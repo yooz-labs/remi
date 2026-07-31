@@ -155,7 +155,6 @@ function buildPipeline(
         tracker.recordPendingHook(q);
       }
     },
-    onSessionInfo: () => {},
   });
 
   const gate = new AutoApproveGate(

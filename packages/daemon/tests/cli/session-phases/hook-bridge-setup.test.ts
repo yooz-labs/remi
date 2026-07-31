@@ -391,14 +391,17 @@ describe('setupHookBridge', () => {
     return { tracker, messageApi: localMessageApi };
   }
 
-  test('registers 14 .on() listeners + the synchronous PermissionRequest resolver (#496)', () => {
+  test('registers 13 .on() listeners + the synchronous PermissionRequest resolver (#496)', () => {
     build();
     const events = new Set(hookServer.listeners.keys());
     // PermissionRequest is NO LONGER a .on() listener — it is the synchronous
-    // resolver (#496), installed via setPermissionResolver.
+    // resolver (#496), installed via setPermissionResolver. SessionStart
+    // dropped from 14 to 13 (#930): Claude Code hard-discards http-type hook
+    // registrations for SessionStart/Setup before dispatch, so remi's
+    // registration never fired -- confirmed by 5,000+ captured events with
+    // zero SessionStart records.
     expect(events).toEqual(
       new Set([
-        'SessionStart',
         'PreToolUse',
         'PostToolUse',
         'Notification',
@@ -422,10 +425,18 @@ describe('setupHookBridge', () => {
 
   describe('Q9 (#893): UserPromptSubmit -> authority', () => {
     function lock(id: string): void {
-      hookServer.fire('SessionStart', {
+      // #930: SessionStart is no longer a registered/dispatched hook
+      // event (Claude Code discards http-type hooks for it). Notification
+      // with a neutral type locks the binder via the same onHookEvent()
+      // first-adopt path with zero downstream side effects (handleNotification
+      // no-ops for anything outside permission_prompt/idle_prompt/
+      // elicitation_dialog).
+      hookServer.fire('Notification', {
         session_id: id,
         transcript_path: path.join(tmpDir, `${id}.jsonl`),
-        hook_event_name: 'SessionStart',
+        hook_event_name: 'Notification',
+        notification_type: 'auth_success',
+        message: '',
       });
     }
 
@@ -636,12 +647,20 @@ describe('setupHookBridge', () => {
   });
 
   describe('phase 4 (#453): the 4 previously-dropped events', () => {
-    /** Fire a SessionStart so the bridge locks onto `id` (admit gate then passes). */
+    /** Fire a neutral Notification so the bridge locks onto `id` (admit gate then passes; #930). */
     function lock(id: string): void {
-      hookServer.fire('SessionStart', {
+      // #930: SessionStart is no longer a registered/dispatched hook
+      // event (Claude Code discards http-type hooks for it). Notification
+      // with a neutral type locks the binder via the same onHookEvent()
+      // first-adopt path with zero downstream side effects (handleNotification
+      // no-ops for anything outside permission_prompt/idle_prompt/
+      // elicitation_dialog).
+      hookServer.fire('Notification', {
         session_id: id,
         transcript_path: path.join(tmpDir, `${id}.jsonl`),
-        hook_event_name: 'SessionStart',
+        hook_event_name: 'Notification',
+        notification_type: 'auth_success',
+        message: '',
       });
     }
 
@@ -737,10 +756,12 @@ describe('setupHookBridge', () => {
     // parked record later pairs with a real render.
     const { tracker } = build({ autoApprove: true, autoApproveDecision: 'approve' });
 
-    hookServer.fire('SessionStart', {
+    hookServer.fire('Notification', {
       session_id: 'claude-sub-123',
       transcript_path: path.join(tmpDir, 'sub.jsonl'),
-      hook_event_name: 'SessionStart',
+      hook_event_name: 'Notification',
+      notification_type: 'auth_success',
+      message: '',
     });
 
     // PTY rendered the subagent's prompt on the user's screen.
@@ -774,10 +795,12 @@ describe('setupHookBridge', () => {
     // no agent_id would inject into the parent agent's PTY input.
     build({ autoApprove: true, autoApproveDecision: 'approve' });
 
-    hookServer.fire('SessionStart', {
+    hookServer.fire('Notification', {
       session_id: 'claude-nested-1',
       transcript_path: path.join(tmpDir, 'nested.jsonl'),
-      hook_event_name: 'SessionStart',
+      hook_event_name: 'Notification',
+      notification_type: 'auth_success',
+      message: '',
     });
 
     // Engage nested-Task subagent context (no agent_id, just Task spawn).
@@ -820,10 +843,12 @@ describe('setupHookBridge', () => {
     const bridge = bridgeHandles[bridgeHandles.length - 1]?.bridge;
     if (!bridge) throw new Error('test setup: no bridge handle');
 
-    hookServer.fire('SessionStart', {
+    hookServer.fire('Notification', {
       session_id: 'claude-leak-1',
       transcript_path: path.join(tmpDir, 'leak.jsonl'),
-      hook_event_name: 'SessionStart',
+      hook_event_name: 'Notification',
+      notification_type: 'auth_success',
+      message: '',
     });
 
     hookServer.fire('PreToolUse', {
@@ -854,12 +879,14 @@ describe('setupHookBridge', () => {
   test('PermissionRequest with auto-approve APPROVE returns "allow" (no inject) (#496)', async () => {
     build({ autoApprove: true });
 
-    // Fire SessionStart first so claudeSessionId locks; subsequent events
-    // pass filterBySession.
-    hookServer.fire('SessionStart', {
+    // Fire a neutral Notification first so claudeSessionId locks (#930);
+    // subsequent events pass filterBySession.
+    hookServer.fire('Notification', {
       session_id: 'claude-locked-123',
       transcript_path: path.join(tmpDir, 'does-not-matter.jsonl'),
-      hook_event_name: 'SessionStart',
+      hook_event_name: 'Notification',
+      notification_type: 'auth_success',
+      message: '',
     });
 
     const decision = await hookServer.firePermission({
@@ -898,10 +925,12 @@ describe('setupHookBridge', () => {
     // claude-A; events are deferred to the mtime fallback. PreToolUse during
     // this window must also be filtered out (the headline #321 symptom: no
     // [AutoApprove], no status updates).
-    hookServer.fire('SessionStart', {
+    hookServer.fire('Notification', {
       session_id: 'claude-A',
       transcript_path: path.join(tmpDir, 'a.jsonl'),
-      hook_event_name: 'SessionStart',
+      hook_event_name: 'Notification',
+      notification_type: 'auth_success',
+      message: '',
     });
     expect(transcriptWatchers.has(SID)).toBe(false);
 
@@ -920,10 +949,12 @@ describe('setupHookBridge', () => {
     // Next hook event must now lock onto claude-A and start the watcher.
     // Pre-#321-fix: the cached `hasSiblingInDir=true` from the first call
     // permanently blocked init even after the sibling was gone.
-    hookServer.fire('SessionStart', {
+    hookServer.fire('Notification', {
       session_id: 'claude-A',
       transcript_path: path.join(tmpDir, 'a.jsonl'),
-      hook_event_name: 'SessionStart',
+      hook_event_name: 'Notification',
+      notification_type: 'auth_success',
+      message: '',
     });
     expect(transcriptWatchers.has(SID)).toBe(true);
 
@@ -944,10 +975,12 @@ describe('setupHookBridge', () => {
     build();
 
     // Acquire the lock cleanly with no siblings present.
-    hookServer.fire('SessionStart', {
+    hookServer.fire('Notification', {
       session_id: 'claude-A',
       transcript_path: path.join(tmpDir, 'a.jsonl'),
-      hook_event_name: 'SessionStart',
+      hook_event_name: 'Notification',
+      notification_type: 'auth_success',
+      message: '',
     });
     expect(transcriptWatchers.has(SID)).toBe(true);
 
@@ -1273,51 +1306,17 @@ describe('setupHookBridge', () => {
     });
   });
 
-  test('SessionStart with source=clear pre-empts classifier and tears down watcher', () => {
-    build();
-
-    // First lock onto claude-A via a normal SessionStart.
-    hookServer.fire('SessionStart', {
-      session_id: 'claude-A',
-      transcript_path: path.join(tmpDir, 'a.jsonl'),
-      hook_event_name: 'SessionStart',
-    });
-
-    // Simulate a live transcript watcher so teardown has something to act on.
-    const stopCalls: number[] = [];
-    transcriptWatchers.set(SID, {
-      filePath: path.join(tmpDir, 'a.jsonl'),
-      stop: () => {
-        stopCalls.push(1);
-      },
-    } as never);
-
-    // Fire SessionStart with source=clear and a DIFFERENT session id.
-    // This pre-empts the classifier into 'restart', tearing down the watcher
-    // and resetting claudeSessionId so the new claude-B can lock.
-    hookServer.fire('SessionStart', {
-      session_id: 'claude-B',
-      transcript_path: path.join(tmpDir, 'b.jsonl'),
-      hook_event_name: 'SessionStart',
-      source: 'clear',
-    });
-
-    // teardown side effects: old watcher stopped, messageApi reset. A new
-    // watcher MAY be registered immediately after (for claude-B), so we
-    // assert only the tear-down signals, not the final map state.
-    expect(stopCalls.length).toBeGreaterThanOrEqual(1);
-    expect(messageApiLog.resetCalls.n).toBeGreaterThanOrEqual(1);
-  });
-
   test('restart (/clear) broadcasts question_resolved for each pending question and clears them (#585 P7)', () => {
     const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
     build({ broadcastResolvedLog });
 
     // Lock onto claude-A.
-    hookServer.fire('SessionStart', {
+    hookServer.fire('Notification', {
       session_id: 'claude-A',
       transcript_path: path.join(tmpDir, 'a.jsonl'),
-      hook_event_name: 'SessionStart',
+      hook_event_name: 'Notification',
+      notification_type: 'auth_success',
+      message: '',
     });
 
     // A question was pushed before the restart (held-hook or hook+PTY path).
@@ -1335,185 +1334,30 @@ describe('setupHookBridge', () => {
     expect(sessionRegistry.getSession(SID)?.currentQuestions.size).toBe(1);
 
     // /clear: a new session_id rotates the binding (restart classification).
-    hookServer.fire('SessionStart', {
+    // #930: SessionStart's own pre-empt is unreachable via hooks now (Claude
+    // Code never sends it), so the rotation here is driven the way it
+    // actually happens post-#930: a real SessionEnd for the OLD id flips
+    // `mainSessionEnded` (`TranscriptBinder.onSessionEnd`), then any
+    // registered event for the NEW id classifies as 'restart'. This is
+    // real production behavior (SessionEnd genuinely fires on a clean exit),
+    // not a synthetic-only substitute.
+    hookServer.fire('SessionEnd', {
+      session_id: 'claude-A',
+      hook_event_name: 'SessionEnd',
+      reason: 'clear',
+    });
+    hookServer.fire('Notification', {
       session_id: 'claude-B',
       transcript_path: path.join(tmpDir, 'b.jsonl'),
-      hook_event_name: 'SessionStart',
-      source: 'clear',
+      hook_event_name: 'Notification',
+      notification_type: 'auth_success',
+      message: '',
     });
 
     // The pending card is dismissed on every client (broadcast) AND dropped from
     // the registry, so nothing lingers across the rotation.
     expect(broadcastResolvedLog).toEqual([{ questionId: QID, reason: 'cancelled' }]);
     expect(sessionRegistry.getSession(SID)?.currentQuestions.size).toBe(0);
-  });
-
-  // SessionStart restart pre-empt is source-agnostic: any rotation of
-  // session_id while PTY is running fires it. These tests cover the new-
-  // source, undefined-source, same-session_id (must NOT fire), missing
-  // session_id (defensive), and subagent (agent_id set, must NOT fire) axes.
-
-  test('SessionStart with unknown source AND new session_id pre-empts classifier (issue #416)', () => {
-    build();
-
-    hookServer.fire('SessionStart', {
-      session_id: 'claude-A',
-      transcript_path: path.join(tmpDir, 'a.jsonl'),
-      hook_event_name: 'SessionStart',
-    });
-
-    const stopCalls: number[] = [];
-    transcriptWatchers.set(SID, {
-      filePath: path.join(tmpDir, 'a.jsonl'),
-      stop: () => {
-        stopCalls.push(1);
-      },
-    } as never);
-
-    hookServer.fire('SessionStart', {
-      session_id: 'claude-B',
-      transcript_path: path.join(tmpDir, 'b.jsonl'),
-      hook_event_name: 'SessionStart',
-      source: 'switch_chat_future_value',
-    });
-
-    expect(stopCalls.length).toBeGreaterThanOrEqual(1);
-    expect(messageApiLog.resetCalls.n).toBeGreaterThanOrEqual(1);
-
-    hookServer.fire('PreToolUse', {
-      session_id: 'claude-B',
-      tool_name: 'Bash',
-      tool_input: { command: 'ls' },
-    });
-    expect(messageApiLog.statusCalls).toContain('executing');
-  });
-
-  test('SessionStart with undefined source AND new session_id pre-empts classifier (issue #416)', () => {
-    // Some Claude Code versions omit `source` entirely on session transitions.
-    build();
-
-    hookServer.fire('SessionStart', {
-      session_id: 'claude-A',
-      transcript_path: path.join(tmpDir, 'a.jsonl'),
-      hook_event_name: 'SessionStart',
-    });
-
-    const stopCalls: number[] = [];
-    transcriptWatchers.set(SID, {
-      filePath: path.join(tmpDir, 'a.jsonl'),
-      stop: () => {
-        stopCalls.push(1);
-      },
-    } as never);
-
-    hookServer.fire('SessionStart', {
-      session_id: 'claude-B',
-      transcript_path: path.join(tmpDir, 'b.jsonl'),
-      hook_event_name: 'SessionStart',
-    });
-
-    expect(stopCalls.length).toBeGreaterThanOrEqual(1);
-    expect(messageApiLog.resetCalls.n).toBeGreaterThanOrEqual(1);
-
-    hookServer.fire('PreToolUse', {
-      session_id: 'claude-B',
-      tool_name: 'Bash',
-      tool_input: { command: 'ls' },
-    });
-    expect(messageApiLog.statusCalls).toContain('executing');
-  });
-
-  test('SessionStart with same session_id does NOT pre-empt (issue #416)', () => {
-    // Locks the `input.session_id !== claudeSessionId` guard against silent
-    // refactor regression: a duplicate SessionStart for the same session
-    // (e.g. SDK reconnect, source=startup repeat) must be a no-op.
-    build();
-
-    hookServer.fire('SessionStart', {
-      session_id: 'claude-A',
-      transcript_path: path.join(tmpDir, 'a.jsonl'),
-      hook_event_name: 'SessionStart',
-    });
-
-    const stopCalls: number[] = [];
-    transcriptWatchers.set(SID, {
-      filePath: path.join(tmpDir, 'a.jsonl'),
-      stop: () => {
-        stopCalls.push(1);
-      },
-    } as never);
-    const resetsBefore = messageApiLog.resetCalls.n;
-
-    hookServer.fire('SessionStart', {
-      session_id: 'claude-A',
-      transcript_path: path.join(tmpDir, 'a.jsonl'),
-      hook_event_name: 'SessionStart',
-      source: 'startup',
-    });
-
-    expect(stopCalls.length).toBe(0);
-    expect(messageApiLog.resetCalls.n).toBe(resetsBefore);
-  });
-
-  test('SessionStart with missing session_id does NOT pre-empt (issue #416)', () => {
-    // Defensive: malformed/incomplete event must be inert, not tear down.
-    build();
-
-    hookServer.fire('SessionStart', {
-      session_id: 'claude-A',
-      transcript_path: path.join(tmpDir, 'a.jsonl'),
-      hook_event_name: 'SessionStart',
-    });
-
-    const stopCalls: number[] = [];
-    transcriptWatchers.set(SID, {
-      filePath: path.join(tmpDir, 'a.jsonl'),
-      stop: () => {
-        stopCalls.push(1);
-      },
-    } as never);
-    const resetsBefore = messageApiLog.resetCalls.n;
-
-    hookServer.fire('SessionStart', {
-      hook_event_name: 'SessionStart',
-      transcript_path: path.join(tmpDir, 'b.jsonl'),
-    });
-
-    expect(stopCalls.length).toBe(0);
-    expect(messageApiLog.resetCalls.n).toBe(resetsBefore);
-  });
-
-  test('SessionStart with agent_id set does NOT pre-empt even on session_id mismatch (issue #416)', () => {
-    // isSubagentEvent guard: a subagent firing SessionStart with its own
-    // session_id (hypothetical future Claude Code shape) must not tear down
-    // main's watcher. Closes the gap the pre-PR narrow `source` gate covered
-    // by accident.
-    build();
-
-    hookServer.fire('SessionStart', {
-      session_id: 'claude-A',
-      transcript_path: path.join(tmpDir, 'a.jsonl'),
-      hook_event_name: 'SessionStart',
-    });
-
-    const stopCalls: number[] = [];
-    transcriptWatchers.set(SID, {
-      filePath: path.join(tmpDir, 'a.jsonl'),
-      stop: () => {
-        stopCalls.push(1);
-      },
-    } as never);
-    const resetsBefore = messageApiLog.resetCalls.n;
-
-    hookServer.fire('SessionStart', {
-      session_id: 'subagent-B',
-      transcript_path: path.join(tmpDir, 'b.jsonl'),
-      hook_event_name: 'SessionStart',
-      agent_id: 'subagent-id-xyz',
-    });
-
-    expect(stopCalls.length).toBe(0);
-    expect(messageApiLog.resetCalls.n).toBe(resetsBefore);
   });
 
   // -------------------------------------------------------------------------
@@ -1536,12 +1380,12 @@ describe('setupHookBridge', () => {
     // labels onto unrelated future PTY prompts.
     const { tracker } = build({ realTracker: true });
 
-    hookServer.fire('SessionStart', {
+    hookServer.fire('Notification', {
       session_id: 'claude-locked-wire-1',
-      hook_event_name: 'SessionStart',
+      hook_event_name: 'Notification',
       transcript_path: path.join(tmpDir, 'wire.jsonl'),
-      source: 'startup',
-      model: 'test',
+      notification_type: 'auth_success',
+      message: '',
     });
 
     hookServer.fire('PermissionRequest', {
@@ -1571,12 +1415,12 @@ describe('setupHookBridge', () => {
     // prompt. Two reviewers flagged this on PR #423.
     const { tracker } = build({ realTracker: true });
 
-    hookServer.fire('SessionStart', {
+    hookServer.fire('Notification', {
       session_id: 'claude-restart-A',
-      hook_event_name: 'SessionStart',
+      hook_event_name: 'Notification',
       transcript_path: path.join(tmpDir, 'a.jsonl'),
-      source: 'startup',
-      model: 'test',
+      notification_type: 'auth_success',
+      message: '',
     });
 
     hookServer.fire('PermissionRequest', {
@@ -1588,15 +1432,23 @@ describe('setupHookBridge', () => {
 
     expect(tracker.hasPendingForTest()).toBe(true);
 
-    // Restart fires (e.g. user typed /clear). Classifier returns
-    // 'restart' because session_id mismatch + source is treated as
-    // restart-evidence by phase 1.
-    hookServer.fire('SessionStart', {
+    // Restart fires (e.g. user typed /clear). #930: SessionStart's own
+    // pre-empt is unreachable via hooks now, so the rotation is driven the
+    // way it actually happens post-#930: a real SessionEnd for the OLD id
+    // flips `mainSessionEnded`, then any registered event for the NEW id
+    // classifies as 'restart' (see the (#585 P7) test above for the same
+    // substitution and its rationale).
+    hookServer.fire('SessionEnd', {
+      session_id: 'claude-restart-A',
+      hook_event_name: 'SessionEnd',
+      reason: 'clear',
+    });
+    hookServer.fire('Notification', {
       session_id: 'claude-restart-B',
-      hook_event_name: 'SessionStart',
+      hook_event_name: 'Notification',
       transcript_path: path.join(tmpDir, 'b.jsonl'),
-      source: 'clear',
-      model: 'test',
+      notification_type: 'auth_success',
+      message: '',
     });
 
     expect(tracker.hasPendingForTest()).toBe(false);
@@ -1614,12 +1466,12 @@ describe('setupHookBridge', () => {
       realTracker: true,
     });
 
-    hookServer.fire('SessionStart', {
+    hookServer.fire('Notification', {
       session_id: 'claude-cancel',
-      hook_event_name: 'SessionStart',
+      hook_event_name: 'Notification',
       transcript_path: path.join(tmpDir, 'c.jsonl'),
-      source: 'startup',
-      model: 'test',
+      notification_type: 'auth_success',
+      message: '',
     });
 
     hookServer.fire('PermissionRequest', {
@@ -1643,12 +1495,12 @@ describe('setupHookBridge', () => {
     // pending slot, or a final PTY echo could fire a spurious push.
     const { tracker } = build({ realTracker: true });
 
-    hookServer.fire('SessionStart', {
+    hookServer.fire('Notification', {
       session_id: 'claude-late-1',
-      hook_event_name: 'SessionStart',
+      hook_event_name: 'Notification',
       transcript_path: path.join(tmpDir, 'late.jsonl'),
-      source: 'startup',
-      model: 'test',
+      notification_type: 'auth_success',
+      message: '',
     });
 
     hookServer.fire('SessionEnd', {
@@ -1679,12 +1531,12 @@ describe('setupHookBridge', () => {
       autoApprovePickIndex: 2,
     });
 
-    hookServer.fire('SessionStart', {
+    hookServer.fire('Notification', {
       session_id: 'claude-pick',
-      hook_event_name: 'SessionStart',
+      hook_event_name: 'Notification',
       transcript_path: path.join(tmpDir, 'pick.jsonl'),
-      source: 'startup',
-      model: 'test',
+      notification_type: 'auth_success',
+      message: '',
     });
 
     hookServer.fire('PermissionRequest', {
@@ -1736,12 +1588,12 @@ describe('setupHookBridge', () => {
       ),
     );
 
-    hookServer.fire('SessionStart', {
+    hookServer.fire('Notification', {
       session_id: 'claude-mixed',
-      hook_event_name: 'SessionStart',
+      hook_event_name: 'Notification',
       transcript_path: path.join(tmpDir, 'mixed.jsonl'),
-      source: 'startup',
-      model: 'test',
+      notification_type: 'auth_success',
+      message: '',
     });
 
     // No auto-approve: the listener falls through to escalateToUser,
@@ -1817,12 +1669,12 @@ describe('setupHookBridge', () => {
       ),
     );
 
-    hookServer.fire('SessionStart', {
+    hookServer.fire('Notification', {
       session_id: 'claude-sub-A',
-      hook_event_name: 'SessionStart',
+      hook_event_name: 'Notification',
       transcript_path: path.join(tmpDir, 'subA.jsonl'),
-      source: 'startup',
-      model: 'test',
+      notification_type: 'auth_success',
+      message: '',
     });
 
     hookServer.fire('PermissionRequest', {
@@ -1892,12 +1744,12 @@ describe('setupHookBridge', () => {
       ),
     );
 
-    hookServer.fire('SessionStart', {
+    hookServer.fire('Notification', {
       session_id: 'claude-sub-B',
-      hook_event_name: 'SessionStart',
+      hook_event_name: 'Notification',
       transcript_path: path.join(tmpDir, 'subB.jsonl'),
-      source: 'startup',
-      model: 'test',
+      notification_type: 'auth_success',
+      message: '',
     });
 
     hookServer.fire('PermissionRequest', {
@@ -1953,12 +1805,12 @@ describe('setupHookBridge', () => {
     // PermissionRequest leaves the tracker with nothing pending at all.
     const { tracker } = build({ realTracker: true });
 
-    hookServer.fire('SessionStart', {
+    hookServer.fire('Notification', {
       session_id: 'claude-sub-N',
-      hook_event_name: 'SessionStart',
+      hook_event_name: 'Notification',
       transcript_path: path.join(tmpDir, 'subN.jsonl'),
-      source: 'startup',
-      model: 'test',
+      notification_type: 'auth_success',
+      message: '',
     });
 
     hookServer.fire('Notification', {
@@ -1990,12 +1842,12 @@ describe('setupHookBridge', () => {
       orphanDebounceMs: 5,
     });
 
-    hookServer.fire('SessionStart', {
+    hookServer.fire('Notification', {
       session_id: 'claude-890-unpaired',
-      hook_event_name: 'SessionStart',
+      hook_event_name: 'Notification',
       transcript_path: path.join(tmpDir, 'unpaired.jsonl'),
-      source: 'startup',
-      model: 'test',
+      notification_type: 'auth_success',
+      message: '',
     });
 
     // No PermissionRequest -- this is the unpaired case by construction.
@@ -2050,12 +1902,12 @@ describe('setupHookBridge', () => {
     // stores the question and waits for a render, it does not push.
     build({ autoApprove: true, autoApproveDecision: 'approve', realTracker: true });
 
-    hookServer.fire('SessionStart', {
+    hookServer.fire('Notification', {
       session_id: 'claude-sub-AA',
-      hook_event_name: 'SessionStart',
+      hook_event_name: 'Notification',
       transcript_path: path.join(tmpDir, 'subAA.jsonl'),
-      source: 'startup',
-      model: 'test',
+      notification_type: 'auth_success',
+      message: '',
     });
 
     const decision = await hookServer.firePermission({
@@ -2084,12 +1936,12 @@ describe('setupHookBridge', () => {
     // render, via the parked record.
     const { tracker } = build({ autoApprove: true, autoApproveDecision: 'approve' });
 
-    hookServer.fire('SessionStart', {
+    hookServer.fire('Notification', {
       session_id: 'claude-sub-hot',
-      hook_event_name: 'SessionStart',
+      hook_event_name: 'Notification',
       transcript_path: path.join(tmpDir, 'subhot.jsonl'),
-      source: 'startup',
-      model: 'test',
+      notification_type: 'auth_success',
+      message: '',
     });
 
     // PTY rendered the subagent's prompt on the user's screen.
@@ -2122,12 +1974,12 @@ describe('setupHookBridge', () => {
     // the approve case above.
     build({ autoApprove: true, autoApproveDecision: 'deny', realTracker: true });
 
-    hookServer.fire('SessionStart', {
+    hookServer.fire('Notification', {
       session_id: 'claude-sub-deny',
-      hook_event_name: 'SessionStart',
+      hook_event_name: 'Notification',
       transcript_path: path.join(tmpDir, 'subdeny.jsonl'),
-      source: 'startup',
-      model: 'test',
+      notification_type: 'auth_success',
+      message: '',
     });
 
     const decision = await hookServer.firePermission({
@@ -2147,12 +1999,12 @@ describe('setupHookBridge', () => {
   test('#807: a PTY-visible prompt does not make a subagent deny either', async () => {
     const { tracker } = build({ autoApprove: true, autoApproveDecision: 'deny' });
 
-    hookServer.fire('SessionStart', {
+    hookServer.fire('Notification', {
       session_id: 'claude-sub-deny-hot',
-      hook_event_name: 'SessionStart',
+      hook_event_name: 'Notification',
       transcript_path: path.join(tmpDir, 'subdenyhot.jsonl'),
-      source: 'startup',
-      model: 'test',
+      notification_type: 'auth_success',
+      message: '',
     });
 
     tracker.onPTYPromptVisible({
@@ -2189,12 +2041,12 @@ describe('setupHookBridge', () => {
     // silent main-agent deny. The bridge resets the tracker and escalates as main.
     build({ autoApprove: true, autoApproveDecision: 'escalate' });
 
-    hookServer.fire('SessionStart', {
+    hookServer.fire('Notification', {
       session_id: 'claude-esc-task',
-      hook_event_name: 'SessionStart',
+      hook_event_name: 'Notification',
       transcript_path: path.join(tmpDir, 'esctask.jsonl'),
-      source: 'startup',
-      model: 'test',
+      notification_type: 'auth_success',
+      message: '',
     });
 
     // Open a synchronous Task context.
@@ -2223,12 +2075,12 @@ describe('setupHookBridge', () => {
     // Mirrors the escalate case above for the eval-error (.catch) branch.
     build({ autoApprove: true, autoApproveThrows: true });
 
-    hookServer.fire('SessionStart', {
+    hookServer.fire('Notification', {
       session_id: 'claude-throws-task',
-      hook_event_name: 'SessionStart',
+      hook_event_name: 'Notification',
       transcript_path: path.join(tmpDir, 'throws-task.jsonl'),
-      source: 'startup',
-      model: 'test',
+      notification_type: 'auth_success',
+      message: '',
     });
 
     hookServer.fire('PreToolUse', {
@@ -2254,12 +2106,12 @@ describe('setupHookBridge', () => {
     // Mirrors the escalate case above for the no-service branch.
     build(); // no autoApprove
 
-    hookServer.fire('SessionStart', {
+    hookServer.fire('Notification', {
       session_id: 'claude-noaa-task',
-      hook_event_name: 'SessionStart',
+      hook_event_name: 'Notification',
       transcript_path: path.join(tmpDir, 'noaatask.jsonl'),
-      source: 'startup',
-      model: 'test',
+      notification_type: 'auth_success',
+      message: '',
     });
 
     hookServer.fire('PreToolUse', {
@@ -2290,12 +2142,12 @@ describe('setupHookBridge', () => {
     // only if Claude's native prompt renders on the PTY.
     build({ autoApprove: true, autoApproveDecision: 'escalate' });
 
-    hookServer.fire('SessionStart', {
+    hookServer.fire('Notification', {
       session_id: 'claude-esc-task-tagged',
-      hook_event_name: 'SessionStart',
+      hook_event_name: 'Notification',
       transcript_path: path.join(tmpDir, 'esctask-tagged.jsonl'),
-      source: 'startup',
-      model: 'test',
+      notification_type: 'auth_success',
+      message: '',
     });
 
     hookServer.fire('PreToolUse', {
@@ -2335,12 +2187,12 @@ describe('setupHookBridge', () => {
     // PreToolUse must not abort it (that dropped decisions about to approve).
     const cancelLog: string[] = [];
     build({ autoApprove: true, cancelLog });
-    hookServer.fire('SessionStart', {
+    hookServer.fire('Notification', {
       session_id: 'claude-locked-pre',
-      hook_event_name: 'SessionStart',
+      hook_event_name: 'Notification',
       transcript_path: path.join(tmpDir, 'cancel-test.jsonl'),
-      source: 'startup',
-      model: 'test',
+      notification_type: 'auth_success',
+      message: '',
     });
     hookServer.fire('PreToolUse', {
       session_id: 'claude-locked-pre',
@@ -2354,12 +2206,12 @@ describe('setupHookBridge', () => {
   test('#537: PostToolUse does NOT cancel the in-flight auto-approve eval', () => {
     const cancelLog: string[] = [];
     build({ autoApprove: true, cancelLog });
-    hookServer.fire('SessionStart', {
+    hookServer.fire('Notification', {
       session_id: 'claude-locked-post',
-      hook_event_name: 'SessionStart',
+      hook_event_name: 'Notification',
       transcript_path: path.join(tmpDir, 'cancel-test.jsonl'),
-      source: 'startup',
-      model: 'test',
+      notification_type: 'auth_success',
+      message: '',
     });
     hookServer.fire('PostToolUse', {
       session_id: 'claude-locked-post',
@@ -2380,12 +2232,12 @@ describe('setupHookBridge', () => {
     // runs, the eval is already tracked as in-flight and main-tagged.
     const cancelLog: string[] = [];
     build({ autoApprove: true, cancelLog });
-    hookServer.fire('SessionStart', {
+    hookServer.fire('Notification', {
       session_id: 'claude-locked-stop',
-      hook_event_name: 'SessionStart',
+      hook_event_name: 'Notification',
       transcript_path: path.join(tmpDir, 'cancel-test.jsonl'),
-      source: 'startup',
-      model: 'test',
+      notification_type: 'auth_success',
+      message: '',
     });
     void hookServer.firePermission({
       session_id: 'claude-locked-stop',
@@ -2407,12 +2259,12 @@ describe('setupHookBridge', () => {
     // not because nothing was in flight.
     const cancelLog: string[] = [];
     build({ autoApprove: true, cancelLog });
-    hookServer.fire('SessionStart', {
+    hookServer.fire('Notification', {
       session_id: 'claude-locked-stop-sub',
-      hook_event_name: 'SessionStart',
+      hook_event_name: 'Notification',
       transcript_path: path.join(tmpDir, 'cancel-test-sub.jsonl'),
-      source: 'startup',
-      model: 'test',
+      notification_type: 'auth_success',
+      message: '',
     });
     void hookServer.firePermission({
       session_id: 'claude-locked-stop-sub',
@@ -2433,12 +2285,12 @@ describe('setupHookBridge', () => {
   test('SessionEnd cancels stale auto-approve LLM eval', () => {
     const cancelLog: string[] = [];
     build({ autoApprove: true, cancelLog });
-    hookServer.fire('SessionStart', {
+    hookServer.fire('Notification', {
       session_id: 'claude-locked-end',
-      hook_event_name: 'SessionStart',
+      hook_event_name: 'Notification',
       transcript_path: path.join(tmpDir, 'cancel-test.jsonl'),
-      source: 'startup',
-      model: 'test',
+      notification_type: 'auth_success',
+      message: '',
     });
     hookServer.fire('SessionEnd', {
       session_id: 'claude-locked-end',
@@ -2453,12 +2305,12 @@ describe('setupHookBridge', () => {
     // cancelling here would defeat auto-approve for slow LLMs.
     const cancelLog: string[] = [];
     build({ autoApprove: true, cancelLog });
-    hookServer.fire('SessionStart', {
+    hookServer.fire('Notification', {
       session_id: 'claude-locked-idle',
-      hook_event_name: 'SessionStart',
+      hook_event_name: 'Notification',
       transcript_path: path.join(tmpDir, 'cancel-test.jsonl'),
-      source: 'startup',
-      model: 'test',
+      notification_type: 'auth_success',
+      message: '',
     });
     hookServer.fire('Notification', {
       session_id: 'claude-locked-idle',
@@ -2476,12 +2328,12 @@ describe('setupHookBridge', () => {
       autoApprove: true,
       autoApproveDecision: 'cancelled',
     });
-    hookServer.fire('SessionStart', {
+    hookServer.fire('Notification', {
       session_id: 'claude-locked-cancel',
-      hook_event_name: 'SessionStart',
+      hook_event_name: 'Notification',
       transcript_path: path.join(tmpDir, 'cancel-test.jsonl'),
-      source: 'startup',
-      model: 'test',
+      notification_type: 'auth_success',
+      message: '',
     });
     hookServer.fire('PermissionRequest', {
       session_id: 'claude-locked-cancel',
@@ -2507,10 +2359,18 @@ describe('setupHookBridge', () => {
   // ---------------------------------------------------------------------------
   describe('#799: subagent question purge', () => {
     function lock(id: string): void {
-      hookServer.fire('SessionStart', {
+      // #930: SessionStart is no longer a registered/dispatched hook
+      // event (Claude Code discards http-type hooks for it). Notification
+      // with a neutral type locks the binder via the same onHookEvent()
+      // first-adopt path with zero downstream side effects (handleNotification
+      // no-ops for anything outside permission_prompt/idle_prompt/
+      // elicitation_dialog).
+      hookServer.fire('Notification', {
         session_id: id,
         transcript_path: path.join(tmpDir, `${id}.jsonl`),
-        hook_event_name: 'SessionStart',
+        hook_event_name: 'Notification',
+        notification_type: 'auth_success',
+        message: '',
       });
     }
 
@@ -2750,10 +2610,18 @@ describe('setupHookBridge', () => {
   // ---------------------------------------------------------------------------
   describe('#889 (Q4): PermissionDenied external resolution', () => {
     function lock(id: string): void {
-      hookServer.fire('SessionStart', {
+      // #930: SessionStart is no longer a registered/dispatched hook
+      // event (Claude Code discards http-type hooks for it). Notification
+      // with a neutral type locks the binder via the same onHookEvent()
+      // first-adopt path with zero downstream side effects (handleNotification
+      // no-ops for anything outside permission_prompt/idle_prompt/
+      // elicitation_dialog).
+      hookServer.fire('Notification', {
         session_id: id,
         transcript_path: path.join(tmpDir, `${id}.jsonl`),
-        hook_event_name: 'SessionStart',
+        hook_event_name: 'Notification',
+        notification_type: 'auth_success',
+        message: '',
       });
     }
 
@@ -2938,10 +2806,18 @@ describe('setupHookBridge', () => {
   // ---------------------------------------------------------------------------
   describe('#889 (Q4): Elicitation / ElicitationResult (real MessageAPI, ADR 0014)', () => {
     function lock(id: string): void {
-      hookServer.fire('SessionStart', {
+      // #930: SessionStart is no longer a registered/dispatched hook
+      // event (Claude Code discards http-type hooks for it). Notification
+      // with a neutral type locks the binder via the same onHookEvent()
+      // first-adopt path with zero downstream side effects (handleNotification
+      // no-ops for anything outside permission_prompt/idle_prompt/
+      // elicitation_dialog).
+      hookServer.fire('Notification', {
         session_id: id,
         transcript_path: path.join(tmpDir, `${id}.jsonl`),
-        hook_event_name: 'SessionStart',
+        hook_event_name: 'Notification',
+        notification_type: 'auth_success',
+        message: '',
       });
     }
 
@@ -3100,262 +2976,7 @@ describe('setupHookBridge', () => {
     });
   });
 
-  describe('session_rotated emission on rotation (#430 #438)', () => {
-    /**
-     * Set up a hook bridge that captures every protocol message it tries
-     * to send. We can't use the shared `build` helper because that swallows
-     * sendAndRecord; rotation emission is the whole point we need to assert
-     * on.
-     */
-    function buildWithCapture(): { sent: import('@remi/shared').ProtocolMessage[] } {
-      const sent: import('@remi/shared').ProtocolMessage[] = [];
-      const tracker = new PassthroughTracker((q) => {
-        messageApiLog.questionCalls += 1;
-        const _ = q;
-      });
-      const handle = setupHookBridge(
-        {
-          sessionRegistry,
-          bindingStore,
-          liveSessionsRegistry,
-          transcriptWatchers: transcriptWatchers as unknown as Map<
-            UUID,
-            import('../../../src/transcript/transcript-watcher.ts').TranscriptWatcher
-          >,
-          transcriptFallbackTimers,
-          autoApproveService: null,
-          currentPort: () => 8765,
-          transcriptDiscovery: new TranscriptDiscovery(),
-        },
-        {
-          hookServer: hookServer as unknown as HookServer,
-          sessionId: SID,
-          workingDirectory: tmpDir,
-          messageApi: {
-            handleMessage: () => {},
-            handleQuestion: () => {},
-            handleStatusChange: () => {},
-            reset: () => {
-              messageApiLog.resetCalls.n += 1;
-            },
-          } as unknown as import('../../../src/api/message-api.ts').MessageAPI,
-          sendAndRecord: (msg) => sent.push(msg),
-          tracker: tracker as unknown as QuestionPresenceTracker,
-        },
-      );
-      bridgeHandles.push(handle);
-      return { sent };
-    }
-
-    test('first-init does NOT emit (no rotation, only hello_ack covers initial)', () => {
-      const { sent } = buildWithCapture();
-
-      // Register the session so the bridge proceeds past hasSession() checks.
-      sessionRegistry.registerSession(SID, tmpDir, fakePTY([]), {
-        handleMessage: () => {},
-        handleQuestion: () => {},
-        handleStatusChange: () => {},
-        reset: () => {},
-      } as unknown as import('../../../src/api/message-api.ts').MessageAPI);
-
-      hookServer.fire('SessionStart', {
-        session_id: 'claude-first-id',
-        transcript_path: path.join(tmpDir, 'first.jsonl'),
-        hook_event_name: 'SessionStart',
-      });
-
-      expect(sent.filter((m) => m.type === 'session_rotated')).toHaveLength(0);
-    });
-
-    test('second SessionStart with a different id emits one session_rotated', () => {
-      const { sent } = buildWithCapture();
-      sessionRegistry.registerSession(SID, tmpDir, fakePTY([]), {
-        handleMessage: () => {},
-        handleQuestion: () => {},
-        handleStatusChange: () => {},
-        reset: () => {},
-      } as unknown as import('../../../src/api/message-api.ts').MessageAPI);
-
-      hookServer.fire('SessionStart', {
-        session_id: 'claude-first-id',
-        transcript_path: path.join(tmpDir, 'first.jsonl'),
-        hook_event_name: 'SessionStart',
-      });
-      hookServer.fire('SessionStart', {
-        session_id: 'claude-second-id',
-        transcript_path: path.join(tmpDir, 'second.jsonl'),
-        hook_event_name: 'SessionStart',
-      });
-
-      const events = sent.filter((m) => m.type === 'session_rotated') as Array<{
-        sessionId: string;
-        oldClaudeSessionId?: string;
-        newClaudeSessionId: string;
-        newTranscriptPath: string;
-        reason: string;
-      }>;
-      expect(events).toHaveLength(1);
-      expect(events[0]?.sessionId).toBe(SID);
-      expect(events[0]?.oldClaudeSessionId).toBe('claude-first-id');
-      expect(events[0]?.newClaudeSessionId).toBe('claude-second-id');
-      expect(events[0]?.newTranscriptPath).toBe(path.join(tmpDir, 'second.jsonl'));
-      expect(events[0]?.reason).toBe('restart');
-    });
-
-    // Epic #453 phase 0 characterization. The #430/#433 hazard: the
-    // transcript-fallback writes the NEW claudeSessionId to sessionStore
-    // BEFORE the hook event for it arrives, so adoptLockFromStore pulls the
-    // new id and classifySessionEvent sees currentLock === incoming = 'match'.
-    // The bug-regression + Codex critics flagged that this exact race is
-    // untested. This pins TODAY's behavior so the TranscriptBinder refactor
-    // (phase 3) cannot change it unnoticed: when the store has already raced
-    // to the new id, the early-return at hook-bridge-setup.ts:370 is hit and
-    // NO session_rotated is emitted (the snapshot's isRotation is computed but
-    // never reaches the restart/adopt announce). Reconnect reconcile then
-    // relies on the store-binding + hello_ack decoration, not a replayed
-    // session_rotated. The binder must consciously preserve OR fix this.
-    test('store raced to the new id before SessionStart: characterize session_rotated', () => {
-      const { sent } = buildWithCapture();
-      sessionRegistry.registerSession(SID, tmpDir, fakePTY([]), {
-        handleMessage: () => {},
-        handleQuestion: () => {},
-        handleStatusChange: () => {},
-        reset: () => {},
-      } as unknown as import('../../../src/api/message-api.ts').MessageAPI);
-
-      // Establish the lock on claude-A.
-      hookServer.fire('SessionStart', {
-        session_id: 'claude-A',
-        transcript_path: path.join(tmpDir, 'a.jsonl'),
-        hook_event_name: 'SessionStart',
-      });
-
-      // Fallback races the store to claude-B BEFORE the SessionStart for B.
-      sessionStore.save({
-        remiSessionId: SID,
-        claudeSessionId: 'claude-B',
-        projectPath: tmpDir,
-        port: 8765,
-        pid: process.pid,
-        startedAt: new Date().toISOString(),
-        exitedAt: null,
-        exitCode: null,
-      });
-
-      // SessionStart for B arrives; adoptLockFromStore pulls B -> 'match'.
-      hookServer.fire('SessionStart', {
-        session_id: 'claude-B',
-        transcript_path: path.join(tmpDir, 'b.jsonl'),
-        hook_event_name: 'SessionStart',
-      });
-
-      // Baseline: the store-raced case does NOT re-emit session_rotated.
-      expect(sent.filter((m) => m.type === 'session_rotated')).toHaveLength(0);
-      // But the binding DID advance to B (store + lock), so a reconnect still
-      // reconciles via the store, not via a replayed rotation event.
-      expect(sessionStore.findByRemiSessionId(SID)?.claudeSessionId).toBe('claude-B');
-    });
-
-    // Epic #453 phase 0: golden-master / differential baseline. A
-    // representative multi-rotation session lifecycle (fresh -> /clear ->
-    // /clear) replayed through the CURRENT path, capturing the control-plane
-    // contract: the ordered session_rotated sequence + the final durable
-    // binding. Phase 3's TranscriptBinder must reproduce this exactly
-    // (shadow-mode diffs against it). Deterministic (synchronous control
-    // plane only; async transcript content is out of scope here).
-    test('golden master: multi-rotation control-plane sequence + final binding', () => {
-      const { sent } = buildWithCapture();
-      sessionRegistry.registerSession(SID, tmpDir, fakePTY([]), {
-        handleMessage: () => {},
-        handleQuestion: () => {},
-        handleStatusChange: () => {},
-        reset: () => {},
-      } as unknown as import('../../../src/api/message-api.ts').MessageAPI);
-
-      // Pre-spawn binding (createNewSession writes this before spawn).
-      sessionStore.save({
-        remiSessionId: SID,
-        claudeSessionId: 'claude-1',
-        projectPath: tmpDir,
-        port: 8765,
-        pid: process.pid,
-        startedAt: new Date().toISOString(),
-        exitedAt: null,
-        exitCode: null,
-      });
-
-      const t1 = path.join(tmpDir, 'm1.jsonl');
-      const t2 = path.join(tmpDir, 'm2.jsonl');
-      const t3 = path.join(tmpDir, 'm3.jsonl');
-
-      hookServer.fire('SessionStart', {
-        session_id: 'claude-1',
-        transcript_path: t1,
-        hook_event_name: 'SessionStart',
-        source: 'startup',
-      });
-      hookServer.fire('SessionStart', {
-        session_id: 'claude-2',
-        transcript_path: t2,
-        hook_event_name: 'SessionStart',
-        source: 'clear',
-      });
-      hookServer.fire('SessionStart', {
-        session_id: 'claude-3',
-        transcript_path: t3,
-        hook_event_name: 'SessionStart',
-        source: 'clear',
-      });
-
-      const rotations = sent
-        .filter((m) => m.type === 'session_rotated')
-        .map((m) => {
-          const r = m as unknown as {
-            oldClaudeSessionId?: string;
-            newClaudeSessionId: string;
-            newTranscriptPath: string;
-            reason: string;
-          };
-          return {
-            old: r.oldClaudeSessionId,
-            new: r.newClaudeSessionId,
-            path: r.newTranscriptPath,
-            reason: r.reason,
-          };
-        });
-
-      // THE GOLDEN MASTER — phase 3 must reproduce this byte-for-byte.
-      expect(rotations).toEqual([
-        { old: 'claude-1', new: 'claude-2', path: t2, reason: 'restart' },
-        { old: 'claude-2', new: 'claude-3', path: t3, reason: 'restart' },
-      ]);
-      expect(sessionStore.findByRemiSessionId(SID)?.claudeSessionId).toBe('claude-3');
-    });
-  });
-
   describe('child-liveness + port-ownership rotation (#451)', () => {
-    /** Write a co-located sibling registry entry. `child` controls how its
-     *  Claude liveness is recorded: alive pid, a dead pid, or none (legacy). */
-    function writeSibling(
-      name: string,
-      child: { claudeChildPid?: number; claudeChildExited?: boolean } = {},
-    ): void {
-      fs.mkdirSync(liveSessionsRegistry.dirPath, { recursive: true });
-      fs.writeFileSync(
-        path.join(liveSessionsRegistry.dirPath, name),
-        JSON.stringify({
-          sessionId: `sib-${name}`,
-          pid: process.pid, // sibling DAEMON is alive
-          wsPort: 18999,
-          hookPort: 18001,
-          projectPath: tmpDir,
-          name: 'sibling',
-          startedAt: new Date().toISOString(),
-          ...child,
-        }),
-      );
-    }
-
     /** Write a transcript whose head optionally carries the remi:<port> marker. */
     function writeTranscript(claudeId: string, ownerPort: number | null): string {
       const p = path.join(tmpDir, `${claudeId}.jsonl`);
@@ -3400,165 +3021,24 @@ describe('setupHookBridge', () => {
     }
 
     const CLAUDE_A = 'aaaaaaaa-1111-1111-1111-111111111111';
-    const CLAUDE_B = 'bbbbbbbb-2222-2222-2222-222222222222';
 
-    test('zombie sibling (dead Claude child) no longer wedges our rotation', async () => {
-      // The exact bug: a leftover daemon (process alive, Claude dead) shares
-      // the dir. Pre-fix it permanently deferred rotation handling. The
-      // rotated transcript here carries NO port marker, proving the zombie is
-      // fully ignored rather than relying on the ownership signal.
-      const deadProc = Bun.spawn(['true'], { stdout: 'ignore', stderr: 'ignore' });
-      await deadProc.exited;
-      writeSibling('zombie.json', { claudeChildPid: deadProc.pid });
-      seedLock(CLAUDE_A);
-      writeTranscript(CLAUDE_A, null);
-      const pathB = writeTranscript(CLAUDE_B, null);
-
-      build();
-      // Event 1: establish lock=CLAUDE_A from the store.
-      hookServer.fire('SessionStart', {
-        session_id: CLAUDE_A,
-        transcript_path: path.join(tmpDir, `${CLAUDE_A}.jsonl`),
-        hook_event_name: 'SessionStart',
-      });
-      // Event 2: in-process rotation to CLAUDE_B.
-      hookServer.fire('SessionStart', {
-        session_id: CLAUDE_B,
-        transcript_path: pathB,
-        hook_event_name: 'SessionStart',
-      });
-
-      try {
-        expect(sessionStore.findByRemiSessionId(SID)?.claudeSessionId).toBe(CLAUDE_B);
-        expect(transcriptWatchers.has(SID)).toBe(true);
-      } finally {
-        stopWatchers();
-      }
-    });
-
-    test('genuine live sibling: our own rotation adopts via the remi:<port> marker', async () => {
-      // A real second daemon (live Claude child) shares the dir. Our rotation
-      // must still rebind because the new transcript carries OUR port marker.
-      writeSibling('live.json', { claudeChildPid: process.pid }); // alive
-      seedLock(CLAUDE_A);
-      writeTranscript(CLAUDE_A, 8765);
-      const pathB = writeTranscript(CLAUDE_B, 8765); // ours
-
-      build();
-      hookServer.fire('SessionStart', {
-        session_id: CLAUDE_A,
-        transcript_path: path.join(tmpDir, `${CLAUDE_A}.jsonl`),
-        hook_event_name: 'SessionStart',
-      });
-      hookServer.fire('SessionStart', {
-        session_id: CLAUDE_B,
-        transcript_path: pathB,
-        hook_event_name: 'SessionStart',
-      });
-
-      try {
-        expect(sessionStore.findByRemiSessionId(SID)?.claudeSessionId).toBe(CLAUDE_B);
-        expect(transcriptWatchers.has(SID)).toBe(true);
-      } finally {
-        stopWatchers();
-      }
-    });
-
-    test("genuine live sibling: the SIBLING's rotation is NOT adopted (no latching)", () => {
-      // Mirror of the above, but the rotating transcript carries the SIBLING's
-      // port. We must not overwrite our binding or start a watcher on it.
-      writeSibling('live2.json', { claudeChildPid: process.pid });
-      seedLock(CLAUDE_A);
-      writeTranscript(CLAUDE_A, 8765);
-      const siblingId = 'cccccccc-3333-3333-3333-333333333333';
-      const pathSib = writeTranscript(siblingId, 18999); // sibling's port
-
-      build();
-      hookServer.fire('SessionStart', {
-        session_id: CLAUDE_A,
-        transcript_path: path.join(tmpDir, `${CLAUDE_A}.jsonl`),
-        hook_event_name: 'SessionStart',
-      });
-      hookServer.fire('SessionStart', {
-        session_id: siblingId,
-        transcript_path: pathSib,
-        hook_event_name: 'SessionStart',
-      });
-
-      try {
-        // Binding unchanged: the sibling's rotation never overwrote ours.
-        expect(sessionStore.findByRemiSessionId(SID)?.claudeSessionId).toBe(CLAUDE_A);
-        // Our watcher (started for CLAUDE_A on event 1) is still intact and was
-        // never torn down or re-pointed at the sibling's transcript.
-        expect(transcriptWatchers.get(SID)?.filePath).toBe(path.join(tmpDir, `${CLAUDE_A}.jsonl`));
-        expect(transcriptWatchers.get(SID)?.filePath).not.toBe(pathSib);
-      } finally {
-        stopWatchers();
-      }
-    });
-
-    test('live sibling + rotation with NO port marker is not adopted', () => {
-      // Guards the &&-not-|| shape of the ownership check: with a live sibling
-      // present and a rotated transcript carrying no remi:<port> marker, we
-      // cannot prove ownership, so we must defer rather than latch.
-      writeSibling('live-nomarker.json', { claudeChildPid: process.pid });
-      seedLock(CLAUDE_A);
-      writeTranscript(CLAUDE_A, 8765); // ours, lets event 1 lock cleanly
-      const pathB = writeTranscript(CLAUDE_B, null); // rotation, unmarked
-
-      build();
-      hookServer.fire('SessionStart', {
-        session_id: CLAUDE_A,
-        transcript_path: path.join(tmpDir, `${CLAUDE_A}.jsonl`),
-        hook_event_name: 'SessionStart',
-      });
-      hookServer.fire('SessionStart', {
-        session_id: CLAUDE_B,
-        transcript_path: pathB,
-        hook_event_name: 'SessionStart',
-      });
-
-      try {
-        // Unproven rotation deferred: binding stays, watcher stays on CLAUDE_A.
-        expect(sessionStore.findByRemiSessionId(SID)?.claudeSessionId).toBe(CLAUDE_A);
-        expect(transcriptWatchers.get(SID)?.filePath).toBe(path.join(tmpDir, `${CLAUDE_A}.jsonl`));
-      } finally {
-        stopWatchers();
-      }
-    });
-
-    test('sibling explicitly flagged claudeChildExited is ignored (recycle-proof)', () => {
-      // The recycle-proof tombstone path: an entry that went alive -> exited via
-      // markClaudeChildExited must not count as a sibling even though its pid is
-      // alive. Rotation proceeds with no port marker, as in the zombie case.
-      writeSibling('flagged-exited.json', {
-        claudeChildPid: process.pid, // alive pid...
-        claudeChildExited: true, // ...but explicitly tombstoned
-      });
-      seedLock(CLAUDE_A);
-      writeTranscript(CLAUDE_A, null);
-      const pathB = writeTranscript(CLAUDE_B, null);
-
-      build();
-      hookServer.fire('SessionStart', {
-        session_id: CLAUDE_A,
-        transcript_path: path.join(tmpDir, `${CLAUDE_A}.jsonl`),
-        hook_event_name: 'SessionStart',
-      });
-      hookServer.fire('SessionStart', {
-        session_id: CLAUDE_B,
-        transcript_path: pathB,
-        hook_event_name: 'SessionStart',
-      });
-
-      try {
-        expect(sessionStore.findByRemiSessionId(SID)?.claudeSessionId).toBe(CLAUDE_B);
-        expect(transcriptWatchers.has(SID)).toBe(true);
-      } finally {
-        stopWatchers();
-      }
-    });
-
+    // #930: the sibling/zombie/port-marker ROTATION scenarios that used to
+    // live in this describe block (fired two SessionStarts to simulate a
+    // live-PTY restart) relied on the SessionStart hookServer listener
+    // calling `binder.preemptOnSessionStart` before `binder.onHookEvent` --
+    // the ONLY way this integration layer could flip `mainSessionEnded` on a
+    // live PTY without an intervening SessionEnd. That listener is deleted
+    // (Claude Code hard-discards http-type hooks for SessionStart, so it
+    // never fired in production either -- see hook-types.ts's
+    // REMI_REGISTERED_HOOK_EVENTS doc comment). The underlying binder logic
+    // (`preemptOnSessionStart`, `incomingReclaimsViaMarker`, zombie-sibling
+    // handling) is unit-tested directly against `TranscriptBinder` in
+    // `tests/transcript/transcript-binder.test.ts` (see its own "#451" and
+    // "zombie sibling" cases), which calls `preemptOnSessionStart` +
+    // `onHookEvent` directly rather than through this deleted wiring. Only
+    // the ONE test below survives here: it locks via the store-adoption path
+    // (`seedLock` + a single PreToolUse), which never depended on
+    // SessionStart at all.
     test('self-heals the watcher when locked-from-store but the fallback gave up', () => {
       // The osa case: single daemon, no sibling. The lock is adopted from the
       // store (deterministic pre-spawn binding), but no watcher exists because
@@ -3599,12 +3079,12 @@ describe('setupHookBridge', () => {
     test('two-step push: a hook stashes pending WITHOUT pushing; only PTY presence fires the push', () => {
       const { tracker } = build({ realTracker: true });
 
-      hookServer.fire('SessionStart', {
+      hookServer.fire('Notification', {
         session_id: 'claude-twostep',
-        hook_event_name: 'SessionStart',
+        hook_event_name: 'Notification',
         transcript_path: path.join(tmpDir, 'twostep.jsonl'),
-        source: 'startup',
-        model: 'test',
+        notification_type: 'auth_success',
+        message: '',
       });
 
       hookServer.fire('PermissionRequest', {
@@ -3647,12 +3127,12 @@ describe('setupHookBridge', () => {
       // A small eval delay guarantees onEvalStart fires before onHandled.
       build({ autoApprove: true, autoApproveDecision: 'approve', autoApproveDelayMs: 10, sendLog });
 
-      hookServer.fire('SessionStart', {
+      hookServer.fire('Notification', {
         session_id: 'claude-aa-status',
-        hook_event_name: 'SessionStart',
+        hook_event_name: 'Notification',
         transcript_path: path.join(tmpDir, 'aa-status.jsonl'),
-        source: 'startup',
-        model: 'test',
+        notification_type: 'auth_success',
+        message: '',
       });
 
       const decision = await hookServer.firePermission({
@@ -3679,12 +3159,12 @@ describe('setupHookBridge', () => {
         sendLog,
       });
 
-      hookServer.fire('SessionStart', {
+      hookServer.fire('Notification', {
         session_id: 'claude-aa-esc',
-        hook_event_name: 'SessionStart',
+        hook_event_name: 'Notification',
         transcript_path: path.join(tmpDir, 'aa-esc.jsonl'),
-        source: 'startup',
-        model: 'test',
+        notification_type: 'auth_success',
+        message: '',
       });
 
       await hookServer.firePermission({
@@ -3706,12 +3186,12 @@ describe('setupHookBridge', () => {
       const sendLog: ProtocolMessage[] = [];
       build({ autoApprove: true, autoApproveDecision: 'approve', autoApproveDelayMs: 10, sendLog });
 
-      hookServer.fire('SessionStart', {
+      hookServer.fire('Notification', {
         session_id: 'claude-aa-subagent',
-        hook_event_name: 'SessionStart',
+        hook_event_name: 'Notification',
         transcript_path: path.join(tmpDir, 'aa-subagent.jsonl'),
-        source: 'startup',
-        model: 'test',
+        notification_type: 'auth_success',
+        message: '',
       });
 
       const decision = await hookServer.firePermission({
@@ -3780,12 +3260,12 @@ describe('setupHookBridge', () => {
         ),
       );
 
-      freshHook.fire('SessionStart', {
+      freshHook.fire('Notification', {
         session_id: 'claude-throw-broadcast',
-        hook_event_name: 'SessionStart',
+        hook_event_name: 'Notification',
         transcript_path: path.join(tmpDir, 'throw-bc.jsonl'),
-        source: 'startup',
-        model: 'test',
+        notification_type: 'auth_success',
+        message: '',
       });
 
       // The decision must still resolve to 'allow' despite the throwing sender.
@@ -3802,12 +3282,20 @@ describe('setupHookBridge', () => {
   });
 
   describe('#891: free-win hook field consumption', () => {
-    /** Fire a SessionStart so the bridge locks onto `id` (admit gate then passes). */
+    /** Fire a neutral Notification so the bridge locks onto `id` (admit gate then passes; #930). */
     function lock(id: string): void {
-      hookServer.fire('SessionStart', {
+      // #930: SessionStart is no longer a registered/dispatched hook
+      // event (Claude Code discards http-type hooks for it). Notification
+      // with a neutral type locks the binder via the same onHookEvent()
+      // first-adopt path with zero downstream side effects (handleNotification
+      // no-ops for anything outside permission_prompt/idle_prompt/
+      // elicitation_dialog).
+      hookServer.fire('Notification', {
         session_id: id,
         transcript_path: path.join(tmpDir, `${id}.jsonl`),
-        hook_event_name: 'SessionStart',
+        hook_event_name: 'Notification',
+        notification_type: 'auth_success',
+        message: '',
       });
     }
 

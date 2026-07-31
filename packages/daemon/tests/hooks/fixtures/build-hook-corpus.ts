@@ -61,8 +61,9 @@
  * despite being registered -- see `EVENTS_WITHOUT_FIXTURES` in
  * `contract-spec.ts`.
  *
- * `SessionStart` is registered too, and STILL has zero fixtures, for a
- * different and more interesting reason: the installed Claude Code binary
+ * `SessionStart` WAS registered too (at the time this corpus was first
+ * built) and STILL had zero fixtures, for a different and more interesting
+ * reason: the installed Claude Code binary
  * (`~/.local/share/claude/versions/2.1.220`) explicitly discards
  * `http`-type hook registrations for `SessionStart`/`Setup` before dispatch.
  * The relevant minified source (found via the same `rg -a -o -P` extraction
@@ -76,7 +77,7 @@
  * `hook-config-manager.ts:19` (`HookEntry.type: 'http'`) shows remi registers
  * EXCLUSIVELY via `http`-type hooks -- there is no code path that registers
  * `command`/`prompt`/`agent`-type hooks. So remi's SessionStart registration
- * is filtered out by Claude Code itself on every single session, silently
+ * was filtered out by Claude Code itself on every single session, silently
  * (the skip is logged only at Claude Code's own internal verbose level, which
  * remi has no visibility into) -- not a race with the hook server binding
  * (confirmed by reading `cli.ts`: `hookServer.start()` and
@@ -84,9 +85,11 @@
  * before the `claude` process is spawned), not a REMI_HOOK_DEBUG logging
  * gap (that write happens unconditionally at the top of `handleRequest`,
  * before dispatch, so it would catch a SessionStart POST if one ever
- * arrived). Filed as a new issue; see the #886 part 2 PR description for the
- * number. `Setup` was never registered by remi at all, so its absence needs
- * no separate explanation.
+ * arrived). Filed as #930; remi unregistered `SessionStart` in response (same
+ * issue) rather than build a `command`-type hook to recover it -- see
+ * `docs/claude-code-hook-contract.md`'s "Corpus status" section for the
+ * current state. `Setup` was never registered by remi at all, so its absence
+ * needs no separate explanation.
  *
  * TEST CONTAMINATION HAZARD, discovered building this corpus: that same
  * "unconditional write" is exactly what makes `~/.remi/hook-diag.jsonl`
@@ -192,10 +195,11 @@ const VERBATIM_PATHS = new Set<string>([
 /**
  * `trigger` and `source` are only ever sent by event types this corpus has
  * zero fixtures for today (Setup/PreCompact/PostCompact/ConfigChange/
- * DirectoryAdded/SessionStart -- none registered, or (SessionStart)
- * registered but never dispatched, see the module doc comment). Kept in the
- * allowlist anyway, inert on this data, so a future corpus rebuild (once one
- * of those events is registered) doesn't need this script re-reviewed.
+ * DirectoryAdded/SessionStart -- none registered today; SessionStart WAS
+ * registered but never dispatched before #930 unregistered it, see the
+ * module doc comment). Kept in the allowlist anyway, inert on this data, so
+ * a future corpus rebuild (once one of those events is registered) doesn't
+ * need this script re-reviewed.
  */
 const VERBATIM_NESTED_PATHS = new Set<string>(['effort.level']);
 

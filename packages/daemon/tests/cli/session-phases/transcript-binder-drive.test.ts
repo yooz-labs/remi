@@ -273,12 +273,36 @@ describe('TranscriptBinder drive mode (#453 phase 3, commit 5)', () => {
     return result;
   }
 
+  // #930: SessionStart is no longer a registered/dispatched hook event
+  // (Claude Code hard-discards http-type hooks for it; see hook-types.ts's
+  // REMI_REGISTERED_HOOK_EVENTS doc comment). Streams below lock via a
+  // neutral Notification (zero downstream side effects for
+  // notification_type: 'auth_success') and drive a rotation via a real
+  // SessionEnd for the OLD id -- production-realistic (SessionEnd genuinely
+  // fires on a clean exit) and, like the deleted SessionStart pre-empt,
+  // flips `mainSessionEnded` so the binder classifies the next event for a
+  // NEW id as 'restart' rather than 'foreign'.
+
   test('(a) normal first-bind + /clear rotation A -> B', async () => {
     const result = await runStream([
-      { event: 'SessionStart', input: { session_id: 'claude-A', transcript_path: 'a.jsonl' } },
       {
-        event: 'SessionStart',
-        input: { session_id: 'claude-B', transcript_path: 'b.jsonl', source: 'clear' },
+        event: 'Notification',
+        input: {
+          session_id: 'claude-A',
+          transcript_path: 'a.jsonl',
+          notification_type: 'auth_success',
+          message: '',
+        },
+      },
+      { event: 'SessionEnd', input: { session_id: 'claude-A', reason: 'clear' } },
+      {
+        event: 'Notification',
+        input: {
+          session_id: 'claude-B',
+          transcript_path: 'b.jsonl',
+          notification_type: 'auth_success',
+          message: '',
+        },
       },
     ]);
 
@@ -294,14 +318,34 @@ describe('TranscriptBinder drive mode (#453 phase 3, commit 5)', () => {
 
   test('(b) A -> B -> A re-resume (idempotent emit)', async () => {
     const result = await runStream([
-      { event: 'SessionStart', input: { session_id: 'claude-A', transcript_path: 'a.jsonl' } },
       {
-        event: 'SessionStart',
-        input: { session_id: 'claude-B', transcript_path: 'b.jsonl', source: 'clear' },
+        event: 'Notification',
+        input: {
+          session_id: 'claude-A',
+          transcript_path: 'a.jsonl',
+          notification_type: 'auth_success',
+          message: '',
+        },
       },
+      { event: 'SessionEnd', input: { session_id: 'claude-A', reason: 'clear' } },
       {
-        event: 'SessionStart',
-        input: { session_id: 'claude-A', transcript_path: 'a.jsonl', source: 'resume' },
+        event: 'Notification',
+        input: {
+          session_id: 'claude-B',
+          transcript_path: 'b.jsonl',
+          notification_type: 'auth_success',
+          message: '',
+        },
+      },
+      { event: 'SessionEnd', input: { session_id: 'claude-B', reason: 'clear' } },
+      {
+        event: 'Notification',
+        input: {
+          session_id: 'claude-A',
+          transcript_path: 'a.jsonl',
+          notification_type: 'auth_success',
+          message: '',
+        },
       },
     ]);
 
@@ -319,8 +363,11 @@ describe('TranscriptBinder drive mode (#453 phase 3, commit 5)', () => {
     // file the harness writes carries no marker, so ownsTranscript() is false.
     const result = await runStream(
       [
-        // Use PreToolUse (not SessionStart) so the SessionStart pre-empt does not
-        // fire; this exercises the first-adopt sibling/ownership gate directly.
+        // Use PreToolUse: SessionStart can no longer fire via hooks at all
+        // (#930), so this also exercises the first-adopt sibling/ownership
+        // gate directly, same as originally intended (avoiding the
+        // SessionStart pre-empt) -- just for a now-permanent reason rather
+        // than a deliberate choice among two working options.
         {
           event: 'PreToolUse',
           input: {

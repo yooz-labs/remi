@@ -9,7 +9,6 @@ import type {
   PostToolUseHookInput,
   PreToolUseHookInput,
   SessionEndHookInput,
-  SessionStartHookInput,
   StopFailureHookInput,
   StopHookInput,
   SubagentStartHookInput,
@@ -29,7 +28,6 @@ describe('HookEventBridge', () => {
   function createBridge() {
     const statuses: Array<{ status: AgentStatus; context?: string }> = [];
     const questions: Question[] = [];
-    const sessionInfos: Array<{ claudeSessionId: string; transcriptPath: string }> = [];
 
     const bridge = new HookEventBridge('session-1' as import('@remi/shared').UUID, {
       onStatusChange: (status, context) => {
@@ -40,10 +38,9 @@ describe('HookEventBridge', () => {
         }
       },
       onQuestion: (q) => questions.push(q),
-      onSessionInfo: (id, path) => sessionInfos.push({ claudeSessionId: id, transcriptPath: path }),
     });
 
-    return { bridge, statuses, questions, sessionInfos };
+    return { bridge, statuses, questions };
   }
 
   it('maps PreToolUse to executing status with tool name', () => {
@@ -116,21 +113,6 @@ describe('HookEventBridge', () => {
     } as StopHookInput);
 
     expect(statuses).toEqual([{ status: 'idle' }]);
-  });
-
-  it('maps SessionStart to session info', () => {
-    const { bridge, sessionInfos } = createBridge();
-
-    bridge.handleSessionStart({
-      ...makeCommon(),
-      hook_event_name: 'SessionStart',
-      source: 'startup',
-      model: 'claude-opus-4-6',
-    } as SessionStartHookInput);
-
-    expect(sessionInfos.length).toBe(1);
-    expect(sessionInfos[0]?.claudeSessionId).toBe('test-session');
-    expect(sessionInfos[0]?.transcriptPath).toBe('/tmp/test.jsonl');
   });
 
   it('an empty-message standalone Notification(permission_prompt) still only sets status (#890, Q5)', () => {
@@ -1210,29 +1192,6 @@ describe('HookEventBridge', () => {
       expect(bridge.isInSubagentContext()).toBe(true);
 
       bridge.resetSubagentContext();
-
-      expect(bridge.isInSubagentContext()).toBe(false);
-    });
-
-    it('handleSessionStart resets any stale state from prior session', () => {
-      const { bridge } = createBridge();
-      bridge.handlePreToolUse({
-        ...makeCommon(),
-        hook_event_name: 'PreToolUse',
-        tool_name: 'Task',
-        tool_input: {},
-        tool_use_id: 'tu_stale',
-      } as PreToolUseHookInput);
-      expect(bridge.isInSubagentContext()).toBe(true);
-
-      bridge.handleSessionStart({
-        ...makeCommon(),
-        session_id: 'new-session-id',
-        transcript_path: '/tmp/new.jsonl',
-        hook_event_name: 'SessionStart',
-        source: 'startup',
-        model: 'claude-opus',
-      } as SessionStartHookInput);
 
       expect(bridge.isInSubagentContext()).toBe(false);
     });

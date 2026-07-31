@@ -62,14 +62,27 @@
  *
  * This listener block IS the per-session hook router (admit-then-fan-out); a
  * formal HookRouter class is deferred to a later refactor (#470). The function
- * registers 14 hookServer `.on()` listeners — the original 6 (SessionStart,
- * PreToolUse, PostToolUse, Notification, Stop, SessionEnd; PermissionRequest
+ * registers 13 hookServer `.on()` listeners — the original 5 still standing
+ * (PreToolUse, PostToolUse, Notification, Stop, SessionEnd; PermissionRequest
  * is installed separately via `setPermissionResolver`, not `.on()`) plus the 4
  * wired in phase 4 (StopFailure, PostToolUseFailure, SubagentStart, SubagentStop)
  * plus the 3 wired for Q4 (#889: PermissionDenied, Elicitation,
  * ElicitationResult) plus the 1 wired for Q9 (#893: UserPromptSubmit) — and
  * returns void. It runs once per session at createNewSession time, only when
  * a hookServer is configured.
+ *
+ * #930 REMOVES the `SessionStart` listener that used to make this 14 (the
+ * "original 6"): Claude Code hard-discards `http`-type hook registrations for
+ * `SessionStart`/`Setup` before dispatch, confirmed by binary extraction
+ * against 2.1.220 and independently by 5,000+ captured events containing zero
+ * `SessionStart` records, so the listener never ran. Its three legs were each
+ * already covered elsewhere: the restart pre-empt has a designed no-hooks
+ * mirror (`TranscriptBinder.feedSyntheticRotation`, #452/#453), every other
+ * listener below already calls `binder.onHookEvent` as its first line, and
+ * the subagent-context reset + `onSessionInfo` leg (`HookEventBridge.
+ * handleSessionStart`) was deleted outright -- `onSessionInfo` was wired to a
+ * literal no-op regardless. `TranscriptBinder.preemptOnSessionStart` itself
+ * is KEPT; `feedSyntheticRotation` is its only remaining caller.
  *
  * The inline session-binding path this file used to also carry (pre-#453) and
  * the shadow-mode differential wiring (#453 phase 3, commit 3) were deleted in
@@ -542,12 +555,6 @@ export function setupHookBridge(
         messageApi.handleQuestion(question);
       }
     },
-    // The binder's onHookEvent (fired from the SessionStart listener) already
-    // subsumes the bind/rotation this callback used to perform inline (#470).
-    // The bridge still fires it (status/subagent tracking lives on
-    // handlers.onSessionStart), but the binding control plane is the binder's
-    // alone, so there is nothing left to do here.
-    onSessionInfo: () => {},
   });
 
   const handlers = hookBridge.hookHandlers();
@@ -717,7 +724,7 @@ export function setupHookBridge(
   // transcript, so session-id filtering cannot distinguish them.
   //
   // Split policy:
-  //   - `PreToolUse` / `PostToolUse` / `SessionStart`: STATUS updates and
+  //   - `PreToolUse` / `PostToolUse`: STATUS updates and
   //     Task-tool tracking are dropped here so they stay scoped to the main
   //     interactive session. #799: Pre/PostToolUse additionally call
   //     `autoApproveGate.cancelExternallyResolved` (agent-scoped) before
@@ -812,14 +819,6 @@ export function setupHookBridge(
       `[Binder] No pre-assigned claudeSessionId for ${sessionId.slice(0, 8)}; fallback poll + dir-watch not armed`,
     );
   }
-
-  hookServer.on('SessionStart', (input) => {
-    // The binder owns the pre-empt + bind. Pre-empt (flip its own
-    // mainSessionEnded) BEFORE onHookEvent, mirroring the pre-#453 order.
-    binder.preemptOnSessionStart(input);
-    binder.onHookEvent(input);
-    handlers.onSessionStart?.(input);
-  });
 
   hookServer.on('PreToolUse', (input) => {
     binder.onHookEvent(input);
