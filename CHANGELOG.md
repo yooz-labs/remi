@@ -101,6 +101,44 @@ All notable changes to Remi are documented here.
   newly-registered events as unregistered.
 
 ### Fixed
+- **A full teardown (`SessionEnd`, `remi unstick`) now resolves every
+  still-open escalation instead of silently dropping its bookkeeping**
+  (#948). `AutoApproveGate.cancelStale`'s mainOnly `Stop` sweep already
+  routed each survivor through `resolveSupersededQuestion` so
+  `question_resolved` + the APNS dismiss + the live-sessions mirror all
+  fire — its own comment named this explicitly as "not a silent
+  bookkeeping-only delete." The non-mainOnly branch (`SessionEnd`) and the
+  separate `forceRelease` (`remi unstick`) did exactly that anyway: a bare
+  `openQuestionSignatures.clear()` + `parkedInputs.clear()`. A PASSTHROUGH
+  escalation — multi-choice/design, e.g. `AskUserQuestion` or
+  `ExitPlanMode`, tracked only in `openQuestionSignatures` (never held) —
+  had its bookkeeping dropped while its card stayed in the store with
+  nothing left to resolve it. Reproduced: firing a `SessionEnd` with no
+  intervening `Stop` (a session killed or dropped mid-prompt) left the
+  card count at 1 before and 1 after. Every captured corpus session that
+  reaches `SessionEnd` also has an earlier `Stop`, which already clears
+  the card via the mainOnly sweep — the reason #949's replay never caught
+  it.
+
+  Both teardown paths now share a new `resolveAllOpenQuestions`, which
+  resolves EVERY survivor through the same funnel — deliberately, unlike
+  the mainOnly sweep, WITHOUT its `isSubagent` skip: that skip exists
+  because a `Stop` means only the lead agent finished while a teammate may
+  still be mid-turn, and a full teardown has no such survivor left to
+  protect (`cancelStale`'s own docstring already said so). `parkedInputs`
+  needed no separate clear call: every parked entry is registered under
+  the same question id as its `openQuestionSignatures` counterpart
+  (`parkSubagentForPTY` sets both together), and `releaseHeld` — reached
+  by every `resolveSupersededQuestion` call — already deletes both maps'
+  entries for a resolved qid unconditionally, before anything downstream
+  can throw, so the loop retires every parked entry as a side effect of
+  retiring its signature. Checked the neighboring
+  `evalIdByQuestion.clear()` in `forceRelease` for the same defect:
+  unaffected — that map is unrelated GPU-eval-cancellation bookkeeping
+  with no card or notification duty of its own, and `forceRelease`'s
+  subsequent untargeted `service.cancel(reason)` already aborts whatever
+  eval is running regardless of which question it belonged to.
+
 - **Every opt-in debug sink now stamps provenance on each record, so a
   synthetic test write is distinguishable from a real one by data** (#934).
   `REMI_HOOK_DEBUG=1` (`hook-diag.jsonl`) and `REMI_QUESTION_TRACE=1`

@@ -540,14 +540,20 @@ export class AutoApproveGate {
    *     `cancelStale`'s mainOnly Stop sweep (#799) use), and `releaseAllHolds`
    *     (#799 -- so the mainOnly Stop sweep below never re-finds and double
    *     -resolves a qid it just released via a held hook).
-   * `cancelStale` (non-mainOnly) / `forceRelease` wholesale-clear the whole
-   * map (session end / force-release — nothing tracked is relevant after
-   * either). A stale entry is harmless (a signature match just triggers a
-   * redundant, idempotent cleanup), but MUST NOT be able to accumulate
-   * indefinitely: an un-deleted entry from a timed-out/cancelled hold would
-   * sit for the rest of the process lifetime and could fire a spurious
-   * `notifyResolved` for a question dead for hours on a much-later,
-   * unrelated duplicate of the same command.
+   * `cancelStale` (non-mainOnly) / `forceRelease` (#948) route every survivor
+   * through `resolveSupersededQuestion` too, via the shared
+   * `resolveAllOpenQuestions` -- session end / force-release means nothing
+   * tracked is relevant after either, but that funnel (not a wholesale
+   * `.clear()`) is what fires `question_resolved` + the APNS dismiss + the
+   * live-sessions mirror for a survivor whose card is still sitting in the
+   * store (#948: a PASSTHROUGH escalation, e.g. AskUserQuestion, is tracked
+   * ONLY here — a bare `.clear()` dropped its bookkeeping with nothing left
+   * to resolve its card). A stale entry is harmless regardless (a signature
+   * match just triggers a redundant, idempotent cleanup), but MUST NOT be
+   * able to accumulate indefinitely: an un-deleted entry from a timed-out/
+   * cancelled hold would sit for the rest of the process lifetime and could
+   * fire a spurious `notifyResolved` for a question dead for hours on a
+   * much-later, unrelated duplicate of the same command.
    */
   private readonly openQuestionSignatures = new Map<UUID, ToolSignature>();
 
@@ -561,8 +567,9 @@ export class AutoApproveGate {
    * Entries are deleted the moment an arbitration consumes one (exactly one
    * evaluation per park), and by every resolution path that retires the
    * matching `openQuestionSignatures` entry (`releaseHeld`, `resolveHeld`,
-   * `cancelStale`'s wholesale clear, `forceRelease`), so a permission whose
-   * prompt never renders cannot linger. `MAX_PARKED_INPUTS` is the backstop
+   * and — via `resolveAllOpenQuestions`, #948 — `cancelStale`'s teardown
+   * branch and `forceRelease`), so a permission whose prompt never renders
+   * cannot linger. `MAX_PARKED_INPUTS` is the backstop
    * for the one shape none of those cover: an agent that parks repeatedly and
    * never advances, ends, or renders — oldest-first eviction bounds the map at
    * a size far above any real fleet's concurrent parks.
@@ -610,11 +617,13 @@ export class AutoApproveGate {
     // -- their hooks are still blocked in a still-running teammate and remain
     // answerable via `resolveHeld`.
     this.releaseAllHolds('passthrough', reason, mainOnly);
-    // #673 / #711: every OPEN escalation this gate has tracked (held above, or
-    // a passthrough one with no hold) is moot on a full teardown -- wholesale
-    // clear, as before. On a mainOnly Stop, only the MAIN-tagged entries are
-    // moot; a teammate's is not (its hold, if any, was just spared above, and
-    // its signature must stay trackable for external-resolution cancellation).
+    // #673 / #711 / #948: every OPEN escalation this gate has tracked (held
+    // above, or a passthrough one with no hold) is moot on a full teardown --
+    // resolved through the SAME funnel a tool-signature match uses, below,
+    // never a silent bookkeeping-only delete. On a mainOnly Stop, only the
+    // MAIN-tagged entries are moot; a teammate's is not (its hold, if any,
+    // was just spared above, and its signature must stay trackable for
+    // external-resolution cancellation).
     if (mainOnly) {
       // #799: a MAIN-tagged signature STILL open here was never held (a held
       // one was already released + unregistered by releaseAllHolds above) --
@@ -628,16 +637,28 @@ export class AutoApproveGate {
       // never catch (a deny produces no PreToolUse to match against). Route
       // each survivor through the SAME funnel a tool-signature match uses
       // (not a silent bookkeeping-only delete), so question_resolved + APNS
-      // dismiss + the live-sessions mirror all fire for it too.
+      // dismiss + the live-sessions mirror all fire for it too. Skip
+      // subagent-tagged entries: a Stop means only the LEAD agent finished,
+      // and a teammate may still be mid-turn -- its still-open escalation is
+      // not moot yet (that agent's own eventual `SubagentStop` resolves it
+      // via `cancelStaleForAgent`).
       for (const [qid, sig] of [...this.openQuestionSignatures]) {
         if (sig.isSubagent) continue;
         this.resolveSupersededQuestion(qid, reason, sig.toolName);
       }
     } else {
-      this.openQuestionSignatures.clear();
-      // #814: a full teardown retires every parked permission too — none of
-      // them can render on a PTY that is going away.
-      this.parkedInputs.clear();
+      // #948: a full teardown has no still-running teammate to protect (see
+      // this method's own docstring above: "there is no 'the rest of the
+      // team is still going' case once the session has ended"), so EVERY
+      // survivor is resolved here -- main OR subagent -- unlike the mainOnly
+      // sweep's `isSubagent` skip just above. This used to be a silent
+      // `openQuestionSignatures.clear()` + `parkedInputs.clear()`: exactly
+      // the "bookkeeping-only delete" the mainOnly branch's own comment
+      // warns against, and it left a passthrough escalation's card (e.g.
+      // AskUserQuestion / ExitPlanMode, tracked only in
+      // `openQuestionSignatures`) sitting in the store with nothing left to
+      // resolve it (#948).
+      this.resolveAllOpenQuestions(reason);
     }
     if (this.deps.service === null) return;
     // #730 (BUG 1 fix): drop THIS session's own QUEUED evals first -- work a
@@ -674,6 +695,39 @@ export class AutoApproveGate {
     }
     if (cancelledCount > 0) {
       log(`[AutoApprove] Cancelled ${cancelledCount} stale MAIN-context LLM eval(s): ${reason}`);
+    }
+  }
+
+  /**
+   * #948: resolve EVERY currently-open escalation (main or subagent) through
+   * `resolveSupersededQuestion` instead of a silent bookkeeping-only delete.
+   * The shared implementation for the two REAL teardown paths, where nothing
+   * tracked can possibly still be relevant afterward: `cancelStale`'s
+   * non-mainOnly branch (`SessionEnd`) and `forceRelease` (`remi unstick`).
+   *
+   * Deliberately does NOT filter by `sig.isSubagent` the way the mainOnly
+   * `Stop` sweep in `cancelStale` does -- that filter exists because a `Stop`
+   * means only the LEAD agent finished while a teammate may still be
+   * mid-turn (see `cancelStale`'s own docstring); neither teardown path has
+   * such a survivor to protect.
+   *
+   * `parkedInputs` needs no separate clear call here. Every parked entry is
+   * registered under the SAME question id as its `openQuestionSignatures`
+   * counterpart (`parkSubagentForPTY` sets both together in one call), and
+   * the only two ways a `parkedInputs` entry is ever removed WITHOUT its
+   * signature counterpart also being removed are `arbitrateParkedRender`
+   * consuming it (the signature survives, now tracking an actual pushed
+   * card -- correctly still open) and `rememberParkedInput`'s
+   * `MAX_PARKED_INPUTS` eviction (same). Neither direction lets a
+   * `parkedInputs` entry outlive its signature. `releaseHeld` -- reached by
+   * every `resolveSupersededQuestion` call below -- unconditionally deletes
+   * BOTH maps' entries for the qid it processes, before anything downstream
+   * can throw, so this loop retires every parked entry as a side effect of
+   * retiring its signature.
+   */
+  private resolveAllOpenQuestions(reason: string): void {
+    for (const [qid, sig] of [...this.openQuestionSignatures]) {
+      this.resolveSupersededQuestion(qid, reason, sig.toolName);
     }
   }
 
@@ -742,10 +796,13 @@ export class AutoApproveGate {
     const holds = this.pendingHolds.size;
     this.releaseAllHolds('passthrough', reason);
     this.evalIdByQuestion.clear();
-    // #673: mirrors cancelStale's wholesale clear -- a force-release is at
-    // least as final as a session end for bookkeeping purposes.
-    this.openQuestionSignatures.clear();
-    this.parkedInputs.clear(); // #814, same finality
+    // #673 / #948: mirrors cancelStale's non-mainOnly teardown branch -- a
+    // force-release is at least as final as a session end, so every
+    // remaining survivor (main or subagent) is resolved through the SAME
+    // funnel a tool-signature match uses, not a silent bookkeeping-only
+    // delete (see `resolveAllOpenQuestions`'s own docstring for why
+    // `parkedInputs` needs no separate clear call).
+    this.resolveAllOpenQuestions(reason);
     const service = this.deps.service;
     if (service === null) return { holds, cancelled: false, drained: 0 };
     const cancelled = service.cancel(reason);
