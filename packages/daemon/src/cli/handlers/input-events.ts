@@ -70,6 +70,21 @@ export interface InputHandlerDeps {
    * break answer handling. Absent => no dismissal broadcast (tests/old callers).
    */
   onQuestionResolved?: (sessionId: UUID, questionId: UUID) => void;
+  /**
+   * Prompt-currency check for a resolved card-answer PTY submit (#920).
+   * Backed by the session's `QuestionPresenceTracker.isPromptCurrent` — the
+   * same gate `AutoApproveGate.answerRenderedParked` uses immediately before
+   * its own PTY write (auto-approve-gate.ts:1830) — so answering a card whose
+   * on-screen prompt is gone is refused instead of typing into whatever
+   * Claude is doing now. Consulted ONLY for `Question.source === 'pty'`
+   * cards (the genuinely hook-less cohort #920 traced the leak to); every
+   * other source is left alone, see the call site's comment for why a
+   * blanket check would misfire on hook-paired questions. Absent (no
+   * tracker wired for this session) is treated as "not current" — fail
+   * toward refusing, matching `isQuestionLive`'s own default in
+   * question-presence-tracker.ts.
+   */
+  isPromptCurrent?: (sessionId: UUID, questionId: UUID, ptyText: string) => boolean;
 }
 
 /**
@@ -224,6 +239,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     releaseHeldAsPassthrough,
     cancelAutoApproveForQuestion,
     onQuestionResolved,
+    isPromptCurrent,
   } = deps;
 
   // #627: in-flight AskUserQuestion runs, keyed `${sessionId}:${questionId}`, so a
@@ -548,6 +564,10 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     // and the throw still propagates (relay -> HTTP 500, WS -> caller-logged).
     const decision = mapAnswerToDecision(active.options, answer);
     let hadHold = false;
+    // Overridden below only on the #920 prompt-currency refusal, so the
+    // `finally` block's removal carries an honest signal instead of the
+    // default 'user_answer' (this card was never actually answered).
+    let removalReason = 'user_answer';
     try {
       if (decision !== null) {
         hadHold =
@@ -579,6 +599,69 @@ export function createInputHandlers(deps: InputHandlerDeps) {
             `[Answer] "${answer}" matched no option (${active.options.length}); submitting verbatim`,
           );
         }
+
+        // #920 prompt-currency guard, checked as late as possible (the same
+        // idiom `AutoApproveGate.answerRenderedParked` uses immediately before
+        // its own PTY write, auto-approve-gate.ts) — nothing else runs between
+        // this check and the injection below. The active-question lookup
+        // above only proves the CARD is still registered; a `source: 'pty'`
+        // question has no hook and so no other staleness signal (#920's own
+        // diagnosis), meaning a card can sit in the store, still "active",
+        // long after its prompt scrolled off screen. Answering it would type
+        // the resolved option value (or free text verbatim, per the review
+        // comment on #920) into whatever Claude is doing right now.
+        //
+        // Scoped to `source === 'pty'` ONLY, not every card: a hook-paired
+        // question's merged `id`/`text` are the HOOK's (tool + command text),
+        // never the raw PTY parse (`consumeAndMerge` in
+        // question-presence-tracker.ts), so `isPromptCurrent`'s id/text match
+        // would almost never succeed for that cohort — a blanket check here
+        // would refuse legitimate hook-sourced answers, not just stale PTY
+        // ones. Free-form `user_input` (#795) is a completely different
+        // handler and never reaches this branch at all.
+        //
+        // Absent `isPromptCurrent` (no tracker wired for this session) is
+        // treated as NOT current — fail toward refusing the injection, not
+        // toward it, mirroring `isQuestionLive`'s own default in
+        // question-presence-tracker.ts: a refused legitimate answer costs the
+        // user a re-answer with the question still visible; an accepted stale
+        // one injects into a live session with nothing to undo it. Those
+        // costs are not symmetric, so ambiguity resolves toward not
+        // injecting.
+        if (
+          active.source === 'pty' &&
+          !(isPromptCurrent?.(session.sessionId, questionId, active.text) ?? false)
+        ) {
+          log(
+            `[Answer] refusing PTY submit for ${questionId.slice(0, 8)}: prompt no longer on screen (source=pty)`,
+          );
+          traceQuestionEvent({
+            action: 'stale_answer',
+            sessionId: session.sessionId,
+            questionId,
+            promptId: active.promptId,
+            signal: 'STALE_ANSWER',
+            callSite: 'input-events.handleAnswer:promptCurrencyGuard',
+            detail: { reason: 'prompt-not-current', source: active.source },
+          });
+          removalReason = 'user_answer:stale_prompt';
+          if (!viaRelay) {
+            send(
+              connectionId,
+              createError(
+                'STALE_ANSWER',
+                'The prompt for this question is no longer on screen; refusing to submit',
+                {
+                  sessionId,
+                  questionId,
+                  pendingQuestionIds: [...session.currentQuestions.keys()],
+                },
+              ),
+            );
+          }
+          return 'stale';
+        }
+
         await session.pty.submitInput(ptyInput);
       } else {
         log(
@@ -611,8 +694,11 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       cancelAutoApproveForQuestion?.(session.sessionId, questionId, 'user-answered');
     } finally {
       // Remove only the answered question; sibling prompts remain answerable.
-      // In `finally` so a throwing submit cannot leave a zombie question.
-      sessionRegistry.removeQuestion(session.sessionId, questionId, 'user_answer');
+      // In `finally` so a throwing submit cannot leave a zombie question, AND
+      // so the #920 prompt-currency refusal above (which `return`s from
+      // inside this `try`) still clears the stale card — `removalReason`
+      // carries the honest signal for that path.
+      sessionRegistry.removeQuestion(session.sessionId, questionId, removalReason);
       // Cross-client dismissal (#585, P7): tell every client this question is
       // resolved so its card clears and the lock-screen push is dismissed.
       // Throw-safe: a broadcast/push failure must never break answer handling,
