@@ -2814,6 +2814,251 @@ describe('AutoApproveGate Stop resolves a still-open MAIN passthrough question (
 });
 
 // ---------------------------------------------------------------------------
+// #948: `cancelStale`'s non-mainOnly (SessionEnd) branch, and `forceRelease`,
+// used to be a silent `openQuestionSignatures.clear()` + `parkedInputs.clear()`
+// -- exactly the "bookkeeping-only delete" the mainOnly Stop sweep's own
+// comment (above) warns against. A PASSTHROUGH escalation (multi-choice /
+// design, e.g. AskUserQuestion) is tracked ONLY in `openQuestionSignatures`,
+// so a session that ends with no intervening `Stop` (e.g. killed or dropped
+// mid-prompt) left its card sitting in the store with nothing left to
+// resolve it. These tests exercise the fix: every survivor -- main OR
+// subagent, unlike the mainOnly sweep -- is now routed through
+// `resolveSupersededQuestion`, and prove the mainOnly Stop path is unchanged.
+// ---------------------------------------------------------------------------
+describe('AutoApproveGate full teardown resolves ALL survivors (#948)', () => {
+  const SID = generateId() as UUID;
+  let registry: SessionRegistry;
+  let lastQuestionId: UUID | undefined;
+  let parkedIds: UUID[];
+
+  function gate(
+    opts: {
+      onResolved?: (
+        questionId: UUID,
+        reason: 'auto_approved' | 'auto_denied' | 'cancelled',
+      ) => void;
+    } = {},
+  ): AutoApproveGate {
+    registry.registerSession(SID, '/d', fakePTY([]), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    return new AutoApproveGate(
+      {
+        service: null,
+        sessionRegistry: registry,
+        tracker: new QuestionPresenceTracker(() => undefined),
+        isInSubagentContext: () => false,
+        escalate: () => {
+          lastQuestionId = generateId();
+          return lastQuestionId;
+        },
+        parkForPTY: () => {
+          const id = generateId() as UUID;
+          parkedIds.push(id);
+          return id;
+        },
+        holdMs: 60_000,
+        alwaysEscalateTools: new Set(['AskUserQuestion']),
+        ...(opts.onResolved ? { onResolved: opts.onResolved } : {}),
+      },
+      SID,
+    );
+  }
+
+  /** AskUserQuestion is in `alwaysEscalateTools` -> design -> escalates as a
+   *  PASSTHROUGH, never held -- the exact #948 repro shape. */
+  function askUserQuestionPr(): PermissionRequestHookInput {
+    return {
+      session_id: 'claude-test',
+      transcript_path: '/tmp/t.jsonl',
+      cwd: '/d',
+      permission_mode: 'default',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'AskUserQuestion',
+      tool_input: { question: 'Which approach?' },
+    };
+  }
+
+  function subagentPr(agentId: string): PermissionRequestHookInput {
+    return {
+      session_id: 'claude-test',
+      transcript_path: '/tmp/t.jsonl',
+      cwd: '/d',
+      permission_mode: 'default',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+      agent_id: agentId,
+      agent_type: 'general-purpose',
+    };
+  }
+
+  beforeEach(() => {
+    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    lastQuestionId = undefined;
+    parkedIds = [];
+    configureLogger({ writeLog: () => {} });
+  });
+
+  afterEach(async () => {
+    __resetLoggerForTests();
+    await registry.shutdown();
+  });
+
+  test('the exact #948 repro: SessionEnd with NO Stop in between resolves a still-open MAIN AskUserQuestion card', async () => {
+    const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
+    const g = gate({ onResolved: (qid, reason) => resolvedLog.push({ qid, reason }) });
+    expect(await g.resolvePermission(askUserQuestionPr())).toBe('passthrough');
+    const qid = lastQuestionId as UUID;
+    registry.addQuestion(SID, {
+      id: qid,
+      text: 'Which approach?',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+    });
+    expect(registry.getQuestion(SID, qid)).not.toBeNull(); // store size 1 before
+
+    g.cancelStale('SessionEnd'); // no mainOnly, no prior Stop -- real teardown
+
+    expect(registry.getQuestion(SID, qid)).toBeNull(); // store size 0 after
+    expect(resolvedLog).toEqual([{ qid, reason: 'cancelled' }]);
+  });
+
+  test('a still-open SUBAGENT passthrough card is ALSO resolved on SessionEnd', async () => {
+    const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
+    const g = gate({ onResolved: (qid, reason) => resolvedLog.push({ qid, reason }) });
+    expect(await g.resolvePermission(subagentPr('agent-1'))).toBe('passthrough');
+    const subagentQid = parkedIds[0] as UUID;
+    registry.addQuestion(SID, {
+      id: subagentQid,
+      text: 'ls?',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+      agentId: 'agent-1',
+    });
+    expect(registry.getQuestion(SID, subagentQid)).not.toBeNull();
+
+    g.cancelStale('SessionEnd');
+
+    expect(registry.getQuestion(SID, subagentQid)).toBeNull();
+    expect(resolvedLog).toEqual([{ qid: subagentQid, reason: 'cancelled' }]);
+  });
+
+  test('Stop(mainOnly) still spares a subagent survivor exactly as before; a LATER SessionEnd then resolves it', async () => {
+    // This is the regression guard: the fix must resolve every survivor on a
+    // REAL teardown WITHOUT turning a mainOnly Stop into one.
+    const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
+    const g = gate({ onResolved: (qid, reason) => resolvedLog.push({ qid, reason }) });
+
+    expect(await g.resolvePermission(subagentPr('agent-1'))).toBe('passthrough');
+    const subagentQid = parkedIds[0] as UUID;
+    registry.addQuestion(SID, {
+      id: subagentQid,
+      text: 'ls?',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+      agentId: 'agent-1',
+    });
+
+    expect(await g.resolvePermission(askUserQuestionPr())).toBe('passthrough');
+    const mainQid = lastQuestionId as UUID;
+    registry.addQuestion(SID, {
+      id: mainQid,
+      text: 'Which approach?',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+    });
+
+    g.cancelStale('Stop', { mainOnly: true });
+    expect(registry.getQuestion(SID, mainQid)).toBeNull(); // MAIN: resolved
+    expect(registry.getQuestion(SID, subagentQid)).not.toBeNull(); // subagent: still spared
+    expect(resolvedLog).toEqual([{ qid: mainQid, reason: 'cancelled' }]);
+
+    // The teammate never fires its own SubagentStop; the session just ends.
+    g.cancelStale('SessionEnd');
+    expect(registry.getQuestion(SID, subagentQid)).toBeNull(); // now resolved too
+    expect(resolvedLog).toEqual([
+      { qid: mainQid, reason: 'cancelled' },
+      { qid: subagentQid, reason: 'cancelled' },
+    ]);
+  });
+
+  test('question_resolved fires once per resolved survivor -- one main, two subagent -- on a full teardown', async () => {
+    const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
+    const g = gate({ onResolved: (qid, reason) => resolvedLog.push({ qid, reason }) });
+
+    expect(await g.resolvePermission(askUserQuestionPr())).toBe('passthrough');
+    const mainQid = lastQuestionId as UUID;
+    registry.addQuestion(SID, {
+      id: mainQid,
+      text: 'q1',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+    });
+
+    expect(await g.resolvePermission(subagentPr('agent-1'))).toBe('passthrough');
+    const subagentQid1 = parkedIds[0] as UUID;
+    registry.addQuestion(SID, {
+      id: subagentQid1,
+      text: 'q2',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+      agentId: 'agent-1',
+    });
+
+    expect(await g.resolvePermission(subagentPr('agent-2'))).toBe('passthrough');
+    const subagentQid2 = parkedIds[1] as UUID;
+    registry.addQuestion(SID, {
+      id: subagentQid2,
+      text: 'q3',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+      agentId: 'agent-2',
+    });
+
+    g.cancelStale('SessionEnd');
+
+    expect(registry.getQuestion(SID, mainQid)).toBeNull();
+    expect(registry.getQuestion(SID, subagentQid1)).toBeNull();
+    expect(registry.getQuestion(SID, subagentQid2)).toBeNull();
+    expect(resolvedLog).toHaveLength(3);
+    const resolvedQids = resolvedLog.map((r) => r.qid);
+    expect(resolvedQids).toContain(mainQid);
+    expect(resolvedQids).toContain(subagentQid1);
+    expect(resolvedQids).toContain(subagentQid2);
+    expect(resolvedLog.every((r) => r.reason === 'cancelled')).toBe(true);
+  });
+
+  test('forceRelease (remi unstick) also resolves a still-open passthrough survivor, mirroring the teardown branch', async () => {
+    const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
+    const g = gate({ onResolved: (qid, reason) => resolvedLog.push({ qid, reason }) });
+    expect(await g.resolvePermission(askUserQuestionPr())).toBe('passthrough');
+    const qid = lastQuestionId as UUID;
+    registry.addQuestion(SID, {
+      id: qid,
+      text: 'Which approach?',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+    });
+
+    g.forceRelease('remi unstick');
+
+    expect(registry.getQuestion(SID, qid)).toBeNull();
+    expect(resolvedLog).toEqual([{ qid, reason: 'cancelled' }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // #799 part 2, subagent mirror: cancelStaleForAgent, wired from SubagentStop.
 // ---------------------------------------------------------------------------
 describe('AutoApproveGate cancelStaleForAgent (#799 part 2, subagent)', () => {
