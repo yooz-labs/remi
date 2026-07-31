@@ -418,4 +418,27 @@ describe('StatusBar', () => {
     expect(writes).toHaveLength(2);
     expect(writes[1]).toBe(writes[0]); // same content -- a heartbeat, not a change
   });
+
+  test('a transition during a room-too-short window still paints once the guard clears', () => {
+    // #932 review fix: the fd/room guards must run BEFORE hasLiveQuestions()
+    // is read and wasQuestionLive is mutated -- otherwise a transition that
+    // lands on a tick with no room gets "consumed" with no write to show
+    // for it, and the bar freezes on stale content for the rest of the
+    // window once room returns (the exact bug protection 1 exists to
+    // prevent, reintroduced through ordering).
+    let rows = 1; // too short: no room for the bar
+    const { bar, writes } = harness({
+      hasLiveQuestions: () => true,
+      getSize: () => ({ cols: 80, rows }),
+    });
+    // Question already live, but no room: no paint, and the transition
+    // must not be consumed here.
+    bar.render();
+    expect(writes).toHaveLength(0);
+    rows = 24; // room restored, question still live
+    // Onset must still fire now: the transition was never observed while
+    // room was unavailable.
+    bar.render();
+    expect(writes).toHaveLength(1);
+  });
 });

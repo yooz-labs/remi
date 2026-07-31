@@ -324,6 +324,20 @@ export class StatusBar {
    *  comment below for why both edges force a fresh paint. */
   render(): void {
     if (this.disabled || !this.isEnabled()) return;
+    // fd/room checks come BEFORE hasLiveQuestions() is read and
+    // wasQuestionLive is mutated (#932 review fix): a transition landing on
+    // a tick where a paint isn't even possible must not be consumed. If it
+    // were, the flag would flip with no write to show for it, and the NEXT
+    // successful tick would compute onset/resumed against the
+    // already-flipped flag -- neither true -- and freeze on stale content
+    // for the rest of the window: the exact bug this whole mechanism exists
+    // to prevent, reintroduced through ordering. Same pattern
+    // `disabled`/`isEnabled()` above already use: return before touching
+    // any state a later, capable tick still needs to see as unconsumed.
+    const fd = this.getStdoutFd();
+    if (fd === null) return;
+    const { cols, rows } = this.getSize();
+    if (rows < MIN_ROWS_FOR_BAR || cols < 1) return;
     const questionLive = this.hasLiveQuestions();
     const wasLive = this.wasQuestionLive;
     this.wasQuestionLive = questionLive;
@@ -335,19 +349,15 @@ export class StatusBar {
     // up to `HEARTBEAT_MS` stale. `onset` is true only on the first
     // render() call after the transition into "live"; it forces one fresh
     // paint below, capturing the status at that instant. Every later call
-    // while still live hits the early return just below and never touches
-    // the fd. `resumed` is the mirror on the way back out: the dialog may
-    // have redrawn or consumed row N while it owned the screen, so the
-    // physical row cannot be trusted to still match `lastRendered` either --
-    // the very first render() after the question clears also forces a fresh
-    // paint, then normal dedup/heartbeat cadence takes back over.
+    // while still live hits the early return just below. `resumed` is the
+    // mirror on the way back out: the dialog may have redrawn or consumed
+    // row N while it owned the screen, so the physical row cannot be
+    // trusted to still match `lastRendered` either -- the very first
+    // render() after the question clears also forces a fresh paint, then
+    // normal dedup/heartbeat cadence takes back over.
     const onset = questionLive && !wasLive;
     const resumed = !questionLive && wasLive;
     if (questionLive && !onset) return;
-    const fd = this.getStdoutFd();
-    if (fd === null) return;
-    const { cols, rows } = this.getSize();
-    if (rows < MIN_ROWS_FOR_BAR || cols < 1) return;
     // The whole draw stays inside the try: an exception escaping into the
     // setInterval callback would surface as an uncaughtException and could take
     // the wrapper down — the one thing a cosmetic bar must never do. The
