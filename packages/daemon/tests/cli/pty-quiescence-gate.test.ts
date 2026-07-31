@@ -134,6 +134,122 @@ describe('PtyQuiescenceGate.isBoundaryClean', () => {
   });
 });
 
+// #932 review finding 1: `isBoundaryClean()` is a HARD gate with no
+// exceptions (status-bar.ts's render() checks it before onset/resumed/
+// heartbeat), so a scanner state reachable only via its well-formed
+// terminator is a liveness bug -- if that terminator never arrives, the bar
+// stops painting for the rest of the session, silently (nothing throws).
+// These reproduce the exact class of input that latched the scanner before
+// the fix, and prove recovery.
+describe('PtyQuiescenceGate — never-latch safety net', () => {
+  test('an unterminated OSC introducer followed by many chunks of normal output eventually recovers to clean', () => {
+    // Direct reproduction of the review finding: one unterminated ESC ]
+    // introducer, then 1000 chunks of entirely normal output -- plain
+    // text, complete CSI sequences, DECSC/DECRC pairs -- none containing
+    // BEL or ESC \. Before the fix, isBoundaryClean() stayed false through
+    // all 1000 chunks.
+    const gate = new PtyQuiescenceGate();
+    gate.observe(bytes([ESC], ']')); // unterminated OSC introducer
+    expect(gate.isBoundaryClean()).toBe(false);
+
+    const normalChunks = [
+      'hello world, this is normal output ',
+      '\x1b[32mgreen text\x1b[0m ',
+      '\x1b7\x1b8 ', // DECSC/DECRC pair
+      'more plain text without any BEL or ST terminator ',
+    ];
+    let recovered = false;
+    for (let i = 0; i < 1000; i++) {
+      gate.observe(bytes(normalChunks[i % normalChunks.length] as string));
+      if (gate.isBoundaryClean()) {
+        recovered = true;
+        break;
+      }
+    }
+    expect(recovered).toBe(true);
+    // And the gate keeps working normally afterward -- not just "clean
+    // once," but genuinely recovered, not wedged in some other state.
+    expect(gate.observe(bytes([ESC], '[31m'))).toBe(false);
+    expect(gate.isBoundaryClean()).toBe(true);
+  });
+
+  test('a stray C0 control other than BEL/ESC inside a string sequence aborts it back to ground', () => {
+    const gate = new PtyQuiescenceGate();
+    gate.observe(bytes([ESC], ']0;some title'));
+    expect(gate.isBoundaryClean()).toBe(false);
+    gate.observe(bytes([0x0a])); // a stray LF -- never a valid OSC byte
+    expect(gate.isBoundaryClean()).toBe(true);
+  });
+
+  test('a stray C0 control aborts DCS/SOS/PM/APC string sequences too', () => {
+    for (const introducer of ['P', 'X', '^', '_']) {
+      const gate = new PtyQuiescenceGate();
+      gate.observe(bytes([ESC], introducer, 'payload'));
+      expect(gate.isBoundaryClean()).toBe(false);
+      gate.observe(bytes([0x18])); // CAN
+      expect(gate.isBoundaryClean()).toBe(true);
+    }
+  });
+
+  test('a stray C0 control inside string-esc (after an ESC that was not ST) also recovers', () => {
+    const gate = new PtyQuiescenceGate();
+    gate.observe(bytes([ESC], ']0;t', [ESC])); // ESC that might be starting ST
+    expect(gate.isBoundaryClean()).toBe(false);
+    gate.observe(bytes([0x0a])); // LF instead of '\' -- abort, not resume
+    expect(gate.isBoundaryClean()).toBe(true);
+  });
+
+  test('a legitimate OSC well under the length cap is unaffected', () => {
+    const gate = new PtyQuiescenceGate();
+    gate.observe(bytes([ESC], ']0;a normal window title', [0x07]));
+    expect(gate.isBoundaryClean()).toBe(true);
+  });
+
+  test('an OSC sequence that never terminates recovers once the length cap is exceeded', () => {
+    const gate = new PtyQuiescenceGate();
+    gate.observe(bytes([ESC], ']52;c;')); // OSC 52 clipboard introducer
+    expect(gate.isBoundaryClean()).toBe(false);
+    // Feed printable, non-control bytes only (a plausible base64 payload
+    // stand-in) well past any realistic OSC 52 payload, with no BEL/ST.
+    const payloadChunk = 'A'.repeat(1000);
+    let recovered = false;
+    for (let i = 0; i < 20; i++) {
+      gate.observe(bytes(payloadChunk));
+      if (gate.isBoundaryClean()) {
+        recovered = true;
+        break;
+      }
+    }
+    expect(recovered).toBe(true);
+  });
+
+  test('a CSI sequence that never reaches a final byte eventually recovers (defense in depth)', () => {
+    // CSI already has malformed-byte recovery for a byte outside its
+    // grammar; this covers the narrower case of a long run of otherwise-
+    // valid param bytes (e.g. corrupted/binary passthrough) that never
+    // reaches a final byte in 0x40-0x7E.
+    const gate = new PtyQuiescenceGate();
+    gate.observe(bytes([ESC], '['));
+    expect(gate.isBoundaryClean()).toBe(false);
+    const paramRun = '0123456789;'.repeat(100); // all valid CSI param bytes
+    let recovered = false;
+    for (let i = 0; i < 10; i++) {
+      gate.observe(bytes(paramRun));
+      if (gate.isBoundaryClean()) {
+        recovered = true;
+        break;
+      }
+    }
+    expect(recovered).toBe(true);
+  });
+
+  test('a legitimate short CSI sequence is unaffected by the run cap', () => {
+    const gate = new PtyQuiescenceGate();
+    expect(gate.observe(bytes([ESC], '[38;2;255;100;50m'))).toBe(false); // 24-bit color SGR
+    expect(gate.isBoundaryClean()).toBe(true);
+  });
+});
+
 describe('PtyQuiescenceGate.observe scroll-region-reset detection (ESC[r)', () => {
   test('a bare ESC[r in one chunk is reported', () => {
     const gate = new PtyQuiescenceGate();
