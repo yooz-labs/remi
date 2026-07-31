@@ -38,7 +38,16 @@ All notable changes to Remi are documented here.
   fallback path — see `authority.ts`'s module doc for the full breakdown,
   and for why an original claim that `<local-command-stdout>` is reachable
   specifically via a `!`-prefixed bash command was corrected to
-  unconfirmed (the only samples inspected were slash-command output).
+  unconfirmed (the only samples inspected were slash-command output; #938
+  tracks getting a live capture to settle it).
+  **The primary source is filtered too, defensively**: the design premise
+  that `UserPromptSubmit.prompt` only ever carries the human's own
+  keystrokes is UNVERIFIED (also #938) — the same `!`-bash-mode question
+  above. The `UserPromptSubmit` listener therefore also runs
+  `isWrappedNonHumanText` over `input.prompt` before recording it, so a
+  wrapped-string failure of that premise is caught on the primary path too,
+  not only the fallback. This is defense in depth, not proof the premise
+  holds; the code comments say so explicitly.
   **Trust boundary**: `enforceAuthorityBoundary` is a code-level backstop,
   independent of the LLM's own reasoning, that downgrades an
   authority-influenced `approve` verdict to `escalate` whenever the

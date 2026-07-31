@@ -7,11 +7,26 @@
  *
  * `UserPromptSubmit` (newly registered, hook-types.ts) hands the daemon the
  * human's typed input DIRECTLY — `prompt`, verbatim, no transcript parsing.
- * That makes it structurally safe: there is no `<local-command-stdout>`-
- * shaped hazard on this path at all, because Claude Code only ever puts the
- * human's own keystrokes in this field. `AuthorityStore` below is that
- * primary source — a per-session, in-memory ring buffer fed by the hook
- * listener in `hook-bridge-setup.ts`.
+ * The DESIGN INTENT is that this makes the primary path structurally safe:
+ * no `<local-command-stdout>`-shaped hazard, because Claude Code should only
+ * ever put the human's own keystrokes in this field.
+ *
+ * **That premise is UNVERIFIED, not confirmed** — tracked as #938. It is
+ * specifically the `!`-bash-mode question: does a `!`-prefixed command's
+ * `UserPromptSubmit.prompt` carry the literal typed text, or the command's
+ * OUTPUT (the same shape the transcript's `<local-command-stdout>` entries
+ * show)? Nobody has captured this live yet. Because the premise is
+ * unverified, `hook-bridge-setup.ts`'s `UserPromptSubmit` listener also runs
+ * `isWrappedNonHumanText` (below) over `input.prompt` before recording it —
+ * DEFENSE IN DEPTH, not confirmation. If the premise holds, that check is a
+ * permanent no-op costing one substring scan on a human-paced event. If the
+ * premise is wrong, it is the thing that catches the wrapped-string shape of
+ * the failure (though NOT an output shape with no wrapper tag at all, which
+ * would need #938's answer to even know exists). Do not read the presence of
+ * that filter as evidence the premise was checked.
+ *
+ * `AuthorityStore` below is the primary source itself — a per-session,
+ * in-memory ring buffer fed by the hook listener in `hook-bridge-setup.ts`.
  *
  * The transcript JSONL is the FALLBACK, load-bearing for a session the
  * daemon attached to mid-conversation (a resume): its prior turns exist only
@@ -155,6 +170,19 @@ export class AuthorityStore {
  * both were observed carrying `isMeta: true` in the sampled data (the
  * `isMeta` check below already excludes them) — belt and suspenders in case
  * a future Claude Code version stops stamping the flag on one of them.
+ *
+ * `'Another Claude session sent a message:'` is a DIFFERENT shape than the
+ * rest of this list: the real captured samples (module doc) put a
+ * human-readable preamble sentence BEFORE the `<agent-message from="...">`
+ * tag, so the entry does not start with a tag at all — a plain prefix match
+ * against `<agent-message` would miss it. This entry matters MORE than the
+ * others on the PRIMARY (hook) path specifically: `UserPromptSubmitHookInput`
+ * (`hook-types.ts`) carries no `isMeta` field at all — that flag exists only
+ * on transcript entries — so if a cross-session agent message is EVER
+ * delivered through `UserPromptSubmit.prompt` (unconfirmed; same epistemic
+ * status as the `!`-bash-mode question, #938), this literal-sentence prefix
+ * is the ONLY defense available on that path. On the transcript fallback it
+ * is pure redundancy on top of the `isMeta` check.
  */
 const NON_HUMAN_WRAPPER_PREFIXES: readonly string[] = [
   '<command-name>',
@@ -162,6 +190,7 @@ const NON_HUMAN_WRAPPER_PREFIXES: readonly string[] = [
   '<local-command-stdout>',
   '<local-command-caveat>',
   '<system-reminder>',
+  'Another Claude session sent a message:',
 ];
 
 /** True if a user-role string entry is a wrapped non-human artifact (slash

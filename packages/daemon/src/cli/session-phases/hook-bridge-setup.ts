@@ -55,7 +55,10 @@
  * (`AutoApproveGateDeps.getAuthority`, wired into the gate below). A filtered
  * transcript read is the FALLBACK for a resumed session's prior turns, which
  * this registration never saw fire for. See `authority.ts`'s module doc for
- * the trust boundary this feature is built around.
+ * the trust boundary this feature is built around, INCLUDING why the
+ * listener also runs `isWrappedNonHumanText` over `input.prompt` before
+ * recording it -- defense in depth for an unverified premise (#938), not
+ * proof the primary source is clean.
  *
  * This listener block IS the per-session hook router (admit-then-fan-out); a
  * formal HookRouter class is deferred to a later refactor (#470). The function
@@ -79,7 +82,12 @@ import type { AgentStatus, ProtocolMessage, UUID } from '@remi/shared';
 import type { MessageAPI } from '../../api/message-api.ts';
 import type { QuestionPresenceTracker } from '../../api/question-presence-tracker.ts';
 import type { SubagentViewRegistry } from '../../api/subagent-view-registry.ts';
-import { AuthorityStore, AutoApproveGate, resolveAuthority } from '../../auto-approve/index.ts';
+import {
+  AuthorityStore,
+  AutoApproveGate,
+  isWrappedNonHumanText,
+  resolveAuthority,
+} from '../../auto-approve/index.ts';
 import type { AutoApproveService } from '../../auto-approve/index.ts';
 import { HookEventBridge } from '../../hooks/index.ts';
 import type {
@@ -1163,12 +1171,30 @@ export function setupHookBridge(
   // policy (hook-types.ts:660): `HookServer.dispatch` runs this listener
   // SYNCHRONOUSLY before Claude Code's blocked hook response, and an HTTP hook
   // has no async escape hatch -- see the module doc's Q9 paragraph. This
-  // handler is therefore intentionally minimal: a binder call already proven
-  // cheap by the other listeners above, then one array push
-  // (`AuthorityStore.record`). No file I/O, no network, no LLM call.
+  // handler is therefore intentionally minimal on top of what every other
+  // listener in this file already pays: `binder.onHookEvent` +
+  // `binder.admits` each call `adoptLockFromStore`
+  // (`transcript-binder.ts`), which does a synchronous `fs.readFileSync`
+  // per call (`session-binding-store.ts:11,16-17`) -- so TWO reads per
+  // event, shared, pre-existing infrastructure, not something Q9
+  // introduces (documented elsewhere as microseconds, not a budget risk
+  // against the 1s timeout). What Q9 ADDS on top of that shared cost is
+  // one string-prefix scan (`isWrappedNonHumanText`) and one array push
+  // (`AuthorityStore.record`) -- no NEW file I/O, no network, no LLM call.
+  //
+  // The `isWrappedNonHumanText` check is DEFENSE IN DEPTH, not confirmation
+  // that this source is safe (#893 review, #938). `authority.ts`'s module doc
+  // documents the premise it guards -- that Claude Code only ever puts the
+  // human's own keystrokes in `UserPromptSubmit.prompt` -- as UNVERIFIED. If
+  // that premise holds, this line is a permanent no-op. If it is wrong in the
+  // same wrapped-string shape the transcript fallback was hardened against,
+  // this is what catches it on the primary path too. #938 tracks getting a
+  // live capture to actually settle the premise; do not read this line as
+  // having settled it.
   hookServer.on('UserPromptSubmit', (input) => {
     binder.onHookEvent(input);
     if (!binder.admits(input)) return;
+    if (isWrappedNonHumanText(input.prompt)) return;
     authorityStore.record(input.prompt);
   });
 
