@@ -11,7 +11,6 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { DiscoverableSession } from '@remi/shared';
-import { isWrappedNonHumanText } from '../auto-approve/authority.ts';
 import type {
   AssistantEntry,
   ContentBlock,
@@ -19,6 +18,7 @@ import type {
   TranscriptEntry,
   UserEntry,
 } from './types.ts';
+import { isWrappedNonHumanText } from './user-entry-provenance.ts';
 
 /** Type predicate for TextBlock content blocks */
 function isTextBlock(block: ContentBlock): block is TextBlock {
@@ -300,7 +300,7 @@ export class TranscriptDiscovery {
             // or the residual non-isMeta wrapper cohort (`<command-name>`,
             // `<local-command-stdout>`) as the session-list preview. Same
             // filter as `TranscriptMessageBridge.handleUserEntry`, imported
-            // from `auto-approve/authority.ts` so both stay in lockstep.
+            // from `./user-entry-provenance.ts` so both stay in lockstep.
             if (userEntry.isMeta !== true) {
               let msgContent: string;
               if (typeof userEntry.message.content === 'string') {

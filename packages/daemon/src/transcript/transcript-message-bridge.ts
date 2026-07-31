@@ -12,8 +12,8 @@
 import type { Message, TranscriptContentBlock, TranscriptContentMessage, UUID } from '@remi/shared';
 import { createTranscriptContent, generateId, now } from '@remi/shared';
 import type { MessageAPI } from '../api/message-api.ts';
-import { isWrappedNonHumanText } from '../auto-approve/authority.ts';
 import type { AssistantEntry, ContentBlock, UserEntry } from './types.ts';
+import { isWrappedNonHumanText } from './user-entry-provenance.ts';
 
 /** Configuration for TranscriptMessageBridge */
 export interface TranscriptMessageBridgeConfig {
@@ -138,14 +138,15 @@ export class TranscriptMessageBridge {
    * `<agent-message from="...">` text in an agent-team session, which
    * otherwise renders in the chat view as a message the human sent (measured
    * across real transcripts: 47 of 88 `isMeta: true` entries were exactly
-   * this shape — see `auto-approve/authority.ts`'s module doc for the full
-   * breakdown). This mirrors that module's `extractUserEntryText`: `isMeta`
-   * is checked FIRST and unconditionally, before any content-shape logic,
-   * then the residual `isWrappedNonHumanText` denylist catches the cohort
+   * this shape — see `user-entry-provenance.ts`'s module doc for the full
+   * breakdown). This mirrors that module's design (also used by
+   * `auto-approve/authority.ts`'s `extractUserEntryText`): `isMeta` is
+   * checked FIRST and unconditionally, before any content-shape logic, then
+   * the residual `isWrappedNonHumanText` denylist catches the cohort
    * (`<command-name>`, `<local-command-stdout>`) that is NOT stamped
-   * `isMeta` at all. `isWrappedNonHumanText` is imported from `authority.ts`
-   * rather than redefined here so the two call sites can never drift into
-   * two different denylists.
+   * `isMeta` at all. `isWrappedNonHumanText` is imported from
+   * `user-entry-provenance.ts` rather than redefined here so all call sites
+   * can never drift into different denylists.
    *
    * SKIP, not tag: an excluded entry is dropped outright (marked processed,
    * no message emitted) rather than shipped with a provenance flag for
