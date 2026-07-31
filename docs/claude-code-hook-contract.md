@@ -125,9 +125,12 @@ it can proceed with that action — a stale or slow daemon can make Claude Code
 unable to submit a prompt, create a worktree, or finish a session, purely
 because a hook nobody needed a decision from is still gating the action
 (#203). This is why `HOOK_EVENT_NAMES` (31, type-complete as of this PR) and
-`REMI_REGISTERED_HOOK_EVENTS` (11 when this document landed; **14 since #889**
-added `PermissionDenied`, `Elicitation` and `ElicitationResult`) are and must
-stay two different lists.
+`REMI_REGISTERED_HOOK_EVENTS` (11 when this document landed; 14 after #889
+added `PermissionDenied`, `Elicitation`, `ElicitationResult`; 15 after #893
+added `UserPromptSubmit`; **14 again since #930 unregistered `SessionStart`**
+— Claude Code hard-discards `http`-type hooks for it before dispatch, so
+remi's registration never gated anything and never even reached the wire;
+see "Corpus status" below) are and must stay two different lists.
 
 ### Axis 2: semantic power — varies from zero to full override, per event
 
@@ -208,7 +211,7 @@ above for what it does).
 | `InstructionsLoaded` | — | `file_path, memory_type, load_reason, globs?, trigger_file_path?, parent_file_path?` | — | [B] was typed `source: string`, which **does not exist** in the binary at all |
 | `MessageDisplay` | — | `turn_id, message_id, index, final?, delta?` | Y (`displayContent`, can replace on-screen text) | [B] new type this PR |
 | `Notification` | Y | `message, title?, notification_type` (8-value enum, widened this PR — see below) | Y (context only) | [B][D] |
-| `SessionStart` | Y | `source?, model?, agent_type?, session_title?` | Y | [B][D] `model` was wrongly required; docs explicitly say "not guaranteed to be present." `agent_type`/`session_title` were untyped |
+| `SessionStart` | **N (#930)** | `source?, model?, agent_type?, session_title?` | Y | [B][D] `model` was wrongly required; docs explicitly say "not guaranteed to be present." `agent_type`/`session_title` were untyped. **[B] http-discarded**: Claude Code hard-discards `http`-type hook registrations for `SessionStart`/`Setup` before dispatch — confirmed by binary extraction against 2.1.220, independently corroborated by 5,000+ captured events with zero `SessionStart` records. remi registered it from #886 onward but unregistered it in #930 once this was confirmed; see "Corpus status" below for the full writeup |
 | `Setup` | — | `trigger` | Y (context only) | [B] new type this PR |
 | `SubagentStart` | Y | `agent_type` | Y (context only) | [B] matches pre-existing type |
 | `SessionEnd` | Y | `reason` | — | [B] matches pre-existing type |
@@ -387,10 +390,30 @@ is not evidence about that event. Fixtures for `UserPromptSubmit` (#893),
 `MessageDisplay` (#892) and the task/teammate events cannot exist until their
 registrations land — the drift test grows WITH the epic; it does not precede it.
 
-`SessionStart` is a special case: it is registered and still has zero captures,
+`SessionStart` was a special case worth recording even after the fix: it was
+registered from #886 onward and had zero captures across 5,000+ real events,
 because Claude Code **hard-discards `http`-type registrations for
-`SessionStart`/`Setup`** before dispatch (#930, verified against 2.1.220). Its
-absence is expected, not a gap — do not fabricate a fixture for it.
+`SessionStart`/`Setup`** before dispatch (#930, verified against 2.1.220 by
+binary extraction — exactly one `hook.type==="http"` filter site, gated on
+`r==="SessionStart"||r==="Setup"`, in the generic matched-hooks pipeline
+every event traverses). The registration cost remi nothing at runtime
+(Claude strips the entry before ever making the HTTP call — no roundtrip,
+unlike every other registered event, which DOES gate Claude on a real one);
+the cost was purely epistemic, a registration that read as coverage while
+never firing, which billed real hours in the #886 investigation. remi
+unregistered `SessionStart` in #930 rather than build a `command`-type hook
+to recover it (considered and rejected: a shell string in
+`settings.local.json`, a process spawn per session start, and a second
+registration mechanism, for an instant-vs-dir-poll latency difference on a
+rare path). Session identity never depended on it — the pre-assigned
+`--session-id` (`claude-binding.ts`, ADR 0001) plus the binder's
+`feedSyntheticRotation` no-hooks mirror (#452/#453) were already the
+designed signal — so `SessionStart` simply dropped out of
+`REMI_REGISTERED_HOOK_EVENTS` and, with it, out of `contract-spec.ts`'s
+`EVENT_SPECS`/`EVENTS_WITHOUT_FIXTURES`: its absence from the corpus needs no
+special case anymore, the same as any other never-registered event. It
+remains in `HOOK_EVENT_NAMES` (Claude Code still defines the event; remi
+just declines to pay for a registration it discards).
 
 `PermissionDenied` / `Elicitation` / `ElicitationResult` (registered in #926)
 have no captures yet because each needs a precondition that has not occurred.
