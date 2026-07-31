@@ -282,7 +282,12 @@ describe('WebSocketClient reconnectWithUrl', () => {
 describe('WebSocketClient ping/pong liveness (#662 review)', () => {
   test('replies with pong when the server sends a protocol ping', async () => {
     const received: ProtocolMessage[] = [];
-    let pingSent: PingMessage | null = null;
+    // `= null as PingMessage | null`, not `= null`: a bare `null`
+    // initializer keeps this narrowed to the literal `null` type at every
+    // read in this function, including after the WebSocket `open` handler
+    // below reassigns it (TS does not widen `let` narrowing back out for
+    // closure-only writes).
+    let pingSent: PingMessage | null = null as PingMessage | null;
 
     const server = Bun.serve({
       port: 0,
@@ -332,7 +337,10 @@ describe('WebSocketClient ping/pong liveness (#662 review)', () => {
     // guards against a reply that only fires on the FIRST ping.
     const pingIds: string[] = [];
     const pongIdsSeen = new Set<string>();
-    let serverWs: Bun.ServerWebSocket<unknown> | null = null;
+    // See the `pingSent` declaration above for why this is `as
+    // Bun.ServerWebSocket<unknown> | null` rather than a bare `null`.
+    let serverWs: Bun.ServerWebSocket<unknown> | null =
+      null as Bun.ServerWebSocket<unknown> | null;
 
     const server = Bun.serve({
       port: 0,

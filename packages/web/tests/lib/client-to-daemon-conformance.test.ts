@@ -36,8 +36,9 @@ import type { ProtocolMessage, ProtocolMessageMap } from '@remi/shared/protocol.
 import { MESSAGE_DIRECTION, createHello, deserialize, generateId } from '@remi/shared/protocol.ts';
 import type { AdapterEvents } from '../../../daemon/src/adapters/connection-adapter.ts';
 // Real daemon adapter -- not a test double. Relative import: packages/web has
-// no `@remi/daemon` path alias (only `packages/web/tests/**` is exempt from
-// both typecheck gates, so this resolves fine at `bun test` runtime; see
+// no `@remi/daemon` path alias, so this stays a relative path even though
+// `packages/web/tests/**` is now typechecked too (`typecheck:web-tests`,
+// #946 -- it was exempt from both gates before that); see
 // message-dispatch-conformance.test.ts's "conformance-test placement
 // decision" comment for the precedent this follows).
 import { WebSocketAdapter } from '../../../daemon/src/adapters/websocket-adapter.ts';
@@ -174,7 +175,11 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
 
       await waitFor(() => eventCalls.length > before);
       const call = eventCalls[eventCalls.length - 1];
-      expect(call?.event).toBe(EXPECTED_EVENT[type]);
+      // Guaranteed by the describe.each filter above; TS can't see through
+      // that filter into this callback, so prove it rather than assert `!`.
+      const expectedEvent = EXPECTED_EVENT[type];
+      if (!expectedEvent) throw new Error(`unreachable: ${type} has no EXPECTED_EVENT entry`);
+      expect(call?.event).toBe(expectedEvent);
       // First positional arg on every AdapterEvents callback is connectionId.
       expect(call?.args[0]).toBe(connectionId);
     });
@@ -183,6 +188,19 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
   test('sanity: every EXPECTED_EVENT key is a real c2d type covered by the loop above', () => {
     for (const type of Object.keys(EXPECTED_EVENT)) {
       expect(C2D_TYPES).toContain(type as keyof ProtocolMessageMap);
+    }
+  });
+
+  // NO_EVENT_TYPES documents which c2d types deliberately have no
+  // AdapterEvents callback; this is the other half of the completeness
+  // invariant the type's own doc comment describes -- until #946, nothing
+  // asserted it, so a new c2d type added to the registry without an
+  // EXPECTED_EVENT entry (and not added here either) would silently fall
+  // through both this loop and the generic one above.
+  test('sanity: every C2D type is covered by EXPECTED_EVENT or NO_EVENT_TYPES', () => {
+    for (const type of C2D_TYPES) {
+      const covered = type in EXPECTED_EVENT || NO_EVENT_TYPES.has(type);
+      expect(covered).toBe(true);
     }
   });
 

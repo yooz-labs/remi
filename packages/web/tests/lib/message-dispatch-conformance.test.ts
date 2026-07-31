@@ -55,9 +55,10 @@ import {
 } from '@remi/shared/protocol.ts';
 import { reserveRange } from '../../../daemon/tests/session/port-test-helpers.ts';
 // Real daemon adapter -- not a test double. Relative import: packages/web has
-// no `@remi/daemon` path alias (only `packages/web/tests/**` is exempt from
-// both typecheck gates, so this resolves fine at `bun test` runtime; see the
-// PR body's "conformance-test placement decision").
+// no `@remi/daemon` path alias, so this stays a relative path even though
+// `packages/web/tests/**` is now typechecked too (`typecheck:web-tests`,
+// #946 -- it was exempt from both gates before that); see the PR body's
+// "conformance-test placement decision").
 import { WebSocketAdapter } from '../../../daemon/src/adapters/websocket-adapter.ts';
 import { WebSocketClient } from '../../src/lib/websocket-client.ts';
 

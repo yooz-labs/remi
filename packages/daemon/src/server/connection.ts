@@ -132,7 +132,17 @@ export class Connection {
   private authenticatedFingerprint: string | null = null;
 
   private readonly ws: WebSocket;
-  private readonly config: Required<ConnectionConfig> & {
+  // `Omit` before re-adding `authenticator` so the property isn't inherited
+  // from `Required<ConnectionConfig>` and then intersected with the explicit
+  // override below: under `exactOptionalPropertyTypes: false`, `Required<>`
+  // collapses an already-optional `X | undefined` field down to plain `X`,
+  // and intersecting that with `X | undefined` collapses back to `X` --
+  // rejecting the `undefined` assignment two lines below. This repo's root
+  // tsconfig has the flag on, so this file alone never showed it, but
+  // `packages/web`'s stricter-in-other-ways / laxer-here tsconfig checks
+  // this file too via the conformance tests (ADR 0014, #946), and the flag
+  // is off there. `Omit` sidesteps the collapse regardless of the flag.
+  private readonly config: Omit<Required<ConnectionConfig>, 'skipHelloAck' | 'authenticator'> & {
     skipHelloAck: boolean;
     authenticator: Authenticator | undefined;
   };

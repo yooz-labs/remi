@@ -108,7 +108,7 @@ export function parseMessage(data: string): SignalingMessage | null {
     }
 
     const obj = parsed as Record<string, unknown>;
-    if (typeof obj.type !== 'string') {
+    if (typeof obj['type'] !== 'string') {
       console.warn('Signaling message missing "type" field');
       return null;
     }
@@ -127,8 +127,8 @@ export function parseMessage(data: string): SignalingMessage | null {
       'relay',
     ];
 
-    if (!validTypes.includes(obj.type)) {
-      console.warn(`Unknown signaling message type: ${obj.type}`);
+    if (!validTypes.includes(obj['type'])) {
+      console.warn(`Unknown signaling message type: ${obj['type']}`);
       return null;
     }
 

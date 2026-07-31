@@ -329,8 +329,12 @@ export default {
             body: body.body ?? '',
             bundleId,
             sandbox,
-            data: Object.keys(data).length > 0 ? data : undefined,
-            category,
+            // `data`/`category` are optional-without-`| undefined` on
+            // ApnsPayload; spread instead of assigning `undefined` so an
+            // absent value omits the key rather than tripping
+            // exactOptionalPropertyTypes (#946).
+            ...(Object.keys(data).length > 0 ? { data } : {}),
+            ...(category ? { category } : {}),
             // #719: mutable-content lets the NSE intercept and mutate the
             // notification before display (to attach the dynamic category);
             // only set when there is something for it to build actions from.

@@ -48,6 +48,19 @@ jobs:
       # non-exhaustive switch over a protocol message — merges green (#883).
       # Verified clean when added, so this gate starts with no backlog.
       - run: bun run typecheck:web
+      # typecheck:web only covers tsconfig.app.json's `include: ["src"]`.
+      # packages/web/tests/** (30 files, including the ADR 0014 two-sided
+      # conformance tests that import daemon source directly) sat outside
+      # both gates above until #946 — a test referencing a since-deleted
+      # interface field passed clean, caught only by manual review (#945).
+      - run: bun run typecheck:web-tests
+      # packages/signaling is the Cloudflare Worker relay -- shipped code on
+      # the remote transport, not test scaffolding. It has its own
+      # `typecheck` script (packages/signaling/package.json) but nothing
+      # called it until #946; the root tsconfig excludes the package
+      # entirely. Given #543/#881's history here, an undetected type error
+      # in this package is the more serious half of #946's gap.
+      - run: bun run typecheck:signaling
 
   test:
     name: Test

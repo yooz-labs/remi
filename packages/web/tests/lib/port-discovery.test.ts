@@ -14,19 +14,30 @@ import {
   resolveDaemonPort,
 } from '../../src/lib/port-discovery';
 
+/** `Bun.serve()`'s `.port` is typed `number | undefined` (a unix-socket
+ *  server has none). Every server bound in this file passes a numeric TCP
+ *  `port`, so it is always defined in practice; narrow once at the bind
+ *  site instead of asserting at each of the many later reads. */
+function requirePort<T extends { port: number | undefined }>(server: T): T & { port: number } {
+  if (server.port === undefined) throw new Error('server bound without a TCP port');
+  return server as T & { port: number };
+}
+
 function authInfoServer() {
-  return Bun.serve({
-    port: 0,
-    fetch(req) {
-      const u = new URL(req.url);
-      if (u.pathname === '/auth-info') {
-        return new Response(JSON.stringify({ authRequired: false, fingerprint: null }), {
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-      return new Response('Not found', { status: 404 });
-    },
-  });
+  return requirePort(
+    Bun.serve({
+      port: 0,
+      fetch(req) {
+        const u = new URL(req.url);
+        if (u.pathname === '/auth-info') {
+          return new Response(JSON.stringify({ authRequired: false, fingerprint: null }), {
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response('Not found', { status: 404 });
+      },
+    }),
+  );
 }
 
 /**
@@ -42,7 +53,7 @@ function bindNear(
 ): { port: number; stop(): void } {
   for (let offset = 1; offset < 50; offset++) {
     try {
-      return Bun.serve({ port: anchorPort + offset, fetch });
+      return requirePort(Bun.serve({ port: anchorPort + offset, fetch }));
     } catch {
       // Port in use; try next.
     }
@@ -205,6 +216,7 @@ describe('discoverDaemonPort', () => {
         portRange: b.port - a.port + 1,
         timeoutMs: 800,
       });
+      if (found === null) throw new Error('expected one of the two daemons to answer');
       expect([a.port, b.port]).toContain(found);
     } finally {
       a.stop();
@@ -300,10 +312,12 @@ describe('discoverDaemonPort', () => {
   test('per-probe timeout fires against a hung server', async () => {
     // Server accepts the connection but never replies. Without the
     // per-probe timer, the scan would hang indefinitely.
-    const hung = Bun.serve({
-      port: 0,
-      fetch: () => new Promise<Response>(() => {}),
-    });
+    const hung = requirePort(
+      Bun.serve({
+        port: 0,
+        fetch: () => new Promise<Response>(() => {}),
+      }),
+    );
     try {
       const start = Date.now();
       const found = await discoverDaemonPort('127.0.0.1', {
@@ -321,10 +335,12 @@ describe('discoverDaemonPort', () => {
   });
 
   test('outer signal aborted mid-flight cancels the scan promptly', async () => {
-    const hung = Bun.serve({
-      port: 0,
-      fetch: () => new Promise<Response>(() => {}),
-    });
+    const hung = requirePort(
+      Bun.serve({
+        port: 0,
+        fetch: () => new Promise<Response>(() => {}),
+      }),
+    );
     const ctl = new AbortController();
     setTimeout(() => ctl.abort(), 50);
     try {
