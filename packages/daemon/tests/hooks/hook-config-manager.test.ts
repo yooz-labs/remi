@@ -53,8 +53,12 @@ describe('HookConfigManager', () => {
     // None of the explicitly-skipped events should appear:
     expect(events).not.toContain('WorktreeCreate');
     expect(events).not.toContain('WorktreeRemove');
-    expect(events).not.toContain('UserPromptSubmit');
     expect(events).not.toContain('PreCompact');
+    // UserPromptSubmit WAS in this skip list before #893; it is now registered
+    // (the auto-approve authority summary's primary source) — see the
+    // REMI_REGISTERED_HOOK_EVENTS containment loop above and the dedicated
+    // timeout test below.
+    expect(events).toContain('UserPromptSubmit');
   });
 
   it('each registered event has an HTTP hook entry with the correct URL', async () => {
@@ -78,8 +82,12 @@ describe('HookConfigManager', () => {
       expect(hooks?.[0]?.type).toBe('http');
       expect(hooks?.[0]?.url).toBe(hookUrl);
       // PermissionRequest must outlast the synchronous auto-approve eval (#537);
-      // every other hook keeps the short fail-fast timeout (#203).
-      expect(hooks?.[0]?.timeout).toBe(event === 'PermissionRequest' ? 600 : 5);
+      // UserPromptSubmit gets an even SHORTER budget than the default (#893) —
+      // its listener is a single array push, so it never needs 5s to fail fast;
+      // every other hook keeps the plain fail-fast timeout (#203).
+      const expectedTimeout =
+        event === 'PermissionRequest' ? 600 : event === 'UserPromptSubmit' ? 1 : 5;
+      expect(hooks?.[0]?.timeout).toBe(expectedTimeout);
     }
   });
 
@@ -93,6 +101,22 @@ describe('HookConfigManager', () => {
       ?.hooks.find((h) => h.url === hookUrl);
     expect(permHook?.timeout).toBe(600);
     // A representative non-permission hook keeps the short timeout.
+    const stopHook = settings.hooks['Stop']
+      ?.find((m) => m.hooks.some((h) => h.url === hookUrl))
+      ?.hooks.find((h) => h.url === hookUrl);
+    expect(stopHook?.timeout).toBe(5);
+  });
+
+  it('#893: UserPromptSubmit gets a short timeout; other non-permission hooks stay at the default', async () => {
+    await manager.install();
+    const settings = readSettings() as {
+      hooks: Record<string, Array<{ hooks: Array<{ url: string; timeout: number }> }>>;
+    };
+    const promptHook = settings.hooks['UserPromptSubmit']
+      ?.find((m) => m.hooks.some((h) => h.url === hookUrl))
+      ?.hooks.find((h) => h.url === hookUrl);
+    expect(promptHook?.timeout).toBe(1);
+    // A representative non-permission, non-UserPromptSubmit hook is unaffected.
     const stopHook = settings.hooks['Stop']
       ?.find((m) => m.hooks.some((h) => h.url === hookUrl))
       ?.hooks.find((h) => h.url === hookUrl);
@@ -156,8 +180,9 @@ describe('HookConfigManager', () => {
 
     // WorktreeRemove had only our entry → key removed entirely.
     expect(settings.hooks['WorktreeRemove']).toBeUndefined();
-    expect(settings.hooks['UserPromptSubmit']).toBeUndefined();
     expect(settings.hooks['PreCompact']).toBeUndefined();
+    // UserPromptSubmit was in this pruned-away group before #893; it is now
+    // registered, so it belongs in the "keeps its entry" loop below instead.
 
     // Registered events keep their entry.
     for (const event of REMI_REGISTERED_HOOK_EVENTS) {

@@ -46,6 +46,12 @@ interface HookMatcher {
  */
 const PERMISSION_REQUEST_HOOK_TIMEOUT = 600;
 const DEFAULT_HOOK_TIMEOUT = 5;
+/** Per-event timeout overrides (seconds), below `DEFAULT_HOOK_TIMEOUT` (#893,
+ *  Epic #885 Risk 3). `UserPromptSubmit`'s listener is a single array push
+ *  (`AuthorityStore.record`, `auto-approve/authority.ts`) -- it never needs
+ *  the full 5s fail-fast budget, and a short one still gates the human's
+ *  prompt submission for less wall-clock time when the daemon is slow/dead. */
+const SHORT_HOOK_TIMEOUTS: Readonly<Record<string, number>> = { UserPromptSubmit: 1 };
 
 interface ClaudeSettings {
   hooks?: Record<string, HookMatcher[]>;
@@ -78,12 +84,16 @@ export class HookConfigManager {
   /**
    * Seconds Claude Code waits for this hook's HTTP response. PermissionRequest
    * gets the long budget (baseline 600s ceiling, raised to the configured hold
-   * timeout when larger so a long human-paced hold is not cut short, #573); all
-   * other hooks keep the short fail-fast timeout (#203).
+   * timeout when larger so a long human-paced hold is not cut short, #573);
+   * events in `SHORT_HOOK_TIMEOUTS` get an even shorter budget than the
+   * default fail-fast timeout (#893); everything else keeps the plain
+   * fail-fast timeout (#203).
    */
   private hookTimeoutFor(event: string): number {
-    if (event !== 'PermissionRequest') return DEFAULT_HOOK_TIMEOUT;
-    return Math.max(PERMISSION_REQUEST_HOOK_TIMEOUT, this.permissionHoldTimeoutSec);
+    if (event === 'PermissionRequest') {
+      return Math.max(PERMISSION_REQUEST_HOOK_TIMEOUT, this.permissionHoldTimeoutSec);
+    }
+    return SHORT_HOOK_TIMEOUTS[event] ?? DEFAULT_HOOK_TIMEOUT;
   }
 
   /**
