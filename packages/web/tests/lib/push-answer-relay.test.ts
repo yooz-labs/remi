@@ -69,11 +69,16 @@ describe('relayAnswerDirect (#575 P4a)', () => {
   }
 
   test('no-auth daemon: posts the answer and returns delivered', async () => {
-    let received: { sessionId: string; questionId: string; answer: string } | null = null;
+    type ReceivedBody = { sessionId: string; questionId: string; answer: string } | null;
+    // `= null as ReceivedBody`, not `= null`: a bare `null` initializer keeps
+    // this narrowed to the literal `null` type at every read in this
+    // function, including after the fetch handler below reassigns it (TS
+    // does not widen `let` narrowing back out for closure-only writes).
+    let received: ReceivedBody = null as ReceivedBody;
     const server = startServer(async (req) => {
       const u = new URL(req.url);
       if (u.pathname === '/answer' && req.method === 'POST') {
-        received = (await req.json()) as typeof received;
+        received = (await req.json()) as ReceivedBody;
         return new Response(JSON.stringify({ result: 'delivered' }), {
           headers: { 'Content-Type': 'application/json' },
         });
@@ -87,9 +92,6 @@ describe('relayAnswerDirect (#575 P4a)', () => {
         questionId: 'q1',
         answer: 'Yes',
         authRequired: false,
-        // Pre-#875 daemon: publishes no answer key, so there is nothing to
-        // seal to. The sealed path has its own tests below.
-        sealRequired: false,
       });
       expect(result).toEqual({ kind: 'delivered' });
       expect(received).toEqual({ sessionId: 's1', questionId: 'q1', answer: 'Yes' });
@@ -113,9 +115,6 @@ describe('relayAnswerDirect (#575 P4a)', () => {
         questionId: 'q1',
         answer: 'Yes',
         authRequired: false,
-        // Pre-#875 daemon: publishes no answer key, so there is nothing to
-        // seal to. The sealed path has its own tests below.
-        sealRequired: false,
       });
       expect(result.kind).toBe('rejected');
     } finally {
@@ -138,9 +137,6 @@ describe('relayAnswerDirect (#575 P4a)', () => {
         questionId: 'q1',
         answer: 'Yes',
         authRequired: false,
-        // Pre-#875 daemon: publishes no answer key, so there is nothing to
-        // seal to. The sealed path has its own tests below.
-        sealRequired: false,
       });
       expect(result.kind).toBe('auth-failed');
     } finally {
@@ -178,7 +174,6 @@ describe('relayAnswerDirect (#575 P4a)', () => {
         questionId: 'q1',
         answer: 'Yes',
         authRequired: true,
-        sealRequired: false,
       });
       expect(result.kind).toBe('needs-passphrase');
       expect(hit).toBe(false); // failed fast, never reached the daemon
@@ -202,7 +197,6 @@ describe('relayAnswerDirect (#575 P4a)', () => {
         questionId: 'q1',
         answer: 'Yes',
         authRequired: true,
-        sealRequired: false,
       });
       expect(result.kind).toBe('needs-passphrase');
       expect(hit).toBe(false);
@@ -215,12 +209,18 @@ describe('relayAnswerDirect (#575 P4a)', () => {
     const unencrypted = await createIdentity(); // no passphrase => signable without a prompt
     store.setItem('remi-identity', serializeIdentity(unencrypted));
 
-    let body: {
+    type AuthBody = {
       sessionId?: string;
       auth?: { signature?: string; clientPublicKey?: string; clientFingerprint?: string };
-    } | null = null;
+    } | null;
+    // `= null as AuthBody`, not `= null`: TS narrows a bare `= null`
+    // initializer to the literal `null` type and never widens it back for
+    // reads outside the closure that reassigns it below (a known control-flow
+    // analysis gap, not specific to this repo), which turns every `body.auth`
+    // read after the guard into "Property does not exist on type 'never'".
+    let body: AuthBody = null as AuthBody;
     const server = startServer(async (req) => {
-      body = (await req.json()) as typeof body;
+      body = (await req.json()) as AuthBody;
       return new Response(JSON.stringify({ result: 'delivered' }), {
         headers: { 'Content-Type': 'application/json' },
       });
@@ -232,13 +232,15 @@ describe('relayAnswerDirect (#575 P4a)', () => {
         questionId: 'q1',
         answer: 'Yes',
         authRequired: true,
-        sealRequired: false,
       });
       expect(result).toEqual({ kind: 'delivered' });
-      expect(body?.auth?.clientPublicKey).toBe(unencrypted.publicKey);
-      expect(body?.auth?.clientFingerprint).toBe(unencrypted.fingerprint);
-      expect(typeof body?.auth?.signature).toBe('string');
-      expect((body?.auth?.signature ?? '').length).toBeGreaterThan(0);
+      // `body` is only ever written from inside the fetch handler above; the
+      // awaited `relayAnswerDirect` call proves that handler ran.
+      if (body === null) throw new Error('expected the daemon to have received a body');
+      expect(body.auth?.clientPublicKey).toBe(unencrypted.publicKey);
+      expect(body.auth?.clientFingerprint).toBe(unencrypted.fingerprint);
+      expect(typeof body.auth?.signature).toBe('string');
+      expect((body.auth?.signature ?? '').length).toBeGreaterThan(0);
     } finally {
       server.stop();
     }
@@ -277,12 +279,13 @@ describe('relayAnswerViaSignaling (#591)', () => {
 
   test('no-auth: POSTs to /answer/{code} and returns delivered', async () => {
     let path = '';
-    let received: { sessionId: string; questionId: string; answer: string } | null = null;
+    type ReceivedBody = { sessionId: string; questionId: string; answer: string } | null;
+    let received: ReceivedBody = null as ReceivedBody;
     const server = startServer(async (req) => {
       const u = new URL(req.url);
       path = u.pathname;
       if (req.method === 'POST') {
-        received = (await req.json()) as typeof received;
+        received = (await req.json()) as ReceivedBody;
         return new Response(JSON.stringify({ result: 'delivered' }), {
           headers: { 'Content-Type': 'application/json' },
         });
@@ -338,11 +341,12 @@ describe('relayAnswerViaSignaling (#591)', () => {
   test('auth required + unencrypted identity: signs and the Worker receives the auth block', async () => {
     const unencrypted = await createIdentity();
     store.setItem('remi-identity', serializeIdentity(unencrypted));
-    let body: {
+    type AuthBody = {
       auth?: { signature?: string; clientPublicKey?: string; clientFingerprint?: string };
-    } | null = null;
+    } | null;
+    let body: AuthBody = null as AuthBody;
     const server = startServer(async (req) => {
-      body = (await req.json()) as typeof body;
+      body = (await req.json()) as AuthBody;
       return new Response(JSON.stringify({ result: 'delivered' }), {
         headers: { 'Content-Type': 'application/json' },
       });
