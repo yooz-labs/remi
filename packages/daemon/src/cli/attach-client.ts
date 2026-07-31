@@ -22,6 +22,7 @@ import type {
 import { performAuthHandshake } from './auth-helper.ts';
 import { capabilityWsOptions } from './capability-client.ts';
 import { DetachScanner } from './detach-scanner.ts';
+import { PtyQuiescenceGate } from './pty-quiescence-gate.ts';
 import { StatusBar, childRows } from './status-bar.ts';
 
 export interface AttachClientOptions {
@@ -82,6 +83,13 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
   // session that already has a live question -- see that function's doc.
   let receivedQuestionSnapshot = false;
   let questionSnapshotTimer: ReturnType<typeof setTimeout> | null = null;
+  // #932 durable fix: this attach cycle's own quiescence + clean-boundary
+  // gate for `outputFd` -- the same fd `statusBar` draws into. Scoped to
+  // this call (not module-level, unlike the wrapper's `wrapperPtyGate` in
+  // cli.ts) because a fresh `runAttachClient()` call is a fresh terminal
+  // parser state: nothing has been written to `outputFd` yet, so a new gate
+  // starting from "ground, never observed" is exactly right.
+  const ptyGate = new PtyQuiescenceGate();
 
   function writeOutput(text: string): void {
     if (outputBroken) return;
@@ -169,8 +177,8 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
 
   function writeRawBytes(base64Data: string): void {
     if (outputBroken) return;
+    const buf = Buffer.from(base64Data, 'base64');
     try {
-      const buf = Buffer.from(base64Data, 'base64');
       fs.writeSync(outputFd, buf);
     } catch (err) {
       outputBroken = true;
@@ -178,7 +186,19 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
       if (code !== 'EBADF' && code !== 'EPIPE') {
         process.stderr.write(`[remi] output write failed: ${code ?? err}\n`);
       }
+      return;
     }
+    // #932 durable fix (review finding 2): feed the quiescence +
+    // clean-boundary gate AFTER the real chunk has landed on the wire,
+    // never before -- and outside the write's own try/catch, so a throw
+    // from this callback (e.g. StatusBar's isBoundaryClean/isQuiescent/
+    // hasLiveQuestions predicates) is never misclassified as a write
+    // failure. Same ordering rationale as the wrapper's
+    // `observeLocalPtyOutput` (pty-session-setup.ts): observing before the
+    // write would put the bar's corrective DECSTBM-reasserting paint on
+    // the wire BEFORE the very ESC[r that triggered it, so the reset would
+    // immediately undo the correction instead of the other way around.
+    if (ptyGate.observe(buf)) statusBar?.notifyScrollRegionReset();
   }
 
   /**
@@ -226,6 +246,9 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
       }),
       isEnabled: () => latestStatus !== null,
       hasLiveQuestions: () => liveQuestionIds.size > 0,
+      // #932 durable fix: gate every paint on the same `ptyGate` `writeRawBytes` feeds.
+      isBoundaryClean: () => ptyGate.isBoundaryClean(),
+      isQuiescent: () => ptyGate.isQuiescent(),
       log: (msg) => process.stderr.write(`${msg}\n`),
     });
     statusBar.start();

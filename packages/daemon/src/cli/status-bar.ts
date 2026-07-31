@@ -27,17 +27,14 @@
  * short to spare a row. A render error backs the bar off rather than crashing
  * the wrapper.
  *
- * Exposure reduction (#932): this bar and Claude's own PTY output are two
- * writers on the same fd, both synchronous `fs.writeSync` in the same
- * process and thread -- so byte-level interleaving WITHIN one write is not
- * the mechanism. The real hazard is a paint landing BETWEEN two PTY-
+ * Exposure reduction (#932, PR #933): this bar and Claude's own PTY output
+ * are two writers on the same fd, both synchronous `fs.writeSync` in the
+ * same process and thread -- so byte-level interleaving WITHIN one write is
+ * not the mechanism. The real hazard is a paint landing BETWEEN two PTY-
  * forwarding chunks, at a boundary that happens to split one of Claude's
  * own escape sequences (the DECSC/DECRC pair above shares Claude's own
- * cursor-save slot -- 166/421 occurrences in the installed binary). This
- * does not fix that (the durable fix is a quiescence + clean-boundary gate
- * on the PTY-forwarding side, tracked on #932 as its own follow-up -- NOT
- * a write queue, since same-process/same-thread writeSync calls have no
- * concurrency to serialize); it just cuts how often a paint is attempted:
+ * cursor-save slot -- 166/421 occurrences in the installed binary). PR #933
+ * did not fix that; it only cut how often a paint is attempted:
  *   1. `render()` no-ops while `hasLiveQuestions()` reports a pending
  *      question -- except for one fresh paint on the transition INTO that
  *      state (see `render()`'s `onset`), so the bar is current the moment
@@ -57,6 +54,23 @@
  * Protection 2 is also a restoration, not a new optimization: #565 specified
  * redraw "on: status change ... and on resize." The unconditional ~250ms
  * timer was added later, in #576, and exceeded that original design.
+ *
+ * The durable fix (#932 follow-up, this file's `isBoundaryClean` /
+ * `isQuiescent` deps): a quiescence + clean-boundary gate, backed by
+ * `PtyQuiescenceGate` (`pty-quiescence-gate.ts`), a small scanner over the
+ * PTY chunks actually forwarded to this fd. `isBoundaryClean()` is a HARD
+ * requirement checked before every write, with no exceptions -- a paint can
+ * no longer land at a boundary that splits one of Claude's own escape
+ * sequences, making that hazard ("mode 1") structurally impossible rather
+ * than just less frequent. `isQuiescent()` is a SOFT requirement that only
+ * gates a routine (non-edge, non-heartbeat) paint, reducing but not
+ * eliminating "mode 2" (a paint landing inside a save/restore pair that
+ * spans a quiet gap -- an accepted residual, see `pty-quiescence-gate.ts`).
+ * Both deps default to always-true (same fail-open pattern as
+ * `hasLiveQuestions`) so a caller that omits them -- tests, or a bar not
+ * wired to a PTY forwarder -- keeps pre-gate behavior. See `render()` for
+ * how the hard/soft split interacts with the heartbeat and the
+ * onset/resumed edges without weakening either.
  */
 
 import * as fs from 'node:fs';
@@ -85,7 +99,25 @@ export const MAX_RENDER_ERRORS = 3;
  *  user would notice as "the bar stopped updating," while still cutting the
  *  write rate roughly 8x versus the old unconditional 250ms cadence -- most
  *  of protection 2's exposure reduction. Not configurable: it exists to keep
- *  the dedup and the region invariant coupled, not to be tuned per caller. */
+ *  the dedup and the region invariant coupled, not to be tuned per caller.
+ *
+ *  #932 durable fix interaction: `render()`'s soft quiescence gate
+ *  (`isQuiescent`) is bypassed once this heartbeat is due, precisely so a
+ *  continuously streaming Claude session cannot defer this reassertion
+ *  indefinitely -- the heartbeat still fires within `HEARTBEAT_MS` of the
+ *  last write, unchanged from before the durable fix. The HARD boundary
+ *  gate (`isBoundaryClean`) is NOT bypassed for the heartbeat, and cannot
+ *  be: writing at a dirty boundary is the exact hazard the gate exists to
+ *  prevent, so weakening it here would defeat the fix it is coupled to. In
+ *  the realistic case this costs nothing -- an escape sequence completes
+ *  within the same or the very next PTY chunk, microseconds to
+ *  milliseconds, not a measurable fraction of 2000ms (see
+ *  `pty-quiescence-gate.ts`'s capture data). The only way the boundary gate
+ *  could delay a heartbeat past this window is a pathologically long
+ *  unterminated sequence -- effectively the same failure mode
+ *  `MAX_RENDER_ERRORS` and the config kill-switch already exist as escape
+ *  hatches for, and, like mode 2, an accepted residual rather than
+ *  something this gate can close without becoming a full VT emulator. */
 export const HEARTBEAT_MS = 2000;
 
 /**
@@ -216,6 +248,28 @@ export interface StatusBarDeps {
    *  not toward a precise per-agent freeze window -- see #932's PR
    *  discussion for the full reasoning on why that tradeoff was kept. */
   readonly hasLiveQuestions?: () => boolean;
+  /** #932 durable fix, HARD gate: true iff a write right now would NOT land
+   *  inside an unterminated Claude escape sequence -- backed by
+   *  `PtyQuiescenceGate.isBoundaryClean()` fed from the PTY chunks actually
+   *  forwarded to this fd (see `pty-quiescence-gate.ts`). `render()` checks
+   *  this before every write, with no exceptions -- not even for the
+   *  heartbeat or an onset/resumed edge paint -- because writing at a dirty
+   *  boundary is the exact hazard the gate exists to make structurally
+   *  impossible. Optional; defaults to always-true (same fail-open pattern
+   *  as `hasLiveQuestions`) so a caller that omits it -- tests, or a bar
+   *  not wired to a PTY forwarder -- keeps pre-gate behavior. */
+  readonly isBoundaryClean?: () => boolean;
+  /** #932 durable fix, SOFT gate: true iff the PTY has been quiet for at
+   *  least `QUIESCENCE_MS` (`pty-quiescence-gate.ts`). Unlike
+   *  `isBoundaryClean`, this gate has documented exceptions: a heartbeat-due
+   *  write, and the onset/resumed edge paints, all proceed as soon as
+   *  `isBoundaryClean()` allows even when this is false -- otherwise a
+   *  continuously streaming Claude session could starve the heartbeat's
+   *  DECSTBM reassertion or delay an onset/resumed capture past the moment
+   *  it is meant to capture. Only a routine (content-changed,
+   *  non-edge/non-heartbeat) paint waits on this. Optional; defaults to
+   *  always-true, same fail-open pattern as the other predicates here. */
+  readonly isQuiescent?: () => boolean;
   /** Write to the terminal fd. Injectable for tests; defaults to fs.writeSync. */
   readonly writeToFd?: (fd: number, data: string) => void;
   /** Current epoch ms. Injectable for tests; defaults to Date.now. */
@@ -268,11 +322,20 @@ export class StatusBar {
    *  level) -- see `render()` for why each edge forces a fresh paint. Reset
    *  by `stop()` so a restart starts from "not live" again. */
   private wasQuestionLive = false;
+  /** Set by `notifyScrollRegionReset()`; cleared only once a write actually
+   *  lands. #932: the ESC[r bonus signal -- if `isBoundaryClean()` refuses
+   *  the immediate attempt (the reset chunk was followed by more bytes that
+   *  left the stream mid-sequence), this stays true so the very next
+   *  capable `render()` call -- the next tick, or the next chunk-triggered
+   *  notify -- retries rather than the intent being silently dropped. */
+  private forceRepaintPending = false;
   private readonly getStdoutFd: () => number | null;
   private readonly getStatus: () => Readonly<RemiStatus>;
   private readonly getSize: () => { cols: number; rows: number };
   private readonly isEnabled: () => boolean;
   private readonly hasLiveQuestions: () => boolean;
+  private readonly isBoundaryClean: () => boolean;
+  private readonly isQuiescent: () => boolean;
   private readonly writeToFd: (fd: number, data: string) => void;
   private readonly now: () => number;
   private readonly log: (msg: string) => void;
@@ -284,6 +347,8 @@ export class StatusBar {
     this.getSize = deps.getSize;
     this.isEnabled = deps.isEnabled;
     this.hasLiveQuestions = deps.hasLiveQuestions ?? (() => false);
+    this.isBoundaryClean = deps.isBoundaryClean ?? (() => true);
+    this.isQuiescent = deps.isQuiescent ?? (() => true);
     this.writeToFd = deps.writeToFd ?? ((fd, data) => fs.writeSync(fd, data));
     this.now = deps.now ?? (() => Date.now());
     this.log = deps.log;
@@ -315,29 +380,59 @@ export class StatusBar {
     this.lastRendered = null;
     this.lastWriteAtMs = null;
     this.wasQuestionLive = false;
+    this.forceRepaintPending = false;
+  }
+
+  /**
+   * #932 durable fix: notify the bar that the PTY-forwarding scanner just
+   * observed Claude emit a bare `ESC[r` (DECSTBM full-screen scroll-region
+   * reset) -- row N is unprotected until the region is re-asserted, so this
+   * attempts an immediate repaint rather than waiting out the normal tick
+   * or the up-to-`HEARTBEAT_MS` heartbeat window. Safe to call any time
+   * (same guards as `render()` apply); if `isBoundaryClean()` still refuses
+   * the attempt -- the reset chunk was followed by more bytes that left the
+   * stream mid-sequence -- the intent is not dropped: it stays pending for
+   * the next capable `render()` call (see `forceRepaintPending`'s doc).
+   */
+  notifyScrollRegionReset(): void {
+    this.forceRepaintPending = true;
+    this.render();
   }
 
   /** Paint the reserved row now. Safe no-op when disabled / detached / no
-   *  room. While a question is live (#932), paints once on the transition
-   *  into that state and freezes after; paints once more on the transition
-   *  back out, then resumes normal cadence -- see the `onset`/`resumed`
-   *  comment below for why both edges force a fresh paint. */
+   *  room / a dirty escape-sequence boundary. While a question is live
+   *  (#932), paints once on the transition into that state and freezes
+   *  after; paints once more on the transition back out, then resumes
+   *  normal cadence -- see the `onset`/`resumed` comment below for why both
+   *  edges force a fresh paint. */
   render(): void {
     if (this.disabled || !this.isEnabled()) return;
-    // fd/room checks come BEFORE hasLiveQuestions() is read and
-    // wasQuestionLive is mutated (#932 review fix): a transition landing on
-    // a tick where a paint isn't even possible must not be consumed. If it
-    // were, the flag would flip with no write to show for it, and the NEXT
-    // successful tick would compute onset/resumed against the
-    // already-flipped flag -- neither true -- and freeze on stale content
-    // for the rest of the window: the exact bug this whole mechanism exists
-    // to prevent, reintroduced through ordering. Same pattern
-    // `disabled`/`isEnabled()` above already use: return before touching
-    // any state a later, capable tick still needs to see as unconsumed.
+    // fd/room/boundary checks come BEFORE hasLiveQuestions() is read and
+    // wasQuestionLive is mutated (#932 review fix, preserved by the durable
+    // fix): a transition landing on a tick where a paint isn't even
+    // possible must not be consumed. If it were, the flag would flip with
+    // no write to show for it, and the NEXT successful tick would compute
+    // onset/resumed against the already-flipped flag -- neither true -- and
+    // freeze on stale content for the rest of the window: the exact bug
+    // this whole mechanism exists to prevent, reintroduced through
+    // ordering. Same pattern `disabled`/`isEnabled()` above already use:
+    // return before touching any state a later, capable tick still needs to
+    // see as unconsumed.
     const fd = this.getStdoutFd();
     if (fd === null) return;
     const { cols, rows } = this.getSize();
     if (rows < MIN_ROWS_FOR_BAR || cols < 1) return;
+    // #932 durable fix, HARD gate: a write can never land at a boundary
+    // that splits one of Claude's own escape sequences -- this belongs in
+    // the same "cannot physically paint" group as the fd/room checks above,
+    // for the identical ordering reason: it must run before
+    // hasLiveQuestions() so a question transition landing while the
+    // boundary is dirty is never consumed either. No exception exists for
+    // this gate -- not onset, not resumed, not the heartbeat -- because
+    // writing here is not merely undesirable, it is the exact hazard #932
+    // documents (a bar write parsed as the continuation of Claude's own
+    // half-delivered sequence).
+    if (!this.isBoundaryClean()) return;
     const questionLive = this.hasLiveQuestions();
     const wasLive = this.wasQuestionLive;
     this.wasQuestionLive = questionLive;
@@ -369,17 +464,31 @@ export class StatusBar {
       const nowMs = this.now();
       const heartbeatDue =
         this.lastWriteAtMs === null || nowMs - this.lastWriteAtMs >= HEARTBEAT_MS;
-      // #932 protection 2: skip the write when nothing changed since the last
-      // successful paint AND the heartbeat hasn't elapsed -- most ticks would
-      // otherwise rewrite identical bytes. The heartbeat still forces a write
-      // at least every HEARTBEAT_MS so buildBarSequence's DECSTBM
-      // re-assertion stays bounded (see that doc and HEARTBEAT_MS's). The
-      // question onset/resume paints always write regardless of either check
-      // -- each is a fresh capture (or recovery), not a routine repaint.
-      if (!onset && !resumed && sequence === this.lastRendered && !heartbeatDue) return;
+      // #932 durable fix: onset/resumed/heartbeat/an observed ESC[r all
+      // bypass the SOFT quiescence gate below (they still obey the HARD
+      // boundary gate above) -- each is either a correctness-critical
+      // instant capture (onset/resumed) or an explicit bound that must not
+      // be starved by continuous output (heartbeat's DECSTBM reassertion,
+      // the scroll-region-reset recovery). This is the documented answer to
+      // "what happens when the gate could defer a paint past the heartbeat
+      // window": it cannot -- the heartbeat is exempt from the soft gate,
+      // so it still fires within HEARTBEAT_MS of the last write regardless
+      // of how busy the PTY is, same as before this fix.
+      const bypassesQuiescence = onset || resumed || heartbeatDue || this.forceRepaintPending;
+      // #932 protection 2 (unchanged): skip the write when nothing changed
+      // since the last successful paint, UNLESS this is one of the forced
+      // paths above.
+      if (!bypassesQuiescence && sequence === this.lastRendered) return;
+      // #932 durable fix, SOFT gate: a routine paint (content changed, none
+      // of the forced reasons above) additionally waits for PTY quiescence
+      // -- reduces "mode 2" exposure (a paint landing inside a save/restore
+      // pair that spans a quiet gap). See `isQuiescent`'s doc for why this
+      // check does not apply to the forced paths.
+      if (!bypassesQuiescence && !this.isQuiescent()) return;
       this.writeToFd(fd, sequence);
       this.lastRendered = sequence;
       this.lastWriteAtMs = nowMs;
+      this.forceRepaintPending = false;
       this.consecutiveErrors = 0;
       this.errorLogged = false;
     } catch (err) {
