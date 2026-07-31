@@ -5,6 +5,60 @@ All notable changes to Remi are documented here.
 ## [Unreleased]
 
 ### Added
+- **`UserPromptSubmit` is now a registered hook, feeding a new auto-approve
+  authority summary** (#893, Q9). `REMI_REGISTERED_HOOK_EVENTS` grows from 14
+  to 15; the listener is a single array push into a per-session
+  `AuthorityStore` (`auto-approve/authority.ts`), and the event gets its own
+  short 1s timeout (`hook-config-manager.ts`'s `hookTimeoutFor`, now a small
+  per-event table instead of one flat default) rather than the plain 5s
+  fail-fast budget, since its handler never has anything to wait on. The
+  human's own typed turns are now threaded into the auto-approve LLM prompt
+  as a delimited "CONVERSATION CONTEXT" block, distinct from and weaker than
+  the existing USER GUIDANCE (config `instructions`) block: it is framed as
+  reported history, not an instruction, and can only ever LOWER escalation
+  for an operation already low/moderate risk. `UserPromptSubmit`'s `prompt`
+  field is the PRIMARY source (direct from Claude Code, no transcript
+  parsing); a filtered transcript read is the FALLBACK for a resumed
+  session's prior turns, which the new registration never saw fire for.
+  Measured across real transcripts, a `role: "user"` entry is not reliably
+  human-typed: 5,518 `tool_result` envelopes; 703 genuine typed turns; 88
+  plain-string entries carrying a top-level `isMeta: true` flag that are
+  NOT human-typed (47 cross-session `<agent-message from="...">` deliveries
+  — a SUBAGENT's own authored text in a "user"-role string, the most direct
+  injection vector found, since filtering on role+shape alone would let a
+  subagent write its own authority; 35 `<local-command-caveat>` notices; 5
+  scheduled/heartbeat prompts; 2 `<system-reminder>`s); and 36/34 plain
+  strings wrapped `<command-name>`/`<local-command-stdout>` that carry NO
+  `isMeta` flag at all. Two different mechanisms handle this: `isMeta ===
+  true` is checked first and excludes the whole 88-entry cohort
+  structurally (`transcript/types.ts` now types the field); the
+  `<command-name>`/`<local-command-stdout>` residual has no structural
+  discriminator and is caught only by a textual-prefix denylist, which is
+  why the hook stays the PRIMARY source and this filter only guards the
+  fallback path — see `authority.ts`'s module doc for the full breakdown,
+  and for why an original claim that `<local-command-stdout>` is reachable
+  specifically via a `!`-prefixed bash command was corrected to
+  unconfirmed (the only samples inspected were slash-command output).
+  **Trust boundary**: `enforceAuthorityBoundary` is a code-level backstop,
+  independent of the LLM's own reasoning, that downgrades an
+  authority-influenced `approve` verdict to `escalate` whenever the
+  operation matches a hardcoded catastrophic pattern (mirroring the
+  prompt's DENY FLOOR) — authority text can never approve `rm -rf /`,
+  `sudo rm`, `curl|sh`, or `chmod 777`, regardless of what the model
+  decided or why.
+  **Side effect on turn-complete notifications** (`#914`, `turn-timer.ts`):
+  `TurnTimer` anchors a turn's elapsed-time measurement on the first hook
+  event `onAnyEvent` sees for that `prompt_id`. `UserPromptSubmit` fires
+  before every other registered event, so it is now that anchor instead of
+  an approximation from the first tool-use/permission event — `elapsedMs`
+  is now accurate rather than a slight underestimate. A turn whose real
+  duration was already at or above `turn_complete_min_seconds` (default 60s)
+  but whose OLD (underestimated) measurement fell just short will now
+  correctly cross the threshold and notify, where it previously did not.
+  This is an intended accuracy fix, not a regression, but it is
+  user-visible: some sessions will see more turn-complete pushes for turns
+  near the threshold.
+
 - **`PermissionDenied` and `Elicitation`/`ElicitationResult` are now
   registered hooks, observe-only** (#889, Q4). A classifier-denied permission
   fires no tool call, so nothing previously proved a still-open escalation
