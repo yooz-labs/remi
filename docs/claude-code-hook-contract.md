@@ -6,8 +6,8 @@ contract has already moved, and re-extract before trusting it against a
 different Claude Code version.
 
 Written for #886 (Q1 of epic #885). Produces the reference doc and the
-`hook-types.ts` drift fixes; the capture corpus (#886's second deliverable)
-is explicitly **not** included here — see "What's pending" at the bottom.
+`hook-types.ts` drift fixes. The capture corpus (#886's second deliverable)
+**has since landed** in PR #931 — see "Corpus status" at the bottom.
 
 ## The rule this document follows
 
@@ -360,24 +360,43 @@ in front of the same daemon.
 
 ---
 
-## What's pending: the capture corpus (#886 part 2)
+## Corpus status (#886 part 2 — LANDED in PR #931)
 
-**Not included in this PR, and not fabricated to look included.** #886's
-second deliverable is a scrubbed fixture corpus built from a week of real
-Claude Code sessions run with `REMI_HOOK_DEBUG=1` (and `REMI_QUESTION_TRACE=1`
-for the question-lifecycle side), checked into the repo, that a drift test
-would validate this document's types against on every future Claude Code
-upgrade. That requires running the owner's real daily sessions over
-real work for about a week — it is not something producible inside this PR,
-and guessing at what such a capture would show would be exactly the kind of
-unverified claim ADR 0011 exists to prevent.
+**Updated 2026-07-31.** This section previously said the corpus and drift test
+did not exist. Both now do, and leaving the old text would have made this
+document assert the absence of its own regression gate — the exact drift it
+warns about.
 
-Concretely still open:
+- **Corpus:** `packages/daemon/tests/hooks/fixtures/hook-corpus.jsonl`, 962
+  redacted records, built reproducibly by `fixtures/build-hook-corpus.ts`
+  (allowlist-only redaction over both values AND object keys, with a build-time
+  assertion that refuses to emit an unsafe key; identifiers pseudonymized by a
+  counter-seeded mixer that never takes the real value as input).
+- **Drift test:** `packages/daemon/tests/hooks/contract-drift.test.ts`,
+  validating every fixture against `fixtures/contract-spec.ts`. Proven able to
+  fail under two independent mutations (fixture-side and type-side).
+- The "week of sessions" was **relaxed from a blocking criterion** (#886): the
+  fixtures landed from a live 2-day capture and the corpus extends
+  opportunistically.
 
-- No drift test exists. `hook-types.ts`'s new/corrected fields are verified
-  against static extraction from the 2.1.220 binary, which is strong evidence
-  for *shape* but cannot observe *runtime frequency*, *ordering*, or
-  *version-to-version stability* the way a capture corpus would.
+### What the corpus structurally CANNOT cover
+
+**Claude Code only sends events you register** (the #203 design). So a corpus
+can never contain an unregistered event, and this test's silence about an event
+is not evidence about that event. Fixtures for `UserPromptSubmit` (#893),
+`MessageDisplay` (#892) and the task/teammate events cannot exist until their
+registrations land — the drift test grows WITH the epic; it does not precede it.
+
+`SessionStart` is a special case: it is registered and still has zero captures,
+because Claude Code **hard-discards `http`-type registrations for
+`SessionStart`/`Setup`** before dispatch (#930, verified against 2.1.220). Its
+absence is expected, not a gap — do not fabricate a fixture for it.
+
+`PermissionDenied` / `Elicitation` / `ElicitationResult` (registered in #926)
+have no captures yet because each needs a precondition that has not occurred.
+
+### Still open
+
 - The `agent_type` common-field tension (structural-vs-empirical, above) needs
   a live agent-teams capture to resolve.
 - The `Notification.notification_type` values left out (Chrome-bridge /
@@ -385,12 +404,14 @@ Concretely still open:
   them can actually arrive via the `Notification` hook.
 - The sequential-tool-permission-hook-dispatch assumption
   (`auto-approve-gate.ts`'s duplicate-re-request cancellation) is **explicitly
-  unverified** — see the PR description's "What I could NOT verify"
-  section. This is the #885 epic's named experiment and needs a live,
-  targeted capture (fire two identical-signature `PermissionRequest`s and
-  observe dispatch order), not the general-purpose corpus above.
+  unverified** — the #885 epic's named experiment, needing a targeted capture
+  (fire two identical-signature `PermissionRequest`s and observe dispatch
+  order), not the general-purpose corpus.
+- **Capture hygiene (#934):** with `REMI_HOOK_DEBUG=1`, running the hooks tests
+  appends their synthetic payloads to the same `hook-diag.jsonl` real captures
+  use — `HookServer` cannot tell a test POST from Claude Code's. The corpus
+  builder filters these, but the raw log is still contaminated, so hand-reading
+  it can show fabricated `SessionStart`/`UserPromptSubmit` rows.
 
-Until the corpus exists, treat every **[B]**-tagged claim in this document as
-"true of the 2.1.220 binary's static shape," not "observed live," and
-re-verify anything load-bearing before building on it across a Claude Code
-version boundary.
+A **[B]**-tagged claim remains "true of the 2.1.220 binary's static shape."
+Where the corpus now corroborates one live, that is stated inline.
