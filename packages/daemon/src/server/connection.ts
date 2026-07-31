@@ -309,7 +309,23 @@ export class Connection {
       // UNKNOWN_MESSAGE would have given.
       auth_response: (m) => this.routeAuthResponse(m),
     };
-    const routed = routeClientMessage(message, handlers);
+    // #916: a handler is trusted to guard its own throws (most are `async`
+    // and unawaited, so a throw there is already a survivable unhandled
+    // rejection -- see process-guards.ts). This is the backstop for one that
+    // forgets and throws SYNCHRONOUSLY: uncaught, that would escape all the
+    // way to `uncaughtException`, whose policy is a fatal exit(1) -- correct
+    // for real state corruption, wrong for a client payload. Contain it here
+    // instead: log via the same onError path routeAuthResponse's catch uses,
+    // and answer the sender rather than silently dropping the message.
+    let routed: boolean;
+    try {
+      routed = routeClientMessage(message, handlers);
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      this.events.onError?.(error);
+      this.sendError('INTERNAL_ERROR', `Handler for '${message.type}' failed: ${error.message}`);
+      return;
+    }
     if (!routed) {
       this.sendError('UNKNOWN_MESSAGE', `Unknown message type: ${message.type}`);
     }
