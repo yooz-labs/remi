@@ -127,19 +127,25 @@ export interface QuestionTraceRecord {
    *  can absorb future signal types without a schema migration. */
   detail?: Record<string, unknown> | undefined;
 
-  // NOT ADDED (#934, scoped out): the answer payload itself. Unlike
-  // `questionSource`, no removal call site currently has an answer string in
-  // scope at `traceQuestionEvent`-call time -- `QuestionStore.remove` only
-  // receives `signal`/`toolName`/`callSite`, and most removals are
-  // hook-driven (a tool completing, a Stop sweep), not answer-driven, so
-  // there is no answer to attach for them at all. Adding it for the
-  // `user_answer:*` paths that DO have one would mean threading an optional
-  // `answer` string through `SessionRegistry.removeQuestion` ->
-  // `QuestionStore.remove` and populating it at the handful of call sites in
-  // `input-events.ts` that have it, leaving every other call site passing
-  // undefined -- judged not cheap enough to do well in this change (the risk
-  // being a half-populated field that reads as complete and isn't, the exact
-  // failure class #934 exists to close). Left as follow-up.
+  // NOT ADDED (#934, a judgment call, not an availability gap -- deliberately
+  // UNTRACKED, no issue filed): the answer payload itself. `answer` genuinely
+  // IS in scope one layer up: all three `SessionRegistry.removeQuestion`
+  // calls in `input-events.ts`'s `handleAnswer` (:342 'user_answer:auq', :460
+  // 'user_answer:cancel', :701 the general answered/stale-prompt path) sit
+  // inside a function that takes `answer: string` as a parameter. But
+  // `QuestionStore.remove` only receives `signal`/`toolName`/`callSite`
+  // today, and every OTHER removal call site repo-wide (auto-approve-gate.ts
+  // x3, hook-bridge-setup.ts, pty-session-setup.ts, cli.ts) is hook- or
+  // system-driven, not answer-driven, with no answer text available at all --
+  // and even within `handleAnswer`, the ':460 cancel' site has no meaningful
+  // answer to record despite the variable being lexically reachable. Unlike
+  // `questionSource` (already on the `Question` object at essentially every
+  // removal call site, hook-driven or not), adding `answer` would mean
+  // threading an optional string through `SessionRegistry.removeQuestion` ->
+  // `QuestionStore.remove`, populated at a small minority of call sites and
+  // undefined everywhere else -- judged not cheap enough to do well in this
+  // change (the risk being a field that reads as complete and isn't, the
+  // exact failure class #934 exists to close).
 }
 
 const TRACE_FILE_NAME = 'question-trace.jsonl';

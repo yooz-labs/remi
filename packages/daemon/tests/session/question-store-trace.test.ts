@@ -95,7 +95,8 @@ describe('question-trace callSite defaults survive the #888 QuestionStore extrac
 
       // #934: every line (add and remove alike) is provenance-stamped.
       // This whole file runs inside a `Bun.spawn`'d worker that inherits
-      // NODE_ENV=test from the parent `bun test` process (never stripped by
+      // REMI_TEST_HARNESS from the parent `bun test` process (set
+      // unconditionally by bunfig.toml's [test] preload, never stripped by
       // `runWorker`'s env-rebuild), so every line reads 'test' here --
       // proving the stamp fires for direct QuestionStore/SessionRegistry
       // calls, not just HTTP-POSTed hook traffic.

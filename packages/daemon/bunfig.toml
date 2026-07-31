@@ -1,0 +1,8 @@
+[test]
+# Same marker as the repo-root bunfig.toml, for `bun test` invoked from
+# inside this package directly (its own package.json `test` script) rather
+# than from the repo root -- Bun does not search parent directories for
+# bunfig.toml, so without this file that invocation path would silently
+# never set the marker. See tests/debug/test-harness-marker.ts for the full
+# rationale (#934 follow-up).
+preload = ["./tests/debug/test-harness-marker.ts"]

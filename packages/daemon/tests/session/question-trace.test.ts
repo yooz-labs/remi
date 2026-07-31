@@ -73,7 +73,8 @@ describe('traceQuestionEvent (#808)', () => {
       expect(typeof added['ts']).toBe('string');
       expect(Number.isNaN(Date.parse(added['ts'] as string))).toBe(false);
       // #934: this worker runs as a `Bun.spawn`'d subprocess that inherits
-      // NODE_ENV=test from the parent `bun test` process (runWorker's env
+      // REMI_TEST_HARNESS from the parent `bun test` process (set
+      // unconditionally by bunfig.toml's [test] preload; runWorker's env
       // rebuild only strips REMI_QUESTION_TRACE, nothing else), so the
       // provenance stamp reads 'test' here -- the field a reader/corpus
       // filters on to exclude exactly this kind of synthetic record.

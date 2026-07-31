@@ -1,0 +1,12 @@
+[test]
+# Marks the process as "running under bun test" for
+# packages/daemon/src/debug/provenance.ts, positively rather than by
+# inferring it from NODE_ENV (#934 follow-up: NODE_ENV is a default Bun
+# applies only when unset, not an override, so an ambient NODE_ENV in a
+# developer's shell could defeat that inference). See the preloaded file's
+# own doc comment for the full history and the documented failure
+# direction. A second copy of this config lives at packages/daemon/bunfig.toml
+# for `bun test` invoked from inside that package directly -- Bun does not
+# search parent directories for bunfig.toml, so this root config alone would
+# silently miss that case.
+preload = ["./packages/daemon/tests/debug/test-harness-marker.ts"]
