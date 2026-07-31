@@ -26,6 +26,37 @@
  * the wrapper has detached (stdout fd is null), or when the terminal is too
  * short to spare a row. A render error backs the bar off rather than crashing
  * the wrapper.
+ *
+ * Exposure reduction (#932): this bar and Claude's own PTY output are two
+ * writers on the same fd, both synchronous `fs.writeSync` in the same
+ * process and thread -- so byte-level interleaving WITHIN one write is not
+ * the mechanism. The real hazard is a paint landing BETWEEN two PTY-
+ * forwarding chunks, at a boundary that happens to split one of Claude's
+ * own escape sequences (the DECSC/DECRC pair above shares Claude's own
+ * cursor-save slot -- 166/421 occurrences in the installed binary). This
+ * does not fix that (the durable fix is a quiescence + clean-boundary gate
+ * on the PTY-forwarding side, tracked on #932 as its own follow-up -- NOT
+ * a write queue, since same-process/same-thread writeSync calls have no
+ * concurrency to serialize); it just cuts how often a paint is attempted:
+ *   1. `render()` no-ops while `hasLiveQuestions()` reports a pending
+ *      question -- except for one fresh paint on the transition INTO that
+ *      state (see `render()`'s `onset`), so the bar is current the moment
+ *      Claude's native statusLine (#560) disappears for an AskUserQuestion
+ *      dialog, then freezes rather than risk a later paint landing
+ *      mid-render. One more forced paint on the transition back OUT (see
+ *      `resumed`) recovers row N before normal cadence resumes, since the
+ *      dialog may have redrawn it while it owned the screen.
+ *   2. A paint whose built escape sequence is byte-identical to the last one
+ *      actually written is skipped -- most ticks rewrite identical bytes, and
+ *      every write is an exposure window -- but only up to `HEARTBEAT_MS`: an
+ *      unbounded skip would stop reasserting DECSTBM (see `buildBarSequence`)
+ *      and trade this exposure for the region-reset bleed it exists to
+ *      prevent. `stop()` resets this so the next `render()` after a restart
+ *      always writes unconditionally.
+ *
+ * Protection 2 is also a restoration, not a new optimization: #565 specified
+ * redraw "on: status change ... and on resize." The unconditional ~250ms
+ * timer was added later, in #576, and exceeded that original design.
  */
 
 import * as fs from 'node:fs';
@@ -46,6 +77,16 @@ export const APPROVED_FRESH_S = 5;
  *  single transient write error (e.g. an interrupted syscall) must not silence
  *  the bar for the whole session; a genuinely dead fd trips this within seconds. */
 export const MAX_RENDER_ERRORS = 3;
+/** Upper bound (ms) on how long an unchanged-status paint can be skipped
+ *  (#932). Every paint re-asserts DECSTBM (see `buildBarSequence`); skipping
+ *  unchanged paints forever would mean that assertion never fires while the
+ *  status happens to sit still, and Claude's own binary can reset the region
+ *  (`ESC[r`) at any time. 2000ms keeps that gap bounded to well under what a
+ *  user would notice as "the bar stopped updating," while still cutting the
+ *  write rate roughly 8x versus the old unconditional 250ms cadence -- most
+ *  of protection 2's exposure reduction. Not configurable: it exists to keep
+ *  the dedup and the region invariant coupled, not to be tuned per caller. */
+export const HEARTBEAT_MS = 2000;
 
 /**
  * Rows to report to the child PTY given the real terminal height and whether
@@ -119,8 +160,11 @@ export function formatStatusBar(status: Readonly<RemiStatus>, nowMs: number): st
  * on output and the bar bleeds up into Claude's content (#565). With the region
  * pinned to `1..row-1`, the terminal can only scroll the rows above the bar, so
  * `row` stays fixed. The region is re-asserted on every paint in case Claude
- * ever resets it. DECSTBM homes the cursor, but DECSC/DECRC (ESC7/ESC8) restore
- * it, and DECRC does not touch the region, so the region persists after.
+ * ever resets it (#932: this is why `StatusBar.render()`'s change-detection
+ * dedup is bounded by `HEARTBEAT_MS` rather than unconditional -- skipping
+ * this call forever would mean the region is never reasserted). DECSTBM
+ * homes the cursor, but DECSC/DECRC (ESC7/ESC8) restore it, and DECRC does
+ * not touch the region, so the region persists after.
  */
 export function buildBarSequence(row: number, cols: number, text: string): string {
   const visible = text.length > cols ? text.slice(0, cols) : text;
@@ -152,6 +196,26 @@ export interface StatusBarDeps {
   readonly getSize: () => { cols: number; rows: number };
   /** Master enable (config flag + wrapper mode + a real TTY). */
   readonly isEnabled: () => boolean;
+  /** True iff the session currently has at least one pending question
+   *  (mirrors `hasLiveQuestions` in `question-presence-tracker.ts`, backed by
+   *  `sessionRegistry.getSession(id)?.currentQuestions.size > 0`). #932:
+   *  `render()` paints once on the transition into this being true, then
+   *  freezes for as long as it stays true, then paints once more on the
+   *  transition back out before resuming normal cadence -- so the bar can
+   *  never paint over a live prompt but also never freezes on stale content
+   *  (see `render()`'s `onset` / `resumed`). Optional; defaults to
+   *  always-false (no suppression) so a caller that omits it keeps the
+   *  pre-#932 behavior instead of silently losing the bar.
+   *
+   *  Session-wide, not agent-scoped: it is true whenever ANY agent in the
+   *  session has a pending question, so in a concurrent multi-agent session
+   *  (Agent Teams, Task-tool subagents) the freeze can span output from an
+   *  UNRELATED agent that is still actively writing to this same PTY/fd
+   *  while a different agent's question sits open. The protection this
+   *  buys is deliberately biased toward never painting over a real prompt,
+   *  not toward a precise per-agent freeze window -- see #932's PR
+   *  discussion for the full reasoning on why that tradeoff was kept. */
+  readonly hasLiveQuestions?: () => boolean;
   /** Write to the terminal fd. Injectable for tests; defaults to fs.writeSync. */
   readonly writeToFd?: (fd: number, data: string) => void;
   /** Current epoch ms. Injectable for tests; defaults to Date.now. */
@@ -167,10 +231,18 @@ export interface StatusBarDeps {
 
 /**
  * Owns the reserved-row redraw loop. `start()` paints immediately and then on a
- * ~250ms timer (#576); the unconditional periodic repaint keeps the bar asserted
- * even if Claude's output scrolled it (inline mode) since the last tick and keeps
- * the `evaluating Ns` counter smooth. `stop()` clears the row and halts the loop.
- * All draws are no-ops unless `isEnabled()` and a live fd and enough rows.
+ * ~250ms timer (#576) so the `evaluating Ns` counter stays smooth. Each tick
+ * still calls `render()` unconditionally, but `render()` itself now (#932)
+ * skips the actual fd write when the built sequence is unchanged from the
+ * last one written AND less than `HEARTBEAT_MS` has passed since the last
+ * write -- so a byte-identical status (the common case) mostly costs no
+ * write, while the DECSTBM re-assertion `buildBarSequence` depends on still
+ * happens at least every `HEARTBEAT_MS` regardless. While a question is
+ * live, every tick is a no-op EXCEPT the first one after the transition
+ * into "live" and the first one after the transition back out, both of
+ * which always write (edge-triggered onset/resume paints, not the
+ * dedup/heartbeat path). `stop()` clears the row and halts the loop. All
+ * draws are no-ops unless `isEnabled()` and a live fd and enough rows.
  */
 export class StatusBar {
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -180,10 +252,27 @@ export class StatusBar {
   /** Set after MAX_RENDER_ERRORS consecutive failures; the bar backs off for
    *  good (the fd has gone bad). A success before then clears the streak. */
   private disabled = false;
+  /** The last escape sequence actually written, or null before the first
+   *  write (or right after `stop()`). #932 protection 2: a paint identical to
+   *  this is skipped rather than rewritten, bounded by `lastWriteAtMs` /
+   *  `HEARTBEAT_MS` below. */
+  private lastRendered: string | null = null;
+  /** Epoch ms of the last actual write, or null before the first write (or
+   *  right after `stop()`). #932: a paint is forced once `HEARTBEAT_MS` has
+   *  elapsed since this, even if `lastRendered` is unchanged -- see
+   *  `HEARTBEAT_MS`'s doc for why this must stay bounded. */
+  private lastWriteAtMs: number | null = null;
+  /** True while the last `render()` call observed a live question. #932:
+   *  `render()` compares this against the current `hasLiveQuestions()` read
+   *  to detect both transitions -- INTO "live" and back OUT (edge, not
+   *  level) -- see `render()` for why each edge forces a fresh paint. Reset
+   *  by `stop()` so a restart starts from "not live" again. */
+  private wasQuestionLive = false;
   private readonly getStdoutFd: () => number | null;
   private readonly getStatus: () => Readonly<RemiStatus>;
   private readonly getSize: () => { cols: number; rows: number };
   private readonly isEnabled: () => boolean;
+  private readonly hasLiveQuestions: () => boolean;
   private readonly writeToFd: (fd: number, data: string) => void;
   private readonly now: () => number;
   private readonly log: (msg: string) => void;
@@ -194,6 +283,7 @@ export class StatusBar {
     this.getStatus = deps.getStatus;
     this.getSize = deps.getSize;
     this.isEnabled = deps.isEnabled;
+    this.hasLiveQuestions = deps.hasLiveQuestions ?? (() => false);
     this.writeToFd = deps.writeToFd ?? ((fd, data) => fs.writeSync(fd, data));
     this.now = deps.now ?? (() => Date.now());
     this.log = deps.log;
@@ -219,15 +309,55 @@ export class StatusBar {
       this.timer = null;
     }
     this.clearRow();
+    // #932: the physical row is now the clear sequence, not `lastRendered`'s
+    // bar sequence -- reset so a future render() after a restart always
+    // writes unconditionally rather than comparing against stale content.
+    this.lastRendered = null;
+    this.lastWriteAtMs = null;
+    this.wasQuestionLive = false;
   }
 
-  /** Paint the reserved row now. Safe no-op when disabled / detached / no room. */
+  /** Paint the reserved row now. Safe no-op when disabled / detached / no
+   *  room. While a question is live (#932), paints once on the transition
+   *  into that state and freezes after; paints once more on the transition
+   *  back out, then resumes normal cadence -- see the `onset`/`resumed`
+   *  comment below for why both edges force a fresh paint. */
   render(): void {
     if (this.disabled || !this.isEnabled()) return;
+    // fd/room checks come BEFORE hasLiveQuestions() is read and
+    // wasQuestionLive is mutated (#932 review fix): a transition landing on
+    // a tick where a paint isn't even possible must not be consumed. If it
+    // were, the flag would flip with no write to show for it, and the NEXT
+    // successful tick would compute onset/resumed against the
+    // already-flipped flag -- neither true -- and freeze on stale content
+    // for the rest of the window: the exact bug this whole mechanism exists
+    // to prevent, reintroduced through ordering. Same pattern
+    // `disabled`/`isEnabled()` above already use: return before touching
+    // any state a later, capable tick still needs to see as unconsumed.
     const fd = this.getStdoutFd();
     if (fd === null) return;
     const { cols, rows } = this.getSize();
     if (rows < MIN_ROWS_FOR_BAR || cols < 1) return;
+    const questionLive = this.hasLiveQuestions();
+    const wasLive = this.wasQuestionLive;
+    this.wasQuestionLive = questionLive;
+    // #932 protection 1 is edge-triggered, not level-triggered. Freezing row
+    // N while a question is live is right, but freezing it on WHATEVER was
+    // last painted is wrong: Claude's native statusLine (#560) disappears
+    // entirely while an AskUserQuestion dialog is open, so this bar is
+    // exactly the cue that has to be current the moment that happens -- not
+    // up to `HEARTBEAT_MS` stale. `onset` is true only on the first
+    // render() call after the transition into "live"; it forces one fresh
+    // paint below, capturing the status at that instant. Every later call
+    // while still live hits the early return just below. `resumed` is the
+    // mirror on the way back out: the dialog may have redrawn or consumed
+    // row N while it owned the screen, so the physical row cannot be
+    // trusted to still match `lastRendered` either -- the very first
+    // render() after the question clears also forces a fresh paint, then
+    // normal dedup/heartbeat cadence takes back over.
+    const onset = questionLive && !wasLive;
+    const resumed = !questionLive && wasLive;
+    if (questionLive && !onset) return;
     // The whole draw stays inside the try: an exception escaping into the
     // setInterval callback would surface as an uncaughtException and could take
     // the wrapper down — the one thing a cosmetic bar must never do. The
@@ -235,7 +365,21 @@ export class StatusBar {
     // practice only the fd write can fail here.
     try {
       const text = formatStatusBar(this.getStatus(), this.now());
-      this.writeToFd(fd, buildBarSequence(rows, cols, text));
+      const sequence = buildBarSequence(rows, cols, text);
+      const nowMs = this.now();
+      const heartbeatDue =
+        this.lastWriteAtMs === null || nowMs - this.lastWriteAtMs >= HEARTBEAT_MS;
+      // #932 protection 2: skip the write when nothing changed since the last
+      // successful paint AND the heartbeat hasn't elapsed -- most ticks would
+      // otherwise rewrite identical bytes. The heartbeat still forces a write
+      // at least every HEARTBEAT_MS so buildBarSequence's DECSTBM
+      // re-assertion stays bounded (see that doc and HEARTBEAT_MS's). The
+      // question onset/resume paints always write regardless of either check
+      // -- each is a fresh capture (or recovery), not a routine repaint.
+      if (!onset && !resumed && sequence === this.lastRendered && !heartbeatDue) return;
+      this.writeToFd(fd, sequence);
+      this.lastRendered = sequence;
+      this.lastWriteAtMs = nowMs;
       this.consecutiveErrors = 0;
       this.errorLogged = false;
     } catch (err) {

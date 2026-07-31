@@ -11,6 +11,7 @@ import {
   createPing,
   createQuestion,
   createQuestionResolved,
+  createQuestionSnapshot,
   createRawPtyOutput,
   createRemiStatus,
   createReplayBatch,
@@ -19,7 +20,14 @@ import {
   now,
   serialize,
 } from '@remi/shared';
-import type { Message, MessageHandlers, ProtocolMessageMap, Question, UUID } from '@remi/shared';
+import type {
+  Message,
+  MessageHandlers,
+  ProtocolMessageMap,
+  Question,
+  RemiStatus,
+  UUID,
+} from '@remi/shared';
 import { runAttachClient } from '../../src/cli/attach-client.ts';
 
 const TEST_PORT = 9873;
@@ -269,6 +277,23 @@ describe('runAttachClient', () => {
     });
     expect(pongMsg).toBeTruthy();
   });
+
+  function mkRemiStatus(targetSessionId: UUID, overrides: Partial<RemiStatus> = {}): RemiStatus {
+    return {
+      pid: 1,
+      connections: 1,
+      sessionStatus: 'idle',
+      adapters: ['ws'],
+      wsPort: 19924,
+      sessionId: targetSessionId,
+      repo: 'remi',
+      branch: 'develop',
+      autoApprove: { inFlight: 0, sinceS: 0, lastVerdict: 'none', lastVerdictAtS: 0 },
+      attached: true,
+      queuedCount: 0,
+      ...overrides,
+    };
+  }
 
   function makeQuestion(text: string, held = true): Question {
     return {
@@ -550,6 +575,224 @@ describe('runAttachClient', () => {
     expect(output).not.toContain('| attached');
     expect(output).not.toContain('\x1b[7m');
     expect(output).not.toContain('\x1b[1;');
+  });
+
+  // #932: statusBarEligible lets a test force the bar on without a real TTY,
+  // proving the positive case the "not a TTY" test above only proves the
+  // negative of.
+  test('paints the reserved-row bar when statusBarEligible is forced true', async () => {
+    setupOutput();
+    const targetSessionId = generateId();
+
+    server = Bun.serve({
+      port: TEST_PORT + 12,
+      fetch(req, srv) {
+        if (srv.upgrade(req, { data: {} })) return;
+        return new Response('Not found', { status: 404 });
+      },
+      websocket: {
+        open() {},
+        message(ws, data) {
+          const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+          const msg = deserialize(text);
+          if (!msg) return;
+
+          if (msg.type === 'hello') {
+            ws.send(serialize(createHelloAck('1.0.0', targetSessionId as UUID)));
+            setTimeout(() => {
+              ws.send(
+                serialize(
+                  createRemiStatus(targetSessionId as UUID, mkRemiStatus(targetSessionId as UUID)),
+                ),
+              );
+              // #932: the daemon always sends question_snapshot (even empty)
+              // right after hello_ack via resendPendingQuestions; the bar's
+              // first paint is gated on having observed one.
+              ws.send(serialize(createQuestionSnapshot(targetSessionId as UUID, [])));
+            }, 50);
+            setTimeout(() => ws.close(), 200);
+          }
+        },
+        close() {},
+      },
+    });
+
+    await runAttachClient({
+      host: 'localhost',
+      port: TEST_PORT + 12,
+      sessionId: targetSessionId,
+      timeout: 3000,
+      outputFd,
+      statusBarEligible: true,
+    });
+
+    const output = readOutput();
+    expect(output).toContain('\x1b[7m'); // reverse-video bar paint
+    expect(output).toContain('\x1b[1;'); // DECSTBM scroll-region assertion
+  });
+
+  // #932: attach-client's own StatusBar (the same class the wrapper draws,
+  // #754) had NO hasLiveQuestions wiring at all before this fix -- the
+  // ~250ms timer painted straight through a live question on this path.
+  // question_snapshot (sent on attach and on every change, #753/#798) is the
+  // signal that now drives it, and the bar's first-ever paint is deferred
+  // until one has been observed (a second review fix) so it cannot read
+  // "no question" for a session that already has one live. Proves the
+  // mechanism end to end on the REAL attach-client code path (not a
+  // StatusBar unit test): the deferred first paint doubling as the onset
+  // paint, freeze through a status change made during the freeze, forced
+  // paint reflecting that change on the transition back out.
+  test('a live question (question_snapshot) suppresses the bar, then the resumed paint reflects a status change made during the freeze', async () => {
+    setupOutput();
+    const targetSessionId = generateId();
+    const questionId = generateId() as UUID;
+
+    server = Bun.serve({
+      port: TEST_PORT + 13,
+      fetch(req, srv) {
+        if (srv.upgrade(req, { data: {} })) return;
+        return new Response('Not found', { status: 404 });
+      },
+      websocket: {
+        open() {},
+        message(ws, data) {
+          const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+          const msg = deserialize(text);
+          if (!msg) return;
+
+          if (msg.type === 'hello') {
+            ws.send(serialize(createHelloAck('1.0.0', targetSessionId as UUID)));
+            // remi_status arrives first, but (#932) startStatusBar() defers
+            // its first paint until a question_snapshot has been observed --
+            // status A ("idle") is only stored, not yet painted.
+            setTimeout(() => {
+              ws.send(
+                serialize(
+                  createRemiStatus(
+                    targetSessionId as UUID,
+                    mkRemiStatus(targetSessionId as UUID, { sessionStatus: 'idle' }),
+                  ),
+                ),
+              );
+            }, 50);
+            // question_snapshot arrives with the question already live: this
+            // unblocks the deferred start AND is simultaneously the
+            // transition into "live", so the bar's first-ever paint IS the
+            // onset paint (reflecting status A, stored above).
+            setTimeout(() => {
+              ws.send(serialize(createQuestionSnapshot(targetSessionId as UUID, [questionId])));
+            }, 150);
+            // Status changes to B ("thinking") WHILE the question is still
+            // live -- must not paint until the freeze ends.
+            setTimeout(() => {
+              ws.send(
+                serialize(
+                  createRemiStatus(
+                    targetSessionId as UUID,
+                    mkRemiStatus(targetSessionId as UUID, { sessionStatus: 'thinking' }),
+                  ),
+                ),
+              );
+            }, 600);
+            // Question resolves, well ahead of the next timer tick.
+            setTimeout(() => {
+              ws.send(serialize(createQuestionSnapshot(targetSessionId as UUID, [])));
+            }, 1200);
+            setTimeout(() => ws.close(), 1700);
+          }
+        },
+        close() {},
+      },
+    });
+
+    // Peek the output mid-freeze (t=900: after the status-B send at t=600,
+    // well ahead of the resolve at t=1200), via a separate read handle so
+    // the write fd stays open. This is what actually proves suppression is
+    // holding rather than merely coinciding on a final count: if
+    // hasLiveQuestions() were broken (e.g. wired to a constant), the status
+    // change at t=600 would have produced its own repaint by the very next
+    // ~250ms tick, long before t=900 -- and the final bars.length could
+    // still land on 2 by coincidence (a plain dedup repaint at t=600 plus
+    // nothing else), masking the regression.
+    let midFreezeOutput = '';
+    setTimeout(() => {
+      midFreezeOutput = fs.readFileSync(outputPath, 'utf-8');
+    }, 900);
+
+    await runAttachClient({
+      host: 'localhost',
+      port: TEST_PORT + 13,
+      sessionId: targetSessionId,
+      timeout: 3000,
+      outputFd,
+      statusBarEligible: true,
+    });
+
+    const midBars = [...midFreezeOutput.matchAll(/\x1b\[7m([^\x1b]*)\x1b\[0m/g)].map((m) => m[1]);
+    expect(midBars.length).toBe(1); // still frozen: only the onset paint so far
+    expect(midBars[0]).toContain('idle'); // not yet "thinking" -- the freeze held
+
+    const output = readOutput();
+    const bars = [...output.matchAll(/\x1b\[7m([^\x1b]*)\x1b\[0m/g)].map((m) => m[1]);
+    // Exactly two real paints total: the bar's first-ever paint (deferred
+    // until question_snapshot arrives, which doubles as the onset paint
+    // since the question is already live by then -- status A, stored
+    // earlier), and the resumed paint on the transition back out (status B,
+    // reflecting the change made during the freeze). Every tick while
+    // frozen wrote nothing, despite the status having changed mid-freeze.
+    expect(bars.length).toBe(2);
+    expect(bars[0]).toContain('idle');
+    expect(bars[1]).toContain('thinking');
+  });
+
+  // #932: an older daemon that never sends question_snapshot must not lose
+  // the bar entirely -- deferring is a bound (createStatusBar()'s 500ms
+  // fallback), not a block.
+  test('the bar still starts via the fallback timeout when no question_snapshot ever arrives', async () => {
+    setupOutput();
+    const targetSessionId = generateId();
+
+    server = Bun.serve({
+      port: TEST_PORT + 14,
+      fetch(req, srv) {
+        if (srv.upgrade(req, { data: {} })) return;
+        return new Response('Not found', { status: 404 });
+      },
+      websocket: {
+        open() {},
+        message(ws, data) {
+          const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+          const msg = deserialize(text);
+          if (!msg) return;
+
+          if (msg.type === 'hello') {
+            ws.send(serialize(createHelloAck('1.0.0', targetSessionId as UUID)));
+            // Deliberately never sends question_snapshot.
+            setTimeout(() => {
+              ws.send(
+                serialize(
+                  createRemiStatus(targetSessionId as UUID, mkRemiStatus(targetSessionId as UUID)),
+                ),
+              );
+            }, 50);
+            setTimeout(() => ws.close(), 900);
+          }
+        },
+        close() {},
+      },
+    });
+
+    await runAttachClient({
+      host: 'localhost',
+      port: TEST_PORT + 14,
+      sessionId: targetSessionId,
+      timeout: 3000,
+      outputFd,
+      statusBarEligible: true,
+    });
+
+    const output = readOutput();
+    expect(output).toContain('\x1b[7m'); // the bar started anyway, past the fallback bound
   });
 
   // #898: renderMessage's total-dispatch handler for raw_pty_output was
