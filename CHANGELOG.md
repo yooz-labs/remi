@@ -112,28 +112,36 @@ All notable changes to Remi are documented here.
   (ADR 0004) is unchanged — only bookkeeping moved, never a push/arbitration
   decision.
 
-- **Answering a card whose on-screen prompt is gone no longer injects into
-  the live PTY** (#920). `#888`'s own reclassification found the residual
-  leak this issue tracks was never a memory problem: a `source: 'pty'` card
-  can sit in the store, still "active," long after its prompt scrolled off
-  screen, and the ONLY gate on the answer path was whether the question was
-  still registered — never whether its prompt was still on screen. Answering
-  one submitted the resolved option value (or free text verbatim) into
-  whatever Claude was doing at that moment; this reproduced live twice in one
-  working session (two bare `1`s landing as apparent user input, minutes
-  apart, with no prompt pending). Had either landed while a real numbered
-  prompt was up, it would have silently selected option 1 on a question the
-  user never saw. `input-events.ts`'s answer handler now calls
-  `QuestionPresenceTracker.isPromptCurrent` — the same gate
-  `AutoApproveGate.answerRenderedParked` already uses immediately before its
-  own PTY write — right before the injection, scoped to `source: 'pty'` cards
-  only (a hook-paired question's merged id/text are the hook's, never the raw
-  PTY parse, so a blanket check would misfire on that cohort). A refused
-  answer clears the stale card (`question_resolved` fires so every client's
-  view updates) and returns the existing `STALE_ANSWER` error the client
-  already handles, rather than failing silently. No tracker wired for a
-  session fails toward refusing, not injecting. Free-form PTY input (#795)
-  and held-hook answers (never PTY-submitted) are untouched.
+- **Answering a `source: 'pty'` card whose on-screen prompt is gone no
+  longer injects into the live PTY** (#920). `#888`'s own reclassification
+  found the residual leak this issue tracks was never a memory problem: a
+  `source: 'pty'` card can sit in the store, still "active," long after its
+  prompt scrolled off screen, and the ONLY gate on the answer path was
+  whether the question was still registered — never whether its prompt was
+  still on screen. Answering one submitted the resolved option value (or
+  free text verbatim) into whatever Claude was doing at that moment; this
+  reproduced live twice in one working session (two bare `1`s landing as
+  apparent user input, minutes apart, with no prompt pending). Had either
+  landed while a real numbered prompt was up, it would have silently
+  selected option 1 on a question the user never saw. `input-events.ts`'s
+  answer handler now calls `QuestionPresenceTracker.isPromptCurrent` — the
+  same gate `AutoApproveGate.answerRenderedParked` already uses immediately
+  before its own PTY write — right before the injection, scoped to
+  `source: 'pty'` cards only (a hook-paired question's merged id/text are
+  the hook's, never the raw PTY parse, so a blanket check would misfire on
+  that cohort). A refused answer clears the stale card (`question_resolved`
+  fires so every client's view updates) and returns the existing
+  `STALE_ANSWER` error the client already handles, rather than failing
+  silently. No tracker wired for a session fails toward refusing, not
+  injecting. Free-form PTY input (#795) and held-hook answers (never
+  PTY-submitted) are untouched. **Does not cover `source: 'elicitation'`
+  cards**, which take the same unguarded `submitInput` path with
+  `allowsFreeText: true` — an arbitrary-free-text variant of this same
+  hazard, worse than a stray digit. `isPromptCurrent` cannot be widened to
+  catch it: elicitation ids/text are hook-minted and never observed by the
+  PTY tracker, so the check would report "not current" for every
+  elicitation card and refuse them all. Needs a different mechanism; filed
+  separately as #940.
 
 - **A question is now identified by one id for its whole prompt cycle**
   (#887). Up to three ids used to exist for a single subagent permission: the
