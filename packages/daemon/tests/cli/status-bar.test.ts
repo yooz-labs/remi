@@ -323,27 +323,47 @@ describe('StatusBar', () => {
     bar.stop();
   });
 
-  // #932: the bar and Claude's own PTY output are two unsynchronized writers
-  // on the same fd; a paint that lands mid-render can corrupt or erase a live
-  // question prompt. These prove the two mitigations directly against the
+  // #932: the bar and Claude's own PTY output are two writers on the same
+  // fd; a paint that lands at the wrong moment can corrupt or erase a live
+  // question prompt. These prove the mitigations directly against the
   // fd-write count, independent of the timer.
-  test('a repaint is suppressed while a question is live', () => {
-    const { bar, writes } = harness({ hasLiveQuestions: () => true });
+  test('the onset paint happens on the transition into a live question and reflects its state', () => {
+    // Edge-triggered, not level-triggered: freezing row N is right, but
+    // freezing it on whatever was last painted is wrong -- Claude's native
+    // statusLine disappears entirely while a question dialog is open, so the
+    // bar has to be current the MOMENT that happens, not up to HEARTBEAT_MS
+    // stale. The first render() after the transition must still paint.
+    const { bar, writes } = harness({
+      hasLiveQuestions: () => true,
+      getStatus: () => mkStatus({ connections: 3 }),
+    });
     bar.render();
-    expect(writes).toHaveLength(0);
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toContain('3 client(s)');
+  });
+
+  test('repaints are suppressed while a question stays live, after the onset paint', () => {
+    const { bar, writes } = harness({ hasLiveQuestions: () => true });
+    bar.render(); // onset: paints once
+    expect(writes).toHaveLength(1);
+    bar.render(); // still live: frozen
+    bar.render(); // still live: frozen
+    expect(writes).toHaveLength(1);
   });
 
   test('repaints resume once the question resolves', () => {
     let live = true;
     const { bar, writes } = harness({ hasLiveQuestions: () => live });
-    bar.render();
-    expect(writes).toHaveLength(0);
-    live = false;
-    bar.render();
+    bar.render(); // onset paint
     expect(writes).toHaveLength(1);
+    bar.render(); // frozen
+    expect(writes).toHaveLength(1);
+    live = false;
+    bar.render(); // resumes
+    expect(writes).toHaveLength(2);
   });
 
-  test('a resumed repaint reflects a status change that happened during suppression', () => {
+  test('the onset paint captures state at the transition, and the resumed repaint reflects a status change made during the freeze', () => {
     // The regression this guards against: a status change while a question is
     // live must not be lost -- the bar has to catch up, not stay stale
     // forever once the question resolves.
@@ -353,14 +373,16 @@ describe('StatusBar', () => {
       hasLiveQuestions: () => live,
       getStatus: () => mkStatus({ connections }),
     });
-    bar.render(); // suppressed: no write
+    bar.render(); // onset: paints the status AT the transition
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toContain('no clients');
     connections = 5; // status changes while the question is still live
-    bar.render(); // still suppressed
-    expect(writes).toHaveLength(0);
+    bar.render(); // frozen: no write
+    expect(writes).toHaveLength(1);
     live = false;
     bar.render(); // question resolved: must repaint with the NEW status
-    expect(writes).toHaveLength(1);
-    expect(writes[0]).toContain('5 client(s)');
+    expect(writes).toHaveLength(2);
+    expect(writes[1]).toContain('5 client(s)');
   });
 
   test('an unchanged status does not write a second time', () => {
