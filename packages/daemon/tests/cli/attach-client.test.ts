@@ -605,6 +605,10 @@ describe('runAttachClient', () => {
                   createRemiStatus(targetSessionId as UUID, mkRemiStatus(targetSessionId as UUID)),
                 ),
               );
+              // #932: the daemon always sends question_snapshot (even empty)
+              // right after hello_ack via resendPendingQuestions; the bar's
+              // first paint is gated on having observed one.
+              ws.send(serialize(createQuestionSnapshot(targetSessionId as UUID, [])));
             }, 50);
             setTimeout(() => ws.close(), 200);
           }
@@ -631,10 +635,13 @@ describe('runAttachClient', () => {
   // #754) had NO hasLiveQuestions wiring at all before this fix -- the
   // ~250ms timer painted straight through a live question on this path.
   // question_snapshot (sent on attach and on every change, #753/#798) is the
-  // signal that now drives it. Proves the mechanism end to end on the REAL
-  // attach-client code path (not a StatusBar unit test): onset paint on the
-  // transition into "live", freeze through a status change made during the
-  // freeze, forced paint reflecting that change on the transition back out.
+  // signal that now drives it, and the bar's first-ever paint is deferred
+  // until one has been observed (a second review fix) so it cannot read
+  // "no question" for a session that already has one live. Proves the
+  // mechanism end to end on the REAL attach-client code path (not a
+  // StatusBar unit test): the deferred first paint doubling as the onset
+  // paint, freeze through a status change made during the freeze, forced
+  // paint reflecting that change on the transition back out.
   test('a live question (question_snapshot) suppresses the bar, then the resumed paint reflects a status change made during the freeze', async () => {
     setupOutput();
     const targetSessionId = generateId();
@@ -655,7 +662,9 @@ describe('runAttachClient', () => {
 
           if (msg.type === 'hello') {
             ws.send(serialize(createHelloAck('1.0.0', targetSessionId as UUID)));
-            // Bar starts, immediate paint with status A ("idle").
+            // remi_status arrives first, but (#932) startStatusBar() defers
+            // its first paint until a question_snapshot has been observed --
+            // status A ("idle") is only stored, not yet painted.
             setTimeout(() => {
               ws.send(
                 serialize(
@@ -666,7 +675,10 @@ describe('runAttachClient', () => {
                 ),
               );
             }, 50);
-            // Question goes live well before the first ~250ms timer tick.
+            // question_snapshot arrives with the question already live: this
+            // unblocks the deferred start AND is simultaneously the
+            // transition into "live", so the bar's first-ever paint IS the
+            // onset paint (reflecting status A, stored above).
             setTimeout(() => {
               ws.send(serialize(createQuestionSnapshot(targetSessionId as UUID, [questionId])));
             }, 150);
@@ -704,15 +716,65 @@ describe('runAttachClient', () => {
 
     const output = readOutput();
     const bars = [...output.matchAll(/\x1b\[7m([^\x1b]*)\x1b\[0m/g)].map((m) => m[1]);
-    // Exactly three real paints: the initial one (status A), the onset paint
-    // on the transition into "live" (still status A -- B has not been sent
-    // yet), and the resumed paint on the transition back out (status B,
-    // reflecting the change made during the freeze). Every tick while frozen
-    // wrote nothing, despite the status having changed mid-freeze.
-    expect(bars.length).toBe(3);
+    // Exactly two real paints: the bar's first-ever paint (deferred until
+    // question_snapshot arrives, which doubles as the onset paint since the
+    // question is already live by then -- status A, stored earlier), and
+    // the resumed paint on the transition back out (status B, reflecting
+    // the change made during the freeze). Every tick while frozen wrote
+    // nothing, despite the status having changed mid-freeze.
+    expect(bars.length).toBe(2);
     expect(bars[0]).toContain('idle');
-    expect(bars[1]).toContain('idle');
-    expect(bars[2]).toContain('thinking');
+    expect(bars[1]).toContain('thinking');
+  });
+
+  // #932: an older daemon that never sends question_snapshot must not lose
+  // the bar entirely -- deferring is a bound (createStatusBar()'s 500ms
+  // fallback), not a block.
+  test('the bar still starts via the fallback timeout when no question_snapshot ever arrives', async () => {
+    setupOutput();
+    const targetSessionId = generateId();
+
+    server = Bun.serve({
+      port: TEST_PORT + 14,
+      fetch(req, srv) {
+        if (srv.upgrade(req, { data: {} })) return;
+        return new Response('Not found', { status: 404 });
+      },
+      websocket: {
+        open() {},
+        message(ws, data) {
+          const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+          const msg = deserialize(text);
+          if (!msg) return;
+
+          if (msg.type === 'hello') {
+            ws.send(serialize(createHelloAck('1.0.0', targetSessionId as UUID)));
+            // Deliberately never sends question_snapshot.
+            setTimeout(() => {
+              ws.send(
+                serialize(
+                  createRemiStatus(targetSessionId as UUID, mkRemiStatus(targetSessionId as UUID)),
+                ),
+              );
+            }, 50);
+            setTimeout(() => ws.close(), 900);
+          }
+        },
+        close() {},
+      },
+    });
+
+    await runAttachClient({
+      host: 'localhost',
+      port: TEST_PORT + 14,
+      sessionId: targetSessionId,
+      timeout: 3000,
+      outputFd,
+      statusBarEligible: true,
+    });
+
+    const output = readOutput();
+    expect(output).toContain('\x1b[7m'); // the bar started anyway, past the fallback bound
   });
 
   // #898: renderMessage's total-dispatch handler for raw_pty_output was

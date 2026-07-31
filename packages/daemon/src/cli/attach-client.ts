@@ -76,6 +76,12 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
   // this client already receives, so the attach-path bar gets the same
   // pause-while-live protection as the wrapper bar.
   let liveQuestionIds = new Set<UUID>();
+  // #932: whether at least one `question_snapshot` has been observed for
+  // this attach cycle. `startStatusBar()`'s first paint must not run before
+  // this is true, or it can read `hasLiveQuestions()` as false for a
+  // session that already has a live question -- see that function's doc.
+  let receivedQuestionSnapshot = false;
+  let questionSnapshotTimer: ReturnType<typeof setTimeout> | null = null;
 
   function writeOutput(text: string): void {
     if (outputBroken) return;
@@ -104,6 +110,10 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
     if (rawPtyTimer) {
       clearTimeout(rawPtyTimer);
       rawPtyTimer = null;
+    }
+    if (questionSnapshotTimer) {
+      clearTimeout(questionSnapshotTimer);
+      questionSnapshotTimer = null;
     }
     if (resizeNudgeTimer) {
       clearTimeout(resizeNudgeTimer);
@@ -177,8 +187,35 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
    * Reserving the row = reporting `rows - 1` to the daemon's PTY, exactly like
    * wrapper mode; the StatusBar itself is the same class, drawing on this
    * terminal's bottom row from the broadcast snapshots.
+   *
+   * #932: `.start()` paints immediately, so that first paint must not read
+   * `hasLiveQuestions()` before `liveQuestionIds` reflects reality. The
+   * daemon always sends `question_snapshot` -- even empty -- right after
+   * hello_ack (`resendPendingQuestions`), but it necessarily arrives as a
+   * LATER message than the hello_ack/remi_status that can trigger this
+   * call, so calling straight through here could paint "no question" for a
+   * session that already has one live. Deferred (not blocked) until one
+   * arrives, bounded by a short timeout that creates the bar anyway --
+   * `createStatusBar()` bypasses the wait -- so an older daemon that never
+   * sends a snapshot doesn't lose the bar entirely, only that first paint's
+   * protection-1 coverage: the same fail-open default `hasLiveQuestions`
+   * already has elsewhere in this file.
    */
   function startStatusBar(): void {
+    if (!statusBarEligible || statusBar !== null || resolved) return;
+    if (!receivedQuestionSnapshot) {
+      if (!questionSnapshotTimer) {
+        questionSnapshotTimer = setTimeout(() => {
+          questionSnapshotTimer = null;
+          createStatusBar();
+        }, 500);
+      }
+      return;
+    }
+    createStatusBar();
+  }
+
+  function createStatusBar(): void {
     if (!statusBarEligible || statusBar !== null || resolved) return;
     statusBar = new StatusBar({
       getStdoutFd: () => (outputBroken ? null : outputFd),
@@ -278,6 +315,15 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
       // `liveQuestionIds`'s declaration for why this is the right signal.
       question_snapshot: (m) => {
         liveQuestionIds = new Set(m.questionIds);
+        if (!receivedQuestionSnapshot) {
+          receivedQuestionSnapshot = true;
+          if (questionSnapshotTimer) {
+            clearTimeout(questionSnapshotTimer);
+            questionSnapshotTimer = null;
+          }
+          // Release a startStatusBar() that deferred waiting for this.
+          if (attachedSessionId) startStatusBar();
+        }
       },
       replay_batch: (m) => {
         for (const nested of m.messages) {
