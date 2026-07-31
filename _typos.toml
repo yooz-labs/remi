@@ -14,4 +14,10 @@ extend-exclude = [
   "*.pbxproj",
   # Same 24-hex BlueprintIdentifier issue in generated scheme files (#649).
   "*.xcscheme",
+  # Redacted hook-capture corpus (#886 part 2): pseudonymized ids are
+  # deterministic pseudo-random alnum strings, not prose, and occasionally
+  # contain word-like substrings by chance (e.g. "giv", "yoy") that trip the
+  # spell checker. See fixtures/build-hook-corpus.ts for how these are
+  # generated.
+  "packages/daemon/tests/hooks/fixtures/hook-corpus.jsonl",
 ]
