@@ -101,6 +101,68 @@ All notable changes to Remi are documented here.
   newly-registered events as unregistered.
 
 ### Fixed
+- **Every opt-in debug sink now stamps provenance on each record, so a
+  synthetic test write is distinguishable from a real one by data** (#934).
+  `REMI_HOOK_DEBUG=1` (`hook-diag.jsonl`) and `REMI_QUESTION_TRACE=1`
+  (`question-trace.jsonl`) are both keyed on an env var the test suite runs
+  under too, and both write to the SAME fixed `~/.remi/*` path a real
+  session uses — `HookServer.handleRequest` cannot tell a test's HTTP POST
+  from Claude Code's, and `QuestionStore`/`SessionRegistry` cannot tell a
+  test calling `add()`/`remove()` directly from a real hook-driven mutation.
+  93+ records in the owner's real `hook-diag.jsonl` had been contaminated
+  with fabricated rows (including `SessionStart`/`UserPromptSubmit`, both
+  contradicting confirmed hook-registration behavior), and 965 of 3,582
+  lines in `question-trace.jsonl` carried the test suite's hardcoded
+  question id. `REMI_PTY_CAPTURE` (`pty/pty-capture.ts`) turned out to be a
+  third sink with the same class of problem — its destination is the env
+  var's own value rather than a fixed path, but any test that spawns a real
+  `PtySession` while a developer's shell has it set inherits the same
+  contamination. All three now call a shared `debugProvenance()`
+  (`src/debug/provenance.ts`) and stamp it on every record — `_provenance`
+  for `hook-diag.jsonl`, `provenance` for `question-trace.jsonl`, a bare
+  third token for `pty-capture`'s line-oriented (not JSONL) format. This
+  stamps rather than gates: each sink's own env var still controls whether it
+  writes at all, unconditionally.
+  **Caught in review before merge:** the first version of `debugProvenance()`
+  read `NODE_ENV === 'test'`, on the claim that `bun test` sets
+  `NODE_ENV=test` for the whole process — true only when `NODE_ENV` is UNSET
+  beforehand. A developer whose shell already exported `NODE_ENV=production`
+  (or `development`, a shared `.envrc`, a container default) got a record
+  stamped `_provenance: 'live'` for a genuinely synthetic write, silently
+  RECREATING #934 while the field made it look solved — worse than no field
+  at all, since the corpus builder trusts `'live'` outright. Fixed by having
+  the test harness positively mark itself instead of inferring test-ness from
+  any ambient variable: `tests/debug/test-harness-marker.ts`, loaded via two
+  `bunfig.toml` files' (repo root and `packages/daemon`, since Bun does not
+  search parent directories for the config) `[test].preload`, sets
+  `REMI_TEST_HARNESS` unconditionally the moment `bun test` starts, before
+  any test file runs — a default Bun itself never overrides is not the same
+  as a variable this codebase always sets itself. `debugProvenance()` reads
+  that marker with a plain truthiness check (not `=== '1'`) so the design
+  fails toward `'test'`, never `'live'`, on any ambiguous value: a lost real
+  record is recoverable by re-capturing, an admitted fabricated one is not.
+  Gating the write itself on the marker was still rejected for the same
+  reason gating on `NODE_ENV` was — a developer running the daemon and the
+  test suite from the same checkout would silently lose real diagnostic
+  capture the moment the marker mechanism had any bug of its own, with no
+  signal anything was suppressed. The corpus builder (`build-hook-corpus.ts`)
+  filters primarily on `_provenance`; the old `/tmp`-rooted-path heuristic
+  (`looksLikeTestFixture`) survives only as a fallback for records captured
+  before this field existed, not as the mechanism. Also added: the
+  question-trace schema now records `Question.source` on every 'remove'
+  event (`questionSource`) — cheap, since the removed `Question` object was
+  already in scope at every call site — closing part of the gap #920 found
+  where a stray PTY write could not be traced back to the card that produced
+  it. The answer payload itself was NOT added and is deliberately untracked
+  (no issue filed): `answer` **is** in scope one layer up, at all three
+  `SessionRegistry.removeQuestion` call sites inside `input-events.ts`'s
+  `handleAnswer`, but every OTHER removal call site repo-wide is hook- or
+  system-driven and genuinely answerless, so threading an optional `answer`
+  through `SessionRegistry.removeQuestion`'s signature would populate it at
+  only a small minority of call sites — judged not cheap enough to do well in
+  this change, versus `questionSource`, which the removed `Question` object
+  already carries at essentially every call site.
+
 - **The redundant `Notification(permission_prompt)` question synthesis is
   deleted** (#890, Q5). It fed a `QuestionPresenceTracker` stash that only
   ever mattered if it arrived with no paired `PermissionRequest` — a richer

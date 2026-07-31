@@ -104,13 +104,18 @@
  * records to the same file real captures live in -- including a handful of
  * `SessionStart`/`UserPromptSubmit`/`UnknownEvent` rows that would otherwise
  * look like exactly the kind of surprising-but-real finding this corpus
- * exists to catch. `looksLikeTestFixture` below filters these out by the
- * `/tmp`-rooted `cwd`/`transcript_path` signature every hooks test fixture in
- * this repo happens to share (verified: zero false positives against every
- * pre-existing real capture in this corpus's source data) -- a general
- * signature, not an enumeration of specific test session ids, so a new test
- * file that follows the same obvious "/tmp for dummy paths" convention is
- * caught by the same check.
+ * exists to catch.
+ *
+ * FIX (#934): every diag line now carries a `_provenance` field
+ * (`'live' | 'test'`, stamped by `src/debug/provenance.ts` at write time) --
+ * data, not a path convention. `isSyntheticRecord` below filters PRIMARILY on
+ * that field. `looksLikeTestFixture`'s `/tmp`-rooted `cwd`/`transcript_path`
+ * signature is kept ONLY as a FALLBACK for records written before this field
+ * existed (any `~/.remi/hook-diag.jsonl` captured with a pre-#934 daemon or
+ * test run) -- it is not the mechanism anymore, just a bridge for historical
+ * data, and it stays inert (never even consulted) once a file is entirely
+ * `_provenance`-stamped. Do not read its continued presence here as "the
+ * path heuristic is still how this works."
  */
 
 import * as fs from 'node:fs';
@@ -139,14 +144,16 @@ const OUTPUT_PATH = expandHome(
 // --- Test-fixture contamination filter --------------------------------------
 
 /**
- * True for a record that is a synthetic test payload, not real Claude Code
- * traffic -- see the "TEST CONTAMINATION HAZARD" module doc note above for
- * how these end up in `hook-diag.jsonl` at all. Every hooks-test dummy `cwd`/
- * `transcript_path` in this repo is `/tmp`-rooted or the fixed
+ * FALLBACK ONLY (#934) -- true for a record that LOOKS like a synthetic test
+ * payload by path convention, not real Claude Code traffic. See the "TEST
+ * CONTAMINATION HAZARD" / "FIX (#934)" module doc notes above: this is no
+ * longer the primary detection mechanism, `isSyntheticRecord` below is. Kept
+ * for records captured before `_provenance` existed. Every hooks-test dummy
+ * `cwd`/`transcript_path` in this repo is `/tmp`-rooted or the fixed
  * `/Users/dev/my-project` sentinel (`grep -rn "cwd:\|transcript_path:"
  * packages/daemon/tests/hooks/*.ts`); no real capture has ever had either.
  */
-function looksLikeTestFixture(record: Record<string, unknown>): boolean {
+export function looksLikeTestFixture(record: Record<string, unknown>): boolean {
   const cwd = record['cwd'];
   const transcriptPath = record['transcript_path'];
   if (typeof cwd === 'string' && (cwd.startsWith('/tmp') || cwd === '/Users/dev/my-project')) {
@@ -156,6 +163,23 @@ function looksLikeTestFixture(record: Record<string, unknown>): boolean {
     return true;
   }
   return false;
+}
+
+/**
+ * True for a record this build should drop as synthetic (#934). Checks the
+ * `_provenance` field FIRST -- data, not convention. Only when a record has
+ * NO `_provenance` at all (written by a daemon/test predating this field)
+ * does this fall back to `looksLikeTestFixture`'s path heuristic; a record
+ * that explicitly says `_provenance: 'live'` is trusted and never re-checked
+ * against the fallback, so a real capture that happens to run from a `/tmp`
+ * cwd (unusual, but not impossible) is not misclassified now that a real
+ * field exists to ask instead of guessing from the path.
+ */
+export function isSyntheticRecord(record: Record<string, unknown>): boolean {
+  const provenance = record['_provenance'];
+  if (provenance === 'test') return true;
+  if (provenance === 'live') return false;
+  return looksLikeTestFixture(record);
 }
 
 // --- Redaction allowlist ----------------------------------------------------
@@ -463,23 +487,33 @@ function main(): void {
       summary.malformedLines += 1;
       continue;
     }
-    if (looksLikeTestFixture(record)) {
+    if (isSyntheticRecord(record)) {
       summary.testFixtureLines += 1;
       continue;
     }
-    const event = String(record['hook_event_name'] ?? '<missing>');
+    // `_provenance` is this build's own input-side filtering field, not part
+    // of the Claude Code hook contract -- drop it before it reaches
+    // `redactRecord`/`contract-drift.test.ts`, which validate the corpus
+    // against `hook-types.ts`'s field set and know nothing about it. Every
+    // record reaching here already passed the `isSyntheticRecord` check
+    // above (kept as real), so dropping the field loses no information the
+    // corpus needs.
+    const { _provenance: _unusedProvenance, ...rest } = record;
+    void _unusedProvenance;
+
+    const event = String(rest['hook_event_name'] ?? '<missing>');
     summary.perEventRaw.set(event, (summary.perEventRaw.get(event) ?? 0) + 1);
 
     let keepThis = true;
     if (DOWNSAMPLED_EVENTS.has(event)) {
-      const key = shapeGroupKey(record);
+      const key = shapeGroupKey(rest);
       const count = groupCounts.get(key) ?? 0;
       keepThis = count < PER_GROUP_CAP;
       groupCounts.set(key, count + 1);
     }
 
     if (keepThis) {
-      kept.push(record);
+      kept.push(rest);
       summary.perEventKept.set(event, (summary.perEventKept.get(event) ?? 0) + 1);
     }
   }
@@ -510,4 +544,14 @@ function main(): void {
   console.log(`Wrote ${redacted.length} redacted records (${outBytes} bytes) to ${OUTPUT_PATH}`);
 }
 
-main();
+// Guarded (#934): this file is now also imported by
+// `build-hook-corpus.test.ts` to unit-test `isSyntheticRecord`/
+// `looksLikeTestFixture` directly (pure functions, no filesystem access) --
+// an unguarded `main()` would run its real-filesystem side effects (reading
+// `~/.remi/hook-diag.jsonl`, overwriting the checked-in `hook-corpus.jsonl`)
+// on EVERY import, including from `bun test`. `import.meta.main` is true
+// only when this file is the process entry point (`bun run
+// build-hook-corpus.ts`), never when another module imports from it.
+if (import.meta.main) {
+  main();
+}

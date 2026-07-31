@@ -430,11 +430,23 @@ have no captures yet because each needs a precondition that has not occurred.
   unverified** — the #885 epic's named experiment, needing a targeted capture
   (fire two identical-signature `PermissionRequest`s and observe dispatch
   order), not the general-purpose corpus.
-- **Capture hygiene (#934):** with `REMI_HOOK_DEBUG=1`, running the hooks tests
-  appends their synthetic payloads to the same `hook-diag.jsonl` real captures
-  use — `HookServer` cannot tell a test POST from Claude Code's. The corpus
-  builder filters these, but the raw log is still contaminated, so hand-reading
-  it can show fabricated `SessionStart`/`UserPromptSubmit` rows.
+- **Capture hygiene (#934, fixed):** with `REMI_HOOK_DEBUG=1`, running the hooks
+  tests still appends their synthetic payloads to the same `hook-diag.jsonl`
+  real captures use — `HookServer` cannot tell a test POST from Claude Code's,
+  and the same is true of `REMI_QUESTION_TRACE`'s `question-trace.jsonl` and
+  `REMI_PTY_CAPTURE`'s capture file (a general property of remi's env-gated
+  debug sinks, not specific to hooks). Every record from all three now carries
+  a provenance stamp (`_provenance`/`provenance`: `'live' | 'test'`, a bare
+  third token for `REMI_PTY_CAPTURE`'s line format — see
+  `src/debug/provenance.ts`), so a synthetic record is distinguishable from a
+  real one **by that field**, not by a `/tmp`-rooted path or a hardcoded
+  session/question id. The corpus builder (`build-hook-corpus.ts`) filters
+  primarily on `_provenance`; the old path heuristic
+  (`looksLikeTestFixture`) survives only as a fallback for records captured
+  before this field existed. The raw log itself is still not physically
+  separated from real traffic (option 2 from #934, "a separate sink for
+  tests," was not built) — hand-reading `hook-diag.jsonl` still requires
+  filtering by `_provenance`, it just no longer requires guessing.
 
 A **[B]**-tagged claim remains "true of the 2.1.220 binary's static shape."
 Where the corpus now corroborates one live, that is stated inline.

@@ -28,6 +28,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { errorToString } from '@remi/shared';
+import { debugProvenance } from '../debug/provenance.ts';
 import type {
   HookInput,
   NotificationHookInput,
@@ -231,9 +232,20 @@ export class HookServer {
     // Diagnostic dump: when REMI_HOOK_DEBUG=1, write every raw hook payload
     // to ~/.remi/hook-diag.jsonl for inspecting what Claude Code actually sends.
     // Used to investigate team/subagent event filtering (issue #316).
+    //
+    // `_provenance` (#934): `handleRequest` cannot tell a test's POST from
+    // Claude Code's -- both are HTTP requests to this same loopback listener
+    // with a valid `hook_event_name`. Stamped on every line so a reader (and
+    // the corpus builder, `fixtures/build-hook-corpus.ts`) can filter
+    // synthetic records by a real field instead of a path convention. See
+    // `debug/provenance.ts` for why this is a stamp, not a write gate.
     if (process.env['REMI_HOOK_DEBUG'] === '1') {
       try {
-        const logLine = JSON.stringify({ _ts: new Date().toISOString(), ...body });
+        const logLine = JSON.stringify({
+          _ts: new Date().toISOString(),
+          _provenance: debugProvenance(),
+          ...body,
+        });
         const remiDir = path.join(os.homedir(), '.remi');
         const logPath = path.join(remiDir, 'hook-diag.jsonl');
         fs.mkdirSync(remiDir, { recursive: true });

@@ -3,10 +3,11 @@
  *
  * Set `REMI_PTY_CAPTURE=/path/to/file` to append every byte written to the child
  * (`IN` — your keystrokes) and read from it (`OUT` — Claude's rendered frames),
- * each as a JSON-escaped line:
+ * each as a JSON-escaped line, provenance-stamped (#934) between the
+ * timestamp and the payload:
  *
- *   IN  1719500000000 "[B"
- *   OUT 1719500000001 "[2K❯ 1. Yes ..."
+ *   IN  1719500000000 live "[B"
+ *   OUT 1719500000001 live "[2K❯ 1. Yes ..."
  *
  * Off unless the env var is set (a single boolean check on the hot path when
  * disabled). Its purpose is to capture the `AskUserQuestion` keystroke model from
@@ -15,9 +16,24 @@
  *
  * Capture is best-effort: a write error disables it and logs ONCE, so a full disk
  * or a bad path can never disturb the live PTY.
+ *
+ * TEST CONTAMINATION (#934): unlike `REMI_HOOK_DEBUG`/`REMI_QUESTION_TRACE`,
+ * this sink's destination is the env var's OWN value, not a fixed `~/.remi/*`
+ * path, so `pty-capture.test.ts`'s own assertions never collide with a real
+ * capture file. But `record()` is called from `pty-session.ts` on every real
+ * PTY write, and ANY test that spawns a real `PtySession` (e.g.
+ * `pty-session-write-serialization.test.ts`, `pty-sigtstp.test.ts`) inherits
+ * whatever `REMI_PTY_CAPTURE` a developer's shell already has set -- so a
+ * developer capturing a real session in one shell while running the full test
+ * suite in another still gets test PTY bytes appended to the same file. This
+ * is the third sink #934 asked to find. The `_provenance` JSON-field
+ * convention the other two sinks use would corrupt this line-oriented (not
+ * JSONL) "IN/OUT ts payload" shape, so the stamp is a bare third token
+ * instead.
  */
 
 import { appendFileSync } from 'node:fs';
+import { debugProvenance } from '../debug/provenance.ts';
 
 // Env is read lazily per call (not cached at import) so a process that sets
 // REMI_PTY_CAPTURE before spawning a PTY is honored, and so the behavior is
@@ -33,7 +49,7 @@ function record(dir: 'IN' | 'OUT', data: string | Uint8Array): void {
   if (!path || disabled) return;
   try {
     const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
-    appendFileSync(path, `${dir} ${Date.now()} ${JSON.stringify(text)}\n`);
+    appendFileSync(path, `${dir} ${Date.now()} ${debugProvenance()} ${JSON.stringify(text)}\n`);
   } catch (err) {
     disabled = true;
     // Loud-once: never silent, never recurring, never fatal to the PTY.
