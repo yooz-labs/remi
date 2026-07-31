@@ -981,10 +981,24 @@ describe('runAttachClient', () => {
     });
 
     const output = readOutput();
-    const bars = [...output.matchAll(/\x1b\[7m([^\x1b]*)\x1b\[0m/g)].map((m) => m[1]);
-    expect(bars.length).toBe(2);
-    expect(bars[0]).toContain('idle');
-    expect(bars[1]).toContain('thinking');
+    const barMatches = [...output.matchAll(/\x1b\[7m([^\x1b]*)\x1b\[0m/g)];
+    expect(barMatches.length).toBe(2);
+    expect(barMatches[0]?.[1]).toContain('idle');
+    expect(barMatches[1]?.[1]).toContain('thinking');
+
+    // #932 review finding 2: a paint count alone does not prove ordering --
+    // the immediate repaint is worthless (and actively harmful) if it lands
+    // on the wire BEFORE the ESC[r that triggered it, since the reset would
+    // then immediately undo the correction. The bar's own paints always
+    // include DECSTBM with explicit params (`\x1b[1;Nr`), so the first
+    // literal bare `\x1b[r` in the raw output can only be our injected
+    // reset chunk (the only other source, the teardown clear sequence,
+    // writes its own bare `\x1b[r` later still, on WS close).
+    const resetIndex = output.indexOf('\x1b[r');
+    expect(resetIndex).toBeGreaterThanOrEqual(0);
+    const secondBarIndex = barMatches[1]?.index;
+    expect(secondBarIndex).toBeDefined();
+    expect(secondBarIndex as number).toBeGreaterThan(resetIndex);
   });
 
   // #898: renderMessage's total-dispatch handler for raw_pty_output was

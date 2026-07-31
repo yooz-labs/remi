@@ -177,15 +177,8 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
 
   function writeRawBytes(base64Data: string): void {
     if (outputBroken) return;
+    const buf = Buffer.from(base64Data, 'base64');
     try {
-      const buf = Buffer.from(base64Data, 'base64');
-      // #932 durable fix: feed the quiescence + clean-boundary gate with the
-      // exact bytes about to hit outputFd, BEFORE the write -- same
-      // ordering rationale as the wrapper's `observeLocalPtyOutput`
-      // (pty-session-setup.ts). When this chunk completes a bare ESC[r
-      // (DECSTBM full-screen reset), ask the bar to repaint immediately
-      // instead of leaving row N unprotected until the next tick.
-      if (ptyGate.observe(buf)) statusBar?.notifyScrollRegionReset();
       fs.writeSync(outputFd, buf);
     } catch (err) {
       outputBroken = true;
@@ -193,7 +186,19 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
       if (code !== 'EBADF' && code !== 'EPIPE') {
         process.stderr.write(`[remi] output write failed: ${code ?? err}\n`);
       }
+      return;
     }
+    // #932 durable fix (review finding 2): feed the quiescence +
+    // clean-boundary gate AFTER the real chunk has landed on the wire,
+    // never before -- and outside the write's own try/catch, so a throw
+    // from this callback (e.g. StatusBar's isBoundaryClean/isQuiescent/
+    // hasLiveQuestions predicates) is never misclassified as a write
+    // failure. Same ordering rationale as the wrapper's
+    // `observeLocalPtyOutput` (pty-session-setup.ts): observing before the
+    // write would put the bar's corrective DECSTBM-reasserting paint on
+    // the wire BEFORE the very ESC[r that triggered it, so the reset would
+    // immediately undo the correction instead of the other way around.
+    if (ptyGate.observe(buf)) statusBar?.notifyScrollRegionReset();
   }
 
   /**
