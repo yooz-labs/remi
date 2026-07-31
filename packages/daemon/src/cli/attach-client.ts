@@ -22,6 +22,7 @@ import type {
 import { performAuthHandshake } from './auth-helper.ts';
 import { capabilityWsOptions } from './capability-client.ts';
 import { DetachScanner } from './detach-scanner.ts';
+import { PtyQuiescenceGate } from './pty-quiescence-gate.ts';
 import { StatusBar, childRows } from './status-bar.ts';
 
 export interface AttachClientOptions {
@@ -82,6 +83,13 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
   // session that already has a live question -- see that function's doc.
   let receivedQuestionSnapshot = false;
   let questionSnapshotTimer: ReturnType<typeof setTimeout> | null = null;
+  // #932 durable fix: this attach cycle's own quiescence + clean-boundary
+  // gate for `outputFd` -- the same fd `statusBar` draws into. Scoped to
+  // this call (not module-level, unlike the wrapper's `wrapperPtyGate` in
+  // cli.ts) because a fresh `runAttachClient()` call is a fresh terminal
+  // parser state: nothing has been written to `outputFd` yet, so a new gate
+  // starting from "ground, never observed" is exactly right.
+  const ptyGate = new PtyQuiescenceGate();
 
   function writeOutput(text: string): void {
     if (outputBroken) return;
@@ -171,6 +179,13 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
     if (outputBroken) return;
     try {
       const buf = Buffer.from(base64Data, 'base64');
+      // #932 durable fix: feed the quiescence + clean-boundary gate with the
+      // exact bytes about to hit outputFd, BEFORE the write -- same
+      // ordering rationale as the wrapper's `observeLocalPtyOutput`
+      // (pty-session-setup.ts). When this chunk completes a bare ESC[r
+      // (DECSTBM full-screen reset), ask the bar to repaint immediately
+      // instead of leaving row N unprotected until the next tick.
+      if (ptyGate.observe(buf)) statusBar?.notifyScrollRegionReset();
       fs.writeSync(outputFd, buf);
     } catch (err) {
       outputBroken = true;
@@ -226,6 +241,9 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
       }),
       isEnabled: () => latestStatus !== null,
       hasLiveQuestions: () => liveQuestionIds.size > 0,
+      // #932 durable fix: gate every paint on the same `ptyGate` `writeRawBytes` feeds.
+      isBoundaryClean: () => ptyGate.isBoundaryClean(),
+      isQuiescent: () => ptyGate.isQuiescent(),
       log: (msg) => process.stderr.write(`${msg}\n`),
     });
     statusBar.start();

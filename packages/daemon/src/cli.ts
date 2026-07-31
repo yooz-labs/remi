@@ -166,6 +166,7 @@ import type { LiveSessionsCollectResult } from './cli/live-sessions-watcher.ts';
 import { startLiveSessionsWatcher } from './cli/live-sessions-watcher.ts';
 import { endLogFileSession, startLogFileSession, writeToLog } from './cli/log-file.ts';
 import { installProcessGuards } from './cli/process-guards.ts';
+import { PtyQuiescenceGate } from './cli/pty-quiescence-gate.ts';
 import { setupHookBridge } from './cli/session-phases/hook-bridge-setup.ts';
 import type { SessionGateHandle } from './cli/session-phases/hook-bridge-setup.ts';
 import { createMessageApiForSession } from './cli/session-phases/message-api-setup.ts';
@@ -1440,6 +1441,17 @@ function collectLiveSessionsUpdate(): LiveSessionsCollectResult | null {
 // can clear the row on shutdown.
 let statusBar: StatusBar | null = null;
 
+// #932 durable fix: the quiescence + clean-boundary gate for the wrapper's
+// own local terminal fd -- the same fd `statusBar` draws into. Module-level
+// (like `statusBar`) so `createNewSession`'s `observeLocalPtyOutput` wiring
+// (constructed once, before the bar itself exists) and the bar's own
+// `isBoundaryClean`/`isQuiescent` deps (wired after, in the wrapper block
+// below) share one instance regardless of call order. Harmless to construct
+// unconditionally in daemon mode too: it is only ever fed via
+// `observeLocalPtyOutput`, which `pty-session-setup.ts`'s `onRawData` only
+// invokes when `passThrough` is true -- daemon-mode sessions never feed it.
+const wrapperPtyGate = new PtyQuiescenceGate();
+
 async function startMdnsIfNeeded(
   logFn: (msg: string) => void,
 ): Promise<import('./mdns/mdns-publisher.ts').MdnsPublisher | null> {
@@ -1683,6 +1695,14 @@ async function createNewSession(
       onQuestionResolved: (sid, questionId) => onQuestionResolved(sid, questionId, 'answered'),
       cancelAutoApproveForQuestion: (sid, questionId, reason) =>
         sessionGateHandles.get(sid)?.cancelEvalForQuestion(questionId, reason),
+      // #932 durable fix: feed the wrapper's quiescence + clean-boundary
+      // gate with every chunk actually forwarded to the local terminal, and
+      // -- when the chunk completes a bare ESC[r (DECSTBM full-screen
+      // reset) -- ask the bar to repaint immediately instead of leaving row
+      // N unprotected until the next tick or the heartbeat.
+      observeLocalPtyOutput: (data) => {
+        if (wrapperPtyGate.observe(data)) statusBar?.notifyScrollRegionReset();
+      },
     },
     { sessionId, workingDirectory, extraArgs: binding.args, passThrough, reservedRows },
   );
@@ -2763,6 +2783,12 @@ if (cliDaemonMode) {
       isEnabled: () => !isWrapperDetached(),
       hasLiveQuestions: () =>
         (sessionRegistry.getSession(sessionId)?.currentQuestions.size ?? 0) > 0,
+      // #932 durable fix: gate every paint on the same PTY-forwarding gate
+      // `observeLocalPtyOutput` (above) feeds. `wrapperPtyGate` is
+      // module-level so it exists before this StatusBar does and keeps
+      // accumulating state across a detach/reattach within one process.
+      isBoundaryClean: () => wrapperPtyGate.isBoundaryClean(),
+      isQuiescent: () => wrapperPtyGate.isQuiescent(),
       log: (m) => log(m),
     });
     statusBar.start();

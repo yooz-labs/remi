@@ -80,6 +80,21 @@ export interface PtySessionSetupDeps {
    * it. Absent => no-op (tests/old callers, or auto-approve disabled).
    */
   cancelAutoApproveForQuestion?: (sessionId: UUID, questionId: UUID, reason: string) => void;
+  /**
+   * #932 durable fix: observe every PTY chunk actually forwarded to the
+   * wrapper's own local terminal fd -- the exact same fd the reserved-row
+   * status bar draws into -- so a `PtyQuiescenceGate` can track whether a
+   * bar write right now would land inside one of Claude's own escape
+   * sequences. Fed with the raw bytes right before they are written to that
+   * fd (only when the wrapper is actually still attached: `passThrough &&
+   * stdoutFd !== null && !isWrapperDetached()`, the same condition guarding
+   * the write itself), never with the bar's own paint bytes -- those are
+   * self-terminating (see `buildBarSequence`) and do not need tracking.
+   * Absent => no gate wired (tests, older callers); `StatusBar`'s own
+   * `isBoundaryClean` / `isQuiescent` defaults then keep pre-durable-fix
+   * behavior (always paintable).
+   */
+  observeLocalPtyOutput?: (data: Uint8Array) => void;
 }
 
 /** Normalized sub-question texts to match a summary answer line against. */
@@ -213,6 +228,7 @@ export function createPtySessionForSession(
     exitProcess = (code: number) => process.exit(code),
     onQuestionResolved,
     cancelAutoApproveForQuestion,
+    observeLocalPtyOutput,
   } = deps;
   const { sessionId, workingDirectory, extraArgs, passThrough, reservedRows = 0 } = args;
 
@@ -242,6 +258,12 @@ export function createPtySessionForSession(
         // Write to the local terminal when wrapper is still attached.
         const stdoutFd = getPtyStdoutFd();
         if (passThrough && stdoutFd !== null && !isWrapperDetached()) {
+          // #932 durable fix: feed the quiescence + clean-boundary gate with
+          // the exact bytes about to hit this fd, BEFORE the write, so the
+          // gate's state reflects the stream up to and including this
+          // chunk by the time anything (a resize-triggered render(), the
+          // status bar's own timer) can observe it next.
+          observeLocalPtyOutput?.(data);
           try {
             fs.writeSync(stdoutFd, data);
           } catch (err) {

@@ -795,6 +795,198 @@ describe('runAttachClient', () => {
     expect(output).toContain('\x1b[7m'); // the bar started anyway, past the fallback bound
   });
 
+  // #932 durable fix: proves the REAL wiring end to end (real
+  // `PtyQuiescenceGate`, fed by real `raw_pty_output` messages through
+  // `writeRawBytes`), not just StatusBar in isolation. A chunk that leaves
+  // the stream mid-escape-sequence must suppress the bar until BOTH gates
+  // clear -- and the two checkpoints below prove they are two SEPARATE
+  // gates, not one: the boundary clears well before quiescence does, and a
+  // routine repaint still waits for both.
+  test('a raw_pty_output chunk ending mid-escape-sequence suppresses the bar until the boundary clears AND the PTY goes quiet', async () => {
+    setupOutput();
+    const targetSessionId = generateId();
+    // A CSI introducer with no final byte -- the stream is left inside an
+    // unterminated escape sequence, exactly the #932 mode-1 hazard.
+    const dirtyChunk = Buffer.from([0x1b, 0x5b]).toString('base64'); // ESC [
+    const completingChunk = Buffer.from('31m', 'utf-8').toString('base64'); // ...31m
+
+    server = Bun.serve({
+      port: TEST_PORT + 15,
+      fetch(req, srv) {
+        if (srv.upgrade(req, { data: {} })) return;
+        return new Response('Not found', { status: 404 });
+      },
+      websocket: {
+        open() {},
+        message(ws, data) {
+          const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+          const msg = deserialize(text);
+          if (!msg) return;
+
+          if (msg.type === 'hello') {
+            ws.send(serialize(createHelloAck('1.0.0', targetSessionId as UUID)));
+            setTimeout(() => {
+              ws.send(
+                serialize(
+                  createRemiStatus(
+                    targetSessionId as UUID,
+                    mkRemiStatus(targetSessionId as UUID, { sessionStatus: 'idle' }),
+                  ),
+                ),
+              );
+            }, 50);
+            // Unblocks the deferred first paint -- status A ("idle"), painted.
+            setTimeout(() => {
+              ws.send(serialize(createQuestionSnapshot(targetSessionId as UUID, [])));
+            }, 100);
+            // Leaves the boundary dirty from here on.
+            setTimeout(() => {
+              ws.send(serialize(createRawPtyOutput(dirtyChunk, targetSessionId as UUID)));
+            }, 150);
+            // A real status change, stored but must not paint while dirty.
+            setTimeout(() => {
+              ws.send(
+                serialize(
+                  createRemiStatus(
+                    targetSessionId as UUID,
+                    mkRemiStatus(targetSessionId as UUID, { sessionStatus: 'thinking' }),
+                  ),
+                ),
+              );
+            }, 200);
+            // Completes the sequence: boundary clears here, but this same
+            // chunk also resets the quiescence window from this instant.
+            setTimeout(() => {
+              ws.send(serialize(createRawPtyOutput(completingChunk, targetSessionId as UUID)));
+            }, 550);
+            setTimeout(() => ws.close(), 1400);
+          }
+        },
+        close() {},
+      },
+    });
+
+    let atBoundaryDirty = '';
+    setTimeout(() => {
+      atBoundaryDirty = fs.readFileSync(outputPath, 'utf-8');
+    }, 500); // well after the status change at t=200, boundary still dirty
+
+    let afterBoundaryClearsButNotQuiescent = '';
+    setTimeout(() => {
+      afterBoundaryClearsButNotQuiescent = fs.readFileSync(outputPath, 'utf-8');
+    }, 750); // boundary cleared at t=550, but only 200ms of quiet (< QUIESCENCE_MS)
+
+    await runAttachClient({
+      host: 'localhost',
+      port: TEST_PORT + 15,
+      sessionId: targetSessionId,
+      timeout: 3000,
+      outputFd,
+      statusBarEligible: true,
+    });
+
+    const barsIn = (text: string) =>
+      [...text.matchAll(/\x1b\[7m([^\x1b]*)\x1b\[0m/g)].map((m) => m[1]);
+
+    const dirtyBars = barsIn(atBoundaryDirty);
+    expect(dirtyBars.length).toBe(1); // only the onset paint; status change never landed
+    expect(dirtyBars[0]).toContain('idle');
+
+    const cleanNotQuietBars = barsIn(afterBoundaryClearsButNotQuiescent);
+    expect(cleanNotQuietBars.length).toBe(1); // boundary alone is not enough
+    expect(cleanNotQuietBars[0]).toContain('idle');
+
+    const output = readOutput();
+    const finalBars = barsIn(output);
+    // Once both the boundary is clean AND the PTY has been quiet for
+    // QUIESCENCE_MS, the routine repaint finally lands with the status
+    // change that was stored back at t=200.
+    expect(finalBars.length).toBe(2);
+    expect(finalBars[1]).toContain('thinking');
+  });
+
+  // #932 durable fix bonus signal: a bare ESC[r (DECSTBM full-screen
+  // scroll-region reset) must trigger an immediate repaint rather than
+  // waiting for the normal tick, the quiescence window, or the heartbeat --
+  // row N is unprotected until DECSTBM is re-asserted. Timed to land well
+  // before the bar's first regular timer tick (~250ms after start()) and
+  // far under QUIESCENCE_MS/HEARTBEAT_MS, so the only mechanism that can
+  // explain the second paint is the immediate trigger.
+  test('a bare ESC[r in raw_pty_output triggers an immediate repaint', async () => {
+    setupOutput();
+    const targetSessionId = generateId();
+    const resetChunk = Buffer.from([0x1b, 0x5b, 0x72]).toString('base64'); // ESC [ r
+
+    server = Bun.serve({
+      port: TEST_PORT + 16,
+      fetch(req, srv) {
+        if (srv.upgrade(req, { data: {} })) return;
+        return new Response('Not found', { status: 404 });
+      },
+      websocket: {
+        open() {},
+        message(ws, data) {
+          const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+          const msg = deserialize(text);
+          if (!msg) return;
+
+          if (msg.type === 'hello') {
+            ws.send(serialize(createHelloAck('1.0.0', targetSessionId as UUID)));
+            setTimeout(() => {
+              ws.send(
+                serialize(
+                  createRemiStatus(
+                    targetSessionId as UUID,
+                    mkRemiStatus(targetSessionId as UUID, { sessionStatus: 'idle' }),
+                  ),
+                ),
+              );
+            }, 50);
+            // Unblocks the deferred first paint -- status A ("idle"), painted.
+            setTimeout(() => {
+              ws.send(serialize(createQuestionSnapshot(targetSessionId as UUID, [])));
+            }, 100);
+            // A real status change, stored but not yet painted.
+            setTimeout(() => {
+              ws.send(
+                serialize(
+                  createRemiStatus(
+                    targetSessionId as UUID,
+                    mkRemiStatus(targetSessionId as UUID, { sessionStatus: 'thinking' }),
+                  ),
+                ),
+              );
+            }, 200);
+            // Sent well before the first regular ~250ms tick (start() was
+            // called at t=100, so the first regular tick lands at ~t=350).
+            setTimeout(() => {
+              ws.send(serialize(createRawPtyOutput(resetChunk, targetSessionId as UUID)));
+            }, 270);
+            // Closes before the first regular tick and far under both
+            // QUIESCENCE_MS (500) and HEARTBEAT_MS (2000).
+            setTimeout(() => ws.close(), 320);
+          }
+        },
+        close() {},
+      },
+    });
+
+    await runAttachClient({
+      host: 'localhost',
+      port: TEST_PORT + 16,
+      sessionId: targetSessionId,
+      timeout: 3000,
+      outputFd,
+      statusBarEligible: true,
+    });
+
+    const output = readOutput();
+    const bars = [...output.matchAll(/\x1b\[7m([^\x1b]*)\x1b\[0m/g)].map((m) => m[1]);
+    expect(bars.length).toBe(2);
+    expect(bars[0]).toContain('idle');
+    expect(bars[1]).toContain('thinking');
+  });
+
   // #898: renderMessage's total-dispatch handler for raw_pty_output was
   // exercised only indirectly before (nothing asserted on decoded bytes).
   test('renders decoded raw_pty_output bytes to output', async () => {
