@@ -1259,9 +1259,15 @@ function onSubagentPassthrough(input: PermissionRequestHookInput): void {
 
 // Daemon-wide turn-duration tracker (#914). Fed from HookServer's onAnyEvent
 // for every hook event (see the two HookServer constructions below), keyed
-// on `prompt_id` -- present on every hook payload's common fields, so this
-// costs no new hook registration. See turn-timer.ts for why the map is safe
-// to share across the daemon's one session.
+// on `prompt_id` -- present on every hook payload's common fields. Originally
+// cost no DEDICATED hook registration (it rode whatever events were already
+// registered for other reasons); since #893 registered `UserPromptSubmit`
+// (for the auto-approve authority summary, unrelated to this tracker), that
+// event is now ALSO the earliest one `onAnyEvent` sees per turn, so
+// `elapsedMs` measures from actual prompt submission instead of
+// approximating from the first tool-use/permission event -- see turn-timer.ts
+// for the accuracy/notification-threshold consequence. See turn-timer.ts for
+// why the map is safe to share across the daemon's one session.
 const turnTimer = new TurnTimer();
 
 /**

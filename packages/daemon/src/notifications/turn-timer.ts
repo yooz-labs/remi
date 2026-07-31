@@ -15,15 +15,34 @@
  *
  * `observe()` is meant to be called from `HookServer`'s `onAnyEvent` for
  * every event remi's hook server accepts, recording only the FIRST time a
- * given `prompt_id` is seen. remi does NOT register `UserPromptSubmit`
- * (`REMI_REGISTERED_HOOK_EVENTS`, #203 -- every registration is a
- * synchronous roundtrip gating Claude), so the true turn start is missed;
- * the mark instead lands on whichever REGISTERED event fires first for that
- * turn (typically a `PreToolUse` or `PermissionRequest`). That makes
- * `elapsedMs` a slight UNDERESTIMATE of the real turn duration -- the safe
- * direction, since fail-toward-silence (#914) means underestimating can only
- * push a turn below the notify threshold, never spuriously above it.
+ * given `prompt_id` is seen.
  *
+ * UPDATE (#893, Q9): remi now registers `UserPromptSubmit`
+ * (`REMI_REGISTERED_HOOK_EVENTS`) for an unrelated reason -- it is the
+ * primary source for the auto-approve authority summary, `auto-approve/
+ * authority.ts`. `onAnyEvent` fires for it like any other accepted event
+ * (`hook-server.ts`), and `UserPromptSubmit` fires at the moment the human
+ * submits the prompt, BEFORE any tool call -- earlier than every other
+ * registered event for that turn. So as an intended side effect, this is now
+ * the mark `observe()` anchors on: the true turn start, not an approximation.
+ *
+ * Before this, remi registered no event that fires at prompt-submission time,
+ * so the mark landed on whichever event fired first for that turn (typically
+ * a `PreToolUse` or `PermissionRequest`), making `elapsedMs` a slight
+ * UNDERESTIMATE of the real turn duration -- harmless under the old fail-
+ * toward-silence framing (#914), since underestimating could only push a turn
+ * BELOW the notify threshold, never spuriously above it. That framing no
+ * longer describes this file: `elapsedMs` is now accurate (or very close to
+ * it), which means some turns that previously measured just under
+ * `turn_complete_min_seconds` (default 60s) now measure at or over it. A
+ * turn whose real duration was already >= the threshold, but whose OLD
+ * (underestimated) measurement fell short, now correctly notifies where it
+ * previously did not -- a deliberate accuracy fix, not a regression, but
+ * worth naming because it is user-visible (more turn-complete pushes for
+ * turns near the threshold) and no code review of `#893` should mistake it
+ * for scope creep.
+ *
+
  * `clear()` drops a `prompt_id`'s entry once its turn is genuinely done, so
  * a normal single-session daemon carries at most a couple of live entries.
  */

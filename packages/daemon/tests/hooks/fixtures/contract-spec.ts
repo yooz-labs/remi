@@ -10,7 +10,7 @@
  * drift test silently stop checking the changed field, not fail loudly —
  * so treat any such edit as also touching this file.
  *
- * SCOPE: only the 14 events in `REMI_REGISTERED_HOOK_EVENTS` are spec'd
+ * SCOPE: only the 15 events in `REMI_REGISTERED_HOOK_EVENTS` are spec'd
  * below. Every other one of the 31 names in `HOOK_EVENT_NAMES` is
  * structurally uncapturable in `~/.remi/hook-diag.jsonl` — Claude Code only
  * POSTs a hook Claude Code has a configured URL for, and remi registers
@@ -147,6 +147,16 @@ export const EVENT_SPECS: Record<RemiRegisteredHookEvent, EventSpec> = {
     required: ['mcp_server_name'],
     optional: ['elicitation_id', 'mode', 'action', 'content'],
   },
+  UserPromptSubmit: {
+    // Both fields are typed non-optional in `hook-types.ts`
+    // (`UserPromptSubmitHookInput`), binary-derived (#886), NOT
+    // capture-verified (#893/#937 is what registers this event for the
+    // first time — see EVENTS_WITHOUT_FIXTURES below). No fields marked
+    // `knownAbsentRequired` or `extraKnownFields`: making either claim
+    // requires a real capture, which does not exist yet.
+    required: ['prompt', 'session_title'],
+    optional: [],
+  },
 };
 
 /**
@@ -164,4 +174,12 @@ export const EVENTS_WITHOUT_FIXTURES: Partial<Record<RemiRegisteredHookEvent, st
   PermissionDenied: 'registered by #926, after most of this corpus was captured.',
   Elicitation: 'registered by #926, after most of this corpus was captured.',
   ElicitationResult: 'registered by #926, after most of this corpus was captured.',
+  UserPromptSubmit:
+    'registered by #893/#937 -- this is the PR that registers it for the ' +
+    'first time. Claude Code only sends events you register (#203 design, ' +
+    "restated in this file's own header), so NO capture of this event can " +
+    'exist anywhere yet, not just in this corpus build. The spec entry above ' +
+    'is binary-derived only (#886); do not read its presence as evidence the ' +
+    'shape was capture-verified. A future corpus rebuild on a session run ' +
+    'after this PR merges is what would close that gap.',
 };

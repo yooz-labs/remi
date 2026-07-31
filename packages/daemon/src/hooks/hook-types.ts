@@ -237,11 +237,13 @@ export interface UserPromptSubmitHookInput extends HookCommonInput {
   hook_event_name: 'UserPromptSubmit';
   /** Binary: `hook_event_name:"UserPromptSubmit",prompt:e,...!1,
    *  session_title:fv(kt())` — the human's typed input, handed to the hook
-   *  directly. This is the authority source Q9 (#885) wants in place of
-   *  transcript-JSONL filtering. Was typed as an empty event body before
-   *  #886; the `...!1` spread in the minified source looks like a
-   *  build-time-folded conditional (spreading `false` is a no-op in JS), not
-   *  a real extra field. */
+   *  directly. This is the PRIMARY authority source Q9 (#893) uses in place of
+   *  transcript-JSONL filtering (see `auto-approve/authority.ts`); registered
+   *  in `REMI_REGISTERED_HOOK_EVENTS` and consumed by the listener in
+   *  `hook-bridge-setup.ts`. Was typed as an empty event body before #886;
+   *  the `...!1` spread in the minified source looks like a build-time-folded
+   *  conditional (spreading `false` is a no-op in JS), not a real extra
+   *  field. */
   prompt: string;
   session_title: string;
 }
@@ -602,9 +604,9 @@ export type HookEventName = (typeof HOOK_EVENT_NAMES)[number];
  * events written into `.claude/settings.local.json` by HookConfigManager.
  *
  * The remaining HOOK_EVENT_NAMES entries (`WorktreeCreate`, `WorktreeRemove`,
- * `UserPromptSubmit`, etc.) are accepted by HookServer for forward
- * compatibility, but registering them in Claude Code's settings turns every
- * such event into a synchronous HTTP roundtrip that gates the underlying
+ * etc.) are accepted by HookServer for forward compatibility, but registering
+ * them in Claude Code's settings turns every such event into a synchronous
+ * HTTP roundtrip that gates the underlying
  * Claude Code action. The most painful symptom: a stale (or just slow)
  * remi daemon makes Claude Code unable to create a worktree, even though
  * remi has no business gating that operation. See issue #203.
@@ -658,6 +660,21 @@ export type HookEventName = (typeof HOOK_EVENT_NAMES)[number];
  * text said "~1s", which does not match this codebase's actual default —
  * see the PR for the measured per-event latency instead).
  *
+ * Q9 (#893) registers a 4th: `UserPromptSubmit`. Unlike Q4's three, THIS one
+ * fires once per HUMAN TURN rather than per tool call — far lower frequency
+ * (a 2-day capture logged ~4,800 per-tool-call hook roundtrips against a
+ * human-paced turn count several orders smaller), and it hands the daemon the
+ * human's own typed `prompt` directly, which is the PRIMARY source
+ * `auto-approve/authority.ts` uses to build the auto-approve prompt's
+ * CONVERSATION CONTEXT block (replacing a transcript-JSONL scrape that cannot
+ * structurally tell a genuine prompt apart from a `!`-command's captured
+ * stdout — see that file's module doc). Its listener (`hook-bridge-setup.ts`)
+ * is a single array push into a per-session ring buffer — cheaper than the Q4
+ * three, not more expensive — and IT gets its own short timeout
+ * (`hookTimeoutFor`, `hook-config-manager.ts`) rather than the flat 5s, since
+ * #889's own text got that number wrong for its three (see above) and this
+ * issue is not repeating the mistake.
+ *
  * **A listener's own work is on Claude's critical path.** `HookServer.
  * handleRequest` (`hook-server.ts`) calls `this.dispatch(body)` and only THEN
  * returns the `{}` response, and `dispatch` invokes listeners synchronously —
@@ -665,11 +682,11 @@ export type HookEventName = (typeof HOOK_EVENT_NAMES)[number];
  * sits blocked on the hook. There is no answer-first escape hatch to fall back
  * on. #889's own text asserted the opposite ("HookServer answers `{}` BEFORE
  * doing work"), which is why this is written down here rather than left as
- * folklore: the three registrations above are safe because each handler is a
- * map lookup or a signature compare, not because responding is free. Anything
- * heavier (an LLM call, a file read, a network hop) must move off the listener
- * — the way `PermissionRequest` does with its hold/park design — before its
- * event is added to this list.
+ * folklore: every registration below is safe because each handler is a map
+ * lookup, a signature compare, or (UserPromptSubmit) an array push — not
+ * because responding is free. Anything heavier (an LLM call, a file read, a
+ * network hop) must move off the listener — the way `PermissionRequest` does
+ * with its hold/park design — before its event is added to this list.
  */
 export const REMI_REGISTERED_HOOK_EVENTS = [
   'PreToolUse',
@@ -686,6 +703,7 @@ export const REMI_REGISTERED_HOOK_EVENTS = [
   'PermissionDenied',
   'Elicitation',
   'ElicitationResult',
+  'UserPromptSubmit',
 ] as const satisfies readonly HookEventName[];
 
 export type RemiRegisteredHookEvent = (typeof REMI_REGISTERED_HOOK_EVENTS)[number];

@@ -47,15 +47,29 @@
  *     can resolve the SAME card by exact id, mirroring PermissionDenied's
  *     "close the lingering-card gap" shape.
  *
+ * #893 (Q9) adds a 4th newly-registered event: `UserPromptSubmit`. Unlike
+ * Q4's three (resolution/surfacing), this one FEEDS a decision input rather
+ * than resolving a question: its listener pushes the human's typed `prompt`
+ * into `authorityStore` (an `AuthorityStore`, `auto-approve/authority.ts`),
+ * the PRIMARY source for the auto-approve prompt's CONVERSATION CONTEXT block
+ * (`AutoApproveGateDeps.getAuthority`, wired into the gate below). A filtered
+ * transcript read is the FALLBACK for a resumed session's prior turns, which
+ * this registration never saw fire for. See `authority.ts`'s module doc for
+ * the trust boundary this feature is built around, INCLUDING why the
+ * listener also runs `isWrappedNonHumanText` over `input.prompt` before
+ * recording it -- defense in depth for an unverified premise (#938), not
+ * proof the primary source is clean.
+ *
  * This listener block IS the per-session hook router (admit-then-fan-out); a
  * formal HookRouter class is deferred to a later refactor (#470). The function
- * registers 13 hookServer `.on()` listeners — the original 6 (SessionStart,
+ * registers 14 hookServer `.on()` listeners — the original 6 (SessionStart,
  * PreToolUse, PostToolUse, Notification, Stop, SessionEnd; PermissionRequest
  * is installed separately via `setPermissionResolver`, not `.on()`) plus the 4
  * wired in phase 4 (StopFailure, PostToolUseFailure, SubagentStart, SubagentStop)
  * plus the 3 wired for Q4 (#889: PermissionDenied, Elicitation,
- * ElicitationResult) — and returns void. It runs once per session at
- * createNewSession time, only when a hookServer is configured.
+ * ElicitationResult) plus the 1 wired for Q9 (#893: UserPromptSubmit) — and
+ * returns void. It runs once per session at createNewSession time, only when
+ * a hookServer is configured.
  *
  * The inline session-binding path this file used to also carry (pre-#453) and
  * the shadow-mode differential wiring (#453 phase 3, commit 3) were deleted in
@@ -68,7 +82,12 @@ import type { AgentStatus, ProtocolMessage, UUID } from '@remi/shared';
 import type { MessageAPI } from '../../api/message-api.ts';
 import type { QuestionPresenceTracker } from '../../api/question-presence-tracker.ts';
 import type { SubagentViewRegistry } from '../../api/subagent-view-registry.ts';
-import { AutoApproveGate } from '../../auto-approve/index.ts';
+import {
+  AuthorityStore,
+  AutoApproveGate,
+  isWrappedNonHumanText,
+  resolveAuthority,
+} from '../../auto-approve/index.ts';
 import type { AutoApproveService } from '../../auto-approve/index.ts';
 import { HookEventBridge } from '../../hooks/index.ts';
 import type {
@@ -325,6 +344,18 @@ export function setupHookBridge(
   } = deps;
   const { hookServer, sessionId, workingDirectory, messageApi, sendAndRecord, tracker } = args;
 
+  // ---- Authority (#893, Q9) --------------------------------------------------
+  // PRIMARY source: `UserPromptSubmit`'s `prompt` field, recorded verbatim by
+  // the listener registered below (a cheap in-memory push; see the policy
+  // comment at hook-types.ts:660). FALLBACK: the transcript, for a resumed
+  // session's prior turns, which this daemon's `UserPromptSubmit` registration
+  // never saw fire (`resolveAuthority`, `auto-approve/authority.ts`, filters
+  // out tool-result and wrapper-tagged transcript entries the hook path never
+  // has to worry about). Read fresh per eval via `AutoApproveGateDeps.
+  // getAuthority` below, so a turn submitted mid-eval is picked up for the
+  // NEXT permission, not stale.
+  const authorityStore = new AuthorityStore();
+
   // Push the session's subagent views to clients (epic #499 phase 3). Declared
   // here (before the binder/handlers reference it) so there is no fragile
   // forward-reference. The SessionViewMeta omits the on-disk path: the client
@@ -553,6 +584,16 @@ export function setupHookBridge(
       sessionRegistry,
       tracker,
       isInSubagentContext: () => hookBridge.isInSubagentContext(),
+      // #893 (Q9): resolve this eval's authority text fresh — the live
+      // UserPromptSubmit-fed store, or the filtered transcript fallback when
+      // the store has recorded nothing yet this session. Both reads are
+      // synchronous and in-memory (see the module doc above); no disk I/O on
+      // this call path.
+      getAuthority: () =>
+        resolveAuthority(
+          authorityStore,
+          () => transcriptWatchers.get(sessionId)?.getUserMessages() ?? [],
+        ),
       // #710: lets the gate recover from a tracker leak (a MAIN-tagged
       // PermissionRequest observing isInSubagentContext() stuck true) instead
       // of denying the main agent forever.
@@ -731,6 +772,12 @@ export function setupHookBridge(
         // the new session could (in principle, if Claude Code ever reused an
         // elicitation_id) resolve an unrelated future card.
         elicitationQuestions.clear();
+        // #893: a PRIOR conversation's authority must not leak into a fresh
+        // one -- /clear, /resume, and /compact's restart case all start over.
+        // The transcript fallback re-derives naturally from the new
+        // transcript path once the binder re-adopts; only the live store
+        // needs an explicit drop.
+        authorityStore.clear();
         // The new session starts with no subagents (#499 phase 3).
         if (subagentViews) {
           subagentViews.clear();
@@ -1117,6 +1164,38 @@ export function setupHookBridge(
     if (!binder.admits(input)) return;
     if (!input.elicitation_id) return;
     resolveElicitation(input.elicitation_id);
+  });
+
+  // ---- Q9 (#893): UserPromptSubmit -> AuthorityStore (primary source) -----
+  // Newly registered in REMI_REGISTERED_HOOK_EVENTS by this change. STRICT
+  // policy (hook-types.ts:660): `HookServer.dispatch` runs this listener
+  // SYNCHRONOUSLY before Claude Code's blocked hook response, and an HTTP hook
+  // has no async escape hatch -- see the module doc's Q9 paragraph. This
+  // handler is therefore intentionally minimal on top of what every other
+  // listener in this file already pays: `binder.onHookEvent` +
+  // `binder.admits` each call `adoptLockFromStore`
+  // (`transcript-binder.ts`), which does a synchronous `fs.readFileSync`
+  // per call (`session-binding-store.ts:11,16-17`) -- so TWO reads per
+  // event, shared, pre-existing infrastructure, not something Q9
+  // introduces (documented elsewhere as microseconds, not a budget risk
+  // against the 1s timeout). What Q9 ADDS on top of that shared cost is
+  // one string-prefix scan (`isWrappedNonHumanText`) and one array push
+  // (`AuthorityStore.record`) -- no NEW file I/O, no network, no LLM call.
+  //
+  // The `isWrappedNonHumanText` check is DEFENSE IN DEPTH, not confirmation
+  // that this source is safe (#893 review, #938). `authority.ts`'s module doc
+  // documents the premise it guards -- that Claude Code only ever puts the
+  // human's own keystrokes in `UserPromptSubmit.prompt` -- as UNVERIFIED. If
+  // that premise holds, this line is a permanent no-op. If it is wrong in the
+  // same wrapped-string shape the transcript fallback was hardened against,
+  // this is what catches it on the primary path too. #938 tracks getting a
+  // live capture to actually settle the premise; do not read this line as
+  // having settled it.
+  hookServer.on('UserPromptSubmit', (input) => {
+    binder.onHookEvent(input);
+    if (!binder.admits(input)) return;
+    if (isWrappedNonHumanText(input.prompt)) return;
+    authorityStore.record(input.prompt);
   });
 
   log(`[Hooks] Event bridge active for session ${sessionId}`);
