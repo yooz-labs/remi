@@ -103,7 +103,7 @@ describe('per-eval cancellation + force-release (#617)', () => {
       {
         service: harness.evaluator,
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => {}),
+        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
         escalate: () => {
           lastQuestionId = generateId();
@@ -169,7 +169,7 @@ describe('per-eval cancellation + force-release (#617)', () => {
       {
         service: null,
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => {}),
+        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
         escalate: () => generateId(),
       },

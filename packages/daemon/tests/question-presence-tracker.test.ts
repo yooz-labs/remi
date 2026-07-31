@@ -29,7 +29,10 @@ function question(opts: {
 
 function makeTracker() {
   const pushed: Question[] = [];
-  const tracker = new QuestionPresenceTracker((q) => pushed.push(q));
+  const tracker = new QuestionPresenceTracker((q) => {
+    pushed.push(q);
+    return undefined;
+  });
   return { tracker, pushed };
 }
 
@@ -100,6 +103,7 @@ describe('QuestionPresenceTracker per-agent pending', () => {
     const tracker = new QuestionPresenceTracker(() => {
       calls++;
       if (calls === 1) throw new Error('network blip');
+      return undefined;
     });
     tracker.recordPendingHook(question({ agentId: undefined, options: [opt('Yes', 'y')] }));
     tracker.onPTYPromptVisible(question({ agentId: undefined }));

@@ -366,7 +366,7 @@ describe('AutoApproveGate cross-session isolation via shared AutoApproveService 
   beforeEach(() => {
     server = startGatedServer();
     registries = [];
-    tracker = new QuestionPresenceTracker(() => {});
+    tracker = new QuestionPresenceTracker(() => undefined);
     configureLogger({ writeLog: () => {} });
   });
 

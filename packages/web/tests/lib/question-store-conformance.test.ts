@@ -248,10 +248,6 @@ describe('question-store conformance: real daemon store <-> real web reducer (#8
             adapter.sendRaw(connectionId, createQuestionResolved(SID, questionId as UUID, 'cancelled'));
           }
         },
-        // Confirmation gate (#888 review fix): only a push that actually
-        // landed in the store (survived QuestionDedup) is evidence of
-        // supersession.
-        isQuestionLive: (id) => sessionRegistry.getQuestion(SID, id as UUID) !== null,
       },
     );
   });

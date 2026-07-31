@@ -165,7 +165,7 @@ describe('TranscriptBinder drive mode (#453 phase 3, commit 5)', () => {
     const transcriptDiscovery = new TranscriptDiscovery();
     const hookServer = new RecordingHookServer();
     const messageApi = noopMessageAPI();
-    const tracker = new QuestionPresenceTracker(() => {});
+    const tracker = new QuestionPresenceTracker(() => undefined);
 
     sessionRegistry.registerSession(SID, tmpDir, fakePTY(), messageApi);
 

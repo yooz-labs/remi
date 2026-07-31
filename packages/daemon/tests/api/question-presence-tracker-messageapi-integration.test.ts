@@ -13,8 +13,9 @@
  * it always owns) + `QuestionPresenceTracker`, wired exactly the way
  * `cli.ts`'s `createNewSession` wires them:
  *   - the tracker's push sink is `messageApi.handleQuestion`, not a raw
- *     collector;
- *   - `isQuestionLive` reads `sessionRegistry.getQuestion`;
+ *     collector -- its `QuestionRegistrationOutcome` return (#888 criterion
+ *     iii) IS the confirmed-delivery signal `pairAndPush` consumes directly,
+ *     replacing the `isQuestionLive` dep this suite used to wire separately;
  *   - `onHooklessQuestionGone` calls `sessionRegistry.removeQuestion`.
  *
  * It reproduces the exact failure chain review found in the V1 mechanism:
@@ -91,7 +92,6 @@ function buildPipeline(): Pipeline {
   );
 
   const tracker = new QuestionPresenceTracker((q, opts) => messageApi.handleQuestion(q, opts), {
-    isQuestionLive: (id) => sessionRegistry.getQuestion(sid, id as UUID) !== null,
     onHooklessQuestionGone: (id, reason) => {
       sessionRegistry.removeQuestion(
         sid,
