@@ -31,6 +31,11 @@ export interface AttachClientOptions {
   timeout?: number;
   /** File descriptor for output. Defaults to 1 (stdout). Override in tests. */
   outputFd?: number;
+  /** Whether the reserved-row status bar (#754) is eligible to start.
+   *  Defaults to `process.stdout.isTTY === true`, same as production. Tests
+   *  run without a real TTY, so this is the hook that lets them exercise the
+   *  bar's actual wiring (including #932's `hasLiveQuestions`) end to end. */
+  statusBarEligible?: boolean;
 }
 
 export interface AttachClientResult {
@@ -59,9 +64,18 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
   // #754: latest daemon status snapshot (remi_status broadcast) + the
   // reserved-row bar rendering it — the same StatusBar the wrapper draws.
   // Only on a real TTY: piped/test output must never receive bar escapes.
-  const statusBarEligible = process.stdout.isTTY === true;
+  const statusBarEligible = opts.statusBarEligible ?? process.stdout.isTTY === true;
   let latestStatus: RemiStatus | null = null;
   let statusBar: StatusBar | null = null;
+  // #932: the authoritative live-question id set for this session, kept
+  // current by `question_snapshot` (sent unconditionally on attach via
+  // `resendPendingQuestions`, and again on every change via
+  // `onQuestionsChanged` -- see that broadcast's doc). Mirrors the wrapper's
+  // own `hasLiveQuestions` (`cli.ts:1525`,
+  // `sessionRegistry.getSession(id)?.currentQuestions.size > 0`) using data
+  // this client already receives, so the attach-path bar gets the same
+  // pause-while-live protection as the wrapper bar.
+  let liveQuestionIds = new Set<UUID>();
 
   function writeOutput(text: string): void {
     if (outputBroken) return;
@@ -174,6 +188,7 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
         rows: process.stdout.rows || 40,
       }),
       isEnabled: () => latestStatus !== null,
+      hasLiveQuestions: () => liveQuestionIds.size > 0,
       log: (msg) => process.stderr.write(`${msg}\n`),
     });
     statusBar.start();
@@ -257,6 +272,13 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
           writeOutput('\r\n\x1b[2m[remi] question answered\x1b[0m\r\n');
         }
       },
+      // #932: the authoritative live set, always overwritten (never merged --
+      // matches `QuestionStore`'s own "full current set, never a delta"
+      // contract). Feeds the status bar's `hasLiveQuestions`; see
+      // `liveQuestionIds`'s declaration for why this is the right signal.
+      question_snapshot: (m) => {
+        liveQuestionIds = new Set(m.questionIds);
+      },
       replay_batch: (m) => {
         for (const nested of m.messages) {
           renderMessage(nested, true);
@@ -309,7 +331,6 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
       hub_status: 'ignore',
       session_rotated: 'ignore',
       session_views: 'ignore',
-      question_snapshot: 'ignore',
     };
     dispatchMessage(msg, handlers);
   }
