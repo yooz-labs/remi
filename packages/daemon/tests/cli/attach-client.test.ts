@@ -705,6 +705,20 @@ describe('runAttachClient', () => {
       },
     });
 
+    // Peek the output mid-freeze (t=900: after the status-B send at t=600,
+    // well ahead of the resolve at t=1200), via a separate read handle so
+    // the write fd stays open. This is what actually proves suppression is
+    // holding rather than merely coinciding on a final count: if
+    // hasLiveQuestions() were broken (e.g. wired to a constant), the status
+    // change at t=600 would have produced its own repaint by the very next
+    // ~250ms tick, long before t=900 -- and the final bars.length could
+    // still land on 2 by coincidence (a plain dedup repaint at t=600 plus
+    // nothing else), masking the regression.
+    let midFreezeOutput = '';
+    setTimeout(() => {
+      midFreezeOutput = fs.readFileSync(outputPath, 'utf-8');
+    }, 900);
+
     await runAttachClient({
       host: 'localhost',
       port: TEST_PORT + 13,
@@ -714,14 +728,18 @@ describe('runAttachClient', () => {
       statusBarEligible: true,
     });
 
+    const midBars = [...midFreezeOutput.matchAll(/\x1b\[7m([^\x1b]*)\x1b\[0m/g)].map((m) => m[1]);
+    expect(midBars.length).toBe(1); // still frozen: only the onset paint so far
+    expect(midBars[0]).toContain('idle'); // not yet "thinking" -- the freeze held
+
     const output = readOutput();
     const bars = [...output.matchAll(/\x1b\[7m([^\x1b]*)\x1b\[0m/g)].map((m) => m[1]);
-    // Exactly two real paints: the bar's first-ever paint (deferred until
-    // question_snapshot arrives, which doubles as the onset paint since the
-    // question is already live by then -- status A, stored earlier), and
-    // the resumed paint on the transition back out (status B, reflecting
-    // the change made during the freeze). Every tick while frozen wrote
-    // nothing, despite the status having changed mid-freeze.
+    // Exactly two real paints total: the bar's first-ever paint (deferred
+    // until question_snapshot arrives, which doubles as the onset paint
+    // since the question is already live by then -- status A, stored
+    // earlier), and the resumed paint on the transition back out (status B,
+    // reflecting the change made during the freeze). Every tick while
+    // frozen wrote nothing, despite the status having changed mid-freeze.
     expect(bars.length).toBe(2);
     expect(bars[0]).toContain('idle');
     expect(bars[1]).toContain('thinking');
