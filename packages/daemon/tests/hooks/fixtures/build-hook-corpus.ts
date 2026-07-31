@@ -63,7 +63,7 @@
  *
  * `SessionStart` is registered too, and STILL has zero fixtures, for a
  * different and more interesting reason: the installed Claude Code binary
- * (`/Users/yahya/.local/share/claude/versions/2.1.220`) explicitly discards
+ * (`~/.local/share/claude/versions/2.1.220`) explicitly discards
  * `http`-type hook registrations for `SessionStart`/`Setup` before dispatch.
  * The relevant minified source (found via the same `rg -a -o -P` extraction
  * method `docs/claude-code-hook-contract.md` uses, anchored on the
@@ -87,6 +87,27 @@
  * arrived). Filed as a new issue; see the #886 part 2 PR description for the
  * number. `Setup` was never registered by remi at all, so its absence needs
  * no separate explanation.
+ *
+ * TEST CONTAMINATION HAZARD, discovered building this corpus: that same
+ * "unconditional write" is exactly what makes `~/.remi/hook-diag.jsonl`
+ * unsafe to treat as pure Claude Code traffic. `hook-server.test.ts` and
+ * friends construct a REAL `HookServer` and POST real HTTP requests at it
+ * (`session_id: 'test-session'`, `cwd: '/tmp/project'`,
+ * `transcript_path: '/tmp/test.jsonl'`, etc.) to exercise `handleRequest` --
+ * and `handleRequest` cannot distinguish a test's POST from Claude Code's,
+ * so with `REMI_HOOK_DEBUG=1` set in the shell (as this repo's own `AGENTS.md`
+ * / project memory tells you to do to build this exact corpus), running
+ * `bun test packages/daemon/tests/hooks/` appends synthetic, FABRICATED
+ * records to the same file real captures live in -- including a handful of
+ * `SessionStart`/`UserPromptSubmit`/`UnknownEvent` rows that would otherwise
+ * look like exactly the kind of surprising-but-real finding this corpus
+ * exists to catch. `looksLikeTestFixture` below filters these out by the
+ * `/tmp`-rooted `cwd`/`transcript_path` signature every hooks test fixture in
+ * this repo happens to share (verified: zero false positives against every
+ * pre-existing real capture in this corpus's source data) -- a general
+ * signature, not an enumeration of specific test session ids, so a new test
+ * file that follows the same obvious "/tmp for dummy paths" convention is
+ * caught by the same check.
  */
 
 import * as fs from 'node:fs';
@@ -112,6 +133,28 @@ const OUTPUT_PATH = expandHome(
   argValue('--output') ?? path.join(import.meta.dir, 'hook-corpus.jsonl'),
 );
 
+// --- Test-fixture contamination filter --------------------------------------
+
+/**
+ * True for a record that is a synthetic test payload, not real Claude Code
+ * traffic -- see the "TEST CONTAMINATION HAZARD" module doc note above for
+ * how these end up in `hook-diag.jsonl` at all. Every hooks-test dummy `cwd`/
+ * `transcript_path` in this repo is `/tmp`-rooted or the fixed
+ * `/Users/dev/my-project` sentinel (`grep -rn "cwd:\|transcript_path:"
+ * packages/daemon/tests/hooks/*.ts`); no real capture has ever had either.
+ */
+function looksLikeTestFixture(record: Record<string, unknown>): boolean {
+  const cwd = record['cwd'];
+  const transcriptPath = record['transcript_path'];
+  if (typeof cwd === 'string' && (cwd.startsWith('/tmp') || cwd === '/Users/dev/my-project')) {
+    return true;
+  }
+  if (typeof transcriptPath === 'string' && transcriptPath.startsWith('/tmp')) {
+    return true;
+  }
+  return false;
+}
+
 // --- Redaction allowlist ----------------------------------------------------
 
 /**
@@ -122,6 +165,15 @@ const OUTPUT_PATH = expandHome(
  * stamps on each line), not Claude-Code-sourced content -- carries no path,
  * content, or identifier information, so it's added here (beyond the task's
  * suggested list) for chronological realism in the fixtures.
+ *
+ * `agent_type` was on this list; removed. It's a real `hook-types.ts`
+ * contract field (a low-cardinality string in principle), but the actual
+ * corpus's 22 distinct real values include issue-numbered subagent names
+ * from real PR-review fanout runs (e.g. `review-198`, `review-420-code`) --
+ * real workflow metadata, possibly naming private-repo issue numbers. The
+ * drift test only asserts field PRESENCE, never a literal value (confirmed:
+ * `grep -n agent_type contract-drift.test.ts contract-spec.ts` shows it used
+ * only as a field-name string), so redacting the value costs nothing.
  */
 const VERBATIM_PATHS = new Set<string>([
   'hook_event_name',
@@ -132,7 +184,6 @@ const VERBATIM_PATHS = new Set<string>([
   'stop_hook_active',
   'duration_ms',
   'is_interrupt',
-  'agent_type',
   'trigger',
   'source',
   '_ts',
@@ -233,6 +284,62 @@ function pseudonymize(fieldPath: string, real: string): string {
   return fake;
 }
 
+// --- Content-keyed maps: the key axis ---------------------------------------
+
+/**
+ * The allowlist above only ever checked VALUES. `redactValue`'s object
+ * branch iterated `Object.entries(value)` and redacted each `nested` value
+ * while copying `key` straight through, unchecked -- so a map keyed by free
+ * text leaks that text as a JSON object key, in full, regardless of what the
+ * allowlist says about values.
+ *
+ * This bit the corpus for real: `AskUserQuestion`'s `tool_input`/
+ * `tool_response` carry `answers` and `annotations`, both maps keyed by the
+ * LITERAL question string (`{"<the question text>": "<the answer>"}`), not
+ * a fixed schema field name. Found by an independent audit that scanned the
+ * committed bytes for any object key outside this exact shape; the smoking
+ * gun was that the SAME text appeared twice in one record -- correctly
+ * redacted as the `question` field's value (`<redacted:str:95>`), and
+ * verbatim as an `answers`/`annotations` key one line later.
+ *
+ * `KEY_SHAPE_RE` is the durable fix: any object whose keys don't all look
+ * identifier-shaped is treated as content-keyed and converted to an array of
+ * `{key, value}` pairs with the key ALSO redacted (to a same-length
+ * placeholder, matching the value convention), rather than kept as a
+ * property name. Converted to an array, not a redacted-key object, so two
+ * real keys of different lengths never collide into the same placeholder
+ * key and silently overwrite each other (a JS object cannot hold two equal
+ * keys; an array of pairs has no such limit). This is a general path -- ANY
+ * future field shaped like `answers`/`annotations` is caught by the same
+ * check, not a second special case naming `AskUserQuestion` specifically.
+ */
+const KEY_SHAPE_RE = /^[A-Za-z0-9_.-]{1,40}$/;
+
+function isSafeKeyShape(key: string): boolean {
+  return KEY_SHAPE_RE.test(key);
+}
+
+function isContentKeyedObject(entries: [string, unknown][]): boolean {
+  // ANY key failing the shape check flips the WHOLE object into the
+  // {key,value}-array form -- neighboring ordinary-looking keys in a
+  // content-keyed map (e.g. a coincidentally short question) are not
+  // trusted just because they happen to pass the regex.
+  return entries.some(([key]) => !isSafeKeyShape(key));
+}
+
+function redactContentKeyedObject(
+  entries: [string, unknown][],
+  pathSoFar: string,
+): Array<{ key: string; value: unknown }> {
+  return entries.map(([key, nested]) => ({
+    key: `<redacted:str:${key.length}>`,
+    // The key itself is no longer a stable schema path (it WAS the content),
+    // so nested redaction continues from the parent path, not a path that
+    // embeds the free-text key.
+    value: redactValue(nested, pathSoFar),
+  }));
+}
+
 // --- Recursive, type-preserving redaction -----------------------------------
 
 function redactValue(value: unknown, pathSoFar: string): unknown {
@@ -247,8 +354,12 @@ function redactValue(value: unknown, pathSoFar: string): unknown {
     return value.map((item) => redactValue(item, pathSoFar));
   }
   if (typeof value === 'object') {
+    const entries = Object.entries(value);
+    if (isContentKeyedObject(entries)) {
+      return redactContentKeyedObject(entries, pathSoFar);
+    }
     const out: Record<string, unknown> = {};
-    for (const [key, nested] of Object.entries(value)) {
+    for (const [key, nested] of entries) {
       const nestedPath = pathSoFar === '' ? key : `${pathSoFar}.${key}`;
       out[key] = redactValue(nested, nestedPath);
     }
@@ -258,6 +369,32 @@ function redactValue(value: unknown, pathSoFar: string): unknown {
   if (typeof value === 'number') return 0;
   if (typeof value === 'boolean') return false;
   return '<redacted:unknown>';
+}
+
+/**
+ * Build-time gate (not just the logic above): recursively walks a REDACTED
+ * record and throws if any object key anywhere doesn't match
+ * `KEY_SHAPE_RE`. This is the durable half of the fix -- it converts "the
+ * redaction logic above is correct" from an assumption into something that
+ * fails the build loudly the moment it's wrong, for this field or any future
+ * one shaped like it. Runs over every kept record before anything is
+ * written, so a violation blocks the file from being produced at all.
+ */
+function assertAllKeysSafe(value: unknown, pathSoFar: string): void {
+  if (value === null || value === undefined) return;
+  if (Array.isArray(value)) {
+    value.forEach((item, i) => assertAllKeysSafe(item, `${pathSoFar}[${i}]`));
+    return;
+  }
+  if (typeof value !== 'object') return;
+  for (const [key, nested] of Object.entries(value)) {
+    if (!isSafeKeyShape(key)) {
+      throw new Error(
+        `Unsafe object key at ${pathSoFar || '<root>'}: "${key}" (length ${key.length}) does not match the identifier-shaped allowlist ${KEY_SHAPE_RE}. This means free text leaked into an object key (e.g. a content-keyed map like AskUserQuestion's answers/annotations) that redactValue's content-keyed-object handling did not catch. Fix redactValue -- do not hand-edit the corpus, the script is the source of truth.`,
+      );
+    }
+    assertAllKeysSafe(nested, pathSoFar === '' ? key : `${pathSoFar}.${key}`);
+  }
 }
 
 function redactRecord(record: Record<string, unknown>): Record<string, unknown> {
@@ -289,6 +426,7 @@ function shapeGroupKey(record: Record<string, unknown>): string {
 interface Summary {
   totalLines: number;
   malformedLines: number;
+  testFixtureLines: number;
   perEventRaw: Map<string, number>;
   perEventKept: Map<string, number>;
 }
@@ -305,6 +443,7 @@ function main(): void {
   const summary: Summary = {
     totalLines: lines.length,
     malformedLines: 0,
+    testFixtureLines: 0,
     perEventRaw: new Map(),
     perEventKept: new Map(),
   };
@@ -318,6 +457,10 @@ function main(): void {
       record = JSON.parse(line) as Record<string, unknown>;
     } catch {
       summary.malformedLines += 1;
+      continue;
+    }
+    if (looksLikeTestFixture(record)) {
+      summary.testFixtureLines += 1;
       continue;
     }
     const event = String(record['hook_event_name'] ?? '<missing>');
@@ -338,13 +481,19 @@ function main(): void {
   }
 
   const redacted = kept.map((record) => redactRecord(record));
+
+  // Gate: validated BEFORE anything is written. A violation here aborts the
+  // build with no output file, rather than writing a corpus that still
+  // needs a human to notice the leak (see assertAllKeysSafe's doc comment).
+  redacted.forEach((record, i) => assertAllKeysSafe(record, `record[${i}]`));
+
   const outLines = redacted.map((r) => JSON.stringify(r));
   fs.writeFileSync(OUTPUT_PATH, `${outLines.join('\n')}\n`);
 
   const outBytes = fs.statSync(OUTPUT_PATH).size;
 
   console.log(
-    `Read ${summary.totalLines} lines from ${INPUT_PATH} (${summary.malformedLines} malformed, skipped)`,
+    `Read ${summary.totalLines} lines from ${INPUT_PATH} (${summary.malformedLines} malformed, ${summary.testFixtureLines} synthetic test-fixture records, both skipped)`,
   );
   console.log('Raw counts by event:');
   for (const [event, n] of [...summary.perEventRaw.entries()].sort((a, b) => b[1] - a[1])) {
