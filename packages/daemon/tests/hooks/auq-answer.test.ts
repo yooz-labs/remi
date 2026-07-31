@@ -17,6 +17,15 @@ const { DOWN, ENTER, SPACE, UP } = AUQ_KEYS;
 const single = (optionCount: number): AuqQuestionSpec => ({ multiSelect: false, optionCount });
 const multi = (optionCount: number): AuqQuestionSpec => ({ multiSelect: true, optionCount });
 
+// The committed fixtures below predate #934's provenance stamp (a bare
+// `live`/`test` token `pty-capture.ts` now writes between the timestamp and
+// the JSON payload), so every line here is the OLD 3-field shape
+// (`IN/OUT ts payload`). The `(?:(?:live|test) )?` segment is there so a
+// FUTURE re-capture (taken with the post-#934 `pty-capture.ts`, 4 fields)
+// parses too, without silently swallowing every line the day someone next
+// refreshes one of these fixtures.
+const CAPTURE_LINE_RE = /^(?:live|test) /;
+
 /** Concatenate the decoded OUT payloads of a capture fixture (rendered frames). */
 function fixtureOutput(name: string): string {
   const path = join(import.meta.dir, '..', 'fixtures', 'auq', name);
@@ -25,8 +34,9 @@ function fixtureOutput(name: string): string {
   for (const l of lines) {
     const m = l.match(/^OUT \d+ (.*)$/);
     if (!m) continue;
+    const payload = (m[1] as string).replace(CAPTURE_LINE_RE, '');
     try {
-      out += JSON.parse(m[1] as string) as string;
+      out += JSON.parse(payload) as string;
     } catch {
       // skip a malformed capture line
     }
@@ -42,8 +52,9 @@ function fixtureInputs(name: string): string[] {
   for (const l of lines) {
     const m = l.match(/^IN \d+ (.*)$/);
     if (!m) continue;
+    const payload = (m[1] as string).replace(CAPTURE_LINE_RE, '');
     try {
-      payloads.push(JSON.parse(m[1] as string) as string);
+      payloads.push(JSON.parse(payload) as string);
     } catch {
       // skip a malformed capture line
     }
