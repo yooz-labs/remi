@@ -72,6 +72,12 @@ describe('traceQuestionEvent (#808)', () => {
       });
       expect(typeof added['ts']).toBe('string');
       expect(Number.isNaN(Date.parse(added['ts'] as string))).toBe(false);
+      // #934: this worker runs as a `Bun.spawn`'d subprocess that inherits
+      // NODE_ENV=test from the parent `bun test` process (runWorker's env
+      // rebuild only strips REMI_QUESTION_TRACE, nothing else), so the
+      // provenance stamp reads 'test' here -- the field a reader/corpus
+      // filters on to exclude exactly this kind of synthetic record.
+      expect(added['provenance']).toBe('test');
 
       expect(removed).toMatchObject({
         action: 'remove',
@@ -83,6 +89,7 @@ describe('traceQuestionEvent (#808)', () => {
         signal: 'PostToolUse-subagent',
         throughFunnel: true,
       });
+      expect(removed['provenance']).toBe('test');
     } finally {
       fs.rmSync(tmpHome, { recursive: true, force: true });
     }

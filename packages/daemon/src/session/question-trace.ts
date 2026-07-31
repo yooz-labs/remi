@@ -16,11 +16,21 @@
  * so a broken sink is still visible without spamming the log. Disabled (the
  * default) short-circuits before touching the filesystem at all, so this can
  * never affect the decision path it observes.
+ *
+ * Also mirrors `hook-diag.jsonl`'s contamination problem (#934): every
+ * `bun test` run that exercises `QuestionStore`/`SessionRegistry` with
+ * `REMI_QUESTION_TRACE=1` set appends synthetic records to this SAME file a
+ * real session writes to -- `traceQuestionEvent` cannot tell a test's direct
+ * call from a real hook-driven one, any more than `HookServer.handleRequest`
+ * can tell a test's POST from Claude Code's. Every record now carries a
+ * `provenance` field (`debug/provenance.ts`) for exactly that reason.
  */
 
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import type { QuestionSource } from '@remi/shared';
+import { debugProvenance } from '../debug/provenance.ts';
 
 /** One question-lifecycle event. */
 export interface QuestionTraceRecord {
@@ -62,6 +72,17 @@ export interface QuestionTraceRecord {
    *  (not every removal path has it — a plain user-answered question, for
    *  instance, does not carry a tool name). */
   toolName?: string | undefined;
+  /**
+   * `Question.source` (#574) at the moment of an 'add'/'remove': which of
+   * remi's own question-detection paths produced it ('permission_request',
+   * 'notification', 'pty', 'elicitation'). Added for #934 alongside the
+   * provenance stamp -- #920's live reproduction needed exactly this to say
+   * which card produced a given PTY write and could not, because this field
+   * did not exist. Absent when the question object itself never had a
+   * `source` (legacy/PTY-only paths that predate #574, or a call site that
+   * does not have the `Question` object in scope).
+   */
+  questionSource?: QuestionSource | undefined;
   /** The event or reason that caused this action, e.g. 'PostToolUse',
    *  'PostToolUse-subagent', 'Stop', 'SubagentStop', 'user_answer',
    *  'STALE_ANSWER', 'duplicate-re-park-subagent', 'session_restart'. */
@@ -105,6 +126,20 @@ export interface QuestionTraceRecord {
    *  pending id list for a stale-answer rejection). Kept loose so the trace
    *  can absorb future signal types without a schema migration. */
   detail?: Record<string, unknown> | undefined;
+
+  // NOT ADDED (#934, scoped out): the answer payload itself. Unlike
+  // `questionSource`, no removal call site currently has an answer string in
+  // scope at `traceQuestionEvent`-call time -- `QuestionStore.remove` only
+  // receives `signal`/`toolName`/`callSite`, and most removals are
+  // hook-driven (a tool completing, a Stop sweep), not answer-driven, so
+  // there is no answer to attach for them at all. Adding it for the
+  // `user_answer:*` paths that DO have one would mean threading an optional
+  // `answer` string through `SessionRegistry.removeQuestion` ->
+  // `QuestionStore.remove` and populating it at the handful of call sites in
+  // `input-events.ts` that have it, leaving every other call site passing
+  // undefined -- judged not cheap enough to do well in this change (the risk
+  // being a half-populated field that reads as complete and isn't, the exact
+  // failure class #934 exists to close). Left as follow-up.
 }
 
 const TRACE_FILE_NAME = 'question-trace.jsonl';
@@ -121,11 +156,22 @@ function isEnabled(): boolean {
  * on every call, so a broken sink cannot spam the log) and otherwise
  * swallowed — this function must NEVER be able to affect the question
  * lifecycle it is only observing.
+ *
+ * `provenance` (#934): a test calling `SessionRegistry`/`QuestionStore`
+ * directly is indistinguishable from a real hook-driven mutation by shape
+ * alone -- both produce a well-formed `QuestionTraceRecord`. Stamped on every
+ * line (see `debug/provenance.ts`) so a reader can filter to genuine records
+ * by a real field: 965 of 3,582 lines on a real machine carried the test
+ * suite's hardcoded question id before this existed.
  */
 export function traceQuestionEvent(record: QuestionTraceRecord): void {
   if (!isEnabled()) return;
   try {
-    const line = JSON.stringify({ ts: new Date().toISOString(), ...record });
+    const line = JSON.stringify({
+      ts: new Date().toISOString(),
+      provenance: debugProvenance(),
+      ...record,
+    });
     const remiDir = path.join(os.homedir(), '.remi');
     fs.mkdirSync(remiDir, { recursive: true });
     fs.appendFileSync(path.join(remiDir, TRACE_FILE_NAME), `${line}\n`);

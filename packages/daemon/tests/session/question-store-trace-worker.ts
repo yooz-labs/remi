@@ -37,6 +37,11 @@ for (let i = 0; i < 9; i++) {
     options: [],
     allowsFreeText: true,
     isAnswered: false,
+    // #934: exercises questionSource threading through remove/evict/clear --
+    // deliberately a real, non-default value (not the more common
+    // 'permission_request') so a test passing on an accidental default would
+    // still be caught.
+    source: 'pty',
   });
 }
 

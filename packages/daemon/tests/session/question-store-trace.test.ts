@@ -82,6 +82,26 @@ describe('question-trace callSite defaults survive the #888 QuestionStore extrac
       for (const r of removes) {
         expect(r['throughFunnel']).toBe(true);
       }
+
+      // #934: every removal record carries the removed Question's own
+      // `source` -- the field #920 needed to say which card produced a given
+      // PTY write and could not, because it did not exist on the trace at
+      // all. The worker constructs every question with source: 'pty'
+      // specifically so this is a real threaded value, not a coincidental
+      // default.
+      for (const r of removes) {
+        expect(r['questionSource']).toBe('pty');
+      }
+
+      // #934: every line (add and remove alike) is provenance-stamped.
+      // This whole file runs inside a `Bun.spawn`'d worker that inherits
+      // NODE_ENV=test from the parent `bun test` process (never stripped by
+      // `runWorker`'s env-rebuild), so every line reads 'test' here --
+      // proving the stamp fires for direct QuestionStore/SessionRegistry
+      // calls, not just HTTP-POSTed hook traffic.
+      for (const line of lines) {
+        expect(line['provenance']).toBe('test');
+      }
     } finally {
       fs.rmSync(tmpHome, { recursive: true, force: true });
     }
