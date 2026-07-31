@@ -51,6 +51,19 @@ interface TranscriptEntryBase {
   readonly cwd?: string;
   readonly version?: string;
   readonly gitBranch?: string;
+  /**
+   * Top-level flag (sibling of `type`/`message`, NOT inside `message`),
+   * confirmed present on real `role: "user"` entries by direct inspection of
+   * live `~/.claude/projects/*\/*.jsonl` files (#893 review correction). True
+   * on entries Claude Code itself injected into a "user"-role slot rather
+   * than genuine human keystrokes: an `<agent-message from="...">`-carrying
+   * cross-session message, a `<local-command-caveat>` notice, a scheduled/
+   * heartbeat task prompt, and a `<system-reminder>`. These are STRUCTURALLY
+   * indistinguishable from a real prompt by content shape alone (plain
+   * string, `role: "user"`) — `isMeta` is the only discriminator, and
+   * `auto-approve/authority.ts` depends on it being present and accurate.
+   */
+  readonly isMeta?: boolean;
 }
 
 /** A user message entry */

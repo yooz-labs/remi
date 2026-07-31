@@ -10,6 +10,7 @@
  */
 
 import { errorToString } from '@remi/shared';
+import { enforceAuthorityBoundary } from './authority.ts';
 import { fileActivityRecord } from './engine-activity.ts';
 import type { EngineHost } from './engine-host.ts';
 import { clearModelCache, pullModel, unloadModel } from './engine-models.ts';
@@ -628,6 +629,14 @@ export class AutoApproveService {
    *            member permission (mirrors the gate's own `evalIsSubagentById`),
    *            so a QUEUED waiter for it can be spared by
    *            `drainScope(scope, {mainOnly: true})`.
+   * @param authority Optional recent-human-turns summary (Q9, #893; see
+   *            `authority.ts`). Passed straight to `buildPrompt` as the
+   *            CONVERSATION CONTEXT block. When present, an `approve` verdict
+   *            is re-checked by `enforceAuthorityBoundary` against a hardcoded
+   *            catastrophic-pattern list AFTER the LLM decides — the code-level
+   *            trust boundary that holds regardless of what the model's
+   *            reasoning said, so authority text can lower escalation for a
+   *            benign operation but can never approve a DENY-FLOOR-shaped one.
    */
   async evaluate(
     toolName: string,
@@ -638,6 +647,7 @@ export class AutoApproveService {
     evalId?: number,
     scope?: string,
     isSubagent?: boolean,
+    authority?: string,
   ): Promise<AutoApproveResult> {
     const start = Date.now();
     // #820: push the idle-unload deadline out. Called at the START so a long
@@ -818,7 +828,7 @@ export class AutoApproveService {
               normalisedSuggestions ?? [],
               this.instructions,
             )
-          : buildPrompt(toolName, toolInput, this.instructions);
+          : buildPrompt(toolName, toolInput, this.instructions, authority);
         // Hard kill via Promise.race: even if fetch ignores the abort signal
         // (provider hang, Bun runtime quirk), evaluate() returns within
         // timeoutMs. The race timer also calls abort() so a fetch that does
@@ -834,7 +844,7 @@ export class AutoApproveService {
         ]);
         const durationMs = Date.now() - start;
 
-        const result: AutoApproveResult = useMultiChoice
+        let result: AutoApproveResult = useMultiChoice
           ? (() => {
               const parsedMc = parseMultiChoiceDecision(
                 response.content,
@@ -871,6 +881,30 @@ export class AutoApproveService {
                   : {}),
               };
             })();
+
+        // Q9 (#893) trust boundary: a binary (non-multichoice) 'approve' verdict
+        // reached with an authority block in the prompt is re-checked here,
+        // deliberately AFTER parsing and with no access to `parsed.reasoning` --
+        // the whole point is that this check cannot be talked into skipping
+        // itself by whatever the model's own reasoning says. Only ever
+        // downgrades approve -> escalate; never touches deny/escalate/pick.
+        const authorityPresent = (authority?.trim().length ?? 0) > 0;
+        if (!useMultiChoice && authorityPresent && result.decision === 'approve') {
+          const guarded = enforceAuthorityBoundary(toolName, toolInput, result.decision, true);
+          if (guarded.overridden) {
+            const original = result;
+            result = {
+              decision: 'escalate',
+              reasoning: `Trust boundary (#893): authority-influenced approve blocked, matched DENY FLOOR pattern "${guarded.matchedPattern}". Original model reasoning: ${original.reasoning}`,
+              durationMs,
+              model: original.model,
+              summary: 'Review this command before it runs?',
+            };
+            this.logFn(
+              `${prefix} TRUST BOUNDARY ${toolName}: approve -> escalate (matched "${guarded.matchedPattern}") (${durationMs}ms)`,
+            );
+          }
+        }
 
         if (this.logDecisions) {
           const denyPrefix = result.decision === 'deny' ? `${prefix} DENIED` : prefix;

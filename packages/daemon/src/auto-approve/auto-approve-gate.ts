@@ -256,6 +256,11 @@ export interface AutoApproveEvaluator {
      *  spare it the same way `cancelStale`'s running-eval cancel already
      *  spares a subagent eval via `evalIsSubagentById`. */
     isSubagent?: boolean,
+    /** Q9 (#893): recent-human-turns authority summary, see
+     *  `AutoApproveGateDeps.getAuthority`. Threaded straight through to
+     *  `buildPrompt`'s CONVERSATION CONTEXT block; the trust boundary itself
+     *  is enforced inside the evaluator, not here. */
+    authority?: string,
   ): Promise<AutoApproveResult>;
   /**
    * Abort an in-flight `evaluate`. With `evalId`, aborts ONLY when that id is the
@@ -289,6 +294,18 @@ export interface AutoApproveGateDeps {
   tracker: QuestionPresenceTracker;
   /** Wraps `HookEventBridge.isInSubagentContext()`. Read live per branch (async TOCTOU). */
   isInSubagentContext: () => boolean;
+  /**
+   * Q9 (#893): this session's authority summary — the human's own typed
+   * turns, from `UserPromptSubmit` (primary) with a filtered transcript
+   * fallback (`auto-approve/authority.ts`'s `resolveAuthority`). Read fresh
+   * on every eval call site below so a turn submitted mid-session is picked
+   * up immediately. Absent, or an empty/whitespace string, means no
+   * CONVERSATION CONTEXT block — identical prompt/behavior to pre-#893.
+   * Synchronous and cheap: both sources are in-memory (a ring buffer / an
+   * already-loaded `TranscriptWatcher`'s cached entries), never a disk read
+   * at call time.
+   */
+  getAuthority?: () => string;
   /**
    * Reset the subagent-context tracker (#710). Called ONLY when a MAIN-tagged
    * PermissionRequest (`agent_id` absent) observes `isInSubagentContext()`
@@ -1243,6 +1260,7 @@ export class AutoApproveGate {
         // can isolate this eval from every other session's.
         this.sessionId,
         isSubagent,
+        this.authorityForEval(),
       )
       .finally(() => {
         this.evalIsSubagentById.delete(evalId);
@@ -1727,6 +1745,7 @@ export class AutoApproveGate {
         evalId,
         this.sessionId,
         true,
+        this.authorityForEval(),
       );
     } catch (err) {
       logError(`[AutoApprove ${this.sessionTag}] Parked-render eval threw; escalating:`, err);
@@ -1897,6 +1916,7 @@ export class AutoApproveGate {
         evalId,
         this.sessionId,
         isSubagent,
+        this.authorityForEval(),
       );
     } catch (err) {
       logError(`[AutoApprove ${this.sessionTag}] escalate_model second opinion threw:`, err);
@@ -1939,6 +1959,24 @@ export class AutoApproveGate {
       fn(arg);
     } catch (err) {
       logError(`[AutoApprove ${this.sessionTag}] ${label} cue threw (cosmetic; ignored):`, err);
+    }
+  }
+
+  /**
+   * Read this eval's authority text (Q9, #893) via `deps.getAuthority`, fresh
+   * per call so a mid-session turn is picked up immediately. Throw-safe like
+   * the cues above: a failure here must escalate the eval toward its normal
+   * "no authority" behavior, never abort the permission decision itself.
+   */
+  private authorityForEval(): string | undefined {
+    const getAuthority = this.deps.getAuthority;
+    if (!getAuthority) return undefined;
+    try {
+      const text = getAuthority();
+      return text.trim().length > 0 ? text : undefined;
+    } catch (err) {
+      logError(`[AutoApprove ${this.sessionTag}] getAuthority threw (ignored):`, err);
+      return undefined;
     }
   }
 

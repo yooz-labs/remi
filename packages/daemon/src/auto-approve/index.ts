@@ -1,6 +1,13 @@
 export { AutoApproveService, parseDecision } from './auto-approve-service.ts';
 export { AutoApproveGate } from './auto-approve-gate.ts';
 export type { AutoApproveEvaluator, AutoApproveGateDeps } from './auto-approve-gate.ts';
+export {
+  AuthorityStore,
+  buildAuthorityFromTranscript,
+  enforceAuthorityBoundary,
+  resolveAuthority,
+} from './authority.ts';
+export type { AuthorityBoundaryResult } from './authority.ts';
 export { EngineHost } from './engine-host.ts';
 export type { EngineHostState, EngineOwnership, PidStore } from './engine-host.ts';
 export {
