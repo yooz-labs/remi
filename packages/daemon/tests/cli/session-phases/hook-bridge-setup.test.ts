@@ -3030,14 +3030,37 @@ describe('setupHookBridge', () => {
     // live PTY without an intervening SessionEnd. That listener is deleted
     // (Claude Code hard-discards http-type hooks for SessionStart, so it
     // never fired in production either -- see hook-types.ts's
-    // REMI_REGISTERED_HOOK_EVENTS doc comment). The underlying binder logic
-    // (`preemptOnSessionStart`, `incomingReclaimsViaMarker`, zombie-sibling
-    // handling) is unit-tested directly against `TranscriptBinder` in
-    // `tests/transcript/transcript-binder.test.ts` (see its own "#451" and
-    // "zombie sibling" cases), which calls `preemptOnSessionStart` +
-    // `onHookEvent` directly rather than through this deleted wiring. Only
-    // the ONE test below survives here: it locks via the store-adoption path
-    // (`seedLock` + a single PreToolUse), which never depended on
+    // REMI_REGISTERED_HOOK_EVENTS doc comment).
+    //
+    // Deleted rather than "covered elsewhere": the scenarios these tests
+    // exercised hinged on `preemptOnSessionStart`'s sibling/ownership guard
+    // (`!this.hasSiblingInDir() || this.ownsTranscript(event.transcript_path)`,
+    // `transcript-binder.ts:480`) taking its `!hasSiblingInDir()` branch --
+    // i.e. a rotation event arriving with an UNMARKED or foreign-port
+    // transcript (`ownsTranscript()` false) while a sibling is present. That
+    // branch is now unreachable through `preemptOnSessionStart`'s only
+    // production caller: `feedSyntheticRotation`'s candidate loop
+    // (`transcript-binder.ts:~1117`) already drops any candidate whose
+    // `ownerPort !== currentPort()` BEFORE it ever calls
+    // `preemptOnSessionStart`, so `ownsTranscript()` is guaranteed true by
+    // the time it runs -- the `!hasSiblingInDir()` side of the OR never
+    // gets to matter. The deleted tests were not testing dead-but-parallel
+    // coverage; they were testing a guard configuration that can no longer
+    // occur.
+    //
+    // This is NOT a matched set against `transcript-binder.test.ts`: that
+    // file has exactly ONE `#451`-labeled test (`#451: restart with a live
+    // sibling + unmarked transcript defers`, line 496) and ONE zombie test
+    // (`a zombie sibling (claude child exited) does not by itself block
+    // reclaim, but staleness does`, line 1702) -- and the zombie test's
+    // single `admitted === false` assertion cannot on its own distinguish
+    // "zombie correctly ignored, staleness alone blocks" from "zombie
+    // incorrectly blocks" (its setup combines a zombie sibling AND a stale
+    // transcript, per its own title). Cited as the one surviving analog, not
+    // as a parallel set proving the deleted scenarios stayed covered.
+    //
+    // Only the ONE test below survives here: it locks via the store-adoption
+    // path (`seedLock` + a single PreToolUse), which never depended on
     // SessionStart at all.
     test('self-heals the watcher when locked-from-store but the fallback gave up', () => {
       // The osa case: single daemon, no sibling. The lock is adopted from the
