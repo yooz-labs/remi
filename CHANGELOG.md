@@ -101,6 +101,47 @@ All notable changes to Remi are documented here.
   newly-registered events as unregistered.
 
 ### Fixed
+- **Every opt-in debug sink now stamps provenance on each record, so a
+  synthetic test write is distinguishable from a real one by data** (#934).
+  `REMI_HOOK_DEBUG=1` (`hook-diag.jsonl`) and `REMI_QUESTION_TRACE=1`
+  (`question-trace.jsonl`) are both keyed on an env var the test suite runs
+  under too, and both write to the SAME fixed `~/.remi/*` path a real
+  session uses — `HookServer.handleRequest` cannot tell a test's HTTP POST
+  from Claude Code's, and `QuestionStore`/`SessionRegistry` cannot tell a
+  test calling `add()`/`remove()` directly from a real hook-driven mutation.
+  93+ records in the owner's real `hook-diag.jsonl` had been contaminated
+  with fabricated rows (including `SessionStart`/`UserPromptSubmit`, both
+  contradicting confirmed hook-registration behavior), and 965 of 3,582
+  lines in `question-trace.jsonl` carried the test suite's hardcoded
+  question id. `REMI_PTY_CAPTURE` (`pty/pty-capture.ts`) turned out to be a
+  third sink with the same class of problem — its destination is the env
+  var's own value rather than a fixed path, but any test that spawns a real
+  `PtySession` while a developer's shell has it set inherits the same
+  contamination. All three now call a shared `debugProvenance()`
+  (`src/debug/provenance.ts`, `'live' | 'test'` from `NODE_ENV`, which `bun
+  test` sets for the whole process) and stamp it on every record —
+  `_provenance` for `hook-diag.jsonl`, `provenance` for
+  `question-trace.jsonl`, a bare third token for `pty-capture`'s
+  line-oriented (not JSONL) format. This stamps rather than gates: each
+  sink's own env var still controls whether it writes at all, unconditionally
+  — gating the write itself on `NODE_ENV !== 'test'` was considered and
+  rejected, since a developer running the daemon and the test suite in
+  separate shells that happen to share an ambient `NODE_ENV=test` would then
+  silently lose real diagnostic capture with no signal anything was
+  suppressed. The corpus builder (`build-hook-corpus.ts`) now filters
+  primarily on `_provenance`; the old `/tmp`-rooted-path heuristic
+  (`looksLikeTestFixture`) survives only as a fallback for records captured
+  before this field existed, not as the mechanism. Also added: the
+  question-trace schema now records `Question.source` on every 'remove'
+  event (`questionSource`) — cheap, since the removed `Question` object was
+  already in scope at every call site — closing part of the gap #920 found
+  where a stray PTY write could not be traced back to the card that produced
+  it. The answer payload itself was NOT added: no removal call site
+  currently has an answer string in scope (most removals are hook-driven,
+  not answer-driven), and threading one through would need
+  `SessionRegistry.removeQuestion`'s signature changed at every caller —
+  judged not cheap enough to do well in this change; left as follow-up.
+
 - **The redundant `Notification(permission_prompt)` question synthesis is
   deleted** (#890, Q5). It fed a `QuestionPresenceTracker` stash that only
   ever mattered if it arrived with no paired `PermissionRequest` — a richer
