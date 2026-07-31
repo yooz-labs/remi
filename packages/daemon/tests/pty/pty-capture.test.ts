@@ -41,10 +41,13 @@ describe('ptyCapture (#627 diagnostic)', () => {
 
     const lines = readFileSync(file, 'utf8').trim().split('\n');
     expect(lines).toHaveLength(3);
-    // IN lines: marker + ms timestamp + JSON of the raw bytes (escapes visible).
-    expect(lines[0]).toMatch(/^IN \d+ "\\u001b\[B"$/);
-    expect(lines[1]).toMatch(/^IN \d+ "\\r"$/);
-    expect(lines[2]).toMatch(/^OUT \d+ ".*option"$/);
+    // IN lines: marker + ms timestamp + provenance (#934) + JSON of the raw
+    // bytes (escapes visible). `bun test` sets NODE_ENV=test for the whole
+    // process (verified in provenance.test.ts), so every line here reads
+    // 'test' -- proving the stamp, not just its presence.
+    expect(lines[0]).toMatch(/^IN \d+ test "\\u001b\[B"$/);
+    expect(lines[1]).toMatch(/^IN \d+ test "\\r"$/);
+    expect(lines[2]).toMatch(/^OUT \d+ test ".*option"$/);
   });
 
   test('decodes Uint8Array output to text', () => {
@@ -52,6 +55,25 @@ describe('ptyCapture (#627 diagnostic)', () => {
     process.env['REMI_PTY_CAPTURE'] = file;
     ptyCapture.out(new TextEncoder().encode('héllo'));
     const lines = readFileSync(file, 'utf8').trim().split('\n');
-    expect(lines[0]).toMatch(/^OUT \d+ "héllo"$/);
+    expect(lines[0]).toMatch(/^OUT \d+ test "héllo"$/);
+  });
+
+  test('stamps "live" provenance when NODE_ENV is not test (#934)', () => {
+    const file = join(dir, 'cap3.log');
+    process.env['REMI_PTY_CAPTURE'] = file;
+    const prevNodeEnv = process.env['NODE_ENV'];
+    try {
+      process.env['NODE_ENV'] = 'production';
+      ptyCapture.in('x');
+      const lines = readFileSync(file, 'utf8').trim().split('\n');
+      expect(lines[0]).toMatch(/^IN \d+ live "x"$/);
+    } finally {
+      if (prevNodeEnv === undefined) {
+        // biome-ignore lint/performance/noDelete: env vars must be truly unset
+        delete process.env['NODE_ENV'];
+      } else {
+        process.env['NODE_ENV'] = prevNodeEnv;
+      }
+    }
   });
 });
