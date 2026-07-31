@@ -37,8 +37,11 @@
  *      pending question, so the ~250ms timer cannot paint over a live prompt.
  *   2. A paint whose built escape sequence is byte-identical to the last one
  *      actually written is skipped -- most ticks rewrite identical bytes, and
- *      every write is an exposure window. `stop()` resets this so the next
- *      `render()` after a restart always writes unconditionally.
+ *      every write is an exposure window -- but only up to `HEARTBEAT_MS`: an
+ *      unbounded skip would stop reasserting DECSTBM (see `buildBarSequence`)
+ *      and trade this exposure for the region-reset bleed it exists to
+ *      prevent. `stop()` resets this so the next `render()` after a restart
+ *      always writes unconditionally.
  */
 
 import * as fs from 'node:fs';
@@ -59,6 +62,16 @@ export const APPROVED_FRESH_S = 5;
  *  single transient write error (e.g. an interrupted syscall) must not silence
  *  the bar for the whole session; a genuinely dead fd trips this within seconds. */
 export const MAX_RENDER_ERRORS = 3;
+/** Upper bound (ms) on how long an unchanged-status paint can be skipped
+ *  (#932). Every paint re-asserts DECSTBM (see `buildBarSequence`); skipping
+ *  unchanged paints forever would mean that assertion never fires while the
+ *  status happens to sit still, and Claude's own binary can reset the region
+ *  (`ESC[r`) at any time. 2000ms keeps that gap bounded to well under what a
+ *  user would notice as "the bar stopped updating," while still cutting the
+ *  write rate roughly 8x versus the old unconditional 250ms cadence -- most
+ *  of protection 2's exposure reduction. Not configurable: it exists to keep
+ *  the dedup and the region invariant coupled, not to be tuned per caller. */
+export const HEARTBEAT_MS = 2000;
 
 /**
  * Rows to report to the child PTY given the real terminal height and whether
@@ -132,8 +145,11 @@ export function formatStatusBar(status: Readonly<RemiStatus>, nowMs: number): st
  * on output and the bar bleeds up into Claude's content (#565). With the region
  * pinned to `1..row-1`, the terminal can only scroll the rows above the bar, so
  * `row` stays fixed. The region is re-asserted on every paint in case Claude
- * ever resets it. DECSTBM homes the cursor, but DECSC/DECRC (ESC7/ESC8) restore
- * it, and DECRC does not touch the region, so the region persists after.
+ * ever resets it (#932: this is why `StatusBar.render()`'s change-detection
+ * dedup is bounded by `HEARTBEAT_MS` rather than unconditional -- skipping
+ * this call forever would mean the region is never reasserted). DECSTBM
+ * homes the cursor, but DECSC/DECRC (ESC7/ESC8) restore it, and DECRC does
+ * not touch the region, so the region persists after.
  */
 export function buildBarSequence(row: number, cols: number, text: string): string {
   const visible = text.length > cols ? text.slice(0, cols) : text;
@@ -191,12 +207,12 @@ export interface StatusBarDeps {
  * ~250ms timer (#576) so the `evaluating Ns` counter stays smooth. Each tick
  * still calls `render()` unconditionally, but `render()` itself now (#932)
  * skips the actual fd write when the built sequence is unchanged from the
- * last one written, or while a question is live -- so a byte-identical status
- * (the common case) costs no write, at the tradeoff that a status-unchanged
- * scroll-away (Claude's inline output pushing the bar off row N) is not
- * re-asserted until the status next changes. `stop()` clears the row and
- * halts the loop. All draws are no-ops unless `isEnabled()` and a live fd and
- * enough rows.
+ * last one written AND less than `HEARTBEAT_MS` has passed since the last
+ * write, or while a question is live -- so a byte-identical status (the
+ * common case) mostly costs no write, while the DECSTBM re-assertion
+ * `buildBarSequence` depends on still happens at least every `HEARTBEAT_MS`
+ * regardless. `stop()` clears the row and halts the loop. All draws are
+ * no-ops unless `isEnabled()` and a live fd and enough rows.
  */
 export class StatusBar {
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -208,8 +224,14 @@ export class StatusBar {
   private disabled = false;
   /** The last escape sequence actually written, or null before the first
    *  write (or right after `stop()`). #932 protection 2: a paint identical to
-   *  this is skipped rather than rewritten. */
+   *  this is skipped rather than rewritten, bounded by `lastWriteAtMs` /
+   *  `HEARTBEAT_MS` below. */
   private lastRendered: string | null = null;
+  /** Epoch ms of the last actual write, or null before the first write (or
+   *  right after `stop()`). #932: a paint is forced once `HEARTBEAT_MS` has
+   *  elapsed since this, even if `lastRendered` is unchanged -- see
+   *  `HEARTBEAT_MS`'s doc for why this must stay bounded. */
+  private lastWriteAtMs: number | null = null;
   private readonly getStdoutFd: () => number | null;
   private readonly getStatus: () => Readonly<RemiStatus>;
   private readonly getSize: () => { cols: number; rows: number };
@@ -255,6 +277,7 @@ export class StatusBar {
     // bar sequence -- reset so a future render() after a restart always
     // writes unconditionally rather than comparing against stale content.
     this.lastRendered = null;
+    this.lastWriteAtMs = null;
   }
 
   /** Paint the reserved row now. Safe no-op when disabled / detached / no
@@ -275,11 +298,18 @@ export class StatusBar {
     try {
       const text = formatStatusBar(this.getStatus(), this.now());
       const sequence = buildBarSequence(rows, cols, text);
+      const nowMs = this.now();
+      const heartbeatDue =
+        this.lastWriteAtMs === null || nowMs - this.lastWriteAtMs >= HEARTBEAT_MS;
       // #932 protection 2: skip the write when nothing changed since the last
-      // successful paint -- most ticks would rewrite identical bytes.
-      if (sequence === this.lastRendered) return;
+      // successful paint AND the heartbeat hasn't elapsed -- most ticks would
+      // otherwise rewrite identical bytes. The heartbeat still forces a write
+      // at least every HEARTBEAT_MS so buildBarSequence's DECSTBM
+      // re-assertion stays bounded (see that doc and HEARTBEAT_MS's).
+      if (sequence === this.lastRendered && !heartbeatDue) return;
       this.writeToFd(fd, sequence);
       this.lastRendered = sequence;
+      this.lastWriteAtMs = nowMs;
       this.consecutiveErrors = 0;
       this.errorLogged = false;
     } catch (err) {

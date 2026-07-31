@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  HEARTBEAT_MS,
   MAX_RENDER_ERRORS,
   MIN_ROWS_FOR_BAR,
   StatusBar,
@@ -376,5 +377,23 @@ describe('StatusBar', () => {
     connections = 1;
     bar.render();
     expect(writes).toHaveLength(2);
+  });
+
+  test('a heartbeat repaint occurs after HEARTBEAT_MS even with an unchanged status', () => {
+    // buildBarSequence's DECSTBM re-assertion (the scroll region that keeps
+    // the bar's row fixed) rides on every paint; an unchanged-status dedup
+    // that never repaints would mean that assertion never fires either, so
+    // the heartbeat forces one at least every HEARTBEAT_MS regardless.
+    let nowMs = NOW_MS;
+    const { bar, writes } = harness({ now: () => nowMs });
+    bar.render();
+    expect(writes).toHaveLength(1);
+    nowMs += HEARTBEAT_MS - 1; // just under the threshold: still deduped
+    bar.render();
+    expect(writes).toHaveLength(1);
+    nowMs += 1; // now at the threshold: forced repaint despite same status
+    bar.render();
+    expect(writes).toHaveLength(2);
+    expect(writes[1]).toBe(writes[0]); // same content -- a heartbeat, not a change
   });
 });
