@@ -315,6 +315,193 @@ describe('createInputHandlers', () => {
       expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
     });
 
+    describe('prompt-currency guard (#920)', () => {
+      function addPtySourcedQuestion(sessionId: UUID): void {
+        sessionRegistry.addQuestion(sessionId, {
+          id: QID,
+          text: 'Proceed? (y/n)',
+          options: [
+            { value: 'y', label: 'Yes', isRecommended: true, isYes: true, isNo: false },
+            { value: 'n', label: 'No', isRecommended: false, isYes: false, isNo: true },
+          ],
+          allowsFreeText: false,
+          isAnswered: false,
+          source: 'pty',
+        });
+      }
+
+      // A stale `source: 'pty'` card (#920: the residual leak cohort -- no
+      // hook, so the active-question lookup alone cannot tell a live prompt
+      // from one that scrolled off screen minutes ago) must NOT reach the
+      // PTY, must clear itself, and must tell the client why.
+      test('refuses the PTY submit and clears the card when the prompt is gone', async () => {
+        const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+        const sessionId = sessionRegistry.createSessionId();
+        sessionRegistry.registerSession(
+          sessionId,
+          '/test/dir',
+          fakePTY(ptyCapture),
+          fakeMessageAPI(new Map()),
+        );
+        addPtySourcedQuestion(sessionId);
+
+        const resolvedCalls: Array<{ sessionId: UUID; questionId: UUID }> = [];
+        const handlers = createInputHandlers({
+          sessionRegistry,
+          bindingStore,
+          send,
+          isPromptCurrent: () => false, // the on-screen prompt is gone
+          onQuestionResolved: (s, q) => resolvedCalls.push({ sessionId: s, questionId: q }),
+        });
+
+        await handlers.onAnswer(CID, sessionId, QID, 'y');
+
+        expect(ptyCapture.submits).toEqual([]);
+        expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+        const errors = sendCalls.filter((c) => c.message.type === 'error');
+        expect(errors).toHaveLength(1);
+        expect((errors[0]?.message as unknown as { code: string }).code).toBe('STALE_ANSWER');
+        // The card must clear on every client (#585), not just refuse locally.
+        expect(resolvedCalls).toEqual([{ sessionId, questionId: QID }]);
+      });
+
+      // The regression test that matters: a `source: 'pty'` card whose prompt
+      // IS still on screen must submit exactly as before the guard existed.
+      test('still submits normally when the prompt IS current', async () => {
+        const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+        const sessionId = sessionRegistry.createSessionId();
+        sessionRegistry.registerSession(
+          sessionId,
+          '/test/dir',
+          fakePTY(ptyCapture),
+          fakeMessageAPI(new Map()),
+        );
+        addPtySourcedQuestion(sessionId);
+
+        const checked: Array<{ sessionId: UUID; questionId: UUID; ptyText: string }> = [];
+        const handlers = createInputHandlers({
+          sessionRegistry,
+          bindingStore,
+          send,
+          isPromptCurrent: (s, q, ptyText) => {
+            checked.push({ sessionId: s, questionId: q, ptyText });
+            return true;
+          },
+        });
+
+        await handlers.onAnswer(CID, sessionId, QID, 'y');
+
+        expect(ptyCapture.submits).toEqual(['y']);
+        expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+        expect(sendCalls.filter((c) => c.message.type === 'error')).toHaveLength(0);
+        expect(checked).toEqual([{ sessionId, questionId: QID, ptyText: 'Proceed? (y/n)' }]);
+      });
+
+      // A hook-paired question's merged id/text are the HOOK's, never the raw
+      // PTY parse (question-presence-tracker.ts consumeAndMerge), so a blanket
+      // currency check would misfire on this cohort. The guard is scoped to
+      // `source === 'pty'` ONLY; proven with a spy that throws if consulted.
+      test('a non-pty-sourced card is never checked', async () => {
+        const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+        const sessionId = sessionRegistry.createSessionId();
+        sessionRegistry.registerSession(
+          sessionId,
+          '/test/dir',
+          fakePTY(ptyCapture),
+          fakeMessageAPI(new Map()),
+        );
+        sessionRegistry.addQuestion(sessionId, {
+          id: QID,
+          text: 'Allow Bash: git push',
+          options: [
+            { value: '1', label: 'Yes', isRecommended: true, isYes: true, isNo: false },
+            { value: '2', label: 'No', isRecommended: false, isYes: false, isNo: true },
+          ],
+          allowsFreeText: false,
+          isAnswered: false,
+          source: 'permission_request',
+        });
+
+        const handlers = createInputHandlers({
+          sessionRegistry,
+          bindingStore,
+          send,
+          isPromptCurrent: () => {
+            throw new Error('isPromptCurrent must not be called for a non-pty source');
+          },
+        });
+
+        await handlers.onAnswer(CID, sessionId, QID, '1');
+
+        expect(ptyCapture.submits).toEqual(['1']);
+        expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+      });
+
+      // Held-hook answers resolve via the hook response and never PTY-submit
+      // (the `hadHold` branch) -- the guard lives only on the `!hadHold`
+      // PTY-submit branch, so it must never be consulted here, even for a
+      // pty-sourced question with an (unusual but not impossible) hold.
+      test('a held-hook answer is unaffected, even for a pty-sourced question', async () => {
+        const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+        const sessionId = sessionRegistry.createSessionId();
+        sessionRegistry.registerSession(
+          sessionId,
+          '/test/dir',
+          fakePTY(ptyCapture),
+          fakeMessageAPI(new Map()),
+        );
+        addPtySourcedQuestion(sessionId);
+
+        const handlers = createInputHandlers({
+          sessionRegistry,
+          bindingStore,
+          send,
+          resolveHeldPermission: () => true, // a hold existed and was resolved
+          isPromptCurrent: () => {
+            throw new Error('isPromptCurrent must not be called on the held-hook branch');
+          },
+        });
+
+        await handlers.onAnswer(CID, sessionId, QID, 'y');
+
+        expect(ptyCapture.submits).toEqual([]); // held -> no PTY submit
+        expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+        expect(sendCalls.filter((c) => c.message.type === 'error')).toHaveLength(0);
+      });
+
+      // #795: free-form PTY submission (raw keystrokes and structured input)
+      // is a deliberate feature -- any attached client can type into the
+      // session. The guard lives ONLY inside handleAnswer's card-submit
+      // branch, never on onUserInput; proven with a spy that throws if
+      // consulted.
+      test('free-form user_input (raw and structured) is unaffected', async () => {
+        const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+        const sessionId = sessionRegistry.createSessionId();
+        sessionRegistry.registerSession(
+          sessionId,
+          '/test/dir',
+          fakePTY(ptyCapture),
+          fakeMessageAPI(new Map()),
+        );
+        sessionRegistry.attachConnection(sessionId, CID);
+
+        const handlers = createInputHandlers({
+          sessionRegistry,
+          bindingStore,
+          send,
+          isPromptCurrent: () => {
+            throw new Error('isPromptCurrent must not be called for free-form user_input');
+          },
+        });
+
+        await handlers.onUserInput(CID, sessionId, '\x1b[A', true);
+        await handlers.onUserInput(CID, sessionId, 'hello world', false);
+
+        expect(ptyCapture.writes).toEqual(['\x1b[A']);
+        expect(ptyCapture.submits).toEqual(['hello world']);
+      });
+    });
+
     // #627: cancel/escape sends Esc to the PTY and clears the question — the
     // universal unstick, regardless of whether the prompt was understood.
     test('cancel sends Esc to the PTY and clears the question', async () => {

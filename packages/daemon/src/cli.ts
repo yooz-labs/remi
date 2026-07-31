@@ -1012,6 +1012,14 @@ const binderClosers: Map<UUID, () => void> = new Map();
 // (multi-session daemons). Populated in createNewSession after setupHookBridge;
 // removed on session close. Empty when no hookServer is configured.
 const sessionGateHandles: Map<UUID, SessionGateHandle> = new Map();
+// Per-session QuestionPresenceTracker (#920): the answer handler needs
+// `isPromptCurrent` to refuse a PTY submit for a `source: 'pty'` card whose
+// on-screen prompt is already gone (input-events.ts's prompt-currency
+// guard). Unlike `sessionGateHandles`, a tracker is constructed for EVERY
+// session in `createNewSession` regardless of whether a hook server is
+// active, so this map is populated unconditionally there; removed on
+// session close, same lifecycle as the other per-session maps below.
+const sessionTrackers: Map<UUID, QuestionPresenceTracker> = new Map();
 /**
  * Per-session "does this binder claim the event?" filters (#914).
  *
@@ -1105,6 +1113,10 @@ const sessionRegistry = new SessionRegistry(
       // Drop the per-session gate handle (#573); any held hook was already
       // released by the gate's closeBinder/cancelStale on teardown.
       sessionGateHandles.delete(sessionId);
+      // Drop the per-session QuestionPresenceTracker (#920): a stale entry
+      // here would make `isPromptCurrent` resolve against a dead session's
+      // last-observed PTY state instead of falling back to "no tracker".
+      sessionTrackers.delete(sessionId);
       // #914: drop the admits filter with the session, so a closed session's
       // binder can never keep admitting turns on its behalf.
       sessionAdmitsHandles.delete(sessionId);
@@ -1557,6 +1569,9 @@ async function createNewSession(
     isQuestionLive: (questionId) =>
       sessionRegistry.getQuestion(sessionId, questionId as UUID) !== null,
   });
+  // #920: register this session's tracker so the answer handler's
+  // prompt-currency guard (input-events.ts) can reach it by sessionId.
+  sessionTrackers.set(sessionId, tracker);
 
   const outputProcessor = new OutputProcessor(
     { sessionId, streamStatusOnly: true },
@@ -1871,6 +1886,13 @@ const inputHandlers: InputHandlers = createInputHandlers({
   // every other client.
   onQuestionResolved: (sessionId, questionId) =>
     onQuestionResolved(sessionId, questionId, 'answered'),
+  // #920: prompt-currency guard for a `source: 'pty'` card-answer, backed by
+  // the RIGHT session's tracker (populated per session in createNewSession,
+  // same map-per-sessionId shape as sessionGateHandles above). No tracker for
+  // this sessionId (session already closed, or never wired one) => "not
+  // current" — fail toward refusing the injection.
+  isPromptCurrent: (sessionId, questionId, ptyText) =>
+    sessionTrackers.get(sessionId)?.isPromptCurrent(questionId, ptyText) ?? false,
 });
 
 const sessionHandlers: SessionHandlers = createSessionHandlers({
