@@ -205,6 +205,10 @@ describe('setupHookBridge', () => {
       autoApprovePickIndex?: number;
       autoApproveDelayMs?: number;
       autoApproveThrows?: boolean;
+      /** Capture every evaluate() call's positional args (#893: used to assert
+       *  the authority text the gate threads through reaches the service).
+       *  Defaults to undefined (not recorded, matches every pre-#893 test). */
+      evaluateCallLog?: unknown[][];
       throwOnQuestionTimes?: number;
       submitInputThrows?: boolean;
       /** Test sink for cancel() invocations from the bridge. Each entry is
@@ -299,7 +303,8 @@ describe('setupHookBridge', () => {
     // exercises the outer .catch() handler.
     const autoApproveService = opts.autoApprove
       ? ({
-          evaluate: async () => {
+          evaluate: async (...args: unknown[]) => {
+            opts.evaluateCallLog?.push(args);
             if (opts.autoApproveDelayMs && opts.autoApproveDelayMs > 0) {
               await new Promise((r) => setTimeout(r, opts.autoApproveDelayMs));
             }
@@ -386,7 +391,7 @@ describe('setupHookBridge', () => {
     return { tracker, messageApi: localMessageApi };
   }
 
-  test('registers 13 .on() listeners + the synchronous PermissionRequest resolver (#496)', () => {
+  test('registers 14 .on() listeners + the synchronous PermissionRequest resolver (#496)', () => {
     build();
     const events = new Set(hookServer.listeners.keys());
     // PermissionRequest is NO LONGER a .on() listener — it is the synchronous
@@ -408,9 +413,104 @@ describe('setupHookBridge', () => {
         'PermissionDenied',
         'Elicitation',
         'ElicitationResult',
+        // Wired for Q9 (#893).
+        'UserPromptSubmit',
       ]),
     );
     expect(hookServer.permissionResolver).not.toBeNull();
+  });
+
+  describe('Q9 (#893): UserPromptSubmit -> authority', () => {
+    function lock(id: string): void {
+      hookServer.fire('SessionStart', {
+        session_id: id,
+        transcript_path: path.join(tmpDir, `${id}.jsonl`),
+        hook_event_name: 'SessionStart',
+      });
+    }
+
+    test('a recorded prompt reaches evaluate() as the authority arg on a later PermissionRequest', async () => {
+      const evaluateCallLog: unknown[][] = [];
+      build({ autoApprove: true, autoApproveDecision: 'approve', evaluateCallLog });
+      lock('claude-q9-1');
+
+      hookServer.fire('UserPromptSubmit', {
+        session_id: 'claude-q9-1',
+        transcript_path: path.join(tmpDir, 'claude-q9-1.jsonl'),
+        hook_event_name: 'UserPromptSubmit',
+        prompt: 'Please clean up the temp files in this directory.',
+        session_title: 'test session',
+      });
+
+      await hookServer.firePermission({
+        session_id: 'claude-q9-1',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'rm -rf /tmp/scratch' },
+      });
+
+      expect(evaluateCallLog.length).toBe(1);
+      // evaluate()'s 9th positional arg (index 8) is the authority text (see
+      // AutoApproveEvaluator.evaluate in auto-approve-gate.ts).
+      const authorityArg = evaluateCallLog[0]?.[8];
+      expect(authorityArg).toBe('Please clean up the temp files in this directory.');
+    });
+
+    test('with no UserPromptSubmit yet, evaluate() gets no authority text', async () => {
+      const evaluateCallLog: unknown[][] = [];
+      build({ autoApprove: true, autoApproveDecision: 'approve', evaluateCallLog });
+      lock('claude-q9-2');
+
+      await hookServer.firePermission({
+        session_id: 'claude-q9-2',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+      });
+
+      expect(evaluateCallLog.length).toBe(1);
+      const authorityArg = evaluateCallLog[0]?.[8];
+      expect(authorityArg).toBeUndefined();
+    });
+
+    test('a foreign session_id UserPromptSubmit is dropped by the binder, not recorded', async () => {
+      const evaluateCallLog: unknown[][] = [];
+      build({ autoApprove: true, autoApproveDecision: 'approve', evaluateCallLog });
+      lock('claude-q9-3');
+
+      // A different daemon's session in the same project dir.
+      hookServer.fire('UserPromptSubmit', {
+        session_id: 'sibling-claude-session',
+        transcript_path: path.join(tmpDir, 'sibling-claude-session.jsonl'),
+        hook_event_name: 'UserPromptSubmit',
+        prompt: 'a sibling daemon prompt',
+        session_title: 'sibling',
+      });
+
+      await hookServer.firePermission({
+        session_id: 'claude-q9-3',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+      });
+
+      const authorityArg = evaluateCallLog[0]?.[8];
+      expect(authorityArg).toBeUndefined();
+    });
+
+    test('does not throw when the listener fires with no downstream consumer wired', () => {
+      build();
+      lock('claude-q9-4');
+      expect(() =>
+        hookServer.fire('UserPromptSubmit', {
+          session_id: 'claude-q9-4',
+          transcript_path: path.join(tmpDir, 'claude-q9-4.jsonl'),
+          hook_event_name: 'UserPromptSubmit',
+          prompt: 'hello',
+          session_title: 'test',
+        }),
+      ).not.toThrow();
+    });
   });
 
   describe('phase 4 (#453): the 4 previously-dropped events', () => {
