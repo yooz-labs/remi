@@ -1551,6 +1551,13 @@ async function createNewSession(
   // silent paths never push. `hasLiveQuestions` backs the #712 orphan-prompt
   // fallback: it is how the tracker tells a PTY echo of a gate-pushed
   // escalation (already registered here) apart from a genuine orphan.
+  //
+  // The push callback forwards `messageApi.handleQuestion`'s
+  // `QuestionRegistrationOutcome` return straight through (#888 criterion
+  // iii): the tracker's own confirmed-delivery gate (`pairAndPush`) now
+  // consumes that value directly instead of a separate `isQuestionLive`
+  // dep that re-queried `sessionRegistry.getQuestion` after the fact -- the
+  // deleted dep used to live here.
   const tracker = new QuestionPresenceTracker((q, opts) => messageApi.handleQuestion(q, opts), {
     hasLiveQuestions: () => (sessionRegistry.getSession(sessionId)?.currentQuestions.size ?? 0) > 0,
     // #888/#920 hard requirement: a hook-less pending question (no
@@ -1572,14 +1579,6 @@ async function createNewSession(
       );
       onQuestionResolved(sessionId, questionId as UUID, 'cancelled');
     },
-    // Confirmation gate for the above (#888 review fix): only a push that
-    // ACTUALLY landed in the single pendingness owner is evidence a
-    // previously-tracked question was superseded -- see
-    // `isQuestionLive`'s doc on the tracker for the swallow class this
-    // closes (a redraw's replacement push silently eaten by QuestionDedup
-    // must not resolve the still-live original).
-    isQuestionLive: (questionId) =>
-      sessionRegistry.getQuestion(sessionId, questionId as UUID) !== null,
   });
   // #920: register this session's tracker so the answer handler's
   // prompt-currency guard (input-events.ts) can reach it by sessionId.

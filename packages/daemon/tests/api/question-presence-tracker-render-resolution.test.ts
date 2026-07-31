@@ -24,18 +24,22 @@
  * reported cancelled. Net: a live question, swallowed, in one status hiccup.
  *
  * This suite now pins the corrected design: `pairAndPush` pushes first, then
- * asks `isQuestionLive` to CONFIRM the replacement actually landed before
- * resolving the question it superseded (`QuestionPresenceTracker`'s own
- * `isQuestionLive` doc has the full chain). The status-leaves-'waiting' and
- * `clearPending` triggers were dropped entirely -- neither can be trusted as
- * evidence a SPECIFIC question's render is gone (see their own reset
- * comments in the tracker) -- so this suite also pins that they no longer
- * resolve anything.
+ * reads the `QuestionRegistrationOutcome` the push call itself returned
+ * (#888 criterion iii) to CONFIRM the replacement actually landed before
+ * resolving the question it superseded (`QuestionPresenceTracker.pairAndPush`'s
+ * own doc has the full chain -- this used to be a separate `isQuestionLive`
+ * dep that re-queried a store after the fact; deleted once the push's own
+ * return value could report the same thing directly). The status-leaves-
+ * 'waiting' and `clearPending` triggers were dropped entirely -- neither can
+ * be trusted as evidence a SPECIFIC question's render is gone (see their own
+ * reset comments in the tracker) -- so this suite also pins that they no
+ * longer resolve anything.
  */
 
 import { describe, expect, test } from 'bun:test';
 import type { Question, QuestionOption } from '@remi/shared';
 import { generateId } from '@remi/shared';
+import type { QuestionRegistrationOutcome } from '../../src/api/message-api.ts';
 import { QuestionPresenceTracker } from '../../src/api/question-presence-tracker.ts';
 
 function makeOption(
@@ -92,8 +96,11 @@ interface BuildOpts {
   /** Simulates QuestionDedup: return false to make a specific push NOT
    *  land (as if suppressed). Defaults to "every push lands". */
   shouldDeliver?: (q: Question) => boolean;
-  /** Omit isQuestionLive entirely, to test the safe-default (unwired) case. */
-  wireIsQuestionLive?: boolean;
+  /** Make the push sink report no outcome at all (`void`), to test the
+   *  safe-default case a push sink that does not implement the
+   *  `QuestionRegistrationOutcome` contract falls into. Defaults to
+   *  reporting the real outcome every time. */
+  reportOutcome?: boolean;
 }
 
 function buildTracker(opts: BuildOpts = {}): Harness {
@@ -101,18 +108,20 @@ function buildTracker(opts: BuildOpts = {}): Harness {
   const gone: Array<{ id: string; reason: string }> = [];
   const liveIds = new Set<string>();
   const shouldDeliver = opts.shouldDeliver ?? (() => true);
-  const wireIsQuestionLive = opts.wireIsQuestionLive ?? true;
+  const reportOutcome = opts.reportOutcome ?? true;
   const tracker = new QuestionPresenceTracker(
-    (q) => {
+    (q): QuestionRegistrationOutcome | undefined => {
       pushed.push(q);
-      if (shouldDeliver(q)) liveIds.add(q.id);
+      const delivered = shouldDeliver(q);
+      if (delivered) liveIds.add(q.id);
+      if (!reportOutcome) return undefined;
+      return delivered ? { status: 'registered' } : { status: 'deduped' };
     },
     {
       onHooklessQuestionGone: (id, reason) => {
         gone.push({ id, reason });
         liveIds.delete(id);
       },
-      ...(wireIsQuestionLive ? { isQuestionLive: (id: string) => liveIds.has(id) } : {}),
       ...opts.extraDeps,
     },
   );
@@ -256,18 +265,16 @@ describe('QuestionPresenceTracker render-resolution (#888/#920)', () => {
   });
 
   test('a throwing onHooklessQuestionGone dep is caught and logged, never propagated', () => {
-    const liveIds = new Set<string>();
     const pushed: Question[] = [];
     const tracker = new QuestionPresenceTracker(
-      (q) => {
+      (q): QuestionRegistrationOutcome => {
         pushed.push(q);
-        liveIds.add(q.id);
+        return { status: 'registered' };
       },
       {
         onHooklessQuestionGone: () => {
           throw new Error('boom');
         },
-        isQuestionLive: (id) => liveIds.has(id),
       },
     );
     const first = makeHooklessPTYQuestion('first');
@@ -282,6 +289,7 @@ describe('QuestionPresenceTracker render-resolution (#888/#920)', () => {
     const pushed: Question[] = [];
     const tracker = new QuestionPresenceTracker((q) => {
       pushed.push(q);
+      return undefined;
     });
     const first = makeHooklessPTYQuestion('first');
     const second = makeHooklessPTYQuestion('second');
@@ -293,15 +301,16 @@ describe('QuestionPresenceTracker render-resolution (#888/#920)', () => {
     expect(pushed).toHaveLength(2);
   });
 
-  test('safe default: onHooklessQuestionGone wired but isQuestionLive NOT wired -- never resolves (fail toward showing)', () => {
-    const { tracker, gone } = buildTracker({ wireIsQuestionLive: false });
+  test('safe default: onHooklessQuestionGone wired but the push sink reports NO outcome -- never resolves (fail toward showing)', () => {
+    const { tracker, gone } = buildTracker({ reportOutcome: false });
     const first = makeHooklessPTYQuestion('first');
     const second = makeHooklessPTYQuestion('second');
     tracker.onPTYPromptVisible(first);
     tracker.onPTYPromptVisible(second);
 
-    // Without confirmation, "delivered" defaults to false -- the mechanism
-    // is fully inert, matching pre-#888 behavior rather than guessing.
+    // Without a reported outcome, "delivered" defaults to false -- the
+    // mechanism is fully inert, matching pre-#888 behavior rather than
+    // guessing.
     expect(gone).toHaveLength(0);
   });
 

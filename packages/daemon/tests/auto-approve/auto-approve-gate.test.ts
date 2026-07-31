@@ -178,7 +178,7 @@ describe('AutoApproveGate', () => {
     subagent = false;
     resets = 0;
     parks = [];
-    tracker = new QuestionPresenceTracker(() => {});
+    tracker = new QuestionPresenceTracker(() => undefined);
     configureLogger({ writeLog: () => {} });
   });
 
@@ -681,7 +681,7 @@ describe('AutoApproveGate lifecycle callbacks (#513)', () => {
     submits = [];
     events = [];
     subagent = false;
-    tracker = new QuestionPresenceTracker(() => {});
+    tracker = new QuestionPresenceTracker(() => undefined);
     configureLogger({ writeLog: () => {} });
   });
 
@@ -809,7 +809,7 @@ describe('AutoApproveGate hold + resolve (#573 Parts A/C)', () => {
       handleQuestion: () => {},
       handleStatusChange: () => {},
     } as never);
-    const tracker = new QuestionPresenceTracker(() => {});
+    const tracker = new QuestionPresenceTracker(() => undefined);
     return new AutoApproveGate(
       {
         service,
@@ -1109,7 +1109,7 @@ describe('AutoApproveGate hold + resolve (#573 Parts A/C)', () => {
       handleQuestion: () => {},
       handleStatusChange: () => {},
     } as never);
-    const tracker = new QuestionPresenceTracker(() => {});
+    const tracker = new QuestionPresenceTracker(() => undefined);
     const gate = new AutoApproveGate(
       {
         service: {
@@ -1154,7 +1154,7 @@ describe('AutoApproveGate hold + resolve (#573 Parts A/C)', () => {
       {
         service: { evaluate: async () => escalate, cancel: () => true },
         sessionRegistry: registryB,
-        tracker: new QuestionPresenceTracker(() => {}),
+        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
         escalate: () => {
           qidB = generateId();
@@ -1220,7 +1220,7 @@ describe('AutoApproveGate Stop mainOnly scoping (#711)', () => {
       {
         service,
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => {}),
+        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
         escalate: () => {
           lastQuestionId = generateId();
@@ -1344,7 +1344,7 @@ describe('AutoApproveGate Stop mainOnly scoping (#711)', () => {
       {
         service,
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => {}),
+        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
         escalate: () => {
           lastQuestionId = generateId();
@@ -1389,7 +1389,7 @@ describe('AutoApproveGate Stop mainOnly scoping (#711)', () => {
       {
         service: evaluator(approve),
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => {}),
+        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
         escalate: () => undefined,
         onEvalStart: (ctx) => ctxLog.push(ctx),
@@ -1447,7 +1447,7 @@ describe('AutoApproveGate slow-eval push (#573 Part B)', () => {
       {
         service,
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => {}),
+        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
         escalate: (i) => {
           escalations.push(i);
@@ -1611,7 +1611,7 @@ describe('AutoApproveGate onResolved cross-client dismissal (#585 P7)', () => {
       {
         service,
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => {}),
+        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
         escalate: () => {
           lastQuestionId = generateId();
@@ -1836,7 +1836,7 @@ describe('AutoApproveGate delivery gating (#603 Phase 1)', () => {
       {
         service,
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => {}),
+        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
         escalate: (i) => {
           escalations.push(i);
@@ -2126,7 +2126,7 @@ describe('AutoApproveGate external-resolution cancel (#673)', () => {
       {
         service,
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => {}),
+        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
         escalate: (i) => {
           escalations.push(i);
@@ -2520,7 +2520,7 @@ describe('AutoApproveGate subagent external-resolution (#799)', () => {
         // (deterministic, no eval timing to await).
         service: null,
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => {}),
+        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
         // Unused by these subagent-only tests (no main escalation is ever
         // driven), but AutoApproveGateDeps requires it.
@@ -2700,7 +2700,7 @@ describe('AutoApproveGate Stop resolves a still-open MAIN passthrough question (
       {
         service: null,
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => {}),
+        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
         escalate: () => {
           lastQuestionId = generateId();
@@ -2838,7 +2838,7 @@ describe('AutoApproveGate cancelStaleForAgent (#799 part 2, subagent)', () => {
       {
         service: null,
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => {}),
+        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
         // Unused by these subagent-only tests (no main escalation is ever
         // driven), but AutoApproveGateDeps requires it.
@@ -3098,7 +3098,7 @@ describe('AutoApproveGate parked-render arbitration (#814)', () => {
     submits = [];
     evalCalls = [];
     resolvedLog = [];
-    tracker = new QuestionPresenceTracker(() => {});
+    tracker = new QuestionPresenceTracker(() => undefined);
     configureLogger({ writeLog: () => {} });
   });
 

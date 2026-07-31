@@ -78,7 +78,7 @@ describe('Model B hold over a real HookServer (#573)', () => {
       {
         service: evaluator(escalate),
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => {}),
+        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
         escalate: () => {
           lastQuestionId = generateId();
@@ -159,7 +159,7 @@ describe('Model B hold over a real HookServer (#573)', () => {
       {
         service: evaluator(escalate),
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => {}),
+        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
         escalate: () => {
           qid = generateId();
@@ -202,7 +202,7 @@ describe('Model B hold over a real HookServer (#573)', () => {
       {
         service: evaluator(escalate),
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => {}),
+        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
         escalate: () => {
           qid = generateId();
@@ -240,7 +240,7 @@ describe('Model B hold over a real HookServer (#573)', () => {
       {
         service: evaluator(escalate),
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => {}),
+        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
         escalate: () => {
           qid = generateId();
