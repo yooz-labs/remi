@@ -24,7 +24,7 @@ Every claim below is tagged with how it was established:
 
 | Tag | Meaning |
 |---|---|
-| **[B]** | Extracted directly from the installed Claude Code binary (`/Users/yahya/.local/share/claude/versions/2.1.220`) — either its embedded zod validation schemas (for response shapes and hook config) or its hook-input builder functions (for payload shapes). Highest confidence: this is the code that actually runs. |
+| **[B]** | Extracted directly from the installed Claude Code binary (`~/.local/share/claude/versions/2.1.220`) — either its embedded zod validation schemas (for response shapes and hook config) or its hook-input builder functions (for payload shapes). Highest confidence: this is the code that actually runs. |
 | **[D]** | From code.claude.com/docs/en/hooks. Used where it corroborates [B] (noted inline) or where [B] extraction wasn't attempted/possible. Treated as secondary per the rule above — where [B] and [D] disagreed, this document says so explicitly and keeps [B]. |
 | **[R]** | remi's own field notes: things learned from `REMI_HOOK_DEBUG` captures on real sessions (dated), or from remi's own runtime behavior/logging (e.g. observed hook-fire counts). Empirical but scoped to remi's own historical sessions, not a fresh capture for this document — see "What's pending." |
 
