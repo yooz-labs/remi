@@ -343,20 +343,36 @@ describe('StatusBar', () => {
   });
 
   test('repaints are suppressed while a question stays live, after the onset paint', () => {
-    const { bar, writes } = harness({ hasLiveQuestions: () => true });
+    // #932 review finding 4: status content must vary DURING the freeze, or
+    // this can't distinguish "the suppression guard held" from "nothing
+    // changed so the dedup check alone produced the same write count" --
+    // neutering `if (questionLive && !onset) return;` previously left this
+    // green because mkStatus() never changed between calls.
+    let connections = 0;
+    const { bar, writes } = harness({
+      hasLiveQuestions: () => true,
+      getStatus: () => mkStatus({ connections: connections++ }),
+    });
     bar.render(); // onset: paints once
     expect(writes).toHaveLength(1);
-    bar.render(); // still live: frozen
-    bar.render(); // still live: frozen
+    bar.render(); // still live: frozen, despite connections having changed
+    bar.render(); // still live: frozen again
     expect(writes).toHaveLength(1);
   });
 
   test('repaints resume once the question resolves', () => {
+    // Same fix as above: content changes on every getStatus() read so a
+    // neutered suppression guard would produce an extra write during the
+    // freeze, not just the same count by coincidence.
     let live = true;
-    const { bar, writes } = harness({ hasLiveQuestions: () => live });
+    let connections = 0;
+    const { bar, writes } = harness({
+      hasLiveQuestions: () => live,
+      getStatus: () => mkStatus({ connections: connections++ }),
+    });
     bar.render(); // onset paint
     expect(writes).toHaveLength(1);
-    bar.render(); // frozen
+    bar.render(); // frozen, despite connections having changed
     expect(writes).toHaveLength(1);
     live = false;
     bar.render(); // resumes
