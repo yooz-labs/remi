@@ -60,8 +60,20 @@ interface TranscriptEntryBase {
    * cross-session message, a `<local-command-caveat>` notice, a scheduled/
    * heartbeat task prompt, and a `<system-reminder>`. These are STRUCTURALLY
    * indistinguishable from a real prompt by content shape alone (plain
-   * string, `role: "user"`) — `isMeta` is the only discriminator, and
-   * `auto-approve/authority.ts` depends on it being present and accurate.
+   * string, `role: "user"`) — `isMeta` is the only discriminator.
+   *
+   * This is GENERAL shared infrastructure, not specific to any one consumer.
+   * `auto-approve/authority.ts` depends on it being present and accurate for
+   * the auto-approve trust boundary (#893). It is ALSO the fix for a second,
+   * separate bug (#936, filed after this field landed): `Transcript
+   * MessageBridge.handleUserEntry` does no provenance filtering today, so
+   * the same `isMeta: true` cohort — notably a subagent's own
+   * `<agent-message from="...">` text — renders as the USER's own chat
+   * bubble in agent-team sessions. That fix touches the bridge and the web
+   * client and is deliberately out of scope for #893 (mixing a security
+   * change with a display change makes both harder to review and revert);
+   * do not assume this field is auto-approve-only when reasoning about
+   * whether it is safe to change or revert.
    */
   readonly isMeta?: boolean;
 }
