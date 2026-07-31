@@ -195,7 +195,14 @@ const NON_HUMAN_WRAPPER_PREFIXES: readonly string[] = [
 
 /** True if a user-role string entry is a wrapped non-human artifact (slash
  *  command echo, `!`-command output, injected reminder) rather than something
- *  the human actually typed. */
+ *  the human actually typed.
+ *
+ *  Also imported directly by `transcript/transcript-message-bridge.ts` and
+ *  `transcript/transcript-discovery.ts` (#936) — the same display-provenance
+ *  hazard applies to what renders as a user chat bubble and what surfaces as
+ *  a session-list preview, not just to the auto-approve authority block.
+ *  Import from here rather than redefining the list elsewhere, so all three
+ *  call sites can never drift into different denylists. */
 export function isWrappedNonHumanText(text: string): boolean {
   const trimmed = text.trimStart();
   return NON_HUMAN_WRAPPER_PREFIXES.some((prefix) => trimmed.startsWith(prefix));
