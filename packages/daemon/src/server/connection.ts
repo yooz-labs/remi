@@ -258,60 +258,92 @@ export class Connection {
       return;
     }
 
-    // In authenticating state, only accept auth_response
-    if (this.state === 'authenticating') {
-      if (message.type === 'auth_response') {
-        this.routeAuthResponse(message);
-      } else if (message.type === 'ping') {
-        this.handlePing(message);
-      } else {
-        this.sendError('AUTH_REQUIRED', 'Authentication required before other messages');
+    // #916: everything below -- the authenticating-state branch AND the
+    // connected-state routing -- runs inside one try/catch. A handler is
+    // trusted to guard its own throws (most are `async` and unawaited, so a
+    // throw there is already a survivable unhandled rejection -- see
+    // process-guards.ts). This is the backstop for one that forgets and
+    // throws SYNCHRONOUSLY: uncaught, that would escape all the way to
+    // `uncaughtException`, whose policy is a fatal exit(1) -- correct for
+    // real state corruption, wrong for a client payload. The authenticating
+    // branch is in scope too: `handlePing` reaches `this.ws.send` just like
+    // any routed handler does, and was not covered before this.
+    try {
+      // In authenticating state, only accept auth_response
+      if (this.state === 'authenticating') {
+        if (message.type === 'auth_response') {
+          this.routeAuthResponse(message);
+        } else if (message.type === 'ping') {
+          this.handlePing(message);
+        } else {
+          this.sendError('AUTH_REQUIRED', 'Authentication required before other messages');
+        }
+        return;
       }
-      return;
-    }
 
-    // Route by message type (#899): a total map over every client-to-daemon
-    // type, so a new registry key breaks this object's compile until it is
-    // decided, rather than silently falling through a switch's default.
-    const handlers: ClientMessageHandlers = {
-      hello: (m) => this.handleHello(m),
-      user_input: (m) => this.handleUserInput(m),
-      answer: (m) => this.handleAnswer(m),
-      bullet_expand_request: (m) => this.handleBulletExpandRequest(m),
-      session_list_request: (m) => this.handleSessionListRequest(m),
-      transcript_load_request: (m) => this.handleTranscriptLoadRequest(m),
-      create_session_request: (m) => this.handleCreateSessionRequest(m),
-      terminal_resize: (m) => this.handleTerminalResize(m),
-      kill_session_request: (m) => this.handleKillSessionRequest(m),
-      resume_session_request: (m) => this.handleResumeSessionRequest(m),
-      session_history_request: (m) => this.handleSessionHistoryRequest(m),
-      detach_session: (m) => this.handleDetachSession(m),
-      register_device_token: (m) => this.handleRegisterDeviceToken(m),
-      unregister_device_token: (m) => this.handleUnregisterDeviceToken(m),
-      ping: (m) => this.handlePing(m),
-      pong: () => {
-        // Explicit protocol-level liveness reply. Redundant with the
-        // any-message reset above (kept as documentation of intent and a
-        // second line of defense if that reset is ever narrowed).
-        this.missedPongs = 0;
-      },
-      // Client acknowledging our message - just track (no-op). #899's trap:
-      // `ack` is tagged 'both' (not 'c2d') precisely because this case is
-      // real and accepting, not a forgotten one -- see MESSAGE_DIRECTION's
-      // comment on `ack` and ClientToDaemonType's doc comment.
-      ack: 'ignore',
-      // Reachable only if a client resends auth_response after already
-      // completing (or skipping) the handshake -- the authenticating-state
-      // branch above intercepts the normal case before this map is ever
-      // consulted. Kept as a real handler (not 'ignore') for defense in
-      // depth: `handleAuthResponse` itself guards on state and answers
-      // INVALID_STATE, a more specific reply than falling through to
-      // UNKNOWN_MESSAGE would have given.
-      auth_response: (m) => this.routeAuthResponse(m),
-    };
-    const routed = routeClientMessage(message, handlers);
-    if (!routed) {
-      this.sendError('UNKNOWN_MESSAGE', `Unknown message type: ${message.type}`);
+      // Route by message type (#899): a total map over every client-to-daemon
+      // type, so a new registry key breaks this object's compile until it is
+      // decided, rather than silently falling through a switch's default.
+      const handlers: ClientMessageHandlers = {
+        hello: (m) => this.handleHello(m),
+        user_input: (m) => this.handleUserInput(m),
+        answer: (m) => this.handleAnswer(m),
+        bullet_expand_request: (m) => this.handleBulletExpandRequest(m),
+        session_list_request: (m) => this.handleSessionListRequest(m),
+        transcript_load_request: (m) => this.handleTranscriptLoadRequest(m),
+        create_session_request: (m) => this.handleCreateSessionRequest(m),
+        terminal_resize: (m) => this.handleTerminalResize(m),
+        kill_session_request: (m) => this.handleKillSessionRequest(m),
+        resume_session_request: (m) => this.handleResumeSessionRequest(m),
+        session_history_request: (m) => this.handleSessionHistoryRequest(m),
+        detach_session: (m) => this.handleDetachSession(m),
+        register_device_token: (m) => this.handleRegisterDeviceToken(m),
+        unregister_device_token: (m) => this.handleUnregisterDeviceToken(m),
+        ping: (m) => this.handlePing(m),
+        pong: () => {
+          // Explicit protocol-level liveness reply. Redundant with the
+          // any-message reset above (kept as documentation of intent and a
+          // second line of defense if that reset is ever narrowed).
+          this.missedPongs = 0;
+        },
+        // Client acknowledging our message - just track (no-op). #899's trap:
+        // `ack` is tagged 'both' (not 'c2d') precisely because this case is
+        // real and accepting, not a forgotten one -- see MESSAGE_DIRECTION's
+        // comment on `ack` and ClientToDaemonType's doc comment.
+        ack: 'ignore',
+        // Reachable only if a client resends auth_response after already
+        // completing (or skipping) the handshake -- the authenticating-state
+        // branch above intercepts the normal case before this map is ever
+        // consulted. Kept as a real handler (not 'ignore') for defense in
+        // depth: `handleAuthResponse` itself guards on state and answers
+        // INVALID_STATE, a more specific reply than falling through to
+        // UNKNOWN_MESSAGE would have given.
+        auth_response: (m) => this.routeAuthResponse(m),
+      };
+      const routed = routeClientMessage(message, handlers);
+      if (!routed) {
+        this.sendError('UNKNOWN_MESSAGE', `Unknown message type: ${message.type}`);
+      }
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      // Insurance consistent with this guard's own thesis (#916 review): NOT
+      // currently reachable -- the wired `onError` (trivial-events.ts) only
+      // logs and `send()` guards on `readyState`, so neither throws today --
+      // but `onError` is a caller-supplied callback and `ws.send` can still
+      // race a closing socket, and a guard whose own report can throw would
+      // undermine the reason this try/catch exists. Each half is independent
+      // and best-effort; `onError` runs first, so the fault is already
+      // logged before the reply is even attempted.
+      try {
+        this.events.onError?.(error);
+      } catch {
+        // Nothing left to safely report a throwing onError callback to.
+      }
+      try {
+        this.sendError('INTERNAL_ERROR', `Handler for '${message.type}' failed: ${error.message}`);
+      } catch {
+        // Socket likely closing; the peer gets no reply instead of a crash.
+      }
     }
   }
 
