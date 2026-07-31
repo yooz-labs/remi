@@ -17,11 +17,12 @@
  * OUTPUT (the same shape the transcript's `<local-command-stdout>` entries
  * show)? Nobody has captured this live yet. Because the premise is
  * unverified, `hook-bridge-setup.ts`'s `UserPromptSubmit` listener also runs
- * `isWrappedNonHumanText` (below) over `input.prompt` before recording it —
- * DEFENSE IN DEPTH, not confirmation. If the premise holds, that check is a
- * permanent no-op costing one substring scan on a human-paced event. If the
- * premise is wrong, it is the thing that catches the wrapped-string shape of
- * the failure (though NOT an output shape with no wrapper tag at all, which
+ * `isWrappedNonHumanText` (`transcript/user-entry-provenance.ts`, imported
+ * below) over `input.prompt` before recording it — DEFENSE IN DEPTH, not
+ * confirmation. If the premise holds, that check is a permanent no-op
+ * costing one substring scan on a human-paced event. If the premise is
+ * wrong, it is the thing that catches the wrapped-string shape of the
+ * failure (though NOT an output shape with no wrapper tag at all, which
  * would need #938's answer to even know exists). Do not read the presence of
  * that filter as evidence the premise was checked.
  *
@@ -30,60 +31,18 @@
  *
  * The transcript JSONL is the FALLBACK, load-bearing for a session the
  * daemon attached to mid-conversation (a resume): its prior turns exist only
- * in the transcript, because `UserPromptSubmit` never fired for them. Measured
- * across real transcripts under `~/.claude/projects/...` (#893 issue thread;
- * corrected after an audit caught a first-pass miscount), a `role: "user"`
- * entry is NOT reliably a human-typed prompt:
- *
- *   | shape                                              | count |
- *   |------------------------------------------------------|-------|
- *   | content: [ {type: tool_result} ]                     | 5,518 |
- *   | content: <string>, isMeta absent -> genuinely typed  |   703 |
- *   | content: <string>, isMeta: true                      |    88 |
- *   | content: <string> starting <command-name>            |    36 |
- *   | content: <string> starting <local-command-stdout>    |    34 |
- *
- * The `isMeta: true` row breaks down as: 47 "Another Claude session sent a
- * message: <agent-message from=\"...\">..." (a SUBAGENT's own authored text,
- * delivered in a plain "user"-role string entry), 35 `<local-command-caveat>`
- * notices, 5 scheduled/heartbeat task prompts, and 2 `<system-reminder>`.
- *
- * TWO SEPARATE MECHANISMS handle this, because ONE discriminator does not
- * cover both hazards:
- *
- * 1. **`tool_result`** is excluded structurally by shape: it is array-shaped
- *    and carries no top-level `text` block (`extractUserEntryText` below,
- *    mirroring `transcript-message-bridge.ts`'s `extractTextContent`). No
- *    flag needed.
- * 2. **The `isMeta: true` cohort** (agent messages, local-command-caveat,
- *    scheduled tasks, system-reminders) IS structurally separable — Claude
- *    Code stamps every one of these `isMeta: true` at the entry's top level
- *    (`transcript/types.ts`). This is the important one to get right: an
- *    `<agent-message>` entry is a SUBAGENT's own words in a user envelope —
- *    filtering ONLY on `role === "user"` + `typeof content === "string"`
- *    would let a subagent write its own authority, a more direct injection
- *    than anything requiring human action. `extractUserEntryText` checks
- *    `entry.isMeta` FIRST, before any content-shape logic, specifically so
- *    this cohort can never slip through by content shape alone.
- * 3. **`<command-name>` and `<local-command-stdout>`** (confirmed: 0 of 36
- *    and 0 of 34 sampled entries carry `isMeta`) are NOT structurally
- *    separable from a genuine prompt at all — same role, same type
- *    (`string`), same shape, no flag. Only the textual wrapper distinguishes
- *    them. `isWrappedNonHumanText` below is a DENYLIST for exactly this
- *    residual case, and denylists fail open: a wrapper tag Claude Code adds
- *    tomorrow sails straight through until someone notices and adds it here.
- *    Whether `<local-command-stdout>` is reachable via a `!`-prefixed bash-
- *    mode command specifically is UNCONFIRMED — the only two samples actually
- *    inspected for this issue ("Goodbye!", "Set model to Fable 5...") are
- *    slash-command output (`/exit`, `/model`), not `!` bash-mode; the general
- *    hazard (this content is Claude-influenceable, not necessarily
- *    human-authored) stands on the samples themselves regardless of exactly
- *    which channel produces it.
- *
- * That asymmetry (isMeta catches one cohort structurally, a denylist catches
- * the other only until it doesn't) is precisely why the hook is the PRIMARY
- * source and this filter only guards the fallback path — see
- * `resolveAuthority`.
+ * in the transcript, because `UserPromptSubmit` never fired for them.
+ * `extractUserEntryText` below is what makes that fallback safe — a
+ * transcript `role: "user"` entry is NOT reliably a human-typed prompt. The
+ * measured breakdown, and the two-mechanism `isMeta` + `isWrappedNonHumanText`
+ * design that handles it, now live in `transcript/user-entry-provenance.ts`'s
+ * module doc — the single source of truth, since the same provenance
+ * question also applies to what `transcript-message-bridge.ts` renders as a
+ * chat message and what `transcript-discovery.ts` shows as a session-list
+ * preview (#936). That asymmetry (isMeta catches one cohort structurally, a
+ * denylist catches the other only until it doesn't) is precisely why the
+ * hook is the PRIMARY source and this filter only guards the fallback path —
+ * see `resolveAuthority`.
  *
  * ## The trust boundary
  *
@@ -100,6 +59,7 @@
  */
 
 import type { ContentBlock, UserEntry } from '../transcript/types.ts';
+import { isWrappedNonHumanText } from '../transcript/user-entry-provenance.ts';
 import { matchSubstringPattern } from './pattern-matcher.ts';
 
 /** Hard caps so a very long session's authority block cannot balloon the
@@ -160,46 +120,16 @@ export class AuthorityStore {
 }
 
 /**
- * Wrapper-tag prefixes that mark a transcript "user"-role STRING entry as
- * something other than genuine human-typed text, for the residual cohort
- * that does NOT carry `isMeta` (confirmed: 0 of 36 `<command-name>` and 0 of
- * 34 `<local-command-stdout>` sampled entries do — see the module doc). A
- * DENYLIST — see the module doc for why that is an accepted, explicitly-named
- * risk here rather than an oversight. `<local-command-caveat>` and
- * `<system-reminder>` are ALSO listed here for defense in depth even though
- * both were observed carrying `isMeta: true` in the sampled data (the
- * `isMeta` check below already excludes them) — belt and suspenders in case
- * a future Claude Code version stops stamping the flag on one of them.
- *
- * `'Another Claude session sent a message:'` is a DIFFERENT shape than the
- * rest of this list: the real captured samples (module doc) put a
- * human-readable preamble sentence BEFORE the `<agent-message from="...">`
- * tag, so the entry does not start with a tag at all — a plain prefix match
- * against `<agent-message` would miss it. This entry matters MORE than the
- * others on the PRIMARY (hook) path specifically: `UserPromptSubmitHookInput`
- * (`hook-types.ts`) carries no `isMeta` field at all — that flag exists only
- * on transcript entries — so if a cross-session agent message is EVER
- * delivered through `UserPromptSubmit.prompt` (unconfirmed; same epistemic
- * status as the `!`-bash-mode question, #938), this literal-sentence prefix
- * is the ONLY defense available on that path. On the transcript fallback it
- * is pure redundancy on top of the `isMeta` check.
+ * `isWrappedNonHumanText` used to be defined here; moved to
+ * `transcript/user-entry-provenance.ts` (#936 review) because it is
+ * fundamentally a transcript user-envelope provenance concern — consumed by
+ * `transcript-message-bridge.ts` and `transcript-discovery.ts` too, neither
+ * of which should depend on the auto-approve policy layer to get it.
+ * Re-exported here (rather than just imported) so existing consumers of
+ * `auto-approve/index.ts` are unaffected. See that module's doc for the
+ * full denylist rationale and the measured breakdown behind it.
  */
-const NON_HUMAN_WRAPPER_PREFIXES: readonly string[] = [
-  '<command-name>',
-  '<command-message>',
-  '<local-command-stdout>',
-  '<local-command-caveat>',
-  '<system-reminder>',
-  'Another Claude session sent a message:',
-];
-
-/** True if a user-role string entry is a wrapped non-human artifact (slash
- *  command echo, `!`-command output, injected reminder) rather than something
- *  the human actually typed. */
-export function isWrappedNonHumanText(text: string): boolean {
-  const trimmed = text.trimStart();
-  return NON_HUMAN_WRAPPER_PREFIXES.some((prefix) => trimmed.startsWith(prefix));
-}
+export { isWrappedNonHumanText } from '../transcript/user-entry-provenance.ts';
 
 /**
  * Extract genuine human-typed text from one transcript user entry, or null
@@ -219,8 +149,9 @@ export function isWrappedNonHumanText(text: string): boolean {
  *    block (Claude's own tool output riding a user envelope) is never
  *    text-typed and so is dropped by construction, not by an extra check.
  * 3. String content -> excluded when wrapper-tagged (the RESIDUAL cohort
- *    `isMeta` does not cover — see `NON_HUMAN_WRAPPER_PREFIXES`); otherwise
- *    it is exactly what a human typed.
+ *    `isMeta` does not cover — see `transcript/user-entry-provenance.ts`'s
+ *    `NON_HUMAN_WRAPPER_PREFIXES`); otherwise it is exactly what a human
+ *    typed.
  */
 export function extractUserEntryText(entry: UserEntry): string | null {
   if (entry.isMeta === true) return null;

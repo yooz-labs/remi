@@ -18,6 +18,7 @@ import type {
   TranscriptEntry,
   UserEntry,
 } from './types.ts';
+import { isWrappedNonHumanText } from './user-entry-provenance.ts';
 
 /** Type predicate for TextBlock content blocks */
 function isTextBlock(block: ContentBlock): block is TextBlock {
@@ -294,17 +295,28 @@ export class TranscriptDiscovery {
 
           if (entry.type === 'user') {
             const userEntry = entry as UserEntry;
-            let msgContent: string;
-            if (typeof userEntry.message.content === 'string') {
-              msgContent = userEntry.message.content;
-            } else if (Array.isArray(userEntry.message.content)) {
-              const textBlocks = userEntry.message.content.filter(isTextBlock);
-              msgContent = textBlocks[0]?.text || '';
-            } else {
-              msgContent = '';
-            }
-            if (msgContent) {
-              lastMessage = msgContent.length > 100 ? `${msgContent.slice(0, 97)}...` : msgContent;
+            // #936: never surface a Claude Code-injected entry (isMeta:
+            // true — e.g. a subagent's `<agent-message from="...">` report)
+            // or the residual non-isMeta wrapper cohort (`<command-name>`,
+            // `<local-command-stdout>`) as the session-list preview. Same
+            // filter as `TranscriptMessageBridge.handleUserEntry`, imported
+            // from `./user-entry-provenance.ts` so both stay in lockstep.
+            if (userEntry.isMeta !== true) {
+              let msgContent: string;
+              if (typeof userEntry.message.content === 'string') {
+                msgContent = isWrappedNonHumanText(userEntry.message.content)
+                  ? ''
+                  : userEntry.message.content;
+              } else if (Array.isArray(userEntry.message.content)) {
+                const textBlocks = userEntry.message.content.filter(isTextBlock);
+                msgContent = textBlocks[0]?.text || '';
+              } else {
+                msgContent = '';
+              }
+              if (msgContent) {
+                lastMessage =
+                  msgContent.length > 100 ? `${msgContent.slice(0, 97)}...` : msgContent;
+              }
             }
           }
         } catch {

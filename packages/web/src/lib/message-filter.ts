@@ -63,6 +63,21 @@ const xmlTagPatterns = [
   /<command-message>.*?<\/command-message>/gs,
   /<command-args>.*?<\/command-args>/gs,
   /<system-reminder>.*?<\/system-reminder>/gs,
+  // COMPATIBILITY LAYER, not the primary defense (#936). The daemon now
+  // filters `isMeta: true` entries — including a subagent's own
+  // `<agent-message from="...">` report — before they ever reach a client
+  // (`TranscriptMessageBridge.handleUserEntry`). This pattern only matters
+  // when talking to an older daemon that still ships that entry as a raw
+  // string. Real captured samples put a human-readable preamble sentence
+  // BEFORE the tag ("Another Claude session sent a message:\n<agent-message
+  // from=\"...\">..."), so the entry does not start with the tag at all — a
+  // bare `<agent-message` prefix match would miss every real sample. Match
+  // the preamble sentence instead, same convention (and the same literal
+  // string) as `auto-approve/authority.ts`'s `NON_HUMAN_WRAPPER_PREFIXES` on
+  // the daemon side, so the two never drift apart. Strips to the end of the
+  // string rather than requiring a closing `</agent-message>` tag, because
+  // whether one is ever present is unconfirmed (#936 "Not verified").
+  /Another Claude session sent a message:[\s\S]*$/g,
 ];
 
 /**
