@@ -2748,8 +2748,10 @@ if (cliDaemonMode) {
 
   // Start drawing the reserved-row bar now that the PTY is up. Reads the live
   // StatusWriter state and repaints on a 1Hz timer (the cadence of the
-  // `evaluating Ns` counter), which also re-asserts the bar if Claude's output
-  // scrolled it. Inert until started, and a no-op when detached.
+  // `evaluating Ns` counter). Inert until started, and a no-op when detached
+  // or while a question is pending (#932 -- see status-bar.ts's module doc:
+  // the bar and Claude's own output share one fd, so painting over a live
+  // prompt risks corrupting or erasing it).
   if (statusBarActive) {
     statusBar = new StatusBar({
       getStdoutFd: getPtyStdoutFd,
@@ -2759,6 +2761,8 @@ if (cliDaemonMode) {
         rows: process.stdout.rows || 40,
       }),
       isEnabled: () => !isWrapperDetached(),
+      hasLiveQuestions: () =>
+        (sessionRegistry.getSession(sessionId)?.currentQuestions.size ?? 0) > 0,
       log: (m) => log(m),
     });
     statusBar.start();

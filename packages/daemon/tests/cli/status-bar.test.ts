@@ -247,7 +247,11 @@ describe('StatusBar', () => {
   });
 
   test('the timer repaints on its interval', async () => {
-    const { bar, writes } = harness();
+    // #932 protection 2 skips a write when the built sequence is unchanged,
+    // so a changing status (not a fixed one) is what proves the timer is
+    // actually ticking rather than painting the same bytes over and over.
+    let connections = 0;
+    const { bar, writes } = harness({ getStatus: () => mkStatus({ connections: connections++ }) });
     bar.start();
     await new Promise((r) => setTimeout(r, 30)); // a few 5ms ticks
     bar.stop();
@@ -258,11 +262,13 @@ describe('StatusBar', () => {
     // No explicit intervalMs: exercise the constructor default. Within 320ms a
     // 250ms timer must have ticked at least once past the immediate paint
     // (the old 1000ms default would not have). Kept comfortably above 250ms to
-    // avoid CI timer jitter flaking the assertion.
+    // avoid CI timer jitter flaking the assertion. Status changes each read
+    // (#932 protection 2) so a repeat tick is not skipped as unchanged.
     const writes: string[] = [];
+    let connections = 0;
     const bar = new StatusBar({
       getStdoutFd: () => 1,
-      getStatus: () => mkStatus(),
+      getStatus: () => mkStatus({ connections: connections++ }),
       getSize: () => ({ cols: 80, rows: 24 }),
       isEnabled: () => true,
       writeToFd: (_fd, data) => writes.push(data),
@@ -314,5 +320,61 @@ describe('StatusBar', () => {
     expect(painted.length).toBeGreaterThan(0);
     expect(logs).toHaveLength(1);
     bar.stop();
+  });
+
+  // #932: the bar and Claude's own PTY output are two unsynchronized writers
+  // on the same fd; a paint that lands mid-render can corrupt or erase a live
+  // question prompt. These prove the two mitigations directly against the
+  // fd-write count, independent of the timer.
+  test('a repaint is suppressed while a question is live', () => {
+    const { bar, writes } = harness({ hasLiveQuestions: () => true });
+    bar.render();
+    expect(writes).toHaveLength(0);
+  });
+
+  test('repaints resume once the question resolves', () => {
+    let live = true;
+    const { bar, writes } = harness({ hasLiveQuestions: () => live });
+    bar.render();
+    expect(writes).toHaveLength(0);
+    live = false;
+    bar.render();
+    expect(writes).toHaveLength(1);
+  });
+
+  test('a resumed repaint reflects a status change that happened during suppression', () => {
+    // The regression this guards against: a status change while a question is
+    // live must not be lost -- the bar has to catch up, not stay stale
+    // forever once the question resolves.
+    let live = true;
+    let connections = 0;
+    const { bar, writes } = harness({
+      hasLiveQuestions: () => live,
+      getStatus: () => mkStatus({ connections }),
+    });
+    bar.render(); // suppressed: no write
+    connections = 5; // status changes while the question is still live
+    bar.render(); // still suppressed
+    expect(writes).toHaveLength(0);
+    live = false;
+    bar.render(); // question resolved: must repaint with the NEW status
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toContain('5 client(s)');
+  });
+
+  test('an unchanged status does not write a second time', () => {
+    const { bar, writes } = harness();
+    bar.render();
+    bar.render();
+    expect(writes).toHaveLength(1);
+  });
+
+  test('a changed status writes again', () => {
+    let connections = 0;
+    const { bar, writes } = harness({ getStatus: () => mkStatus({ connections }) });
+    bar.render();
+    connections = 1;
+    bar.render();
+    expect(writes).toHaveLength(2);
   });
 });

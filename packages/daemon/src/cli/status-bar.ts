@@ -26,6 +26,19 @@
  * the wrapper has detached (stdout fd is null), or when the terminal is too
  * short to spare a row. A render error backs the bar off rather than crashing
  * the wrapper.
+ *
+ * Exposure reduction (#932): this bar and Claude's own PTY output are two
+ * unsynchronized writers on the same fd, and the DECSC/DECRC pair above
+ * shares Claude's own cursor-save slot -- a paint that lands mid-render can
+ * corrupt or erase the very question remi exists to deliver. This does not
+ * fix that race (root fix would mean serializing the two writers); it just
+ * cuts how often a paint is attempted at all:
+ *   1. `render()` no-ops entirely while `hasLiveQuestions()` reports a
+ *      pending question, so the ~250ms timer cannot paint over a live prompt.
+ *   2. A paint whose built escape sequence is byte-identical to the last one
+ *      actually written is skipped -- most ticks rewrite identical bytes, and
+ *      every write is an exposure window. `stop()` resets this so the next
+ *      `render()` after a restart always writes unconditionally.
  */
 
 import * as fs from 'node:fs';
@@ -152,6 +165,14 @@ export interface StatusBarDeps {
   readonly getSize: () => { cols: number; rows: number };
   /** Master enable (config flag + wrapper mode + a real TTY). */
   readonly isEnabled: () => boolean;
+  /** True iff the session currently has at least one pending question
+   *  (mirrors `hasLiveQuestions` in `question-presence-tracker.ts`, backed by
+   *  `sessionRegistry.getSession(id)?.currentQuestions.size > 0`). #932:
+   *  `render()` no-ops while this is true so the bar can never paint over a
+   *  live prompt. Optional; defaults to always-false (no suppression) so a
+   *  caller that omits it keeps the pre-#932 behavior instead of silently
+   *  losing the bar. */
+  readonly hasLiveQuestions?: () => boolean;
   /** Write to the terminal fd. Injectable for tests; defaults to fs.writeSync. */
   readonly writeToFd?: (fd: number, data: string) => void;
   /** Current epoch ms. Injectable for tests; defaults to Date.now. */
@@ -167,10 +188,15 @@ export interface StatusBarDeps {
 
 /**
  * Owns the reserved-row redraw loop. `start()` paints immediately and then on a
- * ~250ms timer (#576); the unconditional periodic repaint keeps the bar asserted
- * even if Claude's output scrolled it (inline mode) since the last tick and keeps
- * the `evaluating Ns` counter smooth. `stop()` clears the row and halts the loop.
- * All draws are no-ops unless `isEnabled()` and a live fd and enough rows.
+ * ~250ms timer (#576) so the `evaluating Ns` counter stays smooth. Each tick
+ * still calls `render()` unconditionally, but `render()` itself now (#932)
+ * skips the actual fd write when the built sequence is unchanged from the
+ * last one written, or while a question is live -- so a byte-identical status
+ * (the common case) costs no write, at the tradeoff that a status-unchanged
+ * scroll-away (Claude's inline output pushing the bar off row N) is not
+ * re-asserted until the status next changes. `stop()` clears the row and
+ * halts the loop. All draws are no-ops unless `isEnabled()` and a live fd and
+ * enough rows.
  */
 export class StatusBar {
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -180,10 +206,15 @@ export class StatusBar {
   /** Set after MAX_RENDER_ERRORS consecutive failures; the bar backs off for
    *  good (the fd has gone bad). A success before then clears the streak. */
   private disabled = false;
+  /** The last escape sequence actually written, or null before the first
+   *  write (or right after `stop()`). #932 protection 2: a paint identical to
+   *  this is skipped rather than rewritten. */
+  private lastRendered: string | null = null;
   private readonly getStdoutFd: () => number | null;
   private readonly getStatus: () => Readonly<RemiStatus>;
   private readonly getSize: () => { cols: number; rows: number };
   private readonly isEnabled: () => boolean;
+  private readonly hasLiveQuestions: () => boolean;
   private readonly writeToFd: (fd: number, data: string) => void;
   private readonly now: () => number;
   private readonly log: (msg: string) => void;
@@ -194,6 +225,7 @@ export class StatusBar {
     this.getStatus = deps.getStatus;
     this.getSize = deps.getSize;
     this.isEnabled = deps.isEnabled;
+    this.hasLiveQuestions = deps.hasLiveQuestions ?? (() => false);
     this.writeToFd = deps.writeToFd ?? ((fd, data) => fs.writeSync(fd, data));
     this.now = deps.now ?? (() => Date.now());
     this.log = deps.log;
@@ -219,11 +251,18 @@ export class StatusBar {
       this.timer = null;
     }
     this.clearRow();
+    // #932: the physical row is now the clear sequence, not `lastRendered`'s
+    // bar sequence -- reset so a future render() after a restart always
+    // writes unconditionally rather than comparing against stale content.
+    this.lastRendered = null;
   }
 
-  /** Paint the reserved row now. Safe no-op when disabled / detached / no room. */
+  /** Paint the reserved row now. Safe no-op when disabled / detached / no
+   *  room / a question is currently live (#932). */
   render(): void {
     if (this.disabled || !this.isEnabled()) return;
+    // #932 protection 1: never paint over a live question prompt.
+    if (this.hasLiveQuestions()) return;
     const fd = this.getStdoutFd();
     if (fd === null) return;
     const { cols, rows } = this.getSize();
@@ -235,7 +274,12 @@ export class StatusBar {
     // practice only the fd write can fail here.
     try {
       const text = formatStatusBar(this.getStatus(), this.now());
-      this.writeToFd(fd, buildBarSequence(rows, cols, text));
+      const sequence = buildBarSequence(rows, cols, text);
+      // #932 protection 2: skip the write when nothing changed since the last
+      // successful paint -- most ticks would rewrite identical bytes.
+      if (sequence === this.lastRendered) return;
+      this.writeToFd(fd, sequence);
+      this.lastRendered = sequence;
       this.consecutiveErrors = 0;
       this.errorLogged = false;
     } catch (err) {
