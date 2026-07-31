@@ -627,7 +627,24 @@ export class RelayAdapter implements ConnectionAdapter {
       // defense in depth + exhaustiveness (mirrors connection.ts).
       auth_response: (m) => this.routeAuthResponse(m),
     };
-    const routed = routeClientMessage(msg, handlers);
+    // #916: NOT a crash-prevention fix like connection.ts's mirror-image
+    // change -- routeMessage's only caller, handleRelayMessage, already
+    // wraps this call in its own try/catch, so a synchronous handler throw
+    // was already contained before this. What that outer catch did NOT do is
+    // reply to the peer (it only logs, mislabeled as "Failed to parse relay
+    // payload"), leaving the client hanging with zero signal. This inner
+    // try/catch fixes the misdiagnosis and adds the reply the issue
+    // requires, matching connection.ts's behavior.
+    let routed: boolean;
+    try {
+      routed = routeClientMessage(msg, handlers);
+    } catch (err) {
+      console.error(`Relay handler for '${msg.type}' failed: ${errorToString(err)}`);
+      this.client?.sendRelay(
+        JSON.stringify(createError('INTERNAL_ERROR', `Handler for '${msg.type}' failed`)),
+      );
+      return;
+    }
     if (!routed) {
       console.warn(`Unknown relay message type: ${msg.type}`);
       this.client?.sendRelay(
