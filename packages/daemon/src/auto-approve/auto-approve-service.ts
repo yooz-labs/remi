@@ -10,6 +10,7 @@
  */
 
 import { errorToString } from '@remi/shared';
+import { reconcileCounterfactual, shouldCounterfactual } from './authority-counterfactual.ts';
 import { enforceAuthorityBoundary } from './authority.ts';
 import { enforceDenyFloor } from './deny-floor.ts';
 import { fileActivityRecord } from './engine-activity.ts';
@@ -936,6 +937,70 @@ export class AutoApproveService {
             };
             this.logFn(
               `${prefix} TRUST BOUNDARY ${toolName}: approve -> escalate (matched "${guarded.matchedPattern}") (${durationMs}ms)`,
+            );
+          }
+        }
+
+        // #954 COUNTERFACTUAL: the authority trust boundary, enforced by
+        // re-asking rather than by pattern.
+        //
+        // `enforceAuthorityBoundary` above checks eight catastrophic
+        // substrings and caught NONE of the measured failure: `rm -rf ./build`
+        // went from `deny` (no authority) to `approve` (authority) 5 runs out
+        // of 5, on nothing stronger than "please clean out the build
+        // directory, it is stale". Widening that substring list does not
+        // scale -- the rule it backstops covers "remote, destructive,
+        // unfamiliar, or irreversible", which is not a substring set.
+        //
+        // So instead of asking WHETHER authority should have approved this,
+        // ask whether it DECIDED it: run the same evaluation with the
+        // authority block removed. If the answer changes, the conversation
+        // text was the deciding factor, which the prompt-level rule forbids.
+        //
+        // Runs INLINE rather than via a nested `evaluate()` call: that would
+        // re-enter `acquireSlot` while still holding this eval's slot, and
+        // deadlock on a single-slot pool.
+        if (
+          !useMultiChoice &&
+          result.decision === 'approve' &&
+          shouldCounterfactual(toolName, toolInput, result.decision, authorityPresent)
+        ) {
+          const cfStart = Date.now();
+          try {
+            const cfResponse = await chatCompletion(
+              { ...this.llmConfig, model },
+              // Same prompt, same instructions, authority block OMITTED.
+              buildPrompt(toolName, toolInput, this.instructions, undefined),
+              this.currentAbortController?.signal,
+            );
+            const cfParsed = parseDecision(cfResponse.content);
+            const reconciled = reconcileCounterfactual(cfParsed.decision);
+            if (reconciled.overridden) {
+              const original = result;
+              result = {
+                decision: 'escalate',
+                reasoning: `Authority counterfactual (#954): the same operation evaluated to "${cfParsed.decision}" WITHOUT the conversation-context block, so that text decided the outcome rather than merely resolving ambiguity. Escalating instead. Authority-free reasoning: ${cfParsed.reasoning} | Original: ${original.reasoning}`,
+                durationMs,
+                model: original.model,
+                summary: 'Approve this? (the chat, not you, allowed it)',
+              };
+              this.logFn(
+                `${prefix} COUNTERFACTUAL ${toolName}: approve -> escalate (authority-free verdict was ${cfParsed.decision}) (+${Date.now() - cfStart}ms)`,
+              );
+            }
+          } catch (err) {
+            // The counterfactual is a SAFETY check, so failing to run it must
+            // not leave the authority-influenced approve standing. Escalate --
+            // the same direction every other failure in this module takes.
+            result = {
+              decision: 'escalate',
+              reasoning: `Authority counterfactual (#954) could not be evaluated (${errorToString(err)}); escalating rather than trusting an authority-influenced approve. Original: ${result.reasoning}`,
+              durationMs,
+              model: result.model,
+              summary: 'Approve this? (safety check unavailable)',
+            };
+            this.logFn(
+              `${prefix} COUNTERFACTUAL ${toolName}: check failed, escalating - ${errorToString(err)}`,
             );
           }
         }
