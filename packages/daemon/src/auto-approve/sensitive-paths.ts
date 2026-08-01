@@ -70,6 +70,8 @@
  * matching below is done on a lowercased path (#960 review).
  */
 
+import { shellWords } from './shell-safety.ts';
+
 /**
  * Absolute system trees. Prefix-matched against a normalised path, so
  * `/etc` catches `/etc/hosts` but not a project file named `/tmp/etcetera`.
@@ -192,7 +194,14 @@ const SENSITIVE_BASENAME_PREFIXES: readonly string[] = ['.env.'];
  * every caller would otherwise have to remember to.
  */
 export function isSensitiveWritePath(candidate: string): boolean {
-  const raw = candidate.trim().replace(/^['"]|['"]$/g, '');
+  // Strip quote and escape characters ANYWHERE, not just at the ends (#960
+  // second review). The Bash path now hands this already-tokenized words, so
+  // it should never see a quote — but `/et"c"/hosts` returning false while
+  // naming `/etc/hosts` is too sharp an edge to leave on a predicate other
+  // code may call directly. Removing these can only make the check match
+  // MORE, so it cannot open a hole; a filename genuinely containing a quote
+  // gets an unnecessary escalation, which is the safe direction.
+  const raw = candidate.trim().replace(/['"\\]/g, '');
   if (raw === '') return false;
 
   // LOWERCASED before anything else. macOS's default filesystem is
@@ -285,7 +294,7 @@ function resolveDotDot(path: string): string {
  * correct anyway since a write group has no business covering it.
  */
 export function segmentTouchesSensitivePath(segment: string): boolean {
-  for (const token of segment.split(/\s+/)) {
+  for (const token of shellWords(segment)) {
     if (token === '') continue;
     // Strip a leading `--flag=` so `--output=/etc/x` is seen as `/etc/x`.
     const value = token.includes('=') ? token.slice(token.indexOf('=') + 1) : token;

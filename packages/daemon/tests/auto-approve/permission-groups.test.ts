@@ -614,3 +614,41 @@ describe('#960 regression: build surface + the DEFAULT-ON build-test group', () 
     expect(bash('cp src/a.ts src/b.ts', WRITE_GROUPS)).toBe('fs-write:cp');
   });
 });
+
+describe('#960 second review: quote and backslash smuggling', () => {
+  // One root cause, three surfaces: the flag allowlist, the sensitive-
+  // destination denylist, and the positional veto each had their own quote
+  // handling and each was defeated independently. Every payload below was
+  // confirmed against real `bash -c printf` argv before being written down.
+  const mustBeNull = [
+    // Flag allowlist.
+    'curl -"o" out.txt https://x',
+    'curl -sS"o" out.txt https://x', // hidden inside an otherwise-safe cluster
+    'curl --"output" out.txt https://x', // whole flag name inside the quote
+    'curl --o\\utput out.txt https://x', // backslash only, no quotes needed
+    "curl -sS$'o' out.txt https://x", // ANSI-C quoting
+    'cp -"f" a b',
+    'git checkout -"f" branch',
+    'git checkout --"force" branch',
+    // Sensitive destinations.
+    'cp evil /et"c"/cron.d/task',
+    'tee ~/."remi"/config.toml',
+    'cp x ~/.ss"h"/authorized_keys',
+    'cp x pack"age".json',
+    // Positional veto: `git checkout "."` discards uncommitted work.
+    'git checkout "."',
+    "git checkout '.'",
+  ];
+  for (const cmd of mustBeNull) {
+    test(JSON.stringify(cmd), () => expect(bash(cmd, WRITE_GROUPS)).toBeNull());
+  }
+
+  test('ordinary quoted arguments still work', () => {
+    // The over-block boundary: quoting is normal, and refusing every quoted
+    // command would make the groups useless.
+    expect(bash('git commit -m "fix: the thing"', WRITE_GROUPS)).toBe('vcs-write:git commit');
+    expect(bash("git commit -m 'another message'", WRITE_GROUPS)).toBe('vcs-write:git commit');
+    expect(bash('cp "src/a b.ts" "src/c d.ts"', WRITE_GROUPS)).toBe('fs-write:cp');
+    expect(bash('mkdir -p "my dir"', WRITE_GROUPS)).toBe('fs-write:mkdir');
+  });
+});

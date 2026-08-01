@@ -28,7 +28,7 @@
  */
 
 import { isSensitiveWritePath, segmentTouchesSensitivePath } from './sensitive-paths.ts';
-import { matchCoveredCommand } from './shell-safety.ts';
+import { matchCoveredCommand, shellWords } from './shell-safety.ts';
 import { hasUnsafeWriteFlag } from './write-flag-safety.ts';
 
 /**
@@ -38,15 +38,26 @@ import { hasUnsafeWriteFlag } from './write-flag-safety.ts';
  * `git checkout .` and `git checkout -- <path>` DISCARD uncommitted work
  * irreversibly. The branch-switch forms are what `vcs-write` is for.
  */
-const WRITE_GROUP_POSITIONAL_VETOES: ReadonlyArray<{ family: RegExp; form: RegExp }> = [
-  { family: /^git\s+(checkout|restore)\b/, form: /(^|\s)\.(\s|$)/ },
-  { family: /^git\s+(checkout|restore)\b/, form: /(^|\s)--(\s|$)/ },
+const WRITE_GROUP_POSITIONAL_VETOES: ReadonlyArray<{ family: RegExp; words: readonly string[] }> = [
+  { family: /^git\s+(checkout|restore)\b/, words: ['.', '--'] },
 ];
 
-/** True if a destructive positional form applies to this segment. */
+/**
+ * True if a destructive positional form applies to this segment.
+ *
+ * Matches against TOKENIZED words, not raw text (#960 second review). The
+ * first cut used `/(^|\s)\.(\s|$)/`, which requires the `.` to be
+ * whitespace-bounded in the source string — so `git checkout "."` sailed
+ * through and irreversibly discarded uncommitted work, while the identical
+ * `git checkout .` was correctly refused. `shellWords` removes the quotes
+ * first, so both are now the same single word `.` and both are refused.
+ */
 function hasWriteGroupPositionalVeto(segment: string): boolean {
-  for (const { family, form } of WRITE_GROUP_POSITIONAL_VETOES) {
-    if (family.test(segment) && form.test(segment)) return true;
+  for (const { family, words } of WRITE_GROUP_POSITIONAL_VETOES) {
+    if (!family.test(segment)) continue;
+    for (const word of shellWords(segment)) {
+      if (words.includes(word)) return true;
+    }
   }
   return false;
 }

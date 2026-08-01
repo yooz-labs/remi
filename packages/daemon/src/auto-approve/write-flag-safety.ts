@@ -36,6 +36,8 @@
  * caught by the `--force` entry, and `--force-with-lease` must be too.
  */
 
+import { shellWords } from './shell-safety.ts';
+
 /** One command family's flag policy. */
 interface FlagPolicy {
   /** Matches the START of a segment, e.g. /^curl\b/. */
@@ -142,42 +144,6 @@ const FLAG_POLICIES: readonly FlagPolicy[] = [
   },
 ];
 
-/**
- * Split a segment into whitespace-separated tokens, ignoring anything inside
- * quotes so a quoted message (`git commit -m "fix -f thing"`) is not scanned
- * for flags it does not contain.
- */
-function flagTokens(segment: string): string[] {
-  const tokens: string[] = [];
-  let current = '';
-  let quote: '"' | "'" | null = null;
-  for (const ch of segment) {
-    if (quote !== null) {
-      if (ch === quote) quote = null;
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch;
-      // A quoted run is never a flag; end the current token.
-      if (current !== '') {
-        tokens.push(current);
-        current = '';
-      }
-      continue;
-    }
-    if (/\s/.test(ch)) {
-      if (current !== '') {
-        tokens.push(current);
-        current = '';
-      }
-      continue;
-    }
-    current += ch;
-  }
-  if (current !== '') tokens.push(current);
-  return tokens;
-}
-
 /** True if `flag` and `dangerous` are prefixes of one another (either way). */
 function longFlagMatches(flag: string, dangerous: string): boolean {
   // An abbreviation must be non-trivial; a bare `--` is not a flag name.
@@ -196,7 +162,7 @@ export function hasUnsafeWriteFlag(segment: string): boolean {
   const policy = FLAG_POLICIES.find((p) => p.family.test(segment));
   if (policy === undefined) return false;
 
-  for (const token of flagTokens(segment)) {
+  for (const token of shellWords(segment)) {
     if (!token.startsWith('-') || token === '-' || token === '--') continue;
 
     if (token.startsWith('--')) {
