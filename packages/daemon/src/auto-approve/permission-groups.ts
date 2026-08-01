@@ -249,24 +249,6 @@ export const BUILTIN_GROUPS: Readonly<Record<string, PermissionGroup>> = {
     ],
     segmentVeto: writeGroupVeto,
   },
-  'net-read': {
-    tools: [],
-    commands: [
-      'curl',
-      'gh api',
-      // GET-shaped only: `write-flag-safety.ts` allowlists curl's safe short
-      // flags, so every method flag, upload/data flag, `-o`/`-O`/`-D`/`-c`
-      // (writes a local file) and `-K` (reads a config file that can carry
-      // any option at all) is refused however it is spelled -- bundled,
-      // attached, or standalone.
-      //
-      // `wget` is deliberately ABSENT (#960 review). Unlike curl, which
-      // streams to stdout, bare `wget <url>` WRITES the response body to a
-      // file in the cwd. There is no read-only default form to curate, so
-      // the whole command belongs to the LLM.
-    ],
-    segmentVeto: writeGroupVeto,
-  },
 };
 
 /**

@@ -1,6 +1,19 @@
 /**
  * Flag safety for write-side permission groups (#960 review).
  *
+ * ## Scope note: curl and `gh api` policies were REMOVED
+ *
+ * They lived here for the `net-read` group, which was cut from #959 after
+ * three review rounds found ten bypasses, five of them curl's. `curl` has
+ * roughly two hundred flags; an allowlist assembled by hand kept missing one
+ * (`-D`, `-c`, `--trace`, then `-1o` where a digit flag ended the scan). The
+ * benefit did not justify it — a curl escalation costs one tap, and only 28
+ * of 226 measured escalations were curl.
+ *
+ * Their policies are deleted rather than left dead, so nothing here suggests
+ * a coverage that does not exist. Tracked for a fresh derivation, against
+ * curl's actual man page rather than memory, in the `net-read` follow-up, #961.
+ *
  * ## Why the first attempt was wrong
  *
  * #959 expressed these boundaries as regexes over the raw segment text, each
@@ -58,53 +71,6 @@ interface FlagPolicy {
 
 const FLAG_POLICIES: readonly FlagPolicy[] = [
   {
-    // curl: safe short flags are the ones that only affect HOW the fetch is
-    // made or what is printed. Everything that writes a file (-o -O -D -c
-    // --trace), uploads (-T -d -F), or changes the method (-X) is absent, as
-    // is -K (reads a config file that can carry any option at all).
-    family: /^curl\b/,
-    safeShortFlags: 'sSLlfikvIVhmuAeGNr46#',
-    dangerousLongFlags: [
-      'output',
-      'remote-name',
-      'remote-header-name',
-      'create-dirs',
-      'output-dir',
-      'dump-header',
-      'cookie',
-      'cookie-jar',
-      'trace',
-      'trace-ascii',
-      'config',
-      'request',
-      'method',
-      'data',
-      'form',
-      'upload-file',
-      'upload',
-      'xattr',
-      'json',
-      'next',
-    ],
-  },
-  {
-    // `gh api` is a GET only while it carries no method and no field flags.
-    family: /^gh\s+api\b/,
-    safeShortFlags: 'qhi',
-    dangerousLongFlags: [
-      'method',
-      'field',
-      'raw-field',
-      'input',
-      'header',
-      'template',
-      'jq',
-      'paginate',
-      'silent',
-      'verbose',
-    ],
-  },
-  {
     // cp/mv: -f forces past a permission error. NOTE the real clobber
     // mechanism is the POSIX default, not -f -- that is handled by the
     // destination guard in `sensitive-paths.ts`, not here.
@@ -119,9 +85,17 @@ const FLAG_POLICIES: readonly FlagPolicy[] = [
   },
   {
     // git write subcommands. The safe set is deliberately small: -a/-m for
-    // commit, -b/-c for branch creation on checkout/switch, -A/-u for add,
-    // plus quiet/verbose. Absent, and therefore vetoed: -f (force / discard),
+    // commit, -b for branch creation on checkout/switch, -A/-u for add, plus
+    // quiet/verbose. Absent, and therefore vetoed: -f (force / discard),
     // -D (force-delete), -n (--no-verify on commit), -B (force-create).
+    //
+    // `c` is listed but currently DEAD (#962). `shell-safety.ts`'s
+    // `EXEC_SCOPED_VETOES` refuses any git segment carrying a standalone `-c`
+    // — it exists to stop `git -c core.hooksPath=… commit`, and cannot tell
+    // that from `git switch -c newbranch`, so it blocks both. Keeping the
+    // letter here documents the intent; #962 is the position-scoped fix that
+    // would make it real. Do not read its presence as "git switch -c is
+    // auto-approved" — it is not.
     family: /^git\b/,
     safeShortFlags: 'amAubcqv',
     dangerousLongFlags: [
