@@ -306,6 +306,159 @@ describe('pullModel', () => {
       }),
     ).rejects.toThrow(/remi model cancel/);
   });
+
+  // #971. The shipped default `model` is a HuggingFace repo id, but the engine
+  // keys its rows by nickname and carries the repo id alongside. Every fixture
+  // above omits `huggingFaceID`, which is why the old `m.id === model` matching
+  // looked correct here while failing on every real install.
+  //
+  // Shape taken from a live `GET /v1/models` (engine 0.7.8 on :19924).
+  const aliased = (over: Record<string, unknown> = {}) => ({
+    id: 'yooz-instruct-4b',
+    module: 'llm',
+    displayName: 'yooz-instruct-4b',
+    sizeBytes: 2_387_349_504,
+    cached: true,
+    loaded: true,
+    isActive: false,
+    deletable: true,
+    huggingFaceID: 'YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx',
+    ...over,
+  });
+
+  test('#971 a cached model configured by its HuggingFace id downloads nothing', async () => {
+    // The regression. Before the fix this dispatched a download for a model
+    // already on disk, then polled to the full timeout and reported it missing.
+    const server = engineServer((path) => {
+      if (path === '/v1/models') return Response.json({ models: [aliased()] });
+      return Response.json({});
+    });
+    stop = server.stop;
+
+    await pullModel(server.url, 'YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx', { sleep: noSleep });
+
+    expect(server.seen.some((s) => s.path.endsWith('/download'))).toBe(false);
+  });
+
+  test('#971 the same model configured by its engine nickname still downloads nothing', async () => {
+    // Either name resolves; the fix must not trade one for the other.
+    const server = engineServer((path) => {
+      if (path === '/v1/models') return Response.json({ models: [aliased()] });
+      return Response.json({});
+    });
+    stop = server.stop;
+
+    await pullModel(server.url, 'yooz-instruct-4b', { sleep: noSleep });
+
+    expect(server.seen.some((s) => s.path.endsWith('/download'))).toBe(false);
+  });
+
+  test('#971 a genuinely absent model still downloads (no false short-circuit)', async () => {
+    // The fix widens matching, so the opposite failure — treating an absent
+    // model as present and never fetching it — has to be excluded explicitly.
+    let polls = 0;
+    const server = engineServer((path) => {
+      if (path.endsWith('/download')) return new Response(null, { status: 202 });
+      if (path === '/v1/state') {
+        return Response.json({
+          modules: [
+            {
+              module: 'llm',
+              models: [{ id: 'yooz-instruct-4b', loadState: 'available', downloadProgress: 0.006 }],
+            },
+          ],
+        });
+      }
+      return Response.json({ models: [aliased({ cached: polls++ >= 1 })] });
+    });
+    stop = server.stop;
+
+    await pullModel(server.url, 'YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx', { sleep: noSleep });
+
+    expect(server.seen.some((s) => s.path.endsWith('/download'))).toBe(true);
+  });
+
+  test('#971 polls /v1/state by the ENGINE id when configured by repo id', async () => {
+    // `/v1/state` rows carry only `id` — no `huggingFaceID` (verified against
+    // the live endpoint) — so probing with the repo id matches nothing and the
+    // loop observes no progress at all until it times out. The configured name
+    // has to be translated through the inventory first.
+    let sawInFlight = false;
+    let polls = 0;
+    const server = engineServer((path) => {
+      if (path.endsWith('/download')) return new Response(null, { status: 202 });
+      if (path === '/v1/state') {
+        // Keyed by the engine id ONLY, exactly like the real endpoint.
+        return Response.json({
+          modules: [
+            {
+              module: 'llm',
+              models: [{ id: 'yooz-instruct-4b', loadState: 'available', downloadProgress: 0.006 }],
+            },
+          ],
+        });
+      }
+      return Response.json({ models: [aliased({ cached: polls++ >= 1 })] });
+    });
+    stop = server.stop;
+
+    await pullModel(server.url, 'YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx', {
+      sleep: noSleep,
+      // A progress callback fires only when a state row was actually FOUND, so
+      // this observes the translation rather than just the happy exit.
+      onProgress: (p) => {
+        if (p.fraction !== undefined) sawInFlight = true;
+      },
+    });
+
+    expect(sawInFlight).toBe(true);
+  });
+
+  test('#971 an engine with no huggingFaceID at all still pulls by the configured name', async () => {
+    // `huggingFaceID` arrived in engine 0.7.8 and remi attaches to whatever
+    // engine holds the port, so a row set without the field is a live case.
+    // There the configured repo id is untranslatable and must be used as-is —
+    // the pre-#971 behavior, preserved.
+    let polls = 0;
+    const server = engineServer((path) => {
+      if (path.endsWith('/download')) return new Response(null, { status: 202 });
+      if (path === '/v1/state') {
+        return Response.json({
+          modules: [
+            {
+              module: 'llm',
+              models: [
+                {
+                  id: 'YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx',
+                  loadState: 'available',
+                  downloadProgress: 0.006,
+                },
+              ],
+            },
+          ],
+        });
+      }
+      return Response.json({
+        models: [
+          {
+            id: 'YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx',
+            module: 'llm',
+            displayName: 'legacy',
+            sizeBytes: 1,
+            cached: polls++ >= 1,
+            loaded: false,
+            isActive: false,
+            deletable: true,
+          },
+        ],
+      });
+    });
+    stop = server.stop;
+
+    await pullModel(server.url, 'YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx', { sleep: noSleep });
+
+    expect(server.seen.some((s) => s.path.endsWith('/download'))).toBe(true);
+  });
 });
 
 describe('disk inventory', () => {

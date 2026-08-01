@@ -5,6 +5,29 @@ All notable changes to Remi are documented here.
 ## [Unreleased]
 
 ### Fixed
+- **A model configured by its HuggingFace id is no longer reported missing**
+  (#971). The engine keys inventory rows by nickname (`yooz-instruct-4b`) and
+  carries the repo id alongside in `huggingFaceID`; `config.toml`'s `model`
+  holds the repo id, which is the shipped default. `pullModel` compared `id` to
+  `id` only, so its "already on disk" short-circuit missed a model that was
+  cached AND loaded, dispatched a redundant download, then polled `/v1/state` —
+  which missed for the same reason — for the full 30 minutes before logging
+  "Could not fetch ... auto-approve will escalate until it is present".
+
+  That warning was false: evaluations worked the whole time, because the engine
+  DOES resolve a repo id on `/v1/llm/generate`, just not on the inventory
+  routes. It fired 15 times in one user's log, once per daemon start.
+
+  Matching now goes through `model-identity.ts`'s `findModel` (#843), which
+  already existed for exactly this and which these two call sites had never
+  adopted. `/v1/state` rows carry only `id`, so the configured name is
+  translated to the canonical engine id through the inventory before probing —
+  and re-translated mid-download, since the row appears only once the fetch is
+  under way. An engine predating `huggingFaceID` (pre-0.7.8) still pulls by the
+  configured name exactly as before.
+
+  Verified against the live engine: `pullModel` for the repo id now returns in
+  **45ms** where it previously threw after 1800s.
 - **The auto-approve pill no longer sticks on "evaluating"** (#970). A cancelled
   eval was the one gate end path that told clients nothing: `onEvalStart` moves
   the pill to `evaluating`, `onHandled` moves it to `approved`, `onEscalate`
