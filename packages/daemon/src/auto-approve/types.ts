@@ -6,6 +6,7 @@
  * or, for multi-choice prompts, pick a specific option index.
  */
 
+import type { AutoApproveLevel } from './levels.ts';
 /**
  * Possible decisions returned by AutoApproveService.evaluate().
  *
@@ -139,6 +140,16 @@ export interface AutoApproveConfig {
    * "vcs-read", "build-test". Default: all three.
    */
   readonly approve_groups: readonly string[];
+  /**
+   * Strictness preset (#963). Selects which permission groups are
+   * auto-approved without an LLM call. `strict` is today's behavior and the
+   * shipped default; `balanced` adds `fs-write`; `trusted` adds `vcs-write`.
+   *
+   * An explicit `approve_groups` in config OVERRIDES this — see
+   * `resolveApproveGroups` in `auto-approve/levels.ts` for why override rather
+   * than union, and `loadConfig` for where the two are reconciled.
+   */
+  readonly level: AutoApproveLevel;
   /**
    * Built-in permission groups to deny without calling the LLM. Checked before
    * `approve_groups` (and before `allow`); any group/pattern deny wins.

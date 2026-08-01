@@ -5,6 +5,27 @@ All notable changes to Remi are documented here.
 ## [Unreleased]
 
 ### Added
+- **`[auto_approve] level` — a strictness preset over the permission groups**
+  (#963). `strict` (the default) is exactly today's behavior; `balanced` adds
+  `fs-write`; `trusted` adds `vcs-write`. This is where #956's premise lands:
+  measured over 796 real evaluations, the 244 deterministic group approvals
+  were honored exactly every time at 0ms, while **35 escalations explicitly
+  cited the user's own `instructions` and escalated anyway** and 57 were plain
+  writes against a config whose prose approved writes outright. Prose to a 4B
+  model is asked; group membership is enforced. `instructions` keeps working
+  and keeps its prompt placement, but stops being load-bearing: it becomes the
+  exception layer for project-specific carve-outs the groups cannot encode.
+  An explicit `approve_groups` OVERRIDES the preset rather than merging with
+  it — a union could only widen, silently re-widening a list a user had
+  deliberately narrowed — and the daemon logs which won, so a config written
+  before levels existed keeps behaving exactly as it always has. `remi config`
+  prints the resolved group list alongside the level, so the effective policy
+  is inspectable without reading source. **The default is `strict`, not
+  `trusted`:** phase 2 needed four adversarial review rounds to close eleven
+  bypasses in the write groups, and defaulting them on in the same change that
+  introduces the switch would bundle "does the mechanism work" with "is this
+  policy right". Flipping the default is a one-line change and its own PR.
+
 - **`UserPromptSubmit` is now a registered hook, feeding a new auto-approve
   authority summary** (#893, Q9). `REMI_REGISTERED_HOOK_EVENTS` grows from 14
   to 15; the listener is a single array push into a per-session
