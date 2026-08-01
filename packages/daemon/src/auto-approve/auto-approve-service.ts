@@ -11,6 +11,7 @@
 
 import { errorToString } from '@remi/shared';
 import { enforceAuthorityBoundary } from './authority.ts';
+import { enforceDenyFloor } from './deny-floor.ts';
 import { fileActivityRecord } from './engine-activity.ts';
 import type { EngineHost } from './engine-host.ts';
 import { clearModelCache, pullModel, unloadModel } from './engine-models.ts';
@@ -888,6 +889,39 @@ export class AutoApproveService {
         // the whole point is that this check cannot be talked into skipping
         // itself by whatever the model's own reasoning says. Only ever
         // downgrades approve -> escalate; never touches deny/escalate/pick.
+        // #953 DENY FLOOR: the prompt's "deny ONLY DENY-FLOOR operations;
+        // everything else you would not approve must ESCALATE, never deny"
+        // rule, enforced in code instead of by instruction. A `deny` is
+        // SILENT -- the gate returns 'deny' to the hook and pushes no card --
+        // so an over-eager deny takes the human out of a decision that was
+        // explicitly routed to them. Measured at 10 of 12 escalate-expected
+        // operations before this guard (see `deny-floor.ts`).
+        //
+        // Runs BEFORE the authority boundary below purely for readability;
+        // the two are disjoint by construction (this one only ever sees
+        // `deny`, that one only ever sees `approve`), so the order carries no
+        // behavioral meaning and neither can observe the other's output.
+        //
+        // Config deny/deny_groups matches never reach here -- they return
+        // early, above, without calling the LLM. This applies to
+        // MODEL-produced denies only.
+        if (!useMultiChoice && result.decision === 'deny') {
+          const floored = enforceDenyFloor(toolName, toolInput, result.decision);
+          if (floored.overridden) {
+            const original = result;
+            result = {
+              decision: 'escalate',
+              reasoning: `Deny floor (#953): model denied an operation matching no DENY FLOOR pattern, so it is escalated for you to answer rather than blocked silently. Original model reasoning: ${original.reasoning}`,
+              durationMs,
+              model: original.model,
+              summary: 'Allow this command to run?',
+            };
+            this.logFn(
+              `${prefix} DENY FLOOR ${toolName}: deny -> escalate (no catastrophic pattern) (${durationMs}ms)`,
+            );
+          }
+        }
+
         const authorityPresent = (authority?.trim().length ?? 0) > 0;
         if (!useMultiChoice && authorityPresent && result.decision === 'approve') {
           const guarded = enforceAuthorityBoundary(toolName, toolInput, result.decision, true);
