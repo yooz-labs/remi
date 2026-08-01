@@ -133,8 +133,14 @@ export const BUILTIN_GROUPS: Readonly<Record<string, PermissionGroup>> = {
  * Unambiguous mutation indicators. None legitimately appears in a curated read
  * command, so matching one can only mean a write snuck past a read prefix
  * (e.g. `git diff --output=f`, `biome check --write`, `find . -delete`).
+ *
+ * Exported for tests ONLY (#957 review). `shell-safety`'s per-segment-veto
+ * tests need the real predicate rather than a hand-copied one: a duplicate
+ * stays byte-identical right up until someone widens this list, at which
+ * point those tests keep passing against a stale veto and report confidence
+ * they no longer have.
  */
-const MUTATION_TOKEN =
+export const MUTATION_TOKEN =
   /(^|\s)(-X|--method|--field|--raw-field|--input|--output|--write|--apply|--fix|-delete|-exec|-execdir|-ok)(\s|=|$)/;
 
 /** True if a name is a built-in group. */

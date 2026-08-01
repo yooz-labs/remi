@@ -136,6 +136,15 @@ describe('permission-groups: adversarial (MUST fall through to LLM, never group-
     'git push origin main',
     'gh pr merge 494',
     'git commit -m x',
+    // mutation flag on a NEUTRAL segment, alongside an otherwise-covered read
+    // (#957). Neutral prefixes (`cd`, `echo`, ...) are waved through without
+    // consulting the curated list, so the blanket veto is the only thing
+    // standing there. The per-segment veto refactor had to keep applying it
+    // inside the neutral branch; without this case the invariant is pinned
+    // only at the `matchCoveredCommand` level and not through the shipped
+    // `matchGroups` path anyone actually calls.
+    'cd --output=/etc/passwd && git status',
+    'echo --write && cat file',
     // read command flipped to write by a flag
     "sed -i 's/a/b/' file", // -i: in-place edit, prefix is `sed -n`
     'git diff --output=patch.txt', // --output writes

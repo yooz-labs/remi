@@ -176,8 +176,12 @@ export function hasExecPrimitive(segment: string): boolean {
  *   When supplied, this replaces `extraVeto` for matched segments only;
  *   NEUTRAL segments keep `extraVeto` regardless, since `cd`/`echo` carrying
  *   `--write` is suspicious no matter which group covered the rest of the
- *   command. Callers that omit it are unaffected: `extraVeto` then applies to
- *   matched segments exactly as before.
+ *   command. Callers that omit it get the same RETURN VALUE as before for
+ *   every input. Note the scope of that claim: `extraVeto` is no longer
+ *   *called* for a segment that is neither neutral nor matches any prefix,
+ *   because the no-match branch now returns first. Both shipped predicates are
+ *   pure, so this is invisible today — but it is a claim about return values,
+ *   not about invocation, and a side-effecting veto would notice.
  */
 export function matchCoveredCommand(
   command: string,

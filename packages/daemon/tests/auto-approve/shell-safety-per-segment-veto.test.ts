@@ -13,12 +13,14 @@
  */
 
 import { describe, expect, test } from 'bun:test';
+import { MUTATION_TOKEN } from '../../src/auto-approve/permission-groups.ts';
 import { matchCoveredCommand } from '../../src/auto-approve/shell-safety.ts';
 
-/** The blanket veto `matchReadOnlyCommand` passes today, reproduced here so
- *  these tests pin the shared behavior rather than importing a private one. */
-const MUTATION_TOKEN =
-  /(^|\s)(-X|--method|--field|--raw-field|--input|--output|--write|--apply|--fix|-delete|-exec|-execdir|-ok)(\s|=|$)/;
+/** The REAL blanket veto `matchReadOnlyCommand` passes, imported rather than
+ *  copied (#957 review). A hand-copied regex stays byte-identical until the
+ *  day someone widens the real one, after which these "existing callers are
+ *  unchanged" tests would keep passing against a veto the shipped code no
+ *  longer uses. */
 const readVeto = (segment: string): boolean => MUTATION_TOKEN.test(segment);
 
 const READS = ['git status', 'cat', 'grep', 'ls'];
@@ -69,16 +71,23 @@ describe('existing callers are unchanged', () => {
 describe('vetoForMatched governs matched segments', () => {
   const WRITES = ['mkdir', 'touch', 'cp'];
 
-  test('a write prefix is permitted when its own veto allows it', () => {
-    // With only the blanket veto this is unreachable: `--output`-class tokens
-    // are rejected before the prefix is even consulted.
+  test('baseline: a write-side prefix can match at all', () => {
+    // Says nothing about the resolver on its own -- `mkdir -p build` carries
+    // no MUTATION_TOKEN, so it would match with or without one. Kept as the
+    // control for the test below, which is the one that needs the resolver.
     const permissive = (): boolean => false;
     expect(matchCoveredCommand('mkdir -p build', WRITES, readVeto, permissive)).toBe('mkdir');
   });
 
   test('the blanket veto no longer applies to a matched segment', () => {
+    // THIS is the case that is unreachable without `vetoForMatched`:
+    // `--output` is a MUTATION_TOKEN, so the blanket veto rejects the segment
+    // before its prefix is ever consulted. Contrast the control above.
     const permissive = (): boolean => false;
     expect(matchCoveredCommand('cp --output=x y', WRITES, readVeto, permissive)).toBe('cp');
+    // Same command, no resolver: the blanket veto refuses it. Pins the
+    // difference the resolver actually makes.
+    expect(matchCoveredCommand('cp --output=x y', WRITES, readVeto)).toBeNull();
   });
 
   test('but it still applies to neutral segments in the same command', () => {
