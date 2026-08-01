@@ -207,16 +207,25 @@ export function hasUnsafeWriteFlag(segment: string): boolean {
       continue;
     }
 
-    // Short-option cluster. Walk the letters until the first non-letter: from
-    // there on it is an ATTACHED VALUE (`-XPOST` -> flag X, value POST), not
-    // more flags. Every letter up to that point is a flag in its own right.
+    // Short-option cluster. EVERY letter is checked, and non-letters are
+    // SKIPPED rather than treated as the start of an attached value.
+    //
+    // Stopping at the first non-letter was the obvious reading -- `-XPOST` is
+    // flag `X` with value `POST` -- and it was wrong. Numeric flags exist:
+    // `curl -1` is TLSv1 and `-4` is IPv4, so `curl -1o out.txt` bundles a
+    // digit flag ahead of `-o` and the scan quit before ever seeing the `o`.
+    // Found while probing this module after it was written to fix the same
+    // class of bug one level down.
+    //
+    // Skipping non-letters cannot under-block, and over-blocks only a safe
+    // flag carrying an ALPHABETIC attached value (`curl -AMozilla` escalates;
+    // `curl -A Mozilla` does not). A dangerous flag with an attached value is
+    // still caught on its own letter, before its value is ever reached --
+    // `-XPOST` vetoes on `X`, `-d@payload` on `d`.
     const cluster = token.slice(1);
     for (const ch of cluster) {
-      if (!/[a-zA-Z]/.test(ch)) break;
+      if (!/[a-zA-Z]/.test(ch)) continue;
       if (!policy.safeShortFlags.includes(ch)) return true;
-      // A safe flag that takes a value consumes the rest of the cluster; we
-      // do not need to know which, because any letter we have not vetoed is
-      // by definition safe to keep scanning past.
     }
   }
   return false;
