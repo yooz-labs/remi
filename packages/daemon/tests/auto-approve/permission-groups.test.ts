@@ -341,7 +341,14 @@ describe('vcs-write: covered', () => {
     ['git commit -m "fix: thing"', 'vcs-write:git commit'],
     ['git checkout develop', 'vcs-write:git checkout'],
     ['git switch feature/x', 'vcs-write:git switch'],
-    ['git stash push -m wip', 'vcs-write:git stash push'],
+    ['git stash push -m wip', 'vcs-write:git stash'],
+    // #972: the two forms that were escalating in the field. `git stash` with
+    // no subcommand is git's own default spelling of `git stash push`, and
+    // `pop` is its counterpart -- both purely local.
+    ['git stash', 'vcs-write:git stash'],
+    ['git stash -q -u', 'vcs-write:git stash'],
+    ['git stash pop', 'vcs-write:git stash'],
+    ['git stash pop -q', 'vcs-write:git stash'],
     ['git worktree add ../x -b feature/y', 'vcs-write:git worktree add'],
   ];
   for (const [cmd, expected] of cases) {
@@ -369,6 +376,16 @@ describe('vcs-write: MUST NOT cover', () => {
     'git commit --no-verify -m x',
     'git commit -n -m x',
     'git merge --force x',
+    // #972: the hazard the bare `git stash` prefix necessarily also matches.
+    // Both DISCARD stashed work irrecoverably, and `clear` discards every
+    // stash at once -- so widening the prefix must not widen these.
+    'git stash drop',
+    'git stash drop stash@{0}',
+    'git stash clear',
+    // Quoted, because the veto matches TOKENIZED words: the raw-text version
+    // of this check is exactly the bug #960 found in `git checkout "."`.
+    'git stash "drop"',
+    'git stash cl"ear"',
     // Writing git internals via a covered prefix.
     'git add .git/hooks/pre-commit',
     // Still subject to the global refusals.

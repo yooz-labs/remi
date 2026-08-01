@@ -40,6 +40,14 @@ import { hasUnsafeWriteFlag } from './write-flag-safety.ts';
  */
 const WRITE_GROUP_POSITIONAL_VETOES: ReadonlyArray<{ family: RegExp; words: readonly string[] }> = [
   { family: /^git\s+(checkout|restore)\b/, words: ['.', '--'] },
+  // #972: `git stash` is listed as a bare prefix so the plain form (which IS
+  // `git stash push`) and `git stash pop` are covered. Word-boundary prefix
+  // matching then also covers `git stash drop` and `git stash clear`, which
+  // DISCARD stashed work irrecoverably — `clear` drops every stash at once.
+  // Those two are refused here rather than by omitting the prefix, because the
+  // matcher cannot express "exactly `git stash`" (`matchPrefix` accepts the
+  // exact segment OR anything starting with `prefix + ' '`).
+  { family: /^git\s+stash\b/, words: ['drop', 'clear'] },
 ];
 
 /**
@@ -240,12 +248,19 @@ export const BUILTIN_GROUPS: Readonly<Record<string, PermissionGroup>> = {
       'git checkout',
       'git switch',
       'git merge',
-      'git stash push',
+      // #972: bare, not `git stash push`. `git stash` with no subcommand IS
+      // push (git's own default), and `git stash pop` restores — both purely
+      // local, both what this group exists to cover, and both were escalating
+      // in the field because only the explicit `push` spelling was listed.
+      // The `drop`/`clear` subcommands this necessarily also prefix-matches are
+      // refused by WRITE_GROUP_POSITIONAL_VETOES above.
+      'git stash',
       'git worktree add',
       // Excluded: `git push` (remote mutation), `git rm`, `git reset`,
       // `git clean`, `git branch -D`, `git worktree remove`. The flag vetoes
       // above catch the destructive forms of what IS listed -- `checkout .`,
-      // `checkout --`, any `--force`/`--hard`/`-D`, `commit --no-verify`.
+      // `checkout --`, any `--force`/`--hard`/`-D`, `commit --no-verify`,
+      // `stash drop`, `stash clear`.
     ],
     segmentVeto: writeGroupVeto,
   },
