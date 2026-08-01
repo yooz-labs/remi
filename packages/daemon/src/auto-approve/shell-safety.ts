@@ -165,11 +165,25 @@ export function hasExecPrimitive(segment: string): boolean {
  *   and exec-primitive checks. The group matcher passes its curated-read
  *   mutation vetoes here; the user allow list passes nothing, because a user
  *   may legitimately allow a write.
+ * @param vetoForMatched Optional veto for a segment that MATCHED a prefix,
+ *   receiving the prefix it matched (#957). `extraVeto` cannot express this:
+ *   it runs before `matchPrefix`, so it has no way to know which curated entry
+ *   covered the segment, and therefore has to apply one blanket rule to every
+ *   segment in the command. That is correct while every curated entry is
+ *   read-only — "none of those tokens legitimately appears in a curated read
+ *   command" (`permission-groups.ts`) — and wrong the moment a group is
+ *   SUPPOSED to mutate, because the blanket rule vetoes it by construction.
+ *   When supplied, this replaces `extraVeto` for matched segments only;
+ *   NEUTRAL segments keep `extraVeto` regardless, since `cd`/`echo` carrying
+ *   `--write` is suspicious no matter which group covered the rest of the
+ *   command. Callers that omit it are unaffected: `extraVeto` then applies to
+ *   matched segments exactly as before.
  */
 export function matchCoveredCommand(
   command: string,
   prefixes: readonly string[],
   extraVeto?: (segment: string) => boolean,
+  vetoForMatched?: (segment: string, matchedPrefix: string) => boolean,
 ): string | null {
   const segments = splitCompound(command);
   let matched: string | null = null;
@@ -177,10 +191,19 @@ export function matchCoveredCommand(
     const seg = raw.trim();
     if (seg === '') continue;
     if (hasShellControl(seg)) return null;
-    if (extraVeto?.(seg)) return null;
-    if (matchPrefix(seg, NEUTRAL_PREFIXES) !== null) continue;
+    if (matchPrefix(seg, NEUTRAL_PREFIXES) !== null) {
+      // Neutral segments are vetoed before they can be waved through. Ordering
+      // note: `extraVeto` used to run ahead of this neutral check for EVERY
+      // segment, so moving it inside is behavior-preserving only because a
+      // vetoed non-neutral segment still returns null below — via its own veto
+      // if it matches, or via the no-match branch if it does not.
+      if (extraVeto?.(seg)) return null;
+      continue;
+    }
     const hit = matchPrefix(seg, prefixes);
     if (hit === null) return null;
+    const vetoed = vetoForMatched ? vetoForMatched(seg, hit) : (extraVeto?.(seg) ?? false);
+    if (vetoed) return null;
     // Veto a code-execution primitive UNLESS the matched entry already carries
     // it. A prefix match requires the segment to start with the entry, so an
     // entry containing `-exec` only matches a command the user spelled out that
