@@ -1686,7 +1686,10 @@ describe('AutoApproveService - deny floor (#953)', () => {
       // The model's own words must survive, so the escalation card is not
       // stripped of the reason the model objected.
       expect(result.reasoning).toContain('destructive, blocking it');
-      // #628: an escalate must carry a lock-screen summary.
+      // #628: an escalate must carry a lock-screen summary. Narrow explicitly
+      // -- `expect(...).toBe('escalate')` does not narrow the discriminated
+      // union for tsc, and `summary` is absent on the `pick` variant.
+      if (result.decision !== 'escalate') throw new Error('expected escalate');
       expect(result.summary).toBeTruthy();
     } finally {
       server.stop();
