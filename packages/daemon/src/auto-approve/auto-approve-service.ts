@@ -18,6 +18,7 @@ import type { EngineHost } from './engine-host.ts';
 import { clearModelCache, pullModel, unloadModel } from './engine-models.ts';
 import type { PullProgress } from './engine-models.ts';
 import { extractJsonObject } from './json-extract.ts';
+import type { AutoApproveLevel } from './levels.ts';
 import { chatCompletion, resolveProviderUrl, warmModel } from './llm-client.ts';
 import type { LLMClientConfig } from './llm-client.ts';
 import { ModelResidency } from './model-residency.ts';
@@ -139,6 +140,8 @@ export class AutoApproveService {
   private readonly approveGroups: readonly string[];
   private readonly denyGroups: readonly string[];
   private readonly instructions: string;
+  /** Strictness preset, threaded into the prompt's default guidelines (#966). */
+  private readonly level: AutoApproveLevel;
   private readonly multichoiceMode: MultiChoiceMode;
   /** Tool names that always escalate to the user, never auto-decided (#572). */
   private readonly alwaysEscalateTools: ReadonlySet<string>;
@@ -255,6 +258,11 @@ export class AutoApproveService {
     this.approveGroups = config.approve_groups;
     this.denyGroups = config.deny_groups;
     this.instructions = config.instructions;
+    // #966: the LLM handles whatever no group covers, so its DEFAULT
+    // GUIDELINES must agree with the level the user chose. Without this the
+    // same policy gives different answers depending on whether a curated
+    // prefix happens to exist.
+    this.level = config.level;
     this.multichoiceMode = config.multichoice;
     this.alwaysEscalateTools = new Set(config.always_escalate_tools);
     this.multichoiceModel = config.multichoice_model;
@@ -830,7 +838,7 @@ export class AutoApproveService {
               normalisedSuggestions ?? [],
               this.instructions,
             )
-          : buildPrompt(toolName, toolInput, this.instructions, authority);
+          : buildPrompt(toolName, toolInput, this.instructions, authority, this.level);
         // Hard kill via Promise.race: even if fetch ignores the abort signal
         // (provider hang, Bun runtime quirk), evaluate() returns within
         // timeoutMs. The race timer also calls abort() so a fetch that does
@@ -970,7 +978,10 @@ export class AutoApproveService {
             const cfResponse = await chatCompletion(
               { ...this.llmConfig, model },
               // Same prompt, same instructions, authority block OMITTED.
-              buildPrompt(toolName, toolInput, this.instructions, undefined),
+              // Same level, same instructions -- ONLY the authority block differs,
+              // which is what makes the comparison a counterfactual rather than
+              // a different question (#954).
+              buildPrompt(toolName, toolInput, this.instructions, undefined, this.level),
               this.currentAbortController?.signal,
             );
             const cfParsed = parseDecision(cfResponse.content);

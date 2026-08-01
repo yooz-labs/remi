@@ -4,6 +4,25 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### Changed
+- **The auto-approve prompt's default guidelines now follow `level`** (#966).
+  `level` selects which groups are approved deterministically, but whatever no
+  group covers still reaches the LLM — which was reading fixed text telling it
+  to escalate exactly what the chosen level said was routine. The same policy
+  then gave different answers depending on whether a curated prefix happened to
+  exist, which is not a distinction a user makes or can predict. `balanced`
+  moves file writes into the prompt's APPROVE list; `trusted` also moves local
+  git mutation. `strict` is **byte-identical** to the prompt that shipped
+  before levels existed, asserted against a baseline captured from `develop`'s
+  own `buildPrompt` rather than hand-transcribed. Fixed at every level, and
+  each asserted rather than described: the DENY FLOOR, the response format,
+  deletion, remote mutation (including `git push`), package install, unfamiliar
+  commands, and design/direction questions. A level widens what is routine,
+  never what is dangerous — two of the pre-existing escalate lines bundle an
+  operation a level approves with one it must never approve (the git line names
+  `git push` beside `git add`; the file line names `deletion` beside creation),
+  so a level REPLACES those lines with narrower ones instead of removing them.
+
 ### Added
 - **`[auto_approve] level` — a strictness preset over the permission groups**
   (#963). `strict` (the default) is exactly today's behavior; `balanced` adds
