@@ -601,6 +601,43 @@ export function setupHookBridge(
     }
   };
 
+  /**
+   * Return clients to the session's REAL status after an eval ended without a
+   * verdict (#970).
+   *
+   * Because `broadcastAutoApproveStatus` is client-only by design (see the note
+   * above), the daemon holds no record that clients are showing `evaluating` —
+   * the pill is fire-and-forget display state, and only another broadcast or a
+   * later hook can move it off. That made the client cue NOT total over the
+   * gate's end paths, unlike the terminal one, whose own invariant
+   * (`status-writer.ts`: "the count returns to 0 and the 'evaluating' cue can
+   * never get stuck") holds precisely because every end path decrements it:
+   *
+   *   onHandled   -> 'approved' broadcast          (covered)
+   *   onEscalate  -> the question path's 'waiting' (covered, indirectly)
+   *   onCancelled -> NOTHING                       (the hole this closes)
+   *
+   * A cancelled verdict self-healed only when a later `Stop`/`SessionEnd`
+   * `idle` or a `PreToolUse` `executing` happened to follow. None is guaranteed
+   * — and by construction none arrives when the eval was cancelled at the end
+   * of a turn or during a disconnect, which is exactly when it was observed
+   * stuck.
+   *
+   * Broadcasts the registry's CURRENT status rather than a chosen constant. The
+   * gate does not know what the session became (nothing was approved, denied,
+   * or escalated), so any fixed value would be a guess, and a wrong status is
+   * the same class of bug as a stuck one. Reading the status the daemon already
+   * tracks is honest by construction: "stop showing evaluating; here is what
+   * this session actually is."
+   */
+  const broadcastCurrentStatus = (): void => {
+    const current = sessionRegistry.getSession(sessionId)?.currentStatus;
+    // No session (torn down mid-eval): nothing to correct, and inventing a
+    // status for a session that no longer exists would be worse than silence.
+    if (current === undefined) return;
+    broadcastAutoApproveStatus(current);
+  };
+
   // Auto-approve control plane (#453 phase 1): owns the PermissionRequest eval +
   // inject + escalate + cancelStale. Constructed after the bridge + handlers so it
   // can wrap the two outward couplings (isInSubagentContext, onPermissionRequest) as
@@ -693,7 +730,20 @@ export function setupHookBridge(
         // #711: same subagent skip as onEvalStart above -- see that comment.
         if (!ctx.isSubagent) broadcastAutoApproveStatus('approved');
       },
-      onCancelled: () => deps.statusWriter?.autoApproveEnd('cancelled', Date.now()),
+      onCancelled: () => {
+        deps.statusWriter?.autoApproveEnd('cancelled', Date.now());
+        // #970: the client pill was moved to 'evaluating' by onEvalStart and
+        // this was the only end path that never moved it back. See
+        // `broadcastCurrentStatus` for why it re-broadcasts the real status
+        // instead of picking one.
+        //
+        // Unconditional, with no `isSubagent` skip like onEvalStart/onHandled
+        // have: this cue is reachable only from a MAIN-context eval, which is
+        // exactly the case that DID broadcast 'evaluating'. See the cue's own
+        // doc on `AutoApproveGateDeps` for why the subagent path cannot reach
+        // it (a cancelled parked render escalates instead).
+        broadcastCurrentStatus();
+      },
       // #585: a held question that resolves without a user answer (Part-B late
       // verdict / hold timeout / cancelStale) tells the daemon to dismiss the
       // pushed card on every client. Forwarded with this session's id.

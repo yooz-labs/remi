@@ -3676,6 +3676,56 @@ describe('AutoApproveGate parked-render arbitration (#814)', () => {
     g.cancelStaleForAgent('agent-1', 'SubagentStop');
     expect(resolvedLog).toHaveLength(0);
   });
+
+  test('#970 a cancelled verdict on a parked render ESCALATES; onCancelled is never reached', async () => {
+    // Pins the routing fact that lets `onCancelled` stay ctx-free. The setup
+    // layer's client status correction (#970) fires unconditionally on that
+    // cue, which is only safe because the cue cannot be reached by a subagent
+    // eval — a subagent eval never broadcasts 'evaluating', so correcting one
+    // would emit the phantom pill #711/#807 removed.
+    //
+    // The subagent path reaches a cancelled verdict ONLY here: a plain
+    // `agent_id` PermissionRequest is parked and never evaluated (#807), so the
+    // hook-bridge harness cannot drive this at all. And arbitration routes
+    // `cancelled` to `escalateRenderedParked()` rather than the cancelled cue.
+    // If that ever changes, this test fails and the ctx-free assumption above
+    // must be revisited in the same change.
+    const cancelledCues: number[] = [];
+    const escalateCues: Array<{ isSubagent: boolean }> = [];
+    const g = new AutoApproveGate(
+      {
+        service: { evaluate: async () => cancelled, cancel: () => true },
+        sessionRegistry: registry,
+        tracker,
+        isInSubagentContext: () => false,
+        escalate: () => generateId(),
+        parkForPTY: () => {
+          const id = generateId() as UUID;
+          parkedIds.push(id);
+          return id;
+        },
+        onCancelled: () => cancelledCues.push(1),
+        onEscalate: (ctx) => escalateCues.push(ctx),
+      },
+      SID,
+    );
+
+    // Park it (never evaluated at hook time), then render it so the gate
+    // arbitrates — which is where a subagent permission is actually evaluated.
+    expect(await g.resolvePermission(pr())).toBe('passthrough');
+    const escalatesAtPark = escalateCues.length;
+
+    const r = rendered(generateId() as UUID);
+    promptOnScreen(r);
+    await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r));
+
+    // The claim: the cancelled verdict produced an ESCALATE, not a cancelled
+    // cue. Measured as growth past the park-time escalate rather than a total,
+    // so the park path's own cue does not have to be counted here.
+    expect(cancelledCues).toHaveLength(0);
+    expect(escalateCues.length).toBeGreaterThan(escalatesAtPark);
+    expect(escalateCues.every((c) => c.isSubagent)).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------

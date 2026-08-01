@@ -3355,6 +3355,158 @@ describe('setupHookBridge', () => {
       expect(statuses).not.toContain('approved');
     });
 
+    test('#970 a CANCELLED eval broadcasts a terminal status, never leaving the pill on "evaluating"', async () => {
+      // The regression. `onEvalStart` moves the client pill to 'evaluating';
+      // before #970 the cancelled path was the ONE end path that broadcast
+      // nothing, so the pill sat there until some later hook happened to move
+      // it -- and none arrives when the eval is cancelled at end-of-turn or
+      // during a disconnect, which is when it was observed stuck in the field.
+      const sendLog: ProtocolMessage[] = [];
+      build({
+        autoApprove: true,
+        autoApproveDecision: 'cancelled',
+        autoApproveDelayMs: 10,
+        sendLog,
+      });
+
+      hookServer.fire('Notification', {
+        session_id: 'claude-aa-cancelled',
+        hook_event_name: 'Notification',
+        transcript_path: path.join(tmpDir, 'aa-cancelled.jsonl'),
+        notification_type: 'auth_success',
+        message: '',
+      });
+
+      const decision = await hookServer.firePermission({
+        session_id: 'claude-aa-cancelled',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+      });
+      expect(decision).toBe('passthrough');
+
+      const statuses = sessionUpdateStatuses(sendLog);
+      // The eval ran, so the pill WAS moved to 'evaluating'...
+      expect(statuses).toContain('evaluating');
+      // ...and the LAST thing clients were told must not be 'evaluating'.
+      // Asserting on the tail rather than "contains something else" is what
+      // makes this a real stuck-state test: an extra 'evaluating' emitted
+      // after the correction would still leave the pill wrong.
+      expect(statuses.at(-1)).not.toBe('evaluating');
+      // Nothing was approved -- claiming otherwise is the opposite lie.
+      expect(statuses).not.toContain('approved');
+    });
+
+    test('#807/#970 a SUBAGENT permission is parked, so no pill is shown and none needs correcting', async () => {
+      // Not a test of the #970 correction — a subagent permission is PARKED and
+      // never evaluated here, so `onCancelled` fires zero times regardless of
+      // what the correction does. (Confirmed by mutation: deleting the
+      // correction entirely leaves this green.) It pins the precondition that
+      // lets that correction run unconditionally: this path shows no pill at
+      // all. The cue's actual unreachability from a subagent eval is asserted
+      // where it is real — "a cancelled parked render ESCALATES" in
+      // auto-approve-gate.test.ts.
+      const sendLog: ProtocolMessage[] = [];
+      build({
+        autoApprove: true,
+        autoApproveDecision: 'cancelled',
+        autoApproveDelayMs: 10,
+        sendLog,
+      });
+
+      hookServer.fire('Notification', {
+        session_id: 'claude-aa-cancel-sub',
+        hook_event_name: 'Notification',
+        transcript_path: path.join(tmpDir, 'aa-cancel-sub.jsonl'),
+        notification_type: 'auth_success',
+        message: '',
+      });
+
+      await hookServer.firePermission({
+        session_id: 'claude-aa-cancel-sub',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+        agent_id: 'teammate-1',
+        agent_type: 'general-purpose',
+      });
+
+      const statuses = sessionUpdateStatuses(sendLog);
+      expect(statuses).not.toContain('evaluating');
+      expect(statuses).not.toContain('approved');
+    });
+
+    // TOTALITY, enumerated over the verdicts rather than asserted case by case:
+    // a new gate end path that broadcasts 'evaluating' and forgets the terminal
+    // half fails HERE instead of silently joining the hole. The terminal cue has
+    // this property by construction (status-writer.ts's inFlight count); this is
+    // the client-side equivalent, and its absence is exactly what #970 was.
+    //
+    // Each verdict declares WHICH channel carries its terminal signal, because
+    // there are two and they are not interchangeable:
+    //   - `broadcast`: the auto-approve client-only `session_update`
+    //     (`broadcastAutoApproveStatus` -> sendAndRecord).
+    //   - `statusPath`: the ordinary status path (`messageApi.handleStatusChange`),
+    //     which the REAL MessageAPI broadcasts to clients. `onEscalate`
+    //     deliberately emits nothing of its own and relies on this, to avoid
+    //     double-emitting alongside the question's own 'waiting'.
+    // Asserting only on `sendLog` would call escalate a stuck pill when it is
+    // not one -- the fake MessageAPI here simply does not forward.
+    //
+    // One `test()` per verdict, not one loop: `build()` registers a session and
+    // the registry allows only one per daemon, so a loop inside a single test
+    // throws on the second iteration.
+    const TERMINAL_CHANNEL = {
+      approve: 'broadcast',
+      deny: 'broadcast',
+      escalate: 'statusPath',
+      cancelled: 'broadcast',
+    } as const satisfies Record<string, 'broadcast' | 'statusPath'>;
+
+    for (const [verdict, channel] of Object.entries(TERMINAL_CHANNEL) as Array<
+      [keyof typeof TERMINAL_CHANNEL, 'broadcast' | 'statusPath']
+    >) {
+      test(`#970 a ${verdict} verdict leaves the pill off "evaluating" (via ${channel})`, async () => {
+        const sendLog: ProtocolMessage[] = [];
+        build({
+          autoApprove: true,
+          autoApproveDecision: verdict,
+          autoApproveDelayMs: 10,
+          sendLog,
+        });
+
+        const claudeId = `claude-aa-total-${verdict}`;
+        hookServer.fire('Notification', {
+          session_id: claudeId,
+          hook_event_name: 'Notification',
+          transcript_path: path.join(tmpDir, `aa-total-${verdict}.jsonl`),
+          notification_type: 'auth_success',
+          message: '',
+        });
+
+        await hookServer.firePermission({
+          session_id: claudeId,
+          hook_event_name: 'PermissionRequest',
+          tool_name: 'Bash',
+          tool_input: { command: 'ls' },
+        });
+
+        // The eval ran, so the pill WAS moved to 'evaluating' in every case.
+        expect(sessionUpdateStatuses(sendLog)).toContain('evaluating');
+
+        if (channel === 'broadcast') {
+          // Whatever clients were told LAST on this channel must not be
+          // 'evaluating'. Asserting on the TAIL, not "contains something else":
+          // an 'evaluating' emitted after the correction still leaves it stuck.
+          expect(sessionUpdateStatuses(sendLog).at(-1)).not.toBe('evaluating');
+        } else {
+          // The ordinary status path carried a real, non-evaluating status out.
+          const terminal = messageApiLog.statusCalls.filter((s) => s !== 'evaluating');
+          expect(terminal.length).toBeGreaterThan(0);
+        }
+      });
+    }
+
     test('a status-broadcast send error never propagates into the gate decision', async () => {
       // The broadcast helper wraps its own send in try/catch so a throwing
       // sendAndRecord cannot break the allow/deny decision or the buffer path.
