@@ -20,6 +20,7 @@ import { log, logError } from '../cli/logger.ts';
 import type { SessionRegistry } from '../session/index.ts';
 import { sendPushTrigger } from './push-client.ts';
 import { PushDedup } from './push-dedup.ts';
+import { tokensWanting } from './push-preferences.ts';
 
 export interface PushConfig {
   /**
@@ -338,10 +339,25 @@ export class NotificationDispatcher {
     // because the attached client may be backgrounded (#603 Phase 3), like
     // dismiss(). Its outcome still reports in_app (reachable) below.
     if (!held && hasActiveClient) return Promise.resolve('in_app');
-    // No device tokens: nobody can be pushed. If a client is attached the user
-    // is still reachable in-app (held case); otherwise there is no channel.
-    if (deviceTokens.size === 0) {
-      if (!hasActiveClient) log(`Push skipped: no device tokens for session ${questionSessionId}`);
+    // Devices that want question pushes (#968). A device muted for questions is
+    // as unreachable for this question as one that never registered, so it is
+    // filtered HERE — above the no-channel check — and not at the fan-out.
+    //
+    // That placement is load-bearing for a HELD escalation: `awaitDelivery`
+    // decides whether to keep Claude blocked, and reporting `pushed` for a fan-
+    // out of zero would block the hook on a card that will never appear on any
+    // lock screen. Reporting `no_channel` instead fails the hold open fast.
+    const wanting = tokensWanting(deviceTokens.values(), 'question');
+    // No reachable device: nobody can be pushed. If a client is attached the
+    // user is still reachable in-app (held case); otherwise there is no channel.
+    if (wanting.length === 0) {
+      if (!hasActiveClient) {
+        log(
+          deviceTokens.size === 0
+            ? `Push skipped: no device tokens for session ${questionSessionId}`
+            : `Push skipped: all ${deviceTokens.size} device token(s) muted question pushes for session ${questionSessionId}`,
+        );
+      }
       return Promise.resolve(hasActiveClient ? 'in_app' : 'no_channel');
     }
 
@@ -384,9 +400,10 @@ export class NotificationDispatcher {
       ...(pushCategory !== undefined ? { category: pushCategory } : {}),
       ...(pushOptions.length > 0 ? { options: pushOptions } : {}),
       ...(dynOptions ? { dynOptions: true } : {}),
+      kind: 'question' as const,
     };
 
-    const perToken = [...deviceTokens.values()].map((dt) =>
+    const perToken = wanting.map((dt) =>
       this.pushOnceWithRetry(cfg.signalingUrl, dt.token, opts, {
         sent: `Push notification sent for session ${pushSessionId}`,
         failed: `Push notification failed for session ${pushSessionId}`,
@@ -489,10 +506,16 @@ export class NotificationDispatcher {
    *  - collapse key is `handoff-<questionId>`, NOT the question id, so the
    *    original card's quiet dismissal (collapse-id = question id) cannot
    *    collapse this notice away.
+   *
+   * IS filtered by per-device push preferences (#968), unlike `dismiss`: this
+   * is a visible, buzzing card about a question, so a device that muted
+   * question pushes must not receive it. It clears nothing, so skipping it
+   * strands nothing.
    */
   pushHoldTimeoutHandoff(questionSessionId: UUID, questionId: UUID): void {
     const { deviceTokens, pushConfig, sessionRegistry } = this.deps;
-    if (deviceTokens.size === 0) return;
+    const wanting = tokensWanting(deviceTokens.values(), 'question');
+    if (wanting.length === 0) return;
     const session = sessionRegistry.getSession(this.sessionId);
     const question = session?.currentQuestions.get(questionId);
     const sessionName = session?.name || 'Agent';
@@ -506,7 +529,7 @@ export class NotificationDispatcher {
     );
     const cfg = pushConfig();
     const pushSessionId = this.deps.getPrimarySessionId() ?? questionSessionId;
-    for (const dt of deviceTokens.values()) {
+    for (const dt of wanting) {
       void this.pushOnceWithRetry(
         cfg.signalingUrl,
         dt.token,
@@ -516,6 +539,7 @@ export class NotificationDispatcher {
           ...(cfg.pushSecret !== undefined ? { pushSecret: cfg.pushSecret } : {}),
           sessionId: pushSessionId,
           questionId: `handoff-${questionId}`,
+          kind: 'question' as const,
         },
         {
           sent: `Push timeout-handoff sent for question ${questionId}`,
@@ -534,6 +558,11 @@ export class NotificationDispatcher {
    * card may still sit on another device's lock screen, and the collapse-id makes
    * a no-op dismissal harmless. No dedup gate (a repeat dismissal is idempotent at
    * the device). No-op when no tokens are registered.
+   *
+   * Deliberately NOT filtered by per-device push preferences (#968): a device
+   * that mutes question pushes can still be holding a card delivered before the
+   * mute, and dropping its dismissal would strand that card on the lock screen
+   * of the very device that asked for less noise.
    *
    * `questionSessionId` is the primary id the client knows (from hello_ack), kept
    * symmetric with `maybePush` so the dismissal carries the same routing id.
@@ -558,6 +587,7 @@ export class NotificationDispatcher {
           sessionId: pushSessionId,
           questionId,
           dismiss: true,
+          kind: 'dismiss' as const,
         },
         {
           sent: `Push dismissal sent for question ${questionId}`,

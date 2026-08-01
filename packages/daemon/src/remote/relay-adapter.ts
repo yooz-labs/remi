@@ -605,7 +605,7 @@ export class RelayAdapter implements ConnectionAdapter {
         this.events.onSessionHistoryRequest?.(connectionId, m.id, m.limit);
       },
       register_device_token: (m) => {
-        this.events.onRegisterDeviceToken?.(connectionId, m.token, m.platform);
+        this.events.onRegisterDeviceToken?.(connectionId, m.token, m.platform, m.pushPrefs);
       },
       unregister_device_token: (m) => {
         this.events.onUnregisterDeviceToken?.(connectionId, m.token);

@@ -4,6 +4,40 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### Added
+- **Separate in-app toggles for question and turn-complete notifications**
+  (#968). Settings now has "Question alerts" and "Turn complete" instead of one
+  "Notifications" switch — which was written by the settings panel and read by
+  nothing, and could not have worked anyway: APNS pushes travel daemon →
+  signaling Worker → APNS and never consult the client. The preference now
+  rides up on `register_device_token` (idempotent and keyed by token, so
+  flipping a toggle is just a re-register) and the daemon filters its per-token
+  fan-out, so muting is enforced by the only party actually in the push path.
+  Per device, not per machine: two phones can want different things.
+- **An explicit `kind` on every push** (`question` | `turn_complete` |
+  `subagent_alert` | `dismiss`), forwarded into the APNS payload. The classes
+  were previously told apart by a NEGATIVE test ("no `questionId`, no
+  `category`") that could not distinguish a turn-complete push from a subagent
+  alert at all — on the wire both are exactly `{token, title, body}`, and the
+  `": turn complete"` title suffix is display text, not a protocol field.
+  Strictly additive: every field that previously carried routing information is
+  sent unchanged, so an un-redeployed Worker or an older client behaves as before.
+
+  Two classes are deliberately NOT mutable. `dismiss` is the quiet
+  `content-available` push that CLEARS a resolved card; suppressing it would
+  strand that card on the lock screen of the very device that asked for less
+  noise. `subagent_alert` already has a user-facing control — it fires only on
+  the patterns in `auto_approve.subagent_alert`. `notifications.on_turn_complete`
+  in `config.toml` remains the machine-wide master switch and still wins.
+
+  The load-bearing case, and the one with its own test: when every device has
+  muted questions and no client is attached, the delivery outcome is
+  `no_channel`, not `pushed`. `awaitDelivery` decides whether a HELD hook keeps
+  Claude blocked, so reporting delivery for a fan-out of zero would block the
+  hook on a card that will never appear anywhere. Malformed preferences fail
+  toward delivering, for the same reason — verified by mutation (a coercing
+  implementation reads `{questions: 0}` as "mute" and the test goes red).
+
 ### Changed
 - **The auto-approve prompt's default guidelines now follow `level`** (#966).
   `level` selects which groups are approved deterministically, but whatever no

@@ -200,6 +200,38 @@ See `.context/notification-and-session-flow.md` for the full flow diagram.
 - Signaling server (Cloudflare Worker) relays push payloads to APNS.
 - iOS categories `REMI_YN`, `REMI_YNA`, `REMI_MULTI` registered in `AppDelegate.swift`.
 
+**Push classes and who can mute them** (#968):
+
+Every push carries an explicit `kind`. Before that field existed the classes
+were told apart by a NEGATIVE test ("no `questionId`, no `category`") which
+could not distinguish turn-complete from a subagent alert at all — on the wire
+those two are both exactly `{token, title, body}`.
+
+| `kind` | Fires on | Mutable per device |
+|---|---|---|
+| `question` | permission prompt, escalation, hold-timeout handoff | yes, `pushPrefs.questions` |
+| `turn_complete` | `Stop` after a turn ≥ `turn_complete_min_seconds` (#914) | yes, `pushPrefs.turnComplete` |
+| `subagent_alert` | a background agent matched `auto_approve.subagent_alert` | no — the pattern list IS the control |
+| `dismiss` | quiet `content-available` clearing a resolved card | **no, deliberately** |
+
+- **A client cannot mute APNS on its own.** The path is daemon → Worker → APNS
+  and never consults the client, so a client-side switch is decoration. It
+  literally was: `settings.notifications` was written by the settings panel and
+  read by nothing. Preferences ride up on `register_device_token` (idempotent
+  and keyed by token, so a toggle change is just a re-register) and the daemon
+  filters its per-token fan-out in `notifications/push-preferences.ts`.
+- **Never filter `dismiss`.** A muted device can still hold a card delivered
+  before the mute; dropping its dismissal strands that card on the lock screen
+  of the device that asked for less noise.
+- **A muted fan-out must report `no_channel`, not `pushed`.** `awaitDelivery`
+  decides whether a held hook keeps Claude blocked; claiming delivery for a
+  fan-out of zero blocks the hook on a card nobody will ever see.
+- Malformed preferences fail toward DELIVERING (`sanitizePushPreferences`). A
+  wrongly-delivered notification is a nuisance; a wrongly-dropped one is the
+  product failing at its only job.
+- `notifications.on_turn_complete = false` in `config.toml` stays the
+  machine-wide master switch and wins over any per-device preference.
+
 **Constraints from real logs (2026-04-12 analysis, updated #718 2026-07-06):**
 
 - Bash `PermissionRequest` may have `permission_suggestions=undefined` (no suggestions), a legacy plain-string label array (e.g. Edit's `["Yes","Always","No"]`), or — since ~Claude Code 2.0.54 — a STRUCTURED array of typed "permission update entries" (`addRules`, `addDirectories`, `setMode`, `removeRules`, `replaceRules`, `removeDirectories`, each carrying `behavior`/`destination`; ground truth: code.claude.com/docs/en/hooks).

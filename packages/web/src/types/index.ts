@@ -248,7 +248,18 @@ export interface UIQuestion {
 export interface AppSettings {
   readonly theme: 'light' | 'dark' | 'system';
   readonly fontSize: 'small' | 'medium' | 'large';
-  readonly notifications: boolean;
+  /**
+   * Push when Claude needs an answer (#968).
+   *
+   * Replaces the single `notifications` flag, which was written by the settings
+   * panel and read by nothing — and could not have worked where it mattered
+   * anyway: APNS pushes travel daemon -> signaling Worker -> APNS and never
+   * consult the client. These two flags are sent up on `register_device_token`
+   * and enforced by the daemon at its per-token fan-out.
+   */
+  readonly notifyQuestions: boolean;
+  /** Push the last assistant message when a long turn ends (#914). */
+  readonly notifyTurnComplete: boolean;
   readonly sound: boolean;
   readonly autoReconnect: boolean;
   readonly showTimestamps: boolean;
@@ -270,7 +281,8 @@ export interface ConnectionConfig {
 export const DEFAULT_SETTINGS: AppSettings = {
   theme: 'system',
   fontSize: 'medium',
-  notifications: true,
+  notifyQuestions: true,
+  notifyTurnComplete: true,
   sound: true,
   autoReconnect: true,
   showTimestamps: true,
