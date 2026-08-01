@@ -317,7 +317,21 @@ export function matchReadOnlyCommand(command: string, prefixes: readonly string[
  * as the default for a group that declares no `segmentVeto` of its own.
  */
 function readSegmentVeto(segment: string): boolean {
-  return MUTATION_TOKEN.test(segment) || hasScopedVeto(segment);
+  if (MUTATION_TOKEN.test(segment) || hasScopedVeto(segment)) return true;
+  // Re-check with quotes and escapes removed (#960 round 3). The regexes above
+  // match RAW TEXT, which is the same flaw the write-side vetoes were rebuilt
+  // to fix — and it was live here too, on groups that ship ENABLED BY DEFAULT:
+  //
+  //     git diff --"output"=f   -> approved (writes a file)
+  //     biome check --"write"   -> approved (mutates source)
+  //     sed -n -"i" x           -> approved (in-place edit)
+  //
+  // while their unquoted forms were all correctly refused. Checking the
+  // reconstructed word list in ADDITION to the raw text can only ever add a
+  // veto, never remove one, so no previously-refused command becomes allowed.
+  const unquoted = shellWords(segment).join(' ');
+  if (unquoted === segment) return false;
+  return MUTATION_TOKEN.test(unquoted) || hasScopedVeto(unquoted);
 }
 
 /**

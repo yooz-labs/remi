@@ -299,6 +299,33 @@ export function shellWords(segment: string): string[] {
       continue;
     }
 
+    if (c === '$' && segment[i + 1] === '"') {
+      // Locale/gettext quoting (`$"..."`). bash strips BOTH the `$` and the
+      // quotes, so `$"--force"` is the word `--force`. Missing this case left
+      // the `$` glued to the front of the token, which broke every check that
+      // asks whether a word STARTS WITH `-` or EQUALS `.` — i.e. the entire
+      // flag allowlist and the positional veto. `git checkout $"--force"` and
+      // `mkdir $"-m" 777` were auto-approved (#960 round 3).
+      //
+      // Handled as double-quoted content, since that is what it is: the `$`
+      // only marks it for translation.
+      started = true;
+      i += 2;
+      while (i < segment.length && segment[i] !== '"') {
+        if (segment[i] === '\\') {
+          const next = segment[i + 1];
+          if (next !== undefined && ['"', '\\', '$', '`', '\n'].includes(next)) {
+            current += next;
+            i += 2;
+            continue;
+          }
+        }
+        current += segment[i];
+        i++;
+      }
+      continue;
+    }
+
     if (c === '$' && segment[i + 1] === "'") {
       // ANSI-C quoting (`$'...'`). Treated as literal contents rather than
       // decoding every escape: the point here is that the QUOTES vanish, so a

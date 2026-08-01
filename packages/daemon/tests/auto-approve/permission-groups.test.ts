@@ -591,11 +591,9 @@ describe('#960 second review: quote and backslash smuggling', () => {
   // handling and each was defeated independently. Every payload below was
   // confirmed against real `bash -c printf` argv before being written down.
   const mustBeNull = [
-    // Flag allowlist.
-    'curl -sS"o" out.txt https://x', // hidden inside an otherwise-safe cluster
-    'curl --"output" out.txt https://x', // whole flag name inside the quote
-    'curl --o\\utput out.txt https://x', // backslash only, no quotes needed
-    "curl -sS$'o' out.txt https://x", // ANSI-C quoting
+    // Flag allowlist. (The curl payloads that originally demonstrated this
+    // class are gone with `net-read` -- asserting them here would pass for
+    // the wrong reason, since curl matches no curated prefix at all.)
     'cp -"f" a b',
     'git checkout -"f" branch',
     'git checkout --"force" branch',
@@ -656,5 +654,49 @@ describe('#959 final pass: every write prefix is covered by a flag policy', () =
     expect(bash('mkdir -p packages/web/dist', WRITE_GROUPS)).toBe('fs-write:mkdir');
     expect(bash('touch src/new.ts', WRITE_GROUPS)).toBe('fs-write:touch');
     expect(bash('tee -a build.log', WRITE_GROUPS)).toBe('fs-write:tee');
+  });
+});
+
+describe('#960 round 3: $"..." locale quoting', () => {
+  // bash strips both the `$` and the quotes, so `$"--force"` IS `--force`.
+  // Leaving the `$` attached broke every check asking whether a word starts
+  // with `-` or equals `.` -- the whole flag allowlist and positional veto.
+  const mustBeNull = [
+    'git checkout $"--force" somebranch',
+    'git checkout $"."',
+    'git merge $"--hard"',
+    'cp evil $"/etc/hosts"',
+    'mkdir $"-m" 777 shared',
+    'cp $"-f" a b',
+  ];
+  for (const cmd of mustBeNull) {
+    test(JSON.stringify(cmd), () => expect(bash(cmd, WRITE_GROUPS)).toBeNull());
+  }
+
+  test('and ordinary $"..." arguments still work', () => {
+    expect(bash('git commit -m $"fix: the thing"', WRITE_GROUPS)).toBe('vcs-write:git commit');
+  });
+});
+
+describe('#960 round 3: the READ groups had the same raw-text flaw', () => {
+  // These ship ENABLED BY DEFAULT, so this was live on every install --
+  // while the identical unquoted forms were all correctly refused.
+  const mustBeNull = [
+    'git diff --"output"=f',
+    'git diff --outp"ut"=f',
+    'biome check --"write"',
+    'sed -n -"i" x',
+    'eslint --"fix" src',
+    'git diff $"--output"=f',
+  ];
+  for (const cmd of mustBeNull) {
+    test(JSON.stringify(cmd), () => expect(bash(cmd)).toBeNull());
+  }
+
+  test('ordinary quoted reads still match', () => {
+    // The over-block boundary: quoting an argument is normal.
+    expect(bash('grep "some pattern" file')).toBe('read-only:grep');
+    expect(bash('git log --grep="fix: thing"')).toBe('vcs-read:git log');
+    expect(bash("git show 'HEAD~1'")).toBe('vcs-read:git show');
   });
 });
