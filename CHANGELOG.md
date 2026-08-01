@@ -5,6 +5,19 @@ All notable changes to Remi are documented here.
 ## [Unreleased]
 
 ### Fixed
+- **`git stash` and `git stash pop` are covered by `vcs-write`** (#972). Only
+  the explicit `git stash push` spelling was listed, so the bare form — which is
+  git's own default spelling of exactly that — and its `pop` counterpart went to
+  the LLM and escalated, despite both being purely local.
+
+  Listing bare `git stash` necessarily also prefix-matches `git stash drop` and
+  `git stash clear`, which discard stashed work irrecoverably (`clear` discards
+  every stash at once). Those are refused through the existing
+  `WRITE_GROUP_POSITIONAL_VETOES` table that already guards `git checkout .`,
+  because the matcher cannot express "exactly `git stash`" — `matchPrefix`
+  accepts the exact segment OR anything starting with `prefix + ' '`. The veto
+  matches tokenized words, so `git stash "drop"` is refused too; the raw-text
+  version of that check is the bug #960 found in `git checkout "."`.
 - **A model configured by its HuggingFace id is no longer reported missing**
   (#971). The engine keys inventory rows by nickname (`yooz-instruct-4b`) and
   carries the repo id alongside in `huggingFaceID`; `config.toml`'s `model`
