@@ -413,6 +413,7 @@ describe('auto_approve config', () => {
         'chmod 777',
       ],
       approve_groups: ['read-only', 'vcs-read', 'build-test'],
+      level: 'strict',
       deny_groups: [],
       instructions: '',
       multichoice: 'skip',
@@ -879,5 +880,71 @@ describe('notifications config (#914)', () => {
     expect(output).toContain('[notifications]');
     expect(output).toContain('on_turn_complete = true');
     expect(output).toContain('turn_complete_min_seconds = 60');
+  });
+});
+
+describe('auto_approve.level (#963)', () => {
+  /** Write a config and load it. Real file, real TOML parse -- no mocks. */
+  function load(toml: string) {
+    fs.writeFileSync(TEST_CONFIG, toml);
+    return loadConfig(TEST_CONFIG);
+  }
+
+  test('a config with no level gets strict, i.e. today unchanged', () => {
+    const c = load('[auto_approve]\nenabled = true\n');
+    expect(c.auto_approve.level).toBe('strict');
+    expect([...c.auto_approve.approve_groups].sort()).toEqual(
+      ['build-test', 'read-only', 'vcs-read'].sort(),
+    );
+  });
+
+  test('level = "balanced" adds fs-write', () => {
+    const c = load('[auto_approve]\nlevel = "balanced"\n');
+    expect(c.auto_approve.approve_groups).toContain('fs-write');
+    expect(c.auto_approve.approve_groups).not.toContain('vcs-write');
+  });
+
+  test('level = "trusted" adds fs-write and vcs-write', () => {
+    const c = load('[auto_approve]\nlevel = "trusted"\n');
+    expect(c.auto_approve.approve_groups).toContain('fs-write');
+    expect(c.auto_approve.approve_groups).toContain('vcs-write');
+    // Still never the cut group, at any level (#961).
+    expect(c.auto_approve.approve_groups).not.toContain('net-read');
+  });
+
+  test('an explicit approve_groups overrides the level', () => {
+    // The upgrade-safety case: someone who set groups before levels existed
+    // keeps exactly their behavior.
+    const c = load('[auto_approve]\nlevel = "trusted"\napprove_groups = ["read-only"]\n');
+    expect(c.auto_approve.approve_groups).toEqual(['read-only']);
+    expect(c.auto_approve.level).toBe('trusted');
+  });
+
+  test('an explicit EMPTY approve_groups is respected', () => {
+    // `[]` means "approve no groups" and must not be mistaken for "unset",
+    // which would silently re-enable them.
+    const c = load('[auto_approve]\nlevel = "trusted"\napprove_groups = []\n');
+    expect(c.auto_approve.approve_groups).toEqual([]);
+  });
+
+  test('an explicit approve_groups WITHOUT a level still wins over the default preset', () => {
+    // The pre-#963 config shape. Loading it must not have the strict preset
+    // overwrite what the user wrote.
+    const c = load('[auto_approve]\napprove_groups = ["build-test"]\n');
+    expect(c.auto_approve.approve_groups).toEqual(['build-test']);
+  });
+
+  test('an invalid level is a startup error naming the valid ones', () => {
+    expect(() => load('[auto_approve]\nlevel = "loose"\n')).toThrow(/level/);
+    expect(() => load('[auto_approve]\nlevel = "loose"\n')).toThrow(/strict/);
+  });
+
+  test('a non-string level is refused too', () => {
+    expect(() => load('[auto_approve]\nlevel = 3\n')).toThrow(/level/);
+  });
+
+  test('no config file at all yields the strict default', () => {
+    const c = loadConfig(path.join(TEST_DIR, 'nope.toml'));
+    expect(c.auto_approve.level).toBe('strict');
   });
 });

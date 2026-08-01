@@ -10,6 +10,12 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { DAEMON_BASE_PORT, DAEMON_PORT_RANGE, errorToString } from '@remi/shared';
 import { parse as parseToml } from 'smol-toml';
+import {
+  AUTO_APPROVE_LEVELS,
+  DEFAULT_AUTO_APPROVE_LEVEL,
+  isAutoApproveLevel,
+  resolveApproveGroups,
+} from '../auto-approve/levels.ts';
 import { KNOWN_TOOL_NAMES, looksLikeToolName } from '../auto-approve/pattern-matcher.ts';
 import { isKnownGroup, knownGroupNames } from '../auto-approve/permission-groups.ts';
 import { DEFAULT_ALWAYS_ESCALATE_TOOLS } from '../auto-approve/types.ts';
@@ -310,6 +316,11 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // default so enabling auto-approve immediately stops paying LLM latency
     // for reads / VCS queries / read-only build+test runs.
     approve_groups: ['read-only', 'vcs-read', 'build-test'],
+    // Strictness preset (#963). `strict` reproduces exactly the
+    // `approve_groups` line above, so an install that never sets this behaves
+    // as it always has. Raising it to "balanced"/"trusted" swaps in the
+    // write-side groups (#959).
+    level: DEFAULT_AUTO_APPROVE_LEVEL,
     deny_groups: [],
     instructions: '',
     multichoice: 'skip',
@@ -464,15 +475,64 @@ export function loadConfig(configPath: string = CONFIG_PATH): RemiConfig {
     const parsed = parseToml(raw) as Record<string, unknown>;
     const merged = deepMerge(DEFAULT_CONFIG, parsed);
     validateAutoApprove(merged.auto_approve, configPath);
+    // Apply the level preset AFTER merge, but decide from the RAW parsed
+    // table (#963). By this point `merged.approve_groups` is populated either
+    // way, so it cannot answer "did the user write this?" — reading it here
+    // would make every install look explicit and no level would ever apply.
+    const rawAutoApprove = parsed['auto_approve'] as Record<string, unknown> | undefined;
+    const levelled = applyLevel(merged, rawAutoApprove, configPath);
     validateTerminal(merged.terminal, configPath);
     validateDaemon(merged.daemon, configPath);
     validateNotifications(merged.notifications, configPath);
-    return merged;
+    return levelled;
   } catch (err) {
     throw new Error(
       `Invalid TOML in ${configPath}: ${errorToString(err)}. Fix the syntax or delete the file to use defaults.`,
     );
   }
+}
+
+/**
+ * Apply the `[auto_approve] level` preset to the merged config (#963).
+ *
+ * Separated from `deepMerge` because the decision needs something the merged
+ * value cannot express: whether `approve_groups` was WRITTEN by the user or
+ * filled in by the default. Both look identical afterwards, so this reads the
+ * raw parsed table instead.
+ *
+ * An explicit `approve_groups` wins over the preset, and the daemon says so —
+ * a user who set groups before levels existed keeps exactly their behavior,
+ * and learns from one log line why their level appears to have no effect.
+ */
+function applyLevel(
+  merged: RemiConfig,
+  rawAutoApprove: Record<string, unknown> | undefined,
+  configPath: string,
+): RemiConfig {
+  const rawLevel = rawAutoApprove?.['level'];
+  if (rawLevel !== undefined && !isAutoApproveLevel(rawLevel)) {
+    throw new Error(
+      `Invalid auto_approve.level in ${configPath}: got ${JSON.stringify(rawLevel)}. Valid levels: ${AUTO_APPROVE_LEVELS.join(', ')}. Example: level = "balanced"`,
+    );
+  }
+  const level = isAutoApproveLevel(rawLevel) ? rawLevel : DEFAULT_AUTO_APPROVE_LEVEL;
+
+  const explicitGroups =
+    rawAutoApprove !== undefined && 'approve_groups' in rawAutoApprove
+      ? merged.auto_approve.approve_groups
+      : undefined;
+  const resolved = resolveApproveGroups(level, explicitGroups);
+
+  if (resolved.source === 'explicit' && rawLevel !== undefined) {
+    console.error(
+      `[AutoApprove] Both level = "${level}" and an explicit approve_groups are set in ${configPath}; approve_groups wins. Remove it to use the level preset.`,
+    );
+  }
+
+  return {
+    ...merged,
+    auto_approve: { ...merged.auto_approve, level, approve_groups: resolved.groups },
+  };
 }
 
 /**
@@ -1090,6 +1150,16 @@ turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_sec
 #
 # rm, package installs, git push, and any --force are in NO group. Deletion,
 # remote mutation, and arbitrary install scripts stay escalations.
+# Strictness preset. Selects which of the groups above are auto-approved:
+#
+#   strict     read-only + vcs-read + build-test   (the default; today's behavior)
+#   balanced   strict   + fs-write
+#   trusted    balanced + vcs-write
+#
+# An explicit approve_groups below OVERRIDES the preset entirely, and the
+# daemon logs that it did -- so a config written before levels existed keeps
+# behaving exactly as it always has.
+# level = "strict"
 # approve_groups = ["read-only", "vcs-read", "build-test"]
 # deny_groups = []
 #
@@ -1234,6 +1304,13 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(`  log_decisions = ${config.auto_approve.log_decisions}`);
   lines.push(`  allow = [${config.auto_approve.allow.map((s) => `"${s}"`).join(', ')}]`);
   lines.push(`  deny = [${config.auto_approve.deny.map((s) => `"${s}"`).join(', ')}]`);
+  lines.push(
+    // Show the RESOLVED list, not the preset name alone (#963). The whole
+    // point of `remi config` is that the effective policy is inspectable
+    // without reading source, and "level = trusted" does not tell you which
+    // groups that is.
+    `  level = "${config.auto_approve.level}"`,
+  );
   lines.push(
     `  approve_groups = [${config.auto_approve.approve_groups.map((s) => `"${s}"`).join(', ')}]`,
   );

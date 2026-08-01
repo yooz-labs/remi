@@ -106,6 +106,7 @@ function makeConfig(server: GatedServer): AutoApproveConfig {
     deny: [],
     subagent_alert: [],
     approve_groups: [],
+    level: 'strict',
     deny_groups: [],
     instructions: '',
     multichoice: 'skip',
