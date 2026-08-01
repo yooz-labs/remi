@@ -29,43 +29,24 @@
 
 import { isSensitiveWritePath, segmentTouchesSensitivePath } from './sensitive-paths.ts';
 import { matchCoveredCommand } from './shell-safety.ts';
+import { hasUnsafeWriteFlag } from './write-flag-safety.ts';
 
 /**
- * Flags that turn a write-side command into something the group never meant
- * to grant (#959). Read groups do not need this — their blanket
- * `MUTATION_TOKEN` already refuses anything mutating — but a write group has
- * to name its own boundary, because "this command writes" is the premise
- * rather than the alarm.
+ * Positional forms that are destructive without carrying any flag at all, so
+ * `write-flag-safety.ts` cannot see them.
+ *
+ * `git checkout .` and `git checkout -- <path>` DISCARD uncommitted work
+ * irreversibly. The branch-switch forms are what `vcs-write` is for.
  */
-const WRITE_GROUP_VETOES: ReadonlyArray<{ family: RegExp; flag: RegExp }> = [
-  // `cp`/`mv` clobbering, and `mv` over an existing path is a delete in
-  // disguise. `-n` (no-clobber) is the safe form and is deliberately allowed.
-  { family: /^(cp|mv)\b/, flag: /(^|\s)(-f|--force)(\s|=|$)/ },
-  // `git checkout .` / `git checkout -- .` / `git restore` DISCARD uncommitted
-  // work irreversibly. The branch-switch forms are what `vcs-write` is for.
-  { family: /^git\s+(checkout|switch)\b/, flag: /(^|\s)(-f|--force|--discard-changes|--)(\s|$)/ },
-  { family: /^git\s+checkout\b/, flag: /(^|\s)\.(\s|$)/ },
-  // Any force-push shape, and the history-rewriting resets.
-  { family: /^git\b/, flag: /(^|\s)(-f|--force|--force-with-lease|--hard|-D)(\s|=|$)/ },
-  // `git commit --no-verify` skips the repo's own hooks, which is a review
-  // gate the user may be relying on.
-  { family: /^git\s+commit\b/, flag: /(^|\s)(--no-verify|-n)(\s|=|$)/ },
-  // curl/wget: anything that MUTATES the remote or writes a local file.
-  {
-    family: /^(curl|wget)\b/,
-    flag: /(^|\s)(-X|--method|-d|--data|--data-\S+|-F|--form|-T|--upload-file|--post\S*|-o|--output|-O|--remote-name|-K|--config)(\s|=|$)/,
-  },
-  // `gh api` is a GET only while it carries no method and no field flags.
-  {
-    family: /^gh\s+api\b/,
-    flag: /(^|\s)(-X|--method|-f|--field|-F|--raw-field|--input)(\s|=|$)/,
-  },
+const WRITE_GROUP_POSITIONAL_VETOES: ReadonlyArray<{ family: RegExp; form: RegExp }> = [
+  { family: /^git\s+(checkout|restore)\b/, form: /(^|\s)\.(\s|$)/ },
+  { family: /^git\s+(checkout|restore)\b/, form: /(^|\s)--(\s|$)/ },
 ];
 
-/** True if a write-group veto flag applies to this segment. */
-function hasWriteGroupVeto(segment: string): boolean {
-  for (const { family, flag } of WRITE_GROUP_VETOES) {
-    if (family.test(segment) && flag.test(segment)) return true;
+/** True if a destructive positional form applies to this segment. */
+function hasWriteGroupPositionalVeto(segment: string): boolean {
+  for (const { family, form } of WRITE_GROUP_POSITIONAL_VETOES) {
+    if (family.test(segment) && form.test(segment)) return true;
   }
   return false;
 }
@@ -76,7 +57,11 @@ function hasWriteGroupVeto(segment: string): boolean {
  * (`sensitive-paths.ts`).
  */
 function writeGroupVeto(segment: string): boolean {
-  return hasWriteGroupVeto(segment) || segmentTouchesSensitivePath(segment);
+  return (
+    hasUnsafeWriteFlag(segment) ||
+    hasWriteGroupPositionalVeto(segment) ||
+    segmentTouchesSensitivePath(segment)
+  );
 }
 
 export interface PermissionGroup {
@@ -257,11 +242,17 @@ export const BUILTIN_GROUPS: Readonly<Record<string, PermissionGroup>> = {
     tools: [],
     commands: [
       'curl',
-      'wget',
       'gh api',
-      // GET-shaped only. The flag vetoes refuse every method flag, every
-      // upload/data flag, `-o`/`-O` (writes a local file), and `-K` (reads a
-      // config file that can carry arbitrary curl options).
+      // GET-shaped only: `write-flag-safety.ts` allowlists curl's safe short
+      // flags, so every method flag, upload/data flag, `-o`/`-O`/`-D`/`-c`
+      // (writes a local file) and `-K` (reads a config file that can carry
+      // any option at all) is refused however it is spelled -- bundled,
+      // attached, or standalone.
+      //
+      // `wget` is deliberately ABSENT (#960 review). Unlike curl, which
+      // streams to stdout, bare `wget <url>` WRITES the response body to a
+      // file in the cwd. There is no read-only default form to curate, so
+      // the whole command belongs to the LLM.
     ],
     segmentVeto: writeGroupVeto,
   },

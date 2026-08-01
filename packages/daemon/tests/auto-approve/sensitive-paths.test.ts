@@ -97,12 +97,28 @@ describe('.git internals', () => {
     test(`sensitive: ${p}`, () => expect(isSensitiveWritePath(p)).toBe(true));
   }
 
-  test('.gitignore and .github are NOT .git', () => {
-    // Both are ordinary tracked files people edit all the time; catching them
-    // would be the over-block failure.
+  test('.gitignore is NOT .git', () => {
+    // An ordinary tracked file people edit constantly; catching it would be
+    // the over-block failure.
     expect(isSensitiveWritePath('/Users/x/project/.gitignore')).toBe(false);
-    expect(isSensitiveWritePath('/Users/x/project/.github/workflows/ci.yml')).toBe(false);
     expect(isSensitiveWritePath('.gitattributes')).toBe(false);
+  });
+
+  test('.github IS sensitive: workflows execute on push (#960 review)', () => {
+    // Deliberately different from `.gitignore`. A workflow file runs on a
+    // machine this guard cannot see, so an auto-approved write to it is code
+    // execution that leaves the box entirely.
+    expect(isSensitiveWritePath('/Users/x/project/.github/workflows/ci.yml')).toBe(true);
+    expect(isSensitiveWritePath('.github/workflows/release.yml')).toBe(true);
+  });
+
+  test('~/.gitconfig IS sensitive: core.hooksPath and ! aliases (#960 review)', () => {
+    // Reaches the same outcome as writing `.git/hooks` without touching
+    // `.git/` at all: `core.hooksPath` repoints hooks anywhere, and an
+    // `[alias] x = "!sh -c ..."` runs on the next vcs-write-approved command.
+    expect(isSensitiveWritePath('~/.gitconfig')).toBe(true);
+    expect(isSensitiveWritePath('/Users/x/.gitconfig')).toBe(true);
+    expect(isSensitiveWritePath('.gitmodules')).toBe(true);
   });
 });
 

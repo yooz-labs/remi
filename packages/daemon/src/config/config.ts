@@ -1076,13 +1076,19 @@ turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_sec
 #   build-test  bun test, tsc --noEmit, biome check, pytest, ...
 #   fs-write    Write/Edit/NotebookEdit + mkdir, touch, tee, cp, mv
 #   vcs-write   git add/commit/checkout/switch/merge, stash push, worktree add
-#   net-read    curl/wget/gh api, GET-shaped only
+#   net-read    curl + gh api, GET-shaped only (wget is excluded: it WRITES
+#               the response body to a file by default, with no flags at all)
 #
 # The write groups refuse sensitive destinations regardless of prefix: system
 # trees (/etc, /usr, /System, ...), credentials (~/.ssh, ~/.aws, .env, id_rsa),
-# .git internals (a hook write is code execution on the next commit), and
+# .git internals and ~/.gitconfig (a hook write, or core.hooksPath, is code
+# execution on the next commit), .github workflows (they execute on push),
 # ~/.remi + ~/.claude -- config that governs this very mechanism, which an
-# auto-approved write must never be able to widen.
+# auto-approved write must never be able to widen -- and the BUILD SURFACE
+# (package.json, tsconfig.json, lockfiles, Makefile, ...), because build-test
+# is enabled by DEFAULT and executes what those files say.
+#
+# Matching is case-insensitive (macOS filesystems are) and resolves dot-dot.
 #
 # rm, package installs, git push, and any --force are in NO group. Deletion,
 # remote mutation, and arbitrary install scripts stay escalations.

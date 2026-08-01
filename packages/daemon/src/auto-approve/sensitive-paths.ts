@@ -35,13 +35,39 @@
  * A write group must be unable to open that loop, and closing it belongs in
  * the same change that opens the group.
  *
- * ## `.git/` is code execution, not data
+ * ## Code-execution surfaces, not just secrets
  *
  * `.git/hooks/pre-commit` runs on the next commit. With `vcs-write` enabled,
  * that commit is itself auto-approved — so a write to `.git/` followed by a
  * `git commit` is arbitrary code execution assembled from two individually
- * approved steps. Refusing `.git/` writes is what keeps the two groups from
- * composing into something neither one grants.
+ * approved steps.
+ *
+ * Review of #960 found the same shape reached three other ways, and the third
+ * is the reason `BUILD_SURFACE` exists below:
+ *
+ * - `~/.gitconfig` sets `core.hooksPath` to any directory, or defines a
+ *   `[alias] commit = "!curl … | sh"`. Same outcome as writing `.git/hooks`,
+ *   via a file that is not under `.git/` at all. `shell-safety.ts` already
+ *   vetoes the ephemeral `git -c core.hooksPath=…` form, so the risk was
+ *   understood; the persistent file achieving the same thing was missed.
+ * - **`package.json` needs NO second opt-in.** `bun run typecheck` is a
+ *   `build-test` prefix, and `build-test` is on by DEFAULT. So `fs-write`
+ *   alone lets an auto-approved edit to `package.json`'s `scripts` inject a
+ *   payload that an already-auto-approved build command then executes. Every
+ *   file whose contents a default-enabled group will EXECUTE is therefore a
+ *   code-execution surface, not ordinary project data.
+ * - `.github/workflows/` executes on push, off this machine entirely.
+ *
+ * The general rule this encodes: a write group must not be able to write
+ * anything that any enabled group later runs.
+ *
+ * ## Case-insensitivity is not optional here
+ *
+ * macOS's default filesystem is case-insensitive-but-preserving, and macOS is
+ * the primary target. `/ETC/hosts` and `~/.REMI/config.toml` resolve to the
+ * same inodes as their lowercase spellings, so a case-sensitive check is not
+ * a stylistic nit — it is a complete bypass of every rule in this file. All
+ * matching below is done on a lowercased path (#960 review).
  */
 
 /**
@@ -55,8 +81,8 @@ const SYSTEM_TREES: readonly string[] = [
   '/sbin',
   '/var',
   '/opt',
-  '/System',
-  '/Library',
+  '/system',
+  '/library',
   '/private/etc',
   '/private/var',
   '/boot',
@@ -88,6 +114,51 @@ const SENSITIVE_SEGMENTS: readonly string[] = [
   '.claude',
   // Git internals: writing a hook here is code execution on the next commit.
   '.git',
+  // CI definitions: they execute on push, on a machine this guard cannot see.
+  '.github',
+  '.gitlab-ci.yml',
+  // Editor/tooling autorun surfaces.
+  '.vscode',
+  '.idea',
+];
+
+/**
+ * Files whose CONTENTS an already-enabled group will execute (#960 review).
+ *
+ * Distinct in kind from the secrets above: none of these is confidential, and
+ * writing one is an ordinary development act. They are here because
+ * `build-test` ships ENABLED BY DEFAULT and runs `bun test`, `bun run
+ * typecheck`, `pytest`, `biome check` — every one of which reads its
+ * behaviour out of a file on this list. An auto-approved write to any of them
+ * turns the next auto-approved build command into arbitrary code execution,
+ * with no second group needing to be opted into.
+ *
+ * This is the cost of a write group coexisting with an execute group, and it
+ * is paid here rather than by hoping the two are never enabled together.
+ */
+const BUILD_SURFACE: readonly string[] = [
+  'package.json',
+  'package-lock.json',
+  'bun.lock',
+  'bun.lockb',
+  'pnpm-lock.yaml',
+  'yarn.lock',
+  'tsconfig.json',
+  'biome.json',
+  'biome.jsonc',
+  'makefile',
+  'justfile',
+  'pyproject.toml',
+  'uv.lock',
+  'setup.py',
+  'conftest.py',
+  'cargo.toml',
+  'dockerfile',
+  'lefthook.yml',
+  'lefthook.yaml',
+  '.pre-commit-config.yaml',
+  'vitest.config.ts',
+  'bunfig.toml',
 ];
 
 /**
@@ -104,6 +175,10 @@ const SENSITIVE_BASENAMES: readonly string[] = [
   'authorized_keys',
   'known_hosts',
   '.htpasswd',
+  // `core.hooksPath` and `[alias] x = "!sh -c …"` make this file a code-
+  // execution surface reached without touching `.git/` at all (#960 review).
+  '.gitconfig',
+  '.gitmodules',
 ];
 
 /** `.env.local`, `.env.production`, ... are the same secret with a suffix. */
@@ -120,17 +195,46 @@ export function isSensitiveWritePath(candidate: string): boolean {
   const raw = candidate.trim().replace(/^['"]|['"]$/g, '');
   if (raw === '') return false;
 
+  // LOWERCASED before anything else. macOS's default filesystem is
+  // case-insensitive, so `/ETC/hosts` and `/etc/hosts` are the same file; a
+  // case-sensitive comparison here bypasses every rule below (#960 review).
+  // Every comparison list in this module is authored in lowercase to match.
+  const lowered = raw.toLowerCase();
+
   // `~` and `$HOME` both denote the home directory; neither is expanded by the
   // time a hook payload reaches us, so treat them as a home-rooted path rather
   // than as a literal directory name.
-  const homeRooted = raw.replace(/^~(?=\/|$)/, '/HOME').replace(/^\$HOME(?=\/|$)/, '/HOME');
-  const normalised = homeRooted.replace(/\/+/g, '/');
+  const homeRooted = lowered.replace(/^~(?=\/|$)/, '/home').replace(/^\$home(?=\/|$)/, '/home');
+  const collapsed = homeRooted.replace(/\/+/g, '/');
+
+  // Resolve `..` BEFORE the system-tree prefix check. Without this,
+  // `/Users/x/project/../../../etc/hosts` fails every `startsWith('/etc')`
+  // test while naming exactly that file (#960 review). The segment scan below
+  // was already traversal-robust because it inspects each segment
+  // individually; the prefix axis was not.
+  const resolved = resolveDotDot(collapsed);
 
   for (const tree of SYSTEM_TREES) {
-    if (normalised === tree || normalised.startsWith(`${tree}/`)) return true;
+    if (resolved === tree || resolved.startsWith(`${tree}/`)) return true;
   }
 
-  const segments = normalised.split('/').filter((s) => s !== '' && s !== '.');
+  // A relative path that still ascends after resolution cannot be prefix-
+  // matched against an absolute system tree, which is how
+  // `../../../etc/hosts` slipped through (#960 review). Strip the leading
+  // ascent and test what it lands ON.
+  //
+  // NOT a blanket refusal of `..`: `git worktree add ../x` and `cp a ../sibling`
+  // are ordinary, and refusing every ascending path would escalate them for no
+  // reason. Only the destination matters.
+  if (resolved === '..' || resolved.startsWith('../')) {
+    const landing = resolved.replace(/^(\.\.\/)+/, '');
+    const firstSegment = landing.split('/')[0] ?? '';
+    for (const tree of SYSTEM_TREES) {
+      if (firstSegment === tree.slice(1)) return true;
+    }
+  }
+
+  const segments = resolved.split('/').filter((s) => s !== '' && s !== '.');
   for (const segment of segments) {
     if (SENSITIVE_SEGMENTS.includes(segment)) return true;
   }
@@ -138,12 +242,36 @@ export function isSensitiveWritePath(candidate: string): boolean {
   const basename = segments.at(-1);
   if (basename !== undefined) {
     if (SENSITIVE_BASENAMES.includes(basename)) return true;
+    if (BUILD_SURFACE.includes(basename)) return true;
     for (const prefix of SENSITIVE_BASENAME_PREFIXES) {
       if (basename.startsWith(prefix)) return true;
     }
   }
 
   return false;
+}
+
+/**
+ * Collapse `.` and `..` segments lexically, preserving whether the path was
+ * absolute. Purely textual — it does not resolve symlinks, and cannot: a
+ * symlink whose target is `/etc` is invisible to any string-level check. See
+ * the "defense in depth" caveat in the module doc.
+ */
+function resolveDotDot(path: string): string {
+  const absolute = path.startsWith('/');
+  const out: string[] = [];
+  for (const segment of path.split('/')) {
+    if (segment === '' || segment === '.') continue;
+    if (segment === '..') {
+      const last = out.at(-1);
+      if (last !== undefined && last !== '..') out.pop();
+      else if (!absolute) out.push('..');
+      // An absolute path cannot rise above `/`, matching the kernel.
+      continue;
+    }
+    out.push(segment);
+  }
+  return `${absolute ? '/' : ''}${out.join('/')}`;
 }
 
 /**

