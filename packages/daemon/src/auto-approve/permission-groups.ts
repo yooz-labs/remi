@@ -27,13 +27,98 @@
  * user allow list uses the same primitives (#536).
  */
 
-import { matchCoveredCommand } from './shell-safety.ts';
+import { isSensitiveWritePath, segmentTouchesSensitivePath } from './sensitive-paths.ts';
+import { matchCoveredCommand, shellWords } from './shell-safety.ts';
+import { hasUnsafeWriteFlag } from './write-flag-safety.ts';
+
+/**
+ * Positional forms that are destructive without carrying any flag at all, so
+ * `write-flag-safety.ts` cannot see them.
+ *
+ * `git checkout .` and `git checkout -- <path>` DISCARD uncommitted work
+ * irreversibly. The branch-switch forms are what `vcs-write` is for.
+ */
+const WRITE_GROUP_POSITIONAL_VETOES: ReadonlyArray<{ family: RegExp; words: readonly string[] }> = [
+  { family: /^git\s+(checkout|restore)\b/, words: ['.', '--'] },
+];
+
+/**
+ * True if a destructive positional form applies to this segment.
+ *
+ * Matches against TOKENIZED words, not raw text (#960 second review). The
+ * first cut used `/(^|\s)\.(\s|$)/`, which requires the `.` to be
+ * whitespace-bounded in the source string — so `git checkout "."` sailed
+ * through and irreversibly discarded uncommitted work, while the identical
+ * `git checkout .` was correctly refused. `shellWords` removes the quotes
+ * first, so both are now the same single word `.` and both are refused.
+ */
+function hasWriteGroupPositionalVeto(segment: string): boolean {
+  for (const { family, words } of WRITE_GROUP_POSITIONAL_VETOES) {
+    if (!family.test(segment)) continue;
+    for (const word of shellWords(segment)) {
+      if (words.includes(word)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The veto profile every write-side group shares: the flag boundaries above,
+ * plus the sensitive-destination axis a read group never needed
+ * (`sensitive-paths.ts`).
+ */
+function writeGroupVeto(segment: string): boolean {
+  return (
+    hasUnsafeWriteFlag(segment) ||
+    hasWriteGroupPositionalVeto(segment) ||
+    segmentTouchesSensitivePath(segment)
+  );
+}
 
 export interface PermissionGroup {
   /** Bare tool names this group approves (e.g. "Read", "Glob"). */
   readonly tools: readonly string[];
-  /** Curated read-only Bash command prefixes (word-boundary prefix match). */
+  /** Curated Bash command prefixes (word-boundary prefix match). */
   readonly commands: readonly string[];
+  /**
+   * Extra veto for a Bash segment this group's prefix matched (#959).
+   *
+   * Absent means the READ profile: the blanket `MUTATION_TOKEN` +
+   * `hasScopedVeto` predicate every group used before write groups existed.
+   * A write group MUST supply its own, because the read profile rejects
+   * `--output`/`--write`/`-delete`-class tokens outright and would therefore
+   * veto every write prefix by construction.
+   *
+   * Supplying one does NOT buy past `hasShellControl` or `hasExecPrimitive`:
+   * those run in `matchCoveredCommand` regardless, and are about the segment
+   * being a DIFFERENT command rather than about mutation.
+   */
+  readonly segmentVeto?: (segment: string) => boolean;
+  /**
+   * Extra veto for a TOOL match this group covers (#959). Absent means no
+   * input inspection at all, which is the historical behavior and is correct
+   * for read tools — `Read` is safe whatever `file_path` says.
+   *
+   * A write tool is the opposite: `Write` to `~/.remi/config.toml` or
+   * `.git/hooks/pre-commit` is exactly the case a bare tool-name match would
+   * wave through. Any group listing a mutating tool must supply this.
+   */
+  readonly toolVeto?: (toolName: string, toolInput: Record<string, unknown>) => boolean;
+}
+
+/**
+ * Tool-input keys that name a destination on the mutating tools. `Write`,
+ * `Edit` and `NotebookEdit` all carry exactly one of these.
+ */
+const TOOL_PATH_KEYS: readonly string[] = ['file_path', 'notebook_path', 'path'];
+
+/** Refuse a mutating tool call whose destination is sensitive (#959). */
+function vetoSensitiveToolPath(_toolName: string, toolInput: Record<string, unknown>): boolean {
+  for (const key of TOOL_PATH_KEYS) {
+    const value = toolInput[key];
+    if (typeof value === 'string' && isSensitiveWritePath(value)) return true;
+  }
+  return false;
 }
 
 export const BUILTIN_GROUPS: Readonly<Record<string, PermissionGroup>> = {
@@ -127,6 +212,43 @@ export const BUILTIN_GROUPS: Readonly<Record<string, PermissionGroup>> = {
       // code by design (and may write coverage/report artifacts).
     ],
   },
+  // --- Write-side groups (#959). Opt-in via `approve_groups`; none is on by
+  // --- default, so this addition changes no shipped behavior on its own.
+  'fs-write': {
+    // The measured pain: 57 of 225 escalations on a real machine were plain
+    // writes, against a config whose `instructions` approve them in prose.
+    tools: ['Write', 'Edit', 'NotebookEdit'],
+    commands: [
+      'mkdir',
+      'touch',
+      'tee',
+      'cp',
+      'mv',
+      // `rm`, `rmdir`, `truncate`, `dd`, `shred`, `chmod` and `chown` are
+      // deliberately absent at every strictness level (#956). Deletion and
+      // permission changes are where escalation earns its cost; a write group
+      // that quietly covered them would be the #536 mistake in a new place.
+    ],
+    segmentVeto: writeGroupVeto,
+    toolVeto: vetoSensitiveToolPath,
+  },
+  'vcs-write': {
+    tools: [],
+    commands: [
+      'git add',
+      'git commit',
+      'git checkout',
+      'git switch',
+      'git merge',
+      'git stash push',
+      'git worktree add',
+      // Excluded: `git push` (remote mutation), `git rm`, `git reset`,
+      // `git clean`, `git branch -D`, `git worktree remove`. The flag vetoes
+      // above catch the destructive forms of what IS listed -- `checkout .`,
+      // `checkout --`, any `--force`/`--hard`/`-D`, `commit --no-verify`.
+    ],
+    segmentVeto: writeGroupVeto,
+  },
 };
 
 /**
@@ -186,11 +308,30 @@ function hasScopedVeto(segment: string): boolean {
  * command of only neutral segments is not "a read").
  */
 export function matchReadOnlyCommand(command: string, prefixes: readonly string[]): string | null {
-  return matchCoveredCommand(
-    command,
-    prefixes,
-    (seg) => MUTATION_TOKEN.test(seg) || hasScopedVeto(seg),
-  );
+  return matchCoveredCommand(command, prefixes, readSegmentVeto);
+}
+
+/**
+ * The READ veto profile: the blanket predicate every group used before write
+ * groups existed. Named (#959) because `matchGroups` now has to reference it
+ * as the default for a group that declares no `segmentVeto` of its own.
+ */
+function readSegmentVeto(segment: string): boolean {
+  if (MUTATION_TOKEN.test(segment) || hasScopedVeto(segment)) return true;
+  // Re-check with quotes and escapes removed (#960 round 3). The regexes above
+  // match RAW TEXT, which is the same flaw the write-side vetoes were rebuilt
+  // to fix — and it was live here too, on groups that ship ENABLED BY DEFAULT:
+  //
+  //     git diff --"output"=f   -> approved (writes a file)
+  //     biome check --"write"   -> approved (mutates source)
+  //     sed -n -"i" x           -> approved (in-place edit)
+  //
+  // while their unquoted forms were all correctly refused. Checking the
+  // reconstructed word list in ADDITION to the raw text can only ever add a
+  // veto, never remove one, so no previously-refused command becomes allowed.
+  const unquoted = shellWords(segment).join(' ');
+  if (unquoted === segment) return false;
+  return MUTATION_TOKEN.test(unquoted) || hasScopedVeto(unquoted);
 }
 
 /**
@@ -216,15 +357,32 @@ export function matchGroups(
         if (!prefixToGroup.has(cmd)) prefixToGroup.set(cmd, name);
       }
     }
-    const hit = matchReadOnlyCommand(command, [...prefixToGroup.keys()]);
+    // Per-segment veto (#957/#959): each matched segment is judged by the
+    // profile of the group that matched IT, not by one blanket rule for the
+    // whole command. A group with no `segmentVeto` gets the historical read
+    // profile, so read-only/vcs-read/build-test behave exactly as before.
+    const hit = matchCoveredCommand(
+      command,
+      [...prefixToGroup.keys()],
+      readSegmentVeto,
+      (segment, matchedPrefix) => {
+        const owner = prefixToGroup.get(matchedPrefix);
+        const group = owner === undefined ? undefined : BUILTIN_GROUPS[owner];
+        const veto = group?.segmentVeto ?? readSegmentVeto;
+        return veto(segment);
+      },
+    );
     if (hit === null) return null;
     return `${prefixToGroup.get(hit) ?? 'group'}:${hit}`;
   }
 
   for (const name of known) {
-    if (BUILTIN_GROUPS[name]?.tools.includes(toolName)) {
-      return `${name}:${toolName}`;
-    }
+    const group = BUILTIN_GROUPS[name];
+    if (group?.tools.includes(toolName) !== true) continue;
+    // A mutating tool must have its destination inspected; a bare tool-name
+    // match would otherwise cover `Write` to `~/.remi/config.toml` (#959).
+    if (group.toolVeto?.(toolName, toolInput) === true) return null;
+    return `${name}:${toolName}`;
   }
   return null;
 }

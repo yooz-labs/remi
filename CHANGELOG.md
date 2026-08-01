@@ -101,6 +101,22 @@ All notable changes to Remi are documented here.
   newly-registered events as unregistered.
 
 ### Fixed
+- **Quoted flags no longer slip past the permission-group vetoes** (#959). The
+  curated group matcher tested flags and paths against the RAW command text,
+  but the shell removes quotes and escapes before the program ever sees them,
+  so one embedded quote defeated the check. This was live on the groups that
+  ship ENABLED BY DEFAULT: `git diff --"output"=f` (writes a file),
+  `biome check --"write"` (mutates source) and `sed -n -"i" x` (in-place edit)
+  were all approved with no LLM call and no question card, while their
+  identical unquoted forms were correctly refused. A new `shellWords()`
+  (`auto-approve/shell-safety.ts`) performs real quote and escape removal --
+  including `$'...'` and `$"..."`, and the backslash form `--o\utput` that
+  needs no quotes at all -- and every veto now runs against tokenized words.
+  The read-group check consults the reconstructed word list IN ADDITION to the
+  raw text, so it can only ever add a refusal, never remove one; no command
+  that was previously refused becomes allowed. Found in the third adversarial
+  review round on #960, which also confirmed the same flaw on the new
+  write-side groups before they shipped.
 - **An auto-approve `deny` that matches no DENY FLOOR pattern is now escalated
   to you instead of silently blocking the command** (#953). `prompt-builder.ts`
   has always said "DENY IS RARE: deny ONLY operations in the DENY FLOOR... For

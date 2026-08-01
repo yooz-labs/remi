@@ -217,3 +217,147 @@ export function matchCoveredCommand(
   }
   return matched;
 }
+
+/**
+ * Split a single command segment into shell WORDS, performing real quote and
+ * escape removal (#960 second review).
+ *
+ * This exists because three separate vetoes were each written to reason about
+ * raw command TEXT, each hand-rolled its own quote handling, and each got it
+ * wrong in a different way. Every one of these auto-approved at 0ms:
+ *
+ *     curl -"o" out.txt url        -> real argv [-o] [out.txt] [url]
+ *     curl -sS"o" out.txt url      -> real argv [-sSo] ...
+ *     curl --o\utput out.txt url   -> real argv [--output] ...
+ *     cp evil /et"c"/cron.d/task   -> real argv [...] [/etc/cron.d/task]
+ *     tee ~/."remi"/config.toml    -> real argv [/Users/x/.remi/config.toml]
+ *     git checkout "."             -> real argv [git] [checkout] [.]
+ *
+ * The shell does not see quotes as part of the word; it removes them and
+ * CONCATENATES adjacent quoted, unquoted and escaped spans into one argument.
+ * Any check that matches against the raw text is therefore matching a string
+ * the program being run will never receive, and one embedded quote or
+ * backslash defeats it. That is not a family of bugs to patch individually —
+ * it is one missing primitive, so it is implemented once here and every
+ * consumer runs against the result.
+ *
+ * Deliberately does NOT expand variables, globs, command substitution, or
+ * brace expansion. Those are unknowable statically, and `hasShellControl`
+ * already refuses a segment containing substitution outright — so a word
+ * reaching this function cannot contain one.
+ */
+export function shellWords(segment: string): string[] {
+  const words: string[] = [];
+  let current = '';
+  let started = false;
+
+  for (let i = 0; i < segment.length; i++) {
+    const c = segment[i];
+
+    if (c === undefined) break;
+
+    if (c === '\\') {
+      // Backslash escapes the next character, and the backslash itself is
+      // removed. `--o\utput` is the word `--output`.
+      const next = segment[i + 1];
+      if (next !== undefined) {
+        current += next;
+        started = true;
+        i++;
+      }
+      continue;
+    }
+
+    if (c === "'") {
+      // Single quotes are fully literal: no escapes, ends at the next quote.
+      started = true;
+      i++;
+      while (i < segment.length && segment[i] !== "'") {
+        current += segment[i];
+        i++;
+      }
+      continue;
+    }
+
+    if (c === '"') {
+      // Double quotes honour backslash escapes for a small set of characters;
+      // every other backslash is literal.
+      started = true;
+      i++;
+      while (i < segment.length && segment[i] !== '"') {
+        if (segment[i] === '\\') {
+          const next = segment[i + 1];
+          if (next !== undefined && ['"', '\\', '$', '`', '\n'].includes(next)) {
+            current += next;
+            i += 2;
+            continue;
+          }
+        }
+        current += segment[i];
+        i++;
+      }
+      continue;
+    }
+
+    if (c === '$' && segment[i + 1] === '"') {
+      // Locale/gettext quoting (`$"..."`). bash strips BOTH the `$` and the
+      // quotes, so `$"--force"` is the word `--force`. Missing this case left
+      // the `$` glued to the front of the token, which broke every check that
+      // asks whether a word STARTS WITH `-` or EQUALS `.` — i.e. the entire
+      // flag allowlist and the positional veto. `git checkout $"--force"` and
+      // `mkdir $"-m" 777` were auto-approved (#960 round 3).
+      //
+      // Handled as double-quoted content, since that is what it is: the `$`
+      // only marks it for translation.
+      started = true;
+      i += 2;
+      while (i < segment.length && segment[i] !== '"') {
+        if (segment[i] === '\\') {
+          const next = segment[i + 1];
+          if (next !== undefined && ['"', '\\', '$', '`', '\n'].includes(next)) {
+            current += next;
+            i += 2;
+            continue;
+          }
+        }
+        current += segment[i];
+        i++;
+      }
+      continue;
+    }
+
+    if (c === '$' && segment[i + 1] === "'") {
+      // ANSI-C quoting (`$'...'`). Treated as literal contents rather than
+      // decoding every escape: the point here is that the QUOTES vanish, so a
+      // flag hidden inside one is seen. Under-decoding an escape can only
+      // produce a longer, stranger word, never a shorter safe-looking one.
+      started = true;
+      i += 2;
+      while (i < segment.length && segment[i] !== "'") {
+        if (segment[i] === '\\' && segment[i + 1] !== undefined) {
+          current += segment[i + 1];
+          i += 2;
+          continue;
+        }
+        current += segment[i];
+        i++;
+      }
+      continue;
+    }
+
+    if (/\s/.test(c)) {
+      if (started) {
+        words.push(current);
+        current = '';
+        started = false;
+      }
+      continue;
+    }
+
+    current += c;
+    started = true;
+  }
+
+  if (started) words.push(current);
+  return words;
+}
