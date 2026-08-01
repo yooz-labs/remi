@@ -65,7 +65,7 @@ import { DEFAULT_SETTINGS } from '@/types';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import type { UnlockedIdentity } from '@remi/shared';
 import { assertNever, isValidMessage } from '@remi/shared';
-import type { ProtocolMessage, RecentDirectory } from '@remi/shared/protocol.ts';
+import type { ProtocolMessage, PushPreferences, RecentDirectory } from '@remi/shared/protocol.ts';
 import {
   createAnswer,
   createDetachSession,
@@ -358,10 +358,6 @@ function App() {
     mq.addEventListener('change', handleChange);
     return () => mq.removeEventListener('change', handleChange);
   }, [settings.theme]);
-
-  const handleSettingsChange = useCallback((newSettings: AppSettings) => {
-    setSettings(newSettings);
-  }, []);
 
   // Multi-daemon message handler. Empty deps intentional: state via functional updaters and refs.
   // `inReplay` (#798, mirrors the terminal client's #753 fix) is true only for
@@ -2099,6 +2095,14 @@ function App() {
   // Send device token to daemons: on new token or new connection
   const deviceTokenRef = useRef<string | null>(null);
   const tokenSentToRef = useRef<Set<ConnectionId>>(new Set());
+  // Push preferences as last sent (#968). Kept in a ref so the two registration
+  // effects below read the CURRENT value without taking `settings` as a
+  // dependency — that would re-run them (and re-register on every daemon) on an
+  // unrelated theme or font-size change.
+  const pushPrefsRef = useRef<PushPreferences>({
+    questions: settings.notifyQuestions,
+    turnComplete: settings.notifyTurnComplete,
+  });
   // #690: id -> resolver for a message awaiting its daemon `ack`. Currently
   // used only by handleDisconnect's unregister_device_token wait; see the
   // 'ack' case in handleMessage for the resolving side.
@@ -2109,7 +2113,7 @@ function App() {
       if (!token) return;
       deviceTokenRef.current = token;
       for (const id of connectedIds) {
-        cmSendMessage(id, createRegisterDeviceToken(token, 'ios'));
+        cmSendMessage(id, createRegisterDeviceToken(token, 'ios', pushPrefsRef.current));
         tokenSentToRef.current.add(id);
       }
     };
@@ -2122,7 +2126,7 @@ function App() {
     if (!deviceTokenRef.current) return;
     for (const id of connectedIds) {
       if (!tokenSentToRef.current.has(id)) {
-        cmSendMessage(id, createRegisterDeviceToken(deviceTokenRef.current, 'ios'));
+        cmSendMessage(id, createRegisterDeviceToken(deviceTokenRef.current, 'ios', pushPrefsRef.current));
         tokenSentToRef.current.add(id);
       }
     }
@@ -2133,6 +2137,44 @@ function App() {
       }
     }
   }, [connectedIds, cmSendMessage]);
+
+  // Declared HERE, not up with the other settings state, because it closes over
+  // `connectedIds` / `cmSendMessage` / the token refs — all declared above this
+  // point. A `useCallback` higher up would evaluate its dependency array during
+  // render, before those bindings are initialized.
+  const handleSettingsChange = useCallback(
+    (newSettings: AppSettings) => {
+      setSettings(newSettings);
+
+      // Push a notification-preference change to every connected daemon (#968).
+      // The daemon is the only thing in the APNS path, so a toggle that is not
+      // sent up is a toggle that does nothing. Re-registering the SAME token is
+      // the update: `register_device_token` is idempotent and keyed by token, so
+      // there is no separate update message and no way for the two to drift.
+      const next: PushPreferences = {
+        questions: newSettings.notifyQuestions,
+        turnComplete: newSettings.notifyTurnComplete,
+      };
+      const prev = pushPrefsRef.current;
+      if (prev.questions === next.questions && prev.turnComplete === next.turnComplete) return;
+      pushPrefsRef.current = next;
+
+      const token = deviceTokenRef.current;
+      // No token yet (permission not granted, or web): the current value is
+      // carried by whatever registration happens first.
+      if (!token) return;
+      for (const id of connectedIds) {
+        try {
+          if (!cmSendMessage(id, createRegisterDeviceToken(token, 'ios', next))) {
+            console.warn(`[App] Could not send push preferences to ${id}`);
+          }
+        } catch (err) {
+          console.warn('[App] Failed to send push preferences:', err);
+        }
+      }
+    },
+    [connectedIds, cmSendMessage],
+  );
 
   // Get active session. Derive connectionStatus from live connection state
   // at render time to avoid stale status from session_list_response merge timing.
@@ -2645,7 +2687,7 @@ function App() {
         for (const id of connectedIds) {
           if (id === connectionId) continue;
           try {
-            const ok = cmSendMessage(id, createRegisterDeviceToken(token, 'ios'));
+            const ok = cmSendMessage(id, createRegisterDeviceToken(token, 'ios', pushPrefsRef.current));
             if (!ok) {
               console.warn(`[App] Could not re-register device token with ${id}`);
             }

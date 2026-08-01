@@ -37,7 +37,7 @@
  * in `cli.ts`'s `sharedEvents` assembly. That work is inherent business
  * logic, not the duplication this module removes.
  */
-import type { AnswerExtras, UUID } from '@remi/shared';
+import type { AnswerExtras, PushPreferences, UUID } from '@remi/shared';
 
 /**
  * Every client-to-daemon event's argument list, WITHOUT `connectionId`.
@@ -94,8 +94,13 @@ export interface ClientMessageEventArgs {
   /** Detach session request received (tmux-style). */
   onDetachSession: [sessionId: UUID, requestId: UUID];
 
-  /** Device token registered for push notifications. */
-  onRegisterDeviceToken: [token: string, platform: 'ios' | 'android'];
+  /** Device token registered for push notifications. `pushPrefs` is undefined
+   *  when the client sent none, which means "wants every push class" (#968). */
+  onRegisterDeviceToken: [
+    token: string,
+    platform: 'ios' | 'android',
+    pushPrefs: PushPreferences | undefined,
+  ];
 
   /** Device token unregistered -- explicit user removal of this server (#690). */
   onUnregisterDeviceToken: [token: string];

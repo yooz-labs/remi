@@ -94,6 +94,7 @@ export type {
   ResumeSessionResponseMessage,
   DetachSessionMessage,
   DetachSessionAckMessage,
+  PushPreferences,
   RegisterDeviceTokenMessage,
   UnregisterDeviceTokenMessage,
   DaemonUpdateAvailableMessage,

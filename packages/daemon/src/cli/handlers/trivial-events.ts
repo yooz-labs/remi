@@ -5,8 +5,12 @@
  */
 
 import { createSessionHistoryResponse, errorToString } from '@remi/shared';
-import type { ProtocolMessage, UUID } from '@remi/shared';
+import type { ProtocolMessage, PushPreferences, UUID } from '@remi/shared';
 
+import {
+  type ResolvedPushPreferences,
+  sanitizePushPreferences,
+} from '../../notifications/push-preferences.ts';
 import type { SessionRegistry, SessionStore } from '../../session/index.ts';
 import { log, logError } from '../logger.ts';
 import { getRecentDirectories } from '../recent-client.ts';
@@ -16,6 +20,14 @@ export interface DeviceTokenEntry {
   platform: string;
   registeredAt: number;
   connectionId: UUID;
+  /**
+   * Which push classes this device wants (#968). Absent on entries registered
+   * before #968, and on any client that sends none — both mean "wants
+   * everything" (`push-preferences.ts` owns that default). Persisted with the
+   * token so the preference survives a daemon restart and is shared across
+   * every local daemon, exactly like the token itself.
+   */
+  pushPrefs?: ResolvedPushPreferences;
 }
 
 export type SendToConnection = (connectionId: UUID, message: ProtocolMessage) => boolean;
@@ -26,7 +38,12 @@ export interface TrivialHandlerDeps {
    * map: it does the #585 rotation prune (a re-registration from the same
    * connection drops that connection's OTHER, now-rotated token) and persists.
    */
-  registerDeviceToken: (token: string, platform: string, connectionId: UUID) => void;
+  registerDeviceToken: (
+    token: string,
+    platform: string,
+    connectionId: UUID,
+    pushPrefs: ResolvedPushPreferences,
+  ) => void;
   /**
    * Unregister a device token (#690) — the store deletes it and marks it
    * `removed` so a concurrent daemon's stale copy is not re-adopted. Fires
@@ -45,9 +62,20 @@ export function createTrivialHandlers(deps: TrivialHandlerDeps) {
   const { registerDeviceToken, unregisterDeviceToken, sessionStore, sessionRegistry, send } = deps;
 
   return {
-    onRegisterDeviceToken: (connectionId: UUID, token: string, platform: string): void => {
-      log(`Device token registered from ${connectionId}: ${token.slice(0, 20)}... (${platform})`);
-      registerDeviceToken(token, platform, connectionId);
+    onRegisterDeviceToken: (
+      connectionId: UUID,
+      token: string,
+      platform: string,
+      pushPrefs?: PushPreferences,
+    ): void => {
+      // Sanitize at the boundary (#968): `pushPrefs` arrives on a client
+      // message, so the stored value is a resolved, definitely-boolean pair and
+      // nothing downstream has to re-decide what a missing field means.
+      const resolved = sanitizePushPreferences(pushPrefs);
+      log(
+        `Device token registered from ${connectionId}: ${token.slice(0, 20)}... (${platform}, questions=${resolved.questions}, turnComplete=${resolved.turnComplete})`,
+      );
+      registerDeviceToken(token, platform, connectionId, resolved);
     },
 
     onUnregisterDeviceToken: (connectionId: UUID, token: string): void => {

@@ -951,6 +951,31 @@ export interface DetachSessionAckMessage {
   readonly error?: string;
 }
 
+/**
+ * Per-device push preferences (#968). Which CLASSES of push this device wants;
+ * the daemon filters its per-token fan-out by these before sending.
+ *
+ * The client cannot mute APNS on its own — the push path is daemon -> signaling
+ * Worker -> APNS and never consults the client — so a device's preference is
+ * only real once the daemon stores and honors it. That is what this carries.
+ *
+ * Absent (or an absent field) means "wants it": an older client that never
+ * sends preferences keeps receiving everything, exactly as before.
+ *
+ * Deliberately does NOT cover two other push classes:
+ *   - subagent alerts, which already have a user-facing control (they fire only
+ *     on the user's own `auto_approve.subagent_alert` patterns);
+ *   - question DISMISSALS, which are quiet `content-available` pushes that clear
+ *     an already-delivered card. Muting those would strand a card on the lock
+ *     screen of the very device that asked for less noise.
+ */
+export interface PushPreferences {
+  /** Push when Claude needs an answer (permission prompts, escalations). */
+  readonly questions?: boolean;
+  /** Push the last assistant message when a long turn ends (#914). */
+  readonly turnComplete?: boolean;
+}
+
 /** Register a device token for push notifications */
 export interface RegisterDeviceTokenMessage {
   readonly type: 'register_device_token';
@@ -960,6 +985,14 @@ export interface RegisterDeviceTokenMessage {
   readonly token: string;
   /** Device platform */
   readonly platform: 'ios' | 'android';
+  /**
+   * Which push classes this device wants (#968). Omitted = all of them.
+   *
+   * Registration is idempotent and keyed by token, so changing a toggle in the
+   * app is just a re-send of this message with new preferences — no separate
+   * update message, and no way for the two to drift apart.
+   */
+  readonly pushPrefs?: PushPreferences;
 }
 
 /**
@@ -1921,10 +1954,12 @@ export function createDetachSessionAck(
   };
 }
 
-/** Create a device token registration message */
+/** Create a device token registration message. `pushPrefs` omitted = this
+ *  device wants every push class (#968). */
 export function createRegisterDeviceToken(
   token: string,
   platform: 'ios' | 'android',
+  pushPrefs?: PushPreferences,
 ): RegisterDeviceTokenMessage {
   return {
     type: 'register_device_token',
@@ -1932,6 +1967,7 @@ export function createRegisterDeviceToken(
     timestamp: now(),
     token,
     platform,
+    ...(pushPrefs !== undefined && { pushPrefs }),
   };
 }
 

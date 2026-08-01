@@ -574,7 +574,7 @@ export class Connection {
 
   private handleRegisterDeviceToken(message: RegisterDeviceTokenMessage): void {
     this.sendAck(message.id, 'delivered');
-    this.events.onRegisterDeviceToken?.(message.token, message.platform);
+    this.events.onRegisterDeviceToken?.(message.token, message.platform, message.pushPrefs);
   }
 
   /**

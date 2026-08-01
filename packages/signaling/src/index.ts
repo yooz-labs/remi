@@ -62,6 +62,19 @@ interface PushRequestBody {
    * lock-screen card for an already-resolved question.
    */
   dismiss?: boolean;
+  /**
+   * Which class of push this is (#968): 'question' | 'turn_complete' |
+   * 'subagent_alert' | 'dismiss'. Passed through verbatim into APNS custom data
+   * as `kind` so the client can label and route by class instead of inferring
+   * it from the ABSENCE of `questionId`/`category` — an inference that could
+   * never tell a turn-complete push from a subagent alert, since those two are
+   * identical on the wire.
+   *
+   * Not validated against the known set: the worker only forwards it, and
+   * rejecting an unrecognized value here would mean a daemon adding a new class
+   * needs a worker redeploy before its pushes work at all.
+   */
+  kind?: string;
 }
 
 /** Per-IP rate limiter: 10 WebSocket upgrades per 60 seconds */
@@ -314,6 +327,11 @@ export default {
         body.options.length <= 6;
       if (wantsDynCategory) {
         data['dynCategory'] = '1';
+      }
+      // #968: forwarded verbatim, capped so a malformed value cannot bloat the
+      // APNS payload (Apple caps an alert payload at 4KB).
+      if (typeof body.kind === 'string' && body.kind.length > 0) {
+        data['kind'] = body.kind.slice(0, 32);
       }
       const category = body.category && body.category.length > 0 ? body.category : undefined;
 
