@@ -1638,3 +1638,108 @@ describeEngine('AutoApproveService - authority trust boundary, real engine (#893
     expect(result.decision).not.toBe('approve');
   }, 60000);
 });
+
+/**
+ * Fixture LLM that ALWAYS returns `deny`. The mirror of
+ * `startRecordingApproveServer`: it makes the deny floor (#953) the only thing
+ * that can produce any verdict other than `deny`, so a test asserting
+ * `escalate` is asserting that `evaluate()` actually applies the guard.
+ */
+function startDenyServer(): { url: string; stop: () => void } {
+  const server = Bun.serve({
+    port: 0,
+    fetch: () =>
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: '{"decision":"deny","reasoning":"destructive, blocking it"}',
+              },
+            },
+          ],
+          model: 'test-model',
+        }),
+        { headers: { 'Content-Type': 'application/json' } },
+      ),
+  });
+  return { url: `http://localhost:${server.port}/v1`, stop: () => server.stop(true) };
+}
+
+describe('AutoApproveService - deny floor (#953)', () => {
+  // These construct the SERVICE, not the pure function. `deny-floor.test.ts`
+  // already pins `enforceDenyFloor` itself; what it cannot see is whether
+  // `evaluate()` calls it. Without this block, deleting the call site leaves
+  // the whole suite green -- found in review of this PR, and exactly the
+  // ADR 0014 failure shape (a test named for a component that never
+  // constructs it).
+
+  test('non-catastrophic deny is escalated by evaluate(), not returned as deny', async () => {
+    const server = startDenyServer();
+    try {
+      const svc = new AutoApproveService(makeAuthorityTestConfig(server.url), logFn);
+      const result = await svc.evaluate('Bash', { command: 'rm -rf ./build' });
+      // The fixture ALWAYS says deny -- if this is 'deny', evaluate() is not
+      // applying the floor.
+      expect(result.decision).toBe('escalate');
+      expect(result.reasoning).toContain('Deny floor');
+      // The model's own words must survive, so the escalation card is not
+      // stripped of the reason the model objected.
+      expect(result.reasoning).toContain('destructive, blocking it');
+      // #628: an escalate must carry a lock-screen summary.
+      expect(result.summary).toBeTruthy();
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('catastrophic deny is left standing by evaluate()', async () => {
+    const server = startDenyServer();
+    try {
+      const svc = new AutoApproveService(makeAuthorityTestConfig(server.url), logFn);
+      const result = await svc.evaluate('Bash', { command: 'sudo rm -rf /etc/hosts' });
+      expect(result.decision).toBe('deny');
+      expect(result.reasoning).not.toContain('Deny floor');
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('the floor applies on the escalate_model second-opinion path too', async () => {
+    // #522's second opinion re-enters this same `evaluate()` via
+    // `modelOverride`, so it must inherit the guard rather than route around
+    // it. Passing a modelOverride is what the gate does for that call.
+    const server = startDenyServer();
+    try {
+      const svc = new AutoApproveService(makeAuthorityTestConfig(server.url), logFn);
+      const result = await svc.evaluate(
+        'Bash',
+        { command: 'git push --force origin main' },
+        undefined,
+        undefined,
+        'second-opinion-model',
+      );
+      expect(result.decision).toBe('escalate');
+      expect(result.reasoning).toContain('Deny floor');
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('a config deny-list match still denies, never reaching the floor', async () => {
+    // The floor must not soften an EXPLICIT user rule. Config deny matches
+    // short-circuit before the LLM, so they should be untouched.
+    const server = startDenyServer();
+    try {
+      const svc = new AutoApproveService(
+        makeAuthorityTestConfig(server.url, { deny: ['npm publish'] }),
+        logFn,
+      );
+      const result = await svc.evaluate('Bash', { command: 'npm publish --access public' });
+      expect(result.decision).toBe('deny');
+      expect(result.reasoning).toContain('deny-matched pattern');
+    } finally {
+      server.stop();
+    }
+  });
+});

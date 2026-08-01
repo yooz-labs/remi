@@ -101,6 +101,36 @@ All notable changes to Remi are documented here.
   newly-registered events as unregistered.
 
 ### Fixed
+- **An auto-approve `deny` that matches no DENY FLOOR pattern is now escalated
+  to you instead of silently blocking the command** (#953). `prompt-builder.ts`
+  has always said "DENY IS RARE: deny ONLY operations in the DENY FLOOR... For
+  anything else you would not approve, ESCALATE, never deny. Escalating lets
+  the user answer; denying blocks them" — but nothing enforced it. The only
+  code-level guard in the module, `enforceAuthorityBoundary`, moves `approve ->
+  escalate` and explicitly never touches `deny`, and the config `deny` list
+  defaults to empty, so the model's verdict was taken at face value. That
+  mattered because a deny is invisible: `AutoApproveGate` returns `'deny'` to
+  the hook and pushes no question card, so you were never asked and never
+  learned the operation had been attempted. Measured against a live engine with
+  the shipped 4B model on 16 cases drawn from the prompt's own ESCALATE list,
+  **10 of 12 escalate-expected operations returned `deny`** — `rm -rf ./build`,
+  `git push --force origin main`, `DROP TABLE`, `ssh`, `curl -X DELETE`,
+  `find -delete` — while all four controls were correct, so this was the
+  escalate/deny boundary specifically rather than a broken prompt or model. The
+  model was not confused about the rule: on `rm -rf ./build` it reasoned "while
+  not in the strict DENY FLOOR" and denied anyway. A new
+  `auto-approve/deny-floor.ts` now owns `CATASTROPHIC_PATTERNS` (moved from
+  `authority.ts`, which re-exports the matcher) plus `enforceDenyFloor`, which
+  mirrors the existing guard's shape — it runs after the model decides, is
+  blind to its reasoning, and only ever moves `deny -> escalate` when the
+  operation matches no catastrophic pattern. It never touches `approve` and
+  never produces a `deny`. Config `deny`/`deny_groups` matches are unaffected:
+  they short-circuit before the LLM call, so this applies to model-produced
+  denies only. Note the list is now asymmetric to widen — an added entry makes
+  `enforceAuthorityBoundary` stricter but `enforceDenyFloor` looser — and that
+  the exfiltration bullet is deliberately absent from it, so a model-denied
+  exfiltration attempt now escalates rather than denies. Same root cause as
+  #954: routing rules stated only in the prompt are not enforced.
 - **A full teardown (`SessionEnd`, `remi unstick`) now resolves every
   still-open escalation instead of silently dropping its bookkeeping**
   (#948). `AutoApproveGate.cancelStale`'s mainOnly `Stop` sweep already
