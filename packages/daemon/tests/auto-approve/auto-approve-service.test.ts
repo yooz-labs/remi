@@ -1748,3 +1748,186 @@ describe('AutoApproveService - deny floor (#953)', () => {
     }
   });
 });
+
+/**
+ * Fixture LLM whose verdict depends on whether the CONVERSATION CONTEXT block
+ * is present — which is precisely the behavior #954 exists to detect, and the
+ * behavior the live 4B model actually exhibits (`deny` with no authority,
+ * `approve` with it, 5 runs each).
+ *
+ * Real HTTP server, real prompt, real parse. The only thing standing in for
+ * the model is a rule that reproduces its measured bias deterministically.
+ */
+const AUTHORITY_SENTINEL = 'zq-authority-sentinel-954';
+
+function startAuthoritySwayedServer(): { url: string; calls: () => number; stop: () => void } {
+  let calls = 0;
+  const server = Bun.serve({
+    port: 0,
+    fetch: async (req) => {
+      calls++;
+      const body = (await req.json()) as { messages?: Array<{ content: string }> };
+      const system = body.messages?.[0]?.content ?? '';
+      // Keyed on the AUTHORITY TEXT itself, not on the words "CONVERSATION
+      // CONTEXT" -- the prompt HEADER names that section in its decision-order
+      // list whether or not the block is present, so matching on it made the
+      // fixture approve unconditionally and two tests fail for the wrong
+      // reason. The sentinel appears only inside a real authority block.
+      const swayed = system.includes(AUTHORITY_SENTINEL);
+      const decision = swayed ? 'approve' : 'deny';
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: `{"decision":"${decision}","reasoning":"${swayed ? 'the user asked for this in conversation' : 'destructive and irreversible'}"}`,
+              },
+            },
+          ],
+          model: 'test-model',
+        }),
+        { headers: { 'Content-Type': 'application/json' } },
+      );
+    },
+  });
+  return {
+    url: `http://localhost:${server.port}/v1`,
+    calls: () => calls,
+    stop: () => server.stop(true),
+  };
+}
+
+describe('AutoApproveService - authority counterfactual (#954)', () => {
+  test('an approve that only happens WITH authority is escalated', async () => {
+    const server = startAuthoritySwayedServer();
+    try {
+      const svc = new AutoApproveService(makeAuthorityTestConfig(server.url), logFn);
+      const result = await svc.evaluate(
+        'Bash',
+        { command: 'rm -rf ./build' },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        `please clean out the build directory, it is stale (${AUTHORITY_SENTINEL})`,
+      );
+      // Without the counterfactual this is 'approve' -- the fixture approves
+      // whenever the authority block is present, exactly as the real model did.
+      expect(result.decision).toBe('escalate');
+      expect(result.reasoning).toContain('Authority counterfactual');
+      // Two calls: the real evaluation, then the authority-free re-ask.
+      expect(server.calls()).toBe(2);
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('no second call when the operation is ordinary', async () => {
+    // The latency guarantee. A second LLM call on every authority-present
+    // approve would double the cost of the common path.
+    const server = startAuthoritySwayedServer();
+    try {
+      const svc = new AutoApproveService(makeAuthorityTestConfig(server.url), logFn);
+      await svc.evaluate(
+        'Bash',
+        { command: 'git status' },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        `what is the repo state? (${AUTHORITY_SENTINEL})`,
+      );
+      expect(server.calls()).toBe(1);
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('no second call without an authority block', async () => {
+    const server = startAuthoritySwayedServer();
+    try {
+      const svc = new AutoApproveService(makeAuthorityTestConfig(server.url), logFn);
+      const result = await svc.evaluate('Bash', { command: 'rm -rf ./build' });
+      // No authority -> the fixture denies -> #953's floor turns that into an
+      // escalate, and the counterfactual never runs.
+      expect(result.decision).toBe('escalate');
+      expect(server.calls()).toBe(1);
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('an approve that survives WITHOUT authority stands', async () => {
+    // The false-positive boundary: authority present, operation risky, but
+    // the model approves either way. Authority did not decide, so the verdict
+    // is left alone -- otherwise the check would escalate legitimate work a
+    // user's `instructions` deliberately approved.
+    const alwaysApprove = startRecordingApproveServer();
+    try {
+      const svc = new AutoApproveService(makeAuthorityTestConfig(alwaysApprove.url), logFn);
+      const result = await svc.evaluate(
+        'Bash',
+        { command: 'git push origin feature/x' },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        'push the branch when tests pass',
+      );
+      expect(result.decision).toBe('approve');
+    } finally {
+      alwaysApprove.stop();
+    }
+  });
+
+  test('a failing counterfactual escalates rather than trusting the approve', async () => {
+    // A safety check that cannot run must not leave the thing it was checking
+    // in place. Same direction every other failure in this module takes.
+    const server = Bun.serve({
+      port: 0,
+      fetch: (() => {
+        let n = 0;
+        return () => {
+          n++;
+          if (n === 1) {
+            return new Response(
+              JSON.stringify({
+                choices: [{ message: { content: '{"decision":"approve","reasoning":"ok"}' } }],
+                model: 'test-model',
+              }),
+              { headers: { 'Content-Type': 'application/json' } },
+            );
+          }
+          return new Response('upstream exploded', { status: 500 });
+        };
+      })(),
+    });
+    try {
+      const svc = new AutoApproveService(
+        makeAuthorityTestConfig(`http://localhost:${server.port}/v1`),
+        logFn,
+      );
+      const result = await svc.evaluate(
+        'Bash',
+        { command: 'rm -rf ./build' },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        'clean the build dir',
+      );
+      expect(result.decision).toBe('escalate');
+      expect(result.reasoning).toContain('could not be evaluated');
+    } finally {
+      server.stop(true);
+    }
+  });
+});
