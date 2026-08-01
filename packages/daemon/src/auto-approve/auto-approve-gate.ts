@@ -400,7 +400,17 @@ export interface AutoApproveGateDeps {
    *  -- the terminal cue above still fires either way. */
   onHandled?: (ctx: { isSubagent: boolean }) => void;
   /** Called when the eval ended without a verdict (cancelled — the user already
-   *  advanced past the prompt). Drives the terminal cue back to idle. #513. */
+   *  advanced past the prompt). Drives the terminal cue back to idle. #513.
+   *
+   *  Deliberately carries NO `ctx.isSubagent`, unlike `onEvalStart` /
+   *  `onEscalate` / `onHandled`: this cue is reachable only from MAIN-context
+   *  evals. `resolvePermission` returns early for an `agent_id` event before any
+   *  eval (#807), and the post-render subagent path
+   *  (`arbitrateParkedRender`) routes a `cancelled` verdict to
+   *  `escalateRenderedParked()` — i.e. to `onEscalate`, not here. A ctx
+   *  parameter would therefore be `false` at every call site, and a
+   *  subagent guard built on it would be untestable dead code (#970, asserted
+   *  by "a cancelled parked render escalates" in the gate tests). */
   onCancelled?: () => void;
   /**
    * Called when a HELD question resolved WITHOUT the user answering it through

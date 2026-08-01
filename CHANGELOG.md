@@ -4,6 +4,32 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- **The auto-approve pill no longer sticks on "evaluating"** (#970). A cancelled
+  eval was the one gate end path that told clients nothing: `onEvalStart` moves
+  the pill to `evaluating`, `onHandled` moves it to `approved`, `onEscalate`
+  relies on the question path's `waiting` — and `onCancelled` broadcast nothing
+  at all. It self-healed only when a later `Stop`/`SessionEnd` `idle` or a
+  `PreToolUse` happened to follow, and none arrives when the eval is cancelled
+  at end-of-turn or during a disconnect, which is exactly when it was seen stuck
+  in the field.
+
+  The terminal statusline never had this bug: its `inFlight` count is decremented
+  by every end path, which is why `status-writer.ts` can claim the cue "can never
+  get stuck". The client cue had no equivalent property, and now does — asserted
+  by a test enumerated over the verdicts, so a future end path that forgets the
+  terminal half fails there instead of silently joining the hole.
+
+  The correction broadcasts the session's CURRENT status from the registry rather
+  than a chosen constant. Nothing was approved, denied, or escalated, so any fixed
+  value would be a guess, and a wrong status is the same class of bug as a stuck one.
+
+  Also pins the routing fact the fix rests on: a subagent eval never shows the pill
+  and cannot reach this cue, because `arbitrateParkedRender` sends a `cancelled`
+  verdict to `escalateRenderedParked()` rather than to `onCancelled`. An earlier
+  draft added an `isSubagent` guard here; it was dead code (always `false`), and
+  the test written for it passed with the guard deleted. Both were dropped in
+  favor of asserting the real routing.
 ### Added
 - **Separate in-app toggles for question and turn-complete notifications**
   (#968). Settings now has "Question alerts" and "Turn complete" instead of one
