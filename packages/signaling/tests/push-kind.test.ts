@@ -73,13 +73,28 @@ describe('/push kind passthrough (#968)', () => {
     globalThis.fetch = realFetch;
   });
 
+  /**
+   * The worker's push rate limiters are MODULE-level, so they are shared by
+   * every signaling test file running in the same bun process. Each file
+   * therefore owns a distinct IP block, and this one owns `192.0.2.x`:
+   *
+   *   203.0.113.x  answer-relay, push-dismiss, push-dyn-category
+   *   203.0.114.x  push-budget (authenticated buckets)
+   *   198.51.100.x push-budget (its unauthenticated per-IP exhaustion test)
+   *   192.0.2.x    here
+   *
+   * Sharing `198.51.100.x` with push-budget is what made this file pass alone
+   * and 429 in CI: that file deliberately blows through the per-IP budget, so
+   * whichever ran second inherited an exhausted bucket. Pick a free block for
+   * any new file rather than reusing one of these.
+   */
   function pushRequest(body: Record<string, unknown>): Request {
     ipCounter += 1;
     return new Request('https://signaling.example/push', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'CF-Connecting-IP': `198.51.100.${100 + ipCounter}`,
+        'CF-Connecting-IP': `192.0.2.${100 + ipCounter}`,
       },
       body: JSON.stringify(body),
     });
