@@ -1068,6 +1068,27 @@ turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_sec
 # allow = ["git status", "bun test", "bunx biome", "Read", "Glob", "Grep"]
 # deny = ["rm -rf /", "sudo ", "curl | sh", "| bash"]
 #
+# Permission groups: curated, deterministic sets approved with no LLM call.
+# Read groups are on by default; the write-side groups are opt-in.
+#
+#   read-only   Read/Glob/Grep/NotebookRead + cat, grep, ls, jq, ...
+#   vcs-read    git status/log/diff/show, gh pr view/list, ...
+#   build-test  bun test, tsc --noEmit, biome check, pytest, ...
+#   fs-write    Write/Edit/NotebookEdit + mkdir, touch, tee, cp, mv
+#   vcs-write   git add/commit/checkout/switch/merge, stash push, worktree add
+#   net-read    curl/wget/gh api, GET-shaped only
+#
+# The write groups refuse sensitive destinations regardless of prefix: system
+# trees (/etc, /usr, /System, ...), credentials (~/.ssh, ~/.aws, .env, id_rsa),
+# .git internals (a hook write is code execution on the next commit), and
+# ~/.remi + ~/.claude -- config that governs this very mechanism, which an
+# auto-approved write must never be able to widen.
+#
+# rm, package installs, git push, and any --force are in NO group. Deletion,
+# remote mutation, and arbitrary install scripts stay escalations.
+# approve_groups = ["read-only", "vcs-read", "build-test"]
+# deny_groups = []
+#
 # Natural-language guidance appended to the LLM system prompt:
 # instructions = """
 # Approve all bun test and biome runs.
