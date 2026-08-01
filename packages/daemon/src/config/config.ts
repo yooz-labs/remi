@@ -524,9 +524,26 @@ function applyLevel(
   const resolved = resolveApproveGroups(level, explicitGroups);
 
   if (resolved.source === 'explicit' && rawLevel !== undefined) {
-    console.error(
-      `[AutoApprove] Both level = "${level}" and an explicit approve_groups are set in ${configPath}; approve_groups wins. Remove it to use the level preset.`,
+    console.warn(
+      `[AutoApprove] Warning: both level = "${level}" and an explicit approve_groups are set in ${configPath}; approve_groups wins. Remove it to use the level preset.`,
     );
+  }
+
+  // Validate the RESOLVED list, not just the user's (#964 review). The
+  // unknown-group warning in `validateAutoApprove` already ran, against the
+  // pre-preset value — so a typo in `LEVEL_GROUPS` (`vcs-writ`) would reach
+  // `matchGroups`, which ignores unknown names, and the level would silently
+  // approve nothing while appearing to work. A user's own typo warns; the
+  // shipped preset's would not have. `levels.test.ts` covers this, but a test
+  // is not the runtime, and this epic has already produced three defects in
+  // code written to fix the previous one.
+  if (resolved.source === 'level') {
+    const unknown = resolved.groups.filter((g) => !isKnownGroup(g));
+    if (unknown.length > 0) {
+      throw new Error(
+        `Internal error: auto_approve.level "${level}" names unknown permission group(s) ${unknown.map((g) => `"${g}"`).join(', ')}. Known groups: ${knownGroupNames().join(', ')}. This is a bug in the shipped level presets, not in ${configPath}.`,
+      );
+    }
   }
 
   return {

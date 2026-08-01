@@ -126,3 +126,25 @@ describe('resolveApproveGroups', () => {
     expect(resolveApproveGroups('trusted', undefined).level).toBe('trusted');
   });
 });
+
+describe('#964 review: a preset typo fails loudly, not silently', () => {
+  // `matchGroups` IGNORES unknown group names, so a typo in `LEVEL_GROUPS`
+  // would approve nothing while the level appeared to work -- and the
+  // unknown-group warning in `validateAutoApprove` cannot catch it, because
+  // that runs against the user's config before the preset replaces it. A
+  // user's own typo warns; the shipped preset's would not have.
+  //
+  // The runtime guard lives in `applyLevel`. This asserts the property it
+  // protects, so the two cannot drift: every name a level ships must be a
+  // group that exists.
+  test('no shipped level names an unknown group', () => {
+    const known = new Set(knownGroupNames());
+    const offenders: string[] = [];
+    for (const level of AUTO_APPROVE_LEVELS) {
+      for (const group of groupsForLevel(level)) {
+        if (!known.has(group)) offenders.push(`${level}:${group}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+});
