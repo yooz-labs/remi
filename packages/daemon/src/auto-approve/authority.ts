@@ -60,7 +60,7 @@
 
 import type { ContentBlock, UserEntry } from '../transcript/types.ts';
 import { isWrappedNonHumanText } from '../transcript/user-entry-provenance.ts';
-import { matchSubstringPattern } from './pattern-matcher.ts';
+import { matchesCatastrophicPattern as matchCatastrophic } from './deny-floor.ts';
 
 /** Hard caps so a very long session's authority block cannot balloon the
  *  prompt (latency, and a bigger haystack for the model to get lost in).
@@ -210,35 +210,16 @@ export function resolveAuthority(
 }
 
 /**
- * Catastrophic-operation patterns, mirroring the DENY FLOOR bullets in
- * `prompt-builder.ts`'s SYSTEM_PROMPT_BODY. Independent of user config: the
- * `deny`/`deny_groups` lists default to EMPTY (`config.ts`), so without this,
- * "the DENY FLOOR" is enforced ONLY by asking the LLM nicely — exactly the
- * mechanism a poisoned authority block could try to talk around. This list
- * covers only the crisply substring-matchable subset (the exfiltration bullet
- * needs real judgment and is deliberately NOT here) — a second, narrower
- * denylist, same caveat as `NON_HUMAN_WRAPPER_PREFIXES` above: it is defense
- * in depth on top of the prompt instruction, not a replacement for it.
+ * `CATASTROPHIC_PATTERNS` and `matchesCatastrophicPattern` used to be defined
+ * here; moved to `deny-floor.ts` (#953) because the DENY FLOOR is not an
+ * authority concern and TWO guards now share the list — one for each direction
+ * across it (`enforceAuthorityBoundary` below stops authority talking the model
+ * INTO a catastrophic approve; `enforceDenyFloor` stops the model denying
+ * things the floor never covered). Same reasoning as #936's move of
+ * `isWrappedNonHumanText`. Re-exported here so existing consumers of
+ * `auto-approve/index.ts` and this module are unaffected.
  */
-const CATASTROPHIC_PATTERNS: readonly string[] = [
-  'rm -rf /',
-  'sudo rm',
-  'rm -rf /etc',
-  'rm -rf /usr',
-  'rm -rf /System',
-  '| sh',
-  '| bash',
-  'chmod 777',
-];
-
-/** True if this tool call matches a hardcoded catastrophic pattern. Exported
- *  for tests; `enforceAuthorityBoundary` is the real call site. */
-export function matchesCatastrophicPattern(
-  toolName: string,
-  toolInput: Record<string, unknown>,
-): string | null {
-  return matchSubstringPattern(toolName, toolInput, CATASTROPHIC_PATTERNS);
-}
+export { matchesCatastrophicPattern } from './deny-floor.ts';
 
 export interface AuthorityBoundaryResult {
   readonly decision: 'approve' | 'deny' | 'escalate';
@@ -272,7 +253,7 @@ export function enforceAuthorityBoundary(
   if (!authorityPresent || decision !== 'approve') {
     return { decision, overridden: false };
   }
-  const matched = matchesCatastrophicPattern(toolName, toolInput);
+  const matched = matchCatastrophic(toolName, toolInput);
   if (matched === null) {
     return { decision, overridden: false };
   }
