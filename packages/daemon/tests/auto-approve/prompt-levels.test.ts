@@ -157,6 +157,40 @@ describe('what each level changes', () => {
     expect(systemPrompt('trusted')).toContain('LOCAL git mutation');
   });
 
+  test('trusted names every local git op it approves, by name', () => {
+    // `git switch`, `git worktree add` and `git stash push` are approved at
+    // `trusted` but appear NOWHERE in the pre-#966 prompt, so nothing else in
+    // this file would notice if one were dropped (#967 review).
+    const approve = systemPrompt('trusted').slice(
+      systemPrompt('trusted').indexOf('APPROVE these operations'),
+      systemPrompt('trusted').indexOf('ESCALATE these operations'),
+    );
+    for (const op of [
+      'git add',
+      'git commit',
+      'git checkout',
+      'git switch',
+      'git merge',
+      'git stash push',
+      'git worktree add',
+    ]) {
+      expect(approve, `trusted should approve ${op}`).toContain(op);
+    }
+  });
+
+  test('git rebase escalates even at trusted', () => {
+    // Deliberately absent from the approve list: a rebase rewrites history and
+    // is not in the same reversible class as add/commit/checkout. Asserted
+    // because it is the kind of omission that looks like an oversight and
+    // would be "fixed" by someone tidying the list.
+    const trusted = systemPrompt('trusted');
+    const escalate = trusted.slice(
+      trusted.indexOf('ESCALATE these operations'),
+      trusted.indexOf(FLOOR_HEADING),
+    );
+    expect(escalate).toContain('git rebase');
+  });
+
   test('trusted names what it does NOT cover, inline', () => {
     // The approve entry has to carry its own exclusions, or "approve local git
     // mutation" reads as covering push and force.
