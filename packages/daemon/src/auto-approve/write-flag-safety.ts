@@ -71,6 +71,40 @@ interface FlagPolicy {
 
 const FLAG_POLICIES: readonly FlagPolicy[] = [
   {
+    // mkdir/touch/tee had NO policy until the final verification pass on #959,
+    // so every flag on them went unchecked and `mkdir -m 777 shared` was
+    // auto-approved at 0ms. Not a regression from the `net-read` cut -- they
+    // never had one -- which is exactly why it survived two review rounds:
+    // nothing was looking at the prefixes nobody had thought were dangerous.
+    //
+    // `-m`/`--mode` is the reason this entry exists: a world-writable
+    // directory lets any local user plant files in it, including into a tree
+    // the other write prefixes will happily write to afterwards.
+    // SPLIT per command, not one family for all three. A combined entry was
+    // written first and its own coverage test caught the reason it cannot
+    // work: `-m` means MODE for mkdir and MODIFY-TIME for touch, so a shared
+    // allowlist has to either permit `mkdir -m 777` or refuse `touch -m`.
+    // The same overloaded-short-flag problem `vcs-read` documents for
+    // `git branch`/`tag`/`remote`.
+    family: /^mkdir\b/,
+    safeShortFlags: 'pv',
+    dangerousLongFlags: ['mode', 'context'],
+  },
+  {
+    // touch: every flag selects WHICH timestamp or how to resolve the path.
+    // `-r` takes a reference PATH, which `sensitive-paths.ts` inspects
+    // independently of this.
+    family: /^touch\b/,
+    safeShortFlags: 'acmrdthf',
+    dangerousLongFlags: ['no-create'],
+  },
+  {
+    // tee: -a append, -i ignore interrupts, -p diagnose pipe errors.
+    family: /^tee\b/,
+    safeShortFlags: 'aip',
+    dangerousLongFlags: ['output-error'],
+  },
+  {
     // cp/mv: -f forces past a permission error. NOTE the real clobber
     // mechanism is the POSIX default, not -f -- that is handled by the
     // destination guard in `sensitive-paths.ts`, not here.
@@ -128,9 +162,17 @@ function longFlagMatches(flag: string, dangerous: string): boolean {
 /**
  * True if a write-side segment carries a flag its family does not permit.
  *
- * Returns false for a segment matching no known family — the caller's prefix
- * curation is what decides whether an unknown command is covered at all, and
- * every write-group prefix has a policy here.
+ * Returns false for a segment matching no known family. That is safe only
+ * because every prefix in a write group has a policy here — a curated write
+ * prefix with no matching family would have its flags waved through entirely.
+ *
+ * That invariant was FALSE until the final pass on #959 (`mkdir`, `touch` and
+ * `tee` had no policy, so `mkdir -m 777` was auto-approved), and the comment
+ * asserted it anyway. It is now asserted by a test that walks
+ * `BUILTIN_GROUPS` rather than by this sentence — see
+ * `permission-groups.test.ts`, "every write prefix is covered by a flag
+ * policy". Adding a prefix to a write group without adding a policy turns
+ * that test red.
  */
 export function hasUnsafeWriteFlag(segment: string): boolean {
   const policy = FLAG_POLICIES.find((p) => p.family.test(segment));

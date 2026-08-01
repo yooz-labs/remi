@@ -621,3 +621,40 @@ describe('#960 second review: quote and backslash smuggling', () => {
     expect(bash('mkdir -p "my dir"', WRITE_GROUPS)).toBe('fs-write:mkdir');
   });
 });
+
+describe('#959 final pass: every write prefix is covered by a flag policy', () => {
+  // `hasUnsafeWriteFlag` returns false for a segment matching no family, so a
+  // curated write prefix with no policy has its flags waved through entirely.
+  // That was true of `mkdir`/`touch`/`tee` through two review rounds while the
+  // module doc asserted the opposite -- the same "a guarantee everyone assumes
+  // is enforced, that nothing enforces" shape as #927 and #946.
+  //
+  // Walking BUILTIN_GROUPS means this cannot go stale: adding a prefix to a
+  // write group without adding a policy turns it red.
+  const WRITE_GROUP_NAMES = ['fs-write', 'vcs-write'];
+
+  for (const groupName of WRITE_GROUP_NAMES) {
+    const group = BUILTIN_GROUPS[groupName];
+    for (const prefix of group?.commands ?? []) {
+      test(`${groupName}: "${prefix}" has a flag policy`, () => {
+        // A knowingly-unclassified flag must be refused. If no policy matches
+        // the prefix, `hasUnsafeWriteFlag` returns false and this fails.
+        expect(bash(`${prefix} -Zqx target`, WRITE_GROUP_NAMES)).toBeNull();
+      });
+    }
+  }
+
+  test('mkdir --mode / -m is refused', () => {
+    // The concrete case the missing policy allowed: a world-writable
+    // directory any local user can plant files into.
+    expect(bash('mkdir -m 777 shared', WRITE_GROUPS)).toBeNull();
+    expect(bash('mkdir -p -m 0777 shared', WRITE_GROUPS)).toBeNull();
+    expect(bash('mkdir --mode=0777 shared', WRITE_GROUPS)).toBeNull();
+  });
+
+  test('ordinary mkdir / touch / tee still work', () => {
+    expect(bash('mkdir -p packages/web/dist', WRITE_GROUPS)).toBe('fs-write:mkdir');
+    expect(bash('touch src/new.ts', WRITE_GROUPS)).toBe('fs-write:touch');
+    expect(bash('tee -a build.log', WRITE_GROUPS)).toBe('fs-write:tee');
+  });
+});
