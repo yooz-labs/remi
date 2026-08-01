@@ -42,6 +42,11 @@ import * as fs from 'node:fs';
 
 import type { DeviceTokenEntry } from '../cli/handlers/trivial-events.ts';
 import { log, logError } from '../cli/logger.ts';
+import {
+  DEFAULT_PUSH_PREFERENCES,
+  type ResolvedPushPreferences,
+  sanitizePushPreferences,
+} from './push-preferences.ts';
 
 /** A tombstone recording that `token` was explicitly removed at `removedAt`
  *  (epoch ms). Persisted so the removal is visible to every daemon sharing
@@ -86,6 +91,20 @@ function isValidEntry(e: unknown): e is DeviceTokenEntry {
     typeof (e as DeviceTokenEntry).platform === 'string' &&
     typeof (e as DeviceTokenEntry).connectionId === 'string'
   );
+}
+
+/**
+ * Resolve a loaded entry's `pushPrefs` to definite booleans (#968), leaving an
+ * entry that has none untouched (absent still means "wants everything", so
+ * writing defaults in would only make old files churn on their next persist).
+ *
+ * The file is local, but it is also shared between daemons and hand-editable,
+ * and a half-written or edited-in `{questions: "no"}` must not decide whether
+ * a notification is sent. `sanitizePushPreferences` fails toward delivering.
+ */
+function normalizePrefs(entry: DeviceTokenEntry): DeviceTokenEntry {
+  if (entry.pushPrefs === undefined) return entry;
+  return { ...entry, pushPrefs: sanitizePushPreferences(entry.pushPrefs) };
 }
 
 function isValidTombstone(t: unknown): t is StoredTombstone {
@@ -151,7 +170,12 @@ export class DeviceTokenStore {
    * connection previously registered (APNS token rotation) — tombstoning the
    * rotated-out token so siblings drop it too. Persists.
    */
-  register(token: string, platform: string, connectionId: string): void {
+  register(
+    token: string,
+    platform: string,
+    connectionId: string,
+    pushPrefs: ResolvedPushPreferences = DEFAULT_PUSH_PREFERENCES,
+  ): void {
     for (const [existingToken, entry] of this.tokens) {
       if (existingToken !== token && entry.connectionId === connectionId) {
         this.tokens.delete(existingToken);
@@ -161,7 +185,16 @@ export class DeviceTokenStore {
         );
       }
     }
-    this.tokens.set(token, { token, platform, registeredAt: monotonicNow(), connectionId });
+    // Last registration wins on `pushPrefs` (#968), including when it widens
+    // what the device wants. Registration is how the app pushes a toggle
+    // change, so an older stored value must never survive a newer one.
+    this.tokens.set(token, {
+      token,
+      platform,
+      registeredAt: monotonicNow(),
+      connectionId,
+      pushPrefs,
+    });
     // A fresh registration is always newer than any prior tombstone for it.
     this.tombstones.delete(token);
     this.persist();
@@ -267,7 +300,7 @@ export class DeviceTokenStore {
       const tokenList = (parsed as { tokens?: unknown })?.tokens;
       const tombstoneList = (parsed as { tombstones?: unknown })?.tombstones;
       return {
-        tokens: Array.isArray(tokenList) ? tokenList.filter(isValidEntry) : [],
+        tokens: Array.isArray(tokenList) ? tokenList.filter(isValidEntry).map(normalizePrefs) : [],
         // Absent on an old-format file (pre-#690) -> no tombstones, loads fine.
         tombstones: Array.isArray(tombstoneList) ? tombstoneList.filter(isValidTombstone) : [],
       };

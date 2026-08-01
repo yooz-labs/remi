@@ -182,6 +182,7 @@ import type { HookInput, PermissionRequestHookInput, StopHookInput } from './hoo
 import { DeviceTokenStore } from './notifications/device-token-store.ts';
 import type { NotificationDispatcher } from './notifications/notification-dispatcher.ts';
 import { sendPushTrigger } from './notifications/push-client.ts';
+import { tokensWanting } from './notifications/push-preferences.ts';
 import {
   TurnTimer,
   buildTurnCompleteText,
@@ -1264,6 +1265,7 @@ function onSubagentPassthrough(input: PermissionRequestHookInput): void {
       title,
       body,
       ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
+      kind: 'subagent_alert',
     }).catch((err) => {
       logError('[SubagentAlert] push failed:', err);
     });
@@ -1329,6 +1331,14 @@ function onTurnStop(input: StopHookInput): void {
     turnTimer.clear(input.prompt_id);
   }
 
+  // Devices that want turn-complete pushes (#968). Resolved BEFORE the gate so
+  // `hasDeviceTokens` means "someone will actually receive this", not merely
+  // "a token exists": a machine whose every device muted turn-complete stops at
+  // the gate instead of building text and fanning out to nobody. The
+  // machine-wide `notifications.on_turn_complete` above still wins over any
+  // per-device preference — it is checked first, inside the gate.
+  const wanting = tokensWanting(deviceTokens.values(), 'turn_complete');
+
   if (
     !shouldNotifyTurnComplete({
       onTurnComplete: remiConfig.notifications.on_turn_complete,
@@ -1336,7 +1346,7 @@ function onTurnStop(input: StopHookInput): void {
       elapsedMs,
       minSeconds: remiConfig.notifications.turn_complete_min_seconds,
       lastAssistantMessage: input.last_assistant_message,
-      hasDeviceTokens: deviceTokens.size > 0,
+      hasDeviceTokens: wanting.length > 0,
     })
   ) {
     return;
@@ -1350,13 +1360,16 @@ function onTurnStop(input: StopHookInput): void {
   log(`[TurnComplete] ${title}`);
 
   const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
-  for (const dt of deviceTokens.values()) {
+  for (const dt of wanting) {
     // Dismiss-only, same convention as onSubagentPassthrough above: no
-    // `category` / `questionId`, it answers nothing.
+    // `category` / `questionId`, it answers nothing. `kind` is what makes it
+    // distinguishable from a subagent alert, which is otherwise identical on
+    // the wire (#968).
     void sendPushTrigger(signalingUrl, dt.token, {
       title,
       body,
       ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
+      kind: 'turn_complete',
     }).catch((err) => {
       logError('[TurnComplete] push failed:', err);
     });

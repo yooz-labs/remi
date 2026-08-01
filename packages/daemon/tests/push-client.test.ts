@@ -120,3 +120,52 @@ describe('sendPushTrigger', () => {
     expect(lastRequest['body']).toBeTruthy();
   });
 });
+
+describe('sendPushTrigger push kind (#968)', () => {
+  let server: ReturnType<typeof Bun.serve>;
+  let lastBody: Record<string, unknown> | null = null;
+  let serverUrl: string;
+
+  beforeEach(() => {
+    lastBody = null;
+    server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        lastBody = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+        return new Response(JSON.stringify({ success: true }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      },
+    });
+    serverUrl = `http://localhost:${server.port}`;
+  });
+
+  afterEach(() => {
+    server.stop();
+  });
+
+  test('carries kind so a turn-complete push is distinguishable from a subagent alert', async () => {
+    // These two are otherwise byte-identical on the wire ({token, title, body}),
+    // which is exactly why `kind` had to exist before either could be filtered
+    // or labelled.
+    await sendPushTrigger(serverUrl, 'tok', {
+      title: 'proj: turn complete',
+      body: 'done',
+      kind: 'turn_complete',
+    });
+    expect(lastBody?.['kind']).toBe('turn_complete');
+
+    await sendPushTrigger(serverUrl, 'tok', {
+      title: 'Background agent ran rm -rf',
+      body: 'heads up',
+      kind: 'subagent_alert',
+    });
+    expect(lastBody?.['kind']).toBe('subagent_alert');
+  });
+
+  test('omits kind entirely when the caller sends none', async () => {
+    await sendPushTrigger(serverUrl, 'tok', { title: 't', body: 'b' });
+    expect(lastBody).not.toBeNull();
+    expect('kind' in (lastBody as Record<string, unknown>)).toBe(false);
+  });
+});
