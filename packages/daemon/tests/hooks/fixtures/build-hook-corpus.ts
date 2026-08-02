@@ -417,6 +417,46 @@ export function collectCommandLikeValues(record: Record<string, unknown>): strin
 }
 
 /**
+ * Joins a value the way the SHELL joins it before credential scanning
+ * (PR #995 review finding 1). Two distinct multi-line shapes both split a
+ * token across what this file's character-class-based rules see as two
+ * separate, individually-too-short runs -- neither half of
+ * `AIzaSyD9tSrykjUwHmk` + `3POiF5EpBLDXKrmnIA` (19 and 18 chars against
+ * `hasHighEntropySecret`'s 20-char floor) trips anything alone, and no
+ * named rule's character class includes `\` or a raw newline, so the
+ * uncollapsed string lets the whole secret through unmatched:
+ *
+ * 1. **Backslash-newline line continuation** -- `\` immediately followed by
+ *    a newline is an everyday idiom for a long `curl`/`git`/`aws`
+ *    invocation, and the shell removes BOTH characters and joins the two
+ *    lines with nothing in between (no space is inserted). Confirmed
+ *    against this exact repo's own real capture: this is ordinary traffic,
+ *    not a contrived construction.
+ * 2. **A literal (non-backslash) newline preserved inside a double-quoted
+ *    string**, or between the lines of a heredoc body -- the shell does
+ *    NOT strip these; they become part of the argument verbatim. They are
+ *    rarer in practice (an operator would need to have actually embedded a
+ *    raw line break inside a credential value, not just wrapped a long
+ *    line with `\`), but they split a token the identical way, through the
+ *    identical mechanism (a `\n` no character class here matches), so this
+ *    function does not try to tell the two shapes apart.
+ *
+ * The fix is one normalization, not two special cases: for DETECTION
+ * purposes only, every `\r?\n` -- with or without a preceding backslash --
+ * is deleted outright (never replaced with a space), which reproduces case 1
+ * exactly and closes case 2 by the same stroke, including a heredoc body
+ * (which is just several such joins in a row -- there is no heredoc-specific
+ * handling because none is needed once newlines themselves are gone). This
+ * can only make matching MORE likely to fire, never less (ADR 0010's err-
+ * broad-in-the-safe-direction posture, same as every other choice in this
+ * file) -- it never runs on the value actually written to the corpus, only
+ * on the throwaway copy `detectCredential`/`hasHighEntropySecret` scan.
+ */
+function joinForCredentialScan(text: string): string {
+  return text.replace(/\\?\r?\n/g, '');
+}
+
+/**
  * Shannon entropy in bits/char. Used only by `hasHighEntropySecret` below,
  * as one signal among several (length + charset diversity + this), never
  * alone -- see that function's doc for why.
@@ -469,7 +509,7 @@ const HIGH_ENTROPY_MIN_BITS_PER_CHAR = 3.5;
  * prefix/assignment rules below are.
  */
 export function hasHighEntropySecret(text: string): boolean {
-  const candidates = text.match(HIGH_ENTROPY_CANDIDATE_RE) ?? [];
+  const candidates = joinForCredentialScan(text).match(HIGH_ENTROPY_CANDIDATE_RE) ?? [];
   for (const token of candidates) {
     const hasLower = /[a-z]/.test(token);
     const hasUpper = /[A-Z]/.test(token);
@@ -513,12 +553,24 @@ const CREDENTIAL_RULES: readonly CredentialRule[] = [
   { label: 'high-entropy string', test: hasHighEntropySecret },
 ];
 
-/** Returns the label of the first matching credential rule, or null. Order
- *  is the order `CREDENTIAL_RULES` is checked in; only the FIRST match is
- *  reported (a value tripping two rules is still one dropped record). */
+/**
+ * Returns the label of the first matching credential rule, or null. Order
+ * is the order `CREDENTIAL_RULES` is checked in; only the FIRST match is
+ * reported (a value tripping two rules is still one dropped record).
+ *
+ * Normalizes with `joinForCredentialScan` ONCE, up front, so EVERY rule
+ * (not only `hasHighEntropySecret`) sees the joined text -- a named prefix
+ * (`sk-...`) or an assignment (`api_key=...`) can be split by the identical
+ * continuation/embedded-newline mechanism `hasHighEntropySecret`'s own doc
+ * describes, and none of those rules' character classes include `\`/`\n`
+ * either. `hasHighEntropySecret` also normalizes internally (its own doc),
+ * so this is a second, harmless pass over already-joined text for that one
+ * rule -- defense in depth for a caller that reaches it directly.
+ */
 export function detectCredential(text: string): string | null {
+  const joined = joinForCredentialScan(text);
   for (const rule of CREDENTIAL_RULES) {
-    if (rule.test(text)) return rule.label;
+    if (rule.test(joined)) return rule.label;
   }
   return null;
 }
@@ -531,6 +583,20 @@ export function detectCredential(text: string): string | null {
 function fakeIpAddress(): string {
   const n = nextMix() % 254;
   return `203.0.113.${n + 1}`;
+}
+
+/** RFC 3849 (`2001:db8::/32`) -- the IPv6 analogue of the IPv4 choice
+ *  above, ALSO reserved specifically for documentation use. `nextMix()` is a
+ *  32-bit value (up to 8 hex digits); `.slice(0, 4)` keeps the final group a
+ *  SYNTACTICALLY VALID single IPv6 group (max 4 hex digits) rather than an
+ *  8-digit run no real address would ever have -- deliberately distinct
+ *  from what a leaked-plaintext concatenation bug would look like (PR #995
+ *  review finding 2 found exactly that shape once, from a different bug in
+ *  `USER_AT_HOST_RE`; keeping this generator's own output unambiguously
+ *  well-formed means a future regression of that kind is visually obvious
+ *  again, not masked by this function already producing over-long groups). */
+function fakeIpv6Address(): string {
+  return `2001:db8::${nextMix().toString(16).slice(0, 4)}`;
 }
 
 /** category -> (real value -> fake value), separate from `idMaps` above
@@ -551,10 +617,27 @@ function pseudonymizeIdentity(category: string, real: string, generate: () => st
   return fake;
 }
 
-/** `/Users/<name>` or `/home/<name>` -- the macOS/Linux home-directory
- *  shape. Only the name segment is replaced; the rest of the path (and the
- *  `/Users/`/`/home/` prefix itself) is left alone, which is exactly the
- *  "preserve structure" requirement for a path argument. */
+/**
+ * `/Users/<name>` or `/home/<name>` -- the macOS/Linux home-directory
+ * shape. Only the name segment is replaced; the rest of the path (and the
+ * `/Users/`/`/home/` prefix itself) is left alone, which is exactly the
+ * "preserve structure" requirement for a path argument.
+ *
+ * HONEST LIMIT (PR #995 review finding 4, not fixed): a PERCENT-ENCODED
+ * home directory -- `%2FUsers%2Fjdoe%2Fsecret.txt`, the shape a pasted
+ * callback/redirect URL query parameter carries -- leaks the username
+ * whole. `%2F` is not literal `/`, so none of `HOME_DIR_RE`,
+ * `SLUG_HOME_DIR_RE`, or `TILDE_USER_RE` recognize it, and this function
+ * does not URL-decode first. That fix was deliberately NOT attempted here:
+ * blanket-decoding `%2F` before scanning would also decode it inside a
+ * URL PATH SEGMENT where it is not a separator at all (a filename that
+ * itself legitimately contains an encoded slash), which changes what the
+ * corpus's `url` field actually represents rather than just redacting
+ * within it -- a correctness risk judged worse than leaving this real but
+ * lower-likelihood shape undecoded. Same posture as the multi-line-split
+ * credential case in `joinForCredentialScan`'s own doc: a limit stated
+ * plainly, not silently absorbed.
+ */
 const HOME_DIR_RE = /\/(Users|home)\/([A-Za-z0-9._-]+)/g;
 
 /**
@@ -584,21 +667,123 @@ const SLUG_HOME_DIR_RE = /-(Users|home)-([A-Za-z0-9._]+)(?=-)/g;
  *  identity to redact) are left untouched. */
 const TILDE_USER_RE = /~([A-Za-z][A-Za-z0-9._-]*)/g;
 
-/** `local@host` -- covers both an email address and an SSH/git-style
- *  `user@host` remote target with ONE pattern, since they are the same
- *  shape. The host alternation requires either a dotted domain ending in a
- *  2+ letter label (`example.com`, `prod.internal`) or a literal IPv4
- *  dotted-quad -- specifically to avoid matching an npm/bun/pip
- *  `package@1.2.3` version pin, whose "host" is a bare numeric semver with
- *  no letter-ending label and (usually) only 3 numeric parts. */
-const USER_AT_HOST_RE =
-  /\b([A-Za-z0-9._%+-]+)@((?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}|(?:\d{1,3}\.){3}\d{1,3})\b/g;
+/**
+ * IPv6 address shape, as a raw pattern-source FRAGMENT (not a compiled
+ * `RegExp`) shared by every IPv6-matching regex below -- a single source of
+ * truth, so three separate hand-copies cannot drift the way #536-class bugs
+ * happen. Every group is non-capturing (`(?:...)`) specifically so this
+ * fragment can be embedded inside a LARGER pattern (`USER_AT_HOST_RE`)
+ * without shifting that pattern's own capture-group indices.
+ *
+ * A well-established, RFC 4291-shaped pattern covering the full 8-group
+ * form, every length of `::`-compression, and the all-compressed `::`/`::1`
+ * forms. NOT a full validator: it does not reject an out-of-range hex group
+ * (there are none -- 1-4 hex digits is always in range), does not handle a
+ * zone-ID suffix (`%eth0`), and does not specifically recognize an
+ * IPv4-mapped tail (`::ffff:192.0.2.1`) as anything other than an unmatched
+ * trailing fragment. Those are edge cases this capture tool does not need
+ * to be perfect on -- "not a shell parser" (module doc) applies here too.
+ *
+ * Measured to NOT false-positive on: a MAC address (needs an internal `::`,
+ * which a single-colon-separated MAC address never has), an `HH:MM:SS`
+ * timestamp (same reason -- three single-colon-separated groups match no
+ * alternative here), or a `sha256:<hex>` digest reference (one colon, no
+ * `::`, and `sha256`'s letters are not all valid hex digits so the match
+ * cannot even start there).
+ *
+ * TRAP FOR ANY FUTURE EMBEDDING (found the hard way, `USER_AT_HOST_RE`
+ * below): the alternatives are ordered so an EARLIER one can match a
+ * genuine PREFIX of what a LATER one would match on the same input (e.g.
+ * `2001:db8::1` -- the second alternative alone already matches
+ * `2001:db8::`, stopping short of the trailing `1`). A JS regex engine
+ * takes the first alternative that lets the REST of the overall pattern
+ * succeed, not the longest one, so this fragment MUST be followed by
+ * something that only succeeds once the hex/colon run is fully consumed --
+ * a trailing `\b` is NOT enough (`:` before a following hex digit already
+ * satisfies `\b`, non-word to word). Every embedding below either follows
+ * this fragment with `(?![0-9a-fA-F:])` directly, or (`BARE_IPV6_RE`)
+ * wraps it in that same lookaround on both sides. Do not embed this
+ * fragment anywhere new without the identical trailing lookaround.
+ */
+const IPV6_PATTERN_SOURCE =
+  '(?:' +
+  '(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|' +
+  '(?:[0-9a-fA-F]{1,4}:){1,7}:|' +
+  '(?:[0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|' +
+  '(?:[0-9a-fA-F]{1,4}:){1,5}(?::[0-9a-fA-F]{1,4}){1,2}|' +
+  '(?:[0-9a-fA-F]{1,4}:){1,4}(?::[0-9a-fA-F]{1,4}){1,3}|' +
+  '(?:[0-9a-fA-F]{1,4}:){1,3}(?::[0-9a-fA-F]{1,4}){1,4}|' +
+  '(?:[0-9a-fA-F]{1,4}:){1,2}(?::[0-9a-fA-F]{1,4}){1,5}|' +
+  '[0-9a-fA-F]{1,4}:(?:(?::[0-9a-fA-F]{1,4}){1,6})|' +
+  ':(?:(?::[0-9a-fA-F]{1,4}){1,7}|:)' +
+  ')';
+
+/**
+ * `local@host` -- covers both an email address and an SSH/git-style
+ * `user@host` remote target with ONE pattern, since they are the same
+ * shape. The host alternation accepts a dotted domain ending in a 2+ letter
+ * label (`example.com`, `prod.internal`), a literal IPv4 dotted-quad, or a
+ * literal IPv6 address (PR #995 review finding 2 -- `ssh jdoe@2001:db8::1`
+ * previously matched NONE of the alternatives, so the whole `local@host`
+ * pair fell through untouched and the USERNAME leaked too, not only the
+ * host; see the module's real-data verification notes in
+ * `guard-chain-replay.test.ts` for the measured before/after). The dotted
+ * domain alternative specifically avoids matching an npm/bun/pip
+ * `package@1.2.3` version pin, whose "host" is a bare numeric semver with
+ * no letter-ending label and (usually) only 3 numeric parts.
+ *
+ * The IPv6 alternative carries its OWN trailing `(?![0-9a-fA-F:])` --
+ * discovered as a second, distinct bug while fixing finding 2, not by
+ * inspection: `IPV6_PATTERN_SOURCE`'s second alternative
+ * (`(?:hex:){1,7}:`, "some groups then a bare `::`") is tried BEFORE the
+ * alternative that also consumes a trailing group, and for `2001:db8::1`
+ * it matches just `2001:db8::` and stops -- the shared outer `\b` right
+ * after it is ALREADY satisfied there (`:` is non-word, `1` is word, so
+ * that IS a boundary), so the engine never backtracks into a longer
+ * alternative, and the real trailing `1` was left BEHIND as unmatched
+ * plaintext, concatenated onto whatever the replacement produced (measured:
+ * `dmw8@2001:db8::66a792981` -- a fake address with a 9-hex-digit final
+ * group, `1` character too many, immediately gave this away as a
+ * concatenation, not a clean generated value). `\b` cannot detect this
+ * because it only asks about word/non-word ADJACENCY, not "does an IPv6
+ * character continue on the other side" -- exactly the same distinction
+ * `BARE_IPV6_RE` below already had to make for its OWN boundaries, and got
+ * right the first time because a negative lookaround was the obvious tool
+ * there. Applying the identical lookaround to the alternative here forces
+ * the engine to keep backtracking into longer alternatives until the match
+ * actually ends where the hex/colon run ends, which is what "boundary"
+ * needs to mean for this charset.
+ */
+const USER_AT_HOST_RE = new RegExp(
+  `\\b([A-Za-z0-9._%+-]+)@((?:[A-Za-z0-9-]+\\.)+[A-Za-z]{2,}|(?:\\d{1,3}\\.){3}\\d{1,3}|${IPV6_PATTERN_SOURCE}(?![0-9a-fA-F:]))\\b`,
+  'g',
+);
 
 const IPV4_SHAPE_RE = /^(\d{1,3}\.){3}\d{1,3}$/;
+const IPV6_SHAPE_RE = new RegExp(`^${IPV6_PATTERN_SOURCE}$`);
 
 /** A bare IPv4 dotted-quad not already consumed by `USER_AT_HOST_RE` above
  *  (that pass runs first). */
 const BARE_IPV4_RE = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g;
+
+/**
+ * A bare IPv6 address, bracketed (`[2001:db8::1]`, the required URL-host
+ * shape when a port follows -- `http://[2001:db8::1]:8080/x`) or not
+ * (`ping 2001:db8::1`). Deliberately does NOT use `\b` for its boundary the
+ * way `BARE_IPV4_RE` does: an address ending in `::` (a valid, if unusual,
+ * compressed form) ends on a non-word `:` character, and `\b` requires a
+ * word-char/non-word-char transition -- right after such an address, the
+ * NEXT real character is typically ALSO non-word (a space, a quote), so no
+ * such transition exists and `\b` would silently fail to anchor there. A
+ * negative lookaround against the IPv6 charset itself (`[0-9a-fA-F:]`) has
+ * no such assumption: it only asks "is the character on this side part of
+ * an IPv6 address," which is true regardless of whether that character is a
+ * hex digit or a colon. This same construction is what lets this ONE
+ * pattern also cover the bracketed URL-host shape without a second, separate
+ * regex: `[` and `]` are not in the IPv6 charset, so they already satisfy
+ * the boundary on their own, and a trailing `:<port>` sits entirely outside
+ * the match (after the closing `]`), never at risk of being swept in. */
+const BARE_IPV6_RE = new RegExp(`(?<![0-9a-fA-F:])${IPV6_PATTERN_SOURCE}(?![0-9a-fA-F:])`, 'g');
 
 /** The CAPTURING machine's own hostname (`os.hostname()`), matched
  *  case-insensitively as a whole word wherever it appears verbatim. This is
@@ -625,15 +810,16 @@ function hostnameRegex(): RegExp {
  * and passed -- this function only transforms, never refuses.
  *
  * Passes run in a fixed order (home dir -> slug-shaped home dir -> tilde
- * user -> user@host/email -> bare IPv4 -> capturing machine's own
- * hostname). A later pass CAN observe a
- * fake value an earlier pass already produced (e.g. `USER_AT_HOST_RE`'s IPv4
- * host alternative, once fake, still LOOKS like an IPv4 shape to
- * `BARE_IPV4_RE`) and re-map it through its own category. That is harmless,
- * not a bug: `pseudonymizeIdentity` is a pure function of its (category,
- * value) pair, so re-mapping an already-fake value still lands on the same
- * final fake value for the same real input every time -- determinism (#992's
- * "same input maps to the same output" requirement) survives the layering.
+ * user -> user@host/email (IPv4 or IPv6 host) -> bare IPv4 -> bare IPv6 ->
+ * capturing machine's own hostname). A later pass CAN observe a fake value
+ * an earlier pass already produced (e.g. `USER_AT_HOST_RE`'s IPv4/IPv6 host
+ * alternatives, once fake, still LOOK like their own shape to
+ * `BARE_IPV4_RE`/`BARE_IPV6_RE`) and re-map it through its own category.
+ * That is harmless, not a bug: `pseudonymizeIdentity` is a pure function of
+ * its (category, value) pair, so re-mapping an already-fake value still
+ * lands on the same final fake value for the same real input every time --
+ * determinism (#992's "same input maps to the same output" requirement)
+ * survives the layering.
  */
 export function pseudonymizeIdentities(text: string): string {
   let out = text;
@@ -657,11 +843,15 @@ export function pseudonymizeIdentities(text: string): string {
     const fakeLocal = pseudonymizeIdentity('username', local, () => fakeShapePreserving(local));
     const fakeHost = IPV4_SHAPE_RE.test(host)
       ? pseudonymizeIdentity('ip', host, fakeIpAddress)
-      : pseudonymizeIdentity('host', host, () => fakeShapePreserving(host));
+      : IPV6_SHAPE_RE.test(host)
+        ? pseudonymizeIdentity('ip6', host, fakeIpv6Address)
+        : pseudonymizeIdentity('host', host, () => fakeShapePreserving(host));
     return `${fakeLocal}@${fakeHost}`;
   });
 
   out = out.replace(BARE_IPV4_RE, (match) => pseudonymizeIdentity('ip', match, fakeIpAddress));
+
+  out = out.replace(BARE_IPV6_RE, (match) => pseudonymizeIdentity('ip6', match, fakeIpv6Address));
 
   out = out.replace(hostnameRegex(), (match) =>
     pseudonymizeIdentity('hostname', match, () => fakeShapePreserving(match)),

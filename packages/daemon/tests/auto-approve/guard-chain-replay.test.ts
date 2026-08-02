@@ -3,26 +3,36 @@
  *
  * ## The gap this closes
  *
- * `enforceDenyFloor` (deny-floor.ts), `enforceAuthorityBoundary` (authority.ts)
- * and `classifyRisk` (risk-bands.ts) are each individually well tested
- * (`deny-floor.test.ts`, `authority.test.ts`, `risk-bands.test.ts`), but until
- * this file NOTHING tested them COMPOSED, and nothing tested them against
- * REAL commands. Every defect found in this area so far (#985's `rm -rf /tmp/
- * x` false match, the flag-order misses fixed in the same round, #976's
- * command-hiding bypasses) was found by ad-hoc probing AFTER the unit tests
- * were already green. This file is the harness that makes that probing
- * systematic and repeatable instead of ad hoc.
+ * `enforceDenyFloor` (deny-floor.ts), `enforceAuthorityBoundary` (authority.ts),
+ * `enforceRiskCeiling` (risk-ceiling.ts) and `classifyRisk` (risk-bands.ts) are
+ * each individually well tested (`deny-floor.test.ts`, `authority.test.ts`,
+ * `risk-bands.test.ts`), but until this file NOTHING tested them COMPOSED,
+ * and nothing tested them against REAL commands. Every defect found in this
+ * area so far (#985's `rm -rf /tmp/x` false match, the flag-order misses
+ * fixed in the same round, #976's command-hiding bypasses) was found by
+ * ad-hoc probing AFTER the unit tests were already green. This file is the
+ * harness that makes that probing systematic and repeatable instead of ad
+ * hoc.
  *
  * NO MOCKS of decision logic (repo rule, AGENTS.md). `runGuardChain` below is
- * NOT a reimplementation of the guard chain -- it is `enforceDenyFloor` and
- * `enforceAuthorityBoundary`, the real exported functions, called in the same
- * order `auto-approve-service.ts` calls them (verified by reading that file:
- * deny-floor runs first, purely for readability -- the two guards are
- * disjoint by construction, deny-floor only ever sees `'deny'`,
- * authority-boundary only ever sees `'approve'`, so the order carries no
- * behavioral meaning). `classifyRisk` is likewise the real function, used
- * here only for the band DISTRIBUTION report, never wired into the decision
- * -- see "Honest limits" below.
+ * NOT a reimplementation of the guard chain -- it is `enforceDenyFloor`,
+ * `enforceAuthorityBoundary` and `enforceRiskCeiling`, the real exported
+ * functions, called in the SAME ORDER `auto-approve-service.ts` composes
+ * them post-#994 (verified by reading that file, not assumed -- this branch
+ * was rebased onto `develop` specifically to pick up #994's merge, which
+ * landed `enforceRiskCeiling` AFTER this file's first draft; the original
+ * "Honest limits" bullet claiming the risk ceiling was "landing separately"
+ * was already false by the time of review and is corrected below):
+ * deny-floor, then authority-boundary, then risk-ceiling. Production's own
+ * comment on the risk-ceiling call site explains WHY that specific order
+ * (placed after authority-boundary so an already-applied downgrade
+ * short-circuits it, and before the #954 counterfactual re-ask so that
+ * mechanism's own `=== 'approve'` guard is already false when this one
+ * fires) -- reasons that are about WHICH guard's user-facing message wins
+ * and about skipping a redundant live LLM call, not about the plain
+ * escalate/not-escalate OUTCOME this file checks. `classifyRisk` is used
+ * both directly (the risk-ceiling guard's own dependency) and for the band
+ * DISTRIBUTION report.
  *
  * ## What this tests, structurally
  *
@@ -34,8 +44,64 @@
  * (`approve`/`deny`/`escalate`) and INVARIANTS are asserted that must hold no
  * matter what a model would have said -- see `assertGuardChainInvariants`
  * for the full list, matched 1:1 against the guards' own documented
- * contracts (deny-floor.ts's "only ever moves deny -> escalate", authority.ts's
- * "only ever downgrades approve -> escalate").
+ * contracts (deny-floor.ts's "only ever moves deny -> escalate",
+ * authority.ts's "only ever downgrades approve -> escalate", risk-ceiling.ts's
+ * "only ever moves approve -> escalate ... when classifyRisk puts the
+ * operation at high or critical").
+ *
+ * ## Invariant accounting -- which checks below can actually fail
+ *
+ * Six invariants are asserted per `(record, verdict, authorityPresent)`
+ * combination. Two are TYPE-LEVEL, not runtime, guarantees, kept as
+ * documentation of what the type system already promises rather than as
+ * meaningful coverage -- no code change short of a compile error could
+ * violate either one, so a green run of these two proves nothing about THIS
+ * change:
+ *
+ *   - **Totality** (`VERDICTS.includes(result.decision)`) -- every guard's
+ *     return type is a closed `'approve' | 'deny' | 'escalate'` union;
+ *     TypeScript rejects any other value at compile time.
+ *   - **`classifyRisk` never returns `'low'`** -- its return type is
+ *     `Exclude<RiskBand, 'low'>` (risk-bands.ts); the type system rejects a
+ *     `'low'` return the same way.
+ *
+ * The other four carry REAL weight -- each is a runtime property of the
+ * COMPOSED chain's actual behavior that a plausible bug could violate
+ * without any compile error:
+ *
+ *   - Never invents a deny (only a `deny` verdict can produce a `deny`
+ *     decision).
+ *   - Never converts `escalate` into anything else.
+ *   - A `deny` survives only on a `matchesCatastrophicPattern` match;
+ *     otherwise it escalates (`enforceDenyFloor`'s own contract). This one
+ *     is checked through the FULL composed chain and stays fully
+ *     independent: neither `enforceAuthorityBoundary` nor
+ *     `enforceRiskCeiling` ever touches a `deny`/`escalate` decision
+ *     (verified by reading both -- each starts with an early return unless
+ *     `decision === 'approve'`), so nothing downstream of `enforceDenyFloor`
+ *     can mask a regression in it.
+ *   - Determinism.
+ *
+ * **`enforceRiskCeiling`'s own invariant belongs in this real-weight
+ * group**, and composing it exposed something about the PREVIOUS
+ * "real-weight" invariant that was not true before #994 landed: an
+ * authority-present catastrophic approve is, by construction, ALSO a
+ * `critical`-band approve (`classifyRisk` checks `matchesCatastrophicPattern`
+ * FIRST and returns `'critical'` on a hit -- risk-bands.ts), and
+ * `enforceRiskCeiling` escalates ANY `high`/`critical` approve regardless of
+ * `authorityPresent`. So once the FULL composed chain includes
+ * `enforceRiskCeiling`, checking only the chain's FINAL decision for that one
+ * case can no longer tell "`enforceAuthorityBoundary` correctly escalated
+ * it" apart from "`enforceAuthorityBoundary` is silently broken but
+ * `enforceRiskCeiling` caught it anyway" -- both produce the identical
+ * observable `'escalate'`. `assertGuardChainInvariants` closes that
+ * specific gap by calling `enforceAuthorityBoundary` DIRECTLY (not only
+ * through `runGuardChain`) for that case, restoring its independent
+ * real-weight status rather than leaving it quietly decorative.
+ *
+ * `enforceDenyFloor`'s invariant needed no equivalent fix (see above --
+ * nothing downstream can touch its output at all, so there is no masking
+ * risk to begin with).
  *
  * ## Two corpora, explicitly separated
  *
@@ -70,54 +136,87 @@
  * ## Verified against real input (stated plainly, not implied)
  *
  * The structure-preserving redaction WAS run against the owner's real,
- * ~47.8k-line `~/.remi/hook-diag.jsonl` while building this feature (not
- * synthetic data) -- 4,021 records survived into a local corpus, 1,074 of
- * them real `Bash` `PermissionRequest`s with a real, structurally rich
- * `command` (average 614 characters). That run is what FOUND the
- * hyphen-flattened Claude-Code-slug home-directory shape now handled by
- * `SLUG_HOME_DIR_RE` in `build-hook-corpus.ts` (`/private/tmp/claude-<pid>/
- * -Users-<name>-Documents-...` survived the slash-anchored `HOME_DIR_RE`
- * entirely on the first pass) and what tuned `HIGH_ENTROPY_CANDIDATE_RE` down
- * from a 29%-of-corpus false-positive rate (it was greedily matching whole
- * multi-segment file paths as one "token" because `/` and `.` were in its
- * character class) to about 1%. The redacted output was then grepped for the
- * real hostname, the real email address, and every IPv4 shape outside the
+ * ~50k-line `~/.remi/hook-diag.jsonl` (not synthetic data), TWICE: once
+ * while building this feature, and a SECOND time after the PR #995 review
+ * (findings 1, 2, and the `HOME_DIR_RE`/`HIGH_ENTROPY_CANDIDATE_RE` fixes
+ * below) to confirm the fixes hold against real traffic, not only the
+ * hand-written regression tests. Numbers below are from that SECOND,
+ * post-fix run: 4,187 records survived into a local corpus, 1,124 of them
+ * real `Bash` `PermissionRequest`s with a real, structurally rich `command`
+ * (average 591 characters).
+ *
+ * The FIRST run is what FOUND two of the four PR #995 review findings before
+ * they were ever reported: the hyphen-flattened Claude-Code-slug
+ * home-directory shape now handled by `SLUG_HOME_DIR_RE` in
+ * `build-hook-corpus.ts` (`/private/tmp/claude-<pid>/-Users-<name>-Documents-
+ * ...` survived the slash-anchored `HOME_DIR_RE` entirely on the first pass),
+ * and the `HIGH_ENTROPY_CANDIDATE_RE` false-positive rate that peaked at 29%
+ * of the corpus (greedily matching whole multi-segment file paths as one
+ * "token" because `/` and `.` were in its character class) before being
+ * tuned down to about 1%. The line-continuation credential split (review
+ * finding 1) and the IPv6 host/username leak (review finding 2) were NOT
+ * caught by this real-data run -- they were found by the reviewer through
+ * direct code inspection, not measurement, because this specific capture
+ * happens not to contain a backslash-continued secret or an IPv6 remote
+ * target. Said plainly rather than overclaimed: real-data verification is
+ * only as good as what the captured traffic happens to contain, and both
+ * classes of bug are now covered by hand-written regression tests
+ * (`build-hook-corpus.test.ts`) specifically because this real corpus could
+ * not have caught them.
+ *
+ * The SECOND (post-fix) run's redacted output was grepped for: the real
+ * hostname, the real email address, every IPv4 shape outside the
  * fake/reserved ranges this tool produces (`203.0.113.0/24`, `0.0.0.0`,
- * `127.0.0.1`) -- ZERO matches for any of the three. The real username had
- * exactly 5 residual occurrences (down from 268 before `SLUG_HOME_DIR_RE`
- * existed), every one of them EITHER an arbitrary non-`/Users`/`/home`-rooted
- * path root (`/data/projects/<user>/...` -- no fixed prefix can generalize to
- * an unknown root) OR a free-text mention (the username appearing as a grep
- * search argument, or inside captured process-listing output) that is not a
- * path/host/email SHAPE at all -- not a home-directory, tilde, `user@host`,
- * or slug leak, which is what this pass targets. Both residual categories are
- * stated as honest limits in `build-hook-corpus.ts`'s own doc comments, not
- * silently left for a reader to discover. Zero matches anywhere for the
- * explicit credential-prefix patterns. That verification is NOT itself a test
- * in this repo (it would require committing the very data #992 exists to
- * keep out) -- it was run once, manually, locally, and is reported here so a
- * reader does not have to take "the redaction works" on faith.
+ * `127.0.0.1`), every IPv6-shaped substring outside the fake/reserved
+ * `2001:db8::/32` prefix this tool now produces, and the explicit
+ * credential-prefix patterns anywhere in the file -- ZERO matches for any
+ * of them. (The corpus contains no real IPv6 addresses at all -- 2 total
+ * IPv6-shaped substrings in 4,187 records, both already `2001:db8::`-fake --
+ * so this run could not have exercised finding 2's fix either; the
+ * hand-written IPv6 tests are this fix's only real coverage, same honest
+ * caveat as the paragraph above.) The real username had exactly 5 residual
+ * occurrences (unchanged from the first run -- down from 268 before
+ * `SLUG_HOME_DIR_RE` existed), every one of them EITHER an arbitrary
+ * non-`/Users`/`/home`-rooted path root (`/data/projects/<user>/...` -- no
+ * fixed prefix can generalize to an unknown root) OR a free-text mention
+ * (the username appearing as a grep search argument, or inside captured
+ * process-listing output) that is not a path/host/email SHAPE at all -- not
+ * a home-directory, tilde, `user@host`, or slug leak, which is what this
+ * pass targets. Both residual categories, plus the percent-encoded-home-dir
+ * gap from review finding 4, are stated as honest limits in
+ * `build-hook-corpus.ts`'s own doc comments, not silently left for a reader
+ * to discover. This verification is NOT itself a test in this repo (it
+ * would require committing the very data #992 exists to keep out) -- it was
+ * run manually, locally, twice, and is reported here so a reader does not
+ * have to take "the redaction works" on faith.
  *
  * ## Honest limits
  *
- * - **The risk CEILING is landing separately (do not depend on it).** This
- *   file composes exactly the two guards named above. It does not assert
- *   anything about `classifyRisk`'s band ever CONSTRAINING a decision --
- *   only that the band is always valid and deterministic. Wiring risk into
- *   the decision chain is a different, not-yet-landed change.
+ * - **The #954 counterfactual re-ask is NOT composed here, and cannot be.**
+ *   `auto-approve-service.ts` runs one more mechanism after the risk ceiling:
+ *   re-evaluating the SAME command with the authority block removed, and
+ *   downgrading `approve -> escalate` if the verdict changes. That needs a
+ *   second live LLM call -- it is not a pure function of `(toolName,
+ *   toolInput, decision, authorityPresent)` the way the three guards above
+ *   are, so it cannot be replayed against a static corpus at all. All three
+ *   guards this file DOES compose are pure and deterministic; that mechanism
+ *   is neither, by design (it is asking the model a second question, not
+ *   pattern-matching the first answer).
  * - **Binary evaluations only**, matching production's own routing
- *   (`auto-approve-service.ts`: `!useMultiChoice && ...` guards both call
- *   sites). A multi-choice (`pick`) verdict never reaches `enforceDenyFloor`
- *   in production and is not simulated here.
+ *   (`auto-approve-service.ts`: `!useMultiChoice && ...` guards all three
+ *   call sites). A multi-choice (`pick`) verdict never reaches
+ *   `enforceDenyFloor` in production and is not simulated here.
  * - **The model verdict is synthetic** (a parameter, not a replayed real
  *   verdict) for the reason stated above -- this file proves the guards'
  *   OWN contracts hold on real command shapes, not that any particular real
  *   model would have produced any particular verdict on them.
  * - **`classifyRisk`'s exact band-per-command is not re-asserted here.**
  *   That is `risk-bands.test.ts`'s job (18KB of dedicated cases). This file
- *   only pins the two invariants stated on `classifyRisk`'s own contract
- *   (never `low`, always deterministic) plus a small number of sanity spot
- *   checks, and reports the full distribution for a human to eyeball.
+ *   only pins the invariants stated on `classifyRisk`'s own contract (never
+ *   `low`, always deterministic, and now that it feeds `enforceRiskCeiling`
+ *   directly, that any `high`/`critical` approve escalates) plus a small
+ *   number of sanity spot checks, and reports the full distribution for a
+ *   human to eyeball.
  */
 
 import { describe, expect, test } from 'bun:test';
@@ -125,7 +224,13 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { enforceAuthorityBoundary } from '../../src/auto-approve/authority.ts';
 import { enforceDenyFloor, matchesCatastrophicPattern } from '../../src/auto-approve/deny-floor.ts';
-import { RISK_BANDS, type RiskBand, classifyRisk } from '../../src/auto-approve/risk-bands.ts';
+import {
+  RISK_BANDS,
+  type RiskBand,
+  classifyRisk,
+  riskBandAtLeast,
+} from '../../src/auto-approve/risk-bands.ts';
+import { enforceRiskCeiling } from '../../src/auto-approve/risk-ceiling.ts';
 
 // ---------------------------------------------------------------------------
 // The guard chain itself -- real functions, composed the way
@@ -142,8 +247,17 @@ interface GuardChainResult {
   readonly decision: Verdict;
   readonly denyFloorOverridden: boolean;
   readonly authorityBoundaryOverridden: boolean;
+  readonly riskCeilingOverridden: boolean;
 }
 
+/**
+ * The three PURE, deterministic guards, composed in production's own order
+ * (`auto-approve-service.ts`, verified post-#994): deny-floor, then
+ * authority-boundary, then risk-ceiling. The #954 counterfactual re-ask that
+ * runs after these in production is deliberately NOT included -- see the
+ * module doc's "Honest limits" for why it cannot be (a live LLM call, not a
+ * pure function of these same four inputs).
+ */
 function runGuardChain(
   toolName: string,
   toolInput: Record<string, unknown>,
@@ -152,10 +266,12 @@ function runGuardChain(
 ): GuardChainResult {
   const floored = enforceDenyFloor(toolName, toolInput, modelVerdict);
   const guarded = enforceAuthorityBoundary(toolName, toolInput, floored.decision, authorityPresent);
+  const ceilinged = enforceRiskCeiling(toolName, toolInput, guarded.decision);
   return {
-    decision: guarded.decision,
+    decision: ceilinged.decision,
     denyFloorOverridden: floored.overridden,
     authorityBoundaryOverridden: guarded.overridden,
+    riskCeilingOverridden: ceilinged.overridden,
   };
 }
 
@@ -298,6 +414,7 @@ function loadLocalCorpusReplayRecords(): ReplayRecord[] {
 interface DistributionReport {
   readonly bandCounts: Record<RiskBand, number>;
   readonly survivingDenies: number;
+  readonly riskCeilingEscalations: number;
   readonly totalChecks: number;
   readonly recordCount: number;
 }
@@ -312,12 +429,15 @@ interface DistributionReport {
 function assertGuardChainInvariants(records: readonly ReplayRecord[]): DistributionReport {
   const bandCounts: Record<RiskBand, number> = { low: 0, moderate: 0, high: 0, critical: 0 };
   let survivingDenies = 0;
+  let riskCeilingEscalations = 0;
   let totalChecks = 0;
 
   for (const record of records) {
     const { toolName, toolInput, label } = record;
 
-    // classifyRisk: valid band, never 'low', deterministic.
+    // classifyRisk: valid band (DECORATIVE -- type-level, see "Invariant
+    // accounting" above), never 'low' (also DECORATIVE), deterministic
+    // (REAL WEIGHT).
     const band = classifyRisk(toolName, toolInput);
     expect(
       RISK_BANDS.includes(band),
@@ -334,6 +454,25 @@ function assertGuardChainInvariants(records: readonly ReplayRecord[]): Distribut
     bandCounts[band] += 1;
 
     const catastrophicMatch = matchesCatastrophicPattern(toolName, toolInput);
+    const isHighOrCritical = riskBandAtLeast(band, 'high');
+
+    // REAL WEIGHT, direct call (not through runGuardChain): enforceAuthorityBoundary's
+    // OWN contract (authority.ts) -- an authority-present approve of a
+    // catastrophic operation must never survive as approve, it must
+    // escalate. Called on the GUARD ITSELF, not the composed chain, because
+    // every catastrophic match is ALSO a 'critical' band (classifyRisk
+    // checks matchesCatastrophicPattern first), so enforceRiskCeiling would
+    // independently produce the identical final 'escalate' even if THIS
+    // guard were silently broken -- checking only the composed result could
+    // no longer tell the two apart once enforceRiskCeiling joined the
+    // chain. See "Invariant accounting" above.
+    if (catastrophicMatch !== null) {
+      const direct = enforceAuthorityBoundary(toolName, toolInput, 'approve', true);
+      expect(
+        direct.decision,
+        `${label}: enforceAuthorityBoundary itself did not escalate an authority-present catastrophic approve`,
+      ).toBe('escalate');
+    }
 
     for (const authorityPresent of AUTHORITY_PRESENT_VALUES) {
       for (const verdict of VERDICTS) {
@@ -342,28 +481,33 @@ function assertGuardChainInvariants(records: readonly ReplayRecord[]): Distribut
 
         const result = runGuardChain(toolName, toolInput, verdict, authorityPresent);
 
-        // TOTALITY: always exactly one of the three decisions. `runGuardChain`
-        // itself would have thrown before reaching this line on anything
-        // else (bun test fails the test on an uncaught throw); this also
-        // pins that the VALUE is one of the three, not just that a value
-        // exists.
+        // DECORATIVE (type-level): always exactly one of the three
+        // decisions. `runGuardChain`'s return type is a closed union;
+        // TypeScript, not this assertion, is what actually enforces it.
         expect(VERDICTS.includes(result.decision), `${context}: not a valid decision`).toBe(true);
 
-        // Never invents a deny: a deny can only come out if a deny went in.
+        // REAL WEIGHT: never invents a deny -- a deny can only come out if
+        // a deny went in.
         if (verdict !== 'deny') {
           expect(result.decision, `${context}: chain invented a deny`).not.toBe('deny');
         }
 
-        // Never converts escalate into approve (nor into anything else --
-        // neither guard touches an 'escalate' input at all today, since the
-        // risk ceiling that WOULD is landing separately; see "Honest limits").
+        // REAL WEIGHT: never converts escalate into anything else. None of
+        // the three composed guards touches an 'escalate' input at all
+        // (verified by reading each -- every one starts with an early
+        // return unless its own trigger decision matches).
         if (verdict === 'escalate') {
           expect(result.decision, `${context}: chain moved off escalate`).toBe('escalate');
         }
 
-        // A deny survives ONLY when matchesCatastrophicPattern matches;
-        // otherwise it must have become escalate (enforceDenyFloor's own
-        // contract, deny-floor.ts).
+        // REAL WEIGHT: a deny survives ONLY when matchesCatastrophicPattern
+        // matches; otherwise it must have become escalate
+        // (enforceDenyFloor's own contract, deny-floor.ts). Checked through
+        // the FULL composed chain and stays fully independent -- neither
+        // enforceAuthorityBoundary nor enforceRiskCeiling ever touches a
+        // 'deny'/'escalate' decision, so nothing downstream can mask a
+        // regression here the way it could for the authority-boundary check
+        // above.
         if (verdict === 'deny') {
           if (catastrophicMatch !== null) {
             expect(result.decision, `${context}: catastrophic deny did not stand`).toBe('deny');
@@ -374,21 +518,26 @@ function assertGuardChainInvariants(records: readonly ReplayRecord[]): Distribut
           }
         }
 
-        // Symmetric counterpart, enforceAuthorityBoundary's own contract
-        // (authority.ts): an authority-present approve of a catastrophic
-        // operation must never survive as approve -- it must escalate.
-        // A non-catastrophic approve, or any approve with no authority
-        // present, is untouched by this guard and may legitimately stay
-        // 'approve' (not asserted here -- that is a fact about the input,
-        // not an invariant of the chain).
-        if (verdict === 'approve' && authorityPresent && catastrophicMatch !== null) {
+        // REAL WEIGHT, new for #994's enforceRiskCeiling: an approve whose
+        // band is 'high' or 'critical' must escalate REGARDLESS of
+        // authorityPresent (risk-ceiling.ts's whole point -- it is NOT
+        // gated on authority the way enforceAuthorityBoundary is; an
+        // authority-FREE approve of a high-risk operation was previously
+        // unguarded by anything at all). A non-high/critical approve is
+        // untouched by this guard and may legitimately stay 'approve' (not
+        // asserted here -- that is a fact about the input, not an invariant
+        // of the chain).
+        if (verdict === 'approve' && isHighOrCritical) {
           expect(
             result.decision,
-            `${context}: authority-present catastrophic approve did not escalate`,
+            `${context}: ${band}-risk approve did not escalate (risk ceiling)`,
           ).toBe('escalate');
+          // The `expect` above already guarantees this (or the test threw
+          // first) -- incrementing unconditionally, not re-checking.
+          riskCeilingEscalations += 1;
         }
 
-        // Determinism: same inputs, same output, every time.
+        // REAL WEIGHT: determinism -- same inputs, same output, every time.
         const again = runGuardChain(toolName, toolInput, verdict, authorityPresent);
         expect(again.decision, `${context}: guard chain is not deterministic`).toBe(
           result.decision,
@@ -399,7 +548,13 @@ function assertGuardChainInvariants(records: readonly ReplayRecord[]): Distribut
     }
   }
 
-  return { bandCounts, survivingDenies, totalChecks, recordCount: records.length };
+  return {
+    bandCounts,
+    survivingDenies,
+    riskCeilingEscalations,
+    totalChecks,
+    recordCount: records.length,
+  };
 }
 
 function logDistribution(title: string, report: DistributionReport): void {
@@ -414,6 +569,9 @@ function logDistribution(title: string, report: DistributionReport): void {
   }
   console.log(
     `  denies surviving as 'deny' (catastrophic-matched) out of ${report.totalChecks} checks: ${report.survivingDenies}`,
+  );
+  console.log(
+    `  approves escalated by the risk ceiling (high/critical band) out of ${report.totalChecks} checks: ${report.riskCeilingEscalations}`,
   );
 }
 
