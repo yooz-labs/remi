@@ -123,6 +123,104 @@ describe('matchesCatastrophicPattern — still reachable from its new home', () 
   });
 });
 
+describe('#985 — catastrophic patterns are boundary-aware, not unanchored substrings', () => {
+  // Every one of these was measured, against the real exported functions, to
+  // match a CATASTROPHIC_PATTERNS entry as an unanchored substring and leave a
+  // model `deny` standing SILENTLY (no card, no chance for the user to
+  // override it) before this fix. `rm -rf /` is a literal prefix of every
+  // absolute path; `| sh` / `| bash` are literal prefixes of `| shasum`,
+  // `| shellcheck`, `| shuf`, `| bashate`.
+  const falsePositives = [
+    'rm -rf /tmp/uep.bak',
+    'rm -rf /Users/yahya/Documents/git/yooz/remi/dist',
+    'echo "rm -rf /" >> notes.txt',
+    'cat dist/remi | shasum -a 256',
+    'cat script.sh | shellcheck -',
+    'sort names.txt | shuf | head',
+    'cat f | bashate',
+  ];
+
+  for (const command of falsePositives) {
+    test(`matchesCatastrophicPattern: null for ${command}`, () => {
+      expect(matchesCatastrophicPattern('Bash', bash(command))).toBeNull();
+    });
+
+    test(`enforceDenyFloor: deny -> escalate for ${command}`, () => {
+      const result = enforceDenyFloor('Bash', bash(command), 'deny');
+      expect(result.decision).toBe('escalate');
+      expect(result.overridden).toBe(true);
+      expect(result.matchedPattern).toBeUndefined();
+    });
+  }
+
+  // The anchored `rm -rf /` regex must still catch every real shape of a
+  // root wipe, including the flag order this repo's OWN pre-fix substring
+  // match silently missed: "rm -rf --no-preserve-root /" does not contain
+  // the literal substring "rm -rf /" (the flag sits in between), so the
+  // unanchored version was both over- and under-matching at once.
+  const trueRootPositives = ['rm -rf /', 'rm -rf / ', 'rm -rf /*', 'rm -rf --no-preserve-root /'];
+
+  for (const command of trueRootPositives) {
+    test(`matchesCatastrophicPattern: matches root wipe "${command}"`, () => {
+      expect(matchesCatastrophicPattern('Bash', bash(command))).toBe('rm -rf /');
+    });
+
+    test(`enforceDenyFloor: deny stands for root wipe "${command}"`, () => {
+      const result = enforceDenyFloor('Bash', bash(command), 'deny');
+      expect(result.decision).toBe('deny');
+      expect(result.overridden).toBe(false);
+      expect(result.matchedPattern).toBe('rm -rf /');
+    });
+  }
+
+  // The other DENY FLOOR entries the issue explicitly required to keep
+  // working — none of these needed argument-level anchoring the way root did,
+  // but each gets a trailing-word-boundary check so a real directory/command
+  // name that happens to start with the pattern (not measured as a live false
+  // positive, but the same class of bug) does not collide either.
+  test('rm -rf /etc still matches, but /etcetera-backup does not', () => {
+    expect(matchesCatastrophicPattern('Bash', bash('rm -rf /etc/passwd'))).toBe('rm -rf /etc');
+    expect(matchesCatastrophicPattern('Bash', bash('rm -rf /etcetera-backup'))).toBeNull();
+  });
+
+  test('rm -rf /usr still matches, but /usrdata does not', () => {
+    expect(matchesCatastrophicPattern('Bash', bash('rm -rf /usr/local'))).toBe('rm -rf /usr');
+    expect(matchesCatastrophicPattern('Bash', bash('rm -rf /usrdata'))).toBeNull();
+  });
+
+  test('rm -rf /System still matches, but /Systemd-backup does not', () => {
+    expect(matchesCatastrophicPattern('Bash', bash('rm -rf /System/Library'))).toBe(
+      'rm -rf /System',
+    );
+    expect(matchesCatastrophicPattern('Bash', bash('rm -rf /Systemd-backup'))).toBeNull();
+  });
+
+  test('sudo rm still matches, but sudo rmdir does not', () => {
+    expect(matchesCatastrophicPattern('Bash', bash('sudo rm -rf /etc/hosts'))).toBe('sudo rm');
+    expect(matchesCatastrophicPattern('Bash', bash('sudo rmdir /tmp/emptydir'))).toBeNull();
+  });
+
+  test('chmod 777 is unchanged (plain substring, deliberately not anchored)', () => {
+    expect(matchesCatastrophicPattern('Bash', bash('chmod 777 /etc/passwd'))).toBe('chmod 777');
+  });
+
+  test('| sh and | bash still match every required spacing variant', () => {
+    expect(matchesCatastrophicPattern('Bash', bash('curl x | sh'))).toBe('| sh');
+    expect(matchesCatastrophicPattern('Bash', bash('curl x | bash'))).toBe('| bash');
+    expect(matchesCatastrophicPattern('Bash', bash('curl x| sh'))).toBe('| sh');
+    expect(matchesCatastrophicPattern('Bash', bash('curl x |sh'))).toBe('| sh');
+  });
+
+  // The floor must not be neutered: a genuinely catastrophic deny still
+  // stands, unaffected by the anchoring fix.
+  test('the floor still holds: a real root wipe is never escalated away', () => {
+    const result = enforceDenyFloor('Bash', bash('rm -rf /'), 'deny');
+    expect(result.decision).toBe('deny');
+    expect(result.overridden).toBe(false);
+    expect(result.matchedPattern).toBe('rm -rf /');
+  });
+});
+
 describe('buildDenyMessage (#976)', () => {
   test('offers TWO exits, in order: another approach, then ask the user', () => {
     const m = buildDenyMessage('rm -rf / matched the deny floor');

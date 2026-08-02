@@ -65,17 +65,134 @@ import { matchSubstringPattern } from './pattern-matcher.ts';
  * standing, so fewer questions reach the user). An entry belongs here only if
  * it is genuinely catastrophic — something that should be refused outright
  * rather than asked about.
+ *
+ * ## Boundary-aware matching (#985)
+ *
+ * Every entry used to be checked with `matchSubstringPattern`, an unanchored
+ * substring search. That is correct for the user's own `deny` list and for
+ * `subagent_alert` (ADR 0010: both are user-authored and small, so
+ * over-matching is the safe failure mode) and wrong here: `rm -rf /` is a
+ * literal prefix of every absolute path (`rm -rf /tmp/uep.bak`, `rm -rf
+ * /Users/.../dist` both matched), and `| sh` / `| bash` are literal prefixes
+ * of `| shasum`, `| shellcheck`, `| shuf`, `| bashate`. Measured against real
+ * commands (#985): every one of those left a model `deny` standing SILENTLY —
+ * no card, no chance for the user to say otherwise, exactly the failure mode
+ * `enforceDenyFloor` exists to close.
+ *
+ * `matchSubstringPattern` itself is NOT changed by this fix. It stays exactly
+ * right for `deny` and `subagent_alert`. This list is a different animal:
+ * fixed, code-owned, and small enough to afford real precision, so the
+ * boundary logic below is local to it instead of widening (and so weakening)
+ * the shared matcher.
+ *
+ * Per-entry call, since not every pattern needs the same treatment:
+ *
+ * - `rm -rf /` needs argument-level precision — "does the path stop at `/`?"
+ *   — which a trailing-word-boundary check cannot express (a path does not
+ *   stop being non-word characters right after a leading `/`; `/tmp` starts
+ *   with a word character immediately). It gets a dedicated regex that
+ *   requires the `/` to be followed by whitespace, `*`, one of `;&|)`, or
+ *   end-of-string — deliberately NOT a closing quote, which is what keeps
+ *   `echo "rm -rf /" >> notes.txt` (a mention, not an invocation) from
+ *   matching. Also accepts an optional `--no-preserve-root` between the flags
+ *   and the path, since that is the one variant explicitly meant to defeat
+ *   `rm`'s own root guard.
+ * - `sudo rm`, `rm -rf /etc`, `rm -rf /usr`, `rm -rf /System` get a
+ *   trailing-word-boundary check (the character right after the pattern must
+ *   not continue an identifier). The collision this closes is a REAL name
+ *   that happens to start with the pattern — `/etcetera-backup`, `sudo
+ *   rmdir` — not a quoted mention; that refinement was only built and tested
+ *   for the two patterns #985 actually measured with real false positives.
+ *   Rejecting the collision is the safe direction on both sides it feeds:
+ *   `enforceDenyFloor` trades a silent deny for an escalate (never a loss),
+ *   and `enforceAuthorityBoundary` trades a downgrade for leaving an approve
+ *   in place on an operation that was never one of these directories anyway.
+ * - `chmod 777` is left as a plain substring, on purpose: its only prefix
+ *   collision is a longer octal mode (`chmod 7777`, `chmod 7770`), and a
+ *   leading `7` only ever ADDS setuid/setgid/sticky bits on top of the same
+ *   `rwxrwxrwx` — over-matching here catches something equally or more
+ *   permissive, not something unrelated, so there is nothing to anchor
+ *   against.
+ *
+ * ## The direction change this causes
+ *
+ * `enforceDenyFloor` gets STRICTER: fewer model denies wrongly qualify as
+ * "the floor already covers this", so more of them correctly escalate to the
+ * user instead of standing silently. This is the fix and the safe direction.
+ *
+ * `enforceAuthorityBoundary` gets LOOSER on the newly-excluded false
+ * positives (an authority-present `approve` of `rm -rf /tmp/x` no longer gets
+ * downgraded to `escalate` by THIS guard) — but that is not the only backstop
+ * for that case. `authority-counterfactual.ts`'s `RISKY_SHAPES` list includes
+ * both `'rm '` and `'rm -'` (`authority-counterfactual.ts:83-84`, confirmed
+ * by reading the array directly, not inferred from a comment — see AGENTS.md
+ * "Verify before you describe"), so any authority-present `approve` of an
+ * `rm`-shaped command still trips the independent #954 counterfactual
+ * re-check regardless of whether it also matches this list. This change only
+ * stops the two guards double-covering `rm -rf /tmp/x`; a dedicated mechanism
+ * already owns that case.
  */
-const CATASTROPHIC_PATTERNS: readonly string[] = [
-  'rm -rf /',
-  'sudo rm',
-  'rm -rf /etc',
-  'rm -rf /usr',
-  'rm -rf /System',
-  '| sh',
-  '| bash',
-  'chmod 777',
+interface CatastrophicRule {
+  readonly label: string;
+  readonly test: (command: string) => boolean;
+}
+
+/** Escapes regex metacharacters so a literal string can be dropped into a
+ *  dynamically built pattern. None of today's labels need it (no `.`, `+`,
+ *  `(`, etc.), but a boundary helper that silently mis-escapes a future entry
+ *  is worse than one extra function call. */
+function escapeRegExp(literal: string): string {
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * True if `needle` occurs in `command` and that occurrence is not
+ * immediately followed by an identifier character (letter, digit,
+ * underscore) — i.e. `needle` is not merely a prefix of a longer word. Scans
+ * every occurrence via the regex engine's own backtracking rather than just
+ * the first `indexOf` hit, so an early false hit inside a longer word cannot
+ * hide a real, boundary-satisfying occurrence later in the same command.
+ */
+function hasTrailingWordBoundary(command: string, needle: string): boolean {
+  return new RegExp(`${escapeRegExp(needle)}(?![A-Za-z0-9_])`).test(command);
+}
+
+/**
+ * `rm -rf /` scoped to the root argument itself: the path must end at `/`,
+ * not merely start with it. Allows an optional `--no-preserve-root` between
+ * the flags and the path. The boundary after `/` deliberately excludes
+ * closing-quote characters — see the module doc for why that is what rejects
+ * a quoted mention rather than an invocation.
+ */
+const ROOT_RM_RE = /\brm\s+-rf\s+(?:--no-preserve-root\s+)?\/(?:[\s*;&|)]|$)/;
+
+/** `| sh` / `| bash`, where the pipe must lead directly (only whitespace
+ *  between) into the interpreter name and the name must end there — so
+ *  `| shasum`, `| shellcheck`, `| shuf`, and `| bashate` do not match. */
+const PIPE_SH_RE = /\|\s*sh\b/;
+const PIPE_BASH_RE = /\|\s*bash\b/;
+
+const CATASTROPHIC_RULES: readonly CatastrophicRule[] = [
+  { label: 'rm -rf /', test: (command) => ROOT_RM_RE.test(command) },
+  { label: 'sudo rm', test: (command) => hasTrailingWordBoundary(command, 'sudo rm') },
+  { label: 'rm -rf /etc', test: (command) => hasTrailingWordBoundary(command, 'rm -rf /etc') },
+  { label: 'rm -rf /usr', test: (command) => hasTrailingWordBoundary(command, 'rm -rf /usr') },
+  {
+    label: 'rm -rf /System',
+    test: (command) => hasTrailingWordBoundary(command, 'rm -rf /System'),
+  },
+  { label: '| sh', test: (command) => PIPE_SH_RE.test(command) },
+  { label: '| bash', test: (command) => PIPE_BASH_RE.test(command) },
+  { label: 'chmod 777', test: (command) => command.includes('chmod 777') },
 ];
+
+/** Bare tool-name equality for non-Bash tools, mirroring
+ *  `matchSubstringPattern`'s documented non-Bash behavior. None of the labels
+ *  above are shaped like a Claude Code tool name (all lowercase and/or
+ *  space-containing), so this is always null in practice; delegating instead
+ *  of hardcoding that keeps this function honest if a future label ever
+ *  changed shape. */
+const CATASTROPHIC_LABELS: readonly string[] = CATASTROPHIC_RULES.map((rule) => rule.label);
 
 /** True if this tool call matches a hardcoded catastrophic pattern. Exported
  *  for tests; `enforceAuthorityBoundary` and `enforceDenyFloor` are the real
@@ -84,7 +201,15 @@ export function matchesCatastrophicPattern(
   toolName: string,
   toolInput: Record<string, unknown>,
 ): string | null {
-  return matchSubstringPattern(toolName, toolInput, CATASTROPHIC_PATTERNS);
+  if (toolName !== 'Bash') {
+    return matchSubstringPattern(toolName, toolInput, CATASTROPHIC_LABELS);
+  }
+  const command = typeof toolInput['command'] === 'string' ? toolInput['command'] : '';
+  if (!command) return null;
+  for (const rule of CATASTROPHIC_RULES) {
+    if (rule.test(command)) return rule.label;
+  }
+  return null;
 }
 
 export interface DenyFloorResult {
