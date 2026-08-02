@@ -8,7 +8,11 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { enforceDenyFloor, matchesCatastrophicPattern } from '../../src/auto-approve/deny-floor.ts';
+import {
+  buildDenyMessage,
+  enforceDenyFloor,
+  matchesCatastrophicPattern,
+} from '../../src/auto-approve/deny-floor.ts';
 
 const bash = (command: string) => ({ command });
 
@@ -116,5 +120,39 @@ describe('matchesCatastrophicPattern — still reachable from its new home', () 
     // The exact discrimination the whole guard rests on: this is destructive
     // but NOT catastrophic, so it must escalate rather than deny.
     expect(matchesCatastrophicPattern('Bash', bash('rm -rf dist'))).toBeNull();
+  });
+});
+
+describe('buildDenyMessage (#976)', () => {
+  test('offers TWO exits, in order: another approach, then ask the user', () => {
+    const m = buildDenyMessage('rm -rf / matched the deny floor');
+    // Order matters. A message that led with "ask the user" would push Claude to
+    // interrupt even when a safe equivalent existed.
+    const alt = m.indexOf('different approach');
+    const ask = m.indexOf('ask the user');
+    expect(alt).toBeGreaterThan(-1);
+    expect(ask).toBeGreaterThan(-1);
+    expect(alt).toBeLessThan(ask);
+  });
+
+  test('carries the reason so the denial is actionable rather than a bare refusal', () => {
+    expect(buildDenyMessage('matched DENY FLOOR pattern "sudo rm"')).toContain(
+      'matched DENY FLOOR pattern "sudo rm"',
+    );
+  });
+
+  test('omits the reason clause entirely when there is no reasoning', () => {
+    for (const empty of [undefined, '', '   ']) {
+      const m = buildDenyMessage(empty);
+      expect(m).not.toContain('Reason:');
+      // Still tells Claude what to do — the exits are the load-bearing half.
+      expect(m).toContain('ask the user');
+    }
+  });
+
+  test('bounds a long reason: this rides a blocking-path hook response', () => {
+    const m = buildDenyMessage('x'.repeat(5000));
+    expect(m.length).toBeLessThan(700);
+    expect(m).toContain('…');
   });
 });

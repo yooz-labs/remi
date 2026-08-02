@@ -126,3 +126,44 @@ export function enforceDenyFloor(
   }
   return { decision: 'escalate', overridden: true };
 }
+
+/**
+ * Cap on the reason text echoed to Claude. The model's own `reasoning` can run
+ * long, and this rides in a hook response Claude Code parses on the blocking
+ * path — bounded beats verbose.
+ */
+const DENY_MESSAGE_REASON_MAX = 300;
+
+/**
+ * Build the `message` for a deny that Claude will actually read (#976).
+ *
+ * A bare `'deny'` tells Claude only that it was refused, so its options are to
+ * guess or to give up. The official hooks reference defines
+ * `decision.message` as "For `deny` only: tells Claude why the permission was
+ * denied" — model-directed — and leaves the turn running unless `interrupt` is
+ * set, so a reason is actionable.
+ *
+ * Two exits are offered deliberately, in this order:
+ *
+ *   1. a different approach — often there is a safer equivalent, and taking it
+ *      costs the user nothing;
+ *   2. asking the user to authorize explicitly.
+ *
+ * A message that said only "ask the user" would push Claude to interrupt even
+ * when a safe alternative existed. The second exit also closes the #976 loop:
+ * the user's answer arrives via `UserPromptSubmit` as genuine EXPLICIT
+ * authorization from a channel text cannot forge, which is the only way to get
+ * above `implicit` under the ADR 0015 amendment.
+ *
+ * Deliberately does NOT claim Claude will ask. The docs guarantee only that it
+ * is not stopped and has been told why; what it does next is its own choice.
+ */
+export function buildDenyMessage(reasoning?: string): string {
+  const trimmed = (reasoning ?? '').trim();
+  const reason =
+    trimmed.length > DENY_MESSAGE_REASON_MAX
+      ? `${trimmed.slice(0, DENY_MESSAGE_REASON_MAX)}…`
+      : trimmed;
+  const why = reason ? ` Reason: ${reason}` : '';
+  return `Remi's auto-approve did not have authorization to approve this operation.${why} Either use a different approach that does not require it, or ask the user to authorize this explicitly before retrying.`;
+}

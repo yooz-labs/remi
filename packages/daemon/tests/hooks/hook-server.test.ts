@@ -582,6 +582,42 @@ describe('HookServer', () => {
       });
     });
 
+    it('#976: serializes a reasoned deny as decision.{behavior,message} on the wire', async () => {
+      // The exact envelope the official hooks reference defines for
+      // PermissionRequest: `message` lives INSIDE `decision`, alongside
+      // `behavior` — not as a top-level `reason`, and not as PreToolUse's
+      // `permissionDecisionReason` (a different event's field).
+      server = new HookServer({ port });
+      server.setPermissionResolver(async () => ({
+        behavior: 'deny' as const,
+        message: 'no authorization; ask the user',
+      }));
+      server.start();
+      const res = await postPermission(port);
+      expect(await res.json()).toEqual({
+        hookSpecificOutput: {
+          hookEventName: 'PermissionRequest',
+          decision: { behavior: 'deny', message: 'no authorization; ask the user' },
+        },
+      });
+    });
+
+    it('#976: a reasoned deny omits `interrupt` unless asked, so the turn continues', async () => {
+      // `interrupt: true` STOPS Claude. Leaving it unset is what lets Claude act
+      // on the message (route around, or ask the user). An accidental `true`
+      // here would silently kill the turn instead.
+      server = new HookServer({ port });
+      server.setPermissionResolver(async () => ({
+        behavior: 'deny' as const,
+        message: 'why',
+      }));
+      server.start();
+      const body = (await (await postPermission(port)).json()) as {
+        hookSpecificOutput: { decision: Record<string, unknown> };
+      };
+      expect('interrupt' in body.hookSpecificOutput.decision).toBe(false);
+    });
+
     it('returns the object decision verbatim, echoing updatedPermissions (#718)', async () => {
       const updatedPermissions = [
         {

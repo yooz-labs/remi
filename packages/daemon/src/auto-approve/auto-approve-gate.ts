@@ -93,6 +93,7 @@ import { log, logError } from '../cli/logger.ts';
 import type { PermissionDecision, PermissionRequestHookInput } from '../hooks/index.ts';
 import { type DeliveryOutcome, isDelivered } from '../notifications/notification-dispatcher.ts';
 import type { SessionRegistry } from '../session/index.ts';
+import { buildDenyMessage } from './deny-floor.ts';
 import { isDesignQuestion, isMultiChoicePermission } from './multichoice.ts';
 import type { AutoApproveResult } from './types.ts';
 
@@ -1432,7 +1433,10 @@ export class AutoApproveGate {
     }
     if (result.decision === 'deny') {
       this.markHandled(isSubagent);
-      return 'deny';
+      // #976: carry the reason to Claude instead of a bare refusal, so it can
+      // route around or ask the user rather than guess. `interrupt` is left
+      // unset (false) so the turn continues and it can act on the message.
+      return { behavior: 'deny', message: buildDenyMessage(result.reasoning) };
     }
     if (result.decision === 'pick') {
       // Multi-choice pick (#399): the response can't express it, so render the
@@ -1490,7 +1494,9 @@ export class AutoApproveGate {
       if (second.decision === 'deny') {
         log(`[AutoApprove ${this.sessionTag}] escalate_model (${escalateModel}) denied`);
         this.markHandled(isSubagent);
-        return 'deny';
+        // #976: same reasoned deny as the primary path above, carrying the
+        // SECOND opinion's reasoning since that is the verdict being applied.
+        return { behavior: 'deny', message: buildDenyMessage(second.reasoning) };
       }
       if (second.decision === 'cancelled') {
         // Claude already advanced (cancelStale fired during the slower second

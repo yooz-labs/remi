@@ -4,6 +4,28 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### Changed
+- **An auto-approve deny now tells Claude why** (#976). The hook response
+  carried a bare `{behavior:"deny"}`, so Claude learned only that it was
+  refused — leaving it to guess or give up. `PermissionDecision` gains the
+  `{behavior:'deny', message?, interrupt?}` variant the official hooks reference
+  defines, where `message` is *"For `deny` only: tells Claude why the permission
+  was denied"* — model-directed, not terminal UI. With `interrupt` unset the turn
+  continues, so the reason is actionable.
+
+  The message offers two exits, deliberately in this order: use a different
+  approach, or ask the user to authorize explicitly. Leading with "ask the user"
+  would push Claude to interrupt even when a safe equivalent existed. The second
+  exit also closes the #976 loop — the user's answer arrives via
+  `UserPromptSubmit` as genuine EXPLICIT authorization from a channel text cannot
+  forge, which is the only route above `implicit` under the ADR 0015 amendment.
+
+  Deliberately NOT claimed anywhere: that Claude will then ask. The docs
+  guarantee only that it is not stopped and has been told why; what it does next
+  is its own choice, and that is an expectation to verify by observation rather
+  than a contract. The bare `'deny'` string stays valid and equivalent to
+  omitting the message, so no existing caller changes.
+
 ### Fixed
 - **Machine-generated text no longer reaches the auto-approve authority channel**
   (#982). `UserPromptSubmit` is authority's PRIMARY source, and `authority.ts`'s

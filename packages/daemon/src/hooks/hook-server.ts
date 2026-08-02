@@ -103,7 +103,33 @@ export type PermissionDecision =
   | 'allow'
   | 'deny'
   | 'passthrough'
-  | { readonly behavior: 'allow'; readonly updatedPermissions: readonly unknown[] };
+  | { readonly behavior: 'allow'; readonly updatedPermissions: readonly unknown[] }
+  /**
+   * A deny that tells Claude WHY (#976). Per the official hooks reference's
+   * PermissionRequest decision-control table:
+   *
+   *   `message`   — "For `deny` only: tells Claude why the permission was denied"
+   *   `interrupt` — "For `deny` only: if `true`, stops Claude"
+   *
+   * So `message` is MODEL-directed, not terminal-UI-directed (PreToolUse's
+   * `permissionDecisionReason` is the field that splits those two audiences;
+   * this event has no user-facing variant at all). With `interrupt` absent or
+   * false the turn continues, so Claude has seen the reason and can act on it —
+   * route around with a safer command, or ask the user directly.
+   *
+   * That last step is the documented LIMIT worth respecting: the docs guarantee
+   * Claude is not stopped and has been told why. They do NOT say it will then
+   * ask the user. Treat "Claude asks" as an expectation to verify by
+   * observation, never as a contract.
+   *
+   * The bare `'deny'` string above stays valid and equivalent to omitting the
+   * message — every existing caller keeps working unchanged.
+   */
+  | {
+      readonly behavior: 'deny';
+      readonly message?: string;
+      readonly interrupt?: boolean;
+    };
 
 export type PermissionResolver = (input: PermissionRequestHookInput) => Promise<PermissionDecision>;
 
