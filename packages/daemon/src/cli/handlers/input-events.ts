@@ -12,6 +12,7 @@
 import { createBulletExpandResponse, createError, errorToString } from '@remi/shared';
 import type { AnswerExtras, AnswerSelection, Question, QuestionOption, UUID } from '@remi/shared';
 
+import { parsePermissionQuestionText } from '../../auto-approve/precedent.ts';
 import { clearAuqRunActive, markAuqRunActive } from '../../hooks/auq-active-runs.ts';
 import { AUQ_KEYS } from '../../hooks/auq-answer.ts';
 import { type AuqRunOutcome, runAuqAnswer } from '../../hooks/auq-runner.ts';
@@ -85,6 +86,26 @@ export interface InputHandlerDeps {
    * question-presence-tracker.ts.
    */
   isPromptCurrent?: (sessionId: UUID, questionId: UUID, ptyText: string) => boolean;
+  /**
+   * Record a human-classified permission answer into this session's
+   * precedent store (#976 prerequisite, `auto-approve/precedent.ts`). Called
+   * ONLY for answers `handleAnswer` can classify with confidence as an
+   * unambiguous approve/deny of a genuine tool permission — see the call
+   * site's comment for the exact conditions. This is the ONLY place in the
+   * codebase that calls into a `PrecedentStore` at all: provenance-safety
+   * (ADR 0015's "Amendment, 2026-08-02", precedent.ts's module doc) depends
+   * on every path into it converging on `handleAnswer`, so a future consumer
+   * must not add another call site instead of routing through here. Absent
+   * (tests, or a session with no wired store) => the answer still applies
+   * normally, it is just not recorded as precedent — recording is additive
+   * and must never gate the answer itself.
+   */
+  recordPrecedent?: (
+    sessionId: UUID,
+    toolName: string,
+    signature: string,
+    decision: 'approved' | 'denied',
+  ) => void;
 }
 
 /**
@@ -240,6 +261,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     cancelAutoApproveForQuestion,
     onQuestionResolved,
     isPromptCurrent,
+    recordPrecedent,
   } = deps;
 
   // #627: in-flight AskUserQuestion runs, keyed `${sessionId}:${questionId}`, so a
@@ -683,6 +705,41 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         answerCacheKey(answer),
         ...(answeredOption ? [answeredOption.value, answeredOption.label] : []),
       ]);
+
+      // #976 prerequisite (precedent.ts, ADR 0015 amendment): record a
+      // provenance-safe human answer for later authorization-grade matching.
+      // Deliberately narrow, "record only what can be classified with
+      // confidence" (skip everything else):
+      //   - `decision` is the SAME classification `mapAnswerToDecision`
+      //     already computed above for the held-hook path. It is non-null
+      //     ONLY for an unambiguous isNo (deny) or isYes-without-"always"/
+      //     suggestion-derived-"always" (approve) option — never for a
+      //     multi-choice pick, free text, or a bare "always" with no
+      //     suggestion to echo. This branch is unreachable for the AUQ
+      //     (`extra.selections`) and cancel (`extra.cancel`) paths above,
+      //     which both `return` earlier, so those are skipped by
+      //     construction, not by an extra check here.
+      //   - `active.source === 'permission_request'` restricts to the ONE
+      //     Question shape that carries genuine tool+command text,
+      //     deterministically built by `HookEventBridge.buildPermissionQuestion`
+      //     (hook-event-bridge.ts). A `source: 'pty'` / `'notification'` /
+      //     `'elicitation'` question, or the source-less StopFailure "Retry?"
+      //     prompt, carries no reliable tool/command identity and is skipped
+      //     — recording "Retry?" -> yes as an approval of some tool would be
+      //     exactly the unrecoverable mistake this module's doc warns about.
+      //   - `parsePermissionQuestionText` can still return null (defensive;
+      //     see its own doc) — skipped rather than guessed.
+      if (decision !== null && active.source === 'permission_request') {
+        const parsed = parsePermissionQuestionText(active.text);
+        if (parsed) {
+          recordPrecedent?.(
+            session.sessionId,
+            parsed.toolName,
+            parsed.signature,
+            decision.decision === 'allow' ? 'approved' : 'denied',
+          );
+        }
+      }
 
       // Free the GPU on EVERY answer (#617): cancel the eval for THIS question
       // unconditionally. Per-eval scoping (the eval id captured when the question

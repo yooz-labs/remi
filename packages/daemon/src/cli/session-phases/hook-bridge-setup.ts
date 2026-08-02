@@ -102,6 +102,10 @@ import {
   resolveAuthority,
 } from '../../auto-approve/index.ts';
 import type { AutoApproveService } from '../../auto-approve/index.ts';
+// Not re-exported from `auto-approve/index.ts` on purpose (#976 prerequisite
+// scope: that barrel is being edited concurrently by other work on the same
+// epic). Imported directly from its own module instead.
+import { PrecedentStore } from '../../auto-approve/precedent.ts';
 import { HookEventBridge } from '../../hooks/index.ts';
 import type {
   ForeignSessionEscalator,
@@ -338,6 +342,16 @@ export interface HookBridgeHandle {
    * this exact session. Always present (the gate is constructed unconditionally).
    */
   gate: SessionGateHandle;
+  /**
+   * This session's precedent store (#976 prerequisite,
+   * `auto-approve/precedent.ts`). cli.ts collects this (keyed by sessionId,
+   * mirroring `sessionGateHandles`) so `input-events.ts`'s `handleAnswer` can
+   * reach the RIGHT session's store through the `recordPrecedent` dependency.
+   * Always present (constructed unconditionally, like `gate`); cleared on
+   * session restart inside this closure (see the `onRotation` callback
+   * above), not by the caller.
+   */
+  precedentStore: PrecedentStore;
 }
 
 export function setupHookBridge(
@@ -368,6 +382,15 @@ export function setupHookBridge(
   // getAuthority` below, so a turn submitted mid-eval is picked up for the
   // NEXT permission, not stale.
   const authorityStore = new AuthorityStore();
+
+  // ---- Precedent (#976 prerequisite, ADR 0015 amendment) --------------------
+  // Per-session, in-memory record of operations a HUMAN actually answered
+  // (`auto-approve/precedent.ts`). Recorded ONLY from `handleAnswer`
+  // (`input-events.ts`) via the `recordPrecedent` callback cli.ts wires
+  // through this handle's `precedentStore` field below — see that module's
+  // doc for the full provenance-safety argument. ADDITIVE ONLY here: nothing
+  // reads from it yet.
+  const precedentStore = new PrecedentStore();
 
   // Push the session's subagent views to clients (epic #499 phase 3). Declared
   // here (before the binder/handlers reference it) so there is no fragile
@@ -878,6 +901,10 @@ export function setupHookBridge(
         // transcript path once the binder re-adopts; only the live store
         // needs an explicit drop.
         authorityStore.clear();
+        // #976 prerequisite: same reasoning applies to precedent -- a PRIOR
+        // conversation's human answers must not authorize or block anything
+        // in a fresh one (ADR 0015 amendment, "Obligations this creates").
+        precedentStore.clear();
         // The new session starts with no subagents (#499 phase 3).
         if (subagentViews) {
           subagentViews.clear();
@@ -1325,5 +1352,6 @@ export function setupHookBridge(
         autoApproveGate.cancelEvalForQuestion(questionId, reason),
       forceRelease: (reason) => autoApproveGate.forceRelease(reason),
     },
+    precedentStore,
   };
 }
