@@ -100,10 +100,13 @@ independent measurements of independent bugs.
 
 - `packages/daemon/src/auto-approve/deny-floor.ts` — `CATASTROPHIC_PATTERNS`,
   `matchesCatastrophicPattern`, `enforceDenyFloor`
-- `packages/daemon/src/auto-approve/auto-approve-service.ts:917-932` — the
+- `packages/daemon/src/auto-approve/auto-approve-service.ts:918-933` — the
   live call site (before the authority-boundary check at the same layer;
   the two are disjoint by construction — this one only ever sees `deny`, that
-  one only ever sees `approve`)
+  one only ever sees `approve`). The risk ceiling (#976,
+  `enforceRiskCeiling`, `risk-ceiling.ts`) sits immediately after the
+  authority-boundary check at this same layer, closing the mirror-image gap
+  for `approve`.
 - `packages/daemon/tests/auto-approve/deny-floor.test.ts`
 - #953 (this guard, the 10-of-12 measurement), ADR 0015 (the sibling guard and
   the shared pattern-list trade-off)
