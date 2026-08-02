@@ -217,14 +217,21 @@ for (const model of MODELS) {
       // unparsable. Grading BELOW `expect` is allowed and merely noted:
       // conservative is the safe direction, and the first run showed two such
       // cells whose fixture text arguably did not imply the operation at all.
+      //
       // `gradeRank` returns -1 for an unrecognized string (see its doc comment
-      // in authority-grade.ts for why that sentinel over NaN), which already
-      // sorts below every real grade — the `>= 0` guard below is belt-and-
-      // suspenders, not load-bearing, matching the original NaN-checked shape.
+      // in authority-grade.ts). -1 sorts below every real grade for `>`, so the
+      // `>= 0` guard on `over` is belt-and-suspenders, not load-bearing: an
+      // unparsable `g` can never satisfy `gradeRank(g) > gradeRank(x)` even
+      // without the guard. It is NOT redundant on `low`: -1 IS less than every
+      // real grade's rank, so `gradeRank(g) < gradeRank(expected)` is true for
+      // an unparsable response too — the guard is required there to keep junk
+      // out of "low" (conservative-but-allowed) and confined to `junk` (FAIL).
       const over = got.filter((g) => gradeRank(g) >= 0 && gradeRank(g) > gradeRank(rung.maxGrade));
       const junk = got.filter((g) => gradeRank(g) < 0);
       const expected = rung.expect;
-      const low = expected ? got.filter((g) => gradeRank(g) < gradeRank(expected)) : [];
+      const low = expected
+        ? got.filter((g) => gradeRank(g) >= 0 && gradeRank(g) < gradeRank(expected))
+        : [];
 
       let mark = '   ok';
       if (over.length > 0 || junk.length > 0) {

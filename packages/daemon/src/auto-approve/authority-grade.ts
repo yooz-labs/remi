@@ -46,16 +46,30 @@ export type AuthorizationGrade = (typeof AUTHORIZATION_GRADES)[number];
  * regular, orderable number rather than `NaN` (which is what the sweep used
  * before this change, gated by an explicit `Number.isNaN` check at every
  * comparison site). `-1` sorts below `none` (index `0`) under ordinary `<`,
- * `<=`, `>`, `>=`, subtraction, and `Array.prototype.sort` — so an
- * unrecognized grade compares as WEAKER than every real grade automatically,
- * without a caller having to remember a special case. `NaN` does not have
- * that property: `NaN > x` and `x > NaN` are BOTH `false` for every `x`, which
- * happens to read as "safe" for a simple threshold check but silently breaks
+ * `<=`, `>`, `>=`, subtraction, and `Array.prototype.sort` — unlike `NaN`,
+ * where `NaN > x` and `x > NaN` are BOTH `false` for every `x`, which breaks
  * anything that assumes real-number ordering (`sort`, `Math.max`, a `-`
- * comparator) — a trap that looks correct until a second comparison shape is
- * added. `-1` has no such trap: it is just the weakest rank there is. Pick the
- * option that is safe by construction over the one that is safe only by
- * convention at every call site.
+ * comparator).
+ *
+ * That said, `-1` does NOT make every comparison safe without a guard, and a
+ * caller must not assume it does — the two directions are NOT symmetric:
+ *
+ * - "Does `g` EXCEED a threshold?" (`gradeRank(g) > gradeRank(ceiling)`) is
+ *   safe unguarded: `-1` can never exceed a real grade's rank (`>= 0`), so an
+ *   unrecognized grade silently and correctly never reads as "exceeds".
+ * - "Is `g` BELOW a threshold?" (`gradeRank(g) < gradeRank(expected)`) is
+ *   **not** safe unguarded: `-1` IS less than every real grade's rank, so an
+ *   unparsable response silently reads as "below" too, indistinguishable from
+ *   a genuine conservative miss. A caller doing this comparison must also
+ *   check `gradeRank(g) >= 0` (i.e. that `g` parsed at all) before trusting
+ *   the `<` result. `run-authority-grading-sweep.ts`'s `low` filter is exactly
+ *   this shape and carries the guard for this reason — see the comment there.
+ *
+ * So: `-1` removes the need for a special case on "exceeds" checks, but a
+ * "below" check still needs one, same as it would with `NaN`. Do not describe
+ * this sentinel as making rank comparisons safe in general; it only changes
+ * which comparisons are safe by default and which still need a validity
+ * check.
  */
 export function gradeRank(grade: string): number {
   return (AUTHORIZATION_GRADES as readonly string[]).indexOf(grade);
