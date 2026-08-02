@@ -254,24 +254,57 @@ function isRootTarget(target: string): boolean {
 /**
  * True if `target` is `dir` itself or a path under it (`/etc`, `/etc/passwd`
  * both count for `dir = '/etc'`), but not a same-prefixed sibling that is a
- * different directory (`/etcetera-backup` does not count): the character
- * right after `dir` must not continue an identifier.
+ * DIFFERENT directory (`/etcetera-backup`, `/etc-backup` do not count).
+ *
+ * Fixed by #985's second review round: the original version here rejected
+ * only an alnum/underscore continuation (`!/^[A-Za-z0-9_]/.test(rest)`),
+ * which is the same mistake as reaching for `\b` — both treat `-` as a valid
+ * boundary. `/usr-local-mine` was measured to match `/usr` under that rule:
+ * `r` is a word character, `-` is not, so a word-boundary check (explicit or
+ * via `\b`) fires right where a real sibling directory name continues. The
+ * only correct boundary for "this path, or a path under it" is an EXACT
+ * match or the immediate next character being `/` — nothing else, since any
+ * other character (`-`, `.`, `_`, a letter) means the target is a
+ * differently-named entry that merely shares a prefix.
  */
 function isDirTarget(target: string, dir: string): boolean {
-  if (!target.startsWith(dir)) return false;
-  const rest = target.slice(dir.length);
-  return rest === '' || !/^[A-Za-z0-9_]/.test(rest);
+  return target === dir || target.startsWith(`${dir}/`);
 }
 
-/** `| sh` / `| bash`, where the pipe must lead directly (only whitespace
- *  between) into the interpreter name and the name must end there — so
- *  `| shasum`, `| shellcheck`, `| shuf`, and `| bashate` do not match. */
-const PIPE_SH_RE = /\|\s*sh\b/;
-const PIPE_BASH_RE = /\|\s*bash\b/;
+/**
+ * Command-token terminator: whitespace, or a shell control character that
+ * would end this token (`;`, `&`, `|`, `)`), or end-of-string. Deliberately
+ * excludes identifier characters (letters, digits, `_`, `-`), for the same
+ * reason `isDirTarget` above cannot use `\b`: a hyphen is not a boundary
+ * between "this exact command name" and "a different, hyphenated command
+ * name that happens to share a prefix" (`sudo rm-wrapper` is not `sudo rm`;
+ * `| sh-wrapper` is not `| sh`). Audited every `\b` in this file for the
+ * same class of bug the `isDirTarget` fix above closed: `RM_INVOCATION_RE`'s
+ * leading `\brm` and `chmod`'s leading `\bchmod` are LEADING boundaries
+ * (checking what precedes the token), which `\b` handles correctly — the
+ * risk is specific to a TRAILING boundary claiming "the token ends here."
+ * `RM_INVOCATION_RE` has no trailing `\b` at all: it requires a literal
+ * whitespace character after `rm` (via the mandatory `\s+` before the flag
+ * run or the target), which already rejects `rm-wrapper` for a stronger
+ * reason than any boundary check — there is no flag/target to capture
+ * without real whitespace. That left exactly two trailing `\b` uses with
+ * this bug: `sudo rm\b` and the two pipe-interpreter rules below, both
+ * fixed to use this terminator instead.
+ */
+const COMMAND_TOKEN_END = '[\\s;&|)]|$';
+
+/** `sudo rm`, `| sh`, `| bash` — the pipe/prefix must lead directly (only
+ *  whitespace between) into the command name, and the name must end at a
+ *  real command-token boundary — so `sudo rmdir`, `sudo rm-wrapper`,
+ *  `| shasum`, `| shellcheck`, `| shuf`, `| bashate`, and `| sh-wrapper` do
+ *  not match. */
+const SUDO_RM_RE = new RegExp(`\\bsudo\\s+rm(?=${COMMAND_TOKEN_END})`);
+const PIPE_SH_RE = new RegExp(`\\|\\s*sh(?=${COMMAND_TOKEN_END})`);
+const PIPE_BASH_RE = new RegExp(`\\|\\s*bash(?=${COMMAND_TOKEN_END})`);
 
 const CATASTROPHIC_RULES: readonly CatastrophicRule[] = [
   { label: 'rm -rf /', test: (command) => matchesRmWithTarget(command, isRootTarget) },
-  { label: 'sudo rm', test: (command) => /\bsudo\s+rm\b/.test(command) },
+  { label: 'sudo rm', test: (command) => SUDO_RM_RE.test(command) },
   {
     label: 'rm -rf /etc',
     test: (command) => matchesRmWithTarget(command, (target) => isDirTarget(target, '/etc')),

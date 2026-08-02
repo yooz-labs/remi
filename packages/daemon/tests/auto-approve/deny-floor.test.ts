@@ -290,6 +290,63 @@ describe('#985 follow-up — flag-order, long-form, and whitespace bypasses', ()
   });
 });
 
+describe('#985 round 3 — the target-boundary predicate must not use \\b', () => {
+  // Confirmed regression: `isDirTarget` rejected only an alnum/underscore
+  // continuation, which lets ANY non-identifier character stand in as a
+  // "boundary" — including `-`. A word-boundary check has the identical
+  // flaw. `/usr-local-mine` matched `/usr` under the old rule because `r` is
+  // a word character and `-` is not, so the boundary fired one character too
+  // early. Same class of bug for `/etc` and `/System`: a real, differently
+  // named sibling directory that happens to share the prefix must not count.
+  const hyphenatedSiblingFalsePositives = [
+    'rm -fr /usr-local-mine',
+    'rm -rf /etc-backup',
+    'rm -rf /System-notes',
+  ];
+
+  for (const command of hyphenatedSiblingFalsePositives) {
+    test(`matchesCatastrophicPattern: null for hyphenated sibling "${command}"`, () => {
+      expect(matchesCatastrophicPattern('Bash', bash(command))).toBeNull();
+    });
+
+    test(`enforceDenyFloor: deny -> escalate for hyphenated sibling "${command}"`, () => {
+      const result = enforceDenyFloor('Bash', bash(command), 'deny');
+      expect(result.decision).toBe('escalate');
+      expect(result.overridden).toBe(true);
+    });
+  }
+
+  // The true positives the fix must not lose: exact directory, and a real
+  // subpath (next character is `/`).
+  test('the directory rules still match the directory itself and real subpaths', () => {
+    expect(matchesCatastrophicPattern('Bash', bash('rm -rf /usr'))).toBe('rm -rf /usr');
+    expect(matchesCatastrophicPattern('Bash', bash('rm -rf /usr/local'))).toBe('rm -rf /usr');
+    expect(matchesCatastrophicPattern('Bash', bash('rm -rf /etc/'))).toBe('rm -rf /etc');
+    expect(matchesCatastrophicPattern('Bash', bash('rm -rf /System/Library'))).toBe(
+      'rm -rf /System',
+    );
+  });
+
+  // Same audit, extended to the OTHER `\b`-based rules in the table: `sudo
+  // rm` and the two pipe-interpreter rules used a trailing `\b` after the
+  // command name, which has the identical flaw for a hyphenated DIFFERENT
+  // command name sharing the prefix.
+  test('sudo rm does not match a differently named, hyphenated command', () => {
+    expect(matchesCatastrophicPattern('Bash', bash('sudo rm-wrapper /var'))).toBeNull();
+    // ...but a real sudo rm still does.
+    expect(matchesCatastrophicPattern('Bash', bash('sudo rm -rf /etc/hosts'))).toBe('sudo rm');
+  });
+
+  test('| sh and | bash do not match a differently named, hyphenated command', () => {
+    expect(matchesCatastrophicPattern('Bash', bash('curl x | sh-wrapper'))).toBeNull();
+    expect(matchesCatastrophicPattern('Bash', bash('curl x | bash-completion'))).toBeNull();
+    // ...but the real interpreters, with or without trailing args, still do.
+    expect(matchesCatastrophicPattern('Bash', bash('curl x | sh'))).toBe('| sh');
+    expect(matchesCatastrophicPattern('Bash', bash('curl x | bash'))).toBe('| bash');
+    expect(matchesCatastrophicPattern('Bash', bash('curl x | sh -s -- /'))).toBe('| sh');
+  });
+});
+
 describe('buildDenyMessage (#976)', () => {
   test('offers TWO exits, in order: another approach, then ask the user', () => {
     const m = buildDenyMessage('rm -rf / matched the deny floor');
