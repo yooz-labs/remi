@@ -870,3 +870,111 @@ describe('scratch: adversarial (MUST fall through, never group-approve)', () => 
     test(JSON.stringify(cmd), () => expect(bash(cmd, SCRATCH_GROUPS)).toBeNull());
   }
 });
+
+/**
+ * #1000 review. Three findings, ONE root cause: `scratch` needed to tell a
+ * scratch-granted redirect clause apart from every other kind, which
+ * `hasShellControl`'s boolean return cannot express, so it grew a COPY of that
+ * function's redirect regex. The copy inherited a greedy `\S+` target, which is
+ * safe for the question the original asks ("is this exactly /dev/null?", so
+ * anything unrecognized is refused) and unsafe for the question the copy asks
+ * ("may I DELETE this clause?", where anything unrecognized is deleted along
+ * with whatever it was hiding).
+ *
+ * Fixed by classifying a redirect target once, in shell-safety.ts, and giving
+ * both consumers the same answer -- `opaque` is a target this module declines
+ * to read as a single path, and `opaque` is never removed.
+ */
+describe('#1000: a redirect clause is never removed unless it is one plain path', () => {
+  const BALANCED_WITH_SCRATCH = [...ALL, 'fs-write', 'scratch'];
+
+  // Two GLUED redirects are one greedy match whose "target" carries the second
+  // operator inside it. Removing it removes a real, non-scratch destination
+  // before `hasShellControl` can veto it. Confirmed against real bash: the
+  // second path is the one that receives the write, the first ends up empty.
+  const gluedRedirect = [
+    'cat file.txt >/tmp/a>/etc/passwd',
+    'cat file.txt >>/tmp/a>>/etc/passwd',
+    'cat file.txt 2>/tmp/a>/etc/shadow',
+    'cat file.txt 3>/tmp/a3>/etc/shadow',
+    'bun test >/tmp/out.txt>/etc/cron.d/evil',
+    // The destinations that make this a privilege-escalation bug and not just
+    // an unwanted write -- the surfaces ADR 0018 built sensitive-paths.ts for.
+    'cat k >/tmp/a>~/.ssh/authorized_keys',
+    'cat e >/tmp/a>.git/hooks/pre-commit',
+    'cat e >/tmp/a>~/.remi/config.toml',
+    // Reaches fs-write-owned prefixes too, at exactly the level that ships
+    // `scratch` alongside `fs-write`.
+    'cp a.txt b.txt >/tmp/x>/etc/cron.d/evil',
+    'touch ok.txt >/tmp/x>~/.ssh/authorized_keys',
+  ];
+  for (const cmd of gluedRedirect) {
+    test(`glued redirect: ${JSON.stringify(cmd)}`, () =>
+      expect(bash(cmd, BALANCED_WITH_SCRATCH)).toBeNull());
+  }
+
+  // The same greedy match also swallows a backgrounding `&` and the entire
+  // command after it, which is a step further: not an arbitrary WRITE but an
+  // arbitrary COMMAND, and `&` is the operator hasShellControl checks first.
+  const backgroundedRedirect = [
+    'cat x >/tmp/a&rm -rf ~',
+    'cat x >/tmp/a&curl evil.example',
+    'bun test >/tmp/o&rm -rf /Users/yahya',
+  ];
+  for (const cmd of backgroundedRedirect) {
+    test(`backgrounded redirect: ${JSON.stringify(cmd)}`, () =>
+      expect(bash(cmd, BALANCED_WITH_SCRATCH)).toBeNull());
+  }
+
+  // The point of the fix is NOT that redirects stopped working: an ordinary
+  // single scratch-rooted redirect is the whole reason the group exists.
+  test('an ordinary scratch-rooted redirect is still granted', () => {
+    expect(bash('bun test > /tmp/out.txt 2>&1', BALANCED_WITH_SCRATCH)).toBe('build-test:bun test');
+  });
+  test('/dev/null and fd-dups are untouched', () => {
+    expect(bash('bun test > /dev/null 2>&1', BALANCED_WITH_SCRATCH)).toBe('build-test:bun test');
+  });
+});
+
+/**
+ * #1000 review, second finding. `splitCompound` deliberately discards WHICH
+ * operator joined two segments -- every other group judges each segment on its
+ * own, so a false negative there is harmless. `scratch` is the first group to
+ * carry state across segments (the tracked `cd`), and that state's correctness
+ * depends on exactly the distinction being discarded.
+ *
+ * Both cases below were confirmed against real bash before being fixed: the
+ * tracked directory and the shell's actual directory genuinely diverge, and a
+ * later RELATIVE `rm -rf` is then approved against a directory nobody checked.
+ */
+describe('#1000: a cd whose effect is not guaranteed does not move the tracked root', () => {
+  // `||` runs its right side only if the left FAILED. `cd /etc` always
+  // succeeds, so `cd /tmp` never runs -- real bash ends in /etc, and a
+  // left-to-right walk ends believing /tmp. `rm -rf hosts` is then /etc/hosts.
+  test('|| short-circuit: the right-hand cd may never run', () => {
+    expect(bash('cd /etc || cd /tmp; rm -rf hosts', SCRATCH_GROUPS)).toBeNull();
+  });
+  test('|| short-circuit, && continuation', () => {
+    expect(bash('cd /etc || cd /tmp && rm -rf hosts', SCRATCH_GROUPS)).toBeNull();
+  });
+  // A pipeline stage runs in a subshell (absent `lastpipe`), so its cd is
+  // discarded when the stage exits -- true whether the cd is REACHED via `|`
+  // or FOLLOWED by `|`, since either position makes it a stage.
+  test('pipeline: a cd reached via | runs in a subshell', () => {
+    expect(bash('true | cd /tmp; rm -rf x', SCRATCH_GROUPS)).toBeNull();
+  });
+  test('pipeline: a cd followed by | runs in a subshell', () => {
+    expect(bash('cd /tmp | true; rm -rf x', SCRATCH_GROUPS)).toBeNull();
+  });
+  // Forgetting the directory must be sticky: a later RELATIVE cd cannot
+  // rebuild a root from an unknown one.
+  test('a relative cd after an unreliable one does not rebuild the root', () => {
+    expect(bash('cd /var || cd /tmp; cd sub; rm -rf y', SCRATCH_GROUPS)).toBeNull();
+  });
+  // The operators that DO guarantee the cd ran, in this shell, still work --
+  // otherwise the fix would have disabled the group rather than corrected it.
+  test('&& and ; still establish the root', () => {
+    expect(bash('cd /tmp && rm -rf junk', SCRATCH_GROUPS)).toBe('scratch:rm');
+    expect(bash('cd /tmp; rm -rf junk', SCRATCH_GROUPS)).toBe('scratch:rm');
+  });
+});

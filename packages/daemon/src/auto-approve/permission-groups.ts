@@ -32,7 +32,13 @@ import {
   resolveDotDot,
   segmentTouchesSensitivePath,
 } from './sensitive-paths.ts';
-import { matchCoveredCommand, shellWords, splitCompound } from './shell-safety.ts';
+import {
+  type CompoundJoiner,
+  matchCoveredCommand,
+  rewriteRedirectClauses,
+  shellWords,
+  splitCompoundParts,
+} from './shell-safety.ts';
 import { hasUnsafeWriteFlag } from './write-flag-safety.ts';
 
 /**
@@ -244,32 +250,44 @@ function advanceScratchCwd(cwd: ScratchCwd, trimmedSegment: string): ScratchCwd 
 }
 
 /**
- * Mirrors `hasShellControl`'s own redirect-clause pattern (shell-safety.ts)
- * so detection here can never disagree with what that function treats as a
- * redirect. Kept local rather than shared: it exists only so a
- * scratch-granted clause can be told apart from every other kind, which
- * `hasShellControl`'s plain boolean return cannot express.
+ * True if a `cd` in this position cannot be assumed to have moved the shell
+ * the rest of the command runs in. Reading segments left-to-right models `&&`,
+ * `;` and newline correctly and the other two operators not at all:
+ *
+ * - `||` — the right-hand side runs only if the left FAILED. `cd /etc || cd
+ *   /tmp` ends in `/etc` whenever `/etc` exists, which is always; a
+ *   left-to-right walk ends believing `/tmp`.
+ * - `|` — a pipeline stage runs in a subshell (absent `lastpipe`), so its `cd`
+ *   is discarded when the stage exits. True for a `cd` REACHED via `|` and for
+ *   one FOLLOWED by `|`, since either position makes it a stage.
+ *
+ * Both directions matter because the consequence is not a missed match but a
+ * tracked scratch root that differs from the real one, under which a later
+ * relative `rm -rf` is approved against a directory nobody checked. Returning
+ * true makes the caller forget the directory rather than guess it, the same
+ * fail-closed handling bare `cd` and `cd -` already get.
  */
-const SCRATCH_REDIRECT_CLAUSE_RE = /\d*>>?\s*&?\S+/g;
-
-/** A redirect target `hasShellControl` already treats as safe (discard, or an fd dup). */
-function isExemptRedirectTarget(target: string): boolean {
-  return target === '/dev/null' || /^&\d+$/.test(target);
+function cdEffectIsUnreliable(joiner: CompoundJoiner, nextJoiner: CompoundJoiner): boolean {
+  return joiner === '|' || joiner === '||' || nextJoiner === '|';
 }
 
 /**
- * Remove every redirect clause in `segment` whose target is scratch-rooted
- * (an exempt target is left untouched — it needs no help). REMOVES the
- * clause entirely rather than retargeting it to `/dev/null`: a retargeted
- * clause would still leave a token like `2>/dev/null` sitting in the word
- * list `scratchTargetVeto` scans for positional arguments, which is neither a
- * flag nor a real target and would wrongly fail that scan.
+ * Remove every redirect clause in `segment` whose target is a plain path under
+ * a scratch root. REMOVES the clause entirely rather than retargeting it to
+ * `/dev/null`: a retargeted clause would still leave a token like
+ * `2>/dev/null` sitting in the word list `scratchTargetVeto` scans for
+ * positional arguments, which is neither a flag nor a real target and would
+ * wrongly fail that scan.
+ *
+ * Only a `path` target is ever removed. `discard`/`fd-dup` need no help —
+ * `hasShellControl` already permits them — and `opaque` must never be removed,
+ * since removing it is exactly how a second operator hidden inside the greedy
+ * match would escape the veto that was going to catch it.
  */
 function sanitizeSegmentRedirects(segment: string, cwd: ScratchCwd): string {
-  return segment.replace(SCRATCH_REDIRECT_CLAUSE_RE, (whole) => {
-    const target = whole.replace(/^\d*>>?\s*/, '');
-    if (isExemptRedirectTarget(target)) return whole;
-    return isStrictlyUnderScratchRoot(target, cwd) ? '' : whole;
+  return rewriteRedirectClauses(segment, (target, text) => {
+    if (target.kind !== 'path') return text;
+    return isStrictlyUnderScratchRoot(target.path, cwd) ? '' : text;
   });
 }
 
@@ -283,26 +301,59 @@ function sanitizeSegmentRedirects(segment: string, cwd: ScratchCwd): string {
  * scratch-rooted redirect through it is to remove the clause before that
  * check ever sees it.
  *
- * Rebuilding with a uniform `&&` between segments is safe even though the
- * original may have used `;`/`|`/newlines: `matchCoveredCommand` re-splits
- * whatever string it is given via `splitCompound` and treats every compound
- * separator identically — it never inspects which one joined two segments —
- * so substituting one for another here cannot change its verdict.
+ * The rebuilt string keeps each segment's ORIGINAL joining operator. An
+ * earlier draft rebuilt with a uniform `&&`, reasoning that
+ * `matchCoveredCommand` re-splits via `splitCompound` and never inspects which
+ * separator joined two segments. That was true of `matchCoveredCommand` and
+ * false of the scratch veto downstream of it, which tracks `cd` across
+ * segments and so depends on exactly the operator a uniform `&&` erased:
+ * flattening `true | cd /tmp` to `true && cd /tmp` converts a discarded
+ * subshell `cd` into one the veto believes moved the shell.
  */
-function sanitizeCommandForScratch(command: string): string {
-  const segments = splitCompound(command);
+function sanitizeCommandForScratch(command: string): ScratchSanitized {
+  const parts = splitCompoundParts(command);
+  const cwdBySegment: ScratchCwd[] = [];
   let cwd: ScratchCwd = null;
-  const sanitized = segments.map((raw) => {
-    const trimmed = raw.trim();
-    if (trimmed === '') return raw;
-    const words = shellWords(trimmed);
+  let rebuilt = '';
+  for (const [i, part] of parts.entries()) {
+    // The cwd RECORDED for a segment is the one in effect when the shell
+    // reaches it, i.e. before its own effect: a `cd` moves the segments after
+    // it, not itself.
+    cwdBySegment.push(cwd);
+    const trimmed = part.text.trim();
+    const words = trimmed === '' ? [] : shellWords(trimmed);
+    let text = part.text;
     if (words[0] === 'cd') {
-      cwd = advanceScratchCwd(cwd, trimmed);
-      return raw;
+      cwd = cdEffectIsUnreliable(part.joiner, parts[i + 1]?.joiner ?? null)
+        ? null
+        : advanceScratchCwd(cwd, trimmed);
+    } else if (trimmed !== '') {
+      text = sanitizeSegmentRedirects(part.text, cwd);
     }
-    return sanitizeSegmentRedirects(raw, cwd);
-  });
-  return sanitized.join(' && ');
+    rebuilt += i === 0 ? text : `${joinerText(part.joiner)}${text}`;
+  }
+  return { command: rebuilt, cwdBySegment };
+}
+
+/**
+ * A scratch pre-pass result: the rewritten command, plus the tracked scratch
+ * directory in effect at each of its compound segments, BY INDEX.
+ *
+ * The trajectory is published rather than recomputed downstream because the
+ * two used to be computed twice — once here and once by a closure threaded
+ * through `matchCoveredCommand` — and two walks of the same command that must
+ * agree are exactly the shape that produced the `|`/`||` desync this type
+ * exists to prevent recurring. One walk, one answer, read by index.
+ */
+interface ScratchSanitized {
+  readonly command: string;
+  readonly cwdBySegment: readonly ScratchCwd[];
+}
+
+/** Render a joiner back into command text, preserving `splitCompoundParts`'s split. */
+function joinerText(joiner: CompoundJoiner): string {
+  if (joiner === null) return '';
+  return joiner === 'newline' ? '\n' : joiner;
 }
 
 /**
@@ -325,7 +376,7 @@ function sanitizeCommandForScratch(command: string): string {
  * mistaken for a positional target.
  */
 function scratchTargetVeto(segment: string, cwd: ScratchCwd): boolean {
-  const stripped = segment.replace(SCRATCH_REDIRECT_CLAUSE_RE, '').trim();
+  const stripped = rewriteRedirectClauses(segment, () => '').trim();
   const words = shellWords(stripped);
   for (const word of words.slice(1)) {
     if (word === '') continue;
@@ -640,7 +691,8 @@ export function matchGroups(
     // out exactly the string it put in and nothing here can change its
     // behavior.
     const scratchActive = known.includes('scratch');
-    const command = scratchActive ? sanitizeCommandForScratch(rawCommand) : rawCommand;
+    const scratch = scratchActive ? sanitizeCommandForScratch(rawCommand) : null;
+    const command = scratch?.command ?? rawCommand;
     // Map each prefix back to its owning group for the descriptive return.
     const prefixToGroup = new Map<string, string>();
     for (const name of known) {
@@ -648,31 +700,24 @@ export function matchGroups(
         if (!prefixToGroup.has(cmd)) prefixToGroup.set(cmd, name);
       }
     }
-    // Threaded across the whole command via closure, in the same left-to-
-    // right order `matchCoveredCommand` walks segments: `extraVeto` observes
-    // every NEUTRAL segment (which is where a `cd` always lands, per
-    // `NEUTRAL_PREFIXES`) and advances it before `vetoForMatched` is ever
-    // asked to judge a LATER segment's targets against it.
-    let scratchCwd: ScratchCwd = null;
-    const extraVeto = scratchActive
-      ? (segment: string) => {
-          scratchCwd = advanceScratchCwd(scratchCwd, segment.trim());
-          return readSegmentVeto(segment);
-        }
-      : readSegmentVeto;
     // Per-segment veto (#957/#959): each matched segment is judged by the
     // profile of the group that matched IT, not by one blanket rule for the
     // whole command. A group with no `segmentVeto` gets the historical read
     // profile, so read-only/vcs-read/build-test behave exactly as before.
-    // `scratch` is special-cased directly (its veto needs `scratchCwd`, which
-    // the stateless `PermissionGroup.segmentVeto` signature has no room for).
+    // `scratch` is special-cased directly (its veto needs the tracked scratch
+    // directory, which the stateless `PermissionGroup.segmentVeto` signature
+    // has no room for). That directory is looked up BY SEGMENT INDEX from the
+    // single walk done in the pre-pass, rather than re-tracked by a closure
+    // here — see `ScratchSanitized`.
     const hit = matchCoveredCommand(
       command,
       [...prefixToGroup.keys()],
-      extraVeto,
-      (segment, matchedPrefix) => {
+      readSegmentVeto,
+      (segment, matchedPrefix, index) => {
         const owner = prefixToGroup.get(matchedPrefix);
-        if (owner === 'scratch') return scratchTargetVeto(segment, scratchCwd);
+        if (owner === 'scratch') {
+          return scratchTargetVeto(segment, scratch?.cwdBySegment[index] ?? null);
+        }
         const group = owner === undefined ? undefined : BUILTIN_GROUPS[owner];
         const veto = group?.segmentVeto ?? readSegmentVeto;
         return veto(segment);
