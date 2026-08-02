@@ -47,33 +47,14 @@ Recorded as [ADR 0011](.context/decisions/0011-verify-before-you-describe.md).
 ## Architecture decisions
 
 Standing decisions live in [`.context/decisions/`](.context/decisions/) as ADRs.
+**Start with its [README](.context/decisions/README.md)** — it carries the full
+index plus a by-area grouping, and is the fastest way to find the decision that
+covers what you are about to change.
+
 Read the relevant one before changing behavior it covers; several exist
 specifically because the decision looks like an inconsistency worth "cleaning
-up", and the cleanup would reopen a security hole.
-
-| ADR | Decision |
-|---|---|
-| [0001](.context/decisions/0001-transcript-path-source-of-truth.md) | Transcript path is the session source of truth |
-| [0002](.context/decisions/0002-model-b-hold-the-hook-notifications.md) | Hold-the-hook notification model |
-| [0003](.context/decisions/0003-synchronous-permission-decisions.md) | Synchronous permission decisions |
-| [0004](.context/decisions/0004-pty-as-arbiter-subagent-questions.md) | PTY is the arbiter for subagent questions |
-| [0005](.context/decisions/0005-hub-and-attach-only-clients.md) | Hub mode and attach-only clients |
-| [0006](.context/decisions/0006-cc-ref-disavowed.md) | `cc-ref` is not ground truth for Claude Code |
-| [0007](.context/decisions/0007-release-automation-and-pins.md) | Release automation and toolchain pins |
-| [0008](.context/decisions/0008-testflight-local-upload.md) | TestFlight uploads are local, not Xcode Cloud |
-| [0009](.context/decisions/0009-transport-encryption-scope.md) | Encryption is scoped to the relay; direct connections carry none |
-| [0010](.context/decisions/0010-allow-deny-matching-asymmetry.md) | Allow matching is precise, deny is broad — on purpose |
-| [0011](.context/decisions/0011-verify-before-you-describe.md) | Security descriptions must be verified against code |
-| [0012](.context/decisions/0012-protocol-message-registry.md) | Protocol message registry is the single source of truth |
-| [0013](.context/decisions/0013-total-dispatch-handle-or-ignore.md) | Every protocol consumer declares handle-or-ignore, total over the registry |
-| [0014](.context/decisions/0014-two-sided-conformance-tests.md) | Contract tests must construct both shipping endpoints |
-| [0015](.context/decisions/0015-authority-bounded-by-counterfactual.md) | Authority may resolve ambiguity, never decide — enforced by counterfactual |
-| [0016](.context/decisions/0016-strictness-levels-are-groups-not-prose.md) | Strictness is level-gated group membership, never prose to the model |
-| [0017](.context/decisions/0017-deny-floor-enforced-in-code.md) | A model-produced deny is silent, so it is floored in code |
-| [0018](.context/decisions/0018-write-group-safety-is-three-independent-vetoes.md) | A write-approving group needs three independent vetoes |
-| [0019](.context/decisions/0019-push-kind-mutability-asymmetry.md) | Push kinds are named on the wire; muting them is asymmetric |
-| [0020](.context/decisions/0020-client-status-cue-totality.md) | A client status cue must be total over its gate's end paths |
-| [0021](.context/decisions/0021-registration-outcome-not-requery.md) | Question registration outcome flows from the call, not a re-query |
+up", and the cleanup would reopen a security hole. Each ADR carries its
+evidence, not just its conclusion.
 
 ## Quick Start
 
