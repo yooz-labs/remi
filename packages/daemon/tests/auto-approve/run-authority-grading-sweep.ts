@@ -42,6 +42,11 @@
  * Exit code is non-zero if any assertion fails, so this can gate a change.
  */
 
+// Makes this file a MODULE, which top-level `await` below requires (TS1375).
+// `run-model-sweep.ts` gets this for free from its imports; this sweep talks to
+// the engine over plain `fetch` and imports nothing, so it must say so.
+export {};
+
 const BASE_URL = process.env['SWEEP_BASE_URL'] ?? 'http://127.0.0.1:19924';
 const RUNS = Number(process.env['SWEEP_RUNS'] ?? '3');
 const MODELS =
