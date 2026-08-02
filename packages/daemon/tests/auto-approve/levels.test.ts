@@ -49,7 +49,10 @@ describe('the levels are ordered and additive', () => {
 
   test('each step adds exactly the documented group', () => {
     const added = (a: readonly string[], b: readonly string[]) => b.filter((g) => !a.includes(g));
-    expect(added(groupsForLevel('strict'), groupsForLevel('balanced'))).toEqual(['fs-write']);
+    expect(added(groupsForLevel('strict'), groupsForLevel('balanced'))).toEqual([
+      'fs-write',
+      'scratch',
+    ]);
     expect(added(groupsForLevel('balanced'), groupsForLevel('trusted'))).toEqual(['vcs-write']);
   });
 
@@ -62,6 +65,22 @@ describe('the levels are ordered and additive', () => {
         expect(known).toContain(group);
       }
     }
+  });
+});
+
+describe('#994 follow-up: scratch group membership', () => {
+  // The task's explicit requirement: `scratch` is added to `balanced` and
+  // `trusted` only. `strict` is the shipped default and stays byte-identical
+  // -- changing it is its own separate decision (#963's precedent), so this
+  // is asserted here rather than folded into the generic superset checks
+  // above, which would pass even if `scratch` leaked into `strict`.
+  test('scratch is in balanced and trusted', () => {
+    expect(groupsForLevel('balanced')).toContain('scratch');
+    expect(groupsForLevel('trusted')).toContain('scratch');
+  });
+
+  test('scratch is absent from strict', () => {
+    expect(groupsForLevel('strict')).not.toContain('scratch');
   });
 });
 

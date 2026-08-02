@@ -143,7 +143,8 @@ export interface AutoApproveConfig {
   /**
    * Strictness preset (#963). Selects which permission groups are
    * auto-approved without an LLM call. `strict` is today's behavior and the
-   * shipped default; `balanced` adds `fs-write`; `trusted` adds `vcs-write`.
+   * shipped default; `balanced` adds `fs-write` and `scratch` (confined to
+   * /tmp, /private/tmp, $TMPDIR); `trusted` adds `vcs-write`.
    *
    * An explicit `approve_groups` in config OVERRIDES this — see
    * `resolveApproveGroups` in `auto-approve/levels.ts` for why override rather

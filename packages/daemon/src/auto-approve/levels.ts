@@ -67,12 +67,15 @@ const LEVEL_GROUPS: Readonly<Record<AutoApproveLevel, readonly string[]>> = {
   // Exactly today's shipped `approve_groups` default. Asserted against
   // `config.ts`'s own default by test, so the two cannot drift apart.
   strict: ['read-only', 'vcs-read', 'build-test'],
-  // Adds file writes: 57 of 226 measured escalations, the single largest
-  // cohort, and the one the user's own config already tried to approve.
-  balanced: ['read-only', 'vcs-read', 'build-test', 'fs-write'],
+  // Adds file writes (57 of 226 measured escalations, the single largest
+  // cohort, and the one the user's own config already tried to approve) and
+  // `scratch` (destination-confined: write/delete/redirect anywhere under
+  // /tmp, /private/tmp, or $TMPDIR — see permission-groups.ts's `scratch`
+  // section).
+  balanced: ['read-only', 'vcs-read', 'build-test', 'fs-write', 'scratch'],
   // Adds local git mutation (add/commit/checkout/switch/merge/stash/worktree).
   // NOT `git push` — that stays an escalation at every level.
-  trusted: ['read-only', 'vcs-read', 'build-test', 'fs-write', 'vcs-write'],
+  trusted: ['read-only', 'vcs-read', 'build-test', 'fs-write', 'scratch', 'vcs-write'],
 };
 
 /** True if `value` names a level. */
