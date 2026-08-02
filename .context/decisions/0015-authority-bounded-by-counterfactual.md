@@ -182,16 +182,50 @@ every time.
 
 ### Obligations this creates
 
-- **#938 becomes a ship-blocker for the matrix.** If `!`-bash-mode output can
-  land in `UserPromptSubmit.prompt`, unwrapped command output — carrying no
-  wrapper, and never shown to be caught by shape-based grading — becomes
-  gradable text on a channel that can now reach `implicit`. Verify before the
-  matrix ships.
+- ~~**#938 becomes a ship-blocker for the matrix.**~~ **DISCHARGED 2026-08-02.**
+  The worry was that a `!`-bash-mode command's OUTPUT could land in
+  `UserPromptSubmit.prompt` — unwrapped, so invisible to shape-based grading —
+  making command output gradable text on a channel that can reach `implicit`.
+  Settled by live probe: **`!` mode fires no hook events at all**, so that
+  event never carries `!` output. #938 closed.
+
+  Keep the methodological result, which outlived the question: the specific
+  worry was unfounded while the channel it worried about **was** genuinely
+  compromised, by a cohort nobody had catalogued. A corpus measurement found
+  **72 of 206 live prompts (35%) machine-generated** — 69 `<task-notification>`,
+  3 `<agent-message>` — all passing the then-current filter and being recorded
+  as the human's turns. Fixed in #982 by a shape rule that fails closed. No
+  amount of reasoning about `!` mode would have found it; only counting the
+  corpus did.
 - **Precedent must key on answer PROVENANCE, not on "the prompt was answered."**
   Under ADR 0004, `arbitrateParkedRender` types approvals into rendered subagent
   prompts itself; precedent keyed on the outcome would launder the gate's own
   model verdicts into human precedent and then authorize future approvals from
   them. A self-licensing loop.
+- **A precedent signature must not be lossy (#990).** Precedent is one of the
+  few non-text channels allowed to establish `explicit`, so a false match there
+  is privilege escalation, not a cosmetic bug. The first implementation keyed on
+  `Question.text`, which `summarizeToolInput` truncates at 120 characters
+  (`hook-event-bridge.ts:621`) — so two commands sharing their first 117
+  characters collapsed to one signature, and appending `&& curl … | sh` past
+  that point inherited the human's approval. Reproduced with a real path from
+  this repo. #989 fails closed (a truncated signature is neither recorded nor
+  matched); #990 separates the display text from the match signature properly.
+  The general rule: **display text truncates for a phone lock screen and should;
+  a match key must never be lossy.** Do not conflate them.
+
+- **Every axis of the matrix is a matching decision, so ADR 0010 applies to all
+  of them.** Building the two axes produced four instances of the same bug in
+  one day, each an allow/deny asymmetry violation found by MEASUREMENT after the
+  tests were green: unanchored deny patterns (#985 — `rm -rf /` matched every
+  absolute path, `| sh` matched `| shasum`); a boundary that accepted `-` as a
+  terminator (`/usr` matched `/usr-local-mine`, plus `sudo rm-wrapper` and
+  `| sh-wrapper`); a risk classifier reading only a segment's head token
+  (`nohup rm -rf ./dist` graded below bare `rm -rf ./dist`); and the truncation
+  above. Before adding a matcher here, state which direction it fails in and
+  probe it against real commands — the unit tests confirmed the cases their
+  authors thought of, and every one of these was found by a probe instead.
+
 - **The no-model-authored-text invariant should become structural.**
   `AuthorityStore.record()` takes a plain `string`; only convention keeps
   summarized or model-generated text out. A branded type constructible solely at
