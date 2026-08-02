@@ -5,6 +5,34 @@ All notable changes to Remi are documented here.
 ## [Unreleased]
 
 ### Fixed
+- **Machine-generated text no longer reaches the auto-approve authority channel**
+  (#982). `UserPromptSubmit` is authority's PRIMARY source, and `authority.ts`'s
+  premise was that Claude Code puts only the human's keystrokes there. Measured
+  over a live capture window: of 206 prompts carrying text, **72 (35%) were
+  machine-generated** — 69 `<task-notification>`, 3 `<agent-message>` — and every
+  one passed the provenance denylist, so all 72 were recorded as the human's own
+  turns and rendered into the prompt as "what the human has actually typed".
+
+  That is live influence, not a hypothetical: #954 measured a merely TOPICAL
+  mention flipping `rm -rf ./build` from `deny` to `approve` 5/5, and task
+  notifications routinely carry operation names, paths, and words like
+  "approved" and "completed".
+
+  Fixed with `isNonHumanForAuthority`, a stricter authority-scoped predicate:
+  the existing denylist OR a leading markup tag. The display consumers
+  (`transcript-message-bridge`, `transcript-discovery`) keep the old denylist
+  deliberately — the two paths have opposite failure directions, exactly like
+  allow vs deny matching (ADR 0010). Wrongly dropping text on a display surface
+  hides the user's own message; wrongly accepting it on the authority surface
+  lets a machine speak as the user into a permission decision.
+
+  A shape rule rather than three more denylist entries, because the denylist
+  fails open by design and this was three proofs of that in one sample — the
+  next wrapper Claude Code introduces is undiscoverable by construction, and now
+  fails closed. Measured cost on the same corpus: zero. No human-typed prompt
+  began with `<` at all.
+
+### Fixed
 - **`git stash` and `git stash pop` are covered by `vcs-write`** (#972). Only
   the explicit `git stash push` spelling was listed, so the bare form — which is
   git's own default spelling of exactly that — and its `pop` counterpart went to

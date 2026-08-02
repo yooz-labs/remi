@@ -5,6 +5,7 @@ export {
   AuthorityStore,
   buildAuthorityFromTranscript,
   enforceAuthorityBoundary,
+  isNonHumanForAuthority,
   isWrappedNonHumanText,
   resolveAuthority,
 } from './authority.ts';

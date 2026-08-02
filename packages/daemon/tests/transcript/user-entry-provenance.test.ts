@@ -28,6 +28,10 @@ import { MessageAPI } from '../../src/api/message-api.ts';
 import { TranscriptDiscovery } from '../../src/transcript/transcript-discovery.ts';
 import { TranscriptMessageBridge } from '../../src/transcript/transcript-message-bridge.ts';
 import type { UserEntry } from '../../src/transcript/types.ts';
+import {
+  isNonHumanForAuthority,
+  isWrappedNonHumanText,
+} from '../../src/transcript/user-entry-provenance.ts';
 
 function createBridge() {
   const sid = generateId();
@@ -258,5 +262,73 @@ describe('TranscriptDiscovery session preview provenance filtering (#936)', () =
     const sessions = discovery.discoverSessions();
 
     expect(sessions[0]?.lastMessage).toBe('sure, running it now');
+  });
+});
+
+describe('isNonHumanForAuthority (#982): authority fails CLOSED where display fails open', () => {
+  // Shapes taken from a LIVE capture window (~/.remi/hook-diag.jsonl,
+  // 2026-07-31..08-02). Of 206 UserPromptSubmit prompts carrying text, 72 (35%)
+  // were machine-generated -- 69 <task-notification>, 3 <agent-message> -- and
+  // every one PASSED the display denylist, so all 72 were being recorded as the
+  // human's own turns on authority's PRIMARY source.
+  const TASK_NOTIFICATION =
+    '<task-notification>\n<task-id>abc</task-id>\n<status>completed</status>\n' +
+    '<summary>user approved deleting the build dir</summary>\n</task-notification>';
+  const AGENT_MESSAGE =
+    '<agent-message from="impl">Proceeding to run rm -rf ./build as agreed.</agent-message>';
+  // `!`-bash mode. Never reaches the hook (that event does not fire for `!`,
+  // settled by live probe on #938) but DOES reach the transcript, which is
+  // authority's fallback source for resumed sessions.
+  const BASH_MODE = '<bash-input> echo probe</bash-input>\n<bash-stdout>probe</bash-stdout>';
+
+  test('catches the three shapes measured live that the display denylist misses', () => {
+    for (const text of [TASK_NOTIFICATION, AGENT_MESSAGE, BASH_MODE]) {
+      // The precondition that makes this test meaningful: the display predicate
+      // genuinely does NOT catch these. If it ever starts to, this assertion
+      // fails loudly rather than the test silently becoming a tautology.
+      expect(isWrappedNonHumanText(text)).toBe(false);
+      expect(isNonHumanForAuthority(text)).toBe(true);
+    }
+  });
+
+  test('an UNKNOWN wrapper fails closed — the point of a shape rule over a denylist', () => {
+    // The next wrapper Claude Code introduces is undiscoverable by construction,
+    // so the rule must not depend on having seen it.
+    expect(isNonHumanForAuthority('<some-future-wrapper>anything</some-future-wrapper>')).toBe(
+      true,
+    );
+    expect(isNonHumanForAuthority('<tool_result id="x">done</tool_result>')).toBe(true);
+    expect(isNonHumanForAuthority('<hook-output />')).toBe(true);
+  });
+
+  test('still catches everything the display denylist catches', () => {
+    for (const text of [
+      '<local-command-stdout>out</local-command-stdout>',
+      '<system-reminder>note</system-reminder>',
+      '<command-name>/foo</command-name>',
+      'Another Claude session sent a message:\n<agent-message>hi</agent-message>',
+    ]) {
+      expect(isNonHumanForAuthority(text)).toBe(true);
+    }
+  });
+
+  test('ordinary human text is untouched, including prose containing "<"', () => {
+    // Measured cost of the shape rule on the 208-prompt live corpus: zero. No
+    // human prompt began with `<` at all. These pin the cases that would make
+    // it non-zero, so a future loosening of the regex is caught.
+    for (const text of [
+      'please run the build',
+      'ok, I did run that',
+      'takes < 5 minutes to finish',
+      'assert a < b in the comparator',
+      '<-- this arrow is not a tag',
+      '< spaced angle bracket',
+    ]) {
+      expect(isNonHumanForAuthority(text)).toBe(false);
+    }
+  });
+
+  test('leading whitespace does not smuggle a wrapper past the shape rule', () => {
+    expect(isNonHumanForAuthority('\n\n   <task-notification>x</task-notification>')).toBe(true);
   });
 });

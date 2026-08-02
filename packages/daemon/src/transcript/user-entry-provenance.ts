@@ -117,11 +117,69 @@ const NON_HUMAN_WRAPPER_PREFIXES: readonly string[] = [
  *  command echo, `!`-command output, injected reminder) rather than something
  *  the human actually typed.
  *
- *  Consumed by `transcript-message-bridge.ts`, `transcript-discovery.ts`
- *  (#936), and `auto-approve/authority.ts` (#893) — import from here rather
- *  than redefining the list elsewhere, so all three call sites can never
- *  drift into different denylists. */
+ *  Consumed by `transcript-message-bridge.ts` and `transcript-discovery.ts`
+ *  (#936) — DISPLAY surfaces, where the right failure direction is OPEN: an
+ *  unrecognized wrapper renders as a chat message, which is noise. Dropping a
+ *  message the human really typed would be worse.
+ *
+ *  NOT sufficient for the authority path — use `isNonHumanForAuthority` there.
+ *  See its doc for the measured reason. */
 export function isWrappedNonHumanText(text: string): boolean {
   const trimmed = text.trimStart();
   return NON_HUMAN_WRAPPER_PREFIXES.some((prefix) => trimmed.startsWith(prefix));
+}
+
+/**
+ * Does the text OPEN with a markup tag (`<task-notification>`,
+ * `<agent-message from="...">`, `<bash-input>`)? Shape-based, so it catches
+ * wrappers this file has never heard of.
+ *
+ * Requires a letter-initial tag name so an arithmetic or prose `<` (`<5 min`,
+ * `a < b`) is not mistaken for markup.
+ */
+function startsWithMarkupTag(text: string): boolean {
+  return /^<[a-zA-Z][a-zA-Z0-9_-]*(\s|\/?>)/.test(text.trimStart());
+}
+
+/**
+ * True if a user-role string must NOT be treated as the human's own words for
+ * AUTHORITY purposes (#982). Strictly wider than `isWrappedNonHumanText`.
+ *
+ * ## Why the authority path needs its own, stricter predicate
+ *
+ * The two paths have OPPOSITE failure directions, exactly like allow vs deny
+ * matching (ADR 0010). A display surface that wrongly drops text hides the
+ * user's own message — bad. An authority surface that wrongly ACCEPTS text
+ * lets a machine speak as the user into a permission decision — worse. So
+ * display keeps the denylist and fails open; authority adds a shape rule and
+ * fails CLOSED.
+ *
+ * ## The measurement that forced this (#982)
+ *
+ * `UserPromptSubmit` is authority's PRIMARY source, and `authority.ts`'s
+ * premise was that Claude Code puts only the human's keystrokes there. Over a
+ * live capture window (`~/.remi/hook-diag.jsonl`, 2026-07-31..08-02), of 206
+ * prompts carrying text, **72 (35%) were machine-generated**: 69
+ * `<task-notification>` and 3 `<agent-message>`. Every one PASSED
+ * `isWrappedNonHumanText`, so all 72 were being recorded as the human's turns.
+ *
+ * Note the module doc above already flagged a cross-session agent message on
+ * this path as possible but "unconfirmed". The 3 `<agent-message>` captures
+ * confirm it.
+ *
+ * ## Why shape, not a wider denylist
+ *
+ * The denylist fails open by design (see the module doc), and #982 is three
+ * proofs of that in one sample. Adding the three observed tags fixes today and
+ * not tomorrow — the next wrapper Claude Code introduces is undiscoverable by
+ * construction. A shape rule makes an UNKNOWN wrapper fail closed, which is the
+ * only direction that survives a contract that keeps growing.
+ *
+ * Measured cost on the same 208-prompt corpus: **zero**. No human-typed prompt
+ * began with `<` at all, tag-shaped or otherwise. The theoretical cost is a
+ * human opening a message with a markup-looking tag, who loses that turn from
+ * the authority window — a nuisance, and the safe direction.
+ */
+export function isNonHumanForAuthority(text: string): boolean {
+  return isWrappedNonHumanText(text) || startsWithMarkupTag(text);
 }
