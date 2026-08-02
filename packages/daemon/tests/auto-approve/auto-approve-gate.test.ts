@@ -196,7 +196,8 @@ describe('AutoApproveGate', () => {
 
   test('deny returns "deny" with NO inject (main context) (#496)', async () => {
     const d = await gateWith(evaluator(deny)).resolvePermission(pr());
-    expect(d).toBe('deny');
+    // #976: a deny now carries its reason to Claude instead of a bare refusal.
+    expect(d).toEqual({ behavior: 'deny', message: expect.stringContaining('ask the user') });
     expect(submits).toHaveLength(0);
     expect(escalations).toHaveLength(0);
   });
@@ -408,7 +409,8 @@ describe('AutoApproveGate', () => {
 
   test('escalate_model second opinion denies -> "deny" (no escalation) (#522)', async () => {
     const d = await gateWithSecondOpinion(deny).resolvePermission(pr());
-    expect(d).toBe('deny');
+    // #976: a deny now carries its reason to Claude instead of a bare refusal.
+    expect(d).toEqual({ behavior: 'deny', message: expect.stringContaining('ask the user') });
     expect(escalations).toHaveLength(0);
     expect(submits).toHaveLength(0);
   });
@@ -696,7 +698,10 @@ describe('AutoApproveGate lifecycle callbacks (#513)', () => {
   });
 
   test('deny fires start then handled', async () => {
-    expect(await gate(evaluator(deny)).resolvePermission(pr())).toBe('deny');
+    expect(await gate(evaluator(deny)).resolvePermission(pr())).toEqual({
+      behavior: 'deny',
+      message: expect.stringContaining('ask the user'),
+    });
     expect(events).toEqual(['start', 'handled']);
   });
 
@@ -1023,7 +1028,8 @@ describe('AutoApproveGate hold + resolve (#573 Parts A/C)', () => {
   test('#625 deny pushes NOTHING (no phantom)', async () => {
     const gate = holdGate(evaluator(deny));
     const d = await gate.resolvePermission(pr());
-    expect(d).toBe('deny');
+    // #976: a deny now carries its reason to Claude instead of a bare refusal.
+    expect(d).toEqual({ behavior: 'deny', message: expect.stringContaining('ask the user') });
     expect(heldPushes).toHaveLength(0);
     expect(escalations).toHaveLength(0);
   });
