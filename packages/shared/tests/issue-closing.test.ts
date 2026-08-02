@@ -1,0 +1,257 @@
+import { describe, expect, test } from 'bun:test';
+import {
+  extractClosingReferences,
+  extractClosingReferencesFromMessages,
+  filterSameRepoReferences,
+} from '../src/issue-closing.ts';
+
+describe('extractClosingReferences - keyword forms and casing', () => {
+  test('close / closes / closed', () => {
+    expect(extractClosingReferences('close #1').map((r) => r.issue)).toEqual([1]);
+    expect(extractClosingReferences('closes #2').map((r) => r.issue)).toEqual([2]);
+    expect(extractClosingReferences('closed #3').map((r) => r.issue)).toEqual([3]);
+  });
+
+  test('fix / fixes / fixed', () => {
+    expect(extractClosingReferences('fix #4').map((r) => r.issue)).toEqual([4]);
+    expect(extractClosingReferences('fixes #5').map((r) => r.issue)).toEqual([5]);
+    expect(extractClosingReferences('fixed #6').map((r) => r.issue)).toEqual([6]);
+  });
+
+  test('resolve / resolves / resolved', () => {
+    expect(extractClosingReferences('resolve #7').map((r) => r.issue)).toEqual([7]);
+    expect(extractClosingReferences('resolves #8').map((r) => r.issue)).toEqual([8]);
+    expect(extractClosingReferences('resolved #9').map((r) => r.issue)).toEqual([9]);
+  });
+
+  test('is case-insensitive on the keyword', () => {
+    expect(extractClosingReferences('Closes #10').map((r) => r.issue)).toEqual([10]);
+    expect(extractClosingReferences('CLOSES #10').map((r) => r.issue)).toEqual([10]);
+    expect(extractClosingReferences('FiXeD #10').map((r) => r.issue)).toEqual([10]);
+    expect(extractClosingReferences('Resolves #10').map((r) => r.issue)).toEqual([10]);
+  });
+
+  test('lowercases the reported keyword', () => {
+    expect(extractClosingReferences('Fixes #10')[0]?.keyword).toBe('fixes');
+    expect(extractClosingReferences('CLOSED #10')[0]?.keyword).toBe('closed');
+  });
+
+  test('does not match a keyword embedded in a larger word', () => {
+    // "enclosed" contains "closed" but is not the keyword "closed".
+    expect(extractClosingReferences('the box was enclosed #10')).toEqual([]);
+    expect(extractClosingReferences('prefixes #10')).toEqual([]);
+  });
+});
+
+describe('extractClosingReferences - multiple issues and dedupe', () => {
+  test('multiple issues in one message, different keywords', () => {
+    const refs = extractClosingReferences('Fixes #10 and closes #12');
+    expect(refs.map((r) => r.issue)).toEqual([10, 12]);
+  });
+
+  test('a comma-separated list after one keyword only closes the first number', () => {
+    // Matches GitHub's real behavior: the keyword must precede EACH
+    // reference. "close #168, #169, #170" only auto-closes #168; #169/#170
+    // have no keyword of their own directly before them.
+    const refs = extractClosingReferences('close #168, #169, #170');
+    expect(refs.map((r) => r.issue)).toEqual([168]);
+  });
+
+  test('the same issue referenced twice in one message is deduped', () => {
+    const refs = extractClosingReferences('Fixes #10. Also fixes #10 again.');
+    expect(refs.map((r) => r.issue)).toEqual([10]);
+  });
+
+  test('the same issue referenced with different keywords is still deduped once', () => {
+    const refs = extractClosingReferences('Closes #10, and this also fixes #10');
+    expect(refs.map((r) => r.issue)).toEqual([10]);
+  });
+});
+
+describe('extractClosingReferences - non-matches', () => {
+  test('a bare #N with no keyword does not close', () => {
+    expect(extractClosingReferences('See #42 for details')).toEqual([]);
+    expect(extractClosingReferences('Related to #42, no fix yet')).toEqual([]);
+  });
+
+  test('a message with no reference at all', () => {
+    expect(extractClosingReferences('chore: bump version to 0.7.4-dev.62')).toEqual([]);
+  });
+
+  test('a keyword and a #N in unrelated paragraphs do not match across the gap', () => {
+    const message = 'Fixes the flaky test suite.\n\nSee also unrelated ticket #99 for context.';
+    expect(extractClosingReferences(message)).toEqual([]);
+  });
+
+  test('a keyword followed by the reference on the next line does not match', () => {
+    // Design decision: the gap between keyword and "#N" is restricted to the
+    // same line ([ \t] in the pattern, not \s), so "Fixes\n#99" (keyword and
+    // reference on separate lines, nothing else between them) is treated as
+    // two unrelated fragments rather than a closing reference.
+    expect(extractClosingReferences('Fixes\n#99')).toEqual([]);
+  });
+
+  test('conventional "(#N)" issue-linking suffix without a keyword does not close', () => {
+    // This repo's PR titles commonly end in "(#N)" referencing the issue,
+    // e.g. "fix: match engine models by HuggingFace id too (#971)" -- that is
+    // NOT a GitHub closing keyword and must not trigger a close.
+    const message = 'fix: match engine models by HuggingFace id too (#971)';
+    expect(extractClosingReferences(message)).toEqual([]);
+  });
+});
+
+describe('extractClosingReferences - cross-repo references', () => {
+  test('parses an explicit owner/repo#N reference', () => {
+    const refs = extractClosingReferences('Fixes yooz-labs/remi#977');
+    expect(refs).toEqual([{ owner: 'yooz-labs', repo: 'remi', issue: 977, keyword: 'fixes' }]);
+  });
+
+  test('a bare #N has null owner/repo', () => {
+    const refs = extractClosingReferences('Fixes #977');
+    expect(refs).toEqual([{ owner: null, repo: null, issue: 977, keyword: 'fixes' }]);
+  });
+
+  test('a same-repo and cross-repo reference to the same number are distinct entries', () => {
+    const refs = extractClosingReferences('Fixes #5 and closes other-org/other-repo#5');
+    expect(refs).toEqual([
+      { owner: null, repo: null, issue: 5, keyword: 'fixes' },
+      { owner: 'other-org', repo: 'other-repo', issue: 5, keyword: 'closes' },
+    ]);
+  });
+});
+
+describe('filterSameRepoReferences', () => {
+  test('keeps bare #N references', () => {
+    const refs = extractClosingReferences('Fixes #10');
+    expect(filterSameRepoReferences(refs, 'yooz-labs', 'remi')).toEqual(refs);
+  });
+
+  test('keeps an explicit owner/repo#N reference that matches the current repo', () => {
+    const refs = extractClosingReferences('Closes yooz-labs/remi#977');
+    expect(filterSameRepoReferences(refs, 'yooz-labs', 'remi')).toEqual(refs);
+  });
+
+  test('matches the current repo case-insensitively', () => {
+    const refs = extractClosingReferences('Closes Yooz-Labs/REMI#977');
+    expect(filterSameRepoReferences(refs, 'yooz-labs', 'remi')).toEqual(refs);
+  });
+
+  test('drops an explicit cross-repo reference to a different repo', () => {
+    const refs = extractClosingReferences('Fixes other-org/other-repo#42');
+    expect(filterSameRepoReferences(refs, 'yooz-labs', 'remi')).toEqual([]);
+  });
+
+  test('a mixed message keeps only the same-repo entry', () => {
+    const refs = extractClosingReferences('Fixes #5 and closes other-org/other-repo#6');
+    const kept = filterSameRepoReferences(refs, 'yooz-labs', 'remi');
+    expect(kept.map((r) => r.issue)).toEqual([5]);
+  });
+});
+
+describe('extractClosingReferencesFromMessages - deduping across a push', () => {
+  test('dedupes an issue referenced from two different commit messages', () => {
+    const refs = extractClosingReferencesFromMessages(['Fixes #10', 'fixes #10 (follow-up)']);
+    expect(refs.map((r) => r.issue)).toEqual([10]);
+  });
+
+  test('collects distinct issues across multiple commits, in first-seen order', () => {
+    const refs = extractClosingReferencesFromMessages([
+      'chore: unrelated bump',
+      'Closes #20',
+      'Fixes #21',
+      'Closes #20 again',
+    ]);
+    expect(refs.map((r) => r.issue)).toEqual([20, 21]);
+  });
+
+  test('a list of messages with none of them containing a reference', () => {
+    const refs = extractClosingReferencesFromMessages([
+      'chore: bump version to 0.7.4-dev.62',
+      'docs: fix typo in README',
+    ]);
+    expect(refs).toEqual([]);
+  });
+});
+
+// Fixtures below are verbatim commit messages pulled from this repo's real
+// history (`git log develop --merges --format=%B` / `git log --all --grep`),
+// not fabricated strings -- they exercise the parser against the actual text
+// it will run on in production.
+describe('extractClosingReferences - real commit messages from this repo', () => {
+  test('8623f8f: merge commit body with "(closes #N)"', () => {
+    const message =
+      'Merge pull request #434 from yooz-labs/feature/issue-427-epic-transcript-binding\n\n' +
+      'Epic: deterministic PTY->transcript binding (closes #427)';
+    expect(extractClosingReferences(message)).toEqual([
+      { owner: null, repo: null, issue: 427, keyword: 'closes' },
+    ]);
+  });
+
+  test('992029f: merge commit body with "close #N, #N, #N" only closes the first', () => {
+    const message =
+      'Merge pull request #363 from yooz-labs/refactor/daemon-tech-debt-168-169-170\n\n' +
+      'refactor(daemon): close #168, #169, #170 — typed metadata + options-object createHello + onConnect tests';
+    expect(extractClosingReferences(message).map((r) => r.issue)).toEqual([168]);
+  });
+
+  test('48aabd2: squashed commit body with "Closes #N" mid-paragraph', () => {
+    const message =
+      'fix: purge stale hooks, limit session list to connected daemon (#173)\n\n' +
+      '* fix: purge stale hooks on install, limit session list to connected daemon\n\n' +
+      'HookConfigManager.install() now probes all localhost HTTP hook URLs\n' +
+      'with a 500ms TCP connect and removes entries pointing to dead ports.\n' +
+      'Prevents ECONNREFUSED errors from accumulating after daemon crashes.\n\n' +
+      'Web app session list uses includeExternal=false so only sessions from\n' +
+      'the connected daemon are shown, preventing cross-daemon message routing.\n\n' +
+      'Closes #172\n\n' +
+      '* refactor: address PR review findings';
+    expect(extractClosingReferences(message)).toEqual([
+      { owner: null, repo: null, issue: 172, keyword: 'closes' },
+    ]);
+  });
+
+  test('c4ba9f8: squashed commit body with "Fixes #N" mid-paragraph', () => {
+    const message =
+      'fix: auto-promote waiting client when active disconnects (#181)\n\n' +
+      '* fix: auto-promote waiting client when active disconnects\n\n' +
+      'Now the session registry maintains a FIFO queue of waiting\n' +
+      'connections. When the active client disconnects, the next waiting\n' +
+      'client is automatically promoted and receives a hello_ack with\n' +
+      'replay messages. Waiting clients that disconnect before promotion\n' +
+      'are cleaned up from the queue.\n\n' +
+      'Fixes #180\n\n' +
+      '* refactor: address PR review findings';
+    expect(extractClosingReferences(message)).toEqual([
+      { owner: null, repo: null, issue: 180, keyword: 'fixes' },
+    ]);
+  });
+
+  test('3a53047: squashed commit body with "Fixes #N" mid-paragraph', () => {
+    const message =
+      'feat: register and handle all 25 Claude Code hook events (#186)\n\n' +
+      'Add type definitions, server dispatch, and event bridge handlers\n' +
+      'for all hook events. High-priority events (PermissionRequest,\n' +
+      'SubagentStart/Stop, StopFailure, SessionEnd) get dedicated handlers.\n' +
+      'Medium/low priority events are accepted but only logged.\n\n' +
+      'The hook server now accepts unknown events with 200 instead of\n' +
+      'rejecting with 400, future-proofing against new Claude Code events.\n\n' +
+      'Fixes #185';
+    expect(extractClosingReferences(message)).toEqual([
+      { owner: null, repo: null, issue: 185, keyword: 'fixes' },
+    ]);
+  });
+
+  test('23b76e5: a typical PR-linking merge commit with no closing keyword', () => {
+    // Real merge commit for PR #974. The "(#971)" suffix is this repo's
+    // conventional-commit style of naming the source issue -- it is NOT a
+    // GitHub closing keyword and must not be treated as one.
+    const message =
+      'Merge pull request #974 from yooz-labs/feature/issue-971-hf-id-model-match\n\n' +
+      'fix: match engine models by HuggingFace id too (#971)';
+    expect(extractClosingReferences(message)).toEqual([]);
+  });
+
+  test('a20efd3: a version-bump commit has no closing reference', () => {
+    expect(extractClosingReferences('chore: bump version to 0.7.4-dev.52')).toEqual([]);
+  });
+});

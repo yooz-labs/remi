@@ -1,0 +1,103 @@
+name: Close Issues on Develop
+
+# GitHub's `Fixes #N` / `Closes #N` automation only closes an issue on a
+# merge into the repository's DEFAULT branch. This repo merges feature PRs
+# into `develop`, not `main` (see AGENTS.md branch strategy) -- so that
+# automation has never once fired here, and issues that were fixed and
+# merged stay open until someone closes them by hand. Confirmed cases, all
+# fixed-and-merged but left open until closed manually: #968 (PR #969), #971
+# (PR #974), #977 (PR #978), #985 (PR #988).
+#
+# This workflow is the workaround: on every push to `develop`, it scans the
+# pushed commits (the merge commit and its individual commits -- the
+# closing keyword usually lives in the PR body, which lands in the merge
+# commit message) for GitHub's standard closing keywords and closes what it
+# finds, leaving a comment that says so explicitly so a human reading the
+# issue later can tell it wasn't a manual close.
+#
+# It errs toward doing nothing when uncertain: cross-repo references are
+# left alone, non-issue numbers (PRs) are never touched, and a missing or
+# already-closed issue is skipped rather than failing the run.
+
+on:
+  push:
+    branches: [develop]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  # Serialize runs so two quick pushes can't race each other's issue
+  # comments/closes; never cancel one that's already closing issues.
+  group: close-on-develop
+  cancel-in-progress: false
+
+env:
+  BUN_VERSION: 1.3.11
+
+jobs:
+  close-issues:
+    name: Close Referenced Issues
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Extract closing references from this push
+        id: refs
+        run: bun run .github/scripts/close-on-develop.ts
+        env:
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+
+      - name: Close referenced issues
+        if: steps.refs.outputs.issues != '' && steps.refs.outputs.issues != '[]'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUES_JSON: ${{ steps.refs.outputs.issues }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          short_sha="${SHA:0:7}"
+          commit_url="https://github.com/${REPO}/commit/${SHA}"
+
+          echo "$ISSUES_JSON" | jq -c '.[]' | while IFS= read -r ref; do
+            number=$(echo "$ref" | jq -r '.issue')
+            keyword=$(echo "$ref" | jq -r '.keyword')
+
+            # Fetch the target before touching it. This is also how we tell
+            # an issue apart from a pull request: issues and PRs share one
+            # number namespace, and the Issues API returns a PR too (with a
+            # `pull_request` key) -- never close on the strength of the
+            # number alone.
+            if ! target_json=$(gh api "repos/${REPO}/issues/${number}" 2>/dev/null); then
+              echo "#${number}: not found (wrong repo, deleted, or never existed), skipping"
+              continue
+            fi
+
+            is_pull_request=$(echo "$target_json" | jq 'has("pull_request")')
+            if [ "$is_pull_request" = "true" ]; then
+              echo "#${number}: is a pull request, not an issue, skipping"
+              continue
+            fi
+
+            state=$(echo "$target_json" | jq -r '.state')
+            if [ "$state" != "open" ]; then
+              echo "#${number}: already ${state}, skipping"
+              continue
+            fi
+
+            line1="Closed automatically: this issue's fix merged to \`develop\` in commit [\`${short_sha}\`](${commit_url}) (matched \"${keyword} #${number}\")."
+            line2="GitHub's \`Closes\`/\`Fixes\` automation only closes issues on a merge to the repository's default branch (\`main\`); this repo merges feature work into \`develop\`, so that automation never fires here. This comment was posted by [close-on-develop.yml](https://github.com/${REPO}/blob/develop/.github/workflows/close-on-develop.yml) to fill that gap -- it is not a human closure."
+            body="${line1}"$'\n\n'"${line2}"
+
+            gh issue comment "$number" --repo "$REPO" --body "$body"
+            gh issue close "$number" --repo "$REPO"
+            echo "#${number}: closed (matched \"${keyword}\")"
+          done
