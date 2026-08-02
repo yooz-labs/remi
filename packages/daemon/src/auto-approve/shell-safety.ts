@@ -17,15 +17,42 @@
 export const NEUTRAL_PREFIXES: readonly string[] = ['cd', 'pwd', 'true', 'echo', ':'];
 
 /**
+ * The operator that JOINS one compound segment to the previous one (`null` for
+ * the first segment, which nothing precedes).
+ *
+ * Most callers do not care — a segment must be covered no matter how it was
+ * reached, which is why `splitCompound` drops this. It matters only to a
+ * caller carrying STATE across segments, because `|` and `||` are the two
+ * operators under which a segment's effect on the outer shell is not what
+ * reading left-to-right suggests: a `||` right-hand side may never run at all,
+ * and a `|` stage runs in a subshell whose side effects are discarded.
+ */
+export type CompoundJoiner = ';' | '&&' | '||' | '|' | 'newline' | null;
+
+export interface CompoundPart {
+  /** Segment text, exactly as it appeared (untrimmed). */
+  readonly text: string;
+  /** Operator preceding this segment; `null` for the first. */
+  readonly joiner: CompoundJoiner;
+}
+
+/**
  * Split a command into compound segments on `&&`, `||`, `;`, `|`, and newlines
  * (`\n`/`\r` — the shell treats an unquoted newline as a command separator,
- * exactly like `;`), respecting single/double quotes (best-effort).
+ * exactly like `;`), respecting single/double quotes (best-effort), retaining
+ * which operator joined each segment to the previous one.
  * Backgrounding `&` is left in the segment for the shell-control veto to catch.
  */
-export function splitCompound(command: string): string[] {
-  const segments: string[] = [];
+export function splitCompoundParts(command: string): CompoundPart[] {
+  const parts: CompoundPart[] = [];
   let current = '';
+  let joiner: CompoundJoiner = null;
   let quote: '"' | "'" | null = null;
+  const push = (nextJoiner: CompoundJoiner) => {
+    parts.push({ text: current, joiner });
+    current = '';
+    joiner = nextJoiner;
+  };
   for (let i = 0; i < command.length; i++) {
     const c = command[i];
     const next = command[i + 1];
@@ -43,31 +70,113 @@ export function splitCompound(command: string): string[] {
     // `git log \ngit push` is one segment that prefix-matches `git log` and the
     // injected `git push` is never examined (shell-injection bypass).
     if (c === ';' || c === '\n' || c === '\r') {
-      segments.push(current);
-      current = '';
+      push(c === ';' ? ';' : 'newline');
       continue;
     }
     if (c === '&' && next === '&') {
-      segments.push(current);
-      current = '';
+      push('&&');
       i++;
       continue;
     }
     if (c === '|' && next === '|') {
-      segments.push(current);
-      current = '';
+      push('||');
       i++;
       continue;
     }
     if (c === '|') {
-      segments.push(current);
-      current = '';
+      push('|');
       continue;
     }
     current += c;
   }
-  segments.push(current);
-  return segments;
+  parts.push({ text: current, joiner });
+  return parts;
+}
+
+/**
+ * Compound segments without their joining operators — what every matcher that
+ * judges each segment independently wants. Defined in terms of
+ * `splitCompoundParts` so the two can never drift apart.
+ */
+export function splitCompound(command: string): string[] {
+  return splitCompoundParts(command).map((p) => p.text);
+}
+
+/**
+ * What a redirect clause points at, as far as this module is willing to claim.
+ *
+ * `opaque` is the load-bearing case. `REDIRECT_CLAUSE_RE`'s target is `\S+`,
+ * and shell operators need no surrounding whitespace, so ONE match can span a
+ * second operator and a second command:
+ *
+ *     >/tmp/a>/etc/passwd    open `/tmp/a`, then reassign the fd to `/etc/passwd`
+ *     >/tmp/a&rm -rf ~       redirect, background it, then `rm -rf ~`
+ *
+ * A consumer that only asks "is this `/dev/null`?" is safe with that blob,
+ * because anything it cannot recognize it rejects. A consumer that asks "may I
+ * DELETE this clause?" is not: the deleted text takes the second operator with
+ * it, and whatever would have vetoed that operator never sees it. Classifying
+ * once, here, is what keeps the two from drifting — the greedy match is not a
+ * bug to be fixed at each call site but a fact to be reported honestly at one.
+ */
+export type RedirectTarget =
+  | { readonly kind: 'discard' }
+  | { readonly kind: 'fd-dup' }
+  | { readonly kind: 'path'; readonly path: string }
+  | { readonly kind: 'opaque' };
+
+/** A redirect clause and what it was found to point at. */
+export interface RedirectClause {
+  /** The whole clause, exactly as it appeared in the segment. */
+  readonly text: string;
+  readonly target: RedirectTarget;
+}
+
+const REDIRECT_CLAUSE_RE = /\d*>>?\s*&?\S+/g;
+const REDIRECT_OPERATOR_RE = /^\d*>>?\s*/;
+
+/**
+ * Characters a redirect target may contain for it to count as ONE ordinary
+ * path. Deliberately an allowlist: a blocklist would have to enumerate every
+ * metacharacter that could smuggle a second command past a veto, whereas an
+ * allowlist only has to describe a path, and anything it fails to anticipate
+ * lands in `opaque` — the conservative side.
+ */
+const PLAIN_PATH_TARGET_RE = /^[A-Za-z0-9_./~${}=+,:@%^-]+$/;
+
+function classifyRedirectTarget(raw: string): RedirectTarget {
+  if (raw === '/dev/null') return { kind: 'discard' };
+  if (/^&\d+$/.test(raw)) return { kind: 'fd-dup' };
+  if (PLAIN_PATH_TARGET_RE.test(raw)) return { kind: 'path', path: raw };
+  return { kind: 'opaque' };
+}
+
+/** Every redirect clause in a segment, each with its classified target. */
+export function findRedirectClauses(segment: string): RedirectClause[] {
+  return [...segment.matchAll(REDIRECT_CLAUSE_RE)].map((m) => ({
+    text: m[0],
+    target: classifyRedirectTarget(m[0].replace(REDIRECT_OPERATOR_RE, '')),
+  }));
+}
+
+/**
+ * Rewrite each redirect clause via `replace`, which receives the clause's
+ * classified target and returns the text to put in its place (return the
+ * clause unchanged to leave it alone).
+ *
+ * Exists so that a caller wanting to REMOVE a clause shares this module's
+ * single parse of what a clause is, rather than re-deriving it from a copy of
+ * `REDIRECT_CLAUSE_RE`. A copy is how the same defect reached three call sites
+ * at once (#1000 review): the pattern is easy to duplicate and its greediness
+ * is only safe for one of the two questions callers ask of it.
+ */
+export function rewriteRedirectClauses(
+  segment: string,
+  replace: (target: RedirectTarget, text: string) => string,
+): string {
+  return segment.replace(REDIRECT_CLAUSE_RE, (whole) =>
+    replace(classifyRedirectTarget(whole.replace(REDIRECT_OPERATOR_RE, '')), whole),
+  );
 }
 
 /** True if the segment carries shell control that could escape the matched prefix. */
@@ -83,13 +192,11 @@ export function hasShellControl(segment: string): boolean {
     return true;
   }
   // Output redirection to anything other than /dev/null or an fd dup (2>&1).
-  const redirs = segment.match(/\d*>>?\s*&?\S+/g);
-  if (redirs) {
-    for (const r of redirs) {
-      const target = r.replace(/^\d*>>?\s*/, '');
-      if (target !== '/dev/null' && !/^&\d+$/.test(target)) {
-        return true;
-      }
+  // `path` and `opaque` both veto, so this is unchanged by the classifier: it
+  // recognizes exactly the two safe shapes and refuses everything else.
+  for (const clause of findRedirectClauses(segment)) {
+    if (clause.target.kind !== 'discard' && clause.target.kind !== 'fd-dup') {
+      return true;
     }
   }
   return false;
@@ -186,12 +293,17 @@ export function hasExecPrimitive(segment: string): boolean {
 export function matchCoveredCommand(
   command: string,
   prefixes: readonly string[],
-  extraVeto?: (segment: string) => boolean,
-  vetoForMatched?: (segment: string, matchedPrefix: string) => boolean,
+  extraVeto?: (segment: string, index: number) => boolean,
+  vetoForMatched?: (segment: string, matchedPrefix: string, index: number) => boolean,
 ): string | null {
   const segments = splitCompound(command);
   let matched: string | null = null;
-  for (const raw of segments) {
+  // Both vetoes receive the segment's INDEX in this split alongside its text.
+  // A veto whose judgement depends on where in the command the segment sits
+  // (`scratch`, which must know the directory the shell had reached by then)
+  // would otherwise have to re-derive that by walking the command a second
+  // time, and a second walk that disagrees with this one is a bypass.
+  for (const [index, raw] of segments.entries()) {
     const seg = raw.trim();
     if (seg === '') continue;
     if (hasShellControl(seg)) return null;
@@ -201,12 +313,14 @@ export function matchCoveredCommand(
       // segment, so moving it inside is behavior-preserving only because a
       // vetoed non-neutral segment still returns null below — via its own veto
       // if it matches, or via the no-match branch if it does not.
-      if (extraVeto?.(seg)) return null;
+      if (extraVeto?.(seg, index)) return null;
       continue;
     }
     const hit = matchPrefix(seg, prefixes);
     if (hit === null) return null;
-    const vetoed = vetoForMatched ? vetoForMatched(seg, hit) : (extraVeto?.(seg) ?? false);
+    const vetoed = vetoForMatched
+      ? vetoForMatched(seg, hit, index)
+      : (extraVeto?.(seg, index) ?? false);
     if (vetoed) return null;
     // Veto a code-execution primitive UNLESS the matched entry already carries
     // it. A prefix match requires the segment to start with the entry, so an

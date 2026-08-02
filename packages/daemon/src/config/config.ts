@@ -1153,6 +1153,8 @@ turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_sec
 #   build-test  bun test, tsc --noEmit, biome check, pytest, ...
 #   fs-write    Write/Edit/NotebookEdit + mkdir, touch, tee, cp, mv
 #   vcs-write   git add/commit/checkout/switch/merge, stash push, worktree add
+#   scratch     touch/cp/mv/tee/mkdir/rm/rmdir + output redirection, ONLY when
+#               every target resolves under /tmp, /private/tmp, or $TMPDIR
 #
 # The write groups refuse sensitive destinations regardless of prefix: system
 # trees (/etc, /usr, /System, ...), credentials (~/.ssh, ~/.aws, .env, id_rsa),
@@ -1161,16 +1163,20 @@ turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_sec
 # ~/.remi + ~/.claude -- config that governs this very mechanism, which an
 # auto-approved write must never be able to widen -- and the BUILD SURFACE
 # (package.json, tsconfig.json, lockfiles, Makefile, ...), because build-test
-# is enabled by DEFAULT and executes what those files say.
+# is enabled by DEFAULT and executes what those files say. scratch instead
+# gets its safety entirely from the destination being confined to a scratch
+# root, which is why it is the one group allowed to cover deletion and output
+# redirection -- rm/rmdir and >/>> are excluded from every OTHER group.
 #
 # Matching is case-insensitive (macOS filesystems are) and resolves dot-dot.
 #
-# rm, package installs, git push, and any --force are in NO group. Deletion,
-# remote mutation, and arbitrary install scripts stay escalations.
+# rm, package installs, git push, and any --force are in NO group EXCEPT
+# scratch's own deletion coverage, which stays confined to scratch roots.
+# Remote mutation and arbitrary install scripts stay escalations everywhere.
 # Strictness preset. Selects which of the groups above are auto-approved:
 #
 #   strict     read-only + vcs-read + build-test   (the default; today's behavior)
-#   balanced   strict   + fs-write
+#   balanced   strict   + fs-write + scratch
 #   trusted    balanced + vcs-write
 #
 # An explicit approve_groups below OVERRIDES the preset entirely, and the

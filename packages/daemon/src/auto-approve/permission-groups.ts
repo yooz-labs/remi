@@ -27,8 +27,18 @@
  * user allow list uses the same primitives (#536).
  */
 
-import { isSensitiveWritePath, segmentTouchesSensitivePath } from './sensitive-paths.ts';
-import { matchCoveredCommand, shellWords } from './shell-safety.ts';
+import {
+  isSensitiveWritePath,
+  resolveDotDot,
+  segmentTouchesSensitivePath,
+} from './sensitive-paths.ts';
+import {
+  type CompoundJoiner,
+  matchCoveredCommand,
+  rewriteRedirectClauses,
+  shellWords,
+  splitCompoundParts,
+} from './shell-safety.ts';
 import { hasUnsafeWriteFlag } from './write-flag-safety.ts';
 
 /**
@@ -81,6 +91,305 @@ function writeGroupVeto(segment: string): boolean {
     hasWriteGroupPositionalVeto(segment) ||
     segmentTouchesSensitivePath(segment)
   );
+}
+
+// ---------------------------------------------------------------------------
+// `scratch` group (owner request: "basically any work in /tmp scratch is
+// allowed", specifically that scratch deletes stop escalating under #994's
+// risk ceiling). A command matches ONLY when every file target it touches
+// provably resolves under a scratch root: `/tmp/...`, `/private/tmp/...`
+// (macOS's real path for `/tmp`), `$TMPDIR/...`, `${TMPDIR}/...`.
+//
+// This is deliberately NOT expressed as a stateless `PermissionGroup.
+// segmentVeto` the way `fs-write`/`vcs-write` are. Two things it needs that a
+// pure `(segment) => boolean` cannot express:
+//
+//   - A leading `cd` into a scratch root must make later RELATIVE targets in
+//     the SAME compound command count as scratch-rooted (the owner's real
+//     traffic: `cd /private/tmp/.../scratchpad && <work>`). That is state
+//     carried ACROSS segments, in order, which `matchCoveredCommand`'s
+//     per-segment veto hooks do not thread through.
+//   - `hasShellControl` (shell-safety.ts) vetoes ANY non-`/dev/null` output
+//     redirect unconditionally, for every group, and runs before any
+//     group-specific veto gets a look. A scratch-rooted redirect target has
+//     to be recognised BEFORE that check runs, not after.
+//
+// Both are handled here, in `matchGroups` itself, rather than through the
+// `PermissionGroup` interface: `sanitizeCommandForScratch` removes a
+// scratch-granted redirect clause before `matchCoveredCommand` ever sees it,
+// and `scratchTargetVeto` is called directly by `matchGroups`'s own
+// `vetoForMatched` closure, which threads a single `cwd` variable across the
+// whole command the way a segment-by-segment veto function structurally
+// cannot.
+//
+// Honest limits, not solved here, because static analysis cannot cover them:
+//
+//   - A symlink under `/tmp` pointing outside it. Every check in this section
+//     is LEXICAL (path-segment text analysis, like every other guard in this
+//     file); none of them resolve the filesystem, and a symlink's target is
+//     invisible to a lexical check.
+//   - `$TMPDIR`'s actual value is never expanded. `$TMPDIR/x` is matched by
+//     SPELLING against the literal token, not by resolving to whatever
+//     directory the shell would actually substitute at runtime.
+// ---------------------------------------------------------------------------
+
+/** Bash prefixes `scratch` covers directly, once every target validates. */
+const SCRATCH_COMMANDS: readonly string[] = ['touch', 'cp', 'mv', 'tee', 'mkdir', 'rm', 'rmdir'];
+
+/**
+ * The tracked "current directory" state while walking a compound command.
+ * `segments` is the path from a virtual filesystem root (`['tmp', 'x']` for
+ * `/tmp/x`; `['private', 'tmp', 'x']` for `/private/tmp/x`; `['$TMPDIR', 'x']`
+ * for `$TMPDIR/x`, the marker kept opaque rather than expanded).
+ * `rootLen` is the number of leading segments that make up the ROOT itself —
+ * `..` may never pop past it, which is what stops `cd /tmp && rm -rf ../..`
+ * from resolving to anything above `/tmp`. `null` means "not known to be
+ * under a scratch root" (never cd'd into one, or the last `cd` left it).
+ */
+type ScratchCwd = { readonly segments: readonly string[]; readonly rootLen: number } | null;
+
+/**
+ * Join `relParts` onto `base`, collapsing `.`/`..` lexically, and refusing to
+ * pop below `floorLen` segments — the root boundary a scratch directory may
+ * never be navigated above. Returns null on an attempted escape.
+ */
+function joinScratchSegments(
+  base: readonly string[],
+  floorLen: number,
+  relParts: readonly string[],
+): string[] | null {
+  const segs = [...base];
+  for (const part of relParts) {
+    if (part === '' || part === '.') continue;
+    if (part === '..') {
+      if (segs.length <= floorLen) return null;
+      segs.pop();
+    } else {
+      segs.push(part);
+    }
+  }
+  return segs;
+}
+
+/**
+ * Classify an ABSOLUTE-shaped token (`/tmp/...`, `/private/tmp/...`,
+ * `$TMPDIR/...`, `${TMPDIR}/...`) into its scratch-root segments, or null if
+ * it is not one of those four shapes. `..`/`.` are resolved via
+ * `resolveDotDot` (sensitive-paths.ts) BEFORE the root check runs, the same
+ * ordering that module documents and for the same reason: `/tmp/../etc`
+ * fails every `startsWith('/tmp')` test only AFTER resolution, not before.
+ */
+function classifyScratchAbsolute(token: string): { segments: string[]; rootLen: number } | null {
+  for (const marker of ['$TMPDIR', '${TMPDIR}']) {
+    if (token === marker || token.startsWith(`${marker}/`)) {
+      const rest = token.slice(marker.length).replace(/^\//, '');
+      const extra = rest === '' ? [] : rest.split('/');
+      const segs = joinScratchSegments(['$TMPDIR'], 1, extra);
+      return segs === null ? null : { segments: segs, rootLen: 1 };
+    }
+  }
+  if (token.startsWith('/')) {
+    const resolved = resolveDotDot(token);
+    const segs = resolved.split('/').filter((s) => s !== '');
+    if (segs[0] === 'tmp') return { segments: segs, rootLen: 1 };
+    if (segs[0] === 'private' && segs[1] === 'tmp') return { segments: segs, rootLen: 2 };
+    return null;
+  }
+  return null;
+}
+
+/**
+ * Resolve any token (absolute-scratch, `$TMPDIR`-form, or a genuinely
+ * relative path) to its scratch-root segments given the tracked `cwd`, or
+ * null if it cannot be shown to land under one.
+ *
+ * An absolute path that is NOT one of the four scratch shapes (`/etc/...`,
+ * `~/...`, `$HOME/...`, any other `$VAR/...`) is "judged on its own merits,
+ * never inherited" from `cwd` — it returns null here regardless of what `cwd`
+ * is, which is what stops `cd /tmp && rm -rf /Users/x` from resolving through
+ * the tracked scratch directory.
+ */
+function resolveScratchTarget(
+  token: string,
+  cwd: ScratchCwd,
+): { segments: readonly string[]; rootLen: number } | null {
+  const absolute = classifyScratchAbsolute(token);
+  if (absolute !== null) return absolute;
+  if (token.startsWith('/') || token.startsWith('~') || token.startsWith('$')) return null;
+  if (cwd === null) return null;
+  const segs = joinScratchSegments(cwd.segments, cwd.rootLen, token.split('/'));
+  return segs === null ? null : { segments: segs, rootLen: cwd.rootLen };
+}
+
+/**
+ * True if `token` resolves to a path STRICTLY under a scratch root (deeper
+ * than the root itself) given `cwd`. Strict, not root-or-equal, so `rm -rf
+ * /tmp` and `rm -rf /private/tmp` — deleting the root, not something under it
+ * — do not qualify; `resolveScratchTarget` (used directly, without the
+ * strictness requirement) is what a `cd` TARGET is checked against instead,
+ * since entering the scratch root itself is fine.
+ */
+function isStrictlyUnderScratchRoot(token: string, cwd: ScratchCwd): boolean {
+  const resolved = resolveScratchTarget(token, cwd);
+  return resolved !== null && resolved.segments.length > resolved.rootLen;
+}
+
+/**
+ * Advance the tracked scratch `cwd` across one trimmed segment. A no-op for
+ * anything other than a `cd`. Bare `cd` (goes to `$HOME`) and `cd -`
+ * (previous directory, unknowable statically) both reset to null rather than
+ * guess.
+ */
+function advanceScratchCwd(cwd: ScratchCwd, trimmedSegment: string): ScratchCwd {
+  if (trimmedSegment === '') return cwd;
+  const words = shellWords(trimmedSegment);
+  if (words[0] !== 'cd') return cwd;
+  const target = words[1];
+  if (target === undefined || target === '-') return null;
+  return resolveScratchTarget(target, cwd);
+}
+
+/**
+ * True if a `cd` in this position cannot be assumed to have moved the shell
+ * the rest of the command runs in. Reading segments left-to-right models `&&`,
+ * `;` and newline correctly and the other two operators not at all:
+ *
+ * - `||` — the right-hand side runs only if the left FAILED. `cd /etc || cd
+ *   /tmp` ends in `/etc` whenever `/etc` exists, which is always; a
+ *   left-to-right walk ends believing `/tmp`.
+ * - `|` — a pipeline stage runs in a subshell (absent `lastpipe`), so its `cd`
+ *   is discarded when the stage exits. True for a `cd` REACHED via `|` and for
+ *   one FOLLOWED by `|`, since either position makes it a stage.
+ *
+ * Both directions matter because the consequence is not a missed match but a
+ * tracked scratch root that differs from the real one, under which a later
+ * relative `rm -rf` is approved against a directory nobody checked. Returning
+ * true makes the caller forget the directory rather than guess it, the same
+ * fail-closed handling bare `cd` and `cd -` already get.
+ */
+function cdEffectIsUnreliable(joiner: CompoundJoiner, nextJoiner: CompoundJoiner): boolean {
+  return joiner === '|' || joiner === '||' || nextJoiner === '|';
+}
+
+/**
+ * Remove every redirect clause in `segment` whose target is a plain path under
+ * a scratch root. REMOVES the clause entirely rather than retargeting it to
+ * `/dev/null`: a retargeted clause would still leave a token like
+ * `2>/dev/null` sitting in the word list `scratchTargetVeto` scans for
+ * positional arguments, which is neither a flag nor a real target and would
+ * wrongly fail that scan.
+ *
+ * Only a `path` target is ever removed. `discard`/`fd-dup` need no help —
+ * `hasShellControl` already permits them — and `opaque` must never be removed,
+ * since removing it is exactly how a second operator hidden inside the greedy
+ * match would escape the veto that was going to catch it.
+ */
+function sanitizeSegmentRedirects(segment: string, cwd: ScratchCwd): string {
+  return rewriteRedirectClauses(segment, (target, text) => {
+    if (target.kind !== 'path') return text;
+    return isStrictlyUnderScratchRoot(target.path, cwd) ? '' : text;
+  });
+}
+
+/**
+ * Pre-pass over the WHOLE command, run only when `scratch` is among the
+ * requested groups: removes every redirect clause whose target is
+ * scratch-rooted, tracking `cd` across segments exactly like the real match
+ * that follows will. This has to run BEFORE `matchCoveredCommand`, not
+ * alongside it: `hasShellControl` cannot be told "except this one clause", it
+ * returns one boolean for the whole segment, so the only way to let a
+ * scratch-rooted redirect through it is to remove the clause before that
+ * check ever sees it.
+ *
+ * The rebuilt string keeps each segment's ORIGINAL joining operator. An
+ * earlier draft rebuilt with a uniform `&&`, reasoning that
+ * `matchCoveredCommand` re-splits via `splitCompound` and never inspects which
+ * separator joined two segments. That was true of `matchCoveredCommand` and
+ * false of the scratch veto downstream of it, which tracks `cd` across
+ * segments and so depends on exactly the operator a uniform `&&` erased:
+ * flattening `true | cd /tmp` to `true && cd /tmp` converts a discarded
+ * subshell `cd` into one the veto believes moved the shell.
+ */
+function sanitizeCommandForScratch(command: string): ScratchSanitized {
+  const parts = splitCompoundParts(command);
+  const cwdBySegment: ScratchCwd[] = [];
+  let cwd: ScratchCwd = null;
+  let rebuilt = '';
+  for (const [i, part] of parts.entries()) {
+    // The cwd RECORDED for a segment is the one in effect when the shell
+    // reaches it, i.e. before its own effect: a `cd` moves the segments after
+    // it, not itself.
+    cwdBySegment.push(cwd);
+    const trimmed = part.text.trim();
+    const words = trimmed === '' ? [] : shellWords(trimmed);
+    let text = part.text;
+    if (words[0] === 'cd') {
+      cwd = cdEffectIsUnreliable(part.joiner, parts[i + 1]?.joiner ?? null)
+        ? null
+        : advanceScratchCwd(cwd, trimmed);
+    } else if (trimmed !== '') {
+      text = sanitizeSegmentRedirects(part.text, cwd);
+    }
+    rebuilt += i === 0 ? text : `${joinerText(part.joiner)}${text}`;
+  }
+  return { command: rebuilt, cwdBySegment };
+}
+
+/**
+ * A scratch pre-pass result: the rewritten command, plus the tracked scratch
+ * directory in effect at each of its compound segments, BY INDEX.
+ *
+ * The trajectory is published rather than recomputed downstream because the
+ * two used to be computed twice — once here and once by a closure threaded
+ * through `matchCoveredCommand` — and two walks of the same command that must
+ * agree are exactly the shape that produced the `|`/`||` desync this type
+ * exists to prevent recurring. One walk, one answer, read by index.
+ */
+interface ScratchSanitized {
+  readonly command: string;
+  readonly cwdBySegment: readonly ScratchCwd[];
+}
+
+/** Render a joiner back into command text, preserving `splitCompoundParts`'s split. */
+function joinerText(joiner: CompoundJoiner): string {
+  if (joiner === null) return '';
+  return joiner === 'newline' ? '\n' : joiner;
+}
+
+/**
+ * Veto for a segment `scratch`'s own prefix matched (touch/cp/mv/tee/mkdir/
+ * rm/rmdir). Every non-flag token, and the VALUE half of any `--flag=value`
+ * token (so `--target-directory=/etc` is seen as `/etc`, the same
+ * `--flag=value` unwrapping `sensitive-paths.ts` already does), must resolve
+ * to a path strictly under a scratch root given `cwd`. Checking every token
+ * rather than guessing which one is "the destination" mirrors
+ * `segmentTouchesSensitivePath`'s own reasoning: getting a command's flag
+ * grammar wrong is fatal in ONE direction for each kind of check, and
+ * checking everything can only fail in the safe one here (an extra
+ * escalation, never a wrongly-approved write).
+ *
+ * Any redirect clause still present in `segment` at this point is exempt by
+ * construction: `sanitizeCommandForScratch` already removed every
+ * scratch-granted one, and a non-exempt, non-granted clause would have
+ * tripped `hasShellControl` before `matchCoveredCommand` ever reached this
+ * veto. It is stripped here purely so a leftover token like `2>&1` is not
+ * mistaken for a positional target.
+ */
+function scratchTargetVeto(segment: string, cwd: ScratchCwd): boolean {
+  const stripped = rewriteRedirectClauses(segment, () => '').trim();
+  const words = shellWords(stripped);
+  for (const word of words.slice(1)) {
+    if (word === '') continue;
+    if (word.startsWith('-')) {
+      const eq = word.indexOf('=');
+      if (eq === -1) continue;
+      const value = word.slice(eq + 1);
+      if (value !== '' && !isStrictlyUnderScratchRoot(value, cwd)) return true;
+      continue;
+    }
+    if (!isStrictlyUnderScratchRoot(word, cwd)) return true;
+  }
+  return false;
 }
 
 export interface PermissionGroup {
@@ -264,6 +573,15 @@ export const BUILTIN_GROUPS: Readonly<Record<string, PermissionGroup>> = {
     ],
     segmentVeto: writeGroupVeto,
   },
+  // See the "`scratch` group" section above `PermissionGroup` for the full
+  // design writeup, including why this entry has no `segmentVeto`: the
+  // stateful cd-tracking and redirect handling it needs live in `matchGroups`
+  // itself, not behind the stateless `(segment) => boolean` this field's type
+  // requires.
+  scratch: {
+    tools: [],
+    commands: SCRATCH_COMMANDS,
+  },
 };
 
 /**
@@ -363,8 +681,18 @@ export function matchGroups(
   if (known.length === 0) return null;
 
   if (toolName === 'Bash') {
-    const command = typeof toolInput['command'] === 'string' ? toolInput['command'].trim() : '';
-    if (command === '') return null;
+    const rawCommand = typeof toolInput['command'] === 'string' ? toolInput['command'].trim() : '';
+    if (rawCommand === '') return null;
+    // `scratch` (see the section above `PermissionGroup`) needs a redirect
+    // clause removed BEFORE `hasShellControl` ever sees it, which has to
+    // happen on the whole command ahead of the per-segment machinery below.
+    // Only run the pre-pass when `scratch` was actually requested, so every
+    // OTHER caller (in particular `strict`, which never lists it) gets back
+    // out exactly the string it put in and nothing here can change its
+    // behavior.
+    const scratchActive = known.includes('scratch');
+    const scratch = scratchActive ? sanitizeCommandForScratch(rawCommand) : null;
+    const command = scratch?.command ?? rawCommand;
     // Map each prefix back to its owning group for the descriptive return.
     const prefixToGroup = new Map<string, string>();
     for (const name of known) {
@@ -376,12 +704,20 @@ export function matchGroups(
     // profile of the group that matched IT, not by one blanket rule for the
     // whole command. A group with no `segmentVeto` gets the historical read
     // profile, so read-only/vcs-read/build-test behave exactly as before.
+    // `scratch` is special-cased directly (its veto needs the tracked scratch
+    // directory, which the stateless `PermissionGroup.segmentVeto` signature
+    // has no room for). That directory is looked up BY SEGMENT INDEX from the
+    // single walk done in the pre-pass, rather than re-tracked by a closure
+    // here — see `ScratchSanitized`.
     const hit = matchCoveredCommand(
       command,
       [...prefixToGroup.keys()],
       readSegmentVeto,
-      (segment, matchedPrefix) => {
+      (segment, matchedPrefix, index) => {
         const owner = prefixToGroup.get(matchedPrefix);
+        if (owner === 'scratch') {
+          return scratchTargetVeto(segment, scratch?.cwdBySegment[index] ?? null);
+        }
         const group = owner === undefined ? undefined : BUILTIN_GROUPS[owner];
         const veto = group?.segmentVeto ?? readSegmentVeto;
         return veto(segment);

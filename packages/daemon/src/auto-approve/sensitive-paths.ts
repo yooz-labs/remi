@@ -265,8 +265,14 @@ export function isSensitiveWritePath(candidate: string): boolean {
  * absolute. Purely textual — it does not resolve symlinks, and cannot: a
  * symlink whose target is `/etc` is invisible to any string-level check. See
  * the "defense in depth" caveat in the module doc.
+ *
+ * Exported for reuse by `permission-groups.ts`'s `scratch` group, which needs
+ * the identical `..`/`.` collapse to tell `/tmp/../etc` apart from a genuine
+ * `/tmp` subpath before checking which root a target lands under — the same
+ * ordering requirement documented above ("resolve `..` BEFORE the prefix
+ * check"), so it is reused rather than re-derived.
  */
-function resolveDotDot(path: string): string {
+export function resolveDotDot(path: string): string {
   const absolute = path.startsWith('/');
   const out: string[] = [];
   for (const segment of path.split('/')) {
