@@ -2155,7 +2155,23 @@ describe('AutoApproveService - risk ceiling (#976)', () => {
     expect(result.reasoning).toContain('allow-matched');
   });
 
-  test('a user approve_groups match on a high-risk command still approves -- the ceiling never runs', async () => {
+  test('a user approve_groups match bypasses the LLM entirely, so the ceiling never gets a chance to run', async () => {
+    // NOT a high-band escape-hatch proof -- `bun test` is `classifyRisk`
+    // `moderate` (`PACKAGE_INSTALL_SUBCOMMANDS.bun` is `['add','install','i']`,
+    // no `'test'`; not a remote mutation, destructive-local op, or privilege
+    // elevation), so this alone cannot distinguish "the group match bypassed
+    // the ceiling" from "the ceiling ran and simply did not fire because the
+    // command was never high-band." By design, no BUILTIN_GROUPS member
+    // contains a high-band operation to test that distinction with: `git push`
+    // is deliberately excluded from `vcs-write`, and `rm`/`chmod`/`chown` are
+    // deliberately excluded from `fs-write` (ADR 0016, permission-groups.ts).
+    // Constructing one here would mean inventing a config no real user has.
+    //
+    // What this DOES prove, and the reason it still earns a place next to the
+    // sibling `allow` test above: config `approve_groups` returns before the
+    // LLM is ever called, same as `allow`. The high-band escape-hatch property
+    // itself is covered by the sibling test's `allow: ['rm -rf ./build']`,
+    // which uses a genuinely high-band command.
     const service = new AutoApproveService(
       makeConfig({
         base_url: 'http://10.255.255.1',
