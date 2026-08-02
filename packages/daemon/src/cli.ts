@@ -133,6 +133,9 @@ import {
   alertTitle,
   resolveProviderUrl,
 } from './auto-approve/index.ts';
+// #976 prerequisite: not re-exported from auto-approve/index.ts on purpose
+// (that barrel is being edited concurrently by other work on the same epic).
+import type { PrecedentStore } from './auto-approve/precedent.ts';
 import { detectAutostartState } from './cli/autostart-state.ts';
 import { resolveClaudeBinding } from './cli/claude-binding.ts';
 import { runConfigCommand } from './cli/cmd-config.ts';
@@ -1022,6 +1025,14 @@ const sessionGateHandles: Map<UUID, SessionGateHandle> = new Map();
 // active, so this map is populated unconditionally there; removed on
 // session close, same lifecycle as the other per-session maps below.
 const sessionTrackers: Map<UUID, QuestionPresenceTracker> = new Map();
+// Per-session precedent stores (#976 prerequisite, `auto-approve/precedent.ts`):
+// keyed by sessionId, same shape as `sessionGateHandles`, so `handleAnswer`
+// (input-events.ts) can record a human-classified answer into the RIGHT
+// session's store via the `recordPrecedent` dependency below. Populated from
+// `hookBridgeHandle.precedentStore` after `setupHookBridge`; empty when no
+// hookServer is configured (a `permission_request`-sourced Question, the only
+// kind precedent ever records, cannot exist without one).
+const sessionPrecedentStores: Map<UUID, PrecedentStore> = new Map();
 /**
  * Per-session "does this binder claim the event?" filters (#914).
  *
@@ -1119,6 +1130,12 @@ const sessionRegistry = new SessionRegistry(
       // here would make `isPromptCurrent` resolve against a dead session's
       // last-observed PTY state instead of falling back to "no tracker".
       sessionTrackers.delete(sessionId);
+      // Drop the per-session precedent store (#976 prerequisite): the store
+      // itself is already cleared on /clear-style rotation inside
+      // setupHookBridge; this is the separate full-session-teardown case
+      // (the ManagedSession itself is gone), so the Map entry must go too or
+      // it lingers for the rest of the daemon's process life.
+      sessionPrecedentStores.delete(sessionId);
       // #914: drop the admits filter with the session, so a closed session's
       // binder can never keep admitting turns on its behalf.
       sessionAdmitsHandles.delete(sessionId);
@@ -1708,6 +1725,8 @@ async function createNewSession(
     // Register the per-session gate handle (#573) so the WebSocket answer path
     // can resolve a held permission / cancel the eval for this exact session.
     sessionGateHandles.set(sessionId, hookBridgeHandle.gate);
+    // #976 prerequisite: same registration for this session's precedent store.
+    sessionPrecedentStores.set(sessionId, hookBridgeHandle.precedentStore);
     // #914: lets the out-of-bridge turn-complete listener apply the same
     // session filter every in-bridge listener already uses.
     sessionAdmitsHandles.set(sessionId, hookBridgeHandle.admits);
@@ -1925,6 +1944,14 @@ const inputHandlers: InputHandlers = createInputHandlers({
   // current" — fail toward refusing the injection.
   isPromptCurrent: (sessionId, questionId, ptyText) =>
     sessionTrackers.get(sessionId)?.isPromptCurrent(questionId, ptyText) ?? false,
+  // #976 prerequisite: route a classified answer to the RIGHT session's
+  // precedent store (populated per session in createNewSession, same
+  // map-per-sessionId shape as sessionGateHandles/sessionTrackers above). No
+  // store for this sessionId (no hookServer, or the session already closed)
+  // is a silent no-op -- recording is additive and must never affect the
+  // answer itself.
+  recordPrecedent: (sessionId, toolName, signature, decision) =>
+    sessionPrecedentStores.get(sessionId)?.record(toolName, signature, decision),
 });
 
 const sessionHandlers: SessionHandlers = createSessionHandlers({

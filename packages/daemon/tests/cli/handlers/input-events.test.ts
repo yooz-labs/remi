@@ -2070,4 +2070,304 @@ describe('createInputHandlers', () => {
       expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
     });
   });
+
+  describe('recordPrecedent wiring (#976 prerequisite)', () => {
+    type RecordCall = {
+      sessionId: UUID;
+      toolName: string;
+      signature: string;
+      decision: 'approved' | 'denied';
+    };
+
+    function registerPermissionQuestion(
+      sessionId: UUID,
+      overrides: Partial<Parameters<SessionRegistry['addQuestion']>[1]> = {},
+    ): void {
+      sessionRegistry.addQuestion(sessionId, {
+        id: QID,
+        text: 'Allow Bash: git status',
+        options: [
+          { value: '1', label: 'Yes', isRecommended: true, isYes: true, isNo: false },
+          { value: '2', label: 'No', isRecommended: false, isYes: false, isNo: true },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+        source: 'permission_request',
+        ...overrides,
+      });
+    }
+
+    function setUp(): {
+      sessionId: UUID;
+      calls: RecordCall[];
+      handlers: ReturnType<typeof createInputHandlers>;
+    } {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      const calls: RecordCall[] = [];
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        recordPrecedent: (sessionId, toolName, signature, decision) => {
+          calls.push({ sessionId, toolName, signature, decision });
+        },
+      });
+      return { sessionId, calls, handlers };
+    }
+
+    test('records an approval for an unambiguous Yes to a permission_request question', async () => {
+      const { sessionId, calls, handlers } = setUp();
+      registerPermissionQuestion(sessionId);
+
+      await handlers.onAnswer(CID, sessionId, QID, 'Yes');
+
+      expect(calls).toEqual([
+        { sessionId, toolName: 'Bash', signature: 'Bash: git status', decision: 'approved' },
+      ]);
+    });
+
+    test('records a denial for an unambiguous No to a permission_request question', async () => {
+      const { sessionId, calls, handlers } = setUp();
+      registerPermissionQuestion(sessionId);
+
+      await handlers.onAnswer(CID, sessionId, QID, 'No');
+
+      expect(calls).toEqual([
+        { sessionId, toolName: 'Bash', signature: 'Bash: git status', decision: 'denied' },
+      ]);
+    });
+
+    test('records the suggestion-derived "Yes, always allow" case as an approval', async () => {
+      const { sessionId, calls, handlers } = setUp();
+      registerPermissionQuestion(sessionId, {
+        options: [
+          {
+            value: 'always',
+            label: 'Yes, always allow: git status',
+            isRecommended: true,
+            isYes: true,
+            isNo: false,
+            suggestionIndex: 0,
+          },
+          { value: 'no', label: 'No', isRecommended: false, isYes: false, isNo: true },
+        ],
+      });
+
+      await handlers.onAnswer(CID, sessionId, QID, 'always');
+
+      expect(calls).toEqual([
+        { sessionId, toolName: 'Bash', signature: 'Bash: git status', decision: 'approved' },
+      ]);
+    });
+
+    test('does NOT record for a non-permission_request source (source: pty), even with otherwise-parseable text', async () => {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      // Deliberately KEEP the default parseable "Allow Bash: git status" text
+      // and change ONLY `source`, so this isolates the source guard itself --
+      // unlike a PTY-shaped question's real text (e.g. "Proceed? (y/n)"),
+      // which would also fail to parse and could pass this test even if the
+      // source check were deleted (that confound is covered separately by
+      // "a non-parseable text is refused regardless of source" below).
+      registerPermissionQuestion(sessionId, { source: 'pty' });
+      const calls: RecordCall[] = [];
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        recordPrecedent: (sessionId, toolName, signature, decision) => {
+          calls.push({ sessionId, toolName, signature, decision });
+        },
+        // `source: 'pty'` also trips the #920 prompt-currency guard earlier in
+        // handleAnswer, which (with no `isPromptCurrent` wired) fails toward
+        // "not current" and returns before ever reaching the precedent code --
+        // that would make this test pass for the WRONG reason. Force it
+        // current so the answer actually proceeds far enough to exercise the
+        // `source === 'permission_request'` check this test targets.
+        isPromptCurrent: () => true,
+      });
+
+      await handlers.onAnswer(CID, sessionId, QID, 'Yes');
+
+      expect(calls).toEqual([]);
+    });
+
+    test('does NOT record for a source-less question, even with otherwise-parseable text', async () => {
+      const { sessionId, calls, handlers } = setUp();
+      // Same isolation as the `source: 'pty'` case above: keep the default
+      // parseable text, omit `source` entirely (StopFailure's real shape).
+      registerPermissionQuestion(sessionId, { source: undefined });
+
+      await handlers.onAnswer(CID, sessionId, QID, 'Yes');
+
+      expect(calls).toEqual([]);
+    });
+
+    test('does NOT record a source-less question with real (unparseable) StopFailure-shaped text', async () => {
+      const { sessionId, calls, handlers } = setUp();
+      sessionRegistry.addQuestion(sessionId, {
+        id: QID,
+        text: 'Session stop failed (foo). Retry?',
+        options: [
+          { value: 'y', label: 'Yes', isRecommended: true, isYes: true, isNo: false },
+          { value: 'n', label: 'No', isRecommended: false, isYes: false, isNo: true },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+      });
+
+      await handlers.onAnswer(CID, sessionId, QID, 'y');
+
+      // Even though this question is isYes/isNo-shaped and would classify as
+      // an unambiguous approve, its text is NOT a genuine tool+command
+      // signature -- recording it would be exactly the unrecoverable mistake
+      // the module's doc warns against. Missing `source` (not
+      // 'permission_request') must refuse it.
+      expect(calls).toEqual([]);
+    });
+
+    test('does NOT record for a bare "always" option with no suggestion to echo (ambiguous)', async () => {
+      const { sessionId, calls, handlers } = setUp();
+      registerPermissionQuestion(sessionId, {
+        options: [
+          { value: 'always', label: 'Yes, always', isRecommended: true, isYes: true, isNo: false },
+          { value: 'no', label: 'No', isRecommended: false, isYes: false, isNo: true },
+        ],
+      });
+
+      await handlers.onAnswer(CID, sessionId, QID, 'always');
+
+      expect(calls).toEqual([]);
+    });
+
+    test('does NOT record for a multi-choice pick, even with otherwise-parseable text', async () => {
+      const { sessionId, calls, handlers } = setUp();
+      // Isolates the `decision !== null` gate specifically: parseable text
+      // ("Allow Bash: git status"), but pick-shaped options (no isYes/isNo),
+      // so `mapAnswerToDecision` alone is what makes `decision` null here --
+      // unlike the realistic ExitPlanMode text below, which would also fail
+      // to parse and could pass even if that gate were deleted.
+      registerPermissionQuestion(sessionId, {
+        options: [
+          { value: '1', label: 'Option A', isRecommended: true, isYes: false, isNo: false },
+          { value: '2', label: 'Option B', isRecommended: false, isYes: false, isNo: false },
+        ],
+      });
+
+      await handlers.onAnswer(CID, sessionId, QID, '1');
+
+      expect(calls).toEqual([]);
+    });
+
+    test('does NOT record for a real ExitPlanMode-shaped multi-choice pick', async () => {
+      const { sessionId, calls, handlers } = setUp();
+      registerPermissionQuestion(sessionId, {
+        text: 'Plan ready for review. How do you want to proceed?',
+        options: [
+          {
+            value: '1',
+            label: 'Yes, and auto-accept edits',
+            isRecommended: true,
+            isYes: false,
+            isNo: false,
+          },
+          {
+            value: '2',
+            label: 'Yes, and manually approve edits',
+            isRecommended: false,
+            isYes: false,
+            isNo: false,
+          },
+          {
+            value: '3',
+            label: 'No, keep planning',
+            isRecommended: false,
+            isYes: false,
+            isNo: false,
+          },
+        ],
+      });
+
+      await handlers.onAnswer(CID, sessionId, QID, '1');
+
+      expect(calls).toEqual([]);
+    });
+
+    test('does NOT record on cancel', async () => {
+      const { sessionId, calls, handlers } = setUp();
+      registerPermissionQuestion(sessionId);
+
+      await handlers.onAnswer(CID, sessionId, QID, '', undefined, { cancel: true });
+
+      expect(calls).toEqual([]);
+    });
+
+    test('does NOT record for a structured AskUserQuestion selections answer', async () => {
+      const { sessionId, calls, handlers } = setUp();
+      // No `questions` array -> handleAuqAnswer's immediate "not structured"
+      // escalate path (no PTY keystroke loop, so this cannot hang) -- the
+      // point under test is that ANY `extra.selections` answer routes to
+      // handleAuqAnswer instead of the classify+record logic in the main
+      // branch, which is a structural (early-return) property, not something
+      // that depends on the AUQ run's own outcome.
+      registerPermissionQuestion(sessionId);
+
+      await handlers.onAnswer(CID, sessionId, QID, '', undefined, {
+        selections: [{ questionIndex: 0, optionIndices: [0] }],
+      });
+
+      expect(calls).toEqual([]);
+    });
+
+    test('absent recordPrecedent dependency never throws (additive, optional)', async () => {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      registerPermissionQuestion(sessionId);
+      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+
+      await expect(handlers.onAnswer(CID, sessionId, QID, 'Yes')).resolves.toBe(undefined);
+      expect(ptyCapture.submits).toEqual(['1']);
+    });
+
+    test('a held-hook resolution (no PTY submit) still records precedent', async () => {
+      const { sessionId, calls, handlers: _unused } = setUp();
+      registerPermissionQuestion(sessionId);
+      const recorded: RecordCall[] = [];
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        resolveHeldPermission: () => true, // a hold existed and was resolved
+        recordPrecedent: (sessionId, toolName, signature, decision) => {
+          recorded.push({ sessionId, toolName, signature, decision });
+        },
+      });
+
+      await handlers.onAnswer(CID, sessionId, QID, 'Yes');
+
+      expect(calls).toEqual([]); // the OTHER handlers instance never saw it
+      expect(recorded).toEqual([
+        { sessionId, toolName: 'Bash', signature: 'Bash: git status', decision: 'approved' },
+      ]);
+    });
+  });
 });
