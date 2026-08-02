@@ -121,7 +121,7 @@
  * characters collapse to the identical signature, so approving one
  * exact-matches the other — reachable in ordinary use in this very repo,
  * whose paths routinely exceed 120 characters, not just adversarially.
- * `isTruncatedSignature` below detects that exact shape; `record()` and both
+ * `isTruncatedSignature` below detects that shape; `record()` and both
  * match functions refuse it outright, in both directions. A missed
  * precedent (nothing is recorded/matched for a >120-character command) is
  * the safe direction; a false exact-match on a truncated signature is the
@@ -130,8 +130,27 @@
  * over 120 characters** — a real, user-visible gap, not a theoretical one.
  * The proper long-term fix is threading the untruncated value through
  * `Question` and `buildPermissionQuestion` itself; that touches the shared
- * protocol type and is out of scope for this store, tracked in a follow-up
- * issue referenced from this PR.
+ * protocol type and is out of scope for this store, tracked as #990.
+ *
+ * ### Round 2 (independent review, 2026-08-02): the check was evadable
+ *
+ * The first fix (above) checked the truncation shape AFTER
+ * `normalizeSignature` had already run. `normalizeSignature` collapses
+ * whitespace RUNS (2+ consecutive whitespace characters) to one — and a
+ * genuinely truncated 120-character detail containing such a run (a double
+ * space, a tab next to a space, an indented line after a newline — ordinary
+ * shell formatting, not even adversarial: an attacker who wants the
+ * collision just adds a space) normalizes SHORTER than 120, so the
+ * `=== 120` check silently missed it. Fixed by moving every truncation
+ * check to run on the RAW, pre-normalization value: `record()` and both
+ * match functions' query-side checks now check `isTruncatedSignature`
+ * BEFORE calling `normalizeSignature`, not after. `parsePermissionQuestionText`
+ * needed no change — it never normalized before checking in the first
+ * place, verified empirically (not just by re-reading the code — see this
+ * module's own test suite). See `isTruncatedSignature`'s doc for the full
+ * argument, including why the check is also now a floor (`>=120`) rather
+ * than an exact match, and why `record()`'s raw-value check — not the match
+ * functions' stored-side check — is the authoritative boundary.
  */
 
 /** One human-classified answer to a permission-shaped question. */
@@ -212,24 +231,57 @@ function normalizeSignature(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
-/** Exact length `HookEventBridge.summarizeToolInput` (hook-event-bridge.ts,
- *  Bash at :621, the generic path/url/description fallback at :647)
- *  produces when it truncates: 117 kept characters + this 3-character
- *  marker = 120 total, always. */
+/** Length `HookEventBridge.summarizeToolInput` (hook-event-bridge.ts, Bash at
+ *  :621, the generic path/url/description fallback at :647) produces when it
+ *  truncates: 117 kept characters + this 3-character marker = 120 total,
+ *  always, TODAY. `isTruncatedSignature` treats this as a floor, not an exact
+ *  match — see its own doc for why. */
 const TRUNCATED_DETAIL_LENGTH = 120;
 const TRUNCATION_MARKER = '...';
 
 /**
- * True when `signature` carries the EXACT shape `summarizeToolInput`
- * produces for a truncated value — see "Truncation" in this module's doc
- * for why this matters (CRITICAL, found in review). Extracts the "detail"
- * portion the same way `parsePermissionQuestionText` does (everything after
- * the first `': '`, or the whole string when there is no colon — a bare
- * tool name like `Allow Read` is never truncated, only its argument is) and
- * checks it against the exact 117-chars-plus-marker shape.
+ * True when `signature` carries the shape `summarizeToolInput` produces for
+ * a truncated value — see "Truncation" in this module's doc for why this
+ * matters (CRITICAL, found in review). Extracts the "detail" portion the
+ * same way `parsePermissionQuestionText` does (everything after the first
+ * `': '`, or the whole string when there is no colon — a bare tool name like
+ * `Allow Read` is never truncated, only its argument is) and checks it
+ * against the truncated shape.
+ *
+ * ## MUST be called on the RAW, pre-normalization value
+ *
+ * (Round 2, found in independent review, 2026-08-02.) `normalizeSignature`
+ * collapses whitespace RUNS (2+ consecutive whitespace characters — a double
+ * space, a tab next to a space, a newline followed by indentation) to a
+ * single character. A genuinely truncated 120-character detail that happens
+ * to contain such a run — ordinary shell formatting (aligned arguments,
+ * indented heredocs/multi-line commands), not even adversarial — normalizes
+ * SHORTER than 120 and this function then misses it entirely if called on
+ * the normalized string. `parsePermissionQuestionText` was already correct
+ * (it never normalizes before calling this); `record()` and both match
+ * functions' QUERY-side checks previously called this on the NORMALIZED
+ * value and are fixed in this same change to call it on the raw parameter
+ * first. A STORED `PrecedentRecord.signature` cannot be un-normalized after
+ * the fact (`record()` only ever stores the normalized form) — which is
+ * exactly why `record()`'s raw-value check is the AUTHORITATIVE boundary
+ * (a truncated raw value, whitespace-run or not, can never enter the store
+ * once that check is correct) and the match functions' stored-side check is
+ * a redundant, best-effort layer, not the reverse.
+ *
+ * ## Floor (`>=`), not exact match (`===`)
+ *
+ * `summarizeToolInput` produces EXACTLY 117+3 today, so `===` would be
+ * precise for the current mechanism. `>=` is chosen instead: if that
+ * constant ever drifts (the kept-character count changes), an exact-match
+ * check would silently stop catching the new shape with no test failure to
+ * flag it, reopening the truncation-collision vulnerability this function
+ * exists to close. A floor keeps catching it. The cost is symmetrical with
+ * the heuristic already accepted below (a longer genuine value that happens
+ * to end in the marker is also refused) — both failure directions land on
+ * "missed precedent," the safe one, never "false match."
  *
  * This is a heuristic, not a certainty: a genuine, untruncated value that
- * happens to be exactly 120 characters and end in `...` (e.g. a command
+ * happens to be at least 120 characters and end in `...` (e.g. a command
  * that legitimately prints `"loading..."`) would also match and be refused.
  * That false positive costs a missed precedent — the safe direction, not
  * the dangerous one — so no attempt is made to distinguish it from a real
@@ -239,7 +291,7 @@ const TRUNCATION_MARKER = '...';
 function isTruncatedSignature(signature: string): boolean {
   const colonIndex = signature.indexOf(': ');
   const detail = colonIndex === -1 ? '' : signature.slice(colonIndex + 2);
-  return detail.length === TRUNCATED_DETAIL_LENGTH && detail.endsWith(TRUNCATION_MARKER);
+  return detail.length >= TRUNCATED_DETAIL_LENGTH && detail.endsWith(TRUNCATION_MARKER);
 }
 
 /**
@@ -306,37 +358,46 @@ export function parsePermissionQuestionText(
  * govern, full stop.
  *
  * Also refuses outright — returns null immediately — when the QUERY
- * signature is truncated (`isTruncatedSignature`; see "Truncation" in this
- * module's doc), and skips any STORED record whose signature is truncated
- * as if it were not there at all. `record()` already refuses to store a
- * truncated signature, so in practice no stored record should ever be
- * truncated; this is defense in depth for a `PrecedentRecord[]` built
- * directly (a test, a future caller bypassing the store).
+ * signature is truncated (`isTruncatedSignature`, checked on the RAW query
+ * BEFORE normalization — see that function's doc, round 2, review
+ * 2026-08-02), and skips any STORED record whose (already-normalized)
+ * signature looks truncated, as if it were not there at all.
  *
- * Honest note on the query-side check specifically, for THIS function only:
- * because matching here is EXACT, a truncated query can only ever equal a
- * stored signature that is itself the identical truncated shape — which the
- * stored-side check immediately above already excludes. So for exact
- * matching the query-side check is provably redundant with the stored-side
- * one today; it is kept for defense in depth and for symmetry with
- * `findDeniedPrecedent`, where the equivalent check is NOT redundant (see
- * that function's doc) — but do not expect a test to observe it firing
- * independently here, and do not add one that pretends to.
+ * Revised understanding (round 2): the query-side check here is NOT
+ * redundant with the stored-side check, unlike what round 1 of this PR
+ * claimed. The two checks now run on DIFFERENT representations — the query
+ * on its raw form, a stored record on its only available (normalized) form
+ * — so a raw-truncated query whose NORMALIZED form happens to coincide
+ * with a real, unrelated, legitimately-stored (non-truncated) signature is
+ * a genuine exact-match collision the stored-side check cannot see (the
+ * stored record is not itself truncated-shaped). Refusing on the raw query
+ * closes that too. Proven with a dedicated test (`precedent.test.ts`,
+ * "a raw-truncated query does not coincidentally exact-match..."). The
+ * OLD claim was true only because round 1 checked both sides
+ * post-normalization, making a match possible only when the stored side
+ * ALSO happened to look truncated post-normalization — that symmetry no
+ * longer holds now that the query check moved to the raw value.
+ *
+ * `record()` refuses to store a truncated RAW signature (also fixed in
+ * round 2 to check before normalizing), so in practice no stored record
+ * should ever be truncated-shaped; the stored-side check here remains
+ * defense in depth for a `PrecedentRecord[]` built directly (a test, a
+ * future caller bypassing the store).
  *
  * Pure: operates over a plain array, no I/O, safe to call on every eval once
- * a consumer exists. Normalizes BOTH the query signature and each stored
- * record's own signature before comparing — `PrecedentStore.record` already
- * normalizes what it stores, but this function must not silently rely on
- * that: a `PrecedentRecord[]` built directly is exactly as comparable as one
- * built through it.
+ * a consumer exists. Normalizes the query signature (AFTER the raw
+ * truncation check) and each stored record's own signature before
+ * comparing — `PrecedentStore.record` already normalizes what it stores,
+ * but this function must not silently rely on that: a `PrecedentRecord[]`
+ * built directly is exactly as comparable as one built through it.
  */
 export function findApprovedPrecedent(
   records: readonly PrecedentRecord[],
   toolName: string,
   signature: string,
 ): PrecedentMatch | null {
+  if (isTruncatedSignature(signature)) return null;
   const target = normalizeSignature(signature);
-  if (isTruncatedSignature(target)) return null;
   for (let i = records.length - 1; i >= 0; i--) {
     const record = records[i];
     if (!record) continue;
@@ -380,16 +441,17 @@ export function findApprovedPrecedent(
  * a wrongly-granted approval. Not requested by review; noted here so a
  * future reader does not read the asymmetry as an oversight.
  *
- * Same truncation refusal as `findApprovedPrecedent` — see there and
- * "Truncation" in this module's doc. UNLIKE `findApprovedPrecedent`, the
- * QUERY-side check here IS independently load-bearing, not just defense in
- * depth: because matching is a BROAD substring in both directions, a
- * truncated (120-char) query can legitimately CONTAIN a short, genuinely
- * stored, non-truncated denial signature somewhere inside its opaque
- * truncated portion — the truncation hides whether that embedded text is
- * really what the human is doing now, or an unrelated coincidence. Refusing
- * the query outright avoids matching (or failing to match) on data this
- * function cannot verify. Proven with a dedicated test
+ * Same truncation refusal as `findApprovedPrecedent`, same round-2 fix — the
+ * check runs on the RAW query, BEFORE normalization (`isTruncatedSignature`'s
+ * doc) — see there and "Truncation" in this module's doc. The query-side
+ * check here is independently load-bearing for its OWN reason, distinct from
+ * `findApprovedPrecedent`'s: because matching is a BROAD substring in both
+ * directions, a truncated (120-char) query can legitimately CONTAIN a short,
+ * genuinely stored, non-truncated denial signature somewhere inside its
+ * opaque truncated portion — the truncation hides whether that embedded text
+ * is really what the human is doing now, or an unrelated coincidence.
+ * Refusing the query outright avoids matching (or failing to match) on data
+ * this function cannot verify. Proven with a dedicated test
  * (`precedent.test.ts`, "a truncated QUERY does not broadly match...").
  */
 export function findDeniedPrecedent(
@@ -397,8 +459,8 @@ export function findDeniedPrecedent(
   toolName: string,
   signature: string,
 ): PrecedentMatch | null {
+  if (isTruncatedSignature(signature)) return null;
   const target = normalizeSignature(signature);
-  if (isTruncatedSignature(target)) return null;
   for (let i = records.length - 1; i >= 0; i--) {
     const record = records[i];
     if (!record) continue;
@@ -445,13 +507,26 @@ export class PrecedentStore {
    * a useless entry that could still occupy a cap slot, the second is a
    * signature this store cannot safely match precisely. `record()` checking
    * this too (not just `parsePermissionQuestionText`) is defense in depth
-   * for any future caller that builds a signature some other way.
+   * for any future caller that builds a signature some other way — and this
+   * IS the authoritative truncation boundary for whatever is actually
+   * stored: once this check is correct, no truncated raw signature can ever
+   * reach `this.records`, so a stored record is never truncated in
+   * practice (see `isTruncatedSignature`'s doc on why the match functions'
+   * stored-side check is therefore redundant, not the reverse).
+   *
+   * The truncation check MUST run on the RAW `signature` parameter, BEFORE
+   * `normalizeSignature` touches it (round 2, review 2026-08-02):
+   * normalization collapses whitespace RUNS, which can shrink a genuinely
+   * truncated 120-character detail below the threshold — ordinary shell
+   * formatting (a double space, aligned arguments, an indented multi-line
+   * command), not just an adversarial construction — and a check running
+   * on the already-shrunk value would silently miss it.
    */
   record(toolName: string, signature: string, decision: 'approved' | 'denied'): void {
+    if (isTruncatedSignature(signature)) return;
     const normalizedToolName = toolName.trim();
     const normalizedSignature = normalizeSignature(signature);
     if (!normalizedToolName || !normalizedSignature) return;
-    if (isTruncatedSignature(normalizedSignature)) return;
     this.records.push({
       toolName: normalizedToolName,
       signature: normalizedSignature,

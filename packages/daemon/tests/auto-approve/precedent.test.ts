@@ -369,19 +369,22 @@ describe('truncation refusal (CRITICAL, review 2026-08-02)', () => {
     expect(store.size).toBe(1);
   });
 
-  // NOTE on what the two tests above/below this comment deliberately do NOT
-  // claim: for EXACT matching (findApprovedPrecedent), a truncated query can
-  // only ever equal an equally-truncated stored signature -- which the
-  // stored-side skip already excludes -- so the query-side check there is
-  // proven-redundant defense in depth, not independently observable. A test
-  // asserting "matchApproved refuses a truncated query against a real
-  // (non-truncated) stored approval" would pass whether or not that specific
-  // check exists (verified: removing ONLY that line left all tests green),
-  // which is exactly the "cannot fail" shape AGENTS.md warns about -- so it
-  // is not included. The BROAD substring matcher below is different: a
-  // truncated (120-char) query can legitimately CONTAIN an unrelated, real,
-  // non-truncated denial as a substring, which the stored-side check alone
-  // does NOT exclude. That case gets a real, mutation-provable test.
+  // ROUND 1 NOTE, corrected in round 2 (see the dedicated describe block
+  // below): this used to claim `findApprovedPrecedent`'s query-side check
+  // was provably redundant with the stored-side check (verified at the
+  // time: removing ONLY that line left every round-1 test green). That
+  // claim relied on BOTH sides being checked post-normalization, so a match
+  // was only possible when the stored side ALSO looked truncated. Round 2's
+  // fix moved the query-side check to the RAW value, which breaks that
+  // symmetry -- the query and stored checks now run on different
+  // representations, and the query check became independently meaningful
+  // (a raw-truncated query whose NORMALIZED form coincidentally equals a
+  // real, unrelated stored approval). See "truncation check runs on RAW
+  // text" below for the corrected, provable test. The BROAD substring
+  // matcher (`findDeniedPrecedent`) was ALWAYS independently load-bearing on
+  // its query side, for a different reason: a truncated (120-char) query can
+  // legitimately CONTAIN an unrelated, real, non-truncated denial as a
+  // substring, which the stored-side check alone does NOT exclude.
   test('matchDenied refuses a truncated QUERY that would otherwise substring-match a real, unrelated denial', () => {
     // Build a 120-char truncated-shaped query whose opaque (truncated) body
     // happens to CONTAIN the exact text of a real, previously-denied, much
@@ -462,5 +465,202 @@ describe('truncation refusal (CRITICAL, review 2026-08-02)', () => {
     if (attackParsed) {
       expect(store.matchApproved(attackParsed.toolName, attackParsed.signature)).toBeNull();
     }
+  });
+});
+
+/**
+ * IMPORTANT, found in independent review (round 2, 2026-08-02): the round-1
+ * fix above checked `isTruncatedSignature` AFTER `normalizeSignature` had
+ * already run in `record()` and both match functions' query-side checks.
+ * `normalizeSignature` collapses whitespace RUNS (2+ consecutive whitespace
+ * characters) to one, so a genuinely truncated 120-character detail
+ * containing such a run — a double space, a tab run, an indented line after
+ * a newline (heredocs/multi-line commands), all ordinary shell formatting,
+ * not adversarial — normalizes SHORTER than 120 and the `=== 120` check
+ * silently missed it. Fixed by checking the RAW value first everywhere.
+ * `parsePermissionQuestionText` needed no change (it never normalized before
+ * checking) — proven here empirically, not just re-read.
+ */
+describe('truncation check runs on RAW text, before normalization (round 2, review 2026-08-02)', () => {
+  /**
+   * Build a truncated-shaped detail (117 kept chars + "...") with a given
+   * whitespace RUN embedded partway through the kept portion — the exact
+   * raw shape `summarizeToolInput` would produce for a real command
+   * containing that formatting. Deliberately hand-built (not derived from
+   * any function under test) so the test doesn't validate itself.
+   */
+  function truncatedDetailContainingRun(run: string): string {
+    const filler = 'a'.repeat(117 - run.length);
+    const kept = `${filler.slice(0, 60)}${run}${filler.slice(60)}`;
+    if (kept.length !== 117) {
+      throw new Error(`test construction bug: kept.length=${kept.length}, expected 117`);
+    }
+    return `${kept}...`;
+  }
+
+  test('sanity: embedding a whitespace run still produces the exact 120-char/marker shape', () => {
+    const detail = truncatedDetailContainingRun('  ');
+    expect(detail.length).toBe(120);
+    expect(detail.endsWith('...')).toBe(true);
+    // And sanity that the run really does shrink under normalization,
+    // which is the whole precondition for this bug to matter.
+    expect(detail.replace(/\s+/g, ' ').length).toBeLessThan(120);
+  });
+
+  test('double space: record() refuses (reproduces the exact review scenario)', () => {
+    const store = new PrecedentStore();
+    store.record('Bash', `Bash: ${truncatedDetailContainingRun('  ')}`, 'approved');
+    expect(store.size).toBe(0);
+  });
+
+  test('tab run: record() refuses', () => {
+    const store = new PrecedentStore();
+    store.record('Bash', `Bash: ${truncatedDetailContainingRun('\t\t')}`, 'approved');
+    expect(store.size).toBe(0);
+  });
+
+  test('newline + indentation run (heredoc/multi-line command): record() refuses', () => {
+    const store = new PrecedentStore();
+    store.record('Bash', `Bash: ${truncatedDetailContainingRun('\n    ')}`, 'approved');
+    expect(store.size).toBe(0);
+  });
+
+  // NOTE on a rejected simpler design: a test shaped like "store an
+  // UNRELATED real approval, query with a raw-truncated detail, expect
+  // null" would pass EVEN under the post-normalization mutation, because
+  // the (wrongly) post-normalized, collapsed query just fails to
+  // string-equal the unrelated stored value for an ORDINARY reason (no
+  // match), never reaching the truncation check at all -- verified: exactly
+  // this shape, tried first, stayed green under the mutation below. The
+  // fix is to make the QUERY's collapsed form coincide with the stored
+  // value on purpose, so a genuine match is only avoided BECAUSE the raw
+  // check fires. Parameterized across all three whitespace-run shapes.
+  const RUN_CASES: ReadonlyArray<{ label: string; run: string }> = [
+    { label: 'double space', run: '  ' },
+    { label: 'tab run', run: '\t\t' },
+    { label: 'newline + indentation run', run: '\n    ' },
+  ];
+
+  for (const { label, run } of RUN_CASES) {
+    test(`${label}: matchApproved does not coincidentally exact-match what the raw-truncated query collapses to`, () => {
+      const rawDetail = truncatedDetailContainingRun(run);
+      const rawQuery = `Bash: ${rawDetail}`;
+      const collapsedForm = rawQuery.replace(/\s+/g, ' ').trim();
+      // Precondition: the run actually shrinks the collapsed form below the
+      // truncation floor, and the raw form is still genuinely truncated-shaped.
+      expect(collapsedForm.length).toBeLessThan(rawQuery.length);
+      expect(rawDetail.length).toBe(120);
+
+      const store = new PrecedentStore();
+      // A real, legitimate, UNRELATED approval that happens to equal
+      // exactly what the raw-truncated query collapses to.
+      store.record('Bash', collapsedForm, 'approved');
+      expect(store.size).toBe(1); // sanity: this record was NOT itself refused
+
+      expect(store.matchApproved('Bash', rawQuery)).toBeNull();
+    });
+
+    test(`${label}: matchDenied does not treat an embedded real denial as a match once the raw-truncated query collapses around it`, () => {
+      const deniedSignature = 'Bash: rm -rf ./build';
+      const filler = 'z'.repeat(117 - deniedSignature.length - run.length);
+      const kept = `${deniedSignature}${run}${filler}`;
+      expect(kept.length).toBe(117); // sanity on the hand-built construction
+      const rawDetail = `${kept}...`;
+      const rawQuery = `Bash: ${rawDetail}`;
+      expect(rawDetail.length).toBe(120);
+      expect(rawQuery.includes(deniedSignature)).toBe(true); // embedding worked
+
+      const store = new PrecedentStore();
+      store.record('Bash', deniedSignature, 'denied');
+
+      expect(store.matchDenied('Bash', rawQuery)).toBeNull();
+    });
+  }
+
+  test('parsePermissionQuestionText already correctly refuses (double space) -- verified, not just re-read', () => {
+    expect(
+      parsePermissionQuestionText(`Allow Bash: ${truncatedDetailContainingRun('  ')}`),
+    ).toBeNull();
+  });
+
+  test('parsePermissionQuestionText already correctly refuses (tab run)', () => {
+    expect(
+      parsePermissionQuestionText(`Allow Bash: ${truncatedDetailContainingRun('\t\t')}`),
+    ).toBeNull();
+  });
+
+  test('parsePermissionQuestionText already correctly refuses (newline+indent run)', () => {
+    expect(
+      parsePermissionQuestionText(`Allow Bash: ${truncatedDetailContainingRun('\n    ')}`),
+    ).toBeNull();
+  });
+
+  // Full end-to-end reproduction of the reviewer's own probe: an ordinary
+  // command, over 120 characters, formatted with double spaces (not a
+  // hand-built detail), run through the exact summarizeToolInput truncation
+  // math, then through record().
+  test('end-to-end: an ordinary double-spaced command over 120 chars is refused, not just a single-spaced one', () => {
+    const singleSpaced =
+      'cp -r /Users/yahya/Documents/git/yooz/remi/packages/daemon/src/cli/session-phases/hook-bridge-setup.ts /Users/yahya/backup/dest.ts';
+    const doubleSpaced =
+      'cp -r  /Users/yahya/Documents/git/yooz/remi/packages/daemon/src/cli/session-phases/hook-bridge-setup.ts  /Users/yahya/backup/dest.ts';
+    expect(singleSpaced.length).toBeGreaterThan(120);
+    expect(doubleSpaced.length).toBeGreaterThan(120);
+
+    const truncate = (cmd: string): string => (cmd.length > 120 ? `${cmd.slice(0, 117)}...` : cmd);
+    const store = new PrecedentStore();
+
+    // Control: the single-spaced command was already correctly refused
+    // (round 1 covers this shape; unaffected by the round-2 fix).
+    store.record('Bash', `Bash: ${truncate(singleSpaced)}`, 'approved');
+    expect(store.size).toBe(0);
+
+    // The double-spaced one must ALSO be refused -- this is what was broken.
+    store.record('Bash', `Bash: ${truncate(doubleSpaced)}`, 'approved');
+    expect(store.size).toBe(0);
+  });
+
+  // The bug specific to findApprovedPrecedent's query-side check (see the
+  // corrected note above the old test suite): a raw-truncated query whose
+  // NORMALIZED form happens to coincide with a real, unrelated,
+  // legitimately-stored approval must still be refused, because the query
+  // check now runs on the raw form while the stored check only ever sees
+  // the normalized one -- the two are no longer the same representation.
+  test('a raw-truncated query does not coincidentally exact-match an unrelated stored approval after normalization collapses it', () => {
+    const bigRun = ' '.repeat(104); // one big run -> collapses to 1 char
+    let rawDetail = `npm${bigRun}run build`;
+    while (rawDetail.length < 117) rawDetail += ' ';
+    rawDetail = `${rawDetail.slice(0, 117)}...`;
+    expect(rawDetail.length).toBe(120);
+    // Sanity: this is exactly what the raw-truncated detail normalizes to,
+    // which is why it was picked as the "coincidentally stored" signature.
+    expect(`Bash: ${rawDetail}`.replace(/\s+/g, ' ').trim()).toBe('Bash: npm run build ...');
+
+    const store = new PrecedentStore();
+    // A real, legitimate, UNRELATED approval that happens to equal exactly
+    // what the truncated query above collapses to after normalization.
+    store.record('Bash', 'Bash: npm run build ...', 'approved');
+    expect(store.size).toBe(1);
+
+    expect(store.matchApproved('Bash', `Bash: ${rawDetail}`)).toBeNull();
+  });
+
+  // The length check is a FLOOR (>=120), not an exact match (===120): if
+  // summarizeToolInput's kept-character count ever changes, an exact-match
+  // check would silently stop catching the new truncated shape with no
+  // test failure to flag it. A floor keeps catching it -- the failure
+  // direction stays "missed precedent" (safe), never "false match."
+  test('a longer-than-120-char detail ending in the marker is ALSO refused (floor, not exact match)', () => {
+    const store = new PrecedentStore();
+    const widerTruncation = `Bash: ${'b'.repeat(150)}...`; // hypothetically wider than today's 117+3
+    store.record('Bash', widerTruncation, 'approved');
+    expect(store.size).toBe(0);
+  });
+
+  test('a longer-than-120-char detail NOT ending in the marker is still accepted (precision preserved)', () => {
+    const store = new PrecedentStore();
+    const longButReal = `Bash: ${'c'.repeat(150)}`; // long, but genuinely not truncated-shaped
+    store.record('Bash', longButReal, 'approved');
+    expect(store.size).toBe(1);
   });
 });
