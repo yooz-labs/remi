@@ -66,6 +66,25 @@ All notable changes to Remi are documented here.
   draft added an `isSubagent` guard here; it was dead code (always `false`), and
   the test written for it passed with the guard deleted. Both were dropped in
   favor of asserting the real routing.
+- **The auto-approve pill's held-hook (Model B / Part B, #573) end paths finish
+  the #970 totality pass.** The previous fix covered the primary eval loop only;
+  a HELD escalation's own end paths are a separate set, enumerated fresh against
+  the live code rather than trusted from the prior pass: a Part-B late `allow`/
+  `deny` verdict (`reconcileLateVerdict` -> `resolveHeld`) turned out to be
+  ALREADY total — `resolveHeld` calls `markHandled` unconditionally, so it
+  already broadcast `approved`. The genuine gap was Part-B's `cancelled` late
+  verdict (`reconcileLateVerdict` -> `releaseHeld`), which calls neither
+  `markHandled` nor any cue and left the pill on a stale `waiting` with nothing
+  to correct it once the session moved on to something else. A new `onHeldCancelled`
+  cue closes it, reusing the same `broadcastCurrentStatus()` the `cancelled` fix
+  above introduced rather than guessing a value.
+
+  Hold-timeout fail-open and the Stop/SessionEnd/external-resolution teardown
+  paths were checked and deliberately left alone: each already has its own
+  status coverage (the hold's own `waiting`, or the driving hook event's own
+  status update in the same synchronous handler) — adding a broadcast there
+  would risk trading a stuck pill for a wrong one, the same failure mode
+  ADR 0020 warns against.
 ### Added
 - **Separate in-app toggles for question and turn-complete notifications**
   (#968). Settings now has "Question alerts" and "Turn complete" instead of one

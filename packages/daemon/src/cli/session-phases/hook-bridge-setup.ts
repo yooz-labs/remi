@@ -611,17 +611,30 @@ export function setupHookBridge(
    * later hook can move it off. That made the client cue NOT total over the
    * gate's end paths, unlike the terminal one, whose own invariant
    * (`status-writer.ts`: "the count returns to 0 and the 'evaluating' cue can
-   * never get stuck") holds precisely because every end path decrements it:
+   * never get stuck") holds precisely because every end path decrements it.
+   * The full enumeration, corrected against the live code (an earlier pass at
+   * this table, ADR 0020, asserted two rows below without checking their call
+   * sites — see the #970 note on `AutoApproveGate.resolveHeld`):
    *
-   *   onHandled   -> 'approved' broadcast          (covered)
-   *   onEscalate  -> the question path's 'waiting' (covered, indirectly)
-   *   onCancelled -> NOTHING                       (the hole this closes)
+   *   onHandled                    -> 'approved' broadcast (covered)
+   *   onEscalate                   -> the question path's 'waiting' (covered, indirectly)
+   *   onCancelled                  -> NOTHING                (closed by this function, PR #973)
+   *   resolveHeld (Part-B allow/deny) -> markHandled -> onHandled -> 'approved' (ALREADY covered;
+   *                                    resolveHeld calls markHandled unconditionally, #711)
+   *   releaseHeld, hold-timeout / undelivered fail-open -> NOTHING NEEDED ('waiting' from
+   *                                    the hold's own onEscalate is still accurate: same
+   *                                    permission, now rendered in the terminal instead)
+   *   releaseHeld, Part-B cancelled -> NOTHING            (closed by onHeldCancelled below)
+   *   releaseHeld, Stop/SessionEnd/external-resolve/SubagentStop -> NOTHING NEEDED (the
+   *                                    driving hook event's own onStatusChange covers it,
+   *                                    or — SubagentStop — no MAIN pill was ever moved)
    *
    * A cancelled verdict self-healed only when a later `Stop`/`SessionEnd`
    * `idle` or a `PreToolUse` `executing` happened to follow. None is guaranteed
    * — and by construction none arrives when the eval was cancelled at the end
    * of a turn or during a disconnect, which is exactly when it was observed
-   * stuck.
+   * stuck. The same reasoning applies to a HELD hook's Part-B cancelled
+   * branch, which is why `onHeldCancelled` reuses this exact function.
    *
    * Broadcasts the registry's CURRENT status rather than a chosen constant. The
    * gate does not know what the session became (nothing was approved, denied,
@@ -744,6 +757,16 @@ export function setupHookBridge(
         // it (a cancelled parked render escalates instead).
         broadcastCurrentStatus();
       },
+      // #970 (follow-up to the onCancelled fix above): the HELD-hook sibling
+      // gap ADR 0020 left open. `reconcileLateVerdict`'s cancelled branch
+      // (Part B: the slow eval decides Claude already advanced past the
+      // prompt while the early push+hold was showing) calls `releaseHeld`,
+      // never `markHandled` -- so unlike a Part-B ALLOW/DENY late verdict
+      // (which already broadcasts 'approved' via `onHandled`, see the note on
+      // `AutoApproveGate.resolveHeld`), nothing corrected the pill here before
+      // this cue existed. Same fix as `onCancelled`: re-broadcast whatever the
+      // registry's CURRENT status actually is, not a guessed constant.
+      onHeldCancelled: () => broadcastCurrentStatus(),
       // #585: a held question that resolves without a user answer (Part-B late
       // verdict / hold timeout / cancelStale) tells the daemon to dismiss the
       // pushed card on every client. Forwarded with this session's id.

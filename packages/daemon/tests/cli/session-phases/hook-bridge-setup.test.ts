@@ -206,6 +206,18 @@ describe('setupHookBridge', () => {
       autoApprovePickIndex?: number;
       autoApproveDelayMs?: number;
       autoApproveThrows?: boolean;
+      /** Seconds to hold a binary main-context escalation open (Model B, #573).
+       *  Absent/0 keeps the pre-existing default (holding disabled, escalate
+       *  returns 'passthrough' immediately). Combine with `autoApproveDecision:
+       *  'escalate'` for an immediate hold, or with a slower
+       *  `autoApproveDelayMs` + `pushHoldTimeoutSec` for a Part-B early
+       *  push+hold that a late verdict then reconciles (#970). */
+      holdTimeoutSec?: number;
+      /** Seconds before a still-running eval triggers Part B's early push+hold
+       *  (#573). Needs `holdTimeoutSec > 0` too (Part B reuses the same hold
+       *  primitive). Set smaller than `autoApproveDelayMs` so the timer wins
+       *  the race and the eval's late verdict reconciles into the hold. */
+      pushHoldTimeoutSec?: number;
       /** Capture every evaluate() call's positional args (#893: used to assert
        *  the authority text the gate threads through reaches the service).
        *  Defaults to undefined (not recorded, matches every pre-#893 test). */
@@ -353,6 +365,8 @@ describe('setupHookBridge', () => {
         autoApproveService,
         currentPort: () => 8765,
         transcriptDiscovery: new TranscriptDiscovery(),
+        ...(opts.holdTimeoutSec ? { holdTimeoutSec: opts.holdTimeoutSec } : {}),
+        ...(opts.pushHoldTimeoutSec ? { pushHoldTimeoutSec: opts.pushHoldTimeoutSec } : {}),
         ...(opts.subagentViews ? { subagentViews: opts.subagentViews } : {}),
         ...(opts.broadcastResolvedLog
           ? {
@@ -3506,6 +3520,153 @@ describe('setupHookBridge', () => {
         }
       });
     }
+
+    // #970 follow-up: the primary-eval verdicts above are all total (PR #973
+    // closed `cancelled`). The HELD hook (Model B / Part B, #573) is a
+    // SEPARATE set of end paths with its own totality question -- ADR 0020's
+    // enumeration, corrected here (see the #970 note on
+    // `AutoApproveGate.resolveHeld`): a Part-B late ALLOW/DENY verdict was
+    // ALREADY total (resolveHeld calls markHandled unconditionally); the
+    // still-open gap was Part-B's CANCELLED late verdict, which calls
+    // `releaseHeld` (no markHandled) and left the pill on a stale 'waiting'.
+    describe('#970 held-hook (Model B / Part B) totality', () => {
+      test('a Part-B ALLOW late verdict broadcasts "approved" end-to-end (pre-existing coverage via onHandled)', async () => {
+        const sendLog: ProtocolMessage[] = [];
+        build({
+          autoApprove: true,
+          autoApproveDecision: 'approve',
+          autoApproveDelayMs: 50, // eval settles AFTER the push-hold timer
+          pushHoldTimeoutSec: 0.01, // 10ms: timer wins, early push+hold fires
+          holdTimeoutSec: 5, // long enough that the hold itself never times out
+          sendLog,
+        });
+
+        hookServer.fire('Notification', {
+          session_id: 'claude-aa-heldb-allow',
+          hook_event_name: 'Notification',
+          transcript_path: path.join(tmpDir, 'aa-heldb-allow.jsonl'),
+          notification_type: 'auth_success',
+          message: '',
+        });
+
+        const decision = await hookServer.firePermission({
+          session_id: 'claude-aa-heldb-allow',
+          hook_event_name: 'PermissionRequest',
+          tool_name: 'Bash',
+          tool_input: { command: 'ls' },
+        });
+        expect(decision).toBe('allow');
+
+        const statuses = sessionUpdateStatuses(sendLog);
+        expect(statuses).toContain('evaluating');
+        expect(statuses.at(-1)).toBe('approved');
+      });
+
+      test('a Part-B DENY late verdict also broadcasts "approved" (onHandled does not distinguish allow/deny -- pre-existing, out of #970 scope)', async () => {
+        const sendLog: ProtocolMessage[] = [];
+        build({
+          autoApprove: true,
+          autoApproveDecision: 'deny',
+          autoApproveDelayMs: 50,
+          pushHoldTimeoutSec: 0.01,
+          holdTimeoutSec: 5,
+          sendLog,
+        });
+
+        hookServer.fire('Notification', {
+          session_id: 'claude-aa-heldb-deny',
+          hook_event_name: 'Notification',
+          transcript_path: path.join(tmpDir, 'aa-heldb-deny.jsonl'),
+          notification_type: 'auth_success',
+          message: '',
+        });
+
+        const decision = await hookServer.firePermission({
+          session_id: 'claude-aa-heldb-deny',
+          hook_event_name: 'PermissionRequest',
+          tool_name: 'Bash',
+          tool_input: { command: 'ls' },
+        });
+        expect(decision).toBe('deny');
+
+        const statuses = sessionUpdateStatuses(sendLog);
+        expect(statuses).toContain('evaluating');
+        // Not stuck on 'evaluating' -- the actual totality property under test.
+        expect(statuses.at(-1)).not.toBe('evaluating');
+      });
+
+      test('#970 a Part-B CANCELLED late verdict broadcasts a terminal status via onHeldCancelled, never leaving the pill on "evaluating"', async () => {
+        // The regression this PR fixes: before onHeldCancelled existed, this
+        // path called releaseHeld (no markHandled, no cue) and left the pill
+        // wherever onEscalate's 'waiting' put it -- stale the moment the
+        // session moved on to something else.
+        const sendLog: ProtocolMessage[] = [];
+        build({
+          autoApprove: true,
+          autoApproveDecision: 'cancelled',
+          autoApproveDelayMs: 50,
+          pushHoldTimeoutSec: 0.01,
+          holdTimeoutSec: 5,
+          sendLog,
+        });
+
+        hookServer.fire('Notification', {
+          session_id: 'claude-aa-heldb-cancelled',
+          hook_event_name: 'Notification',
+          transcript_path: path.join(tmpDir, 'aa-heldb-cancelled.jsonl'),
+          notification_type: 'auth_success',
+          message: '',
+        });
+
+        const decision = await hookServer.firePermission({
+          session_id: 'claude-aa-heldb-cancelled',
+          hook_event_name: 'PermissionRequest',
+          tool_name: 'Bash',
+          tool_input: { command: 'ls' },
+        });
+        expect(decision).toBe('passthrough');
+
+        const statuses = sessionUpdateStatuses(sendLog);
+        expect(statuses).toContain('evaluating');
+        expect(statuses.at(-1)).not.toBe('evaluating');
+        expect(statuses).not.toContain('approved'); // nothing was approved
+      });
+
+      test('a hold-timeout fail-open broadcasts NOTHING new -- the pill is already "waiting" (via the ordinary status path) and stays correct', async () => {
+        const sendLog: ProtocolMessage[] = [];
+        build({
+          autoApprove: true,
+          autoApproveDecision: 'escalate',
+          autoApproveDelayMs: 5,
+          holdTimeoutSec: 0.02, // 20ms: short so the hold fails open quickly
+          sendLog,
+        });
+
+        hookServer.fire('Notification', {
+          session_id: 'claude-aa-holdtimeout',
+          hook_event_name: 'Notification',
+          transcript_path: path.join(tmpDir, 'aa-holdtimeout.jsonl'),
+          notification_type: 'auth_success',
+          message: '',
+        });
+
+        // Resolves once the hold times out and fails open to passthrough.
+        const decision = await hookServer.firePermission({
+          session_id: 'claude-aa-holdtimeout',
+          hook_event_name: 'PermissionRequest',
+          tool_name: 'Bash',
+          tool_input: { command: 'ls' },
+        });
+        expect(decision).toBe('passthrough');
+
+        // The 'broadcast' channel (client-only pill) only ever saw 'evaluating'
+        // -- the hold's own creation moved the pill to 'waiting' through the
+        // ORDINARY status path (messageApi.handleStatusChange), asserted below,
+        // and the fail-open correctly adds nothing more to either channel.
+        expect(sessionUpdateStatuses(sendLog)).toEqual(['evaluating']);
+        expect(messageApiLog.statusCalls).toContain('waiting');
+      });
+    });
 
     test('a status-broadcast send error never propagates into the gate decision', async () => {
       // The broadcast helper wraps its own send in try/catch so a throwing
