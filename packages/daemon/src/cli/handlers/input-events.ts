@@ -87,6 +87,42 @@ export interface InputHandlerDeps {
    */
   isPromptCurrent?: (sessionId: UUID, questionId: UUID, ptyText: string) => boolean;
   /**
+   * Weaker companion to `isPromptCurrent`: "is this session rendering ANY
+   * interactive prompt right now?", backed by
+   * `QuestionPresenceTracker.isPromptObservedOnPTY` (#1002).
+   *
+   * NOT backed by that class's `isPromptVisibleOnPTY`, despite the closer
+   * name. That flag means "this tracker pushed a card off a PTY render", which
+   * is false for the most common cohort of all: a gate-owned hook card whose
+   * native prompt renders is recognised as an echo and suppressed without ever
+   * setting it. Probing the real tracker showed `recordPendingHook` +
+   * `onOrphanPTYPrompt` leaving it false while a prompt is genuinely on
+   * screen, so a guard built on it would have refused legitimate answers —
+   * trading a stray-injection bug for a cannot-answer-at-all bug.
+   *
+   * Exists because `isPromptCurrent` cannot serve hook-paired cards at all. A
+   * hook-paired question's `id`/`text` are the HOOK's (tool + command text),
+   * never the raw PTY parse, so its id/text match would fail for that whole
+   * cohort — which is why the #920 guard is scoped to `source === 'pty'` and
+   * why widening it on id/text would refuse legitimate answers rather than fix
+   * anything.
+   *
+   * But the scoping left a real hole: a hook-sourced card whose hold is ALREADY
+   * gone still reached `pty.submitInput` with nothing checked, and typed its
+   * option digit into whatever Claude was doing. Observed live — a bare `1`
+   * landed in an unrelated session as a chat message, recorded in the
+   * transcript as a user entry (#1002).
+   *
+   * Two different questions were being conflated: "is THIS prompt on screen?"
+   * (needs id/text, genuinely impossible for hook-paired cards) and "is ANY
+   * prompt on screen?" (all that is needed before typing a digit, and
+   * perfectly answerable for them). This dep answers the second.
+   *
+   * Absent => treated as NOT visible, the same fail-toward-refusing default
+   * `isPromptCurrent` documents.
+   */
+  isPromptObservedOnPTY?: (sessionId: UUID) => boolean;
+  /**
    * Record a human-classified permission answer into this session's
    * precedent store (#976 prerequisite, `auto-approve/precedent.ts`). Called
    * ONLY for answers `handleAnswer` can classify with confidence as an
@@ -261,6 +297,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     cancelAutoApproveForQuestion,
     onQuestionResolved,
     isPromptCurrent,
+    isPromptObservedOnPTY,
     recordPrecedent,
   } = deps;
 
@@ -650,12 +687,27 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         // one injects into a live session with nothing to undo it. Those
         // costs are not symmetric, so ambiguity resolves toward not
         // injecting.
-        if (
-          active.source === 'pty' &&
-          !(isPromptCurrent?.(session.sessionId, questionId, active.text) ?? false)
-        ) {
+        //
+        // #1002 extends the same principle to the cohort the `source: 'pty'`
+        // scoping left uncovered. A hook-sourced card only reaches this line
+        // when NO hold was resolved and NONE was released just now, i.e. this
+        // answer will cause nothing to render — so if no prompt is on screen
+        // already, the digit lands in whatever Claude is doing. That is not
+        // hypothetical: it was observed typing a bare `1` into an unrelated
+        // session, recorded in the transcript as a user message.
+        //
+        // The `!released` condition is what keeps this from refusing the
+        // legitimate case: when the answer itself pops a held hook to
+        // passthrough, Claude is deliberately about to render its native
+        // prompt and the submit is intended, so presence cannot be required
+        // yet.
+        const promptGone =
+          active.source === 'pty'
+            ? !(isPromptCurrent?.(session.sessionId, questionId, active.text) ?? false)
+            : !released && !(isPromptObservedOnPTY?.(session.sessionId) ?? false);
+        if (promptGone) {
           log(
-            `[Answer] refusing PTY submit for ${questionId.slice(0, 8)}: prompt no longer on screen (source=pty)`,
+            `[Answer] refusing PTY submit for ${questionId.slice(0, 8)}: no prompt on screen (source=${active.source})`,
           );
           traceQuestionEvent({
             action: 'stale_answer',
@@ -664,7 +716,10 @@ export function createInputHandlers(deps: InputHandlerDeps) {
             promptId: active.promptId,
             signal: 'STALE_ANSWER',
             callSite: 'input-events.handleAnswer:promptCurrencyGuard',
-            detail: { reason: 'prompt-not-current', source: active.source },
+            detail: {
+              reason: active.source === 'pty' ? 'prompt-not-current' : 'no-prompt-on-screen',
+              source: active.source,
+            },
           });
           removalReason = 'user_answer:stale_prompt';
           if (!viaRelay) {
