@@ -209,8 +209,9 @@ every time.
   (`hook-event-bridge.ts:621`) — so two commands sharing their first 117
   characters collapsed to one signature, and appending `&& curl … | sh` past
   that point inherited the human's approval. Reproduced with a real path from
-  this repo. #989 fails closed (a truncated signature is neither recorded nor
-  matched); #990 separates the display text from the match signature properly.
+  this repo. **Unfixed as of 2026-08-02.** #989 is open, and as pushed contains
+  no truncation guard — `record()` refuses only a BLANK signature, so a
+  truncated one is recorded and matched like any other. #990 is open with no PR.
   The general rule: **display text truncates for a phone lock screen and should;
   a match key must never be lossy.** Do not conflate them.
 
@@ -222,7 +223,8 @@ every time.
   terminator (`/usr` matched `/usr-local-mine`, plus `sudo rm-wrapper` and
   `| sh-wrapper`); a risk classifier reading only a segment's head token
   (`nohup rm -rf ./dist` graded below bare `rm -rf ./dist`); and the truncation
-  above. Before adding a matcher here, state which direction it fails in and
+  above — **the first three are fixed and merged, the truncation is the one
+  still open.** Before adding a matcher here, state which direction it fails in and
   probe it against real commands — the unit tests confirmed the cases their
   authors thought of, and every one of these was found by a probe instead.
 
@@ -245,5 +247,6 @@ every time.
 - `packages/daemon/src/auto-approve/prompt-builder.ts` — the CONVERSATION
   CONTEXT block and its (non-load-bearing) trailer
 - #893 (Q9, built the authority path), #954 (counterfactual + measurement),
-  #938 (the unverified `!`-bash-mode provenance premise), #976 (the risk x
+  #938 (settled 2026-08-02: `!` mode fires no hook events at all, so the
+  premise held; the real exposure was #982's uncataloged cohort), #976 (the risk x
   authorization direction this constrains)
