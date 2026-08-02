@@ -210,7 +210,12 @@ describe('extractClosingReferences - real commit messages from this repo', () =>
     ]);
   });
 
-  test('c4ba9f8: squashed commit body with "Fixes #N" mid-paragraph', () => {
+  // Named by shape rather than by commit SHA. A short hex SHA tokenizes into
+  // false-positive "words" that `typos` rejects — the same failure that made
+  // `_typos.toml` exclude the 24-hex object ids in `.pbxproj` (#719). The
+  // fixture below is still the verbatim commit message; only the test NAME
+  // avoids the hex.
+  test('squashed commit body with "Fixes #N" mid-paragraph', () => {
     const message =
       'fix: auto-promote waiting client when active disconnects (#181)\n\n' +
       '* fix: auto-promote waiting client when active disconnects\n\n' +
