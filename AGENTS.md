@@ -67,6 +67,13 @@ up", and the cleanup would reopen a security hole.
 | [0012](.context/decisions/0012-protocol-message-registry.md) | Protocol message registry is the single source of truth |
 | [0013](.context/decisions/0013-total-dispatch-handle-or-ignore.md) | Every protocol consumer declares handle-or-ignore, total over the registry |
 | [0014](.context/decisions/0014-two-sided-conformance-tests.md) | Contract tests must construct both shipping endpoints |
+| [0015](.context/decisions/0015-authority-bounded-by-counterfactual.md) | Authority may resolve ambiguity, never decide — enforced by counterfactual |
+| [0016](.context/decisions/0016-strictness-levels-are-groups-not-prose.md) | Strictness is level-gated group membership, never prose to the model |
+| [0017](.context/decisions/0017-deny-floor-enforced-in-code.md) | A model-produced deny is silent, so it is floored in code |
+| [0018](.context/decisions/0018-write-group-safety-is-three-independent-vetoes.md) | A write-approving group needs three independent vetoes |
+| [0019](.context/decisions/0019-push-kind-mutability-asymmetry.md) | Push kinds are named on the wire; muting them is asymmetric |
+| [0020](.context/decisions/0020-client-status-cue-totality.md) | A client status cue must be total over its gate's end paths |
+| [0021](.context/decisions/0021-registration-outcome-not-requery.md) | Question registration outcome flows from the call, not a re-query |
 
 ## Quick Start
 
