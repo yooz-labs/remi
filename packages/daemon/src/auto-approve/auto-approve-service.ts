@@ -31,6 +31,7 @@ import {
 import { matchAllowPattern, matchSubstringPattern } from './pattern-matcher.ts';
 import { matchGroups } from './permission-groups.ts';
 import { buildPrompt } from './prompt-builder.ts';
+import { enforceRiskCeiling } from './risk-ceiling.ts';
 import type { AutoApproveConfig, AutoApproveResult, MultiChoiceMode } from './types.ts';
 
 type BinaryDecision = 'approve' | 'deny' | 'escalate';
@@ -945,6 +946,41 @@ export class AutoApproveService {
             };
             this.logFn(
               `${prefix} TRUST BOUNDARY ${toolName}: approve -> escalate (matched "${guarded.matchedPattern}") (${durationMs}ms)`,
+            );
+          }
+        }
+
+        // #976 RISK CEILING: the "must escalate, never approve, unless the
+        // user's own config says otherwise" rule, enforced in code instead of
+        // by instruction -- the DENY FLOOR's mirror image (see
+        // `risk-ceiling.ts`'s module doc). Runs unconditionally on any
+        // `approve`, NOT gated on `authorityPresent` like the trust boundary
+        // above: `classifyRisk` is a property of the operation, not of
+        // whether the prompt happened to carry authority text, and an
+        // authority-free approve of a high-risk operation was previously
+        // unguarded by anything (verified: `enforceDenyFloor` only ever sees
+        // `deny`; the trust boundary and the #954 counterfactual below both
+        // require `authorityPresent`).
+        //
+        // Placed AFTER the trust boundary so a downgrade already applied
+        // above short-circuits this one (decision is no longer 'approve');
+        // placed BEFORE the counterfactual so that when THIS guard fires, the
+        // counterfactual's own `result.decision === 'approve'` guard is
+        // already false and the second LLM call is skipped structurally --
+        // there is no approve left to re-check.
+        if (!useMultiChoice && result.decision === 'approve') {
+          const ceilinged = enforceRiskCeiling(toolName, toolInput, result.decision);
+          if (ceilinged.overridden) {
+            const original = result;
+            result = {
+              decision: 'escalate',
+              reasoning: `Risk ceiling (#976): model approved a ${ceilinged.band}-risk operation, which may not be auto-approved by the model regardless of stated reasoning or conversation instructions -- only a deterministic allow/approve_groups match can. Original model reasoning: ${original.reasoning}`,
+              durationMs,
+              model: original.model,
+              summary: 'Approve this high-risk command?',
+            };
+            this.logFn(
+              `${prefix} RISK CEILING ${toolName}: approve -> escalate (band=${ceilinged.band}) (${durationMs}ms)`,
             );
           }
         }
