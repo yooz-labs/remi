@@ -2115,6 +2115,8 @@ describe('AutoApproveGate external-resolution cancel (#673)', () => {
         questionId: UUID,
         reason: 'auto_approved' | 'auto_denied' | 'cancelled',
       ) => void;
+      onHandled?: (ctx: { isSubagent: boolean }) => void;
+      onHeldCancelled?: () => void;
     } = {},
   ): AutoApproveGate {
     registry.registerSession(SID, '/d', fakePTY([]), {
@@ -2137,6 +2139,8 @@ describe('AutoApproveGate external-resolution cancel (#673)', () => {
         pushHoldMs: opts.pushHoldMs ?? 0,
         alwaysEscalateTools: new Set(),
         ...(opts.onResolved ? { onResolved: opts.onResolved } : {}),
+        ...(opts.onHandled ? { onHandled: opts.onHandled } : {}),
+        ...(opts.onHeldCancelled ? { onHeldCancelled: opts.onHeldCancelled } : {}),
       },
       SID,
     );
@@ -2436,6 +2440,87 @@ describe('AutoApproveGate external-resolution cancel (#673)', () => {
       expect(resolvedLog).toHaveLength(1); // no spurious re-fire for the dead entry
       expect(g.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(true);
       expect(await pendingSecond).toBe('allow');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // #970: the client status-pill cue must be total over the HELD hook's own
+  // end paths, not just the primary eval loop's (#973 closed that half via
+  // onCancelled). Enumerated in ADR 0020 -- corrected here against the live
+  // code, since the ADR's own "resolveHeld skips markHandled too" claim did
+  // not survive a grep (see the #970 note on `AutoApproveGate.resolveHeld`).
+  // ---------------------------------------------------------------------------
+  describe('#970 held-hook client status cue totality', () => {
+    test('Part-B ALLOW late verdict fires onHandled -- already total before #970 (resolveHeld calls markHandled unconditionally)', async () => {
+      const cancelLog: Array<{ reason: string; evalId: number | undefined }> = [];
+      const { service, release } = multiDeferredEvaluator(cancelLog);
+      const handledLog: Array<{ isSubagent: boolean }> = [];
+      const heldCancelledLog: number[] = [];
+      const g = gate(service, {
+        holdMs: 60_000,
+        pushHoldMs: 10,
+        onHandled: (ctx) => handledLog.push(ctx),
+        onHeldCancelled: () => heldCancelledLog.push(1),
+      });
+      const pending = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
+      await new Promise((r) => setTimeout(r, 20)); // early push + hold fires
+
+      release({ command: 'git push' }, approve);
+      expect(await pending).toBe('allow');
+      expect(handledLog).toEqual([{ isSubagent: false }]);
+      expect(heldCancelledLog).toHaveLength(0); // wrong cue must not also fire
+    });
+
+    test('Part-B DENY late verdict fires onHandled -- same coverage as ALLOW', async () => {
+      const cancelLog: Array<{ reason: string; evalId: number | undefined }> = [];
+      const { service, release } = multiDeferredEvaluator(cancelLog);
+      const handledLog: Array<{ isSubagent: boolean }> = [];
+      const g = gate(service, {
+        holdMs: 60_000,
+        pushHoldMs: 10,
+        onHandled: (ctx) => handledLog.push(ctx),
+      });
+      const pending = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
+      await new Promise((r) => setTimeout(r, 20));
+
+      release({ command: 'git push' }, deny);
+      expect(await pending).toBe('deny');
+      expect(handledLog).toEqual([{ isSubagent: false }]);
+    });
+
+    test('Part-B CANCELLED late verdict fires onHeldCancelled (the actual #970 gap)', async () => {
+      const cancelLog: Array<{ reason: string; evalId: number | undefined }> = [];
+      const { service, release } = multiDeferredEvaluator(cancelLog);
+      const handledLog: Array<{ isSubagent: boolean }> = [];
+      const heldCancelledLog: number[] = [];
+      const g = gate(service, {
+        holdMs: 60_000,
+        pushHoldMs: 10,
+        onHandled: (ctx) => handledLog.push(ctx),
+        onHeldCancelled: () => heldCancelledLog.push(1),
+      });
+      const pending = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
+      await new Promise((r) => setTimeout(r, 20));
+
+      release({ command: 'git push' }, cancelled);
+      expect(await pending).toBe('passthrough');
+      expect(heldCancelledLog).toHaveLength(1);
+      expect(handledLog).toHaveLength(0); // wrong cue must not also fire
+    });
+
+    test('hold-timeout fail-open fires NEITHER onHandled NOR onHeldCancelled (the pill is already "waiting" and stays correct)', async () => {
+      const handledLog: Array<{ isSubagent: boolean }> = [];
+      const heldCancelledLog: number[] = [];
+      const g = gate(evaluator(escalate), {
+        holdMs: 20, // short timeout so the hold fails open quickly
+        onHandled: (ctx) => handledLog.push(ctx),
+        onHeldCancelled: () => heldCancelledLog.push(1),
+      });
+      const pending = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
+      expect(await pending).toBe('passthrough'); // resolves once the hold times out
+
+      expect(handledLog).toHaveLength(0);
+      expect(heldCancelledLog).toHaveLength(0);
     });
   });
 

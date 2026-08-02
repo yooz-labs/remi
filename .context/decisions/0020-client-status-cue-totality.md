@@ -32,7 +32,8 @@ enumerating the gate's end paths against what each one broadcasts:
 | `onHandled` (silent approve) | `autoApproveEnd('approved')` | `'approved'` |
 | `onEscalate` | `autoApproveEnd('escalated')` | none (relies on the question path's own `'waiting'`) |
 | `onCancelled` | `autoApproveEnd('cancelled')` | **none** |
-| `releaseHeld` (hold timeout, `part-b-cancelled`) | already ended at escalate | **none**, and `resolveHeld` skips `markHandled` too |
+| `resolveHeld` (Part-B late `allow`/`deny`) | already ended at escalate | `'approved'`, via `markHandled` — **already covered**, see below |
+| `releaseHeld` (hold timeout, `part-b-cancelled`) | already ended at escalate | hold-timeout: none needed (`'waiting'` still correct); `part-b-cancelled`: **none** until this ADR's follow-up fix |
 
 `onCancelled` left the pill on `'evaluating'` with nothing scheduled to clear
 it; it "self-healed" only incidentally, when a later `Stop`/`SessionEnd`
@@ -56,20 +57,41 @@ escalated, so guessing a value would just trade one wrong status for another.
 
 Easier: a client that reconnects or is watching live no longer has the pill
 stuck on `'evaluating'` after a cancelled eval — the most commonly hit case
-(disconnect mid-hold, hold-timeout under a flaky relay).
+(disconnect mid-hold, hold-timeout under a flaky relay) — nor after a HELD
+hold's Part-B `cancelled` late verdict, the same failure mode one layer down
+(see below).
 
-**Harder, and the reason this ADR exists as a warning, not a closed
-success story: the fix is partial, and #970 is still open.** `resolveHeld`
-does not call `markHandled` either (verified by grep — `releaseHeld` is the
-sole owner of the per-hold teardown, and neither the hold-timeout path nor
-`resolveHeld`'s own late-verdict path calls `broadcastCurrentStatus` or any
-equivalent). That means a Part B late verdict — the user's answer arriving
-after the hold already timed out and handed off, or a `part-b-cancelled`
-reconciliation — still emits **no** client status update. The pill sits on
-`'waiting'` after a slow eval silently auto-approves. "The cue is now total"
-describes the *intent* PR #973 pursued, not the current coverage table; a
-future reader should re-run the enumeration above against the live code
-before treating this as closed, and #970 should stay open until it does.
+**Correction to this ADR's own first draft.** The paragraph originally here
+claimed "`resolveHeld` does not call `markHandled` either... neither the
+hold-timeout path nor `resolveHeld`'s own late-verdict path calls
+`broadcastCurrentStatus` or any equivalent," and left #970 open on that
+basis. That claim did not survive a grep: `resolveHeld` has called
+`this.markHandled(hold.isSubagent)` unconditionally since #711 (commit
+`d1b3c5e2`, 2026-07-06 — a month before this ADR was written), which routes
+through `onHandled` -> `broadcastAutoApproveStatus('approved')` exactly like
+a silent primary-eval decision. A Part-B late `allow`/`deny` verdict
+(`reconcileLateVerdict` -> `resolveHeld`) was therefore **already total**
+before this ADR's own follow-up work started. This is exactly the failure
+[ADR 0011](./0011-verify-before-you-describe.md) exists to catch, caught by
+this ADR itself: a security/correctness description believed without
+checking the call site, which reads as "handled" and stops anyone from
+looking again.
+
+**What was actually still open, and is now closed:** `releaseHeld` (a
+*different* method — no `markHandled`, ever) is what a HELD hold's
+`cancelled` late verdict (`reconcileLateVerdict`'s `part-b-cancelled`
+branch) calls. That path genuinely emitted nothing: the pill sat wherever
+`onEscalate`'s `'waiting'` left it, stale the moment the session moved on to
+something else during the slow eval. A new `onHeldCancelled` cue on
+`AutoApproveGateDeps`, wired to the SAME `broadcastCurrentStatus()`
+`onCancelled` uses, closes it. The other `releaseHeld` callers
+(hold-timeout/undelivered fail-open, `cancelStale`'s Stop/SessionEnd
+teardown, `cancelStaleForAgent`, and PreToolUse/PostToolUse
+external-resolution) were each checked against this same question and
+deliberately left without a broadcast — see the `#970 totality note` comments
+at each call site in `auto-approve-gate.ts` for the specific reasoning
+(either the pill is already correct, or the driving hook event already
+carries its own status update in the same synchronous handler).
 
 The specific wrong "cleanup" this ADR exists to head off: treating the
 client pill as harmless decoration because it is explicitly *not* wired into
@@ -77,9 +99,10 @@ client pill as harmless decoration because it is explicitly *not* wired into
 blast radius (a stuck pill cannot re-enter the decision/buffer path,
 unlike the gate's own internal state), but it does not make a stuck cue
 harmless to the user, who is being told to expect a decision that already
-happened. Closing #970 means finishing the same enumeration this ADR
-performed, against `releaseHeld` and `resolveHeld`, not declaring victory at
-`onCancelled`.
+happened. A second wrong cleanup this update adds to the warning list:
+trusting an ADR's own prior enumeration without re-running it against the
+live code, which is precisely how the `resolveHeld` claim above survived
+across a whole PR review undetected.
 
 ## Alternatives considered
 
@@ -100,14 +123,27 @@ performed, against `releaseHeld` and `resolveHeld`, not declaring victory at
 - `packages/daemon/src/cli/status-writer.ts:118-124` — the terminal
   invariant's own stated proof ("every gate end-path calls this exactly
   once")
-- `packages/daemon/src/cli/session-phases/hook-bridge-setup.ts:582-745` —
+- `packages/daemon/src/cli/session-phases/hook-bridge-setup.ts` —
   `broadcastAutoApproveStatus`, `broadcastCurrentStatus`, and the
-  `onEvalStart`/`onHandled`/`onCancelled` wiring
-- `packages/daemon/src/auto-approve/auto-approve-gate.ts:847-931` —
-  `resolveHeld`, `releaseHeld`; grep confirms neither calls
-  `broadcastCurrentStatus` or `markHandled` on the late-verdict/hold-timeout
-  path — the still-uncovered end paths this ADR flags
-- #970 (issue, OPEN as of 2026-08-01 — the enumeration table above and the
-  live-log evidence), PR #973 (MERGED 2026-08-01, `onCancelled` only)
-- #576 (introduced the client pill), #711 (`isSubagent` skip), #573
-  (Part B early push+hold, whose timeout path is the still-uncovered case)
+  `onEvalStart`/`onHandled`/`onCancelled`/`onHeldCancelled` wiring (the
+  function's own docstring carries the corrected, full enumeration table)
+- `packages/daemon/src/auto-approve/auto-approve-gate.ts` — `resolveHeld`
+  (calls `markHandled` unconditionally since #711's `d1b3c5e2`, contra this
+  ADR's original claim — see the `#970 note` on its docstring), `releaseHeld`
+  (never calls `markHandled`; each of its five call sites carries its own
+  `#970 totality note` explaining whether it needs a cue), and the new
+  `onHeldCancelled` dep + its wiring in `reconcileLateVerdict`'s cancelled
+  branch
+- `packages/daemon/tests/auto-approve/auto-approve-gate.test.ts` — describe
+  block `#970 held-hook client status cue totality`: direct cue-level proof
+  for Part-B allow/deny (`onHandled`), Part-B cancelled (`onHeldCancelled`),
+  and hold-timeout (neither cue fires)
+- `packages/daemon/tests/cli/session-phases/hook-bridge-setup.test.ts` —
+  describe block `#970 held-hook (Model B / Part B) totality`: the same four
+  scenarios exercised end-to-end through the real hook wiring
+- #970 (issue, closed by the follow-up PR to #973), PR #973 (MERGED
+  2026-08-01, `onCancelled` only — the primary-eval half), the follow-up PR
+  (held-hook half: `onHeldCancelled` + the `resolveHeld` correction above)
+- #576 (introduced the client pill), #711 (`isSubagent` skip; also the PR
+  that quietly made `resolveHeld`'s coverage already-total), #573 (Part B
+  early push+hold)

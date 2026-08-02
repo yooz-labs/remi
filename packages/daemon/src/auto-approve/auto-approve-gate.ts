@@ -413,6 +413,30 @@ export interface AutoApproveGateDeps {
    *  by "a cancelled parked render escalates" in the gate tests). */
   onCancelled?: () => void;
   /**
+   * Called when a HELD hook's Part-B late verdict resolved to 'cancelled' --
+   * `reconcileLateVerdict` found Claude had already advanced past the prompt
+   * while the early push+hold (#573) was showing, and released the hold to
+   * passthrough. The held-path sibling of `onCancelled` above, closing the
+   * SAME class of gap #970 found there: the client pill was moved off
+   * 'evaluating' to 'waiting' when the hold was created (`onEscalate` ->
+   * the question path's own broadcast), but nothing moved it again when the
+   * verdict turned out to be "nothing to decide" -- the pill would sit on a
+   * now-stale 'waiting' regardless of what the session actually became in
+   * the meantime.
+   *
+   * Deliberately NOT folded into `onCancelled` itself: that cue fires from
+   * `resolvePermission`'s own eval loop and `releaseHeld` is a completely
+   * different exit (a HELD hook's late-verdict reconciliation), so sharing
+   * one callback would make a caller's cue handler guess which path it is
+   * in. Also carries no `ctx.isSubagent`, for the same reason `onCancelled`
+   * does not: Part B (`maybePushOnSlowEval`) refuses to arm at all for a
+   * subagent-tagged input or while `isInSubagentContext()` is true, so this
+   * cue is unreachable from anywhere but a MAIN-context hold -- a ctx
+   * parameter would be `false` at every call site and an isSubagent guard
+   * built on it would be untestable dead code, exactly as documented on
+   * `onCancelled`. */
+  onHeldCancelled?: () => void;
+  /**
    * Called when a HELD question resolved WITHOUT the user answering it through
    * the WebSocket/relay answer path (#585, P7): a Part-B slow-eval verdict landed
    * after the early push (auto_approved/auto_denied), the hold timed out, or
@@ -833,6 +857,17 @@ export class AutoApproveGate {
    * Clears the hold's timer and marks the permission handled so the #484 buffer
    * + #513 cue close exactly as for a silent auto-decision.
    *
+   * #970 note: `markHandled` below ALSO fires the #576 client status broadcast
+   * (`onHandled` -> `broadcastAutoApproveStatus('approved')`), so a Part-B late
+   * verdict reconciled through here (`reconcileLateVerdict`'s allow/deny
+   * branches, which call this method) was ALREADY total before the #970 fix --
+   * verified by grep AND by a regression test in hook-bridge-setup.test.ts,
+   * because an earlier pass at this same enumeration (ADR 0020) claimed
+   * otherwise without checking this call site. The one late-verdict outcome
+   * that genuinely reached no cue was the CANCELLED branch, which calls
+   * `releaseHeld` (a separate method, no `markHandled`) -- see `onHeldCancelled`
+   * on `AutoApproveGateDeps` for that fix.
+   *
    * `suggestionIndex` (#718): present when the user picked a suggestion-derived
    * "Yes, always allow: ..." option. `decision` is still `'allow'` in that case
    * (the caller maps isNo -> deny, everything else it can express -> allow);
@@ -896,6 +931,12 @@ export class AutoApproveGate {
    * prompt. Returns true iff a hold for `questionId` existed. Public wrapper over
    * the private `releaseHeld(qid, 'passthrough')`; no markHandled (the user is
    * about to answer the native prompt, not a silent auto-decision).
+   *
+   * #970 totality note: no client status cue needed. This path only runs
+   * because a client JUST answered (input-events.ts), so the answering
+   * client already knows the outcome, and the PTY inject that follows
+   * triggers the normal PreToolUse -> 'executing' status update for every
+   * OTHER connected client, same as `onEscalate` relies on elsewhere.
    */
   releaseHeldAsPassthrough(questionId: UUID): boolean {
     // #673: openQuestionSignatures cleanup lives in the private releaseHeld
@@ -913,7 +954,14 @@ export class AutoApproveGate {
    *  cleanup is never duplicated here -- #799's mainOnly Stop sweep in
    *  `cancelStale` depends on `releaseHeld` having already dropped this qid's
    *  `openQuestionSignatures` entry, or it would re-find it and double-fire
-   *  `notifyResolved`. */
+   *  `notifyResolved`.
+   *
+   *  #970 totality note: no client status cue fires here either. Both callers
+   *  (`Stop` mainOnly, `SessionEnd`) are hook events the setup layer ALSO
+   *  drives through the ordinary status path in the same synchronous handler,
+   *  immediately after `cancelStale` returns (`onStatusChange('idle')` for
+   *  both) -- the same "the question path's own status already covers it"
+   *  reasoning `onEscalate` relies on, not a new exception. */
   private releaseAllHolds(decision: PermissionDecision, reason: string, mainOnly = false): void {
     const targets = mainOnly
       ? [...this.pendingHolds].filter(([, hold]) => !hold.isSubagent)
@@ -1023,6 +1071,15 @@ export class AutoApproveGate {
    * and resolve the hook so Claude renders its native prompt and the local
    * terminal can take over. No-op when the hold is already gone (answered, Part-B
    * verdict, cancelled) so it never double-resolves.
+   *
+   * #970 totality note: this deliberately fires NO client status cue. Every
+   * path into a hold (immediate binary escalation or Part B's early push)
+   * already moved the pill to 'waiting' via `onEscalate` before a hold could
+   * ever exist, and failing open here does not change what the client is
+   * actually waiting on -- the SAME permission is still unanswered, just
+   * rendered in the terminal now instead of held on the hook. 'waiting'
+   * stays true; broadcasting anything else here would be the wrong-status
+   * failure mode ADR 0020 warns is as bad as a stuck one.
    */
   private failOpenHeld(qid: UUID, logMessage: string): void {
     if (!this.pendingHolds.has(qid)) return;
@@ -1584,6 +1641,13 @@ export class AutoApproveGate {
       this.deps.tracker.clearPending();
       this.notifyResolved(qid, 'cancelled');
       this.releaseHeld(qid, 'passthrough', 'part-b-cancelled');
+      // #970: releaseHeld (unlike resolveHeld) never calls markHandled, so
+      // nothing else on this branch tells the client the pill is stale. The
+      // pill was moved to 'waiting' when the hold was created (onEscalate)
+      // and nothing has corrected it since -- the exact gap onCancelled closed
+      // for the non-held path. See onHeldCancelled's own doc for why this is a
+      // separate cue rather than reusing onCancelled.
+      this.safeCue('onHeldCancelled', this.deps.onHeldCancelled);
     }
     // escalate / pick: already pushed + holding; no double-push, leave as-is.
   }
@@ -2265,6 +2329,20 @@ export class AutoApproveGate {
    * `toolName` (#808), when the caller knows it (a signature match or a
    * tracked `ToolSignature` both carry it), is carried onto the
    * question-lifecycle trace record for this removal.
+   *
+   * #970 totality note: no client status cue fires here. All three callers
+   * already have their own status coverage:
+   *   - `cancelExternallyResolved` (PreToolUse/PostToolUse/PermissionDenied
+   *     match) runs INSIDE the same synchronous hook handler that also drives
+   *     `handlers.onPreToolUse` etc. -> `onStatusChange('executing', ...)` for
+   *     the identical event, so the pill is corrected in the same tick.
+   *   - `cancelStale`'s mainOnly Stop sweep runs before `handlers.onStop`'s
+   *     own `onStatusChange('idle')` in that same Stop handler -- see the
+   *     note on `releaseAllHolds` above.
+   *   - `cancelStaleForAgent` (SubagentStop) only ever matches a
+   *     `sig.isSubagent` entry, and #711 never broadcasts the MAIN client
+   *     pill for a subagent/team-member eval or hold in the first place --
+   *     there is nothing to correct.
    */
   private resolveSupersededQuestion(qid: UUID, reason: string, toolName?: string): void {
     log(
