@@ -87,32 +87,83 @@ import { matchSubstringPattern } from './pattern-matcher.ts';
  *
  * Per-entry call, since not every pattern needs the same treatment:
  *
- * - `rm -rf /` needs argument-level precision — "does the path stop at `/`?"
- *   — which a trailing-word-boundary check cannot express (a path does not
- *   stop being non-word characters right after a leading `/`; `/tmp` starts
- *   with a word character immediately). It gets a dedicated regex that
- *   requires the `/` to be followed by whitespace, `*`, one of `;&|)`, or
- *   end-of-string — deliberately NOT a closing quote, which is what keeps
- *   `echo "rm -rf /" >> notes.txt` (a mention, not an invocation) from
- *   matching. Also accepts an optional `--no-preserve-root` between the flags
- *   and the path, since that is the one variant explicitly meant to defeat
- *   `rm`'s own root guard.
- * - `sudo rm`, `rm -rf /etc`, `rm -rf /usr`, `rm -rf /System` get a
- *   trailing-word-boundary check (the character right after the pattern must
- *   not continue an identifier). The collision this closes is a REAL name
- *   that happens to start with the pattern — `/etcetera-backup`, `sudo
- *   rmdir` — not a quoted mention; that refinement was only built and tested
- *   for the two patterns #985 actually measured with real false positives.
- *   Rejecting the collision is the safe direction on both sides it feeds:
- *   `enforceDenyFloor` trades a silent deny for an escalate (never a loss),
- *   and `enforceAuthorityBoundary` trades a downgrade for leaving an approve
- *   in place on an operation that was never one of these directories anyway.
- * - `chmod 777` is left as a plain substring, on purpose: its only prefix
- *   collision is a longer octal mode (`chmod 7777`, `chmod 7770`), and a
- *   leading `7` only ever ADDS setuid/setgid/sticky bits on top of the same
- *   `rwxrwxrwx` — over-matching here catches something equally or more
- *   permissive, not something unrelated, so there is nothing to anchor
- *   against.
+ * - `rm -rf /`, `rm -rf /etc`, `rm -rf /usr`, `rm -rf /System` need
+ *   argument-level precision — "is the flag set both recursive AND force, and
+ *   does the target argument name this exact path (or a subpath of it)?" —
+ *   which no fixed literal can express, because `rm` accepts the same two
+ *   flags in more shapes than one string can enumerate: `-rf`, `-fr`, `-r -f`
+ *   (either order, separate tokens), `--recursive --force` (either order,
+ *   long form), and combined getopt-style clusters (`-rvf`, `-fvr`, any
+ *   other ordering with other short flags mixed in). These four rules share
+ *   `matchesRmWithTarget`: it finds every `rm` invocation in the command
+ *   (word-bounded, so `confirm -rf /` and `rmdir -rf /` do not count),
+ *   collects the run of flag-shaped tokens that follow (which is also what
+ *   sweeps up `--no-preserve-root` without a special case for it — it is
+ *   just another flag token in the run, contributing to neither recursive
+ *   nor force, and simply not interrupting the scan), and checks the first
+ *   non-flag token against a target predicate. The root predicate
+ *   (`isRootTarget`) requires the target to equal `/` or `/` immediately
+ *   followed only by `*`, `;`, `&`, `|`, `)`, or end-of-string —
+ *   deliberately NOT a closing quote, which is what keeps `echo "rm -rf /"
+ *   >> notes.txt` (a mention, not an invocation) from matching: the quote in
+ *   the source string glues onto the whitespace-delimited target token
+ *   (`/"`), and `isRootTarget` rejects that shape. The directory predicates
+ *   (`isDirTarget`) require the target to equal the directory or continue
+ *   into a subpath (`/etc`, `/etc/passwd`) but not a same-prefixed sibling
+ *   (`/etcetera-backup`).
+ * - `sudo rm` and `chmod 777` stay simple regexes over the raw command text
+ *   (word-bounded `\bsudo\s+rm\b`, prefix-bounded `\bchmod\s+777`) rather
+ *   than flag-aware parsing: `sudo rm` is intentionally broad regardless of
+ *   flags (any sudo-elevated `rm` at all, not just recursive-force ones), and
+ *   `chmod 777`'s only prefix collision is a longer octal mode (`chmod
+ *   7777`), which is equally or more permissive — over-matching there catches
+ *   something worse, not something unrelated, so there is nothing to anchor.
+ *   Both still needed the whitespace fix below.
+ * - Every rule tolerates repeated whitespace (`\s+` instead of a literal
+ *   single space) wherever the ORIGINAL literal had one, so `sudo  rm`
+ *   (double space) and `rm  -rf  /` still match. This was not cosmetic:
+ *   `develop` requires exactly one literal space in `matchSubstringPattern`'s
+ *   plain `.includes()` check, so two spaces anywhere in a pattern is itself
+ *   an existing bypass, independent of flag order.
+ *
+ * ## What this round (#985 follow-up) additionally closed, and what it does not
+ *
+ * A second probe against this same list, after the initial #985 fix, found
+ * FOUR shapes that still fell through on the FIXED-LITERAL version of this
+ * list (i.e. the version that shipped with the anchored-but-still-literal
+ * `rm -rf /` / `rm -rf /etc` / `rm -rf /usr` / `rm -rf /System` / `sudo rm`
+ * entries, before this comment's rules existed): `rm -fr /` (flags reversed),
+ * `rm -r -f /` (flags split into separate tokens), `rm --recursive --force /`
+ * (long form), and `sudo  rm -rf /var` (double space). In every one of these,
+ * the MISS was a false NEGATIVE on this list specifically — for
+ * `enforceDenyFloor` that meant the model's `deny` fell through to `escalate`
+ * rather than standing as a floored deny (per this module's own doc on
+ * `enforceDenyFloor`, an escalate is "strictly better than the deny it
+ * replaces in both directions", so this was never a silent-approval hole);
+ * for `enforceAuthorityBoundary` it meant no downgrade from THIS guard, but
+ * `authority-counterfactual.ts`'s `RISKY_SHAPES` already includes `'rm '`,
+ * `'rm -'`, and `'sudo'` (`authority-counterfactual.ts:81-146`, verified by
+ * reading the array), so an authority-present approve of any of these four
+ * shapes still tripped the independent #954 counterfactual regardless. The
+ * bug was this list being internally inconsistent — the SAME catastrophic
+ * operation floored under one spelling and merely escalated under another —
+ * not a path to a silent approve. Fixed here by generalizing to flag-aware
+ * matching instead of adding more literals.
+ *
+ * This is still NOT a shell parser, and deliberately stops short of being
+ * one. `matchesRmWithTarget` reasons about whitespace-delimited TOKENS in the
+ * raw command text — it does not interpret quoting, variable expansion
+ * (`$VAR`, `${VAR}`), command substitution (`` `cmd` ``, `$(cmd)`), or
+ * backslash escapes. A command that hides its target behind any of those
+ * (`rm -rf "$ROOT"`, `` rm -rf `echo /` ``) will not match. That is
+ * acceptable and intentional: this list is explicitly "a second, narrower
+ * denylist: defense in depth on top of the prompt instruction, not a
+ * replacement for it" (see above) — the LLM path and the
+ * authority-counterfactual re-check both sit behind it and do not depend on
+ * this list's syntactic coverage. Chasing full shell semantics here would
+ * turn a "small, code-owned, auditable" list into an unbounded parser, which
+ * is exactly the kind of scope the exfiltration bullet was already kept out
+ * for.
  *
  * ## The direction change this causes
  *
@@ -137,34 +188,80 @@ interface CatastrophicRule {
   readonly test: (command: string) => boolean;
 }
 
-/** Escapes regex metacharacters so a literal string can be dropped into a
- *  dynamically built pattern. None of today's labels need it (no `.`, `+`,
- *  `(`, etc.), but a boundary helper that silently mis-escapes a future entry
- *  is worse than one extra function call. */
-function escapeRegExp(literal: string): string {
-  return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/**
+ * Finds every `rm` invocation in `command` (word-bounded via `\b`, so
+ * `confirm -rf /` and `rmdir -rf /` are not invocations of `rm`), captures
+ * the run of flag-shaped tokens immediately following it (group 1: each
+ * repetition is whitespace + 1-2 dashes + letters/hyphens, which is also
+ * what sweeps up `--no-preserve-root` for free), then captures the next
+ * whitespace-delimited token as the target (group 2). Global, so a compound
+ * command gets every `rm` checked, not just the first.
+ */
+const RM_INVOCATION_RE = /\brm((?:\s+-{1,2}[A-Za-z-]+)*)\s+(\S+)/g;
+
+/**
+ * True if the flag run captured by `RM_INVOCATION_RE` supplies BOTH
+ * recursive and force, in any of `rm`'s accepted shapes: separate short
+ * flags (`-r -f` or `-f -r`), a combined getopt-style cluster in either
+ * order and mixed with other letters (`-rf`, `-fr`, `-rvf`, `-fvr`), or long
+ * flags in either order (`--recursive --force` / `--force --recursive`).
+ * Heuristic over flag TEXT, not real option parsing — see the module doc's
+ * "not a parser" note for why that line is deliberate.
+ */
+function suppliesRecursiveAndForce(flags: string): boolean {
+  let hasRecursive = false;
+  let hasForce = false;
+  for (const token of flags.trim().split(/\s+/).filter(Boolean)) {
+    if (token.startsWith('--')) {
+      if (token === '--recursive') hasRecursive = true;
+      if (token === '--force') hasForce = true;
+      continue;
+    }
+    // Single-dash cluster: getopt-style, so any letter in it counts,
+    // regardless of position or what else rides along (-rvf, -fvr, -v, ...).
+    if (token.includes('r')) hasRecursive = true;
+    if (token.includes('f')) hasForce = true;
+  }
+  return hasRecursive && hasForce;
 }
 
 /**
- * True if `needle` occurs in `command` and that occurrence is not
- * immediately followed by an identifier character (letter, digit,
- * underscore) — i.e. `needle` is not merely a prefix of a longer word. Scans
- * every occurrence via the regex engine's own backtracking rather than just
- * the first `indexOf` hit, so an early false hit inside a longer word cannot
- * hide a real, boundary-satisfying occurrence later in the same command.
+ * True if some `rm` invocation in `command` supplies both recursive and
+ * force AND its target satisfies `isTarget`. Shared by the root and
+ * directory rules below; only the target predicate differs between them.
  */
-function hasTrailingWordBoundary(command: string, needle: string): boolean {
-  return new RegExp(`${escapeRegExp(needle)}(?![A-Za-z0-9_])`).test(command);
+function matchesRmWithTarget(command: string, isTarget: (target: string) => boolean): boolean {
+  for (const match of command.matchAll(RM_INVOCATION_RE)) {
+    const flags = match[1] ?? '';
+    const target = match[2] ?? '';
+    if (suppliesRecursiveAndForce(flags) && isTarget(target)) return true;
+  }
+  return false;
 }
 
 /**
- * `rm -rf /` scoped to the root argument itself: the path must end at `/`,
- * not merely start with it. Allows an optional `--no-preserve-root` between
- * the flags and the path. The boundary after `/` deliberately excludes
- * closing-quote characters — see the module doc for why that is what rejects
- * a quoted mention rather than an invocation.
+ * True if `target` is exactly the root path, optionally immediately followed
+ * by nothing but `*`, `;`, `&`, `|`, or `)` — i.e. root and only root, not a
+ * subpath (`/tmp`, rejected: the char after `/` is a letter) and not a
+ * quote-attached mention (`/"`, from `echo "rm -rf /"` — the closing quote
+ * glues onto this whitespace-delimited token — rejected: `"` is not in the
+ * allowed set).
  */
-const ROOT_RM_RE = /\brm\s+-rf\s+(?:--no-preserve-root\s+)?\/(?:[\s*;&|)]|$)/;
+function isRootTarget(target: string): boolean {
+  return /^\/[*;&|)]*$/.test(target);
+}
+
+/**
+ * True if `target` is `dir` itself or a path under it (`/etc`, `/etc/passwd`
+ * both count for `dir = '/etc'`), but not a same-prefixed sibling that is a
+ * different directory (`/etcetera-backup` does not count): the character
+ * right after `dir` must not continue an identifier.
+ */
+function isDirTarget(target: string, dir: string): boolean {
+  if (!target.startsWith(dir)) return false;
+  const rest = target.slice(dir.length);
+  return rest === '' || !/^[A-Za-z0-9_]/.test(rest);
+}
 
 /** `| sh` / `| bash`, where the pipe must lead directly (only whitespace
  *  between) into the interpreter name and the name must end there — so
@@ -173,17 +270,23 @@ const PIPE_SH_RE = /\|\s*sh\b/;
 const PIPE_BASH_RE = /\|\s*bash\b/;
 
 const CATASTROPHIC_RULES: readonly CatastrophicRule[] = [
-  { label: 'rm -rf /', test: (command) => ROOT_RM_RE.test(command) },
-  { label: 'sudo rm', test: (command) => hasTrailingWordBoundary(command, 'sudo rm') },
-  { label: 'rm -rf /etc', test: (command) => hasTrailingWordBoundary(command, 'rm -rf /etc') },
-  { label: 'rm -rf /usr', test: (command) => hasTrailingWordBoundary(command, 'rm -rf /usr') },
+  { label: 'rm -rf /', test: (command) => matchesRmWithTarget(command, isRootTarget) },
+  { label: 'sudo rm', test: (command) => /\bsudo\s+rm\b/.test(command) },
+  {
+    label: 'rm -rf /etc',
+    test: (command) => matchesRmWithTarget(command, (target) => isDirTarget(target, '/etc')),
+  },
+  {
+    label: 'rm -rf /usr',
+    test: (command) => matchesRmWithTarget(command, (target) => isDirTarget(target, '/usr')),
+  },
   {
     label: 'rm -rf /System',
-    test: (command) => hasTrailingWordBoundary(command, 'rm -rf /System'),
+    test: (command) => matchesRmWithTarget(command, (target) => isDirTarget(target, '/System')),
   },
   { label: '| sh', test: (command) => PIPE_SH_RE.test(command) },
   { label: '| bash', test: (command) => PIPE_BASH_RE.test(command) },
-  { label: 'chmod 777', test: (command) => command.includes('chmod 777') },
+  { label: 'chmod 777', test: (command) => /\bchmod\s+777/.test(command) },
 ];
 
 /** Bare tool-name equality for non-Bash tools, mirroring

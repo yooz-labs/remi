@@ -221,6 +221,75 @@ describe('#985 — catastrophic patterns are boundary-aware, not unanchored subs
   });
 });
 
+describe('#985 follow-up — flag-order, long-form, and whitespace bypasses', () => {
+  // Probed independently against the shipped #985 fix (still the fixed-literal
+  // version at that point) and confirmed to be MISSES on `develop` too, so
+  // these are pre-existing gaps in the list's own coverage, not a regression
+  // introduced by the initial anchoring fix. Each one is the SAME catastrophic
+  // root wipe as `rm -rf /`, spelled differently.
+  const rootBypasses = [
+    'rm -fr /',
+    'rm -r -f /',
+    'rm -f -r /',
+    'rm --recursive --force /',
+    'rm --force --recursive /',
+    'rm -rvf /',
+    'rm -fvr /',
+  ];
+
+  for (const command of rootBypasses) {
+    test(`matchesCatastrophicPattern: "${command}" is a root wipe`, () => {
+      expect(matchesCatastrophicPattern('Bash', bash(command))).toBe('rm -rf /');
+    });
+
+    test(`enforceDenyFloor: deny stands for "${command}"`, () => {
+      const result = enforceDenyFloor('Bash', bash(command), 'deny');
+      expect(result.decision).toBe('deny');
+      expect(result.overridden).toBe(false);
+      expect(result.matchedPattern).toBe('rm -rf /');
+    });
+  }
+
+  test('flag-order variants reach /etc and /usr too, not just root', () => {
+    expect(matchesCatastrophicPattern('Bash', bash('rm -fr /etc/hosts'))).toBe('rm -rf /etc');
+    expect(matchesCatastrophicPattern('Bash', bash('rm -r -f /usr/local'))).toBe('rm -rf /usr');
+  });
+
+  test('double space after sudo is no longer a bypass', () => {
+    // Regression target: matchSubstringPattern's plain .includes('sudo rm')
+    // requires exactly one literal space, so two spaces anywhere was already
+    // its own bypass class, independent of rm's flag order.
+    expect(matchesCatastrophicPattern('Bash', bash('sudo  rm -rf /var'))).toBe('sudo rm');
+    const result = enforceDenyFloor('Bash', bash('sudo  rm -rf /var'), 'deny');
+    expect(result.decision).toBe('deny');
+    expect(result.overridden).toBe(false);
+  });
+
+  // A broader rm rule is exactly the kind of change that can re-break the
+  // measured false positives from the original #985 report — assert those
+  // explicitly here too, including with the flag order swapped, so a
+  // regression in the generalization is caught by this same block.
+  test('the flag generalization does not resurrect the original false positives', () => {
+    expect(matchesCatastrophicPattern('Bash', bash('rm -rf /tmp/uep.bak'))).toBeNull();
+    expect(matchesCatastrophicPattern('Bash', bash('rm -fr /tmp/uep.bak'))).toBeNull();
+    expect(matchesCatastrophicPattern('Bash', bash('rm -r -f /tmp/uep.bak'))).toBeNull();
+    expect(matchesCatastrophicPattern('Bash', bash('cat dist/remi | shasum -a 256'))).toBeNull();
+  });
+
+  test('the flag generalization does not widen non-catastrophic project deletes', () => {
+    expect(matchesCatastrophicPattern('Bash', bash('rm -rf ./build'))).toBeNull();
+    expect(matchesCatastrophicPattern('Bash', bash('rm -fr ./build'))).toBeNull();
+    expect(matchesCatastrophicPattern('Bash', bash('rm -r -f node_modules'))).toBeNull();
+  });
+
+  test('rm without both recursive and force is never treated as the floor', () => {
+    // -r alone (no force) and -f alone (no recursive) must not qualify, even
+    // targeting root, since the rule requires BOTH.
+    expect(matchesCatastrophicPattern('Bash', bash('rm -r /'))).toBeNull();
+    expect(matchesCatastrophicPattern('Bash', bash('rm -f /'))).toBeNull();
+  });
+});
+
 describe('buildDenyMessage (#976)', () => {
   test('offers TWO exits, in order: another approach, then ask the user', () => {
     const m = buildDenyMessage('rm -rf / matched the deny floor');
