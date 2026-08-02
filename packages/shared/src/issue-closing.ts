@@ -25,11 +25,31 @@ export interface ClosingReference {
 
 // GitHub's standard closing keywords -- close/closes/closed, fix/fixes/fixed,
 // resolve/resolves/resolved -- case-insensitive, immediately followed by an
-// optional "owner/repo" and "#<number>". `[ \t]` (not `\s`) restricts the gap
+// optional "owner/repo" and "#<number>". `[ \t:]` (not `\s`) restricts the gap
 // between the keyword and the reference to the same line, so a keyword in one
 // paragraph of a PR body can't sweep in an unrelated "#12" mentioned later.
+//
+// The gap is ONE bounded quantified class, not two adjacent unbounded ones
+// (i.e. not `[ \t]*:?[ \t]*`). Two adjacent `*`-quantifiers over overlapping
+// character classes, separated by something zero-width-capable, is the
+// classic ambiguous-quantifier ReDoS shape: for a run of m non-matching
+// separator characters the backtracker explores O(m) ways to split it
+// between the two groups, and across the states introduced by the optional
+// `:?` this measured as quadratic in practice (a PR body's merge-commit
+// message is attacker-controlled -- anyone can open a PR against a public
+// repo). `{0,20}` on a single merged class caps the search to a constant
+// per attempt regardless of input size, which is enough for any realistic
+// "keyword<punctuation/whitespace>#N" spacing.
 const CLOSING_KEYWORD_PATTERN =
-  /\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b[ \t]*:?[ \t]*(?:([\w.-]+)\/([\w.-]+))?#(\d+)/gi;
+  /\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b[ \t:]{0,20}(?:([\w.-]+)\/([\w.-]+))?#(\d+)/gi;
+
+// Known, deliberate limitation: this regex has no notion of markdown
+// structure, so `fixes #10` inside a fenced or inline code block (common in
+// this repo's PR bodies, which document commands and config) parses as a
+// real closing reference -- a plausible false-close path, not fixed here.
+// The inverse, a markdown link like `Fixes [#42](https://...)`, does NOT
+// match (the `[` breaks the pattern before `#42`), which fails safe. Both
+// are exercised in issue-closing.test.ts under "known limitations".
 
 /**
  * Extract closing references from a single commit message, deduped within

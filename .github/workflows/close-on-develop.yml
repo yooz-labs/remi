@@ -40,6 +40,11 @@ jobs:
   close-issues:
     name: Close Referenced Issues
     runs-on: ubuntu-latest
+    # Defense in depth: a parser bug (or anything else that hangs) should
+    # not be able to occupy the runner for GitHub's 360-minute default
+    # ceiling, especially with concurrency.cancel-in-progress: false
+    # serializing every later develop push behind a stuck run.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
 
@@ -67,37 +72,69 @@ jobs:
           short_sha="${SHA:0:7}"
           commit_url="https://github.com/${REPO}/commit/${SHA}"
 
-          echo "$ISSUES_JSON" | jq -c '.[]' | while IFS= read -r ref; do
-            number=$(echo "$ref" | jq -r '.issue')
-            keyword=$(echo "$ref" | jq -r '.keyword')
+          # The while loop is wrapped in its own explicit ( ) subshell (the
+          # final stage of the pipe below) purely so a `failures` counter set
+          # inside the loop is still visible after `done`, in the same
+          # subshell, to decide the final `exit` status -- variables set
+          # inside a `| while` don't otherwise escape that iteration.
+          echo "$ISSUES_JSON" | jq -c '.[]' | (
+            failures=0
 
-            # Fetch the target before touching it. This is also how we tell
-            # an issue apart from a pull request: issues and PRs share one
-            # number namespace, and the Issues API returns a PR too (with a
-            # `pull_request` key) -- never close on the strength of the
-            # number alone.
-            if ! target_json=$(gh api "repos/${REPO}/issues/${number}" 2>/dev/null); then
-              echo "#${number}: not found (wrong repo, deleted, or never existed), skipping"
-              continue
+            while IFS= read -r ref; do
+              number=$(echo "$ref" | jq -r '.issue')
+              keyword=$(echo "$ref" | jq -r '.keyword')
+
+              # Fetch the target before touching it. This is also how we
+              # tell an issue apart from a pull request: issues and PRs
+              # share one number namespace, and the Issues API returns a PR
+              # too (with a `pull_request` key) -- never close on the
+              # strength of the number alone.
+              if ! target_json=$(gh api "repos/${REPO}/issues/${number}" 2>/dev/null); then
+                echo "#${number}: not found (wrong repo, deleted, or never existed), skipping"
+                continue
+              fi
+
+              is_pull_request=$(echo "$target_json" | jq 'has("pull_request")')
+              if [ "$is_pull_request" = "true" ]; then
+                echo "#${number}: is a pull request, not an issue, skipping"
+                continue
+              fi
+
+              state=$(echo "$target_json" | jq -r '.state')
+              if [ "$state" != "open" ]; then
+                echo "#${number}: already ${state}, skipping"
+                continue
+              fi
+
+              # Close BEFORE commenting, and check the result explicitly
+              # (`if !`, not a bare call) so one bad issue can't take the
+              # rest of the batch down with it: this loop runs inside a pipe
+              # subshell, where an unguarded `gh` failure would trip `set -e`
+              # via `pipefail` and abort every issue still queued behind it.
+              # A close that fails must never be followed by a comment that
+              # claims it happened -- close first, comment only once the
+              # close is confirmed.
+              if ! gh issue close "$number" --repo "$REPO"; then
+                echo "#${number}: FAILED to close, skipping (no comment posted)"
+                failures=$((failures + 1))
+                continue
+              fi
+
+              line1="Closed automatically: this issue's fix merged to \`develop\` in commit [\`${short_sha}\`](${commit_url}) (matched \"${keyword} #${number}\")."
+              line2="GitHub's \`Closes\`/\`Fixes\` automation only closes issues on a merge to the repository's default branch (\`main\`); this repo merges feature work into \`develop\`, so that automation never fires here. This comment was posted by [close-on-develop.yml](https://github.com/${REPO}/blob/develop/.github/workflows/close-on-develop.yml) to fill that gap -- it is not a human closure."
+              body="${line1}"$'\n\n'"${line2}"
+
+              if ! gh issue comment "$number" --repo "$REPO" --body "$body"; then
+                echo "#${number}: closed, but FAILED to post the explanatory comment"
+                failures=$((failures + 1))
+                continue
+              fi
+
+              echo "#${number}: closed (matched \"${keyword}\")"
+            done
+
+            if [ "$failures" -gt 0 ]; then
+              echo "::error::${failures} issue(s) failed to close and/or comment; see log above."
+              exit 1
             fi
-
-            is_pull_request=$(echo "$target_json" | jq 'has("pull_request")')
-            if [ "$is_pull_request" = "true" ]; then
-              echo "#${number}: is a pull request, not an issue, skipping"
-              continue
-            fi
-
-            state=$(echo "$target_json" | jq -r '.state')
-            if [ "$state" != "open" ]; then
-              echo "#${number}: already ${state}, skipping"
-              continue
-            fi
-
-            line1="Closed automatically: this issue's fix merged to \`develop\` in commit [\`${short_sha}\`](${commit_url}) (matched \"${keyword} #${number}\")."
-            line2="GitHub's \`Closes\`/\`Fixes\` automation only closes issues on a merge to the repository's default branch (\`main\`); this repo merges feature work into \`develop\`, so that automation never fires here. This comment was posted by [close-on-develop.yml](https://github.com/${REPO}/blob/develop/.github/workflows/close-on-develop.yml) to fill that gap -- it is not a human closure."
-            body="${line1}"$'\n\n'"${line2}"
-
-            gh issue comment "$number" --repo "$REPO" --body "$body"
-            gh issue close "$number" --repo "$REPO"
-            echo "#${number}: closed (matched \"${keyword}\")"
-          done
+          )

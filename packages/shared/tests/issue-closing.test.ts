@@ -260,3 +260,66 @@ describe('extractClosingReferences - real commit messages from this repo', () =>
     expect(extractClosingReferences('chore: bump version to 0.7.4-dev.52')).toEqual([]);
   });
 });
+
+describe('extractClosingReferences - ReDoS resistance', () => {
+  // Regression guard for a quadratic-blowup bug: the gap between the keyword
+  // and "#N" used to be two adjacent unbounded quantifiers over the same
+  // character class ([ \t]*:?[ \t]*), the classic ambiguous-quantifier ReDoS
+  // shape. A commit message is attacker-controlled (a PR body lands in the
+  // merge commit message, and anyone can open a PR against a public repo),
+  // so a keyword followed by a long non-matching run of spaces/tabs must
+  // stay fast. The fix bounds the gap to a single {0,20} class; this test
+  // locks that bound in by asserting a large adversarial input still
+  // completes in well under a second, not the 6+ seconds (80k chars) to
+  // 15+ minutes (1MB) the unbounded pattern measured at.
+  test('a keyword followed by a very long non-matching run resolves quickly', () => {
+    const input = `fixes ${' '.repeat(200_000)}x`;
+    const start = performance.now();
+    const refs = extractClosingReferences(input);
+    const elapsedMs = performance.now() - start;
+    expect(refs).toEqual([]);
+    expect(elapsedMs).toBeLessThan(1000);
+  });
+
+  test('a keyword followed by a long run of the gap characters themselves resolves quickly', () => {
+    // Exercises the bounded class directly: 100k characters that are ALL
+    // members of [ \t:], still never resolving into "#<digits>".
+    const input = `closes ${' \t:'.repeat(50_000)}`;
+    const start = performance.now();
+    const refs = extractClosingReferences(input);
+    const elapsedMs = performance.now() - start;
+    expect(refs).toEqual([]);
+    expect(elapsedMs).toBeLessThan(1000);
+  });
+
+  test('a real reference still matches immediately after a long gap-only prefix elsewhere in the message', () => {
+    // The bound should not cause false negatives on realistic input -- a
+    // long unrelated run earlier in the message must not prevent a later,
+    // normally-formed reference from matching.
+    const input = `Unrelated: ${' '.repeat(10_000)}padding.\n\nFixes #42`;
+    expect(extractClosingReferences(input).map((r) => r.issue)).toEqual([42]);
+  });
+});
+
+describe('extractClosingReferences - known limitations (documented, not fixed)', () => {
+  test('a keyword+reference inside a markdown code span still matches (false-close risk)', () => {
+    // The parser has no notion of markdown structure. This repo's PR bodies
+    // routinely include inline code or fenced blocks documenting commands,
+    // and "fixes #10" inside one of those still reads as a real reference.
+    // Recorded here deliberately, not as a target to fix in this change.
+    const inline = 'See `git log --grep fixes #10` for context.';
+    expect(extractClosingReferences(inline).map((r) => r.issue)).toEqual([10]);
+
+    const fenced = ['```', 'fixes #11', '```'].join('\n');
+    expect(extractClosingReferences(fenced).map((r) => r.issue)).toEqual([11]);
+  });
+
+  test('a markdown link reference does not match (fails safe)', () => {
+    // "Fixes [#42](https://github.com/...)" -- the "[" immediately after the
+    // keyword's gap breaks the pattern before it reaches "#42", so this
+    // form is silently NOT treated as a closing reference. That is the safe
+    // direction to fail in for an auto-closer.
+    const message = 'Fixes [#42](https://github.com/yooz-labs/remi/issues/42) for details';
+    expect(extractClosingReferences(message)).toEqual([]);
+  });
+});
