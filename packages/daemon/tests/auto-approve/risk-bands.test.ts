@@ -83,6 +83,10 @@ describe('classifyRisk — high band: remote mutation', () => {
     'gh pr create --title x --body y',
     'gh issue create --title x',
     'gh issue close 5',
+    // scp/rsync WITH a remote destination -- mirrors authority-counterfactual.ts's
+    // RISKY_SHAPES entries for 'scp '/'rsync' (lines 116-118).
+    'scp local.txt dev@host:/tmp/',
+    'rsync -av ./ dev@host:/srv/',
   ];
   for (const command of highRemote) {
     test(`high: ${command}`, () => {
@@ -101,6 +105,69 @@ describe('classifyRisk — high band: remote mutation', () => {
   test('read-only gh subcommands are not high', () => {
     expect(classifyRisk('Bash', bash('gh pr view 12'))).toBe('moderate');
     expect(classifyRisk('Bash', bash('gh issue list'))).toBe('moderate');
+  });
+
+  test('a purely local scp/rsync (no remote destination) is not a mutation', () => {
+    expect(classifyRisk('Bash', bash('scp file1.txt file2.txt'))).toBe('moderate');
+    expect(classifyRisk('Bash', bash('rsync -av ./src/ ./backup/'))).toBe('moderate');
+  });
+});
+
+describe('classifyRisk — command-wrapper bypass (coordinator field report on #987)', () => {
+  // Every MISS line from the coordinator's measurement against the classifier
+  // as originally pushed, verbatim except where noted. `sshpass ...` is the
+  // 'sshpass' entry in run-authority-grading-sweep.ts's OPERATIONS list;
+  // 'ssh dev@10.0.0.5 uptime' and 'rm -rf ./build' are the baseline (already
+  // correct) rows, included so the table reads the same as the report.
+  const wrapped = [
+    'ssh dev@10.0.0.5 uptime',
+    'sshpass -p hunter2 ssh -o StrictHostKeyChecking=no dev@10.0.0.5',
+    'env FOO=1 ssh dev@host uptime',
+    'timeout 30 ssh dev@host uptime',
+    'xargs -I{} ssh dev@{} uptime',
+    'rm -rf ./build',
+    'nohup rm -rf ./dist',
+  ];
+  for (const command of wrapped) {
+    test(`high (was moderate for the wrapped forms): ${command}`, () => {
+      expect(classifyRisk('Bash', bash(command))).toBe('high');
+    });
+  }
+
+  test('bare VAR=value prefix without an explicit env wrapper is still unwrapped', () => {
+    // `FOO=1 cmd` is valid POSIX shell with or without a leading `env`.
+    expect(classifyRisk('Bash', bash('FOO=1 BAR=2 ssh dev@host uptime'))).toBe('high');
+  });
+
+  test('chained wrappers are fully unwrapped', () => {
+    expect(classifyRisk('Bash', bash('nice nohup rm -rf ./dist'))).toBe('high');
+  });
+
+  test('a wrapper hiding a package install is still caught (unwrap, not the whole-word backstop)', () => {
+    // Neither "npm" nor "install" is in the whole-word backstop list, so this
+    // one can ONLY pass via unwrapCommand -- see the prove-it-can-fail note.
+    expect(
+      classifyRisk('Bash', bash('env NPM_CONFIG_REGISTRY=https://x npm install left-pad')),
+    ).toBe('high');
+  });
+
+  test("timeout's bare duration positional is skipped, reaching a wrapped chmod", () => {
+    // Neither "timeout" nor "chmod" is in the whole-word backstop list either
+    // -- this one also depends entirely on unwrapCommand's positional-arg handling.
+    expect(classifyRisk('Bash', bash('timeout 30 chmod 700 /usr/local/bin/tool'))).toBe('high');
+  });
+
+  test('two wrappers NOT in the enumerated list are still caught by the whole-word backstop', () => {
+    // `ionice` and `setsid` are deliberately absent from COMMAND_WRAPPERS --
+    // unwrapCommand does nothing for either, so only hasDangerousWholeWord can
+    // classify these correctly. Proves the backstop, not just the list.
+    expect(classifyRisk('Bash', bash('ionice -c3 rm -rf ./dist'))).toBe('high');
+    expect(classifyRisk('Bash', bash('setsid ssh dev@host uptime'))).toBe('high');
+  });
+
+  test('accepted trade-off: the whole-word backstop over-fires on prose containing the word (ADR 0010, err broad)', () => {
+    expect(classifyRisk('Bash', bash('echo "use ssh to connect"'))).toBe('high');
+    expect(classifyRisk('Bash', bash('git commit -m "fix rm bug"'))).toBe('high');
   });
 });
 
