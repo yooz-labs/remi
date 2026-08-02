@@ -30,7 +30,7 @@ add a row below.
 | [0012](0012-protocol-message-registry.md) | Protocol message registry is the single source of truth |
 | [0013](0013-total-dispatch-handle-or-ignore.md) | Every protocol consumer declares handle-or-ignore, total over the registry |
 | [0014](0014-two-sided-conformance-tests.md) | Contract tests must construct both shipping endpoints |
-| [0015](0015-authority-bounded-by-counterfactual.md) | Authority may resolve ambiguity, never decide — enforced by counterfactual |
+| [0015](0015-authority-bounded-by-counterfactual.md) | Authority may resolve ambiguity, never decide — amended 2026-08-02: graded authorization may decide, but text alone cannot grade above `implicit` |
 | [0016](0016-strictness-levels-are-groups-not-prose.md) | Strictness is level-gated group membership, never prose to the model |
 | [0017](0017-deny-floor-enforced-in-code.md) | A model-produced deny is silent, so it is floored in code |
 | [0018](0018-write-group-safety-is-three-independent-vetoes.md) | A write-approving group needs three independent vetoes |
