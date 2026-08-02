@@ -287,10 +287,28 @@ const TRUNCATION_MARKER = '...';
  * the dangerous one — so no attempt is made to distinguish it from a real
  * truncation; the alternative (treating it as untruncated) risks the exact
  * false-match this function exists to prevent.
+ *
+ * ## No `': '` separator: the whole signature is the detail
+ *
+ * (Found in independent review, 2026-08-02.) `<toolName>: <detail>` is a
+ * convention of this file's own caller (`parsePermissionQuestionText`
+ * always emits either that shape or a bare `<toolName>` with no detail at
+ * all) — it is NOT something this function is entitled to assume about
+ * every caller. `record()` is a public method on an exported class; a
+ * future caller (the risk x authorization matrix this store is a
+ * prerequisite for) could hand it a signature with no colon that is
+ * nonetheless a raw, truncated value. Treating "no colon" as "therefore
+ * short and safe" — the previous behavior, which fell through to an empty
+ * `detail` and so could never be flagged truncated — is a guard that fails
+ * OPEN on a shape it does not recognize, exactly the pattern this module
+ * exists to avoid. When there is no separator, the WHOLE signature is
+ * checked as the detail instead: a bare 120+ character value ending in the
+ * marker is still caught, and an ordinary short bare value (a real tool
+ * name) is unaffected, since it is nowhere near the length floor.
  */
 function isTruncatedSignature(signature: string): boolean {
   const colonIndex = signature.indexOf(': ');
-  const detail = colonIndex === -1 ? '' : signature.slice(colonIndex + 2);
+  const detail = colonIndex === -1 ? signature : signature.slice(colonIndex + 2);
   return detail.length >= TRUNCATED_DETAIL_LENGTH && detail.endsWith(TRUNCATION_MARKER);
 }
 

@@ -2216,7 +2216,7 @@ describe('createInputHandlers', () => {
       expect(calls).toEqual([]);
     });
 
-    test('does NOT record a source-less question with real (unparseable) StopFailure-shaped text', async () => {
+    test('does NOT record a source-less question with real (unparsable) StopFailure-shaped text', async () => {
       const { sessionId, calls, handlers } = setUp();
       sessionRegistry.addQuestion(sessionId, {
         id: QID,

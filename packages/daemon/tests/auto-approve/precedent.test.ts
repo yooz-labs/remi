@@ -663,4 +663,27 @@ describe('truncation check runs on RAW text, before normalization (round 2, revi
     store.record('Bash', longButReal, 'approved');
     expect(store.size).toBe(1);
   });
+
+  // Found in independent review, 2026-08-02: `<toolName>: <detail>` is a
+  // convention of THIS FILE'S OWN `parsePermissionQuestionText`, not a
+  // guarantee `isTruncatedSignature` is entitled to rely on. `record()` is a
+  // public method on an exported class -- a future caller with no colon in
+  // its signature (a bare, raw truncated value) must still be caught, not
+  // silently waved through because "no colon" was read as "must be short."
+  describe('no ": " separator -- the whole signature is checked as the detail', () => {
+    test('a bare (no-colon) truncated signature is refused, not silently accepted', () => {
+      const store = new PrecedentStore();
+      const bareTruncated = `${'d'.repeat(117)}...`; // 120 chars, no "ToolName: " prefix at all
+      expect(bareTruncated.length).toBe(120);
+      expect(bareTruncated.includes(': ')).toBe(false); // sanity: genuinely no separator
+      store.record('Bash', bareTruncated, 'approved');
+      expect(store.size).toBe(0);
+    });
+
+    test('an ordinary short bare (no-colon) signature is still accepted', () => {
+      const store = new PrecedentStore();
+      store.record('Read', 'Read', 'approved'); // a real bare tool name, unaffected
+      expect(store.size).toBe(1);
+    });
+  });
 });
