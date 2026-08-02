@@ -116,6 +116,26 @@
  * data, and it stays inert (never even consulted) once a file is entirely
  * `_provenance`-stamped. Do not read its continued presence here as "the
  * path heuristic is still how this works."
+ *
+ * ## `--mode structure-preserving` (#992)
+ *
+ * Everything above describes the DEFAULT mode (`--mode redact`, also the
+ * default when `--mode` is omitted entirely) -- UNCHANGED by #992.
+ * `corpus-replay.test.ts` replays the checked-in `hook-corpus.jsonl`, which
+ * this default mode produced, and nothing about #992 may alter that file or
+ * the logic that built it.
+ *
+ * `--mode structure-preserving` is a SEPARATE, additive mode for a different
+ * consumer: `packages/daemon/tests/auto-approve/guard-chain-replay.test.ts`
+ * needs to replay real `Bash` commands through `enforceDenyFloor` /
+ * `enforceAuthorityBoundary` / `classifyRisk`, and those functions read
+ * shell STRUCTURE (binary name, subcommands, flags, `&&`/`||`/`;`/`|`,
+ * redirections, substitutions, quoting) out of `tool_input.command` -- the
+ * exact content the default mode's blanket `<redacted:str:N>` placeholder
+ * destroys. See the "Structure-preserving pseudonymization" section below
+ * (near `pseudonymizeIdentities`) for what this mode does instead, and
+ * `guard-chain-replay.test.ts`'s own header for why its output is never
+ * committed.
  */
 
 import * as fs from 'node:fs';
@@ -137,9 +157,35 @@ function expandHome(p: string): string {
 }
 
 const INPUT_PATH = expandHome(argValue('--input') ?? '~/.remi/hook-diag.jsonl');
-const OUTPUT_PATH = expandHome(
-  argValue('--output') ?? path.join(import.meta.dir, 'hook-corpus.jsonl'),
-);
+
+/**
+ * `redact` (default, and what an omitted `--mode` also means) is the
+ * ORIGINAL behavior -- untouched by #992. `structure-preserving` is the new,
+ * additive mode; see the module doc's "`--mode structure-preserving`"
+ * section.
+ */
+const MODE: 'redact' | 'structure-preserving' =
+  argValue('--mode') === 'structure-preserving' ? 'structure-preserving' : 'redact';
+
+/**
+ * The structure-preserving default lands in `tests/auto-approve/fixtures/`
+ * (a DIFFERENT directory from this file, gitignored, see `.gitignore`) --
+ * deliberately not alongside `hook-corpus.jsonl`, so nothing about a normal
+ * `redact`-mode run's file listing changes.
+ */
+const DEFAULT_OUTPUT_PATH =
+  MODE === 'structure-preserving'
+    ? path.join(
+        import.meta.dir,
+        '..',
+        '..',
+        'auto-approve',
+        'fixtures',
+        '.local-command-corpus.jsonl',
+      )
+    : path.join(import.meta.dir, 'hook-corpus.jsonl');
+
+const OUTPUT_PATH = expandHome(argValue('--output') ?? DEFAULT_OUTPUT_PATH);
 
 // --- Test-fixture contamination filter --------------------------------------
 
@@ -312,6 +358,318 @@ function pseudonymize(fieldPath: string, real: string): string {
   return fake;
 }
 
+// --- Structure-preserving pseudonymization (`--mode structure-preserving`, #992) ----
+//
+// Scope: ONLY `tool_input.command` / `file_path` / `path` / `url` -- see
+// `COMMAND_LIKE_PATHS` below, consulted from `redactValue`. Every other
+// field, in EITHER mode, still gets the blanket type-preserving placeholder
+// from `redactValue`'s default branch, so this section cannot widen what
+// leaves this script unredacted beyond those four fields.
+//
+// Two passes, always in this order, over each of the four fields' raw
+// string value:
+//
+//   1. `detectCredential` -- a REFUSAL check, not a redaction. If it matches,
+//      the caller (`main`) drops the WHOLE record; this module never tries
+//      to scrub-and-keep a credential-bearing value (see its own doc for
+//      why: a partial scrub is a claim about completeness this script has
+//      no way to back up).
+//   2. `pseudonymizeIdentities` -- runs ONLY on a value that passed (1).
+//      Replaces identity-bearing substrings (home directory, usernames,
+//      hostnames, IPs, email addresses) with consistently-mapped fakes,
+//      leaving every other character -- binary name, subcommand, flags,
+//      `&&`/`||`/`;`/`|`, redirections, `$()`/backtick/`<()` substitutions,
+//      quoting -- untouched. This is deliberately NOT a shell parser (same
+//      posture as `deny-floor.ts`/`risk-bands.ts`, whose whole reason for
+//      existing is to read this untouched text): it pattern-matches
+//      identity SHAPES in the raw string rather than tokenizing first, so a
+//      shape hidden behind quoting/substitution/variable expansion will not
+//      be found. That is an honest limit, not a gap this script tries to
+//      paper over -- see `guard-chain-replay.test.ts`'s header for the same
+//      point made about the guards this corpus feeds.
+
+/** Exact `tool_input.<key>` paths this mode treats specially. Everything
+ *  else in `tool_input` (and the rest of the record) is unaffected by this
+ *  section -- it still gets `redactValue`'s ordinary placeholder. */
+const COMMAND_LIKE_PATHS = new Set<string>([
+  'tool_input.command',
+  'tool_input.file_path',
+  'tool_input.path',
+  'tool_input.url',
+]);
+
+/** The four `tool_input` keys `COMMAND_LIKE_PATHS` names, as bare keys --
+ *  used by `main()` to pre-scan a record for a credential BEFORE deciding
+ *  whether to keep it at all (a decision `redactValue`, which only sees one
+ *  value at a time and returns a redacted value rather than a keep/drop
+ *  verdict, cannot make by itself). */
+const COMMAND_LIKE_KEYS = ['command', 'file_path', 'path', 'url'] as const;
+
+export function collectCommandLikeValues(record: Record<string, unknown>): string[] {
+  const toolInput = record['tool_input'];
+  if (typeof toolInput !== 'object' || toolInput === null || Array.isArray(toolInput)) return [];
+  const out: string[] = [];
+  for (const key of COMMAND_LIKE_KEYS) {
+    const value = (toolInput as Record<string, unknown>)[key];
+    if (typeof value === 'string' && value.length > 0) out.push(value);
+  }
+  return out;
+}
+
+/**
+ * Shannon entropy in bits/char. Used only by `hasHighEntropySecret` below,
+ * as one signal among several (length + charset diversity + this), never
+ * alone -- see that function's doc for why.
+ */
+function shannonEntropy(s: string): number {
+  const freq = new Map<string, number>();
+  for (const ch of s) freq.set(ch, (freq.get(ch) ?? 0) + 1);
+  let entropy = 0;
+  for (const count of freq.values()) {
+    const p = count / s.length;
+    entropy -= p * Math.log2(p);
+  }
+  return entropy;
+}
+
+/**
+ * Deliberately EXCLUDES `/` and `.` even though both are valid base64/JWT
+ * characters (`/` in standard base64; `.` between a JWT's three segments).
+ * Measured against 45,111 real captured records (#992): including them made
+ * `[A-Za-z0-9+/_.=-]{20,}` greedily swallow an entire multi-segment file
+ * PATH as one "token" (`/` never breaks the match), and a real project path
+ * mixing case and containing any digit anywhere (a version number, a port, a
+ * dated filename -- not rare) then reads as high-entropy across its full
+ * length. That inflated the drop rate to 29% of all real records, almost
+ * all `file_path`/`path` values with no secret in them at all -- the
+ * opposite of this backstop's job. Dropping `/`/`.` from the candidate
+ * class costs coverage only on a secret that specifically embeds one of
+ * those two characters AND has no other detectable shape (no recognized
+ * prefix, no assignment form) -- narrower than losing a third of the corpus
+ * to ordinary paths.
+ */
+const HIGH_ENTROPY_CANDIDATE_RE = /[A-Za-z0-9+_=-]{20,}/g;
+const HIGH_ENTROPY_MIN_BITS_PER_CHAR = 3.5;
+
+/**
+ * Backstop for a secret that matches none of the named prefixes/assignment
+ * shapes below: any 20+ char run of base64/token-alphabet characters that
+ * mixes upper, lower AND digit (all three) AND has near-random-looking
+ * character distribution.
+ *
+ * The "all three" requirement is load-bearing, not incidental: a git commit
+ * SHA or a UUID is ALSO a long, high-entropy-looking run (hex is only 16
+ * symbols, but a real hash's digits look close to uniformly random over
+ * them), and neither is a secret. Both are lowercase-hex-plus-digit --
+ * exactly TWO of the three categories -- so requiring all three excludes
+ * them structurally rather than by naming "looks like a hash" as a special
+ * case. A typical generated secret (API key, JWT, base64-encoded key
+ * material) mixes case and digits and clears this bar; this is a heuristic
+ * backstop for the unnamed case, not the primary defense -- the named
+ * prefix/assignment rules below are.
+ */
+export function hasHighEntropySecret(text: string): boolean {
+  const candidates = text.match(HIGH_ENTROPY_CANDIDATE_RE) ?? [];
+  for (const token of candidates) {
+    const hasLower = /[a-z]/.test(token);
+    const hasUpper = /[A-Z]/.test(token);
+    const hasDigit = /[0-9]/.test(token);
+    if (!(hasLower && hasUpper && hasDigit)) continue;
+    if (shannonEntropy(token) >= HIGH_ENTROPY_MIN_BITS_PER_CHAR) return true;
+  }
+  return false;
+}
+
+interface CredentialRule {
+  readonly label: string;
+  readonly test: (s: string) => boolean;
+}
+
+/**
+ * Refusal patterns (#992's "refuses, does not scrub-and-keep" requirement).
+ * A hit on ANY rule means `main()` drops the whole record -- this list only
+ * needs to decide "credential-shaped: yes/no", never to extract or preserve
+ * the value.
+ *
+ * The `password|token|api_key` assignment rule is deliberately broad enough
+ * to also drop `TOKEN=$GITHUB_TOKEN` (a variable REFERENCE, not an embedded
+ * secret) -- same ADR 0010 "err broad in the safe direction" posture this
+ * codebase already applies to deny-shaped matching elsewhere
+ * (`deny-floor.ts`, `risk-bands.ts`): a false-positive drop here costs one
+ * fewer corpus record; a false-negative keeps a real secret in a PUBLIC
+ * repo's potential future commit. Not symmetric, and not meant to be.
+ */
+const CREDENTIAL_RULES: readonly CredentialRule[] = [
+  { label: 'bearer token', test: (s) => /\bBearer\s+[A-Za-z0-9\-_.=]{8,}/i.test(s) },
+  { label: 'sk- prefixed key', test: (s) => /\bsk-[A-Za-z0-9_-]{10,}/.test(s) },
+  { label: 'ghp_/gho_ prefixed token', test: (s) => /\bgh[po]_[A-Za-z0-9]{20,}/.test(s) },
+  { label: 'AKIA prefixed AWS key', test: (s) => /\bAKIA[0-9A-Z]{16}\b/.test(s) },
+  { label: 'PEM private key block', test: (s) => /-----BEGIN[ A-Z]*PRIVATE KEY-----/.test(s) },
+  {
+    label: 'password/token/api_key assignment',
+    test: (s) =>
+      /\b(password|passwd|token|api[_-]?key|secret)\s*[:=]\s*['"]?[^\s'";,]{4,}/i.test(s),
+  },
+  { label: 'high-entropy string', test: hasHighEntropySecret },
+];
+
+/** Returns the label of the first matching credential rule, or null. Order
+ *  is the order `CREDENTIAL_RULES` is checked in; only the FIRST match is
+ *  reported (a value tripping two rules is still one dropped record). */
+export function detectCredential(text: string): string | null {
+  for (const rule of CREDENTIAL_RULES) {
+    if (rule.test(text)) return rule.label;
+  }
+  return null;
+}
+
+/** RFC 5737 TEST-NET-3 (`203.0.113.0/24`) -- reserved for documentation
+ *  use, so a pseudonymized IP can never collide with a real routable
+ *  address. Wraps within the /24 (254 usable host addresses) via `nextMix`,
+ *  which is already the same non-reversible counter-seeded generator the
+ *  id pseudonymizer above uses. */
+function fakeIpAddress(): string {
+  const n = nextMix() % 254;
+  return `203.0.113.${n + 1}`;
+}
+
+/** category -> (real value -> fake value), separate from `idMaps` above
+ *  (different key shape: category name, not a hook-contract field path) but
+ *  the same "stable for one script run, never hash-derived" design. */
+const identityMaps = new Map<string, Map<string, string>>();
+
+function pseudonymizeIdentity(category: string, real: string, generate: () => string): string {
+  let perCategory = identityMaps.get(category);
+  if (!perCategory) {
+    perCategory = new Map<string, string>();
+    identityMaps.set(category, perCategory);
+  }
+  const existing = perCategory.get(real);
+  if (existing !== undefined) return existing;
+  const fake = generate();
+  perCategory.set(real, fake);
+  return fake;
+}
+
+/** `/Users/<name>` or `/home/<name>` -- the macOS/Linux home-directory
+ *  shape. Only the name segment is replaced; the rest of the path (and the
+ *  `/Users/`/`/home/` prefix itself) is left alone, which is exactly the
+ *  "preserve structure" requirement for a path argument. */
+const HOME_DIR_RE = /\/(Users|home)\/([A-Za-z0-9._-]+)/g;
+
+/**
+ * `-Users-<name>-` or `-home-<name>-` -- the SLASH-FLATTENED project-slug
+ * shape Claude Code itself uses for scratch/session directories (this
+ * session's own scratchpad path is exactly this shape:
+ * `/private/tmp/claude-<pid>/-Users-<name>-Documents-git-...`, found by
+ * running this tool against real captured data (#992) and grepping the
+ * output for the real username -- it survived `HOME_DIR_RE` above, which
+ * requires an actual `/` on both sides and never matches a hyphen-joined
+ * slug). The lookahead (not a consuming match) on the trailing `-` leaves it
+ * in place for whatever segment follows.
+ *
+ * Genuinely ambiguous when the real username OR the segment immediately
+ * after it contains a hyphen of its own -- collapsing `/` to `-` is lossy,
+ * so there is no way to know from the flattened text alone where the
+ * username run is supposed to end. This takes the maximal non-hyphen run,
+ * the common case (typical macOS/Linux usernames are plain alnum), and
+ * states the ambiguity here rather than silently getting it wrong on an
+ * unstated edge case.
+ */
+const SLUG_HOME_DIR_RE = /-(Users|home)-([A-Za-z0-9._]+)(?=-)/g;
+
+/** `~name` (tilde-prefixed username, e.g. `~deploy/bin`). Deliberately
+ *  requires a letter immediately after `~` so bare `~` and `~/relative/path`
+ *  (which name the CURRENT user only implicitly, carrying no separate
+ *  identity to redact) are left untouched. */
+const TILDE_USER_RE = /~([A-Za-z][A-Za-z0-9._-]*)/g;
+
+/** `local@host` -- covers both an email address and an SSH/git-style
+ *  `user@host` remote target with ONE pattern, since they are the same
+ *  shape. The host alternation requires either a dotted domain ending in a
+ *  2+ letter label (`example.com`, `prod.internal`) or a literal IPv4
+ *  dotted-quad -- specifically to avoid matching an npm/bun/pip
+ *  `package@1.2.3` version pin, whose "host" is a bare numeric semver with
+ *  no letter-ending label and (usually) only 3 numeric parts. */
+const USER_AT_HOST_RE =
+  /\b([A-Za-z0-9._%+-]+)@((?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}|(?:\d{1,3}\.){3}\d{1,3})\b/g;
+
+const IPV4_SHAPE_RE = /^(\d{1,3}\.){3}\d{1,3}$/;
+
+/** A bare IPv4 dotted-quad not already consumed by `USER_AT_HOST_RE` above
+ *  (that pass runs first). */
+const BARE_IPV4_RE = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g;
+
+/** The CAPTURING machine's own hostname (`os.hostname()`), matched
+ *  case-insensitively as a whole word wherever it appears verbatim. This is
+ *  the only hostname this script can recognize without a `user@` or URL
+ *  anchor -- an arbitrary bare remote alias (`ssh build-box-3 uptime`) is
+ *  not structurally distinguishable from any other command word, and this
+ *  script does not attempt to guess. Stated plainly rather than left for a
+ *  reader to discover missing (AGENTS.md "Verify before you describe").
+ *  Lazily compiled (not a module-level `RegExp` literal) so importing this
+ *  file for its pure functions (`build-hook-corpus.test.ts` does exactly
+ *  that) never calls `os.hostname()` as a side effect of module load. */
+let cachedHostnameRe: RegExp | null = null;
+function hostnameRegex(): RegExp {
+  if (cachedHostnameRe === null) {
+    const escaped = os.hostname().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    cachedHostnameRe = new RegExp(`\\b${escaped}\\b`, 'gi');
+  }
+  return cachedHostnameRe;
+}
+
+/**
+ * Pseudonymize identity-bearing substrings in one command-like field's raw
+ * text. Caller (`redactValue`) guarantees the credential check already ran
+ * and passed -- this function only transforms, never refuses.
+ *
+ * Passes run in a fixed order (home dir -> slug-shaped home dir -> tilde
+ * user -> user@host/email -> bare IPv4 -> capturing machine's own
+ * hostname). A later pass CAN observe a
+ * fake value an earlier pass already produced (e.g. `USER_AT_HOST_RE`'s IPv4
+ * host alternative, once fake, still LOOKS like an IPv4 shape to
+ * `BARE_IPV4_RE`) and re-map it through its own category. That is harmless,
+ * not a bug: `pseudonymizeIdentity` is a pure function of its (category,
+ * value) pair, so re-mapping an already-fake value still lands on the same
+ * final fake value for the same real input every time -- determinism (#992's
+ * "same input maps to the same output" requirement) survives the layering.
+ */
+export function pseudonymizeIdentities(text: string): string {
+  let out = text;
+
+  out = out.replace(HOME_DIR_RE, (_match, kind: string, user: string) => {
+    const fake = pseudonymizeIdentity('username', user, () => fakeShapePreserving(user));
+    return `/${kind}/${fake}`;
+  });
+
+  out = out.replace(SLUG_HOME_DIR_RE, (_match, kind: string, user: string) => {
+    const fake = pseudonymizeIdentity('username', user, () => fakeShapePreserving(user));
+    return `-${kind}-${fake}`;
+  });
+
+  out = out.replace(TILDE_USER_RE, (_match, user: string) => {
+    const fake = pseudonymizeIdentity('username', user, () => fakeShapePreserving(user));
+    return `~${fake}`;
+  });
+
+  out = out.replace(USER_AT_HOST_RE, (_match, local: string, host: string) => {
+    const fakeLocal = pseudonymizeIdentity('username', local, () => fakeShapePreserving(local));
+    const fakeHost = IPV4_SHAPE_RE.test(host)
+      ? pseudonymizeIdentity('ip', host, fakeIpAddress)
+      : pseudonymizeIdentity('host', host, () => fakeShapePreserving(host));
+    return `${fakeLocal}@${fakeHost}`;
+  });
+
+  out = out.replace(BARE_IPV4_RE, (match) => pseudonymizeIdentity('ip', match, fakeIpAddress));
+
+  out = out.replace(hostnameRegex(), (match) =>
+    pseudonymizeIdentity('hostname', match, () => fakeShapePreserving(match)),
+  );
+
+  return out;
+}
+
 // --- Content-keyed maps: the key axis ---------------------------------------
 
 /**
@@ -373,6 +731,20 @@ function redactContentKeyedObject(
 function redactValue(value: unknown, pathSoFar: string): unknown {
   if (VERBATIM_PATHS.has(pathSoFar) || VERBATIM_NESTED_PATHS.has(pathSoFar)) {
     return value;
+  }
+  // `--mode structure-preserving` only (#992): by the time this is reached
+  // for a KEPT record, `main()` has already run `detectCredential` over
+  // every one of these four fields and dropped the WHOLE record if any
+  // matched -- so this call only ever pseudonymizes, never a value that
+  // still carries a credential. In default (`redact`) mode, `MODE` is never
+  // `structure-preserving`, so this branch is dead code and behavior is
+  // byte-for-byte the original.
+  if (
+    MODE === 'structure-preserving' &&
+    COMMAND_LIKE_PATHS.has(pathSoFar) &&
+    typeof value === 'string'
+  ) {
+    return pseudonymizeIdentities(value);
   }
   if (IDENTIFIER_PATHS.has(pathSoFar) && typeof value === 'string') {
     return pseudonymize(pathSoFar, value);
@@ -457,6 +829,10 @@ interface Summary {
   testFixtureLines: number;
   perEventRaw: Map<string, number>;
   perEventKept: Map<string, number>;
+  /** `--mode structure-preserving` only; always 0 in default mode. */
+  credentialDroppedLines: number;
+  /** label (`CredentialRule.label`) -> count. Empty in default mode. */
+  credentialDropReasons: Map<string, number>;
 }
 
 function main(): void {
@@ -474,6 +850,8 @@ function main(): void {
     testFixtureLines: 0,
     perEventRaw: new Map(),
     perEventKept: new Map(),
+    credentialDroppedLines: 0,
+    credentialDropReasons: new Map(),
   };
 
   const groupCounts = new Map<string, number>();
@@ -503,6 +881,28 @@ function main(): void {
 
     const event = String(rest['hook_event_name'] ?? '<missing>');
     summary.perEventRaw.set(event, (summary.perEventRaw.get(event) ?? 0) + 1);
+
+    // `--mode structure-preserving` only (#992): a credential-shaped value in
+    // ANY of the four command-like fields drops the WHOLE record -- counted
+    // above in `perEventRaw` (it WAS real traffic), but never counted toward
+    // down-sampling or `perEventKept`, and never reaches `redactRecord`. See
+    // the "Structure-preserving pseudonymization" module section for why
+    // this is a refusal (drop), not a scrub (keep-but-redact).
+    if (MODE === 'structure-preserving') {
+      let credentialLabel: string | null = null;
+      for (const value of collectCommandLikeValues(rest)) {
+        credentialLabel = detectCredential(value);
+        if (credentialLabel !== null) break;
+      }
+      if (credentialLabel !== null) {
+        summary.credentialDroppedLines += 1;
+        summary.credentialDropReasons.set(
+          credentialLabel,
+          (summary.credentialDropReasons.get(credentialLabel) ?? 0) + 1,
+        );
+        continue;
+      }
+    }
 
     let keepThis = true;
     if (DOWNSAMPLED_EVENTS.has(event)) {
@@ -542,6 +942,45 @@ function main(): void {
     console.log(`  ${event}: ${n}`);
   }
   console.log(`Wrote ${redacted.length} redacted records (${outBytes} bytes) to ${OUTPUT_PATH}`);
+
+  if (MODE === 'structure-preserving') {
+    printStructurePreservingReviewReport(summary, redacted);
+  }
+}
+
+/**
+ * #992's "emits a review report to stdout" requirement: every distinct
+ * command-like value that made it into the OUTPUT corpus (already
+ * pseudonymized -- this reads the post-`redactRecord` records, not the raw
+ * input), plus how many records were dropped and why, so the owner can
+ * actually look at what this run produced before deciding whether any of it
+ * is fit to ever be committed (a decision this script does not make -- see
+ * the module doc and `guard-chain-replay.test.ts`'s header).
+ */
+function printStructurePreservingReviewReport(
+  summary: Summary,
+  redacted: readonly Record<string, unknown>[],
+): void {
+  console.log('');
+  console.log('=== Structure-preserving capture: review report (#992) ===');
+  console.log(`Records dropped for credential-like content: ${summary.credentialDroppedLines}`);
+  for (const [label, n] of [...summary.credentialDropReasons.entries()].sort(
+    (a, b) => b[1] - a[1],
+  )) {
+    console.log(`  ${label}: ${n}`);
+  }
+
+  const distinctCommands = new Set<string>();
+  for (const record of redacted) {
+    for (const value of collectCommandLikeValues(record)) {
+      distinctCommands.add(value);
+    }
+  }
+  console.log(`Distinct command-like values in the output corpus: ${distinctCommands.size}`);
+  console.log('--- Review every line below before considering any subset for commit ---');
+  for (const command of [...distinctCommands].sort()) {
+    console.log(`  ${command}`);
+  }
 }
 
 // Guarded (#934): this file is now also imported by

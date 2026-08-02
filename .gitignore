@@ -91,6 +91,13 @@ playwright-report/
 # epic-dev local state (never committed)
 .claude/*.local.md
 
+# Locally-captured, structure-preserving command corpus (real Bash commands
+# from the owner's machine, pseudonymized but never redacted-to-placeholder --
+# see build-hook-corpus.ts's `--mode structure-preserving` and
+# guard-chain-replay.test.ts's header). Never committed; the owner reviews
+# and decides separately whether any reviewed subset is fit to commit.
+packages/daemon/tests/auto-approve/fixtures/.local-command-corpus.jsonl
+
 # Agent worktrees: full checkouts of in-progress branches. Never committed. The
 # whole of `.claude` is also excluded from biome (biome.json) -- otherwise
 # `biome check .` lints every running agent's working tree and reports their
