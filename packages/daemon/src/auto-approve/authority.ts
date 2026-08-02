@@ -59,7 +59,7 @@
  */
 
 import type { ContentBlock, UserEntry } from '../transcript/types.ts';
-import { isWrappedNonHumanText } from '../transcript/user-entry-provenance.ts';
+import { isNonHumanForAuthority } from '../transcript/user-entry-provenance.ts';
 import { matchesCatastrophicPattern as matchCatastrophic } from './deny-floor.ts';
 
 /** Hard caps so a very long session's authority block cannot balloon the
@@ -129,7 +129,10 @@ export class AuthorityStore {
  * `auto-approve/index.ts` are unaffected. See that module's doc for the
  * full denylist rationale and the measured breakdown behind it.
  */
-export { isWrappedNonHumanText } from '../transcript/user-entry-provenance.ts';
+export {
+  isNonHumanForAuthority,
+  isWrappedNonHumanText,
+} from '../transcript/user-entry-provenance.ts';
 
 /**
  * Extract genuine human-typed text from one transcript user entry, or null
@@ -159,7 +162,9 @@ export function extractUserEntryText(entry: UserEntry): string | null {
   if (typeof content === 'string') {
     const trimmed = content.trim();
     if (!trimmed) return null;
-    if (isWrappedNonHumanText(trimmed)) return null;
+    // #982: authority-scoped predicate — fails CLOSED on any unknown
+    // markup wrapper, unlike the display denylist.
+    if (isNonHumanForAuthority(trimmed)) return null;
     return trimmed;
   }
   const text = content

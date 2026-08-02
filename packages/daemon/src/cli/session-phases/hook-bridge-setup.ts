@@ -98,7 +98,7 @@ import type { SubagentViewRegistry } from '../../api/subagent-view-registry.ts';
 import {
   AuthorityStore,
   AutoApproveGate,
-  isWrappedNonHumanText,
+  isNonHumanForAuthority,
   resolveAuthority,
 } from '../../auto-approve/index.ts';
 import type { AutoApproveService } from '../../auto-approve/index.ts';
@@ -1286,7 +1286,9 @@ export function setupHookBridge(
   hookServer.on('UserPromptSubmit', (input) => {
     binder.onHookEvent(input);
     if (!binder.admits(input)) return;
-    if (isWrappedNonHumanText(input.prompt)) return;
+    // #982: 35% of live UserPromptSubmit prompts were machine-generated
+    // (<task-notification>, <agent-message>) and ALL passed the old denylist.
+    if (isNonHumanForAuthority(input.prompt)) return;
     authorityStore.record(input.prompt);
   });
 
