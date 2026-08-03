@@ -19,6 +19,28 @@ import type { AutoApproveLevel } from './levels.ts';
 export type AutoApproveDecision = 'approve' | 'deny' | 'escalate' | 'pick' | 'cancelled';
 
 /**
+ * What produced a `deny`, and what it matched (#1015). The distinction is the
+ * whole point of carrying it: it decides whether the user gets told.
+ *
+ * - `config` — the user's own `deny` / `deny_groups` matched, at 0ms, before
+ *   any model ran. Their standing rule fired as written; an audit line is
+ *   warranted, a push is not.
+ * - `model-floor` — the MODEL said deny and `enforceDenyFloor` let it stand
+ *   because `matchesCatastrophicPattern` matched. Nobody configured this one,
+ *   and the floor's match is measurably wrong most of the time it fires (7 of
+ *   8 hits on 918 real commands were prose that merely QUOTED a dangerous
+ *   string — #997). This is the class that must not be silent.
+ *
+ * `pattern` is what matched in either case (the config entry, the group name,
+ * or the catastrophic label), so a report can say WHY without re-running any
+ * matcher.
+ */
+export interface DenySource {
+  readonly kind: 'config' | 'model-floor';
+  readonly pattern: string;
+}
+
+/**
  * LLM-produced (or pattern-matched) decision. `model` is the model that
  * produced the verdict (or the configured model for pattern-matched
  * decisions, since downstream telemetry treats them uniformly).
@@ -38,6 +60,17 @@ export type AutoApproveDecisionResult =
        *  title/body instead of the raw "Allow Bash: <command>". Absent for
        *  approve/deny, pattern-matched verdicts, or when the model omits it. */
       readonly summary?: string | undefined;
+      /** #1015: which mechanism produced a `deny`. Present on `deny` results
+       *  only; absent on approve/escalate.
+       *
+       *  Carried structurally rather than left to be re-derived downstream. The
+       *  reasoning strings ARE currently distinguishable (`deny-matched
+       *  pattern:` / `deny-matched group:` vs the model's own prose), so a
+       *  consumer could sniff them — and that is exactly the defect shape this
+       *  module has hit repeatedly: two pieces of code independently deriving
+       *  the same judgement and drifting apart the first time one side's
+       *  wording changes. The site that decides is the site that reports. */
+      readonly denySource?: DenySource | undefined;
     }
   | {
       readonly decision: 'pick';

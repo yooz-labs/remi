@@ -41,6 +41,7 @@
  */
 
 import { matchSubstringPattern } from './pattern-matcher.ts';
+import type { DenySource } from './types.ts';
 
 /**
  * Catastrophic-operation patterns, mirroring the DENY FLOOR bullets in
@@ -389,6 +390,37 @@ export function enforceDenyFloor(
 }
 
 /**
+ * Which `DenySource` a `enforceDenyFloor` result implies (#1015), or `null`
+ * when what is being returned is not a deny.
+ *
+ * Split out of the call site in `auto-approve-service.ts` for one reason: the
+ * only way to reach that call site is through a live LLM verdict, so the
+ * branch was reachable in tests only with an engine running. As a pure
+ * function it can be probed with real `enforceDenyFloor` output in CI, which
+ * is where this repo's defects have actually been caught.
+ *
+ * The test is the DECISION, and only the decision. A first draft also returned
+ * null when `overridden` was set — which reads as "an overridden deny became a
+ * visible escalate, so there is nothing to report" and is true of every result
+ * `enforceDenyFloor` can actually produce, since it sets `overridden` only on
+ * the escalate branch. Mutation-testing caught that the clause was therefore
+ * unreachable: deleting it turned ZERO tests red. Worse, on the one shape that
+ * would reach it (`{decision:'deny', overridden:true}`, incoherent but
+ * type-legal) it suppresses the report on a deny that IS standing — failing
+ * toward the silence this function exists to end. Removed rather than pinned:
+ * a redundant check is tolerable, one whose only reachable effect is wrong is
+ * not.
+ */
+export function denySourceForFloor(result: DenyFloorResult): DenySource | null {
+  if (result.decision !== 'deny') return null;
+  // `matchedPattern` is set by `enforceDenyFloor` exactly when it leaves a deny
+  // standing, so the fallback never fires in practice. It exists because the
+  // type permits absence, and a report naming no pattern still beats the
+  // silence this whole path exists to end.
+  return { kind: 'model-floor', pattern: result.matchedPattern ?? '' };
+}
+
+/**
  * Cap on the reason text echoed to Claude. The model's own `reasoning` can run
  * long, and this rides in a hook response Claude Code parses on the blocking
  * path — bounded beats verbose.
@@ -411,10 +443,33 @@ const DENY_MESSAGE_REASON_MAX = 300;
  *   2. asking the user to authorize explicitly.
  *
  * A message that said only "ask the user" would push Claude to interrupt even
- * when a safe alternative existed. The second exit also closes the #976 loop:
- * the user's answer arrives via `UserPromptSubmit` as genuine EXPLICIT
- * authorization from a channel text cannot forge, which is the only way to get
- * above `implicit` under the ADR 0015 amendment.
+ * when a safe alternative existed.
+ *
+ * ## What the second exit does and does not close (corrected, #976)
+ *
+ * This doc previously claimed the second exit "closes the #976 loop: the
+ * user's answer arrives via `UserPromptSubmit` as genuine EXPLICIT
+ * authorization from a channel text cannot forge." **That is wrong, and it is
+ * wrong in the direction that matters.** A reply typed in chat IS text — it
+ * reaches the daemon on exactly the channel `capGradeForTextProvenance` caps,
+ * so it buys at most `implicit`, never `explicit`. The sentence conflated the
+ * CHAT channel with the CARD channel; only the card is a non-text channel.
+ *
+ * The consequence is band-dependent, and worth stating because it decides
+ * whether this message is useful at all:
+ *
+ * - **`moderate`** — the loop DOES close. `matrixDecision` approves moderate on
+ *   `implicit`, which is exactly what a chat reply can supply.
+ * - **`high`** — the loop CANNOT close, by construction. High demands a witness
+ *   text cannot produce, so the reply grades `implicit`, falls below the bar,
+ *   and the next attempt is refused for the same reason as the first. Only a
+ *   card answer or a session precedent gets there.
+ *
+ * The message is still right to offer the exit — a user told "ask me" can go
+ * and answer a card, or simply run the command themselves — but nothing here
+ * should be read as a promise that asking in chat will unblock a high-band
+ * operation. ADR 0015's amendment carries the same conflation and is corrected
+ * alongside this.
  *
  * Deliberately does NOT claim Claude will ask. The docs guarantee only that it
  * is not stopped and has been told why; what it does next is its own choice.
@@ -427,4 +482,64 @@ export function buildDenyMessage(reasoning?: string): string {
       : trimmed;
   const why = reason ? ` Reason: ${reason}` : '';
   return `Remi's auto-approve did not have authorization to approve this operation.${why} Either use a different approach that does not require it, or ask the user to authorize this explicitly before retrying.`;
+}
+
+/**
+ * How much of the refused command rides in the notification body (#1015).
+ * Sized like `SubagentAlerter`'s own detail cap for the same reason: iOS
+ * truncates hard, and a banner is a pointer to the log line, not a transcript.
+ */
+const DENIED_DETAIL_MAX = 160;
+
+/** The operation a deny notification is about — enough to say what was
+ *  refused without the caller reaching back into the raw hook input. */
+export interface DeniedOperation {
+  readonly toolName: string;
+  readonly detail: string;
+  readonly pattern: string;
+}
+
+/**
+ * Extract the human-readable operation from a refused tool call (#1015).
+ *
+ * Falls back to the bare tool name when there is no `command` string, which is
+ * every non-Bash tool. That is deliberately less informative than
+ * `HookEventBridge.summarizeToolInput` (which digs out `file_path`, `url`, and
+ * friends): this text goes on a lock screen, and the tool name plus the matched
+ * pattern already answers "what got refused, and why". Reaching for the richer
+ * summarizer would couple the notification path to the question-building path
+ * for a cosmetic gain.
+ */
+export function deniedOperation(
+  toolName: string,
+  toolInput: Record<string, unknown>,
+  pattern: string,
+): DeniedOperation {
+  const raw = typeof toolInput['command'] === 'string' ? toolInput['command'] : toolName;
+  const detail = raw.length > DENIED_DETAIL_MAX ? `${raw.slice(0, DENIED_DETAIL_MAX)}...` : raw;
+  return { toolName, detail, pattern };
+}
+
+/** Notification title for a refused operation. Short: iOS truncates hard, and
+ *  the one thing that must survive truncation is that something was BLOCKED. */
+export function deniedTitle(op: DeniedOperation): string {
+  return `Blocked ${op.toolName}`;
+}
+
+/**
+ * Notification body. States plainly that the operation did NOT run and that
+ * there is nothing to answer — the mirror of `alertBody`'s "was allowed to
+ * run", and load-bearing for the same reason: this banner carries no
+ * `category` and no `options`, so a user who reads it as a prompt would wait
+ * for an affordance that never appears.
+ *
+ * Names the matched pattern because that is the actionable part. #997 measured
+ * this floor matching prose 7 times in 8 on real traffic, so the most likely
+ * reader of this notification is someone whose `gh issue create` was refused
+ * for quoting a dangerous string — and "matched `rm -rf /`" is what makes that
+ * diagnosable in one read instead of one debugging session.
+ */
+export function deniedBody(op: DeniedOperation): string {
+  const why = op.pattern ? `Matched "${op.pattern}". ` : '';
+  return `${why}It did not run, and there is nothing to answer: ${op.detail}`;
 }

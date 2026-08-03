@@ -106,6 +106,7 @@ import type { AutoApproveService } from '../../auto-approve/index.ts';
 // scope: that barrel is being edited concurrently by other work on the same
 // epic). Imported directly from its own module instead.
 import { PrecedentStore } from '../../auto-approve/precedent.ts';
+import type { DenySource } from '../../auto-approve/types.ts';
 import { HookEventBridge } from '../../hooks/index.ts';
 import type {
   ForeignSessionEscalator,
@@ -257,6 +258,17 @@ export interface HookBridgeDeps {
    * `foreignSessionEscalator` above). Absent => no alert, no audit line.
    */
   onSubagentPassthrough?: (input: PermissionRequestHookInput) => void;
+  /**
+   * Observer for every `deny` the gate returns to the hook (#1015). Forwarded
+   * verbatim to the gate's `onAutoDenied`; see that dep's doc for why a deny
+   * is the one verdict with no user-facing surface of its own.
+   *
+   * Supplied by `cli.ts`, which owns the push transport — same reasoning as
+   * `onSubagentPassthrough` above. Absent => a deny stays invisible, which is
+   * the pre-#1015 behavior and is correct for tests that build their own
+   * bridge without push wiring.
+   */
+  onAutoDenied?: (input: PermissionRequestHookInput, source: DenySource, reasoning: string) => void;
 }
 
 export interface HookBridgeArgs {
@@ -731,6 +743,7 @@ export function setupHookBridge(
         return question.id;
       },
       ...(deps.onSubagentPassthrough ? { onSubagentPassthrough: deps.onSubagentPassthrough } : {}),
+      ...(deps.onAutoDenied ? { onAutoDenied: deps.onAutoDenied } : {}),
       // #484: buffer the PTY prompt while the eval runs; release it only on an
       // escalate verdict, so silently auto-approved permissions never push APNS.
       // #560: the same lifecycle drives the auto-approve cue in Claude's native
