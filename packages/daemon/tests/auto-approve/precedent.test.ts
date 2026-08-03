@@ -53,11 +53,29 @@ describe('PrecedentStore', () => {
     expect(store.size).toBe(0);
   });
 
-  test('normalizes whitespace on record (surrounding + collapsed internal)', () => {
+  test('record() trims but does NOT collapse internal whitespace (#1017 round 4)', () => {
+    // Changed deliberately. `record()` used to store the whitespace-COLLAPSED
+    // form, which forced both matchers to the loose comparison. It now stores
+    // the raw trimmed value so each matcher picks its own strictness: the
+    // approve side compares raw (precise), the deny side collapses (broad).
     const store = new PrecedentStore();
     store.record('Bash', '  Bash:   git   status  ', 'approved');
-    const match = store.matchApproved('Bash', 'Bash: git status');
-    expect(match).not.toBeNull();
+    // Surrounding whitespace is still ignored -- trimming loses nothing.
+    expect(store.matchApproved('Bash', 'Bash:   git   status')).not.toBeNull();
+    // INTERNAL runs are no longer collapsed away on the ALLOW side. This test
+    // asserted the opposite until round 4 of #1017, where collapsing was
+    // measured equating a dead-code Python line with one that executes -- an
+    // over-match on the allow side, which is exactly what ADR 0010 forbids
+    // there. A missed precedent is a question; a false one is an escalation.
+    expect(store.matchApproved('Bash', 'Bash: git status')).toBeNull();
+  });
+
+  test('the DENY side still collapses: broad is right for a stop rule', () => {
+    // The other half of the asymmetry, and the reason `record()` had to stop
+    // collapsing rather than the deny matcher starting to.
+    const store = new PrecedentStore();
+    store.record('Bash', 'Bash:   git   status', 'denied');
+    expect(store.matchDenied('Bash', 'Bash: git status')).not.toBeNull();
   });
 
   test('evicts the oldest entry once over maxEntries (cap/eviction)', () => {
@@ -201,9 +219,13 @@ describe('findApprovedPrecedent — precise (ADR 0010: allow-shaped)', () => {
     });
   });
 
-  test('surrounding/collapsed whitespace differences still match (normalization)', () => {
+  test('surrounding whitespace is ignored; INTERNAL runs are not (#1017 round 4)', () => {
     const records = [record('Bash: git   status')];
-    expect(findApprovedPrecedent(records, 'Bash', '  Bash: git status  ')).not.toBeNull();
+    // Trimming is safe: it drops nothing that changes the command.
+    expect(findApprovedPrecedent(records, 'Bash', '  Bash: git   status  ')).not.toBeNull();
+    // Collapsing is not. Measured: it equated two Python programs whose only
+    // difference was one line's indentation -- one dead code, one executing.
+    expect(findApprovedPrecedent(records, 'Bash', 'Bash: git status')).toBeNull();
   });
 
   test('different tool, same text, does not match', () => {

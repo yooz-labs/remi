@@ -112,15 +112,44 @@
  * matches too much silently grants permission. A deny rule that matches too
  * little silently withholds a block." (ADR 0010). Concretely:
  *
- *   - `findApprovedPrecedent` requires an EXACT match (same tool, same
- *     whitespace-normalized signature). A command differing by one flag, one
- *     path, or an added redirection is a DIFFERENT operation and must not
- *     match — the failure this avoids is a stale approval silently covering
- *     a more dangerous variant of the same command family.
- *   - `findDeniedPrecedent` matches BROADLY (same tool, substring either
- *     direction). The failure this avoids is the mirror image: a denial that
- *     technically doesn't re-fire for a near-identical repeat of the exact
- *     thing the user just said no to.
+ *   - `findApprovedPrecedent` requires an EXACT match on the RAW (trimmed)
+ *     signature. A command differing by one flag, one path, one redirection —
+ *     or one space — is a DIFFERENT operation and must not match. The failure
+ *     this avoids is a stale approval silently covering a more dangerous
+ *     variant of the same command family.
+ *   - `findDeniedPrecedent` matches BROADLY: whitespace-collapsed, substring
+ *     either direction. The failure this avoids is the mirror image — a denial
+ *     that doesn't re-fire for a near-identical repeat of the exact thing the
+ *     user just said no to.
+ *
+ * ## Whitespace collapsing is a LOOSENING, so it belongs only on the deny side
+ *
+ * (Found in the fourth review round of #1017, and MEASURED — the example below
+ * was executed, not reasoned about.) Both matchers used to compare
+ * `normalizeSignature`'d values, and `record()` stored the collapsed form so
+ * they had no choice. `normalizeSignature` replaces every whitespace RUN with
+ * one space, which makes a newline and a newline-plus-indentation identical.
+ * For anything whose semantics live in its indentation, that equates two
+ * different programs:
+ *
+ *     python3 -c "…if False:\n    pass\n    os.system('touch MARKER')"   # nested: dead code, never runs
+ *     python3 -c "…if False:\n    pass\nos.system('touch MARKER')"       # sibling: runs unconditionally
+ *
+ * Verified by running both: the first creates no MARKER, the second does. Yet
+ * they collapsed to one signature and `matchApproved` returned `matchKind:
+ * 'exact'`, so approving the harmless one 0ms-approved the one that executes.
+ * Nothing adversarial is required — an ordinary indented heredoc or `-c`
+ * script does it.
+ *
+ * The module doc used to call whitespace collapsing "the one transformation
+ * the task spec calls out as provably safe." It is not provably safe, and more
+ * to the point it is a LOOSENING: applying it on the allow side is precisely
+ * the over-matching ADR 0010 forbids there. `record()` now stores the raw
+ * (trimmed) signature and each matcher applies its own strictness.
+ *
+ * The cost is real and is the safe direction: a command re-issued with
+ * incidental whitespace differences no longer matches, so the user is asked
+ * again. A missed precedent is a question; a false one is an escalation.
  *
  * If precision on the approve side ever looks like it should loosen (fuzzy
  * matching, argument-shape matching, path-prefix matching), that needs a
@@ -457,7 +486,8 @@ export function signatureForOperation(
  *
  * | tool | summary | complete? |
  * |---|---|---|
- * | `Bash` | the full command | **yes** — the command IS the operation, and every risk/deny function in this module keys off the same `command` field |
+ * | `Bash` with a `command` field | the full command | **yes** — and only in this exact shape; see "`cmd` is not `command`" below |
+ * | `Bash` with only `cmd` | the full command | no — the signature sees it, the RISK layer does not |
  * | `Write`/`Edit` | `file_path` only | no — `content` / `new_string` decide what actually happens |
  * | `Read` | `file_path` only | no — see "Read looked safe and was not" below |
  * | `Glob`/`Grep` | `pattern` only | no — the `path` it runs under is dropped, so `Grep: TODO` in a repo and in `/etc` are one signature |
@@ -492,6 +522,29 @@ export function signatureForOperation(
  * read that is its EXTENT. The cost of removing `Read` is close to zero
  * anyway: the `read-only` group approves reads at 0ms without ever consulting
  * precedent.
+ *
+ * ## `cmd` is not `command` — the same hole as `terminal`, one field down
+ *
+ * `summarizeToolInput` accepts EITHER field for Bash
+ * (`get('command') ?? get('cmd')`), so both produce a complete signature and
+ * both render a correct card. The risk layer accepts only one:
+ *
+ *     classifyRisk('Bash', {command: 'rm -rf /'})            -> critical
+ *     classifyRisk('Bash', {cmd:     'rm -rf /'})            -> moderate
+ *     matchesCatastrophicPattern('Bash', {cmd: 'rm -rf /'})  -> null
+ *
+ * `classifyRisk`, `matchesCatastrophicPattern`, `matchGroups`,
+ * `matchAllowPattern` and `matchSubstringPattern` all read `toolInput.command`
+ * and nothing else. So a `cmd`-shaped Bash call is `terminal` again: complete
+ * signature, unclassifiable risk, fictional matrix bound.
+ *
+ * **An earlier draft of this very table asserted the opposite** — "the command
+ * IS the operation, and every risk/deny function in this module keys off the
+ * same `command` field." That was false when written, and it is the third time
+ * in this PR that I wrote an explanation the code did not support. It is also
+ * why eligibility is no longer a property of the tool NAME alone:
+ * `precedentMayAuthorize` takes the input and requires the field the risk
+ * layer actually reads to be the one present.
  *
  * ## Why `terminal` is not here either, though `summarizeToolInput` knows it
  *
@@ -543,8 +596,17 @@ const PRECEDENT_ELIGIBLE_TOOLS: ReadonlySet<string> = new Set(['Bash']);
  * compare them the same way. When #1020 fixes that layer's literal-`'Bash'`
  * assumption, this gate should be updated in the same change, not before.
  */
-export function precedentMayAuthorize(toolName: string): boolean {
-  return PRECEDENT_ELIGIBLE_TOOLS.has(toolName);
+export function precedentMayAuthorize(
+  toolName: string,
+  toolInput: Record<string, unknown>,
+): boolean {
+  if (!PRECEDENT_ELIGIBLE_TOOLS.has(toolName)) return false;
+  // The INPUT SHAPE, not just the name. `summarizeToolInput` accepts `cmd` as
+  // a fallback and would happily build a complete signature from it, but the
+  // risk layer reads `command` and nothing else — so a `cmd`-only call has an
+  // unclassifiable band and must not be authorizable. Requiring the field the
+  // BOUND depends on is what keeps the two in agreement.
+  return typeof toolInput['command'] === 'string' && toolInput['command'].length > 0;
 }
 
 /**
@@ -615,12 +677,16 @@ export function findApprovedPrecedent(
   signature: string,
 ): PrecedentMatch | null {
   if (isTruncatedSignature(signature)) return null;
-  const target = normalizeSignature(signature);
+  // RAW, not `normalizeSignature`. See "Whitespace collapsing is a LOOSENING"
+  // in the module doc: collapsing runs on the ALLOW side is exactly the
+  // over-matching ADR 0010 forbids, and it was measured equating a dead-code
+  // Python line with one that executes.
+  const target = signature.trim();
   for (let i = records.length - 1; i >= 0; i--) {
     const record = records[i];
     if (!record) continue;
     if (record.toolName !== toolName) continue;
-    const storedSignature = normalizeSignature(record.signature);
+    const storedSignature = record.signature.trim();
     if (isTruncatedSignature(storedSignature)) continue;
     if (storedSignature !== target) continue;
     // First hit while scanning newest-first: the FRESHEST record for this
@@ -750,7 +816,10 @@ export class PrecedentStore {
   record(toolName: string, signature: string, decision: 'approved' | 'denied'): void {
     if (isTruncatedSignature(signature)) return;
     const normalizedToolName = toolName.trim();
-    const normalizedSignature = normalizeSignature(signature);
+    // Stored RAW (trimmed only), NOT whitespace-collapsed. Each matcher then
+    // applies its OWN strictness: the approve side compares raw, the deny side
+    // collapses. Storing a collapsed form would force both to the loose one.
+    const normalizedSignature = signature.trim();
     if (!normalizedToolName || !normalizedSignature) return;
     this.records.push({
       toolName: normalizedToolName,

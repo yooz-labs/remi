@@ -787,7 +787,7 @@ export class AutoApproveService {
       // payload. See its doc for the measured escalation that produced the
       // rule (an approved `Write` to a path authorized every later write to
       // that path, with any content, at `high`, at 0ms).
-      if (this.sessionPrecedent && precedent && precedentMayAuthorize(toolName)) {
+      if (this.sessionPrecedent && precedent && precedentMayAuthorize(toolName, toolInput)) {
         const signature = signatureForOperation(toolName, toolInput);
         const approvedMatch = precedent.matchApproved(toolName, signature);
         if (approvedMatch !== null) {

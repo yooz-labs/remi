@@ -422,12 +422,14 @@ describe('#976 a signature that is not the whole operation cannot authorize', ()
     expect(result.decision).not.toBe('approve');
   });
 
+  const cmd = { command: 'ls' };
+
   test('precedentMayAuthorize: Bash only', () => {
-    // Bash's summary is the whole command AND every risk/deny function keys
-    // off the same `command` field. Nothing else clears both bars.
-    expect(precedentMayAuthorize('Bash')).toBe(true);
+    // Bash's summary is the whole command AND the risk layer reads the same
+    // field. Nothing else clears both bars.
+    expect(precedentMayAuthorize('Bash', cmd)).toBe(true);
     for (const tool of ['Write', 'Edit', 'NotebookEdit', 'Glob', 'Grep', 'WebFetch', 'SomeMcp']) {
-      expect(precedentMayAuthorize(tool)).toBe(false);
+      expect(precedentMayAuthorize(tool, cmd)).toBe(false);
     }
   });
 
@@ -435,8 +437,8 @@ describe('#976 a signature that is not the whole operation cannot authorize', ()
     // A tool added to `summarizeToolInput` later gets no precedent until
     // someone decides its summary is a complete identity. Costs a question,
     // never a compromise.
-    expect(precedentMayAuthorize('SomeFutureTool')).toBe(false);
-    expect(precedentMayAuthorize('')).toBe(false);
+    expect(precedentMayAuthorize('SomeFutureTool', cmd)).toBe(false);
+    expect(precedentMayAuthorize('', cmd)).toBe(false);
   });
 
   test('case-SENSITIVE: a lowercase `bash` is not eligible', () => {
@@ -445,7 +447,7 @@ describe('#976 a signature that is not the whole operation cannot authorize', ()
     // bands as a NON-Bash tool -- capped at moderate, never floored. Eligible
     // + unbandable is precisely the hole excluding `terminal` closes.
     expect(classifyRisk('bash', { command: 'rm -rf /' })).not.toBe('critical');
-    expect(precedentMayAuthorize('bash')).toBe(false);
+    expect(precedentMayAuthorize('bash', cmd)).toBe(false);
   });
 
   test('`terminal` is not eligible: its risk cannot be classified', () => {
@@ -454,7 +456,96 @@ describe('#976 a signature that is not the whole operation cannot authorize', ()
     // not sufficient. The matrix bound would be fictional.
     expect(classifyRisk('terminal', { command: 'rm -rf /' })).toBe('moderate');
     expect(matchesCatastrophicPattern('terminal', { command: 'rm -rf /' })).toBeNull();
-    expect(precedentMayAuthorize('terminal')).toBe(false);
+    expect(precedentMayAuthorize('terminal', cmd)).toBe(false);
+  });
+
+  test('a `cmd`-only Bash call is NOT eligible: the risk layer cannot see it', () => {
+    // `summarizeToolInput` accepts `command ?? cmd`, so a `cmd`-only call gets
+    // a COMPLETE signature and a correct card -- while classifyRisk and the
+    // deny floor read `command` and nothing else. Same hole as `terminal`, one
+    // field down.
+    expect(signatureForOperation('Bash', { cmd: 'rm -rf /' })).toBe('Bash: rm -rf /');
+    expect(classifyRisk('Bash', { cmd: 'rm -rf /' })).toBe('moderate');
+    expect(classifyRisk('Bash', { command: 'rm -rf /' })).toBe('critical');
+    expect(matchesCatastrophicPattern('Bash', { cmd: 'rm -rf /' })).toBeNull();
+    expect(precedentMayAuthorize('Bash', { cmd: 'rm -rf /' })).toBe(false);
+  });
+
+  test('an approved `cmd`-only rm -rf / does not authorize its repeat', async () => {
+    const store = new PrecedentStore();
+    humanAnswered(store, 'Bash', { cmd: 'rm -rf /' }, 'approved');
+    const result = await service().evaluate(
+      'Bash',
+      { cmd: 'rm -rf /' },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      readerFor(store),
+    );
+    expect(result.decision).not.toBe('approve');
+  });
+
+  test('an empty command is not eligible either', () => {
+    expect(precedentMayAuthorize('Bash', {})).toBe(false);
+    expect(precedentMayAuthorize('Bash', { command: '' })).toBe(false);
+    expect(precedentMayAuthorize('Bash', { command: 42 })).toBe(false);
+  });
+
+  test('MEASURED: indentation decides whether a line runs, and must not collapse', async () => {
+    // Executed, not reasoned about: the first creates no MARKER (nested under
+    // `if False:`), the second does (a sibling statement). Collapsing
+    // whitespace RUNS -- which `normalizeSignature` does -- made these one
+    // signature and returned matchKind 'exact', so approving the harmless one
+    // 0ms-approved the one that executes. An ordinary indented heredoc or -c
+    // script is enough; nothing adversarial required.
+    const safe = 'python3 -c "\nimport os\nif False:\n    pass\n    os.system(\'touch M\')\n"';
+    const danger = 'python3 -c "\nimport os\nif False:\n    pass\nos.system(\'touch M\')\n"';
+    expect(safe).not.toBe(danger);
+
+    const store = new PrecedentStore();
+    humanAnswered(store, 'Bash', { command: safe }, 'approved');
+    expect(
+      store.matchApproved('Bash', signatureForOperation('Bash', { command: danger })),
+    ).toBeNull();
+
+    const result = await service().evaluate(
+      'Bash',
+      { command: danger },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      readerFor(store),
+    );
+    expect(result.decision).not.toBe('approve');
+  });
+
+  test('the exact same command still matches -- precision is not paranoia', async () => {
+    // The other side of the trade: raw comparison must not break the value
+    // case it exists for.
+    const store = new PrecedentStore();
+    const command = 'python3 -c "\nimport os\nif False:\n    pass\n"';
+    humanAnswered(store, 'Bash', { command }, 'approved');
+    const result = await service().evaluate(
+      'Bash',
+      { command },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      readerFor(store),
+    );
+    expect(result.decision).toBe('approve');
   });
 
   test('an approved narrow Read does NOT authorize reading the whole file', async () => {
