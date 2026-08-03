@@ -73,25 +73,24 @@ describe('#999 stripShellGrammar', () => {
     expect(stripShellGrammar('break rm -rf /').structural).toBe(false);
   });
 
-  test('peels an opaque-token assignment, quotes and all', () => {
-    expect(stripShellGrammar('FOO=bar git status').command).toBe('git status');
-    expect(stripShellGrammar('FOO="bar" git status').command).toBe('git status');
-    expect(stripShellGrammar("FOO='bar' git status").command).toBe('git status');
-    expect(stripShellGrammar('A=1 B=2 git status').command).toBe('git status');
-    expect(stripShellGrammar('FOO=bar').structural).toBe(true);
-  });
-
-  test('a value with a space is NOT opaque, so it is not peeled', () => {
-    // Narrowed by the #1004 re-review: the value allowlist names the one shape
-    // that is safe, and a quoted string with a space is not it. The regex still
-    // consumes the whole quoted value (the command is left intact, never
-    // `b" git status`), it is simply refused rather than peeled.
-    expect(stripShellGrammar('FOO="a b" git status').command).toBe('FOO="a b" git status');
-    expect(stripShellGrammar("FOO='a b' git status").command).toBe("FOO='a b' git status");
+  test('an assignment prefix is never peeled, whatever it looks like', () => {
+    // Three attempts to make this safe all lost. The last one settles it:
+    // `PYTEST_PLUGINS=evil_plugin` is exactly as opaque as `ACC=da8d7a2a868`,
+    // and pytest imports it as arbitrary Python. The danger is in what the TOOL
+    // does with the variable, which the assignment does not contain.
+    for (const cmd of [
+      'FOO=bar git status',
+      'ACC=da8d7a2a868 git status',
+      'PYTEST_PLUGINS=evil_plugin pytest',
+      'HTTPS_PROXY=evilproxyhost gh pr view 1',
+      'A=1 B=2 git status',
+    ]) {
+      expect(stripShellGrammar(cmd).command).toBe(cmd);
+    }
   });
 
   test('an assignment does NOT bless the command it prefixes', () => {
-    expect(stripShellGrammar('FOO=bar rm -rf /').command).toBe('rm -rf /');
+    expect(stripShellGrammar('FOO=bar rm -rf /').command).toBe('FOO=bar rm -rf /');
   });
 });
 
@@ -222,9 +221,6 @@ describe('#999 safe loops and conditionals are covered', () => {
     ['until git diff --quiet; do echo waiting; done', 'until condition judged'],
     ['for d in a b; do cd $d; ls; done', 'cd stays neutral inside a body'],
     ['time bun test', 'time peeled'],
-    ['FOO=bar git status', 'assignment peeled'],
-    ['ACC=da8d7a2a git status', 'the real-traffic shape'],
-    ['for i in 1 2; do ACC=x gh pr view $i; done', 'assignment inside a loop body'],
   ];
   for (const [cmd, why] of mustCover) {
     test(`${JSON.stringify(cmd)} (${why})`, () => expect(covered(cmd)).not.toBeNull());
@@ -305,10 +301,12 @@ describe('#1004 an assignment whose value is a path is never peeled', () => {
     test(JSON.stringify(cmd), () => expect(covered(cmd)).toBeNull());
   }
 
-  test('opaque token values still peel (the cohort this feature exists for)', () => {
-    expect(covered('ACC=da8d7a2a868 git status')).not.toBeNull();
-    expect(covered('ZONE=e684135de4 git status')).not.toBeNull();
-    expect(covered('HITS=0 git status')).not.toBeNull();
+  test('even a benign-looking token value escalates now', () => {
+    // The measured cost of removing assignment peeling: ~150 real commands of
+    // this shape go back to the LLM. Asserted explicitly so the trade is
+    // visible rather than implied.
+    expect(covered('ACC=da8d7a2a868 git status')).toBeNull();
+    expect(covered('HITS=0 git status')).toBeNull();
   });
 });
 
@@ -335,9 +333,10 @@ describe('#1004 only an opaque-token value is peeled', () => {
     test(JSON.stringify(cmd), () => expect(covered(cmd)).toBeNull());
   }
 
-  test('opaque tokens still peel', () => {
-    for (const c of ['ACC=da8d7a2a868 git status', 'V=1.2.3 git status', 'N=0 git status']) {
-      expect(covered(c)).not.toBeNull();
+  test('a bare-token value is refused too -- no value shape is safe', () => {
+    // `PYTEST_PLUGINS=evil_plugin` and `ACC=da8d7a2a868` are the same shape.
+    for (const c of ['PYTEST_PLUGINS=evil_plugin pytest', 'V=1.2.3 git status']) {
+      expect(covered(c)).toBeNull();
     }
   });
 });
