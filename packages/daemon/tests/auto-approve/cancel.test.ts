@@ -126,6 +126,7 @@ function makeConfig(timeoutSeconds: number, baseUrl?: string): AutoApproveConfig
     model_cache: '',
     disable_thinking: false,
     always_escalate_tools: [],
+    session_precedent: true,
     hold_timeout: 0,
     push_hold_timeout: 0,
     delivery_confirm_timeout: 0,

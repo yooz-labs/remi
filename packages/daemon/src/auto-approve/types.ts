@@ -317,6 +317,39 @@ export interface AutoApproveConfig {
    */
   readonly always_escalate_tools: readonly string[];
   /**
+   * Whether an operation the user ALREADY ANSWERED in this session may be
+   * decided from that answer instead of asked again (#976, ADR 0015).
+   *
+   * Both directions, and they are not symmetric:
+   *
+   *   - An earlier **approval** of the byte-identical operation authorizes a
+   *     repeat at 0ms, subject to the risk x authorization matrix — so
+   *     `critical` is still never approved and `high` needs the precedent
+   *     (text cannot supply the witness it demands). This is the WIDENING
+   *     half, and the only one this switch really gates: it is what stops the
+   *     third `git push origin feature/x` of a session from asking a third
+   *     time.
+   *   - An earlier **denial** that broadly matches downgrades a model approve
+   *     to escalate. That is a TIGHTENING and stays on even when this is off:
+   *     turning off "reuse my yes" must not also discard "I already said no."
+   *
+   * Session-scoped and in-memory (`PrecedentStore`), cleared on rotation.
+   * Nothing persists — a durable rule is what `allow` / `approve_groups` are
+   * for, and a precedent that outlived its conversation would be an allow-list
+   * entry the user never wrote.
+   *
+   * **Default: false**, and not because the mechanism is unfinished. Four
+   * review rounds on #1017 each found the same defect class — the signature
+   * used as the authorization key drops something that changes what the
+   * operation does. Each was closed; one is KNOWN and still OPEN (#1019: a
+   * Bash signature carries no `cwd`, so an approval in one worktree authorizes
+   * the identical command in another). A privilege-GRANTING path should not
+   * ship on by default with a known-unfixed escalation. Flip once #1019 lands.
+   *
+   * Off means every repeat is asked again — the pre-#976 behavior.
+   */
+  readonly session_precedent: boolean;
+  /**
    * Seconds the daemon HOLDS a BINARY main-context PermissionRequest hook open
    * after escalating to the user, instead of returning passthrough immediately
    * (Model B, #573). Claude blocks on the held hook (no native prompt rendered)

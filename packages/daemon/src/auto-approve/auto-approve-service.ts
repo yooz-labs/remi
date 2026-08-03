@@ -12,6 +12,7 @@
 import { errorToString } from '@remi/shared';
 import { reconcileCounterfactual, shouldCounterfactual } from './authority-counterfactual.ts';
 import { enforceAuthorityBoundary } from './authority.ts';
+import { AuthorizationAssessment, matrixDecision } from './authorization-assessment.ts';
 import { denySourceForFloor, enforceDenyFloor } from './deny-floor.ts';
 import { fileActivityRecord } from './engine-activity.ts';
 import type { EngineHost } from './engine-host.ts';
@@ -30,6 +31,7 @@ import {
 } from './multichoice.ts';
 import { matchAllowPattern, matchSubstringPattern } from './pattern-matcher.ts';
 import { matchGroups, matchGroupsBroad } from './permission-groups.ts';
+import { type PrecedentReader, precedentMayAuthorize, signatureForOperation } from './precedent.ts';
 import { buildPrompt } from './prompt-builder.ts';
 import { classifyRisk, formatMatrixContext } from './risk-bands.ts';
 import { enforceRiskCeiling } from './risk-ceiling.ts';
@@ -147,6 +149,10 @@ export class AutoApproveService {
   private readonly multichoiceMode: MultiChoiceMode;
   /** Tool names that always escalate to the user, never auto-decided (#572). */
   private readonly alwaysEscalateTools: ReadonlySet<string>;
+  /** #976: whether an earlier session APPROVAL may authorize a repeat. The
+   *  deny direction is deliberately not gated by this — see the post-model
+   *  precedent guard in `evaluate` for why. */
+  private readonly sessionPrecedent: boolean;
   /** Falls back to llmConfig.model when empty. */
   private readonly multichoiceModel: string;
   /** Second-opinion model on a primary 'escalate' (#522); empty = none. Public
@@ -267,6 +273,7 @@ export class AutoApproveService {
     this.level = config.level;
     this.multichoiceMode = config.multichoice;
     this.alwaysEscalateTools = new Set(config.always_escalate_tools);
+    this.sessionPrecedent = config.session_precedent;
     this.multichoiceModel = config.multichoice_model;
     this.escalateModel = config.escalate_model;
     this.escalateTimeoutMs = config.escalate_timeout > 0 ? config.escalate_timeout * 1000 : 0;
@@ -660,6 +667,21 @@ export class AutoApproveService {
     scope?: string,
     isSubagent?: boolean,
     authority?: string,
+    /**
+     * This session's precedent, READ-ONLY (#976). Per-CALL rather than a
+     * constructor field because the service is daemon-wide and shared across
+     * sessions while a `PrecedentStore` is per-session — a stored reference
+     * would let one session's answers authorize another's, which is the one
+     * thing precedent must never do.
+     *
+     * A `PrecedentReader`, never the store: `handleAnswer` stays the single
+     * writer by construction, so the gate cannot record its own verdicts as
+     * human precedent (`precedent.ts`, "Why provenance").
+     *
+     * Absent => no precedent consulted in either direction; every caller that
+     * omits it behaves exactly as it did pre-#976.
+     */
+    precedent?: PrecedentReader,
   ): Promise<AutoApproveResult> {
     const start = Date.now();
     // #820: push the idle-unload deadline out. Called at the START so a long
@@ -736,6 +758,60 @@ export class AutoApproveService {
           this.logFn(`${prefix} ${toolName}: approve (0ms) - ${reasoning}`);
         }
         return { decision: 'approve', reasoning, durationMs: 0, model };
+      }
+
+      // #976 PRECEDENT, approve direction: the user already answered YES to
+      // this byte-identical operation in this session, so asking again is
+      // asking them to repeat themselves.
+      //
+      // Placed here — after the user's own deny/allow/group rules, before the
+      // design-question router and the LLM — because it is a 0ms determination
+      // of the SAME kind as the rules above, and because being pre-LLM is half
+      // the point: a repeat costs nothing and a 0ms verdict never loses the
+      // prompt-lifetime race (#998).
+      //
+      // The authorization is real but BOUNDED by `matrixDecision`, which is
+      // why this cannot simply return approve. `critical` never approves, on
+      // any authorization — a human may re-answer a catastrophic operation at
+      // a card every single time, and precedent must not spend one answer on
+      // all future ones. `high` approves only because a precedent carries the
+      // non-text witness the band demands; text alone never can.
+      //
+      // The whole consult is skipped when `session_precedent` is off. The DENY
+      // direction is not: see the post-model guard below for why that half
+      // stays on regardless.
+      //
+      // `precedentMayAuthorize` gates the tool BEFORE the lookup: a signature
+      // is only an authorization if it identifies the whole operation, and for
+      // most tools `summarizeToolInput` names the target while dropping the
+      // payload. See its doc for the measured escalation that produced the
+      // rule (an approved `Write` to a path authorized every later write to
+      // that path, with any content, at `high`, at 0ms).
+      if (this.sessionPrecedent && precedent && precedentMayAuthorize(toolName, toolInput)) {
+        const signature = signatureForOperation(toolName, toolInput);
+        const approvedMatch = precedent.matchApproved(toolName, signature);
+        if (approvedMatch !== null) {
+          const band = classifyRisk(toolName, toolInput);
+          const assessment = AuthorizationAssessment.fromPrecedent(approvedMatch);
+          if (matrixDecision(band, assessment) === 'approve') {
+            const reasoning = `session precedent (#976): you approved this exact operation at ${new Date(approvedMatch.recordedAt).toISOString()} (band=${band}, grade=${assessment.grade})`;
+            // Logged unconditionally, unlike the allow/group approves above.
+            // This is the only approve in the module that rests on something
+            // the USER did rather than on something they WROTE, so the record
+            // of which answer authorized it is the audit trail for a decision
+            // nobody can otherwise reconstruct from config.
+            this.logFn(`${prefix} PRECEDENT ${toolName}: approve (0ms) - ${reasoning}`);
+            return { decision: 'approve', reasoning, durationMs: 0, model };
+          }
+          // Matrix refused. Fall through to the normal path rather than
+          // escalating here: a `critical` operation still deserves whatever
+          // the deny floor and the model have to say about it, and
+          // short-circuiting would make precedent STRICTER than no precedent
+          // at all, which is incoherent.
+          this.logFn(
+            `${prefix} PRECEDENT ${toolName}: match found but band=${band} refuses it; evaluating normally`,
+          );
+        }
       }
 
       // Design / plan-mode / long-form questions are never auto-decided by the
@@ -1006,6 +1082,45 @@ export class AutoApproveService {
             };
             this.logFn(
               `${prefix} RISK CEILING ${toolName}: approve -> escalate (band=${ceilinged.band}) (${durationMs}ms)`,
+            );
+          }
+        }
+
+        // #976 PRECEDENT, deny direction: the user already said NO to
+        // something like this in this session, so the model does not get to
+        // say yes without asking them again.
+        //
+        // BROAD, not exact (ADR 0010, and `findDeniedPrecedent`'s own doc): a
+        // stop rule should over-reach rather than under-reach, and the cost of
+        // over-reach here is one card the user answers, not a wrongly-granted
+        // approval. That is the exact inverse of the approve direction above,
+        // which is exact-match precisely because it grants.
+        //
+        // NOT gated on `session_precedent`. That flag governs whether an
+        // earlier YES may be reused; reading it as "ignore my earlier NO too"
+        // would turn a switch that trades convenience for caution into one
+        // that discards a refusal the user actually made. A user who wants
+        // fewer 0ms approvals has not asked to have their denials forgotten.
+        //
+        // Post-model and approve-only, like every other guard here: it never
+        // invents a deny, never touches an escalate, and moves in exactly one
+        // direction.
+        if (!useMultiChoice && precedent && result.decision === 'approve') {
+          const deniedMatch = precedent.matchDenied(
+            toolName,
+            signatureForOperation(toolName, toolInput),
+          );
+          if (deniedMatch !== null) {
+            const original = result;
+            result = {
+              decision: 'escalate',
+              reasoning: `Session precedent (#976): you denied "${deniedMatch.matchedSignature}" earlier in this session, which covers this operation, so a model approve is escalated back to you instead of standing. Original model reasoning: ${original.reasoning}`,
+              durationMs,
+              model: original.model,
+              summary: 'You said no to this before. Allow it now?',
+            };
+            this.logFn(
+              `${prefix} PRECEDENT ${toolName}: approve -> escalate (denied "${deniedMatch.matchedSignature}") (${durationMs}ms)`,
             );
           }
         }

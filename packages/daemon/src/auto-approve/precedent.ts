@@ -1,10 +1,26 @@
 /**
  * Precedent — a per-session, in-memory record of operations a HUMAN actually
  * answered, keyed on answer PROVENANCE (#976 prerequisite, ADR 0015
- * "Amendment, 2026-08-02"). ADDITIVE ONLY: this module records data and
- * exposes a pure matcher; nothing in the decision path consumes it yet. A
- * later change wires a consumer in (`enforceAuthorityBoundary`-style, after
- * the model, never before it).
+ * "Amendment, 2026-08-02").
+ *
+ * WIRED as of #976, in both directions, and the two are placed differently on
+ * purpose (`auto-approve-service.ts`):
+ *
+ *   - **approve, PRE-model, 0ms** — an exact match authorizes a repeat, bounded
+ *     by `matrixDecision` (so `critical` still never approves and `high`
+ *     approves only on the non-text witness a precedent carries). Pre-model
+ *     because a repeat should cost nothing, and because a 0ms verdict never
+ *     loses the prompt-lifetime race (#998). Gated on
+ *     `auto_approve.session_precedent`.
+ *   - **deny, POST-model, approve-only** — a broad match downgrades a model
+ *     approve to escalate, exactly like `enforceDenyFloor` /
+ *     `enforceRiskCeiling` / `enforceAuthorityBoundary` next to it. NOT gated
+ *     on that flag: turning off "reuse my yes" must not also discard "I
+ *     already said no."
+ *
+ * The decision path receives a `PrecedentReader` (below), never the store, so
+ * the single-writer property this module's whole provenance argument rests on
+ * is structural rather than a convention anyone has to remember.
  *
  * ## Why provenance, not "the prompt was answered"
  *
@@ -96,15 +112,44 @@
  * matches too much silently grants permission. A deny rule that matches too
  * little silently withholds a block." (ADR 0010). Concretely:
  *
- *   - `findApprovedPrecedent` requires an EXACT match (same tool, same
- *     whitespace-normalized signature). A command differing by one flag, one
- *     path, or an added redirection is a DIFFERENT operation and must not
- *     match — the failure this avoids is a stale approval silently covering
- *     a more dangerous variant of the same command family.
- *   - `findDeniedPrecedent` matches BROADLY (same tool, substring either
- *     direction). The failure this avoids is the mirror image: a denial that
- *     technically doesn't re-fire for a near-identical repeat of the exact
- *     thing the user just said no to.
+ *   - `findApprovedPrecedent` requires an EXACT match on the RAW (trimmed)
+ *     signature. A command differing by one flag, one path, one redirection —
+ *     or one space — is a DIFFERENT operation and must not match. The failure
+ *     this avoids is a stale approval silently covering a more dangerous
+ *     variant of the same command family.
+ *   - `findDeniedPrecedent` matches BROADLY: whitespace-collapsed, substring
+ *     either direction. The failure this avoids is the mirror image — a denial
+ *     that doesn't re-fire for a near-identical repeat of the exact thing the
+ *     user just said no to.
+ *
+ * ## Whitespace collapsing is a LOOSENING, so it belongs only on the deny side
+ *
+ * (Found in the fourth review round of #1017, and MEASURED — the example below
+ * was executed, not reasoned about.) Both matchers used to compare
+ * `normalizeSignature`'d values, and `record()` stored the collapsed form so
+ * they had no choice. `normalizeSignature` replaces every whitespace RUN with
+ * one space, which makes a newline and a newline-plus-indentation identical.
+ * For anything whose semantics live in its indentation, that equates two
+ * different programs:
+ *
+ *     python3 -c "…if False:\n    pass\n    os.system('touch MARKER')"   # nested: dead code, never runs
+ *     python3 -c "…if False:\n    pass\nos.system('touch MARKER')"       # sibling: runs unconditionally
+ *
+ * Verified by running both: the first creates no MARKER, the second does. Yet
+ * they collapsed to one signature and `matchApproved` returned `matchKind:
+ * 'exact'`, so approving the harmless one 0ms-approved the one that executes.
+ * Nothing adversarial is required — an ordinary indented heredoc or `-c`
+ * script does it.
+ *
+ * The module doc used to call whitespace collapsing "the one transformation
+ * the task spec calls out as provably safe." It is not provably safe, and more
+ * to the point it is a LOOSENING: applying it on the allow side is precisely
+ * the over-matching ADR 0010 forbids there. `record()` now stores the raw
+ * (trimmed) signature and each matcher applies its own strictness.
+ *
+ * The cost is real and is the safe direction: a command re-issued with
+ * incidental whitespace differences no longer matches, so the user is asked
+ * again. A missed precedent is a question; a false one is an escalation.
  *
  * If precision on the approve side ever looks like it should loosen (fuzzy
  * matching, argument-shape matching, path-prefix matching), that needs a
@@ -152,6 +197,8 @@
  * than an exact match, and why `record()`'s raw-value check — not the match
  * functions' stored-side check — is the authoritative boundary.
  */
+
+import { summarizeToolInput } from '../hooks/tool-summary.ts';
 
 /** One human-classified answer to a permission-shaped question. */
 export interface PrecedentRecord {
@@ -231,11 +278,22 @@ function normalizeSignature(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
-/** Length `HookEventBridge.summarizeToolInput` (hook-event-bridge.ts, Bash at
- *  :621, the generic path/url/description fallback at :647) produces when it
+/** Length `summarizeToolInput` (`hooks/tool-summary.ts`, since #976; it lived
+ *  as a private method on `HookEventBridge` before that) produces when it
  *  truncates: 117 kept characters + this 3-character marker = 120 total,
  *  always, TODAY. `isTruncatedSignature` treats this as a floor, not an exact
- *  match — see its own doc for why. */
+ *  match — see its own doc for why.
+ *
+ *  Corrected while moving that function (AGENTS.md rule 3): this comment used
+ *  to say Bash AND "the generic path/url/description fallback" truncate, which
+ *  reads as though every summarized value is capped. Only TWO branches
+ *  truncate — Bash's `command`, and the generic last-resort loop. The
+ *  Read/Write/Edit `file_path`, the Glob/Grep `pattern` and the fetch `url`
+ *  branches all return their value verbatim at any length. That is the SAFE
+ *  direction for precedent (a full value is precisely matchable; nothing
+ *  collides), but the old wording would have led someone auditing the
+ *  truncation hole to believe a case was covered that this function never
+ *  touches. */
 const TRUNCATED_DETAIL_LENGTH = 120;
 const TRUNCATION_MARKER = '...';
 
@@ -365,6 +423,210 @@ export function parsePermissionQuestionText(
 }
 
 /**
+ * Build the signature for an operation being CONSULTED (#976), from the raw
+ * `(toolName, toolInput)` the gate has at decision time — before any
+ * `Question` exists to parse.
+ *
+ * This is the mirror of `parsePermissionQuestionText`, which is the RECORD
+ * side, and the two must produce byte-identical strings for the same operation
+ * or an exact match silently never fires. That failure is invisible: precedent
+ * just never matches, which is indistinguishable from "the user has not
+ * approved this before."
+ *
+ * The identity is structural, not careful: both sides bottom out in
+ * `summarizeToolInput` (`hooks/tool-summary.ts`), which is why that function
+ * was lifted out of `HookEventBridge` in this same change. Record side parses
+ * `Allow <tool>: <detail>` off a question BUILT from it; this side composes
+ * `<tool>: <detail>` from it directly. A second implementation here is the
+ * exact defect shape this module's area has produced repeatedly.
+ *
+ * Returns the bare tool name when there is no summarizable argument, matching
+ * `buildPermissionQuestion`'s own `Allow <tool>` shape.
+ *
+ * No truncation check here: `findApprovedPrecedent` / `findDeniedPrecedent`
+ * both refuse a truncated QUERY on the raw value (`isTruncatedSignature`), and
+ * doing it in two places invites the two checks to disagree.
+ */
+export function signatureForOperation(
+  toolName: string,
+  toolInput: Record<string, unknown>,
+): string {
+  const detail = summarizeToolInput(toolName, toolInput);
+  return detail === null ? toolName : `${toolName}: ${detail}`;
+}
+
+/**
+ * Tools whose signature is the WHOLE operation, and which may therefore have a
+ * past approval reused (#976). Everything else is evaluated normally, every
+ * time.
+ *
+ * ## Why an allowlist and not "every tool"
+ *
+ * `signatureForOperation` is built from `summarizeToolInput`, whose job is to
+ * produce ONE readable line for a lock-screen card. For most tools that line
+ * names the TARGET and drops the PAYLOAD — which is fine for display and
+ * catastrophic for authorization.
+ *
+ * Found in review of this PR's first draft, and measured against the real
+ * functions rather than reasoned about:
+ *
+ *     Write {file_path: '~/.ssh/authorized_keys', content: <benign>}
+ *     Write {file_path: '~/.ssh/authorized_keys', content: <attacker>}
+ *     -> signatures IDENTICAL, matchApproved returns an EXACT hit,
+ *        band=high grade=explicit witness=yes -> approve, at 0ms
+ *
+ * So one approved write to a path authorized every later write to that path,
+ * with any content at all. `high` is precisely the band whose justification is
+ * "a precedent carries the non-text witness text cannot supply" — and the
+ * witness was real; the SIGNATURE was not. ADR 0010's "an allow rule that
+ * matches too much silently grants permission" was defeated a layer below the
+ * matcher, so the matcher's exactness guaranteed nothing.
+ *
+ * Per tool, why it is or is not here:
+ *
+ * | tool | summary | complete? |
+ * |---|---|---|
+ * | `Bash` with a `command` field | the full command | **yes** — and only in this exact shape; see "`cmd` is not `command`" below |
+ * | `Bash` with only `cmd` | the full command | no — the signature sees it, the RISK layer does not |
+ * | `Write`/`Edit` | `file_path` only | no — `content` / `new_string` decide what actually happens |
+ * | `Read` | `file_path` only | no — see "Read looked safe and was not" below |
+ * | `Glob`/`Grep` | `pattern` only | no — the `path` it runs under is dropped, so `Grep: TODO` in a repo and in `/etc` are one signature |
+ * | fetch/web | `url` | no — `prompt` is dropped, and the fetch is a network egress whose repeat deserves asking |
+ * | anything else | first matching field | no — the generic fallback is incomplete BY CONSTRUCTION |
+ *
+ * Fails closed: an unrecognized tool is not eligible. A new tool added to
+ * `summarizeToolInput` gets no precedent until someone decides its summary is
+ * a complete identity, which is the direction that costs a question rather
+ * than a compromise.
+ *
+ * ## `Read` looked safe and was not — the same mistake, one round later
+ *
+ * The first draft of this list also allowed `Read`, on the reasoning "a read
+ * has no payload; `offset`/`limit` narrow it, never widen it." The first half
+ * is true; the second is the wrong question. `offset`/`limit` never enter the
+ * signature at all, so a narrow read and a whole-file read are ONE key:
+ *
+ *     Read {file_path: '~/.ssh/id_rsa', offset: 1, limit: 1}   // approved once
+ *     Read {file_path: '~/.ssh/id_rsa'}                        // the whole file
+ *     -> signatures IDENTICAL -> exact hit -> band=moderate -> approve, 0ms
+ *
+ * `classifyRisk` does not elevate a sensitive READ path either (only
+ * `Write`/`Edit`/`NotebookEdit` get `isSensitiveWritePath`, `risk-bands.ts`),
+ * so nothing downstream catches it. One approved peek at a credential file
+ * authorized an unattended dump of it.
+ *
+ * That is the identical defect this list was created to fix, found one review
+ * round later on the entry that looked obviously fine. Worth stating plainly:
+ * "the payload is missing" is not the rule — the rule is **anything the
+ * signature drops that changes what the operation does or exposes**, and for a
+ * read that is its EXTENT. The cost of removing `Read` is close to zero
+ * anyway: the `read-only` group approves reads at 0ms without ever consulting
+ * precedent.
+ *
+ * ## `cmd` is not `command` — the same hole as `terminal`, one field down
+ *
+ * `summarizeToolInput` accepts EITHER field for Bash
+ * (`get('command') ?? get('cmd')`), so both produce a complete signature and
+ * both render a correct card. The risk layer accepts only one:
+ *
+ *     classifyRisk('Bash', {command: 'rm -rf /'})            -> critical
+ *     classifyRisk('Bash', {cmd:     'rm -rf /'})            -> moderate
+ *     matchesCatastrophicPattern('Bash', {cmd: 'rm -rf /'})  -> null
+ *
+ * `classifyRisk`, `matchesCatastrophicPattern`, `matchGroups`,
+ * `matchAllowPattern` and `matchSubstringPattern` all read `toolInput.command`
+ * and nothing else. So a `cmd`-shaped Bash call is `terminal` again: complete
+ * signature, unclassifiable risk, fictional matrix bound.
+ *
+ * **An earlier draft of this very table asserted the opposite** — "the command
+ * IS the operation, and every risk/deny function in this module keys off the
+ * same `command` field." That was false when written, and it is the third time
+ * in this PR that I wrote an explanation the code did not support. It is also
+ * why eligibility is no longer a property of the tool NAME alone:
+ * `precedentMayAuthorize` takes the input and requires the field the risk
+ * layer actually reads to be the one present.
+ *
+ * ## Why `terminal` is not here either, though `summarizeToolInput` knows it
+ *
+ * `summarizeToolInput` treats `terminal` like `bash` and extracts the real
+ * command, so its signature IS complete — and it is still excluded, because
+ * completeness is necessary and not sufficient. The bands that bound what a
+ * precedent may authorize do not recognize the name:
+ *
+ *     classifyRisk('Bash',     {command: 'rm -rf /'})  -> critical
+ *     classifyRisk('terminal', {command: 'rm -rf /'})  -> moderate
+ *     matchesCatastrophicPattern('terminal', ...)      -> null
+ *
+ * `classifyRisk`, `matchesCatastrophicPattern` and `matchSubstringPattern` all
+ * branch on the literal string `'Bash'`, so a `terminal`-named tool is capped
+ * at `moderate` — the tier `implicit` reaches — and can never be floored. An
+ * entry here whose risk cannot be classified is an entry whose matrix bound is
+ * fictional.
+ *
+ * **That gap is bigger than this list and is tracked separately (#1020):** it
+ * applies to ANY command-executing tool not literally named `Bash`, including
+ * one an MCP server registers, and it bypasses the deny floor and risk ceiling
+ * with or without precedent. Excluding `terminal` here does not fix it; it
+ * only keeps this module from depending on it.
+ *
+ * ## The deny direction deliberately ignores this
+ *
+ * `findDeniedPrecedent` is a STOP rule (ADR 0010), so a content-blind
+ * signature makes it match MORE, not less: a denied `Write` to a path flags
+ * every later write to it. That is the safe direction and the intended one, so
+ * the deny consult does not consult this list.
+ */
+const PRECEDENT_ELIGIBLE_TOOLS: ReadonlySet<string> = new Set(['Bash']);
+
+/**
+ * May a past approval of `toolName` authorize a repeat? See
+ * `PRECEDENT_ELIGIBLE_TOOLS` for the rule and the two measured failures that
+ * produced it.
+ *
+ * **Case-SENSITIVE, deliberately, and this is the load-bearing detail.** The
+ * obvious implementation lowercases — it reads as defensive, and a first draft
+ * of this function did exactly that. It is the bug. `classifyRisk`,
+ * `matchesCatastrophicPattern` and `matchSubstringPattern` all compare
+ * `toolName === 'Bash'` exactly, so a tool named `bash` in lowercase would be
+ * ELIGIBLE here while banding as a non-Bash tool there: capped at `moderate`,
+ * never floored, precedent-approvable — the same hole excluding `terminal`
+ * closes, reopened by the normalization meant to prevent it.
+ *
+ * So this set must contain exactly the strings the RISK layer recognizes, and
+ * compare them the same way. When #1020 fixes that layer's literal-`'Bash'`
+ * assumption, this gate should be updated in the same change, not before.
+ */
+export function precedentMayAuthorize(
+  toolName: string,
+  toolInput: Record<string, unknown>,
+): boolean {
+  if (!PRECEDENT_ELIGIBLE_TOOLS.has(toolName)) return false;
+  // The INPUT SHAPE, not just the name. `summarizeToolInput` accepts `cmd` as
+  // a fallback and would happily build a complete signature from it, but the
+  // risk layer reads `command` and nothing else — so a `cmd`-only call has an
+  // unclassifiable band and must not be authorizable. Requiring the field the
+  // BOUND depends on is what keeps the two in agreement.
+  return typeof toolInput['command'] === 'string' && toolInput['command'].length > 0;
+}
+
+/**
+ * Read-only view of a `PrecedentStore` (#976).
+ *
+ * The decision path receives THIS, never the store, so `handleAnswer` remains
+ * the single writer BY CONSTRUCTION rather than by convention. That matters
+ * more than it reads: ADR 0015's whole provenance argument collapses if the
+ * gate can record its own verdicts, because the gate TYPES approvals into
+ * rendered subagent prompts under ADR 0004 — a self-licensing loop where
+ * machine approvals become "human precedent" that authorizes future machine
+ * approvals. Handing out a reader makes that unrepresentable at the type level
+ * instead of relying on nobody calling `record`.
+ */
+export interface PrecedentReader {
+  matchApproved(toolName: string, signature: string): PrecedentMatch | null;
+  matchDenied(toolName: string, signature: string): PrecedentMatch | null;
+}
+
+/**
  * Exact-match approval lookup (ADR 0010: allow-shaped, must be precise).
  * Iterates most-recent-first and returns based on the FRESHEST record for
  * this exact (tool, signature) pair, regardless of ITS decision — not the
@@ -415,12 +677,16 @@ export function findApprovedPrecedent(
   signature: string,
 ): PrecedentMatch | null {
   if (isTruncatedSignature(signature)) return null;
-  const target = normalizeSignature(signature);
+  // RAW, not `normalizeSignature`. See "Whitespace collapsing is a LOOSENING"
+  // in the module doc: collapsing runs on the ALLOW side is exactly the
+  // over-matching ADR 0010 forbids, and it was measured equating a dead-code
+  // Python line with one that executes.
+  const target = signature.trim();
   for (let i = records.length - 1; i >= 0; i--) {
     const record = records[i];
     if (!record) continue;
     if (record.toolName !== toolName) continue;
-    const storedSignature = normalizeSignature(record.signature);
+    const storedSignature = record.signature.trim();
     if (isTruncatedSignature(storedSignature)) continue;
     if (storedSignature !== target) continue;
     // First hit while scanning newest-first: the FRESHEST record for this
@@ -505,10 +771,17 @@ export function findDeniedPrecedent(
  * never from a hot path, but there is no reason to make it anything other
  * than cheap).
  *
- * NOT wired to any consumer by this change. `matchApproved` / `matchDenied`
- * exist so a later PR can call them without reaching into `records` directly
- * (kept private), and so this module's own tests can exercise the matchers
- * through the same surface a real consumer would use.
+ * WIRED as of #976. `matchApproved` / `matchDenied` are consumed by
+ * `AutoApproveService.evaluate` — the first at 0ms before the model, the
+ * second after it — through the read-only `PrecedentReader` above, never
+ * through this class directly. `records` stays private so no consumer can
+ * reach past the two matchers.
+ *
+ * (This comment said "NOT wired to any consumer by this change" until the
+ * change that wired it. Corrected in the same PR, per AGENTS.md rule 3 — a
+ * stale "nothing reads this" sitting above a class that now performs 0ms
+ * auto-approvals is the exact shape of the documentation failure ADR 0011
+ * exists for.)
  */
 export class PrecedentStore {
   private readonly records: PrecedentRecord[] = [];
@@ -543,7 +816,10 @@ export class PrecedentStore {
   record(toolName: string, signature: string, decision: 'approved' | 'denied'): void {
     if (isTruncatedSignature(signature)) return;
     const normalizedToolName = toolName.trim();
-    const normalizedSignature = normalizeSignature(signature);
+    // Stored RAW (trimmed only), NOT whitespace-collapsed. Each matcher then
+    // applies its OWN strictness: the approve side compares raw, the deny side
+    // collapses. Storing a collapsed form would force both to the loose one.
+    const normalizedSignature = signature.trim();
     if (!normalizedToolName || !normalizedSignature) return;
     this.records.push({
       toolName: normalizedToolName,
