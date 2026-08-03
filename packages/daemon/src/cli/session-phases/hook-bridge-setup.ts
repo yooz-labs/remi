@@ -694,6 +694,20 @@ export function setupHookBridge(
           authorityStore,
           () => transcriptWatchers.get(sessionId)?.getUserMessages() ?? [],
         ),
+      // #976: THIS session's precedent, read-only. The store itself is never
+      // handed out — `handleAnswer` stays the single writer by construction,
+      // which is what keeps the gate from recording its own ADR-0004
+      // arbitration verdicts as human precedent (see `precedent.ts`).
+      //
+      // The `PrecedentStore` methods are read via a fresh object rather than
+      // by passing the store: passing it would satisfy `PrecedentReader`
+      // structurally (TypeScript is structural, so the extra `record` comes
+      // along) and the write surface would be one cast away at any future call
+      // site. This closes it over the two methods and hands out nothing else.
+      getPrecedent: () => ({
+        matchApproved: (tool, signature) => precedentStore.matchApproved(tool, signature),
+        matchDenied: (tool, signature) => precedentStore.matchDenied(tool, signature),
+      }),
       // #710: lets the gate recover from a tracker leak (a MAIN-tagged
       // PermissionRequest observing isInSubagentContext() stuck true) instead
       // of denying the main agent forever.

@@ -159,12 +159,43 @@ cannot climb past the band that authorizes moderate-risk work, and every
 high-risk approval traces to an act the user performed rather than a sentence
 that appeared.
 
-It also does not cost the product the behavior #976 wanted. A high-risk request
-made in chat still escalates the FIRST time — then the deny-with-message path
+It also does not cost the product the behavior #976 wanted — but the mechanism
+is not the one this ADR originally named, and the difference is load-bearing.
+
+**Correction, 2026-08-03.** The paragraph here used to read: a high-risk request
+escalates the first time, then "the deny-with-message path
 (`{behavior:'deny', message}`, verified model-directed) makes Claude ask
-directly, the user's answer IS `explicit` authorization from a non-text channel,
-and session precedent covers near-identical repeats. One confirmation instead of
-every time.
+directly, the user's answer IS `explicit` authorization from a non-text
+channel." **That is wrong, and it is wrong against this ADR's own rule.** A
+reply typed in chat arrives via `UserPromptSubmit` — which is TEXT, on exactly
+the channel the table above caps at `implicit`. The sentence conflated the CHAT
+channel with the CARD channel; only the card is non-text. Nothing in the
+implementation ever behaved as the sentence described, so this is a documented
+intention that the code correctly refused to honor.
+
+The consequence is band-dependent, and worth stating precisely because it
+decides which loops can close at all:
+
+- **`moderate`** — the conversational loop DOES close. Deny with a message,
+  Claude asks, the user replies, the reply grades up to `implicit`, and
+  `matrixDecision` approves `moderate` on `implicit`. This is a real product
+  behavior and it works.
+- **`high`** — the loop **cannot** close, by construction. `high` requires a
+  witness text cannot produce, so the reply caps at `implicit`, falls below the
+  bar, and the next attempt is refused for the identical reason. Asking in chat
+  can never unblock a high-band operation. **Only a card answer or a session
+  precedent derived from one gets there.**
+
+So the honest version of the original claim: a high-risk request escalates the
+first time and the user answers a CARD; session precedent then covers
+byte-identical repeats (#976, wired 2026-08-03). One confirmation instead of
+every time — via the card, not via chat.
+
+The same conflated sentence had been copied into `buildDenyMessage`'s doc in
+`deny-floor.ts` and is corrected there too (#1015). That is the pattern
+AGENTS.md "Verify before you describe" exists for: a wrong description of a
+security mechanism reads as "this is handled," and this one survived from the
+ADR into the code comment that implements it.
 
 ### What this does NOT change
 
@@ -206,7 +237,8 @@ every time.
   few non-text channels allowed to establish `explicit`, so a false match there
   is privilege escalation, not a cosmetic bug. The first implementation keyed on
   `Question.text`, which `summarizeToolInput` truncates at 120 characters
-  (`hook-event-bridge.ts:621`) — so two commands sharing their first 117
+  (`hooks/tool-summary.ts` since #976; a private method on `HookEventBridge`
+  before that) — so two commands sharing their first 117
   characters collapsed to one signature, and appending `&& curl … | sh` past
   that point inherited the human's approval. Reproduced with a real path from
   this repo. **Unfixed as of 2026-08-02.** #989 is open, and as pushed contains

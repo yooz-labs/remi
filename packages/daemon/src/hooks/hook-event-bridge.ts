@@ -47,6 +47,7 @@ import type {
 } from './hook-types.ts';
 import { SubagentContextTracker } from './subagent-context-tracker.ts';
 import { extractToolQuestion } from './tool-question.ts';
+import { summarizeToolInput } from './tool-summary.ts';
 
 export interface HookBridgeEvents {
   onStatusChange: (status: AgentStatus, context?: string) => void;
@@ -465,7 +466,7 @@ export class HookEventBridge {
         : toolQuestion.text;
       options = toolQuestion.options;
     } else {
-      const inputSummary = this.summarizeToolInput(toolName, input.tool_input);
+      const inputSummary = summarizeToolInput(toolName, input.tool_input);
       // The action carries the command/path/pattern context (#497).
       const action = inputSummary ? `${toolName}: ${inputSummary}` : toolName;
       // A subagent prompt names the agent, e.g.
@@ -605,49 +606,5 @@ export class HookEventBridge {
   handleSessionEnd(_input: SessionEndHookInput): void {
     this.subagentContext.reset();
     this.events.onStatusChange('idle');
-  }
-
-  /** Extract a short summary from tool input for the question prompt. */
-  private summarizeToolInput(toolName: string, toolInput: Record<string, unknown>): string | null {
-    if (!toolInput || typeof toolInput !== 'object') return null;
-    const lower = toolName.toLowerCase();
-
-    const get = (key: string): unknown => toolInput[key];
-
-    // Bash: show the command
-    if (lower === 'bash' || lower === 'terminal') {
-      const cmd = get('command') ?? get('cmd');
-      if (typeof cmd === 'string') {
-        return cmd.length > 120 ? `${cmd.slice(0, 117)}...` : cmd;
-      }
-    }
-
-    // Read/Write/Edit: show the file path
-    if (lower === 'read' || lower === 'write' || lower === 'edit') {
-      const path = get('file_path') ?? get('path');
-      if (typeof path === 'string') return path;
-    }
-
-    // Glob/Grep: show the pattern
-    if (lower === 'glob' || lower === 'grep') {
-      const pattern = get('pattern') ?? get('glob');
-      if (typeof pattern === 'string') return pattern;
-    }
-
-    // WebFetch: show the URL
-    if (lower.includes('fetch') || lower.includes('web')) {
-      const url = get('url');
-      if (typeof url === 'string') return url;
-    }
-
-    // Generic: try common field names
-    for (const key of ['command', 'file_path', 'path', 'url', 'description']) {
-      const val = get(key);
-      if (typeof val === 'string' && val.length > 0) {
-        return val.length > 120 ? `${val.slice(0, 117)}...` : val;
-      }
-    }
-
-    return null;
   }
 }

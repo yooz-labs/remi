@@ -428,6 +428,7 @@ describe('auto_approve config', () => {
       model_cache: '',
       disable_thinking: true,
       always_escalate_tools: ['AskUserQuestion', 'ExitPlanMode'],
+      session_precedent: true,
       hold_timeout: 1800,
       push_hold_timeout: 60,
       delivery_confirm_timeout: 6,

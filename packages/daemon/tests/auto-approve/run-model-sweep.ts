@@ -355,6 +355,7 @@ function makeConfig(model: string): AutoApproveConfig {
     // rather than a judgment. SWEEP_THINKING=1 measures the other axis.
     disable_thinking: process.env['SWEEP_THINKING'] !== '1',
     always_escalate_tools: [],
+    session_precedent: true,
     hold_timeout: 0,
     push_hold_timeout: 0,
     delivery_confirm_timeout: 0,

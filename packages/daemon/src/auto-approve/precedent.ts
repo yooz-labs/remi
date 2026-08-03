@@ -1,10 +1,26 @@
 /**
  * Precedent — a per-session, in-memory record of operations a HUMAN actually
  * answered, keyed on answer PROVENANCE (#976 prerequisite, ADR 0015
- * "Amendment, 2026-08-02"). ADDITIVE ONLY: this module records data and
- * exposes a pure matcher; nothing in the decision path consumes it yet. A
- * later change wires a consumer in (`enforceAuthorityBoundary`-style, after
- * the model, never before it).
+ * "Amendment, 2026-08-02").
+ *
+ * WIRED as of #976, in both directions, and the two are placed differently on
+ * purpose (`auto-approve-service.ts`):
+ *
+ *   - **approve, PRE-model, 0ms** — an exact match authorizes a repeat, bounded
+ *     by `matrixDecision` (so `critical` still never approves and `high`
+ *     approves only on the non-text witness a precedent carries). Pre-model
+ *     because a repeat should cost nothing, and because a 0ms verdict never
+ *     loses the prompt-lifetime race (#998). Gated on
+ *     `auto_approve.session_precedent`.
+ *   - **deny, POST-model, approve-only** — a broad match downgrades a model
+ *     approve to escalate, exactly like `enforceDenyFloor` /
+ *     `enforceRiskCeiling` / `enforceAuthorityBoundary` next to it. NOT gated
+ *     on that flag: turning off "reuse my yes" must not also discard "I
+ *     already said no."
+ *
+ * The decision path receives a `PrecedentReader` (below), never the store, so
+ * the single-writer property this module's whole provenance argument rests on
+ * is structural rather than a convention anyone has to remember.
  *
  * ## Why provenance, not "the prompt was answered"
  *
@@ -153,6 +169,8 @@
  * functions' stored-side check — is the authoritative boundary.
  */
 
+import { summarizeToolInput } from '../hooks/tool-summary.ts';
+
 /** One human-classified answer to a permission-shaped question. */
 export interface PrecedentRecord {
   /**
@@ -231,11 +249,22 @@ function normalizeSignature(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
-/** Length `HookEventBridge.summarizeToolInput` (hook-event-bridge.ts, Bash at
- *  :621, the generic path/url/description fallback at :647) produces when it
+/** Length `summarizeToolInput` (`hooks/tool-summary.ts`, since #976; it lived
+ *  as a private method on `HookEventBridge` before that) produces when it
  *  truncates: 117 kept characters + this 3-character marker = 120 total,
  *  always, TODAY. `isTruncatedSignature` treats this as a floor, not an exact
- *  match — see its own doc for why. */
+ *  match — see its own doc for why.
+ *
+ *  Corrected while moving that function (AGENTS.md rule 3): this comment used
+ *  to say Bash AND "the generic path/url/description fallback" truncate, which
+ *  reads as though every summarized value is capped. Only TWO branches
+ *  truncate — Bash's `command`, and the generic last-resort loop. The
+ *  Read/Write/Edit `file_path`, the Glob/Grep `pattern` and the fetch `url`
+ *  branches all return their value verbatim at any length. That is the SAFE
+ *  direction for precedent (a full value is precisely matchable; nothing
+ *  collides), but the old wording would have led someone auditing the
+ *  truncation hole to believe a case was covered that this function never
+ *  touches. */
 const TRUNCATED_DETAIL_LENGTH = 120;
 const TRUNCATION_MARKER = '...';
 
@@ -362,6 +391,56 @@ export function parsePermissionQuestionText(
   if (isTruncatedSignature(action)) return null;
 
   return { toolName, signature: action };
+}
+
+/**
+ * Build the signature for an operation being CONSULTED (#976), from the raw
+ * `(toolName, toolInput)` the gate has at decision time — before any
+ * `Question` exists to parse.
+ *
+ * This is the mirror of `parsePermissionQuestionText`, which is the RECORD
+ * side, and the two must produce byte-identical strings for the same operation
+ * or an exact match silently never fires. That failure is invisible: precedent
+ * just never matches, which is indistinguishable from "the user has not
+ * approved this before."
+ *
+ * The identity is structural, not careful: both sides bottom out in
+ * `summarizeToolInput` (`hooks/tool-summary.ts`), which is why that function
+ * was lifted out of `HookEventBridge` in this same change. Record side parses
+ * `Allow <tool>: <detail>` off a question BUILT from it; this side composes
+ * `<tool>: <detail>` from it directly. A second implementation here is the
+ * exact defect shape this module's area has produced repeatedly.
+ *
+ * Returns the bare tool name when there is no summarizable argument, matching
+ * `buildPermissionQuestion`'s own `Allow <tool>` shape.
+ *
+ * No truncation check here: `findApprovedPrecedent` / `findDeniedPrecedent`
+ * both refuse a truncated QUERY on the raw value (`isTruncatedSignature`), and
+ * doing it in two places invites the two checks to disagree.
+ */
+export function signatureForOperation(
+  toolName: string,
+  toolInput: Record<string, unknown>,
+): string {
+  const detail = summarizeToolInput(toolName, toolInput);
+  return detail === null ? toolName : `${toolName}: ${detail}`;
+}
+
+/**
+ * Read-only view of a `PrecedentStore` (#976).
+ *
+ * The decision path receives THIS, never the store, so `handleAnswer` remains
+ * the single writer BY CONSTRUCTION rather than by convention. That matters
+ * more than it reads: ADR 0015's whole provenance argument collapses if the
+ * gate can record its own verdicts, because the gate TYPES approvals into
+ * rendered subagent prompts under ADR 0004 — a self-licensing loop where
+ * machine approvals become "human precedent" that authorizes future machine
+ * approvals. Handing out a reader makes that unrepresentable at the type level
+ * instead of relying on nobody calling `record`.
+ */
+export interface PrecedentReader {
+  matchApproved(toolName: string, signature: string): PrecedentMatch | null;
+  matchDenied(toolName: string, signature: string): PrecedentMatch | null;
 }
 
 /**

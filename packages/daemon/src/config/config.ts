@@ -373,6 +373,13 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // Always escalate these to the user; never auto-decided by the LLM (#572):
     // AskUserQuestion + plan-mode. Extend with custom question-posing tools.
     always_escalate_tools: [...DEFAULT_ALWAYS_ESCALATE_TOOLS],
+    // Reuse an answer the user already gave THIS SESSION for the identical
+    // operation (#976). On by default: without it the third `git push origin
+    // feature/x` of a session asks a third time. Session-scoped, in-memory,
+    // cleared on rotation -- a durable rule is what `allow` is for. The
+    // deny-direction half (an earlier "no" downgrades a model approve to
+    // escalate) is a tightening and stays on regardless of this flag.
+    session_precedent: true,
     // Hold a binary main-context PermissionRequest hook open until the user
     // answers (Model B, #573). Large + human-paced; on expiry it fails open to
     // the native prompt. 0 disables holding (escalate -> passthrough as before).
@@ -793,6 +800,11 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
   if (!isStringArray(cfg.always_escalate_tools)) {
     throw new Error(
       `Invalid auto_approve.always_escalate_tools in ${configPath}: must be an array of tool names. Example: always_escalate_tools = ["AskUserQuestion", "ExitPlanMode"]`,
+    );
+  }
+  if (typeof cfg.session_precedent !== 'boolean') {
+    throw new Error(
+      `Invalid auto_approve.session_precedent in ${configPath}: must be true or false, got ${typeof cfg.session_precedent}.`,
     );
   }
   for (const t of cfg.always_escalate_tools) {
@@ -1253,6 +1265,15 @@ turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_sec
 #                                  # auto-decided by the LLM (design / plan-mode
 #                                  # / long-form questions). Add custom MCP tools
 #                                  # that solicit user intent.
+# session_precedent = true         # Reuse an answer you already gave THIS
+#                                  # session for the byte-identical operation,
+#                                  # so the third "git push origin feature/x"
+#                                  # does not ask a third time. Bounded by risk
+#                                  # band: a catastrophic operation still asks
+#                                  # every time. Session-scoped and in-memory --
+#                                  # for a durable rule use "allow". Setting
+#                                  # false does NOT discard an earlier "no";
+#                                  # that half always applies.
 `;
 }
 
@@ -1359,6 +1380,7 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(
     `  always_escalate_tools = [${config.auto_approve.always_escalate_tools.map((s) => `"${s}"`).join(', ')}]`,
   );
+  lines.push(`  session_precedent = ${config.auto_approve.session_precedent}`);
   lines.push('');
   lines.push('# transcript_binder_enabled is a deprecated kill-switch (#470); flip = restart.');
   lines.push('[features]');

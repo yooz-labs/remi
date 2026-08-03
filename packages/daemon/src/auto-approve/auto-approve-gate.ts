@@ -95,6 +95,7 @@ import { type DeliveryOutcome, isDelivered } from '../notifications/notification
 import type { SessionRegistry } from '../session/index.ts';
 import { buildDenyMessage } from './deny-floor.ts';
 import { isDesignQuestion, isMultiChoicePermission } from './multichoice.ts';
+import type { PrecedentReader } from './precedent.ts';
 import type { AutoApproveResult } from './types.ts';
 
 /** Hard cap on `parkedInputs` (#814). One entry per parked subagent
@@ -268,6 +269,10 @@ export interface AutoApproveEvaluator {
      *  `buildPrompt`'s CONVERSATION CONTEXT block; the trust boundary itself
      *  is enforced inside the evaluator, not here. */
     authority?: string,
+    /** #976: this session's precedent, READ-ONLY. See
+     *  `AutoApproveGateDeps.getPrecedent`; the matrix that bounds what a
+     *  precedent may authorize lives inside the evaluator, not here. */
+    precedent?: PrecedentReader,
   ): Promise<AutoApproveResult>;
   /**
    * Abort an in-flight `evaluate`. With `evalId`, aborts ONLY when that id is the
@@ -313,6 +318,23 @@ export interface AutoApproveGateDeps {
    * at call time.
    */
   getAuthority?: () => string;
+  /**
+   * #976: this session's precedent store, as a READ-ONLY reader.
+   *
+   * Read fresh per eval for the same reason as `getAuthority`: an answer given
+   * mid-session must count for the next permission, not the one after that.
+   *
+   * A `PrecedentReader` and never the `PrecedentStore` itself, deliberately.
+   * `handleAnswer` (`cli/handlers/input-events.ts`) is the single writer, and
+   * that has to hold BY CONSTRUCTION rather than by convention: the gate types
+   * its own approvals into rendered subagent prompts under ADR 0004, so a gate
+   * that could `record()` would launder machine verdicts into human precedent
+   * and then authorize future machine approvals from them. Handing out a
+   * reader makes that self-licensing loop unrepresentable.
+   *
+   * Absent => no precedent in either direction; pre-#976 behavior exactly.
+   */
+  getPrecedent?: () => PrecedentReader | undefined;
   /**
    * Reset the subagent-context tracker (#710). Called ONLY when a MAIN-tagged
    * PermissionRequest (`agent_id` absent) observes `isInSubagentContext()`
@@ -1428,6 +1450,7 @@ export class AutoApproveGate {
         this.sessionId,
         isSubagent,
         this.authorityForEval(),
+        this.precedentForEval(),
       )
       .finally(() => {
         this.evalIsSubagentById.delete(evalId);
@@ -1950,6 +1973,7 @@ export class AutoApproveGate {
         this.sessionId,
         true,
         this.authorityForEval(),
+        this.precedentForEval(),
       );
     } catch (err) {
       logError(`[AutoApprove ${this.sessionTag}] Parked-render eval threw; escalating:`, err);
@@ -2144,6 +2168,7 @@ export class AutoApproveGate {
         this.sessionId,
         isSubagent,
         this.authorityForEval(),
+        this.precedentForEval(),
       );
     } catch (err) {
       logError(`[AutoApprove ${this.sessionTag}] escalate_model second opinion threw:`, err);
@@ -2203,6 +2228,28 @@ export class AutoApproveGate {
       return text.trim().length > 0 ? text : undefined;
     } catch (err) {
       logError(`[AutoApprove ${this.sessionTag}] getAuthority threw (ignored):`, err);
+      return undefined;
+    }
+  }
+
+  /**
+   * Read this session's precedent reader (#976) via `deps.getPrecedent`, fresh
+   * per call so an answer given moments ago counts for THIS permission rather
+   * than the one after it.
+   *
+   * Throw-safe like `authorityForEval` above, and the failure direction is the
+   * point: returning `undefined` means the evaluator consults no precedent, so
+   * a repeat gets asked again (a nuisance) and, more importantly, the DENY
+   * direction falls back to whatever the model and the other guards say. Both
+   * are the pre-#976 behavior; neither can turn a refusal into an approval.
+   */
+  private precedentForEval(): PrecedentReader | undefined {
+    const getPrecedent = this.deps.getPrecedent;
+    if (!getPrecedent) return undefined;
+    try {
+      return getPrecedent();
+    } catch (err) {
+      logError(`[AutoApprove ${this.sessionTag}] getPrecedent threw (ignored):`, err);
       return undefined;
     }
   }
