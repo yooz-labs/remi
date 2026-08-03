@@ -17,6 +17,151 @@
 export const NEUTRAL_PREFIXES: readonly string[] = ['cd', 'pwd', 'true', 'echo', ':'];
 
 /**
+ * Shell keywords that PREFIX a real command (#999).
+ *
+ * Every one of these is followed by a command that actually runs, so the ONLY
+ * correct handling is to remove the keyword and judge what is left exactly as
+ * if the keyword had never been there. `do echo x` is an `echo`; `while rm -rf
+ * /` is an `rm -rf /` and must be refused as one.
+ *
+ * They are deliberately NOT in `NEUTRAL_PREFIXES`. Adding them there would make
+ * `do <anything>` benign, which is a 0ms auto-approval of `do rm -rf /` — the
+ * #536 bug class exactly (a prefix match that says nothing about the rest of
+ * the command), reintroduced one level up in the grammar.
+ *
+ * `while`/`until`/`if`/`elif` matter most here, because their CONDITION is a
+ * command: stripping and re-judging is what keeps `until rm -rf /` honest.
+ *
+ * Loop and block TERMINATORS (`done`, `fi`, `esac`) are in this list rather
+ * than a separate "these are benign on their own" list on purpose. Nothing may
+ * legally follow them on the same segment, but if anything ever does, stripping
+ * and re-judging refuses it, whereas treating the keyword as benign would wave
+ * `done rm -rf /` straight through. Same reasoning for `!` (negation) and
+ * `time`: both run the command that follows.
+ */
+const GRAMMAR_PREFIX_KEYWORDS: readonly string[] = [
+  'do',
+  'then',
+  'else',
+  'elif',
+  'while',
+  'until',
+  'if',
+  'done',
+  'fi',
+  'esac',
+  '!',
+  'time',
+  // `export FOO=bar` runs nothing. `export FOO=bar rm` exports a variable
+  // NAMED rm rather than running it, so stripping and re-judging over-refuses
+  // there, which is the right direction to be wrong in.
+  'export',
+];
+
+/**
+ * A leading `NAME=value` assignment.
+ *
+ * NEVER peeled, and the reasoning is worth keeping because three separate
+ * attempts to make it safe all failed, each from a direction the previous fix
+ * did not anticipate:
+ *
+ *   1. peel any assignment       -> `PATH=/evil/bin git status` approved `git`
+ *                                   while `/evil/bin/git` ran
+ *   2. refuse dangerous NAMES    -> `HOME=/tmp/evil git commit` ran an
+ *                                   attacker's `pre-commit` via `core.hooksPath`
+ *   3. refuse path-shaped VALUES -> `HTTPS_PROXY=host:port gh pr view` handed a
+ *                                   network position the request
+ *   4. require OPAQUE values     -> `PYTEST_PLUGINS=evil_plugin pytest` imports
+ *                                   arbitrary Python, at the SHIPPED DEFAULT
+ *                                   level, and `evil_plugin` is exactly as
+ *                                   opaque as the benign `ACC=da8d7a2a868`
+ *
+ * (4) is the one that settles it. No property of the assignment can separate
+ * those two strings, because the danger is not in the assignment at all — it is
+ * in what the TOOL does with the variable, and any tool may give any name any
+ * meaning. A rule that inspects only the assignment is answering a question the
+ * assignment does not contain.
+ *
+ * So an assignment prefix simply is not covered, and the command escalates.
+ * That costs the ~150 real commands this was measured to cover
+ * (`ACC=da8d7a2a868 git status` and friends), which is the correct trade
+ * against arbitrary code execution with no opt-in. Restoring coverage safely
+ * would mean knowing a specific (variable, command) pair is inert — a
+ * per-command allowlist, not a value heuristic. That is a separate design, not
+ * a widening of this one.
+ */
+const ASSIGNMENT_HEAD_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+/** True if the segment's first word is a `NAME=value` assignment. */
+export function hasAssignmentPrefix(segment: string): boolean {
+  return ASSIGNMENT_HEAD_RE.test(segment.trim());
+}
+
+/**
+ * A `for`/`select` header binds a variable over a word list and runs NOTHING;
+ * the body is a separate segment. Command substitution in the word list would
+ * run something, and `hasShellControl` already refuses the whole segment for
+ * that before this is consulted, so the header cannot smuggle a command past.
+ * A command cannot follow the word list on the same segment either — `do` must
+ * be introduced by `;` or a newline, both of which `splitCompound` splits on.
+ */
+const FOR_HEADER_RE = /^(?:for|select)\b/;
+
+/**
+ * A `case` header dispatches and runs nothing, but unlike `for` it is followed
+ * on the SAME segment by `<pattern>) <command>` (the `;;` that would separate
+ * them only appears after the first body). So this is anchored to end at `in`:
+ * `case $x in a) rm -rf /` must NOT be read as a bare header, or the `rm` rides
+ * in unexamined.
+ */
+const CASE_HEADER_RE = /^case\s+\S+\s+in$/;
+
+/** `break`/`continue` take an optional LEVEL COUNT, never a command. */
+const LOOP_CONTROL_RE = /^(?:break|continue)(?:\s+\d+)?$/;
+
+/** A segment reduced to the command it actually runs, if any. */
+export interface StrippedSegment {
+  /** What remains once leading grammar keywords are removed. */
+  readonly command: string;
+  /** True when the segment is pure grammar and runs no command at all. */
+  readonly structural: boolean;
+}
+
+/**
+ * Peel shell grammar off a segment so the command inside it can be judged.
+ *
+ * Before this existed, one unrecognized structural keyword vetoed an entire
+ * line: per-segment matching requires EVERY segment to be covered, and `for` /
+ * `do` / `done` matched nothing, so every loop and conditional escalated no
+ * matter how safe its body was. Measured at 190 of 733 real main-agent
+ * commands, 25.9%, with 190 of 190 uncovered (#999).
+ *
+ * The safety property is that this function only ever REMOVES grammar and
+ * hands back a command for the normal matcher to judge. It never decides that
+ * something is allowed. A segment it cannot reduce to pure grammar comes back
+ * as a command, and an unrecognized command is still refused.
+ */
+export function stripShellGrammar(segment: string): StrippedSegment {
+  let rest = segment.trim();
+  if (FOR_HEADER_RE.test(rest) || CASE_HEADER_RE.test(rest) || LOOP_CONTROL_RE.test(rest)) {
+    return { command: '', structural: true };
+  }
+  // Loop: a segment may stack keywords, e.g. `do if [ -f x ]`. Assignments are
+  // NOT peeled (see `ASSIGNMENT_HEAD_RE`), so `do FOO=bar git status` peels the
+  // `do` and stops, leaving `FOO=bar git status` to be judged and refused.
+  for (;;) {
+    const keyword = matchPrefix(rest, GRAMMAR_PREFIX_KEYWORDS);
+    if (keyword === null) break;
+    rest = rest.slice(keyword.length).trim();
+    // A `for`/`case` header can follow a keyword too: `do for f in a b`.
+    if (FOR_HEADER_RE.test(rest) || CASE_HEADER_RE.test(rest) || LOOP_CONTROL_RE.test(rest)) {
+      return { command: '', structural: true };
+    }
+  }
+  return { command: rest, structural: rest === '' };
+}
+
+/**
  * The operator that JOINS one compound segment to the previous one (`null` for
  * the first segment, which nothing precedes).
  *
@@ -306,21 +451,29 @@ export function matchCoveredCommand(
   for (const [index, raw] of segments.entries()) {
     const seg = raw.trim();
     if (seg === '') continue;
+    // On the ORIGINAL segment, before any grammar is removed: whatever a
+    // keyword introduces, it cannot make a redirect or a `&` safe.
     if (hasShellControl(seg)) return null;
-    if (matchPrefix(seg, NEUTRAL_PREFIXES) !== null) {
+    // Shell grammar is peeled off so the command inside is judged on its own
+    // merits (#999). `body` is what actually runs; a segment that is pure
+    // grammar runs nothing and needs no coverage.
+    const stripped = stripShellGrammar(seg);
+    if (stripped.structural) continue;
+    const body = stripped.command;
+    if (matchPrefix(body, NEUTRAL_PREFIXES) !== null) {
       // Neutral segments are vetoed before they can be waved through. Ordering
       // note: `extraVeto` used to run ahead of this neutral check for EVERY
       // segment, so moving it inside is behavior-preserving only because a
       // vetoed non-neutral segment still returns null below — via its own veto
       // if it matches, or via the no-match branch if it does not.
-      if (extraVeto?.(seg, index)) return null;
+      if (extraVeto?.(body, index)) return null;
       continue;
     }
-    const hit = matchPrefix(seg, prefixes);
+    const hit = matchPrefix(body, prefixes);
     if (hit === null) return null;
     const vetoed = vetoForMatched
-      ? vetoForMatched(seg, hit, index)
-      : (extraVeto?.(seg, index) ?? false);
+      ? vetoForMatched(body, hit, index)
+      : (extraVeto?.(body, index) ?? false);
     if (vetoed) return null;
     // Veto a code-execution primitive UNLESS the matched entry already carries
     // it. A prefix match requires the segment to start with the entry, so an

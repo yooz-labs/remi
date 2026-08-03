@@ -183,7 +183,14 @@ const COMMAND_WRAPPERS: ReadonlySet<string> = new Set([
  * rather than trusting this table to be complete.
  */
 const WRAPPER_VALUE_FLAGS: Readonly<Record<string, ReadonlySet<string>>> = {
-  env: new Set(['-u', '--unset', '-C', '--chdir', '-S', '--split-string']),
+  // `-S`/`--split-string` is deliberately ABSENT: its value is not inert
+  // metadata like `-u`/`-C`, it is a full command line that env re-splits and
+  // executes. Discarding it as a value flag erased the command entirely, so
+  // `env -S 'PYTEST_PLUGINS=evil_plugin pytest'` graded `moderate` while the
+  // bare form graded `high` (#1004 re-review, proven by real execution).
+  // `extractEnvSplitString` extracts and RECURSES into it instead, the same
+  // shape `extractShellDashC` already uses for `sh -c`.
+  env: new Set(['-u', '--unset', '-C', '--chdir']),
   timeout: new Set(['-s', '--signal', '-k', '--kill-after']),
   nice: new Set(['-n', '--adjustment']),
   stdbuf: new Set(['-i', '-o', '-e', '--input', '--output', '--error']),
@@ -220,7 +227,7 @@ const WRAPPER_POSITIONAL_ARG: Readonly<Record<string, RegExp>> = {
   chroot: /^\S+$/,
 };
 
-/** True for a bare `NAME=value` shell assignment token (`FOO=1 cmd`, valid with or without `env`). */
+/** A bare `NAME=value` shell assignment token (`FOO=1 cmd`, valid with or without `env`). */
 function isAssignmentToken(word: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*=/.test(word);
 }
@@ -237,19 +244,24 @@ function isAssignmentToken(word: string): boolean {
 function unwrapCommand(words: readonly string[]): readonly string[] {
   let rest = words;
   for (;;) {
-    while (rest.length > 0 && isAssignmentToken(rest[0] ?? '')) {
-      rest = rest.slice(1);
-    }
+    // Assignments are NOT stripped. Stripping them made
+    // `HOME=/tmp/evilhome git commit` grade `moderate` -- byte-identical to a
+    // plain `git commit` -- so `enforceRiskCeiling`, whose job is to override a
+    // wrong LLM approval, could never fire on it. Leaving the token in place is
+    // what lets the head-position check below see it.
     const head = rest[0];
     if (head === undefined || !COMMAND_WRAPPERS.has(head)) return rest;
     rest = rest.slice(1);
     const valueFlags = WRAPPER_VALUE_FLAGS[head];
     while (rest.length > 0) {
       const token = rest[0] ?? '';
-      if (isAssignmentToken(token)) {
-        rest = rest.slice(1);
-        continue;
-      }
+      // An assignment is NOT consumed here either. This inner loop is a second
+      // stripper, and removing only the outer one left `env
+      // PYTEST_PLUGINS=evil_plugin pytest` grading `moderate` while the bare
+      // form correctly graded `high` -- `env` is the one wrapper that really
+      // does take `NAME=value` arguments, and stripping them handed the head
+      // token straight to the band check with the dangerous part discarded.
+      // Leaving the token in place is what lets the head-position check see it.
       if (!token.startsWith('-')) break;
       rest = rest.slice(1);
       if (valueFlags?.has(token) === true) rest = rest.slice(1);
@@ -438,6 +450,29 @@ function extractShellDashC(words: readonly string[]): string | null {
   const cIndex = words.indexOf('-c');
   if (cIndex === -1) return null;
   return words[cIndex + 1] ?? null;
+}
+
+/**
+ * The command line inside `env -S '<...>'` / `env --split-string '<...>'`, or
+ * null when there is none.
+ *
+ * env's own documented feature: the value is re-split and executed, so it is
+ * COMMAND CONTENT, not an argument. It must be judged, not skipped — the same
+ * reasoning as `sh -c`, and handled the same way (extract, then recurse via
+ * `classifyCommandMax`, which re-applies every band rule including this one).
+ */
+function extractEnvSplitString(words: readonly string[]): string | null {
+  if (words[0] !== 'env') return null;
+  for (let i = 1; i < words.length; i++) {
+    const w = words[i];
+    if (w === '-S' || w === '--split-string') return words[i + 1] ?? null;
+    // GNU long-option equals form. BSD env (macOS) has no `--split-string` at
+    // all, but remi targets Linux too, where GNU getopt accepts it.
+    if (w?.startsWith('--split-string=') === true) return w.slice('--split-string='.length);
+    // `env -Sfoo` attached form -- works on BSD env, verified on this machine.
+    if (w?.startsWith('-S') === true && w.length > 2) return w.slice(2);
+  }
+  return null;
 }
 
 /**
@@ -749,12 +784,36 @@ function classifySegmentBand(rawSegment: string, depth: number): 'moderate' | 'h
 
   if (hasExecPrimitive(sanitized)) return 'high';
 
-  const words = unwrapCommand(shellWords(sanitized));
+  const rawWords = shellWords(sanitized);
+  // Read BEFORE unwrapping: `unwrapCommand` strips `env` and its flags, so by
+  // the time `words` exists the `-S` marker is gone. The first draft of this
+  // ran on `words` and never fired at all -- two cases passed anyway, by the
+  // accident that the extracted command happened to land at index 0 and trip
+  // the assignment rule. Probing the attached form (`env -S'...'`) is what
+  // exposed it.
+  const envSplit = extractEnvSplitString(rawWords);
+  const words = unwrapCommand(rawWords);
+
+  // A leading assignment sets the environment the following command runs in,
+  // and what that does is defined by the TOOL, not by anything visible here:
+  // `HOME=` redirects git's hooks, `PYTEST_PLUGINS=` imports arbitrary Python,
+  // `HTTPS_PROXY=` moves the network. The command after it can look entirely
+  // benign to a model, which is exactly when the ceiling has to be the thing
+  // that says no.
+  //
+  // Head position only: an assignment matters as a PREFIX. A later
+  // `FOO=bar`-shaped token is just an argument (`git commit -m FOO=bar`).
+  if (isAssignmentToken(words[0] ?? '')) return 'high';
 
   const shellArg = extractShellDashC(words);
   if (shellArg !== null) {
     if (depth >= MAX_RECURSION_DEPTH) return 'high';
     if (classifyCommandMax(shellArg, depth + 1) === 'high') return 'high';
+  }
+
+  if (envSplit !== null) {
+    if (depth >= MAX_RECURSION_DEPTH) return 'high';
+    if (classifyCommandMax(envSplit, depth + 1) === 'high') return 'high';
   }
 
   if (isRemoteMutation(words)) return 'high';
