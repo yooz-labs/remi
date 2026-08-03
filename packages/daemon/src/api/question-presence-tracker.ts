@@ -659,7 +659,13 @@ export class QuestionPresenceTracker {
     }
     this.adoptRenderOwnedQuestion({
       id: merged.id,
-      agent: agentKey(ptyQuestion),
+      // Scope by the MERGED question, not the raw PTY parse. The parse often
+      // carries no `agentId` at all (`Do you want to proceed?` says nothing
+      // about whose permission it is), so keying on it filed a parked SUBAGENT
+      // card under `main` — and the next main-agent prompt then superseded it,
+      // which is the very cross-agent bleed the scoping exists to stop. The
+      // merge takes the hook record's agent, which is the one that knows.
+      agent: agentKey(merged),
       text: ptyQuestion.text,
     });
   }
@@ -1080,7 +1086,13 @@ export class QuestionPresenceTracker {
         if (outcome?.status === 'registered') {
           this.adoptRenderOwnedQuestion({
             id: merged.id,
-            agent: agentKey(ptyQuestion),
+            // Scope by the MERGED question, not the raw PTY parse. The parse often
+            // carries no `agentId` at all (`Do you want to proceed?` says nothing
+            // about whose permission it is), so keying on it filed a parked SUBAGENT
+            // card under `main` — and the next main-agent prompt then superseded it,
+            // which is the very cross-agent bleed the scoping exists to stop. The
+            // merge takes the hook record's agent, which is the one that knows.
+            agent: agentKey(merged),
             text: ptyQuestion.text,
           });
         }

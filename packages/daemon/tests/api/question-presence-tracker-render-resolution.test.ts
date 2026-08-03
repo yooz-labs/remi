@@ -571,3 +571,38 @@ describe('#1008 a different agent never supersedes, and a redraw is not a replac
     expect(gone).toEqual([{ id: first.id, reason: 'pty_render_superseded' }]);
   });
 });
+
+/**
+ * #1008 review follow-up, found by probing rather than by the review.
+ *
+ * The first cut of the agent scoping keyed on the RAW PTY question. A PTY parse
+ * usually carries no `agentId` — "Do you want to proceed?" says nothing about
+ * whose permission it is — so `agentKey` fell back to `main` and filed a parked
+ * SUBAGENT card under the main agent. The next main-agent prompt then
+ * superseded it: exactly the cross-agent bleed the scoping was added to stop,
+ * reintroduced by the scoping itself.
+ *
+ * Keying on the MERGED question fixes it, because the merge takes the hook
+ * record's `agentId`, which is the half that knows.
+ */
+describe('#1008 a parked subagent card is scoped by its HOOK agent, not the PTY parse', () => {
+  test('a main-agent prompt does not resolve a parked subagent card', async () => {
+    const { tracker, gone } = buildTracker();
+    tracker.setParkedRenderArbiter(async () => ({ outcome: 'push' }));
+
+    const hook = makeHookRecord('reviewer · Bash: git push');
+    (hook as { agentId?: string }).agentId = 'agent-1';
+    tracker.recordPendingHook(hook);
+    tracker.parkAwaitingPTY(hook);
+
+    // The render itself carries NO agentId -- this is the normal case.
+    tracker.onOrphanPTYPrompt(makeHooklessPTYQuestion('Do you want to proceed?'));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(tracker.observedRenderOwnedQuestionForTest()).toBe(hook.id);
+
+    // A genuinely different, main-agent prompt takes the screen.
+    tracker.onPTYPromptVisible(makeHooklessPTYQuestion('A different main prompt'));
+
+    expect(gone).toHaveLength(0);
+  });
+});
