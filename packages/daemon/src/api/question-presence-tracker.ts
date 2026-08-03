@@ -144,6 +144,15 @@ export type ParkedRenderArbiter = (ctx: {
 }) => Promise<ParkedRenderVerdict>;
 
 /** Pending-hook map key: the prompt's agent, or MAIN_AGENT_ID for the primary. */
+/** The one card the current on-screen prompt owns, and what identifies it. */
+interface RenderOwnedCard {
+  readonly id: string;
+  /** Agent the PTY prompt belonged to; a different agent never supersedes. */
+  readonly agent: string;
+  /** Raw PTY text, so a byte-identical redraw is not read as a replacement. */
+  readonly text: string;
+}
+
 function agentKey(question: Question): string {
   return question.agentId ?? MAIN_AGENT_ID;
 }
@@ -296,7 +305,7 @@ export class QuestionPresenceTracker {
    * / the Stop sweeps), so this mechanism -- scoped tightly to the one cohort
    * that has no other exit -- leaves it alone.
    */
-  private observedRenderOwnedQuestion: string | null = null;
+  private observedRenderOwnedQuestion: RenderOwnedCard | null = null;
 
   /** Count of MAIN-context auto-approve evals in flight. A PTY prompt that
    *  appears while this is > 0 is BUFFERED (not pushed): if the verdict is
@@ -648,7 +657,11 @@ export class QuestionPresenceTracker {
       // registered.
       return;
     }
-    this.adoptRenderOwnedQuestion(merged.id);
+    this.adoptRenderOwnedQuestion({
+      id: merged.id,
+      agent: agentKey(ptyQuestion),
+      text: ptyQuestion.text,
+    });
   }
 
   /**
@@ -683,16 +696,47 @@ export class QuestionPresenceTracker {
    * hook response and is not rendering, so it has no render to be superseded
    * by, and `pushHeldHook` is a different trigger entirely.
    */
-  private adoptRenderOwnedQuestion(id: string): void {
-    if (this.observedRenderOwnedQuestion !== null && this.observedRenderOwnedQuestion !== id) {
+  private adoptRenderOwnedQuestion(card: RenderOwnedCard): void {
+    const previous = this.observedRenderOwnedQuestion;
+    if (previous !== null && previous.id !== card.id && this.supersedes(previous, card)) {
       this.noteHooklessGone('pty_render_superseded');
     }
-    this.observedRenderOwnedQuestion = id;
+    this.observedRenderOwnedQuestion = card;
+  }
+
+  /**
+   * True when `next` genuinely REPLACES `previous` on screen, rather than
+   * merely following it.
+   *
+   * Two refusals, both found by driving concurrent agents through the real
+   * stack (#1008 review):
+   *
+   * 1. **A different agent's prompt proves nothing about this one.** Every
+   *    other piece of state in this file is agent-keyed (`pending`,
+   *    `awaitingPTY`, dedup, in-flight evals — see #425/#767/#799 for why
+   *    cross-agent bleed is dangerous); this slot was the exception. Subagent
+   *    B rendering an unrelated permission silently resolved subagent A's
+   *    escalated card: no answer, no tool run, no `SubagentStop`. Worse, the
+   *    cli.ts funnel then deleted A's `openQuestionSignatures` entry, killing
+   *    the exact-signature exit as well — reproducing the unremovable card
+   *    #1005 exists to fix, through a different door, for a permission the
+   *    gate had specifically judged risky enough to escalate.
+   *
+   * Text identity is deliberately NOT a second refusal here, though a review
+   * proposed it. A same-text redraw superseding is #888's stated policy ("the
+   * guard is delivery, not text identity"), and the harm does not apply: a
+   * supersede only fires on a CONFIRMED-registered replacement, so the user
+   * still holds a card for that prompt — the new one. Cross-agent is the
+   * asymmetric case, and the only one that leaves a prompt with no card at all.
+   */
+  private supersedes(previous: RenderOwnedCard, next: RenderOwnedCard): boolean {
+    return previous.agent === next.agent;
   }
 
   private noteHooklessGone(reason: string): void {
-    const id = this.observedRenderOwnedQuestion;
-    if (id === null) return;
+    const card = this.observedRenderOwnedQuestion;
+    if (card === null) return;
+    const id = card.id;
     this.observedRenderOwnedQuestion = null;
     try {
       this.deps.onHooklessQuestionGone?.(id, reason);
@@ -1034,7 +1078,11 @@ export class QuestionPresenceTracker {
         // 0021): a deduped push changed nothing, so it must not retire the card
         // that is still the best evidence of what is on screen.
         if (outcome?.status === 'registered') {
-          this.adoptRenderOwnedQuestion(merged.id);
+          this.adoptRenderOwnedQuestion({
+            id: merged.id,
+            agent: agentKey(ptyQuestion),
+            text: ptyQuestion.text,
+          });
         }
       });
   }
@@ -1393,6 +1441,6 @@ export class QuestionPresenceTracker {
   /** Test-only: the id of the currently-tracked hook-less question, if any
    *  (#888/#920), or null when none is tracked. */
   observedRenderOwnedQuestionForTest(): string | null {
-    return this.observedRenderOwnedQuestion;
+    return this.observedRenderOwnedQuestion?.id ?? null;
   }
 }

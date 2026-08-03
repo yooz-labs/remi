@@ -512,3 +512,62 @@ describe('#1005 an arbitration-verdict push takes the render-owned slot', () => 
     expect(tracker.observedRenderOwnedQuestionForTest()).toBeNull();
   });
 });
+
+/**
+ * #1008 review. The render-owned slot was the ONE piece of state in this file
+ * that was not agent-keyed, and #1008 moved the highest-stakes cohort
+ * (deliberately-escalated subagent permissions) into it. Nothing in this file
+ * exercised two concurrent agents in either direction, which is how that
+ * shipped unnoticed.
+ */
+describe('#1008 a different agent never supersedes, and a redraw is not a replacement', () => {
+  function makeAgentPTY(agentId: string, text: string): Question {
+    return { ...makeHooklessPTYQuestion(text), agentId } as Question;
+  }
+
+  test('agent B rendering does NOT resolve agent A card', () => {
+    const { tracker, gone } = buildTracker();
+    const a = makeAgentPTY('agent-a', 'Allow Bash: git push');
+    tracker.onPTYPromptVisible(a);
+    expect(tracker.observedRenderOwnedQuestionForTest()).toBe(a.id);
+
+    // A completely unrelated agent's permission renders on the shared PTY.
+    // Nobody answered A; no tool ran; no SubagentStop fired.
+    const b = makeAgentPTY('agent-b', 'Allow Bash: rm -rf build');
+    tracker.onPTYPromptVisible(b);
+
+    expect(gone).toHaveLength(0); // A must survive
+  });
+
+  test('the SAME agent rendering something different does supersede', () => {
+    const { tracker, gone } = buildTracker();
+    const first = makeAgentPTY('agent-a', 'Allow Bash: git push');
+    tracker.onPTYPromptVisible(first);
+    tracker.onPTYPromptVisible(makeAgentPTY('agent-a', 'Allow Bash: something else'));
+
+    expect(gone).toEqual([{ id: first.id, reason: 'pty_render_superseded' }]);
+  });
+
+  test('a same-agent redraw DOES supersede, and that is correct', () => {
+    // Review proposed refusing this too (a redraw is "the same prompt"). It is
+    // #888's deliberate policy -- "the guard is delivery, not text identity" --
+    // and the harm does not apply: a supersede only fires on a CONFIRMED
+    // registration, so the user still holds a card for this prompt, the new
+    // one. Cross-agent above is the case that leaves a prompt with NO card.
+    const { tracker, gone } = buildTracker();
+    const first = makeAgentPTY('agent-a', 'Do you want to proceed?');
+    tracker.onPTYPromptVisible(first);
+    tracker.onPTYPromptVisible(makeAgentPTY('agent-a', 'Do you want to proceed?'));
+
+    expect(gone).toEqual([{ id: first.id, reason: 'pty_render_superseded' }]);
+  });
+
+  test('main-agent prompts still supersede each other', () => {
+    const { tracker, gone } = buildTracker();
+    const first = makeHooklessPTYQuestion('first prompt');
+    tracker.onPTYPromptVisible(first);
+    tracker.onPTYPromptVisible(makeHooklessPTYQuestion('second prompt'));
+
+    expect(gone).toEqual([{ id: first.id, reason: 'pty_render_superseded' }]);
+  });
+});
