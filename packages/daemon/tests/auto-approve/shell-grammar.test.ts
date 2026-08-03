@@ -221,3 +221,79 @@ describe('#999 safe loops and conditionals are covered', () => {
     test(`${JSON.stringify(cmd)} (${why})`, () => expect(covered(cmd)).not.toBeNull());
   }
 });
+
+/**
+ * #1004 review, CRITICAL 1. Peeling made `matchCoveredCommand` judge the PEELED
+ * body while the scratch group's cwd tracker still detected `cd` in the RAW
+ * segment text. A `cd` behind a grammar keyword was therefore invisible to the
+ * tracker, which carried the previous scratch directory forward while the real
+ * shell had moved elsewhere — and a later relative `rm` was approved against a
+ * directory nobody checked.
+ *
+ * This is the third instance of one shape: two walks over the same command that
+ * must agree, computed from two different texts (#1000 twice, then this).
+ */
+describe('#1004 a cd behind a grammar keyword never carries a stale scratch root', () => {
+  const SCRATCH = [...TRUSTED];
+  const escapes = [
+    'cd /tmp/work && if true; then cd /etc; fi && rm passwd',
+    'cd /tmp/work; for x in 1; do cd /etc; done; rm passwd',
+    'cd /tmp/work; while true; do cd /etc; break; done; rm passwd',
+    'cd /tmp/work; until false; do cd /etc; break; done; rm passwd',
+    'cd /tmp/work && if true; then cd /Users/yahya; fi && rm -rf Documents',
+  ];
+  for (const cmd of escapes) {
+    test(JSON.stringify(cmd), () =>
+      expect(matchGroups('Bash', { command: cmd }, SCRATCH)).toBeNull());
+  }
+
+  test('a plain cd into scratch still works (the fix does not disable the group)', () => {
+    expect(matchGroups('Bash', { command: 'cd /tmp/work && rm junk' }, SCRATCH)).toBe('scratch:rm');
+  });
+
+  test('a conditional cd forgets the root rather than keeping the old one', () => {
+    // Even when the conditional cd targets scratch, its effect is unknowable
+    // (the branch may not run), so a later relative target is refused rather
+    // than resolved against a guessed directory.
+    expect(
+      matchGroups('Bash', { command: 'cd /tmp/a && if true; then cd /tmp/b; fi && rm x' }, SCRATCH),
+    ).toBeNull();
+  });
+});
+
+/**
+ * #1004 review, CRITICAL 2. `HOME=/tmp/evil git commit` peeled to a covered
+ * `git commit`, while a `.gitconfig` at the redirected HOME sets
+ * `core.hooksPath` and runs an attacker's `pre-commit` — demonstrated end to end
+ * against real git. Same shape for every tool that reads a config path from the
+ * environment, so the rule tests the VALUE (does it point somewhere?) rather
+ * than trying to enumerate tools.
+ */
+describe('#1004 an assignment whose value is a path is never peeled', () => {
+  const mustRefuse = [
+    'HOME=/tmp/evilhome git commit -m x',
+    'XDG_CONFIG_HOME=/tmp/e git commit -m x',
+    'KUBECONFIG=/tmp/e.yaml git status',
+    'AWS_CONFIG_FILE=/tmp/e git status',
+    'AWS_SHARED_CREDENTIALS_FILE=/tmp/e git status',
+    'DOCKER_CONFIG=/tmp/e git status',
+    'GH_CONFIG_DIR=/tmp/e gh pr view 1',
+    // The generic rule: an ordinary-looking name still cannot carry a path.
+    'D=/tmp/e git status',
+    'ANYTHING=~/evil git status',
+    'ANYTHING=./rel git status',
+    // Name-based refusals for values that are not paths.
+    'HOME=relative git status',
+    'IFS=x git status',
+    'POSIXLY_CORRECT=1 git status',
+  ];
+  for (const cmd of mustRefuse) {
+    test(JSON.stringify(cmd), () => expect(covered(cmd)).toBeNull());
+  }
+
+  test('opaque token values still peel (the cohort this feature exists for)', () => {
+    expect(covered('ACC=da8d7a2a868 git status')).not.toBeNull();
+    expect(covered('ZONE=e684135de4 git status')).not.toBeNull();
+    expect(covered('HITS=0 git status')).not.toBeNull();
+  });
+});

@@ -74,7 +74,33 @@ const GRAMMAR_PREFIX_KEYWORDS: readonly string[] = [
  * The quoted alternatives come first so a value containing spaces is consumed
  * whole: `FOO="a b" git status` must leave `git status`, not `b" git status`.
  */
-const ASSIGNMENT_PREFIX_RE = /^([A-Za-z_][A-Za-z0-9_]*)=(?:"[^"]*"|'[^']*'|\S*)(?:\s+|$)/;
+const ASSIGNMENT_PREFIX_RE = /^([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|\S*)(?:\s+|$)/;
+
+/**
+ * An assignment whose VALUE names a filesystem location is never peeled,
+ * whatever the variable is called.
+ *
+ * The name denylist below cannot win this on its own. Review of #1004 proved
+ * `HOME=/tmp/evilhome git commit` peels to a covered `git commit` while a
+ * `.gitconfig` at the redirected HOME sets `core.hooksPath` and runs an
+ * attacker's `pre-commit` — demonstrated end to end against real git 2.55. The
+ * same shape reaches `XDG_CONFIG_HOME` (git reads it too), `KUBECONFIG`
+ * (`exec:` credential plugins), `AWS_CONFIG_FILE` (`credential_process`),
+ * `DOCKER_CONFIG` (`credHelpers`), and every future tool that learns to read a
+ * config path from the environment. Enumerating tools is a race this cannot
+ * win.
+ *
+ * What every one of those attacks has in common is not the variable name, it is
+ * that the value points somewhere. So that is what is tested. The benign
+ * assignments this feature exists to cover look nothing like it — measured on
+ * real traffic they are opaque tokens (`ACC=da8d7a2a`, `TOK=...`,
+ * `ZONE=e684...`, `HITS=0`).
+ *
+ * Costs an escalation on an honest `D=/some/dir` prefix. That is the right
+ * direction to be wrong in: the alternative is a covered command running under
+ * an attacker's configuration.
+ */
+const PATH_LIKE_VALUE_RE = /[/~]/;
 
 /**
  * Variables whose assignment changes WHICH program a command name resolves to,
@@ -105,6 +131,15 @@ const EXECUTION_INFLUENCING_NAMES: readonly string[] = [
   'VISUAL',
   'PAGER',
   'MANPATH',
+  // Config-location redirection (#1004 review). Covered by the value test as
+  // well whenever the value is a real path; listed here so a relative or
+  // otherwise path-free spelling is refused too.
+  'HOME',
+  'KUBECONFIG',
+  'LESSOPEN',
+  'MANPAGER',
+  'TERMINFO',
+  'POSIXLY_CORRECT',
 ];
 const EXECUTION_INFLUENCING_PREFIXES: readonly string[] = [
   'LD_',
@@ -117,6 +152,11 @@ const EXECUTION_INFLUENCING_PREFIXES: readonly string[] = [
   'NODE_',
   'JAVA_',
   'npm_',
+  'XDG_',
+  'AWS_',
+  'DOCKER_',
+  'GH_',
+  'SSH_',
 ];
 
 function redirectsExecution(name: string): boolean {
@@ -182,7 +222,13 @@ export function stripShellGrammar(segment: string): StrippedSegment {
     if (keyword === null) {
       const assignment = ASSIGNMENT_PREFIX_RE.exec(rest);
       if (assignment === null) break;
+      // Two independent refusals: what the variable is called, and whether its
+      // value points at a filesystem location. Either one alone leaks -- the
+      // name list misses `HOME`-class config redirection, the value test misses
+      // non-path settings like `IFS=x`.
       if (redirectsExecution(assignment[1] ?? '')) break;
+      const value = (assignment[2] ?? '').replace(/^["']|["']$/g, '');
+      if (PATH_LIKE_VALUE_RE.test(value)) break;
       rest = rest.slice(assignment[0].length).trim();
       if (rest === '') return { command: '', structural: true };
       continue;
