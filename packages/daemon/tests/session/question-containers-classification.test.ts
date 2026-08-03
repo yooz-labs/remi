@@ -134,9 +134,9 @@ const REGISTRY: readonly Entry[] = [
   },
   {
     file: 'api/question-presence-tracker.ts',
-    field: 'observedHooklessQuestion',
+    field: 'observedRenderOwnedQuestion',
     cls: 'post-card-metadata',
-    note: 'Id of the currently-PUSHED hook-less question (#888/#920) -- tracks a card the store already owns, to know when to resolve it on a confirmed superseding render.',
+    note: 'Id of the currently-PUSHED render-born question (#888/#920, widened by #1005). Tracks a card the store already owns, to know when to resolve it on a confirmed superseding render. Was `observedHooklessQuestion`, scoped to hookRecord === undefined; that excluded parked subagent escalations, which are hook-BORN but whose hook was answered passthrough at park time (ADR 0004), so the render is their only living evidence and nothing tracked them at all -- they left the store only via lru_eviction. Held cards still never reach here (a held hook means Claude is blocked, not rendering; pushHeldHook is a different trigger).',
   },
   {
     file: 'api/question-presence-tracker.ts',
