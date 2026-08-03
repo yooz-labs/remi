@@ -135,7 +135,7 @@ describe('QuestionPresenceTracker render-resolution (#888/#920)', () => {
     tracker.onPTYPromptVisible(q);
     expect(pushed).toHaveLength(1);
     expect(pushed[0]?.id).toBe(q.id);
-    expect(tracker.observedHooklessQuestionForTest()).toBe(q.id);
+    expect(tracker.observedRenderOwnedQuestionForTest()).toBe(q.id);
     expect(gone).toHaveLength(0); // nothing superseded yet
   });
 
@@ -147,7 +147,7 @@ describe('QuestionPresenceTracker render-resolution (#888/#920)', () => {
     tracker.onPTYPromptVisible(second);
 
     expect(gone).toEqual([{ id: first.id, reason: 'pty_render_superseded' }]);
-    expect(tracker.observedHooklessQuestionForTest()).toBe(second.id);
+    expect(tracker.observedRenderOwnedQuestionForTest()).toBe(second.id);
   });
 
   test('the hard requirement fix: a redraw whose replacement push is DEDUPED does NOT resolve the original', () => {
@@ -171,7 +171,7 @@ describe('QuestionPresenceTracker render-resolution (#888/#920)', () => {
     expect(liveIds.has(second.id)).toBe(false); // second never landed
     // Tracking still points at the original -- a LATER confirmed
     // supersession can still resolve it correctly.
-    expect(tracker.observedHooklessQuestionForTest()).toBe(first.id);
+    expect(tracker.observedRenderOwnedQuestionForTest()).toBe(first.id);
   });
 
   test('a redraw of the SAME text, once CONFIRMED delivered (e.g. a richer re-emission), still supersedes', () => {
@@ -190,7 +190,7 @@ describe('QuestionPresenceTracker render-resolution (#888/#920)', () => {
     tracker.onPTYPromptVisible(second);
 
     expect(gone).toEqual([{ id: first.id, reason: 'pty_render_superseded' }]);
-    expect(tracker.observedHooklessQuestionForTest()).toBe(second.id);
+    expect(tracker.observedRenderOwnedQuestionForTest()).toBe(second.id);
   });
 
   test('status changes never resolve a hook-less question (trigger dropped, #888 review fix)', () => {
@@ -200,11 +200,11 @@ describe('QuestionPresenceTracker render-resolution (#888/#920)', () => {
 
     tracker.onStatusChange('executing'); // leaves 'waiting'
     expect(gone).toHaveLength(0);
-    expect(tracker.observedHooklessQuestionForTest()).toBe(q.id);
+    expect(tracker.observedRenderOwnedQuestionForTest()).toBe(q.id);
 
     tracker.onStatusChange('waiting'); // back to 'waiting'
     expect(gone).toHaveLength(0);
-    expect(tracker.observedHooklessQuestionForTest()).toBe(q.id);
+    expect(tracker.observedRenderOwnedQuestionForTest()).toBe(q.id);
   });
 
   test('clearPending never resolves a hook-less question (trigger dropped, #888 review fix)', () => {
@@ -216,25 +216,40 @@ describe('QuestionPresenceTracker render-resolution (#888/#920)', () => {
     expect(gone).toHaveLength(0);
     // Tracking survives clearPending too -- a later CONFIRMED supersession
     // can still resolve it, exactly as if clearPending had never run.
-    expect(tracker.observedHooklessQuestionForTest()).toBe(q.id);
+    expect(tracker.observedRenderOwnedQuestionForTest()).toBe(q.id);
   });
 
-  test('a HOOK-PAIRED render is never tracked as hook-less (it has its own removal path)', () => {
+  /**
+   * CHANGED by #1005 Change B. This test previously asserted that a
+   * hook-paired render is NOT tracked, justified as "it has its own removal
+   * path". That justification was measured false for the cohort that matters:
+   * a parked subagent escalation is hook-BORN, but its hook was answered
+   * `passthrough` at park time (ADR 0004), so its only exits are an
+   * exact-signature tool-run match, a phone answer, or `SubagentStop` — and a
+   * terminal DENY fires no tool call, the lead-`Stop` sweep skips subagent
+   * entries (#711), and a teammate can run for days without `SubagentStop`.
+   *
+   * Tracing the 8 cards stuck in a real pending set: 7 subagent-tagged, every
+   * one removed ONLY by `lru_eviction`, 2.5-12.5h after being added. The
+   * "own removal path" did not exist. So a hook-paired render IS tracked now.
+   */
+  test('a HOOK-PAIRED render IS tracked as render-owned (#1005)', () => {
     const { tracker, gone } = buildTracker();
     const hookRecord = makeHookRecord();
     tracker.recordPendingHook(hookRecord);
     const ptyRender = makeHooklessPTYQuestion(); // agentless -> pairs as sole candidate
     tracker.onPTYPromptVisible(ptyRender);
 
-    expect(tracker.observedHooklessQuestionForTest()).toBeNull();
-    expect(gone).toHaveLength(0); // nothing hook-less was ever tracked
+    // The merged push adopts the HOOK's id (#887), so that is what is tracked.
+    expect(tracker.observedRenderOwnedQuestionForTest()).toBe(hookRecord.id);
+    expect(gone).toHaveLength(0); // nothing was superseded yet
   });
 
   test('a hook-paired render, CONFIRMED delivered, SUPERSEDES a previously-tracked hook-less one', () => {
     const { tracker, gone } = buildTracker();
     const hookless = makeHooklessPTYQuestion('orphan prompt');
     tracker.onPTYPromptVisible(hookless);
-    expect(tracker.observedHooklessQuestionForTest()).toBe(hookless.id);
+    expect(tracker.observedRenderOwnedQuestionForTest()).toBe(hookless.id);
 
     const hookRecord = makeHookRecord();
     tracker.recordPendingHook(hookRecord);
@@ -242,9 +257,10 @@ describe('QuestionPresenceTracker render-resolution (#888/#920)', () => {
     tracker.onPTYPromptVisible(paired);
 
     expect(gone).toEqual([{ id: hookless.id, reason: 'pty_render_superseded' }]);
-    // The merged push adopted the HOOK's id (#887) -- tracking is null now,
-    // not the merged id, because the merge was hook-paired.
-    expect(tracker.observedHooklessQuestionForTest()).toBeNull();
+    // The merged push adopted the HOOK's id (#887), and since #1005 a
+    // hook-paired render takes the render-owned slot rather than clearing it —
+    // so the NEXT confirmed render can resolve this one in turn.
+    expect(tracker.observedRenderOwnedQuestionForTest()).toBe(hookRecord.id);
   });
 
   test('a HELD-hook push (always hook-derived) never touches hook-less tracking', () => {
@@ -260,7 +276,7 @@ describe('QuestionPresenceTracker render-resolution (#888/#920)', () => {
     // The hook-less question is untouched by the held push -- it is a
     // completely separate mechanism (#573) that never renders on the PTY,
     // and pushHeldHook never runs the confirmed-delivery gate at all.
-    expect(tracker.observedHooklessQuestionForTest()).toBe(hookless.id);
+    expect(tracker.observedRenderOwnedQuestionForTest()).toBe(hookless.id);
     expect(gone).toHaveLength(0);
   });
 
@@ -282,7 +298,7 @@ describe('QuestionPresenceTracker render-resolution (#888/#920)', () => {
     tracker.onPTYPromptVisible(first);
     expect(() => tracker.onPTYPromptVisible(second)).not.toThrow();
     // Tracking still advances correctly despite the dep throwing.
-    expect(tracker.observedHooklessQuestionForTest()).toBe(second.id);
+    expect(tracker.observedRenderOwnedQuestionForTest()).toBe(second.id);
   });
 
   test('no onHooklessQuestionGone dep wired: tracker behaves exactly as before #888', () => {
@@ -355,7 +371,7 @@ describe('QuestionPresenceTracker render-resolution (#888/#920)', () => {
     tracker.onOrphanPTYPrompt(first);
     await new Promise((r) => setTimeout(r, 30));
     expect(pushed).toHaveLength(1);
-    expect(tracker.observedHooklessQuestionForTest()).toBe(first.id);
+    expect(tracker.observedRenderOwnedQuestionForTest()).toBe(first.id);
 
     const second = makeHooklessPTYQuestion('orphan B');
     tracker.onOrphanPTYPrompt(second);
@@ -417,5 +433,82 @@ describe('#1002 prompt-on-screen signals are not interchangeable', () => {
     tracker.onPTYPromptVisible(makeHooklessPTYQuestion());
     expect(tracker.isPromptVisibleOnPTY()).toBe(true);
     expect(tracker.isPromptObservedOnPTY()).toBe(true);
+  });
+});
+
+/**
+ * #1005 Change B. The parked-render ARBITRATION push (an escalate verdict, the
+ * "45 born live" cohort) went through `pushMerged` directly, bypassing the
+ * render-owned bookkeeping entirely — so those cards were tracked by nothing
+ * and could only ever leave the store via LRU eviction.
+ */
+describe('#1005 an arbitration-verdict push takes the render-owned slot', () => {
+  function trackerWithArbiter(
+    pushes: Question[],
+    gone: Array<{ id: string; reason: string }>,
+    verdict: 'push' | 'answered',
+    deliver: () => boolean = () => true,
+  ): QuestionPresenceTracker {
+    const tracker = new QuestionPresenceTracker(
+      (q) => {
+        pushes.push(q);
+        return deliver() ? { status: 'registered' as const } : { status: 'deduped' as const };
+      },
+      { onHooklessQuestionGone: (id, reason) => gone.push({ id, reason }) },
+    );
+    tracker.setParkedRenderArbiter(async () => ({ outcome: verdict }));
+    return tracker;
+  }
+
+  test('an escalated parked render is superseded by the next confirmed render', async () => {
+    const pushes: Question[] = [];
+    const gone: Array<{ id: string; reason: string }> = [];
+    const tracker = trackerWithArbiter(pushes, gone, 'push');
+
+    const hook = makeHookRecord('reviewer · Bash: git push');
+    tracker.recordPendingHook(hook);
+    tracker.parkAwaitingPTY(hook);
+    tracker.onOrphanPTYPrompt(makeHooklessPTYQuestion('Do you want to proceed?'));
+    await new Promise((r) => setTimeout(r, 5));
+
+    expect(pushes).toHaveLength(1);
+    expect(tracker.observedRenderOwnedQuestionForTest()).toBe(hook.id);
+
+    // A different prompt takes the screen: the escalated card's prompt is
+    // provably gone, so the card is resolved instead of lingering.
+    tracker.onPTYPromptVisible(makeHooklessPTYQuestion('A different prompt'));
+    expect(gone).toEqual([{ id: hook.id, reason: 'pty_render_superseded' }]);
+  });
+
+  test('an UNCONFIRMED arbitration push does not claim the slot (ADR 0021)', async () => {
+    const pushes: Question[] = [];
+    const gone: Array<{ id: string; reason: string }> = [];
+    const tracker = trackerWithArbiter(pushes, gone, 'push', () => false);
+
+    const hook = makeHookRecord('reviewer · Bash: git push');
+    tracker.recordPendingHook(hook);
+    tracker.parkAwaitingPTY(hook);
+    tracker.onOrphanPTYPrompt(makeHooklessPTYQuestion('Do you want to proceed?'));
+    await new Promise((r) => setTimeout(r, 5));
+
+    // Deduped: nothing is known to have changed, so nothing is tracked and
+    // nothing is resolved on its strength.
+    expect(tracker.observedRenderOwnedQuestionForTest()).toBeNull();
+    expect(gone).toHaveLength(0);
+  });
+
+  test('an ANSWERED verdict pushes nothing and claims nothing', async () => {
+    const pushes: Question[] = [];
+    const gone: Array<{ id: string; reason: string }> = [];
+    const tracker = trackerWithArbiter(pushes, gone, 'answered');
+
+    const hook = makeHookRecord('reviewer · Bash: git push');
+    tracker.recordPendingHook(hook);
+    tracker.parkAwaitingPTY(hook);
+    tracker.onOrphanPTYPrompt(makeHooklessPTYQuestion('Do you want to proceed?'));
+    await new Promise((r) => setTimeout(r, 5));
+
+    expect(pushes).toHaveLength(0);
+    expect(tracker.observedRenderOwnedQuestionForTest()).toBeNull();
   });
 });
