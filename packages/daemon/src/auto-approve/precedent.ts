@@ -457,9 +457,9 @@ export function signatureForOperation(
  *
  * | tool | summary | complete? |
  * |---|---|---|
- * | `Bash` | the full command | **yes** — the command IS the operation |
- * | `Read` | `file_path` | **yes** — a read has no payload; `offset`/`limit` narrow it, never widen it |
+ * | `Bash` | the full command | **yes** — the command IS the operation, and every risk/deny function in this module keys off the same `command` field |
  * | `Write`/`Edit` | `file_path` only | no — `content` / `new_string` decide what actually happens |
+ * | `Read` | `file_path` only | no — see "Read looked safe and was not" below |
  * | `Glob`/`Grep` | `pattern` only | no — the `path` it runs under is dropped, so `Grep: TODO` in a repo and in `/etc` are one signature |
  * | fetch/web | `url` | no — `prompt` is dropped, and the fetch is a network egress whose repeat deserves asking |
  * | anything else | first matching field | no — the generic fallback is incomplete BY CONSTRUCTION |
@@ -469,6 +469,53 @@ export function signatureForOperation(
  * a complete identity, which is the direction that costs a question rather
  * than a compromise.
  *
+ * ## `Read` looked safe and was not — the same mistake, one round later
+ *
+ * The first draft of this list also allowed `Read`, on the reasoning "a read
+ * has no payload; `offset`/`limit` narrow it, never widen it." The first half
+ * is true; the second is the wrong question. `offset`/`limit` never enter the
+ * signature at all, so a narrow read and a whole-file read are ONE key:
+ *
+ *     Read {file_path: '~/.ssh/id_rsa', offset: 1, limit: 1}   // approved once
+ *     Read {file_path: '~/.ssh/id_rsa'}                        // the whole file
+ *     -> signatures IDENTICAL -> exact hit -> band=moderate -> approve, 0ms
+ *
+ * `classifyRisk` does not elevate a sensitive READ path either (only
+ * `Write`/`Edit`/`NotebookEdit` get `isSensitiveWritePath`, `risk-bands.ts`),
+ * so nothing downstream catches it. One approved peek at a credential file
+ * authorized an unattended dump of it.
+ *
+ * That is the identical defect this list was created to fix, found one review
+ * round later on the entry that looked obviously fine. Worth stating plainly:
+ * "the payload is missing" is not the rule — the rule is **anything the
+ * signature drops that changes what the operation does or exposes**, and for a
+ * read that is its EXTENT. The cost of removing `Read` is close to zero
+ * anyway: the `read-only` group approves reads at 0ms without ever consulting
+ * precedent.
+ *
+ * ## Why `terminal` is not here either, though `summarizeToolInput` knows it
+ *
+ * `summarizeToolInput` treats `terminal` like `bash` and extracts the real
+ * command, so its signature IS complete — and it is still excluded, because
+ * completeness is necessary and not sufficient. The bands that bound what a
+ * precedent may authorize do not recognize the name:
+ *
+ *     classifyRisk('Bash',     {command: 'rm -rf /'})  -> critical
+ *     classifyRisk('terminal', {command: 'rm -rf /'})  -> moderate
+ *     matchesCatastrophicPattern('terminal', ...)      -> null
+ *
+ * `classifyRisk`, `matchesCatastrophicPattern` and `matchSubstringPattern` all
+ * branch on the literal string `'Bash'`, so a `terminal`-named tool is capped
+ * at `moderate` — the tier `implicit` reaches — and can never be floored. An
+ * entry here whose risk cannot be classified is an entry whose matrix bound is
+ * fictional.
+ *
+ * **That gap is bigger than this list and is tracked separately (#1020):** it
+ * applies to ANY command-executing tool not literally named `Bash`, including
+ * one an MCP server registers, and it bypasses the deny floor and risk ceiling
+ * with or without precedent. Excluding `terminal` here does not fix it; it
+ * only keeps this module from depending on it.
+ *
  * ## The deny direction deliberately ignores this
  *
  * `findDeniedPrecedent` is a STOP rule (ADR 0010), so a content-blind
@@ -476,18 +523,28 @@ export function signatureForOperation(
  * every later write to it. That is the safe direction and the intended one, so
  * the deny consult does not consult this list.
  */
-const PRECEDENT_ELIGIBLE_TOOLS: ReadonlySet<string> = new Set(['bash', 'terminal', 'read']);
+const PRECEDENT_ELIGIBLE_TOOLS: ReadonlySet<string> = new Set(['Bash']);
 
 /**
  * May a past approval of `toolName` authorize a repeat? See
- * `PRECEDENT_ELIGIBLE_TOOLS` for the rule and the measured failure that
+ * `PRECEDENT_ELIGIBLE_TOOLS` for the rule and the two measured failures that
  * produced it.
  *
- * Case-insensitive, matching `summarizeToolInput`'s own dispatch, so a tool
- * spelled `bash` does not slip past a check written for `Bash`.
+ * **Case-SENSITIVE, deliberately, and this is the load-bearing detail.** The
+ * obvious implementation lowercases — it reads as defensive, and a first draft
+ * of this function did exactly that. It is the bug. `classifyRisk`,
+ * `matchesCatastrophicPattern` and `matchSubstringPattern` all compare
+ * `toolName === 'Bash'` exactly, so a tool named `bash` in lowercase would be
+ * ELIGIBLE here while banding as a non-Bash tool there: capped at `moderate`,
+ * never floored, precedent-approvable — the same hole excluding `terminal`
+ * closes, reopened by the normalization meant to prevent it.
+ *
+ * So this set must contain exactly the strings the RISK layer recognizes, and
+ * compare them the same way. When #1020 fixes that layer's literal-`'Bash'`
+ * assumption, this gate should be updated in the same change, not before.
  */
 export function precedentMayAuthorize(toolName: string): boolean {
-  return PRECEDENT_ELIGIBLE_TOOLS.has(toolName.toLowerCase());
+  return PRECEDENT_ELIGIBLE_TOOLS.has(toolName);
 }
 
 /**

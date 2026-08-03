@@ -14,12 +14,14 @@
 
 import { afterAll, describe, expect, test } from 'bun:test';
 import { AutoApproveService } from '../../src/auto-approve/auto-approve-service.ts';
+import { matchesCatastrophicPattern } from '../../src/auto-approve/deny-floor.ts';
 import {
   type PrecedentReader,
   PrecedentStore,
   precedentMayAuthorize,
   signatureForOperation,
 } from '../../src/auto-approve/precedent.ts';
+import { classifyRisk } from '../../src/auto-approve/risk-bands.ts';
 import type { AutoApproveConfig } from '../../src/auto-approve/types.ts';
 
 /** A URL nothing serves: reaching the model is a test failure, not a slow path. */
@@ -420,12 +422,10 @@ describe('#976 a signature that is not the whole operation cannot authorize', ()
     expect(result.decision).not.toBe('approve');
   });
 
-  test('precedentMayAuthorize: only tools whose summary IS the operation', () => {
-    // Bash's summary is the whole command; Read has no payload. Everything
-    // else drops something that decides what happens.
-    for (const tool of ['Bash', 'bash', 'terminal', 'Read', 'read']) {
-      expect(precedentMayAuthorize(tool)).toBe(true);
-    }
+  test('precedentMayAuthorize: Bash only', () => {
+    // Bash's summary is the whole command AND every risk/deny function keys
+    // off the same `command` field. Nothing else clears both bars.
+    expect(precedentMayAuthorize('Bash')).toBe(true);
     for (const tool of ['Write', 'Edit', 'NotebookEdit', 'Glob', 'Grep', 'WebFetch', 'SomeMcp']) {
       expect(precedentMayAuthorize(tool)).toBe(false);
     }
@@ -437,6 +437,52 @@ describe('#976 a signature that is not the whole operation cannot authorize', ()
     // never a compromise.
     expect(precedentMayAuthorize('SomeFutureTool')).toBe(false);
     expect(precedentMayAuthorize('')).toBe(false);
+  });
+
+  test('case-SENSITIVE: a lowercase `bash` is not eligible', () => {
+    // Lowercasing reads as defensive and is the bug. `classifyRisk` and the
+    // deny floor compare `toolName === 'Bash'` exactly, so a lowercase `bash`
+    // bands as a NON-Bash tool -- capped at moderate, never floored. Eligible
+    // + unbandable is precisely the hole excluding `terminal` closes.
+    expect(classifyRisk('bash', { command: 'rm -rf /' })).not.toBe('critical');
+    expect(precedentMayAuthorize('bash')).toBe(false);
+  });
+
+  test('`terminal` is not eligible: its risk cannot be classified', () => {
+    // `summarizeToolInput` DOES understand `terminal` and extracts the real
+    // command, so its signature is complete -- and completeness is necessary,
+    // not sufficient. The matrix bound would be fictional.
+    expect(classifyRisk('terminal', { command: 'rm -rf /' })).toBe('moderate');
+    expect(matchesCatastrophicPattern('terminal', { command: 'rm -rf /' })).toBeNull();
+    expect(precedentMayAuthorize('terminal')).toBe(false);
+  });
+
+  test('an approved narrow Read does NOT authorize reading the whole file', async () => {
+    // The second instance of this PR's own defect, found a review round after
+    // the first. `offset`/`limit` never enter the signature, so a one-line
+    // peek at a credential file and a full dump of it are ONE key. Nothing
+    // downstream catches it either: `classifyRisk` elevates a sensitive WRITE
+    // path, never a sensitive read.
+    const store = new PrecedentStore();
+    const file_path = '/Users/x/.ssh/id_rsa';
+    expect(signatureForOperation('Read', { file_path, offset: 1, limit: 1 })).toBe(
+      signatureForOperation('Read', { file_path }),
+    );
+    humanAnswered(store, 'Read', { file_path, offset: 1, limit: 1 }, 'approved');
+
+    const result = await service().evaluate(
+      'Read',
+      { file_path },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      readerFor(store),
+    );
+    expect(result.reasoning).not.toContain('session precedent');
   });
 });
 
