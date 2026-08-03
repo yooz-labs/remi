@@ -13,6 +13,7 @@ import {
   RISK_BANDS,
   bandForGroupMatch,
   classifyRisk,
+  formatMatrixContext,
   riskBandAtLeast,
   riskBandRank,
 } from '../../src/auto-approve/risk-bands.ts';
@@ -464,6 +465,30 @@ describe('RISK_BANDS / riskBandRank / riskBandAtLeast', () => {
     expect(riskBandAtLeast('moderate', 'high')).toBe(false);
     expect(riskBandAtLeast('critical', 'low')).toBe(true);
     expect(riskBandAtLeast('low', 'critical')).toBe(false);
+  });
+});
+
+/**
+ * #976 instrumentation. This string is the measurement the decision to build
+ * (or abandon) the matrix's widening half rests on, so its format is pinned
+ * rather than left to a template literal nobody can test — the service's
+ * decision log only fires after a real LLM round-trip, and mocks are forbidden.
+ */
+describe('#976 formatMatrixContext', () => {
+  test('carries both axes, because neither is sufficient alone', () => {
+    expect(formatMatrixContext('moderate', true)).toBe('[band=moderate authority=yes]');
+    expect(formatMatrixContext('moderate', false)).toBe('[band=moderate authority=no]');
+    expect(formatMatrixContext('critical', true)).toBe('[band=critical authority=yes]');
+    expect(formatMatrixContext('high', false)).toBe('[band=high authority=no]');
+  });
+
+  test('the eligible population is greppable as one token', () => {
+    // The whole point: `band=moderate authority=yes` is the ONLY combination a
+    // text-derived grade could decide -- critical never approves, and high
+    // needs a witness text cannot supply. A field log has to be countable with
+    // one grep, or the measurement will not get taken.
+    const line = `AutoApprove Bash: escalate (5000ms) ${formatMatrixContext('moderate', true)} - reason`;
+    expect(line).toContain('band=moderate authority=yes');
   });
 });
 

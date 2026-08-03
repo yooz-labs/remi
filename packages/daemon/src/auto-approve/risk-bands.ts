@@ -928,3 +928,23 @@ export function classifyRisk(
 
   return classifyCommandMax(command, 0);
 }
+
+/**
+ * The matrix context a decision was taken in, for the decision log (#976).
+ *
+ * Extracted as a pure function rather than inlined into the template so the
+ * FORMAT is testable without an engine. The service's decision log only fires
+ * after a real LLM round-trip, and the repo forbids mocks, so an inline
+ * template string would be effectively untestable — and this string is not
+ * decoration, it is the measurement the decision to build (or not build) the
+ * matrix's widening half rests on.
+ *
+ * Both fields matter and neither is sufficient alone. `band` says whether a
+ * grade could ever be decisive (`critical` never approves; `high` needs a
+ * witness text cannot supply; only `moderate` is in play). `authority` says
+ * whether there was any text to grade. The eligible population is the
+ * intersection, and it has never been counted.
+ */
+export function formatMatrixContext(band: RiskBand, authorityPresent: boolean): string {
+  return `[band=${band} authority=${authorityPresent ? 'yes' : 'no'}]`;
+}
