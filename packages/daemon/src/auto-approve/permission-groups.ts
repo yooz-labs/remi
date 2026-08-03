@@ -27,6 +27,7 @@
  * user allow list uses the same primitives (#536).
  */
 
+import { COMMAND_WRAPPERS, SHELL_C_BINARIES } from './risk-bands.ts';
 import {
   isSensitiveWritePath,
   resolveDotDot,
@@ -35,6 +36,7 @@ import {
 import {
   type CompoundJoiner,
   matchCoveredCommand,
+  matchPrefix,
   rewriteRedirectClauses,
   shellWords,
   splitCompoundParts,
@@ -752,6 +754,262 @@ export function matchGroups(
     // match would otherwise cover `Write` to `~/.remi/config.toml` (#959).
     if (group.toolVeto?.(toolName, toolInput) === true) return null;
     return `${name}:${toolName}`;
+  }
+  return null;
+}
+
+/**
+ * Match a permission request against the named groups the way a STOP RULE has
+ * to: does ANY part of this command belong to a class the user hard-blocked?
+ *
+ * `matchGroups` answers the opposite question — "is the ENTIRE command covered,
+ * may I skip the LLM?" — and answers it precisely, returning null the moment
+ * one compound segment is not covered. That precision is correct for an ALLOW
+ * decision and backwards for a DENY one, which is ADR 0010's whole point: allow
+ * matching is narrow, deny matching is broad, and a rule that fails in the
+ * wrong direction is worse than no rule.
+ *
+ * Asking the precise matcher a deny question meant appending anything it did
+ * not recognise defeated the block outright (#1001):
+ *
+ *     deny_groups = ["fs-write"]
+ *     mkdir /tmp/x              -> denied
+ *     mkdir /tmp/x && ls -la    -> NOT denied
+ *
+ * — including the exact `mkdir` the user configured it to stop.
+ *
+ * So this deliberately does NOT require total coverage, and deliberately does
+ * NOT apply `segmentVeto`/`toolVeto`. Those vetoes exist to NARROW an allow
+ * match (a mutation flag means "do not approve this"); applying them here would
+ * mean a command that looks MORE dangerous is LESS likely to be denied.
+ */
+
+/**
+ * Wrappers the DENY path unwraps that `COMMAND_WRAPPERS` (risk-bands.ts) does
+ * not list.
+ *
+ * **The first version of this comment justified the split with a mechanism the
+ * code does not have.** It claimed risk-bands must not strip `sudo`, because
+ * `hasDangerousWholeWord` raises the band BECAUSE `sudo` is present and
+ * unwrapping would lower it. Review disproved that empirically: that check runs
+ * on the RAW segment text and short-circuits BEFORE `unwrapCommand` is called,
+ * so adding `sudo` to the shared set changes its classification not at all
+ * (`sudo mkdir` stays high, `sudo rm -rf /important` stays critical). Recorded
+ * here rather than silently rewritten — a wrong explanation in a comment is the
+ * failure ADR 0011 exists to name, and this file is where that ADR is cited.
+ *
+ * The real reason to keep `sudo`/`su`/`doas` separate is a genuine difference
+ * in what the two consumers are asking. `classifyRisk` treats an elevation
+ * wrapper's mere PRESENCE as the risk signal — privilege elevation is dangerous
+ * regardless of what it wraps — while this matcher wants to see THROUGH it to
+ * the operation being elevated. Those are different questions about the same
+ * token, which is the one situation where two sets are right.
+ *
+ * The other eight names have no such argument, and review showed sharing them
+ * would IMPROVE risk-bands rather than harm it: `setsid git push origin main
+ * --force` grades `moderate` there today while the bare command grades `high`,
+ * because the wrapper hides the command from the classifier. That is a live gap
+ * in a shipped module, filed separately — they stay here until it is fixed, so
+ * the deny path is not waiting on it.
+ */
+const DENY_EXTRA_WRAPPERS: ReadonlySet<string> = new Set([
+  'sudo',
+  'su',
+  'doas',
+  'runuser',
+  'ionice',
+  'setsid',
+  'script',
+  'chrt',
+  'taskset',
+  'proxychains',
+  'systemd-run',
+]);
+
+function isDenyUnwrappableWrapper(word: string): boolean {
+  return COMMAND_WRAPPERS.has(word) || DENY_EXTRA_WRAPPERS.has(word);
+}
+
+/**
+ * Rewrite a segment's HEAD word into the command name the shell would actually
+ * resolve, for the three spellings that hide it without any shell control:
+ *
+ *   /bin/mkdir x        path-qualified -- `matchPrefix` only knows bare names
+ *   ${x:-mkdir} x       parameter expansion with a literal default
+ *   {mkdir,} x          brace expansion
+ *
+ * All three confirmed to really run `mkdir` in review. Only the head word is
+ * touched: an ARGUMENT that happens to look like a path is not a command name,
+ * and rewriting those would invent matches.
+ */
+function normalizeHeadWord(words: readonly string[]): readonly string[] {
+  const head = words[0];
+  if (head === undefined || head === '') return words;
+  let name = head;
+  const expansion = /^\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=]([^}]*)\}$/.exec(name);
+  if (expansion !== null) name = expansion[1] ?? name;
+  const brace = /^\{([^,{}]+),?\}$/.exec(name);
+  if (brace !== null) name = brace[1] ?? name;
+  if (name.includes('/')) name = name.slice(name.lastIndexOf('/') + 1);
+  return name === head ? words : [name, ...words.slice(1)];
+}
+
+/** Bounds the unwrap recursion below; a real command nests a handful of levels. */
+const MAX_DENY_UNWRAP_DEPTH = 4;
+
+/**
+ * Find a denied prefix anywhere a segment could actually run one.
+ *
+ * A stop rule has to see through the things that HIDE a command name, and
+ * review of #1001 proved five separate ways to hide one, each verified by
+ * running it in real bash:
+ *
+ *     mkdir\t/tmp/x    'mkdir' /tmp/x    env mkdir /tmp/x
+ *     sh -c "mkdir x"   true & mkdir x    x=$(mkdir /tmp/x)
+ *
+ * The first instinct — treat any segment carrying shell control as a match,
+ * since ambiguity should block — was measured and abandoned. Over the real
+ * corpus it made EVERY group name block ~44% of ordinary traffic, because
+ * roughly 400 of 921 commands carry a redirect, a substitution or a wrapper
+ * somewhere. A deny knob that blocks half of everything is one people switch
+ * off, which is a worse security outcome than the gap it closes.
+ *
+ * So this UNWRAPS instead of refusing: it looks inside the wrapper, the `-c`
+ * argument, the substitution and the backgrounded half, and matches the real
+ * command name in each. Precise where precision is possible, and still broad in
+ * the ADR 0010 sense — any ONE part matching is enough.
+ */
+function findDenyHitInSegment(
+  segment: string,
+  prefixes: readonly string[],
+  depth: number,
+): string | null {
+  // `${IFS}` expands to a space, so `mkdir${IFS}/tmp/x` really runs `mkdir` --
+  // a standard, deliberate filter-bypass technique, not an accident. Normalized
+  // before anything else looks at the text.
+  const seg = segment.replace(/\$\{IFS\}|\$IFS\b/g, ' ').trim();
+  if (seg === '' || depth > MAX_DENY_UNWRAP_DEPTH) return null;
+
+  // Grammar first (#999), so `do mkdir /tmp/x` cannot evade what `mkdir
+  // /tmp/x` catches.
+  const body = stripShellGrammar(seg).command || seg;
+
+  // Raw text AND `shellWords`-tokenized text. Tokenizing is what defeats
+  // quoting, escaping and tab separators — the shell strips those before
+  // resolving a command name, so a raw-string compare is looking at something
+  // the shell never sees.
+  const words = shellWords(body);
+  for (const candidate of [body, words.join(' '), normalizeHeadWord(words).join(' ')]) {
+    const hit = matchPrefix(candidate, prefixes);
+    if (hit !== null) return hit;
+  }
+
+  // A lone `&` backgrounds the left side and runs the right; `splitCompound`
+  // deliberately leaves it glued (the allow path wants `hasShellControl` to
+  // veto the whole segment), so the deny path splits it itself.
+  if (/(^|[^&>])&(?![&>0-9])/.test(body)) {
+    for (const part of body.split(/(?<![&>])&(?![&>0-9])/)) {
+      const hit = findDenyHitInSegment(part, prefixes, depth + 1);
+      if (hit !== null) return hit;
+    }
+  }
+
+  // A wrapper renames the head token without changing what runs. Drop leading
+  // wrapper tokens and their flags, then judge the remainder.
+  if (isDenyUnwrappableWrapper(words[0] ?? '')) {
+    // Scan forward from every position after the wrapper rather than trying to
+    // model each wrapper's flag grammar. `runuser -u root -- mkdir` and
+    // `script -q /tmp/log mkdir` both bury the real command behind a wrapper's
+    // POSITIONAL argument, and enumerating which flags take values for eleven
+    // wrappers is exactly the per-tool denylist that lost repeatedly in #1004.
+    //
+    // Broad, but scoped: it only applies once a wrapper head is confirmed, so
+    // an ordinary command's arguments are never scanned this way.
+    for (let i = 1; i < words.length; i++) {
+      // Every position is tried, INCLUDING one that follows a flag. That
+      // knowingly accepts a false positive: `env -u mkdir git status` unsets a
+      // variable NAMED mkdir and runs `git status`, but reports
+      // `fs-write:mkdir`.
+      //
+      // Skipping post-flag positions was tried and reverted. It broke two real
+      // evasions immediately -- `su -c "mkdir /tmp/x"` (an interpreter's `-c`
+      // value IS a command) and `ionice -c2 -n0 mkdir` (attached flags consume
+      // no following token) -- because telling a flag's value from a command
+      // needs each wrapper's flag grammar, which is the per-tool denylist that
+      // lost repeatedly in #1004.
+      //
+      // The trade is asymmetric and settles it: the false positive
+      // over-blocks, which for a stop rule the user opted into is a prompt;
+      // the evasions under-block, which is the failure ADR 0010 calls
+      // unacceptable.
+      const hit = findDenyHitInSegment(words.slice(i).join(' '), prefixes, depth + 1);
+      if (hit !== null) return hit;
+    }
+  }
+
+  // An interpreter's `-c` argument is a command line, not an argument.
+  if (SHELL_C_BINARIES.has(words[0] ?? '')) {
+    const cIndex = words.indexOf('-c');
+    const inner = cIndex === -1 ? undefined : words[cIndex + 1];
+    if (inner !== undefined) {
+      const hit = findDenyHitInSegment(inner, prefixes, depth + 1);
+      if (hit !== null) return hit;
+    }
+  }
+
+  // Command substitution runs its contents.
+  for (const m of body.matchAll(/\$\(([^()]*)\)|`([^`]*)`/g)) {
+    const inner = m[1] ?? m[2];
+    if (inner === undefined || inner === '') continue;
+    const hit = findDenyHitInSegment(inner, prefixes, depth + 1);
+    if (hit !== null) return hit;
+  }
+
+  return null;
+}
+
+export function matchGroupsBroad(
+  toolName: string,
+  toolInput: Record<string, unknown>,
+  groupNames: readonly string[],
+): string | null {
+  const known = groupNames.filter(isKnownGroup);
+  if (known.length === 0) return null;
+
+  if (toolName === 'Bash') {
+    const command = typeof toolInput['command'] === 'string' ? toolInput['command'].trim() : '';
+    if (command === '') return null;
+    const prefixToGroup = new Map<string, string>();
+    for (const name of known) {
+      for (const cmd of BUILTIN_GROUPS[name]?.commands ?? []) {
+        if (!prefixToGroup.has(cmd)) prefixToGroup.set(cmd, name);
+      }
+    }
+    const prefixes = [...prefixToGroup.keys()];
+    for (const raw of splitCompoundParts(command)) {
+      const seg = raw.text.trim();
+      if (seg === '') continue;
+      // AMBIGUITY MEANS BLOCK, the mirror image of the allow path. Shell
+      // control, substitution or backgrounding means this module cannot say
+      // what the segment runs — and for a stop rule "I cannot tell" must
+      // resolve to a match, not to a pass. `matchGroups` refuses to APPROVE on
+      // the same signal; refusing to DENY on it would be the identical
+      // reasoning applied in the fatal direction.
+      //
+      // Review proved these are not theoretical. Every one of these really
+      // executes a `mkdir` and every one evaded `deny_groups=["fs-write"]`,
+      // verified against real bash:
+      //   true & mkdir /tmp/x        (a lone `&` is not a compound separator)
+      //   x=$(mkdir /tmp/x)          (substitution)
+      //   sh -c "mkdir /tmp/x"       (wrapper)
+      const hit = findDenyHitInSegment(seg, prefixes, 0);
+      if (hit !== null) return `${prefixToGroup.get(hit) ?? 'group'}:${hit}`;
+    }
+    return null;
+  }
+
+  for (const name of known) {
+    if (BUILTIN_GROUPS[name]?.tools.includes(toolName) === true) return `${name}:${toolName}`;
   }
   return null;
 }

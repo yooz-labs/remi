@@ -29,7 +29,7 @@ import {
   parseMultiChoiceDecision,
 } from './multichoice.ts';
 import { matchAllowPattern, matchSubstringPattern } from './pattern-matcher.ts';
-import { matchGroups } from './permission-groups.ts';
+import { matchGroups, matchGroupsBroad } from './permission-groups.ts';
 import { buildPrompt } from './prompt-builder.ts';
 import { classifyRisk, formatMatrixContext } from './risk-bands.ts';
 import { enforceRiskCeiling } from './risk-ceiling.ts';
@@ -697,7 +697,11 @@ export class AutoApproveService {
         this.logFn(`${prefix} DENIED ${toolName}: ${reasoning} (0ms)`);
         return { decision: 'deny', reasoning, durationMs: 0, model };
       }
-      const denyGroupMatch = matchGroups(toolName, toolInput, this.denyGroups);
+      // BROAD, not precise (#1001, ADR 0010). `matchGroups` requires the WHOLE
+      // command to be covered and is right for the allow question below; asking
+      // it a deny question meant `mkdir /tmp/x && ls -la` defeated a
+      // `deny_groups = ["fs-write"]` that stopped the bare `mkdir`.
+      const denyGroupMatch = matchGroupsBroad(toolName, toolInput, this.denyGroups);
       if (denyGroupMatch !== null) {
         const reasoning = `deny-matched group: "${denyGroupMatch}"`;
         this.logFn(`${prefix} DENIED ${toolName}: ${reasoning} (0ms)`);
