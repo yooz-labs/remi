@@ -27,6 +27,7 @@
  * user allow list uses the same primitives (#536).
  */
 
+import { COMMAND_WRAPPERS, SHELL_C_BINARIES } from './risk-bands.ts';
 import {
   isSensitiveWritePath,
   resolveDotDot,
@@ -34,6 +35,8 @@ import {
 } from './sensitive-paths.ts';
 import {
   type CompoundJoiner,
+  hasExecPrimitive,
+  hasShellControl,
   matchCoveredCommand,
   matchPrefix,
   rewriteRedirectClauses,
@@ -803,16 +806,41 @@ export function matchGroupsBroad(
     for (const raw of splitCompoundParts(command)) {
       const seg = raw.text.trim();
       if (seg === '') continue;
-      const hit = matchPrefix(seg, prefixes);
-      if (hit !== null) return `${prefixToGroup.get(hit) ?? 'group'}:${hit}`;
+      // AMBIGUITY MEANS BLOCK, the mirror image of the allow path. Shell
+      // control, substitution or backgrounding means this module cannot say
+      // what the segment runs — and for a stop rule "I cannot tell" must
+      // resolve to a match, not to a pass. `matchGroups` refuses to APPROVE on
+      // the same signal; refusing to DENY on it would be the identical
+      // reasoning applied in the fatal direction.
+      //
+      // Review proved these are not theoretical. Every one of these really
+      // executes a `mkdir` and every one evaded `deny_groups=["fs-write"]`,
+      // verified against real bash:
+      //   true & mkdir /tmp/x        (a lone `&` is not a compound separator)
+      //   x=$(mkdir /tmp/x)          (substitution)
+      //   sh -c "mkdir /tmp/x"       (wrapper)
+      const head = shellWords(seg)[0] ?? '';
+      if (
+        hasShellControl(seg) ||
+        hasExecPrimitive(seg) ||
+        COMMAND_WRAPPERS.has(head) ||
+        SHELL_C_BINARIES.has(head)
+      ) {
+        return `${known[0] ?? 'group'}:ambiguous-segment`;
+      }
+      // Peel grammar (#999) so `do rm -rf /` cannot evade a deny the bare form
+      // catches, and match on TOKENIZED words so quoting and escaping cannot
+      // either: `'mkdir' /tmp/x`, `"mkdir" /tmp/x` and `mkdi\r /tmp/x` are all
+      // real `mkdir` invocations that a raw-string prefix compare misses,
+      // as is a tab separator (`mkdir\t/tmp/x`).
+      const body = stripShellGrammar(seg).command;
+      const normalized = shellWords(body === '' ? seg : body).join(' ');
+      for (const candidate of [seg, body, normalized]) {
+        if (candidate === '') continue;
+        const hit = matchPrefix(candidate, prefixes);
+        if (hit !== null) return `${prefixToGroup.get(hit) ?? 'group'}:${hit}`;
+      }
     }
-    // KNOWN GAP, deliberately not closed here: a segment behind a shell grammar
-    // keyword (`do rm -rf /`) does not prefix-match, so it evades a deny the
-    // bare form catches. `stripShellGrammar` (#999) is what fixes it and lives
-    // on an unmerged branch; peeling before the match above is a two-line
-    // change once that lands. Noted rather than worked around, because the
-    // workaround would be a second grammar recognizer — the exact defect shape
-    // this module has already produced four times.
     return null;
   }
 

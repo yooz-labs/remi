@@ -155,7 +155,7 @@ export function bandForGroupMatch(groupHit: string | null): RiskBand | undefined
  * "Command-wrapper bypass" section for why `hasDangerousWholeWord` exists as
  * a second, independent mechanism rather than relying on this list alone.
  */
-const COMMAND_WRAPPERS: ReadonlySet<string> = new Set([
+export const COMMAND_WRAPPERS: ReadonlySet<string> = new Set([
   'env',
   'nohup',
   'timeout',
@@ -419,7 +419,7 @@ function extractSubstitutions(segment: string): SubstitutionExtraction {
 }
 
 /** `sh`/`bash`/`zsh`/`dash`/`ksh`, bare or path-qualified (`/bin/...`, `/usr/bin/...`). */
-const SHELL_C_BINARIES: ReadonlySet<string> = new Set([
+export const SHELL_C_BINARIES: ReadonlySet<string> = new Set([
   'sh',
   'bash',
   'zsh',

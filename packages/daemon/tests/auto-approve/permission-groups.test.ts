@@ -1030,6 +1030,46 @@ describe('#1001 matchGroupsBroad: a stop rule matches ANY segment', () => {
     expect(bash('cp --to-command=sh a b', DENY)).toBeNull(); // precise refuses to approve it
   });
 
+  /**
+   * Review of #1009 proved a whole evasion class beyond the disclosed
+   * grammar-keyword gap. Every one of these really executes a `mkdir` -- checked
+   * against real bash -- and every one walked past `deny_groups=["fs-write"]`.
+   *
+   * The fix is the mirror image of the allow path's own rule: `matchGroups`
+   * refuses to APPROVE when it cannot tell what a segment runs, so the stop rule
+   * must refuse to PASS on the same signal. Ambiguity means block.
+   */
+  describe('ambiguity means block, and quoting cannot hide the command', () => {
+    const evasions: Array<[string, string]> = [
+      ['mkdir\t/tmp/x', 'a tab is real IFS whitespace'],
+      ["'mkdir' /tmp/x", 'single-quoted command name'],
+      ['"mkdir" /tmp/x', 'double-quoted command name'],
+      ['mkdi\\r /tmp/x', 'backslash-escaped character'],
+      ['env mkdir /tmp/x', 'wrapper'],
+      ['nohup mkdir /tmp/x', 'wrapper'],
+      ['command mkdir /tmp/x', 'wrapper'],
+      ['echo x | xargs mkdir', 'wrapper consuming stdin'],
+      ['sh -c "mkdir /tmp/x"', 'interpreter'],
+      ["bash -c 'mkdir /tmp/x'", 'interpreter'],
+      ['true & mkdir /tmp/x', 'a lone & is not a compound separator'],
+      ['x=$(mkdir /tmp/x)', 'command substitution'],
+      ['x=`mkdir /tmp/x`', 'backtick substitution'],
+      ['git status && do mkdir /tmp/x', 'behind a grammar keyword (#999)'],
+    ];
+    for (const [cmd, why] of evasions) {
+      test(`${JSON.stringify(cmd)} (${why})`, () =>
+        expect(matchGroupsBroad('Bash', { command: cmd }, DENY)).not.toBeNull());
+    }
+
+    test('ordinary commands are still not blocked', () => {
+      // Blocking on ambiguity must not degrade into blocking everything, or the
+      // config knob stops meaning anything.
+      for (const cmd of ['ls -la', 'git status', 'echo hi', 'cat README.md']) {
+        expect(matchGroupsBroad('Bash', { command: cmd }, DENY)).toBeNull();
+      }
+    });
+  });
+
   test('unknown group names are ignored, and an empty list matches nothing', () => {
     expect(matchGroupsBroad('Bash', { command: 'mkdir /tmp/x' }, ['nope'])).toBeNull();
     expect(matchGroupsBroad('Bash', { command: 'mkdir /tmp/x' }, [])).toBeNull();
