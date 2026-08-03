@@ -1085,6 +1085,23 @@ describe('#1001 matchGroupsBroad: a stop rule matches ANY segment', () => {
         expect(matchGroupsBroad('Bash', { command: cmd }, DENY)).not.toBeNull());
     }
 
+    test('${IFS} is a space, so it cannot hide the command name', () => {
+      // A standard, deliberate filter-bypass technique, not an accident.
+      expect(matchGroupsBroad('Bash', { command: 'mkdir${IFS}/tmp/x' }, DENY)).not.toBeNull();
+      expect(matchGroupsBroad('Bash', { command: 'mkdir$IFS/tmp/x' }, DENY)).not.toBeNull();
+    });
+
+    test('a flag value spelling a covered command over-blocks, KNOWINGLY', () => {
+      // `env -u mkdir git status` unsets a variable NAMED mkdir and runs `git
+      // status` -- it creates nothing, yet this reports a match. Accepted, and
+      // pinned so the trade stays visible rather than being rediscovered as a
+      // bug: suppressing it requires each wrapper's flag grammar, and the
+      // attempt broke `su -c "mkdir"` and `ionice -c2 -n0 mkdir` immediately.
+      // Over-blocking a stop rule the user opted into costs a prompt;
+      // under-blocking it is the failure ADR 0010 calls unacceptable.
+      expect(matchGroupsBroad('Bash', { command: 'env -u mkdir git status' }, DENY)).not.toBeNull();
+    });
+
     test('an ARGUMENT that looks like a path is not a command name', () => {
       // Only the HEAD word is normalized. Rewriting arguments would invent
       // matches -- `cat /bin/mkdir` reads a file, it does not run one.

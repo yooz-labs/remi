@@ -785,19 +785,32 @@ export function matchGroups(
  */
 
 /**
- * Wrappers the DENY path unwraps that `COMMAND_WRAPPERS` (risk-bands.ts)
- * deliberately does not list.
+ * Wrappers the DENY path unwraps that `COMMAND_WRAPPERS` (risk-bands.ts) does
+ * not list.
  *
- * Kept separate on purpose rather than added to the shared set, because the two
- * consumers want opposite things from the same token. `risk-bands` must NOT
- * strip `sudo`: `hasDangerousWholeWord` raises the band precisely BECAUSE
- * `sudo` is present, so unwrapping it there would LOWER a band that exists to
- * be high. The deny path wants the opposite — see through the wrapper to the
- * command being elevated, so `sudo mkdir` is still a `mkdir`.
+ * **The first version of this comment justified the split with a mechanism the
+ * code does not have.** It claimed risk-bands must not strip `sudo`, because
+ * `hasDangerousWholeWord` raises the band BECAUSE `sudo` is present and
+ * unwrapping would lower it. Review disproved that empirically: that check runs
+ * on the RAW segment text and short-circuits BEFORE `unwrapCommand` is called,
+ * so adding `sudo` to the shared set changes its classification not at all
+ * (`sudo mkdir` stays high, `sudo rm -rf /important` stays critical). Recorded
+ * here rather than silently rewritten — a wrong explanation in a comment is the
+ * failure ADR 0011 exists to name, and this file is where that ADR is cited.
  *
- * This is a real semantic divergence with a stated reason, not the accidental
- * duplication this module has produced five times. Verified live in review:
- * every one of these really runs the wrapped command.
+ * The real reason to keep `sudo`/`su`/`doas` separate is a genuine difference
+ * in what the two consumers are asking. `classifyRisk` treats an elevation
+ * wrapper's mere PRESENCE as the risk signal — privilege elevation is dangerous
+ * regardless of what it wraps — while this matcher wants to see THROUGH it to
+ * the operation being elevated. Those are different questions about the same
+ * token, which is the one situation where two sets are right.
+ *
+ * The other eight names have no such argument, and review showed sharing them
+ * would IMPROVE risk-bands rather than harm it: `setsid git push origin main
+ * --force` grades `moderate` there today while the bare command grades `high`,
+ * because the wrapper hides the command from the classifier. That is a live gap
+ * in a shipped module, filed separately — they stay here until it is fixed, so
+ * the deny path is not waiting on it.
  */
 const DENY_EXTRA_WRAPPERS: ReadonlySet<string> = new Set([
   'sudo',
@@ -871,7 +884,10 @@ function findDenyHitInSegment(
   prefixes: readonly string[],
   depth: number,
 ): string | null {
-  const seg = segment.trim();
+  // `${IFS}` expands to a space, so `mkdir${IFS}/tmp/x` really runs `mkdir` --
+  // a standard, deliberate filter-bypass technique, not an accident. Normalized
+  // before anything else looks at the text.
+  const seg = segment.replace(/\$\{IFS\}|\$IFS\b/g, ' ').trim();
   if (seg === '' || depth > MAX_DENY_UNWRAP_DEPTH) return null;
 
   // Grammar first (#999), so `do mkdir /tmp/x` cannot evade what `mkdir
@@ -910,6 +926,22 @@ function findDenyHitInSegment(
     // Broad, but scoped: it only applies once a wrapper head is confirmed, so
     // an ordinary command's arguments are never scanned this way.
     for (let i = 1; i < words.length; i++) {
+      // Every position is tried, INCLUDING one that follows a flag. That
+      // knowingly accepts a false positive: `env -u mkdir git status` unsets a
+      // variable NAMED mkdir and runs `git status`, but reports
+      // `fs-write:mkdir`.
+      //
+      // Skipping post-flag positions was tried and reverted. It broke two real
+      // evasions immediately -- `su -c "mkdir /tmp/x"` (an interpreter's `-c`
+      // value IS a command) and `ionice -c2 -n0 mkdir` (attached flags consume
+      // no following token) -- because telling a flag's value from a command
+      // needs each wrapper's flag grammar, which is the per-tool denylist that
+      // lost repeatedly in #1004.
+      //
+      // The trade is asymmetric and settles it: the false positive
+      // over-blocks, which for a stop rule the user opted into is a prompt;
+      // the evasions under-block, which is the failure ADR 0010 calls
+      // unacceptable.
       const hit = findDenyHitInSegment(words.slice(i).join(' '), prefixes, depth + 1);
       if (hit !== null) return hit;
     }
