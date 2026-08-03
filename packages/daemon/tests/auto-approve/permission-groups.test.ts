@@ -1061,6 +1061,37 @@ describe('#1001 matchGroupsBroad: a stop rule matches ANY segment', () => {
         expect(matchGroupsBroad('Bash', { command: cmd }, DENY)).not.toBeNull());
     }
 
+    /**
+     * Second review round. Every one verified to really run `mkdir` -- the
+     * Linux-only ones in a Docker container, the rest natively.
+     */
+    const roundTwo: Array<[string, string]> = [
+      ['sudo mkdir /tmp/x', 'the most common elevation wrapper, absent from the shared set'],
+      ['su -c "mkdir /tmp/x"', 'elevation via an interpreter flag'],
+      ['doas mkdir /tmp/x', 'the BSD sudo'],
+      ['ionice -c2 -n0 mkdir /tmp/x', 'scheduling wrapper'],
+      ['setsid mkdir /tmp/x', 'session wrapper'],
+      ['runuser -u root -- mkdir /tmp/x', 'command hidden behind a positional arg and --'],
+      ['script -q /tmp/log mkdir /tmp/x', 'command hidden behind a positional logfile'],
+      ['/bin/mkdir /tmp/x', 'path-qualified'],
+      ['/usr/bin/mkdir /tmp/x', 'path-qualified'],
+      ['./mkdir /tmp/x', 'relative path'],
+      ['${x:-mkdir} /tmp/x', 'parameter expansion with a literal default'],
+      ['${x:=mkdir} /tmp/x', 'assigning form of the same'],
+      ['{mkdir,} /tmp/x', 'brace expansion'],
+    ];
+    for (const [cmd, why] of roundTwo) {
+      test(`${JSON.stringify(cmd)} (${why})`, () =>
+        expect(matchGroupsBroad('Bash', { command: cmd }, DENY)).not.toBeNull());
+    }
+
+    test('an ARGUMENT that looks like a path is not a command name', () => {
+      // Only the HEAD word is normalized. Rewriting arguments would invent
+      // matches -- `cat /bin/mkdir` reads a file, it does not run one.
+      expect(matchGroupsBroad('Bash', { command: 'cat /bin/mkdir' }, DENY)).toBeNull();
+      expect(matchGroupsBroad('Bash', { command: 'ls -la /usr/bin/mkdir' }, DENY)).toBeNull();
+    });
+
     test('ordinary commands are still not blocked', () => {
       // Blocking on ambiguity must not degrade into blocking everything, or the
       // config knob stops meaning anything.

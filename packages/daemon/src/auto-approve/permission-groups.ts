@@ -784,6 +784,63 @@ export function matchGroups(
  * mean a command that looks MORE dangerous is LESS likely to be denied.
  */
 
+/**
+ * Wrappers the DENY path unwraps that `COMMAND_WRAPPERS` (risk-bands.ts)
+ * deliberately does not list.
+ *
+ * Kept separate on purpose rather than added to the shared set, because the two
+ * consumers want opposite things from the same token. `risk-bands` must NOT
+ * strip `sudo`: `hasDangerousWholeWord` raises the band precisely BECAUSE
+ * `sudo` is present, so unwrapping it there would LOWER a band that exists to
+ * be high. The deny path wants the opposite — see through the wrapper to the
+ * command being elevated, so `sudo mkdir` is still a `mkdir`.
+ *
+ * This is a real semantic divergence with a stated reason, not the accidental
+ * duplication this module has produced five times. Verified live in review:
+ * every one of these really runs the wrapped command.
+ */
+const DENY_EXTRA_WRAPPERS: ReadonlySet<string> = new Set([
+  'sudo',
+  'su',
+  'doas',
+  'runuser',
+  'ionice',
+  'setsid',
+  'script',
+  'chrt',
+  'taskset',
+  'proxychains',
+  'systemd-run',
+]);
+
+function isDenyUnwrappableWrapper(word: string): boolean {
+  return COMMAND_WRAPPERS.has(word) || DENY_EXTRA_WRAPPERS.has(word);
+}
+
+/**
+ * Rewrite a segment's HEAD word into the command name the shell would actually
+ * resolve, for the three spellings that hide it without any shell control:
+ *
+ *   /bin/mkdir x        path-qualified -- `matchPrefix` only knows bare names
+ *   ${x:-mkdir} x       parameter expansion with a literal default
+ *   {mkdir,} x          brace expansion
+ *
+ * All three confirmed to really run `mkdir` in review. Only the head word is
+ * touched: an ARGUMENT that happens to look like a path is not a command name,
+ * and rewriting those would invent matches.
+ */
+function normalizeHeadWord(words: readonly string[]): readonly string[] {
+  const head = words[0];
+  if (head === undefined || head === '') return words;
+  let name = head;
+  const expansion = /^\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=]([^}]*)\}$/.exec(name);
+  if (expansion !== null) name = expansion[1] ?? name;
+  const brace = /^\{([^,{}]+),?\}$/.exec(name);
+  if (brace !== null) name = brace[1] ?? name;
+  if (name.includes('/')) name = name.slice(name.lastIndexOf('/') + 1);
+  return name === head ? words : [name, ...words.slice(1)];
+}
+
 /** Bounds the unwrap recursion below; a real command nests a handful of levels. */
 const MAX_DENY_UNWRAP_DEPTH = 4;
 
@@ -826,7 +883,7 @@ function findDenyHitInSegment(
   // resolving a command name, so a raw-string compare is looking at something
   // the shell never sees.
   const words = shellWords(body);
-  for (const candidate of [body, words.join(' ')]) {
+  for (const candidate of [body, words.join(' '), normalizeHeadWord(words).join(' ')]) {
     const hit = matchPrefix(candidate, prefixes);
     if (hit !== null) return hit;
   }
@@ -843,14 +900,19 @@ function findDenyHitInSegment(
 
   // A wrapper renames the head token without changing what runs. Drop leading
   // wrapper tokens and their flags, then judge the remainder.
-  let rest = words;
-  while (rest.length > 0 && COMMAND_WRAPPERS.has(rest[0] ?? '')) {
-    rest = rest.slice(1);
-    while (rest.length > 0 && (rest[0] ?? '').startsWith('-')) rest = rest.slice(1);
-  }
-  if (rest.length > 0 && rest.length !== words.length) {
-    const hit = findDenyHitInSegment(rest.join(' '), prefixes, depth + 1);
-    if (hit !== null) return hit;
+  if (isDenyUnwrappableWrapper(words[0] ?? '')) {
+    // Scan forward from every position after the wrapper rather than trying to
+    // model each wrapper's flag grammar. `runuser -u root -- mkdir` and
+    // `script -q /tmp/log mkdir` both bury the real command behind a wrapper's
+    // POSITIONAL argument, and enumerating which flags take values for eleven
+    // wrappers is exactly the per-tool denylist that lost repeatedly in #1004.
+    //
+    // Broad, but scoped: it only applies once a wrapper head is confirmed, so
+    // an ordinary command's arguments are never scanned this way.
+    for (let i = 1; i < words.length; i++) {
+      const hit = findDenyHitInSegment(words.slice(i).join(' '), prefixes, depth + 1);
+      if (hit !== null) return hit;
+    }
   }
 
   // An interpreter's `-c` argument is a command line, not an argument.
