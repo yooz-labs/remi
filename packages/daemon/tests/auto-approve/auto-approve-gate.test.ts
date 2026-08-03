@@ -3984,19 +3984,14 @@ describe('#1005 end-to-end: a retired escalation registers no card via the real 
   function wire(pushes: Question[]) {
     const sid = registry.createSessionId();
     const submits: string[] = [];
-    registry.registerSession(
-      sid,
-      '/d',
-      fakePTY({ writes: [], submits }) as unknown as PTYSession,
-      {
-        handleMessage: () => {},
-        handleQuestion: (q: Question) => {
-          pushes.push(q);
-          registry.addQuestion(sid, q as never);
-        },
-        handleStatusChange: () => {},
-      } as never,
-    );
+    registry.registerSession(sid, '/d', fakePTY(submits), {
+      handleMessage: () => {},
+      handleQuestion: (q: Question) => {
+        pushes.push(q);
+        registry.addQuestion(sid, q as never);
+      },
+      handleStatusChange: () => {},
+    } as never);
     const tracker = new QuestionPresenceTracker((q) => {
       pushes.push(q);
       registry.addQuestion(sid, q as never);
