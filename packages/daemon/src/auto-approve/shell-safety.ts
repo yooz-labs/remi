@@ -146,8 +146,9 @@ export function stripShellGrammar(segment: string): StrippedSegment {
   if (FOR_HEADER_RE.test(rest) || CASE_HEADER_RE.test(rest) || LOOP_CONTROL_RE.test(rest)) {
     return { command: '', structural: true };
   }
-  // Loop: a segment may stack keywords and assignments, e.g. `do if [ -f x ]`
-  // or `do FOO=bar git status`.
+  // Loop: a segment may stack keywords, e.g. `do if [ -f x ]`. Assignments are
+  // NOT peeled (see `ASSIGNMENT_HEAD_RE`), so `do FOO=bar git status` peels the
+  // `do` and stops, leaving `FOO=bar git status` to be judged and refused.
   for (;;) {
     const keyword = matchPrefix(rest, GRAMMAR_PREFIX_KEYWORDS);
     if (keyword === null) break;

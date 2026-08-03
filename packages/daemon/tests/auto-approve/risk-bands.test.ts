@@ -494,6 +494,18 @@ describe('#1004 an assignment that redirects execution grades high', () => {
     'ACC=da8d7a2a868 git status',
     'V=1.2.3 bun test',
     'PYTEST_PLUGINS=evil_plugin pytest',
+    // Behind an `env` wrapper. `env` is the one wrapper that genuinely takes
+    // NAME=value arguments, and a SECOND assignment-stripping loop inside the
+    // wrapper-arg consumer discarded them -- so the bare form graded `high`
+    // while this one graded `moderate`. Nothing tested it in either direction,
+    // which is how it survived removing the outer loop (#1004 re-review).
+    'env PYTEST_PLUGINS=evil_plugin pytest',
+    'env HOME=/tmp/evil git commit -m x',
+    'env FOO=bar pytest',
+    // Same code path for the other wrappers, even though only `env` is a real
+    // attack (bash tries to EXECUTE a program named `FOO=bar` after `nohup`).
+    'nohup FOO=bar pytest',
+    'nice FOO=bar pytest',
   ];
   for (const command of high) {
     test(JSON.stringify(command), () => expect(classifyRisk('Bash', { command })).toBe('high'));

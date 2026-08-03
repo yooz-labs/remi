@@ -248,10 +248,13 @@ function unwrapCommand(words: readonly string[]): readonly string[] {
     const valueFlags = WRAPPER_VALUE_FLAGS[head];
     while (rest.length > 0) {
       const token = rest[0] ?? '';
-      if (isAssignmentToken(token)) {
-        rest = rest.slice(1);
-        continue;
-      }
+      // An assignment is NOT consumed here either. This inner loop is a second
+      // stripper, and removing only the outer one left `env
+      // PYTEST_PLUGINS=evil_plugin pytest` grading `moderate` while the bare
+      // form correctly graded `high` -- `env` is the one wrapper that really
+      // does take `NAME=value` arguments, and stripping them handed the head
+      // token straight to the band check with the dangerous part discarded.
+      // Leaving the token in place is what lets the head-position check see it.
       if (!token.startsWith('-')) break;
       rest = rest.slice(1);
       if (valueFlags?.has(token) === true) rest = rest.slice(1);
