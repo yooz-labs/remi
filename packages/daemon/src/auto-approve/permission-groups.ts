@@ -35,8 +35,6 @@ import {
 } from './sensitive-paths.ts';
 import {
   type CompoundJoiner,
-  hasExecPrimitive,
-  hasShellControl,
   matchCoveredCommand,
   matchPrefix,
   rewriteRedirectClauses,
@@ -785,6 +783,97 @@ export function matchGroups(
  * match (a mutation flag means "do not approve this"); applying them here would
  * mean a command that looks MORE dangerous is LESS likely to be denied.
  */
+
+/** Bounds the unwrap recursion below; a real command nests a handful of levels. */
+const MAX_DENY_UNWRAP_DEPTH = 4;
+
+/**
+ * Find a denied prefix anywhere a segment could actually run one.
+ *
+ * A stop rule has to see through the things that HIDE a command name, and
+ * review of #1001 proved five separate ways to hide one, each verified by
+ * running it in real bash:
+ *
+ *     mkdir\t/tmp/x    'mkdir' /tmp/x    env mkdir /tmp/x
+ *     sh -c "mkdir x"   true & mkdir x    x=$(mkdir /tmp/x)
+ *
+ * The first instinct — treat any segment carrying shell control as a match,
+ * since ambiguity should block — was measured and abandoned. Over the real
+ * corpus it made EVERY group name block ~44% of ordinary traffic, because
+ * roughly 400 of 921 commands carry a redirect, a substitution or a wrapper
+ * somewhere. A deny knob that blocks half of everything is one people switch
+ * off, which is a worse security outcome than the gap it closes.
+ *
+ * So this UNWRAPS instead of refusing: it looks inside the wrapper, the `-c`
+ * argument, the substitution and the backgrounded half, and matches the real
+ * command name in each. Precise where precision is possible, and still broad in
+ * the ADR 0010 sense — any ONE part matching is enough.
+ */
+function findDenyHitInSegment(
+  segment: string,
+  prefixes: readonly string[],
+  depth: number,
+): string | null {
+  const seg = segment.trim();
+  if (seg === '' || depth > MAX_DENY_UNWRAP_DEPTH) return null;
+
+  // Grammar first (#999), so `do mkdir /tmp/x` cannot evade what `mkdir
+  // /tmp/x` catches.
+  const body = stripShellGrammar(seg).command || seg;
+
+  // Raw text AND `shellWords`-tokenized text. Tokenizing is what defeats
+  // quoting, escaping and tab separators — the shell strips those before
+  // resolving a command name, so a raw-string compare is looking at something
+  // the shell never sees.
+  const words = shellWords(body);
+  for (const candidate of [body, words.join(' ')]) {
+    const hit = matchPrefix(candidate, prefixes);
+    if (hit !== null) return hit;
+  }
+
+  // A lone `&` backgrounds the left side and runs the right; `splitCompound`
+  // deliberately leaves it glued (the allow path wants `hasShellControl` to
+  // veto the whole segment), so the deny path splits it itself.
+  if (/(^|[^&>])&(?![&>0-9])/.test(body)) {
+    for (const part of body.split(/(?<![&>])&(?![&>0-9])/)) {
+      const hit = findDenyHitInSegment(part, prefixes, depth + 1);
+      if (hit !== null) return hit;
+    }
+  }
+
+  // A wrapper renames the head token without changing what runs. Drop leading
+  // wrapper tokens and their flags, then judge the remainder.
+  let rest = words;
+  while (rest.length > 0 && COMMAND_WRAPPERS.has(rest[0] ?? '')) {
+    rest = rest.slice(1);
+    while (rest.length > 0 && (rest[0] ?? '').startsWith('-')) rest = rest.slice(1);
+  }
+  if (rest.length > 0 && rest.length !== words.length) {
+    const hit = findDenyHitInSegment(rest.join(' '), prefixes, depth + 1);
+    if (hit !== null) return hit;
+  }
+
+  // An interpreter's `-c` argument is a command line, not an argument.
+  if (SHELL_C_BINARIES.has(words[0] ?? '')) {
+    const cIndex = words.indexOf('-c');
+    const inner = cIndex === -1 ? undefined : words[cIndex + 1];
+    if (inner !== undefined) {
+      const hit = findDenyHitInSegment(inner, prefixes, depth + 1);
+      if (hit !== null) return hit;
+    }
+  }
+
+  // Command substitution runs its contents.
+  for (const m of body.matchAll(/\$\(([^()]*)\)|`([^`]*)`/g)) {
+    const inner = m[1] ?? m[2];
+    if (inner === undefined || inner === '') continue;
+    const hit = findDenyHitInSegment(inner, prefixes, depth + 1);
+    if (hit !== null) return hit;
+  }
+
+  return null;
+}
+
 export function matchGroupsBroad(
   toolName: string,
   toolInput: Record<string, unknown>,
@@ -819,27 +908,8 @@ export function matchGroupsBroad(
       //   true & mkdir /tmp/x        (a lone `&` is not a compound separator)
       //   x=$(mkdir /tmp/x)          (substitution)
       //   sh -c "mkdir /tmp/x"       (wrapper)
-      const head = shellWords(seg)[0] ?? '';
-      if (
-        hasShellControl(seg) ||
-        hasExecPrimitive(seg) ||
-        COMMAND_WRAPPERS.has(head) ||
-        SHELL_C_BINARIES.has(head)
-      ) {
-        return `${known[0] ?? 'group'}:ambiguous-segment`;
-      }
-      // Peel grammar (#999) so `do rm -rf /` cannot evade a deny the bare form
-      // catches, and match on TOKENIZED words so quoting and escaping cannot
-      // either: `'mkdir' /tmp/x`, `"mkdir" /tmp/x` and `mkdi\r /tmp/x` are all
-      // real `mkdir` invocations that a raw-string prefix compare misses,
-      // as is a tab separator (`mkdir\t/tmp/x`).
-      const body = stripShellGrammar(seg).command;
-      const normalized = shellWords(body === '' ? seg : body).join(' ');
-      for (const candidate of [seg, body, normalized]) {
-        if (candidate === '') continue;
-        const hit = matchPrefix(candidate, prefixes);
-        if (hit !== null) return `${prefixToGroup.get(hit) ?? 'group'}:${hit}`;
-      }
+      const hit = findDenyHitInSegment(seg, prefixes, 0);
+      if (hit !== null) return `${prefixToGroup.get(hit) ?? 'group'}:${hit}`;
     }
     return null;
   }
