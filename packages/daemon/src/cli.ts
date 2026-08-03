@@ -1944,6 +1944,11 @@ const inputHandlers: InputHandlers = createInputHandlers({
   // current" — fail toward refusing the injection.
   isPromptCurrent: (sessionId, questionId, ptyText) =>
     sessionTrackers.get(sessionId)?.isPromptCurrent(questionId, ptyText) ?? false,
+  // #1002: the weaker "is ANY prompt on screen" backstop, for the hook-paired
+  // cards `isPromptCurrent` structurally cannot serve. Same map, same
+  // no-tracker-means-refuse default.
+  isPromptObservedOnPTY: (sessionId) =>
+    sessionTrackers.get(sessionId)?.isPromptObservedOnPTY() ?? false,
   // #976 prerequisite: route a classified answer to the RIGHT session's
   // precedent store (populated per session in createNewSession, same
   // map-per-sessionId shape as sessionGateHandles/sessionTrackers above). No

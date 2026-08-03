@@ -364,3 +364,58 @@ describe('QuestionPresenceTracker render-resolution (#888/#920)', () => {
     expect(gone).toEqual([{ id: first.id, reason: 'pty_render_superseded' }]);
   });
 });
+
+/**
+ * #1002. `handleAnswer` needs to know "is a prompt on screen?" before typing a
+ * digit into the PTY. The obvious candidate, `isPromptVisibleOnPTY`, cannot
+ * answer that: it means "this tracker PUSHED a card off a PTY render", which is
+ * false for the most common cohort of all — a gate-owned hook card whose native
+ * prompt renders is recognised as an echo and suppressed without setting it.
+ *
+ * These tests exist because the first attempt at #1002 used that flag and would
+ * have refused every legitimate hook-sourced answer. They pin the distinction so
+ * the two are not "simplified" back together.
+ */
+describe('#1002 prompt-on-screen signals are not interchangeable', () => {
+  test('a gate-owned hook render: visible=false, observed=true', () => {
+    const { tracker } = buildTracker();
+    const hook = makeHookRecord('Allow Bash: ls -la');
+    tracker.recordPendingHook(hook);
+    tracker.onOrphanPTYPrompt(makeHooklessPTYQuestion('Allow Bash: ls -la'));
+
+    // Suppressed as a gate-owned echo, so it never pushed a card off the render.
+    expect(tracker.isPromptVisibleOnPTY()).toBe(false);
+    // But a prompt IS genuinely on screen, and this reports it.
+    expect(tracker.isPromptObservedOnPTY()).toBe(true);
+  });
+
+  test('observed starts false, before anything has rendered', () => {
+    const { tracker } = buildTracker();
+    expect(tracker.isPromptObservedOnPTY()).toBe(false);
+  });
+
+  test('a status transition off waiting clears observed (the stale-card case)', () => {
+    const { tracker } = buildTracker();
+    tracker.recordPendingHook(makeHookRecord('Allow Bash: ls -la'));
+    tracker.onOrphanPTYPrompt(makeHooklessPTYQuestion('Allow Bash: ls -la'));
+    expect(tracker.isPromptObservedOnPTY()).toBe(true);
+
+    tracker.onStatusChange('thinking');
+    expect(tracker.isPromptObservedOnPTY()).toBe(false);
+  });
+
+  test('clearPending clears observed', () => {
+    const { tracker } = buildTracker();
+    tracker.recordPendingHook(makeHookRecord('Allow Bash: ls -la'));
+    tracker.onOrphanPTYPrompt(makeHooklessPTYQuestion('Allow Bash: ls -la'));
+    tracker.clearPending();
+    expect(tracker.isPromptObservedOnPTY()).toBe(false);
+  });
+
+  test('a hookless render sets both signals', () => {
+    const { tracker } = buildTracker();
+    tracker.onPTYPromptVisible(makeHooklessPTYQuestion());
+    expect(tracker.isPromptVisibleOnPTY()).toBe(true);
+    expect(tracker.isPromptObservedOnPTY()).toBe(true);
+  });
+});

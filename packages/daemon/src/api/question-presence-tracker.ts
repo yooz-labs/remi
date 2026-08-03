@@ -1266,6 +1266,32 @@ export class QuestionPresenceTracker {
   }
 
   /**
+   * True when the PTY parser's most recent observation is a prompt that has
+   * not been cleared since — "is SOMETHING on screen right now", regardless of
+   * who owns it (#1002).
+   *
+   * Weaker than `isPromptVisibleOnPTY`, and deliberately so. That flag means
+   * "THIS tracker pushed a card off a PTY render", which is true for the
+   * hookless, orphan and parked-render paths and FALSE for the most common
+   * case of all: a gate-owned hook card whose native prompt renders is routed
+   * to `onOrphanPTYPrompt`, recognised as an echo of something already pushed,
+   * and suppressed without ever setting the flag. Verified by probing this
+   * class directly rather than by reading it — `recordPendingHook` followed by
+   * `onOrphanPTYPrompt` leaves `isPromptVisibleOnPTY()` false while a real
+   * prompt is genuinely on screen.
+   *
+   * `observedPTYQuestionId` has no such gap: `onOrphanPTYPrompt` records it
+   * before any branch decides to push, buffer, suppress or arbitrate, and both
+   * `onStatusChange` (away from `waiting`) and `clearPending` null it. So it
+   * answers "is a prompt on screen" for every cohort, which is exactly what a
+   * caller about to type a digit into the PTY needs to know, and all it needs
+   * to know.
+   */
+  isPromptObservedOnPTY(): boolean {
+    return this.observedPTYQuestionId !== null;
+  }
+
+  /**
    * True when `questionId` is BOTH on screen and still the LATEST prompt this
    * tracker observed (#814). The identity half is what `isPromptVisibleOnPTY`
    * cannot express, and it is load-bearing for any ASYNC verdict:
