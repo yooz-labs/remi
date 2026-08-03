@@ -427,6 +427,70 @@ export function signatureForOperation(
 }
 
 /**
+ * Tools whose signature is the WHOLE operation, and which may therefore have a
+ * past approval reused (#976). Everything else is evaluated normally, every
+ * time.
+ *
+ * ## Why an allowlist and not "every tool"
+ *
+ * `signatureForOperation` is built from `summarizeToolInput`, whose job is to
+ * produce ONE readable line for a lock-screen card. For most tools that line
+ * names the TARGET and drops the PAYLOAD — which is fine for display and
+ * catastrophic for authorization.
+ *
+ * Found in review of this PR's first draft, and measured against the real
+ * functions rather than reasoned about:
+ *
+ *     Write {file_path: '~/.ssh/authorized_keys', content: <benign>}
+ *     Write {file_path: '~/.ssh/authorized_keys', content: <attacker>}
+ *     -> signatures IDENTICAL, matchApproved returns an EXACT hit,
+ *        band=high grade=explicit witness=yes -> approve, at 0ms
+ *
+ * So one approved write to a path authorized every later write to that path,
+ * with any content at all. `high` is precisely the band whose justification is
+ * "a precedent carries the non-text witness text cannot supply" — and the
+ * witness was real; the SIGNATURE was not. ADR 0010's "an allow rule that
+ * matches too much silently grants permission" was defeated a layer below the
+ * matcher, so the matcher's exactness guaranteed nothing.
+ *
+ * Per tool, why it is or is not here:
+ *
+ * | tool | summary | complete? |
+ * |---|---|---|
+ * | `Bash` | the full command | **yes** — the command IS the operation |
+ * | `Read` | `file_path` | **yes** — a read has no payload; `offset`/`limit` narrow it, never widen it |
+ * | `Write`/`Edit` | `file_path` only | no — `content` / `new_string` decide what actually happens |
+ * | `Glob`/`Grep` | `pattern` only | no — the `path` it runs under is dropped, so `Grep: TODO` in a repo and in `/etc` are one signature |
+ * | fetch/web | `url` | no — `prompt` is dropped, and the fetch is a network egress whose repeat deserves asking |
+ * | anything else | first matching field | no — the generic fallback is incomplete BY CONSTRUCTION |
+ *
+ * Fails closed: an unrecognized tool is not eligible. A new tool added to
+ * `summarizeToolInput` gets no precedent until someone decides its summary is
+ * a complete identity, which is the direction that costs a question rather
+ * than a compromise.
+ *
+ * ## The deny direction deliberately ignores this
+ *
+ * `findDeniedPrecedent` is a STOP rule (ADR 0010), so a content-blind
+ * signature makes it match MORE, not less: a denied `Write` to a path flags
+ * every later write to it. That is the safe direction and the intended one, so
+ * the deny consult does not consult this list.
+ */
+const PRECEDENT_ELIGIBLE_TOOLS: ReadonlySet<string> = new Set(['bash', 'terminal', 'read']);
+
+/**
+ * May a past approval of `toolName` authorize a repeat? See
+ * `PRECEDENT_ELIGIBLE_TOOLS` for the rule and the measured failure that
+ * produced it.
+ *
+ * Case-insensitive, matching `summarizeToolInput`'s own dispatch, so a tool
+ * spelled `bash` does not slip past a check written for `Bash`.
+ */
+export function precedentMayAuthorize(toolName: string): boolean {
+  return PRECEDENT_ELIGIBLE_TOOLS.has(toolName.toLowerCase());
+}
+
+/**
  * Read-only view of a `PrecedentStore` (#976).
  *
  * The decision path receives THIS, never the store, so `handleAnswer` remains
@@ -584,10 +648,17 @@ export function findDeniedPrecedent(
  * never from a hot path, but there is no reason to make it anything other
  * than cheap).
  *
- * NOT wired to any consumer by this change. `matchApproved` / `matchDenied`
- * exist so a later PR can call them without reaching into `records` directly
- * (kept private), and so this module's own tests can exercise the matchers
- * through the same surface a real consumer would use.
+ * WIRED as of #976. `matchApproved` / `matchDenied` are consumed by
+ * `AutoApproveService.evaluate` — the first at 0ms before the model, the
+ * second after it — through the read-only `PrecedentReader` above, never
+ * through this class directly. `records` stays private so no consumer can
+ * reach past the two matchers.
+ *
+ * (This comment said "NOT wired to any consumer by this change" until the
+ * change that wired it. Corrected in the same PR, per AGENTS.md rule 3 — a
+ * stale "nothing reads this" sitting above a class that now performs 0ms
+ * auto-approvals is the exact shape of the documentation failure ADR 0011
+ * exists for.)
  */
 export class PrecedentStore {
   private readonly records: PrecedentRecord[] = [];

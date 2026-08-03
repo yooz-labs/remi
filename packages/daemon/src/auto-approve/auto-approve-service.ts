@@ -31,7 +31,7 @@ import {
 } from './multichoice.ts';
 import { matchAllowPattern, matchSubstringPattern } from './pattern-matcher.ts';
 import { matchGroups, matchGroupsBroad } from './permission-groups.ts';
-import { type PrecedentReader, signatureForOperation } from './precedent.ts';
+import { type PrecedentReader, precedentMayAuthorize, signatureForOperation } from './precedent.ts';
 import { buildPrompt } from './prompt-builder.ts';
 import { classifyRisk, formatMatrixContext } from './risk-bands.ts';
 import { enforceRiskCeiling } from './risk-ceiling.ts';
@@ -780,7 +780,14 @@ export class AutoApproveService {
       // The whole consult is skipped when `session_precedent` is off. The DENY
       // direction is not: see the post-model guard below for why that half
       // stays on regardless.
-      if (this.sessionPrecedent && precedent) {
+      //
+      // `precedentMayAuthorize` gates the tool BEFORE the lookup: a signature
+      // is only an authorization if it identifies the whole operation, and for
+      // most tools `summarizeToolInput` names the target while dropping the
+      // payload. See its doc for the measured escalation that produced the
+      // rule (an approved `Write` to a path authorized every later write to
+      // that path, with any content, at `high`, at 0ms).
+      if (this.sessionPrecedent && precedent && precedentMayAuthorize(toolName)) {
         const signature = signatureForOperation(toolName, toolInput);
         const approvedMatch = precedent.matchApproved(toolName, signature);
         if (approvedMatch !== null) {
