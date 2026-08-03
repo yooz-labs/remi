@@ -183,7 +183,14 @@ const COMMAND_WRAPPERS: ReadonlySet<string> = new Set([
  * rather than trusting this table to be complete.
  */
 const WRAPPER_VALUE_FLAGS: Readonly<Record<string, ReadonlySet<string>>> = {
-  env: new Set(['-u', '--unset', '-C', '--chdir', '-S', '--split-string']),
+  // `-S`/`--split-string` is deliberately ABSENT: its value is not inert
+  // metadata like `-u`/`-C`, it is a full command line that env re-splits and
+  // executes. Discarding it as a value flag erased the command entirely, so
+  // `env -S 'PYTEST_PLUGINS=evil_plugin pytest'` graded `moderate` while the
+  // bare form graded `high` (#1004 re-review, proven by real execution).
+  // `extractEnvSplitString` extracts and RECURSES into it instead, the same
+  // shape `extractShellDashC` already uses for `sh -c`.
+  env: new Set(['-u', '--unset', '-C', '--chdir']),
   timeout: new Set(['-s', '--signal', '-k', '--kill-after']),
   nice: new Set(['-n', '--adjustment']),
   stdbuf: new Set(['-i', '-o', '-e', '--input', '--output', '--error']),
@@ -443,6 +450,26 @@ function extractShellDashC(words: readonly string[]): string | null {
   const cIndex = words.indexOf('-c');
   if (cIndex === -1) return null;
   return words[cIndex + 1] ?? null;
+}
+
+/**
+ * The command line inside `env -S '<...>'` / `env --split-string '<...>'`, or
+ * null when there is none.
+ *
+ * env's own documented feature: the value is re-split and executed, so it is
+ * COMMAND CONTENT, not an argument. It must be judged, not skipped — the same
+ * reasoning as `sh -c`, and handled the same way (extract, then recurse via
+ * `classifyCommandMax`, which re-applies every band rule including this one).
+ */
+function extractEnvSplitString(words: readonly string[]): string | null {
+  if (words[0] !== 'env') return null;
+  for (let i = 1; i < words.length; i++) {
+    const w = words[i];
+    if (w === '-S' || w === '--split-string') return words[i + 1] ?? null;
+    // `env -Sfoo` attached form.
+    if (w?.startsWith('-S') === true && w.length > 2) return w.slice(2);
+  }
+  return null;
 }
 
 /**
@@ -754,7 +781,15 @@ function classifySegmentBand(rawSegment: string, depth: number): 'moderate' | 'h
 
   if (hasExecPrimitive(sanitized)) return 'high';
 
-  const words = unwrapCommand(shellWords(sanitized));
+  const rawWords = shellWords(sanitized);
+  // Read BEFORE unwrapping: `unwrapCommand` strips `env` and its flags, so by
+  // the time `words` exists the `-S` marker is gone. The first draft of this
+  // ran on `words` and never fired at all -- two cases passed anyway, by the
+  // accident that the extracted command happened to land at index 0 and trip
+  // the assignment rule. Probing the attached form (`env -S'...'`) is what
+  // exposed it.
+  const envSplit = extractEnvSplitString(rawWords);
+  const words = unwrapCommand(rawWords);
 
   // A leading assignment sets the environment the following command runs in,
   // and what that does is defined by the TOOL, not by anything visible here:
@@ -771,6 +806,11 @@ function classifySegmentBand(rawSegment: string, depth: number): 'moderate' | 'h
   if (shellArg !== null) {
     if (depth >= MAX_RECURSION_DEPTH) return 'high';
     if (classifyCommandMax(shellArg, depth + 1) === 'high') return 'high';
+  }
+
+  if (envSplit !== null) {
+    if (depth >= MAX_RECURSION_DEPTH) return 'high';
+    if (classifyCommandMax(envSplit, depth + 1) === 'high') return 'high';
   }
 
   if (isRemoteMutation(words)) return 'high';

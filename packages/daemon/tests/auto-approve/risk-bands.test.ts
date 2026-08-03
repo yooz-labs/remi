@@ -506,6 +506,17 @@ describe('#1004 an assignment that redirects execution grades high', () => {
     // attack (bash tries to EXECUTE a program named `FOO=bar` after `nohup`).
     'nohup FOO=bar pytest',
     'nice FOO=bar pytest',
+    // `env -S`/`--split-string` takes a full command line that env re-splits
+    // and EXECUTES. It was listed as a value flag, so the whole command was
+    // discarded as an argument and never judged -- the bare form graded high
+    // while this graded moderate (#1004 re-review, proven by real execution).
+    // Extracted and recursed into now, like `sh -c`.
+    "env -S 'PYTEST_PLUGINS=evil_plugin pytest'",
+    "env --split-string 'HOME=/tmp/evil git commit -m x'",
+    // Attached form. The first fix missed this one and two other cases only
+    // passed by accident, which is how the miss was caught.
+    "env -S'PYTEST_PLUGINS=evil pytest'",
+    "env -S 'rm -rf /tmp/x'",
   ];
   for (const command of high) {
     test(JSON.stringify(command), () => expect(classifyRisk('Bash', { command })).toBe('high'));
@@ -518,6 +529,9 @@ describe('#1004 an assignment that redirects execution grades high', () => {
     'git commit -m FOO=bar',
     'grep -n A=B file.txt',
     'git log --format=%H',
+    // env's genuinely inert value flags must NOT inflate the band.
+    'env -u FOO pytest',
+    'env -C /tmp pytest',
   ];
   for (const command of moderate) {
     test(`stays moderate: ${JSON.stringify(command)}`, () =>
