@@ -520,44 +520,71 @@ describe('#1005 an arbitration-verdict push takes the render-owned slot', () => 
  * exercised two concurrent agents in either direction, which is how that
  * shipped unnoticed.
  */
-describe('#1008 a different agent never supersedes, and a redraw is not a replacement', () => {
-  function makeAgentPTY(agentId: string, text: string): Question {
-    return { ...makeHooklessPTYQuestion(text), agentId } as Question;
+/**
+ * #1008 review. The render-owned slot was the ONE piece of state in this file
+ * that was not agent-keyed, and #1008 moved the highest-stakes cohort
+ * (deliberately-escalated subagent permissions) into it.
+ *
+ * These drive the REAL path: a hook record carries the `agentId`, the PTY render
+ * carries NONE (the parser never sets one — grep `question-parser.ts`), and
+ * pairing happens through `parkAwaitingPTY` + `onOrphanPTYPrompt`. An earlier
+ * version of these tests hand-set `agentId` on the raw PTY question and used
+ * `onPTYPromptVisible`, which is only reached when the hook server is OFF — so
+ * they exercised a shape that cannot occur in production and passed while the
+ * scoping was broken. Caught in review.
+ */
+describe('#1008 a different agent never supersedes, driven through the real path', () => {
+  function parkAndRender(
+    tracker: ReturnType<typeof buildTracker>['tracker'],
+    agentId: string,
+    text: string,
+  ): Question {
+    const hook = makeHookRecord(text);
+    (hook as { agentId?: string }).agentId = agentId;
+    tracker.recordPendingHook(hook);
+    tracker.parkAwaitingPTY(hook);
+    // The raw render carries NO agentId, exactly as the parser produces it.
+    tracker.onOrphanPTYPrompt(makeHooklessPTYQuestion('Do you want to proceed?'));
+    return hook;
   }
 
-  test('agent B rendering does NOT resolve agent A card', () => {
+  test('subagent B rendering does NOT resolve subagent A card', async () => {
     const { tracker, gone } = buildTracker();
-    const a = makeAgentPTY('agent-a', 'Allow Bash: git push');
-    tracker.onPTYPromptVisible(a);
+    tracker.setParkedRenderArbiter(async () => ({ outcome: 'push' }));
+
+    const a = parkAndRender(tracker, 'agent-a', 'reviewer · Bash: git push');
+    await new Promise((r) => setTimeout(r, 5));
     expect(tracker.observedRenderOwnedQuestionForTest()).toBe(a.id);
 
-    // A completely unrelated agent's permission renders on the shared PTY.
-    // Nobody answered A; no tool ran; no SubagentStop fired.
-    const b = makeAgentPTY('agent-b', 'Allow Bash: rm -rf build');
-    tracker.onPTYPromptVisible(b);
+    parkAndRender(tracker, 'agent-b', 'builder · Bash: rm -rf build');
+    await new Promise((r) => setTimeout(r, 5));
 
-    expect(gone).toHaveLength(0); // A must survive
+    // Nobody answered A. No tool ran. No SubagentStop fired.
+    expect(gone).toHaveLength(0);
   });
 
-  test('the SAME agent rendering something different does supersede', () => {
+  test('the SAME agent rendering something different does supersede', async () => {
     const { tracker, gone } = buildTracker();
-    const first = makeAgentPTY('agent-a', 'Allow Bash: git push');
-    tracker.onPTYPromptVisible(first);
-    tracker.onPTYPromptVisible(makeAgentPTY('agent-a', 'Allow Bash: something else'));
+    tracker.setParkedRenderArbiter(async () => ({ outcome: 'push' }));
+
+    const first = parkAndRender(tracker, 'agent-a', 'reviewer · Bash: git push');
+    await new Promise((r) => setTimeout(r, 5));
+    parkAndRender(tracker, 'agent-a', 'reviewer · Bash: something else');
+    await new Promise((r) => setTimeout(r, 5));
 
     expect(gone).toEqual([{ id: first.id, reason: 'pty_render_superseded' }]);
   });
 
   test('a same-agent redraw DOES supersede, and that is correct', () => {
-    // Review proposed refusing this too (a redraw is "the same prompt"). It is
-    // #888's deliberate policy -- "the guard is delivery, not text identity" --
-    // and the harm does not apply: a supersede only fires on a CONFIRMED
-    // registration, so the user still holds a card for this prompt, the new
-    // one. Cross-agent above is the case that leaves a prompt with NO card.
+    // Review proposed refusing this too ("a redraw is the same prompt"), then
+    // retracted on the same reasoning: a supersede only fires on a CONFIRMED
+    // registration, so the user always holds a card for the current prompt --
+    // the new one. Cross-agent above is the case that leaves a prompt with NO
+    // card. Kept as a main-agent case, where an agentless render is real.
     const { tracker, gone } = buildTracker();
-    const first = makeAgentPTY('agent-a', 'Do you want to proceed?');
+    const first = makeHooklessPTYQuestion('Do you want to proceed?');
     tracker.onPTYPromptVisible(first);
-    tracker.onPTYPromptVisible(makeAgentPTY('agent-a', 'Do you want to proceed?'));
+    tracker.onPTYPromptVisible(makeHooklessPTYQuestion('Do you want to proceed?'));
 
     expect(gone).toEqual([{ id: first.id, reason: 'pty_render_superseded' }]);
   });
@@ -572,19 +599,6 @@ describe('#1008 a different agent never supersedes, and a redraw is not a replac
   });
 });
 
-/**
- * #1008 review follow-up, found by probing rather than by the review.
- *
- * The first cut of the agent scoping keyed on the RAW PTY question. A PTY parse
- * usually carries no `agentId` — "Do you want to proceed?" says nothing about
- * whose permission it is — so `agentKey` fell back to `main` and filed a parked
- * SUBAGENT card under the main agent. The next main-agent prompt then
- * superseded it: exactly the cross-agent bleed the scoping was added to stop,
- * reintroduced by the scoping itself.
- *
- * Keying on the MERGED question fixes it, because the merge takes the hook
- * record's `agentId`, which is the half that knows.
- */
 describe('#1008 a parked subagent card is scoped by its HOOK agent, not the PTY parse', () => {
   test('a main-agent prompt does not resolve a parked subagent card', async () => {
     const { tracker, gone } = buildTracker();
