@@ -104,6 +104,12 @@ import type { AutoApproveResult } from './types.ts';
  *  is the right eviction. */
 const MAX_PARKED_INPUTS = 64;
 
+/** Hard cap on `retiredEscalations` (#1005). Only needs to outlive the gap
+ *  between a retirement and the PTY render it must suppress, which is a
+ *  render cycle; sized generously above `MAX_PARKED_INPUTS` because forgetting
+ *  early fails toward an extra card, not toward silence. */
+const MAX_RETIRED_ESCALATIONS = 256;
+
 /** The (tool_name, tool_input) signature of an OPEN escalation (#673),
  *  tracked so an external-resolution signal can find and cancel it. */
 interface ToolSignature {
@@ -593,6 +599,39 @@ export class AutoApproveGate {
   private readonly openQuestionSignatures = new Map<UUID, ToolSignature>();
 
   /**
+   * Ids of escalations this gate has RETIRED — resolved, released, or answered
+   * on the user's behalf (#1005).
+   *
+   * Exists so `arbitrateParkedRender` can tell "this permission is already
+   * settled" from "I have never heard of this id". Those look identical in
+   * `openQuestionSignatures` (absent either way) and need opposite handling:
+   * settled must not push a card, unknown MUST still push, because an id the
+   * gate has no record of is one it has no evidence about and the standing
+   * rule is that ambiguity resolves toward showing the user.
+   *
+   * A card pushed for a retired escalation is unremovable by design: retirement
+   * already deleted the signature entry, and every sweep this gate has iterates
+   * that map. So the cost of getting this wrong is not a redundant prompt, it
+   * is a permanent one.
+   *
+   * Bounded like `parkedInputs`: insertion-ordered, oldest evicted past the
+   * cap. Forgetting an old retirement fails toward pushing (a redundant card
+   * the user can dismiss), never toward silence.
+   */
+  private readonly retiredEscalations = new Set<UUID>();
+
+  /** Record a retirement, bounded like `parkedInputs` (oldest evicted). */
+  private markRetired(questionId: UUID): void {
+    this.retiredEscalations.delete(questionId);
+    this.retiredEscalations.add(questionId);
+    while (this.retiredEscalations.size > MAX_RETIRED_ESCALATIONS) {
+      const oldest = this.retiredEscalations.values().next().value;
+      if (oldest === undefined) break;
+      this.retiredEscalations.delete(oldest);
+    }
+  }
+
+  /**
    * The original hook input of every PARKED subagent permission (#814), keyed
    * by the parked `Question.id`. The hook itself was answered 'passthrough'
    * immediately (#807), so this is the only surviving record of what the
@@ -885,6 +924,9 @@ export class AutoApproveGate {
     // escalation this question tracked is resolved now regardless of which
     // branch below runs -- clear it unconditionally, not just on the hit path.
     this.openQuestionSignatures.delete(questionId);
+    // #1005: pair every signature retirement with a positive record of it,
+    // so a later parked render can tell "settled" from "never seen".
+    this.markRetired(questionId);
     this.parkedInputs.delete(questionId); // #814, see releaseHeld
     this.confirmedDeliveries.delete(questionId); // #733: same unconditional cleanup
     const hold = this.pendingHolds.get(questionId);
@@ -1683,6 +1725,9 @@ export class AutoApproveGate {
     toolName?: string,
   ): boolean {
     this.openQuestionSignatures.delete(questionId);
+    // #1005: pair every signature retirement with a positive record of it,
+    // so a later parked render can tell "settled" from "never seen".
+    this.markRetired(questionId);
     // #814: a parked permission resolved through any of these paths can never
     // be arbitrated on render any more; retire its remembered hook input with
     // the signature it belongs to.
@@ -1841,6 +1886,28 @@ export class AutoApproveGate {
   ): Promise<ParkedRenderVerdict> {
     const input = this.parkedInputs.get(parkedQuestionId);
     const service = this.deps.service;
+    // #1005: this escalation was RETIRED (resolved / released / answered).
+    // Pushing here mints a card for a permission that is already settled, and
+    // -- because retirement deleted its `openQuestionSignatures` entry on the
+    // way out -- that card lands OUTSIDE every removal path this gate has: the
+    // signature sweeps and `cancelStaleForAgent` both iterate that map. Only
+    // LRU eviction or a user answer could ever remove it, which is how 7 of the
+    // 8 cards found stuck in a live pending set were born (2.5-12.5h lifetimes,
+    // `lru_eviction` their only removal).
+    //
+    // Keyed on POSITIVE evidence of retirement, never on the absence of a
+    // signature entry. Absence cannot tell "was retired" from "was never
+    // parked", and those need opposite handling: an id this gate knows nothing
+    // about is one it has no evidence about, so it must still fail open to the
+    // user. (An existing test, "an unknown parked id pushes without
+    // evaluating", pins exactly that and caught this when the check was written
+    // the absent-entry way.)
+    if (this.retiredEscalations.has(parkedQuestionId)) {
+      log(
+        `[AutoApprove ${this.sessionTag}] Parked render for ${parkedQuestionId.slice(0, 8)} already retired; not pushing`,
+      );
+      return { outcome: 'answered' };
+    }
     if (input === undefined || service === null) {
       // No auto-approve, or the park was already consumed/retired (an external
       // resolution, a session teardown, a duplicate render, a MAX_PARKED_INPUTS
@@ -1895,10 +1962,27 @@ export class AutoApproveGate {
     }
 
     if (result.decision === 'cancelled') {
-      // The eval was aborted because something proved the prompt moot (the
-      // agent advanced, the user answered in the terminal). Report push: the
-      // tracker drops it when the prompt is already off screen, and if it is
-      // somehow still up, the user is the right fallback.
+      // #1005: distinguish WHOSE resolution cancelled this eval. If this
+      // question's own bookkeeping is gone, the cancel was ITS resolution --
+      // the permission is settled and a card would be a zombie born outside
+      // every removal path (see the retired-park check at the top).
+      //
+      // The tracker cannot be relied on to drop it instead: `isPromptCurrent`'s
+      // text fallback matches "Do you want to proceed?", which is what EVERY
+      // Claude Code permission prompt renders, so with agent-team traffic
+      // something text-identical is almost always on screen. That check is
+      // structurally blind here.
+      if (this.retiredEscalations.has(parkedQuestionId)) {
+        log(
+          `[AutoApprove ${this.sessionTag}] Parked-render eval cancelled by its own resolution: ${result.reasoning}`,
+        );
+        this.markHandled(true);
+        return { outcome: 'answered' };
+      }
+      // The entry survives, so the cancel was collateral -- a SIBLING's
+      // PostToolUse aborted this eval. The prompt may well still be live, so
+      // keep failing open to the user. Mapping `cancelled` to `answered`
+      // unconditionally would swallow it.
       log(`[AutoApprove ${this.sessionTag}] Parked-render eval cancelled: ${result.reasoning}`);
       return this.escalateRenderedParked();
     }
@@ -1911,6 +1995,9 @@ export class AutoApproveGate {
         // to retire, which a deny in particular would otherwise leak until
         // SubagentStop (a denial fires no tool call to match against).
         this.openQuestionSignatures.delete(parkedQuestionId);
+        // #1005: pair every signature retirement with a positive record of it,
+        // so a later parked render can tell "settled" from "never seen".
+        this.markRetired(parkedQuestionId);
         this.markHandled(true);
         return { outcome: 'answered' };
       }
@@ -1945,6 +2032,9 @@ export class AutoApproveGate {
         (await this.answerRenderedParked(input, second, rendered, ptyPrompt))
       ) {
         this.openQuestionSignatures.delete(parkedQuestionId);
+        // #1005: pair every signature retirement with a positive record of it,
+        // so a later parked render can tell "settled" from "never seen".
+        this.markRetired(parkedQuestionId);
         this.markHandled(true);
         log(
           `[AutoApprove ${this.sessionTag}] escalate_model (${this.deps.escalateModel}) ${second.decision === 'deny' ? 'denied' : 'approved'} a parked render (${input.tool_name})`,

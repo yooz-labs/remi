@@ -3634,6 +3634,65 @@ describe('AutoApproveGate parked-render arbitration (#814)', () => {
     expect(evalCalls).toHaveLength(0);
   });
 
+  /**
+   * #1005. A parked render whose escalation was ALREADY retired must not push:
+   * retirement deleted its `openQuestionSignatures` entry, and every sweep this
+   * gate has iterates that map, so the resulting card is unremovable by anything
+   * except LRU eviction or a user answer. That is how 7 of the 8 cards found
+   * stuck in a live pending set were born.
+   *
+   * Keyed on a positive record of retirement, NOT on the signature entry being
+   * absent -- absent cannot tell "settled" from "never parked", and the test
+   * immediately below pins that the latter must still push.
+   */
+  describe('#1005 a retired escalation does not push a card', () => {
+    test('externally resolved before its render: answered, no push', async () => {
+      const g = gate(escalate);
+      await g.resolvePermission(pr('git push'));
+      const r = rendered(parkedIds[0] as UUID);
+      promptOnScreen(r);
+
+      // The tool actually ran -- PostToolUse retires the escalation.
+      g.cancelExternallyResolved(
+        { toolName: 'Bash', toolInput: { command: 'git push' }, agentId: 'agent-1' },
+        'PostToolUse-subagent',
+      );
+
+      expect(await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r))).toEqual({
+        outcome: 'answered',
+      });
+    });
+
+    test('a cancelled eval for a retired question is answered, not pushed', async () => {
+      const g = gate(cancelled);
+      await g.resolvePermission(pr('git push'));
+      const r = rendered(parkedIds[0] as UUID);
+      promptOnScreen(r);
+      g.cancelExternallyResolved(
+        { toolName: 'Bash', toolInput: { command: 'git push' }, agentId: 'agent-1' },
+        'PostToolUse-subagent',
+      );
+
+      expect(await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r))).toEqual({
+        outcome: 'answered',
+      });
+    });
+
+    test('a cancelled eval whose OWN escalation is still open still pushes', async () => {
+      // The cancel was collateral -- a sibling agent's PostToolUse aborted this
+      // eval. The prompt may well be live, so mapping `cancelled` to `answered`
+      // unconditionally would swallow it.
+      const g = gate(cancelled);
+      await g.resolvePermission(pr('git push'));
+      const r = rendered(parkedIds[0] as UUID);
+      promptOnScreen(r);
+
+      expect(await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r))).toEqual({
+        outcome: 'push',
+      });
+    });
+  });
+
   test('an unknown parked id pushes without evaluating', async () => {
     const g = gate(approve);
     const unknown = rendered(generateId() as UUID);
