@@ -338,8 +338,15 @@ export interface AutoApproveConfig {
    * for, and a precedent that outlived its conversation would be an allow-list
    * entry the user never wrote.
    *
-   * Default: true. Off means every repeat is asked again, which is the
-   * pre-#976 behavior.
+   * **Default: false**, and not because the mechanism is unfinished. Four
+   * review rounds on #1017 each found the same defect class — the signature
+   * used as the authorization key drops something that changes what the
+   * operation does. Each was closed; one is KNOWN and still OPEN (#1019: a
+   * Bash signature carries no `cwd`, so an approval in one worktree authorizes
+   * the identical command in another). A privilege-GRANTING path should not
+   * ship on by default with a known-unfixed escalation. Flip once #1019 lands.
+   *
+   * Off means every repeat is asked again — the pre-#976 behavior.
    */
   readonly session_precedent: boolean;
   /**

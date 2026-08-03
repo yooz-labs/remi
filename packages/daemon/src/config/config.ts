@@ -374,12 +374,27 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // AskUserQuestion + plan-mode. Extend with custom question-posing tools.
     always_escalate_tools: [...DEFAULT_ALWAYS_ESCALATE_TOOLS],
     // Reuse an answer the user already gave THIS SESSION for the identical
-    // operation (#976). On by default: without it the third `git push origin
-    // feature/x` of a session asks a third time. Session-scoped, in-memory,
-    // cleared on rotation -- a durable rule is what `allow` is for. The
-    // deny-direction half (an earlier "no" downgrades a model approve to
-    // escalate) is a tightening and stays on regardless of this flag.
-    session_precedent: true,
+    // operation (#976). Session-scoped, in-memory, cleared on rotation -- a
+    // durable rule is what `allow` is for. The deny-direction half (an earlier
+    // "no" downgrades a model approve to escalate) is a TIGHTENING and stays
+    // on regardless of this flag.
+    //
+    // OFF by default, deliberately, and not because the mechanism is unfinished.
+    // Four review rounds on #1017 each found the same defect class -- the
+    // signature used as the authorization key drops something that changes what
+    // the operation does (Write's `content`, Read's extent, `cmd` vs `command`,
+    // collapsed indentation). Each was closed. One instance is KNOWN and still
+    // OPEN: a Bash signature carries no `cwd` (#1019), so `git push origin
+    // feature/x` approved in one worktree silently authorizes the identical
+    // command in another -- and worktrees are this project's own documented
+    // workflow. Closing it needs the signature to carry more than
+    // `Question.text` can (#990).
+    //
+    // Shipping a privilege-GRANTING path on by default with a known-unfixed
+    // escalation is the wrong trade. Flip this to true once #1019 lands; until
+    // then it is opt-in for anyone who wants the convenience and understands
+    // the boundary.
+    session_precedent: false,
     // Hold a binary main-context PermissionRequest hook open until the user
     // answers (Model B, #573). Large + human-paced; on expiry it fails open to
     // the native prompt. 0 disables holding (escalate -> passthrough as before).
@@ -1265,7 +1280,7 @@ turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_sec
 #                                  # auto-decided by the LLM (design / plan-mode
 #                                  # / long-form questions). Add custom MCP tools
 #                                  # that solicit user intent.
-# session_precedent = true         # Reuse an answer you already gave THIS
+# session_precedent = false        # Reuse an answer you already gave THIS
 #                                  # session for the byte-identical operation,
 #                                  # so the third "git push origin feature/x"
 #                                  # does not ask a third time. Bounded by risk
@@ -1273,7 +1288,8 @@ turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_sec
 #                                  # every time. Session-scoped and in-memory --
 #                                  # for a durable rule use "allow". Setting
 #                                  # false does NOT discard an earlier "no";
-#                                  # that half always applies.
+#                                  # that half always applies. OFF by default
+#                                  # until #1019 (a signature carries no cwd).
 `;
 }
 
