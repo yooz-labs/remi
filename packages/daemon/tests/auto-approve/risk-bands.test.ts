@@ -517,6 +517,10 @@ describe('#1004 an assignment that redirects execution grades high', () => {
     // passed by accident, which is how the miss was caught.
     "env -S'PYTEST_PLUGINS=evil pytest'",
     "env -S 'rm -rf /tmp/x'",
+    // GNU long-option equals form. BSD env (macOS) rejects `--split-string`
+    // outright, but remi targets Linux too.
+    'env --split-string=rm\\ -rf\\ /tmp/x',
+    'env --split-string=PYTEST_PLUGINS=evil pytest',
   ];
   for (const command of high) {
     test(JSON.stringify(command), () => expect(classifyRisk('Bash', { command })).toBe('high'));

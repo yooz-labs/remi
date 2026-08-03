@@ -466,7 +466,10 @@ function extractEnvSplitString(words: readonly string[]): string | null {
   for (let i = 1; i < words.length; i++) {
     const w = words[i];
     if (w === '-S' || w === '--split-string') return words[i + 1] ?? null;
-    // `env -Sfoo` attached form.
+    // GNU long-option equals form. BSD env (macOS) has no `--split-string` at
+    // all, but remi targets Linux too, where GNU getopt accepts it.
+    if (w?.startsWith('--split-string=') === true) return w.slice('--split-string='.length);
+    // `env -Sfoo` attached form -- works on BSD env, verified on this machine.
     if (w?.startsWith('-S') === true && w.length > 2) return w.slice(2);
   }
   return null;
