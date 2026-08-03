@@ -31,6 +31,7 @@ import {
 import { matchAllowPattern, matchSubstringPattern } from './pattern-matcher.ts';
 import { matchGroups } from './permission-groups.ts';
 import { buildPrompt } from './prompt-builder.ts';
+import { classifyRisk, formatMatrixContext } from './risk-bands.ts';
 import { enforceRiskCeiling } from './risk-ceiling.ts';
 import type { AutoApproveConfig, AutoApproveResult, MultiChoiceMode } from './types.ts';
 
@@ -1054,8 +1055,20 @@ export class AutoApproveService {
 
         if (this.logDecisions) {
           const denyPrefix = result.decision === 'deny' ? `${prefix} DENIED` : prefix;
+          // #976 instrumentation. The matrix's WIDENING half is only worth
+          // building if a meaningful share of final escalates are
+          // (band=moderate + authority present) -- that is the sole population
+          // a text-derived grade could decide, since critical never approves
+          // and high needs a witness text cannot supply. Nobody has counted it.
+          //
+          // Emitted on every decision rather than only on escalates so the
+          // denominator is visible too: "12% of escalates are eligible" means
+          // nothing without knowing how many escalates there were.
           this.logFn(
-            `${denyPrefix} ${toolName}: ${result.decision} (${durationMs}ms) - ${result.reasoning}`,
+            `${denyPrefix} ${toolName}: ${result.decision} (${durationMs}ms) ${formatMatrixContext(
+              classifyRisk(toolName, toolInput),
+              authorityPresent,
+            )} - ${result.reasoning}`,
           );
         }
 
