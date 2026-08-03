@@ -35,6 +35,7 @@ import {
 import {
   type CompoundJoiner,
   matchCoveredCommand,
+  matchPrefix,
   rewriteRedirectClauses,
   shellWords,
   splitCompoundParts,
@@ -734,6 +735,71 @@ export function matchGroups(
     // match would otherwise cover `Write` to `~/.remi/config.toml` (#959).
     if (group.toolVeto?.(toolName, toolInput) === true) return null;
     return `${name}:${toolName}`;
+  }
+  return null;
+}
+
+/**
+ * Match a permission request against the named groups the way a STOP RULE has
+ * to: does ANY part of this command belong to a class the user hard-blocked?
+ *
+ * `matchGroups` answers the opposite question — "is the ENTIRE command covered,
+ * may I skip the LLM?" — and answers it precisely, returning null the moment
+ * one compound segment is not covered. That precision is correct for an ALLOW
+ * decision and backwards for a DENY one, which is ADR 0010's whole point: allow
+ * matching is narrow, deny matching is broad, and a rule that fails in the
+ * wrong direction is worse than no rule.
+ *
+ * Asking the precise matcher a deny question meant appending anything it did
+ * not recognise defeated the block outright (#1001):
+ *
+ *     deny_groups = ["fs-write"]
+ *     mkdir /tmp/x              -> denied
+ *     mkdir /tmp/x && ls -la    -> NOT denied
+ *
+ * — including the exact `mkdir` the user configured it to stop.
+ *
+ * So this deliberately does NOT require total coverage, and deliberately does
+ * NOT apply `segmentVeto`/`toolVeto`. Those vetoes exist to NARROW an allow
+ * match (a mutation flag means "do not approve this"); applying them here would
+ * mean a command that looks MORE dangerous is LESS likely to be denied.
+ */
+export function matchGroupsBroad(
+  toolName: string,
+  toolInput: Record<string, unknown>,
+  groupNames: readonly string[],
+): string | null {
+  const known = groupNames.filter(isKnownGroup);
+  if (known.length === 0) return null;
+
+  if (toolName === 'Bash') {
+    const command = typeof toolInput['command'] === 'string' ? toolInput['command'].trim() : '';
+    if (command === '') return null;
+    const prefixToGroup = new Map<string, string>();
+    for (const name of known) {
+      for (const cmd of BUILTIN_GROUPS[name]?.commands ?? []) {
+        if (!prefixToGroup.has(cmd)) prefixToGroup.set(cmd, name);
+      }
+    }
+    const prefixes = [...prefixToGroup.keys()];
+    for (const raw of splitCompoundParts(command)) {
+      const seg = raw.text.trim();
+      if (seg === '') continue;
+      const hit = matchPrefix(seg, prefixes);
+      if (hit !== null) return `${prefixToGroup.get(hit) ?? 'group'}:${hit}`;
+    }
+    // KNOWN GAP, deliberately not closed here: a segment behind a shell grammar
+    // keyword (`do rm -rf /`) does not prefix-match, so it evades a deny the
+    // bare form catches. `stripShellGrammar` (#999) is what fixes it and lives
+    // on an unmerged branch; peeling before the match above is a two-line
+    // change once that lands. Noted rather than worked around, because the
+    // workaround would be a second grammar recognizer — the exact defect shape
+    // this module has already produced four times.
+    return null;
+  }
+
+  for (const name of known) {
+    if (BUILTIN_GROUPS[name]?.tools.includes(toolName) === true) return `${name}:${toolName}`;
   }
   return null;
 }
