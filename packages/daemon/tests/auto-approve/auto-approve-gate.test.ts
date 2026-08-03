@@ -7,7 +7,7 @@ import {
   AutoApproveGate,
   autoAnswerValue,
 } from '../../src/auto-approve/auto-approve-gate.ts';
-import type { AutoApproveResult } from '../../src/auto-approve/types.ts';
+import type { AutoApproveResult, DenySource } from '../../src/auto-approve/types.ts';
 import { __resetLoggerForTests, configureLogger } from '../../src/cli/logger.ts';
 import type { PermissionRequestHookInput } from '../../src/hooks/index.ts';
 import type { DeliveryOutcome } from '../../src/notifications/notification-dispatcher.ts';
@@ -4100,5 +4100,186 @@ describe('#1005 end-to-end: a retired escalation registers no card via the real 
     expect(pushes).toHaveLength(0);
     // The whole point: nothing accumulates in the store that no sweep can clear.
     expect(registry.getSession(sid)?.currentQuestions.size).toBe(0);
+  });
+});
+
+/**
+ * #1015: every `deny` the gate returns must reach the `onAutoDenied` sink.
+ *
+ * A deny is the one verdict with no user-facing surface of its own -- no
+ * Question, so no card, no push, no `question_resolved`. This sink is the
+ * human's only channel, so what matters is that NOTHING reaching the hook as a
+ * deny bypasses it, and that a broken sink cannot break the decision.
+ */
+describe('AutoApproveGate onAutoDenied (#1015)', () => {
+  const SID = generateId() as UUID;
+  let registry: SessionRegistry;
+  let denied: Array<{ tool: string; source: DenySource; reasoning: string }>;
+
+  const denyFromConfig: AutoApproveResult = {
+    decision: 'deny',
+    reasoning: 'deny-matched group: "fs-write"',
+    durationMs: 0,
+    model: 'm',
+    denySource: { kind: 'config', pattern: 'fs-write' },
+  };
+  const denyFromFloor: AutoApproveResult = {
+    decision: 'deny',
+    reasoning: 'the model refused',
+    durationMs: 12,
+    model: 'm',
+    denySource: { kind: 'model-floor', pattern: 'rm -rf /' },
+  };
+  const approveResult: AutoApproveResult = {
+    decision: 'approve',
+    reasoning: 't',
+    durationMs: 0,
+    model: 'm',
+  };
+  const escalateResult: AutoApproveResult = {
+    decision: 'escalate',
+    reasoning: 't',
+    durationMs: 0,
+    model: 'm',
+  };
+
+  function makeGate(
+    result: AutoApproveResult,
+    opts: { secondOpinion?: AutoApproveResult; sinkThrows?: boolean } = {},
+  ): AutoApproveGate {
+    registry.registerSession(SID, '/d', fakePTY([]), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    const service: AutoApproveEvaluator = {
+      evaluate: async (_t, _i, _tag, _s, modelOverride) =>
+        modelOverride === 'big-model' ? (opts.secondOpinion ?? result) : result,
+      cancel: () => true,
+    };
+    return new AutoApproveGate(
+      {
+        service,
+        sessionRegistry: registry,
+        tracker: new QuestionPresenceTracker(() => undefined),
+        isInSubagentContext: () => false,
+        escalate: () => generateId(),
+        onAutoDenied: (input, source, reasoning) => {
+          if (opts.sinkThrows) throw new Error('test: sink synthetic failure');
+          denied.push({ tool: input.tool_name, source, reasoning });
+        },
+        ...(opts.secondOpinion ? { escalateModel: 'big-model' } : {}),
+      },
+      SID,
+    );
+  }
+
+  function pr(): PermissionRequestHookInput {
+    return {
+      session_id: 'claude-test',
+      transcript_path: '/tmp/t.jsonl',
+      cwd: '/d',
+      permission_mode: 'default',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'rm -rf /' },
+    };
+  }
+
+  beforeEach(() => {
+    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    denied = [];
+    configureLogger({ writeLog: () => {} });
+  });
+
+  afterEach(async () => {
+    __resetLoggerForTests();
+    await registry.shutdown();
+  });
+
+  test('a primary deny reaches the sink, carrying source and reasoning verbatim', async () => {
+    const d = await makeGate(denyFromFloor).resolvePermission(pr());
+    expect(d).toEqual({ behavior: 'deny', message: expect.stringContaining('ask the user') });
+    expect(denied).toEqual([
+      {
+        tool: 'Bash',
+        source: { kind: 'model-floor', pattern: 'rm -rf /' },
+        reasoning: 'the model refused',
+      },
+    ]);
+  });
+
+  test('a config deny reaches the sink too -- filtering is the sink’s call, not the gate’s', async () => {
+    // cli.ts logs both and pushes only for model-floor. Deciding that HERE
+    // would put the policy in two places, and the gate is the wrong one: it
+    // cannot see the user's config.
+    await makeGate(denyFromConfig).resolvePermission(pr());
+    expect(denied).toHaveLength(1);
+    expect(denied[0]?.source.kind).toBe('config');
+  });
+
+  test('a SECOND-OPINION deny reaches the sink: it is equally invisible', async () => {
+    // The primary escalates, the heavy escalate_model refuses. This return is
+    // as silent as the primary one and was the easier of the two to miss.
+    const d = await makeGate(escalateResult, { secondOpinion: denyFromFloor }).resolvePermission(
+      pr(),
+    );
+    expect(d).toEqual({ behavior: 'deny', message: expect.stringContaining('ask the user') });
+    expect(denied).toHaveLength(1);
+    expect(denied[0]?.source).toEqual({ kind: 'model-floor', pattern: 'rm -rf /' });
+  });
+
+  test('an untagged deny is still reported, not dropped', async () => {
+    // Unreachable today (every deny return in `evaluate` tags itself) but the
+    // type permits it. A missing tag must degrade the report, never silence
+    // it -- silence is the bug.
+    const untagged: AutoApproveResult = {
+      decision: 'deny',
+      reasoning: 'no source field',
+      durationMs: 0,
+      model: 'm',
+    };
+    await makeGate(untagged).resolvePermission(pr());
+    expect(denied).toHaveLength(1);
+    expect(denied[0]?.source).toEqual({ kind: 'model-floor', pattern: '' });
+  });
+
+  test('an approve never reaches the sink', async () => {
+    await makeGate(approveResult).resolvePermission(pr());
+    expect(denied).toEqual([]);
+  });
+
+  test('an escalate never reaches the sink', async () => {
+    await makeGate(escalateResult).resolvePermission(pr());
+    expect(denied).toEqual([]);
+  });
+
+  test('a sink that throws is absorbed: the deny still reaches the hook', async () => {
+    // Same contract as the cosmetic cues. An observer must never be able to
+    // turn a decided permission into an unanswered hook.
+    const d = await makeGate(denyFromFloor, { sinkThrows: true }).resolvePermission(pr());
+    expect(d).toEqual({ behavior: 'deny', message: expect.stringContaining('ask the user') });
+  });
+
+  test('an absent sink is fine: the gate does not require one', async () => {
+    registry.registerSession(SID, '/d', fakePTY([]), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    const gate = new AutoApproveGate(
+      {
+        service: { evaluate: async () => denyFromFloor, cancel: () => true },
+        sessionRegistry: registry,
+        tracker: new QuestionPresenceTracker(() => undefined),
+        isInSubagentContext: () => false,
+        escalate: () => generateId(),
+      },
+      SID,
+    );
+    expect(await gate.resolvePermission(pr())).toEqual({
+      behavior: 'deny',
+      message: expect.stringContaining('ask the user'),
+    });
   });
 });

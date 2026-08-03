@@ -125,6 +125,9 @@ import { loadOrCreateAnswerKey } from './auth/answer-key.ts';
 import { Authenticator } from './auth/authenticator.ts';
 import { loadOrCreateCapabilityToken } from './auth/capability-token.ts';
 import { IdentityStore } from './auth/identity-store.ts';
+// #976 prerequisite: not re-exported from auto-approve/index.ts on purpose
+// (that barrel is being edited concurrently by other work on the same epic).
+import { deniedBody, deniedOperation, deniedTitle } from './auto-approve/deny-floor.ts';
 import {
   AutoApproveService,
   EngineHost,
@@ -133,9 +136,8 @@ import {
   alertTitle,
   resolveProviderUrl,
 } from './auto-approve/index.ts';
-// #976 prerequisite: not re-exported from auto-approve/index.ts on purpose
-// (that barrel is being edited concurrently by other work on the same epic).
 import type { PrecedentStore } from './auto-approve/precedent.ts';
+import type { DenySource } from './auto-approve/types.ts';
 import { detectAutostartState } from './cli/autostart-state.ts';
 import { resolveClaudeBinding } from './cli/claude-binding.ts';
 import { runConfigCommand } from './cli/cmd-config.ts';
@@ -1289,6 +1291,59 @@ function onSubagentPassthrough(input: PermissionRequestHookInput): void {
   }
 }
 
+/**
+ * Report an auto-approve `deny` (#1015).
+ *
+ * A deny is the only verdict with no user-facing surface of its own: it builds
+ * no `Question`, so nothing is pushed, nothing is broadcast, and nothing lands
+ * in history to scroll back to. Claude gets `buildDenyMessage` and the human
+ * gets nothing at all.
+ *
+ * Two channels, deliberately asymmetric:
+ *
+ * - **Log, always, both sources.** Unconditional and NOT gated on
+ *   `log_decisions` — that flag governs the routine per-decision trace, and a
+ *   refusal is not routine. Same reasoning as `onSubagentPassthrough` above:
+ *   the push can fail or be throttled downstream, so the local record is what
+ *   makes the decision auditable at all.
+ * - **Push, `model-floor` only.** A `config` deny is the user's own standing
+ *   rule in `config.toml` firing exactly as written; notifying them about it
+ *   is telling them what they already decided. A `model-floor` deny is the
+ *   opposite — the model refused and `matchesCatastrophicPattern` happened to
+ *   agree, which #997 measured going wrong 7 times in 8 on real traffic. That
+ *   is the one nobody chose.
+ *
+ * Fire-and-forget: the gate has already answered the hook, so this must never
+ * delay or throw into it.
+ */
+function onAutoDenied(
+  input: PermissionRequestHookInput,
+  source: DenySource,
+  reasoning: string,
+): void {
+  const op = deniedOperation(input.tool_name, input.tool_input, source.pattern);
+  const title = deniedTitle(op);
+  const body = deniedBody(op);
+  log(`[AutoDenied ${source.kind}] ${title} - ${body} (${reasoning})`);
+
+  if (source.kind !== 'model-floor') return;
+  if (deviceTokens.size === 0) return;
+  const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
+  for (const dt of deviceTokens.values()) {
+    // Deliberately no `category` / `options` / `questionId`: the operation is
+    // already refused and there is nothing for the user to answer. Same
+    // dismiss-only convention as the subagent alert above.
+    void sendPushTrigger(signalingUrl, dt.token, {
+      title,
+      body,
+      ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
+      kind: 'auto_denied',
+    }).catch((err) => {
+      logError('[AutoDenied] push failed:', err);
+    });
+  }
+}
+
 // Daemon-wide turn-duration tracker (#914). Fed from HookServer's onAnyEvent
 // for every hook event (see the two HookServer constructions below), keyed
 // on `prompt_id` -- present on every hook payload's common fields. Originally
@@ -1704,6 +1759,7 @@ async function createNewSession(
         statusWriter,
         foreignSessionEscalator,
         onSubagentPassthrough,
+        onAutoDenied,
         // #573: classify holdable escalations + the hold / slow-eval-push budgets
         // (seconds; the gate converts to ms and treats <=0 as disabled).
         alwaysEscalateTools: new Set(remiConfig.auto_approve.always_escalate_tools),
