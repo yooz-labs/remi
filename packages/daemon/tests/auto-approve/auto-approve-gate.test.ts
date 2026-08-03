@@ -1442,7 +1442,17 @@ describe('AutoApproveGate slow-eval push (#573 Part B)', () => {
 
   function gate(
     service: AutoApproveEvaluator,
-    opts: { holdMs?: number; pushHoldMs?: number } = {},
+    opts: {
+      holdMs?: number;
+      pushHoldMs?: number;
+      /** #1015: records every deny reported to the observer, so a Part B late
+       *  deny can be checked for the report it must produce. */
+      onAutoDenied?: (
+        input: PermissionRequestHookInput,
+        source: DenySource,
+        reasoning: string,
+      ) => void;
+    } = {},
   ): AutoApproveGate {
     registry.registerSession(SID, '/d', fakePTY([]), {
       handleMessage: () => {},
@@ -1463,6 +1473,7 @@ describe('AutoApproveGate slow-eval push (#573 Part B)', () => {
         holdMs: opts.holdMs ?? 60_000,
         pushHoldMs: opts.pushHoldMs ?? 0,
         alwaysEscalateTools: new Set(),
+        ...(opts.onAutoDenied ? { onAutoDenied: opts.onAutoDenied } : {}),
       },
       SID,
     );
@@ -1518,6 +1529,55 @@ describe('AutoApproveGate slow-eval push (#573 Part B)', () => {
     release(deny);
     expect(await pending).toBe('deny');
     expect(escalations).toHaveLength(1);
+  });
+
+  test('#1015: a slow eval whose late verdict is deny REPORTS it', async () => {
+    // The third deny path, and the least visible of the three: the user is
+    // already looking at a pushed card saying "needs your permission", and
+    // this resolution makes it vanish via a quiet content-available dismiss
+    // that carries no title and no body. Without the report the refusal is
+    // worse than invisible -- the user saw a prompt and then saw it disappear.
+    //
+    // Found in review, not in writing: `reportDeny` was wired at the two
+    // SYNCHRONOUS deny returns and this async one needed `input` threaded down
+    // a level, which is exactly why it was missed.
+    const denied: DenySource[] = [];
+    const { service, release } = deferredEvaluator();
+    const g = gate(service, {
+      pushHoldMs: 20,
+      onAutoDenied: (_input, source) => denied.push(source),
+    });
+    const pending = g.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 40));
+    expect(escalations).toHaveLength(1); // the early card is on screen
+
+    release({
+      decision: 'deny',
+      reasoning: 'the model refused',
+      durationMs: 90_000,
+      model: 'm',
+      denySource: { kind: 'model-floor', pattern: 'rm -rf /' },
+    });
+    expect(await pending).toBe('deny');
+    // The reconciliation is fired-and-forgotten off the hook response, so the
+    // report can land a microtask later than the hook resolves.
+    await new Promise((r) => setTimeout(r, 10));
+    expect(denied).toEqual([{ kind: 'model-floor', pattern: 'rm -rf /' }]);
+  });
+
+  test('#1015: a slow eval whose late verdict is APPROVE reports nothing', async () => {
+    const denied: DenySource[] = [];
+    const { service, release } = deferredEvaluator();
+    const g = gate(service, {
+      pushHoldMs: 20,
+      onAutoDenied: (_input, source) => denied.push(source),
+    });
+    const pending = g.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 40));
+    release(approve);
+    expect(await pending).toBe('allow');
+    await new Promise((r) => setTimeout(r, 10));
+    expect(denied).toEqual([]);
   });
 
   test('a slow eval whose late verdict is escalate keeps the existing hold (no double push)', async () => {

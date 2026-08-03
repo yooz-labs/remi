@@ -1664,7 +1664,7 @@ export class AutoApproveGate {
     // The reconciliation NEVER pushes again — a late escalate just leaves the
     // existing hold in place (guarded by the pendingHolds membership check
     // inside reconcileLateVerdict), and pushHeldHook is itself idempotent.
-    void this.reconcileLateVerdict(safeEval, questionId);
+    void this.reconcileLateVerdict(input, safeEval, questionId);
     return heldDecision;
   }
 
@@ -1678,6 +1678,7 @@ export class AutoApproveGate {
    * double-resolve.
    */
   private async reconcileLateVerdict(
+    input: PermissionRequestHookInput,
     safeEval: Promise<{ ok: true; result: AutoApproveResult } | { ok: false; err: unknown }>,
     qid: UUID | undefined,
   ): Promise<void> {
@@ -1702,6 +1703,18 @@ export class AutoApproveGate {
       this.notifyResolved(qid, 'auto_approved');
       this.resolveHeld(qid, 'allow');
     } else if (result.decision === 'deny') {
+      // #1015: the THIRD deny path, and the least visible of the three. The
+      // user already has a card on their lock screen saying "needs your
+      // permission"; this dismisses it with a quiet content-available push
+      // carrying no title and no body. Without the report, the card simply
+      // vanishes and the refusal is invisible — worse than the synchronous
+      // deny, because the user saw a prompt and then saw it disappear.
+      //
+      // Found in review of this change, not by writing it: `reportDeny` was
+      // wired at the two SYNCHRONOUS deny returns and this async one was
+      // missed. It needed `input` threaded down a level, which is exactly why
+      // it was easy to miss and why the parameter now exists.
+      this.reportDeny(input, result);
       this.notifyResolved(qid, 'auto_denied');
       this.resolveHeld(qid, 'deny');
     } else if (result.decision === 'cancelled') {
