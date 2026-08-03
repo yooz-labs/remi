@@ -13,7 +13,7 @@
  * So this file does not test the two functions separately. It runs the REAL
  * `HookEventBridge.buildPermissionQuestion` to produce the question a user
  * would actually answer, parses it with the real record-side parser, and
- * compares against the real consult-side deriver. No literal expected strings:
+ * compares against the real consult-side builder. No literal expected strings:
  * a hardcoded `'Bash: git push'` would keep passing if BOTH sides changed
  * together, which is the case that matters least, and would fail spuriously on
  * a cosmetic question-text change, which is the case that matters not at all.
