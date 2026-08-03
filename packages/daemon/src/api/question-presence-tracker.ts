@@ -49,7 +49,7 @@
  * exits used to be the user answering it or the `MAX_PENDING_QUESTIONS` LRU
  * cap, which measured as a real leak (12 of 29 source-less questions never
  * removed in one working day's capture, one still pending 2h51m later).
- * `observedHooklessQuestion` + `deps.onHooklessQuestionGone` close that gap,
+ * `observedRenderOwnedQuestion` + `deps.onHooklessQuestionGone` close that gap,
  * but ONLY on a CONFIRMED-delivered replacement push in `pairAndPush` --
  * the `QuestionRegistrationOutcome` returned directly by the `push` call is
  * the confirmation gate (#888 criterion iii; formerly a separate
@@ -144,6 +144,15 @@ export type ParkedRenderArbiter = (ctx: {
 }) => Promise<ParkedRenderVerdict>;
 
 /** Pending-hook map key: the prompt's agent, or MAIN_AGENT_ID for the primary. */
+/** The one card the current on-screen prompt owns, and what identifies it. */
+interface RenderOwnedCard {
+  readonly id: string;
+  /** Agent the PTY prompt belonged to; a different agent never supersedes. */
+  readonly agent: string;
+  /** Raw PTY text, so a byte-identical redraw is not read as a replacement. */
+  readonly text: string;
+}
+
 function agentKey(question: Question): string {
   return question.agentId ?? MAIN_AGENT_ID;
 }
@@ -296,7 +305,7 @@ export class QuestionPresenceTracker {
    * / the Stop sweeps), so this mechanism -- scoped tightly to the one cohort
    * that has no other exit -- leaves it alone.
    */
-  private observedHooklessQuestion: string | null = null;
+  private observedRenderOwnedQuestion: RenderOwnedCard | null = null;
 
   /** Count of MAIN-context auto-approve evals in flight. A PTY prompt that
    *  appears while this is > 0 is BUFFERED (not pushed): if the verdict is
@@ -632,37 +641,109 @@ export class QuestionPresenceTracker {
    * swallowing a live question is not.
    */
   private pairAndPush(ptyQuestion: Question): void {
-    const { merged, hookRecord } = this.consumeAndMerge(ptyQuestion);
+    // `hookRecord` is deliberately not read here any more: #1005 widened the
+    // render-owned slot to EVERY confirmed render-born card, hook-paired or
+    // not, so whether a hook was consumed no longer changes what is tracked.
+    const { merged } = this.consumeAndMerge(ptyQuestion);
     this.ptyShowingQuestion = true;
     const outcome = this.pushMerged(merged);
     const delivered = outcome?.status === 'registered';
     if (!delivered) {
       // Not confirmed (deduped, or the push sink returned no outcome):
-      // nothing is known to have changed. Leave `observedHooklessQuestion`
+      // nothing is known to have changed. Leave `observedRenderOwnedQuestion`
       // exactly as it was -- if it was tracking an older id, that question
       // is STILL the best evidence of what's on screen, and must not be
       // resolved on the strength of a replacement that never actually
       // registered.
       return;
     }
-    if (this.observedHooklessQuestion !== null && this.observedHooklessQuestion !== merged.id) {
-      this.noteHooklessGone('pty_render_superseded');
-    }
-    this.observedHooklessQuestion = hookRecord === undefined ? merged.id : null;
+    this.adoptRenderOwnedQuestion({
+      id: merged.id,
+      // Scope by the MERGED question, not the raw PTY parse. The parse often
+      // carries no `agentId` at all (`Do you want to proceed?` says nothing
+      // about whose permission it is), so keying on it filed a parked SUBAGENT
+      // card under `main` — and the next main-agent prompt then superseded it,
+      // which is the very cross-agent bleed the scoping exists to stop. The
+      // merge takes the hook record's agent, which is the one that knows.
+      agent: agentKey(merged),
+      text: ptyQuestion.text,
+    });
   }
 
   /**
    * Clear and report the currently-tracked hook-less question as gone
-   * (#888/#920), if one is tracked. No-op when `observedHooklessQuestion` is
+   * (#888/#920), if one is tracked. No-op when `observedRenderOwnedQuestion` is
    * null (nothing to resolve) or no `onHooklessQuestionGone` dep is wired
    * (pre-#888 behavior: hook-less questions are never actively resolved).
    * The dep is invoked outside any try/catch at some call sites, so a throw
    * is caught and logged here rather than trusted to the caller.
    */
+  /**
+   * Record `id` as THE card this screen's prompt owns, resolving whatever card
+   * held that slot before it (#1005 Change B).
+   *
+   * One PTY renders one prompt, so at most one render-born card can be live.
+   * A confirmed-registered replacement render IS the screen's current prompt,
+   * which makes the previous card's prompt provably gone — the same reasoning
+   * #888/#920 already applied, but that version was scoped to `hookRecord ===
+   * undefined` and so covered only genuinely hook-less cards.
+   *
+   * The excluded cohort is where the leak lived. A parked subagent escalation
+   * is hook-BORN, but its hook was answered `passthrough` at park time (ADR
+   * 0004), so the PTY render is its only living evidence — identical in
+   * lifecycle to a hook-less card, and previously tracked by nothing. Its exits
+   * were an exact-signature tool-run match, a phone answer, or `SubagentStop`;
+   * a terminal DENY fires no tool call, the lead-`Stop` sweep skips subagent
+   * entries (#711), and an agent-team teammate can run for days without
+   * `SubagentStop`. So those cards had no working exit and accumulated until
+   * LRU eviction.
+   *
+   * Held cards never reach here: a held hook means Claude is BLOCKED on the
+   * hook response and is not rendering, so it has no render to be superseded
+   * by, and `pushHeldHook` is a different trigger entirely.
+   */
+  private adoptRenderOwnedQuestion(card: RenderOwnedCard): void {
+    const previous = this.observedRenderOwnedQuestion;
+    if (previous !== null && previous.id !== card.id && this.supersedes(previous, card)) {
+      this.noteHooklessGone('pty_render_superseded');
+    }
+    this.observedRenderOwnedQuestion = card;
+  }
+
+  /**
+   * True when `next` genuinely REPLACES `previous` on screen, rather than
+   * merely following it.
+   *
+   * Two refusals, both found by driving concurrent agents through the real
+   * stack (#1008 review):
+   *
+   * 1. **A different agent's prompt proves nothing about this one.** Every
+   *    other piece of state in this file is agent-keyed (`pending`,
+   *    `awaitingPTY`, dedup, in-flight evals — see #425/#767/#799 for why
+   *    cross-agent bleed is dangerous); this slot was the exception. Subagent
+   *    B rendering an unrelated permission silently resolved subagent A's
+   *    escalated card: no answer, no tool run, no `SubagentStop`. Worse, the
+   *    cli.ts funnel then deleted A's `openQuestionSignatures` entry, killing
+   *    the exact-signature exit as well — reproducing the unremovable card
+   *    #1005 exists to fix, through a different door, for a permission the
+   *    gate had specifically judged risky enough to escalate.
+   *
+   * Text identity is deliberately NOT a second refusal here, though a review
+   * proposed it. A same-text redraw superseding is #888's stated policy ("the
+   * guard is delivery, not text identity"), and the harm does not apply: a
+   * supersede only fires on a CONFIRMED-registered replacement, so the user
+   * still holds a card for that prompt — the new one. Cross-agent is the
+   * asymmetric case, and the only one that leaves a prompt with no card at all.
+   */
+  private supersedes(previous: RenderOwnedCard, next: RenderOwnedCard): boolean {
+    return previous.agent === next.agent;
+  }
+
   private noteHooklessGone(reason: string): void {
-    const id = this.observedHooklessQuestion;
-    if (id === null) return;
-    this.observedHooklessQuestion = null;
+    const card = this.observedRenderOwnedQuestion;
+    if (card === null) return;
+    const id = card.id;
+    this.observedRenderOwnedQuestion = null;
     try {
       this.deps.onHooklessQuestionGone?.(id, reason);
     } catch (err) {
@@ -988,12 +1069,33 @@ export class QuestionPresenceTracker {
           );
           return;
         }
-        this.pushMerged(
+        const outcome = this.pushMerged(
           verdict.summary !== undefined && merged.summary === undefined
             ? { ...merged, summary: verdict.summary }
             : merged,
           'parked-render arbitration verdict; NO retry path exists for this push',
         );
+        // #1005 Change B: this push is render-born too, so it takes the
+        // render-owned slot like any other. Without this the escalate-verdict
+        // cohort -- the one whose exits are a tool-run match, a phone answer or
+        // `SubagentStop`, none of which fire on a terminal DENY -- was tracked
+        // by nothing and could only leave via LRU eviction. Gated on a
+        // CONFIRMED registration for the same reason `pairAndPush` is (ADR
+        // 0021): a deduped push changed nothing, so it must not retire the card
+        // that is still the best evidence of what is on screen.
+        if (outcome?.status === 'registered') {
+          this.adoptRenderOwnedQuestion({
+            id: merged.id,
+            // Scope by the MERGED question, not the raw PTY parse. The parse often
+            // carries no `agentId` at all (`Do you want to proceed?` says nothing
+            // about whose permission it is), so keying on it filed a parked SUBAGENT
+            // card under `main` — and the next main-agent prompt then superseded it,
+            // which is the very cross-agent bleed the scoping exists to stop. The
+            // merge takes the hook record's agent, which is the one that knows.
+            agent: agentKey(merged),
+            text: ptyQuestion.text,
+          });
+        }
       });
   }
 
@@ -1104,7 +1206,7 @@ export class QuestionPresenceTracker {
       // a real hook event, and the tracker cannot tell which -- V1 treated
       // any status-leaves-waiting as "the render is gone" and a false
       // positive could resolve a question that never actually left the
-      // screen (found in review of #888). `observedHooklessQuestion` is
+      // screen (found in review of #888). `observedRenderOwnedQuestion` is
       // deliberately left untouched (not even nulled) so a LATER, genuinely
       // CONFIRMED supersession in `pairAndPush` can still resolve it --
       // losing this trigger costs a delayed cleanup, not a wrong one.
@@ -1350,7 +1452,7 @@ export class QuestionPresenceTracker {
 
   /** Test-only: the id of the currently-tracked hook-less question, if any
    *  (#888/#920), or null when none is tracked. */
-  observedHooklessQuestionForTest(): string | null {
-    return this.observedHooklessQuestion;
+  observedRenderOwnedQuestionForTest(): string | null {
+    return this.observedRenderOwnedQuestion?.id ?? null;
   }
 }

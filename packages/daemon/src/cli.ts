@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.7.4-dev.70'; // REMI_COMPILED_VERSION
+      return '0.7.4-dev.72'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.7.4-dev.70'; // REMI_COMPILED_VERSION
+    return '0.7.4-dev.72'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -1608,6 +1608,20 @@ async function createNewSession(
         'QuestionPresenceTracker.onHooklessQuestionGone',
       );
       onQuestionResolved(sessionId, questionId as UUID, 'cancelled');
+      // #1005 Change B: since this trigger now also fires for HOOK-BORN cards,
+      // removing the card is no longer the whole job -- the gate still holds
+      // bookkeeping for it (`openQuestionSignatures`, and possibly a held
+      // hook keeping Claude blocked). Route it through the gate's own funnel so
+      // the entry is retired rather than left stale, and so a hold, if any, is
+      // released instead of stalling to `hold_timeout`. A no-op when the gate
+      // has nothing for this id.
+      try {
+        sessionGateHandles.get(sessionId)?.releaseHeldAsPassthrough?.(questionId as UUID);
+      } catch (err) {
+        logError(
+          `[QuestionPresenceTracker] gate cleanup for superseded ${questionId.slice(0, 8)} threw: ${errorToString(err)}`,
+        );
+      }
     },
   });
   // #920: register this session's tracker so the answer handler's

