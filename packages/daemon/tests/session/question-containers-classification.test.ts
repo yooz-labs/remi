@@ -188,6 +188,12 @@ const REGISTRY: readonly Entry[] = [
   },
   {
     file: 'auto-approve/auto-approve-gate.ts',
+    field: 'retiredEscalations',
+    cls: 'mixed',
+    note: "NEW (#1005). Ids of escalations this gate RETIRED -- resolved, released, or answered on the user's behalf -- so a later parked render can tell 'already settled' from 'never seen' and refuse to push a card no sweep could ever remove. Mixed for the same reason openQuestionSignatures is: retiring a HELD escalation is post-card metadata (its card was registered), retiring a PARKED one (#814) is pre-card (parkAwaitingPTY, no card ever existed). Never a pendingness opinion -- consulted only to SUPPRESS creating a card, never to claim one is live, and forgetting an entry past the cap fails toward pushing.",
+  },
+  {
+    file: 'auto-approve/auto-approve-gate.ts',
     field: 'parkedInputs',
     cls: 'pre-card',
     note: 'Original hook input of every PARKED subagent permission (#814) -- the sole surviving record of what a parked permission asked, before any card exists.',

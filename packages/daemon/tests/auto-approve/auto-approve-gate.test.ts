@@ -3634,6 +3634,65 @@ describe('AutoApproveGate parked-render arbitration (#814)', () => {
     expect(evalCalls).toHaveLength(0);
   });
 
+  /**
+   * #1005. A parked render whose escalation was ALREADY retired must not push:
+   * retirement deleted its `openQuestionSignatures` entry, and every sweep this
+   * gate has iterates that map, so the resulting card is unremovable by anything
+   * except LRU eviction or a user answer. That is how 7 of the 8 cards found
+   * stuck in a live pending set were born.
+   *
+   * Keyed on a positive record of retirement, NOT on the signature entry being
+   * absent -- absent cannot tell "settled" from "never parked", and the test
+   * immediately below pins that the latter must still push.
+   */
+  describe('#1005 a retired escalation does not push a card', () => {
+    test('externally resolved before its render: answered, no push', async () => {
+      const g = gate(escalate);
+      await g.resolvePermission(pr('git push'));
+      const r = rendered(parkedIds[0] as UUID);
+      promptOnScreen(r);
+
+      // The tool actually ran -- PostToolUse retires the escalation.
+      g.cancelExternallyResolved(
+        { toolName: 'Bash', toolInput: { command: 'git push' }, agentId: 'agent-1' },
+        'PostToolUse-subagent',
+      );
+
+      expect(await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r))).toEqual({
+        outcome: 'answered',
+      });
+    });
+
+    test('a cancelled eval for a retired question is answered, not pushed', async () => {
+      const g = gate(cancelled);
+      await g.resolvePermission(pr('git push'));
+      const r = rendered(parkedIds[0] as UUID);
+      promptOnScreen(r);
+      g.cancelExternallyResolved(
+        { toolName: 'Bash', toolInput: { command: 'git push' }, agentId: 'agent-1' },
+        'PostToolUse-subagent',
+      );
+
+      expect(await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r))).toEqual({
+        outcome: 'answered',
+      });
+    });
+
+    test('a cancelled eval whose OWN escalation is still open still pushes', async () => {
+      // The cancel was collateral -- a sibling agent's PostToolUse aborted this
+      // eval. The prompt may well be live, so mapping `cancelled` to `answered`
+      // unconditionally would swallow it.
+      const g = gate(cancelled);
+      await g.resolvePermission(pr('git push'));
+      const r = rendered(parkedIds[0] as UUID);
+      promptOnScreen(r);
+
+      expect(await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r))).toEqual({
+        outcome: 'push',
+      });
+    });
+  });
+
   test('an unknown parked id pushes without evaluating', async () => {
     const g = gate(approve);
     const unknown = rendered(generateId() as UUID);
@@ -3895,5 +3954,151 @@ describe('autoAnswerValue (#814)', () => {
   test('no options at all resolves to nothing (caller escalates)', () => {
     expect(autoAnswerValue(approve, [], [])).toBeUndefined();
     expect(autoAnswerValue(deny, [], [])).toBeUndefined();
+  });
+});
+
+/**
+ * #1005, end to end through the REAL tracker pairing path.
+ *
+ * The parked-render tests above call `gate.arbitrateParkedRender` directly,
+ * which is the right unit for the verdict logic but skips how the arbiter is
+ * actually reached in production: the tracker pairs a PTY render against its
+ * `awaitingPTY` map (`matchAwaitingPTYKey`) and invokes the arbiter itself.
+ * A fix verified only at the unit level could pass while the wiring that feeds
+ * it changed underneath — noted in review of this PR, and closed here rather
+ * than left as a manual check somebody ran once.
+ */
+describe('#1005 end-to-end: a retired escalation registers no card via the real pairing path', () => {
+  let registry: SessionRegistry;
+
+  beforeEach(() => {
+    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    configureLogger({ writeLog: () => {} });
+  });
+  afterEach(async () => {
+    __resetLoggerForTests();
+    await registry.shutdown();
+  });
+
+  /** Real tracker + real gate, wired the way cli.ts wires them. */
+  function wire(pushes: Question[]) {
+    const sid = registry.createSessionId();
+    const submits: string[] = [];
+    registry.registerSession(sid, '/d', fakePTY(submits), {
+      handleMessage: () => {},
+      handleQuestion: (q: Question) => {
+        pushes.push(q);
+        registry.addQuestion(sid, q as never);
+      },
+      handleStatusChange: () => {},
+    } as never);
+    const tracker = new QuestionPresenceTracker((q) => {
+      pushes.push(q);
+      registry.addQuestion(sid, q as never);
+      return { status: 'registered' as const };
+    });
+    const gate = new AutoApproveGate(
+      {
+        service: { evaluate: async () => escalate, cancel: () => true },
+        sessionRegistry: registry,
+        tracker,
+        isInSubagentContext: () => true,
+        escalate: () => undefined,
+        // Wired exactly as cli.ts does: the gate hands the rich question to the
+        // tracker, which is what makes the PTY render pair with it later. The
+        // unit tests above stub this out and call the arbiter directly; that is
+        // precisely the wiring this end-to-end pair exists to cover.
+        parkForPTY: (input) => {
+          const q = {
+            id: generateId(),
+            text: `reviewer · Bash: ${String((input.tool_input as { command?: string }).command)}`,
+            options: [
+              { value: '1', label: '1', isRecommended: false, isYes: false, isNo: false },
+              { value: '2', label: '2', isRecommended: false, isYes: false, isNo: false },
+            ],
+            allowsFreeText: false,
+            isAnswered: false,
+            source: 'permission_request',
+            agentId: input.agent_id,
+          } as unknown as Question;
+          tracker.recordPendingHook(q);
+          tracker.parkAwaitingPTY(q);
+          return q.id as UUID;
+        },
+      },
+      sid,
+    );
+    tracker.setParkedRenderArbiter((ctx) =>
+      gate.arbitrateParkedRender(ctx.parkedQuestionId, ctx.rendered, ctx.ptyPrompt),
+    );
+    return { sid, tracker, gate };
+  }
+
+  test('baseline: a parked render with no retirement DOES push (harness is not vacuous)', async () => {
+    const pushes: Question[] = [];
+    const { sid, tracker, gate } = wire(pushes);
+    await gate.resolvePermission({
+      session_id: 'c',
+      transcript_path: '/tmp/t.jsonl',
+      cwd: '/d',
+      permission_mode: 'default',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'git push' },
+      agent_id: 'agent-1',
+      agent_type: 'general-purpose',
+    } as PermissionRequestHookInput);
+    tracker.onOrphanPTYPrompt({
+      id: generateId(),
+      text: 'Do you want to proceed?',
+      options: [
+        { value: '1', label: '1', isRecommended: false, isYes: false, isNo: false },
+        { value: '2', label: '2', isRecommended: false, isYes: false, isNo: false },
+      ],
+      allowsFreeText: false,
+      isAnswered: false,
+    } as Question);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(pushes.length).toBeGreaterThan(0);
+    expect(registry.getSession(sid)?.currentQuestions.size).toBeGreaterThan(0);
+  });
+
+  test('retired before its render: no card, and the pending set stays empty', async () => {
+    const pushes: Question[] = [];
+    const { sid, tracker, gate } = wire(pushes);
+    await gate.resolvePermission({
+      session_id: 'c',
+      transcript_path: '/tmp/t.jsonl',
+      cwd: '/d',
+      permission_mode: 'default',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'git push' },
+      agent_id: 'agent-1',
+      agent_type: 'general-purpose',
+    } as PermissionRequestHookInput);
+
+    // The tool actually ran: PostToolUse retires the escalation before any
+    // prompt reaches the screen.
+    gate.cancelExternallyResolved(
+      { toolName: 'Bash', toolInput: { command: 'git push' }, agentId: 'agent-1' },
+      'PostToolUse-subagent',
+    );
+
+    tracker.onOrphanPTYPrompt({
+      id: generateId(),
+      text: 'Do you want to proceed?',
+      options: [
+        { value: '1', label: '1', isRecommended: false, isYes: false, isNo: false },
+        { value: '2', label: '2', isRecommended: false, isYes: false, isNo: false },
+      ],
+      allowsFreeText: false,
+      isAnswered: false,
+    } as Question);
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(pushes).toHaveLength(0);
+    // The whole point: nothing accumulates in the store that no sweep can clear.
+    expect(registry.getSession(sid)?.currentQuestions.size).toBe(0);
   });
 });
