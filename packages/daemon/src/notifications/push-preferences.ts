@@ -17,8 +17,15 @@
  *   - `subagent_alert` is not filtered either. It already has a user-facing
  *     control — it fires only on the patterns the user put in
  *     `auto_approve.subagent_alert` — so a second mute would be redundant.
+ *   - `auto_denied` (#1015) is not filtered either, for a stronger reason than
+ *     either of those: it is the ONLY signal that an operation was refused. A
+ *     deny creates no `Question`, so there is no card to find later and no
+ *     history entry to scroll back to — muting it restores exactly the
+ *     invisibility the notification exists to end. It is also rare by
+ *     construction (a model deny that `matchesCatastrophicPattern` agreed
+ *     with, or the user's own `deny_groups`), so there is little noise to mute.
  *
- * Both are enumerated explicitly rather than defaulted, so adding a new
+ * All three are enumerated explicitly rather than defaulted, so adding a new
  * `PushKind` is a type error here instead of a silent "unfiltered".
  */
 
@@ -88,6 +95,8 @@ export function wantsPush(entry: DeviceTokenEntry, kind: PushKind): boolean {
     case 'subagent_alert':
       return true;
     case 'dismiss':
+      return true;
+    case 'auto_denied':
       return true;
   }
 }

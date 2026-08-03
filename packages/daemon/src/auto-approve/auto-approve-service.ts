@@ -12,7 +12,7 @@
 import { errorToString } from '@remi/shared';
 import { reconcileCounterfactual, shouldCounterfactual } from './authority-counterfactual.ts';
 import { enforceAuthorityBoundary } from './authority.ts';
-import { enforceDenyFloor } from './deny-floor.ts';
+import { denySourceForFloor, enforceDenyFloor } from './deny-floor.ts';
 import { fileActivityRecord } from './engine-activity.ts';
 import type { EngineHost } from './engine-host.ts';
 import { clearModelCache, pullModel, unloadModel } from './engine-models.ts';
@@ -695,7 +695,13 @@ export class AutoApproveService {
       if (denyMatch !== null) {
         const reasoning = `deny-matched pattern: "${denyMatch}"`;
         this.logFn(`${prefix} DENIED ${toolName}: ${reasoning} (0ms)`);
-        return { decision: 'deny', reasoning, durationMs: 0, model };
+        return {
+          decision: 'deny',
+          reasoning,
+          durationMs: 0,
+          model,
+          denySource: { kind: 'config', pattern: denyMatch },
+        };
       }
       // BROAD, not precise (#1001, ADR 0010). `matchGroups` requires the WHOLE
       // command to be covered and is right for the allow question below; asking
@@ -705,7 +711,13 @@ export class AutoApproveService {
       if (denyGroupMatch !== null) {
         const reasoning = `deny-matched group: "${denyGroupMatch}"`;
         this.logFn(`${prefix} DENIED ${toolName}: ${reasoning} (0ms)`);
-        return { decision: 'deny', reasoning, durationMs: 0, model };
+        return {
+          decision: 'deny',
+          reasoning,
+          durationMs: 0,
+          model,
+          denySource: { kind: 'config', pattern: denyGroupMatch },
+        };
       }
 
       // Allow list + approve groups: bypass the LLM for known-safe operations.
@@ -934,6 +946,14 @@ export class AutoApproveService {
             this.logFn(
               `${prefix} DENY FLOOR ${toolName}: deny -> escalate (no catastrophic pattern) (${durationMs}ms)`,
             );
+          } else {
+            // The deny STANDS: the model refused and the floor's pattern list
+            // agreed. That is the one deny nobody configured, and #997 measured
+            // the floor matching prose 7 times out of 8 on real traffic, so it
+            // is also the one most likely to be wrong. Tag it (#1015) so
+            // `cli.ts` can tell the user instead of the refusal vanishing.
+            const denySource = denySourceForFloor(floored);
+            if (denySource !== null) result = { ...result, denySource };
           }
         }
 

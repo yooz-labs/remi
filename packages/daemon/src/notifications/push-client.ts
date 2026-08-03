@@ -17,7 +17,7 @@ const DEFAULT_SIGNALING_URL = 'https://remi-signaling.yooz.workers.dev';
  * (per-device filtering, `push-preferences.ts`) and the client (labelling,
  * routing) act on it.
  */
-export type PushKind = 'question' | 'turn_complete' | 'subagent_alert' | 'dismiss';
+export type PushKind = 'question' | 'turn_complete' | 'subagent_alert' | 'dismiss' | 'auto_denied';
 
 /** Options for sendPushTrigger */
 export interface PushTriggerOptions {

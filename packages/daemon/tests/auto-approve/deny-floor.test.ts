@@ -10,6 +10,10 @@
 import { describe, expect, test } from 'bun:test';
 import {
   buildDenyMessage,
+  deniedBody,
+  deniedOperation,
+  deniedTitle,
+  denySourceForFloor,
   enforceDenyFloor,
   matchesCatastrophicPattern,
 } from '../../src/auto-approve/deny-floor.ts';
@@ -378,5 +382,120 @@ describe('buildDenyMessage (#976)', () => {
     const m = buildDenyMessage('x'.repeat(5000));
     expect(m.length).toBeLessThan(700);
     expect(m).toContain('…');
+  });
+});
+
+/**
+ * #1015: a model deny is invisible to the user unless something reports it.
+ *
+ * These drive `denySourceForFloor` from REAL `enforceDenyFloor` output rather
+ * than from hand-built result literals. That is the whole reason the function
+ * was split out of `auto-approve-service.ts`: at the original call site the
+ * only way in was a live LLM verdict, so the branch was engine-gated and never
+ * ran in CI. Composing the two real functions here is what makes it testable
+ * at all, so a literal would throw away the point.
+ */
+describe('denySourceForFloor (#1015)', () => {
+  test('a deny the floor LEAVES STANDING is tagged model-floor, with what matched', () => {
+    // The genuine article: `enforceDenyFloor` returns overridden=false and
+    // names the pattern, so the report can say why.
+    const floored = enforceDenyFloor('Bash', bash('rm -rf /'), 'deny');
+    expect(floored.overridden).toBe(false);
+    expect(denySourceForFloor(floored)).toEqual({ kind: 'model-floor', pattern: 'rm -rf /' });
+  });
+
+  test('the #997 false positive is tagged too — that is the population this exists for', () => {
+    // 7 of 8 floor hits on 918 real commands were prose quoting a dangerous
+    // string. The floor still refuses them (narrowing it is #997's own
+    // question); this change is that the refusal stops being silent.
+    const prose = bash('gh issue comment 976 --body "patterns: rm -rf /, sudo rm, chmod 777"');
+    const floored = enforceDenyFloor('Bash', prose, 'deny');
+    expect(floored.overridden).toBe(false);
+    expect(denySourceForFloor(floored)?.kind).toBe('model-floor');
+  });
+
+  test('a deny the floor OVERRODE yields no source: it became a visible escalate', () => {
+    const floored = enforceDenyFloor('Bash', bash('git push origin main'), 'deny');
+    expect(floored.overridden).toBe(true);
+    // The DECISION is what makes this null -- an escalate is not a deny. An
+    // earlier draft also tested `overridden` and this test appeared to cover
+    // that clause; deleting the clause turned nothing red, because
+    // `enforceDenyFloor` sets `overridden` only when it has ALSO rewritten the
+    // decision to escalate. Asserting both here is the point: they move
+    // together, so only one of them can be doing the work.
+    expect(floored.decision).toBe('escalate');
+    // Reporting here would notify the user about a card they are ALSO getting.
+    expect(denySourceForFloor(floored)).toBeNull();
+  });
+
+  test('a standing deny is reported even if a caller marks it overridden', () => {
+    // The incoherent shape the removed `|| result.overridden` clause was the
+    // only reachable guard against: type-legal, unproducible by
+    // `enforceDenyFloor`, and the direction matters. A deny is being returned
+    // to the hook, so it must be reported -- suppressing it here would restore
+    // the silence for the one case where a caller's bookkeeping disagreed with
+    // its own verdict.
+    expect(
+      denySourceForFloor({ decision: 'deny', overridden: true, matchedPattern: 'rm -rf /' }),
+    ).toEqual({ kind: 'model-floor', pattern: 'rm -rf /' });
+  });
+
+  test('approve and escalate yield no source', () => {
+    for (const decision of ['approve', 'escalate'] as const) {
+      const floored = enforceDenyFloor('Bash', bash('rm -rf /'), decision);
+      expect(denySourceForFloor(floored)).toBeNull();
+    }
+  });
+
+  test('a standing deny with no matched pattern still reports, with an empty pattern', () => {
+    // Unreachable through `enforceDenyFloor` (it always names the pattern when
+    // it leaves a deny standing), so this forges the shape deliberately. The
+    // direction is the assertion: a missing pattern must degrade the report,
+    // never suppress it — suppressing restores the exact invisibility this
+    // function exists to end.
+    expect(denySourceForFloor({ decision: 'deny', overridden: false })).toEqual({
+      kind: 'model-floor',
+      pattern: '',
+    });
+  });
+});
+
+describe('deniedOperation / deniedTitle / deniedBody (#1015)', () => {
+  test('carries the real command, not the tool name, for Bash', () => {
+    const op = deniedOperation('Bash', bash('rm -rf /'), 'rm -rf /');
+    expect(op).toEqual({ toolName: 'Bash', detail: 'rm -rf /', pattern: 'rm -rf /' });
+  });
+
+  test('falls back to the tool name when there is no command string', () => {
+    // Every non-Bash tool, plus a Bash call with a malformed input.
+    expect(deniedOperation('Write', { file_path: '/etc/passwd' }, 'p').detail).toBe('Write');
+    expect(deniedOperation('Bash', { command: 42 }, 'p').detail).toBe('Bash');
+  });
+
+  test('bounds the detail: this lands on a lock screen', () => {
+    const op = deniedOperation('Bash', bash(`echo ${'x'.repeat(500)}`), 'p');
+    expect(op.detail.length).toBeLessThanOrEqual(163);
+    expect(op.detail.endsWith('...')).toBe(true);
+  });
+
+  test('the body says the operation did NOT run and has nothing to answer', () => {
+    // Load-bearing, not cosmetic: this push carries no `category` and no
+    // `options`, so a user who read it as a prompt would wait for an
+    // affordance that never arrives.
+    const body = deniedBody(deniedOperation('Bash', bash('rm -rf /'), 'rm -rf /'));
+    expect(body).toContain('did not run');
+    expect(body).toContain('nothing to answer');
+    // And names what matched -- the actionable part, given #997's false rate.
+    expect(body).toContain('rm -rf /');
+  });
+
+  test('the body omits the match clause when no pattern is known', () => {
+    const body = deniedBody(deniedOperation('Bash', bash('x'), ''));
+    expect(body).not.toContain('Matched');
+    expect(body).toContain('did not run');
+  });
+
+  test('the title leads with BLOCKED, which is what must survive truncation', () => {
+    expect(deniedTitle(deniedOperation('Bash', bash('rm -rf /'), 'p'))).toBe('Blocked Bash');
   });
 });

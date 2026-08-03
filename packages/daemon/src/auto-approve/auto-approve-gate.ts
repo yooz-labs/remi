@@ -95,7 +95,7 @@ import { type DeliveryOutcome, isDelivered } from '../notifications/notification
 import type { SessionRegistry } from '../session/index.ts';
 import { buildDenyMessage } from './deny-floor.ts';
 import { isDesignQuestion, isMultiChoicePermission } from './multichoice.ts';
-import type { AutoApproveResult } from './types.ts';
+import type { AutoApproveResult, DenySource } from './types.ts';
 
 /** Hard cap on `parkedInputs` (#814). One entry per parked subagent
  *  permission awaiting a PTY render; a real agent fleet holds a handful at
@@ -358,6 +358,24 @@ export interface AutoApproveGateDeps {
    * is logged and absorbed, never propagated into the hook response.
    */
   onSubagentPassthrough?: (input: PermissionRequestHookInput) => void;
+  /**
+   * Every `deny` this gate returns to the hook (#1015), reported for
+   * observation ONLY — like `onSubagentPassthrough` above, the decision is
+   * already made by the time this fires and a sink cannot influence it.
+   *
+   * A deny is the one verdict with no user-facing surface of its own: it
+   * creates no `Question`, so no card is pushed and no `question_resolved`
+   * broadcast follows. Claude is told why (`buildDenyMessage`) and the human
+   * is told nothing. This dep is the human's channel.
+   *
+   * `source` says which mechanism refused, so the sink can treat the user's
+   * own standing `config.toml` rule differently from a model deny that merely
+   * survived the floor — see `DenySource`.
+   *
+   * Fire-and-forget and throw-safe, like the cosmetic cues: a sink that throws
+   * is logged and absorbed, never propagated into the hook response.
+   */
+  onAutoDenied?: (input: PermissionRequestHookInput, source: DenySource, reasoning: string) => void;
   /** Escalate to the user (wraps `handlers.onPermissionRequest`). Returns the id
    *  of the `Question` it created (#573), so a binary escalation can hold the
    *  hook keyed by that id and resolve it when the user answers; `undefined`
@@ -1475,6 +1493,7 @@ export class AutoApproveGate {
     }
     if (result.decision === 'deny') {
       this.markHandled(isSubagent);
+      this.reportDeny(input, result);
       // #976: carry the reason to Claude instead of a bare refusal, so it can
       // route around or ask the user rather than guess. `interrupt` is left
       // unset (false) so the turn continues and it can act on the message.
@@ -1536,6 +1555,7 @@ export class AutoApproveGate {
       if (second.decision === 'deny') {
         log(`[AutoApprove ${this.sessionTag}] escalate_model (${escalateModel}) denied`);
         this.markHandled(isSubagent);
+        this.reportDeny(input, second);
         // #976: same reasoned deny as the primary path above, carrying the
         // SECOND opinion's reasoning since that is the verdict being applied.
         return { behavior: 'deny', message: buildDenyMessage(second.reasoning) };
@@ -1644,7 +1664,7 @@ export class AutoApproveGate {
     // The reconciliation NEVER pushes again — a late escalate just leaves the
     // existing hold in place (guarded by the pendingHolds membership check
     // inside reconcileLateVerdict), and pushHeldHook is itself idempotent.
-    void this.reconcileLateVerdict(safeEval, questionId);
+    void this.reconcileLateVerdict(input, safeEval, questionId);
     return heldDecision;
   }
 
@@ -1658,6 +1678,7 @@ export class AutoApproveGate {
    * double-resolve.
    */
   private async reconcileLateVerdict(
+    input: PermissionRequestHookInput,
     safeEval: Promise<{ ok: true; result: AutoApproveResult } | { ok: false; err: unknown }>,
     qid: UUID | undefined,
   ): Promise<void> {
@@ -1682,6 +1703,18 @@ export class AutoApproveGate {
       this.notifyResolved(qid, 'auto_approved');
       this.resolveHeld(qid, 'allow');
     } else if (result.decision === 'deny') {
+      // #1015: the THIRD deny path, and the least visible of the three. The
+      // user already has a card on their lock screen saying "needs your
+      // permission"; this dismisses it with a quiet content-available push
+      // carrying no title and no body. Without the report, the card simply
+      // vanishes and the refusal is invisible — worse than the synchronous
+      // deny, because the user saw a prompt and then saw it disappear.
+      //
+      // Found in review of this change, not by writing it: `reportDeny` was
+      // wired at the two SYNCHRONOUS deny returns and this async one was
+      // missed. It needed `input` threaded down a level, which is exactly why
+      // it was easy to miss and why the parameter now exists.
+      this.reportDeny(input, result);
       this.notifyResolved(qid, 'auto_denied');
       this.resolveHeld(qid, 'deny');
     } else if (result.decision === 'cancelled') {
@@ -2169,6 +2202,39 @@ export class AutoApproveGate {
       fn();
     } catch (err) {
       logError(`[AutoApprove ${this.sessionTag}] ${label} cue threw (cosmetic; ignored):`, err);
+    }
+  }
+
+  /**
+   * Report a `deny` this gate is about to return to the hook (#1015).
+   *
+   * Called from BOTH deny returns — the primary verdict and the
+   * `escalate_model` second opinion — because both are equally invisible to
+   * the user, and a second-opinion deny is if anything the more surprising of
+   * the two (the fast model wanted to ask; the heavy one refused outright).
+   *
+   * Deliberately reads `denySource` off the result rather than re-deriving it:
+   * the service knows which mechanism refused, and a second derivation here is
+   * the drift this module has been bitten by repeatedly (see `DenySource`).
+   *
+   * A result with NO `denySource` is reported as a `model-floor` deny with an
+   * empty pattern rather than being dropped. That combination should be
+   * unreachable — every `return { decision: 'deny' }` in `evaluate` tags
+   * itself — but "the tag went missing" must not silently restore the exact
+   * invisibility this dep exists to end. Reporting too much is a nuisance;
+   * reporting nothing is the bug.
+   */
+  private reportDeny(input: PermissionRequestHookInput, result: AutoApproveResult): void {
+    const fn = this.deps.onAutoDenied;
+    if (!fn) return;
+    const source: DenySource =
+      'denySource' in result && result.denySource !== undefined
+        ? result.denySource
+        : { kind: 'model-floor', pattern: '' };
+    try {
+      fn(input, source, result.reasoning);
+    } catch (err) {
+      logError(`[AutoApprove ${this.sessionTag}] onAutoDenied sink threw (ignored):`, err);
     }
   }
 
