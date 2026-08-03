@@ -152,6 +152,33 @@ describe('#976 matrixDecision', () => {
   });
 });
 
+describe('#976 the high-band redundancy is real, and now actually tested', () => {
+  test('a witness-less explicit assessment still escalates at high', () => {
+    // Review found this branch had ZERO coverage: every existing high-band case
+    // goes through `fromText` (always witness=null AND capped below explicit,
+    // so the rank check alone decides) or `fromPrecedent` (always explicit AND
+    // witness-paired, so the rank check alone decides again). Removing the
+    // witness check therefore turned 0 tests red, while the PR claimed 2 --
+    // the redundancy was real by construction but unpinned by any test.
+    //
+    // Forging the impossible combination is the only way to isolate it. The
+    // point of the redundancy is exactly this: if a future factory bug ever let
+    // text reach `explicit`, the missing witness must still refuse.
+    const forged = { grade: 'explicit', witness: null } as unknown as AuthorizationAssessment;
+    expect(matrixDecision('high', forged)).toBe('escalate');
+  });
+
+  test('a witness alone, below explicit, also escalates at high', () => {
+    // The other half of the AND: both conditions must hold, so neither alone
+    // is sufficient.
+    const forged = {
+      grade: 'implicit',
+      witness: { kind: 'precedent', matchedAt: 1 },
+    } as unknown as AuthorizationAssessment;
+    expect(matrixDecision('high', forged)).toBe('escalate');
+  });
+});
+
 describe('#976 the measured failure it exists to block (#954)', () => {
   test('rm -rf ./build plus a casual topical mention stays escalated', () => {
     // #954: a topical mention flipped deny->approve 5/5 when the model decided

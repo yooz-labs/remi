@@ -21,6 +21,22 @@
  *
  * Nothing here calls a model, reads config, or touches I/O — it is a pure
  * decision function, so it can be tested exhaustively without an engine.
+ *
+ * **The guarantee is compile-time only, and does not survive an `any`
+ * boundary.** `Object.create(AuthorizationAssessment.prototype)` and
+ * `JSON.parse(...)` both return `any`, so either can produce a value that
+ * satisfies this type with no diagnostic, no cast and no suppression comment —
+ * verified in review, `instanceof` even reports true for the first. That is a
+ * TypeScript limitation, not a hole to patch here: `matrixDecision` performs no
+ * runtime validation, deliberately, because a brand check would be trivially
+ * satisfiable by the same forgery.
+ *
+ * What it means for whoever wires this in: an assessment must never cross a
+ * serialization boundary. Do not persist one, send one over IPC, or rebuild one
+ * from a log or replay — derive it fresh, at the decision point, from a
+ * `PrecedentMatch` or a graded string. If a future design needs to carry
+ * authorization across such a boundary, carry the EVIDENCE (the precedent
+ * record) and re-derive, never the conclusion.
  */
 
 import {
