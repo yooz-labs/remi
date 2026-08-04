@@ -4,6 +4,117 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-08-03
+
+Closes four security holes and rebuilds auto-approve around deterministic
+permission groups, so the local model decides far less and what it does
+decide is bounded by a risk band it cannot argue its way past. Question cards
+that could be created and then never removed by anything but eviction now
+have working exits, and an answer meant for one session can no longer be
+typed into another.
+
+Two of the security fixes are things a 0.7.3 install is exposed to today: a
+website you visit could answer your permission prompts (#535), and a tool
+name in the allow-list approved any Bash command containing it (#536).
+
+### Added
+- **An earlier answer can authorize a later identical operation** (#976, #1017),
+  **off by default**. Both directions are wired, and they ship with different
+  defaults on purpose. The DENY direction is always on: a command the user
+  refused earlier in the session now blocks a model `approve` for the same
+  operation, because a stop rule that fires too rarely is the dangerous
+  direction (ADR 0010). The APPROVE direction — an exact precedent minting
+  `explicit` authorization, the only route above `implicit` under the ADR 0015
+  amendment — is behind `[auto_approve] session_precedent`, default `false`.
+
+  Default-off is not caution for its own sake. Four review rounds each found the
+  same defect: `signatureForOperation` derives from `summarizeToolInput`, whose
+  job is one readable line for a lock-screen card, so it drops whatever will not
+  fit — `Write`'s `content`, `Read`'s `offset`/`limit`, a command's indentation.
+  Every one of those made an approval authorize a strictly larger operation than
+  the one answered. All four are closed and mutation-tested, and
+  `precedentMayAuthorize` now fails closed to a per-tool allowlist. But #1019 is
+  a KNOWN-OPEN instance of the same class — a Bash signature carries no `cwd`,
+  so an approval in one worktree authorizes the same command in another. Turning
+  this on before that lands is a decision the operator should make deliberately.
+
+- **A `scratch` permission group** (#1000). `rm /tmp/scratch.bak` bands `high`,
+  so with the #994 risk ceiling in place it escalated unconditionally and no
+  conversation text could approve it — correct as a fallback, wrong as a policy
+  for a scratch directory. `scratch` matches a Bash command only when EVERY file
+  target it touches provably resolves under `/tmp`, `/private/tmp` (macOS's real
+  path), or `$TMPDIR`, including a leading `cd` into one and output redirection
+  from any otherwise-covered command. Deletion is in the group, which no other
+  group allows. In `balanced` and `trusted`, not in `careful`.
+
+- **`AuthorizationAssessment`, making the provenance ceiling structural** (#1010).
+  ADR 0015's rule — text alone can never establish authorization — was a
+  convention: `capGradeForTextProvenance` existed and callers were expected to
+  remember it. The type now removes the remembering. Private constructor, two
+  factories; `fromText` caps inside the factory so a text-derived grade above
+  `implicit` is unrepresentable rather than merely rejected, and `fromPrecedent`
+  is the only mint for `explicit`. The private field is load-bearing: TypeScript
+  is structural, so an interface with the same fields could be forged by an
+  object literal, while a class with a private member is nominal and cannot be.
+
+- **Risk band and authority presence on every decision** (#1012), instrumentation
+  only. Logged on every decision rather than only escalates, so the denominator
+  is visible — "12% of escalates were eligible" means nothing without knowing how
+  many escalates there were.
+
+### Fixed
+- **A model deny is no longer invisible** (#1015). An auto-approve deny produced
+  no card, no push and no log line, so the operation simply did not happen and
+  the user was never told why. Every deny is now logged unconditionally, on its
+  own path rather than through `log_decisions` — a user who turned decision
+  logging off asked for less noise about routine decisions, not to be kept
+  unaware that an operation was blocked. A deny that matched the model floor
+  also pushes a `kind: 'auto_denied'` notification naming the pattern it hit. Config-sourced denies log but do not push: the user wrote that rule, so
+  it firing is the rule working. The fix covers all three deny paths, including
+  the held-hook verdict that resolves after `push_hold_timeout` (60s by default)
+  — the least visible of the three, since its card disappears through a quiet
+  `content-available` dismiss that carries no title or body.
+
+- **`deny_groups` now matches broadly, as a stop rule must** (#1001).
+  `deny_groups` was answered by `matchGroups`, the same precise function that
+  answers the ALLOW question, so appending anything the group did not recognize
+  defeated the block outright — `mkdir /tmp/x` was denied, `mkdir /tmp/x && ls`
+  was not. `matchGroupsBroad` matches if any segment hits, and deliberately does
+  not apply the allow-side vetoes: those exist to NARROW an allow match, and
+  applying them to a deny would mean a command that looks more dangerous is less
+  likely to be blocked.
+
+- **Subagent cards now have a working exit** (#1005, two changes). Tracing the 8
+  ids in a real stale pending set: 7 of 8 subagent-tagged, every one removed
+  ONLY by LRU eviction, 2.5 to 12.5 hours after being added — which is also why
+  every reconnect re-sent exactly 8. A parked escalation that had already been
+  retired still pushed a card, and retirement had deleted the signature entry
+  every sweep iterates, so nothing could remove it (#1006). And a card that IS
+  legitimately created now participates in render ownership, so a confirmed
+  replacement prompt resolves it (#1008); previously that slot was scoped to
+  hookless cards, while a parked subagent escalation is hook-born but answered
+  `passthrough` at park time (ADR 0004), leaving the render as its only living
+  evidence and tracked by nothing.
+
+- **Shell grammar and assignments peel before matching** (#999). One
+  unrecognized structural keyword vetoed a whole line: per-segment matching
+  requires every segment to be covered, and `for`/`do`/`done` matched nothing,
+  so every loop and conditional escalated no matter how safe its body was.
+  `stripShellGrammar` only ever REMOVES grammar and hands the command inside to
+  the normal matcher; it never decides anything is allowed. Terminators are
+  peeled rather than treated as benign, so `done rm -rf /` re-judges the `rm`.
+  Assignments peel for the same reason — `FOO=bar rm -rf /` really does run
+  `rm`. Assignments were the largest single uncovered cohort in the real corpus,
+  150 of 678.
+
+- **An answer is never typed into a session with no prompt on screen** (#1002).
+  A bare `1`, tapped on a phone for a different session's card, arrived in a
+  live unrelated session as a chat message. #920's guard asks "is THIS prompt on
+  screen?", which a hook-paired card can never satisfy — its id and text are the
+  hook's, not the PTY parse — so the guard was scoped away from that cohort
+  entirely. The presence question ("is ANY prompt on screen?") is answerable for
+  both, and is now asked for both.
+
 ### Changed
 - **An auto-approve deny now tells Claude why** (#976). The hook response
   carried a bare `{behavior:"deny"}`, so Claude learned only that it was
