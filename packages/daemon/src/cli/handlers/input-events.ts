@@ -12,6 +12,7 @@
 import { createBulletExpandResponse, createError, errorToString } from '@remi/shared';
 import type { AnswerExtras, AnswerSelection, Question, QuestionOption, UUID } from '@remi/shared';
 
+import { parsePermissionQuestionText } from '../../auto-approve/precedent.ts';
 import { clearAuqRunActive, markAuqRunActive } from '../../hooks/auq-active-runs.ts';
 import { AUQ_KEYS } from '../../hooks/auq-answer.ts';
 import { type AuqRunOutcome, runAuqAnswer } from '../../hooks/auq-runner.ts';
@@ -70,6 +71,77 @@ export interface InputHandlerDeps {
    * break answer handling. Absent => no dismissal broadcast (tests/old callers).
    */
   onQuestionResolved?: (sessionId: UUID, questionId: UUID) => void;
+  /**
+   * Prompt-currency check for a resolved card-answer PTY submit (#920).
+   * Backed by the session's `QuestionPresenceTracker.isPromptCurrent` — the
+   * same gate `AutoApproveGate.answerRenderedParked` uses immediately before
+   * its own PTY write (auto-approve-gate.ts:1830) — so answering a card whose
+   * on-screen prompt is gone is refused instead of typing into whatever
+   * Claude is doing now. Consulted ONLY for `Question.source === 'pty'`
+   * cards (the genuinely hook-less cohort #920 traced the leak to); every
+   * other source is left alone, see the call site's comment for why a
+   * blanket check would misfire on hook-paired questions. Absent (no
+   * tracker wired for this session) is treated as "not current" — fail
+   * toward refusing, matching `isQuestionLive`'s own default in
+   * question-presence-tracker.ts.
+   */
+  isPromptCurrent?: (sessionId: UUID, questionId: UUID, ptyText: string) => boolean;
+  /**
+   * Weaker companion to `isPromptCurrent`: "is this session rendering ANY
+   * interactive prompt right now?", backed by
+   * `QuestionPresenceTracker.isPromptObservedOnPTY` (#1002).
+   *
+   * NOT backed by that class's `isPromptVisibleOnPTY`, despite the closer
+   * name. That flag means "this tracker pushed a card off a PTY render", which
+   * is false for the most common cohort of all: a gate-owned hook card whose
+   * native prompt renders is recognised as an echo and suppressed without ever
+   * setting it. Probing the real tracker showed `recordPendingHook` +
+   * `onOrphanPTYPrompt` leaving it false while a prompt is genuinely on
+   * screen, so a guard built on it would have refused legitimate answers —
+   * trading a stray-injection bug for a cannot-answer-at-all bug.
+   *
+   * Exists because `isPromptCurrent` cannot serve hook-paired cards at all. A
+   * hook-paired question's `id`/`text` are the HOOK's (tool + command text),
+   * never the raw PTY parse, so its id/text match would fail for that whole
+   * cohort — which is why the #920 guard is scoped to `source === 'pty'` and
+   * why widening it on id/text would refuse legitimate answers rather than fix
+   * anything.
+   *
+   * But the scoping left a real hole: a hook-sourced card whose hold is ALREADY
+   * gone still reached `pty.submitInput` with nothing checked, and typed its
+   * option digit into whatever Claude was doing. Observed live — a bare `1`
+   * landed in an unrelated session as a chat message, recorded in the
+   * transcript as a user entry (#1002).
+   *
+   * Two different questions were being conflated: "is THIS prompt on screen?"
+   * (needs id/text, genuinely impossible for hook-paired cards) and "is ANY
+   * prompt on screen?" (all that is needed before typing a digit, and
+   * perfectly answerable for them). This dep answers the second.
+   *
+   * Absent => treated as NOT visible, the same fail-toward-refusing default
+   * `isPromptCurrent` documents.
+   */
+  isPromptObservedOnPTY?: (sessionId: UUID) => boolean;
+  /**
+   * Record a human-classified permission answer into this session's
+   * precedent store (#976 prerequisite, `auto-approve/precedent.ts`). Called
+   * ONLY for answers `handleAnswer` can classify with confidence as an
+   * unambiguous approve/deny of a genuine tool permission — see the call
+   * site's comment for the exact conditions. This is the ONLY place in the
+   * codebase that calls into a `PrecedentStore` at all: provenance-safety
+   * (ADR 0015's "Amendment, 2026-08-02", precedent.ts's module doc) depends
+   * on every path into it converging on `handleAnswer`, so a future consumer
+   * must not add another call site instead of routing through here. Absent
+   * (tests, or a session with no wired store) => the answer still applies
+   * normally, it is just not recorded as precedent — recording is additive
+   * and must never gate the answer itself.
+   */
+  recordPrecedent?: (
+    sessionId: UUID,
+    toolName: string,
+    signature: string,
+    decision: 'approved' | 'denied',
+  ) => void;
 }
 
 /**
@@ -224,6 +296,9 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     releaseHeldAsPassthrough,
     cancelAutoApproveForQuestion,
     onQuestionResolved,
+    isPromptCurrent,
+    isPromptObservedOnPTY,
+    recordPrecedent,
   } = deps;
 
   // #627: in-flight AskUserQuestion runs, keyed `${sessionId}:${questionId}`, so a
@@ -497,7 +572,11 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         action: 'stale_answer',
         sessionId: session.sessionId,
         questionId,
+        // No promptId: by construction the question is already gone from the
+        // registry (that is what makes this a stale answer), so there is no
+        // Question object left to read it from.
         signal: 'STALE_ANSWER',
+        callSite: 'input-events.handleAnswer',
         detail: { pendingQuestionIds: pendingIds, freedHeld },
       });
       if (!viaRelay) {
@@ -544,6 +623,10 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     // and the throw still propagates (relay -> HTTP 500, WS -> caller-logged).
     const decision = mapAnswerToDecision(active.options, answer);
     let hadHold = false;
+    // Overridden below only on the #920 prompt-currency refusal, so the
+    // `finally` block's removal carries an honest signal instead of the
+    // default 'user_answer' (this card was never actually answered).
+    let removalReason = 'user_answer';
     try {
       if (decision !== null) {
         hadHold =
@@ -575,6 +658,87 @@ export function createInputHandlers(deps: InputHandlerDeps) {
             `[Answer] "${answer}" matched no option (${active.options.length}); submitting verbatim`,
           );
         }
+
+        // #920 prompt-currency guard, checked as late as possible (the same
+        // idiom `AutoApproveGate.answerRenderedParked` uses immediately before
+        // its own PTY write, auto-approve-gate.ts) — nothing else runs between
+        // this check and the injection below. The active-question lookup
+        // above only proves the CARD is still registered; a `source: 'pty'`
+        // question has no hook and so no other staleness signal (#920's own
+        // diagnosis), meaning a card can sit in the store, still "active",
+        // long after its prompt scrolled off screen. Answering it would type
+        // the resolved option value (or free text verbatim, per the review
+        // comment on #920) into whatever Claude is doing right now.
+        //
+        // Scoped to `source === 'pty'` ONLY, not every card: a hook-paired
+        // question's merged `id`/`text` are the HOOK's (tool + command text),
+        // never the raw PTY parse (`consumeAndMerge` in
+        // question-presence-tracker.ts), so `isPromptCurrent`'s id/text match
+        // would almost never succeed for that cohort — a blanket check here
+        // would refuse legitimate hook-sourced answers, not just stale PTY
+        // ones. Free-form `user_input` (#795) is a completely different
+        // handler and never reaches this branch at all.
+        //
+        // Absent `isPromptCurrent` (no tracker wired for this session) is
+        // treated as NOT current — fail toward refusing the injection, not
+        // toward it, mirroring `isQuestionLive`'s own default in
+        // question-presence-tracker.ts: a refused legitimate answer costs the
+        // user a re-answer with the question still visible; an accepted stale
+        // one injects into a live session with nothing to undo it. Those
+        // costs are not symmetric, so ambiguity resolves toward not
+        // injecting.
+        //
+        // #1002 extends the same principle to the cohort the `source: 'pty'`
+        // scoping left uncovered. A hook-sourced card only reaches this line
+        // when NO hold was resolved and NONE was released just now, i.e. this
+        // answer will cause nothing to render — so if no prompt is on screen
+        // already, the digit lands in whatever Claude is doing. That is not
+        // hypothetical: it was observed typing a bare `1` into an unrelated
+        // session, recorded in the transcript as a user message.
+        //
+        // The `!released` condition is what keeps this from refusing the
+        // legitimate case: when the answer itself pops a held hook to
+        // passthrough, Claude is deliberately about to render its native
+        // prompt and the submit is intended, so presence cannot be required
+        // yet.
+        const promptGone =
+          active.source === 'pty'
+            ? !(isPromptCurrent?.(session.sessionId, questionId, active.text) ?? false)
+            : !released && !(isPromptObservedOnPTY?.(session.sessionId) ?? false);
+        if (promptGone) {
+          log(
+            `[Answer] refusing PTY submit for ${questionId.slice(0, 8)}: no prompt on screen (source=${active.source})`,
+          );
+          traceQuestionEvent({
+            action: 'stale_answer',
+            sessionId: session.sessionId,
+            questionId,
+            promptId: active.promptId,
+            signal: 'STALE_ANSWER',
+            callSite: 'input-events.handleAnswer:promptCurrencyGuard',
+            detail: {
+              reason: active.source === 'pty' ? 'prompt-not-current' : 'no-prompt-on-screen',
+              source: active.source,
+            },
+          });
+          removalReason = 'user_answer:stale_prompt';
+          if (!viaRelay) {
+            send(
+              connectionId,
+              createError(
+                'STALE_ANSWER',
+                'The prompt for this question is no longer on screen; refusing to submit',
+                {
+                  sessionId,
+                  questionId,
+                  pendingQuestionIds: [...session.currentQuestions.keys()],
+                },
+              ),
+            );
+          }
+          return 'stale';
+        }
+
         await session.pty.submitInput(ptyInput);
       } else {
         log(
@@ -597,6 +761,41 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         ...(answeredOption ? [answeredOption.value, answeredOption.label] : []),
       ]);
 
+      // #976 prerequisite (precedent.ts, ADR 0015 amendment): record a
+      // provenance-safe human answer for later authorization-grade matching.
+      // Deliberately narrow, "record only what can be classified with
+      // confidence" (skip everything else):
+      //   - `decision` is the SAME classification `mapAnswerToDecision`
+      //     already computed above for the held-hook path. It is non-null
+      //     ONLY for an unambiguous isNo (deny) or isYes-without-"always"/
+      //     suggestion-derived-"always" (approve) option — never for a
+      //     multi-choice pick, free text, or a bare "always" with no
+      //     suggestion to echo. This branch is unreachable for the AUQ
+      //     (`extra.selections`) and cancel (`extra.cancel`) paths above,
+      //     which both `return` earlier, so those are skipped by
+      //     construction, not by an extra check here.
+      //   - `active.source === 'permission_request'` restricts to the ONE
+      //     Question shape that carries genuine tool+command text,
+      //     deterministically built by `HookEventBridge.buildPermissionQuestion`
+      //     (hook-event-bridge.ts). A `source: 'pty'` / `'notification'` /
+      //     `'elicitation'` question, or the source-less StopFailure "Retry?"
+      //     prompt, carries no reliable tool/command identity and is skipped
+      //     — recording "Retry?" -> yes as an approval of some tool would be
+      //     exactly the unrecoverable mistake this module's doc warns about.
+      //   - `parsePermissionQuestionText` can still return null (defensive;
+      //     see its own doc) — skipped rather than guessed.
+      if (decision !== null && active.source === 'permission_request') {
+        const parsed = parsePermissionQuestionText(active.text);
+        if (parsed) {
+          recordPrecedent?.(
+            session.sessionId,
+            parsed.toolName,
+            parsed.signature,
+            decision.decision === 'allow' ? 'approved' : 'denied',
+          );
+        }
+      }
+
       // Free the GPU on EVERY answer (#617): cancel the eval for THIS question
       // unconditionally. Per-eval scoping (the eval id captured when the question
       // was held) makes this safe where the old `hadHold`-gated cancelStale was
@@ -607,8 +806,11 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       cancelAutoApproveForQuestion?.(session.sessionId, questionId, 'user-answered');
     } finally {
       // Remove only the answered question; sibling prompts remain answerable.
-      // In `finally` so a throwing submit cannot leave a zombie question.
-      sessionRegistry.removeQuestion(session.sessionId, questionId, 'user_answer');
+      // In `finally` so a throwing submit cannot leave a zombie question, AND
+      // so the #920 prompt-currency refusal above (which `return`s from
+      // inside this `try`) still clears the stale card — `removalReason`
+      // carries the honest signal for that path.
+      sessionRegistry.removeQuestion(session.sessionId, questionId, removalReason);
       // Cross-client dismissal (#585, P7): tell every client this question is
       // resolved so its card clears and the lock-screen push is dismissed.
       // Throw-safe: a broadcast/push failure must never break answer handling,

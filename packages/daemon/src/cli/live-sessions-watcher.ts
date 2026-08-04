@@ -68,41 +68,79 @@ export function startLiveSessionsWatcher(deps: LiveSessionsWatcherDeps): () => v
     }
   };
 
-  try {
-    // On a fresh install (no session has ever registered), the directory may
-    // not exist yet. A long-running hub that hits ENOENT here would never
-    // re-arm the watcher for its entire lifetime, so ensure it up front.
-    fs.mkdirSync(deps.dirPath, { recursive: true });
-    watcher = fs.watch(deps.dirPath, { persistent: false }, () => {
-      if (debounceTimer) clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(flush, debounceMs);
-    });
-    // An FSWatcher emitting 'error' with no listener throws out of the event
-    // loop as an uncaughtException, which the process guards treat as fatal —
-    // killing the whole (possibly launchd-managed, unattended) hub over a
-    // recoverable fs hiccup in a peripheral notify-siblings feature. Degrade
-    // to "watcher dead, logged" instead. (Cast: bun-types' FSWatcher omits
-    // the EventEmitter surface the runtime object actually has.)
-    (watcher as unknown as import('node:events').EventEmitter).on('error', (err: unknown) => {
-      deps.logError(
-        `[LiveSessions] Watcher error; sibling-daemon broadcasts disabled: ${errorToString(err)}`,
-      );
-      if (debounceTimer) {
-        clearTimeout(debounceTimer);
-        debounceTimer = null;
-      }
-      watcher?.close();
-      watcher = null;
-    });
-  } catch (err) {
-    deps.logError(`[LiveSessions] Could not watch live-sessions dir: ${errorToString(err)}`);
-  }
+  /**
+   * Re-arm budget after a watcher error.
+   *
+   * A watcher that dies stays dead, and this one drives sibling-daemon
+   * broadcasts for the daemon's whole lifetime. On Linux a transient ENOENT is
+   * routine here: `LiveSessionsRegistry.register` writes a `.json.tmp` and
+   * renames it, and inotify can report the vanished temp path. Closing
+   * permanently on that turns a millisecond-long fs race into a
+   * silently-degraded daemon that never broadcasts a sibling again.
+   *
+   * Bounded rather than infinite so a genuinely broken directory (deleted,
+   * unmounted, permissions) does not spin forever — it degrades exactly as
+   * before once the budget is spent, and says so.
+   */
+  const MAX_REARMS = 5;
+  const REARM_DELAY_MS = 250;
+  let rearmsLeft = MAX_REARMS;
+  let rearmTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const arm = (): void => {
+    try {
+      // On a fresh install (no session has ever registered), the directory may
+      // not exist yet. A long-running hub that hits ENOENT here would never
+      // re-arm the watcher for its entire lifetime, so ensure it up front.
+      fs.mkdirSync(deps.dirPath, { recursive: true });
+      watcher = fs.watch(deps.dirPath, { persistent: false }, () => {
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(flush, debounceMs);
+      });
+      // An FSWatcher emitting 'error' with no listener throws out of the event
+      // loop as an uncaughtException, which the process guards treat as fatal —
+      // killing the whole (possibly launchd-managed, unattended) hub over a
+      // recoverable fs hiccup in a peripheral notify-siblings feature. Never
+      // let it propagate. (Cast: bun-types' FSWatcher omits the EventEmitter
+      // surface the runtime object actually has.)
+      (watcher as unknown as import('node:events').EventEmitter).on('error', (err: unknown) => {
+        if (debounceTimer) {
+          clearTimeout(debounceTimer);
+          debounceTimer = null;
+        }
+        watcher?.close();
+        watcher = null;
+        if (rearmsLeft > 0) {
+          rearmsLeft--;
+          deps.logError(
+            `[LiveSessions] Watcher error; re-arming (${rearmsLeft} left): ${errorToString(err)}`,
+          );
+          rearmTimer = setTimeout(arm, REARM_DELAY_MS);
+          return;
+        }
+        deps.logError(
+          `[LiveSessions] Watcher error and re-arm budget exhausted; sibling-daemon broadcasts disabled: ${errorToString(err)}`,
+        );
+      });
+    } catch (err) {
+      deps.logError(`[LiveSessions] Could not watch live-sessions dir: ${errorToString(err)}`);
+    }
+  };
+
+  arm();
 
   return () => {
     if (debounceTimer) {
       clearTimeout(debounceTimer);
       debounceTimer = null;
     }
+    // Cancel any pending re-arm AND spend the budget, so a close that races a
+    // scheduled re-arm cannot resurrect a watcher the caller has stopped.
+    if (rearmTimer) {
+      clearTimeout(rearmTimer);
+      rearmTimer = null;
+    }
+    rearmsLeft = 0;
     if (watcher) {
       watcher.close();
       watcher = null;

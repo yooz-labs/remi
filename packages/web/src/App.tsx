@@ -64,7 +64,8 @@ import type {
 import { DEFAULT_SETTINGS } from '@/types';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import type { UnlockedIdentity } from '@remi/shared';
-import type { ProtocolMessage, RecentDirectory } from '@remi/shared/protocol.ts';
+import { assertNever, isValidMessage } from '@remi/shared';
+import type { ProtocolMessage, PushPreferences, RecentDirectory } from '@remi/shared/protocol.ts';
 import {
   createAnswer,
   createDetachSession,
@@ -357,10 +358,6 @@ function App() {
     mq.addEventListener('change', handleChange);
     return () => mq.removeEventListener('change', handleChange);
   }, [settings.theme]);
-
-  const handleSettingsChange = useCallback((newSettings: AppSettings) => {
-    setSettings(newSettings);
-  }, []);
 
   // Multi-daemon message handler. Empty deps intentional: state via functional updaters and refs.
   // `inReplay` (#798, mirrors the terminal client's #753 fix) is true only for
@@ -946,7 +943,20 @@ function App() {
         // dispatched with inReplay=true (#798) so replay-sensitive cases (currently
         // just 'question', mirroring the terminal client's #753 fix) can skip
         // state mutations that assume LIVE pendingness.
+        // Validate each nested message before recursing. `deserialize` checks
+        // only the OUTER envelope, so `messages` is `ProtocolMessage[]` by
+        // compile-time assertion alone — an older client replaying a batch
+        // from a newer daemon can receive a type it has no case for. That
+        // would reach `assertNever` in the default and THROW, propagating out
+        // through websocket-client's catch and erroring the whole connection.
+        // Before exhaustiveness landed this was a silent no-op, and graceful
+        // degradation is a stated principle, so skip-and-continue preserves it
+        // while keeping the compile-time guarantee for types we do know (#897).
         for (const replayMsg of message.messages) {
+          if (!isValidMessage(replayMsg)) {
+            console.debug('Skipping unknown message type in replay batch', replayMsg);
+            continue;
+          }
           handleMessage(connectionId, replayMsg, true);
         }
         break;
@@ -1624,9 +1634,79 @@ function App() {
         // ignored so the debounced broadcast doesn't spam the debug log.
         break;
 
-      default:
-        console.debug(`[App] Unhandled message type: ${(message as { type: string }).type}`);
+      // c2d per MESSAGE_DIRECTION (packages/shared/src/protocol.ts): this
+      // client SENDS every one of these to the daemon; the daemon never
+      // sends one back to a client, so handleMessage should never actually
+      // observe one arriving here. Grouped as one explicit no-op rather than
+      // omitted -- if a future/older daemon ever echoes one, it is silently
+      // dropped instead of console.debug-spamming, and the #897 exhaustiveness
+      // sweep records that this was decided, not forgotten.
+      case 'hello':
+      case 'user_input':
+      case 'answer':
+      case 'bullet_expand_request':
+      case 'session_list_request':
+      case 'transcript_load_request':
+      case 'create_session_request':
+      case 'terminal_resize':
+      case 'auth_response':
+      case 'kill_session_request':
+      case 'session_history_request':
+      case 'resume_session_request':
+      case 'detach_session':
+      case 'register_device_token':
+      case 'unregister_device_token':
         break;
+
+      // Intercepted in useConnectionManager's createMessageHandler
+      // (hooks/useConnectionManager.ts) before it ever calls this handler --
+      // 'auth_challenge' drives handleAuthChallenge and 'auth_result' drives
+      // handleAuthResult, both returning early. handleMessage never actually
+      // observes either; the cases exist only so this switch stays exhaustive
+      // against ProtocolMessageMap.
+      case 'auth_challenge':
+      case 'auth_result':
+        break;
+
+      // Keep-alive, both directions. lib/websocket-client.ts's own
+      // `handleMessage` already auto-replies pong to an inbound ping before
+      // forwarding it up, and both ping and pong double as proof-of-life for
+      // its heartbeat monitor regardless of what happens here -- no
+      // application-level handling is needed in the app layer.
+      case 'ping':
+      case 'pong':
+        break;
+
+      // d2c per MESSAGE_DIRECTION, but createAgentOutput (protocol.ts) has no
+      // live caller on the WebSocket/relay path today: AdapterRegistry.
+      // sendMessage, the only thing that would invoke
+      // WebSocketAdapter.sendMessage/RelayAdapter.sendMessage, is never
+      // called anywhere in packages/daemon/src (verified by grep) outside
+      // TelegramAdapter's unrelated same-named internal helper. Chat delivery
+      // to the web client goes through structured_agent_output and
+      // transcript_content instead. Kept as an explicit no-op rather than
+      // removed from the union, in case an older daemon or a future adapter
+      // starts sending it.
+      case 'agent_output':
+        break;
+
+      // createEdit (protocol.ts) has zero callers anywhere in this repo --
+      // fully dead on the wire today. Explicit no-op rather than removed
+      // from the union.
+      case 'edit':
+        break;
+
+      // Live d2c: packages/daemon/src/cli/handlers/pty-message-fanout.ts
+      // sends this to every ATTACHED connection for a session, not just
+      // CLI-attach-mode clients, so the web client does receive it. The web
+      // UI renders from structured_agent_output/transcript_content instead
+      // of raw terminal bytes, so this is intentionally ignored here (the
+      // CLI attach client's raw-terminal case is the real consumer).
+      case 'raw_pty_output':
+        break;
+
+      default:
+        assertNever(message);
     }
   }, []);
 
@@ -2015,6 +2095,14 @@ function App() {
   // Send device token to daemons: on new token or new connection
   const deviceTokenRef = useRef<string | null>(null);
   const tokenSentToRef = useRef<Set<ConnectionId>>(new Set());
+  // Push preferences as last sent (#968). Kept in a ref so the two registration
+  // effects below read the CURRENT value without taking `settings` as a
+  // dependency — that would re-run them (and re-register on every daemon) on an
+  // unrelated theme or font-size change.
+  const pushPrefsRef = useRef<PushPreferences>({
+    questions: settings.notifyQuestions,
+    turnComplete: settings.notifyTurnComplete,
+  });
   // #690: id -> resolver for a message awaiting its daemon `ack`. Currently
   // used only by handleDisconnect's unregister_device_token wait; see the
   // 'ack' case in handleMessage for the resolving side.
@@ -2025,7 +2113,7 @@ function App() {
       if (!token) return;
       deviceTokenRef.current = token;
       for (const id of connectedIds) {
-        cmSendMessage(id, createRegisterDeviceToken(token, 'ios'));
+        cmSendMessage(id, createRegisterDeviceToken(token, 'ios', pushPrefsRef.current));
         tokenSentToRef.current.add(id);
       }
     };
@@ -2038,7 +2126,7 @@ function App() {
     if (!deviceTokenRef.current) return;
     for (const id of connectedIds) {
       if (!tokenSentToRef.current.has(id)) {
-        cmSendMessage(id, createRegisterDeviceToken(deviceTokenRef.current, 'ios'));
+        cmSendMessage(id, createRegisterDeviceToken(deviceTokenRef.current, 'ios', pushPrefsRef.current));
         tokenSentToRef.current.add(id);
       }
     }
@@ -2049,6 +2137,44 @@ function App() {
       }
     }
   }, [connectedIds, cmSendMessage]);
+
+  // Declared HERE, not up with the other settings state, because it closes over
+  // `connectedIds` / `cmSendMessage` / the token refs — all declared above this
+  // point. A `useCallback` higher up would evaluate its dependency array during
+  // render, before those bindings are initialized.
+  const handleSettingsChange = useCallback(
+    (newSettings: AppSettings) => {
+      setSettings(newSettings);
+
+      // Push a notification-preference change to every connected daemon (#968).
+      // The daemon is the only thing in the APNS path, so a toggle that is not
+      // sent up is a toggle that does nothing. Re-registering the SAME token is
+      // the update: `register_device_token` is idempotent and keyed by token, so
+      // there is no separate update message and no way for the two to drift.
+      const next: PushPreferences = {
+        questions: newSettings.notifyQuestions,
+        turnComplete: newSettings.notifyTurnComplete,
+      };
+      const prev = pushPrefsRef.current;
+      if (prev.questions === next.questions && prev.turnComplete === next.turnComplete) return;
+      pushPrefsRef.current = next;
+
+      const token = deviceTokenRef.current;
+      // No token yet (permission not granted, or web): the current value is
+      // carried by whatever registration happens first.
+      if (!token) return;
+      for (const id of connectedIds) {
+        try {
+          if (!cmSendMessage(id, createRegisterDeviceToken(token, 'ios', next))) {
+            console.warn(`[App] Could not send push preferences to ${id}`);
+          }
+        } catch (err) {
+          console.warn('[App] Failed to send push preferences:', err);
+        }
+      }
+    },
+    [connectedIds, cmSendMessage],
+  );
 
   // Get active session. Derive connectionStatus from live connection state
   // at render time to avoid stale status from session_list_response merge timing.
@@ -2561,7 +2687,7 @@ function App() {
         for (const id of connectedIds) {
           if (id === connectionId) continue;
           try {
-            const ok = cmSendMessage(id, createRegisterDeviceToken(token, 'ios'));
+            const ok = cmSendMessage(id, createRegisterDeviceToken(token, 'ios', pushPrefsRef.current));
             if (!ok) {
               console.warn(`[App] Could not re-register device token with ${id}`);
             }

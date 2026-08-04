@@ -59,55 +59,196 @@ export function now(): Timestamp {
 }
 
 /**
- * Protocol message types.
- * Discriminated union for type-safe message handling.
+ * Registry mapping each wire `type` discriminant to its message interface —
+ * the single source of truth `ProtocolMessage` and the runtime type
+ * allowlist in {@link deserialize} derive from (#895). Before this, those
+ * were two independently hand-maintained 45-entry lists (a `ProtocolMessage`
+ * union and a `validTypes` array inside `isValidMessage`) with nothing
+ * checking them against each other: adding a message type meant remembering
+ * to edit both, and forgetting `validTypes` failed silently (`deserialize`
+ * just returns `null` for the type, repo-wide). See
+ * `packages/shared/tests/protocol-registry.test.ts` for the golden-equality
+ * test that guards this derivation.
  */
-export type ProtocolMessage =
-  | HelloMessage
-  | HelloAckMessage
-  | AgentOutputMessage
-  | StructuredAgentOutputMessage
-  | UserInputMessage
-  | AckMessage
-  | EditMessage
-  | QuestionMessage
-  | AnswerMessage
-  | SessionUpdateMessage
-  | PingMessage
-  | PongMessage
-  | ErrorMessage
-  | ReplayBatchMessage
-  | BulletExpandRequestMessage
-  | BulletExpandResponseMessage
-  | SessionListRequestMessage
-  | SessionListResponseMessage
-  | TranscriptContentMessage
-  | TranscriptLoadRequestMessage
-  | TranscriptLoadCompleteMessage
-  | CreateSessionRequestMessage
-  | CreateSessionResponseMessage
-  | TerminalResizeMessage
-  | AuthChallengeMessage
-  | AuthResponseMessage
-  | AuthResultMessage
-  | KillSessionRequestMessage
-  | KillSessionResponseMessage
-  | RawPtyOutputMessage
-  | SessionHistoryRequestMessage
-  | SessionHistoryResponseMessage
-  | ResumeSessionRequestMessage
-  | ResumeSessionResponseMessage
-  | DetachSessionMessage
-  | DetachSessionAckMessage
-  | RegisterDeviceTokenMessage
-  | UnregisterDeviceTokenMessage
-  | DaemonUpdateAvailableMessage
-  | HubStatusMessage
-  | SessionRotatedMessage
-  | SessionViewsMessage
-  | QuestionResolvedMessage
-  | RemiStatusMessage
-  | QuestionSnapshotMessage;
+export interface ProtocolMessageMap {
+  hello: HelloMessage;
+  hello_ack: HelloAckMessage;
+  agent_output: AgentOutputMessage;
+  structured_agent_output: StructuredAgentOutputMessage;
+  user_input: UserInputMessage;
+  ack: AckMessage;
+  edit: EditMessage;
+  question: QuestionMessage;
+  answer: AnswerMessage;
+  session_update: SessionUpdateMessage;
+  ping: PingMessage;
+  pong: PongMessage;
+  error: ErrorMessage;
+  replay_batch: ReplayBatchMessage;
+  bullet_expand_request: BulletExpandRequestMessage;
+  bullet_expand_response: BulletExpandResponseMessage;
+  session_list_request: SessionListRequestMessage;
+  session_list_response: SessionListResponseMessage;
+  transcript_content: TranscriptContentMessage;
+  transcript_load_request: TranscriptLoadRequestMessage;
+  transcript_load_complete: TranscriptLoadCompleteMessage;
+  create_session_request: CreateSessionRequestMessage;
+  create_session_response: CreateSessionResponseMessage;
+  terminal_resize: TerminalResizeMessage;
+  auth_challenge: AuthChallengeMessage;
+  auth_response: AuthResponseMessage;
+  auth_result: AuthResultMessage;
+  kill_session_request: KillSessionRequestMessage;
+  kill_session_response: KillSessionResponseMessage;
+  raw_pty_output: RawPtyOutputMessage;
+  session_history_request: SessionHistoryRequestMessage;
+  session_history_response: SessionHistoryResponseMessage;
+  resume_session_request: ResumeSessionRequestMessage;
+  resume_session_response: ResumeSessionResponseMessage;
+  detach_session: DetachSessionMessage;
+  detach_session_ack: DetachSessionAckMessage;
+  register_device_token: RegisterDeviceTokenMessage;
+  unregister_device_token: UnregisterDeviceTokenMessage;
+  daemon_update_available: DaemonUpdateAvailableMessage;
+  hub_status: HubStatusMessage;
+  session_rotated: SessionRotatedMessage;
+  session_views: SessionViewsMessage;
+  question_resolved: QuestionResolvedMessage;
+  remi_status: RemiStatusMessage;
+  question_snapshot: QuestionSnapshotMessage;
+}
+
+/**
+ * Compile-time proof that every {@link ProtocolMessageMap} entry's interface
+ * discriminant (`type`) matches the key it is registered under — catches
+ * `wrong_key: SomeOtherMessage` typos as a build error.
+ *
+ * NOTE on the failure sentinel: mapping a mismatch to `never` and indexing
+ * the whole object by `keyof ProtocolMessageMap` does NOT work, because
+ * TypeScript drops `never` out of unions (`true | never` simplifies to
+ * `true`) — a single wrong entry is silently absorbed by the other 44
+ * correct ones and the check passes anyway (verified with `tsc --strict`
+ * against a deliberately mismatched two-entry registry: zero diagnostics).
+ * Mapping the failure branch to `false` instead avoids the collapse, since
+ * `true | false` is `boolean`, which is not assignable to the `true`
+ * annotation below — so a mismatch is a real compile error.
+ */
+type _DiscriminantsMatch = {
+  [K in keyof ProtocolMessageMap]: ProtocolMessageMap[K] extends { readonly type: K }
+    ? true
+    : false;
+}[keyof ProtocolMessageMap];
+// Forces the check above to run; a mismatched discriminant fails this
+// assignment (`boolean` is not assignable to `true`) instead of being
+// silently unused.
+const _discriminantsMatch: true = true as _DiscriminantsMatch;
+void _discriminantsMatch;
+
+/**
+ * Protocol message types.
+ * Discriminated union for type-safe message handling, derived from
+ * {@link ProtocolMessageMap} so a new registry entry automatically joins the
+ * union.
+ */
+export type ProtocolMessage = ProtocolMessageMap[keyof ProtocolMessageMap];
+
+/** The message interface registered for wire discriminant `K`. */
+export type MessageOf<K extends keyof ProtocolMessageMap> = ProtocolMessageMap[K];
+
+/**
+ * Which side of the wire originates each message type, derived from observed
+ * dispatch sites rather than invented (#895):
+ * - `c2d` — routed by the daemon's inbound switch
+ *   (`packages/daemon/src/server/connection.ts` `handleMessage`).
+ * - `d2c` — handled by `packages/web/src/App.tsx`'s `handleMessage` and/or
+ *   `packages/daemon/src/cli/attach-client.ts`'s switch, or produced only by
+ *   daemon-side broadcast producers.
+ * - `both` — genuinely constructed by both sides in current code (`ping` and
+ *   `pong` each have a producer on both the daemon and the web client).
+ *
+ * `ack` and `error` are classified `d2c` rather than `both`: `createAck`/
+ * `createError` are only ever called from `packages/daemon/src/server/
+ * connection.ts` and its handlers (grep: no web/CLI-client call site
+ * constructs either). `connection.ts`'s inbound switch does have a case for
+ * `'ack'` (comment: "Client acknowledging our message - just track"), but no
+ * current client sends one — it is a defensive/forward-compatibility branch,
+ * not an observed producer. `'error'` has no inbound case at all; an inbound
+ * `error` message falls through to the `default` branch and gets treated as
+ * `UNKNOWN_MESSAGE`.
+ */
+export const MESSAGE_DIRECTION = {
+  hello: 'c2d',
+  hello_ack: 'd2c',
+  agent_output: 'd2c',
+  structured_agent_output: 'd2c',
+  user_input: 'c2d',
+  // 'both', not 'd2c'. The daemon is the only side that CONSTRUCTS an ack
+  // today, but `connection.ts`'s inbound switch has a real accepting
+  // `case 'ack'` — so an ack arriving from a client is routed, not rejected.
+  // Every other tag here was derived from dispatch sites; classifying this one
+  // by who constructs it instead would make the table disagree with the
+  // daemon's own router the moment C6 (#899) uses it to gate inbound messages.
+  ack: 'both',
+  edit: 'd2c',
+  question: 'd2c',
+  answer: 'c2d',
+  session_update: 'd2c',
+  ping: 'both',
+  pong: 'both',
+  error: 'd2c',
+  replay_batch: 'd2c',
+  bullet_expand_request: 'c2d',
+  bullet_expand_response: 'd2c',
+  session_list_request: 'c2d',
+  session_list_response: 'd2c',
+  transcript_content: 'd2c',
+  transcript_load_request: 'c2d',
+  transcript_load_complete: 'd2c',
+  create_session_request: 'c2d',
+  create_session_response: 'd2c',
+  terminal_resize: 'c2d',
+  auth_challenge: 'd2c',
+  auth_response: 'c2d',
+  auth_result: 'd2c',
+  kill_session_request: 'c2d',
+  kill_session_response: 'd2c',
+  raw_pty_output: 'd2c',
+  session_history_request: 'c2d',
+  session_history_response: 'd2c',
+  resume_session_request: 'c2d',
+  resume_session_response: 'd2c',
+  detach_session: 'c2d',
+  detach_session_ack: 'd2c',
+  register_device_token: 'c2d',
+  unregister_device_token: 'c2d',
+  daemon_update_available: 'd2c',
+  hub_status: 'd2c',
+  session_rotated: 'd2c',
+  session_views: 'd2c',
+  question_resolved: 'd2c',
+  remi_status: 'd2c',
+  question_snapshot: 'd2c',
+} as const satisfies Record<keyof ProtocolMessageMap, 'c2d' | 'd2c' | 'both'>;
+
+/**
+ * Every registry key the daemon can legitimately receive from a client:
+ * derived as "NOT `d2c`" (i.e. `c2d` or `both`), never as "tagged `c2d`" (#899).
+ *
+ * The distinction is `ack`: tagged `both` because `connection.ts`'s inbound
+ * routing has a real accepting case for it (an ack CAN arrive from a client,
+ * even though only the daemon currently constructs one — see the comment on
+ * `ack` in {@link MESSAGE_DIRECTION}). A `c2d`-only derivation would silently
+ * exclude `ack` and make the daemon reject a message it accepts today,
+ * surfacing as a hard-to-trace `UNKNOWN_MESSAGE`. `ping`/`pong` are `both`
+ * for the same structural reason (both sides construct and accept them).
+ *
+ * `packages/shared/tests/protocol-registry.test.ts`'s `INBOUND_ROUTED` list
+ * pins the exact 18-member set this type must resolve to, hand-transcribed
+ * from `connection.ts` independently of this derivation.
+ */
+export type ClientToDaemonType = {
+  [K in keyof ProtocolMessageMap]: (typeof MESSAGE_DIRECTION)[K] extends 'd2c' ? never : K;
+}[keyof ProtocolMessageMap];
 
 /** Client hello - initiates connection */
 export interface HelloMessage {
@@ -695,6 +836,25 @@ export interface AuthChallengeMessage {
   readonly serverFingerprint: string;
   /** Base64-encoded server Ed25519 public key */
   readonly serverPublicKey: string;
+  /**
+   * Relay end-to-end encryption (#543). Present ONLY on the relay transport;
+   * the direct WebSocket path leaves both absent and is unchanged by this.
+   *
+   * The daemon's ephemeral P-256 public key, and an Ed25519 signature over
+   * `kexSigningInput(challenge, thisKey, null)` made with the identity key in
+   * `serverPublicKey`. The signature is what stops the worker substituting its
+   * own key: it forwards these fields and can replace them, but cannot forge a
+   * signature the client will accept.
+   */
+  readonly relayEphemeralKey?: string;
+  readonly relayKexSignature?: string;
+  /**
+   * The daemon's long-lived P-256 answer key, base64 (#875). Phones pin this
+   * alongside the fingerprint so a lock-screen answer can be sealed with no
+   * live connection to negotiate over. Absent on a daemon that has none, in
+   * which case a client must refuse to send rather than send in the clear.
+   */
+  readonly answerEncryptionKey?: string;
 }
 
 /** Authentication response from client to server */
@@ -708,6 +868,19 @@ export interface AuthResponseMessage {
   readonly signature: string;
   /** Client's fingerprint for display */
   readonly clientFingerprint: string;
+  /**
+   * Relay end-to-end encryption (#543), relay transport only.
+   *
+   * The client's ephemeral P-256 public key, and an Ed25519 signature over
+   * `kexSigningInput(challenge, daemonKey, thisKey)` made with the identity in
+   * `clientPublicKey`. Binding BOTH keys means neither side's contribution can
+   * be swapped after the fact.
+   *
+   * `signature` above is unchanged and still covers the challenge alone, so the
+   * direct path's verification is untouched.
+   */
+  readonly relayEphemeralKey?: string;
+  readonly relayKexSignature?: string;
 }
 
 /** Authentication result from server to client */
@@ -778,6 +951,31 @@ export interface DetachSessionAckMessage {
   readonly error?: string;
 }
 
+/**
+ * Per-device push preferences (#968). Which CLASSES of push this device wants;
+ * the daemon filters its per-token fan-out by these before sending.
+ *
+ * The client cannot mute APNS on its own — the push path is daemon -> signaling
+ * Worker -> APNS and never consults the client — so a device's preference is
+ * only real once the daemon stores and honors it. That is what this carries.
+ *
+ * Absent (or an absent field) means "wants it": an older client that never
+ * sends preferences keeps receiving everything, exactly as before.
+ *
+ * Deliberately does NOT cover two other push classes:
+ *   - subagent alerts, which already have a user-facing control (they fire only
+ *     on the user's own `auto_approve.subagent_alert` patterns);
+ *   - question DISMISSALS, which are quiet `content-available` pushes that clear
+ *     an already-delivered card. Muting those would strand a card on the lock
+ *     screen of the very device that asked for less noise.
+ */
+export interface PushPreferences {
+  /** Push when Claude needs an answer (permission prompts, escalations). */
+  readonly questions?: boolean;
+  /** Push the last assistant message when a long turn ends (#914). */
+  readonly turnComplete?: boolean;
+}
+
 /** Register a device token for push notifications */
 export interface RegisterDeviceTokenMessage {
   readonly type: 'register_device_token';
@@ -787,6 +985,14 @@ export interface RegisterDeviceTokenMessage {
   readonly token: string;
   /** Device platform */
   readonly platform: 'ios' | 'android';
+  /**
+   * Which push classes this device wants (#968). Omitted = all of them.
+   *
+   * Registration is idempotent and keyed by token, so changing a toggle in the
+   * app is just a re-send of this message with new preferences — no separate
+   * update message, and no way for the two to drift apart.
+   */
+  readonly pushPrefs?: PushPreferences;
 }
 
 /**
@@ -955,9 +1161,25 @@ export function deserialize(data: string): ProtocolMessage | null {
 }
 
 /**
- * Type guard to check if parsed JSON is a valid protocol message.
+ * The runtime type allowlist {@link isValidMessage} checks incoming messages
+ * against, derived from the {@link ProtocolMessageMap} registry (#895)
+ * instead of hand-maintained as its own list. Guarded by the golden-equality
+ * test in `packages/shared/tests/protocol-registry.test.ts`: if this ever
+ * drops a type, `deserialize` silently returns `null` for it repo-wide.
  */
-function isValidMessage(value: unknown): value is ProtocolMessage {
+const VALID_TYPES: ReadonlySet<string> = new Set(Object.keys(MESSAGE_DIRECTION));
+
+/**
+ * Type guard to check if parsed JSON is a valid protocol message.
+ *
+ * Exported because `deserialize` validates only the OUTER envelope.
+ * `ReplayBatchMessage.messages` is `readonly ProtocolMessage[]` at compile
+ * time only, so nested replayed messages reach a consumer's dispatch unchecked
+ * and a consumer that recurses into them must validate each one itself (#897).
+ * Use this rather than re-deriving the check: a second copy of "what counts as
+ * a valid message" is the drift this registry exists to eliminate.
+ */
+export function isValidMessage(value: unknown): value is ProtocolMessage {
   if (typeof value !== 'object' || value === null) {
     return false;
   }
@@ -969,56 +1191,7 @@ function isValidMessage(value: unknown): value is ProtocolMessage {
   if (typeof obj['id'] !== 'string') return false;
   if (typeof obj['timestamp'] !== 'string') return false;
 
-  // Validate by type
-  const validTypes = [
-    'hello',
-    'hello_ack',
-    'agent_output',
-    'structured_agent_output',
-    'user_input',
-    'ack',
-    'edit',
-    'question',
-    'answer',
-    'session_update',
-    'ping',
-    'pong',
-    'error',
-    'replay_batch',
-    'bullet_expand_request',
-    'bullet_expand_response',
-    'session_list_request',
-    'session_list_response',
-    'transcript_content',
-    'transcript_load_request',
-    'transcript_load_complete',
-    'create_session_request',
-    'create_session_response',
-    'terminal_resize',
-    'auth_challenge',
-    'auth_response',
-    'auth_result',
-    'kill_session_request',
-    'kill_session_response',
-    'raw_pty_output',
-    'session_history_request',
-    'session_history_response',
-    'resume_session_request',
-    'resume_session_response',
-    'detach_session',
-    'detach_session_ack',
-    'register_device_token',
-    'unregister_device_token',
-    'daemon_update_available',
-    'hub_status',
-    'session_rotated',
-    'session_views',
-    'question_resolved',
-    'remi_status',
-    'question_snapshot',
-  ];
-
-  return validTypes.includes(obj['type'] as string);
+  return VALID_TYPES.has(obj['type']);
 }
 
 /** Optional fields for {@link createHello}. */
@@ -1589,6 +1762,8 @@ export function createAuthChallenge(
   challenge: string,
   serverFingerprint: string,
   serverPublicKey: string,
+  relayKex?: { readonly ephemeralKey: string; readonly signature: string },
+  answerEncryptionKey?: string,
 ): AuthChallengeMessage {
   return {
     type: 'auth_challenge',
@@ -1597,6 +1772,11 @@ export function createAuthChallenge(
     challenge,
     serverFingerprint,
     serverPublicKey,
+    ...(relayKex && {
+      relayEphemeralKey: relayKex.ephemeralKey,
+      relayKexSignature: relayKex.signature,
+    }),
+    ...(answerEncryptionKey !== undefined && { answerEncryptionKey }),
   };
 }
 
@@ -1607,6 +1787,7 @@ export function createAuthResponse(
   clientPublicKey: string,
   signature: string,
   clientFingerprint: string,
+  relayKex?: { readonly ephemeralKey: string; readonly signature: string },
 ): AuthResponseMessage {
   return {
     type: 'auth_response',
@@ -1615,6 +1796,10 @@ export function createAuthResponse(
     clientPublicKey,
     signature,
     clientFingerprint,
+    ...(relayKex && {
+      relayEphemeralKey: relayKex.ephemeralKey,
+      relayKexSignature: relayKex.signature,
+    }),
   };
 }
 
@@ -1769,10 +1954,12 @@ export function createDetachSessionAck(
   };
 }
 
-/** Create a device token registration message */
+/** Create a device token registration message. `pushPrefs` omitted = this
+ *  device wants every push class (#968). */
 export function createRegisterDeviceToken(
   token: string,
   platform: 'ios' | 'android',
+  pushPrefs?: PushPreferences,
 ): RegisterDeviceTokenMessage {
   return {
     type: 'register_device_token',
@@ -1780,6 +1967,7 @@ export function createRegisterDeviceToken(
     timestamp: now(),
     token,
     platform,
+    ...(pushPrefs !== undefined && { pushPrefs }),
   };
 }
 

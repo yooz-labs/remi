@@ -213,15 +213,105 @@ describe('startLiveSessionsWatcher (#542)', () => {
           startedAt: new Date().toISOString(),
         });
 
-        await waitFor(() => errors.length >= 1, 'the throwing collect to be logged');
+        // Wait for THE collect error specifically, not merely for any log line
+        // (#903): an unrelated watcher error can otherwise satisfy the wait,
+        // which is how this test used to pass without its subject ever running.
+        //
+        // Re-touch the directory while waiting. On Linux `register()`'s
+        // `.json.tmp` write+rename can make the watcher emit ENOENT; its
+        // handler closes and re-arms (`live-sessions-watcher.ts`), but the
+        // event that would have triggered the flush is already gone by the time
+        // the new watcher is listening. Without a fresh event `collect` is
+        // never called and the wait hangs to timeout -- observed in CI, never
+        // locally. The re-arm and the re-touch are both required; neither alone
+        // is sufficient.
+        const deadline = Date.now() + TEST_TIMEOUT_MS - 2000;
+        let touch = 0;
+        while (Date.now() < deadline && !errors.some((e) => e.includes('collect exploded'))) {
+          fs.writeFileSync(path.join(tmpDir, `touch-${touch++}.json`), '{}');
+          await new Promise((r) => setTimeout(r, 100));
+        }
 
         expect(broadcasts).toEqual([]);
-        expect(errors.length).toBeGreaterThanOrEqual(1);
-        expect(errors[0]).toContain('collect exploded');
+        expect(errors.some((e) => e.includes('collect exploded'))).toBe(true);
       } finally {
         closer();
       }
     },
     TEST_TIMEOUT_MS,
   );
+});
+
+/**
+ * A watcher error must not permanently disable sibling-daemon broadcasts.
+ *
+ * The handler closes the watcher on error, deliberately: an FSWatcher emitting
+ * `error` with no listener throws as an uncaughtException and would kill an
+ * unattended launchd-managed hub. But closing PERMANENTLY turns a millisecond
+ * fs race into a daemon that never broadcasts a sibling again for its whole
+ * lifetime — and on Linux that race is routine, because `register()` writes a
+ * `.json.tmp` and renames it, and inotify can report the vanished temp path.
+ *
+ * This was found via CI: a test whose subject is `collect` being called hung
+ * for its full timeout, because the watcher had died before any file event
+ * could reach the debounced flush.
+ */
+describe('watcher re-arms after a transient error (#903 follow-up)', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-rearm-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('a file event still reaches collect after the re-arm window', async () => {
+    const collects: number[] = [];
+    const closer = startLiveSessionsWatcher({
+      dirPath: dir,
+      collect: (): LiveSessionsCollectResult | null => {
+        collects.push(Date.now());
+        return null;
+      },
+      broadcast: () => {},
+      logError: () => {},
+      debounceMs: 10,
+    });
+
+    try {
+      fs.writeFileSync(path.join(dir, 'a.json'), '{}');
+      await waitFor(() => collects.length > 0, 'the first flush');
+      const before = collects.length;
+
+      // Past any re-arm delay, a real event must still be observed. Before the
+      // re-arm change a watcher killed by a transient ENOENT stayed dead and
+      // this second write would be silently ignored forever.
+      await new Promise((r) => setTimeout(r, 400));
+      fs.writeFileSync(path.join(dir, 'b.json'), '{}');
+      await waitFor(() => collects.length > before, 'a flush after the re-arm window');
+    } finally {
+      closer();
+    }
+  });
+
+  test('the closer cancels a pending re-arm so a stopped watcher stays stopped', async () => {
+    let collects = 0;
+    const closer = startLiveSessionsWatcher({
+      dirPath: dir,
+      collect: (): LiveSessionsCollectResult | null => {
+        collects++;
+        return null;
+      },
+      broadcast: () => {},
+      logError: () => {},
+      debounceMs: 10,
+    });
+    closer();
+    const after = collects;
+    fs.writeFileSync(path.join(dir, 'c.json'), '{}');
+    await new Promise((r) => setTimeout(r, 400));
+    expect(collects).toBe(after);
+  });
 });

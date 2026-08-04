@@ -14,6 +14,7 @@ import {
   type SessionRegistryFile,
 } from '../session/session-registry-file.ts';
 import { performAuthHandshake } from './auth-helper.ts';
+import { capabilityWsOptions } from './capability-client.ts';
 import {
   type DiscoveredEndpoint,
   FETCH_SESSIONS_TIMEOUT_MS,
@@ -204,7 +205,7 @@ export async function fetchSessions(
     let authInProgress = false;
     let ws: WebSocket;
     try {
-      ws = new WebSocket(url);
+      ws = new WebSocket(url, capabilityWsOptions() as never);
     } catch {
       reject(new Error(`Cannot connect to daemon at ${host}:${port}. Is remi running?`));
       return;

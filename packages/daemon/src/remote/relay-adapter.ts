@@ -12,6 +12,26 @@
  * When set, the adapter runs a challenge-response handshake before accepting
  * any protocol messages from the relay peer:
  *   peer-connected -> auth_challenge -> auth_response -> auth_result -> onConnect
+ *
+ * ## Encryption engages with auth, not with the relay (#881)
+ *
+ * The #543 key exchange rides that handshake, so it runs ONLY when an
+ * `authenticator` is present. `cli.ts` passes one only in permanent-code mode,
+ * so the DEFAULT rotating-code path never derives `sessionKeys` — even when the
+ * user passed `--auth`.
+ *
+ * The two directions then behave DIFFERENTLY, and the difference matters:
+ *
+ * - **Outbound** (`sendRaw`): refuses to send at all. It returns false and logs
+ *   rather than falling back to plaintext, which is deliberate (#543: "a silent
+ *   downgrade is exactly the bug"). The consequence is that in default mode the
+ *   daemon cannot deliver ANY message over the relay — not a leak, a breakage.
+ * - **Inbound** (the `relay` handler): falls through to `handleRelayMessage`
+ *   on the raw payload, so an unencrypted `user_input`, `answer` or device
+ *   token from a client IS accepted, and the Worker saw it in the clear.
+ *
+ * So "the relay is unencrypted by default" is wrong in the outbound direction
+ * and right in the inbound one. Say which direction you mean; see #881.
  */
 
 import {
@@ -19,14 +39,24 @@ import {
   createAuthResult,
   createError,
   createQuestion,
+  decryptRelayPayload,
+  deriveRelaySessionKeys,
+  encryptRelayPayload,
+  errorToString,
+  generateEphemeralKeyPair,
   generateId,
+  isSealedAnswer,
+  openSealedAnswer,
 } from '@remi/shared';
 import type {
   AgentStatus,
+  AnswerKeyPair,
   AuthResponseMessage,
+  EphemeralKeyPair,
   Message,
   ProtocolMessage,
   Question,
+  RelaySessionKeys,
   UUID,
 } from '@remi/shared';
 import type {
@@ -36,11 +66,44 @@ import type {
   ConnectionAdapter,
 } from '../adapters/connection-adapter.ts';
 import type { Authenticator } from '../auth/authenticator.ts';
+import { type ClientMessageHandlers, routeClientMessage } from '../server/route-client-message.ts';
 import { SignalingClient } from './signaling-client.ts';
+
+/**
+ * The slice of `SignalingClient` the adapter actually uses.
+ *
+ * Named so a test can stand in for the transport without a network or a
+ * Worker (#543). The relay's handshake had no adapter-level coverage at all
+ * before this: `relay-adapter-auth.test.ts` exercises `Authenticator`
+ * directly and never constructs an adapter, which is why making the key
+ * exchange mandatory broke none of its tests.
+ */
+export interface RelayTransport {
+  on(event: 'registered', cb: (code: string, expiresAt: string) => void): void;
+  on(event: 'relay', cb: (payload: string) => void): void;
+  on(event: 'error', cb: (code: string, message: string) => void): void;
+  on(event: 'open' | 'close' | 'peer-connected' | 'peer-disconnected', cb: () => void): void;
+  on(event: 'code-rotated', cb: (code: string) => void): void;
+  // biome-ignore lint/suspicious/noExplicitAny: the emitter is heterogeneous by design
+  on(event: string, cb: (...args: any[]) => void): void;
+  sendRelay(payload: string): void;
+  connect(code?: string): void;
+  close(): void;
+  readonly isConnected: boolean;
+  readonly connectionCode: string | null;
+}
 
 /** Base relay config fields shared by both modes */
 interface RelayAdapterConfigBase extends AdapterConfig {
   readonly signalingUrl: string;
+  /**
+   * Build the transport. Defaults to a real `SignalingClient`; tests pass a
+   * stand-in so the handshake can be driven without a Worker.
+   */
+  readonly createTransport?: (
+    url: string,
+    options: { rotateOnReconnect: boolean },
+  ) => RelayTransport;
 }
 
 /** Rotating codes (default): code changes on reconnect; no auth required */
@@ -66,7 +129,7 @@ export class RelayAdapter implements ConnectionAdapter {
 
   private readonly config: RelayAdapterConfig;
   private readonly events: Partial<AdapterEvents>;
-  private client: SignalingClient | null = null;
+  private client: RelayTransport | null = null;
   private running = false;
   private connectionCode: string | null = null;
 
@@ -75,6 +138,18 @@ export class RelayAdapter implements ConnectionAdapter {
 
   /** Auth state for the current relay peer */
   private authState: RelayAuthState = 'none';
+
+  /**
+   * Relay end-to-end encryption state (#543). All three are per-connection and
+   * cleared by `resetClient`, so a new peer can never inherit the previous
+   * peer's keys.
+   */
+  private ephemeralKeys: EphemeralKeyPair | null = null;
+  private sessionKeys: RelaySessionKeys | null = null;
+  private kexChallenge: string | null = null;
+
+  /** Opens sealed lock-screen answers (#875). Absent = cannot open them. */
+  private answerKey: AnswerKeyPair | null = null;
 
   constructor(config: RelayAdapterConfig, events: Partial<AdapterEvents> = {}) {
     this.config = config;
@@ -109,7 +184,10 @@ export class RelayAdapter implements ConnectionAdapter {
 
     const rotateOnReconnect = this.config.rotateCode !== false;
 
-    this.client = new SignalingClient(this.config.signalingUrl, { rotateOnReconnect });
+    const createTransport =
+      this.config.createTransport ??
+      ((url: string, options: { rotateOnReconnect: boolean }) => new SignalingClient(url, options));
+    this.client = createTransport(this.config.signalingUrl, { rotateOnReconnect });
 
     this.client.on('registered', (code: string) => {
       this.connectionCode = code;
@@ -133,10 +211,16 @@ export class RelayAdapter implements ConnectionAdapter {
       this.clientConnectionId = connectionId;
 
       if (this.requiresAuth && this.config.authenticator) {
-        // Send auth challenge before accepting messages
-        const challenge = this.config.authenticator.createChallenge(connectionId);
+        // Open the relay key exchange along with the challenge (#543), so
+        // encryption costs no extra round trip. Async because signing is, so
+        // the challenge is sent from the continuation.
         this.authState = 'challenging';
-        this.client?.sendRelay(JSON.stringify(challenge));
+        this.startKeyExchange(connectionId).catch((err) => {
+          console.error(
+            `Relay key exchange could not start: ${errorToString(err)}. Refusing the connection rather than relaying in the clear.`,
+          );
+          this.resetClient('Key exchange failed');
+        });
       } else {
         // No auth required; accept connection immediately
         this.authState = 'authenticated';
@@ -153,59 +237,26 @@ export class RelayAdapter implements ConnectionAdapter {
       this.resetClient('Remote client disconnected');
     });
 
-    this.client.on('relay', (payload: string) => {
-      try {
-        const message = JSON.parse(payload);
-        if (!message || typeof message !== 'object' || typeof message.type !== 'string') {
-          console.warn('Relay payload missing required "type" field');
-          return;
-        }
-
-        // #591: a connection-independent relayed answer (lock-screen / backgrounded
-        // phone) is SELF-AUTHENTICATING — it carries an Ed25519 `auth` block and is
-        // dispatched via the relayAnswer path, so it needs NO connected /
-        // handshake-authenticated WS peer (there is none). Gate on the ABSENCE of a
-        // connected peer so a normal connected peer's answer always uses the
-        // standard onAnswer routing even if a future client signs WS answers.
-        if (
-          !this.clientConnectionId &&
-          message.type === 'answer' &&
-          message.auth &&
-          typeof message.auth === 'object'
-        ) {
-          this.handleRelayedAnswer(message).catch((err) =>
-            console.warn('Relayed answer error:', err instanceof Error ? err.message : err),
-          );
-          return;
-        }
-
-        if (!this.clientConnectionId) {
-          console.warn('Received relay message before client connection established');
-          return;
-        }
-
-        // Handle auth_response during challenging state
-        if (message.type === 'auth_response') {
-          this.handleAuthResponse(message as AuthResponseMessage).catch((err) => {
-            console.error('Relay auth error:', err instanceof Error ? err.message : err);
-            const failResult = createAuthResult(false, undefined, 'INTERNAL_AUTH_ERROR');
-            this.client?.sendRelay(JSON.stringify(failResult));
-            this.resetClient();
+    this.client.on('relay', (rawPayload: string) => {
+      // Once the key exchange has completed, every payload is ciphertext
+      // (#543). Before it, only the handshake messages travel, and those are
+      // public keys and signatures by design.
+      if (this.sessionKeys) {
+        const keys = this.sessionKeys;
+        decryptRelayPayload(keys.receive, rawPayload)
+          .then((plaintext) => this.handleRelayMessage(plaintext))
+          .catch((err) => {
+            // AES-GCM authenticates, so this is a wrong key or a tampered
+            // payload, never a benign parse hiccup. Drop the connection rather
+            // than let an attacker probe with garbage.
+            console.error(
+              `Relay payload failed authenticated decryption: ${errorToString(err)}. Dropping the peer.`,
+            );
+            this.resetClient('Relay decryption failed');
           });
-          return;
-        }
-
-        // Block all other messages until authenticated
-        if (this.authState !== 'authenticated') {
-          console.warn(`Relay message '${message.type}' dropped: not authenticated`);
-          return;
-        }
-
-        // Route incoming protocol messages from the remote client
-        this.routeMessage(message);
-      } catch (e) {
-        console.warn('Failed to parse relay payload:', e instanceof Error ? e.message : e);
+        return;
       }
+      this.handleRelayMessage(rawPayload);
     });
 
     this.client.on('error', (code: string, msg: string) => {
@@ -214,6 +265,101 @@ export class RelayAdapter implements ConnectionAdapter {
 
     this.client.connect(this.config.code);
     this.running = true;
+  }
+
+  /** Handle one decrypted (or pre-handshake) relay payload. */
+  private handleRelayMessage(payload: string): void {
+    try {
+      const message = JSON.parse(payload);
+      if (!message || typeof message !== 'object' || typeof message.type !== 'string') {
+        console.warn('Relay payload missing required "type" field');
+        return;
+      }
+
+      // #591: a connection-independent relayed answer (lock-screen / backgrounded
+      // phone) is SELF-AUTHENTICATING — it carries an Ed25519 `auth` block and is
+      // dispatched via the relayAnswer path, so it needs NO connected /
+      // handshake-authenticated WS peer (there is none). Gate on the ABSENCE of a
+      // connected peer so a normal connected peer's answer always uses the
+      // standard onAnswer routing even if a future client signs WS answers.
+      // A sealed answer (#875) carries no readable `auth` block: the auth is
+      // inside the ciphertext, which is the point. Recognise it by shape.
+      if (
+        !this.clientConnectionId &&
+        message.type === 'answer' &&
+        ((message.auth && typeof message.auth === 'object') || isSealedAnswer(message))
+      ) {
+        this.handleRelayedAnswer(message).catch((err) =>
+          console.warn('Relayed answer error:', err instanceof Error ? err.message : err),
+        );
+        return;
+      }
+
+      if (!this.clientConnectionId) {
+        console.warn('Received relay message before client connection established');
+        return;
+      }
+
+      // Handle auth_response during challenging state
+      if (message.type === 'auth_response') {
+        this.routeAuthResponse(message as AuthResponseMessage);
+        return;
+      }
+
+      // Block all other messages until authenticated
+      if (this.authState !== 'authenticated') {
+        console.warn(`Relay message '${message.type}' dropped: not authenticated`);
+        return;
+      }
+
+      // Route incoming protocol messages from the remote client. `message`
+      // has only been checked for a string `type` field at this point (not
+      // the full envelope) -- deliberately unchanged from before #899, so a
+      // truly unregistered type still gets reported back by name (see
+      // routeMessage's default branch) instead of being silently dropped.
+      // #899 unifies WHICH handler fires for a known type, not this
+      // envelope-parsing step, which is relay-specific (sealed/self-
+      // authenticating answers above have no full envelope at all).
+      this.routeMessage(message as ProtocolMessage);
+    } catch (e) {
+      console.warn('Failed to parse relay payload:', e instanceof Error ? e.message : e);
+    }
+  }
+
+  /** Shared by the pre-authenticated handshake branch above and the
+   *  post-authenticated handler map in `routeMessage` (see that map's
+   *  `auth_response` entry for why the latter is reachable only
+   *  defensively). Mirrors `connection.ts`'s `routeAuthResponse` (#899). */
+  private routeAuthResponse(message: AuthResponseMessage): void {
+    this.handleAuthResponse(message).catch((err) => {
+      console.error('Relay auth error:', err instanceof Error ? err.message : err);
+      const failResult = createAuthResult(false, undefined, 'INTERNAL_AUTH_ERROR');
+      this.client?.sendRelay(JSON.stringify(failResult));
+      this.resetClient();
+    });
+  }
+
+  /** Give the adapter the key that opens sealed answers (#875). */
+  setAnswerKey(key: AnswerKeyPair): void {
+    this.answerKey = key;
+  }
+
+  /**
+   * Open the relay key exchange (#543): generate an ephemeral keypair, sign it
+   * with the daemon identity, and send it alongside the auth challenge.
+   */
+  private async startKeyExchange(connectionId: string): Promise<void> {
+    if (!this.config.authenticator) return;
+    const ephemeral = await generateEphemeralKeyPair();
+    this.ephemeralKeys = ephemeral;
+    const challenge = await this.config.authenticator.createChallengeWithRelayKex(
+      connectionId,
+      ephemeral.publicKeyBase64,
+    );
+    // Kept because deriving the session keys needs the same challenge as the
+    // HKDF salt, and the pending challenge is the authenticator's private state.
+    this.kexChallenge = challenge.challenge;
+    this.client?.sendRelay(JSON.stringify(challenge));
   }
 
   private async handleAuthResponse(response: AuthResponseMessage): Promise<void> {
@@ -230,6 +376,38 @@ export class RelayAdapter implements ConnectionAdapter {
       this.clientConnectionId,
       response,
     );
+
+    // The identity check passed; now bind the ephemeral key to that identity
+    // (#543). A client that cannot do this is too old for an encrypted relay,
+    // and continuing would put session content back on the wire in the clear,
+    // which is the whole bug. Refuse, and say which it is.
+    if (result.success) {
+      const ephemeral = this.ephemeralKeys;
+      const kexOk =
+        ephemeral !== null &&
+        (await this.config.authenticator.verifyRelayKex(
+          this.kexChallenge ?? '',
+          response,
+          ephemeral.publicKeyBase64,
+        ));
+      if (!kexOk) {
+        const why = response.relayEphemeralKey
+          ? 'its key-exchange signature did not verify'
+          : 'it did not offer a key exchange (client too old for an encrypted relay; update the app)';
+        console.warn(`Relay auth failed: ${why}`);
+        this.client?.sendRelay(
+          JSON.stringify(createAuthResult(false, undefined, 'RELAY_KEX_FAILED')),
+        );
+        this.resetClient();
+        return;
+      }
+      this.sessionKeys = await deriveRelaySessionKeys(
+        ephemeral.privateKey,
+        response.relayEphemeralKey as string,
+        this.kexChallenge ?? '',
+        true,
+      );
+    }
 
     // Send auth_result to the client
     this.client?.sendRelay(JSON.stringify(result));
@@ -258,7 +436,30 @@ export class RelayAdapter implements ConnectionAdapter {
    * authenticator (rotating-code no-auth mode) the room code is the only gate,
    * consistent with the relay's WS path.
    */
-  private async handleRelayedAnswer(msg: Record<string, unknown>): Promise<void> {
+  private async handleRelayedAnswer(raw: Record<string, unknown>): Promise<void> {
+    // A sealed envelope (#875) is opened before anything else looks at it: the
+    // Worker forwards ciphertext, so sessionId/questionId/answer do not exist
+    // until this succeeds. A failure is a wrong key or a tampered request, never
+    // a benign shape, so the answer is dropped rather than partially honored.
+    let msg = raw;
+    if (isSealedAnswer(raw)) {
+      if (!this.answerKey) {
+        console.warn('Sealed answer dropped: this daemon has no answer key, so it cannot open it');
+        return;
+      }
+      try {
+        const opened = await openSealedAnswer(this.answerKey.privateKeyPkcs8Base64, raw);
+        if (opened === null || typeof opened !== 'object') {
+          console.warn('Sealed answer dropped: contents were not an object');
+          return;
+        }
+        msg = opened as Record<string, unknown>;
+      } catch (err) {
+        console.warn(`Sealed answer rejected: ${errorToString(err)}`);
+        return;
+      }
+    }
+
     const sessionId = typeof msg['sessionId'] === 'string' ? msg['sessionId'] : '';
     const questionId = typeof msg['questionId'] === 'string' ? msg['questionId'] : '';
     const answer = typeof msg['answer'] === 'string' ? msg['answer'] : '';
@@ -324,162 +525,133 @@ export class RelayAdapter implements ConnectionAdapter {
     }
     this.clientConnectionId = null;
     this.authState = 'none';
+    // Ephemeral by definition (#543): a new peer must never inherit these.
+    this.ephemeralKeys = null;
+    this.sessionKeys = null;
+    this.kexChallenge = null;
   }
 
-  private routeMessage(msg: Record<string, unknown>): void {
+  /**
+   * Route one client-to-daemon message (#899): a total map over every
+   * client-to-daemon type, mirroring `connection.ts`'s handler map so both
+   * transports do "which handler for which type" the same way. The ad-hoc
+   * per-field `typeof` checks this replaced are GONE, not relocated --
+   * `msg` is trusted the same way `connection.ts` trusts it post-
+   * `deserialize`: a malformed field (e.g. a non-string `sessionId`) now
+   * flows straight to the event handler instead of being dropped with a
+   * warning, matching the direct-WebSocket path's existing (equally
+   * unvalidated) behavior. See the PR description for the concrete list of
+   * payloads this stops rejecting.
+   */
+  private routeMessage(msg: ProtocolMessage): void {
     if (!this.clientConnectionId) return;
     const connectionId = this.clientConnectionId;
-    switch (msg['type']) {
-      case 'user_input': {
-        if (typeof msg['content'] !== 'string' || typeof msg['sessionId'] !== 'string') {
-          console.warn('Invalid user_input payload: missing content or sessionId');
-          return;
-        }
-        const claudeId =
-          typeof msg['claudeSessionId'] === 'string' ? msg['claudeSessionId'] : undefined;
-        const messageId = typeof msg['id'] === 'string' ? msg['id'] : undefined;
+    const handlers: ClientMessageHandlers = {
+      // Hello is handled at connection level (the relay's `peer-connected`
+      // event), not message level -- a client never needs to send one here.
+      hello: 'ignore',
+      user_input: (m) => {
         this.events.onUserInput?.(
           connectionId,
-          msg['sessionId'],
-          msg['content'],
-          msg['raw'] === true,
-          claudeId,
-          messageId,
+          m.sessionId,
+          m.content,
+          m.raw,
+          m.claudeSessionId,
+          m.id,
         );
-        break;
-      }
-      case 'answer': {
-        if (typeof msg['questionId'] !== 'string' || typeof msg['answer'] !== 'string') {
-          console.warn('Invalid answer payload: missing questionId or answer');
-          return;
-        }
-        const claudeId =
-          typeof msg['claudeSessionId'] === 'string' ? msg['claudeSessionId'] : undefined;
+      },
+      answer: (m) => {
+        // Forward structured AskUserQuestion selections/cancel (#627) same
+        // as connection.ts's handleAnswer -- previously dropped over relay
+        // (found while unifying this dispatch; see the PR description).
+        const extra =
+          m.selections !== undefined || m.cancel !== undefined
+            ? { selections: m.selections, cancel: m.cancel }
+            : undefined;
         this.events.onAnswer?.(
           connectionId,
-          typeof msg['sessionId'] === 'string' ? msg['sessionId'] : '',
-          msg['questionId'],
-          msg['answer'],
-          claudeId,
+          m.sessionId,
+          m.questionId,
+          m.answer,
+          m.claudeSessionId,
+          extra,
         );
-        break;
-      }
-      case 'session_list_request':
-        if (typeof msg['id'] !== 'string') {
-          console.warn('Invalid session_list_request payload: missing id');
-          return;
-        }
-        this.events.onSessionListRequest?.(
-          connectionId,
-          msg['id'],
-          (msg['includeExternal'] as boolean) ?? false,
-        );
-        break;
-      case 'transcript_load_request':
-        if (typeof msg['sessionId'] !== 'string' || typeof msg['id'] !== 'string') {
-          console.warn('Invalid transcript_load_request payload: missing sessionId or id');
-          return;
-        }
-        this.events.onTranscriptLoadRequest?.(connectionId, msg['sessionId'], msg['id']);
-        break;
-      case 'create_session_request':
-        if (typeof msg['id'] !== 'string') {
-          console.warn('Invalid create_session_request payload: missing id');
-          return;
-        }
-        this.events.onCreateSessionRequest?.(
-          connectionId,
-          msg['directory'] as string | undefined,
-          msg['id'],
-        );
-        break;
-      case 'resume_session_request':
-        if (typeof msg['sessionId'] !== 'string' || typeof msg['id'] !== 'string') {
-          console.warn('Invalid resume_session_request payload: missing sessionId or id');
-          return;
-        }
-        this.events.onResumeSessionRequest?.(connectionId, msg['sessionId'], msg['id']);
-        break;
-      case 'bullet_expand_request':
-        if (
-          typeof msg['sessionId'] !== 'string' ||
-          typeof msg['bulletId'] !== 'number' ||
-          typeof msg['id'] !== 'string'
-        ) {
-          console.warn('Invalid bullet_expand_request payload: missing required fields');
-          return;
-        }
-        this.events.onBulletExpandRequest?.(
-          connectionId,
-          msg['sessionId'],
-          msg['bulletId'],
-          msg['id'],
-        );
-        break;
-      case 'terminal_resize':
-        if (typeof msg['cols'] !== 'number' || typeof msg['rows'] !== 'number') {
-          console.warn('Invalid terminal_resize payload: cols and rows must be numbers');
-          return;
-        }
-        this.events.onTerminalResize?.(connectionId, msg['cols'], msg['rows']);
-        break;
-      case 'kill_session_request':
-        if (typeof msg['sessionId'] !== 'string' || typeof msg['id'] !== 'string') {
-          console.warn('Invalid kill_session_request payload: missing sessionId or id');
-          return;
-        }
-        this.events.onKillSessionRequest?.(connectionId, msg['sessionId'], msg['id']);
-        break;
-      case 'detach_session':
-        if (typeof msg['sessionId'] !== 'string' || typeof msg['id'] !== 'string') {
-          console.warn('Invalid detach_session payload: missing sessionId or id');
-          return;
-        }
-        this.events.onDetachSession?.(connectionId, msg['sessionId'], msg['id']);
-        break;
-      case 'session_history_request': {
-        if (typeof msg['id'] !== 'string') {
-          console.warn('Invalid session_history_request payload: missing id');
-          return;
-        }
-        const limit = typeof msg['limit'] === 'number' ? msg['limit'] : undefined;
-        this.events.onSessionHistoryRequest?.(connectionId, msg['id'], limit);
-        break;
-      }
-      case 'register_device_token':
-        if (typeof msg['token'] !== 'string') {
-          console.warn('Invalid register_device_token payload: missing token');
-          return;
-        }
-        if (msg['platform'] !== 'ios' && msg['platform'] !== 'android') {
-          console.warn('Invalid register_device_token payload: platform must be ios or android');
-          return;
-        }
-        this.events.onRegisterDeviceToken?.(connectionId, msg['token'], msg['platform']);
-        break;
-      case 'unregister_device_token':
-        if (typeof msg['token'] !== 'string') {
-          console.warn('Invalid unregister_device_token payload: missing token');
-          return;
-        }
-        this.events.onUnregisterDeviceToken?.(connectionId, msg['token']);
-        break;
-      case 'ping':
-        // Liveness ping needs no reply over relay.
-        break;
-      case 'hello':
-        // Hello is handled at connection level, not message level
-        break;
-      default:
-        console.warn(`Unknown relay message type: ${msg['type']}`);
-        this.client?.sendRelay(
-          JSON.stringify(
-            createError(
-              'UNSUPPORTED',
-              `Message type '${String(msg['type'])}' is not supported over relay`,
-            ),
-          ),
-        );
+      },
+      session_list_request: (m) => {
+        this.events.onSessionListRequest?.(connectionId, m.id, m.includeExternal ?? false);
+      },
+      transcript_load_request: (m) => {
+        this.events.onTranscriptLoadRequest?.(connectionId, m.sessionId, m.id);
+      },
+      create_session_request: (m) => {
+        this.events.onCreateSessionRequest?.(connectionId, m.directory, m.id);
+      },
+      resume_session_request: (m) => {
+        this.events.onResumeSessionRequest?.(connectionId, m.sessionId, m.id);
+      },
+      bullet_expand_request: (m) => {
+        this.events.onBulletExpandRequest?.(connectionId, m.sessionId, m.bulletId, m.id);
+      },
+      terminal_resize: (m) => {
+        this.events.onTerminalResize?.(connectionId, m.cols, m.rows);
+      },
+      kill_session_request: (m) => {
+        this.events.onKillSessionRequest?.(connectionId, m.sessionId, m.id);
+      },
+      detach_session: (m) => {
+        this.events.onDetachSession?.(connectionId, m.sessionId, m.id);
+      },
+      session_history_request: (m) => {
+        this.events.onSessionHistoryRequest?.(connectionId, m.id, m.limit);
+      },
+      register_device_token: (m) => {
+        this.events.onRegisterDeviceToken?.(connectionId, m.token, m.platform, m.pushPrefs);
+      },
+      unregister_device_token: (m) => {
+        this.events.onUnregisterDeviceToken?.(connectionId, m.token);
+      },
+      // Liveness ping needs no reply over relay.
+      ping: 'ignore',
+      // No relay-side liveness tracking consumes this yet, but it is a real
+      // client-to-daemon type (#899's trap): treat it as the no-op
+      // connection.ts already does rather than rejecting it as UNSUPPORTED,
+      // which is what happened before this map existed (found while
+      // unifying this dispatch; see the PR description).
+      pong: 'ignore',
+      // Client acknowledging our message - just track (no-op), matching
+      // connection.ts. Same trap as `pong`: previously fell through to the
+      // UNSUPPORTED default because relay's switch had no case for it.
+      ack: 'ignore',
+      // Unreachable here in practice -- handleRelayMessage intercepts
+      // auth_response before routeMessage is ever called. Real handler for
+      // defense in depth + exhaustiveness (mirrors connection.ts).
+      auth_response: (m) => this.routeAuthResponse(m),
+    };
+    // #916: NOT a crash-prevention fix like connection.ts's mirror-image
+    // change -- routeMessage's only caller, handleRelayMessage, already
+    // wraps this call in its own try/catch, so a synchronous handler throw
+    // was already contained before this. What that outer catch did NOT do is
+    // reply to the peer (it only logs, mislabeled as "Failed to parse relay
+    // payload"), leaving the client hanging with zero signal. This inner
+    // try/catch fixes the misdiagnosis and adds the reply the issue
+    // requires, matching connection.ts's behavior.
+    let routed: boolean;
+    try {
+      routed = routeClientMessage(msg, handlers);
+    } catch (err) {
+      console.error(`Relay handler for '${msg.type}' failed: ${errorToString(err)}`);
+      this.client?.sendRelay(
+        JSON.stringify(createError('INTERNAL_ERROR', `Handler for '${msg.type}' failed`)),
+      );
+      return;
+    }
+    if (!routed) {
+      console.warn(`Unknown relay message type: ${msg.type}`);
+      this.client?.sendRelay(
+        JSON.stringify(
+          createError('UNSUPPORTED', `Message type '${msg.type}' is not supported over relay`),
+        ),
+      );
     }
   }
 
@@ -512,7 +684,19 @@ export class RelayAdapter implements ConnectionAdapter {
       return false;
     }
 
-    this.client.sendRelay(JSON.stringify(message));
+    // Post-handshake traffic is encrypted end to end (#543); the worker
+    // forwards an opaque string. Refuse to send rather than fall back to
+    // plaintext: this path carries user_input, answers and device tokens, and
+    // a silent downgrade is exactly the bug.
+    const keys = this.sessionKeys;
+    if (!keys) {
+      console.error('Refusing to relay a message before the key exchange completed');
+      return false;
+    }
+    const plaintext = JSON.stringify(message);
+    encryptRelayPayload(keys.send, plaintext)
+      .then((sealed) => this.client?.sendRelay(sealed))
+      .catch((err) => console.error(`Relay encryption failed: ${errorToString(err)}`));
     return true;
   }
 

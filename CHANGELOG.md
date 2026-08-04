@@ -4,6 +4,895 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-08-03
+
+Closes four security holes and rebuilds auto-approve around deterministic
+permission groups, so the local model decides far less and what it does
+decide is bounded by a risk band it cannot argue its way past. Question cards
+that could be created and then never removed by anything but eviction now
+have working exits, and an answer meant for one session can no longer be
+typed into another.
+
+Two of the security fixes are things a 0.7.3 install is exposed to today: a
+website you visit could answer your permission prompts (#535), and a tool
+name in the allow-list approved any Bash command containing it (#536).
+
+### Added
+- **An earlier answer can authorize a later identical operation** (#976, #1017),
+  **off by default**. Both directions are wired, and they ship with different
+  defaults on purpose. The DENY direction is always on: a command the user
+  refused earlier in the session now blocks a model `approve` for the same
+  operation, because a stop rule that fires too rarely is the dangerous
+  direction (ADR 0010). The APPROVE direction — an exact precedent minting
+  `explicit` authorization, the only route above `implicit` under the ADR 0015
+  amendment — is behind `[auto_approve] session_precedent`, default `false`.
+
+  Default-off is not caution for its own sake. Four review rounds each found the
+  same defect: `signatureForOperation` derives from `summarizeToolInput`, whose
+  job is one readable line for a lock-screen card, so it drops whatever will not
+  fit — `Write`'s `content`, `Read`'s `offset`/`limit`, a command's indentation.
+  Every one of those made an approval authorize a strictly larger operation than
+  the one answered. All four are closed and mutation-tested, and
+  `precedentMayAuthorize` now fails closed to a per-tool allowlist. But #1019 is
+  a KNOWN-OPEN instance of the same class — a Bash signature carries no `cwd`,
+  so an approval in one worktree authorizes the same command in another. Turning
+  this on before that lands is a decision the operator should make deliberately.
+
+- **A `scratch` permission group** (#1000). `rm /tmp/scratch.bak` bands `high`,
+  so with the #994 risk ceiling in place it escalated unconditionally and no
+  conversation text could approve it — correct as a fallback, wrong as a policy
+  for a scratch directory. `scratch` matches a Bash command only when EVERY file
+  target it touches provably resolves under `/tmp`, `/private/tmp` (macOS's real
+  path), or `$TMPDIR`, including a leading `cd` into one and output redirection
+  from any otherwise-covered command. Deletion is in the group, which no other
+  group allows. In `balanced` and `trusted`, not in `careful`.
+
+- **`AuthorizationAssessment`, making the provenance ceiling structural** (#1010).
+  ADR 0015's rule — text alone can never establish authorization — was a
+  convention: `capGradeForTextProvenance` existed and callers were expected to
+  remember it. The type now removes the remembering. Private constructor, two
+  factories; `fromText` caps inside the factory so a text-derived grade above
+  `implicit` is unrepresentable rather than merely rejected, and `fromPrecedent`
+  is the only mint for `explicit`. The private field is load-bearing: TypeScript
+  is structural, so an interface with the same fields could be forged by an
+  object literal, while a class with a private member is nominal and cannot be.
+
+- **Risk band and authority presence on every decision** (#1012), instrumentation
+  only. Logged on every decision rather than only escalates, so the denominator
+  is visible — "12% of escalates were eligible" means nothing without knowing how
+  many escalates there were.
+
+### Fixed
+- **A model deny is no longer invisible** (#1015). An auto-approve deny produced
+  no card, no push and no log line, so the operation simply did not happen and
+  the user was never told why. Every deny is now logged unconditionally, on its
+  own path rather than through `log_decisions` — a user who turned decision
+  logging off asked for less noise about routine decisions, not to be kept
+  unaware that an operation was blocked. A deny that matched the model floor
+  also pushes a `kind: 'auto_denied'` notification naming the pattern it hit. Config-sourced denies log but do not push: the user wrote that rule, so
+  it firing is the rule working. The fix covers all three deny paths, including
+  the held-hook verdict that resolves after `push_hold_timeout` (60s by default)
+  — the least visible of the three, since its card disappears through a quiet
+  `content-available` dismiss that carries no title or body.
+
+- **`deny_groups` now matches broadly, as a stop rule must** (#1001).
+  `deny_groups` was answered by `matchGroups`, the same precise function that
+  answers the ALLOW question, so appending anything the group did not recognize
+  defeated the block outright — `mkdir /tmp/x` was denied, `mkdir /tmp/x && ls`
+  was not. `matchGroupsBroad` matches if any segment hits, and deliberately does
+  not apply the allow-side vetoes: those exist to NARROW an allow match, and
+  applying them to a deny would mean a command that looks more dangerous is less
+  likely to be blocked.
+
+- **Subagent cards now have a working exit** (#1005, two changes). Tracing the 8
+  ids in a real stale pending set: 7 of 8 subagent-tagged, every one removed
+  ONLY by LRU eviction, 2.5 to 12.5 hours after being added — which is also why
+  every reconnect re-sent exactly 8. A parked escalation that had already been
+  retired still pushed a card, and retirement had deleted the signature entry
+  every sweep iterates, so nothing could remove it (#1006). And a card that IS
+  legitimately created now participates in render ownership, so a confirmed
+  replacement prompt resolves it (#1008); previously that slot was scoped to
+  hookless cards, while a parked subagent escalation is hook-born but answered
+  `passthrough` at park time (ADR 0004), leaving the render as its only living
+  evidence and tracked by nothing.
+
+- **Shell grammar and assignments peel before matching** (#999). One
+  unrecognized structural keyword vetoed a whole line: per-segment matching
+  requires every segment to be covered, and `for`/`do`/`done` matched nothing,
+  so every loop and conditional escalated no matter how safe its body was.
+  `stripShellGrammar` only ever REMOVES grammar and hands the command inside to
+  the normal matcher; it never decides anything is allowed. Terminators are
+  peeled rather than treated as benign, so `done rm -rf /` re-judges the `rm`.
+  Assignments peel for the same reason — `FOO=bar rm -rf /` really does run
+  `rm`. Assignments were the largest single uncovered cohort in the real corpus,
+  150 of 678.
+
+- **An answer is never typed into a session with no prompt on screen** (#1002).
+  A bare `1`, tapped on a phone for a different session's card, arrived in a
+  live unrelated session as a chat message. #920's guard asks "is THIS prompt on
+  screen?", which a hook-paired card can never satisfy — its id and text are the
+  hook's, not the PTY parse — so the guard was scoped away from that cohort
+  entirely. The presence question ("is ANY prompt on screen?") is answerable for
+  both, and is now asked for both.
+
+### Changed
+- **An auto-approve deny now tells Claude why** (#976). The hook response
+  carried a bare `{behavior:"deny"}`, so Claude learned only that it was
+  refused — leaving it to guess or give up. `PermissionDecision` gains the
+  `{behavior:'deny', message?, interrupt?}` variant the official hooks reference
+  defines, where `message` is *"For `deny` only: tells Claude why the permission
+  was denied"* — model-directed, not terminal UI. With `interrupt` unset the turn
+  continues, so the reason is actionable.
+
+  The message offers two exits, deliberately in this order: use a different
+  approach, or ask the user to authorize explicitly. Leading with "ask the user"
+  would push Claude to interrupt even when a safe equivalent existed. The second
+  exit also closes the #976 loop — the user's answer arrives via
+  `UserPromptSubmit` as genuine EXPLICIT authorization from a channel text cannot
+  forge, which is the only route above `implicit` under the ADR 0015 amendment.
+
+  Deliberately NOT claimed anywhere: that Claude will then ask. The docs
+  guarantee only that it is not stopped and has been told why; what it does next
+  is its own choice, and that is an expectation to verify by observation rather
+  than a contract. The bare `'deny'` string stays valid and equivalent to
+  omitting the message, so no existing caller changes.
+
+### Fixed
+- **Machine-generated text no longer reaches the auto-approve authority channel**
+  (#982). `UserPromptSubmit` is authority's PRIMARY source, and `authority.ts`'s
+  premise was that Claude Code puts only the human's keystrokes there. Measured
+  over a live capture window: of 206 prompts carrying text, **72 (35%) were
+  machine-generated** — 69 `<task-notification>`, 3 `<agent-message>` — and every
+  one passed the provenance denylist, so all 72 were recorded as the human's own
+  turns and rendered into the prompt as "what the human has actually typed".
+
+  That is live influence, not a hypothetical: #954 measured a merely TOPICAL
+  mention flipping `rm -rf ./build` from `deny` to `approve` 5/5, and task
+  notifications routinely carry operation names, paths, and words like
+  "approved" and "completed".
+
+  Fixed with `isNonHumanForAuthority`, a stricter authority-scoped predicate:
+  the existing denylist OR a leading markup tag. The display consumers
+  (`transcript-message-bridge`, `transcript-discovery`) keep the old denylist
+  deliberately — the two paths have opposite failure directions, exactly like
+  allow vs deny matching (ADR 0010). Wrongly dropping text on a display surface
+  hides the user's own message; wrongly accepting it on the authority surface
+  lets a machine speak as the user into a permission decision.
+
+  A shape rule rather than three more denylist entries, because the denylist
+  fails open by design and this was three proofs of that in one sample — the
+  next wrapper Claude Code introduces is undiscoverable by construction, and now
+  fails closed. Measured cost on the same corpus: zero. No human-typed prompt
+  began with `<` at all.
+
+### Fixed
+- **`git stash` and `git stash pop` are covered by `vcs-write`** (#972). Only
+  the explicit `git stash push` spelling was listed, so the bare form — which is
+  git's own default spelling of exactly that — and its `pop` counterpart went to
+  the LLM and escalated, despite both being purely local.
+
+  Listing bare `git stash` necessarily also prefix-matches `git stash drop` and
+  `git stash clear`, which discard stashed work irrecoverably (`clear` discards
+  every stash at once). Those are refused through the existing
+  `WRITE_GROUP_POSITIONAL_VETOES` table that already guards `git checkout .`,
+  because the matcher cannot express "exactly `git stash`" — `matchPrefix`
+  accepts the exact segment OR anything starting with `prefix + ' '`. The veto
+  matches tokenized words, so `git stash "drop"` is refused too; the raw-text
+  version of that check is the bug #960 found in `git checkout "."`.
+- **A model configured by its HuggingFace id is no longer reported missing**
+  (#971). The engine keys inventory rows by nickname (`yooz-instruct-4b`) and
+  carries the repo id alongside in `huggingFaceID`; `config.toml`'s `model`
+  holds the repo id, which is the shipped default. `pullModel` compared `id` to
+  `id` only, so its "already on disk" short-circuit missed a model that was
+  cached AND loaded, dispatched a redundant download, then polled `/v1/state` —
+  which missed for the same reason — for the full 30 minutes before logging
+  "Could not fetch ... auto-approve will escalate until it is present".
+
+  That warning was false: evaluations worked the whole time, because the engine
+  DOES resolve a repo id on `/v1/llm/generate`, just not on the inventory
+  routes. It fired 15 times in one user's log, once per daemon start.
+
+  Matching now goes through `model-identity.ts`'s `findModel` (#843), which
+  already existed for exactly this and which these two call sites had never
+  adopted. `/v1/state` rows carry only `id`, so the configured name is
+  translated to the canonical engine id through the inventory before probing —
+  and re-translated mid-download, since the row appears only once the fetch is
+  under way. An engine predating `huggingFaceID` (pre-0.7.8) still pulls by the
+  configured name exactly as before.
+
+  Verified against the live engine: `pullModel` for the repo id now returns in
+  **45ms** where it previously threw after 1800s.
+- **The auto-approve pill no longer sticks on "evaluating"** (#970). A cancelled
+  eval was the one gate end path that told clients nothing: `onEvalStart` moves
+  the pill to `evaluating`, `onHandled` moves it to `approved`, `onEscalate`
+  relies on the question path's `waiting` — and `onCancelled` broadcast nothing
+  at all. It self-healed only when a later `Stop`/`SessionEnd` `idle` or a
+  `PreToolUse` happened to follow, and none arrives when the eval is cancelled
+  at end-of-turn or during a disconnect, which is exactly when it was seen stuck
+  in the field.
+
+  The terminal statusline never had this bug: its `inFlight` count is decremented
+  by every end path, which is why `status-writer.ts` can claim the cue "can never
+  get stuck". The client cue had no equivalent property, and now does — asserted
+  by a test enumerated over the verdicts, so a future end path that forgets the
+  terminal half fails there instead of silently joining the hole.
+
+  The correction broadcasts the session's CURRENT status from the registry rather
+  than a chosen constant. Nothing was approved, denied, or escalated, so any fixed
+  value would be a guess, and a wrong status is the same class of bug as a stuck one.
+
+  Also pins the routing fact the fix rests on: a subagent eval never shows the pill
+  and cannot reach this cue, because `arbitrateParkedRender` sends a `cancelled`
+  verdict to `escalateRenderedParked()` rather than to `onCancelled`. An earlier
+  draft added an `isSubagent` guard here; it was dead code (always `false`), and
+  the test written for it passed with the guard deleted. Both were dropped in
+  favor of asserting the real routing.
+- **The auto-approve pill's held-hook (Model B / Part B, #573) end paths finish
+  the #970 totality pass.** The previous fix covered the primary eval loop only;
+  a HELD escalation's own end paths are a separate set, enumerated fresh against
+  the live code rather than trusted from the prior pass: a Part-B late `allow`/
+  `deny` verdict (`reconcileLateVerdict` -> `resolveHeld`) turned out to be
+  ALREADY total — `resolveHeld` calls `markHandled` unconditionally, so it
+  already broadcast `approved`. The genuine gap was Part-B's `cancelled` late
+  verdict (`reconcileLateVerdict` -> `releaseHeld`), which calls neither
+  `markHandled` nor any cue and left the pill on a stale `waiting` with nothing
+  to correct it once the session moved on to something else. A new `onHeldCancelled`
+  cue closes it, reusing the same `broadcastCurrentStatus()` the `cancelled` fix
+  above introduced rather than guessing a value.
+
+  Hold-timeout fail-open and the Stop/SessionEnd/external-resolution teardown
+  paths were checked and deliberately left alone: each already has its own
+  status coverage (the hold's own `waiting`, or the driving hook event's own
+  status update in the same synchronous handler) — adding a broadcast there
+  would risk trading a stuck pill for a wrong one, the same failure mode
+  ADR 0020 warns against.
+### Added
+- **Separate in-app toggles for question and turn-complete notifications**
+  (#968). Settings now has "Question alerts" and "Turn complete" instead of one
+  "Notifications" switch — which was written by the settings panel and read by
+  nothing, and could not have worked anyway: APNS pushes travel daemon →
+  signaling Worker → APNS and never consult the client. The preference now
+  rides up on `register_device_token` (idempotent and keyed by token, so
+  flipping a toggle is just a re-register) and the daemon filters its per-token
+  fan-out, so muting is enforced by the only party actually in the push path.
+  Per device, not per machine: two phones can want different things.
+- **An explicit `kind` on every push** (`question` | `turn_complete` |
+  `subagent_alert` | `dismiss`), forwarded into the APNS payload. The classes
+  were previously told apart by a NEGATIVE test ("no `questionId`, no
+  `category`") that could not distinguish a turn-complete push from a subagent
+  alert at all — on the wire both are exactly `{token, title, body}`, and the
+  `": turn complete"` title suffix is display text, not a protocol field.
+  Strictly additive: every field that previously carried routing information is
+  sent unchanged, so an un-redeployed Worker or an older client behaves as before.
+
+  Two classes are deliberately NOT mutable. `dismiss` is the quiet
+  `content-available` push that CLEARS a resolved card; suppressing it would
+  strand that card on the lock screen of the very device that asked for less
+  noise. `subagent_alert` already has a user-facing control — it fires only on
+  the patterns in `auto_approve.subagent_alert`. `notifications.on_turn_complete`
+  in `config.toml` remains the machine-wide master switch and still wins.
+
+  The load-bearing case, and the one with its own test: when every device has
+  muted questions and no client is attached, the delivery outcome is
+  `no_channel`, not `pushed`. `awaitDelivery` decides whether a HELD hook keeps
+  Claude blocked, so reporting delivery for a fan-out of zero would block the
+  hook on a card that will never appear anywhere. Malformed preferences fail
+  toward delivering, for the same reason — verified by mutation (a coercing
+  implementation reads `{questions: 0}` as "mute" and the test goes red).
+
+### Changed
+- **The auto-approve prompt's default guidelines now follow `level`** (#966).
+  `level` selects which groups are approved deterministically, but whatever no
+  group covers still reaches the LLM — which was reading fixed text telling it
+  to escalate exactly what the chosen level said was routine. The same policy
+  then gave different answers depending on whether a curated prefix happened to
+  exist, which is not a distinction a user makes or can predict. `balanced`
+  moves file writes into the prompt's APPROVE list; `trusted` also moves local
+  git mutation. `strict` is **byte-identical** to the prompt that shipped
+  before levels existed, asserted against a baseline captured from `develop`'s
+  own `buildPrompt` rather than hand-transcribed. Fixed at every level, and
+  each asserted rather than described: the DENY FLOOR, the response format,
+  deletion, remote mutation (including `git push`), package install, unfamiliar
+  commands, and design/direction questions. A level widens what is routine,
+  never what is dangerous — two of the pre-existing escalate lines bundle an
+  operation a level approves with one it must never approve (the git line names
+  `git push` beside `git add`; the file line names `deletion` beside creation),
+  so a level REPLACES those lines with narrower ones instead of removing them.
+
+### Added
+- **`[auto_approve] level` — a strictness preset over the permission groups**
+  (#963). `strict` (the default) is exactly today's behavior; `balanced` adds
+  `fs-write`; `trusted` adds `vcs-write`. This is where #956's premise lands:
+  measured over 796 real evaluations, the 244 deterministic group approvals
+  were honored exactly every time at 0ms, while **35 escalations explicitly
+  cited the user's own `instructions` and escalated anyway** and 57 were plain
+  writes against a config whose prose approved writes outright. Prose to a 4B
+  model is asked; group membership is enforced. `instructions` keeps working
+  and keeps its prompt placement, but stops being load-bearing: it becomes the
+  exception layer for project-specific carve-outs the groups cannot encode.
+  An explicit `approve_groups` OVERRIDES the preset rather than merging with
+  it — a union could only widen, silently re-widening a list a user had
+  deliberately narrowed — and the daemon logs which won, so a config written
+  before levels existed keeps behaving exactly as it always has. `remi config`
+  prints the resolved group list alongside the level, so the effective policy
+  is inspectable without reading source. **The default is `strict`, not
+  `trusted`:** phase 2 needed four adversarial review rounds to close eleven
+  bypasses in the write groups, and defaulting them on in the same change that
+  introduces the switch would bundle "does the mechanism work" with "is this
+  policy right". Flipping the default is a one-line change and its own PR.
+
+- **`UserPromptSubmit` is now a registered hook, feeding a new auto-approve
+  authority summary** (#893, Q9). `REMI_REGISTERED_HOOK_EVENTS` grows from 14
+  to 15; the listener is a single array push into a per-session
+  `AuthorityStore` (`auto-approve/authority.ts`), and the event gets its own
+  short 1s timeout (`hook-config-manager.ts`'s `hookTimeoutFor`, now a small
+  per-event table instead of one flat default) rather than the plain 5s
+  fail-fast budget, since its handler never has anything to wait on. The
+  human's own typed turns are now threaded into the auto-approve LLM prompt
+  as a delimited "CONVERSATION CONTEXT" block, distinct from and weaker than
+  the existing USER GUIDANCE (config `instructions`) block: it is framed as
+  reported history, not an instruction, and can only ever LOWER escalation
+  for an operation already low/moderate risk. `UserPromptSubmit`'s `prompt`
+  field is the PRIMARY source (direct from Claude Code, no transcript
+  parsing); a filtered transcript read is the FALLBACK for a resumed
+  session's prior turns, which the new registration never saw fire for.
+  Measured across real transcripts, a `role: "user"` entry is not reliably
+  human-typed: 5,518 `tool_result` envelopes; 703 genuine typed turns; 88
+  plain-string entries carrying a top-level `isMeta: true` flag that are
+  NOT human-typed (47 cross-session `<agent-message from="...">` deliveries
+  — a SUBAGENT's own authored text in a "user"-role string, the most direct
+  injection vector found, since filtering on role+shape alone would let a
+  subagent write its own authority; 35 `<local-command-caveat>` notices; 5
+  scheduled/heartbeat prompts; 2 `<system-reminder>`s); and 36/34 plain
+  strings wrapped `<command-name>`/`<local-command-stdout>` that carry NO
+  `isMeta` flag at all. Two different mechanisms handle this: `isMeta ===
+  true` is checked first and excludes the whole 88-entry cohort
+  structurally (`transcript/types.ts` now types the field); the
+  `<command-name>`/`<local-command-stdout>` residual has no structural
+  discriminator and is caught only by a textual-prefix denylist, which is
+  why the hook stays the PRIMARY source and this filter only guards the
+  fallback path — see `authority.ts`'s module doc for the full breakdown,
+  and for why an original claim that `<local-command-stdout>` is reachable
+  specifically via a `!`-prefixed bash command was corrected to
+  unconfirmed (the only samples inspected were slash-command output; #938
+  tracks getting a live capture to settle it).
+  **The primary source is filtered too, defensively**: the design premise
+  that `UserPromptSubmit.prompt` only ever carries the human's own
+  keystrokes is UNVERIFIED (also #938) — the same `!`-bash-mode question
+  above. The `UserPromptSubmit` listener therefore also runs
+  `isWrappedNonHumanText` over `input.prompt` before recording it, so a
+  wrapped-string failure of that premise is caught on the primary path too,
+  not only the fallback. This is defense in depth, not proof the premise
+  holds; the code comments say so explicitly.
+  **Trust boundary**: `enforceAuthorityBoundary` is a code-level backstop,
+  independent of the LLM's own reasoning, that downgrades an
+  authority-influenced `approve` verdict to `escalate` whenever the
+  operation matches a hardcoded catastrophic pattern (mirroring the
+  prompt's DENY FLOOR) — authority text can never approve `rm -rf /`,
+  `sudo rm`, `curl|sh`, or `chmod 777`, regardless of what the model
+  decided or why.
+  **Side effect on turn-complete notifications** (`#914`, `turn-timer.ts`):
+  `TurnTimer` anchors a turn's elapsed-time measurement on the first hook
+  event `onAnyEvent` sees for that `prompt_id`. `UserPromptSubmit` fires
+  before every other registered event, so it is now that anchor instead of
+  an approximation from the first tool-use/permission event — `elapsedMs`
+  is now accurate rather than a slight underestimate. A turn whose real
+  duration was already at or above `turn_complete_min_seconds` (default 60s)
+  but whose OLD (underestimated) measurement fell just short will now
+  correctly cross the threshold and notify, where it previously did not.
+  This is an intended accuracy fix, not a regression, but it is
+  user-visible: some sessions will see more turn-complete pushes for turns
+  near the threshold.
+
+- **`PermissionDenied` and `Elicitation`/`ElicitationResult` are now
+  registered hooks, observe-only** (#889, Q4). A classifier-denied permission
+  fires no tool call, so nothing previously proved a still-open escalation
+  was resolved; `PermissionDenied` now routes into the same
+  `AutoApproveGate.cancelExternallyResolved` funnel PreToolUse/PostToolUse
+  use, matching on `tool_name` + `tool_input` + `agentId`. (It does carry a
+  `tool_use_id`, unlike `PermissionRequest` — but the escalation it would match
+  was registered from a `PermissionRequest`, which never sends one, so the
+  exact-id branch is unreachable from this path today and the id is
+  forward-compatible only.) An MCP `Elicitation` dialog previously
+  arrived only as a PTY orphan (the dedicated hook was never registered, and
+  the `Notification(elicitation_dialog)` variant that did fire was logged
+  and ignored); it now builds an answerable, free-text `Question` card
+  instead of fabricating Accept/Decline options nobody has verified against
+  a real dialog, and `ElicitationResult` resolves that exact card by
+  `elicitation_id`. Neither hook response encodes a decision —
+  `REMI_REGISTERED_HOOK_EVENTS` grows from 11 to 14, each new registration
+  measured at well under 1ms of added roundtrip latency locally.
+  Review fix before merge: an `Elicitation` re-fired for an `elicitation_id`
+  whose card was still open used to repoint the correlation map at the repeat,
+  which `QuestionDedup` had already suppressed (same text, same zero options,
+  so never "richer") — so `ElicitationResult` resolved an id that was never
+  registered and the card the user could actually see was left with no
+  automated way to clear. The map now refuses to displace a still-live card
+  and never tracks an id that did not reach `sessionRegistry`, the same
+  confirmed-delivery gate #888 landed. Review also added the two missing
+  guards' tests plus one proving `PermissionDenied` resolves only its own
+  agent when two escalations share a signature, and one proving Q5's residual
+  unpaired-notification path still surfaces a card; and corrected
+  `docs/claude-code-hook-contract.md`, which still listed all three
+  newly-registered events as unregistered.
+
+### Fixed
+- **Conversation text can no longer decide a permission** (#954). Q9 (#893)
+  added a CONVERSATION CONTEXT block to the auto-approve prompt with a
+  constraint stated in three places -- it "can NEVER turn an operation that is
+  remote, destructive, unfamiliar, or irreversible into an approve". Measured
+  against the live 4B with `rm -rf ./build` held constant and only the block
+  varying: no authority gave `deny` 5 runs of 5, and **"please clean out the
+  build directory, it is stale" gave `approve` 5 of 5**. Unrelated chatter
+  stayed `deny`, so the trigger was topical MENTION, not authorization -- a
+  casual sentence moved the verdict two steps, skipping `escalate` entirely.
+  `enforceAuthorityBoundary` caught none of it: it checks eight catastrophic
+  substrings and `rm -rf ./build` is not one, and widening that list does not
+  scale to "remote, destructive, unfamiliar, or irreversible". The rule is now
+  enforced as a COUNTERFACTUAL instead of a pattern: when a risky-looking
+  operation is approved with an authority block present, the same evaluation
+  is re-run with the block removed, and a differing verdict means the
+  conversation decided the outcome, which escalates. Authority may still
+  resolve ambiguity -- an approve that survives without it stands untouched --
+  so a user's `instructions` are unaffected. The second call is gated on all
+  three conditions (risky shape, authority present, verdict was approve), a
+  set close to empty in 796 measured evaluations, so steady-state latency is
+  unchanged. A counterfactual that cannot run escalates rather than leaving
+  the approve standing.
+
+- **Quoted flags no longer slip past the permission-group vetoes** (#959). The
+  curated group matcher tested flags and paths against the RAW command text,
+  but the shell removes quotes and escapes before the program ever sees them,
+  so one embedded quote defeated the check. This was live on the groups that
+  ship ENABLED BY DEFAULT: `git diff --"output"=f` (writes a file),
+  `biome check --"write"` (mutates source) and `sed -n -"i" x` (in-place edit)
+  were all approved with no LLM call and no question card, while their
+  identical unquoted forms were correctly refused. A new `shellWords()`
+  (`auto-approve/shell-safety.ts`) performs real quote and escape removal --
+  including `$'...'` and `$"..."`, and the backslash form `--o\utput` that
+  needs no quotes at all -- and every veto now runs against tokenized words.
+  The read-group check consults the reconstructed word list IN ADDITION to the
+  raw text, so it can only ever add a refusal, never remove one; no command
+  that was previously refused becomes allowed. Found in the third adversarial
+  review round on #960, which also confirmed the same flaw on the new
+  write-side groups before they shipped.
+- **An auto-approve `deny` that matches no DENY FLOOR pattern is now escalated
+  to you instead of silently blocking the command** (#953). `prompt-builder.ts`
+  has always said "DENY IS RARE: deny ONLY operations in the DENY FLOOR... For
+  anything else you would not approve, ESCALATE, never deny. Escalating lets
+  the user answer; denying blocks them" — but nothing enforced it. The only
+  code-level guard in the module, `enforceAuthorityBoundary`, moves `approve ->
+  escalate` and explicitly never touches `deny`, and the config `deny` list
+  defaults to empty, so the model's verdict was taken at face value. That
+  mattered because a deny is invisible: `AutoApproveGate` returns `'deny'` to
+  the hook and pushes no question card, so you were never asked and never
+  learned the operation had been attempted. Measured against a live engine with
+  the shipped 4B model on 16 cases drawn from the prompt's own ESCALATE list,
+  **10 of 12 escalate-expected operations returned `deny`** — `rm -rf ./build`,
+  `git push --force origin main`, `DROP TABLE`, `ssh`, `curl -X DELETE`,
+  `find -delete` — while all four controls were correct, so this was the
+  escalate/deny boundary specifically rather than a broken prompt or model. The
+  model was not confused about the rule: on `rm -rf ./build` it reasoned "while
+  not in the strict DENY FLOOR" and denied anyway. A new
+  `auto-approve/deny-floor.ts` now owns `CATASTROPHIC_PATTERNS` (moved from
+  `authority.ts`, which re-exports the matcher) plus `enforceDenyFloor`, which
+  mirrors the existing guard's shape — it runs after the model decides, is
+  blind to its reasoning, and only ever moves `deny -> escalate` when the
+  operation matches no catastrophic pattern. It never touches `approve` and
+  never produces a `deny`. Config `deny`/`deny_groups` matches are unaffected:
+  they short-circuit before the LLM call, so this applies to model-produced
+  denies only. Note the list is now asymmetric to widen — an added entry makes
+  `enforceAuthorityBoundary` stricter but `enforceDenyFloor` looser — and that
+  the exfiltration bullet is deliberately absent from it, so a model-denied
+  exfiltration attempt now escalates rather than denies. Same root cause as
+  #954: routing rules stated only in the prompt are not enforced.
+- **A full teardown (`SessionEnd`, `remi unstick`) now resolves every
+  still-open escalation instead of silently dropping its bookkeeping**
+  (#948). `AutoApproveGate.cancelStale`'s mainOnly `Stop` sweep already
+  routed each survivor through `resolveSupersededQuestion` so
+  `question_resolved` + the APNS dismiss + the live-sessions mirror all
+  fire — its own comment named this explicitly as "not a silent
+  bookkeeping-only delete." The non-mainOnly branch (`SessionEnd`) and the
+  separate `forceRelease` (`remi unstick`) did exactly that anyway: a bare
+  `openQuestionSignatures.clear()` + `parkedInputs.clear()`. A PASSTHROUGH
+  escalation — multi-choice/design, e.g. `AskUserQuestion` or
+  `ExitPlanMode`, tracked only in `openQuestionSignatures` (never held) —
+  had its bookkeeping dropped while its card stayed in the store with
+  nothing left to resolve it. Reproduced: firing a `SessionEnd` with no
+  intervening `Stop` (a session killed or dropped mid-prompt) left the
+  card count at 1 before and 1 after. Every captured corpus session that
+  reaches `SessionEnd` also has an earlier `Stop`, which already clears
+  the card via the mainOnly sweep — the reason #949's replay never caught
+  it.
+
+  Both teardown paths now share a new `resolveAllOpenQuestions`, which
+  resolves EVERY survivor through the same funnel — deliberately, unlike
+  the mainOnly sweep, WITHOUT its `isSubagent` skip: that skip exists
+  because a `Stop` means only the lead agent finished while a teammate may
+  still be mid-turn, and a full teardown has no such survivor left to
+  protect (`cancelStale`'s own docstring already said so). `parkedInputs`
+  needed no separate clear call: every parked entry is registered under
+  the same question id as its `openQuestionSignatures` counterpart
+  (`parkSubagentForPTY` sets both together), and `releaseHeld` — reached
+  by every `resolveSupersededQuestion` call — already deletes both maps'
+  entries for a resolved qid unconditionally, before anything downstream
+  can throw, so the loop retires every parked entry as a side effect of
+  retiring its signature. Checked the neighboring
+  `evalIdByQuestion.clear()` in `forceRelease` for the same defect:
+  unaffected — that map is unrelated GPU-eval-cancellation bookkeeping
+  with no card or notification duty of its own, and `forceRelease`'s
+  subsequent untargeted `service.cancel(reason)` already aborts whatever
+  eval is running regardless of which question it belonged to.
+
+- **Every opt-in debug sink now stamps provenance on each record, so a
+  synthetic test write is distinguishable from a real one by data** (#934).
+  `REMI_HOOK_DEBUG=1` (`hook-diag.jsonl`) and `REMI_QUESTION_TRACE=1`
+  (`question-trace.jsonl`) are both keyed on an env var the test suite runs
+  under too, and both write to the SAME fixed `~/.remi/*` path a real
+  session uses — `HookServer.handleRequest` cannot tell a test's HTTP POST
+  from Claude Code's, and `QuestionStore`/`SessionRegistry` cannot tell a
+  test calling `add()`/`remove()` directly from a real hook-driven mutation.
+  93+ records in the owner's real `hook-diag.jsonl` had been contaminated
+  with fabricated rows (including `SessionStart`/`UserPromptSubmit`, both
+  contradicting confirmed hook-registration behavior), and 965 of 3,582
+  lines in `question-trace.jsonl` carried the test suite's hardcoded
+  question id. `REMI_PTY_CAPTURE` (`pty/pty-capture.ts`) turned out to be a
+  third sink with the same class of problem — its destination is the env
+  var's own value rather than a fixed path, but any test that spawns a real
+  `PtySession` while a developer's shell has it set inherits the same
+  contamination. All three now call a shared `debugProvenance()`
+  (`src/debug/provenance.ts`) and stamp it on every record — `_provenance`
+  for `hook-diag.jsonl`, `provenance` for `question-trace.jsonl`, a bare
+  third token for `pty-capture`'s line-oriented (not JSONL) format. This
+  stamps rather than gates: each sink's own env var still controls whether it
+  writes at all, unconditionally.
+  **Caught in review before merge:** the first version of `debugProvenance()`
+  read `NODE_ENV === 'test'`, on the claim that `bun test` sets
+  `NODE_ENV=test` for the whole process — true only when `NODE_ENV` is UNSET
+  beforehand. A developer whose shell already exported `NODE_ENV=production`
+  (or `development`, a shared `.envrc`, a container default) got a record
+  stamped `_provenance: 'live'` for a genuinely synthetic write, silently
+  RECREATING #934 while the field made it look solved — worse than no field
+  at all, since the corpus builder trusts `'live'` outright. Fixed by having
+  the test harness positively mark itself instead of inferring test-ness from
+  any ambient variable: `tests/debug/test-harness-marker.ts`, loaded via two
+  `bunfig.toml` files' (repo root and `packages/daemon`, since Bun does not
+  search parent directories for the config) `[test].preload`, sets
+  `REMI_TEST_HARNESS` unconditionally the moment `bun test` starts, before
+  any test file runs — a default Bun itself never overrides is not the same
+  as a variable this codebase always sets itself. `debugProvenance()` reads
+  that marker with a plain truthiness check (not `=== '1'`) so the design
+  fails toward `'test'`, never `'live'`, on any ambiguous value: a lost real
+  record is recoverable by re-capturing, an admitted fabricated one is not.
+  Gating the write itself on the marker was still rejected for the same
+  reason gating on `NODE_ENV` was — a developer running the daemon and the
+  test suite from the same checkout would silently lose real diagnostic
+  capture the moment the marker mechanism had any bug of its own, with no
+  signal anything was suppressed. The corpus builder (`build-hook-corpus.ts`)
+  filters primarily on `_provenance`; the old `/tmp`-rooted-path heuristic
+  (`looksLikeTestFixture`) survives only as a fallback for records captured
+  before this field existed, not as the mechanism. Also added: the
+  question-trace schema now records `Question.source` on every 'remove'
+  event (`questionSource`) — cheap, since the removed `Question` object was
+  already in scope at every call site — closing part of the gap #920 found
+  where a stray PTY write could not be traced back to the card that produced
+  it. The answer payload itself was NOT added and is deliberately untracked
+  (no issue filed): `answer` **is** in scope one layer up, at all three
+  `SessionRegistry.removeQuestion` call sites inside `input-events.ts`'s
+  `handleAnswer`, but every OTHER removal call site repo-wide is hook- or
+  system-driven and genuinely answerless, so threading an optional `answer`
+  through `SessionRegistry.removeQuestion`'s signature would populate it at
+  only a small minority of call sites — judged not cheap enough to do well in
+  this change, versus `questionSource`, which the removed `Question` object
+  already carries at essentially every call site.
+
+- **The redundant `Notification(permission_prompt)` question synthesis is
+  deleted** (#890, Q5). It fed a `QuestionPresenceTracker` stash that only
+  ever mattered if it arrived with no paired `PermissionRequest` — a richer
+  paired `PermissionRequest` (the common case) always superseded it, and the
+  stash itself is never pushed on its own. A capture corpus (4244 events / 5
+  sessions / one working day) found 68/68 `permission_prompt` notifications
+  paired by `prompt_id`, 0 unpaired. The event still flips status to
+  `'waiting'`; in the theoretical unpaired case, a still-rendering prompt
+  falls to the same orphan-PTY fallback every other hook-less prompt already
+  uses, not to silence.
+
+- **`QuestionStore` is now the single owner of a session's pending-question
+  state, and a hook-less question can resolve from a screen render alone**
+  (#888). Measured from a real capture (#920): of 29 daily source-less
+  questions, 12 were never removed (one still pending 2h51m later) because
+  every removal path (`AutoApproveGate.cancelExternallyResolved`, the
+  Stop/SubagentStop sweeps) matches a tool signature carried by a hook event
+  — and a genuinely hook-less prompt (an agent-team native prompt, a bare
+  subprocess `(y/n)`) has no hook and so no signature. Its only exits were
+  the user answering it or the `MAX_PENDING_QUESTIONS` LRU cap.
+  `question-parser.ts` now sets `source: 'pty'` on every PTY-parsed question
+  (documented since #574 but never implemented, which is why this cohort was
+  invisible), and `QuestionPresenceTracker` gained a render-resolution
+  transition: when a CONFIRMED replacement push supersedes a hook-less
+  question, the original is removed from the store — the screen disappearing
+  IS its resolution evidence, since nothing else exists.
+
+  A first version of this compared the PTY-parsed render's id alone and also
+  treated a status-leaves-`'waiting'` transition or a session restart as
+  resolution evidence. Review found both unsound and reachable in
+  production: the PTY parser mints a fresh id on every parse even for a
+  prompt that merely redraws (#486), and `cli.ts` calls
+  `tracker.onStatusChange` unconditionally while gating the paired
+  `QuestionDedup` reset behind `!hookServer` — so a PTY-text-parsed status
+  false positive (confidence >= 0.5, not certainty) could resolve a question
+  whose "replacement" render was then silently deduped, telling the client
+  a still-live prompt was cancelled. Fixed: resolution now fires ONLY once a
+  new dep, `isQuestionLive`, confirms the replacement actually landed in
+  the store (not suppressed by dedup); the status and restart triggers were
+  dropped entirely rather than patched, since neither can be trusted as
+  evidence for one specific question (a real restart already resolves
+  everything via the pre-existing `resolveAndClearQuestions`). A before/
+  after repro on the real pipeline (20 hook-paired cycles + 15 hook-less
+  renders, each a genuinely distinct render) went from 8 of 35 added never
+  removed (7 via LRU eviction) to 0 of 35; a separate integration suite
+  drives the real `MessageAPI`/`QuestionDedup` and reproduces the
+  flap-then-redraw chain directly, pinning that a deduped replacement no
+  longer swallows the original.
+
+  `SessionRegistry`'s `addQuestion`/`removeQuestion`/`clearQuestions`/
+  `getQuestion` are now thin adapters over a new `QuestionStore`
+  (`packages/daemon/src/session/question-store.ts`), which is the only code
+  that mutates the pending-question map; `ManagedSession.currentQuestions`
+  is a live, read-only view over it. Review also found and fixed a second,
+  related bug: `QuestionPresenceTracker`'s hook/PTY merge silently took the
+  PTY parse's `source` even for a hook-paired (parked-then-rendered
+  subagent permission) question, which meant `pending-question-label.ts`'s
+  `source === 'permission_request'` branch never fired for that class —
+  the macOS menu-bar app and hub census showed the full raw prompt text
+  instead of the intended short "Permission: `<tool>`" label. The hook
+  record's own `source` now wins, matching the existing text/options/
+  agentId precedent.
+
+  The gate's own per-question bookkeeping (`AutoApproveGate`'s
+  `pendingHolds`/`openQuestionSignatures`/`parkedInputs`/`evalIdByQuestion`/
+  `confirmedDeliveries`, `QuestionPresenceTracker`'s `pending`/`awaitingPTY`/
+  `bufferedDuringEval`/`armedOrphanQuestion`) is intentionally left as a
+  follow-up: each is metadata about resolving a question the store already
+  owns, not a second opinion on whether it is pending, and collapsing it
+  into one state machine safely needs the same trace-driven verification
+  each earned individually (#751/#763/#767/#814). The PTY-as-arbiter policy
+  (ADR 0004) is unchanged — only bookkeeping moved, never a push/arbitration
+  decision.
+
+- **Answering a `source: 'pty'` card whose on-screen prompt is gone no
+  longer injects into the live PTY** (#920). `#888`'s own reclassification
+  found the residual leak this issue tracks was never a memory problem: a
+  `source: 'pty'` card can sit in the store, still "active," long after its
+  prompt scrolled off screen, and the ONLY gate on the answer path was
+  whether the question was still registered — never whether its prompt was
+  still on screen. Answering one submitted the resolved option value (or
+  free text verbatim) into whatever Claude was doing at that moment; this
+  reproduced live twice in one working session (two bare `1`s landing as
+  apparent user input, minutes apart, with no prompt pending). Had either
+  landed while a real numbered prompt was up, it would have silently
+  selected option 1 on a question the user never saw. `input-events.ts`'s
+  answer handler now calls `QuestionPresenceTracker.isPromptCurrent` — the
+  same gate `AutoApproveGate.answerRenderedParked` already uses immediately
+  before its own PTY write — right before the injection, scoped to
+  `source: 'pty'` cards only (a hook-paired question's merged id/text are
+  the hook's, never the raw PTY parse, so a blanket check would misfire on
+  that cohort). A refused answer clears the stale card (`question_resolved`
+  fires so every client's view updates) and returns the existing
+  `STALE_ANSWER` error the client already handles, rather than failing
+  silently. No tracker wired for a session fails toward refusing, not
+  injecting. Free-form PTY input (#795) and held-hook answers (never
+  PTY-submitted) are untouched. **Does not cover `source: 'elicitation'`
+  cards**, which take the same unguarded `submitInput` path with
+  `allowsFreeText: true` — an arbitrary-free-text variant of this same
+  hazard, worse than a stray digit. `isPromptCurrent` cannot be widened to
+  catch it: elicitation ids/text are hook-minted and never observed by the
+  PTY tracker, so the check would report "not current" for every
+  elicitation card and refuse them all. Needs a different mechanism; filed
+  separately as #940.
+
+- **A question is now identified by one id for its whole prompt cycle**
+  (#887). Up to three ids used to exist for a single subagent permission: the
+  hook bridge minted one at `PermissionRequest`, the PTY parser minted a
+  fresh one on every render, and the gate had to re-key its own bookkeeping
+  (`openQuestionSignatures`) to follow whichever one the pushed card ended up
+  under. Missing that re-key — which, verified while fixing this, happened on
+  every parked-subagent-permission cycle in a session with no auto-approve
+  configured, since the re-key only ran from inside the auto-approve
+  arbiter — left the gate tracking a signature under an id no pushed card
+  ever carried, so a later PreToolUse/PostToolUse/SubagentStop match could
+  never find and resolve it. `QuestionPresenceTracker.consumeAndMerge` now
+  ADOPTS the hook's id when pairing a PTY render with a parked hook record
+  instead of minting a new one from the PTY parse; a genuinely hook-less
+  prompt (an agent-team native prompt, a subprocess `(y/n)`) still gets its
+  id from the PTY parse, since there is no hook to mint one first. The gate's
+  `rekeySignatureToRendered` is deleted outright — nothing replaces it, since
+  the id it used to chase never moves now.
+
+  `Question` gained an optional `promptId` (Claude Code's own `prompt_id`,
+  present on every hook event since 2.1.196), carried from the hook onto a
+  hook-born question and through the PTY-render merge, as a same-turn
+  correlation key distinct from the question's own `id`. The opt-in
+  question-lifecycle trace (`REMI_QUESTION_TRACE=1`) now records it plus a
+  `callSite` naming which internal function emitted each add/remove, closing
+  the gap where a double-removal in a capture showed THAT it happened but not
+  WHICH code path did it.
+
+### Security
+- **Lock-screen answers are sealed to the daemon** (#875). The signaling
+  Worker's `/answer/{code}` route accepted `sessionId`, `questionId` and the
+  answer text as plain JSON, and the client had a matching function to send
+  them. The phone now seals the whole body, `auth` block included, to a
+  long-lived P-256 key the daemon publishes in its auth challenge and the phone
+  pins beside the fingerprint. Ephemeral-static ECDH, so it costs one request
+  and no round trip, which is all a suspended phone gets.
+
+  The Worker sees an opaque envelope and the room code it routes by. The daemon
+  opens it, then verifies the signature that was inside, so sealing hides who
+  answered from the Worker without excusing the phone from proving it.
+
+  A phone with no pinned key **refuses to send** rather than falling back to
+  plaintext; reconnecting once re-pins it. A daemon that cannot open a sealed
+  answer drops it rather than acting on a partial one.
+
+  Scope, stated plainly: **this path has no caller today.**
+  `relayAnswerViaSignaling` has zero callers and the wired lock-screen path
+  (`relayAnswerDirect`, `App.tsx:1929`) POSTs straight to the daemon with no
+  Worker involved. So this seals a dormant route before #612 wires it, rather
+  than stopping traffic in flight. Doing it in this order means whoever
+  implements #612 inherits an encrypted path instead of adding a plaintext one.
+
+  No forward secrecy on the daemon's side: the static key opens every answer
+  ever sealed to it. A sleeping phone has no round trip to negotiate a fresh
+  key, and rotating invalidates every pin until each phone reconnects. Recorded
+  in `sealed-answer.ts` rather than left to be discovered.
+
+### Security
+- **The relay transport is encrypted end to end** (#543). The signaling Worker
+  was built to relay a *handshake*; WebRTC was meant to carry the session and
+  was never implemented, so the relay became the data path and
+  `RelayAdapter.routeMessage` carries every protocol message, `user_input` and
+  answers included, as plain JSON the Worker could read.
+
+  The daemon now runs a signed ephemeral ECDH on top of the existing Ed25519
+  auth handshake, so it costs no extra round trip, and encrypts every payload
+  after it with AES-256-GCM. Each side signs its ephemeral key with its identity
+  key, so a Worker that substituted one would be caught rather than trusted, and
+  the session challenge is bound into both signatures so a recorded handshake
+  cannot be replayed. Keys are per-connection and discarded on reset.
+
+  A peer that cannot do the exchange is **refused**, not served in plaintext,
+  and a payload that fails authenticated decryption drops the peer instead of
+  being ignored. Both are deliberate: the failure this closes is precisely a
+  silent fall back to the clear.
+
+  Scope worth stating honestly: no shipped client speaks the relay peer protocol
+  today, so this closes the path before anything drives it rather than stopping
+  a live leak. The leak that IS live is the lock-screen answer route
+  (`POST /answer/{code}`), which sends `sessionId`, `questionId` and the answer
+  text to the Worker in the clear. That is a different path with no handshake to
+  key from, and it is tracked separately.
+
+### Removed
+- **`packages/web/src/lib/signaling-client.ts`** (#543), 201 lines with zero
+  references anywhere in the tree. It was the client half of the relay and was
+  never wired up. Deleting it means nobody completes an unencrypted relay peer
+  by accident; a future one starts from the encrypted handshake.
+
+### Added
+- **Turn-complete push notification** (#914). `Stop.last_assistant_message` is
+  present on the already-registered `Stop` hook (100% of captured events,
+  #891) but was only ever logged, never surfaced. remi now pushes
+  "`<session>`: turn complete" with the actual last message when a turn runs
+  long — gated on DURATION, not on every `Stop`, because `Stop` fires on every
+  turn including two-second interactive ones and a push on all of them is
+  worse than nothing. Duration is measured from `prompt_id` (present on every
+  hook's common fields), the earliest-observed hook event for that turn to
+  `Stop`, so it costs no new hook registration. New `[notifications]` config:
+  `on_turn_complete` (default true) and `turn_complete_min_seconds` (default
+  60). Never fires on a stop-hook re-entry, an empty message, or with no
+  device registered. `notifySessionComplete()`
+  (`packages/web/src/lib/notifications.ts`), dead code with zero callers that
+  made #914 confusing in the first place, is deleted rather than wired up —
+  the actual notification is a server-side APNS push with real content, which
+  the client already displays generically.
+
+- **Hook fields remi was already receiving and dropping are now consumed**
+  (#891). No new hook registrations — this is entirely fields the
+  already-registered `Stop`, `SubagentStop` and `PostToolUse` hooks carry.
+  `SubagentStop.agent_transcript_path` now replaces the SubagentStart-time
+  path *derivation* for the subagent-view switcher: Claude Code hands the
+  real path over directly once the file is guaranteed to exist, so it wins
+  over the guess (validated the same way `agentId` already was, so a
+  malformed value can't override a good derived one; falls back to the
+  derivation when absent). `Stop.last_assistant_message` and
+  `PostToolUse.duration_ms` (above a 5s threshold) are now logged instead of
+  silently discarded — neither reaches a client yet, since `Session` /
+  `SessionUpdateMessage` have no text field to carry them and adding one is a
+  protocol change, out of scope here.
+
+- **Local capability token** (#869, groundwork). The daemon now keeps a random
+  secret in `~/.remi/capability.key` (mode 0600) and the CLI presents it on
+  connect, so a local client can prove it is one without a trust-on-first-use
+  round trip. A new `[daemon] require_local_auth` retires the blanket loopback
+  auth exemption: with it on, a loopback peer must present that token or
+  complete the Ed25519 challenge, exactly like a remote client.
+
+  It defaults to **off**, and only because the macOS app cannot yet do either.
+  It is sandboxed with no access to `~/.remi` by design (#649/#651) and has no
+  identity of its own, so turning this on before that ships would lock it out.
+  A machine that only uses the CLI and the web client can turn it on today.
+
+  Worth stating plainly: a file readable by the user does not stop a process
+  running AS that user from reading it too. This raises the bar from "any local
+  process can approve a permission" to "any process that can read your home
+  directory can". That is an improvement, not a boundary.
+
+### Security
+- **A website you visit can no longer answer your permission prompts** (#535).
+  The WebSocket upgrade validated no `Origin` and every HTTP endpoint answered
+  with `Access-Control-Allow-Origin: *`, while auth is off by default on
+  loopback binds and loopback peers are exempt even when it is on. WebSocket
+  upgrades are not subject to the same-origin policy and a wildcard CORS header
+  waives it for the rest, so any page could open `ws://127.0.0.1:<port>/ws` or
+  POST `/answer` and approve a permission on your machine.
+
+  A browser always sets `Origin` and a page cannot forge it, while native
+  clients (CLI, iOS, macOS) send none. remi's own clients are allowed
+  (`capacitor://localhost`, any loopback origin, `https://remi.yooz.live`, plus
+  anything in the new `daemon.allowed_origins`) and everything else is refused,
+  including the literal `null` a sandboxed iframe or `file://` page sends. The
+  wildcard is replaced by an echo of the caller's own origin, which still serves
+  the iOS port-scan probe that needed it.
+
+  The hook endpoint is gated too, and more strictly. It is the softer target of
+  the two: `req.json()` ignores `Content-Type`, so a page could POST a forged
+  hook body as a CORS-simple request with no preflight and never read the reply.
+  A forged `PermissionRequest` with an unknown session pushed a fake "Claude
+  needs your permission" notification to your phone; with a known one it took an
+  eval-queue slot ahead of real prompts. Only Claude Code posts hooks and it is
+  not a browser, so ANY `Origin` is refused there.
+
+  A local process can still connect by sending no `Origin`, which is
+  indistinguishable from a native client. That needs a capability token and is
+  tracked in #869.
+
+  If you serve the web client from your own origin, add it to
+  `~/.remi/config.toml` under `[daemon] allowed_origins`; the daemon logs the
+  exact line when it refuses one.
+- **A tool name in the allow-list no longer approves a Bash command that
+  merely contains it** (#536). The shipped default `allow = ['Read', 'Glob',
+  'Grep']` was documented as matching tools only; it substring-matched the
+  Bash command string too, so `rm -rf Readme`, `rm -rf ~/Documents/Reading`
+  and `python Read_data.py && rm -rf /tmp/x` were all approved at 0ms with no
+  evaluation. A custom entry was wider still: `allow = ['git status']`
+  approved `git status; rm -rf ~`, because a substring says nothing about the
+  rest of the command.
+
+  Allow now splits a command into compound segments and requires EVERY
+  segment to be neutral (`cd`, `pwd`, `echo`) or match an entry, and vetoes
+  command substitution, redirection to a real file, and backgrounding. The
+  case that motivated substring matching still works: `cd /foo && git push
+  origin main` matches a `git push` entry, which Claude Code's own prefix
+  pattern misses.
+
+  It also vetoes code-execution primitives, which are a different thing from
+  writes: `find . -exec rm -rf {} +`, `git -c core.hooksPath=/tmp/evil
+  status`, `tar --to-command=...` and `awk 'BEGIN{system(...)}'` do not make
+  the allowed command write, they make it run a command the user never saw.
+  Spelling the primitive out in the entry itself still works, since a prefix
+  match means the user typed it. Ordinary mutation flags are untouched: an
+  entry of `biome check --fix` is a write the user chose.
+
+  **Deny is unchanged and stays a plain substring search**, along with
+  `subagent_alert`. Over-matching a deny costs an evaluation; under-matching
+  one costs a command that should have been refused.
+
+  If a config relied on the old substring behavior for Bash, those commands
+  now get evaluated instead of approved at 0ms. An allow entry shaped like a
+  tool name but meant as a shell command (`Rscript`, `MSBuild`) now warns at
+  config load, since it matches a tool of that name and never the command.
+
 ## [0.7.3] - 2026-07-28
 
 Makes remi able to stop its own daemons, and to evict a model the engine

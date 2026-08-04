@@ -381,6 +381,32 @@ export function SettingsPanel({ open, settings, onClose, onChange }: SettingsPan
     onChange({ ...settings, ...partial });
   };
 
+  /**
+   * Flip one notification toggle (#968), checking OS permission when turning a
+   * push class ON for the first time — a preference the daemon honors is still
+   * silent if iOS itself is set to deny.
+   *
+   * Turning one OFF never checks: muting must always work, including from a
+   * device whose OS permission was already revoked.
+   */
+  const enableNotify = async (
+    key: 'notifyQuestions' | 'notifyTurnComplete',
+    value: boolean,
+  ): Promise<void> => {
+    if (!value || !isNative()) {
+      update({ [key]: value });
+      return;
+    }
+    const permission = await checkNotificationPermission();
+    if (permission === 'denied') {
+      // Leave the toggle as it was: claiming it is on while the OS drops every
+      // push is the same lie the old dead toggle told.
+      openNotificationSettings();
+      return;
+    }
+    update({ [key]: true });
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
       {/* Backdrop */}
@@ -464,24 +490,14 @@ export function SettingsPanel({ open, settings, onClose, onChange }: SettingsPan
                 onChange={(v) => update({ showTimestamps: v })}
               />
               <Toggle
-                label="Notifications"
-                checked={settings.notifications}
-                onChange={async (v) => {
-                  if (!v) {
-                    update({ notifications: false });
-                    return;
-                  }
-                  if (!isNative()) {
-                    update({ notifications: true });
-                    return;
-                  }
-                  const permission = await checkNotificationPermission();
-                  if (permission === 'denied') {
-                    openNotificationSettings();
-                  } else {
-                    update({ notifications: true });
-                  }
-                }}
+                label="Question alerts"
+                checked={settings.notifyQuestions}
+                onChange={(v) => void enableNotify('notifyQuestions', v)}
+              />
+              <Toggle
+                label="Turn complete"
+                checked={settings.notifyTurnComplete}
+                onChange={(v) => void enableNotify('notifyTurnComplete', v)}
               />
               <Toggle
                 label="Sound"

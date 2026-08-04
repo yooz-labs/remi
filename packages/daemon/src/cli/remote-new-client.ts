@@ -20,6 +20,7 @@ import { errorToString } from '@remi/shared';
 import type { ProtocolMessage, UUID } from '@remi/shared';
 import { runAttachClient } from './attach-client.ts';
 import { performAuthHandshake } from './auth-helper.ts';
+import { capabilityWsOptions } from './capability-client.ts';
 
 export interface RemoteNewOptions {
   readonly host: string;
@@ -47,7 +48,7 @@ async function createRemoteSession(
     let ws: WebSocket;
 
     try {
-      ws = new WebSocket(url);
+      ws = new WebSocket(url, capabilityWsOptions() as never);
     } catch (err) {
       const detail = errorToString(err);
       reject(new Error(`Cannot connect to daemon at ${host}:${port}: ${detail}`));

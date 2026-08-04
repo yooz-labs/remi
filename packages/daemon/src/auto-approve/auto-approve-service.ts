@@ -10,11 +10,16 @@
  */
 
 import { errorToString } from '@remi/shared';
+import { reconcileCounterfactual, shouldCounterfactual } from './authority-counterfactual.ts';
+import { enforceAuthorityBoundary } from './authority.ts';
+import { AuthorizationAssessment, matrixDecision } from './authorization-assessment.ts';
+import { denySourceForFloor, enforceDenyFloor } from './deny-floor.ts';
 import { fileActivityRecord } from './engine-activity.ts';
 import type { EngineHost } from './engine-host.ts';
 import { clearModelCache, pullModel, unloadModel } from './engine-models.ts';
 import type { PullProgress } from './engine-models.ts';
 import { extractJsonObject } from './json-extract.ts';
+import type { AutoApproveLevel } from './levels.ts';
 import { chatCompletion, resolveProviderUrl, warmModel } from './llm-client.ts';
 import type { LLMClientConfig } from './llm-client.ts';
 import { ModelResidency } from './model-residency.ts';
@@ -24,9 +29,12 @@ import {
   isMultiChoicePermission,
   parseMultiChoiceDecision,
 } from './multichoice.ts';
-import { matchPattern } from './pattern-matcher.ts';
-import { matchGroups } from './permission-groups.ts';
+import { matchAllowPattern, matchSubstringPattern } from './pattern-matcher.ts';
+import { matchGroups, matchGroupsBroad } from './permission-groups.ts';
+import { type PrecedentReader, precedentMayAuthorize, signatureForOperation } from './precedent.ts';
 import { buildPrompt } from './prompt-builder.ts';
+import { classifyRisk, formatMatrixContext } from './risk-bands.ts';
+import { enforceRiskCeiling } from './risk-ceiling.ts';
 import type { AutoApproveConfig, AutoApproveResult, MultiChoiceMode } from './types.ts';
 
 type BinaryDecision = 'approve' | 'deny' | 'escalate';
@@ -136,9 +144,15 @@ export class AutoApproveService {
   private readonly approveGroups: readonly string[];
   private readonly denyGroups: readonly string[];
   private readonly instructions: string;
+  /** Strictness preset, threaded into the prompt's default guidelines (#966). */
+  private readonly level: AutoApproveLevel;
   private readonly multichoiceMode: MultiChoiceMode;
   /** Tool names that always escalate to the user, never auto-decided (#572). */
   private readonly alwaysEscalateTools: ReadonlySet<string>;
+  /** #976: whether an earlier session APPROVAL may authorize a repeat. The
+   *  deny direction is deliberately not gated by this — see the post-model
+   *  precedent guard in `evaluate` for why. */
+  private readonly sessionPrecedent: boolean;
   /** Falls back to llmConfig.model when empty. */
   private readonly multichoiceModel: string;
   /** Second-opinion model on a primary 'escalate' (#522); empty = none. Public
@@ -252,8 +266,14 @@ export class AutoApproveService {
     this.approveGroups = config.approve_groups;
     this.denyGroups = config.deny_groups;
     this.instructions = config.instructions;
+    // #966: the LLM handles whatever no group covers, so its DEFAULT
+    // GUIDELINES must agree with the level the user chose. Without this the
+    // same policy gives different answers depending on whether a curated
+    // prefix happens to exist.
+    this.level = config.level;
     this.multichoiceMode = config.multichoice;
     this.alwaysEscalateTools = new Set(config.always_escalate_tools);
+    this.sessionPrecedent = config.session_precedent;
     this.multichoiceModel = config.multichoice_model;
     this.escalateModel = config.escalate_model;
     this.escalateTimeoutMs = config.escalate_timeout > 0 ? config.escalate_timeout * 1000 : 0;
@@ -628,6 +648,14 @@ export class AutoApproveService {
    *            member permission (mirrors the gate's own `evalIsSubagentById`),
    *            so a QUEUED waiter for it can be spared by
    *            `drainScope(scope, {mainOnly: true})`.
+   * @param authority Optional recent-human-turns summary (Q9, #893; see
+   *            `authority.ts`). Passed straight to `buildPrompt` as the
+   *            CONVERSATION CONTEXT block. When present, an `approve` verdict
+   *            is re-checked by `enforceAuthorityBoundary` against a hardcoded
+   *            catastrophic-pattern list AFTER the LLM decides — the code-level
+   *            trust boundary that holds regardless of what the model's
+   *            reasoning said, so authority text can lower escalation for a
+   *            benign operation but can never approve a DENY-FLOOR-shaped one.
    */
   async evaluate(
     toolName: string,
@@ -638,6 +666,22 @@ export class AutoApproveService {
     evalId?: number,
     scope?: string,
     isSubagent?: boolean,
+    authority?: string,
+    /**
+     * This session's precedent, READ-ONLY (#976). Per-CALL rather than a
+     * constructor field because the service is daemon-wide and shared across
+     * sessions while a `PrecedentStore` is per-session — a stored reference
+     * would let one session's answers authorize another's, which is the one
+     * thing precedent must never do.
+     *
+     * A `PrecedentReader`, never the store: `handleAnswer` stays the single
+     * writer by construction, so the gate cannot record its own verdicts as
+     * human precedent (`precedent.ts`, "Why provenance").
+     *
+     * Absent => no precedent consulted in either direction; every caller that
+     * omits it behaves exactly as it did pre-#976.
+     */
+    precedent?: PrecedentReader,
   ): Promise<AutoApproveResult> {
     const start = Date.now();
     // #820: push the idle-unload deadline out. Called at the START so a long
@@ -666,24 +710,40 @@ export class AutoApproveService {
       : undefined;
 
     // Entire body wrapped in try/catch so the "never throws" contract holds
-    // even if matchPattern or other sync code fails (e.g. malformed config).
+    // even if the matchers or other sync code fail (e.g. malformed config).
     try {
       // Deny list + deny groups: checked first, always win. No LLM call.
-      const denyMatch = matchPattern(toolName, toolInput, this.deny);
+      const denyMatch = matchSubstringPattern(toolName, toolInput, this.deny);
       if (denyMatch !== null) {
         const reasoning = `deny-matched pattern: "${denyMatch}"`;
         this.logFn(`${prefix} DENIED ${toolName}: ${reasoning} (0ms)`);
-        return { decision: 'deny', reasoning, durationMs: 0, model };
+        return {
+          decision: 'deny',
+          reasoning,
+          durationMs: 0,
+          model,
+          denySource: { kind: 'config', pattern: denyMatch },
+        };
       }
-      const denyGroupMatch = matchGroups(toolName, toolInput, this.denyGroups);
+      // BROAD, not precise (#1001, ADR 0010). `matchGroups` requires the WHOLE
+      // command to be covered and is right for the allow question below; asking
+      // it a deny question meant `mkdir /tmp/x && ls -la` defeated a
+      // `deny_groups = ["fs-write"]` that stopped the bare `mkdir`.
+      const denyGroupMatch = matchGroupsBroad(toolName, toolInput, this.denyGroups);
       if (denyGroupMatch !== null) {
         const reasoning = `deny-matched group: "${denyGroupMatch}"`;
         this.logFn(`${prefix} DENIED ${toolName}: ${reasoning} (0ms)`);
-        return { decision: 'deny', reasoning, durationMs: 0, model };
+        return {
+          decision: 'deny',
+          reasoning,
+          durationMs: 0,
+          model,
+          denySource: { kind: 'config', pattern: denyGroupMatch },
+        };
       }
 
       // Allow list + approve groups: bypass the LLM for known-safe operations.
-      const allowMatch = matchPattern(toolName, toolInput, this.allow);
+      const allowMatch = matchAllowPattern(toolName, toolInput, this.allow);
       if (allowMatch !== null) {
         const reasoning = `allow-matched pattern: "${allowMatch}"`;
         if (this.logDecisions) {
@@ -698,6 +758,60 @@ export class AutoApproveService {
           this.logFn(`${prefix} ${toolName}: approve (0ms) - ${reasoning}`);
         }
         return { decision: 'approve', reasoning, durationMs: 0, model };
+      }
+
+      // #976 PRECEDENT, approve direction: the user already answered YES to
+      // this byte-identical operation in this session, so asking again is
+      // asking them to repeat themselves.
+      //
+      // Placed here — after the user's own deny/allow/group rules, before the
+      // design-question router and the LLM — because it is a 0ms determination
+      // of the SAME kind as the rules above, and because being pre-LLM is half
+      // the point: a repeat costs nothing and a 0ms verdict never loses the
+      // prompt-lifetime race (#998).
+      //
+      // The authorization is real but BOUNDED by `matrixDecision`, which is
+      // why this cannot simply return approve. `critical` never approves, on
+      // any authorization — a human may re-answer a catastrophic operation at
+      // a card every single time, and precedent must not spend one answer on
+      // all future ones. `high` approves only because a precedent carries the
+      // non-text witness the band demands; text alone never can.
+      //
+      // The whole consult is skipped when `session_precedent` is off. The DENY
+      // direction is not: see the post-model guard below for why that half
+      // stays on regardless.
+      //
+      // `precedentMayAuthorize` gates the tool BEFORE the lookup: a signature
+      // is only an authorization if it identifies the whole operation, and for
+      // most tools `summarizeToolInput` names the target while dropping the
+      // payload. See its doc for the measured escalation that produced the
+      // rule (an approved `Write` to a path authorized every later write to
+      // that path, with any content, at `high`, at 0ms).
+      if (this.sessionPrecedent && precedent && precedentMayAuthorize(toolName, toolInput)) {
+        const signature = signatureForOperation(toolName, toolInput);
+        const approvedMatch = precedent.matchApproved(toolName, signature);
+        if (approvedMatch !== null) {
+          const band = classifyRisk(toolName, toolInput);
+          const assessment = AuthorizationAssessment.fromPrecedent(approvedMatch);
+          if (matrixDecision(band, assessment) === 'approve') {
+            const reasoning = `session precedent (#976): you approved this exact operation at ${new Date(approvedMatch.recordedAt).toISOString()} (band=${band}, grade=${assessment.grade})`;
+            // Logged unconditionally, unlike the allow/group approves above.
+            // This is the only approve in the module that rests on something
+            // the USER did rather than on something they WROTE, so the record
+            // of which answer authorized it is the audit trail for a decision
+            // nobody can otherwise reconstruct from config.
+            this.logFn(`${prefix} PRECEDENT ${toolName}: approve (0ms) - ${reasoning}`);
+            return { decision: 'approve', reasoning, durationMs: 0, model };
+          }
+          // Matrix refused. Fall through to the normal path rather than
+          // escalating here: a `critical` operation still deserves whatever
+          // the deny floor and the model have to say about it, and
+          // short-circuiting would make precedent STRICTER than no precedent
+          // at all, which is incoherent.
+          this.logFn(
+            `${prefix} PRECEDENT ${toolName}: match found but band=${band} refuses it; evaluating normally`,
+          );
+        }
       }
 
       // Design / plan-mode / long-form questions are never auto-decided by the
@@ -818,7 +932,7 @@ export class AutoApproveService {
               normalisedSuggestions ?? [],
               this.instructions,
             )
-          : buildPrompt(toolName, toolInput, this.instructions);
+          : buildPrompt(toolName, toolInput, this.instructions, authority, this.level);
         // Hard kill via Promise.race: even if fetch ignores the abort signal
         // (provider hang, Bun runtime quirk), evaluate() returns within
         // timeoutMs. The race timer also calls abort() so a fetch that does
@@ -834,7 +948,7 @@ export class AutoApproveService {
         ]);
         const durationMs = Date.now() - start;
 
-        const result: AutoApproveResult = useMultiChoice
+        let result: AutoApproveResult = useMultiChoice
           ? (() => {
               const parsedMc = parseMultiChoiceDecision(
                 response.content,
@@ -872,10 +986,228 @@ export class AutoApproveService {
               };
             })();
 
+        // Q9 (#893) trust boundary: a binary (non-multichoice) 'approve' verdict
+        // reached with an authority block in the prompt is re-checked here,
+        // deliberately AFTER parsing and with no access to `parsed.reasoning` --
+        // the whole point is that this check cannot be talked into skipping
+        // itself by whatever the model's own reasoning says. Only ever
+        // downgrades approve -> escalate; never touches deny/escalate/pick.
+        // #953 DENY FLOOR: the prompt's "deny ONLY DENY-FLOOR operations;
+        // everything else you would not approve must ESCALATE, never deny"
+        // rule, enforced in code instead of by instruction. A `deny` is
+        // SILENT -- the gate returns 'deny' to the hook and pushes no card --
+        // so an over-eager deny takes the human out of a decision that was
+        // explicitly routed to them. Measured at 10 of 12 escalate-expected
+        // operations before this guard (see `deny-floor.ts`).
+        //
+        // Runs BEFORE the authority boundary below purely for readability;
+        // the two are disjoint by construction (this one only ever sees
+        // `deny`, that one only ever sees `approve`), so the order carries no
+        // behavioral meaning and neither can observe the other's output.
+        //
+        // Config deny/deny_groups matches never reach here -- they return
+        // early, above, without calling the LLM. This applies to
+        // MODEL-produced denies only.
+        if (!useMultiChoice && result.decision === 'deny') {
+          const floored = enforceDenyFloor(toolName, toolInput, result.decision);
+          if (floored.overridden) {
+            const original = result;
+            result = {
+              decision: 'escalate',
+              reasoning: `Deny floor (#953): model denied an operation matching no DENY FLOOR pattern, so it is escalated for you to answer rather than blocked silently. Original model reasoning: ${original.reasoning}`,
+              durationMs,
+              model: original.model,
+              summary: 'Allow this command to run?',
+            };
+            this.logFn(
+              `${prefix} DENY FLOOR ${toolName}: deny -> escalate (no catastrophic pattern) (${durationMs}ms)`,
+            );
+          } else {
+            // The deny STANDS: the model refused and the floor's pattern list
+            // agreed. That is the one deny nobody configured, and #997 measured
+            // the floor matching prose 7 times out of 8 on real traffic, so it
+            // is also the one most likely to be wrong. Tag it (#1015) so
+            // `cli.ts` can tell the user instead of the refusal vanishing.
+            const denySource = denySourceForFloor(floored);
+            if (denySource !== null) result = { ...result, denySource };
+          }
+        }
+
+        const authorityPresent = (authority?.trim().length ?? 0) > 0;
+        if (!useMultiChoice && authorityPresent && result.decision === 'approve') {
+          const guarded = enforceAuthorityBoundary(toolName, toolInput, result.decision, true);
+          if (guarded.overridden) {
+            const original = result;
+            result = {
+              decision: 'escalate',
+              reasoning: `Trust boundary (#893): authority-influenced approve blocked, matched DENY FLOOR pattern "${guarded.matchedPattern}". Original model reasoning: ${original.reasoning}`,
+              durationMs,
+              model: original.model,
+              summary: 'Review this command before it runs?',
+            };
+            this.logFn(
+              `${prefix} TRUST BOUNDARY ${toolName}: approve -> escalate (matched "${guarded.matchedPattern}") (${durationMs}ms)`,
+            );
+          }
+        }
+
+        // #976 RISK CEILING: the "must escalate, never approve, unless the
+        // user's own config says otherwise" rule, enforced in code instead of
+        // by instruction -- the DENY FLOOR's mirror image (see
+        // `risk-ceiling.ts`'s module doc). Runs unconditionally on any
+        // `approve`, NOT gated on `authorityPresent` like the trust boundary
+        // above: `classifyRisk` is a property of the operation, not of
+        // whether the prompt happened to carry authority text, and an
+        // authority-free approve of a high-risk operation was previously
+        // unguarded by anything (verified: `enforceDenyFloor` only ever sees
+        // `deny`; the trust boundary and the #954 counterfactual below both
+        // require `authorityPresent`).
+        //
+        // Placed AFTER the trust boundary so a downgrade already applied
+        // above short-circuits this one (decision is no longer 'approve');
+        // placed BEFORE the counterfactual so that when THIS guard fires, the
+        // counterfactual's own `result.decision === 'approve'` guard is
+        // already false and the second LLM call is skipped structurally --
+        // there is no approve left to re-check.
+        if (!useMultiChoice && result.decision === 'approve') {
+          const ceilinged = enforceRiskCeiling(toolName, toolInput, result.decision);
+          if (ceilinged.overridden) {
+            const original = result;
+            result = {
+              decision: 'escalate',
+              reasoning: `Risk ceiling (#976): model approved a ${ceilinged.band}-risk operation, which may not be auto-approved by the model regardless of stated reasoning or conversation instructions -- only a deterministic allow/approve_groups match can. Original model reasoning: ${original.reasoning}`,
+              durationMs,
+              model: original.model,
+              summary: 'Approve this high-risk command?',
+            };
+            this.logFn(
+              `${prefix} RISK CEILING ${toolName}: approve -> escalate (band=${ceilinged.band}) (${durationMs}ms)`,
+            );
+          }
+        }
+
+        // #976 PRECEDENT, deny direction: the user already said NO to
+        // something like this in this session, so the model does not get to
+        // say yes without asking them again.
+        //
+        // BROAD, not exact (ADR 0010, and `findDeniedPrecedent`'s own doc): a
+        // stop rule should over-reach rather than under-reach, and the cost of
+        // over-reach here is one card the user answers, not a wrongly-granted
+        // approval. That is the exact inverse of the approve direction above,
+        // which is exact-match precisely because it grants.
+        //
+        // NOT gated on `session_precedent`. That flag governs whether an
+        // earlier YES may be reused; reading it as "ignore my earlier NO too"
+        // would turn a switch that trades convenience for caution into one
+        // that discards a refusal the user actually made. A user who wants
+        // fewer 0ms approvals has not asked to have their denials forgotten.
+        //
+        // Post-model and approve-only, like every other guard here: it never
+        // invents a deny, never touches an escalate, and moves in exactly one
+        // direction.
+        if (!useMultiChoice && precedent && result.decision === 'approve') {
+          const deniedMatch = precedent.matchDenied(
+            toolName,
+            signatureForOperation(toolName, toolInput),
+          );
+          if (deniedMatch !== null) {
+            const original = result;
+            result = {
+              decision: 'escalate',
+              reasoning: `Session precedent (#976): you denied "${deniedMatch.matchedSignature}" earlier in this session, which covers this operation, so a model approve is escalated back to you instead of standing. Original model reasoning: ${original.reasoning}`,
+              durationMs,
+              model: original.model,
+              summary: 'You said no to this before. Allow it now?',
+            };
+            this.logFn(
+              `${prefix} PRECEDENT ${toolName}: approve -> escalate (denied "${deniedMatch.matchedSignature}") (${durationMs}ms)`,
+            );
+          }
+        }
+
+        // #954 COUNTERFACTUAL: the authority trust boundary, enforced by
+        // re-asking rather than by pattern.
+        //
+        // `enforceAuthorityBoundary` above checks eight catastrophic
+        // substrings and caught NONE of the measured failure: `rm -rf ./build`
+        // went from `deny` (no authority) to `approve` (authority) 5 runs out
+        // of 5, on nothing stronger than "please clean out the build
+        // directory, it is stale". Widening that substring list does not
+        // scale -- the rule it backstops covers "remote, destructive,
+        // unfamiliar, or irreversible", which is not a substring set.
+        //
+        // So instead of asking WHETHER authority should have approved this,
+        // ask whether it DECIDED it: run the same evaluation with the
+        // authority block removed. If the answer changes, the conversation
+        // text was the deciding factor, which the prompt-level rule forbids.
+        //
+        // Runs INLINE rather than via a nested `evaluate()` call: that would
+        // re-enter `acquireSlot` while still holding this eval's slot, and
+        // deadlock on a single-slot pool.
+        if (
+          !useMultiChoice &&
+          result.decision === 'approve' &&
+          shouldCounterfactual(toolName, toolInput, result.decision, authorityPresent)
+        ) {
+          const cfStart = Date.now();
+          try {
+            const cfResponse = await chatCompletion(
+              { ...this.llmConfig, model },
+              // Same prompt, same instructions, authority block OMITTED.
+              // Same level, same instructions -- ONLY the authority block differs,
+              // which is what makes the comparison a counterfactual rather than
+              // a different question (#954).
+              buildPrompt(toolName, toolInput, this.instructions, undefined, this.level),
+              this.currentAbortController?.signal,
+            );
+            const cfParsed = parseDecision(cfResponse.content);
+            const reconciled = reconcileCounterfactual(cfParsed.decision);
+            if (reconciled.overridden) {
+              const original = result;
+              result = {
+                decision: 'escalate',
+                reasoning: `Authority counterfactual (#954): the same operation evaluated to "${cfParsed.decision}" WITHOUT the conversation-context block, so that text decided the outcome rather than merely resolving ambiguity. Escalating instead. Authority-free reasoning: ${cfParsed.reasoning} | Original: ${original.reasoning}`,
+                durationMs,
+                model: original.model,
+                summary: 'Approve this? (the chat, not you, allowed it)',
+              };
+              this.logFn(
+                `${prefix} COUNTERFACTUAL ${toolName}: approve -> escalate (authority-free verdict was ${cfParsed.decision}) (+${Date.now() - cfStart}ms)`,
+              );
+            }
+          } catch (err) {
+            // The counterfactual is a SAFETY check, so failing to run it must
+            // not leave the authority-influenced approve standing. Escalate --
+            // the same direction every other failure in this module takes.
+            result = {
+              decision: 'escalate',
+              reasoning: `Authority counterfactual (#954) could not be evaluated (${errorToString(err)}); escalating rather than trusting an authority-influenced approve. Original: ${result.reasoning}`,
+              durationMs,
+              model: result.model,
+              summary: 'Approve this? (safety check unavailable)',
+            };
+            this.logFn(
+              `${prefix} COUNTERFACTUAL ${toolName}: check failed, escalating - ${errorToString(err)}`,
+            );
+          }
+        }
+
         if (this.logDecisions) {
           const denyPrefix = result.decision === 'deny' ? `${prefix} DENIED` : prefix;
+          // #976 instrumentation. The matrix's WIDENING half is only worth
+          // building if a meaningful share of final escalates are
+          // (band=moderate + authority present) -- that is the sole population
+          // a text-derived grade could decide, since critical never approves
+          // and high needs a witness text cannot supply. Nobody has counted it.
+          //
+          // Emitted on every decision rather than only on escalates so the
+          // denominator is visible too: "12% of escalates are eligible" means
+          // nothing without knowing how many escalates there were.
           this.logFn(
-            `${denyPrefix} ${toolName}: ${result.decision} (${durationMs}ms) - ${result.reasoning}`,
+            `${denyPrefix} ${toolName}: ${result.decision} (${durationMs}ms) ${formatMatrixContext(
+              classifyRisk(toolName, toolInput),
+              authorityPresent,
+            )} - ${result.reasoning}`,
           );
         }
 

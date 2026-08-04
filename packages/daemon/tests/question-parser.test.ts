@@ -190,6 +190,22 @@ describe('parseQuestion() - ANSI handling and properties', () => {
     expect(a.question?.isAnswered).toBe(false);
     expect(a.question?.answer).toBeUndefined();
   });
+
+  test('every parsed question carries source "pty" (#888/#920)', () => {
+    // The shared type's own doc says "PTY-parsed prompts are 'pty'", but
+    // nothing ever set it -- this is the one-line #920 fix that makes the
+    // hook-less cohort visible in the question-lifecycle trace at all. All
+    // three parser paths (selection-box chrome, literal y/n, free-text
+    // waiting) go through createQuestion, so one assertion per path.
+    const chrome = parseQuestion('❯ 1. Yes\n  2. No');
+    expect(chrome.question?.source).toBe('pty');
+
+    const yesNo = parseQuestion('Continue? (y/n)');
+    expect(yesNo.question?.source).toBe('pty');
+
+    const waiting = parseQuestion('Please enter your response');
+    expect(waiting.question?.source).toBe('pty');
+  });
 });
 
 describe('hasQuestionIndicator()', () => {

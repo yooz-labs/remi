@@ -1,0 +1,11 @@
+{
+  "type": "auth_challenge",
+  "id": "7162dc07-7ebc-4573-83f4-3194dc6c1381",
+  "timestamp": "2026-07-29T11:27:08.615Z",
+  "challenge": "base64-challenge",
+  "serverFingerprint": "AA:BB:CC:DD",
+  "serverPublicKey": "base64-server-pubkey",
+  "relayEphemeralKey": "base64-ephemeral-key",
+  "relayKexSignature": "base64-kex-signature",
+  "answerEncryptionKey": "base64-answer-encryption-key"
+}

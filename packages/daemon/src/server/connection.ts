@@ -49,71 +49,24 @@ import type {
   UserInputMessage,
 } from '@remi/shared';
 import type { Authenticator } from '../auth/authenticator.ts';
+import type { ClientMessageEvents } from './client-message-events.ts';
+import { type ClientMessageHandlers, routeClientMessage } from './route-client-message.ts';
 
 /** Connection state */
 export type ConnectionState = 'connecting' | 'authenticating' | 'connected' | 'disconnected';
 
-/** Events emitted by connection */
-export interface ConnectionEvents {
+/**
+ * Events emitted by a connection. The per-message portion (`onUserInput`,
+ * `onAnswer`, ...) is declared once in `client-message-events.ts` (#900) and
+ * inherited here without a `connectionId` -- a `Connection` is already
+ * scoped to one peer.
+ */
+export interface ConnectionEvents extends ClientMessageEvents {
   /** Connection established */
   onConnect: (sessionId: UUID) => void;
 
   /** Connection closed */
   onDisconnect: (reason: string) => void;
-
-  /** User input received. `messageId` is the wire message's own id (#681),
-   *  carried so a rejection (e.g. NOT_ACTIVE_CONNECTION) can name the
-   *  specific bubble that was dropped. */
-  onUserInput: (
-    sessionId: UUID,
-    content: string,
-    raw?: boolean,
-    claudeSessionId?: UUID,
-    messageId?: UUID,
-  ) => void;
-
-  /** Answer to question received. `extra` carries the structured AskUserQuestion
-   *  selections / cancel flag (#627); omitted for a plain single answer. */
-  onAnswer: (
-    sessionId: UUID,
-    questionId: UUID,
-    answer: string,
-    claudeSessionId?: UUID,
-    extra?: AnswerExtras,
-  ) => void;
-
-  /** Bullet expand request received */
-  onBulletExpandRequest: (sessionId: UUID, bulletId: number, requestId: UUID) => void;
-
-  /** Session list request received */
-  onSessionListRequest: (requestId: UUID, includeExternal: boolean) => void;
-
-  /** Transcript load request received */
-  onTranscriptLoadRequest: (sessionId: string, requestId: UUID) => void;
-
-  /** Create session request received */
-  onCreateSessionRequest: (directory: string | undefined, requestId: UUID) => void;
-
-  /** Terminal resize from attached CLI client */
-  onTerminalResize: (cols: number, rows: number) => void;
-
-  /** Kill session request received */
-  onKillSessionRequest: (sessionId: UUID, requestId: UUID) => void;
-
-  /** Resume session request received */
-  onResumeSessionRequest: (sessionId: string, requestId: UUID) => void;
-
-  /** Session history request received */
-  onSessionHistoryRequest: (requestId: UUID, limit: number | undefined) => void;
-
-  /** Detach session request received (tmux-style) */
-  onDetachSession: (sessionId: UUID, requestId: UUID) => void;
-
-  /** Device token registered for push notifications */
-  onRegisterDeviceToken: (token: string, platform: 'ios' | 'android') => void;
-
-  /** Device token unregistered — explicit user removal of this server (#690) */
-  onUnregisterDeviceToken: (token: string) => void;
 
   /** Authentication succeeded */
   onAuthSuccess: (clientFingerprint: string) => void;
@@ -179,7 +132,17 @@ export class Connection {
   private authenticatedFingerprint: string | null = null;
 
   private readonly ws: WebSocket;
-  private readonly config: Required<ConnectionConfig> & {
+  // `Omit` before re-adding `authenticator` so the property isn't inherited
+  // from `Required<ConnectionConfig>` and then intersected with the explicit
+  // override below: under `exactOptionalPropertyTypes: false`, `Required<>`
+  // collapses an already-optional `X | undefined` field down to plain `X`,
+  // and intersecting that with `X | undefined` collapses back to `X` --
+  // rejecting the `undefined` assignment two lines below. This repo's root
+  // tsconfig has the flag on, so this file alone never showed it, but
+  // `packages/web`'s stricter-in-other-ways / laxer-here tsconfig checks
+  // this file too via the conformance tests (ADR 0014, #946), and the flag
+  // is off there. `Omit` sidesteps the collapse regardless of the flag.
+  private readonly config: Omit<Required<ConnectionConfig>, 'skipHelloAck' | 'authenticator'> & {
     skipHelloAck: boolean;
     authenticator: Authenticator | undefined;
   };
@@ -305,81 +268,104 @@ export class Connection {
       return;
     }
 
-    // In authenticating state, only accept auth_response
-    if (this.state === 'authenticating') {
-      if (message.type === 'auth_response') {
-        this.handleAuthResponse(message).catch((err) => {
-          this.send(createAuthResult(false, undefined, 'INTERNAL_AUTH_ERROR'));
-          this.events.onError?.(err instanceof Error ? err : new Error(String(err)));
-          this.close('Authentication error');
-        });
-      } else if (message.type === 'ping') {
-        this.handlePing(message);
-      } else {
-        this.sendError('AUTH_REQUIRED', 'Authentication required before other messages');
+    // #916: everything below -- the authenticating-state branch AND the
+    // connected-state routing -- runs inside one try/catch. A handler is
+    // trusted to guard its own throws (most are `async` and unawaited, so a
+    // throw there is already a survivable unhandled rejection -- see
+    // process-guards.ts). This is the backstop for one that forgets and
+    // throws SYNCHRONOUSLY: uncaught, that would escape all the way to
+    // `uncaughtException`, whose policy is a fatal exit(1) -- correct for
+    // real state corruption, wrong for a client payload. The authenticating
+    // branch is in scope too: `handlePing` reaches `this.ws.send` just like
+    // any routed handler does, and was not covered before this.
+    try {
+      // In authenticating state, only accept auth_response
+      if (this.state === 'authenticating') {
+        if (message.type === 'auth_response') {
+          this.routeAuthResponse(message);
+        } else if (message.type === 'ping') {
+          this.handlePing(message);
+        } else {
+          this.sendError('AUTH_REQUIRED', 'Authentication required before other messages');
+        }
+        return;
       }
-      return;
-    }
 
-    // Route by message type
-    switch (message.type) {
-      case 'hello':
-        this.handleHello(message);
-        break;
-      case 'user_input':
-        this.handleUserInput(message);
-        break;
-      case 'answer':
-        this.handleAnswer(message);
-        break;
-      case 'bullet_expand_request':
-        this.handleBulletExpandRequest(message);
-        break;
-      case 'session_list_request':
-        this.handleSessionListRequest(message);
-        break;
-      case 'transcript_load_request':
-        this.handleTranscriptLoadRequest(message);
-        break;
-      case 'create_session_request':
-        this.handleCreateSessionRequest(message);
-        break;
-      case 'terminal_resize':
-        this.handleTerminalResize(message);
-        break;
-      case 'kill_session_request':
-        this.handleKillSessionRequest(message);
-        break;
-      case 'resume_session_request':
-        this.handleResumeSessionRequest(message);
-        break;
-      case 'session_history_request':
-        this.handleSessionHistoryRequest(message);
-        break;
-      case 'detach_session':
-        this.handleDetachSession(message);
-        break;
-      case 'ping':
-        this.handlePing(message);
-        break;
-      case 'register_device_token':
-        this.handleRegisterDeviceToken(message);
-        break;
-      case 'unregister_device_token':
-        this.handleUnregisterDeviceToken(message);
-        break;
-      case 'pong':
-        // Explicit protocol-level liveness reply. Redundant with the
-        // any-message reset above (kept as documentation of intent and a
-        // second line of defense if that reset is ever narrowed).
-        this.missedPongs = 0;
-        break;
-      case 'ack':
-        // Client acknowledging our message - just track
-        break;
-      default:
+      // Route by message type (#899): a total map over every client-to-daemon
+      // type, so a new registry key breaks this object's compile until it is
+      // decided, rather than silently falling through a switch's default.
+      const handlers: ClientMessageHandlers = {
+        hello: (m) => this.handleHello(m),
+        user_input: (m) => this.handleUserInput(m),
+        answer: (m) => this.handleAnswer(m),
+        bullet_expand_request: (m) => this.handleBulletExpandRequest(m),
+        session_list_request: (m) => this.handleSessionListRequest(m),
+        transcript_load_request: (m) => this.handleTranscriptLoadRequest(m),
+        create_session_request: (m) => this.handleCreateSessionRequest(m),
+        terminal_resize: (m) => this.handleTerminalResize(m),
+        kill_session_request: (m) => this.handleKillSessionRequest(m),
+        resume_session_request: (m) => this.handleResumeSessionRequest(m),
+        session_history_request: (m) => this.handleSessionHistoryRequest(m),
+        detach_session: (m) => this.handleDetachSession(m),
+        register_device_token: (m) => this.handleRegisterDeviceToken(m),
+        unregister_device_token: (m) => this.handleUnregisterDeviceToken(m),
+        ping: (m) => this.handlePing(m),
+        pong: () => {
+          // Explicit protocol-level liveness reply. Redundant with the
+          // any-message reset above (kept as documentation of intent and a
+          // second line of defense if that reset is ever narrowed).
+          this.missedPongs = 0;
+        },
+        // Client acknowledging our message - just track (no-op). #899's trap:
+        // `ack` is tagged 'both' (not 'c2d') precisely because this case is
+        // real and accepting, not a forgotten one -- see MESSAGE_DIRECTION's
+        // comment on `ack` and ClientToDaemonType's doc comment.
+        ack: 'ignore',
+        // Reachable only if a client resends auth_response after already
+        // completing (or skipping) the handshake -- the authenticating-state
+        // branch above intercepts the normal case before this map is ever
+        // consulted. Kept as a real handler (not 'ignore') for defense in
+        // depth: `handleAuthResponse` itself guards on state and answers
+        // INVALID_STATE, a more specific reply than falling through to
+        // UNKNOWN_MESSAGE would have given.
+        auth_response: (m) => this.routeAuthResponse(m),
+      };
+      const routed = routeClientMessage(message, handlers);
+      if (!routed) {
         this.sendError('UNKNOWN_MESSAGE', `Unknown message type: ${message.type}`);
+      }
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      // Insurance consistent with this guard's own thesis (#916 review): NOT
+      // currently reachable -- the wired `onError` (trivial-events.ts) only
+      // logs and `send()` guards on `readyState`, so neither throws today --
+      // but `onError` is a caller-supplied callback and `ws.send` can still
+      // race a closing socket, and a guard whose own report can throw would
+      // undermine the reason this try/catch exists. Each half is independent
+      // and best-effort; `onError` runs first, so the fault is already
+      // logged before the reply is even attempted.
+      try {
+        this.events.onError?.(error);
+      } catch {
+        // Nothing left to safely report a throwing onError callback to.
+      }
+      try {
+        this.sendError('INTERNAL_ERROR', `Handler for '${message.type}' failed: ${error.message}`);
+      } catch {
+        // Socket likely closing; the peer gets no reply instead of a crash.
+      }
     }
+  }
+
+  /** Shared by the authenticating-state branch and the post-connect handler
+   *  map: both may see a real `auth_response` (see the map entry's comment
+   *  on why the latter is reachable only defensively). */
+  private routeAuthResponse(message: AuthResponseMessage): void {
+    this.handleAuthResponse(message).catch((err) => {
+      this.send(createAuthResult(false, undefined, 'INTERNAL_AUTH_ERROR'));
+      this.events.onError?.(err instanceof Error ? err : new Error(String(err)));
+      this.close('Authentication error');
+    });
   }
 
   /**
@@ -588,7 +574,7 @@ export class Connection {
 
   private handleRegisterDeviceToken(message: RegisterDeviceTokenMessage): void {
     this.sendAck(message.id, 'delivered');
-    this.events.onRegisterDeviceToken?.(message.token, message.platform);
+    this.events.onRegisterDeviceToken?.(message.token, message.platform, message.pushPrefs);
   }
 
   /**

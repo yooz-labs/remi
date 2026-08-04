@@ -8,6 +8,54 @@ Project-specific agent instructions. Ecosystem-wide rules live in `../AGENTS.md`
 - **Tech stack:** Bun + TypeScript (backend), React + Capacitor (frontend), WebSocket, xterm.js.
 - **Philosophy:** "My agent needs me. Yes or No."
 
+## Verify before you describe
+
+**This repo's documentation has repeatedly described security behavior the code
+did not have.** Not as sloppiness — as a specific, recurring failure that hid
+real problems for months. Known cases, all confirmed:
+
+| The claim | The reality | Cost |
+|---|---|---|
+| "peer-to-peer, TURN relays encrypted blobs" (this file) | no WebRTC exists; the Worker was the data path in plaintext | #543, unnoticed for months |
+| "auto = based on bind address" (`AuthConfig.enabled`) | `'auto'` resolves to `false` on every bind, `0.0.0.0` included | #880, still open |
+| allow-patterns match tool names (`config.ts`) | substring match, so `Read` covered `cat x \| sh` | #536, a P0 |
+| `relay-adapter-auth.test.ts` "tests the relay adapter" | never constructed one; 8 tests that could not fail on that claim (corrected from a stale "29" — ADR 0014) | mandatory kex shipped uncovered |
+| "the relay is now end-to-end encrypted" (#543, believed done) | engages only when an authenticator exists, i.e. never by default | #881, found while *writing the README fix for the previous row* |
+
+The pattern is what matters: **a wrong security description reads as "this is
+handled," so nobody looks again.** Docs that overstate protection are more
+dangerous than docs that are missing.
+
+Rules, all cheap:
+
+1. **Before citing a doc/comment as evidence that something is safe, check the
+   code.** One `grep` for the caller, one `curl` against the running daemon, one
+   `git log -S`. Every case above was settled by a single command.
+2. **A claim about a live data path needs a caller trace.** "The relay sends X in
+   plaintext" is only true if something calls it — twice this turn a module was
+   dead code. Grep for callers before you assert impact, and before you file the
+   issue.
+3. **When code and comment disagree, fix the comment in the same change**, even
+   when the behavior is someone else's call. Leave the issue number in the
+   comment (see `AuthConfig.enabled` for the shape).
+4. **Say what ships, not what was intended.** Aspirations belong in issues.
+5. **A test named for a component must construct it.** If it does not, the name
+   is a claim about coverage that is not true.
+
+Recorded as [ADR 0011](.context/decisions/0011-verify-before-you-describe.md).
+
+## Architecture decisions
+
+Standing decisions live in [`.context/decisions/`](.context/decisions/) as ADRs.
+**Start with its [README](.context/decisions/README.md)** — it carries the full
+index plus a by-area grouping, and is the fastest way to find the decision that
+covers what you are about to change.
+
+Read the relevant one before changing behavior it covers; several exist
+specifically because the decision looks like an inconsistency worth "cleaning
+up", and the cleanup would reopen a security hole. Each ADR carries its
+evidence, not just its conclusion.
+
 ## Quick Start
 
 ```bash
@@ -101,7 +149,14 @@ registers itself in live-sessions.
 | Method | When to use |
 |---|---|
 | Direct connection | Same Wi-Fi, Tailscale, VPN, SSH tunnel |
-| Signaling + WebRTC | No direct access (STUN / TURN fallback) |
+| Signaling relay | No direct access. Every protocol message is carried by the Cloudflare Worker |
+
+**There is no WebRTC.** No `RTCPeerConnection` or data channel exists anywhere
+in this repo. The worker was built to relay a *handshake*, with WebRTC intended
+to carry the session; that second half was never implemented, so the relay
+became the data transport by default and is the only remote path there is.
+Anything describing a peer-to-peer path, DTLS, or TURN relaying opaque blobs is
+describing an intention, not this codebase (#543).
 
 ## Question Detection and Notifications
 
@@ -133,6 +188,38 @@ See `.context/notification-and-session-flow.md` for the full flow diagram.
 - Signaling server (Cloudflare Worker) relays push payloads to APNS.
 - iOS categories `REMI_YN`, `REMI_YNA`, `REMI_MULTI` registered in `AppDelegate.swift`.
 
+**Push classes and who can mute them** (#968):
+
+Every push carries an explicit `kind`. Before that field existed the classes
+were told apart by a NEGATIVE test ("no `questionId`, no `category`") which
+could not distinguish turn-complete from a subagent alert at all — on the wire
+those two are both exactly `{token, title, body}`.
+
+| `kind` | Fires on | Mutable per device |
+|---|---|---|
+| `question` | permission prompt, escalation, hold-timeout handoff | yes, `pushPrefs.questions` |
+| `turn_complete` | `Stop` after a turn ≥ `turn_complete_min_seconds` (#914) | yes, `pushPrefs.turnComplete` |
+| `subagent_alert` | a background agent matched `auto_approve.subagent_alert` | no — the pattern list IS the control |
+| `dismiss` | quiet `content-available` clearing a resolved card | **no, deliberately** |
+
+- **A client cannot mute APNS on its own.** The path is daemon → Worker → APNS
+  and never consults the client, so a client-side switch is decoration. It
+  literally was: `settings.notifications` was written by the settings panel and
+  read by nothing. Preferences ride up on `register_device_token` (idempotent
+  and keyed by token, so a toggle change is just a re-register) and the daemon
+  filters its per-token fan-out in `notifications/push-preferences.ts`.
+- **Never filter `dismiss`.** A muted device can still hold a card delivered
+  before the mute; dropping its dismissal strands that card on the lock screen
+  of the device that asked for less noise.
+- **A muted fan-out must report `no_channel`, not `pushed`.** `awaitDelivery`
+  decides whether a held hook keeps Claude blocked; claiming delivery for a
+  fan-out of zero blocks the hook on a card nobody will ever see.
+- Malformed preferences fail toward DELIVERING (`sanitizePushPreferences`). A
+  wrongly-delivered notification is a nuisance; a wrongly-dropped one is the
+  product failing at its only job.
+- `notifications.on_turn_complete = false` in `config.toml` stays the
+  machine-wide master switch and wins over any per-device preference.
+
 **Constraints from real logs (2026-04-12 analysis, updated #718 2026-07-06):**
 
 - Bash `PermissionRequest` may have `permission_suggestions=undefined` (no suggestions), a legacy plain-string label array (e.g. Edit's `["Yes","Always","No"]`), or — since ~Claude Code 2.0.54 — a STRUCTURED array of typed "permission update entries" (`addRules`, `addDirectories`, `setMode`, `removeRules`, `replaceRules`, `removeDirectories`, each carrying `behavior`/`destination`; ground truth: code.claude.com/docs/en/hooks).
@@ -154,9 +241,22 @@ See `.context/notification-and-session-flow.md` for the full flow diagram.
 
 ## Core Principles
 
-1. **Zero friction** — WebRTC provides DTLS encryption automatically.
+1. **Zero friction** — pairing is a code, not an account.
 2. **Reliable messaging** — WhatsApp-style states (sending → sent → delivered → read).
-3. **No data in cloud** — peer-to-peer when possible; TURN only relays encrypted blobs.
+3. **No data in cloud** — the relay should carry ciphertext it cannot read, so the
+   worker is a courier and not a reader. **This is still a goal, not a
+   description.** #543 built the encryption; #881 is that it engages only when an
+   `authenticator` is present, which `cli.ts` supplies only in permanent-code
+   mode — so a default install, and even `--auth` alone, never derives session
+   keys. Outbound then REFUSES to send (a breakage, not a leak) while inbound
+   still ACCEPTS plaintext (a leak). Name the direction; conflating them is how
+   the first draft of this very row got it wrong.
+   The principle as previously written ("peer-to-peer when possible; TURN only
+   relays encrypted blobs") described a WebRTC design that was never built, which
+   is precisely why nobody noticed the worker was receiving plaintext
+   `user_input`, answers and device tokens for months. Direct connections (LAN,
+   Tailscale, VPN, SSH tunnel) genuinely never touch a server; that part is true
+   today. State what ships, not what was intended.
 4. **Graceful degradation** — if parsing fails, show raw text.
 
 ## Branch Strategy

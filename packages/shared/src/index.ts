@@ -49,6 +49,9 @@ export { DAEMON_BASE_PORT, DAEMON_PORT_RANGE } from './daemon-ports.ts';
 // Protocol
 export type {
   ProtocolMessage,
+  ProtocolMessageMap,
+  MessageOf,
+  ClientToDaemonType,
   HelloMessage,
   HelloAckMessage,
   AgentOutputMessage,
@@ -91,6 +94,7 @@ export type {
   ResumeSessionResponseMessage,
   DetachSessionMessage,
   DetachSessionAckMessage,
+  PushPreferences,
   RegisterDeviceTokenMessage,
   UnregisterDeviceTokenMessage,
   DaemonUpdateAvailableMessage,
@@ -112,6 +116,7 @@ export {
   now,
   serialize,
   deserialize,
+  MESSAGE_DIRECTION,
   createHello,
   createHelloAck,
   createAgentOutput,
@@ -159,11 +164,18 @@ export {
   createQuestionResolved,
   createRemiStatus,
   createQuestionSnapshot,
+  isValidMessage,
   MessageIdTracker,
 } from './protocol.ts';
 
+// Total-dispatch helpers over the protocol registry (#896)
+export type { MessageHandlers } from './dispatch.ts';
+export { dispatchMessage, assertNever } from './dispatch.ts';
+
 // Crypto
 export type { Base64, Fingerprint, RawKeyPair, ExportedKeyPair, EncryptedData } from './crypto.ts';
+export * from './relay-crypto.ts';
+export * from './sealed-answer.ts';
 export {
   PBKDF2_ITERATIONS,
   SALT_SIZE,

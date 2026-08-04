@@ -277,6 +277,19 @@ function createQuestion(
     options,
     allowsFreeText,
     isAnswered: false,
+    // #920/#888: every PTY-parsed question is source 'pty' by construction --
+    // this is the ONLY parser in the daemon that mints a Question straight
+    // from screen text, never from a hook. Undocumented before this (the
+    // shared type's own doc said "PTY-parsed prompts are 'pty'" but nothing
+    // ever set it), which is why the resulting source-less cohort was
+    // invisible in the #808/#920 capture: 12 of 29 added were never removed.
+    // `QuestionPresenceTracker.consumeAndMerge` overrides this with the
+    // hook's own `source` when a hook record pairs with the render (a
+    // hook-paired question DOES have a removal path via the tool signature);
+    // this default only survives to a client-visible question for a
+    // genuinely hook-less prompt, which is exactly the cohort #888's
+    // render-resolution transition exists to resolve.
+    source: 'pty',
   };
 }
 

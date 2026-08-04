@@ -62,6 +62,8 @@
 
 import { errorToString } from '@remi/shared';
 
+import { findModel } from './model-identity.ts';
+
 /** One model in the engine's catalogue (`LLMModelInfo`). `sizeBytes` and
  *  `latencyHintMs` are optional on the wire so future backends can omit them;
  *  treat them as hints, never as invariants. */
@@ -560,8 +562,16 @@ export async function pullModel(
   const sleep = opts.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
 
   // Already on disk: nothing to fetch. Cheap, and it makes `pull` idempotent.
+  //
+  // #971: matched under EITHER name. `model` comes from config, whose shipped
+  // default is the repo id (`YoozLabs/...`), while the inventory row's `id` is
+  // the engine nickname (`yooz-instruct-4b`) and carries the repo id in
+  // `huggingFaceID`. Comparing `id` to `id` alone reported a cached, loaded,
+  // working model as missing — so this short-circuit never fired, a redundant
+  // download was dispatched, and the poll below ran to its full 30-minute
+  // timeout on every daemon start.
   const before = await listManagedModels(baseUrl).catch(() => [] as readonly ManagedModel[]);
-  if (before.some((m) => m.id === model && m.cached)) return;
+  if (findModel(before, model)?.cached) return;
 
   // Deliberately NOT wrapped: an unknown model id is a 400 from the engine and
   // must fail immediately with that message, not enter the poll loop.
@@ -572,8 +582,16 @@ export async function pullModel(
   let firstFraction: number | undefined;
   let sawInFlight = false;
   let consecutiveUnreachable = 0;
+  // The id to probe `/v1/state` with (#971). Unlike the inventory, state rows
+  // carry ONLY `id` — no `huggingFaceID` — so a repo-shaped configured name has
+  // to be translated through the inventory or every probe misses and the loop
+  // observes nothing until it times out. Falls back to `model` itself when the
+  // inventory does not (yet) name it: correct for an engine that predates the
+  // alias field, and self-correcting once the row appears (refreshed at the
+  // bottom of the loop).
+  let probeId = findModel(before, model)?.id ?? model;
   for (;;) {
-    const row = await getModelState(baseUrl, model).catch(() => undefined);
+    const row = await getModelState(baseUrl, probeId).catch(() => undefined);
     if (row === undefined) {
       // Distinguish "engine went away" from "slow download" — otherwise a
       // crash mid-pull is indistinguishable from progress for 30 minutes.
@@ -614,7 +632,13 @@ export async function pullModel(
     const inventory = await listManagedModels(baseUrl).catch(
       () => undefined as readonly ManagedModel[] | undefined,
     );
-    if (inventory?.some((m) => m.id === model && m.cached)) return;
+    // #971: same either-name match as the short-circuit above.
+    const inventoryRow = inventory === undefined ? undefined : findModel(inventory, model);
+    if (inventoryRow?.cached) return;
+    // The row can appear mid-download (the engine registers it once the fetch
+    // is under way), which is the point at which a repo-shaped configured name
+    // becomes translatable — so adopt the canonical id for the next probe.
+    if (inventoryRow !== undefined) probeId = inventoryRow.id;
 
     if (now() >= deadline) {
       throw new Error(

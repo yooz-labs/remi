@@ -25,6 +25,7 @@ import {
   fromBase64,
   generateChallenge,
   importPublicKey,
+  kexSigningInput,
   sign,
   verify,
 } from '@remi/shared';
@@ -59,6 +60,8 @@ export class Authenticator {
   private readonly identity: UnlockedIdentity;
   private readonly store: IdentityStore;
   private readonly tofuMode: TofuMode;
+  /** Published in every challenge so phones can pin it (#875). */
+  private answerEncryptionKey: string | undefined;
   /** Active challenges keyed by connection ID */
   private readonly pendingChallenges = new Map<string, string>();
 
@@ -72,10 +75,89 @@ export class Authenticator {
    * Create an auth challenge for a new connection.
    * @param connectionId Unique connection identifier to track the challenge
    */
+  /**
+   * Publish the daemon's answer key (#875). Set once at startup; absent means
+   * clients must refuse to send a lock-screen answer rather than send plaintext.
+   */
+  setAnswerEncryptionKey(publicKeyBase64: string): void {
+    this.answerEncryptionKey = publicKeyBase64;
+  }
+
   createChallenge(connectionId: string): AuthChallengeMessage {
     const challenge = generateChallenge();
     this.pendingChallenges.set(connectionId, challenge);
-    return createAuthChallenge(challenge, this.identity.fingerprint, this.identity.publicKeyRaw);
+    return createAuthChallenge(
+      challenge,
+      this.identity.fingerprint,
+      this.identity.publicKeyRaw,
+      undefined,
+      this.answerEncryptionKey,
+    );
+  }
+
+  /**
+   * Create an auth challenge that also opens the relay key exchange (#543).
+   *
+   * Lives here rather than in the relay adapter because signing needs the
+   * identity private key, which the Authenticator owns and does not hand out.
+   * The signature is what makes the exchange authenticated: the worker relays
+   * these fields and can replace them, but cannot produce a signature over a
+   * substituted key that the client will accept.
+   *
+   * Used ONLY by the relay transport. The direct WebSocket path calls
+   * `createChallenge` and is unaffected.
+   */
+  async createChallengeWithRelayKex(
+    connectionId: string,
+    ephemeralPublicKeyBase64: string,
+  ): Promise<AuthChallengeMessage> {
+    const challenge = generateChallenge();
+    this.pendingChallenges.set(connectionId, challenge);
+    const signature = await sign(
+      this.identity.privateKey,
+      kexSigningInput(challenge, ephemeralPublicKeyBase64, null),
+    );
+    return createAuthChallenge(
+      challenge,
+      this.identity.fingerprint,
+      this.identity.publicKeyRaw,
+      { ephemeralKey: ephemeralPublicKeyBase64, signature },
+      this.answerEncryptionKey,
+    );
+  }
+
+  /**
+   * Verify the client's half of the relay key exchange (#543).
+   *
+   * Separate from `verifyResponse` on purpose: that call proves who the client
+   * is, this one proves the ephemeral key came from that same client. Both must
+   * pass before any traffic is encrypted, and the caller must treat a false
+   * here as fatal to the connection rather than as "encryption unavailable" —
+   * silently continuing in plaintext is the exact failure this issue is about.
+   *
+   * Takes the challenge as an argument rather than reading `pendingChallenges`,
+   * because `verifyResponse` consumes that entry. Looking it up here made the
+   * result depend on call order, which failed closed but for the wrong reason.
+   */
+  async verifyRelayKex(
+    challenge: string,
+    response: AuthResponseMessage,
+    daemonEphemeralKeyBase64: string,
+  ): Promise<boolean> {
+    if (!challenge) return false;
+    const { relayEphemeralKey, relayKexSignature } = response;
+    if (!relayEphemeralKey || !relayKexSignature) return false;
+    try {
+      const clientKey = await importPublicKey(fromBase64(response.clientPublicKey));
+      return await verify(
+        clientKey,
+        kexSigningInput(challenge, daemonEphemeralKeyBase64, relayEphemeralKey),
+        relayKexSignature,
+      );
+    } catch {
+      // A malformed key or signature is a failed verification, not a crash.
+      return false;
+    }
   }
 
   /**

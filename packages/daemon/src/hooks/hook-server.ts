@@ -4,12 +4,31 @@
  * Claude Code posts JSON to this endpoint when configured hooks fire.
  * The server parses the payload and emits typed events for the daemon
  * to consume (status changes, question detection, session info).
+ *
+ * ## Browsers are refused outright (#535)
+ *
+ * This is a loopback listener that drives permission handling, so it is the
+ * same drive-by target as the WebSocket. It is in fact softer: `req.json()`
+ * ignores `Content-Type`, so a page can POST a forged hook body as a
+ * CORS-"simple" request (`text/plain`, `mode: 'no-cors'`) with no preflight to
+ * negotiate, and never needs to read the reply. A forged `PermissionRequest`
+ * with an unknown `session_id` reaches `ForeignSessionEscalator`, which pushes
+ * an informational "Claude needs your permission" notification to the user's
+ * phone; with a known one it consumes an eval-queue slot ahead of real prompts.
+ * Only the ephemeral port stands between a page and either, and obscurity is
+ * not a control.
+ *
+ * The legitimate caller is Claude Code's own `type: 'http'` hook, a native
+ * client that sends no `Origin` header, so the policy here is stricter than
+ * `origin-policy.ts`: ANY `Origin` is refused. No browser has business posting
+ * a hook, including remi's own clients.
  */
 
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { errorToString } from '@remi/shared';
+import { debugProvenance } from '../debug/provenance.ts';
 import type {
   HookInput,
   NotificationHookInput,
@@ -39,6 +58,18 @@ export interface HookServerEvents {
   onStopFailure: (input: StopFailureHookInput) => void;
   onSessionEnd: (input: SessionEndHookInput) => void;
   onError: (error: Error) => void;
+  /**
+   * Fired for EVERY accepted hook event (any `hook_event_name`, known or
+   * not), before the event-specific dispatch below -- including a
+   * `PermissionRequest` handled by the synchronous resolver, which otherwise
+   * returns early and never reaches `dispatch()` (#914). Exists so a caller
+   * can observe a signal common to all events (e.g. `prompt_id`, present on
+   * every hook payload) without registering a typed handler or a dynamic
+   * `on()` listener for each event name individually. Wrapped in the same
+   * try/catch as every other event callback: a bug here must never affect
+   * the hook response Claude Code is blocking on.
+   */
+  onAnyEvent: (input: HookInput) => void;
 }
 
 /** Maps hook event names to their input types, derived from the HookInput union */
@@ -72,7 +103,33 @@ export type PermissionDecision =
   | 'allow'
   | 'deny'
   | 'passthrough'
-  | { readonly behavior: 'allow'; readonly updatedPermissions: readonly unknown[] };
+  | { readonly behavior: 'allow'; readonly updatedPermissions: readonly unknown[] }
+  /**
+   * A deny that tells Claude WHY (#976). Per the official hooks reference's
+   * PermissionRequest decision-control table:
+   *
+   *   `message`   — "For `deny` only: tells Claude why the permission was denied"
+   *   `interrupt` — "For `deny` only: if `true`, stops Claude"
+   *
+   * So `message` is MODEL-directed, not terminal-UI-directed (PreToolUse's
+   * `permissionDecisionReason` is the field that splits those two audiences;
+   * this event has no user-facing variant at all). With `interrupt` absent or
+   * false the turn continues, so Claude has seen the reason and can act on it —
+   * route around with a safer command, or ask the user directly.
+   *
+   * That last step is the documented LIMIT worth respecting: the docs guarantee
+   * Claude is not stopped and has been told why. They do NOT say it will then
+   * ask the user. Treat "Claude asks" as an expectation to verify by
+   * observation, never as a contract.
+   *
+   * The bare `'deny'` string above stays valid and equivalent to omitting the
+   * message — every existing caller keeps working unchanged.
+   */
+  | {
+      readonly behavior: 'deny';
+      readonly message?: string;
+      readonly interrupt?: boolean;
+    };
 
 export type PermissionResolver = (input: PermissionRequestHookInput) => Promise<PermissionDecision>;
 
@@ -171,6 +228,18 @@ export class HookServer {
   private async handleRequest(req: Request): Promise<Response> {
     const url = new URL(req.url);
 
+    // A browser is never a legitimate caller here (#535). Checked before the
+    // route match so a page cannot even probe which paths exist.
+    const origin = req.headers.get('origin');
+    if (origin !== null) {
+      this.events.onError?.(
+        new Error(
+          `Refused a hook POST carrying Origin ${origin}: only Claude Code posts hooks, and it sends no Origin (#535).`,
+        ),
+      );
+      return new Response('Forbidden origin', { status: 403 });
+    }
+
     if (req.method !== 'POST' || url.pathname !== '/hooks') {
       return new Response('Not Found', { status: 404 });
     }
@@ -189,9 +258,20 @@ export class HookServer {
     // Diagnostic dump: when REMI_HOOK_DEBUG=1, write every raw hook payload
     // to ~/.remi/hook-diag.jsonl for inspecting what Claude Code actually sends.
     // Used to investigate team/subagent event filtering (issue #316).
+    //
+    // `_provenance` (#934): `handleRequest` cannot tell a test's POST from
+    // Claude Code's -- both are HTTP requests to this same loopback listener
+    // with a valid `hook_event_name`. Stamped on every line so a reader (and
+    // the corpus builder, `fixtures/build-hook-corpus.ts`) can filter
+    // synthetic records by a real field instead of a path convention. See
+    // `debug/provenance.ts` for why this is a stamp, not a write gate.
     if (process.env['REMI_HOOK_DEBUG'] === '1') {
       try {
-        const logLine = JSON.stringify({ _ts: new Date().toISOString(), ...body });
+        const logLine = JSON.stringify({
+          _ts: new Date().toISOString(),
+          _provenance: debugProvenance(),
+          ...body,
+        });
         const remiDir = path.join(os.homedir(), '.remi');
         const logPath = path.join(remiDir, 'hook-diag.jsonl');
         fs.mkdirSync(remiDir, { recursive: true });
@@ -215,6 +295,14 @@ export class HookServer {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    // Central any-event hook (#914), fired before either branch below so it
+    // also sees a PermissionRequest handled by the synchronous resolver.
+    try {
+      this.events.onAnyEvent?.(body as unknown as HookInput);
+    } catch (err) {
+      this.events.onError?.(err instanceof Error ? err : new Error(String(err)));
     }
 
     // Synchronous PermissionRequest decision (#496). When a resolver is

@@ -7,12 +7,22 @@ import {
   createTerminalResize,
   createUserInput,
   deserialize,
+  dispatchMessage,
   generateId,
   serialize,
 } from '@remi/shared';
-import type { ProtocolMessage, Question, RemiStatus, UUID } from '@remi/shared';
+import type {
+  MessageHandlers,
+  ProtocolMessage,
+  ProtocolMessageMap,
+  Question,
+  RemiStatus,
+  UUID,
+} from '@remi/shared';
 import { performAuthHandshake } from './auth-helper.ts';
+import { capabilityWsOptions } from './capability-client.ts';
 import { DetachScanner } from './detach-scanner.ts';
+import { PtyQuiescenceGate } from './pty-quiescence-gate.ts';
 import { StatusBar, childRows } from './status-bar.ts';
 
 export interface AttachClientOptions {
@@ -22,6 +32,11 @@ export interface AttachClientOptions {
   timeout?: number;
   /** File descriptor for output. Defaults to 1 (stdout). Override in tests. */
   outputFd?: number;
+  /** Whether the reserved-row status bar (#754) is eligible to start.
+   *  Defaults to `process.stdout.isTTY === true`, same as production. Tests
+   *  run without a real TTY, so this is the hook that lets them exercise the
+   *  bar's actual wiring (including #932's `hasLiveQuestions`) end to end. */
+  statusBarEligible?: boolean;
 }
 
 export interface AttachClientResult {
@@ -50,9 +65,31 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
   // #754: latest daemon status snapshot (remi_status broadcast) + the
   // reserved-row bar rendering it — the same StatusBar the wrapper draws.
   // Only on a real TTY: piped/test output must never receive bar escapes.
-  const statusBarEligible = process.stdout.isTTY === true;
+  const statusBarEligible = opts.statusBarEligible ?? process.stdout.isTTY === true;
   let latestStatus: RemiStatus | null = null;
   let statusBar: StatusBar | null = null;
+  // #932: the authoritative live-question id set for this session, kept
+  // current by `question_snapshot` (sent unconditionally on attach via
+  // `resendPendingQuestions`, and again on every change via
+  // `onQuestionsChanged` -- see that broadcast's doc). Mirrors the wrapper's
+  // own `hasLiveQuestions` (`cli.ts:1525`,
+  // `sessionRegistry.getSession(id)?.currentQuestions.size > 0`) using data
+  // this client already receives, so the attach-path bar gets the same
+  // pause-while-live protection as the wrapper bar.
+  let liveQuestionIds = new Set<UUID>();
+  // #932: whether at least one `question_snapshot` has been observed for
+  // this attach cycle. `startStatusBar()`'s first paint must not run before
+  // this is true, or it can read `hasLiveQuestions()` as false for a
+  // session that already has a live question -- see that function's doc.
+  let receivedQuestionSnapshot = false;
+  let questionSnapshotTimer: ReturnType<typeof setTimeout> | null = null;
+  // #932 durable fix: this attach cycle's own quiescence + clean-boundary
+  // gate for `outputFd` -- the same fd `statusBar` draws into. Scoped to
+  // this call (not module-level, unlike the wrapper's `wrapperPtyGate` in
+  // cli.ts) because a fresh `runAttachClient()` call is a fresh terminal
+  // parser state: nothing has been written to `outputFd` yet, so a new gate
+  // starting from "ground, never observed" is exactly right.
+  const ptyGate = new PtyQuiescenceGate();
 
   function writeOutput(text: string): void {
     if (outputBroken) return;
@@ -81,6 +118,10 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
     if (rawPtyTimer) {
       clearTimeout(rawPtyTimer);
       rawPtyTimer = null;
+    }
+    if (questionSnapshotTimer) {
+      clearTimeout(questionSnapshotTimer);
+      questionSnapshotTimer = null;
     }
     if (resizeNudgeTimer) {
       clearTimeout(resizeNudgeTimer);
@@ -136,8 +177,8 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
 
   function writeRawBytes(base64Data: string): void {
     if (outputBroken) return;
+    const buf = Buffer.from(base64Data, 'base64');
     try {
-      const buf = Buffer.from(base64Data, 'base64');
       fs.writeSync(outputFd, buf);
     } catch (err) {
       outputBroken = true;
@@ -145,7 +186,19 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
       if (code !== 'EBADF' && code !== 'EPIPE') {
         process.stderr.write(`[remi] output write failed: ${code ?? err}\n`);
       }
+      return;
     }
+    // #932 durable fix (review finding 2): feed the quiescence +
+    // clean-boundary gate AFTER the real chunk has landed on the wire,
+    // never before -- and outside the write's own try/catch, so a throw
+    // from this callback (e.g. StatusBar's isBoundaryClean/isQuiescent/
+    // hasLiveQuestions predicates) is never misclassified as a write
+    // failure. Same ordering rationale as the wrapper's
+    // `observeLocalPtyOutput` (pty-session-setup.ts): observing before the
+    // write would put the bar's corrective DECSTBM-reasserting paint on
+    // the wire BEFORE the very ESC[r that triggered it, so the reset would
+    // immediately undo the correction instead of the other way around.
+    if (ptyGate.observe(buf)) statusBar?.notifyScrollRegionReset();
   }
 
   /**
@@ -154,8 +207,35 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
    * Reserving the row = reporting `rows - 1` to the daemon's PTY, exactly like
    * wrapper mode; the StatusBar itself is the same class, drawing on this
    * terminal's bottom row from the broadcast snapshots.
+   *
+   * #932: `.start()` paints immediately, so that first paint must not read
+   * `hasLiveQuestions()` before `liveQuestionIds` reflects reality. The
+   * daemon always sends `question_snapshot` -- even empty -- right after
+   * hello_ack (`resendPendingQuestions`), but it necessarily arrives as a
+   * LATER message than the hello_ack/remi_status that can trigger this
+   * call, so calling straight through here could paint "no question" for a
+   * session that already has one live. Deferred (not blocked) until one
+   * arrives, bounded by a short timeout that creates the bar anyway --
+   * `createStatusBar()` bypasses the wait -- so an older daemon that never
+   * sends a snapshot doesn't lose the bar entirely, only that first paint's
+   * protection-1 coverage: the same fail-open default `hasLiveQuestions`
+   * already has elsewhere in this file.
    */
   function startStatusBar(): void {
+    if (!statusBarEligible || statusBar !== null || resolved) return;
+    if (!receivedQuestionSnapshot) {
+      if (!questionSnapshotTimer) {
+        questionSnapshotTimer = setTimeout(() => {
+          questionSnapshotTimer = null;
+          createStatusBar();
+        }, 500);
+      }
+      return;
+    }
+    createStatusBar();
+  }
+
+  function createStatusBar(): void {
     if (!statusBarEligible || statusBar !== null || resolved) return;
     statusBar = new StatusBar({
       getStdoutFd: () => (outputBroken ? null : outputFd),
@@ -165,6 +245,10 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
         rows: process.stdout.rows || 40,
       }),
       isEnabled: () => latestStatus !== null,
+      hasLiveQuestions: () => liveQuestionIds.size > 0,
+      // #932 durable fix: gate every paint on the same `ptyGate` `writeRawBytes` feeds.
+      isBoundaryClean: () => ptyGate.isBoundaryClean(),
+      isQuiescent: () => ptyGate.isQuiescent(),
       log: (msg) => process.stderr.write(`${msg}\n`),
     });
     statusBar.start();
@@ -207,50 +291,117 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
     writeOutput(lines.join(''));
   }
 
+  /**
+   * #898: total dispatch over the full protocol registry, not just the
+   * `d2c`/`both`-tagged subset — `ReplayBatchMessage.messages` is typed
+   * `readonly ProtocolMessage[]` (no direction narrowing), and this function
+   * recurses into it, so a handler map scoped to a `DaemonToClientType`
+   * alias would not type-check against that recursive call without adding a
+   * new runtime narrowing step that doesn't exist today. Sizing the map to
+   * the full `keyof ProtocolMessageMap` is a strictly stronger guarantee
+   * than "every d2c entry decided" (it is a superset), needs no new
+   * machinery, and matches the type `renderMessage` already accepts.
+   *
+   * Rebuilt on every call (not hoisted) because the `question` handler
+   * closes over this call's `inReplay` argument.
+   */
   function renderMessage(msg: ProtocolMessage, inReplay = false): void {
-    switch (msg.type) {
-      case 'raw_pty_output':
+    const handlers: MessageHandlers<keyof ProtocolMessageMap, void> = {
+      raw_pty_output: (m) => {
         receivedRawPty = true;
-        writeRawBytes(msg.data);
-        break;
-      case 'remi_status':
+        writeRawBytes(m.data);
+      },
+      remi_status: (m) => {
         // #754: display state only — never printed as text. The bar's own
         // 250ms repaint loop reads the latest snapshot.
-        latestStatus = msg.status;
+        latestStatus = m.status;
         if (attachedSessionId) startStatusBar();
-        break;
-      case 'question':
+      },
+      question: (m) => {
         // #753: LIVE questions only. Replayed history is not trustworthy for
         // pendingness — question_resolved is broadcast-only (never recorded),
         // so an already-answered question replays indistinguishably from a
         // pending one. The daemon re-sends the authoritative pending set as
         // live messages right after the replay batch, which is what lands here.
-        if (!inReplay) renderQuestionBanner(msg.question);
-        break;
-      case 'question_resolved':
+        if (!inReplay) renderQuestionBanner(m.question);
+      },
+      question_resolved: (m) => {
         // Only acknowledge questions this client actually bannered; resolved
         // broadcasts for questions answered before attach are noise.
-        if (banneredQuestionIds.delete(msg.questionId)) {
+        if (banneredQuestionIds.delete(m.questionId)) {
           writeOutput('\r\n\x1b[2m[remi] question answered\x1b[0m\r\n');
         }
-        break;
-      case 'agent_output':
-      case 'structured_agent_output':
-      case 'session_update':
-      case 'transcript_content':
-        // Suppressed; raw PTY output already provides the full terminal view
-        break;
-      case 'replay_batch':
-        for (const m of msg.messages) {
-          renderMessage(m, true);
+      },
+      // #932: the authoritative live set, always overwritten (never merged --
+      // matches `QuestionStore`'s own "full current set, never a delta"
+      // contract). Feeds the status bar's `hasLiveQuestions`; see
+      // `liveQuestionIds`'s declaration for why this is the right signal.
+      question_snapshot: (m) => {
+        liveQuestionIds = new Set(m.questionIds);
+        if (!receivedQuestionSnapshot) {
+          receivedQuestionSnapshot = true;
+          if (questionSnapshotTimer) {
+            clearTimeout(questionSnapshotTimer);
+            questionSnapshotTimer = null;
+          }
+          // Release a startStatusBar() that deferred waiting for this.
+          if (attachedSessionId) startStatusBar();
         }
-        break;
-      case 'error':
-        writeOutput(`\n[error: ${msg.code} - ${msg.message}]\n`);
-        break;
-      default:
-        break;
-    }
+      },
+      replay_batch: (m) => {
+        for (const nested of m.messages) {
+          renderMessage(nested, true);
+        }
+      },
+      error: (m) => {
+        writeOutput(`\n[error: ${m.code} - ${m.message}]\n`);
+      },
+      // Suppressed; raw PTY output already provides the full terminal view.
+      // Already-explicit no-ops in the pre-#898 switch (same behavior here).
+      agent_output: 'ignore',
+      structured_agent_output: 'ignore',
+      session_update: 'ignore',
+      transcript_content: 'ignore',
+      // Everything below fell through the pre-#898 switch's anonymous
+      // `default: break` — a silent drop. Behavior is unchanged (still a
+      // no-op); the entries are now explicit and greppable (#898). Full
+      // per-type rationale is in the PR description.
+      hello: 'ignore',
+      hello_ack: 'ignore',
+      user_input: 'ignore',
+      ack: 'ignore',
+      edit: 'ignore',
+      answer: 'ignore',
+      ping: 'ignore',
+      pong: 'ignore',
+      bullet_expand_request: 'ignore',
+      bullet_expand_response: 'ignore',
+      session_list_request: 'ignore',
+      session_list_response: 'ignore',
+      transcript_load_request: 'ignore',
+      transcript_load_complete: 'ignore',
+      create_session_request: 'ignore',
+      create_session_response: 'ignore',
+      terminal_resize: 'ignore',
+      auth_challenge: 'ignore',
+      auth_response: 'ignore',
+      auth_result: 'ignore',
+      kill_session_request: 'ignore',
+      kill_session_response: 'ignore',
+      session_history_request: 'ignore',
+      session_history_response: 'ignore',
+      resume_session_request: 'ignore',
+      resume_session_response: 'ignore',
+      detach_session: 'ignore',
+      detach_session_ack: 'ignore',
+      register_device_token: 'ignore',
+      unregister_device_token: 'ignore',
+      daemon_update_available: 'ignore',
+      hub_status: 'ignore',
+      session_rotated: 'ignore',
+      session_views: 'ignore',
+    };
+    dispatchMessage(msg, handlers);
   }
 
   function sendHello(): void {
@@ -271,7 +422,7 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
       resolve(result);
     }
 
-    ws = new WebSocket(url);
+    ws = new WebSocket(url, capabilityWsOptions() as never);
 
     const connectionTimer = setTimeout(() => {
       writeOutput(`\n[timed out connecting to daemon at ${host}:${port}]\n`);

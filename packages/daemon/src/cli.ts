@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.7.3'; // REMI_COMPILED_VERSION
+      return '0.7.4-dev.78'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.7.3'; // REMI_COMPILED_VERSION
+    return '0.7.4-dev.78'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -118,10 +118,16 @@ import {
 } from '@remi/shared';
 import type { ProtocolMessage, UUID, UnlockedIdentity } from '@remi/shared';
 import { isEncrypted, unlockIdentity } from '@remi/shared';
+import type { AnswerKeyPair } from '@remi/shared';
 import { AdapterRegistry, TelegramAdapter, WebSocketAdapter } from './adapters/index.ts';
 import { QuestionPresenceTracker } from './api/question-presence-tracker.ts';
+import { loadOrCreateAnswerKey } from './auth/answer-key.ts';
 import { Authenticator } from './auth/authenticator.ts';
+import { loadOrCreateCapabilityToken } from './auth/capability-token.ts';
 import { IdentityStore } from './auth/identity-store.ts';
+// #976 prerequisite: not re-exported from auto-approve/index.ts on purpose
+// (that barrel is being edited concurrently by other work on the same epic).
+import { deniedBody, deniedOperation, deniedTitle } from './auto-approve/deny-floor.ts';
 import {
   AutoApproveService,
   EngineHost,
@@ -130,6 +136,8 @@ import {
   alertTitle,
   resolveProviderUrl,
 } from './auto-approve/index.ts';
+import type { PrecedentStore } from './auto-approve/precedent.ts';
+import type { DenySource } from './auto-approve/types.ts';
 import { detectAutostartState } from './cli/autostart-state.ts';
 import { resolveClaudeBinding } from './cli/claude-binding.ts';
 import { runConfigCommand } from './cli/cmd-config.ts';
@@ -163,6 +171,7 @@ import type { LiveSessionsCollectResult } from './cli/live-sessions-watcher.ts';
 import { startLiveSessionsWatcher } from './cli/live-sessions-watcher.ts';
 import { endLogFileSession, startLogFileSession, writeToLog } from './cli/log-file.ts';
 import { installProcessGuards } from './cli/process-guards.ts';
+import { PtyQuiescenceGate } from './cli/pty-quiescence-gate.ts';
 import { setupHookBridge } from './cli/session-phases/hook-bridge-setup.ts';
 import type { SessionGateHandle } from './cli/session-phases/hook-bridge-setup.ts';
 import { createMessageApiForSession } from './cli/session-phases/message-api-setup.ts';
@@ -174,10 +183,16 @@ import { isRemiBinaryPath, startUpdateWatcher } from './cli/update-watcher.ts';
 import { applyEnvOverrides, detectLocalLLMPlatform, loadConfig } from './config/index.ts';
 import type { RemiConfig } from './config/index.ts';
 import { ForeignSessionEscalator, HookConfigManager, HookServer } from './hooks/index.ts';
-import type { PermissionRequestHookInput } from './hooks/index.ts';
+import type { HookInput, PermissionRequestHookInput, StopHookInput } from './hooks/index.ts';
 import { DeviceTokenStore } from './notifications/device-token-store.ts';
 import type { NotificationDispatcher } from './notifications/notification-dispatcher.ts';
 import { sendPushTrigger } from './notifications/push-client.ts';
+import { tokensWanting } from './notifications/push-preferences.ts';
+import {
+  TurnTimer,
+  buildTurnCompleteText,
+  shouldNotifyTurnComplete,
+} from './notifications/turn-timer.ts';
 import { OutputProcessor } from './parser/output-processor.ts';
 import { PTYManager, type PTYSession } from './pty/index.ts';
 import {
@@ -1004,6 +1019,34 @@ const binderClosers: Map<UUID, () => void> = new Map();
 // (multi-session daemons). Populated in createNewSession after setupHookBridge;
 // removed on session close. Empty when no hookServer is configured.
 const sessionGateHandles: Map<UUID, SessionGateHandle> = new Map();
+// Per-session QuestionPresenceTracker (#920): the answer handler needs
+// `isPromptCurrent` to refuse a PTY submit for a `source: 'pty'` card whose
+// on-screen prompt is already gone (input-events.ts's prompt-currency
+// guard). Unlike `sessionGateHandles`, a tracker is constructed for EVERY
+// session in `createNewSession` regardless of whether a hook server is
+// active, so this map is populated unconditionally there; removed on
+// session close, same lifecycle as the other per-session maps below.
+const sessionTrackers: Map<UUID, QuestionPresenceTracker> = new Map();
+// Per-session precedent stores (#976 prerequisite, `auto-approve/precedent.ts`):
+// keyed by sessionId, same shape as `sessionGateHandles`, so `handleAnswer`
+// (input-events.ts) can record a human-classified answer into the RIGHT
+// session's store via the `recordPrecedent` dependency below. Populated from
+// `hookBridgeHandle.precedentStore` after `setupHookBridge`; empty when no
+// hookServer is configured (a `permission_request`-sourced Question, the only
+// kind precedent ever records, cannot exist without one).
+const sessionPrecedentStores: Map<UUID, PrecedentStore> = new Map();
+/**
+ * Per-session "does this binder claim the event?" filters (#914).
+ *
+ * Listeners registered INSIDE `setupHookBridge` all consult `binder.admits()`.
+ * `onTurnStop` is registered out here, so it needs the same filter: two daemons
+ * in the SAME project directory each append their own matcher to the shared
+ * `.claude/settings.local.json` hooks array, and Claude Code POSTs every event
+ * to both. Unfiltered, this daemon would push "turn complete" for a sibling's
+ * turn, labelled with THIS session's name and carrying the sibling's output --
+ * a false "done" for a session that may still be working.
+ */
+const sessionAdmitsHandles: Map<UUID, (input: HookInput) => boolean> = new Map();
 /**
  * Force-release every session's gate (#617, `remi unstick` -> SIGUSR2): the "just
  * get me out" lever when an LLM eval + a question are stuck and the phone has no
@@ -1085,6 +1128,19 @@ const sessionRegistry = new SessionRegistry(
       // Drop the per-session gate handle (#573); any held hook was already
       // released by the gate's closeBinder/cancelStale on teardown.
       sessionGateHandles.delete(sessionId);
+      // Drop the per-session QuestionPresenceTracker (#920): a stale entry
+      // here would make `isPromptCurrent` resolve against a dead session's
+      // last-observed PTY state instead of falling back to "no tracker".
+      sessionTrackers.delete(sessionId);
+      // Drop the per-session precedent store (#976 prerequisite): the store
+      // itself is already cleared on /clear-style rotation inside
+      // setupHookBridge; this is the separate full-session-teardown case
+      // (the ManagedSession itself is gone), so the Map entry must go too or
+      // it lingers for the rest of the daemon's process life.
+      sessionPrecedentStores.delete(sessionId);
+      // #914: drop the admits filter with the session, so a closed session's
+      // binder can never keep admitting turns on its behalf.
+      sessionAdmitsHandles.delete(sessionId);
       // Drop the per-session APNS dispatcher (#585, P7).
       sessionNotifiers.delete(sessionId);
       const watcher = transcriptWatchers.get(sessionId);
@@ -1148,6 +1204,7 @@ const sessionRegistry = new SessionRegistry(
         action: 'snapshot_broadcast',
         sessionId,
         signal: 'onQuestionsChanged',
+        callSite: 'cli.ts:onQuestionsChanged',
         detail: { liveQuestionIds: questions.map((q) => q.id) },
       });
     },
@@ -1227,8 +1284,166 @@ function onSubagentPassthrough(input: PermissionRequestHookInput): void {
       title,
       body,
       ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
+      kind: 'subagent_alert',
     }).catch((err) => {
       logError('[SubagentAlert] push failed:', err);
+    });
+  }
+}
+
+/**
+ * Report an auto-approve `deny` (#1015).
+ *
+ * A deny is the only verdict with no user-facing surface of its own: it builds
+ * no `Question`, so nothing is pushed, nothing is broadcast, and nothing lands
+ * in history to scroll back to. Claude gets `buildDenyMessage` and the human
+ * gets nothing at all.
+ *
+ * Two channels, deliberately asymmetric:
+ *
+ * - **Log, always, both sources.** Unconditional and NOT gated on
+ *   `log_decisions` — that flag governs the routine per-decision trace, and a
+ *   refusal is not routine. Same reasoning as `onSubagentPassthrough` above:
+ *   the push can fail or be throttled downstream, so the local record is what
+ *   makes the decision auditable at all.
+ * - **Push, `model-floor` only.** A `config` deny is the user's own standing
+ *   rule in `config.toml` firing exactly as written; notifying them about it
+ *   is telling them what they already decided. A `model-floor` deny is the
+ *   opposite — the model refused and `matchesCatastrophicPattern` happened to
+ *   agree, which #997 measured going wrong 7 times in 8 on real traffic. That
+ *   is the one nobody chose.
+ *
+ * Fire-and-forget: the gate has already answered the hook, so this must never
+ * delay or throw into it.
+ */
+function onAutoDenied(
+  input: PermissionRequestHookInput,
+  source: DenySource,
+  reasoning: string,
+): void {
+  const op = deniedOperation(input.tool_name, input.tool_input, source.pattern);
+  const title = deniedTitle(op);
+  const body = deniedBody(op);
+  log(`[AutoDenied ${source.kind}] ${title} - ${body} (${reasoning})`);
+
+  if (source.kind !== 'model-floor') return;
+  if (deviceTokens.size === 0) return;
+  const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
+  for (const dt of deviceTokens.values()) {
+    // Deliberately no `category` / `options` / `questionId`: the operation is
+    // already refused and there is nothing for the user to answer. Same
+    // dismiss-only convention as the subagent alert above.
+    void sendPushTrigger(signalingUrl, dt.token, {
+      title,
+      body,
+      ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
+      kind: 'auto_denied',
+    }).catch((err) => {
+      logError('[AutoDenied] push failed:', err);
+    });
+  }
+}
+
+// Daemon-wide turn-duration tracker (#914). Fed from HookServer's onAnyEvent
+// for every hook event (see the two HookServer constructions below), keyed
+// on `prompt_id` -- present on every hook payload's common fields. Originally
+// cost no DEDICATED hook registration (it rode whatever events were already
+// registered for other reasons); since #893 registered `UserPromptSubmit`
+// (for the auto-approve authority summary, unrelated to this tracker), that
+// event is now ALSO the earliest one `onAnyEvent` sees per turn, so
+// `elapsedMs` measures from actual prompt submission instead of
+// approximating from the first tool-use/permission event -- see turn-timer.ts
+// for the accuracy/notification-threshold consequence. See turn-timer.ts for
+// why the map is safe to share across the daemon's one session.
+const turnTimer = new TurnTimer();
+
+/**
+ * Push a "turn complete" notification when `Stop` reports a genuinely long,
+ * non-reentrant turn (#914). Config-gated (default on, 60s) and fails toward
+ * silence on any unknown signal -- see `shouldNotifyTurnComplete`. Fire-and-
+ * forget, mirroring `onSubagentPassthrough` immediately above: a notification
+ * bug must never delay or break the hook response Claude is blocking on.
+ *
+ * Deliberately does NOT check `hook-bridge-setup.ts`'s `binder.admits()` (the
+ * transcript-binding validity gate its own Stop listener uses) -- that state
+ * lives inside that file's closure, and this listener is a second, additive
+ * `hookServer.on('Stop', ...)` registration that intentionally never touches
+ * it (#914 scope: Q2 owns hook-bridge-setup.ts). remi is one session per
+ * daemon, so every Stop this process's own hookServer sees is this session's;
+ * the narrow gap that leaves is a resumed/rotated session mid-race, which
+ * `shouldNotifyTurnComplete`'s own gates (unknown elapsed, empty message)
+ * catch most instances of anyway.
+ */
+function onTurnStop(input: StopHookInput): void {
+  // Session filter FIRST (#914). Claude Code broadcasts every event to every
+  // daemon registered for the directory, so an unfiltered Stop here is very
+  // likely a sibling's. Note the timer cannot save us: `onAnyEvent` observes
+  // sibling events too, so `elapsedMs` comes back populated and plausible.
+  // Fail closed -- no admitting session means we do not claim this turn.
+  let admitted = false;
+  for (const admits of sessionAdmitsHandles.values()) {
+    try {
+      if (admits(input)) {
+        admitted = true;
+        break;
+      }
+    } catch {
+      // A binder that throws must not break the hook path; treat as not ours.
+    }
+  }
+  if (!admitted) return;
+
+  const elapsedMs = turnTimer.elapsedMs(input.prompt_id);
+  // A stop-hook re-entry means the turn is still going, not finished -- do
+  // NOT clear the mark for it: the eventual real Stop still needs the turn's
+  // original first-seen time to measure the full duration.
+  // `shouldNotifyTurnComplete` below is the single source of truth for
+  // never notifying on a re-entry; this only gates the clear's timing.
+  if (!input.stop_hook_active) {
+    turnTimer.clear(input.prompt_id);
+  }
+
+  // Devices that want turn-complete pushes (#968). Resolved BEFORE the gate so
+  // `hasDeviceTokens` means "someone will actually receive this", not merely
+  // "a token exists": a machine whose every device muted turn-complete stops at
+  // the gate instead of building text and fanning out to nobody. The
+  // machine-wide `notifications.on_turn_complete` above still wins over any
+  // per-device preference — it is checked first, inside the gate.
+  const wanting = tokensWanting(deviceTokens.values(), 'turn_complete');
+
+  if (
+    !shouldNotifyTurnComplete({
+      onTurnComplete: remiConfig.notifications.on_turn_complete,
+      stopHookActive: input.stop_hook_active,
+      elapsedMs,
+      minSeconds: remiConfig.notifications.turn_complete_min_seconds,
+      lastAssistantMessage: input.last_assistant_message,
+      hasDeviceTokens: wanting.length > 0,
+    })
+  ) {
+    return;
+  }
+
+  const primarySessionId = getPrimarySessionId();
+  const session = primarySessionId ? sessionRegistry.getSession(primarySessionId) : undefined;
+  const sessionName = session?.name || 'Agent';
+  // Non-null: shouldNotifyTurnComplete already required a non-empty message.
+  const { title, body } = buildTurnCompleteText(sessionName, input.last_assistant_message ?? '');
+  log(`[TurnComplete] ${title}`);
+
+  const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
+  for (const dt of wanting) {
+    // Dismiss-only, same convention as onSubagentPassthrough above: no
+    // `category` / `questionId`, it answers nothing. `kind` is what makes it
+    // distinguishable from a subagent alert, which is otherwise identical on
+    // the wire (#968).
+    void sendPushTrigger(signalingUrl, dt.token, {
+      title,
+      body,
+      ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
+      kind: 'turn_complete',
+    }).catch((err) => {
+      logError('[TurnComplete] push failed:', err);
     });
   }
 }
@@ -1329,6 +1544,17 @@ function collectLiveSessionsUpdate(): LiveSessionsCollectResult | null {
 // can clear the row on shutdown.
 let statusBar: StatusBar | null = null;
 
+// #932 durable fix: the quiescence + clean-boundary gate for the wrapper's
+// own local terminal fd -- the same fd `statusBar` draws into. Module-level
+// (like `statusBar`) so `createNewSession`'s `observeLocalPtyOutput` wiring
+// (constructed once, before the bar itself exists) and the bar's own
+// `isBoundaryClean`/`isQuiescent` deps (wired after, in the wrapper block
+// below) share one instance regardless of call order. Harmless to construct
+// unconditionally in daemon mode too: it is only ever fed via
+// `observeLocalPtyOutput`, which `pty-session-setup.ts`'s `onRawData` only
+// invokes when `passThrough` is true -- daemon-mode sessions never feed it.
+const wrapperPtyGate = new PtyQuiescenceGate();
+
 async function startMdnsIfNeeded(
   logFn: (msg: string) => void,
 ): Promise<import('./mdns/mdns-publisher.ts').MdnsPublisher | null> {
@@ -1410,9 +1636,52 @@ async function createNewSession(
   // silent paths never push. `hasLiveQuestions` backs the #712 orphan-prompt
   // fallback: it is how the tracker tells a PTY echo of a gate-pushed
   // escalation (already registered here) apart from a genuine orphan.
+  //
+  // The push callback forwards `messageApi.handleQuestion`'s
+  // `QuestionRegistrationOutcome` return straight through (#888 criterion
+  // iii): the tracker's own confirmed-delivery gate (`pairAndPush`) now
+  // consumes that value directly instead of a separate `isQuestionLive`
+  // dep that re-queried `sessionRegistry.getQuestion` after the fact -- the
+  // deleted dep used to live here.
   const tracker = new QuestionPresenceTracker((q, opts) => messageApi.handleQuestion(q, opts), {
     hasLiveQuestions: () => (sessionRegistry.getSession(sessionId)?.currentQuestions.size ?? 0) > 0,
+    // #888/#920 hard requirement: a hook-less pending question (no
+    // PermissionRequest/Notification ever fired for it) has no tool
+    // signature for AutoApproveGate to resolve it by, so its PTY render
+    // disappearing is its ONLY resolution evidence -- see the tracker's own
+    // module doc. Remove it from the single pendingness owner (which
+    // broadcasts question_snapshot via onQuestionsChanged, #798) and fire the
+    // SAME question_resolved + APNS-dismiss path every other cancellation
+    // route uses (`onQuestionResolved`, defined below in this file) so a
+    // client sees the card clear immediately, not only on the next snapshot.
+    onHooklessQuestionGone: (questionId, reason) => {
+      sessionRegistry.removeQuestion(
+        sessionId,
+        questionId as UUID,
+        reason,
+        undefined,
+        'QuestionPresenceTracker.onHooklessQuestionGone',
+      );
+      onQuestionResolved(sessionId, questionId as UUID, 'cancelled');
+      // #1005 Change B: since this trigger now also fires for HOOK-BORN cards,
+      // removing the card is no longer the whole job -- the gate still holds
+      // bookkeeping for it (`openQuestionSignatures`, and possibly a held
+      // hook keeping Claude blocked). Route it through the gate's own funnel so
+      // the entry is retired rather than left stale, and so a hold, if any, is
+      // released instead of stalling to `hold_timeout`. A no-op when the gate
+      // has nothing for this id.
+      try {
+        sessionGateHandles.get(sessionId)?.releaseHeldAsPassthrough?.(questionId as UUID);
+      } catch (err) {
+        logError(
+          `[QuestionPresenceTracker] gate cleanup for superseded ${questionId.slice(0, 8)} threw: ${errorToString(err)}`,
+        );
+      }
+    },
   });
+  // #920: register this session's tracker so the answer handler's
+  // prompt-currency guard (input-events.ts) can reach it by sessionId.
+  sessionTrackers.set(sessionId, tracker);
 
   const outputProcessor = new OutputProcessor(
     { sessionId, streamStatusOnly: true },
@@ -1430,8 +1699,9 @@ async function createNewSession(
         // phantom-notification source (>1,100 confirmed pushes fired right after a
         // 0 ms approve). But #624/#712 review found real prompts that reach ONLY
         // the PTY (Claude's native Agent-Teams permissions, a passthrough
-        // re-render after a held hook's card was already dismissed, MCP
-        // elicitation dialogs) — those were silently swallowed by the old
+        // re-render after a held hook's card was already dismissed; MCP
+        // elicitation dialogs were a third until #889 registered the
+        // `Elicitation` hook) — those were silently swallowed by the old
         // unconditional suppression. `onOrphanPTYPrompt` tells the two apart
         // structurally (pending hook record / live registered question means the
         // gate owns this cycle) and debounces the genuine orphans before pushing.
@@ -1489,6 +1759,7 @@ async function createNewSession(
         statusWriter,
         foreignSessionEscalator,
         onSubagentPassthrough,
+        onAutoDenied,
         // #573: classify holdable escalations + the hold / slow-eval-push budgets
         // (seconds; the gate converts to ms and treats <=0 as disabled).
         alwaysEscalateTools: new Set(remiConfig.auto_approve.always_escalate_tools),
@@ -1524,6 +1795,11 @@ async function createNewSession(
     // Register the per-session gate handle (#573) so the WebSocket answer path
     // can resolve a held permission / cancel the eval for this exact session.
     sessionGateHandles.set(sessionId, hookBridgeHandle.gate);
+    // #976 prerequisite: same registration for this session's precedent store.
+    sessionPrecedentStores.set(sessionId, hookBridgeHandle.precedentStore);
+    // #914: lets the out-of-bridge turn-complete listener apply the same
+    // session filter every in-bridge listener already uses.
+    sessionAdmitsHandles.set(sessionId, hookBridgeHandle.admits);
   }
 
   const ptySession = createPtySessionForSession(
@@ -1541,6 +1817,14 @@ async function createNewSession(
       onQuestionResolved: (sid, questionId) => onQuestionResolved(sid, questionId, 'answered'),
       cancelAutoApproveForQuestion: (sid, questionId, reason) =>
         sessionGateHandles.get(sid)?.cancelEvalForQuestion(questionId, reason),
+      // #932 durable fix: feed the wrapper's quiescence + clean-boundary
+      // gate with every chunk actually forwarded to the local terminal, and
+      // -- when the chunk completes a bare ESC[r (DECSTBM full-screen
+      // reset) -- ask the bar to repaint immediately instead of leaving row
+      // N unprotected until the next tick or the heartbeat.
+      observeLocalPtyOutput: (data) => {
+        if (wrapperPtyGate.observe(data)) statusBar?.notifyScrollRegionReset();
+      },
     },
     { sessionId, workingDirectory, extraArgs: binding.args, passThrough, reservedRows },
   );
@@ -1723,6 +2007,26 @@ const inputHandlers: InputHandlers = createInputHandlers({
   // every other client.
   onQuestionResolved: (sessionId, questionId) =>
     onQuestionResolved(sessionId, questionId, 'answered'),
+  // #920: prompt-currency guard for a `source: 'pty'` card-answer, backed by
+  // the RIGHT session's tracker (populated per session in createNewSession,
+  // same map-per-sessionId shape as sessionGateHandles above). No tracker for
+  // this sessionId (session already closed, or never wired one) => "not
+  // current" — fail toward refusing the injection.
+  isPromptCurrent: (sessionId, questionId, ptyText) =>
+    sessionTrackers.get(sessionId)?.isPromptCurrent(questionId, ptyText) ?? false,
+  // #1002: the weaker "is ANY prompt on screen" backstop, for the hook-paired
+  // cards `isPromptCurrent` structurally cannot serve. Same map, same
+  // no-tracker-means-refuse default.
+  isPromptObservedOnPTY: (sessionId) =>
+    sessionTrackers.get(sessionId)?.isPromptObservedOnPTY() ?? false,
+  // #976 prerequisite: route a classified answer to the RIGHT session's
+  // precedent store (populated per session in createNewSession, same
+  // map-per-sessionId shape as sessionGateHandles/sessionTrackers above). No
+  // store for this sessionId (no hookServer, or the session already closed)
+  // is a silent no-op -- recording is additive and must never affect the
+  // answer itself.
+  recordPrecedent: (sessionId, toolName, signature, decision) =>
+    sessionPrecedentStores.get(sessionId)?.record(toolName, signature, decision),
 });
 
 const sessionHandlers: SessionHandlers = createSessionHandlers({
@@ -1845,6 +2149,26 @@ const sharedEvents = {
 // Local/private networks don't need auth; relay/public access does.
 // ---------------------------------------------------------------------------
 const bindHost = cliBindHost ?? remiConfig.daemon.bind;
+
+// Local capability token (#869). Created on first run with mode 0600 so the
+// CLI can prove it is a local client without a TOFU round trip. Generated
+// unconditionally, even while `require_local_auth` is false, so that turning
+// the flag on later never has to also create a secret mid-flight.
+//
+// NOT fatal if it cannot be written. An unwritable `~/.remi` is a broken
+// environment and the daemon says so a few lines later when the PID file
+// fails, which is the more useful error; dying here would replace it with a
+// worse one. Running with no token fails CLOSED: `capabilityTokenMatches`
+// rejects an empty expected value, so nobody is admitted by this path and
+// local clients fall back to the Ed25519 challenge.
+let localCapabilityToken = '';
+try {
+  localCapabilityToken = loadOrCreateCapabilityToken(undefined, logError);
+} catch (err) {
+  logError(
+    `[capability] could not create the local capability token: ${errorToString(err)}. Local clients will be challenged instead.`,
+  );
+}
 const isLocalhostBind = bindHost === 'localhost' || bindHost === '127.0.0.1' || bindHost === '::1';
 
 // Determine whether auth should be enabled
@@ -1853,6 +2177,8 @@ const configAuth = remiConfig.auth.enabled;
 const authEnabled = cliAuth ?? (configAuth === 'auto' ? false : configAuth);
 
 let authenticator: Authenticator | undefined;
+/** Opens sealed lock-screen answers (#875); handed to the relay adapter. */
+let daemonAnswerKey: AnswerKeyPair | undefined;
 let serverFingerprint: string | undefined;
 
 if (authEnabled) {
@@ -1913,6 +2239,17 @@ if (authEnabled) {
 
   const tofuMode = cliNoTofu ? ('reject' as const) : ('auto-accept' as const);
   authenticator = new Authenticator({ identity: unlockedIdentity, identityStore, tofuMode });
+  // Published in every auth challenge so phones can pin it and seal
+  // lock-screen answers to this daemon (#875). Non-fatal: without it the
+  // daemon simply cannot open sealed answers and says so when one arrives,
+  // which is better than refusing to start.
+  try {
+    const answerKey = await loadOrCreateAnswerKey(undefined, logError);
+    authenticator.setAnswerEncryptionKey(answerKey.publicKeyBase64);
+    daemonAnswerKey = answerKey;
+  } catch (err) {
+    logError(`[answer-key] could not load or create the answer key: ${errorToString(err)}`);
+  }
   serverFingerprint = storedIdentity.fingerprint;
   console.log(`Authentication enabled (fingerprint: ${serverFingerprint}, TOFU: ${tofuMode})`);
 } else {
@@ -1934,6 +2271,9 @@ const wsAdapter = new WebSocketAdapter(
     port: PORT,
     host: bindHost,
     authenticator,
+    allowedOrigins: remiConfig.daemon.allowed_origins,
+    capabilityToken: localCapabilityToken,
+    requireLocalAuth: remiConfig.daemon.require_local_auth,
   },
   sharedEvents,
 );
@@ -1967,7 +2307,7 @@ if (!cliNoRelay && remiConfig.network.relay) {
     // Permanent code mode: persist code to disk, require Ed25519 auth over relay
     if (!authenticator) {
       console.error(
-        'Permanent connection codes require authentication (--auth or non-localhost bind).',
+        'Permanent connection codes require authentication. Pass --auth (a non-localhost bind does NOT enable it on its own; see #880).',
       );
       process.exit(1);
     }
@@ -1987,6 +2327,7 @@ if (!cliNoRelay && remiConfig.network.relay) {
     );
   }
 
+  if (daemonAnswerKey) relayAdapter.setAnswerKey(daemonAnswerKey);
   registry.register(relayAdapter);
 }
 
@@ -2134,7 +2475,14 @@ if (cliDaemonMode) {
       PORT = probed;
       STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
       const newWsAdapter = new WebSocketAdapter(
-        { port: PORT, host: bindHost, authenticator },
+        {
+          port: PORT,
+          host: bindHost,
+          authenticator,
+          allowedOrigins: remiConfig.daemon.allowed_origins,
+          capabilityToken: localCapabilityToken,
+          requireLocalAuth: remiConfig.daemon.require_local_auth,
+        },
         sharedEvents,
       );
       registry.register(newWsAdapter);
@@ -2281,9 +2629,13 @@ if (cliDaemonMode) {
         { port: 0 },
         {
           onError: (err) => console.error(`[HookServer] ${err.message}`),
+          onAnyEvent: (input) => turnTimer.observe(input.prompt_id),
         },
       );
       hookServer.start();
+      // Additive second Stop listener (#914) -- see onTurnStop's module doc
+      // for why this is deliberately separate from hook-bridge-setup.ts's own.
+      hookServer.on('Stop', onTurnStop);
       HOOK_PORT = hookServer.port;
       console.log(`  Hook server listening on port ${HOOK_PORT}`);
     } catch (err) {
@@ -2444,7 +2796,14 @@ if (cliDaemonMode) {
       PORT = probed;
       STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
       const newWsAdapter = new WebSocketAdapter(
-        { port: PORT, host: bindHost, authenticator },
+        {
+          port: PORT,
+          host: bindHost,
+          authenticator,
+          allowedOrigins: remiConfig.daemon.allowed_origins,
+          capabilityToken: localCapabilityToken,
+          requireLocalAuth: remiConfig.daemon.require_local_auth,
+        },
         sharedEvents,
       );
       registry.register(newWsAdapter);
@@ -2477,9 +2836,13 @@ if (cliDaemonMode) {
       { port: 0 },
       {
         onError: (err) => logError(`[HookServer] ${err.message}`),
+        onAnyEvent: (input) => turnTimer.observe(input.prompt_id),
       },
     );
     hookServer.start();
+    // Additive second Stop listener (#914) -- see onTurnStop's module doc for
+    // why this is deliberately separate from hook-bridge-setup.ts's own.
+    hookServer.on('Stop', onTurnStop);
     HOOK_PORT = hookServer.port;
     log(`Hook server listening on ${hookServer.url} (port ${HOOK_PORT})`);
 
@@ -2547,8 +2910,10 @@ if (cliDaemonMode) {
 
   // Start drawing the reserved-row bar now that the PTY is up. Reads the live
   // StatusWriter state and repaints on a 1Hz timer (the cadence of the
-  // `evaluating Ns` counter), which also re-asserts the bar if Claude's output
-  // scrolled it. Inert until started, and a no-op when detached.
+  // `evaluating Ns` counter). Inert until started, and a no-op when detached
+  // or while a question is pending (#932 -- see status-bar.ts's module doc:
+  // the bar and Claude's own output share one fd, so painting over a live
+  // prompt risks corrupting or erasing it).
   if (statusBarActive) {
     statusBar = new StatusBar({
       getStdoutFd: getPtyStdoutFd,
@@ -2558,6 +2923,14 @@ if (cliDaemonMode) {
         rows: process.stdout.rows || 40,
       }),
       isEnabled: () => !isWrapperDetached(),
+      hasLiveQuestions: () =>
+        (sessionRegistry.getSession(sessionId)?.currentQuestions.size ?? 0) > 0,
+      // #932 durable fix: gate every paint on the same PTY-forwarding gate
+      // `observeLocalPtyOutput` (above) feeds. `wrapperPtyGate` is
+      // module-level so it exists before this StatusBar does and keeps
+      // accumulating state across a detach/reattach within one process.
+      isBoundaryClean: () => wrapperPtyGate.isBoundaryClean(),
+      isQuiescent: () => wrapperPtyGate.isQuiescent(),
       log: (m) => log(m),
     });
     statusBar.start();

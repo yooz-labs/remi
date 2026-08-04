@@ -170,15 +170,22 @@ describe('relay-adapter routeMessage forwards claudeSessionId (#429)', () => {
     expect(calls[0]?.claudeSessionId).toBe(CSID);
   });
 
-  test('non-string claudeSessionId is dropped to undefined (defensive)', () => {
-    const calls: Array<{ claudeSessionId: string | undefined }> = [];
+  // #899: routeMessage's ad-hoc `typeof claudeSessionId === 'string'` guard
+  // (pre-unification) is GONE, not relocated -- connection.ts's inbound
+  // switch never had an equivalent guard either (it forwards
+  // `message.claudeSessionId` straight from the parsed JSON, trusting the
+  // type system same as every other field). This test now pins the new,
+  // unified behavior instead of the old defensive one: a malformed field
+  // is forwarded as-is, matching the direct-WebSocket path exactly.
+  test('non-string claudeSessionId is forwarded as-is (#899 parity with connection.ts)', () => {
+    const calls: Array<{ claudeSessionId: unknown }> = [];
     const adapter = makeAdapter({
       onAnswer: (
         _connectionId: UUID,
         _sessionId: UUID,
         _questionId: UUID,
         _answer: string,
-        claudeSessionId?: string,
+        claudeSessionId?: unknown,
       ) => {
         calls.push({ claudeSessionId });
       },
@@ -193,7 +200,42 @@ describe('relay-adapter routeMessage forwards claudeSessionId (#429)', () => {
     });
 
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.claudeSessionId).toBeUndefined();
+    expect(calls[0]?.claudeSessionId).toBe(42);
+  });
+
+  // #899: previously dropped over relay -- connection.ts's handleAnswer has
+  // always forwarded the structured AskUserQuestion selections/cancel
+  // (#627) alongside a plain answer, but the pre-unification relay switch
+  // never computed the equivalent `extra` argument at all. Found while
+  // unifying the two dispatchers onto the same handler body.
+  test('answer selections/cancel are forwarded as extra (#899: previously dropped over relay)', () => {
+    const calls: Array<{ extra: unknown }> = [];
+    const adapter = makeAdapter({
+      onAnswer: (
+        _connectionId: UUID,
+        _sessionId: UUID,
+        _questionId: UUID,
+        _answer: string,
+        _claudeSessionId?: string,
+        extra?: unknown,
+      ) => {
+        calls.push({ extra });
+      },
+    });
+
+    callRoute(adapter, {
+      type: 'answer',
+      sessionId: SID,
+      questionId: QID,
+      answer: '',
+      selections: [{ questionIndex: 0, optionIndices: [1] }],
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.extra).toEqual({
+      selections: [{ questionIndex: 0, optionIndices: [1] }],
+      cancel: undefined,
+    });
   });
 });
 
@@ -278,17 +320,23 @@ describe('relay-adapter routeMessage no-longer-silently-drops requests (#453 pha
     expect(calls[0]?.platform).toBe('ios');
   });
 
-  test('register_device_token with invalid platform is NOT dispatched', () => {
-    const calls: Array<{ token: string }> = [];
+  // #899: routeMessage's ad-hoc `platform !== 'ios' && platform !== 'android'`
+  // guard (pre-unification) is GONE, not relocated -- connection.ts's
+  // handleRegisterDeviceToken never validated this field either. Pins the
+  // new, unified (permissive) behavior instead of the old defensive one.
+  test('register_device_token with an unrecognized platform is forwarded as-is (#899 parity)', () => {
+    const calls: Array<{ token: string; platform: unknown }> = [];
     const adapter = makeAdapter({
-      onRegisterDeviceToken: (_c: UUID, token: string) => {
-        calls.push({ token });
+      onRegisterDeviceToken: (_c: UUID, token: string, platform: unknown) => {
+        calls.push({ token, platform });
       },
     });
 
     callRoute(adapter, { type: 'register_device_token', token: 'abc123', platform: 'windows' });
 
-    expect(calls).toHaveLength(0);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.token).toBe('abc123');
+    expect(calls[0]?.platform).toBe('windows');
   });
 
   test('unregister_device_token dispatches onUnregisterDeviceToken (#690)', () => {
@@ -306,17 +354,24 @@ describe('relay-adapter routeMessage no-longer-silently-drops requests (#453 pha
     expect(calls[0]?.token).toBe('abc123');
   });
 
-  test('unregister_device_token with missing token is NOT dispatched', () => {
-    const calls: Array<{ token: string }> = [];
+  // #899: routeMessage's ad-hoc `typeof token !== 'string'` guard
+  // (pre-unification) is GONE, not relocated -- connection.ts's
+  // handleUnregisterDeviceToken never validated this field either
+  // (`this.events.onUnregisterDeviceToken?.(message.token)`, no check).
+  // Pins the new, unified (permissive) behavior instead of the old
+  // defensive one.
+  test('unregister_device_token with a missing token forwards undefined (#899 parity)', () => {
+    const calls: Array<{ token: unknown }> = [];
     const adapter = makeAdapter({
-      onUnregisterDeviceToken: (_c: UUID, token: string) => {
+      onUnregisterDeviceToken: (_c: UUID, token: unknown) => {
         calls.push({ token });
       },
     });
 
     callRoute(adapter, { type: 'unregister_device_token' });
 
-    expect(calls).toHaveLength(0);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.token).toBeUndefined();
   });
 
   test('unknown type now rejects via sendRelay with error + UNSUPPORTED (no silent drop)', () => {
@@ -339,6 +394,69 @@ describe('relay-adapter routeMessage no-longer-silently-drops requests (#453 pha
 
     callRoute(adapter, { type: 'ping', id: RID });
 
+    expect(sent).toHaveLength(0);
+  });
+
+  // #899's trap, pinned at the relay call site: before this unification,
+  // relay's routeMessage switch had no `case 'ack'` or `case 'pong'` at all,
+  // so both fell to the default branch and got rejected as UNSUPPORTED --
+  // even though `ack`/`pong` are legitimate client-to-daemon types
+  // (MESSAGE_DIRECTION tags both 'both', not 'd2c') and connection.ts's
+  // direct-WebSocket switch has always accepted them as no-ops. A
+  // `ClientToDaemonType` derived as "tagged c2d" (excluding 'both') would
+  // have reproduced exactly this bug in the unified router; deriving it as
+  // "not d2c" is what fixes it here.
+  test('ack is a no-op over relay: no UNSUPPORTED rejection (#899 trap)', () => {
+    const adapter = makeAdapter({});
+    const sent = attachSendRelaySpy(adapter);
+
+    callRoute(adapter, { type: 'ack', id: RID, ack: { messageId: RID, state: 'delivered' } });
+
+    expect(sent).toHaveLength(0);
+  });
+
+  test('pong is a no-op over relay: no UNSUPPORTED rejection (#899 trap)', () => {
+    const adapter = makeAdapter({});
+    const sent = attachSendRelaySpy(adapter);
+
+    callRoute(adapter, { type: 'pong', id: RID, pingId: RID });
+
+    expect(sent).toHaveLength(0);
+  });
+
+  test('hello is a no-op over relay (connection established via peer-connected, not message)', () => {
+    const adapter = makeAdapter({});
+    const sent = attachSendRelaySpy(adapter);
+
+    callRoute(adapter, { type: 'hello', id: RID });
+
+    expect(sent).toHaveLength(0);
+  });
+
+  // In real operation, `handleRelayMessage` intercepts `auth_response`
+  // BEFORE `routeMessage` is ever called (state-gated, unconditional -- see
+  // relay-adapter.ts's `handleRelayMessage`), so the map's `auth_response`
+  // entry cannot be reached this way outside a test. This proves the entry
+  // itself is real (not missing / not silently rejected) by calling
+  // routeMessage directly, bypassing that earlier interception -- the entry
+  // exists purely for exhaustiveness + defense in depth (#899), and this is
+  // the only way to exercise it at all.
+  test('auth_response reaching routeMessage directly is routed, not rejected as UNSUPPORTED (#899)', () => {
+    const adapter = makeAdapter({});
+    const sent = attachSendRelaySpy(adapter);
+
+    callRoute(adapter, {
+      type: 'auth_response',
+      id: RID,
+      clientPublicKey: 'base64-pubkey',
+      signature: 'base64-sig',
+      clientFingerprint: 'AA:BB:CC:DD',
+    });
+
+    // handleAuthResponse's own state guard (authState is 'none' here, not
+    // 'challenging') makes it a no-op with a console.warn -- the point of
+    // this test is only that it got THAT far, i.e. NOT rejected as
+    // UNSUPPORTED the way a missing map entry would have been.
     expect(sent).toHaveLength(0);
   });
 });

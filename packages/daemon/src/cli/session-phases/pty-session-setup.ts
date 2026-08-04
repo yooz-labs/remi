@@ -80,6 +80,26 @@ export interface PtySessionSetupDeps {
    * it. Absent => no-op (tests/old callers, or auto-approve disabled).
    */
   cancelAutoApproveForQuestion?: (sessionId: UUID, questionId: UUID, reason: string) => void;
+  /**
+   * #932 durable fix: observe every PTY chunk actually forwarded to the
+   * wrapper's own local terminal fd -- the exact same fd the reserved-row
+   * status bar draws into -- so a `PtyQuiescenceGate` can track whether a
+   * bar write right now would land inside one of Claude's own escape
+   * sequences. Fed with the raw bytes right AFTER they are successfully
+   * written to that fd (never before -- #932 review finding 2: this
+   * callback can synchronously trigger an immediate bar repaint when the
+   * chunk completes a bare ESC[r, and observing before the write would put
+   * that corrective paint on the wire before the very reset that
+   * triggered it, undoing the correction instead of the other way around),
+   * only when the wrapper is actually still attached (`passThrough &&
+   * stdoutFd !== null && !isWrapperDetached()`, the same condition guarding
+   * the write itself), and never with the bar's own paint bytes -- those
+   * are self-terminating (see `buildBarSequence`) and do not need
+   * tracking. Absent => no gate wired (tests, older callers); `StatusBar`'s
+   * own `isBoundaryClean` / `isQuiescent` defaults then keep
+   * pre-durable-fix behavior (always paintable).
+   */
+  observeLocalPtyOutput?: (data: Uint8Array) => void;
 }
 
 /** Normalized sub-question texts to match a summary answer line against. */
@@ -213,6 +233,7 @@ export function createPtySessionForSession(
     exitProcess = (code: number) => process.exit(code),
     onQuestionResolved,
     cancelAutoApproveForQuestion,
+    observeLocalPtyOutput,
   } = deps;
   const { sessionId, workingDirectory, extraArgs, passThrough, reservedRows = 0 } = args;
 
@@ -242,8 +263,10 @@ export function createPtySessionForSession(
         // Write to the local terminal when wrapper is still attached.
         const stdoutFd = getPtyStdoutFd();
         if (passThrough && stdoutFd !== null && !isWrapperDetached()) {
+          let wroteToLocalTerminal = false;
           try {
             fs.writeSync(stdoutFd, data);
+            wroteToLocalTerminal = true;
           } catch (err) {
             const code = (err as NodeJS.ErrnoException).code;
             setPtyStdoutFd(null);
@@ -266,6 +289,24 @@ export function createPtySessionForSession(
             process.stdin.removeAllListeners('data');
             process.stdin.unref();
           }
+          // #932 durable fix (review finding 2): feed the quiescence +
+          // clean-boundary gate AFTER the real chunk has landed on the
+          // wire, never before -- and outside the write's own try/catch,
+          // so a throw from this callback (e.g. a caller's isBoundaryClean/
+          // isQuiescent/hasLiveQuestions predicate) is never misclassified
+          // as a terminal write failure and does not trigger a spurious
+          // detach. `observeLocalPtyOutput` can synchronously trigger an
+          // immediate bar repaint (StatusBar.notifyScrollRegionReset, when
+          // this chunk completes a bare ESC[r) -- observing before the
+          // write would put that corrective DECSTBM-reasserting write on
+          // the wire BEFORE the very reset that triggered it, so the reset
+          // would immediately undo the correction instead of the other way
+          // around. Only fed on a successful write: a failed write means
+          // these bytes never reached the terminal, so the gate must not
+          // treat them as having done so (and `isWrapperDetached()` is now
+          // true anyway, so the bar cannot paint through this fd
+          // regardless).
+          if (wroteToLocalTerminal) observeLocalPtyOutput?.(data);
         }
 
         // Forward raw PTY bytes when at least one connection is attached

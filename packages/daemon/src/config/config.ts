@@ -10,6 +10,13 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { DAEMON_BASE_PORT, DAEMON_PORT_RANGE, errorToString } from '@remi/shared';
 import { parse as parseToml } from 'smol-toml';
+import {
+  AUTO_APPROVE_LEVELS,
+  DEFAULT_AUTO_APPROVE_LEVEL,
+  isAutoApproveLevel,
+  resolveApproveGroups,
+} from '../auto-approve/levels.ts';
+import { KNOWN_TOOL_NAMES, looksLikeToolName } from '../auto-approve/pattern-matcher.ts';
 import { isKnownGroup, knownGroupNames } from '../auto-approve/permission-groups.ts';
 import { DEFAULT_ALWAYS_ESCALATE_TOOLS } from '../auto-approve/types.ts';
 import type { AutoApproveConfig } from '../auto-approve/types.ts';
@@ -70,6 +77,32 @@ export interface DaemonConfig {
    * set false to restore the old `orphan_timeout`-based reaping.
    */
   readonly persist_sessions: boolean;
+  /**
+   * Extra browser origins allowed to open a WebSocket or POST an answer (#535).
+   *
+   * Empty by default. remi's own clients are already covered: native clients
+   * (CLI, iOS, macOS) send no `Origin` at all, the iOS WebView sends
+   * `capacitor://localhost`, a dev server sends a loopback origin, and the
+   * hosted client sends `https://remi.yooz.live`. This is for a web client you
+   * host yourself; the daemon logs the exact line to add when it refuses one.
+   */
+  readonly allowed_origins: readonly string[];
+  /**
+   * Retire the blanket loopback auth exemption (#869).
+   *
+   * With it false (today's default), any process on this machine can open the
+   * daemon's WebSocket and answer a permission prompt: it sends no `Origin`,
+   * which makes it indistinguishable from the CLI. With it true, a loopback
+   * peer must present the capability token from `~/.remi/capability.key` or
+   * complete the Ed25519 challenge, exactly like a remote client.
+   *
+   * Default false ONLY because the macOS app cannot yet do either: it is
+   * sandboxed away from `~/.remi` by design (#649/#651) and has no identity of
+   * its own yet. Turning this on before that ships locks it out. The CLI
+   * already sends the token, so a machine that only uses the CLI and the web
+   * client can turn this on today.
+   */
+  readonly require_local_auth: boolean;
 }
 
 /** Network settings */
@@ -81,13 +114,44 @@ export interface NetworkConfig {
 
 /** Authentication settings (restart required) */
 export interface AuthConfig {
-  /** "auto" = based on bind address, true = always, false = never */
+  /**
+   * `true` = always require auth, `false` = never.
+   *
+   * `"auto"` is the DEFAULT and currently resolves to `false` on every bind
+   * address, including `0.0.0.0`: `cli.ts` computes `isLocalhostBind` on the
+   * line above the decision and then does not consult it
+   * (`cliAuth ?? (configAuth === 'auto' ? false : configAuth)`). This comment
+   * used to claim "auto = based on bind address", which is what the name
+   * suggests and what the code does not do; #880 tracks whether the code or the
+   * name is wrong. Until that is settled, read `"auto"` as "off", and do not
+   * assume exposing the daemon on a network turns authentication on.
+   */
   readonly enabled: 'auto' | boolean;
 }
 
 /** Display settings */
 export interface DisplayConfig {
   readonly max_bullet_length: number;
+}
+
+/**
+ * Turn-complete notification settings (#914). `Stop.last_assistant_message`
+ * is present on the already-registered `Stop` hook (no new registration),
+ * but `Stop` fires on every turn including two-second interactive ones -- a
+ * push on every one is worse than nothing (the user mutes it). Gated on turn
+ * DURATION so it only fires when the user plausibly walked away.
+ */
+export interface NotificationsConfig {
+  /** Master on/off for the turn-complete push. */
+  readonly on_turn_complete: boolean;
+  /**
+   * Minimum turn duration (seconds, measured from the earliest hook event
+   * remi saw for the turn's `prompt_id` to `Stop`) before a turn-complete
+   * push fires. The right value is personal -- how long before "still
+   * watching" becomes "probably walked away" -- so it is configurable rather
+   * than fixed.
+   */
+  readonly turn_complete_min_seconds: number;
 }
 
 /**
@@ -149,6 +213,7 @@ export interface RemiConfig {
   readonly telegram: TelegramConfig;
   readonly auto_approve: AutoApproveConfig;
   readonly features: FeaturesConfig;
+  readonly notifications: NotificationsConfig;
 }
 
 /** Built-in defaults used when no config file or CLI flags are provided */
@@ -159,6 +224,8 @@ export const DEFAULT_CONFIG: RemiConfig = {
     bind: '0.0.0.0',
     orphan_timeout: 300,
     persist_sessions: true,
+    allowed_origins: [],
+    require_local_auth: false,
   },
   network: {
     mdns: true,
@@ -219,10 +286,12 @@ export const DEFAULT_CONFIG: RemiConfig = {
     timeout: 30,
     log_decisions: true,
     // Safe read-only TOOLS, fast-pathed without an LLM call. These are
-    // tool-name matches (not Bash substrings), so a compound command cannot
-    // bypass them — `Read` matches the Read tool, never a `Bash` string. Bash
-    // git/gh commands are intentionally NOT defaulted here (substring matching
-    // is compound-command-unsafe); the LLM prompt evaluates those in full.
+    // tool-name matches: `Read` matches the Read tool and is never tested
+    // against a Bash command string (#536 — until that fix it was, so this
+    // very list approved `rm -rf Readme`). A Bash entry added here is matched
+    // per compound segment with a shell-control veto, so an approved segment
+    // cannot carry an unapproved one. Bash git/gh commands are still not
+    // defaulted; the LLM prompt evaluates those in full.
     allow: ['Read', 'Glob', 'Grep'],
     deny: [],
     // Background-agent commands worth a heads-up even though they ran (#807).
@@ -247,6 +316,11 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // default so enabling auto-approve immediately stops paying LLM latency
     // for reads / VCS queries / read-only build+test runs.
     approve_groups: ['read-only', 'vcs-read', 'build-test'],
+    // Strictness preset (#963). `strict` reproduces exactly the
+    // `approve_groups` line above, so an install that never sets this behaves
+    // as it always has. Raising it to "balanced"/"trusted" swaps in the
+    // write-side groups (#959).
+    level: DEFAULT_AUTO_APPROVE_LEVEL,
     deny_groups: [],
     instructions: '',
     multichoice: 'skip',
@@ -299,6 +373,28 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // Always escalate these to the user; never auto-decided by the LLM (#572):
     // AskUserQuestion + plan-mode. Extend with custom question-posing tools.
     always_escalate_tools: [...DEFAULT_ALWAYS_ESCALATE_TOOLS],
+    // Reuse an answer the user already gave THIS SESSION for the identical
+    // operation (#976). Session-scoped, in-memory, cleared on rotation -- a
+    // durable rule is what `allow` is for. The deny-direction half (an earlier
+    // "no" downgrades a model approve to escalate) is a TIGHTENING and stays
+    // on regardless of this flag.
+    //
+    // OFF by default, deliberately, and not because the mechanism is unfinished.
+    // Four review rounds on #1017 each found the same defect class -- the
+    // signature used as the authorization key drops something that changes what
+    // the operation does (Write's `content`, Read's extent, `cmd` vs `command`,
+    // collapsed indentation). Each was closed. One instance is KNOWN and still
+    // OPEN: a Bash signature carries no `cwd` (#1019), so `git push origin
+    // feature/x` approved in one worktree silently authorizes the identical
+    // command in another -- and worktrees are this project's own documented
+    // workflow. Closing it needs the signature to carry more than
+    // `Question.text` can (#990).
+    //
+    // Shipping a privilege-GRANTING path on by default with a known-unfixed
+    // escalation is the wrong trade. Flip this to true once #1019 lands; until
+    // then it is opt-in for anyone who wants the convenience and understands
+    // the boundary.
+    session_precedent: false,
     // Hold a binary main-context PermissionRequest hook open until the user
     // answers (Model B, #573). Large + human-paced; on expiry it fails open to
     // the native prompt. 0 disables holding (escalate -> passthrough as before).
@@ -322,6 +418,13 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // `REMI_TRANSCRIPT_BINDER_ENABLED=false` no longer restores an alternate
     // path (deleted in #470); it only logs a deprecation warning at boot.
     transcript_binder_enabled: true,
+  },
+  notifications: {
+    on_turn_complete: true,
+    // 60s: long enough that a normal interactive turn (seconds) never fires
+    // it, short enough to still be useful for "went to get coffee" absences.
+    // Personal preference varies a lot here, hence configurable.
+    turn_complete_min_seconds: 60,
   },
 };
 
@@ -363,6 +466,10 @@ function deepMerge(base: RemiConfig, partial: Record<string, unknown>): RemiConf
       base.features,
       partial['features'] as Record<string, unknown> | undefined,
     ),
+    notifications: mergeSection(
+      base.notifications,
+      partial['notifications'] as Record<string, unknown> | undefined,
+    ),
   };
 }
 
@@ -390,8 +497,16 @@ export function loadConfig(configPath: string = CONFIG_PATH): RemiConfig {
     const parsed = parseToml(raw) as Record<string, unknown>;
     const merged = deepMerge(DEFAULT_CONFIG, parsed);
     validateAutoApprove(merged.auto_approve, configPath);
+    // Apply the level preset AFTER merge, but decide from the RAW parsed
+    // table (#963). By this point `merged.approve_groups` is populated either
+    // way, so it cannot answer "did the user write this?" — reading it here
+    // would make every install look explicit and no level would ever apply.
+    const rawAutoApprove = parsed['auto_approve'] as Record<string, unknown> | undefined;
+    const levelled = applyLevel(merged, rawAutoApprove, configPath);
     validateTerminal(merged.terminal, configPath);
-    return merged;
+    validateDaemon(merged.daemon, configPath);
+    validateNotifications(merged.notifications, configPath);
+    return levelled;
   } catch (err) {
     throw new Error(
       `Invalid TOML in ${configPath}: ${errorToString(err)}. Fix the syntax or delete the file to use defaults.`,
@@ -400,15 +515,110 @@ export function loadConfig(configPath: string = CONFIG_PATH): RemiConfig {
 }
 
 /**
+ * Apply the `[auto_approve] level` preset to the merged config (#963).
+ *
+ * Separated from `deepMerge` because the decision needs something the merged
+ * value cannot express: whether `approve_groups` was WRITTEN by the user or
+ * filled in by the default. Both look identical afterwards, so this reads the
+ * raw parsed table instead.
+ *
+ * An explicit `approve_groups` wins over the preset, and the daemon says so —
+ * a user who set groups before levels existed keeps exactly their behavior,
+ * and learns from one log line why their level appears to have no effect.
+ */
+function applyLevel(
+  merged: RemiConfig,
+  rawAutoApprove: Record<string, unknown> | undefined,
+  configPath: string,
+): RemiConfig {
+  const rawLevel = rawAutoApprove?.['level'];
+  if (rawLevel !== undefined && !isAutoApproveLevel(rawLevel)) {
+    throw new Error(
+      `Invalid auto_approve.level in ${configPath}: got ${JSON.stringify(rawLevel)}. Valid levels: ${AUTO_APPROVE_LEVELS.join(', ')}. Example: level = "balanced"`,
+    );
+  }
+  const level = isAutoApproveLevel(rawLevel) ? rawLevel : DEFAULT_AUTO_APPROVE_LEVEL;
+
+  const explicitGroups =
+    rawAutoApprove !== undefined && 'approve_groups' in rawAutoApprove
+      ? merged.auto_approve.approve_groups
+      : undefined;
+  const resolved = resolveApproveGroups(level, explicitGroups);
+
+  if (resolved.source === 'explicit' && rawLevel !== undefined) {
+    console.warn(
+      `[AutoApprove] Warning: both level = "${level}" and an explicit approve_groups are set in ${configPath}; approve_groups wins. Remove it to use the level preset.`,
+    );
+  }
+
+  // Validate the RESOLVED list, not just the user's (#964 review). The
+  // unknown-group warning in `validateAutoApprove` already ran, against the
+  // pre-preset value — so a typo in `LEVEL_GROUPS` (`vcs-writ`) would reach
+  // `matchGroups`, which ignores unknown names, and the level would silently
+  // approve nothing while appearing to work. A user's own typo warns; the
+  // shipped preset's would not have. `levels.test.ts` covers this, but a test
+  // is not the runtime, and this epic has already produced three defects in
+  // code written to fix the previous one.
+  if (resolved.source === 'level') {
+    const unknown = resolved.groups.filter((g) => !isKnownGroup(g));
+    if (unknown.length > 0) {
+      throw new Error(
+        `Internal error: auto_approve.level "${level}" names unknown permission group(s) ${unknown.map((g) => `"${g}"`).join(', ')}. Known groups: ${knownGroupNames().join(', ')}. This is a bug in the shipped level presets, not in ${configPath}.`,
+      );
+    }
+  }
+
+  return {
+    ...merged,
+    auto_approve: { ...merged.auto_approve, level, approve_groups: resolved.groups },
+  };
+}
+
+/**
  * Validate auto_approve config has correct runtime types.
  *
  * TOML doesn't enforce TypeScript types. A user writing `allow = "git"` (string
- * instead of string[]) would produce a runtime value that matchPattern would
- * iterate character-by-character, auto-approving almost every command. This
- * validator refuses to start with such misconfigurations.
+ * instead of string[]) would produce a runtime value the matchers would iterate
+ * character-by-character, auto-approving almost every command. This validator
+ * refuses to start with such misconfigurations.
  *
  * Also warns about dangerously short patterns that would match too broadly.
  */
+/**
+ * Validate `[daemon]` entries whose runtime type is load-bearing (#535).
+ *
+ * `allowed_origins` widens who may answer a permission prompt, so a wrong type
+ * must stop the daemon rather than degrade quietly. Written as a string
+ * (`allowed_origins = "https://x"`) it would still be truthy and `.includes()`
+ * would then substring-match origins against it, which is not what anyone meant.
+ */
+function validateDaemon(cfg: DaemonConfig, configPath: string): void {
+  const v: unknown = cfg.allowed_origins;
+  if (!Array.isArray(v) || !v.every((s) => typeof s === 'string')) {
+    throw new Error(
+      `Invalid daemon.allowed_origins in ${configPath}: must be an array of origin strings, got ${typeof v === 'string' ? `string "${v}"` : typeof v}. Example: allowed_origins = ["https://remi.example.com"]`,
+    );
+  }
+  for (const origin of v) {
+    // An origin is scheme + host + optional port. A path, a query, or a
+    // trailing slash never appears in an `Origin` header, so an entry carrying
+    // one can never match and is a silent no-op: refuse it instead.
+    let parsed: URL;
+    try {
+      parsed = new URL(origin);
+    } catch {
+      throw new Error(
+        `Invalid daemon.allowed_origins entry "${origin}" in ${configPath}: not a URL. Use scheme://host[:port], e.g. "https://remi.example.com".`,
+      );
+    }
+    if (parsed.origin !== origin) {
+      throw new Error(
+        `Invalid daemon.allowed_origins entry "${origin}" in ${configPath}: an Origin header carries no path, query, or trailing slash, so this entry would never match. Use "${parsed.origin}".`,
+      );
+    }
+  }
+}
+
 function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
   const isStringArray = (v: unknown): v is readonly string[] =>
     Array.isArray(v) && v.every((s) => typeof s === 'string');
@@ -607,6 +817,11 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
       `Invalid auto_approve.always_escalate_tools in ${configPath}: must be an array of tool names. Example: always_escalate_tools = ["AskUserQuestion", "ExitPlanMode"]`,
     );
   }
+  if (typeof cfg.session_precedent !== 'boolean') {
+    throw new Error(
+      `Invalid auto_approve.session_precedent in ${configPath}: must be true or false, got ${typeof cfg.session_precedent}.`,
+    );
+  }
   for (const t of cfg.always_escalate_tools) {
     if (t.trim().length === 0) {
       console.warn(
@@ -630,6 +845,38 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
         `[AutoApprove] Warning: deny pattern "${p}" is shorter than ${MIN_PATTERN_LENGTH} chars and will block many commands. Use a more specific pattern.`,
       );
     }
+  }
+
+  // An allow entry shaped like a tool name matches that TOOL and is never
+  // tested against a Bash command (#536). That is the point of the fix, but it
+  // silently changes what a capitalized real binary does: `Rscript`, `MSBuild`
+  // and friends look like tool names and stop covering their own commands. The
+  // entry keeps working for a tool of that name, so this is a warning rather
+  // than an error, but it must not be silent.
+  for (const p of cfg.allow) {
+    if (looksLikeToolName(p) && !KNOWN_TOOL_NAMES.has(p)) {
+      console.warn(
+        `[AutoApprove] Warning: allow entry "${p}" is shaped like a tool name, so it matches the ${p} TOOL and never a Bash command containing it. If you meant the shell command, lowercase it or give a longer prefix (e.g. "${p} " with an argument).`,
+      );
+    }
+  }
+}
+
+/** Validate `[notifications]` has correct runtime types (#914). */
+function validateNotifications(cfg: NotificationsConfig, configPath: string): void {
+  if (typeof cfg.on_turn_complete !== 'boolean') {
+    throw new Error(
+      `Invalid notifications.on_turn_complete in ${configPath}: must be a boolean (true/false), got ${typeof cfg.on_turn_complete === 'string' ? `string "${cfg.on_turn_complete}"` : typeof cfg.on_turn_complete}. Example: on_turn_complete = true`,
+    );
+  }
+  if (
+    typeof cfg.turn_complete_min_seconds !== 'number' ||
+    !Number.isFinite(cfg.turn_complete_min_seconds) ||
+    cfg.turn_complete_min_seconds < 0
+  ) {
+    throw new Error(
+      `Invalid notifications.turn_complete_min_seconds in ${configPath}: must be a non-negative number (seconds), got ${typeof cfg.turn_complete_min_seconds === 'string' ? `string "${cfg.turn_complete_min_seconds}"` : typeof cfg.turn_complete_min_seconds}. Example: turn_complete_min_seconds = 60`,
+    );
   }
 }
 
@@ -846,6 +1093,16 @@ port_range = ${DEFAULT_CONFIG.daemon.port_range}
 bind = "${DEFAULT_CONFIG.daemon.bind}"
 orphan_timeout = ${DEFAULT_CONFIG.daemon.orphan_timeout}  # seconds (ignored when persist_sessions = true)
 persist_sessions = ${DEFAULT_CONFIG.daemon.persist_sessions}  # keep sessions alive after disconnect (tmux-style)
+# Extra browser origins allowed to connect (#535). remi's own clients need no
+# entry here: native clients send no Origin, the iOS app sends
+# capacitor://localhost, and the hosted client sends https://remi.yooz.live.
+# Only a web client you host yourself does. Example:
+#   allowed_origins = ["https://remi.example.com"]
+allowed_origins = []
+# Require loopback clients to prove themselves (#869). Off by default until
+# the macOS app ships its own identity; safe to turn on if you only use the
+# CLI and the web client.
+require_local_auth = false
 
 [network]
 mdns = ${DEFAULT_CONFIG.network.mdns}
@@ -871,6 +1128,17 @@ bot_token = ""
 authorized_chat_ids = []
 authorized_user_ids = []
 
+[notifications]
+# Push "<session>: turn complete" with Claude's actual last message when a
+# turn runs long (#914). Stop fires on EVERY turn, including two-second
+# interactive ones, so this is gated on duration: below the threshold you are
+# presumably still watching and a push would just be noise you learn to
+# ignore. Above it, you plausibly walked away and a lock-screen ping is the
+# whole point of remi. Never fires on a stop-hook re-entry (the turn is not
+# actually done yet) or with no device registered.
+on_turn_complete = ${DEFAULT_CONFIG.notifications.on_turn_complete}
+turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_seconds}  # tune to taste; there is no "right" value
+
 # [auto_approve]
 # enabled = false
 # provider = "yooz"             # "yooz" (engine, macOS) | "llamacpp" (thin
@@ -888,10 +1156,62 @@ authorized_user_ids = []
                                 # (covers cold model load on the local engine)
 # log_decisions = true
 #
-# User-defined rules. Substring matching for Bash, tool-name match for others.
-# Checked BEFORE the LLM. Deny is checked first and always wins.
+# User-defined rules, checked BEFORE the LLM. Deny is checked first and wins.
+#
+# Allow and deny do NOT match the same way, on purpose (#536). Allow is precise:
+# a Bash command is split on ; && || | and every segment must either match one
+# of your prefixes or be a neutral no-op (cd, pwd, echo, true, :), and anything
+# with shell control (backticks, $(), redirects, -exec) is refused even when a
+# prefix matches. An entry shaped like a tool name
+# ("Read") matches that TOOL and never a command containing the word. Deny stays
+# a broad substring match, because a rule meant to stop something should
+# over-reach rather than under-reach.
+#
+# So "Read" here does not allow 'cat file | sh', and "git status" does not allow
+# 'git status && rm -rf /'.
 # allow = ["git status", "bun test", "bunx biome", "Read", "Glob", "Grep"]
 # deny = ["rm -rf /", "sudo ", "curl | sh", "| bash"]
+#
+# Permission groups: curated, deterministic sets approved with no LLM call.
+# Read groups are on by default; the write-side groups are opt-in.
+#
+#   read-only   Read/Glob/Grep/NotebookRead + cat, grep, ls, jq, ...
+#   vcs-read    git status/log/diff/show, gh pr view/list, ...
+#   build-test  bun test, tsc --noEmit, biome check, pytest, ...
+#   fs-write    Write/Edit/NotebookEdit + mkdir, touch, tee, cp, mv
+#   vcs-write   git add/commit/checkout/switch/merge, stash push, worktree add
+#   scratch     touch/cp/mv/tee/mkdir/rm/rmdir + output redirection, ONLY when
+#               every target resolves under /tmp, /private/tmp, or $TMPDIR
+#
+# The write groups refuse sensitive destinations regardless of prefix: system
+# trees (/etc, /usr, /System, ...), credentials (~/.ssh, ~/.aws, .env, id_rsa),
+# .git internals and ~/.gitconfig (a hook write, or core.hooksPath, is code
+# execution on the next commit), .github workflows (they execute on push),
+# ~/.remi + ~/.claude -- config that governs this very mechanism, which an
+# auto-approved write must never be able to widen -- and the BUILD SURFACE
+# (package.json, tsconfig.json, lockfiles, Makefile, ...), because build-test
+# is enabled by DEFAULT and executes what those files say. scratch instead
+# gets its safety entirely from the destination being confined to a scratch
+# root, which is why it is the one group allowed to cover deletion and output
+# redirection -- rm/rmdir and >/>> are excluded from every OTHER group.
+#
+# Matching is case-insensitive (macOS filesystems are) and resolves dot-dot.
+#
+# rm, package installs, git push, and any --force are in NO group EXCEPT
+# scratch's own deletion coverage, which stays confined to scratch roots.
+# Remote mutation and arbitrary install scripts stay escalations everywhere.
+# Strictness preset. Selects which of the groups above are auto-approved:
+#
+#   strict     read-only + vcs-read + build-test   (the default; today's behavior)
+#   balanced   strict   + fs-write + scratch
+#   trusted    balanced + vcs-write
+#
+# An explicit approve_groups below OVERRIDES the preset entirely, and the
+# daemon logs that it did -- so a config written before levels existed keeps
+# behaving exactly as it always has.
+# level = "strict"
+# approve_groups = ["read-only", "vcs-read", "build-test"]
+# deny_groups = []
 #
 # Natural-language guidance appended to the LLM system prompt:
 # instructions = """
@@ -960,6 +1280,16 @@ authorized_user_ids = []
 #                                  # auto-decided by the LLM (design / plan-mode
 #                                  # / long-form questions). Add custom MCP tools
 #                                  # that solicit user intent.
+# session_precedent = false        # Reuse an answer you already gave THIS
+#                                  # session for the byte-identical operation,
+#                                  # so the third "git push origin feature/x"
+#                                  # does not ask a third time. Bounded by risk
+#                                  # band: a catastrophic operation still asks
+#                                  # every time. Session-scoped and in-memory --
+#                                  # for a durable rule use "allow". Setting
+#                                  # false does NOT discard an earlier "no";
+#                                  # that half always applies. OFF by default
+#                                  # until #1019 (a signature carries no cwd).
 `;
 }
 
@@ -999,6 +1329,8 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(`  bind = "${config.daemon.bind}"`);
   lines.push(`  orphan_timeout = ${config.daemon.orphan_timeout}`);
   lines.push(`  persist_sessions = ${config.daemon.persist_sessions}`);
+  lines.push(`  allowed_origins = ${JSON.stringify(config.daemon.allowed_origins)}`);
+  lines.push(`  require_local_auth = ${config.daemon.require_local_auth}`);
   lines.push('');
   lines.push('[network]');
   lines.push(`  mdns = ${config.network.mdns}`);
@@ -1033,6 +1365,13 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(`  allow = [${config.auto_approve.allow.map((s) => `"${s}"`).join(', ')}]`);
   lines.push(`  deny = [${config.auto_approve.deny.map((s) => `"${s}"`).join(', ')}]`);
   lines.push(
+    // Show the RESOLVED list, not the preset name alone (#963). The whole
+    // point of `remi config` is that the effective policy is inspectable
+    // without reading source, and "level = trusted" does not tell you which
+    // groups that is.
+    `  level = "${config.auto_approve.level}"`,
+  );
+  lines.push(
     `  approve_groups = [${config.auto_approve.approve_groups.map((s) => `"${s}"`).join(', ')}]`,
   );
   lines.push(
@@ -1057,10 +1396,15 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(
     `  always_escalate_tools = [${config.auto_approve.always_escalate_tools.map((s) => `"${s}"`).join(', ')}]`,
   );
+  lines.push(`  session_precedent = ${config.auto_approve.session_precedent}`);
   lines.push('');
   lines.push('# transcript_binder_enabled is a deprecated kill-switch (#470); flip = restart.');
   lines.push('[features]');
   lines.push(`  transcript_binder_enabled = ${config.features.transcript_binder_enabled}`);
+  lines.push('');
+  lines.push('[notifications]');
+  lines.push(`  on_turn_complete = ${config.notifications.on_turn_complete}`);
+  lines.push(`  turn_complete_min_seconds = ${config.notifications.turn_complete_min_seconds}`);
 
   return lines.join('\n');
 }

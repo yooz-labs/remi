@@ -205,26 +205,6 @@ export async function notifyQuestion(sessionName: string, prompt: string): Promi
   }
 }
 
-/** Send a local notification for session completion. */
-export async function notifySessionComplete(sessionName: string): Promise<void> {
-  if (!localPermissionGranted) return;
-  try {
-    await LocalNotifications.schedule({
-      notifications: [
-        {
-          title: `${sessionName} finished`,
-          body: 'The agent has completed its work.',
-          id: nextNotificationId(),
-          schedule: { at: new Date() },
-          ...(soundEnabled ? { sound: 'default' } : {}),
-        },
-      ],
-    });
-  } catch (err) {
-    console.warn('[Notifications] Failed to schedule completion notification:', err);
-  }
-}
-
 /** Send a local notification for a session error. */
 export async function notifySessionError(sessionName: string, error: string): Promise<void> {
   if (!localPermissionGranted) return;

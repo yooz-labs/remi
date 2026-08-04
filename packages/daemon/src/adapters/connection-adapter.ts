@@ -5,14 +5,8 @@
  * without coupling to a specific transport.
  */
 
-import type {
-  AgentStatus,
-  AnswerExtras,
-  Message,
-  ProtocolMessage,
-  Question,
-  UUID,
-} from '@remi/shared';
+import type { AgentStatus, Message, ProtocolMessage, Question, UUID } from '@remi/shared';
+import type { ClientMessageEventsWithConnectionId } from '../server/client-message-events.ts';
 
 /**
  * Adapter-specific metadata, discriminated by `kind`.
@@ -75,36 +69,24 @@ export interface AdapterMetadata {
   readonly platformData?: AdapterPlatformData;
 }
 
-/** Events emitted from adapter to daemon */
-export interface AdapterEvents {
+/**
+ * Events emitted from adapter to daemon. The per-message portion
+ * (`onUserInput`, `onAnswer`, ...) is declared once in
+ * `client-message-events.ts` (#900) and inherited here with `connectionId`
+ * first -- one adapter instance serves many peers.
+ *
+ * Deliberately kept SEMANTIC, not wire-shaped: the Telegram adapter
+ * synthesizes `onUserInput` directly from chat text, with no
+ * `ProtocolMessage` anywhere in that path (`telegram-adapter.ts`'s
+ * `handleTextMessage`). A contract shaped like the wire protocol (e.g. a
+ * single `onMessage(msg: ProtocolMessage)`) would break that adapter.
+ */
+export interface AdapterEvents extends ClientMessageEventsWithConnectionId {
   /** New connection established */
   onConnect: (connectionId: UUID, metadata: AdapterMetadata) => void;
 
   /** Connection closed */
   onDisconnect: (connectionId: UUID, reason: string) => void;
-
-  /** User input received. `messageId` is the wire message's own id (#681),
-   *  carried so a rejection (e.g. NOT_ACTIVE_CONNECTION) can name the
-   *  specific bubble that was dropped. */
-  onUserInput: (
-    connectionId: UUID,
-    sessionId: UUID,
-    content: string,
-    raw?: boolean,
-    claudeSessionId?: UUID,
-    messageId?: UUID,
-  ) => void;
-
-  /** Answer to question received. `extra` carries structured AskUserQuestion
-   *  selections / cancel (#627); omitted for a plain single answer. */
-  onAnswer: (
-    connectionId: UUID,
-    sessionId: UUID,
-    questionId: UUID,
-    answer: string,
-    claudeSessionId?: UUID,
-    extra?: AnswerExtras,
-  ) => void;
 
   /**
    * Connection-independent answer relay (#575, P4a). Used by the HTTP /answer
@@ -118,48 +100,6 @@ export interface AdapterEvents {
     answer: string,
     claudeSessionId?: UUID,
   ) => Promise<'delivered' | 'session-not-found' | 'stale-binding' | 'stale'>;
-
-  /** Bullet expand request received */
-  onBulletExpandRequest: (
-    connectionId: UUID,
-    sessionId: UUID,
-    bulletId: number,
-    requestId: UUID,
-  ) => void;
-
-  /** Session list request received */
-  onSessionListRequest: (connectionId: UUID, requestId: UUID, includeExternal: boolean) => void;
-
-  /** Transcript load request received */
-  onTranscriptLoadRequest: (connectionId: UUID, sessionId: string, requestId: UUID) => void;
-
-  /** Create session request received */
-  onCreateSessionRequest: (
-    connectionId: UUID,
-    directory: string | undefined,
-    requestId: UUID,
-  ) => void;
-
-  /** Terminal resize from attached CLI client */
-  onTerminalResize: (connectionId: UUID, cols: number, rows: number) => void;
-
-  /** Kill session request received */
-  onKillSessionRequest: (connectionId: UUID, sessionId: UUID, requestId: UUID) => void;
-
-  /** Resume session request received */
-  onResumeSessionRequest: (connectionId: UUID, sessionId: string, requestId: UUID) => void;
-
-  /** Session history request received */
-  onSessionHistoryRequest: (connectionId: UUID, requestId: UUID, limit: number | undefined) => void;
-
-  /** Detach session request received (tmux-style) */
-  onDetachSession: (connectionId: UUID, sessionId: UUID, requestId: UUID) => void;
-
-  /** Device token registered for push notifications */
-  onRegisterDeviceToken: (connectionId: UUID, token: string, platform: 'ios' | 'android') => void;
-
-  /** Device token unregistered — explicit user removal of this server (#690) */
-  onUnregisterDeviceToken: (connectionId: UUID, token: string) => void;
 
   /** Error occurred */
   onError: (connectionId: UUID, error: Error) => void;

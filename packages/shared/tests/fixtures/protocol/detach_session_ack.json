@@ -1,0 +1,7 @@
+{
+  "type": "detach_session_ack",
+  "id": "1766c84c-cd3a-4be2-b326-588fd9bf041b",
+  "timestamp": "2026-07-29T11:27:08.616Z",
+  "sessionId": "fixture-session-id",
+  "success": true
+}

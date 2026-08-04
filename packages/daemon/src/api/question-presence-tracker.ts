@@ -28,14 +28,47 @@
  * concurrent agents (main + a subagent, #419) keep separate records and a
  * later subagent hook cannot clobber the main agent's option labels (#425).
  *
- * Upstream context (anthropics/claude-code #23983): subagent / Agent-Teams
- * permission requests do not fire PermissionRequest hooks at all. The PTY
- * is the only source for those. A PTY-only push path (no preceding hook
- * record) is therefore a first-class case here, not a fallback.
+ * Stale-as-written correction (#886): this comment used to claim subagent /
+ * Agent-Teams permission requests never fire PermissionRequest hooks at all,
+ * citing upstream anthropics/claude-code #23983. That is contradicted by
+ * AutoApproveGate.resolvePermission's own logging (auto-approve-gate.ts
+ * ~1150): a live 0.6.22 session recorded 16 subagent-tagged (`agent_id`
+ * present) PermissionRequest hooks against only 2 PTY renders. Task-tool /
+ * background-subagent escalations DO fire the hook -- they are parked
+ * (ADR 0004) and passed through unconditionally, and MOST never render,
+ * which is different from "never fires." What #23983 may still describe
+ * correctly is narrower: native Agent-Teams teammate prompts specifically
+ * (as opposed to Task-tool subagents generally) possibly firing no hook at
+ * all. That narrower claim was not independently re-verified here. Either
+ * way, a PTY-only push path (no preceding hook record) stays a first-class
+ * case in this tracker, not a fallback -- it just is not the ONLY source for
+ * subagent prompts the way this comment previously implied.
+ *
+ * Render-resolution (#888/#920): a PTY-only pushed question has no hook and
+ * so no tool signature for `AutoApproveGate` to resolve it by -- its only
+ * exits used to be the user answering it or the `MAX_PENDING_QUESTIONS` LRU
+ * cap, which measured as a real leak (12 of 29 source-less questions never
+ * removed in one working day's capture, one still pending 2h51m later).
+ * `observedRenderOwnedQuestion` + `deps.onHooklessQuestionGone` close that gap,
+ * but ONLY on a CONFIRMED-delivered replacement push in `pairAndPush` --
+ * the `QuestionRegistrationOutcome` returned directly by the `push` call is
+ * the confirmation gate (#888 criterion iii; formerly a separate
+ * `deps.isQuestionLive` re-query of the store, deleted once the push call
+ * itself could report its own outcome). An id-comparison-only version of
+ * this (this file's own V1) could resolve a question that never actually
+ * left the screen: the PTY parser mints a fresh id on every parse
+ * regardless of content (#486), and the replacement's own push can be
+ * silently eaten by `QuestionDedup`'s 5s window -- found in review, see
+ * `pairAndPush`'s doc for the full failure chain. Status-leaves-'waiting'
+ * and `clearPending` were dropped as triggers for the same reason (both can
+ * fire on a signal unrelated to whether THIS question's render is actually
+ * gone); see their own reset comments. See `pairAndPush` and
+ * `noteHooklessGone`.
  */
 
 import { MAIN_AGENT_ID } from '@remi/shared';
 import type { AgentStatus, Question } from '@remi/shared';
+import type { QuestionRegistrationOutcome } from './message-api.ts';
 
 export interface PushOptions {
   /**
@@ -52,8 +85,20 @@ export interface PushOptions {
  * should fire. Implementations forward to `MessageAPI.handleQuestion`,
  * which applies the content-identity QuestionDedup before the network
  * layer — unless `opts.held` marks the load-bearing held-hook card.
+ *
+ * Returns `MessageAPI.handleQuestion`'s own `QuestionRegistrationOutcome`
+ * (#888 criterion iii) — `pairAndPush` consumes this DIRECTLY as its
+ * confirmed-delivery signal instead of re-querying the store afterward (the
+ * deleted `isQuestionLive` dep). `| undefined` (not `| void` — this
+ * codebase's lint config forbids `void` inside a union) covers a push sink
+ * that does not participate in the outcome contract; production always
+ * returns the real outcome because `cli.ts` wires this straight to
+ * `messageApi.handleQuestion`.
  */
-export type PushQuestion = (question: Question, opts?: PushOptions) => void;
+export type PushQuestion = (
+  question: Question,
+  opts?: PushOptions,
+) => QuestionRegistrationOutcome | undefined;
 
 /**
  * Verdict of a parked-render arbitration (#814).
@@ -79,8 +124,11 @@ export type ParkedRenderVerdict =
  * user), but the contract is a resolved verdict.
  *
  *   - `parkedQuestionId` — the id of the PARKED hook question (what the gate
- *     tracks in `openQuestionSignatures`), NOT the id of the card that would
- *     be pushed (that one comes from the PTY question, see `pairAndPush`).
+ *     tracks in `openQuestionSignatures`). Equal to `rendered.id` (#887: the
+ *     merge adopts the hook's id instead of minting a new one from the PTY
+ *     parse, see `consumeAndMerge`); kept as its own parameter because it is
+ *     also the key `parkedInputs` is stored under, independent of what the
+ *     merged card ends up looking like.
  *   - `rendered` — the merged question as it would be pushed.
  *   - `ptyPrompt` — what the PTY parser actually read off the screen, before
  *     the merge policy may have replaced its options with the hook's (#718).
@@ -96,6 +144,15 @@ export type ParkedRenderArbiter = (ctx: {
 }) => Promise<ParkedRenderVerdict>;
 
 /** Pending-hook map key: the prompt's agent, or MAIN_AGENT_ID for the primary. */
+/** The one card the current on-screen prompt owns, and what identifies it. */
+interface RenderOwnedCard {
+  readonly id: string;
+  /** Agent the PTY prompt belonged to; a different agent never supersedes. */
+  readonly agent: string;
+  /** Raw PTY text, so a byte-identical redraw is not read as a replacement. */
+  readonly text: string;
+}
+
 function agentKey(question: Question): string {
   return question.agentId ?? MAIN_AGENT_ID;
 }
@@ -138,6 +195,34 @@ export interface QuestionPresenceTrackerDeps {
   orphanDebounceMs?: number;
   /** Clock override for the parked-record TTL (#763). Defaults to Date.now. */
   nowMs?: () => number;
+  /**
+   * The render-resolution transition (#888/#920 hard requirement): fired when
+   * a genuinely HOOK-LESS pending question's only evidence -- the PTY render
+   * -- is gone. A hook-less question (no PermissionRequest/Notification ever
+   * fired for it: an agent-team native prompt, a bare subprocess `(y/n)`) has
+   * no tool signature for `AutoApproveGate.cancelExternallyResolved` or the
+   * Stop/SubagentStop sweeps to match, so absent this callback it can leave
+   * `SessionRegistry.currentQuestions` only via the user answering it or the
+   * `MAX_PENDING_QUESTIONS` LRU cap -- the #920 measured leak (12 of 29
+   * source-less questions never removed over one working day, one still
+   * pending 2h51m later).
+   *
+   * Fires ONLY from `pairAndPush`, and ONLY once the `QuestionRegistrationOutcome`
+   * returned by the `push` call CONFIRMS the replacement that superseded it
+   * actually registered -- see `pairAndPush`'s doc for why an
+   * id/status/restart-based trigger without that confirmation is unsound
+   * (found in review of the first version of this mechanism, #888). Does NOT
+   * touch push/arbitration decisions (ADR 0004 unchanged) -- this only tells
+   * the caller a PREVIOUSLY PUSHED question's evidence is gone, so it can be
+   * removed from the pending store.
+   *
+   * MUST be synchronous and non-throwing (same contract as
+   * `hasLiveQuestions`): invoked with no surrounding try/catch at most call
+   * sites, but a throw is still caught internally and logged, never
+   * propagated. `reason` is a short signal string carried onto the
+   * question-lifecycle trace.
+   */
+  onHooklessQuestionGone?: (questionId: string, reason: string) => void;
 }
 
 export class QuestionPresenceTracker {
@@ -199,6 +284,28 @@ export class QuestionPresenceTracker {
    *  and answering the second with the first's verdict is the same answer to
    *  the same question, which is why that collapse is acceptable. */
   private observedPTYText: string | null = null;
+
+  /**
+   * The id of the currently-PUSHED hook-less question, if any (#888/#920).
+   * Set by `pairAndPush` when a merge produces a question with NO pairing
+   * hook record (`hookRecord === undefined` in `consumeAndMerge` -- a
+   * genuinely hook-less prompt), cleared (and `deps.onHooklessQuestionGone`
+   * fired) the moment that evidence is gone: a DIFFERENT render supersedes it
+   * (see `pairAndPush`), status leaves 'waiting', or `clearPending` runs.
+   *
+   * Distinct from `observedPTYQuestionId` (the RAW pre-merge PTY parse id,
+   * used for arbiter identity per ADR 0004) because the id that matters here
+   * is the one actually registered in `SessionRegistry.currentQuestions` --
+   * for a hook-less question that IS the same value (no merge changes it),
+   * but tracking it separately keeps this mechanism decoupled from the
+   * arbitration-identity fields it must not affect.
+   *
+   * A hook-PAIRED question is never tracked here: it already has a
+   * signature-matched removal path (`AutoApproveGate.cancelExternallyResolved`
+   * / the Stop sweeps), so this mechanism -- scoped tightly to the one cohort
+   * that has no other exit -- leaves it alone.
+   */
+  private observedRenderOwnedQuestion: RenderOwnedCard | null = null;
 
   /** Count of MAIN-context auto-approve evals in flight. A PTY prompt that
    *  appears while this is > 0 is BUFFERED (not pushed): if the verdict is
@@ -309,6 +416,15 @@ export class QuestionPresenceTracker {
       // A pending rich permission request stays put unless the incoming is a
       // newer permission request: a generic Notification or a source-less
       // StopFailure-shaped question for the same agent must NOT evict it.
+      //
+      // Currently UNREACHABLE, deliberately kept (#890/Q5): both entry points
+      // -- `hook-bridge-setup.ts`'s `onQuestion` (gated to
+      // `source === 'permission_request'`) and `parkAwaitingPTY` below (always
+      // a permission question) -- now pass only 'permission_request', because
+      // Q5 deleted the 'notification' synthesis that was the other caller.
+      // Not deleted: this is the invariant that makes adding a future stashed
+      // source safe, and re-deriving it after a regression is how #574 was
+      // found in the first place.
       if (existing.source === 'permission_request' && question.source !== 'permission_request') {
         console.debug(
           `[QuestionPresenceTracker] Keeping richer pending permission_request for agent "${key}"; not evicting with source="${question.source ?? 'undefined'}" (kept="${existing.text.slice(0, 50)}", dropped="${question.text.slice(0, 50)}")`,
@@ -429,12 +545,16 @@ export class QuestionPresenceTracker {
    * sole pending hook when exactly one exists (unambiguous). With 2+ pending
    * hooks from different agents and no agent match, push bare to avoid
    * misattributing another agent's labels (#425 / #483). When paired, the hook
-   * contributes `options`, `agentId` (so the client keys the prompt to the right
-   * agent), AND `text` — the hook's text carries the tool + command + agent
-   * context (e.g. "code-reviewer · Bash: git push origin main"), whereas the
-   * PTY's literal screen text is the bare terminal prompt ("Do you want to
-   * proceed?"). The PTY contributes `id` / `allowsFreeText` / `isAnswered` and
-   * its presence is the push trigger (#497). The consumed hook entry is removed.
+   * contributes `id` (#887: identity is minted ONCE, at hook arrival — see
+   * `consumeAndMerge`), `options`, `agentId` (so the client keys the prompt to
+   * the right agent), AND `text` — the hook's text carries the tool + command +
+   * agent context (e.g. "code-reviewer · Bash: git push origin main"), whereas
+   * the PTY's literal screen text is the bare terminal prompt ("Do you want to
+   * proceed?"). The PTY contributes `allowsFreeText` / `isAnswered` and its
+   * presence is the push trigger (#497). The consumed hook entry is removed.
+   * With NO hook record (a genuinely hook-less prompt: an agent-team native
+   * prompt, or a subprocess `(y/n)`), the PTY's own freshly-parsed `id` IS the
+   * identity — there is no other source for one.
    *
    * Options exception (#718): when the hook record's options are the daemon's
    * honest Yes/No FALLBACK (`hookRecord.optionsAreFallback`, set when
@@ -479,11 +599,158 @@ export class QuestionPresenceTracker {
    * check lives only in `onPTYPromptVisible`; the #751 parked-render path and
    * the escalate-release path call this directly so an in-flight eval cannot
    * re-capture a prompt that has already won its arbitration.
+   *
+   * #888/#920 render-resolution, CONFIRMED-delivery gate: the confirmation
+   * that a hook-less question's replacement actually registered comes
+   * DIRECTLY from `push`'s own `QuestionRegistrationOutcome` return value
+   * (#888 criterion iii) rather than a separate `isQuestionLive` re-query of
+   * the store after the fact -- the information flows from the call itself.
+   * The push is synchronous end to end (push -> `MessageAPI.handleQuestion`
+   * -> `QuestionDedup` -> `SessionRegistry.addQuestion`), so the returned
+   * outcome is exactly as current as a post-hoc store query would have been.
+   *
+   * An id-comparison-only version of this check (this file's own V1) could
+   * resolve a question that never actually left the screen, for two reasons
+   * found in review:
+   *   1. The PTY parser mints a FRESH id on every single parse (#486), even
+   *      when a prompt merely REDRAWS with unchanged text -- the exact
+   *      hazard `isPromptCurrent`'s own text fallback already documents
+   *      elsewhere in this file ("a prompt that merely redraws re-emits
+   *      under a fresh id ... matching on the id alone would call a live
+   *      prompt gone"). V1 applied no such guard to this mechanism.
+   *   2. Even a GENUINELY different render can be silently swallowed by
+   *      `QuestionDedup`'s 5s same-fingerprint window before it ever reaches
+   *      `SessionRegistry.addQuestion` -- and V1 resolved the OLD id
+   *      regardless, on the strength of the new render having merely been
+   *      PARSED, not actually delivered. Reachable in production: a false-
+   *      positive PTY-text status parse (`output-processor.ts`'s >= 0.5
+   *      confidence gate) flips status out of 'waiting' without resetting
+   *      `QuestionDedup` (cli.ts only resets it when no hook server is
+   *      active), status flips back to 'waiting' with the SAME prompt still
+   *      on screen, the redraw parses under a fresh id, and dedup silently
+   *      eats it -- net effect: the daemon told the client the question was
+   *      cancelled while the identical prompt sat unanswered on the real
+   *      screen. That is the disqualifying failure for this epic.
+   *
+   * A push whose returned status is not `'registered'` (deduped, or the push
+   * sink does not report an outcome at all) changes nothing: an unconfirmed
+   * push must not resolve anything, matching the "fail toward showing" rule
+   * every other ambiguous path in this codebase follows (`auto-approve-gate.ts`,
+   * "every ambiguous path resolves toward showing the user"). Losing this ONE
+   * resolution trigger on an unconfirmed push is an acceptable cost;
+   * swallowing a live question is not.
    */
   private pairAndPush(ptyQuestion: Question): void {
+    // `hookRecord` is deliberately not read here any more: #1005 widened the
+    // render-owned slot to EVERY confirmed render-born card, hook-paired or
+    // not, so whether a hook was consumed no longer changes what is tracked.
     const { merged } = this.consumeAndMerge(ptyQuestion);
     this.ptyShowingQuestion = true;
-    this.pushMerged(merged);
+    const outcome = this.pushMerged(merged);
+    const delivered = outcome?.status === 'registered';
+    if (!delivered) {
+      // Not confirmed (deduped, or the push sink returned no outcome):
+      // nothing is known to have changed. Leave `observedRenderOwnedQuestion`
+      // exactly as it was -- if it was tracking an older id, that question
+      // is STILL the best evidence of what's on screen, and must not be
+      // resolved on the strength of a replacement that never actually
+      // registered.
+      return;
+    }
+    this.adoptRenderOwnedQuestion({
+      id: merged.id,
+      // Scope by the MERGED question, not the raw PTY parse. The parse often
+      // carries no `agentId` at all (`Do you want to proceed?` says nothing
+      // about whose permission it is), so keying on it filed a parked SUBAGENT
+      // card under `main` — and the next main-agent prompt then superseded it,
+      // which is the very cross-agent bleed the scoping exists to stop. The
+      // merge takes the hook record's agent, which is the one that knows.
+      agent: agentKey(merged),
+      text: ptyQuestion.text,
+    });
+  }
+
+  /**
+   * Clear and report the currently-tracked hook-less question as gone
+   * (#888/#920), if one is tracked. No-op when `observedRenderOwnedQuestion` is
+   * null (nothing to resolve) or no `onHooklessQuestionGone` dep is wired
+   * (pre-#888 behavior: hook-less questions are never actively resolved).
+   * The dep is invoked outside any try/catch at some call sites, so a throw
+   * is caught and logged here rather than trusted to the caller.
+   */
+  /**
+   * Record `id` as THE card this screen's prompt owns, resolving whatever card
+   * held that slot before it (#1005 Change B).
+   *
+   * One PTY renders one prompt, so at most one render-born card can be live.
+   * A confirmed-registered replacement render IS the screen's current prompt,
+   * which makes the previous card's prompt provably gone — the same reasoning
+   * #888/#920 already applied, but that version was scoped to `hookRecord ===
+   * undefined` and so covered only genuinely hook-less cards.
+   *
+   * The excluded cohort is where the leak lived. A parked subagent escalation
+   * is hook-BORN, but its hook was answered `passthrough` at park time (ADR
+   * 0004), so the PTY render is its only living evidence — identical in
+   * lifecycle to a hook-less card, and previously tracked by nothing. Its exits
+   * were an exact-signature tool-run match, a phone answer, or `SubagentStop`;
+   * a terminal DENY fires no tool call, the lead-`Stop` sweep skips subagent
+   * entries (#711), and an agent-team teammate can run for days without
+   * `SubagentStop`. So those cards had no working exit and accumulated until
+   * LRU eviction.
+   *
+   * Held cards never reach here: a held hook means Claude is BLOCKED on the
+   * hook response and is not rendering, so it has no render to be superseded
+   * by, and `pushHeldHook` is a different trigger entirely.
+   */
+  private adoptRenderOwnedQuestion(card: RenderOwnedCard): void {
+    const previous = this.observedRenderOwnedQuestion;
+    if (previous !== null && previous.id !== card.id && this.supersedes(previous, card)) {
+      this.noteHooklessGone('pty_render_superseded');
+    }
+    this.observedRenderOwnedQuestion = card;
+  }
+
+  /**
+   * True when `next` genuinely REPLACES `previous` on screen, rather than
+   * merely following it.
+   *
+   * Two refusals, both found by driving concurrent agents through the real
+   * stack (#1008 review):
+   *
+   * 1. **A different agent's prompt proves nothing about this one.** Every
+   *    other piece of state in this file is agent-keyed (`pending`,
+   *    `awaitingPTY`, dedup, in-flight evals — see #425/#767/#799 for why
+   *    cross-agent bleed is dangerous); this slot was the exception. Subagent
+   *    B rendering an unrelated permission silently resolved subagent A's
+   *    escalated card: no answer, no tool run, no `SubagentStop`. Worse, the
+   *    cli.ts funnel then deleted A's `openQuestionSignatures` entry, killing
+   *    the exact-signature exit as well — reproducing the unremovable card
+   *    #1005 exists to fix, through a different door, for a permission the
+   *    gate had specifically judged risky enough to escalate.
+   *
+   * Text identity is deliberately NOT a second refusal here, though a review
+   * proposed it. A same-text redraw superseding is #888's stated policy ("the
+   * guard is delivery, not text identity"), and the harm does not apply: a
+   * supersede only fires on a CONFIRMED-registered replacement, so the user
+   * still holds a card for that prompt — the new one. Cross-agent is the
+   * asymmetric case, and the only one that leaves a prompt with no card at all.
+   */
+  private supersedes(previous: RenderOwnedCard, next: RenderOwnedCard): boolean {
+    return previous.agent === next.agent;
+  }
+
+  private noteHooklessGone(reason: string): void {
+    const card = this.observedRenderOwnedQuestion;
+    if (card === null) return;
+    const id = card.id;
+    this.observedRenderOwnedQuestion = null;
+    try {
+      this.deps.onHooklessQuestionGone?.(id, reason);
+    } catch (err) {
+      console.error(
+        `[QuestionPresenceTracker] onHooklessQuestionGone threw for ${id.slice(0, 8)} (${reason}): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   /**
@@ -533,11 +800,39 @@ export class QuestionPresenceTracker {
       hookRecord && hookRecord.options.length > 0
         ? {
             ...ptyQuestion,
+            // #887: ADOPT the hook's id instead of the PTY's freshly-parsed one.
+            // Identity is minted ONCE, at first sight — hook arrival for a
+            // hook-born question, the PTY parse only for a genuinely hook-less
+            // one (the `: ptyQuestion` branch below, where no hookRecord exists
+            // at all). A prompt that redraws while still pending re-parses under
+            // a fresh PTY id every time (#486), but that id is a disposable
+            // parse artifact once a hookRecord exists to pair with — it is
+            // discarded here, never observed downstream. This is what used to
+            // require the gate's `rekeySignatureToRendered`: with the id stable
+            // across the hook -> PTY-render hop, `openQuestionSignatures` (keyed
+            // by the hook's id at park/escalate time) already matches the id of
+            // the card this method is about to push, so there is nothing left
+            // to re-key.
+            id: hookRecord.id,
             // The hook text carries the tool/command/agent context; the PTY's is
             // the bare terminal prompt. Use the hook's when it has one (#497).
             text: hookRecord.text || ptyQuestion.text,
             options: useHookOptions ? [...hookRecord.options] : [...ptyQuestion.options],
             agentId: ptyQuestion.agentId ?? hookRecord.agentId,
+            promptId: hookRecord.promptId ?? ptyQuestion.promptId,
+            // #888 review finding: the `...ptyQuestion` spread above silently
+            // carried `ptyQuestion.source` ('pty', once question-parser sets
+            // it -- #920) onto a HOOK-PAIRED merged question, which has a
+            // signature-matched removal path (`openQuestionSignatures`) a
+            // genuinely hook-less question does not. Left uncorrected, adding
+            // `source: 'pty'` to the parser would have mislabeled every
+            // hook-paired render as the unresolvable-by-signature cohort,
+            // muddying the exact measurement #920's acceptance criterion asks
+            // for. The hook's own source is authoritative here, mirroring
+            // text/options/agentId above. That source is always
+            // 'permission_request' since #890/Q5 deleted the 'notification'
+            // synthesis -- the only other value that ever reached this stash.
+            source: hookRecord.source ?? ptyQuestion.source,
             // #718 review: `optionsAreFallback` must describe whichever
             // `options` ended up on the merged question, not silently inherit
             // whatever `ptyQuestion` happened to carry from the `...ptyQuestion`
@@ -556,7 +851,25 @@ export class QuestionPresenceTracker {
             ...(hookRecord.submitLabel ? { submitLabel: hookRecord.submitLabel } : {}),
             ...(hookRecord.summary ? { summary: hookRecord.summary } : {}),
           }
-        : ptyQuestion;
+        : // NOTE (#887 review): identity adoption above is gated on
+          // `options.length > 0`, so an optionless hook record falls here and
+          // the PTY's own id survives. That is DELIBERATE for the
+          // `recordPendingHook` path -- `question-presence-tracker.test.ts`
+          // asserts `toBe(ptyQ)`, i.e. no merge at all, for the
+          // addDirectories-only case hook-event-bridge filters to empty.
+          //
+          // It is a latent hazard only on the PARKED path, where
+          // `openQuestionSignatures` is keyed by the hook id at park time: a
+          // future producer emitting an optionless PARKED record would push a
+          // card under the PTY id and reintroduce the #808 mismatch, with no
+          // `rekeySignatureToRendered` left to catch it. Unreachable today
+          // (every producer guarantees at least the honest Yes/No pair).
+          //
+          // Not fixed here: separating the two paths' merge policy is exactly
+          // the "one owner for identity" work in #888, and changing it now
+          // would break the deliberate assertion above to defend a case that
+          // cannot occur.
+          ptyQuestion;
 
     return { merged, hookRecord };
   }
@@ -564,20 +877,28 @@ export class QuestionPresenceTracker {
   /** Push a merged question through the sink. Push errors are caught and
    *  logged but not rethrown — for a live render the next PTY emit for the
    *  same prompt retries WITHOUT the hook merge, which beats crashing on a
-   *  network blip.
+   *  network blip. Returns the sink's `QuestionRegistrationOutcome` (#888
+   *  criterion iii) so `pairAndPush` can consume it directly as its
+   *  confirmed-delivery signal; a thrown push (caught below) or a sink that
+   *  reports no outcome both surface as `undefined`, treated identically by
+   *  the caller (not confirmed).
    *
    *  `context` (#814) names the caller in the error line, because that retry
    *  argument does NOT hold for a post-arbitration push: its pending record
    *  was consumed at render time and a prompt sitting idle may never redraw,
    *  so a throw there is an unrecoverable missed notification and has to be
    *  greppable as such. */
-  private pushMerged(merged: Question, context = 'render'): void {
+  private pushMerged(
+    merged: Question,
+    context = 'render',
+  ): QuestionRegistrationOutcome | undefined {
     try {
-      this.push(merged);
+      return this.push(merged);
     } catch (err) {
       console.error(
         `[QuestionPresenceTracker] push sink threw (${context}): ${err instanceof Error ? err.message : String(err)}`,
       );
+      return undefined;
     }
   }
 
@@ -590,9 +911,12 @@ export class QuestionPresenceTracker {
    * returns — and re-pushing those is the #625 phantom flood. But some
    * prompts reach ONLY the PTY (#712): Claude's native agent-team permission
    * prompts (no PermissionRequest hook fires for these at all, see
-   * anthropics/claude-code #23983), a prompt re-rendered as passthrough after
-   * a held hook was released (its card already dismissed, registry entry
-   * removed), and MCP elicitation dialogs. Those must still reach the phone.
+   * anthropics/claude-code #23983), and a prompt re-rendered as passthrough
+   * after a held hook was released (its card already dismissed, registry entry
+   * removed). Those must still reach the phone. (MCP elicitation dialogs USED
+   * to belong on this list; since #889 the `Elicitation` hook is registered
+   * and pushes the card itself, so its PTY render is a gate-owned echo like
+   * any other -- suppressed below via the live-question check, not orphaned.)
    *
    * Disambiguation is structural, not content-based: if the gate already owns
    * this prompt cycle, EITHER it has already registered a live question
@@ -745,12 +1069,33 @@ export class QuestionPresenceTracker {
           );
           return;
         }
-        this.pushMerged(
+        const outcome = this.pushMerged(
           verdict.summary !== undefined && merged.summary === undefined
             ? { ...merged, summary: verdict.summary }
             : merged,
           'parked-render arbitration verdict; NO retry path exists for this push',
         );
+        // #1005 Change B: this push is render-born too, so it takes the
+        // render-owned slot like any other. Without this the escalate-verdict
+        // cohort -- the one whose exits are a tool-run match, a phone answer or
+        // `SubagentStop`, none of which fire on a terminal DENY -- was tracked
+        // by nothing and could only leave via LRU eviction. Gated on a
+        // CONFIRMED registration for the same reason `pairAndPush` is (ADR
+        // 0021): a deduped push changed nothing, so it must not retire the card
+        // that is still the best evidence of what is on screen.
+        if (outcome?.status === 'registered') {
+          this.adoptRenderOwnedQuestion({
+            id: merged.id,
+            // Scope by the MERGED question, not the raw PTY parse. The parse often
+            // carries no `agentId` at all (`Do you want to proceed?` says nothing
+            // about whose permission it is), so keying on it filed a parked SUBAGENT
+            // card under `main` — and the next main-agent prompt then superseded it,
+            // which is the very cross-agent bleed the scoping exists to stop. The
+            // merge takes the hook record's agent, which is the one that knows.
+            agent: agentKey(merged),
+            text: ptyQuestion.text,
+          });
+        }
       });
   }
 
@@ -855,6 +1200,16 @@ export class QuestionPresenceTracker {
       // #814: nothing is on screen now.
       this.observedPTYQuestionId = null;
       this.observedPTYText = null;
+      // #888/#920 review fix: deliberately NOT a hook-less resolution trigger.
+      // `status` here can come from a PTY-TEXT-parsed guess
+      // (`output-processor.ts`, confidence >= 0.5, not certainty) as well as
+      // a real hook event, and the tracker cannot tell which -- V1 treated
+      // any status-leaves-waiting as "the render is gone" and a false
+      // positive could resolve a question that never actually left the
+      // screen (found in review of #888). `observedRenderOwnedQuestion` is
+      // deliberately left untouched (not even nulled) so a LATER, genuinely
+      // CONFIRMED supersession in `pairAndPush` can still resolve it --
+      // losing this trigger costs a delayed cleanup, not a wrong one.
       // The verdict window is over: any buffered prompt was auto-handled (the
       // agent advanced) or left the screen. Discard it — do not ping the user.
       this.mainEvalsInFlight = 0;
@@ -943,6 +1298,20 @@ export class QuestionPresenceTracker {
     this.ptyShowingQuestion = false;
     this.observedPTYQuestionId = null;
     this.observedPTYText = null;
+    // #888/#920 review fix: deliberately NOT a hook-less resolution trigger,
+    // for the SAME reason as `onStatusChange` -- see that reset's comment.
+    // `clearPending` is not restart-exclusive: `AutoApproveGate` also calls
+    // it on a CANCELLED eval for one specific hook-derived question, which
+    // says nothing about whether some unrelated hook-less question (a
+    // different agent's native prompt) is still genuinely on screen. The one
+    // call site that IS a real restart (`TranscriptBinder.onRotation` via
+    // `hook-bridge-setup.ts`) already resolves every pending question,
+    // hook-less or not, through `resolveAndClearQuestions` +
+    // `sessionRegistry.clearQuestions` immediately alongside this call --
+    // so this method adds no coverage a genuine restart still needs, and
+    // firing it from the cancelled-eval call sites would have reintroduced
+    // the exact "resolve a still-live question on an unrelated signal" class
+    // this whole review fix exists to close.
     this.mainEvalsInFlight = 0;
     this.bufferedDuringEval = null;
     this.pushedHeldIds.clear();
@@ -996,6 +1365,32 @@ export class QuestionPresenceTracker {
    */
   isPromptVisibleOnPTY(): boolean {
     return this.ptyShowingQuestion;
+  }
+
+  /**
+   * True when the PTY parser's most recent observation is a prompt that has
+   * not been cleared since — "is SOMETHING on screen right now", regardless of
+   * who owns it (#1002).
+   *
+   * Weaker than `isPromptVisibleOnPTY`, and deliberately so. That flag means
+   * "THIS tracker pushed a card off a PTY render", which is true for the
+   * hookless, orphan and parked-render paths and FALSE for the most common
+   * case of all: a gate-owned hook card whose native prompt renders is routed
+   * to `onOrphanPTYPrompt`, recognised as an echo of something already pushed,
+   * and suppressed without ever setting the flag. Verified by probing this
+   * class directly rather than by reading it — `recordPendingHook` followed by
+   * `onOrphanPTYPrompt` leaves `isPromptVisibleOnPTY()` false while a real
+   * prompt is genuinely on screen.
+   *
+   * `observedPTYQuestionId` has no such gap: `onOrphanPTYPrompt` records it
+   * before any branch decides to push, buffer, suppress or arbitrate, and both
+   * `onStatusChange` (away from `waiting`) and `clearPending` null it. So it
+   * answers "is a prompt on screen" for every cohort, which is exactly what a
+   * caller about to type a digit into the PTY needs to know, and all it needs
+   * to know.
+   */
+  isPromptObservedOnPTY(): boolean {
+    return this.observedPTYQuestionId !== null;
   }
 
   /**
@@ -1053,5 +1448,11 @@ export class QuestionPresenceTracker {
   /** Test-only: parked-render arbitrations awaiting a verdict (#814). */
   parkedArbitrationsForTest(): number {
     return this.arbitratingPTYTexts.length;
+  }
+
+  /** Test-only: the id of the currently-tracked hook-less question, if any
+   *  (#888/#920), or null when none is tracked. */
+  observedRenderOwnedQuestionForTest(): string | null {
+    return this.observedRenderOwnedQuestion?.id ?? null;
   }
 }

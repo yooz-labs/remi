@@ -1,6 +1,17 @@
 export { AutoApproveService, parseDecision } from './auto-approve-service.ts';
 export { AutoApproveGate } from './auto-approve-gate.ts';
 export type { AutoApproveEvaluator, AutoApproveGateDeps } from './auto-approve-gate.ts';
+export {
+  AuthorityStore,
+  buildAuthorityFromTranscript,
+  enforceAuthorityBoundary,
+  isNonHumanForAuthority,
+  isWrappedNonHumanText,
+  resolveAuthority,
+} from './authority.ts';
+export type { AuthorityBoundaryResult } from './authority.ts';
+export { enforceDenyFloor, matchesCatastrophicPattern } from './deny-floor.ts';
+export type { DenyFloorResult } from './deny-floor.ts';
 export { EngineHost } from './engine-host.ts';
 export type { EngineHostState, EngineOwnership, PidStore } from './engine-host.ts';
 export {

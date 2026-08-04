@@ -93,8 +93,10 @@ import { log, logError } from '../cli/logger.ts';
 import type { PermissionDecision, PermissionRequestHookInput } from '../hooks/index.ts';
 import { type DeliveryOutcome, isDelivered } from '../notifications/notification-dispatcher.ts';
 import type { SessionRegistry } from '../session/index.ts';
+import { buildDenyMessage } from './deny-floor.ts';
 import { isDesignQuestion, isMultiChoicePermission } from './multichoice.ts';
-import type { AutoApproveResult } from './types.ts';
+import type { PrecedentReader } from './precedent.ts';
+import type { AutoApproveResult, DenySource } from './types.ts';
 
 /** Hard cap on `parkedInputs` (#814). One entry per parked subagent
  *  permission awaiting a PTY render; a real agent fleet holds a handful at
@@ -102,6 +104,12 @@ import type { AutoApproveResult } from './types.ts';
  *  loop, where dropping the OLDEST (whose prompt has long since not rendered)
  *  is the right eviction. */
 const MAX_PARKED_INPUTS = 64;
+
+/** Hard cap on `retiredEscalations` (#1005). Only needs to outlive the gap
+ *  between a retirement and the PTY render it must suppress, which is a
+ *  render cycle; sized generously above `MAX_PARKED_INPUTS` because forgetting
+ *  early fails toward an extra card, not toward silence. */
+const MAX_RETIRED_ESCALATIONS = 256;
 
 /** The (tool_name, tool_input) signature of an OPEN escalation (#673),
  *  tracked so an external-resolution signal can find and cancel it. */
@@ -256,6 +264,15 @@ export interface AutoApproveEvaluator {
      *  spare it the same way `cancelStale`'s running-eval cancel already
      *  spares a subagent eval via `evalIsSubagentById`. */
     isSubagent?: boolean,
+    /** Q9 (#893): recent-human-turns authority summary, see
+     *  `AutoApproveGateDeps.getAuthority`. Threaded straight through to
+     *  `buildPrompt`'s CONVERSATION CONTEXT block; the trust boundary itself
+     *  is enforced inside the evaluator, not here. */
+    authority?: string,
+    /** #976: this session's precedent, READ-ONLY. See
+     *  `AutoApproveGateDeps.getPrecedent`; the matrix that bounds what a
+     *  precedent may authorize lives inside the evaluator, not here. */
+    precedent?: PrecedentReader,
   ): Promise<AutoApproveResult>;
   /**
    * Abort an in-flight `evaluate`. With `evalId`, aborts ONLY when that id is the
@@ -289,6 +306,35 @@ export interface AutoApproveGateDeps {
   tracker: QuestionPresenceTracker;
   /** Wraps `HookEventBridge.isInSubagentContext()`. Read live per branch (async TOCTOU). */
   isInSubagentContext: () => boolean;
+  /**
+   * Q9 (#893): this session's authority summary — the human's own typed
+   * turns, from `UserPromptSubmit` (primary) with a filtered transcript
+   * fallback (`auto-approve/authority.ts`'s `resolveAuthority`). Read fresh
+   * on every eval call site below so a turn submitted mid-session is picked
+   * up immediately. Absent, or an empty/whitespace string, means no
+   * CONVERSATION CONTEXT block — identical prompt/behavior to pre-#893.
+   * Synchronous and cheap: both sources are in-memory (a ring buffer / an
+   * already-loaded `TranscriptWatcher`'s cached entries), never a disk read
+   * at call time.
+   */
+  getAuthority?: () => string;
+  /**
+   * #976: this session's precedent store, as a READ-ONLY reader.
+   *
+   * Read fresh per eval for the same reason as `getAuthority`: an answer given
+   * mid-session must count for the next permission, not the one after that.
+   *
+   * A `PrecedentReader` and never the `PrecedentStore` itself, deliberately.
+   * `handleAnswer` (`cli/handlers/input-events.ts`) is the single writer, and
+   * that has to hold BY CONSTRUCTION rather than by convention: the gate types
+   * its own approvals into rendered subagent prompts under ADR 0004, so a gate
+   * that could `record()` would launder machine verdicts into human precedent
+   * and then authorize future machine approvals from them. Handing out a
+   * reader makes that self-licensing loop unrepresentable.
+   *
+   * Absent => no precedent in either direction; pre-#976 behavior exactly.
+   */
+  getPrecedent?: () => PrecedentReader | undefined;
   /**
    * Reset the subagent-context tracker (#710). Called ONLY when a MAIN-tagged
    * PermissionRequest (`agent_id` absent) observes `isInSubagentContext()`
@@ -334,6 +380,24 @@ export interface AutoApproveGateDeps {
    * is logged and absorbed, never propagated into the hook response.
    */
   onSubagentPassthrough?: (input: PermissionRequestHookInput) => void;
+  /**
+   * Every `deny` this gate returns to the hook (#1015), reported for
+   * observation ONLY — like `onSubagentPassthrough` above, the decision is
+   * already made by the time this fires and a sink cannot influence it.
+   *
+   * A deny is the one verdict with no user-facing surface of its own: it
+   * creates no `Question`, so no card is pushed and no `question_resolved`
+   * broadcast follows. Claude is told why (`buildDenyMessage`) and the human
+   * is told nothing. This dep is the human's channel.
+   *
+   * `source` says which mechanism refused, so the sink can treat the user's
+   * own standing `config.toml` rule differently from a model deny that merely
+   * survived the floor — see `DenySource`.
+   *
+   * Fire-and-forget and throw-safe, like the cosmetic cues: a sink that throws
+   * is logged and absorbed, never propagated into the hook response.
+   */
+  onAutoDenied?: (input: PermissionRequestHookInput, source: DenySource, reasoning: string) => void;
   /** Escalate to the user (wraps `handlers.onPermissionRequest`). Returns the id
    *  of the `Question` it created (#573), so a binary escalation can hold the
    *  hook keyed by that id and resolve it when the user answers; `undefined`
@@ -383,8 +447,42 @@ export interface AutoApproveGateDeps {
    *  -- the terminal cue above still fires either way. */
   onHandled?: (ctx: { isSubagent: boolean }) => void;
   /** Called when the eval ended without a verdict (cancelled — the user already
-   *  advanced past the prompt). Drives the terminal cue back to idle. #513. */
+   *  advanced past the prompt). Drives the terminal cue back to idle. #513.
+   *
+   *  Deliberately carries NO `ctx.isSubagent`, unlike `onEvalStart` /
+   *  `onEscalate` / `onHandled`: this cue is reachable only from MAIN-context
+   *  evals. `resolvePermission` returns early for an `agent_id` event before any
+   *  eval (#807), and the post-render subagent path
+   *  (`arbitrateParkedRender`) routes a `cancelled` verdict to
+   *  `escalateRenderedParked()` — i.e. to `onEscalate`, not here. A ctx
+   *  parameter would therefore be `false` at every call site, and a
+   *  subagent guard built on it would be untestable dead code (#970, asserted
+   *  by "a cancelled parked render escalates" in the gate tests). */
   onCancelled?: () => void;
+  /**
+   * Called when a HELD hook's Part-B late verdict resolved to 'cancelled' --
+   * `reconcileLateVerdict` found Claude had already advanced past the prompt
+   * while the early push+hold (#573) was showing, and released the hold to
+   * passthrough. The held-path sibling of `onCancelled` above, closing the
+   * SAME class of gap #970 found there: the client pill was moved off
+   * 'evaluating' to 'waiting' when the hold was created (`onEscalate` ->
+   * the question path's own broadcast), but nothing moved it again when the
+   * verdict turned out to be "nothing to decide" -- the pill would sit on a
+   * now-stale 'waiting' regardless of what the session actually became in
+   * the meantime.
+   *
+   * Deliberately NOT folded into `onCancelled` itself: that cue fires from
+   * `resolvePermission`'s own eval loop and `releaseHeld` is a completely
+   * different exit (a HELD hook's late-verdict reconciliation), so sharing
+   * one callback would make a caller's cue handler guess which path it is
+   * in. Also carries no `ctx.isSubagent`, for the same reason `onCancelled`
+   * does not: Part B (`maybePushOnSlowEval`) refuses to arm at all for a
+   * subagent-tagged input or while `isInSubagentContext()` is true, so this
+   * cue is unreachable from anywhere but a MAIN-context hold -- a ctx
+   * parameter would be `false` at every call site and an isSubagent guard
+   * built on it would be untestable dead code, exactly as documented on
+   * `onCancelled`. */
+  onHeldCancelled?: () => void;
   /**
    * Called when a HELD question resolved WITHOUT the user answering it through
    * the WebSocket/relay answer path (#585, P7): a Part-B slow-eval verdict landed
@@ -523,16 +621,55 @@ export class AutoApproveGate {
    *     `cancelStale`'s mainOnly Stop sweep (#799) use), and `releaseAllHolds`
    *     (#799 -- so the mainOnly Stop sweep below never re-finds and double
    *     -resolves a qid it just released via a held hook).
-   * `cancelStale` (non-mainOnly) / `forceRelease` wholesale-clear the whole
-   * map (session end / force-release — nothing tracked is relevant after
-   * either). A stale entry is harmless (a signature match just triggers a
-   * redundant, idempotent cleanup), but MUST NOT be able to accumulate
-   * indefinitely: an un-deleted entry from a timed-out/cancelled hold would
-   * sit for the rest of the process lifetime and could fire a spurious
-   * `notifyResolved` for a question dead for hours on a much-later,
-   * unrelated duplicate of the same command.
+   * `cancelStale` (non-mainOnly) / `forceRelease` (#948) route every survivor
+   * through `resolveSupersededQuestion` too, via the shared
+   * `resolveAllOpenQuestions` -- session end / force-release means nothing
+   * tracked is relevant after either, but that funnel (not a wholesale
+   * `.clear()`) is what fires `question_resolved` + the APNS dismiss + the
+   * live-sessions mirror for a survivor whose card is still sitting in the
+   * store (#948: a PASSTHROUGH escalation, e.g. AskUserQuestion, is tracked
+   * ONLY here — a bare `.clear()` dropped its bookkeeping with nothing left
+   * to resolve its card). A stale entry is harmless regardless (a signature
+   * match just triggers a redundant, idempotent cleanup), but MUST NOT be
+   * able to accumulate indefinitely: an un-deleted entry from a timed-out/
+   * cancelled hold would sit for the rest of the process lifetime and could
+   * fire a spurious `notifyResolved` for a question dead for hours on a
+   * much-later, unrelated duplicate of the same command.
    */
   private readonly openQuestionSignatures = new Map<UUID, ToolSignature>();
+
+  /**
+   * Ids of escalations this gate has RETIRED — resolved, released, or answered
+   * on the user's behalf (#1005).
+   *
+   * Exists so `arbitrateParkedRender` can tell "this permission is already
+   * settled" from "I have never heard of this id". Those look identical in
+   * `openQuestionSignatures` (absent either way) and need opposite handling:
+   * settled must not push a card, unknown MUST still push, because an id the
+   * gate has no record of is one it has no evidence about and the standing
+   * rule is that ambiguity resolves toward showing the user.
+   *
+   * A card pushed for a retired escalation is unremovable by design: retirement
+   * already deleted the signature entry, and every sweep this gate has iterates
+   * that map. So the cost of getting this wrong is not a redundant prompt, it
+   * is a permanent one.
+   *
+   * Bounded like `parkedInputs`: insertion-ordered, oldest evicted past the
+   * cap. Forgetting an old retirement fails toward pushing (a redundant card
+   * the user can dismiss), never toward silence.
+   */
+  private readonly retiredEscalations = new Set<UUID>();
+
+  /** Record a retirement, bounded like `parkedInputs` (oldest evicted). */
+  private markRetired(questionId: UUID): void {
+    this.retiredEscalations.delete(questionId);
+    this.retiredEscalations.add(questionId);
+    while (this.retiredEscalations.size > MAX_RETIRED_ESCALATIONS) {
+      const oldest = this.retiredEscalations.values().next().value;
+      if (oldest === undefined) break;
+      this.retiredEscalations.delete(oldest);
+    }
+  }
 
   /**
    * The original hook input of every PARKED subagent permission (#814), keyed
@@ -544,8 +681,9 @@ export class AutoApproveGate {
    * Entries are deleted the moment an arbitration consumes one (exactly one
    * evaluation per park), and by every resolution path that retires the
    * matching `openQuestionSignatures` entry (`releaseHeld`, `resolveHeld`,
-   * `cancelStale`'s wholesale clear, `forceRelease`), so a permission whose
-   * prompt never renders cannot linger. `MAX_PARKED_INPUTS` is the backstop
+   * and — via `resolveAllOpenQuestions`, #948 — `cancelStale`'s teardown
+   * branch and `forceRelease`), so a permission whose prompt never renders
+   * cannot linger. `MAX_PARKED_INPUTS` is the backstop
    * for the one shape none of those cover: an agent that parks repeatedly and
    * never advances, ends, or renders — oldest-first eviction bounds the map at
    * a size far above any real fleet's concurrent parks.
@@ -593,11 +731,13 @@ export class AutoApproveGate {
     // -- their hooks are still blocked in a still-running teammate and remain
     // answerable via `resolveHeld`.
     this.releaseAllHolds('passthrough', reason, mainOnly);
-    // #673 / #711: every OPEN escalation this gate has tracked (held above, or
-    // a passthrough one with no hold) is moot on a full teardown -- wholesale
-    // clear, as before. On a mainOnly Stop, only the MAIN-tagged entries are
-    // moot; a teammate's is not (its hold, if any, was just spared above, and
-    // its signature must stay trackable for external-resolution cancellation).
+    // #673 / #711 / #948: every OPEN escalation this gate has tracked (held
+    // above, or a passthrough one with no hold) is moot on a full teardown --
+    // resolved through the SAME funnel a tool-signature match uses, below,
+    // never a silent bookkeeping-only delete. On a mainOnly Stop, only the
+    // MAIN-tagged entries are moot; a teammate's is not (its hold, if any,
+    // was just spared above, and its signature must stay trackable for
+    // external-resolution cancellation).
     if (mainOnly) {
       // #799: a MAIN-tagged signature STILL open here was never held (a held
       // one was already released + unregistered by releaseAllHolds above) --
@@ -611,16 +751,28 @@ export class AutoApproveGate {
       // never catch (a deny produces no PreToolUse to match against). Route
       // each survivor through the SAME funnel a tool-signature match uses
       // (not a silent bookkeeping-only delete), so question_resolved + APNS
-      // dismiss + the live-sessions mirror all fire for it too.
+      // dismiss + the live-sessions mirror all fire for it too. Skip
+      // subagent-tagged entries: a Stop means only the LEAD agent finished,
+      // and a teammate may still be mid-turn -- its still-open escalation is
+      // not moot yet (that agent's own eventual `SubagentStop` resolves it
+      // via `cancelStaleForAgent`).
       for (const [qid, sig] of [...this.openQuestionSignatures]) {
         if (sig.isSubagent) continue;
         this.resolveSupersededQuestion(qid, reason, sig.toolName);
       }
     } else {
-      this.openQuestionSignatures.clear();
-      // #814: a full teardown retires every parked permission too — none of
-      // them can render on a PTY that is going away.
-      this.parkedInputs.clear();
+      // #948: a full teardown has no still-running teammate to protect (see
+      // this method's own docstring above: "there is no 'the rest of the
+      // team is still going' case once the session has ended"), so EVERY
+      // survivor is resolved here -- main OR subagent -- unlike the mainOnly
+      // sweep's `isSubagent` skip just above. This used to be a silent
+      // `openQuestionSignatures.clear()` + `parkedInputs.clear()`: exactly
+      // the "bookkeeping-only delete" the mainOnly branch's own comment
+      // warns against, and it left a passthrough escalation's card (e.g.
+      // AskUserQuestion / ExitPlanMode, tracked only in
+      // `openQuestionSignatures`) sitting in the store with nothing left to
+      // resolve it (#948).
+      this.resolveAllOpenQuestions(reason);
     }
     if (this.deps.service === null) return;
     // #730 (BUG 1 fix): drop THIS session's own QUEUED evals first -- work a
@@ -657,6 +809,39 @@ export class AutoApproveGate {
     }
     if (cancelledCount > 0) {
       log(`[AutoApprove] Cancelled ${cancelledCount} stale MAIN-context LLM eval(s): ${reason}`);
+    }
+  }
+
+  /**
+   * #948: resolve EVERY currently-open escalation (main or subagent) through
+   * `resolveSupersededQuestion` instead of a silent bookkeeping-only delete.
+   * The shared implementation for the two REAL teardown paths, where nothing
+   * tracked can possibly still be relevant afterward: `cancelStale`'s
+   * non-mainOnly branch (`SessionEnd`) and `forceRelease` (`remi unstick`).
+   *
+   * Deliberately does NOT filter by `sig.isSubagent` the way the mainOnly
+   * `Stop` sweep in `cancelStale` does -- that filter exists because a `Stop`
+   * means only the LEAD agent finished while a teammate may still be
+   * mid-turn (see `cancelStale`'s own docstring); neither teardown path has
+   * such a survivor to protect.
+   *
+   * `parkedInputs` needs no separate clear call here. Every parked entry is
+   * registered under the SAME question id as its `openQuestionSignatures`
+   * counterpart (`parkSubagentForPTY` sets both together in one call), and
+   * the only two ways a `parkedInputs` entry is ever removed WITHOUT its
+   * signature counterpart also being removed are `arbitrateParkedRender`
+   * consuming it (the signature survives, now tracking an actual pushed
+   * card -- correctly still open) and `rememberParkedInput`'s
+   * `MAX_PARKED_INPUTS` eviction (same). Neither direction lets a
+   * `parkedInputs` entry outlive its signature. `releaseHeld` -- reached by
+   * every `resolveSupersededQuestion` call below -- unconditionally deletes
+   * BOTH maps' entries for the qid it processes, before anything downstream
+   * can throw, so this loop retires every parked entry as a side effect of
+   * retiring its signature.
+   */
+  private resolveAllOpenQuestions(reason: string): void {
+    for (const [qid, sig] of [...this.openQuestionSignatures]) {
+      this.resolveSupersededQuestion(qid, reason, sig.toolName);
     }
   }
 
@@ -725,10 +910,13 @@ export class AutoApproveGate {
     const holds = this.pendingHolds.size;
     this.releaseAllHolds('passthrough', reason);
     this.evalIdByQuestion.clear();
-    // #673: mirrors cancelStale's wholesale clear -- a force-release is at
-    // least as final as a session end for bookkeeping purposes.
-    this.openQuestionSignatures.clear();
-    this.parkedInputs.clear(); // #814, same finality
+    // #673 / #948: mirrors cancelStale's non-mainOnly teardown branch -- a
+    // force-release is at least as final as a session end, so every
+    // remaining survivor (main or subagent) is resolved through the SAME
+    // funnel a tool-signature match uses, not a silent bookkeeping-only
+    // delete (see `resolveAllOpenQuestions`'s own docstring for why
+    // `parkedInputs` needs no separate clear call).
+    this.resolveAllOpenQuestions(reason);
     const service = this.deps.service;
     if (service === null) return { holds, cancelled: false, drained: 0 };
     const cancelled = service.cancel(reason);
@@ -749,6 +937,17 @@ export class AutoApproveGate {
    * Clears the hold's timer and marks the permission handled so the #484 buffer
    * + #513 cue close exactly as for a silent auto-decision.
    *
+   * #970 note: `markHandled` below ALSO fires the #576 client status broadcast
+   * (`onHandled` -> `broadcastAutoApproveStatus('approved')`), so a Part-B late
+   * verdict reconciled through here (`reconcileLateVerdict`'s allow/deny
+   * branches, which call this method) was ALREADY total before the #970 fix --
+   * verified by grep AND by a regression test in hook-bridge-setup.test.ts,
+   * because an earlier pass at this same enumeration (ADR 0020) claimed
+   * otherwise without checking this call site. The one late-verdict outcome
+   * that genuinely reached no cue was the CANCELLED branch, which calls
+   * `releaseHeld` (a separate method, no `markHandled`) -- see `onHeldCancelled`
+   * on `AutoApproveGateDeps` for that fix.
+   *
    * `suggestionIndex` (#718): present when the user picked a suggestion-derived
    * "Yes, always allow: ..." option. `decision` is still `'allow'` in that case
    * (the caller maps isNo -> deny, everything else it can express -> allow);
@@ -765,6 +964,9 @@ export class AutoApproveGate {
     // escalation this question tracked is resolved now regardless of which
     // branch below runs -- clear it unconditionally, not just on the hit path.
     this.openQuestionSignatures.delete(questionId);
+    // #1005: pair every signature retirement with a positive record of it,
+    // so a later parked render can tell "settled" from "never seen".
+    this.markRetired(questionId);
     this.parkedInputs.delete(questionId); // #814, see releaseHeld
     this.confirmedDeliveries.delete(questionId); // #733: same unconditional cleanup
     const hold = this.pendingHolds.get(questionId);
@@ -776,7 +978,13 @@ export class AutoApproveGate {
     // this leaves a ghost card that replays on reconnect and lets a late
     // handleAnswer find it "live" and misroute. The user-answer path also
     // removes it in handleAnswer's finally; a double-remove is idempotent.
-    this.deps.sessionRegistry.removeQuestion(this.sessionId, questionId, `resolveHeld:${decision}`);
+    this.deps.sessionRegistry.removeQuestion(
+      this.sessionId,
+      questionId,
+      `resolveHeld:${decision}`,
+      undefined,
+      'AutoApproveGate.resolveHeld',
+    );
     this.markHandled(hold.isSubagent);
     let resolvedDecision: PermissionDecision = decision;
     let logSuffix: string = decision;
@@ -806,6 +1014,12 @@ export class AutoApproveGate {
    * prompt. Returns true iff a hold for `questionId` existed. Public wrapper over
    * the private `releaseHeld(qid, 'passthrough')`; no markHandled (the user is
    * about to answer the native prompt, not a silent auto-decision).
+   *
+   * #970 totality note: no client status cue needed. This path only runs
+   * because a client JUST answered (input-events.ts), so the answering
+   * client already knows the outcome, and the PTY inject that follows
+   * triggers the normal PreToolUse -> 'executing' status update for every
+   * OTHER connected client, same as `onEscalate` relies on elsewhere.
    */
   releaseHeldAsPassthrough(questionId: UUID): boolean {
     // #673: openQuestionSignatures cleanup lives in the private releaseHeld
@@ -823,7 +1037,14 @@ export class AutoApproveGate {
    *  cleanup is never duplicated here -- #799's mainOnly Stop sweep in
    *  `cancelStale` depends on `releaseHeld` having already dropped this qid's
    *  `openQuestionSignatures` entry, or it would re-find it and double-fire
-   *  `notifyResolved`. */
+   *  `notifyResolved`.
+   *
+   *  #970 totality note: no client status cue fires here either. Both callers
+   *  (`Stop` mainOnly, `SessionEnd`) are hook events the setup layer ALSO
+   *  drives through the ordinary status path in the same synchronous handler,
+   *  immediately after `cancelStale` returns (`onStatusChange('idle')` for
+   *  both) -- the same "the question path's own status already covers it"
+   *  reasoning `onEscalate` relies on, not a new exception. */
   private releaseAllHolds(decision: PermissionDecision, reason: string, mainOnly = false): void {
     const targets = mainOnly
       ? [...this.pendingHolds].filter(([, hold]) => !hold.isSubagent)
@@ -933,6 +1154,15 @@ export class AutoApproveGate {
    * and resolve the hook so Claude renders its native prompt and the local
    * terminal can take over. No-op when the hold is already gone (answered, Part-B
    * verdict, cancelled) so it never double-resolves.
+   *
+   * #970 totality note: this deliberately fires NO client status cue. Every
+   * path into a hold (immediate binary escalation or Part B's early push)
+   * already moved the pill to 'waiting' via `onEscalate` before a hold could
+   * ever exist, and failing open here does not change what the client is
+   * actually waiting on -- the SAME permission is still unanswered, just
+   * rendered in the terminal now instead of held on the hook. 'waiting'
+   * stays true; broadcasting anything else here would be the wrong-status
+   * failure mode ADR 0020 warns is as bad as a stuck one.
    */
   private failOpenHeld(qid: UUID, logMessage: string): void {
     if (!this.pendingHolds.has(qid)) return;
@@ -1237,6 +1467,8 @@ export class AutoApproveGate {
         // can isolate this eval from every other session's.
         this.sessionId,
         isSubagent,
+        this.authorityForEval(),
+        this.precedentForEval(),
       )
       .finally(() => {
         this.evalIsSubagentById.delete(evalId);
@@ -1284,7 +1516,11 @@ export class AutoApproveGate {
     }
     if (result.decision === 'deny') {
       this.markHandled(isSubagent);
-      return 'deny';
+      this.reportDeny(input, result);
+      // #976: carry the reason to Claude instead of a bare refusal, so it can
+      // route around or ask the user rather than guess. `interrupt` is left
+      // unset (false) so the turn continues and it can act on the message.
+      return { behavior: 'deny', message: buildDenyMessage(result.reasoning) };
     }
     if (result.decision === 'pick') {
       // Multi-choice pick (#399): the response can't express it, so render the
@@ -1342,7 +1578,10 @@ export class AutoApproveGate {
       if (second.decision === 'deny') {
         log(`[AutoApprove ${this.sessionTag}] escalate_model (${escalateModel}) denied`);
         this.markHandled(isSubagent);
-        return 'deny';
+        this.reportDeny(input, second);
+        // #976: same reasoned deny as the primary path above, carrying the
+        // SECOND opinion's reasoning since that is the verdict being applied.
+        return { behavior: 'deny', message: buildDenyMessage(second.reasoning) };
       }
       if (second.decision === 'cancelled') {
         // Claude already advanced (cancelStale fired during the slower second
@@ -1448,7 +1687,7 @@ export class AutoApproveGate {
     // The reconciliation NEVER pushes again — a late escalate just leaves the
     // existing hold in place (guarded by the pendingHolds membership check
     // inside reconcileLateVerdict), and pushHeldHook is itself idempotent.
-    void this.reconcileLateVerdict(safeEval, questionId);
+    void this.reconcileLateVerdict(input, safeEval, questionId);
     return heldDecision;
   }
 
@@ -1462,6 +1701,7 @@ export class AutoApproveGate {
    * double-resolve.
    */
   private async reconcileLateVerdict(
+    input: PermissionRequestHookInput,
     safeEval: Promise<{ ok: true; result: AutoApproveResult } | { ok: false; err: unknown }>,
     qid: UUID | undefined,
   ): Promise<void> {
@@ -1486,6 +1726,18 @@ export class AutoApproveGate {
       this.notifyResolved(qid, 'auto_approved');
       this.resolveHeld(qid, 'allow');
     } else if (result.decision === 'deny') {
+      // #1015: the THIRD deny path, and the least visible of the three. The
+      // user already has a card on their lock screen saying "needs your
+      // permission"; this dismisses it with a quiet content-available push
+      // carrying no title and no body. Without the report, the card simply
+      // vanishes and the refusal is invisible — worse than the synchronous
+      // deny, because the user saw a prompt and then saw it disappear.
+      //
+      // Found in review of this change, not by writing it: `reportDeny` was
+      // wired at the two SYNCHRONOUS deny returns and this async one was
+      // missed. It needed `input` threaded down a level, which is exactly why
+      // it was easy to miss and why the parameter now exists.
+      this.reportDeny(input, result);
       this.notifyResolved(qid, 'auto_denied');
       this.resolveHeld(qid, 'deny');
     } else if (result.decision === 'cancelled') {
@@ -1493,6 +1745,13 @@ export class AutoApproveGate {
       this.deps.tracker.clearPending();
       this.notifyResolved(qid, 'cancelled');
       this.releaseHeld(qid, 'passthrough', 'part-b-cancelled');
+      // #970: releaseHeld (unlike resolveHeld) never calls markHandled, so
+      // nothing else on this branch tells the client the pill is stale. The
+      // pill was moved to 'waiting' when the hold was created (onEscalate)
+      // and nothing has corrected it since -- the exact gap onCancelled closed
+      // for the non-held path. See onHeldCancelled's own doc for why this is a
+      // separate cue rather than reusing onCancelled.
+      this.safeCue('onHeldCancelled', this.deps.onHeldCancelled);
     }
     // escalate / pick: already pushed + holding; no double-push, leave as-is.
   }
@@ -1522,6 +1781,9 @@ export class AutoApproveGate {
     toolName?: string,
   ): boolean {
     this.openQuestionSignatures.delete(questionId);
+    // #1005: pair every signature retirement with a positive record of it,
+    // so a later parked render can tell "settled" from "never seen".
+    this.markRetired(questionId);
     // #814: a parked permission resolved through any of these paths can never
     // be arbitrated on render any more; retire its remembered hook input with
     // the signature it belongs to.
@@ -1536,7 +1798,13 @@ export class AutoApproveGate {
     // Drop the registry entry so no ghost card replays (#585, P7 FIX 2). The
     // user-answer path (releaseHeldAsPassthrough -> handleAnswer finally) also
     // removes it; a double-remove is idempotent.
-    this.deps.sessionRegistry.removeQuestion(this.sessionId, questionId, reason, toolName);
+    this.deps.sessionRegistry.removeQuestion(
+      this.sessionId,
+      questionId,
+      reason,
+      toolName,
+      'AutoApproveGate.releaseHeld',
+    );
     hold.resolve(decision);
     return true;
   }
@@ -1674,17 +1942,40 @@ export class AutoApproveGate {
   ): Promise<ParkedRenderVerdict> {
     const input = this.parkedInputs.get(parkedQuestionId);
     const service = this.deps.service;
+    // #1005: this escalation was RETIRED (resolved / released / answered).
+    // Pushing here mints a card for a permission that is already settled, and
+    // -- because retirement deleted its `openQuestionSignatures` entry on the
+    // way out -- that card lands OUTSIDE every removal path this gate has: the
+    // signature sweeps and `cancelStaleForAgent` both iterate that map. Only
+    // LRU eviction or a user answer could ever remove it, which is how 7 of the
+    // 8 cards found stuck in a live pending set were born (2.5-12.5h lifetimes,
+    // `lru_eviction` their only removal).
+    //
+    // Keyed on POSITIVE evidence of retirement, never on the absence of a
+    // signature entry. Absence cannot tell "was retired" from "was never
+    // parked", and those need opposite handling: an id this gate knows nothing
+    // about is one it has no evidence about, so it must still fail open to the
+    // user. (An existing test, "an unknown parked id pushes without
+    // evaluating", pins exactly that and caught this when the check was written
+    // the absent-entry way.)
+    if (this.retiredEscalations.has(parkedQuestionId)) {
+      log(
+        `[AutoApprove ${this.sessionTag}] Parked render for ${parkedQuestionId.slice(0, 8)} already retired; not pushing`,
+      );
+      return { outcome: 'answered' };
+    }
     if (input === undefined || service === null) {
       // No auto-approve, or the park was already consumed/retired (an external
       // resolution, a session teardown, a duplicate render, a MAX_PARKED_INPUTS
       // eviction). Push: the prompt is on screen and nobody else is going to
-      // surface it. The re-key still has to happen — the signature may well
-      // still be open (eviction drops only the input), and a card pushed under
-      // an id no resolution path knows is the #808 stale card.
+      // surface it. No re-key needed (#887): `rendered.id` IS `parkedQuestionId`
+      // — the tracker adopts the hook's id at merge time instead of minting a
+      // new one from the PTY parse — so `openQuestionSignatures` (keyed by
+      // `parkedQuestionId` since `parkSubagentForPTY`) already matches the id
+      // of the card about to be pushed.
       log(
         `[AutoApprove ${this.sessionTag}] Parked render for ${parkedQuestionId.slice(0, 8)} not evaluated (${service === null ? 'no auto-approve service' : 'no parked input'}); pushing to the user`,
       );
-      this.rekeySignatureToRendered(parkedQuestionId, rendered);
       return { outcome: 'push' };
     }
     // Exactly one evaluation per park: a second render of the same prompt
@@ -1714,10 +2005,12 @@ export class AutoApproveGate {
         evalId,
         this.sessionId,
         true,
+        this.authorityForEval(),
+        this.precedentForEval(),
       );
     } catch (err) {
       logError(`[AutoApprove ${this.sessionTag}] Parked-render eval threw; escalating:`, err);
-      return this.escalateRenderedParked(parkedQuestionId, rendered);
+      return this.escalateRenderedParked();
     } finally {
       this.evalIsSubagentById.delete(evalId);
       if (this.evalIdByQuestion.get(parkedQuestionId) === evalId) {
@@ -1726,12 +2019,29 @@ export class AutoApproveGate {
     }
 
     if (result.decision === 'cancelled') {
-      // The eval was aborted because something proved the prompt moot (the
-      // agent advanced, the user answered in the terminal). Report push: the
-      // tracker drops it when the prompt is already off screen, and if it is
-      // somehow still up, the user is the right fallback.
+      // #1005: distinguish WHOSE resolution cancelled this eval. If this
+      // question's own bookkeeping is gone, the cancel was ITS resolution --
+      // the permission is settled and a card would be a zombie born outside
+      // every removal path (see the retired-park check at the top).
+      //
+      // The tracker cannot be relied on to drop it instead: `isPromptCurrent`'s
+      // text fallback matches "Do you want to proceed?", which is what EVERY
+      // Claude Code permission prompt renders, so with agent-team traffic
+      // something text-identical is almost always on screen. That check is
+      // structurally blind here.
+      if (this.retiredEscalations.has(parkedQuestionId)) {
+        log(
+          `[AutoApprove ${this.sessionTag}] Parked-render eval cancelled by its own resolution: ${result.reasoning}`,
+        );
+        this.markHandled(true);
+        return { outcome: 'answered' };
+      }
+      // The entry survives, so the cancel was collateral -- a SIBLING's
+      // PostToolUse aborted this eval. The prompt may well still be live, so
+      // keep failing open to the user. Mapping `cancelled` to `answered`
+      // unconditionally would swallow it.
       log(`[AutoApprove ${this.sessionTag}] Parked-render eval cancelled: ${result.reasoning}`);
-      return this.escalateRenderedParked(parkedQuestionId, rendered);
+      return this.escalateRenderedParked();
     }
 
     if (result.decision === 'approve' || result.decision === 'deny' || result.decision === 'pick') {
@@ -1742,10 +2052,13 @@ export class AutoApproveGate {
         // to retire, which a deny in particular would otherwise leak until
         // SubagentStop (a denial fires no tool call to match against).
         this.openQuestionSignatures.delete(parkedQuestionId);
+        // #1005: pair every signature retirement with a positive record of it,
+        // so a later parked render can tell "settled" from "never seen".
+        this.markRetired(parkedQuestionId);
         this.markHandled(true);
         return { outcome: 'answered' };
       }
-      return this.escalateRenderedParked(parkedQuestionId, rendered);
+      return this.escalateRenderedParked();
     }
 
     // escalate: consult the second opinion before interrupting the user, the
@@ -1776,6 +2089,9 @@ export class AutoApproveGate {
         (await this.answerRenderedParked(input, second, rendered, ptyPrompt))
       ) {
         this.openQuestionSignatures.delete(parkedQuestionId);
+        // #1005: pair every signature retirement with a positive record of it,
+        // so a later parked render can tell "settled" from "never seen".
+        this.markRetired(parkedQuestionId);
         this.markHandled(true);
         log(
           `[AutoApprove ${this.sessionTag}] escalate_model (${this.deps.escalateModel}) ${second.decision === 'deny' ? 'denied' : 'approved'} a parked render (${input.tool_name})`,
@@ -1783,7 +2099,7 @@ export class AutoApproveGate {
         return { outcome: 'answered' };
       }
     }
-    return this.escalateRenderedParked(parkedQuestionId, rendered, result.summary);
+    return this.escalateRenderedParked(result.summary);
   }
 
   /**
@@ -1833,37 +2149,24 @@ export class AutoApproveGate {
   }
 
   /**
-   * Hand a rendered parked prompt to the user (#814): re-key its open-escalation
-   * signature onto the id of the card that is about to be pushed, close the
-   * eval cue, and report `push`.
+   * Hand a rendered parked prompt to the user (#814): close the eval cue and
+   * report `push`.
    *
-   * The re-key matters. A parked render pushes the MERGED question, whose id
-   * comes from the PTY question — NOT from the parked hook question the
-   * signature was registered under. Without this, every later resolution
-   * signal (a matching PreToolUse, `SubagentStop`, a phone answer) would
-   * remove/dismiss the parked id while the client holds a card under the
-   * rendered id, leaving exactly the stale card #808 is about.
+   * Pre-#887 this also had to re-key `openQuestionSignatures` from
+   * `parkedQuestionId` onto `rendered.id`: the parked render pushed the MERGED
+   * question, whose id used to come from the freshly-parsed PTY question, NOT
+   * from the parked hook question the signature was registered under. Missing
+   * that re-key meant every later resolution signal (a matching PreToolUse,
+   * `SubagentStop`, a phone answer) would remove/dismiss the parked id while
+   * the client held a card under the rendered id — the #808 stale-card class.
+   * #887 removed the mismatch at its source instead of patching around it:
+   * `QuestionPresenceTracker.consumeAndMerge` now ADOPTS the hook's id for the
+   * merged question, so `rendered.id` IS `parkedQuestionId` here by
+   * construction, and `openQuestionSignatures` never needs to move.
    */
-  private escalateRenderedParked(
-    parkedQuestionId: UUID,
-    rendered: Question,
-    summary?: string,
-  ): ParkedRenderVerdict {
-    this.rekeySignatureToRendered(parkedQuestionId, rendered);
+  private escalateRenderedParked(summary?: string): ParkedRenderVerdict {
     this.safeCueWithArg('onEscalate', this.deps.onEscalate, { isSubagent: true });
     return summary === undefined ? { outcome: 'push' } : { outcome: 'push', summary };
-  }
-
-  /** Move a parked question's open-escalation signature onto the id of the
-   *  card about to be pushed (#814) — see `escalateRenderedParked`. Every
-   *  path that returns `push` must call this, including the ones that never
-   *  evaluated, or the pushed card is unresolvable. No-op when the park has
-   *  no signature (parkForPTY returned no id, or it was already retired). */
-  private rekeySignatureToRendered(parkedQuestionId: UUID, rendered: Question): void {
-    const signature = this.openQuestionSignatures.get(parkedQuestionId);
-    if (signature === undefined || rendered.id === parkedQuestionId) return;
-    this.openQuestionSignatures.delete(parkedQuestionId);
-    this.openQuestionSignatures.set(rendered.id as UUID, signature);
   }
 
   /**
@@ -1897,6 +2200,8 @@ export class AutoApproveGate {
         evalId,
         this.sessionId,
         isSubagent,
+        this.authorityForEval(),
+        this.precedentForEval(),
       );
     } catch (err) {
       logError(`[AutoApprove ${this.sessionTag}] escalate_model second opinion threw:`, err);
@@ -1926,6 +2231,39 @@ export class AutoApproveGate {
   }
 
   /**
+   * Report a `deny` this gate is about to return to the hook (#1015).
+   *
+   * Called from BOTH deny returns — the primary verdict and the
+   * `escalate_model` second opinion — because both are equally invisible to
+   * the user, and a second-opinion deny is if anything the more surprising of
+   * the two (the fast model wanted to ask; the heavy one refused outright).
+   *
+   * Deliberately reads `denySource` off the result rather than re-deriving it:
+   * the service knows which mechanism refused, and a second derivation here is
+   * the drift this module has been bitten by repeatedly (see `DenySource`).
+   *
+   * A result with NO `denySource` is reported as a `model-floor` deny with an
+   * empty pattern rather than being dropped. That combination should be
+   * unreachable — every `return { decision: 'deny' }` in `evaluate` tags
+   * itself — but "the tag went missing" must not silently restore the exact
+   * invisibility this dep exists to end. Reporting too much is a nuisance;
+   * reporting nothing is the bug.
+   */
+  private reportDeny(input: PermissionRequestHookInput, result: AutoApproveResult): void {
+    const fn = this.deps.onAutoDenied;
+    if (!fn) return;
+    const source: DenySource =
+      'denySource' in result && result.denySource !== undefined
+        ? result.denySource
+        : { kind: 'model-floor', pattern: '' };
+    try {
+      fn(input, source, result.reasoning);
+    } catch (err) {
+      logError(`[AutoApprove ${this.sessionTag}] onAutoDenied sink threw (ignored):`, err);
+    }
+  }
+
+  /**
    * `safeCue` for a single-argument lifecycle callback (e.g. `onHeldEscalate`,
    * #573). Same contract: a throw is logged and absorbed so a held-push failure
    * cannot propagate into the decision/hold path. NOTE the held push IS
@@ -1939,6 +2277,46 @@ export class AutoApproveGate {
       fn(arg);
     } catch (err) {
       logError(`[AutoApprove ${this.sessionTag}] ${label} cue threw (cosmetic; ignored):`, err);
+    }
+  }
+
+  /**
+   * Read this eval's authority text (Q9, #893) via `deps.getAuthority`, fresh
+   * per call so a mid-session turn is picked up immediately. Throw-safe like
+   * the cues above: a failure here must escalate the eval toward its normal
+   * "no authority" behavior, never abort the permission decision itself.
+   */
+  private authorityForEval(): string | undefined {
+    const getAuthority = this.deps.getAuthority;
+    if (!getAuthority) return undefined;
+    try {
+      const text = getAuthority();
+      return text.trim().length > 0 ? text : undefined;
+    } catch (err) {
+      logError(`[AutoApprove ${this.sessionTag}] getAuthority threw (ignored):`, err);
+      return undefined;
+    }
+  }
+
+  /**
+   * Read this session's precedent reader (#976) via `deps.getPrecedent`, fresh
+   * per call so an answer given moments ago counts for THIS permission rather
+   * than the one after it.
+   *
+   * Throw-safe like `authorityForEval` above, and the failure direction is the
+   * point: returning `undefined` means the evaluator consults no precedent, so
+   * a repeat gets asked again (a nuisance) and, more importantly, the DENY
+   * direction falls back to whatever the model and the other guards say. Both
+   * are the pre-#976 behavior; neither can turn a refusal into an approval.
+   */
+  private precedentForEval(): PrecedentReader | undefined {
+    const getPrecedent = this.deps.getPrecedent;
+    if (!getPrecedent) return undefined;
+    try {
+      return getPrecedent();
+    } catch (err) {
+      logError(`[AutoApprove ${this.sessionTag}] getPrecedent threw (ignored):`, err);
+      return undefined;
     }
   }
 
@@ -2055,13 +2433,27 @@ export class AutoApproveGate {
       // so this can never find/cancel itself).
       //
       // Baked-in assumption: Claude Code processes a turn's tool-permission
-      // hooks SEQUENTIALLY (verified against the cc-ref reference source,
-      // conversation.rs:370's sequential for-loop), so two identical-signature
-      // MAIN-context escalations can never be genuinely concurrent/live at
-      // once -- an incoming duplicate always means the earlier one is dead. If
-      // Claude Code ever parallelizes main-context tool-permission dispatch,
-      // this invariant breaks and this check would need a stronger key (e.g.
+      // hooks SEQUENTIALLY, so two identical-signature MAIN-context
+      // escalations can never be genuinely concurrent/live at once -- an
+      // incoming duplicate always means the earlier one is dead. If Claude
+      // Code ever parallelizes main-context tool-permission dispatch, this
+      // invariant breaks and this check would need a stronger key (e.g.
       // requiring tool_use_id) before it could keep firing safely.
+      //
+      // UNVERIFIED (#886): this used to cite cc-ref's conversation.rs:370 as
+      // proof of sequential dispatch. cc-ref is a disavowed third-party
+      // reimplementation (ADR 0006) and was never valid evidence for Claude
+      // Code's actual concurrency model, and static extraction from the
+      // installed binary (strings + minified-source reading, #886's method
+      // for everything else in this file) cannot settle a runtime ordering
+      // question either -- there is no way to observe dispatch order without
+      // firing two identical-signature PermissionRequests back-to-back
+      // against a live Claude Code and watching what arrives. That capture
+      // is the #885 epic's named experiment and has not been run. Until it
+      // is, treat this as a load-bearing, unverified assumption, not a
+      // verified fact -- behavior is left unchanged here because the
+      // alternative (a stronger key) is a real design change that needs its
+      // own testing, not a side effect of a documentation pass.
       this.cancelExternallyResolved(observed, 'duplicate-re-request');
       this.openQuestionSignatures.set(questionId, {
         toolName: observed.toolName,
@@ -2146,6 +2538,20 @@ export class AutoApproveGate {
    * `toolName` (#808), when the caller knows it (a signature match or a
    * tracked `ToolSignature` both carry it), is carried onto the
    * question-lifecycle trace record for this removal.
+   *
+   * #970 totality note: no client status cue fires here. All three callers
+   * already have their own status coverage:
+   *   - `cancelExternallyResolved` (PreToolUse/PostToolUse/PermissionDenied
+   *     match) runs INSIDE the same synchronous hook handler that also drives
+   *     `handlers.onPreToolUse` etc. -> `onStatusChange('executing', ...)` for
+   *     the identical event, so the pill is corrected in the same tick.
+   *   - `cancelStale`'s mainOnly Stop sweep runs before `handlers.onStop`'s
+   *     own `onStatusChange('idle')` in that same Stop handler -- see the
+   *     note on `releaseAllHolds` above.
+   *   - `cancelStaleForAgent` (SubagentStop) only ever matches a
+   *     `sig.isSubagent` entry, and #711 never broadcasts the MAIN client
+   *     pill for a subagent/team-member eval or hold in the first place --
+   *     there is nothing to correct.
    */
   private resolveSupersededQuestion(qid: UUID, reason: string, toolName?: string): void {
     log(
@@ -2168,7 +2574,13 @@ export class AutoApproveGate {
       );
     }
     try {
-      this.deps.sessionRegistry.removeQuestion(this.sessionId, qid, reason, toolName);
+      this.deps.sessionRegistry.removeQuestion(
+        this.sessionId,
+        qid,
+        reason,
+        toolName,
+        'AutoApproveGate.resolveSupersededQuestion',
+      );
     } catch (err) {
       logError(
         `[AutoApprove ${this.sessionTag}] removeQuestion during external-resolve cleanup threw:`,

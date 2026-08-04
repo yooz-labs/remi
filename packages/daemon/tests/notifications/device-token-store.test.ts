@@ -343,3 +343,83 @@ describe('DeviceTokenStore (#603 Phase 6)', () => {
     expect(tombstonesOnDisk(file)).toContain('recent-removal');
   });
 });
+
+describe('DeviceTokenStore push preferences (#968)', () => {
+  let tmpDir: string;
+  let file: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-tokens-prefs-'));
+    file = path.join(tmpDir, 'device-tokens.json');
+    configureLogger({ writeLog: () => {} });
+  });
+
+  afterEach(() => {
+    __resetLoggerForTests();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test('register without preferences stores the all-on default', () => {
+    const s = new DeviceTokenStore(file);
+    s.register('tok-a', 'ios', CID);
+    expect(s.map.get('tok-a')?.pushPrefs).toEqual({ questions: true, turnComplete: true });
+  });
+
+  test('preferences survive a restart via the persisted file', () => {
+    const s = new DeviceTokenStore(file);
+    s.register('tok-a', 'ios', CID, { questions: true, turnComplete: false });
+
+    const reloaded = new DeviceTokenStore(file);
+    reloaded.load();
+    expect(reloaded.map.get('tok-a')?.pushPrefs).toEqual({ questions: true, turnComplete: false });
+  });
+
+  test('re-registering the same token replaces its preferences, including widening them', () => {
+    // Re-registration IS how the app pushes a toggle change, so a stored value
+    // must never survive a newer one -- in either direction.
+    const s = new DeviceTokenStore(file);
+    s.register('tok-a', 'ios', CID, { questions: false, turnComplete: false });
+    expect(s.map.get('tok-a')?.pushPrefs).toEqual({ questions: false, turnComplete: false });
+
+    s.register('tok-a', 'ios', CID, { questions: true, turnComplete: true });
+    expect(s.map.get('tok-a')?.pushPrefs).toEqual({ questions: true, turnComplete: true });
+
+    const reloaded = new DeviceTokenStore(file);
+    reloaded.load();
+    expect(reloaded.map.get('tok-a')?.pushPrefs).toEqual({ questions: true, turnComplete: true });
+  });
+
+  test('an entry written before #968 loads with no preferences, meaning all-on', () => {
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        tokens: [{ token: 'legacy', platform: 'ios', registeredAt: 1, connectionId: CID }],
+      }),
+    );
+    const s = new DeviceTokenStore(file);
+    s.load();
+    expect(s.map.get('legacy')?.pushPrefs).toBeUndefined();
+  });
+
+  test('a hand-edited non-boolean preference is normalized on load, not trusted', () => {
+    // The file is shared between daemons and editable; `"no"` is truthy, so an
+    // implementation that coerced would read this as a mute.
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        tokens: [
+          {
+            token: 'edited',
+            platform: 'ios',
+            registeredAt: 1,
+            connectionId: CID,
+            pushPrefs: { questions: 'no', turnComplete: false },
+          },
+        ],
+      }),
+    );
+    const s = new DeviceTokenStore(file);
+    s.load();
+    expect(s.map.get('edited')?.pushPrefs).toEqual({ questions: true, turnComplete: false });
+  });
+});

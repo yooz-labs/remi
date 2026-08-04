@@ -9,6 +9,8 @@ import { describe, expect, test } from 'bun:test';
 import { compositeKey, dedupSessions } from '../../src/lib/session-dedup';
 import type { ConnectionId, UISession } from '../../src/types';
 
+const cid = (s: string) => s as ConnectionId;
+
 function makeSession(overrides: Partial<UISession>): UISession {
   return {
     id: '11111111-1111-1111-1111-111111111111',
@@ -63,8 +65,8 @@ describe('dedupSessions (the core safety invariant of #430)', () => {
     const result = dedupSessions([a, b]);
 
     expect(result).toHaveLength(2);
-    expect(result[0]?.connectionId).toBe('host:18766');
-    expect(result[1]?.connectionId).toBe('host:18767');
+    expect(result[0]?.connectionId).toBe(cid('host:18766'));
+    expect(result[1]?.connectionId).toBe(cid('host:18767'));
   });
 
   test('same daemon reporting the same binding twice collapses to one row', () => {
@@ -126,8 +128,8 @@ describe('dedupSessions (the core safety invariant of #430)', () => {
 
     expect(result).toHaveLength(2);
     expect(result.map((s) => s.connectionId).sort()).toEqual([
-      'host:18766',
-      'host:18767',
+      cid('host:18766'),
+      cid('host:18767'),
     ]);
   });
 });

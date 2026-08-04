@@ -73,12 +73,26 @@ export function isLoopbackAddress(host: string | null | undefined): boolean {
  * Returns `true` only when an authenticator is configured AND the peer is on
  * a loopback address. Non-loopback peers always require auth when an
  * authenticator is configured; without an authenticator the bypass is moot.
+ *
+ * #869: the blanket loopback exemption is what lets any local process answer
+ * a permission prompt. `requireLocalAuth` retires it, at which point a
+ * loopback peer must present the capability token (see
+ * `auth/capability-token.ts`) or complete the Ed25519 challenge like any
+ * remote client. It is opt-in until every client can do one or the other:
+ * the macOS app is sandboxed away from `~/.remi` by design and needs its own
+ * identity first, so flipping this default before that ships would lock it out.
  */
 export function shouldSkipAuthForPeer(
   hasAuthenticator: boolean,
   peerAddress: string | null | undefined,
+  options: { readonly requireLocalAuth?: boolean; readonly hasCapability?: boolean } = {},
 ): boolean {
-  return hasAuthenticator && isLoopbackAddress(peerAddress);
+  if (!hasAuthenticator) return false;
+  if (!isLoopbackAddress(peerAddress)) return false;
+  // A valid capability token is proof in its own right, so the challenge is
+  // redundant whether or not the exemption is retired.
+  if (options.hasCapability) return true;
+  return !options.requireLocalAuth;
 }
 
 /** True for any address in 127.0.0.0/8. */

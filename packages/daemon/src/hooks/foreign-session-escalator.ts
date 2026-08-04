@@ -68,6 +68,7 @@ import type { DeviceTokenEntry } from '../cli/handlers/trivial-events.ts';
 import { log, logError } from '../cli/logger.ts';
 import type { PushConfig, PushFn } from '../notifications/notification-dispatcher.ts';
 import { sendPushTrigger } from '../notifications/push-client.ts';
+import { tokensWanting } from '../notifications/push-preferences.ts';
 import type { SessionBindingStore } from '../session/index.ts';
 import { type SessionRegistryFile, claudeChildLooksAlive } from '../session/index.ts';
 import { MARKER_SETTLE_MS, readTranscriptOwnerPort } from '../transcript/transcript-owner.ts';
@@ -265,9 +266,15 @@ export class ForeignSessionEscalator {
   ): Promise<void> {
     const { deviceTokens, pushConfig } = this.deps;
     const shortId = input.session_id.slice(0, 8);
-    if (deviceTokens.size === 0) {
+    // A permission request in a session remi does not manage is still a
+    // question-class push (#968) — it buzzes, and it says the agent is blocked
+    // on someone — so a device muted for questions does not get it.
+    const wanting = tokensWanting(deviceTokens.values(), 'question');
+    if (wanting.length === 0) {
       log(
-        `[ForeignSession] No device tokens registered; cannot notify about unbound session ${shortId}`,
+        deviceTokens.size === 0
+          ? `[ForeignSession] No device tokens registered; cannot notify about unbound session ${shortId}`
+          : `[ForeignSession] All ${deviceTokens.size} device token(s) muted question pushes; not notifying about unbound session ${shortId}`,
       );
       return;
     }
@@ -277,7 +284,7 @@ export class ForeignSessionEscalator {
     const body = `${input.tool_name} requested permission in a Claude session Remi does not manage${cwdHint ? ` (${cwdHint})` : ''}. Not connected to Remi; answer it in that terminal directly.`;
 
     const results = await Promise.allSettled(
-      [...deviceTokens.values()].map((dt) =>
+      wanting.map((dt) =>
         this.pushFn(cfg.signalingUrl, dt.token, {
           title,
           body,
@@ -286,6 +293,7 @@ export class ForeignSessionEscalator {
           // Deliberately no `category` / `options`: dismiss-only, no action
           // buttons (see module doc). Also no `questionId` -- there is no
           // Question backing this push for an answer to resolve against.
+          kind: 'question' as const,
         }),
       ),
     );

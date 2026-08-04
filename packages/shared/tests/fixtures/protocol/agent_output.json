@@ -1,0 +1,16 @@
+{
+  "type": "agent_output",
+  "id": "f66218c9-f5a0-4b45-b57d-d07b582bceb6",
+  "timestamp": "2026-07-29T11:27:08.613Z",
+  "message": {
+    "id": "fixture-message-id",
+    "sessionId": "fixture-session-id",
+    "sender": "agent",
+    "content": "Fixture message content",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "state": "delivered",
+    "stateChangedAt": "2026-01-01T00:00:00.000Z",
+    "isEditing": false,
+    "tool": "Bash"
+  }
+}

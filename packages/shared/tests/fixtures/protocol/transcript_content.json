@@ -1,0 +1,46 @@
+{
+  "type": "transcript_content",
+  "id": "dfa49880-d068-4a0b-a004-7f30f6176826",
+  "timestamp": "2026-07-29T11:27:08.614Z",
+  "sessionId": "fixture-session-id",
+  "entryUuid": "fixture-entry-uuid",
+  "role": "assistant",
+  "content": "Fixture transcript content",
+  "message": {
+    "id": "fixture-message-id",
+    "sessionId": "fixture-session-id",
+    "sender": "agent",
+    "content": "Fixture message content",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "state": "delivered",
+    "stateChangedAt": "2026-01-01T00:00:00.000Z",
+    "isEditing": false,
+    "tool": "Bash",
+    "bullets": [
+      {
+        "bulletId": 1,
+        "content": "A fixture bullet",
+        "type": "dash",
+        "startLine": 0,
+        "endLine": 0,
+        "hasCodeBlock": false
+      }
+    ],
+    "firstBulletId": 1,
+    "lastBulletId": 1
+  },
+  "isUpdate": false,
+  "tools": ["Bash"],
+  "model": "yooz-quality",
+  "hadThinking": true,
+  "usage": {
+    "input_tokens": 10,
+    "output_tokens": 20
+  },
+  "contentBlocks": [
+    {
+      "type": "text",
+      "text": "Fixture transcript text"
+    }
+  ]
+}

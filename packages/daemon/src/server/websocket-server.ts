@@ -6,8 +6,14 @@
  */
 
 import { generateId } from '@remi/shared';
-import type { AnswerExtras, ProtocolMessage, UUID } from '@remi/shared';
+import type { ProtocolMessage, UUID } from '@remi/shared';
+import { CAPABILITY_HEADER, capabilityTokenMatches } from '../auth/capability-token.ts';
+import {
+  type ClientMessageEventsWithConnectionId,
+  bindConnectionId,
+} from './client-message-events.ts';
 import { Connection, type ConnectionConfig, type ConnectionEvents } from './connection.ts';
+import { corsHeadersForOrigin, isAllowedOrigin, rejectionNotice } from './origin-policy.ts';
 import { shouldSkipAuthForPeer } from './peer-helpers.ts';
 
 /** Server configuration */
@@ -26,10 +32,36 @@ export interface ServerConfig {
 
   /** Connection configuration */
   readonly connection?: Partial<ConnectionConfig>;
+
+  /**
+   * Extra browser origins permitted to reach this daemon, beyond the built-in
+   * defaults (#535). For a self-hosted web client. See `origin-policy.ts`.
+   */
+  readonly allowedOrigins?: readonly string[];
+
+  /** Where the origin-rejection notice goes. Defaults to `console.warn`. */
+  readonly logFn?: (msg: string) => void;
+
+  /**
+   * The local capability token this daemon accepts (#869). Empty disables the
+   * capability path entirely, leaving the Ed25519 challenge as the only proof.
+   */
+  readonly capabilityToken?: string;
+
+  /**
+   * Retire the blanket loopback auth exemption (#869). When true, a loopback
+   * peer must present the capability token or complete the Ed25519 challenge,
+   * exactly like a remote one. Opt-in until every client can do one of those.
+   */
+  readonly requireLocalAuth?: boolean;
 }
 
-/** Server events */
-export interface ServerEvents {
+/**
+ * Server events. The per-message portion (`onUserInput`, `onAnswer`, ...) is
+ * declared once in `client-message-events.ts` (#900) and inherited here with
+ * `connectionId` first -- one server serves many peers.
+ */
+export interface ServerEvents extends ClientMessageEventsWithConnectionId {
   /** Server started listening */
   onStart: (port: number) => void;
 
@@ -41,29 +73,6 @@ export interface ServerEvents {
 
   /** Client disconnected */
   onClientDisconnect: (connectionId: UUID, reason: string) => void;
-
-  /** User input from client. `messageId` is the wire message's own id (#681),
-   *  carried so a rejection (e.g. NOT_ACTIVE_CONNECTION) can name the
-   *  specific bubble that was dropped. */
-  onUserInput: (
-    connectionId: UUID,
-    sessionId: UUID,
-    content: string,
-    raw?: boolean,
-    claudeSessionId?: UUID,
-    messageId?: UUID,
-  ) => void;
-
-  /** Answer from client. `extra` carries structured AskUserQuestion selections /
-   *  cancel (#627); omitted for a plain single answer. */
-  onAnswer: (
-    connectionId: UUID,
-    sessionId: UUID,
-    questionId: UUID,
-    answer: string,
-    claudeSessionId?: UUID,
-    extra?: AnswerExtras,
-  ) => void;
 
   /**
    * Connection-independent answer relay over HTTP POST /answer (#575, P4a).
@@ -77,48 +86,6 @@ export interface ServerEvents {
     answer: string,
     claudeSessionId?: UUID,
   ) => Promise<'delivered' | 'session-not-found' | 'stale-binding' | 'stale'>;
-
-  /** Bullet expand request from client */
-  onBulletExpandRequest: (
-    connectionId: UUID,
-    sessionId: UUID,
-    bulletId: number,
-    requestId: UUID,
-  ) => void;
-
-  /** Session list request from client */
-  onSessionListRequest: (connectionId: UUID, requestId: UUID, includeExternal: boolean) => void;
-
-  /** Transcript load request from client */
-  onTranscriptLoadRequest: (connectionId: UUID, sessionId: string, requestId: UUID) => void;
-
-  /** Create session request from client */
-  onCreateSessionRequest: (
-    connectionId: UUID,
-    directory: string | undefined,
-    requestId: UUID,
-  ) => void;
-
-  /** Terminal resize from attached CLI client */
-  onTerminalResize: (connectionId: UUID, cols: number, rows: number) => void;
-
-  /** Kill session request from client */
-  onKillSessionRequest: (connectionId: UUID, sessionId: UUID, requestId: UUID) => void;
-
-  /** Resume session request from client */
-  onResumeSessionRequest: (connectionId: UUID, sessionId: string, requestId: UUID) => void;
-
-  /** Session history request from client */
-  onSessionHistoryRequest: (connectionId: UUID, requestId: UUID, limit: number | undefined) => void;
-
-  /** Detach session request from client (tmux-style) */
-  onDetachSession: (connectionId: UUID, sessionId: UUID, requestId: UUID) => void;
-
-  /** Device token registered for push notifications */
-  onRegisterDeviceToken: (connectionId: UUID, token: string, platform: 'ios' | 'android') => void;
-
-  /** Device token unregistered — explicit user removal of this server (#690) */
-  onUnregisterDeviceToken: (connectionId: UUID, token: string) => void;
 
   /** Error occurred */
   onError: (error: Error) => void;
@@ -141,11 +108,19 @@ const DEFAULT_MAX_CONNECTIONS = 100;
  */
 const WS_IDLE_TIMEOUT_SECONDS = 120;
 
+/** Cap on distinct refused origins remembered for log de-duplication (#535). */
+const MAX_REFUSED_ORIGINS_TRACKED = 64;
+
 /** WebSocket data attached to each connection */
 interface WSData {
   connectionId: UUID;
   /** Peer IP captured at upgrade time (used to skip auth for loopback). */
   peerAddress: string | null;
+  /**
+   * Whether this peer presented a valid capability token on the upgrade
+   * (#869). Decided once, at upgrade, because the header only exists there.
+   */
+  hasCapability: boolean;
 }
 
 /**
@@ -172,6 +147,14 @@ export class WebSocketServer {
   private server: ReturnType<typeof Bun.serve> | null = null;
   private isRunning = false;
 
+  /**
+   * Origins already refused once. A rejected page typically retries in a loop,
+   * and the notice is several lines long; without this the log becomes unusable
+   * exactly when someone is trying to read it. Bounded because the set is keyed
+   * by attacker-controlled input.
+   */
+  private readonly refusedOrigins: Set<string> = new Set();
+
   constructor(config: Partial<ServerConfig> = {}, events: Partial<ServerEvents> = {}) {
     this.config = {
       port: config.port ?? DEFAULT_PORT,
@@ -179,8 +162,31 @@ export class WebSocketServer {
       path: config.path ?? DEFAULT_PATH,
       maxConnections: config.maxConnections ?? DEFAULT_MAX_CONNECTIONS,
       connection: config.connection ?? {},
+      allowedOrigins: config.allowedOrigins ?? [],
+      logFn: config.logFn ?? ((msg: string) => console.warn(msg)),
+      capabilityToken: config.capabilityToken ?? '',
+      requireLocalAuth: config.requireLocalAuth ?? false,
     };
     this.events = events;
+  }
+
+  /**
+   * Gate a request on its `Origin` (#535). Returns true when the request may
+   * proceed. Logs the first refusal per origin, naming the fix.
+   */
+  private originAllowed(origin: string | null): boolean {
+    if (isAllowedOrigin(origin, this.config.allowedOrigins)) return true;
+    const key = origin ?? '';
+    if (!this.refusedOrigins.has(key)) {
+      if (this.refusedOrigins.size >= MAX_REFUSED_ORIGINS_TRACKED) {
+        // Keep logging correctness over log-spam suppression: forget the old
+        // keys rather than going silent for the rest of the process's life.
+        this.refusedOrigins.clear();
+      }
+      this.refusedOrigins.add(key);
+      this.config.logFn(rejectionNotice(key));
+    }
+    return false;
   }
 
   /** Get number of active connections */
@@ -227,6 +233,15 @@ export class WebSocketServer {
 
       fetch(req, server) {
         const url = new URL(req.url);
+        const origin = req.headers.get('origin');
+
+        // Origin gate (#535). Checked before ANYTHING else, including the
+        // connection limit, so a hostile page cannot even learn whether the
+        // daemon is saturated. A page cannot forge this header; a native
+        // client sends none and passes.
+        if (!self.originAllowed(origin)) {
+          return new Response('Forbidden origin', { status: 403 });
+        }
 
         // Only handle WebSocket upgrade on the configured path
         if (url.pathname === path) {
@@ -237,12 +252,20 @@ export class WebSocketServer {
 
           const peer = server.requestIP(req);
           const peerAddress = peer?.address ?? null;
+          // The capability token rides the upgrade request, so it can only be
+          // read here (#869). A browser cannot set this header, which is the
+          // point: it proves the caller read a 0600 file in the user's home.
+          const hasCapability = capabilityTokenMatches(
+            req.headers.get(CAPABILITY_HEADER),
+            self.config.capabilityToken,
+          );
 
           // Upgrade to WebSocket
           const success = server.upgrade(req, {
             data: {
               connectionId: generateId(),
               peerAddress,
+              hasCapability,
             },
           });
 
@@ -253,16 +276,15 @@ export class WebSocketServer {
           return new Response('WebSocket upgrade failed', { status: 400 });
         }
 
-        // CORS headers for HTTP endpoints. The daemon is a local-network
-        // service that already accepts arbitrary WebSocket clients;
-        // wildcard CORS does not add a security risk and is required for
-        // the Capacitor iOS app (origin `capacitor://localhost`) to fetch
-        // /auth-info during port-scan discovery. Without it, every probe
-        // fails silently and the port-scan added in #393 reports "no
-        // daemon found" even when daemons are actively serving (#403).
+        // CORS headers for HTTP endpoints. Echoes the caller's own origin
+        // rather than `*` (#535): every origin reaching this line already
+        // passed the allow-list, so echoing is strictly narrower than the
+        // wildcard and still lets the Capacitor iOS app (origin
+        // `capacitor://localhost`) read /auth-info during port-scan
+        // discovery, which is what the wildcard was for (#393/#403).
         const jsonCorsHeaders: Record<string, string> = {
           'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
+          ...corsHeadersForOrigin(origin),
         };
 
         // Health check endpoint
@@ -285,7 +307,13 @@ export class WebSocketServer {
           const peer = server.requestIP(req);
           const authenticator = self.config.connection?.authenticator;
           const authRequired =
-            !shouldSkipAuthForPeer(!!authenticator, peer?.address) && !!authenticator;
+            !shouldSkipAuthForPeer(!!authenticator, peer?.address, {
+              requireLocalAuth: self.config.requireLocalAuth,
+              hasCapability: capabilityTokenMatches(
+                req.headers.get(CAPABILITY_HEADER),
+                self.config.capabilityToken,
+              ),
+            }) && !!authenticator;
           return new Response(
             JSON.stringify({
               authRequired,
@@ -305,7 +333,7 @@ export class WebSocketServer {
             return new Response(null, {
               status: 204,
               headers: {
-                'Access-Control-Allow-Origin': '*',
+                ...corsHeadersForOrigin(origin),
                 'Access-Control-Allow-Methods': 'POST, OPTIONS',
                 'Access-Control-Allow-Headers': 'Content-Type',
               },
@@ -323,7 +351,7 @@ export class WebSocketServer {
 
         return new Response('Not found', {
           status: 404,
-          headers: { 'Access-Control-Allow-Origin': '*' },
+          headers: corsHeadersForOrigin(origin),
         });
       },
 
@@ -470,7 +498,16 @@ export class WebSocketServer {
 
     // Authenticate with the same trust model as the WebSocket.
     const authenticator = this.config.connection?.authenticator;
-    if (authenticator && !shouldSkipAuthForPeer(true, peerAddress)) {
+    if (
+      authenticator &&
+      !shouldSkipAuthForPeer(true, peerAddress, {
+        requireLocalAuth: this.config.requireLocalAuth,
+        hasCapability: capabilityTokenMatches(
+          req.headers.get(CAPABILITY_HEADER),
+          this.config.capabilityToken,
+        ),
+      })
+    ) {
       const auth = body.auth;
       const signature = typeof auth?.signature === 'string' ? auth.signature : '';
       const clientPublicKey = typeof auth?.clientPublicKey === 'string' ? auth.clientPublicKey : '';
@@ -523,6 +560,11 @@ export class WebSocketServer {
   }
 
   private handleOpen(ws: { data: WSData }): void {
+    // The per-message forwarding (onUserInput, onAnswer, ...) is generic:
+    // every one of them just needs this connection's id prepended before
+    // reaching `this.events` (#900). `bindConnectionId` does that once for
+    // every key in `client-message-events.ts`'s single declaration, instead
+    // of 13 hand-written closures that each re-implemented the same prepend.
     const connectionEvents: Partial<ConnectionEvents> = {
       onConnect: (_sessionId) => {
         const connection = this.connections.get(ws.data.connectionId);
@@ -537,75 +579,11 @@ export class WebSocketServer {
         this.events.onClientDisconnect?.(connectionId, reason);
       },
 
-      onUserInput: (sessionId, content, raw, claudeSessionId, messageId) => {
-        this.events.onUserInput?.(
-          ws.data.connectionId,
-          sessionId,
-          content,
-          raw,
-          claudeSessionId,
-          messageId,
-        );
-      },
-
-      onAnswer: (sessionId, questionId, answer, claudeSessionId, extra) => {
-        this.events.onAnswer?.(
-          ws.data.connectionId,
-          sessionId,
-          questionId,
-          answer,
-          claudeSessionId,
-          extra,
-        );
-      },
-
-      onBulletExpandRequest: (sessionId, bulletId, requestId) => {
-        this.events.onBulletExpandRequest?.(ws.data.connectionId, sessionId, bulletId, requestId);
-      },
-
-      onSessionListRequest: (requestId, includeExternal) => {
-        this.events.onSessionListRequest?.(ws.data.connectionId, requestId, includeExternal);
-      },
-
-      onTranscriptLoadRequest: (sessionId, requestId) => {
-        this.events.onTranscriptLoadRequest?.(ws.data.connectionId, sessionId, requestId);
-      },
-
-      onCreateSessionRequest: (directory, requestId) => {
-        this.events.onCreateSessionRequest?.(ws.data.connectionId, directory, requestId);
-      },
-
-      onTerminalResize: (cols, rows) => {
-        this.events.onTerminalResize?.(ws.data.connectionId, cols, rows);
-      },
-
-      onKillSessionRequest: (sessionId, requestId) => {
-        this.events.onKillSessionRequest?.(ws.data.connectionId, sessionId, requestId);
-      },
-
-      onResumeSessionRequest: (sessionId, requestId) => {
-        this.events.onResumeSessionRequest?.(ws.data.connectionId, sessionId, requestId);
-      },
-
-      onSessionHistoryRequest: (requestId, limit) => {
-        this.events.onSessionHistoryRequest?.(ws.data.connectionId, requestId, limit);
-      },
-
-      onDetachSession: (sessionId, requestId) => {
-        this.events.onDetachSession?.(ws.data.connectionId, sessionId, requestId);
-      },
-
-      onRegisterDeviceToken: (token, platform) => {
-        this.events.onRegisterDeviceToken?.(ws.data.connectionId, token, platform);
-      },
-
-      onUnregisterDeviceToken: (token) => {
-        this.events.onUnregisterDeviceToken?.(ws.data.connectionId, token);
-      },
-
       onError: (error) => {
         this.events.onError?.(error);
       },
+
+      ...bindConnectionId(ws.data.connectionId, this.events),
     };
 
     // Localhost-no-auth (#257): even when an authenticator is configured,
@@ -613,7 +591,12 @@ export class WebSocketServer {
     // being on the same machine. Drop the authenticator from this peer's
     // connection so it never receives an auth_challenge.
     let perConnectionConfig = this.config.connection;
-    if (shouldSkipAuthForPeer(!!perConnectionConfig?.authenticator, ws.data.peerAddress)) {
+    if (
+      shouldSkipAuthForPeer(!!perConnectionConfig?.authenticator, ws.data.peerAddress, {
+        requireLocalAuth: this.config.requireLocalAuth,
+        hasCapability: ws.data.hasCapability,
+      })
+    ) {
       perConnectionConfig = { ...perConnectionConfig, authenticator: undefined };
     }
 

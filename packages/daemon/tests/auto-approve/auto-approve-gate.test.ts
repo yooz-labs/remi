@@ -7,7 +7,7 @@ import {
   AutoApproveGate,
   autoAnswerValue,
 } from '../../src/auto-approve/auto-approve-gate.ts';
-import type { AutoApproveResult } from '../../src/auto-approve/types.ts';
+import type { AutoApproveResult, DenySource } from '../../src/auto-approve/types.ts';
 import { __resetLoggerForTests, configureLogger } from '../../src/cli/logger.ts';
 import type { PermissionRequestHookInput } from '../../src/hooks/index.ts';
 import type { DeliveryOutcome } from '../../src/notifications/notification-dispatcher.ts';
@@ -178,7 +178,7 @@ describe('AutoApproveGate', () => {
     subagent = false;
     resets = 0;
     parks = [];
-    tracker = new QuestionPresenceTracker(() => {});
+    tracker = new QuestionPresenceTracker(() => undefined);
     configureLogger({ writeLog: () => {} });
   });
 
@@ -196,7 +196,8 @@ describe('AutoApproveGate', () => {
 
   test('deny returns "deny" with NO inject (main context) (#496)', async () => {
     const d = await gateWith(evaluator(deny)).resolvePermission(pr());
-    expect(d).toBe('deny');
+    // #976: a deny now carries its reason to Claude instead of a bare refusal.
+    expect(d).toEqual({ behavior: 'deny', message: expect.stringContaining('ask the user') });
     expect(submits).toHaveLength(0);
     expect(escalations).toHaveLength(0);
   });
@@ -408,7 +409,8 @@ describe('AutoApproveGate', () => {
 
   test('escalate_model second opinion denies -> "deny" (no escalation) (#522)', async () => {
     const d = await gateWithSecondOpinion(deny).resolvePermission(pr());
-    expect(d).toBe('deny');
+    // #976: a deny now carries its reason to Claude instead of a bare refusal.
+    expect(d).toEqual({ behavior: 'deny', message: expect.stringContaining('ask the user') });
     expect(escalations).toHaveLength(0);
     expect(submits).toHaveLength(0);
   });
@@ -681,7 +683,7 @@ describe('AutoApproveGate lifecycle callbacks (#513)', () => {
     submits = [];
     events = [];
     subagent = false;
-    tracker = new QuestionPresenceTracker(() => {});
+    tracker = new QuestionPresenceTracker(() => undefined);
     configureLogger({ writeLog: () => {} });
   });
 
@@ -696,7 +698,10 @@ describe('AutoApproveGate lifecycle callbacks (#513)', () => {
   });
 
   test('deny fires start then handled', async () => {
-    expect(await gate(evaluator(deny)).resolvePermission(pr())).toBe('deny');
+    expect(await gate(evaluator(deny)).resolvePermission(pr())).toEqual({
+      behavior: 'deny',
+      message: expect.stringContaining('ask the user'),
+    });
     expect(events).toEqual(['start', 'handled']);
   });
 
@@ -809,7 +814,7 @@ describe('AutoApproveGate hold + resolve (#573 Parts A/C)', () => {
       handleQuestion: () => {},
       handleStatusChange: () => {},
     } as never);
-    const tracker = new QuestionPresenceTracker(() => {});
+    const tracker = new QuestionPresenceTracker(() => undefined);
     return new AutoApproveGate(
       {
         service,
@@ -1023,7 +1028,8 @@ describe('AutoApproveGate hold + resolve (#573 Parts A/C)', () => {
   test('#625 deny pushes NOTHING (no phantom)', async () => {
     const gate = holdGate(evaluator(deny));
     const d = await gate.resolvePermission(pr());
-    expect(d).toBe('deny');
+    // #976: a deny now carries its reason to Claude instead of a bare refusal.
+    expect(d).toEqual({ behavior: 'deny', message: expect.stringContaining('ask the user') });
     expect(heldPushes).toHaveLength(0);
     expect(escalations).toHaveLength(0);
   });
@@ -1109,7 +1115,7 @@ describe('AutoApproveGate hold + resolve (#573 Parts A/C)', () => {
       handleQuestion: () => {},
       handleStatusChange: () => {},
     } as never);
-    const tracker = new QuestionPresenceTracker(() => {});
+    const tracker = new QuestionPresenceTracker(() => undefined);
     const gate = new AutoApproveGate(
       {
         service: {
@@ -1154,7 +1160,7 @@ describe('AutoApproveGate hold + resolve (#573 Parts A/C)', () => {
       {
         service: { evaluate: async () => escalate, cancel: () => true },
         sessionRegistry: registryB,
-        tracker: new QuestionPresenceTracker(() => {}),
+        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
         escalate: () => {
           qidB = generateId();
@@ -1220,7 +1226,7 @@ describe('AutoApproveGate Stop mainOnly scoping (#711)', () => {
       {
         service,
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => {}),
+        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
         escalate: () => {
           lastQuestionId = generateId();
@@ -1344,7 +1350,7 @@ describe('AutoApproveGate Stop mainOnly scoping (#711)', () => {
       {
         service,
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => {}),
+        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
         escalate: () => {
           lastQuestionId = generateId();
@@ -1389,7 +1395,7 @@ describe('AutoApproveGate Stop mainOnly scoping (#711)', () => {
       {
         service: evaluator(approve),
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => {}),
+        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
         escalate: () => undefined,
         onEvalStart: (ctx) => ctxLog.push(ctx),
@@ -1436,7 +1442,17 @@ describe('AutoApproveGate slow-eval push (#573 Part B)', () => {
 
   function gate(
     service: AutoApproveEvaluator,
-    opts: { holdMs?: number; pushHoldMs?: number } = {},
+    opts: {
+      holdMs?: number;
+      pushHoldMs?: number;
+      /** #1015: records every deny reported to the observer, so a Part B late
+       *  deny can be checked for the report it must produce. */
+      onAutoDenied?: (
+        input: PermissionRequestHookInput,
+        source: DenySource,
+        reasoning: string,
+      ) => void;
+    } = {},
   ): AutoApproveGate {
     registry.registerSession(SID, '/d', fakePTY([]), {
       handleMessage: () => {},
@@ -1447,7 +1463,7 @@ describe('AutoApproveGate slow-eval push (#573 Part B)', () => {
       {
         service,
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => {}),
+        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
         escalate: (i) => {
           escalations.push(i);
@@ -1457,6 +1473,7 @@ describe('AutoApproveGate slow-eval push (#573 Part B)', () => {
         holdMs: opts.holdMs ?? 60_000,
         pushHoldMs: opts.pushHoldMs ?? 0,
         alwaysEscalateTools: new Set(),
+        ...(opts.onAutoDenied ? { onAutoDenied: opts.onAutoDenied } : {}),
       },
       SID,
     );
@@ -1512,6 +1529,55 @@ describe('AutoApproveGate slow-eval push (#573 Part B)', () => {
     release(deny);
     expect(await pending).toBe('deny');
     expect(escalations).toHaveLength(1);
+  });
+
+  test('#1015: a slow eval whose late verdict is deny REPORTS it', async () => {
+    // The third deny path, and the least visible of the three: the user is
+    // already looking at a pushed card saying "needs your permission", and
+    // this resolution makes it vanish via a quiet content-available dismiss
+    // that carries no title and no body. Without the report the refusal is
+    // worse than invisible -- the user saw a prompt and then saw it disappear.
+    //
+    // Found in review, not in writing: `reportDeny` was wired at the two
+    // SYNCHRONOUS deny returns and this async one needed `input` threaded down
+    // a level, which is exactly why it was missed.
+    const denied: DenySource[] = [];
+    const { service, release } = deferredEvaluator();
+    const g = gate(service, {
+      pushHoldMs: 20,
+      onAutoDenied: (_input, source) => denied.push(source),
+    });
+    const pending = g.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 40));
+    expect(escalations).toHaveLength(1); // the early card is on screen
+
+    release({
+      decision: 'deny',
+      reasoning: 'the model refused',
+      durationMs: 90_000,
+      model: 'm',
+      denySource: { kind: 'model-floor', pattern: 'rm -rf /' },
+    });
+    expect(await pending).toBe('deny');
+    // The reconciliation is fired-and-forgotten off the hook response, so the
+    // report can land a microtask later than the hook resolves.
+    await new Promise((r) => setTimeout(r, 10));
+    expect(denied).toEqual([{ kind: 'model-floor', pattern: 'rm -rf /' }]);
+  });
+
+  test('#1015: a slow eval whose late verdict is APPROVE reports nothing', async () => {
+    const denied: DenySource[] = [];
+    const { service, release } = deferredEvaluator();
+    const g = gate(service, {
+      pushHoldMs: 20,
+      onAutoDenied: (_input, source) => denied.push(source),
+    });
+    const pending = g.resolvePermission(pr());
+    await new Promise((r) => setTimeout(r, 40));
+    release(approve);
+    expect(await pending).toBe('allow');
+    await new Promise((r) => setTimeout(r, 10));
+    expect(denied).toEqual([]);
   });
 
   test('a slow eval whose late verdict is escalate keeps the existing hold (no double push)', async () => {
@@ -1611,7 +1677,7 @@ describe('AutoApproveGate onResolved cross-client dismissal (#585 P7)', () => {
       {
         service,
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => {}),
+        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
         escalate: () => {
           lastQuestionId = generateId();
@@ -1836,7 +1902,7 @@ describe('AutoApproveGate delivery gating (#603 Phase 1)', () => {
       {
         service,
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => {}),
+        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
         escalate: (i) => {
           escalations.push(i);
@@ -2115,6 +2181,8 @@ describe('AutoApproveGate external-resolution cancel (#673)', () => {
         questionId: UUID,
         reason: 'auto_approved' | 'auto_denied' | 'cancelled',
       ) => void;
+      onHandled?: (ctx: { isSubagent: boolean }) => void;
+      onHeldCancelled?: () => void;
     } = {},
   ): AutoApproveGate {
     registry.registerSession(SID, '/d', fakePTY([]), {
@@ -2126,7 +2194,7 @@ describe('AutoApproveGate external-resolution cancel (#673)', () => {
       {
         service,
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => {}),
+        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
         escalate: (i) => {
           escalations.push(i);
@@ -2137,6 +2205,8 @@ describe('AutoApproveGate external-resolution cancel (#673)', () => {
         pushHoldMs: opts.pushHoldMs ?? 0,
         alwaysEscalateTools: new Set(),
         ...(opts.onResolved ? { onResolved: opts.onResolved } : {}),
+        ...(opts.onHandled ? { onHandled: opts.onHandled } : {}),
+        ...(opts.onHeldCancelled ? { onHeldCancelled: opts.onHeldCancelled } : {}),
       },
       SID,
     );
@@ -2439,6 +2509,87 @@ describe('AutoApproveGate external-resolution cancel (#673)', () => {
     });
   });
 
+  // ---------------------------------------------------------------------------
+  // #970: the client status-pill cue must be total over the HELD hook's own
+  // end paths, not just the primary eval loop's (#973 closed that half via
+  // onCancelled). Enumerated in ADR 0020 -- corrected here against the live
+  // code, since the ADR's own "resolveHeld skips markHandled too" claim did
+  // not survive a grep (see the #970 note on `AutoApproveGate.resolveHeld`).
+  // ---------------------------------------------------------------------------
+  describe('#970 held-hook client status cue totality', () => {
+    test('Part-B ALLOW late verdict fires onHandled -- already total before #970 (resolveHeld calls markHandled unconditionally)', async () => {
+      const cancelLog: Array<{ reason: string; evalId: number | undefined }> = [];
+      const { service, release } = multiDeferredEvaluator(cancelLog);
+      const handledLog: Array<{ isSubagent: boolean }> = [];
+      const heldCancelledLog: number[] = [];
+      const g = gate(service, {
+        holdMs: 60_000,
+        pushHoldMs: 10,
+        onHandled: (ctx) => handledLog.push(ctx),
+        onHeldCancelled: () => heldCancelledLog.push(1),
+      });
+      const pending = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
+      await new Promise((r) => setTimeout(r, 20)); // early push + hold fires
+
+      release({ command: 'git push' }, approve);
+      expect(await pending).toBe('allow');
+      expect(handledLog).toEqual([{ isSubagent: false }]);
+      expect(heldCancelledLog).toHaveLength(0); // wrong cue must not also fire
+    });
+
+    test('Part-B DENY late verdict fires onHandled -- same coverage as ALLOW', async () => {
+      const cancelLog: Array<{ reason: string; evalId: number | undefined }> = [];
+      const { service, release } = multiDeferredEvaluator(cancelLog);
+      const handledLog: Array<{ isSubagent: boolean }> = [];
+      const g = gate(service, {
+        holdMs: 60_000,
+        pushHoldMs: 10,
+        onHandled: (ctx) => handledLog.push(ctx),
+      });
+      const pending = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
+      await new Promise((r) => setTimeout(r, 20));
+
+      release({ command: 'git push' }, deny);
+      expect(await pending).toBe('deny');
+      expect(handledLog).toEqual([{ isSubagent: false }]);
+    });
+
+    test('Part-B CANCELLED late verdict fires onHeldCancelled (the actual #970 gap)', async () => {
+      const cancelLog: Array<{ reason: string; evalId: number | undefined }> = [];
+      const { service, release } = multiDeferredEvaluator(cancelLog);
+      const handledLog: Array<{ isSubagent: boolean }> = [];
+      const heldCancelledLog: number[] = [];
+      const g = gate(service, {
+        holdMs: 60_000,
+        pushHoldMs: 10,
+        onHandled: (ctx) => handledLog.push(ctx),
+        onHeldCancelled: () => heldCancelledLog.push(1),
+      });
+      const pending = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
+      await new Promise((r) => setTimeout(r, 20));
+
+      release({ command: 'git push' }, cancelled);
+      expect(await pending).toBe('passthrough');
+      expect(heldCancelledLog).toHaveLength(1);
+      expect(handledLog).toHaveLength(0); // wrong cue must not also fire
+    });
+
+    test('hold-timeout fail-open fires NEITHER onHandled NOR onHeldCancelled (the pill is already "waiting" and stays correct)', async () => {
+      const handledLog: Array<{ isSubagent: boolean }> = [];
+      const heldCancelledLog: number[] = [];
+      const g = gate(evaluator(escalate), {
+        holdMs: 20, // short timeout so the hold fails open quickly
+        onHandled: (ctx) => handledLog.push(ctx),
+        onHeldCancelled: () => heldCancelledLog.push(1),
+      });
+      const pending = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
+      expect(await pending).toBe('passthrough'); // resolves once the hold times out
+
+      expect(handledLog).toHaveLength(0);
+      expect(heldCancelledLog).toHaveLength(0);
+    });
+  });
+
   describe('teardown clears tracking', () => {
     test('cancelStale clears openQuestionSignatures (a later signature match is a harmless no-op)', async () => {
       const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
@@ -2520,7 +2671,7 @@ describe('AutoApproveGate subagent external-resolution (#799)', () => {
         // (deterministic, no eval timing to await).
         service: null,
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => {}),
+        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
         // Unused by these subagent-only tests (no main escalation is ever
         // driven), but AutoApproveGateDeps requires it.
@@ -2700,7 +2851,7 @@ describe('AutoApproveGate Stop resolves a still-open MAIN passthrough question (
       {
         service: null,
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => {}),
+        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
         escalate: () => {
           lastQuestionId = generateId();
@@ -2814,6 +2965,251 @@ describe('AutoApproveGate Stop resolves a still-open MAIN passthrough question (
 });
 
 // ---------------------------------------------------------------------------
+// #948: `cancelStale`'s non-mainOnly (SessionEnd) branch, and `forceRelease`,
+// used to be a silent `openQuestionSignatures.clear()` + `parkedInputs.clear()`
+// -- exactly the "bookkeeping-only delete" the mainOnly Stop sweep's own
+// comment (above) warns against. A PASSTHROUGH escalation (multi-choice /
+// design, e.g. AskUserQuestion) is tracked ONLY in `openQuestionSignatures`,
+// so a session that ends with no intervening `Stop` (e.g. killed or dropped
+// mid-prompt) left its card sitting in the store with nothing left to
+// resolve it. These tests exercise the fix: every survivor -- main OR
+// subagent, unlike the mainOnly sweep -- is now routed through
+// `resolveSupersededQuestion`, and prove the mainOnly Stop path is unchanged.
+// ---------------------------------------------------------------------------
+describe('AutoApproveGate full teardown resolves ALL survivors (#948)', () => {
+  const SID = generateId() as UUID;
+  let registry: SessionRegistry;
+  let lastQuestionId: UUID | undefined;
+  let parkedIds: UUID[];
+
+  function gate(
+    opts: {
+      onResolved?: (
+        questionId: UUID,
+        reason: 'auto_approved' | 'auto_denied' | 'cancelled',
+      ) => void;
+    } = {},
+  ): AutoApproveGate {
+    registry.registerSession(SID, '/d', fakePTY([]), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    return new AutoApproveGate(
+      {
+        service: null,
+        sessionRegistry: registry,
+        tracker: new QuestionPresenceTracker(() => undefined),
+        isInSubagentContext: () => false,
+        escalate: () => {
+          lastQuestionId = generateId();
+          return lastQuestionId;
+        },
+        parkForPTY: () => {
+          const id = generateId() as UUID;
+          parkedIds.push(id);
+          return id;
+        },
+        holdMs: 60_000,
+        alwaysEscalateTools: new Set(['AskUserQuestion']),
+        ...(opts.onResolved ? { onResolved: opts.onResolved } : {}),
+      },
+      SID,
+    );
+  }
+
+  /** AskUserQuestion is in `alwaysEscalateTools` -> design -> escalates as a
+   *  PASSTHROUGH, never held -- the exact #948 repro shape. */
+  function askUserQuestionPr(): PermissionRequestHookInput {
+    return {
+      session_id: 'claude-test',
+      transcript_path: '/tmp/t.jsonl',
+      cwd: '/d',
+      permission_mode: 'default',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'AskUserQuestion',
+      tool_input: { question: 'Which approach?' },
+    };
+  }
+
+  function subagentPr(agentId: string): PermissionRequestHookInput {
+    return {
+      session_id: 'claude-test',
+      transcript_path: '/tmp/t.jsonl',
+      cwd: '/d',
+      permission_mode: 'default',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+      agent_id: agentId,
+      agent_type: 'general-purpose',
+    };
+  }
+
+  beforeEach(() => {
+    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    lastQuestionId = undefined;
+    parkedIds = [];
+    configureLogger({ writeLog: () => {} });
+  });
+
+  afterEach(async () => {
+    __resetLoggerForTests();
+    await registry.shutdown();
+  });
+
+  test('the exact #948 repro: SessionEnd with NO Stop in between resolves a still-open MAIN AskUserQuestion card', async () => {
+    const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
+    const g = gate({ onResolved: (qid, reason) => resolvedLog.push({ qid, reason }) });
+    expect(await g.resolvePermission(askUserQuestionPr())).toBe('passthrough');
+    const qid = lastQuestionId as UUID;
+    registry.addQuestion(SID, {
+      id: qid,
+      text: 'Which approach?',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+    });
+    expect(registry.getQuestion(SID, qid)).not.toBeNull(); // store size 1 before
+
+    g.cancelStale('SessionEnd'); // no mainOnly, no prior Stop -- real teardown
+
+    expect(registry.getQuestion(SID, qid)).toBeNull(); // store size 0 after
+    expect(resolvedLog).toEqual([{ qid, reason: 'cancelled' }]);
+  });
+
+  test('a still-open SUBAGENT passthrough card is ALSO resolved on SessionEnd', async () => {
+    const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
+    const g = gate({ onResolved: (qid, reason) => resolvedLog.push({ qid, reason }) });
+    expect(await g.resolvePermission(subagentPr('agent-1'))).toBe('passthrough');
+    const subagentQid = parkedIds[0] as UUID;
+    registry.addQuestion(SID, {
+      id: subagentQid,
+      text: 'ls?',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+      agentId: 'agent-1',
+    });
+    expect(registry.getQuestion(SID, subagentQid)).not.toBeNull();
+
+    g.cancelStale('SessionEnd');
+
+    expect(registry.getQuestion(SID, subagentQid)).toBeNull();
+    expect(resolvedLog).toEqual([{ qid: subagentQid, reason: 'cancelled' }]);
+  });
+
+  test('Stop(mainOnly) still spares a subagent survivor exactly as before; a LATER SessionEnd then resolves it', async () => {
+    // This is the regression guard: the fix must resolve every survivor on a
+    // REAL teardown WITHOUT turning a mainOnly Stop into one.
+    const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
+    const g = gate({ onResolved: (qid, reason) => resolvedLog.push({ qid, reason }) });
+
+    expect(await g.resolvePermission(subagentPr('agent-1'))).toBe('passthrough');
+    const subagentQid = parkedIds[0] as UUID;
+    registry.addQuestion(SID, {
+      id: subagentQid,
+      text: 'ls?',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+      agentId: 'agent-1',
+    });
+
+    expect(await g.resolvePermission(askUserQuestionPr())).toBe('passthrough');
+    const mainQid = lastQuestionId as UUID;
+    registry.addQuestion(SID, {
+      id: mainQid,
+      text: 'Which approach?',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+    });
+
+    g.cancelStale('Stop', { mainOnly: true });
+    expect(registry.getQuestion(SID, mainQid)).toBeNull(); // MAIN: resolved
+    expect(registry.getQuestion(SID, subagentQid)).not.toBeNull(); // subagent: still spared
+    expect(resolvedLog).toEqual([{ qid: mainQid, reason: 'cancelled' }]);
+
+    // The teammate never fires its own SubagentStop; the session just ends.
+    g.cancelStale('SessionEnd');
+    expect(registry.getQuestion(SID, subagentQid)).toBeNull(); // now resolved too
+    expect(resolvedLog).toEqual([
+      { qid: mainQid, reason: 'cancelled' },
+      { qid: subagentQid, reason: 'cancelled' },
+    ]);
+  });
+
+  test('question_resolved fires once per resolved survivor -- one main, two subagent -- on a full teardown', async () => {
+    const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
+    const g = gate({ onResolved: (qid, reason) => resolvedLog.push({ qid, reason }) });
+
+    expect(await g.resolvePermission(askUserQuestionPr())).toBe('passthrough');
+    const mainQid = lastQuestionId as UUID;
+    registry.addQuestion(SID, {
+      id: mainQid,
+      text: 'q1',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+    });
+
+    expect(await g.resolvePermission(subagentPr('agent-1'))).toBe('passthrough');
+    const subagentQid1 = parkedIds[0] as UUID;
+    registry.addQuestion(SID, {
+      id: subagentQid1,
+      text: 'q2',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+      agentId: 'agent-1',
+    });
+
+    expect(await g.resolvePermission(subagentPr('agent-2'))).toBe('passthrough');
+    const subagentQid2 = parkedIds[1] as UUID;
+    registry.addQuestion(SID, {
+      id: subagentQid2,
+      text: 'q3',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+      agentId: 'agent-2',
+    });
+
+    g.cancelStale('SessionEnd');
+
+    expect(registry.getQuestion(SID, mainQid)).toBeNull();
+    expect(registry.getQuestion(SID, subagentQid1)).toBeNull();
+    expect(registry.getQuestion(SID, subagentQid2)).toBeNull();
+    expect(resolvedLog).toHaveLength(3);
+    const resolvedQids = resolvedLog.map((r) => r.qid);
+    expect(resolvedQids).toContain(mainQid);
+    expect(resolvedQids).toContain(subagentQid1);
+    expect(resolvedQids).toContain(subagentQid2);
+    expect(resolvedLog.every((r) => r.reason === 'cancelled')).toBe(true);
+  });
+
+  test('forceRelease (remi unstick) also resolves a still-open passthrough survivor, mirroring the teardown branch', async () => {
+    const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
+    const g = gate({ onResolved: (qid, reason) => resolvedLog.push({ qid, reason }) });
+    expect(await g.resolvePermission(askUserQuestionPr())).toBe('passthrough');
+    const qid = lastQuestionId as UUID;
+    registry.addQuestion(SID, {
+      id: qid,
+      text: 'Which approach?',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+    });
+
+    g.forceRelease('remi unstick');
+
+    expect(registry.getQuestion(SID, qid)).toBeNull();
+    expect(resolvedLog).toEqual([{ qid, reason: 'cancelled' }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // #799 part 2, subagent mirror: cancelStaleForAgent, wired from SubagentStop.
 // ---------------------------------------------------------------------------
 describe('AutoApproveGate cancelStaleForAgent (#799 part 2, subagent)', () => {
@@ -2838,7 +3234,7 @@ describe('AutoApproveGate cancelStaleForAgent (#799 part 2, subagent)', () => {
       {
         service: null,
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => {}),
+        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
         // Unused by these subagent-only tests (no main escalation is ever
         // driven), but AutoApproveGateDeps requires it.
@@ -3098,7 +3494,7 @@ describe('AutoApproveGate parked-render arbitration (#814)', () => {
     submits = [];
     evalCalls = [];
     resolvedLog = [];
-    tracker = new QuestionPresenceTracker(() => {});
+    tracker = new QuestionPresenceTracker(() => undefined);
     configureLogger({ writeLog: () => {} });
   });
 
@@ -3298,6 +3694,65 @@ describe('AutoApproveGate parked-render arbitration (#814)', () => {
     expect(evalCalls).toHaveLength(0);
   });
 
+  /**
+   * #1005. A parked render whose escalation was ALREADY retired must not push:
+   * retirement deleted its `openQuestionSignatures` entry, and every sweep this
+   * gate has iterates that map, so the resulting card is unremovable by anything
+   * except LRU eviction or a user answer. That is how 7 of the 8 cards found
+   * stuck in a live pending set were born.
+   *
+   * Keyed on a positive record of retirement, NOT on the signature entry being
+   * absent -- absent cannot tell "settled" from "never parked", and the test
+   * immediately below pins that the latter must still push.
+   */
+  describe('#1005 a retired escalation does not push a card', () => {
+    test('externally resolved before its render: answered, no push', async () => {
+      const g = gate(escalate);
+      await g.resolvePermission(pr('git push'));
+      const r = rendered(parkedIds[0] as UUID);
+      promptOnScreen(r);
+
+      // The tool actually ran -- PostToolUse retires the escalation.
+      g.cancelExternallyResolved(
+        { toolName: 'Bash', toolInput: { command: 'git push' }, agentId: 'agent-1' },
+        'PostToolUse-subagent',
+      );
+
+      expect(await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r))).toEqual({
+        outcome: 'answered',
+      });
+    });
+
+    test('a cancelled eval for a retired question is answered, not pushed', async () => {
+      const g = gate(cancelled);
+      await g.resolvePermission(pr('git push'));
+      const r = rendered(parkedIds[0] as UUID);
+      promptOnScreen(r);
+      g.cancelExternallyResolved(
+        { toolName: 'Bash', toolInput: { command: 'git push' }, agentId: 'agent-1' },
+        'PostToolUse-subagent',
+      );
+
+      expect(await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r))).toEqual({
+        outcome: 'answered',
+      });
+    });
+
+    test('a cancelled eval whose OWN escalation is still open still pushes', async () => {
+      // The cancel was collateral -- a sibling agent's PostToolUse aborted this
+      // eval. The prompt may well be live, so mapping `cancelled` to `answered`
+      // unconditionally would swallow it.
+      const g = gate(cancelled);
+      await g.resolvePermission(pr('git push'));
+      const r = rendered(parkedIds[0] as UUID);
+      promptOnScreen(r);
+
+      expect(await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r))).toEqual({
+        outcome: 'push',
+      });
+    });
+  });
+
   test('an unknown parked id pushes without evaluating', async () => {
     const g = gate(approve);
     const unknown = rendered(generateId() as UUID);
@@ -3388,21 +3843,23 @@ describe('AutoApproveGate parked-render arbitration (#814)', () => {
     expect(evalCalls).toHaveLength(2); // both were evaluated, independently
   });
 
-  test('a pushed render is resolvable by its RENDERED id: the signature is re-keyed', async () => {
+  test('a pushed render is resolvable by the PARKED id: no re-key needed (#887)', async () => {
+    // Pre-#887 the tracker's merge minted the pushed card's id from the PTY
+    // parse, so this test built `rendered` with a DIFFERENT id than the park
+    // and relied on `rekeySignatureToRendered` to move `openQuestionSignatures`
+    // onto it. #887 removed the mismatch at its source instead:
+    // `QuestionPresenceTracker.consumeAndMerge` now ADOPTS the hook's id, so
+    // `rendered.id` IS `parkedQuestionId` in every real call — this test
+    // builds `rendered` that way and proves resolution needs no re-key.
     const g = gate(escalate);
     await g.resolvePermission(pr());
-    const renderedId = generateId() as UUID;
-    promptOnScreen(rendered(renderedId));
+    const parkedId = parkedIds[0] as UUID;
+    const r = rendered(parkedId);
+    promptOnScreen(r);
 
-    expect(
-      await g.arbitrateParkedRender(
-        parkedIds[0] as UUID,
-        rendered(renderedId),
-        screen(rendered(renderedId)),
-      ),
-    ).toEqual({ outcome: 'push' });
-    // The tracker pushes the MERGED question, whose id is the PTY question's.
-    registry.addQuestion(SID, rendered(renderedId));
+    expect(await g.arbitrateParkedRender(parkedId, r, screen(r))).toEqual({ outcome: 'push' });
+    // The tracker pushes the MERGED question under the parked id (#887).
+    registry.addQuestion(SID, r);
 
     // The subagent's tool now runs => it was answered in the terminal.
     g.cancelExternallyResolved(
@@ -3410,8 +3867,8 @@ describe('AutoApproveGate parked-render arbitration (#814)', () => {
       'PreToolUse-subagent',
     );
 
-    expect(registry.getQuestion(SID, renderedId)).toBeNull();
-    expect(resolvedLog).toEqual([{ qid: renderedId, reason: 'cancelled' }]);
+    expect(registry.getQuestion(SID, parkedId)).toBeNull();
+    expect(resolvedLog).toEqual([{ qid: parkedId, reason: 'cancelled' }]);
   });
 
   test('an auto-answered render leaves NO open escalation behind (a deny fires no tool call)', async () => {
@@ -3428,6 +3885,56 @@ describe('AutoApproveGate parked-render arbitration (#814)', () => {
     // Nothing left for SubagentStop to resolve: no phantom resolution fires.
     g.cancelStaleForAgent('agent-1', 'SubagentStop');
     expect(resolvedLog).toHaveLength(0);
+  });
+
+  test('#970 a cancelled verdict on a parked render ESCALATES; onCancelled is never reached', async () => {
+    // Pins the routing fact that lets `onCancelled` stay ctx-free. The setup
+    // layer's client status correction (#970) fires unconditionally on that
+    // cue, which is only safe because the cue cannot be reached by a subagent
+    // eval — a subagent eval never broadcasts 'evaluating', so correcting one
+    // would emit the phantom pill #711/#807 removed.
+    //
+    // The subagent path reaches a cancelled verdict ONLY here: a plain
+    // `agent_id` PermissionRequest is parked and never evaluated (#807), so the
+    // hook-bridge harness cannot drive this at all. And arbitration routes
+    // `cancelled` to `escalateRenderedParked()` rather than the cancelled cue.
+    // If that ever changes, this test fails and the ctx-free assumption above
+    // must be revisited in the same change.
+    const cancelledCues: number[] = [];
+    const escalateCues: Array<{ isSubagent: boolean }> = [];
+    const g = new AutoApproveGate(
+      {
+        service: { evaluate: async () => cancelled, cancel: () => true },
+        sessionRegistry: registry,
+        tracker,
+        isInSubagentContext: () => false,
+        escalate: () => generateId(),
+        parkForPTY: () => {
+          const id = generateId() as UUID;
+          parkedIds.push(id);
+          return id;
+        },
+        onCancelled: () => cancelledCues.push(1),
+        onEscalate: (ctx) => escalateCues.push(ctx),
+      },
+      SID,
+    );
+
+    // Park it (never evaluated at hook time), then render it so the gate
+    // arbitrates — which is where a subagent permission is actually evaluated.
+    expect(await g.resolvePermission(pr())).toBe('passthrough');
+    const escalatesAtPark = escalateCues.length;
+
+    const r = rendered(generateId() as UUID);
+    promptOnScreen(r);
+    await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r));
+
+    // The claim: the cancelled verdict produced an ESCALATE, not a cancelled
+    // cue. Measured as growth past the park-time escalate rather than a total,
+    // so the park path's own cue does not have to be counted here.
+    expect(cancelledCues).toHaveLength(0);
+    expect(escalateCues.length).toBeGreaterThan(escalatesAtPark);
+    expect(escalateCues.every((c) => c.isSubagent)).toBe(true);
   });
 });
 
@@ -3507,5 +4014,332 @@ describe('autoAnswerValue (#814)', () => {
   test('no options at all resolves to nothing (caller escalates)', () => {
     expect(autoAnswerValue(approve, [], [])).toBeUndefined();
     expect(autoAnswerValue(deny, [], [])).toBeUndefined();
+  });
+});
+
+/**
+ * #1005, end to end through the REAL tracker pairing path.
+ *
+ * The parked-render tests above call `gate.arbitrateParkedRender` directly,
+ * which is the right unit for the verdict logic but skips how the arbiter is
+ * actually reached in production: the tracker pairs a PTY render against its
+ * `awaitingPTY` map (`matchAwaitingPTYKey`) and invokes the arbiter itself.
+ * A fix verified only at the unit level could pass while the wiring that feeds
+ * it changed underneath — noted in review of this PR, and closed here rather
+ * than left as a manual check somebody ran once.
+ */
+describe('#1005 end-to-end: a retired escalation registers no card via the real pairing path', () => {
+  let registry: SessionRegistry;
+
+  beforeEach(() => {
+    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    configureLogger({ writeLog: () => {} });
+  });
+  afterEach(async () => {
+    __resetLoggerForTests();
+    await registry.shutdown();
+  });
+
+  /** Real tracker + real gate, wired the way cli.ts wires them. */
+  function wire(pushes: Question[]) {
+    const sid = registry.createSessionId();
+    const submits: string[] = [];
+    registry.registerSession(sid, '/d', fakePTY(submits), {
+      handleMessage: () => {},
+      handleQuestion: (q: Question) => {
+        pushes.push(q);
+        registry.addQuestion(sid, q as never);
+      },
+      handleStatusChange: () => {},
+    } as never);
+    const tracker = new QuestionPresenceTracker((q) => {
+      pushes.push(q);
+      registry.addQuestion(sid, q as never);
+      return { status: 'registered' as const };
+    });
+    const gate = new AutoApproveGate(
+      {
+        service: { evaluate: async () => escalate, cancel: () => true },
+        sessionRegistry: registry,
+        tracker,
+        isInSubagentContext: () => true,
+        escalate: () => undefined,
+        // Wired exactly as cli.ts does: the gate hands the rich question to the
+        // tracker, which is what makes the PTY render pair with it later. The
+        // unit tests above stub this out and call the arbiter directly; that is
+        // precisely the wiring this end-to-end pair exists to cover.
+        parkForPTY: (input) => {
+          const q = {
+            id: generateId(),
+            text: `reviewer · Bash: ${String((input.tool_input as { command?: string }).command)}`,
+            options: [
+              { value: '1', label: '1', isRecommended: false, isYes: false, isNo: false },
+              { value: '2', label: '2', isRecommended: false, isYes: false, isNo: false },
+            ],
+            allowsFreeText: false,
+            isAnswered: false,
+            source: 'permission_request',
+            agentId: input.agent_id,
+          } as unknown as Question;
+          tracker.recordPendingHook(q);
+          tracker.parkAwaitingPTY(q);
+          return q.id as UUID;
+        },
+      },
+      sid,
+    );
+    tracker.setParkedRenderArbiter((ctx) =>
+      gate.arbitrateParkedRender(ctx.parkedQuestionId, ctx.rendered, ctx.ptyPrompt),
+    );
+    return { sid, tracker, gate };
+  }
+
+  test('baseline: a parked render with no retirement DOES push (harness is not vacuous)', async () => {
+    const pushes: Question[] = [];
+    const { sid, tracker, gate } = wire(pushes);
+    await gate.resolvePermission({
+      session_id: 'c',
+      transcript_path: '/tmp/t.jsonl',
+      cwd: '/d',
+      permission_mode: 'default',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'git push' },
+      agent_id: 'agent-1',
+      agent_type: 'general-purpose',
+    } as PermissionRequestHookInput);
+    tracker.onOrphanPTYPrompt({
+      id: generateId(),
+      text: 'Do you want to proceed?',
+      options: [
+        { value: '1', label: '1', isRecommended: false, isYes: false, isNo: false },
+        { value: '2', label: '2', isRecommended: false, isYes: false, isNo: false },
+      ],
+      allowsFreeText: false,
+      isAnswered: false,
+    } as Question);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(pushes.length).toBeGreaterThan(0);
+    expect(registry.getSession(sid)?.currentQuestions.size).toBeGreaterThan(0);
+  });
+
+  test('retired before its render: no card, and the pending set stays empty', async () => {
+    const pushes: Question[] = [];
+    const { sid, tracker, gate } = wire(pushes);
+    await gate.resolvePermission({
+      session_id: 'c',
+      transcript_path: '/tmp/t.jsonl',
+      cwd: '/d',
+      permission_mode: 'default',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'git push' },
+      agent_id: 'agent-1',
+      agent_type: 'general-purpose',
+    } as PermissionRequestHookInput);
+
+    // The tool actually ran: PostToolUse retires the escalation before any
+    // prompt reaches the screen.
+    gate.cancelExternallyResolved(
+      { toolName: 'Bash', toolInput: { command: 'git push' }, agentId: 'agent-1' },
+      'PostToolUse-subagent',
+    );
+
+    tracker.onOrphanPTYPrompt({
+      id: generateId(),
+      text: 'Do you want to proceed?',
+      options: [
+        { value: '1', label: '1', isRecommended: false, isYes: false, isNo: false },
+        { value: '2', label: '2', isRecommended: false, isYes: false, isNo: false },
+      ],
+      allowsFreeText: false,
+      isAnswered: false,
+    } as Question);
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(pushes).toHaveLength(0);
+    // The whole point: nothing accumulates in the store that no sweep can clear.
+    expect(registry.getSession(sid)?.currentQuestions.size).toBe(0);
+  });
+});
+
+/**
+ * #1015: every `deny` the gate returns must reach the `onAutoDenied` sink.
+ *
+ * A deny is the one verdict with no user-facing surface of its own -- no
+ * Question, so no card, no push, no `question_resolved`. This sink is the
+ * human's only channel, so what matters is that NOTHING reaching the hook as a
+ * deny bypasses it, and that a broken sink cannot break the decision.
+ */
+describe('AutoApproveGate onAutoDenied (#1015)', () => {
+  const SID = generateId() as UUID;
+  let registry: SessionRegistry;
+  let denied: Array<{ tool: string; source: DenySource; reasoning: string }>;
+
+  const denyFromConfig: AutoApproveResult = {
+    decision: 'deny',
+    reasoning: 'deny-matched group: "fs-write"',
+    durationMs: 0,
+    model: 'm',
+    denySource: { kind: 'config', pattern: 'fs-write' },
+  };
+  const denyFromFloor: AutoApproveResult = {
+    decision: 'deny',
+    reasoning: 'the model refused',
+    durationMs: 12,
+    model: 'm',
+    denySource: { kind: 'model-floor', pattern: 'rm -rf /' },
+  };
+  const approveResult: AutoApproveResult = {
+    decision: 'approve',
+    reasoning: 't',
+    durationMs: 0,
+    model: 'm',
+  };
+  const escalateResult: AutoApproveResult = {
+    decision: 'escalate',
+    reasoning: 't',
+    durationMs: 0,
+    model: 'm',
+  };
+
+  function makeGate(
+    result: AutoApproveResult,
+    opts: { secondOpinion?: AutoApproveResult; sinkThrows?: boolean } = {},
+  ): AutoApproveGate {
+    registry.registerSession(SID, '/d', fakePTY([]), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    const service: AutoApproveEvaluator = {
+      evaluate: async (_t, _i, _tag, _s, modelOverride) =>
+        modelOverride === 'big-model' ? (opts.secondOpinion ?? result) : result,
+      cancel: () => true,
+    };
+    return new AutoApproveGate(
+      {
+        service,
+        sessionRegistry: registry,
+        tracker: new QuestionPresenceTracker(() => undefined),
+        isInSubagentContext: () => false,
+        escalate: () => generateId(),
+        onAutoDenied: (input, source, reasoning) => {
+          if (opts.sinkThrows) throw new Error('test: sink synthetic failure');
+          denied.push({ tool: input.tool_name, source, reasoning });
+        },
+        ...(opts.secondOpinion ? { escalateModel: 'big-model' } : {}),
+      },
+      SID,
+    );
+  }
+
+  function pr(): PermissionRequestHookInput {
+    return {
+      session_id: 'claude-test',
+      transcript_path: '/tmp/t.jsonl',
+      cwd: '/d',
+      permission_mode: 'default',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'rm -rf /' },
+    };
+  }
+
+  beforeEach(() => {
+    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    denied = [];
+    configureLogger({ writeLog: () => {} });
+  });
+
+  afterEach(async () => {
+    __resetLoggerForTests();
+    await registry.shutdown();
+  });
+
+  test('a primary deny reaches the sink, carrying source and reasoning verbatim', async () => {
+    const d = await makeGate(denyFromFloor).resolvePermission(pr());
+    expect(d).toEqual({ behavior: 'deny', message: expect.stringContaining('ask the user') });
+    expect(denied).toEqual([
+      {
+        tool: 'Bash',
+        source: { kind: 'model-floor', pattern: 'rm -rf /' },
+        reasoning: 'the model refused',
+      },
+    ]);
+  });
+
+  test('a config deny reaches the sink too -- filtering is the sink’s call, not the gate’s', async () => {
+    // cli.ts logs both and pushes only for model-floor. Deciding that HERE
+    // would put the policy in two places, and the gate is the wrong one: it
+    // cannot see the user's config.
+    await makeGate(denyFromConfig).resolvePermission(pr());
+    expect(denied).toHaveLength(1);
+    expect(denied[0]?.source.kind).toBe('config');
+  });
+
+  test('a SECOND-OPINION deny reaches the sink: it is equally invisible', async () => {
+    // The primary escalates, the heavy escalate_model refuses. This return is
+    // as silent as the primary one and was the easier of the two to miss.
+    const d = await makeGate(escalateResult, { secondOpinion: denyFromFloor }).resolvePermission(
+      pr(),
+    );
+    expect(d).toEqual({ behavior: 'deny', message: expect.stringContaining('ask the user') });
+    expect(denied).toHaveLength(1);
+    expect(denied[0]?.source).toEqual({ kind: 'model-floor', pattern: 'rm -rf /' });
+  });
+
+  test('an untagged deny is still reported, not dropped', async () => {
+    // Unreachable today (every deny return in `evaluate` tags itself) but the
+    // type permits it. A missing tag must degrade the report, never silence
+    // it -- silence is the bug.
+    const untagged: AutoApproveResult = {
+      decision: 'deny',
+      reasoning: 'no source field',
+      durationMs: 0,
+      model: 'm',
+    };
+    await makeGate(untagged).resolvePermission(pr());
+    expect(denied).toHaveLength(1);
+    expect(denied[0]?.source).toEqual({ kind: 'model-floor', pattern: '' });
+  });
+
+  test('an approve never reaches the sink', async () => {
+    await makeGate(approveResult).resolvePermission(pr());
+    expect(denied).toEqual([]);
+  });
+
+  test('an escalate never reaches the sink', async () => {
+    await makeGate(escalateResult).resolvePermission(pr());
+    expect(denied).toEqual([]);
+  });
+
+  test('a sink that throws is absorbed: the deny still reaches the hook', async () => {
+    // Same contract as the cosmetic cues. An observer must never be able to
+    // turn a decided permission into an unanswered hook.
+    const d = await makeGate(denyFromFloor, { sinkThrows: true }).resolvePermission(pr());
+    expect(d).toEqual({ behavior: 'deny', message: expect.stringContaining('ask the user') });
+  });
+
+  test('an absent sink is fine: the gate does not require one', async () => {
+    registry.registerSession(SID, '/d', fakePTY([]), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    const gate = new AutoApproveGate(
+      {
+        service: { evaluate: async () => denyFromFloor, cancel: () => true },
+        sessionRegistry: registry,
+        tracker: new QuestionPresenceTracker(() => undefined),
+        isInSubagentContext: () => false,
+        escalate: () => generateId(),
+      },
+      SID,
+    );
+    expect(await gate.resolvePermission(pr())).toEqual({
+      behavior: 'deny',
+      message: expect.stringContaining('ask the user'),
+    });
   });
 });

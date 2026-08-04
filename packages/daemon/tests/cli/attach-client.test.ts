@@ -3,12 +3,16 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
+  MESSAGE_DIRECTION,
+  createAck,
   createAgentOutput,
   createError,
   createHelloAck,
   createPing,
   createQuestion,
   createQuestionResolved,
+  createQuestionSnapshot,
+  createRawPtyOutput,
   createRemiStatus,
   createReplayBatch,
   deserialize,
@@ -16,7 +20,14 @@ import {
   now,
   serialize,
 } from '@remi/shared';
-import type { Message, Question, UUID } from '@remi/shared';
+import type {
+  Message,
+  MessageHandlers,
+  ProtocolMessageMap,
+  Question,
+  RemiStatus,
+  UUID,
+} from '@remi/shared';
 import { runAttachClient } from '../../src/cli/attach-client.ts';
 
 const TEST_PORT = 9873;
@@ -266,6 +277,23 @@ describe('runAttachClient', () => {
     });
     expect(pongMsg).toBeTruthy();
   });
+
+  function mkRemiStatus(targetSessionId: UUID, overrides: Partial<RemiStatus> = {}): RemiStatus {
+    return {
+      pid: 1,
+      connections: 1,
+      sessionStatus: 'idle',
+      adapters: ['ws'],
+      wsPort: 19924,
+      sessionId: targetSessionId,
+      repo: 'remi',
+      branch: 'develop',
+      autoApprove: { inFlight: 0, sinceS: 0, lastVerdict: 'none', lastVerdictAtS: 0 },
+      attached: true,
+      queuedCount: 0,
+      ...overrides,
+    };
+  }
 
   function makeQuestion(text: string, held = true): Question {
     return {
@@ -547,5 +575,620 @@ describe('runAttachClient', () => {
     expect(output).not.toContain('| attached');
     expect(output).not.toContain('\x1b[7m');
     expect(output).not.toContain('\x1b[1;');
+  });
+
+  // #932: statusBarEligible lets a test force the bar on without a real TTY,
+  // proving the positive case the "not a TTY" test above only proves the
+  // negative of.
+  test('paints the reserved-row bar when statusBarEligible is forced true', async () => {
+    setupOutput();
+    const targetSessionId = generateId();
+
+    server = Bun.serve({
+      port: TEST_PORT + 12,
+      fetch(req, srv) {
+        if (srv.upgrade(req, { data: {} })) return;
+        return new Response('Not found', { status: 404 });
+      },
+      websocket: {
+        open() {},
+        message(ws, data) {
+          const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+          const msg = deserialize(text);
+          if (!msg) return;
+
+          if (msg.type === 'hello') {
+            ws.send(serialize(createHelloAck('1.0.0', targetSessionId as UUID)));
+            setTimeout(() => {
+              ws.send(
+                serialize(
+                  createRemiStatus(targetSessionId as UUID, mkRemiStatus(targetSessionId as UUID)),
+                ),
+              );
+              // #932: the daemon always sends question_snapshot (even empty)
+              // right after hello_ack via resendPendingQuestions; the bar's
+              // first paint is gated on having observed one.
+              ws.send(serialize(createQuestionSnapshot(targetSessionId as UUID, [])));
+            }, 50);
+            setTimeout(() => ws.close(), 200);
+          }
+        },
+        close() {},
+      },
+    });
+
+    await runAttachClient({
+      host: 'localhost',
+      port: TEST_PORT + 12,
+      sessionId: targetSessionId,
+      timeout: 3000,
+      outputFd,
+      statusBarEligible: true,
+    });
+
+    const output = readOutput();
+    expect(output).toContain('\x1b[7m'); // reverse-video bar paint
+    expect(output).toContain('\x1b[1;'); // DECSTBM scroll-region assertion
+  });
+
+  // #932: attach-client's own StatusBar (the same class the wrapper draws,
+  // #754) had NO hasLiveQuestions wiring at all before this fix -- the
+  // ~250ms timer painted straight through a live question on this path.
+  // question_snapshot (sent on attach and on every change, #753/#798) is the
+  // signal that now drives it, and the bar's first-ever paint is deferred
+  // until one has been observed (a second review fix) so it cannot read
+  // "no question" for a session that already has one live. Proves the
+  // mechanism end to end on the REAL attach-client code path (not a
+  // StatusBar unit test): the deferred first paint doubling as the onset
+  // paint, freeze through a status change made during the freeze, forced
+  // paint reflecting that change on the transition back out.
+  test('a live question (question_snapshot) suppresses the bar, then the resumed paint reflects a status change made during the freeze', async () => {
+    setupOutput();
+    const targetSessionId = generateId();
+    const questionId = generateId() as UUID;
+
+    server = Bun.serve({
+      port: TEST_PORT + 13,
+      fetch(req, srv) {
+        if (srv.upgrade(req, { data: {} })) return;
+        return new Response('Not found', { status: 404 });
+      },
+      websocket: {
+        open() {},
+        message(ws, data) {
+          const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+          const msg = deserialize(text);
+          if (!msg) return;
+
+          if (msg.type === 'hello') {
+            ws.send(serialize(createHelloAck('1.0.0', targetSessionId as UUID)));
+            // remi_status arrives first, but (#932) startStatusBar() defers
+            // its first paint until a question_snapshot has been observed --
+            // status A ("idle") is only stored, not yet painted.
+            setTimeout(() => {
+              ws.send(
+                serialize(
+                  createRemiStatus(
+                    targetSessionId as UUID,
+                    mkRemiStatus(targetSessionId as UUID, { sessionStatus: 'idle' }),
+                  ),
+                ),
+              );
+            }, 50);
+            // question_snapshot arrives with the question already live: this
+            // unblocks the deferred start AND is simultaneously the
+            // transition into "live", so the bar's first-ever paint IS the
+            // onset paint (reflecting status A, stored above).
+            setTimeout(() => {
+              ws.send(serialize(createQuestionSnapshot(targetSessionId as UUID, [questionId])));
+            }, 150);
+            // Status changes to B ("thinking") WHILE the question is still
+            // live -- must not paint until the freeze ends.
+            setTimeout(() => {
+              ws.send(
+                serialize(
+                  createRemiStatus(
+                    targetSessionId as UUID,
+                    mkRemiStatus(targetSessionId as UUID, { sessionStatus: 'thinking' }),
+                  ),
+                ),
+              );
+            }, 600);
+            // Question resolves, well ahead of the next timer tick.
+            setTimeout(() => {
+              ws.send(serialize(createQuestionSnapshot(targetSessionId as UUID, [])));
+            }, 1200);
+            setTimeout(() => ws.close(), 1700);
+          }
+        },
+        close() {},
+      },
+    });
+
+    // Peek the output mid-freeze (t=900: after the status-B send at t=600,
+    // well ahead of the resolve at t=1200), via a separate read handle so
+    // the write fd stays open. This is what actually proves suppression is
+    // holding rather than merely coinciding on a final count: if
+    // hasLiveQuestions() were broken (e.g. wired to a constant), the status
+    // change at t=600 would have produced its own repaint by the very next
+    // ~250ms tick, long before t=900 -- and the final bars.length could
+    // still land on 2 by coincidence (a plain dedup repaint at t=600 plus
+    // nothing else), masking the regression.
+    let midFreezeOutput = '';
+    setTimeout(() => {
+      midFreezeOutput = fs.readFileSync(outputPath, 'utf-8');
+    }, 900);
+
+    await runAttachClient({
+      host: 'localhost',
+      port: TEST_PORT + 13,
+      sessionId: targetSessionId,
+      timeout: 3000,
+      outputFd,
+      statusBarEligible: true,
+    });
+
+    const midBars = [...midFreezeOutput.matchAll(/\x1b\[7m([^\x1b]*)\x1b\[0m/g)].map((m) => m[1]);
+    expect(midBars.length).toBe(1); // still frozen: only the onset paint so far
+    expect(midBars[0]).toContain('idle'); // not yet "thinking" -- the freeze held
+
+    const output = readOutput();
+    const bars = [...output.matchAll(/\x1b\[7m([^\x1b]*)\x1b\[0m/g)].map((m) => m[1]);
+    // Exactly two real paints total: the bar's first-ever paint (deferred
+    // until question_snapshot arrives, which doubles as the onset paint
+    // since the question is already live by then -- status A, stored
+    // earlier), and the resumed paint on the transition back out (status B,
+    // reflecting the change made during the freeze). Every tick while
+    // frozen wrote nothing, despite the status having changed mid-freeze.
+    expect(bars.length).toBe(2);
+    expect(bars[0]).toContain('idle');
+    expect(bars[1]).toContain('thinking');
+  });
+
+  // #932: an older daemon that never sends question_snapshot must not lose
+  // the bar entirely -- deferring is a bound (createStatusBar()'s 500ms
+  // fallback), not a block.
+  test('the bar still starts via the fallback timeout when no question_snapshot ever arrives', async () => {
+    setupOutput();
+    const targetSessionId = generateId();
+
+    server = Bun.serve({
+      port: TEST_PORT + 14,
+      fetch(req, srv) {
+        if (srv.upgrade(req, { data: {} })) return;
+        return new Response('Not found', { status: 404 });
+      },
+      websocket: {
+        open() {},
+        message(ws, data) {
+          const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+          const msg = deserialize(text);
+          if (!msg) return;
+
+          if (msg.type === 'hello') {
+            ws.send(serialize(createHelloAck('1.0.0', targetSessionId as UUID)));
+            // Deliberately never sends question_snapshot.
+            setTimeout(() => {
+              ws.send(
+                serialize(
+                  createRemiStatus(targetSessionId as UUID, mkRemiStatus(targetSessionId as UUID)),
+                ),
+              );
+            }, 50);
+            setTimeout(() => ws.close(), 900);
+          }
+        },
+        close() {},
+      },
+    });
+
+    await runAttachClient({
+      host: 'localhost',
+      port: TEST_PORT + 14,
+      sessionId: targetSessionId,
+      timeout: 3000,
+      outputFd,
+      statusBarEligible: true,
+    });
+
+    const output = readOutput();
+    expect(output).toContain('\x1b[7m'); // the bar started anyway, past the fallback bound
+  });
+
+  // #932 durable fix: proves the REAL wiring end to end (real
+  // `PtyQuiescenceGate`, fed by real `raw_pty_output` messages through
+  // `writeRawBytes`), not just StatusBar in isolation. A chunk that leaves
+  // the stream mid-escape-sequence must suppress the bar until BOTH gates
+  // clear -- and the two checkpoints below prove they are two SEPARATE
+  // gates, not one: the boundary clears well before quiescence does, and a
+  // routine repaint still waits for both.
+  test('a raw_pty_output chunk ending mid-escape-sequence suppresses the bar until the boundary clears AND the PTY goes quiet', async () => {
+    setupOutput();
+    const targetSessionId = generateId();
+    // A CSI introducer with no final byte -- the stream is left inside an
+    // unterminated escape sequence, exactly the #932 mode-1 hazard.
+    const dirtyChunk = Buffer.from([0x1b, 0x5b]).toString('base64'); // ESC [
+    const completingChunk = Buffer.from('31m', 'utf-8').toString('base64'); // ...31m
+
+    server = Bun.serve({
+      port: TEST_PORT + 15,
+      fetch(req, srv) {
+        if (srv.upgrade(req, { data: {} })) return;
+        return new Response('Not found', { status: 404 });
+      },
+      websocket: {
+        open() {},
+        message(ws, data) {
+          const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+          const msg = deserialize(text);
+          if (!msg) return;
+
+          if (msg.type === 'hello') {
+            ws.send(serialize(createHelloAck('1.0.0', targetSessionId as UUID)));
+            setTimeout(() => {
+              ws.send(
+                serialize(
+                  createRemiStatus(
+                    targetSessionId as UUID,
+                    mkRemiStatus(targetSessionId as UUID, { sessionStatus: 'idle' }),
+                  ),
+                ),
+              );
+            }, 50);
+            // Unblocks the deferred first paint -- status A ("idle"), painted.
+            setTimeout(() => {
+              ws.send(serialize(createQuestionSnapshot(targetSessionId as UUID, [])));
+            }, 100);
+            // Leaves the boundary dirty from here on.
+            setTimeout(() => {
+              ws.send(serialize(createRawPtyOutput(dirtyChunk, targetSessionId as UUID)));
+            }, 150);
+            // A real status change, stored but must not paint while dirty.
+            setTimeout(() => {
+              ws.send(
+                serialize(
+                  createRemiStatus(
+                    targetSessionId as UUID,
+                    mkRemiStatus(targetSessionId as UUID, { sessionStatus: 'thinking' }),
+                  ),
+                ),
+              );
+            }, 200);
+            // Completes the sequence: boundary clears here, but this same
+            // chunk also resets the quiescence window from this instant.
+            setTimeout(() => {
+              ws.send(serialize(createRawPtyOutput(completingChunk, targetSessionId as UUID)));
+            }, 550);
+            setTimeout(() => ws.close(), 1400);
+          }
+        },
+        close() {},
+      },
+    });
+
+    let atBoundaryDirty = '';
+    setTimeout(() => {
+      atBoundaryDirty = fs.readFileSync(outputPath, 'utf-8');
+    }, 500); // well after the status change at t=200, boundary still dirty
+
+    let afterBoundaryClearsButNotQuiescent = '';
+    setTimeout(() => {
+      afterBoundaryClearsButNotQuiescent = fs.readFileSync(outputPath, 'utf-8');
+    }, 750); // boundary cleared at t=550, but only 200ms of quiet (< QUIESCENCE_MS)
+
+    await runAttachClient({
+      host: 'localhost',
+      port: TEST_PORT + 15,
+      sessionId: targetSessionId,
+      timeout: 3000,
+      outputFd,
+      statusBarEligible: true,
+    });
+
+    const barsIn = (text: string) =>
+      [...text.matchAll(/\x1b\[7m([^\x1b]*)\x1b\[0m/g)].map((m) => m[1]);
+
+    const dirtyBars = barsIn(atBoundaryDirty);
+    expect(dirtyBars.length).toBe(1); // only the onset paint; status change never landed
+    expect(dirtyBars[0]).toContain('idle');
+
+    const cleanNotQuietBars = barsIn(afterBoundaryClearsButNotQuiescent);
+    expect(cleanNotQuietBars.length).toBe(1); // boundary alone is not enough
+    expect(cleanNotQuietBars[0]).toContain('idle');
+
+    const output = readOutput();
+    const finalBars = barsIn(output);
+    // Once both the boundary is clean AND the PTY has been quiet for
+    // QUIESCENCE_MS, the routine repaint finally lands with the status
+    // change that was stored back at t=200.
+    expect(finalBars.length).toBe(2);
+    expect(finalBars[1]).toContain('thinking');
+  });
+
+  // #932 durable fix bonus signal: a bare ESC[r (DECSTBM full-screen
+  // scroll-region reset) must trigger an immediate repaint rather than
+  // waiting for the normal tick, the quiescence window, or the heartbeat --
+  // row N is unprotected until DECSTBM is re-asserted. Timed to land well
+  // before the bar's first regular timer tick (~250ms after start()) and
+  // far under QUIESCENCE_MS/HEARTBEAT_MS, so the only mechanism that can
+  // explain the second paint is the immediate trigger.
+  test('a bare ESC[r in raw_pty_output triggers an immediate repaint', async () => {
+    setupOutput();
+    const targetSessionId = generateId();
+    const resetChunk = Buffer.from([0x1b, 0x5b, 0x72]).toString('base64'); // ESC [ r
+
+    server = Bun.serve({
+      port: TEST_PORT + 16,
+      fetch(req, srv) {
+        if (srv.upgrade(req, { data: {} })) return;
+        return new Response('Not found', { status: 404 });
+      },
+      websocket: {
+        open() {},
+        message(ws, data) {
+          const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+          const msg = deserialize(text);
+          if (!msg) return;
+
+          if (msg.type === 'hello') {
+            ws.send(serialize(createHelloAck('1.0.0', targetSessionId as UUID)));
+            setTimeout(() => {
+              ws.send(
+                serialize(
+                  createRemiStatus(
+                    targetSessionId as UUID,
+                    mkRemiStatus(targetSessionId as UUID, { sessionStatus: 'idle' }),
+                  ),
+                ),
+              );
+            }, 50);
+            // Unblocks the deferred first paint -- status A ("idle"), painted.
+            setTimeout(() => {
+              ws.send(serialize(createQuestionSnapshot(targetSessionId as UUID, [])));
+            }, 100);
+            // A real status change, stored but not yet painted.
+            setTimeout(() => {
+              ws.send(
+                serialize(
+                  createRemiStatus(
+                    targetSessionId as UUID,
+                    mkRemiStatus(targetSessionId as UUID, { sessionStatus: 'thinking' }),
+                  ),
+                ),
+              );
+            }, 200);
+            // Sent well before the first regular ~250ms tick (start() was
+            // called at t=100, so the first regular tick lands at ~t=350).
+            setTimeout(() => {
+              ws.send(serialize(createRawPtyOutput(resetChunk, targetSessionId as UUID)));
+            }, 270);
+            // Closes before the first regular tick and far under both
+            // QUIESCENCE_MS (500) and HEARTBEAT_MS (2000).
+            setTimeout(() => ws.close(), 320);
+          }
+        },
+        close() {},
+      },
+    });
+
+    await runAttachClient({
+      host: 'localhost',
+      port: TEST_PORT + 16,
+      sessionId: targetSessionId,
+      timeout: 3000,
+      outputFd,
+      statusBarEligible: true,
+    });
+
+    const output = readOutput();
+    const barMatches = [...output.matchAll(/\x1b\[7m([^\x1b]*)\x1b\[0m/g)];
+    expect(barMatches.length).toBe(2);
+    expect(barMatches[0]?.[1]).toContain('idle');
+    expect(barMatches[1]?.[1]).toContain('thinking');
+
+    // #932 review finding 2: a paint count alone does not prove ordering --
+    // the immediate repaint is worthless (and actively harmful) if it lands
+    // on the wire BEFORE the ESC[r that triggered it, since the reset would
+    // then immediately undo the correction. The bar's own paints always
+    // include DECSTBM with explicit params (`\x1b[1;Nr`), so the first
+    // literal bare `\x1b[r` in the raw output can only be our injected
+    // reset chunk (the only other source, the teardown clear sequence,
+    // writes its own bare `\x1b[r` later still, on WS close).
+    const resetIndex = output.indexOf('\x1b[r');
+    expect(resetIndex).toBeGreaterThanOrEqual(0);
+    const secondBarIndex = barMatches[1]?.index;
+    expect(secondBarIndex).toBeDefined();
+    expect(secondBarIndex as number).toBeGreaterThan(resetIndex);
+  });
+
+  // #898: renderMessage's total-dispatch handler for raw_pty_output was
+  // exercised only indirectly before (nothing asserted on decoded bytes).
+  test('renders decoded raw_pty_output bytes to output', async () => {
+    setupOutput();
+    const targetSessionId = generateId();
+    const payload = Buffer.from('hello from the pty\n', 'utf-8').toString('base64');
+
+    server = Bun.serve({
+      port: TEST_PORT + 9,
+      fetch(req, srv) {
+        if (srv.upgrade(req, { data: {} })) return;
+        return new Response('Not found', { status: 404 });
+      },
+      websocket: {
+        open() {},
+        message(ws, data) {
+          const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+          const msg = deserialize(text);
+          if (!msg) return;
+
+          if (msg.type === 'hello') {
+            ws.send(serialize(createHelloAck('1.0.0', targetSessionId as UUID)));
+            setTimeout(() => {
+              ws.send(serialize(createRawPtyOutput(payload, targetSessionId as UUID)));
+            }, 50);
+            setTimeout(() => ws.close(), 200);
+          }
+        },
+        close() {},
+      },
+    });
+
+    await runAttachClient({
+      host: 'localhost',
+      port: TEST_PORT + 9,
+      sessionId: targetSessionId,
+      timeout: 3000,
+      outputFd,
+    });
+
+    const output = readOutput();
+    expect(output).toContain('hello from the pty');
+  });
+
+  // #898: the generic `error` branch (any code other than the early-return
+  // SESSION_ENDED/SESSION_BUSY specials handled before renderMessage is
+  // reached) was never exercised by name.
+  test('renders a generic error inline without ending the session', async () => {
+    setupOutput();
+    const targetSessionId = generateId();
+
+    server = Bun.serve({
+      port: TEST_PORT + 10,
+      fetch(req, srv) {
+        if (srv.upgrade(req, { data: {} })) return;
+        return new Response('Not found', { status: 404 });
+      },
+      websocket: {
+        open() {},
+        message(ws, data) {
+          const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+          const msg = deserialize(text);
+          if (!msg) return;
+
+          if (msg.type === 'hello') {
+            ws.send(serialize(createHelloAck('1.0.0', targetSessionId as UUID)));
+            setTimeout(() => {
+              ws.send(serialize(createError('SOME_OTHER_CODE', 'transient glitch')));
+            }, 50);
+            setTimeout(() => ws.close(), 200);
+          }
+        },
+        close() {},
+      },
+    });
+
+    const result = await runAttachClient({
+      host: 'localhost',
+      port: TEST_PORT + 10,
+      sessionId: targetSessionId,
+      timeout: 3000,
+      outputFd,
+    });
+
+    const output = readOutput();
+    expect(output).toContain('[error: SOME_OTHER_CODE - transient glitch]');
+    // Unlike SESSION_ENDED/SESSION_BUSY, a generic error code does not end
+    // the attach session; the connection just closes normally afterward.
+    expect(result.reason).toBe('connection_closed');
+  });
+
+  // #898: `ack` is direction 'both' and genuinely arrives here — the daemon
+  // acks messages this client sends (e.g. terminal_resize, user_input) — but
+  // attach-client has never rendered acks and must keep not rendering them.
+  // Proves the 'ignore' entry for a real (not merely hypothetical) inbound
+  // type is correct, not just unreachable code. (Sent right after hello_ack,
+  // not gated on a specific client message, since process.stdout.columns/
+  // rows are unset in this non-TTY test environment and attach-client skips
+  // its own resize sends in that case.)
+  test('ignores a real ack reply without printing or crashing', async () => {
+    setupOutput();
+    const targetSessionId = generateId();
+
+    server = Bun.serve({
+      port: TEST_PORT + 11,
+      fetch(req, srv) {
+        if (srv.upgrade(req, { data: {} })) return;
+        return new Response('Not found', { status: 404 });
+      },
+      websocket: {
+        open() {},
+        message(ws, data) {
+          const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+          const msg = deserialize(text);
+          if (!msg) return;
+
+          if (msg.type === 'hello') {
+            ws.send(serialize(createHelloAck('1.0.0', targetSessionId as UUID)));
+            setTimeout(() => {
+              ws.send(
+                serialize(
+                  createAck({ messageId: generateId(), state: 'delivered', timestamp: now() }),
+                ),
+              );
+            }, 50);
+            setTimeout(() => ws.close(), 200);
+          }
+        },
+        close() {},
+      },
+    });
+
+    const result = await runAttachClient({
+      host: 'localhost',
+      port: TEST_PORT + 11,
+      sessionId: targetSessionId,
+      timeout: 3000,
+      outputFd,
+    });
+
+    const output = readOutput();
+    expect(output).not.toContain('ack');
+    expect(output).not.toContain('[error');
+    expect(result.reason).toBe('connection_closed');
+  });
+});
+
+// --- Compile-time totality demonstration (#898 acceptance criterion) ---
+//
+// attach-client.ts's renderMessage builds a `MessageHandlers<keyof
+// ProtocolMessageMap, void>` literal covering every registry key (see the
+// doc comment on renderMessage for why the map is sized to the full
+// registry rather than a narrower daemon-to-client-only alias). This proves
+// the mechanism directly against that same type: a handler map missing one
+// key does not satisfy it. Verified live (not just present): removing
+// `question_snapshot: 'ignore'` from attach-client.ts's actual handlers
+// object and running `bun run typecheck` produced `TS2741: Property
+// 'question_snapshot' is missing in type '{...}' but required in type
+// 'MessageHandlers<keyof ProtocolMessageMap, void>'` at the object literal;
+// restoring the entry made it pass again.
+describe('renderMessage handler map is total (compile-time, #898)', () => {
+  test('a handler map missing one registry key is rejected by MessageHandlers<keyof ProtocolMessageMap>', () => {
+    const registryTypes = Object.keys(MESSAGE_DIRECTION) as (keyof ProtocolMessageMap)[];
+    const allButOne = registryTypes.filter((t) => t !== 'question_snapshot');
+    const missingOneHandler = Object.fromEntries(
+      allButOne.map((t) => [t, 'ignore' as const]),
+    ) as MessageHandlers<Exclude<keyof ProtocolMessageMap, 'question_snapshot'>>;
+
+    expect(Object.keys(missingOneHandler).length).toBe(registryTypes.length - 1);
+
+    // @ts-expect-error - deliberately missing 'question_snapshot'; assigning
+    // to the full MessageHandlers<keyof ProtocolMessageMap> type must fail.
+    // This is the shape attach-client.ts's renderMessage handler map has:
+    // forgetting a registry key is a build error here, not a silent runtime
+    // no-op (#898's acceptance criterion). Removing this comment to check
+    // the assignment is unguarded is how this was verified (see file header
+    // note above and the dispatch.ts pattern this mirrors).
+    const incomplete: MessageHandlers<keyof ProtocolMessageMap> = missingOneHandler;
+    void incomplete;
+  });
+
+  test('the same map WITH the key present satisfies the full type', () => {
+    const registryTypes = Object.keys(MESSAGE_DIRECTION) as (keyof ProtocolMessageMap)[];
+    const complete = Object.fromEntries(
+      registryTypes.map((t) => [t, 'ignore' as const]),
+    ) as MessageHandlers<keyof ProtocolMessageMap>;
+
+    const total: MessageHandlers<keyof ProtocolMessageMap> = complete;
+    expect(Object.keys(total).length).toBe(registryTypes.length);
   });
 });

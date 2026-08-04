@@ -3,13 +3,9 @@
  */
 
 import { describe, expect, test } from 'bun:test';
+import type { UUID } from '@remi/shared';
 import { shouldKeepExisting } from '../../src/lib/question-merge';
-import type {
-  UIQuestion,
-  UIQuestionOption,
-  UIQuestionResolvedReason,
-  UUID,
-} from '../../src/types';
+import type { UIQuestion, UIQuestionOption, UIQuestionResolvedReason } from '../../src/types';
 
 let nextId = 0;
 function uiq(

@@ -51,6 +51,16 @@ function fakeMessageAPI(bulletMap: Map<number, string | null>): MessageAPI {
 
 const CID = 'conn0000-0000-0000-0000-000000000000' as UUID;
 const QID = 'ques0000-0000-0000-0000-000000000000' as UUID;
+
+/**
+ * The #1002 guard refuses a PTY submit when no prompt is on screen, and
+ * treats an unwired dep as "no prompt" (fail toward not injecting). Every
+ * test below that exercises the PTY-submit path is describing the ordinary
+ * case where Claude IS showing its prompt, so they say so explicitly rather
+ * than inheriting the refusing default. The refusal itself is covered by its
+ * own tests in the `#1002` block.
+ */
+const PROMPT_ON_SCREEN = { isPromptObservedOnPTY: () => true };
 const REQ = 'req00000-0000-0000-0000-000000000000' as UUID;
 
 describe('createInputHandlers', () => {
@@ -92,7 +102,12 @@ describe('createInputHandlers', () => {
       );
       sessionRegistry.attachConnection(sessionId, CID);
 
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
       await handlers.onUserInput(CID, sessionId, '\x1b[A', true);
 
       expect(ptyCapture.writes).toEqual(['\x1b[A']);
@@ -110,7 +125,12 @@ describe('createInputHandlers', () => {
       );
       sessionRegistry.attachConnection(sessionId, CID);
 
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
       await handlers.onUserInput(CID, sessionId, 'hello world', false);
 
       expect(ptyCapture.submits).toEqual(['hello world']);
@@ -120,7 +140,12 @@ describe('createInputHandlers', () => {
     test('logs and returns when no session is attached to the connection', async () => {
       const logs: string[] = [];
       configureLogger({ writeLog: (msg) => logs.push(msg) });
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
 
       await handlers.onUserInput(
         CID,
@@ -133,7 +158,12 @@ describe('createInputHandlers', () => {
     });
 
     test('sends SESSION_NOT_FOUND when the session does not exist at all (#662)', async () => {
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
       const missingSessionId = 'nosn0000-0000-0000-0000-000000000000' as UUID;
 
       await handlers.onUserInput(CID, missingSessionId, 'ignored', false);
@@ -162,7 +192,12 @@ describe('createInputHandlers', () => {
       // not queued behind the first.
       sessionRegistry.attachConnection(sessionId, CID);
 
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
       await handlers.onUserInput(firstConn, sessionId, 'from first', false);
       await handlers.onUserInput(CID, sessionId, 'from second', false);
 
@@ -187,7 +222,12 @@ describe('createInputHandlers', () => {
       // The first connection detaches (e.g. it closed its tab).
       sessionRegistry.detachConnection(firstConn);
 
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
       await handlers.onUserInput(CID, sessionId, 'still typing', false);
 
       // CID's submit still lands -- it was never affected by the other
@@ -214,7 +254,12 @@ describe('createInputHandlers', () => {
       );
       // CID never attaches (as a query-mode connection would not).
 
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
       await handlers.onUserInput(CID, sessionId, 'ignored', false);
 
       expect(sendCalls).toHaveLength(1);
@@ -242,7 +287,12 @@ describe('createInputHandlers', () => {
       );
       // CID never attaches.
 
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
       const droppedMessageId = generateId();
       await handlers.onUserInput(CID, sessionId, 'ignored', false, undefined, droppedMessageId);
 
@@ -277,7 +327,12 @@ describe('createInputHandlers', () => {
       );
       sessionRegistry.attachConnection(sessionId, CID);
 
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
       // Should not throw
       await handlers.onUserInput(CID, sessionId, 'x', true);
 
@@ -308,11 +363,335 @@ describe('createInputHandlers', () => {
         isAnswered: false,
       });
 
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
       await handlers.onAnswer(CID, sessionId, QID, 'yes');
 
       expect(ptyCapture.submits).toEqual(['yes']);
       expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+    });
+
+    describe('prompt-currency guard (#920)', () => {
+      function addPtySourcedQuestion(sessionId: UUID): void {
+        sessionRegistry.addQuestion(sessionId, {
+          id: QID,
+          text: 'Proceed? (y/n)',
+          options: [
+            { value: 'y', label: 'Yes', isRecommended: true, isYes: true, isNo: false },
+            { value: 'n', label: 'No', isRecommended: false, isYes: false, isNo: true },
+          ],
+          allowsFreeText: false,
+          isAnswered: false,
+          source: 'pty',
+        });
+      }
+
+      // A stale `source: 'pty'` card (#920: the residual leak cohort -- no
+      // hook, so the active-question lookup alone cannot tell a live prompt
+      // from one that scrolled off screen minutes ago) must NOT reach the
+      // PTY, must clear itself, and must tell the client why.
+      test('refuses the PTY submit and clears the card when the prompt is gone', async () => {
+        const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+        const sessionId = sessionRegistry.createSessionId();
+        sessionRegistry.registerSession(
+          sessionId,
+          '/test/dir',
+          fakePTY(ptyCapture),
+          fakeMessageAPI(new Map()),
+        );
+        addPtySourcedQuestion(sessionId);
+
+        const resolvedCalls: Array<{ sessionId: UUID; questionId: UUID }> = [];
+        const handlers = createInputHandlers({
+          ...PROMPT_ON_SCREEN,
+          sessionRegistry,
+          bindingStore,
+          send,
+          isPromptCurrent: () => false, // the on-screen prompt is gone
+          onQuestionResolved: (s, q) => resolvedCalls.push({ sessionId: s, questionId: q }),
+        });
+
+        await handlers.onAnswer(CID, sessionId, QID, 'y');
+
+        expect(ptyCapture.submits).toEqual([]);
+        expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+        const errors = sendCalls.filter((c) => c.message.type === 'error');
+        expect(errors).toHaveLength(1);
+        expect((errors[0]?.message as unknown as { code: string }).code).toBe('STALE_ANSWER');
+        // The card must clear on every client (#585), not just refuse locally.
+        expect(resolvedCalls).toEqual([{ sessionId, questionId: QID }]);
+      });
+
+      // The regression test that matters: a `source: 'pty'` card whose prompt
+      // IS still on screen must submit exactly as before the guard existed.
+      test('still submits normally when the prompt IS current', async () => {
+        const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+        const sessionId = sessionRegistry.createSessionId();
+        sessionRegistry.registerSession(
+          sessionId,
+          '/test/dir',
+          fakePTY(ptyCapture),
+          fakeMessageAPI(new Map()),
+        );
+        addPtySourcedQuestion(sessionId);
+
+        const checked: Array<{ sessionId: UUID; questionId: UUID; ptyText: string }> = [];
+        const handlers = createInputHandlers({
+          ...PROMPT_ON_SCREEN,
+          sessionRegistry,
+          bindingStore,
+          send,
+          isPromptCurrent: (s, q, ptyText) => {
+            checked.push({ sessionId: s, questionId: q, ptyText });
+            return true;
+          },
+        });
+
+        await handlers.onAnswer(CID, sessionId, QID, 'y');
+
+        expect(ptyCapture.submits).toEqual(['y']);
+        expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+        expect(sendCalls.filter((c) => c.message.type === 'error')).toHaveLength(0);
+        expect(checked).toEqual([{ sessionId, questionId: QID, ptyText: 'Proceed? (y/n)' }]);
+      });
+
+      // A hook-paired question's merged id/text are the HOOK's, never the raw
+      // PTY parse (question-presence-tracker.ts consumeAndMerge), so a blanket
+      // currency check would misfire on this cohort. The ID/TEXT guard is
+      // scoped to `source === 'pty'` ONLY; proven with a spy that throws if
+      // consulted.
+      //
+      // Renamed for #1002: this cohort IS checked now, just not by this dep —
+      // `isPromptObservedOnPTY` asks the weaker "is anything on screen?", which
+      // hook-paired cards CAN answer. The old name claimed the cohort was
+      // unguarded, which was true and was the bug.
+      test('a non-pty-sourced card is not checked by the id/text guard', async () => {
+        const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+        const sessionId = sessionRegistry.createSessionId();
+        sessionRegistry.registerSession(
+          sessionId,
+          '/test/dir',
+          fakePTY(ptyCapture),
+          fakeMessageAPI(new Map()),
+        );
+        sessionRegistry.addQuestion(sessionId, {
+          id: QID,
+          text: 'Allow Bash: git push',
+          options: [
+            { value: '1', label: 'Yes', isRecommended: true, isYes: true, isNo: false },
+            { value: '2', label: 'No', isRecommended: false, isYes: false, isNo: true },
+          ],
+          allowsFreeText: false,
+          isAnswered: false,
+          source: 'permission_request',
+        });
+
+        const handlers = createInputHandlers({
+          ...PROMPT_ON_SCREEN,
+          sessionRegistry,
+          bindingStore,
+          send,
+          isPromptCurrent: () => {
+            throw new Error('isPromptCurrent must not be called for a non-pty source');
+          },
+        });
+
+        await handlers.onAnswer(CID, sessionId, QID, '1');
+
+        expect(ptyCapture.submits).toEqual(['1']);
+        expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+      });
+
+      /**
+       * #1002. Observed live: a bare `1` arrived in an unrelated session as a
+       * chat message. The card was hook-sourced, its hold was already gone, so
+       * `hadHold` was false and nothing released — and because the id/text
+       * guard above is scoped to `source === 'pty'`, the digit went to the PTY
+       * with nothing checked at all.
+       */
+      describe('#1002 no-prompt-on-screen guard for hook-sourced cards', () => {
+        function addHookSourcedQuestion(sessionId: UUID): void {
+          sessionRegistry.addQuestion(sessionId, {
+            id: QID,
+            text: 'Allow Bash: ls -la',
+            options: [
+              { value: '1', label: 'Yes', isRecommended: true, isYes: true, isNo: false },
+              { value: '2', label: 'No', isRecommended: false, isYes: false, isNo: true },
+            ],
+            allowsFreeText: false,
+            isAnswered: false,
+            source: 'permission_request',
+          });
+        }
+
+        test('no prompt on screen and no hold: refuses to submit, reports STALE_ANSWER', async () => {
+          const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+          const sessionId = sessionRegistry.createSessionId();
+          sessionRegistry.registerSession(
+            sessionId,
+            '/test/dir',
+            fakePTY(ptyCapture),
+            fakeMessageAPI(new Map()),
+          );
+          addHookSourcedQuestion(sessionId);
+
+          const handlers = createInputHandlers({
+            sessionRegistry,
+            bindingStore,
+            send,
+            isPromptObservedOnPTY: () => false, // nothing on screen
+          });
+
+          await handlers.onAnswer(CID, sessionId, QID, '1');
+
+          expect(ptyCapture.submits).toEqual([]); // the whole point: no stray digit
+          expect(
+            sendCalls.filter(
+              (c) => c.message.type === 'error' && c.message.code === 'STALE_ANSWER',
+            ),
+          ).toHaveLength(1);
+        });
+
+        test('an unwired dep is treated as no prompt (fails toward not injecting)', async () => {
+          const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+          const sessionId = sessionRegistry.createSessionId();
+          sessionRegistry.registerSession(
+            sessionId,
+            '/test/dir',
+            fakePTY(ptyCapture),
+            fakeMessageAPI(new Map()),
+          );
+          addHookSourcedQuestion(sessionId);
+
+          const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+
+          await handlers.onAnswer(CID, sessionId, QID, '1');
+          expect(ptyCapture.submits).toEqual([]);
+        });
+
+        test('a prompt IS on screen: submits normally', async () => {
+          const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+          const sessionId = sessionRegistry.createSessionId();
+          sessionRegistry.registerSession(
+            sessionId,
+            '/test/dir',
+            fakePTY(ptyCapture),
+            fakeMessageAPI(new Map()),
+          );
+          addHookSourcedQuestion(sessionId);
+
+          const handlers = createInputHandlers({
+            sessionRegistry,
+            bindingStore,
+            send,
+            isPromptObservedOnPTY: () => true,
+          });
+
+          await handlers.onAnswer(CID, sessionId, QID, '1');
+          expect(ptyCapture.submits).toEqual(['1']);
+          expect(sendCalls.filter((c) => c.message.type === 'error')).toHaveLength(0);
+        });
+
+        /**
+         * The condition that keeps this guard from breaking the legitimate
+         * case. When the answer ITSELF pops a held hook to passthrough, Claude
+         * is deliberately about to render its native prompt — so nothing is on
+         * screen YET, and requiring presence here would refuse a good answer.
+         */
+        test('releasing a hold in this same call submits even with nothing on screen', async () => {
+          const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+          const sessionId = sessionRegistry.createSessionId();
+          sessionRegistry.registerSession(
+            sessionId,
+            '/test/dir',
+            fakePTY(ptyCapture),
+            fakeMessageAPI(new Map()),
+          );
+          addHookSourcedQuestion(sessionId);
+
+          const handlers = createInputHandlers({
+            sessionRegistry,
+            bindingStore,
+            send,
+            releaseHeldAsPassthrough: () => true, // a hold existed, popped now
+            isPromptObservedOnPTY: () => false, // prompt has not rendered yet
+          });
+
+          await handlers.onAnswer(CID, sessionId, QID, '1');
+          expect(ptyCapture.submits).toEqual(['1']);
+          expect(sendCalls.filter((c) => c.message.type === 'error')).toHaveLength(0);
+        });
+      });
+
+      // Held-hook answers resolve via the hook response and never PTY-submit
+      // (the `hadHold` branch) -- the guard lives only on the `!hadHold`
+      // PTY-submit branch, so it must never be consulted here, even for a
+      // pty-sourced question with an (unusual but not impossible) hold.
+      test('a held-hook answer is unaffected, even for a pty-sourced question', async () => {
+        const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+        const sessionId = sessionRegistry.createSessionId();
+        sessionRegistry.registerSession(
+          sessionId,
+          '/test/dir',
+          fakePTY(ptyCapture),
+          fakeMessageAPI(new Map()),
+        );
+        addPtySourcedQuestion(sessionId);
+
+        const handlers = createInputHandlers({
+          ...PROMPT_ON_SCREEN,
+          sessionRegistry,
+          bindingStore,
+          send,
+          resolveHeldPermission: () => true, // a hold existed and was resolved
+          isPromptCurrent: () => {
+            throw new Error('isPromptCurrent must not be called on the held-hook branch');
+          },
+        });
+
+        await handlers.onAnswer(CID, sessionId, QID, 'y');
+
+        expect(ptyCapture.submits).toEqual([]); // held -> no PTY submit
+        expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+        expect(sendCalls.filter((c) => c.message.type === 'error')).toHaveLength(0);
+      });
+
+      // #795: free-form PTY submission (raw keystrokes and structured input)
+      // is a deliberate feature -- any attached client can type into the
+      // session. The guard lives ONLY inside handleAnswer's card-submit
+      // branch, never on onUserInput; proven with a spy that throws if
+      // consulted.
+      test('free-form user_input (raw and structured) is unaffected', async () => {
+        const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+        const sessionId = sessionRegistry.createSessionId();
+        sessionRegistry.registerSession(
+          sessionId,
+          '/test/dir',
+          fakePTY(ptyCapture),
+          fakeMessageAPI(new Map()),
+        );
+        sessionRegistry.attachConnection(sessionId, CID);
+
+        const handlers = createInputHandlers({
+          ...PROMPT_ON_SCREEN,
+          sessionRegistry,
+          bindingStore,
+          send,
+          isPromptCurrent: () => {
+            throw new Error('isPromptCurrent must not be called for free-form user_input');
+          },
+        });
+
+        await handlers.onUserInput(CID, sessionId, '\x1b[A', true);
+        await handlers.onUserInput(CID, sessionId, 'hello world', false);
+
+        expect(ptyCapture.writes).toEqual(['\x1b[A']);
+        expect(ptyCapture.submits).toEqual(['hello world']);
+      });
     });
 
     // #627: cancel/escape sends Esc to the PTY and clears the question — the
@@ -334,7 +713,12 @@ describe('createInputHandlers', () => {
         isAnswered: false,
       });
 
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
       await handlers.onAnswer(CID, sessionId, QID, '', undefined, { cancel: true });
 
       expect(ptyCapture.writes).toEqual([AUQ_KEYS.ESC]);
@@ -360,7 +744,12 @@ describe('createInputHandlers', () => {
         isAnswered: false,
       });
 
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
       await handlers.onAnswer(CID, sessionId, QID, '', undefined, {
         selections: [{ questionIndex: 0, optionIndices: [0] }],
       });
@@ -413,7 +802,12 @@ describe('createInputHandlers', () => {
         ],
       });
 
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
       // Pick Green (index 1): expect DOWN then ENTER, then closure -> question gone.
       await handlers.onAnswer(CID, sessionId, QID, '', undefined, {
         selections: [{ questionIndex: 0, optionIndices: [1] }],
@@ -477,7 +871,12 @@ describe('createInputHandlers', () => {
         ],
       });
 
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
       // Q1 -> Green (index 1); Q2 -> Apple + Cherry (indices 0, 2).
       await handlers.onAnswer(CID, sessionId, QID, '', undefined, {
         selections: [
@@ -543,6 +942,7 @@ describe('createInputHandlers', () => {
       });
 
       const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
         sessionRegistry,
         bindingStore,
         send,
@@ -588,7 +988,12 @@ describe('createInputHandlers', () => {
         isAnswered: false,
       });
 
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
       await expect(handlers.onAnswer(CID, sessionId, QID, 'y')).rejects.toThrow('pty closed');
 
       // No zombie question left behind for a retry to double-submit.
@@ -618,7 +1023,12 @@ describe('createInputHandlers', () => {
         isAnswered: false,
       });
 
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
       // Pass a bogus sessionId, handler should still find the session via connection
       await handlers.onAnswer(CID, 'bogus000-0000-0000-0000-000000000000' as UUID, QID, 'hello');
 
@@ -643,7 +1053,12 @@ describe('createInputHandlers', () => {
       // must signal the drop back to the iOS client so the user is not left
       // wondering whether their tap landed.
 
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
       await handlers.onAnswer(CID, sessionId, QID, 'hi');
 
       expect(ptyCapture.submits).toEqual([]);
@@ -674,7 +1089,12 @@ describe('createInputHandlers', () => {
       });
 
       const stale = 'stal0000-0000-0000-0000-000000000000' as UUID;
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
       await handlers.onAnswer(CID, sessionId, stale, 'yes');
 
       expect(ptyCapture.submits).toEqual([]);
@@ -716,7 +1136,12 @@ describe('createInputHandlers', () => {
         agentId: 'sub-7',
       });
 
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
       // Answer the first; it should inject and be removed, the second stays.
       await handlers.onAnswer(CID, sessionId, QID, 'one');
       expect(ptyCapture.submits).toEqual(['one']);
@@ -735,7 +1160,12 @@ describe('createInputHandlers', () => {
     test('logs when neither sessionId nor connectionId maps to a session', async () => {
       const logs: string[] = [];
       configureLogger({ writeLog: (msg) => logs.push(msg) });
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
 
       await handlers.onAnswer(CID, 'miss0000-0000-0000-0000-000000000000' as UUID, QID, 'y');
 
@@ -772,6 +1202,7 @@ describe('createInputHandlers', () => {
       const held: Array<{ sessionId: UUID; questionId: UUID; decision: 'allow' | 'deny' }> = [];
       const cancels: Array<{ sessionId: UUID; questionId: UUID; reason: string }> = [];
       const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
         sessionRegistry,
         bindingStore,
         send,
@@ -805,6 +1236,7 @@ describe('createInputHandlers', () => {
 
       const held: Array<'allow' | 'deny'> = [];
       const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
         sessionRegistry,
         bindingStore,
         send,
@@ -838,6 +1270,7 @@ describe('createInputHandlers', () => {
       const released: UUID[] = [];
       const cancels: Array<{ sessionId: UUID; questionId: UUID; reason: string }> = [];
       const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
         sessionRegistry,
         bindingStore,
         send,
@@ -899,6 +1332,7 @@ describe('createInputHandlers', () => {
 
       const held: Array<{ decision: 'allow' | 'deny'; suggestionIndex: number | undefined }> = [];
       const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
         sessionRegistry,
         bindingStore,
         send,
@@ -927,6 +1361,7 @@ describe('createInputHandlers', () => {
 
       const cancels: Array<{ sessionId: UUID; questionId: UUID; reason: string }> = [];
       const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
         sessionRegistry,
         bindingStore,
         send,
@@ -966,6 +1401,7 @@ describe('createInputHandlers', () => {
 
       let resolveHeldCalled = false;
       const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
         sessionRegistry,
         bindingStore,
         send,
@@ -994,7 +1430,12 @@ describe('createInputHandlers', () => {
       );
       addYesNoQuestion(sessionId);
 
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
       await handlers.onAnswer(CID, sessionId, QID, '1');
 
       expect(ptyCapture.submits).toEqual(['1']); // PTY path, no held resolution
@@ -1035,6 +1476,7 @@ describe('createInputHandlers', () => {
 
       const held: Array<'allow' | 'deny'> = [];
       const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
         sessionRegistry,
         bindingStore,
         send,
@@ -1064,6 +1506,7 @@ describe('createInputHandlers', () => {
 
       const held: Array<'allow' | 'deny'> = [];
       const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
         sessionRegistry,
         bindingStore,
         send,
@@ -1095,6 +1538,7 @@ describe('createInputHandlers', () => {
 
       const released: UUID[] = [];
       const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
         sessionRegistry,
         bindingStore,
         send,
@@ -1125,6 +1569,7 @@ describe('createInputHandlers', () => {
       addYesNoAlwaysQuestion(sessionId);
 
       const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
         sessionRegistry,
         bindingStore,
         send,
@@ -1152,6 +1597,7 @@ describe('createInputHandlers', () => {
       addYesNoAlwaysQuestion(sessionId);
 
       const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
         sessionRegistry,
         bindingStore,
         send,
@@ -1189,6 +1635,7 @@ describe('createInputHandlers', () => {
       });
 
       const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
         sessionRegistry,
         bindingStore,
         send,
@@ -1219,6 +1666,7 @@ describe('createInputHandlers', () => {
       });
 
       const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
         sessionRegistry,
         bindingStore,
         send,
@@ -1245,6 +1693,7 @@ describe('createInputHandlers', () => {
       addYesNoAlwaysQuestion(sessionId);
 
       const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
         sessionRegistry,
         bindingStore,
         send,
@@ -1267,7 +1716,12 @@ describe('createInputHandlers', () => {
 
   describe('onBulletExpandRequest', () => {
     test('sends NOT_FOUND when session is missing', () => {
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
 
       handlers.onBulletExpandRequest(CID, 'noses000-0000-0000-0000-000000000000' as UUID, 1, REQ);
 
@@ -1286,7 +1740,12 @@ describe('createInputHandlers', () => {
         fakeMessageAPI(new Map()),
       );
 
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
       handlers.onBulletExpandRequest(CID, sessionId, 99, REQ);
 
       expect(sendCalls).toHaveLength(1);
@@ -1304,7 +1763,12 @@ describe('createInputHandlers', () => {
         fakeMessageAPI(new Map([[7, 'full expanded content']])),
       );
 
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
       handlers.onBulletExpandRequest(CID, sessionId, 7, REQ);
 
       expect(sendCalls).toHaveLength(1);
@@ -1350,7 +1814,12 @@ describe('createInputHandlers', () => {
         isAnswered: false,
       });
 
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
       await handlers.onAnswer(CID, sessionId, QID, 'y', bound);
 
       expect(capture.submits).toEqual(['y']);
@@ -1369,7 +1838,12 @@ describe('createInputHandlers', () => {
         isAnswered: false,
       });
 
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
       await handlers.onAnswer(CID, sessionId, QID, 'y', stale);
 
       expect(capture.submits).toEqual([]);
@@ -1392,7 +1866,12 @@ describe('createInputHandlers', () => {
         isAnswered: false,
       });
 
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
       await handlers.onAnswer(CID, sessionId, QID, 'y');
 
       expect(capture.submits).toEqual(['y']);
@@ -1404,7 +1883,12 @@ describe('createInputHandlers', () => {
       const stale = '99999999-aaaa-bbbb-cccc-dddddddddddd' as UUID;
       const { sessionId, capture } = registerSessionWithBinding(bound);
 
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
       await handlers.onUserInput(CID, sessionId, 'ls', false, stale);
 
       expect(capture.submits).toEqual([]);
@@ -1433,7 +1917,12 @@ describe('createInputHandlers', () => {
         allowsFreeText: false,
         isAnswered: false,
       });
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
 
       const claudeId = '11111111-2222-3333-4444-555555555555' as UUID;
       await handlers.onAnswer(CID, sessionId, QID, 'y', claudeId);
@@ -1467,7 +1956,12 @@ describe('createInputHandlers', () => {
         isAnswered: false,
       });
 
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
       const outcome = await handlers.relayAnswer(sessionId, QID, 'Yes');
 
       expect(outcome).toBe('delivered');
@@ -1502,6 +1996,7 @@ describe('createInputHandlers', () => {
       const held: Array<{ decision: 'allow' | 'deny' }> = [];
       const cancels: Array<{ questionId: UUID; reason: string }> = [];
       const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
         sessionRegistry,
         bindingStore,
         send,
@@ -1543,7 +2038,12 @@ describe('createInputHandlers', () => {
         isAnswered: false,
       });
 
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
       // The relay surfaces the throw (the HTTP route turns it into a 500).
       await expect(handlers.relayAnswer(sessionId, QID, 'Yes')).rejects.toThrow('pty closed');
       // Question consumed exactly once despite the throw.
@@ -1551,7 +2051,12 @@ describe('createInputHandlers', () => {
     });
 
     test('returns session-not-found for an unknown session (no error frame)', async () => {
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
       const outcome = await handlers.relayAnswer(
         'unknown0-0000-0000-0000-000000000000' as UUID,
         QID,
@@ -1571,7 +2076,12 @@ describe('createInputHandlers', () => {
         fakeMessageAPI(new Map()),
       );
       // No question added: the relay must report stale rather than submitting.
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
       const outcome = await handlers.relayAnswer(sessionId, QID, 'Yes');
 
       expect(outcome).toBe('stale');
@@ -1606,7 +2116,12 @@ describe('createInputHandlers', () => {
         isAnswered: false,
       });
 
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
       const outcome = await handlers.relayAnswer(
         sessionId,
         QID,
@@ -1648,7 +2163,12 @@ describe('createInputHandlers', () => {
 
     test('a same-value relay duplicate after a relay success reports delivered, no re-submit', async () => {
       const { sessionId, ptyCapture } = registerYesNo();
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
 
       expect(await handlers.relayAnswer(sessionId, QID, 'Yes')).toBe('delivered');
       expect(ptyCapture.submits).toEqual(['1']);
@@ -1660,7 +2180,12 @@ describe('createInputHandlers', () => {
 
     test('cross-channel: a WS answer then its relay duplicate reports delivered', async () => {
       const { sessionId, ptyCapture } = registerYesNo();
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
 
       await handlers.onAnswer(CID, sessionId, QID, 'Yes'); // in-app WS copy wins
       expect(ptyCapture.submits).toEqual(['1']);
@@ -1671,7 +2196,12 @@ describe('createInputHandlers', () => {
 
     test('a WS duplicate sends NO STALE_ANSWER error frame', async () => {
       const { sessionId } = registerYesNo();
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
 
       await handlers.onAnswer(CID, sessionId, QID, 'Yes');
       await handlers.onAnswer(CID, sessionId, QID, 'Yes'); // duplicate
@@ -1681,7 +2211,12 @@ describe('createInputHandlers', () => {
 
     test('a CONFLICTING late answer (different value) still reports stale', async () => {
       const { sessionId, ptyCapture } = registerYesNo();
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
 
       expect(await handlers.relayAnswer(sessionId, QID, 'Yes')).toBe('delivered');
       // A second device answered "No" after "Yes" already won: must fail loudly.
@@ -1709,7 +2244,12 @@ describe('createInputHandlers', () => {
         allowsFreeText: false,
         isAnswered: false,
       });
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
 
       await expect(handlers.relayAnswer(sessionId, QID, 'Yes')).rejects.toThrow('pty closed');
       // The answer was never applied, so its duplicate is NOT a success echo.
@@ -1718,7 +2258,12 @@ describe('createInputHandlers', () => {
 
     test('an unknown question with no recorded answer still reports stale', async () => {
       const { sessionId } = registerYesNo();
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
       const other = 'cccccccc-0000-0000-0000-000000000000' as UUID;
       expect(await handlers.relayAnswer(sessionId, other, 'Yes')).toBe('stale');
     });
@@ -1728,7 +2273,12 @@ describe('createInputHandlers', () => {
       // the label ("Yes"). Same tap, different spelling — the cache records
       // both at application time (#759 review finding 1).
       const { sessionId, ptyCapture } = registerYesNo();
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
 
       await handlers.onAnswer(CID, sessionId, QID, '1'); // in-app value
       expect(ptyCapture.submits).toEqual(['1']);
@@ -1741,6 +2291,7 @@ describe('createInputHandlers', () => {
       const { sessionId, ptyCapture } = registerYesNo();
       const held: Array<'allow' | 'deny'> = [];
       const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
         sessionRegistry,
         bindingStore,
         send,
@@ -1791,7 +2342,12 @@ describe('createInputHandlers', () => {
           },
         ],
       });
-      const handlers = createInputHandlers({ sessionRegistry, bindingStore, send });
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
       const selections = [{ questionIndex: 0, optionIndices: [0] }];
 
       await handlers.onAnswer(CID, sessionId, QID, '', undefined, { selections });
@@ -1832,6 +2388,7 @@ describe('createInputHandlers', () => {
       const sessionId = registerWithQuestion(QID);
       const resolved: Array<{ sessionId: UUID; questionId: UUID }> = [];
       const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
         sessionRegistry,
         bindingStore,
         send,
@@ -1855,6 +2412,7 @@ describe('createInputHandlers', () => {
       // No question registered -> the answer is stale.
       const resolved: UUID[] = [];
       const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
         sessionRegistry,
         bindingStore,
         send,
@@ -1869,6 +2427,7 @@ describe('createInputHandlers', () => {
     test('a throwing onQuestionResolved never breaks answer handling', async () => {
       const sessionId = registerWithQuestion(QID);
       const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
         sessionRegistry,
         bindingStore,
         send,
@@ -1881,6 +2440,314 @@ describe('createInputHandlers', () => {
       // throwing broadcast (it is guarded in the finally).
       await expect(handlers.onAnswer(CID, sessionId, QID, 'y')).resolves.toBe(undefined);
       expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+    });
+  });
+
+  describe('recordPrecedent wiring (#976 prerequisite)', () => {
+    type RecordCall = {
+      sessionId: UUID;
+      toolName: string;
+      signature: string;
+      decision: 'approved' | 'denied';
+    };
+
+    function registerPermissionQuestion(
+      sessionId: UUID,
+      overrides: Partial<Parameters<SessionRegistry['addQuestion']>[1]> = {},
+    ): void {
+      sessionRegistry.addQuestion(sessionId, {
+        id: QID,
+        text: 'Allow Bash: git status',
+        options: [
+          { value: '1', label: 'Yes', isRecommended: true, isYes: true, isNo: false },
+          { value: '2', label: 'No', isRecommended: false, isYes: false, isNo: true },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+        source: 'permission_request',
+        ...overrides,
+      });
+    }
+
+    function setUp(): {
+      sessionId: UUID;
+      calls: RecordCall[];
+      handlers: ReturnType<typeof createInputHandlers>;
+    } {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      const calls: RecordCall[] = [];
+      const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
+        sessionRegistry,
+        bindingStore,
+        send,
+        recordPrecedent: (sessionId, toolName, signature, decision) => {
+          calls.push({ sessionId, toolName, signature, decision });
+        },
+      });
+      return { sessionId, calls, handlers };
+    }
+
+    test('records an approval for an unambiguous Yes to a permission_request question', async () => {
+      const { sessionId, calls, handlers } = setUp();
+      registerPermissionQuestion(sessionId);
+
+      await handlers.onAnswer(CID, sessionId, QID, 'Yes');
+
+      expect(calls).toEqual([
+        { sessionId, toolName: 'Bash', signature: 'Bash: git status', decision: 'approved' },
+      ]);
+    });
+
+    test('records a denial for an unambiguous No to a permission_request question', async () => {
+      const { sessionId, calls, handlers } = setUp();
+      registerPermissionQuestion(sessionId);
+
+      await handlers.onAnswer(CID, sessionId, QID, 'No');
+
+      expect(calls).toEqual([
+        { sessionId, toolName: 'Bash', signature: 'Bash: git status', decision: 'denied' },
+      ]);
+    });
+
+    test('records the suggestion-derived "Yes, always allow" case as an approval', async () => {
+      const { sessionId, calls, handlers } = setUp();
+      registerPermissionQuestion(sessionId, {
+        options: [
+          {
+            value: 'always',
+            label: 'Yes, always allow: git status',
+            isRecommended: true,
+            isYes: true,
+            isNo: false,
+            suggestionIndex: 0,
+          },
+          { value: 'no', label: 'No', isRecommended: false, isYes: false, isNo: true },
+        ],
+      });
+
+      await handlers.onAnswer(CID, sessionId, QID, 'always');
+
+      expect(calls).toEqual([
+        { sessionId, toolName: 'Bash', signature: 'Bash: git status', decision: 'approved' },
+      ]);
+    });
+
+    test('does NOT record for a non-permission_request source (source: pty), even with otherwise-parseable text', async () => {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      // Deliberately KEEP the default parseable "Allow Bash: git status" text
+      // and change ONLY `source`, so this isolates the source guard itself --
+      // unlike a PTY-shaped question's real text (e.g. "Proceed? (y/n)"),
+      // which would also fail to parse and could pass this test even if the
+      // source check were deleted (that confound is covered separately by
+      // "a non-parseable text is refused regardless of source" below).
+      registerPermissionQuestion(sessionId, { source: 'pty' });
+      const calls: RecordCall[] = [];
+      const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
+        sessionRegistry,
+        bindingStore,
+        send,
+        recordPrecedent: (sessionId, toolName, signature, decision) => {
+          calls.push({ sessionId, toolName, signature, decision });
+        },
+        // `source: 'pty'` also trips the #920 prompt-currency guard earlier in
+        // handleAnswer, which (with no `isPromptCurrent` wired) fails toward
+        // "not current" and returns before ever reaching the precedent code --
+        // that would make this test pass for the WRONG reason. Force it
+        // current so the answer actually proceeds far enough to exercise the
+        // `source === 'permission_request'` check this test targets.
+        isPromptCurrent: () => true,
+      });
+
+      await handlers.onAnswer(CID, sessionId, QID, 'Yes');
+
+      expect(calls).toEqual([]);
+    });
+
+    test('does NOT record for a source-less question, even with otherwise-parseable text', async () => {
+      const { sessionId, calls, handlers } = setUp();
+      // Same isolation as the `source: 'pty'` case above: keep the default
+      // parseable text, omit `source` entirely (StopFailure's real shape).
+      registerPermissionQuestion(sessionId, { source: undefined });
+
+      await handlers.onAnswer(CID, sessionId, QID, 'Yes');
+
+      expect(calls).toEqual([]);
+    });
+
+    test('does NOT record a source-less question with real (unparsable) StopFailure-shaped text', async () => {
+      const { sessionId, calls, handlers } = setUp();
+      sessionRegistry.addQuestion(sessionId, {
+        id: QID,
+        text: 'Session stop failed (foo). Retry?',
+        options: [
+          { value: 'y', label: 'Yes', isRecommended: true, isYes: true, isNo: false },
+          { value: 'n', label: 'No', isRecommended: false, isYes: false, isNo: true },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+      });
+
+      await handlers.onAnswer(CID, sessionId, QID, 'y');
+
+      // Even though this question is isYes/isNo-shaped and would classify as
+      // an unambiguous approve, its text is NOT a genuine tool+command
+      // signature -- recording it would be exactly the unrecoverable mistake
+      // the module's doc warns against. Missing `source` (not
+      // 'permission_request') must refuse it.
+      expect(calls).toEqual([]);
+    });
+
+    test('does NOT record for a bare "always" option with no suggestion to echo (ambiguous)', async () => {
+      const { sessionId, calls, handlers } = setUp();
+      registerPermissionQuestion(sessionId, {
+        options: [
+          { value: 'always', label: 'Yes, always', isRecommended: true, isYes: true, isNo: false },
+          { value: 'no', label: 'No', isRecommended: false, isYes: false, isNo: true },
+        ],
+      });
+
+      await handlers.onAnswer(CID, sessionId, QID, 'always');
+
+      expect(calls).toEqual([]);
+    });
+
+    test('does NOT record for a multi-choice pick, even with otherwise-parseable text', async () => {
+      const { sessionId, calls, handlers } = setUp();
+      // Isolates the `decision !== null` gate specifically: parseable text
+      // ("Allow Bash: git status"), but pick-shaped options (no isYes/isNo),
+      // so `mapAnswerToDecision` alone is what makes `decision` null here --
+      // unlike the realistic ExitPlanMode text below, which would also fail
+      // to parse and could pass even if that gate were deleted.
+      registerPermissionQuestion(sessionId, {
+        options: [
+          { value: '1', label: 'Option A', isRecommended: true, isYes: false, isNo: false },
+          { value: '2', label: 'Option B', isRecommended: false, isYes: false, isNo: false },
+        ],
+      });
+
+      await handlers.onAnswer(CID, sessionId, QID, '1');
+
+      expect(calls).toEqual([]);
+    });
+
+    test('does NOT record for a real ExitPlanMode-shaped multi-choice pick', async () => {
+      const { sessionId, calls, handlers } = setUp();
+      registerPermissionQuestion(sessionId, {
+        text: 'Plan ready for review. How do you want to proceed?',
+        options: [
+          {
+            value: '1',
+            label: 'Yes, and auto-accept edits',
+            isRecommended: true,
+            isYes: false,
+            isNo: false,
+          },
+          {
+            value: '2',
+            label: 'Yes, and manually approve edits',
+            isRecommended: false,
+            isYes: false,
+            isNo: false,
+          },
+          {
+            value: '3',
+            label: 'No, keep planning',
+            isRecommended: false,
+            isYes: false,
+            isNo: false,
+          },
+        ],
+      });
+
+      await handlers.onAnswer(CID, sessionId, QID, '1');
+
+      expect(calls).toEqual([]);
+    });
+
+    test('does NOT record on cancel', async () => {
+      const { sessionId, calls, handlers } = setUp();
+      registerPermissionQuestion(sessionId);
+
+      await handlers.onAnswer(CID, sessionId, QID, '', undefined, { cancel: true });
+
+      expect(calls).toEqual([]);
+    });
+
+    test('does NOT record for a structured AskUserQuestion selections answer', async () => {
+      const { sessionId, calls, handlers } = setUp();
+      // No `questions` array -> handleAuqAnswer's immediate "not structured"
+      // escalate path (no PTY keystroke loop, so this cannot hang) -- the
+      // point under test is that ANY `extra.selections` answer routes to
+      // handleAuqAnswer instead of the classify+record logic in the main
+      // branch, which is a structural (early-return) property, not something
+      // that depends on the AUQ run's own outcome.
+      registerPermissionQuestion(sessionId);
+
+      await handlers.onAnswer(CID, sessionId, QID, '', undefined, {
+        selections: [{ questionIndex: 0, optionIndices: [0] }],
+      });
+
+      expect(calls).toEqual([]);
+    });
+
+    test('absent recordPrecedent dependency never throws (additive, optional)', async () => {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      registerPermissionQuestion(sessionId);
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...PROMPT_ON_SCREEN,
+      });
+
+      await expect(handlers.onAnswer(CID, sessionId, QID, 'Yes')).resolves.toBe(undefined);
+      expect(ptyCapture.submits).toEqual(['1']);
+    });
+
+    test('a held-hook resolution (no PTY submit) still records precedent', async () => {
+      const { sessionId, calls, handlers: _unused } = setUp();
+      registerPermissionQuestion(sessionId);
+      const recorded: RecordCall[] = [];
+      const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
+        sessionRegistry,
+        bindingStore,
+        send,
+        resolveHeldPermission: () => true, // a hold existed and was resolved
+        recordPrecedent: (sessionId, toolName, signature, decision) => {
+          recorded.push({ sessionId, toolName, signature, decision });
+        },
+      });
+
+      await handlers.onAnswer(CID, sessionId, QID, 'Yes');
+
+      expect(calls).toEqual([]); // the OTHER handlers instance never saw it
+      expect(recorded).toEqual([
+        { sessionId, toolName: 'Bash', signature: 'Bash: git status', decision: 'approved' },
+      ]);
     });
   });
 });

@@ -247,6 +247,33 @@ describe('ForeignSessionEscalator (#672)', () => {
       expect(pushCalls).toHaveLength(0);
     });
 
+    test('#968: skips a device that muted question pushes, keeps the others', async () => {
+      // An unbound session's permission request is a question-class push: it
+      // buzzes and says an agent is blocked on someone. A device that muted
+      // question alerts must not get it.
+      registerToken('muted');
+      registerToken('wants');
+      deviceTokens.get('muted')!.pushPrefs = { questions: false, turnComplete: true };
+      deviceTokens.get('wants')!.pushPrefs = { questions: true, turnComplete: false };
+
+      const escalator = new ForeignSessionEscalator(deps());
+      escalator.handleUnadmitted(permissionInput(), OUR_SESSION_ID);
+      await flush();
+
+      expect(pushCalls.map((c) => c.token)).toEqual(['wants']);
+      expect(pushCalls[0]!.opts.kind).toBe('question');
+    });
+
+    test('#968: every device muted -> no push attempted, no throw', async () => {
+      registerToken('a');
+      deviceTokens.get('a')!.pushPrefs = { questions: false, turnComplete: true };
+
+      const escalator = new ForeignSessionEscalator(deps());
+      expect(() => escalator.handleUnadmitted(permissionInput(), OUR_SESSION_ID)).not.toThrow();
+      await flush();
+      expect(pushCalls).toHaveLength(0);
+    });
+
     test('rate-limits repeated escalations for the SAME foreign session_id', async () => {
       registerToken();
       const escalator = new ForeignSessionEscalator(deps({ rateLimitMs: 60_000 }));

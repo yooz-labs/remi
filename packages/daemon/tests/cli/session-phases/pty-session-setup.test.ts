@@ -10,7 +10,11 @@ import {
   createPtySessionForSession,
   detectAuqTerminalAnswers,
 } from '../../../src/cli/session-phases/pty-session-setup.ts';
-import { __resetWrapperStateForTests } from '../../../src/cli/wrapper-state.ts';
+import {
+  __resetWrapperStateForTests,
+  setPtyStdoutFd,
+  setWrapperDetached,
+} from '../../../src/cli/wrapper-state.ts';
 import { clearAuqRunActive, markAuqRunActive } from '../../../src/hooks/auq-active-runs.ts';
 import { OutputProcessor } from '../../../src/parser/output-processor.ts';
 import { appendPtyOutput, clearPtyOutput } from '../../../src/pty/output-buffer.ts';
@@ -254,6 +258,188 @@ describe('createPtySessionForSession', () => {
         /* already exited */
       }
     }
+  });
+});
+
+// #932 review finding 3: the wrapper's onRawData wiring (observeLocalPtyOutput)
+// does NOT require spawning a real `claude` to test -- createPtySessionForSession
+// never calls .start() (PTYSession's constructor only stores config; Bun.spawn
+// happens in start(), see the "returns a PTYSession whose sessionState starts in
+// created" test above), so the `events` object passed to `new PTYSession(...)`
+// is fully populated and reachable: TypeScript's `private` is compile-time only,
+// not a runtime guarantee, so a cast reaches it directly, exactly as the review
+// did in its own 16ms counter-example.
+describe('createPtySessionForSession onRawData wiring (#932)', () => {
+  let tmpDir: string;
+  let sessionRegistry: SessionRegistry;
+  let sessionStore: SessionStore;
+  let liveSessionsRegistry: SessionRegistryFile;
+  let outputProcessor: OutputProcessor;
+  let outPath: string;
+  let outFd: number;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-pty-rawdata-'));
+    sessionRegistry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    sessionStore = new SessionStore(path.join(tmpDir, 'sessions.json'));
+    liveSessionsRegistry = new SessionRegistryFile(path.join(tmpDir, 'live-sessions'));
+    outputProcessor = new OutputProcessor(
+      { sessionId: SID, streamStatusOnly: true },
+      { onMessage: () => {}, onQuestion: () => {}, onStatusChange: () => {} },
+    );
+    configureLogger({ writeLog: () => {} });
+    outPath = path.join(tmpDir, 'local-terminal-out');
+    fs.writeFileSync(outPath, '');
+    outFd = fs.openSync(outPath, 'w');
+    setPtyStdoutFd(outFd);
+    setWrapperDetached(false);
+  });
+
+  afterEach(async () => {
+    __resetLoggerForTests();
+    __resetWrapperStateForTests();
+    await sessionRegistry.shutdown();
+    try {
+      fs.closeSync(outFd);
+    } catch {
+      // may already be closed by a test that exercises the write-failure path
+    }
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  /** Reach the real onRawData callback without starting a PTY (no `claude`
+   *  spawned) -- see this describe block's doc comment. */
+  function rawDataHandlerOf(pty: ReturnType<typeof createPtySessionForSession>) {
+    const events = (pty as unknown as { events: { onRawData?: (d: Uint8Array) => void } }).events;
+    const handler = events.onRawData;
+    if (!handler) throw new Error('onRawData was not wired');
+    return handler;
+  }
+
+  /** Invoke onRawData the way `PTYSession.handleData` actually does in
+   *  production -- wrapped in a try/catch that routes any throw to
+   *  `onError` (pty-session.ts) rather than letting it escape. The write-
+   *  failure path's stdin cleanup (`process.stdin.unref()` etc.) assumes a
+   *  real interactive terminal that this test runner's stdin does not
+   *  provide; production never calls onRawData bare either, so this
+   *  matches the real invocation context rather than papering over it. */
+  function invokeOnRawData(
+    pty: ReturnType<typeof createPtySessionForSession>,
+    data: Uint8Array,
+  ): void {
+    try {
+      rawDataHandlerOf(pty)(data);
+    } catch {
+      // See doc comment: mirrors PTYSession.handleData's own onError routing.
+    }
+  }
+
+  test('onRawData writes the real chunk to the local terminal and calls observeLocalPtyOutput with the exact bytes', () => {
+    const observedChunks: Uint8Array[] = [];
+    const pty = createPtySessionForSession(
+      {
+        sessionRegistry,
+        sessionStore,
+        liveSessionsRegistry,
+        outputProcessor,
+        wsPort: 9999,
+        sendMessage: () => {},
+        cleanup: async () => {},
+        observeLocalPtyOutput: (data) => observedChunks.push(data),
+      },
+      { sessionId: SID, workingDirectory: tmpDir, extraArgs: [], passThrough: true },
+    );
+
+    const chunk = new TextEncoder().encode('hello from claude');
+    invokeOnRawData(pty, chunk);
+
+    expect(fs.readFileSync(outPath, 'utf-8')).toBe('hello from claude');
+    expect(observedChunks).toHaveLength(1);
+    expect(observedChunks[0]).toEqual(chunk);
+  });
+
+  // #932 review finding 2, proven at the wrapper level (the review noted this
+  // test would have caught it directly): the real chunk must land on the wire
+  // BEFORE anything observeLocalPtyOutput itself writes to the same fd, never
+  // after -- an immediate bar repaint triggered by an observed ESC[r would
+  // otherwise be undone by the very reset that triggered it.
+  test('observeLocalPtyOutput fires strictly AFTER the real chunk is written to the same fd', () => {
+    const pty = createPtySessionForSession(
+      {
+        sessionRegistry,
+        sessionStore,
+        liveSessionsRegistry,
+        outputProcessor,
+        wsPort: 9999,
+        sendMessage: () => {},
+        cleanup: async () => {},
+        observeLocalPtyOutput: () => {
+          // Simulate StatusBar.notifyScrollRegionReset's synchronous write
+          // to the SAME shared fd.
+          fs.writeSync(outFd, 'MARKER');
+        },
+      },
+      { sessionId: SID, workingDirectory: tmpDir, extraArgs: [], passThrough: true },
+    );
+
+    invokeOnRawData(pty, new TextEncoder().encode('\x1b[r'));
+
+    const written = fs.readFileSync(outPath, 'utf-8');
+    const chunkIndex = written.indexOf('\x1b[r');
+    const markerIndex = written.indexOf('MARKER');
+    expect(chunkIndex).toBe(0); // the real chunk is written first, at offset 0
+    expect(markerIndex).toBeGreaterThan(chunkIndex);
+  });
+
+  test('observeLocalPtyOutput is NOT called when the local write fails', () => {
+    // Close the writable fd and reopen the same path read-only so the write
+    // throws EBADF -- a real, not simulated, write failure.
+    fs.closeSync(outFd);
+    outFd = fs.openSync(outPath, 'r');
+    setPtyStdoutFd(outFd);
+
+    let observed = false;
+    const pty = createPtySessionForSession(
+      {
+        sessionRegistry,
+        sessionStore,
+        liveSessionsRegistry,
+        outputProcessor,
+        wsPort: 9999,
+        sendMessage: () => {},
+        cleanup: async () => {},
+        observeLocalPtyOutput: () => {
+          observed = true;
+        },
+      },
+      { sessionId: SID, workingDirectory: tmpDir, extraArgs: [], passThrough: true },
+    );
+
+    invokeOnRawData(pty, new TextEncoder().encode('data that cannot be written'));
+
+    expect(observed).toBe(false);
+  });
+
+  test('onRawData does not write or observe when passThrough is false', () => {
+    const observedChunks: Uint8Array[] = [];
+    const pty = createPtySessionForSession(
+      {
+        sessionRegistry,
+        sessionStore,
+        liveSessionsRegistry,
+        outputProcessor,
+        wsPort: 9999,
+        sendMessage: () => {},
+        cleanup: async () => {},
+        observeLocalPtyOutput: (data) => observedChunks.push(data),
+      },
+      { sessionId: SID, workingDirectory: tmpDir, extraArgs: [], passThrough: false },
+    );
+
+    invokeOnRawData(pty, new TextEncoder().encode('daemon-mode chunk'));
+
+    expect(fs.readFileSync(outPath, 'utf-8')).toBe('');
+    expect(observedChunks).toHaveLength(0);
   });
 });
 

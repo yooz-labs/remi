@@ -1,6 +1,6 @@
 {
   "name": "remi",
-  "version": "0.7.3",
+  "version": "0.7.4-dev.78",
   "private": true,
   "license": "UNLICENSED",
   "workspaces": ["packages/*"],
@@ -10,6 +10,9 @@
     "test:coverage": "bun test --coverage --coverage-reporter=text --coverage-reporter=lcov",
     "test:e2e": "bunx playwright test --config tests/e2e/playwright.config.ts",
     "typecheck": "tsc --noEmit",
+    "typecheck:web": "cd packages/web && tsc -p tsconfig.app.json --noEmit",
+    "typecheck:web-tests": "cd packages/web && tsc -p tsconfig.test.json --noEmit",
+    "typecheck:signaling": "cd packages/signaling && tsc --noEmit",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",

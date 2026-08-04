@@ -6,36 +6,40 @@
  * This is the hook-based replacement for terminal output parsing.
  *
  * Permission question flow (verified from real hook logs 2026-04-12, updated
- * #718 for structured suggestions observed 2026-07-06):
+ * #718 for structured suggestions observed 2026-07-06; #890/Q5 2026-07-29):
  *   - PermissionRequest fires with tool_name, tool_input, and optionally
  *     permission_suggestions. This is either a legacy plain-string label set
  *     (e.g. ["Yes","Always","No"] for Edit) OR, since ~Claude Code 2.0.54, a
  *     STRUCTURED array of typed entries (`addRules`, `addDirectories`,
  *     `setMode`, ...) — see `optionsFromSuggestions` for how each shape maps
  *     to a variable-count option set (never a fixed 3). With NO usable
- *     suggestions of either shape, the honest Yes/No 2-set substitutes.
+ *     suggestions of either shape, the honest Yes/No 2-set substitutes. This
+ *     is the ONLY event that forwards a Question to `onQuestion` for a
+ *     permission prompt (see `handlePermissionRequest`).
  *   - Notification(permission_prompt) fires shortly after with a plain-text
  *     message like "Claude needs your permission to use Bash" (no numbered
- *     options; those appear only in the terminal UI) — always the Yes/No
- *     fallback, since this event never carries permission_suggestions.
- *   - Both events forward their question to onQuestion. The push gate is
- *     QuestionPresenceTracker (cli.ts wiring): hook events stash the
- *     metadata; PTY confirms presence and fires the push. If both events
- *     arrive before PTY (typical), the second simply replaces the first
- *     in the tracker — Claude only renders one prompt at a time.
+ *     options; those appear only in the terminal UI). It no longer
+ *     synthesizes a second `Question` (#890, Q5: the
+ *     `tracker.recordPendingHook` stash it fed was a stash-only safety net,
+ *     immediately superseded whenever paired with the richer
+ *     PermissionRequest above, and a capture corpus — 4244 events / 5
+ *     sessions / one day — found 68/68 pairs, 0 unpaired; see
+ *     `handleNotification` for the full argument and the residual-failure-
+ *     mode analysis). It still flips status to `'waiting'`.
  */
 
 import { DEFAULT_PERMISSION_LABELS, generateId } from '@remi/shared';
 import type { AgentStatus, Question, QuestionOption, UUID } from '@remi/shared';
+import type { QuestionRegistrationOutcome } from '../api/message-api.ts';
 import type { HookServerEvents } from './hook-server.ts';
 import type {
+  ElicitationHookInput,
   NotificationHookInput,
   PermissionRequestHookInput,
   PostToolUseFailureHookInput,
   PostToolUseHookInput,
   PreToolUseHookInput,
   SessionEndHookInput,
-  SessionStartHookInput,
   StopFailureHookInput,
   StopHookInput,
   SubagentStartHookInput,
@@ -43,11 +47,27 @@ import type {
 } from './hook-types.ts';
 import { SubagentContextTracker } from './subagent-context-tracker.ts';
 import { extractToolQuestion } from './tool-question.ts';
+import { summarizeToolInput } from './tool-summary.ts';
 
 export interface HookBridgeEvents {
   onStatusChange: (status: AgentStatus, context?: string) => void;
-  onQuestion: (question: Question) => void;
-  onSessionInfo: (claudeSessionId: string, transcriptPath: string) => void;
+  /**
+   * Returns the `QuestionRegistrationOutcome` (#888 criterion iii) when the
+   * implementation routed `question` through `MessageAPI.handleQuestion` --
+   * the ordinary direct-emit path every question source but
+   * 'permission_request' takes. A 'permission_request' question is instead
+   * stashed via `QuestionPresenceTracker.recordPendingHook` (no
+   * `handleQuestion` call happens at hook time; that question is not
+   * registered until a later PTY render pairs with it), so implementations
+   * return `undefined` for that branch. `handleElicitation`'s caller
+   * (`hook-bridge-setup.ts`'s `Elicitation` listener) consumes this directly
+   * instead of re-querying `SessionRegistry` after the fact (#925 gate).
+   * `| undefined` (not `| void` -- this codebase's lint config forbids `void`
+   * inside a union) covers every implementation that does not care about the
+   * outcome (`handlePermissionRequest`, `handleStopFailure`, and every test
+   * double that only collects emitted questions).
+   */
+  onQuestion: (question: Question) => QuestionRegistrationOutcome | undefined;
 }
 
 /** Honest Yes/No fallback options (#718): used when a PermissionRequest
@@ -308,7 +328,6 @@ export class HookEventBridge {
       onPostToolUse: (input) => this.handlePostToolUse(input),
       onNotification: (input) => this.handleNotification(input),
       onStop: (input) => this.handleStop(input),
-      onSessionStart: (input) => this.handleSessionStart(input),
       onPermissionRequest: (input) => this.handlePermissionRequest(input),
       onPostToolUseFailure: (input) => this.handlePostToolUseFailure(input),
       onSubagentStart: (input) => this.handleSubagentStart(input),
@@ -330,33 +349,46 @@ export class HookEventBridge {
 
   handleNotification(input: NotificationHookInput): void {
     if (input.notification_type === 'permission_prompt') {
-      // Phase 4 (#419): the subagentContext drop previously sat here.
-      // It was redundant defense: cli.ts hook-bridge-setup already
-      // forwards subagent events (phase 4 removed the agent_id gate)
-      // and the tracker handles presence by PTY confirmation. Keep
-      // SubagentContextTracker for the auto-approve default-deny path
-      // (still consumed via hookBridge.isInSubagentContext()).
+      // #925/#890 (Q5): the `source: 'notification'` Question synthesis that
+      // used to live here was DELETED after the capture gate closed it out.
+      // `hook-bridge-setup.ts`'s `onQuestion` callback routed BOTH
+      // 'permission_request' and 'notification' sources to
+      // `tracker.recordPendingHook`, which only STASHES (no push of its own —
+      // verified by reading the method body: it touches only `this.pending`,
+      // never the push sink). The stash existed purely as a safety net for
+      // the case where this Notification arrives with NO paired
+      // PermissionRequest for the same prompt; a paired PermissionRequest's
+      // OWN richer stash is never evicted by a later Notification
+      // (`recordPendingHook`'s "richer wins" rule), so in the paired case
+      // this stash was always dead weight, immediately superseded.
       //
-      // Forward the question — push semantics live in the tracker
-      // (cli.ts wiring). A trailing Notification arriving after
-      // PermissionRequest replaces the pending record, which is fine
-      // (Claude renders one prompt at a time).
-      const question: Question = {
-        id: generateId(),
-        text: input.message || 'Allow this action?',
-        options: [...DEFAULT_PERMISSION_OPTIONS],
-        allowsFreeText: false,
-        isAnswered: false,
-        agentId: input.agent_id,
-        // Generic fallback: the tracker must let a richer PermissionRequest
-        // for the same agent win over this text/options (#574).
-        source: 'notification',
-        // #718: this generic Notification never carries permission_suggestions
-        // at all, so it is always the honest Yes/No fallback — never let it
-        // overwrite a PTY-parsed question's own options in the tracker merge.
-        optionsAreFallback: true,
-      };
-      this.events.onQuestion(question);
+      // Capture data (`~/.remi/hook-diag.jsonl`, re-verified for this PR):
+      // 4244 events / 5 sessions / one working day (2026-07-29, ~11h span) —
+      // 68 permission_prompt Notifications, 68 paired with a PermissionRequest
+      // by `prompt_id`, 0 UNPAIRED. 171 PermissionRequests (73 subagent-
+      // tagged) across Bash/Monitor/AskUserQuestion/Skill/WebFetch/three
+      // mcp__claude-in-chrome__* tools — the workflow coverage the capture
+      // gate needed. Still only one day on one machine; stated here as a
+      // caveat, not resolved by this change.
+      //
+      // Residual failure mode (argued, not assumed): if a permission_prompt
+      // Notification ever DOES arrive unpaired, two sub-cases:
+      //   - the prompt never renders on the PTY either -> no observable
+      //     effect before OR after this change (the pre-existing stash was
+      //     never pushed on its own regardless).
+      //   - the prompt DOES render -> `QuestionPresenceTracker.consumeAndMerge`
+      //     finds no stashed hookRecord for it and falls through to the bare
+      //     PTY-parsed question (`source: 'pty'`) via the SAME orphan-PTY
+      //     fallback every other genuinely hook-less prompt already uses
+      //     (subagent native prompts, #712) — not "nothing", and arguably
+      //     RICHER than the deleted synthesis's generic "Claude needs your
+      //     permission to use Bash" text would have contributed pre-#887's
+      //     "hook text wins" merge rule.
+      // `onStatusChange('waiting')` below is deliberately KEPT (not deleted
+      // with the Question): idempotent in the paired case (PermissionRequest
+      // already set 'waiting' moments earlier, per this file's own module
+      // doc), and it remains the only wait-signal at all for the theoretical
+      // unpaired case above.
       this.events.onStatusChange('waiting');
     } else if (input.notification_type === 'idle_prompt') {
       this.events.onStatusChange('idle');
@@ -384,18 +416,6 @@ export class HookEventBridge {
       // PostToolUse(Task) can't permanently block the user's permission prompts.
       this.subagentContext.reset();
     }
-  }
-
-  handleSessionStart(input: SessionStartHookInput): void {
-    if (!input.session_id || !input.transcript_path) {
-      console.warn(
-        `[HookEventBridge] SessionStart missing required fields: session_id=${input.session_id}, transcript_path=${input.transcript_path}`,
-      );
-      return;
-    }
-    // Reset tracker for a fresh session (also covers daemon restart mid-Task).
-    this.subagentContext.reset();
-    this.events.onSessionInfo(input.session_id, input.transcript_path);
   }
 
   /**
@@ -446,7 +466,7 @@ export class HookEventBridge {
         : toolQuestion.text;
       options = toolQuestion.options;
     } else {
-      const inputSummary = this.summarizeToolInput(toolName, input.tool_input);
+      const inputSummary = summarizeToolInput(toolName, input.tool_input);
       // The action carries the command/path/pattern context (#497).
       const action = inputSummary ? `${toolName}: ${inputSummary}` : toolName;
       // A subagent prompt names the agent, e.g.
@@ -464,6 +484,8 @@ export class HookEventBridge {
       allowsFreeText: false,
       isAnswered: false,
       agentId: input.agent_id,
+      // #887: same-turn correlation key, see `Question.promptId`.
+      promptId: input.prompt_id,
       // Rich source: carries tool + command + agent context. The tracker
       // keeps this over a trailing generic notification for the same agent (#574).
       source: 'permission_request',
@@ -514,57 +536,75 @@ export class HookEventBridge {
       allowsFreeText: false,
       isAnswered: false,
       agentId: input.agent_id,
+      // #887: same-turn correlation key, see `Question.promptId`.
+      promptId: input.prompt_id,
     };
     this.events.onQuestion(question);
     this.events.onStatusChange('waiting');
   }
 
+  /**
+   * Build + emit the answerable card for an MCP `Elicitation` dialog (#889,
+   * Q4). Previously this arrived only as a PTY orphan: the dedicated
+   * `Elicitation` hook was never registered (so it never fired at all), and
+   * the generic `Notification(elicitation_dialog)` variant that DID fire was
+   * logged and ignored (see `handleNotification` above).
+   *
+   * Deliberately observe-only: no fixed Accept/Decline/Cancel options are
+   * fabricated. Claude Code's own TUI is already rendering SOME interactive
+   * prompt for the dialog (that is what makes it a "PTY orphan" today, not a
+   * silent hang), and this codebase has no live capture of what that prompt's
+   * own on-screen convention is (numbered choice? y/n? something else? — see
+   * `docs/claude-code-hook-contract.md` "What's pending"). Fabricating
+   * Accept/Decline options here would type a GUESSED literal string onto the
+   * PTY via the generic answer path (`input-events.ts`'s
+   * `resolveOption(...)?.value ?? answer`), which is worse than the orphan
+   * this is fixing if the guess is wrong. Instead: `options: []` +
+   * `allowsFreeText: true` — already a supported, tested shape
+   * (`question-parser.ts` uses it for PTY-detected free-text prompts, and
+   * `QuestionCard.tsx` already renders a free-text row for zero options) — so
+   * the card surfaces the dialog's own text and lets the user type whatever
+   * they would have typed sitting at the terminal, submitted verbatim
+   * (`ptyInput = resolveOption(...)?.value ?? answer` falls through to the
+   * raw answer when no option matches).
+   *
+   * Returns the created Question's id so `hook-bridge-setup.ts` can correlate
+   * a later `ElicitationResult` (matched by `elicitation_id`, an exact key
+   * both events carry) to resolve this exact card — the same "don't leave a
+   * pending card with no resolution signal" shape as `PermissionDenied`.
+   * Also returns the `QuestionRegistrationOutcome` `onQuestion` reported for
+   * this exact call (#888 criterion iii), so the caller can tell whether the
+   * card actually registered WITHOUT a separate `SessionRegistry` re-query
+   * (`rememberElicitation`'s "was not registered" guard, `hook-bridge-setup.ts`).
+   */
+  handleElicitation(input: ElicitationHookInput): {
+    questionId: UUID;
+    outcome: QuestionRegistrationOutcome | undefined;
+  } {
+    const question: Question = {
+      id: generateId(),
+      text: input.message
+        ? `${input.mcp_server_name}: ${input.message}`
+        : `${input.mcp_server_name} is requesting input`,
+      options: [],
+      allowsFreeText: true,
+      isAnswered: false,
+      agentId: input.agent_id,
+      // #887: same-turn correlation key, see `Question.promptId`.
+      promptId: input.prompt_id,
+      // #889: NOT 'permission_request'/'notification' -- the onQuestion
+      // callback in hook-bridge-setup.ts only stashes those two sources via
+      // the PTY-arbiter tracker; every other source (this one included)
+      // direct-emits, same as a source-less StopFailure card.
+      source: 'elicitation',
+    };
+    const outcome = this.events.onQuestion(question);
+    this.events.onStatusChange('waiting');
+    return { questionId: question.id, outcome };
+  }
+
   handleSessionEnd(_input: SessionEndHookInput): void {
     this.subagentContext.reset();
     this.events.onStatusChange('idle');
-  }
-
-  /** Extract a short summary from tool input for the question prompt. */
-  private summarizeToolInput(toolName: string, toolInput: Record<string, unknown>): string | null {
-    if (!toolInput || typeof toolInput !== 'object') return null;
-    const lower = toolName.toLowerCase();
-
-    const get = (key: string): unknown => toolInput[key];
-
-    // Bash: show the command
-    if (lower === 'bash' || lower === 'terminal') {
-      const cmd = get('command') ?? get('cmd');
-      if (typeof cmd === 'string') {
-        return cmd.length > 120 ? `${cmd.slice(0, 117)}...` : cmd;
-      }
-    }
-
-    // Read/Write/Edit: show the file path
-    if (lower === 'read' || lower === 'write' || lower === 'edit') {
-      const path = get('file_path') ?? get('path');
-      if (typeof path === 'string') return path;
-    }
-
-    // Glob/Grep: show the pattern
-    if (lower === 'glob' || lower === 'grep') {
-      const pattern = get('pattern') ?? get('glob');
-      if (typeof pattern === 'string') return pattern;
-    }
-
-    // WebFetch: show the URL
-    if (lower.includes('fetch') || lower.includes('web')) {
-      const url = get('url');
-      if (typeof url === 'string') return url;
-    }
-
-    // Generic: try common field names
-    for (const key of ['command', 'file_path', 'path', 'url', 'description']) {
-      const val = get(key);
-      if (typeof val === 'string' && val.length > 0) {
-        return val.length > 120 ? `${val.slice(0, 117)}...` : val;
-      }
-    }
-
-    return null;
   }
 }

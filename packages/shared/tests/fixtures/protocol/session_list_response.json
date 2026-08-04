@@ -1,0 +1,27 @@
+{
+  "type": "session_list_response",
+  "id": "b9537e99-3d5d-4361-8237-2f0f5a7940ad",
+  "timestamp": "2026-07-29T11:27:08.614Z",
+  "sessions": [
+    {
+      "sessionId": "fixture-session-id",
+      "name": "fixture-host/fixture-project/main",
+      "projectPath": "/Users/fixture/project",
+      "status": "active",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "lastActivity": "2026-01-01T00:00:00.000Z",
+      "messageCount": 3,
+      "model": "yooz-quality",
+      "lastMessage": "Last message preview",
+      "source": "daemon",
+      "canAttach": true,
+      "canResume": false,
+      "claudeSessionId": "fixture-claude-session-id",
+      "transcriptPath": "/Users/fixture/transcript.jsonl",
+      "wsPort": 19924,
+      "daemonHost": "fixture-host"
+    }
+  ],
+  "requestId": "fixture-request-id",
+  "daemonPorts": [19924, 19925]
+}

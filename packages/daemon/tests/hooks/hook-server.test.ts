@@ -440,6 +440,114 @@ describe('HookServer', () => {
   });
 
   // -------------------------------------------------------------------------
+  // onAnyEvent (#914)
+  // -------------------------------------------------------------------------
+  describe('onAnyEvent', () => {
+    it('fires for a typed event alongside its specific handler', async () => {
+      const any: string[] = [];
+      const stops: StopHookInput[] = [];
+      server = new HookServer(
+        { port },
+        {
+          onAnyEvent: (input) => any.push(input.hook_event_name),
+          onStop: (input) => stops.push(input),
+        },
+      );
+      server.start();
+
+      await fetch(makeUrl(port), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(makePayload({ hook_event_name: 'Stop', stop_hook_active: false })),
+      });
+
+      expect(any).toEqual(['Stop']);
+      expect(stops.length).toBe(1);
+    });
+
+    it('fires for an event with no typed handler (medium-priority events)', async () => {
+      const any: string[] = [];
+      server = new HookServer({ port }, { onAnyEvent: (input) => any.push(input.hook_event_name) });
+      server.start();
+
+      await fetch(makeUrl(port), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(makePayload({ hook_event_name: 'UserPromptSubmit' })),
+      });
+
+      expect(any).toEqual(['UserPromptSubmit']);
+    });
+
+    it('fires for PermissionRequest even when the synchronous resolver intercepts it', async () => {
+      // The resolver branch returns BEFORE the normal dispatch() call, which is
+      // exactly the gap onAnyEvent exists to cover (#914).
+      const any: string[] = [];
+      let permissionFired = 0;
+      server = new HookServer({ port }, { onAnyEvent: (input) => any.push(input.hook_event_name) });
+      server.setPermissionResolver(async () => {
+        permissionFired++;
+        return 'allow';
+      });
+      server.start();
+
+      await fetch(makeUrl(port), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(
+          makePayload({ hook_event_name: 'PermissionRequest', tool_name: 'Bash' }),
+        ),
+      });
+
+      expect(permissionFired).toBe(1);
+      expect(any).toEqual(['PermissionRequest']);
+    });
+
+    it('a throwing onAnyEvent reports onError but does not break the response', async () => {
+      const errors: Error[] = [];
+      let stopFired = 0;
+      server = new HookServer(
+        { port },
+        {
+          onError: (e) => errors.push(e),
+          onAnyEvent: () => {
+            throw new Error('onAnyEvent boom');
+          },
+          onStop: () => stopFired++,
+        },
+      );
+      server.start();
+
+      const res = await fetch(makeUrl(port), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(makePayload({ hook_event_name: 'Stop', stop_hook_active: false })),
+      });
+
+      expect(res.status).toBe(200);
+      expect(errors.length).toBe(1);
+      expect(errors[0]?.message).toContain('onAnyEvent boom');
+      // The event still reaches the normal dispatch despite onAnyEvent throwing.
+      expect(stopFired).toBe(1);
+    });
+
+    it('does not fire for a request refused before eventName is read (missing hook_event_name)', async () => {
+      const any: string[] = [];
+      server = new HookServer({ port }, { onAnyEvent: (input) => any.push(input.hook_event_name) });
+      server.start();
+
+      const res = await fetch(makeUrl(port), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(makePayload({})),
+      });
+
+      expect(res.status).toBe(400);
+      expect(any).toEqual([]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Synchronous PermissionRequest resolver (#496)
   // -------------------------------------------------------------------------
   describe('synchronous PermissionRequest decision', () => {
@@ -472,6 +580,42 @@ describe('HookServer', () => {
       expect(await res.json()).toEqual({
         hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'deny' } },
       });
+    });
+
+    it('#976: serializes a reasoned deny as decision.{behavior,message} on the wire', async () => {
+      // The exact envelope the official hooks reference defines for
+      // PermissionRequest: `message` lives INSIDE `decision`, alongside
+      // `behavior` — not as a top-level `reason`, and not as PreToolUse's
+      // `permissionDecisionReason` (a different event's field).
+      server = new HookServer({ port });
+      server.setPermissionResolver(async () => ({
+        behavior: 'deny' as const,
+        message: 'no authorization; ask the user',
+      }));
+      server.start();
+      const res = await postPermission(port);
+      expect(await res.json()).toEqual({
+        hookSpecificOutput: {
+          hookEventName: 'PermissionRequest',
+          decision: { behavior: 'deny', message: 'no authorization; ask the user' },
+        },
+      });
+    });
+
+    it('#976: a reasoned deny omits `interrupt` unless asked, so the turn continues', async () => {
+      // `interrupt: true` STOPS Claude. Leaving it unset is what lets Claude act
+      // on the message (route around, or ask the user). An accidental `true`
+      // here would silently kill the turn instead.
+      server = new HookServer({ port });
+      server.setPermissionResolver(async () => ({
+        behavior: 'deny' as const,
+        message: 'why',
+      }));
+      server.start();
+      const body = (await (await postPermission(port)).json()) as {
+        hookSpecificOutput: { decision: Record<string, unknown> };
+      };
+      expect('interrupt' in body.hookSpecificOutput.decision).toBe(false);
     });
 
     it('returns the object decision verbatim, echoing updatedPermissions (#718)', async () => {
@@ -537,6 +681,76 @@ describe('HookServer', () => {
       });
       expect(await res.json()).toEqual({});
       expect(preToolFired).toBe(1);
+    });
+  });
+
+  describe('browser origins are refused (#535)', () => {
+    it('a forged hook POST from a page is refused before it can fire an event', async () => {
+      // The realistic shape: a CORS-"simple" request. `text/plain` needs no
+      // preflight to negotiate and `req.json()` ignores Content-Type anyway, so
+      // before the gate this drove real permission handling and could push a
+      // fake "Claude needs your permission" notification to the user's phone.
+      let permissionFired = 0;
+      let preToolFired = 0;
+      server = new HookServer({ port }, { onPreToolUse: () => preToolFired++, onError: () => {} });
+      server.setPermissionResolver(async () => {
+        permissionFired++;
+        return 'allow';
+      });
+      server.start();
+
+      const res = await fetch(makeUrl(port), {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain', Origin: 'https://evil.example' },
+        body: JSON.stringify(
+          makePayload({ hook_event_name: 'PermissionRequest', tool_name: 'Bash' }),
+        ),
+      });
+
+      expect(res.status).toBe(403);
+      expect(permissionFired).toBe(0);
+      expect(preToolFired).toBe(0);
+    });
+
+    it('refuses even an origin the WebSocket would admit', async () => {
+      // Stricter than origin-policy.ts on purpose: Claude Code is the only
+      // legitimate caller here, and it is not a browser.
+      server = new HookServer({ port }, { onError: () => {} });
+      server.start();
+      for (const origin of ['capacitor://localhost', 'http://localhost:5173']) {
+        const res = await fetch(makeUrl(port), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Origin: origin },
+          body: JSON.stringify(makePayload({ hook_event_name: 'Stop' })),
+        });
+        expect(res.status).toBe(403);
+      }
+    });
+
+    it('reports the refusal instead of dropping it silently', async () => {
+      const errors: Error[] = [];
+      server = new HookServer({ port }, { onError: (e) => errors.push(e) });
+      server.start();
+      await fetch(makeUrl(port), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Origin: 'https://evil.example' },
+        body: JSON.stringify(makePayload({ hook_event_name: 'Stop' })),
+      });
+      expect(errors.length).toBe(1);
+      expect(errors[0]?.message).toContain('https://evil.example');
+    });
+
+    it('Claude Code sends no Origin and is unaffected', async () => {
+      let stopFired = 0;
+      server = new HookServer({ port }, { onStop: () => stopFired++ });
+      server.start();
+      const res = await fetch(makeUrl(port), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(makePayload({ hook_event_name: 'Stop' })),
+      });
+      expect(res.status).toBe(200);
+      expect(stopFired).toBe(1);
     });
   });
 });

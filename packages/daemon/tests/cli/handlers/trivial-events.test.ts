@@ -69,6 +69,38 @@ describe('createTrivialHandlers', () => {
     expect(calls).toEqual([{ token: 'ios-device-token-abc', platform: 'ios', connectionId: CID }]);
   });
 
+  test('#968: onRegisterDeviceToken resolves push preferences before the store sees them', () => {
+    // Sanitizing at the boundary is what lets everything downstream treat
+    // `pushPrefs` as a definitely-boolean pair instead of re-deciding what a
+    // missing or malformed field meant.
+    const calls: Array<{ token: string; prefs: unknown }> = [];
+    const { send } = makeSend();
+    const handlers = createTrivialHandlers({
+      registerDeviceToken: (token, _platform, _connectionId, pushPrefs) =>
+        calls.push({ token, prefs: pushPrefs }),
+      unregisterDeviceToken: () => {},
+      sessionStore,
+      sessionRegistry,
+      send,
+    });
+    configureLogger({ writeLog: () => {} });
+
+    // No preferences sent -> everything on.
+    handlers.onRegisterDeviceToken(CID, 'tok-none', 'ios');
+    // Explicit mute, honored.
+    handlers.onRegisterDeviceToken(CID, 'tok-muted', 'ios', { turnComplete: false });
+    // Malformed: `'false'` is truthy, so a coercing handler would mute here.
+    handlers.onRegisterDeviceToken(CID, 'tok-bad', 'ios', {
+      questions: 'false',
+    } as unknown as { questions?: boolean });
+
+    expect(calls).toEqual([
+      { token: 'tok-none', prefs: { questions: true, turnComplete: true } },
+      { token: 'tok-muted', prefs: { questions: true, turnComplete: false } },
+      { token: 'tok-bad', prefs: { questions: true, turnComplete: true } },
+    ]);
+  });
+
   test('onUnregisterDeviceToken forwards token to the store (#690)', () => {
     const calls: string[] = [];
     const { send } = makeSend();

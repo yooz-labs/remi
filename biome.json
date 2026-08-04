@@ -44,6 +44,17 @@
     }
   },
   "files": {
-    "ignore": ["node_modules", "dist", ".git", "*.md", "packages/web", "packages/daemon/scripts"]
+    "ignore": [
+      "node_modules",
+      "dist",
+      ".git",
+      "*.md",
+      "packages/web",
+      "packages/daemon/scripts",
+      "packages/macos/Remi/Resources/web",
+      "packages/macos/DerivedData",
+      ".claude",
+      "build"
+    ]
   }
 }

@@ -60,8 +60,8 @@ remi attach --host 192.168.1.5 macbook/remi/main
 - **Cross-platform** - iOS, Android, Web, macOS, Windows, Linux
 - **macOS menu-bar app** - a status "r" tracking live connections plus the full web UI in a native window; see [docs/MACOS_APP.md](docs/MACOS_APP.md)
 - **Notifications** - Push alerts when Claude needs your input
-- **Encrypted** - TLS/DTLS transport encryption on all connections
-- **No cloud dependency** - All data stays on your machines; relay only forwards encrypted blobs
+- **Encrypted relay, when authenticated** - with an authenticated permanent code (`--auth --permanent-code`, or `[auth] enabled = true` plus `--permanent-code`), relay traffic is end-to-end encrypted (P-256 ECDH signed by each side's Ed25519 identity, AES-256-GCM) and the Cloudflare Worker cannot read it. The default rotating-code mode never derives session keys, where the daemon **refuses to send** rather than downgrade, and **accepts unencrypted inbound messages** — so the relay does not currently work end to end without auth, and what a client did send arrived in the clear (#881). Even when encrypted, the Worker still sees the room code and who talks to whom and when: this hides content, not metadata
+- **No cloud dependency** - direct connections (same network, Tailscale, VPN, SSH tunnel) never touch a server at all. The relay is the exception, and see the caveat above
 
 ## Connection Methods
 
@@ -78,7 +78,7 @@ Phone/Browser ──► Direct WebSocket (same network, Tailscale, VPN)
 │   Your Phone        │                      │   Your Dev Machine  │
 │   (Remi App)        │◄════════════════════►│   (Remi Daemon)     │
 │                     │   WebSocket / Relay   │   mDNS: _remi._tcp │
-│   Chat View         │   (TLS encrypted)    ├─────────────────────┤
+│   Chat View         │   (end-to-end enc.)  ├─────────────────────┤
 │   Session List      │                      │   PTY Manager       │
 │   Notifications     │                      │   Session Registry  │
 └─────────────────────┘                      │   Transcript Parser │

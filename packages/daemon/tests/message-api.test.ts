@@ -246,9 +246,11 @@ describe('MessageAPI', () => {
         isAnswered: false,
       };
 
-      api.handleQuestion(question);
+      const outcome = api.handleQuestion(question);
 
       expect(events.onQuestion).toHaveBeenCalledWith(question);
+      // #888 criterion iii: the registration outcome is returned, not void.
+      expect(outcome).toEqual({ status: 'registered' });
     });
 
     test('handleStatusChange emits onStatusChange', () => {
@@ -273,12 +275,17 @@ describe('MessageAPI', () => {
       } as const;
       const q2 = { ...q1, id: 'q-2' };
 
-      api.handleQuestion(q1);
-      api.handleQuestion(q2);
+      const outcome1 = api.handleQuestion(q1);
+      const outcome2 = api.handleQuestion(q2);
 
       expect(events.onQuestion).toHaveBeenCalledTimes(1);
       const survivor = events.onQuestion.mock.calls[0]?.[0] as { id: string };
       expect(survivor.id).toBe('q-1');
+      // #888 criterion iii: the registered question reports success; the
+      // deduped one reports "not registered" -- distinct, non-void outcomes
+      // instead of a caller having to re-query a store to find out.
+      expect(outcome1).toEqual({ status: 'registered' });
+      expect(outcome2).toEqual({ status: 'deduped' });
     });
 
     test('a held question bypasses dedup and forwards the held flag (#603 Phase 3)', () => {
@@ -297,10 +304,15 @@ describe('MessageAPI', () => {
 
       api.handleQuestion(q1); // emits
       // Identical content -> would normally be deduped, but held is load-bearing.
-      api.handleQuestion(q2, { held: true });
+      const heldOutcome = api.handleQuestion(q2, { held: true });
 
       expect(events.onQuestion).toHaveBeenCalledTimes(2);
       expect(events.onQuestion.mock.calls[1]?.[1]).toEqual({ held: true });
+      // #888 criterion iii: a held push reports its OWN distinct outcome --
+      // never 'deduped' (it bypassed the gate entirely) and never conflated
+      // with an ordinary 'registered' push (see QuestionRegistrationOutcome's
+      // doc for why collapsing the two would be boolean-blindness).
+      expect(heldOutcome).toEqual({ status: 'held' });
     });
 
     test('emits upgrade when later question has more options', () => {
@@ -408,6 +420,56 @@ describe('MessageAPI', () => {
       // immediately after a question, dedup baseline must persist.
       api.handleQuestion({ ...q1, id: 'q-2' });
       expect(events.onQuestion).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('handleQuestion registration outcome (#888 criterion iii)', () => {
+    // Two silent-drop defects (#925, #926) both traced to handleQuestion
+    // returning void and swallowing the outcome when QuestionDedup
+    // suppressed the emission. These tests pin the fix directly, independent
+    // of the two call sites (QuestionPresenceTracker.pairAndPush,
+    // hook-bridge-setup.ts's rememberElicitation) that now consume it.
+    const question = {
+      id: 'q-outcome-1',
+      text: 'Allow Bash: ls',
+      options: [
+        { label: 'Yes', value: '1', isRecommended: true, isYes: true, isNo: false },
+        { label: 'No', value: '2', isRecommended: false, isYes: false, isNo: true },
+      ],
+      allowsFreeText: false,
+      isAnswered: false,
+    } as const;
+
+    test('a registered (non-deduped) question reports { status: "registered" }', () => {
+      const outcome = api.handleQuestion(question);
+      expect(outcome).toEqual({ status: 'registered' });
+    });
+
+    test('a deduped question reports { status: "deduped" }, not void or a bare falsy value', () => {
+      api.handleQuestion(question);
+      const outcome = api.handleQuestion({ ...question, id: 'q-outcome-2' });
+      expect(outcome).toEqual({ status: 'deduped' });
+      expect(outcome).not.toBeUndefined();
+    });
+
+    test('a held question reports { status: "held" } and is unreachable by dedup even when identical', () => {
+      api.handleQuestion(question); // registers, arms the dedup baseline
+      const heldOutcome = api.handleQuestion({ ...question, id: 'q-outcome-3' }, { held: true });
+      // Distinct from both other outcomes -- collapsing it into 'registered'
+      // would hide that it bypassed dedup; collapsing it into 'deduped'
+      // would be simply wrong (it always emits).
+      expect(heldOutcome).toEqual({ status: 'held' });
+      expect(heldOutcome).not.toEqual({ status: 'registered' });
+      expect(heldOutcome).not.toEqual({ status: 'deduped' });
+    });
+
+    test('the three outcomes are pairwise distinct status literals', () => {
+      const registered = api.handleQuestion({ ...question, id: 'q-outcome-4' });
+      const deduped = api.handleQuestion({ ...question, id: 'q-outcome-4' });
+      api.handleStatusChange('thinking'); // reset dedup baseline
+      const held = api.handleQuestion({ ...question, id: 'q-outcome-5' }, { held: true });
+      const statuses = new Set([registered.status, deduped.status, held.status]);
+      expect(statuses.size).toBe(3);
     });
   });
 });

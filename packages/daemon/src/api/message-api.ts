@@ -11,6 +11,37 @@ import { BulletEngine } from '../parser/bullet-engine.ts';
 import { BulletContentRegistry } from './bullet-content-registry.ts';
 import { QuestionDedup } from './question-dedup.ts';
 
+/**
+ * Outcome of a `handleQuestion` call (#888 criterion iii). Replaces a bare
+ * `void` return -- and deliberately not a bare `boolean` either.
+ *
+ * Two silent-drop defects (#925, #926) both traced to the same root cause:
+ * `handleQuestion` returned `void` and swallowed the outcome when
+ * `QuestionDedup` suppressed the emission, so the caller had no way to tell
+ * "the question is live" from "the question never registered" without
+ * re-querying `SessionRegistry` after the fact. A `boolean` return would
+ * fix the immediate defect but reopen a subtler one: `true` would have to
+ * mean both "registered" (the ordinary case) and "held" (the load-bearing
+ * #573 escalation that bypasses dedup entirely) -- collapsing two outcomes
+ * that call sites must treat differently invites exactly the kind of
+ * boolean-blindness bug this criterion exists to prevent. A discriminated
+ * union instead names all three outcomes and lets a caller `switch` on
+ * `status` with TypeScript exhaustiveness checking (a `default` branch
+ * asserting `never`): adding a fourth outcome later breaks every such
+ * switch at compile time instead of silently falling through one of them.
+ *
+ * Consumed directly by the two hand-rolled gates that used to re-query the
+ * store instead of trusting this return value:
+ *   - `QuestionPresenceTracker.pairAndPush`'s confirmed-delivery check (the
+ *     deleted `isQuestionLive` dep), via the `PushQuestion` callback type.
+ *   - `hook-bridge-setup.ts`'s `rememberElicitation`, via
+ *     `HookEventBridge.handleElicitation`'s return.
+ */
+export type QuestionRegistrationOutcome =
+  | { readonly status: 'registered' }
+  | { readonly status: 'deduped' }
+  | { readonly status: 'held' };
+
 /** Events emitted by MessageAPI to adapters */
 export interface MessageAPIEvents {
   /** New structured message created */
@@ -212,19 +243,25 @@ export class MessageAPI {
 
   /**
    * Emit a question, deduping against recent emissions. See QuestionDedup
-   * for upgrade rules.
+   * for upgrade rules. Returns the registration outcome (#888 criterion
+   * iii) instead of silently discarding it -- see `QuestionRegistrationOutcome`
+   * for why callers must not be left to guess.
    */
-  handleQuestion(question: Question, opts?: { held?: boolean }): void {
+  handleQuestion(question: Question, opts?: { held?: boolean }): QuestionRegistrationOutcome {
     // A HELD escalation (Model B, #573) bypasses the content-dedup: its card is
     // load-bearing — it registers the question that makes the held hook
     // answerable — not a PTY/hook echo. Deduping it away would leave the hook
     // held with no answerable question until it fails open (#603 Phase 3, R7).
+    // Its outcome is reported as its own distinct 'held' status, not folded
+    // into 'registered': a held push never passes through the dedup gate
+    // below, so conflating the two would misrepresent what actually happened.
     if (opts?.held) {
       this.events.onQuestion?.(question, opts);
-      return;
+      return { status: 'held' };
     }
-    if (!this.questionDedup.shouldEmit(question)) return;
+    if (!this.questionDedup.shouldEmit(question)) return { status: 'deduped' };
     this.events.onQuestion?.(question);
+    return { status: 'registered' };
   }
 
   handleStatusChange(status: AgentStatus, context?: string): void {

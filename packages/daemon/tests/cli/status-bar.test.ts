@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  HEARTBEAT_MS,
   MAX_RENDER_ERRORS,
   MIN_ROWS_FOR_BAR,
   StatusBar,
@@ -247,7 +248,11 @@ describe('StatusBar', () => {
   });
 
   test('the timer repaints on its interval', async () => {
-    const { bar, writes } = harness();
+    // #932 protection 2 skips a write when the built sequence is unchanged,
+    // so a changing status (not a fixed one) is what proves the timer is
+    // actually ticking rather than painting the same bytes over and over.
+    let connections = 0;
+    const { bar, writes } = harness({ getStatus: () => mkStatus({ connections: connections++ }) });
     bar.start();
     await new Promise((r) => setTimeout(r, 30)); // a few 5ms ticks
     bar.stop();
@@ -258,11 +263,13 @@ describe('StatusBar', () => {
     // No explicit intervalMs: exercise the constructor default. Within 320ms a
     // 250ms timer must have ticked at least once past the immediate paint
     // (the old 1000ms default would not have). Kept comfortably above 250ms to
-    // avoid CI timer jitter flaking the assertion.
+    // avoid CI timer jitter flaking the assertion. Status changes each read
+    // (#932 protection 2) so a repeat tick is not skipped as unchanged.
     const writes: string[] = [];
+    let connections = 0;
     const bar = new StatusBar({
       getStdoutFd: () => 1,
-      getStatus: () => mkStatus(),
+      getStatus: () => mkStatus({ connections: connections++ }),
       getSize: () => ({ cols: 80, rows: 24 }),
       isEnabled: () => true,
       writeToFd: (_fd, data) => writes.push(data),
@@ -314,5 +321,335 @@ describe('StatusBar', () => {
     expect(painted.length).toBeGreaterThan(0);
     expect(logs).toHaveLength(1);
     bar.stop();
+  });
+
+  // #932: the bar and Claude's own PTY output are two writers on the same
+  // fd; a paint that lands at the wrong moment can corrupt or erase a live
+  // question prompt. These prove the mitigations directly against the
+  // fd-write count, independent of the timer.
+  test('the onset paint happens on the transition into a live question and reflects its state', () => {
+    // Edge-triggered, not level-triggered: freezing row N is right, but
+    // freezing it on whatever was last painted is wrong -- Claude's native
+    // statusLine disappears entirely while a question dialog is open, so the
+    // bar has to be current the MOMENT that happens, not up to HEARTBEAT_MS
+    // stale. The first render() after the transition must still paint.
+    const { bar, writes } = harness({
+      hasLiveQuestions: () => true,
+      getStatus: () => mkStatus({ connections: 3 }),
+    });
+    bar.render();
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toContain('3 client(s)');
+  });
+
+  test('repaints are suppressed while a question stays live, after the onset paint', () => {
+    // #932 review finding 4: status content must vary DURING the freeze, or
+    // this can't distinguish "the suppression guard held" from "nothing
+    // changed so the dedup check alone produced the same write count" --
+    // neutering `if (questionLive && !onset) return;` previously left this
+    // green because mkStatus() never changed between calls.
+    let connections = 0;
+    const { bar, writes } = harness({
+      hasLiveQuestions: () => true,
+      getStatus: () => mkStatus({ connections: connections++ }),
+    });
+    bar.render(); // onset: paints once
+    expect(writes).toHaveLength(1);
+    bar.render(); // still live: frozen, despite connections having changed
+    bar.render(); // still live: frozen again
+    expect(writes).toHaveLength(1);
+  });
+
+  test('repaints resume once the question resolves', () => {
+    // Same fix as above: content changes on every getStatus() read so a
+    // neutered suppression guard would produce an extra write during the
+    // freeze, not just the same count by coincidence.
+    let live = true;
+    let connections = 0;
+    const { bar, writes } = harness({
+      hasLiveQuestions: () => live,
+      getStatus: () => mkStatus({ connections: connections++ }),
+    });
+    bar.render(); // onset paint
+    expect(writes).toHaveLength(1);
+    bar.render(); // frozen, despite connections having changed
+    expect(writes).toHaveLength(1);
+    live = false;
+    bar.render(); // resumes
+    expect(writes).toHaveLength(2);
+  });
+
+  test('the onset paint captures state at the transition, and the resumed repaint reflects a status change made during the freeze', () => {
+    // The regression this guards against: a status change while a question is
+    // live must not be lost -- the bar has to catch up, not stay stale
+    // forever once the question resolves.
+    let live = true;
+    let connections = 0;
+    const { bar, writes } = harness({
+      hasLiveQuestions: () => live,
+      getStatus: () => mkStatus({ connections }),
+    });
+    bar.render(); // onset: paints the status AT the transition
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toContain('no clients');
+    connections = 5; // status changes while the question is still live
+    bar.render(); // frozen: no write
+    expect(writes).toHaveLength(1);
+    live = false;
+    bar.render(); // question resolved: must repaint with the NEW status
+    expect(writes).toHaveLength(2);
+    expect(writes[1]).toContain('5 client(s)');
+  });
+
+  test('an unchanged status does not write a second time', () => {
+    const { bar, writes } = harness();
+    bar.render();
+    bar.render();
+    expect(writes).toHaveLength(1);
+  });
+
+  test('a changed status writes again', () => {
+    let connections = 0;
+    const { bar, writes } = harness({ getStatus: () => mkStatus({ connections }) });
+    bar.render();
+    connections = 1;
+    bar.render();
+    expect(writes).toHaveLength(2);
+  });
+
+  test('a heartbeat repaint occurs after HEARTBEAT_MS even with an unchanged status', () => {
+    // buildBarSequence's DECSTBM re-assertion (the scroll region that keeps
+    // the bar's row fixed) rides on every paint; an unchanged-status dedup
+    // that never repaints would mean that assertion never fires either, so
+    // the heartbeat forces one at least every HEARTBEAT_MS regardless.
+    let nowMs = NOW_MS;
+    const { bar, writes } = harness({ now: () => nowMs });
+    bar.render();
+    expect(writes).toHaveLength(1);
+    nowMs += HEARTBEAT_MS - 1; // just under the threshold: still deduped
+    bar.render();
+    expect(writes).toHaveLength(1);
+    nowMs += 1; // now at the threshold: forced repaint despite same status
+    bar.render();
+    expect(writes).toHaveLength(2);
+    expect(writes[1]).toBe(writes[0]); // same content -- a heartbeat, not a change
+  });
+
+  test('a transition during a room-too-short window still paints once the guard clears', () => {
+    // #932 review fix: the fd/room guards must run BEFORE hasLiveQuestions()
+    // is read and wasQuestionLive is mutated -- otherwise a transition that
+    // lands on a tick with no room gets "consumed" with no write to show
+    // for it, and the bar freezes on stale content for the rest of the
+    // window once room returns (the exact bug protection 1 exists to
+    // prevent, reintroduced through ordering).
+    let rows = 1; // too short: no room for the bar
+    const { bar, writes } = harness({
+      hasLiveQuestions: () => true,
+      getSize: () => ({ cols: 80, rows }),
+    });
+    // Question already live, but no room: no paint, and the transition
+    // must not be consumed here.
+    bar.render();
+    expect(writes).toHaveLength(0);
+    rows = 24; // room restored, question still live
+    // Onset must still fire now: the transition was never observed while
+    // room was unavailable.
+    bar.render();
+    expect(writes).toHaveLength(1);
+  });
+});
+
+// #932 durable fix: the quiescence + clean-boundary gate. `isBoundaryClean`
+// and `isQuiescent` default to always-true in the harness (matching
+// StatusBar's own fail-open defaults), so every test below opts in
+// explicitly -- proving these tests actually exercise the new guards rather
+// than merely coinciding with the pre-gate behavior every other test above
+// already covers.
+describe('StatusBar — #932 durable fix (quiescence + clean-boundary gate)', () => {
+  function harness(overrides: Partial<StatusBarDeps> = {}) {
+    const writes: string[] = [];
+    const logs: string[] = [];
+    const deps: StatusBarDeps = {
+      getStdoutFd: () => 1,
+      getStatus: () => mkStatus(),
+      getSize: () => ({ cols: 80, rows: 24 }),
+      isEnabled: () => true,
+      writeToFd: (_fd, data) => writes.push(data),
+      now: () => NOW_MS,
+      log: (m) => logs.push(m),
+      intervalMs: 5,
+      ...overrides,
+    };
+    return { bar: new StatusBar(deps), writes, logs };
+  }
+
+  test('render refuses to write while isBoundaryClean is false', () => {
+    const { bar, writes } = harness({ isBoundaryClean: () => false });
+    bar.render();
+    expect(writes).toHaveLength(0);
+  });
+
+  test('render writes once the boundary becomes clean', () => {
+    let clean = false;
+    const { bar, writes } = harness({ isBoundaryClean: () => clean });
+    bar.render();
+    expect(writes).toHaveLength(0);
+    clean = true;
+    bar.render();
+    expect(writes).toHaveLength(1);
+  });
+
+  test('a routine (content-changed) paint is refused while not quiescent, then happens once quiescent', () => {
+    // The very first render() is itself heartbeat-due (lastWriteAtMs is
+    // still null), so it bypasses quiescence like any other forced paint --
+    // same as before this fix. The gate under test here is a SECOND paint
+    // triggered only by a content change, well inside HEARTBEAT_MS.
+    let quiescent = false;
+    let connections = 0;
+    const { bar, writes } = harness({
+      isQuiescent: () => quiescent,
+      getStatus: () => mkStatus({ connections: connections++ }),
+    });
+    bar.render(); // first-ever paint: heartbeat-due, bypasses quiescence
+    expect(writes).toHaveLength(1);
+    bar.render(); // content changed again, but not quiescent: refused
+    expect(writes).toHaveLength(1);
+    quiescent = true;
+    bar.render(); // now quiescent: the routine paint proceeds
+    expect(writes).toHaveLength(2);
+    // Content keeps changing but quiescence drops again: refused once more.
+    quiescent = false;
+    bar.render();
+    expect(writes).toHaveLength(2);
+  });
+
+  test('an unchanged status still does not write a second time even when quiescent (dedup unaffected)', () => {
+    const { bar, writes } = harness({ isQuiescent: () => true });
+    bar.render();
+    bar.render();
+    expect(writes).toHaveLength(1);
+  });
+
+  test('the onset paint bypasses the quiescence gate but still honors the boundary gate', () => {
+    // Onset must fire the instant a question goes live, even mid-burst --
+    // see status-bar.ts's HEARTBEAT_MS doc for why the soft gate has
+    // documented exceptions.
+    const { bar, writes } = harness({
+      hasLiveQuestions: () => true,
+      isQuiescent: () => false,
+      isBoundaryClean: () => true,
+    });
+    bar.render();
+    expect(writes).toHaveLength(1);
+  });
+
+  test('the onset paint does NOT bypass the boundary gate', () => {
+    // The hard gate has no exceptions -- not even onset. Regression guard:
+    // if someone "simplifies" render() by exempting onset from the boundary
+    // check too, this must go red.
+    const { bar, writes } = harness({
+      hasLiveQuestions: () => true,
+      isQuiescent: () => true,
+      isBoundaryClean: () => false,
+    });
+    bar.render();
+    expect(writes).toHaveLength(0);
+  });
+
+  test('the resumed paint bypasses the quiescence gate but still honors the boundary gate', () => {
+    let live = true;
+    const { bar, writes } = harness({
+      hasLiveQuestions: () => live,
+      isQuiescent: () => false,
+      isBoundaryClean: () => true,
+    });
+    bar.render(); // onset
+    expect(writes).toHaveLength(1);
+    live = false;
+    bar.render(); // resumed, still not quiescent
+    expect(writes).toHaveLength(2);
+  });
+
+  test('a heartbeat repaint bypasses the quiescence gate but still honors the boundary gate', () => {
+    let nowMs = NOW_MS;
+    const { bar, writes } = harness({ now: () => nowMs, isQuiescent: () => false });
+    bar.render();
+    expect(writes).toHaveLength(1);
+    nowMs += HEARTBEAT_MS; // heartbeat due; PTY still "active" (not quiescent)
+    bar.render();
+    expect(writes).toHaveLength(2);
+  });
+
+  test('a heartbeat repaint does NOT bypass the boundary gate', () => {
+    // Regression guard for the interaction called out in HEARTBEAT_MS's doc:
+    // the heartbeat must never force a write at a dirty boundary, even
+    // though it is exempt from the (safe) quiescence gate.
+    let nowMs = NOW_MS;
+    const { bar, writes } = harness({ now: () => nowMs, isBoundaryClean: () => false });
+    bar.render();
+    expect(writes).toHaveLength(0);
+    nowMs += HEARTBEAT_MS;
+    bar.render();
+    expect(writes).toHaveLength(0);
+  });
+
+  test('notifyScrollRegionReset paints immediately, bypassing the quiescence gate', () => {
+    const { bar, writes } = harness({ isQuiescent: () => false, isBoundaryClean: () => true });
+    bar.notifyScrollRegionReset();
+    expect(writes).toHaveLength(1);
+  });
+
+  test('notifyScrollRegionReset stays pending and retries once the boundary clears', () => {
+    let clean = true;
+    let quiescent = true;
+    const { bar, writes } = harness({
+      isQuiescent: () => quiescent,
+      isBoundaryClean: () => clean,
+    });
+    // Get an ordinary first paint in so lastWriteAtMs is set -- otherwise
+    // every following render() would ALSO be "heartbeat due" (lastWriteAtMs
+    // still null) regardless of forceRepaintPending, and the test below
+    // would not actually prove the pending flag is what triggers the write.
+    bar.render();
+    expect(writes).toHaveLength(1);
+    // Now block both the boundary and quiescence, and go dirty; the
+    // immediate attempt inside notifyScrollRegionReset must be refused.
+    clean = false;
+    quiescent = false;
+    bar.notifyScrollRegionReset();
+    expect(writes).toHaveLength(1);
+    bar.render(); // still dirty, still not quiescent, unchanged content: no write
+    expect(writes).toHaveLength(1);
+    // Boundary clears, but quiescence and content still would not justify a
+    // routine write on their own (unchanged status, heartbeat not due,
+    // still not quiescent) -- only the pending flag can explain a write now.
+    clean = true;
+    bar.render();
+    expect(writes).toHaveLength(2);
+  });
+
+  test('a transition during a dirty-boundary window still paints once the boundary clears', () => {
+    // Mirrors the room-too-short guard-ordering test: the boundary gate must
+    // sit in the same "cannot physically paint" group as the fd/room checks,
+    // BEFORE hasLiveQuestions() is read -- otherwise a question transition
+    // landing while the boundary is dirty gets consumed with no write to
+    // show for it, and the bar freezes on stale content once the boundary
+    // clears (the exact bug the ordering exists to prevent).
+    let clean = false;
+    const { bar, writes } = harness({
+      hasLiveQuestions: () => true,
+      isBoundaryClean: () => clean,
+    });
+    bar.render(); // question already live, but boundary dirty: no paint, no consumption
+    expect(writes).toHaveLength(0);
+    clean = true;
+    bar.render(); // onset must still fire now
+    expect(writes).toHaveLength(1);
+  });
+
+  test('omitting isBoundaryClean/isQuiescent keeps pre-durable-fix behavior (always paintable)', () => {
+    const { bar, writes } = harness({});
+    bar.render();
+    expect(writes).toHaveLength(1);
   });
 });

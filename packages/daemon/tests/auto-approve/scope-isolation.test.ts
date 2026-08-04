@@ -106,6 +106,7 @@ function makeConfig(server: GatedServer): AutoApproveConfig {
     deny: [],
     subagent_alert: [],
     approve_groups: [],
+    level: 'strict',
     deny_groups: [],
     instructions: '',
     multichoice: 'skip',
@@ -120,6 +121,7 @@ function makeConfig(server: GatedServer): AutoApproveConfig {
     model_cache: '',
     disable_thinking: false,
     always_escalate_tools: [],
+    session_precedent: true,
     hold_timeout: 0,
     push_hold_timeout: 0,
     delivery_confirm_timeout: 0,
@@ -366,7 +368,7 @@ describe('AutoApproveGate cross-session isolation via shared AutoApproveService 
   beforeEach(() => {
     server = startGatedServer();
     registries = [];
-    tracker = new QuestionPresenceTracker(() => {});
+    tracker = new QuestionPresenceTracker(() => undefined);
     configureLogger({ writeLog: () => {} });
   });
 

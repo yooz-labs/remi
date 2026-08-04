@@ -37,11 +37,14 @@ export interface BulletEngineConfig {
  */
 export class BulletEngine {
   private nextBulletId: number;
-  private readonly sessionId: UUID;
   private readonly maxBulletLength: number;
 
-  constructor(sessionId: UUID, initialBulletId = 1, config?: BulletEngineConfig) {
-    this.sessionId = sessionId;
+  // `_sessionId` has never been read anywhere in this class (found by #946's
+  // web-tests typecheck gate, which pulls this file in via a conformance
+  // test); the field that stored it is gone. Kept as a parameter, not
+  // removed, to avoid a signature change across its 9 call sites for a
+  // no-op cleanup.
+  constructor(_sessionId: UUID, initialBulletId = 1, config?: BulletEngineConfig) {
     this.nextBulletId = initialBulletId;
     this.maxBulletLength = config?.maxBulletLength ?? DEFAULT_MAX_BULLET_LENGTH;
   }

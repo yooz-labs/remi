@@ -132,6 +132,7 @@ describe('Held escalation round-trip — register + push + shared answer (#573)'
     tracker = new QuestionPresenceTracker((q) => {
       pushes.push(q);
       registry.addQuestion(SID, q);
+      return undefined;
     });
   });
 

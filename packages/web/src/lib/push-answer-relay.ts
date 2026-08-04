@@ -16,7 +16,7 @@
  * path (which has the same limitation) or surfaces an "open the app" failure.
  */
 
-import { sign } from '@remi/shared';
+import { sealAnswer, sign } from '@remi/shared';
 import { hasIdentity, isIdentityEncrypted, unlockStoredIdentity } from './identity-client';
 
 /** Outcome of a direct-relay attempt. */
@@ -216,6 +216,15 @@ interface SignalingRelayInput {
   readonly claudeSessionId?: string | undefined;
   /** When true, sign the request (the daemon verifies it on the relay path). */
   readonly authRequired: boolean;
+  /**
+   * The daemon's pinned answer key (#875). Present => the body is sealed and
+   * the Worker sees only ciphertext. Absent => this daemon has not published
+   * one, or this phone has not connected since it did; the caller decides
+   * whether to send in the clear, and `sealRequired` says it must not.
+   */
+  readonly answerEncryptionKey?: string | undefined;
+  /** Refuse to send unsealed. Default true: plaintext here is the bug (#875). */
+  readonly sealRequired?: boolean;
   readonly timeoutMs?: number;
 }
 
@@ -254,6 +263,32 @@ export async function relayAnswerViaSignaling(input: SignalingRelayInput): Promi
     auth = built;
   }
 
+  // Seal the body to the daemon's pinned answer key (#875). The Worker then
+  // sees an opaque envelope instead of the session, the question and the
+  // answer text. The `auth` block goes INSIDE, so the Worker cannot see which
+  // phone answered either; the daemon verifies it after opening.
+  const plainBody = {
+    sessionId: input.sessionId,
+    questionId: input.questionId,
+    answer: input.answer,
+    ...(input.claudeSessionId ? { claudeSessionId: input.claudeSessionId } : {}),
+    ...(auth ? { auth } : {}),
+  };
+  let requestBody: unknown = plainBody;
+  if (input.answerEncryptionKey) {
+    try {
+      requestBody = await sealAnswer(input.answerEncryptionKey, plainBody);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message || err.name : String(err);
+      return { kind: 'unreachable', reason: `seal failed: ${detail}` };
+    }
+  } else if (input.sealRequired !== false) {
+    // Refusing is the point. Falling back to plaintext would hand the Worker
+    // the answer, which is what this path exists to stop. Reconnecting the app
+    // once re-pins the key and this resolves itself.
+    return { kind: 'unreachable', reason: 'no pinned answer key; reconnect once to seal answers' };
+  }
+
   const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -262,13 +297,7 @@ export async function relayAnswerViaSignaling(input: SignalingRelayInput): Promi
     const res = await fetch(httpUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        sessionId: input.sessionId,
-        questionId: input.questionId,
-        answer: input.answer,
-        ...(input.claudeSessionId ? { claudeSessionId: input.claudeSessionId } : {}),
-        ...(auth ? { auth } : {}),
-      }),
+      body: JSON.stringify(requestBody),
       signal: controller.signal,
     });
 

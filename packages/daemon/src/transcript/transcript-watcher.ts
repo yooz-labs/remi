@@ -30,6 +30,43 @@ function isTextBlock(block: ContentBlock): block is TextBlock {
 
 const DEFAULT_POLL_INTERVAL_MS = 2000;
 
+/**
+ * Attach an error listener to an `FSWatcher` so a watch failure degrades
+ * instead of killing the process.
+ *
+ * An `FSWatcher` that emits `'error'` with no listener throws out of the event
+ * loop as an `uncaughtException`. The `try/catch` around `fs.watch()` does NOT
+ * cover this: it catches only the synchronous construction throw, while the
+ * dangerous case is asynchronous — the watched path vanishing later. Transcript
+ * files do vanish in normal use (session rotation, `/clear`, cleanup), so
+ * without this an unattended daemon dies over a recoverable fs event.
+ *
+ * Safe to lose: every caller here arms a poll fallback alongside the watcher,
+ * so a dead watcher costs notification latency, not correctness.
+ *
+ * Same pattern and rationale as `cli/live-sessions-watcher.ts`. (Cast because
+ * bun-types' `FSWatcher` omits the EventEmitter surface the runtime object
+ * actually has.)
+ */
+function attachWatcherErrorHandler(
+  watcher: fs.FSWatcher,
+  what: string,
+  events: { onError?: ((err: Error) => void) | undefined },
+  onDead?: () => void,
+): void {
+  (watcher as unknown as import('node:events').EventEmitter).on('error', (err: unknown) => {
+    events.onError?.(
+      new Error(`fs.watch on ${what} failed, falling back to polling: ${errorToString(err)}`),
+    );
+    try {
+      watcher.close();
+    } catch {
+      // Already closed or unusable; the listener above is what mattered.
+    }
+    onDead?.();
+  });
+}
+
 export class TranscriptWatcher {
   private readonly config: Required<TranscriptWatcherConfig>;
   private readonly events: TranscriptWatcherEvents;
@@ -197,6 +234,9 @@ export class TranscriptWatcher {
           onFileAppeared();
         }
       });
+      // The poll fallback below is already armed, so losing this watcher costs
+      // latency, not correctness — the file still gets picked up.
+      attachWatcherErrorHandler(dirWatcher, `directory ${dir}`, this.events);
 
       // Also poll in case fs.watch misses it
       this.pollTimer = setInterval(() => {
@@ -240,6 +280,9 @@ export class TranscriptWatcher {
         if ((eventType === 'change' || eventType === 'rename') && this.running) {
           this.readNewEntries();
         }
+      });
+      attachWatcherErrorHandler(this.watcher, `file ${this.config.filePath}`, this.events, () => {
+        this.watcher = null;
       });
     } catch (error) {
       // fs.watch not available on this platform; fall back to polling only

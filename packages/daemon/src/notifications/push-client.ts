@@ -6,8 +6,30 @@
 
 const DEFAULT_SIGNALING_URL = 'https://remi-signaling.yooz.workers.dev';
 
+/**
+ * What class of push this is (#968).
+ *
+ * Before this existed, the classes were told apart only by a NEGATIVE test —
+ * "no questionId, no category" — which could not distinguish a turn-complete
+ * push from a subagent alert at all: on the wire they were byte-identical
+ * `{token, title, body}`. The `": turn complete"` title suffix is display text,
+ * not a discriminator. Naming the class explicitly is what lets both the daemon
+ * (per-device filtering, `push-preferences.ts`) and the client (labelling,
+ * routing) act on it.
+ */
+export type PushKind = 'question' | 'turn_complete' | 'subagent_alert' | 'dismiss' | 'auto_denied';
+
 /** Options for sendPushTrigger */
 export interface PushTriggerOptions {
+  /**
+   * Which class of push this is. Forwarded to the Worker, which passes it
+   * through into the APNS payload's custom data as `kind`.
+   *
+   * Purely additive: every field that previously distinguished these classes
+   * (`category`, `questionId`, `dismiss`) is still sent exactly as before, so an
+   * older Worker or client that ignores `kind` behaves identically.
+   */
+  kind?: PushKind;
   /** Title shown in the notification banner. Optional only for a `dismiss`
    *  push (#585, P7), which is silent (content-available) and has no text. */
   title?: string;
@@ -87,6 +109,9 @@ export async function sendPushTrigger(
   }
   if (opts.dismiss) {
     payload['dismiss'] = true;
+  }
+  if (opts.kind) {
+    payload['kind'] = opts.kind;
   }
   const response = await fetch(url, {
     method: 'POST',

@@ -6,6 +6,7 @@
  * or, for multi-choice prompts, pick a specific option index.
  */
 
+import type { AutoApproveLevel } from './levels.ts';
 /**
  * Possible decisions returned by AutoApproveService.evaluate().
  *
@@ -16,6 +17,28 @@
  *   the bridge-side contract.
  */
 export type AutoApproveDecision = 'approve' | 'deny' | 'escalate' | 'pick' | 'cancelled';
+
+/**
+ * What produced a `deny`, and what it matched (#1015). The distinction is the
+ * whole point of carrying it: it decides whether the user gets told.
+ *
+ * - `config` — the user's own `deny` / `deny_groups` matched, at 0ms, before
+ *   any model ran. Their standing rule fired as written; an audit line is
+ *   warranted, a push is not.
+ * - `model-floor` — the MODEL said deny and `enforceDenyFloor` let it stand
+ *   because `matchesCatastrophicPattern` matched. Nobody configured this one,
+ *   and the floor's match is measurably wrong most of the time it fires (7 of
+ *   8 hits on 918 real commands were prose that merely QUOTED a dangerous
+ *   string — #997). This is the class that must not be silent.
+ *
+ * `pattern` is what matched in either case (the config entry, the group name,
+ * or the catastrophic label), so a report can say WHY without re-running any
+ * matcher.
+ */
+export interface DenySource {
+  readonly kind: 'config' | 'model-floor';
+  readonly pattern: string;
+}
 
 /**
  * LLM-produced (or pattern-matched) decision. `model` is the model that
@@ -37,6 +60,17 @@ export type AutoApproveDecisionResult =
        *  title/body instead of the raw "Allow Bash: <command>". Absent for
        *  approve/deny, pattern-matched verdicts, or when the model omits it. */
       readonly summary?: string | undefined;
+      /** #1015: which mechanism produced a `deny`. Present on `deny` results
+       *  only; absent on approve/escalate.
+       *
+       *  Carried structurally rather than left to be re-derived downstream. The
+       *  reasoning strings ARE currently distinguishable (`deny-matched
+       *  pattern:` / `deny-matched group:` vs the model's own prose), so a
+       *  consumer could sniff them — and that is exactly the defect shape this
+       *  module has hit repeatedly: two pieces of code independently deriving
+       *  the same judgement and drifting apart the first time one side's
+       *  wording changes. The site that decides is the site that reports. */
+      readonly denySource?: DenySource | undefined;
     }
   | {
       readonly decision: 'pick';
@@ -93,16 +127,26 @@ export interface AutoApproveConfig {
   /** Whether to log all decisions */
   readonly log_decisions: boolean;
   /**
-   * Substring patterns that short-circuit to approve without calling the LLM.
-   * For Bash: matched against the command string (substring contains).
-   * For other tools: list the tool name (e.g. "Read", "Glob") for any invocation.
-   * Default: empty. Deny list is checked first and always wins.
+   * Patterns that short-circuit to approve without calling the LLM.
+   *
+   * NOT substring matching (#536). For Bash the command is split on
+   * `; && || |` and EVERY segment must either match one of these as a prefix
+   * or be a neutral no-op (`cd`, `pwd`, `echo`, `true`, `:`); a segment with
+   * shell control (backticks, `$()`, redirects, `-exec`) is refused even when
+   * a prefix matches. An entry shaped like a tool name ("Read", "Glob") matches
+   * that TOOL and never a Bash command containing the word.
+   *
+   * See `matchAllowPattern` in `pattern-matcher.ts` and `matchCoveredCommand`
+   * in `shell-safety.ts`. Default: empty. Deny is checked first and always wins.
    */
   readonly allow: readonly string[];
   /**
    * Substring patterns that short-circuit to deny without calling the LLM.
-   * Same matching rules as `allow`. Checked BEFORE allow; always wins.
-   * Default: empty.
+   *
+   * Deliberately NOT the same rules as `allow` (#536): deny stays a broad
+   * substring match (`matchSubstringPattern`), because a rule meant to STOP
+   * something should over-reach rather than under-reach. Checked BEFORE allow;
+   * always wins. Default: empty.
    */
   readonly deny: readonly string[];
   /**
@@ -124,11 +168,22 @@ export interface AutoApproveConfig {
   /**
    * Built-in permission groups to approve without calling the LLM (epic #494).
    * A group is a curated set of read-by-definition operations matched with
-   * compound-segment-aware prefix logic (see `permission-groups.ts`), safer
-   * than the substring `allow` list for Bash. Known groups: "read-only",
+   * compound-segment-aware prefix logic (see `permission-groups.ts`), curated
+   * rather than user-supplied like the `allow` list. Known groups: "read-only",
    * "vcs-read", "build-test". Default: all three.
    */
   readonly approve_groups: readonly string[];
+  /**
+   * Strictness preset (#963). Selects which permission groups are
+   * auto-approved without an LLM call. `strict` is today's behavior and the
+   * shipped default; `balanced` adds `fs-write` and `scratch` (confined to
+   * /tmp, /private/tmp, $TMPDIR); `trusted` adds `vcs-write`.
+   *
+   * An explicit `approve_groups` in config OVERRIDES this — see
+   * `resolveApproveGroups` in `auto-approve/levels.ts` for why override rather
+   * than union, and `loadConfig` for where the two are reconciled.
+   */
+  readonly level: AutoApproveLevel;
   /**
    * Built-in permission groups to deny without calling the LLM. Checked before
    * `approve_groups` (and before `allow`); any group/pattern deny wins.
@@ -261,6 +316,39 @@ export interface AutoApproveConfig {
    * non-binary suggestions. See `DEFAULT_ALWAYS_ESCALATE_TOOLS`.
    */
   readonly always_escalate_tools: readonly string[];
+  /**
+   * Whether an operation the user ALREADY ANSWERED in this session may be
+   * decided from that answer instead of asked again (#976, ADR 0015).
+   *
+   * Both directions, and they are not symmetric:
+   *
+   *   - An earlier **approval** of the byte-identical operation authorizes a
+   *     repeat at 0ms, subject to the risk x authorization matrix — so
+   *     `critical` is still never approved and `high` needs the precedent
+   *     (text cannot supply the witness it demands). This is the WIDENING
+   *     half, and the only one this switch really gates: it is what stops the
+   *     third `git push origin feature/x` of a session from asking a third
+   *     time.
+   *   - An earlier **denial** that broadly matches downgrades a model approve
+   *     to escalate. That is a TIGHTENING and stays on even when this is off:
+   *     turning off "reuse my yes" must not also discard "I already said no."
+   *
+   * Session-scoped and in-memory (`PrecedentStore`), cleared on rotation.
+   * Nothing persists — a durable rule is what `allow` / `approve_groups` are
+   * for, and a precedent that outlived its conversation would be an allow-list
+   * entry the user never wrote.
+   *
+   * **Default: false**, and not because the mechanism is unfinished. Four
+   * review rounds on #1017 each found the same defect class — the signature
+   * used as the authorization key drops something that changes what the
+   * operation does. Each was closed; one is KNOWN and still OPEN (#1019: a
+   * Bash signature carries no `cwd`, so an approval in one worktree authorizes
+   * the identical command in another). A privilege-GRANTING path should not
+   * ship on by default with a known-unfixed escalation. Flip once #1019 lands.
+   *
+   * Off means every repeat is asked again — the pre-#976 behavior.
+   */
+  readonly session_precedent: boolean;
   /**
    * Seconds the daemon HOLDS a BINARY main-context PermissionRequest hook open
    * after escalating to the user, instead of returning passthrough immediately

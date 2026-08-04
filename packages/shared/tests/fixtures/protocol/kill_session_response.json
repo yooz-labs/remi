@@ -1,0 +1,7 @@
+{
+  "type": "kill_session_response",
+  "id": "beea12aa-0d70-415d-9985-c8260b3cdd7c",
+  "timestamp": "2026-07-29T11:27:08.615Z",
+  "success": true,
+  "requestId": "fixture-request-id"
+}

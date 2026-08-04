@@ -13,6 +13,7 @@ import type { Message, TranscriptContentBlock, TranscriptContentMessage, UUID } 
 import { createTranscriptContent, generateId, now } from '@remi/shared';
 import type { MessageAPI } from '../api/message-api.ts';
 import type { AssistantEntry, ContentBlock, UserEntry } from './types.ts';
+import { isWrappedNonHumanText } from './user-entry-provenance.ts';
 
 /** Configuration for TranscriptMessageBridge */
 export interface TranscriptMessageBridgeConfig {
@@ -130,6 +131,32 @@ export class TranscriptMessageBridge {
   /**
    * Handle a user entry from TranscriptWatcher.
    * Emits a TranscriptContentMessage for user messages.
+   *
+   * Provenance filtering (#936): Claude Code stamps `isMeta: true` at the
+   * entry's top level on "user"-role entries IT injected rather than
+   * something the human typed — most consequentially a subagent's own
+   * `<agent-message from="...">` text in an agent-team session, which
+   * otherwise renders in the chat view as a message the human sent (measured
+   * across real transcripts: 47 of 88 `isMeta: true` entries were exactly
+   * this shape — see `user-entry-provenance.ts`'s module doc for the full
+   * breakdown). This mirrors that module's design (also used by
+   * `auto-approve/authority.ts`'s `extractUserEntryText`): `isMeta` is
+   * checked FIRST and unconditionally, before any content-shape logic, then
+   * the residual `isWrappedNonHumanText` denylist catches the cohort
+   * (`<command-name>`, `<local-command-stdout>`) that is NOT stamped
+   * `isMeta` at all. `isWrappedNonHumanText` is imported from
+   * `user-entry-provenance.ts` rather than redefined here so all call sites
+   * can never drift into different denylists.
+   *
+   * SKIP, not tag: an excluded entry is dropped outright (marked processed,
+   * no message emitted) rather than shipped with a provenance flag for
+   * clients to render specially. This matches what the web client already
+   * does for the six pre-existing wrapper tags — `stripProtocolTags` removes
+   * tag and content, and the caller (`App.tsx`) drops the message entirely
+   * when nothing is left — so there is no "render it differently" case being
+   * lost: a rendered bubble was never the intended outcome for this cohort.
+   * Filtering here also fixes every client at once (macOS, iOS, web), not
+   * just the one that happens to run `stripProtocolTags`.
    */
   handleUserEntry(entry: UserEntry): void {
     if (this.processedEntryUuids.has(entry.uuid)) {
@@ -140,13 +167,26 @@ export class TranscriptMessageBridge {
       this.transcriptSessionId = entry.sessionId;
     }
 
+    // Primary defense: see doc comment above.
+    if (entry.isMeta === true) {
+      this.processedEntryUuids.add(entry.uuid);
+      return;
+    }
+
+    const rawContent = entry.message.content;
     const content =
-      typeof entry.message.content === 'string'
-        ? entry.message.content
-        : this.extractTextContent(entry.message.content as readonly ContentBlock[]);
+      typeof rawContent === 'string'
+        ? rawContent
+        : this.extractTextContent(rawContent as readonly ContentBlock[]);
 
     // Skip user entries with no text content (tool_result entries)
     if (!content) {
+      this.processedEntryUuids.add(entry.uuid);
+      return;
+    }
+
+    // Residual defense for the non-isMeta wrapper cohort; see doc above.
+    if (typeof rawContent === 'string' && isWrappedNonHumanText(rawContent)) {
       this.processedEntryUuids.add(entry.uuid);
       return;
     }

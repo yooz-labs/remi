@@ -413,6 +413,7 @@ describe('auto_approve config', () => {
         'chmod 777',
       ],
       approve_groups: ['read-only', 'vcs-read', 'build-test'],
+      level: 'strict',
       deny_groups: [],
       instructions: '',
       multichoice: 'skip',
@@ -427,6 +428,7 @@ describe('auto_approve config', () => {
       model_cache: '',
       disable_thinking: true,
       always_escalate_tools: ['AskUserQuestion', 'ExitPlanMode'],
+      session_precedent: false,
       hold_timeout: 1800,
       push_hold_timeout: 60,
       delivery_confirm_timeout: 6,
@@ -819,5 +821,131 @@ describe('terminal config (#513)', () => {
     expect(output).toContain('notify = "osc9"');
     expect(output).toContain('status_cue = true');
     expect(output).toContain('status_bar = true');
+  });
+});
+
+describe('notifications config (#914)', () => {
+  test('defaults: on_turn_complete true, 60s threshold', () => {
+    expect(DEFAULT_CONFIG.notifications).toEqual({
+      on_turn_complete: true,
+      turn_complete_min_seconds: 60,
+    });
+  });
+
+  test('loads notifications from TOML', () => {
+    fs.writeFileSync(
+      TEST_CONFIG,
+      '[notifications]\non_turn_complete = false\nturn_complete_min_seconds = 120\n',
+    );
+    const config = loadConfig(TEST_CONFIG);
+    expect(config.notifications.on_turn_complete).toBe(false);
+    expect(config.notifications.turn_complete_min_seconds).toBe(120);
+  });
+
+  test('preserves notifications defaults when section missing', () => {
+    fs.writeFileSync(TEST_CONFIG, '[daemon]\nbase_port = 19000\n');
+    const config = loadConfig(TEST_CONFIG);
+    expect(config.notifications).toEqual(DEFAULT_CONFIG.notifications);
+  });
+
+  test('rejects on_turn_complete as a string', () => {
+    fs.writeFileSync(TEST_CONFIG, '[notifications]\non_turn_complete = "yes"\n');
+    expect(() => loadConfig(TEST_CONFIG)).toThrow(/notifications\.on_turn_complete/);
+  });
+
+  test('rejects a negative turn_complete_min_seconds', () => {
+    fs.writeFileSync(TEST_CONFIG, '[notifications]\nturn_complete_min_seconds = -1\n');
+    expect(() => loadConfig(TEST_CONFIG)).toThrow(/notifications\.turn_complete_min_seconds/);
+  });
+
+  test('rejects turn_complete_min_seconds as a string', () => {
+    fs.writeFileSync(TEST_CONFIG, '[notifications]\nturn_complete_min_seconds = "soon"\n');
+    expect(() => loadConfig(TEST_CONFIG)).toThrow(/notifications\.turn_complete_min_seconds/);
+  });
+
+  test('accepts turn_complete_min_seconds = 0 (fires on any duration)', () => {
+    fs.writeFileSync(TEST_CONFIG, '[notifications]\nturn_complete_min_seconds = 0\n');
+    const config = loadConfig(TEST_CONFIG);
+    expect(config.notifications.turn_complete_min_seconds).toBe(0);
+  });
+
+  test('generateDefaultConfig includes a [notifications] block', () => {
+    const generated = generateDefaultConfig();
+    expect(generated).toContain('[notifications]');
+    expect(generated).toContain('on_turn_complete = true');
+    expect(generated).toContain('turn_complete_min_seconds = 60');
+  });
+
+  test('formatConfig includes the notifications section', () => {
+    const output = formatConfig(DEFAULT_CONFIG, path.join(TEST_DIR, 'nonexistent.toml'));
+    expect(output).toContain('[notifications]');
+    expect(output).toContain('on_turn_complete = true');
+    expect(output).toContain('turn_complete_min_seconds = 60');
+  });
+});
+
+describe('auto_approve.level (#963)', () => {
+  /** Write a config and load it. Real file, real TOML parse -- no mocks. */
+  function load(toml: string) {
+    fs.writeFileSync(TEST_CONFIG, toml);
+    return loadConfig(TEST_CONFIG);
+  }
+
+  test('a config with no level gets strict, i.e. today unchanged', () => {
+    const c = load('[auto_approve]\nenabled = true\n');
+    expect(c.auto_approve.level).toBe('strict');
+    expect([...c.auto_approve.approve_groups].sort()).toEqual(
+      ['build-test', 'read-only', 'vcs-read'].sort(),
+    );
+  });
+
+  test('level = "balanced" adds fs-write', () => {
+    const c = load('[auto_approve]\nlevel = "balanced"\n');
+    expect(c.auto_approve.approve_groups).toContain('fs-write');
+    expect(c.auto_approve.approve_groups).not.toContain('vcs-write');
+  });
+
+  test('level = "trusted" adds fs-write and vcs-write', () => {
+    const c = load('[auto_approve]\nlevel = "trusted"\n');
+    expect(c.auto_approve.approve_groups).toContain('fs-write');
+    expect(c.auto_approve.approve_groups).toContain('vcs-write');
+    // Still never the cut group, at any level (#961).
+    expect(c.auto_approve.approve_groups).not.toContain('net-read');
+  });
+
+  test('an explicit approve_groups overrides the level', () => {
+    // The upgrade-safety case: someone who set groups before levels existed
+    // keeps exactly their behavior.
+    const c = load('[auto_approve]\nlevel = "trusted"\napprove_groups = ["read-only"]\n');
+    expect(c.auto_approve.approve_groups).toEqual(['read-only']);
+    expect(c.auto_approve.level).toBe('trusted');
+  });
+
+  test('an explicit EMPTY approve_groups is respected', () => {
+    // `[]` means "approve no groups" and must not be mistaken for "unset",
+    // which would silently re-enable them.
+    const c = load('[auto_approve]\nlevel = "trusted"\napprove_groups = []\n');
+    expect(c.auto_approve.approve_groups).toEqual([]);
+  });
+
+  test('an explicit approve_groups WITHOUT a level still wins over the default preset', () => {
+    // The pre-#963 config shape. Loading it must not have the strict preset
+    // overwrite what the user wrote.
+    const c = load('[auto_approve]\napprove_groups = ["build-test"]\n');
+    expect(c.auto_approve.approve_groups).toEqual(['build-test']);
+  });
+
+  test('an invalid level is a startup error naming the valid ones', () => {
+    expect(() => load('[auto_approve]\nlevel = "loose"\n')).toThrow(/level/);
+    expect(() => load('[auto_approve]\nlevel = "loose"\n')).toThrow(/strict/);
+  });
+
+  test('a non-string level is refused too', () => {
+    expect(() => load('[auto_approve]\nlevel = 3\n')).toThrow(/level/);
+  });
+
+  test('no config file at all yields the strict default', () => {
+    const c = loadConfig(path.join(TEST_DIR, 'nope.toml'));
+    expect(c.auto_approve.level).toBe('strict');
   });
 });

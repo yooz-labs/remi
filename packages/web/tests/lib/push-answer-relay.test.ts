@@ -8,7 +8,12 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { createIdentity, serializeIdentity } from '@remi/shared';
+import {
+  createIdentity,
+  generateAnswerKeyPair,
+  openSealedAnswer,
+  serializeIdentity,
+} from '@remi/shared';
 import {
   answerUrl,
   relayAnswerDirect,
@@ -64,11 +69,16 @@ describe('relayAnswerDirect (#575 P4a)', () => {
   }
 
   test('no-auth daemon: posts the answer and returns delivered', async () => {
-    let received: { sessionId: string; questionId: string; answer: string } | null = null;
+    type ReceivedBody = { sessionId: string; questionId: string; answer: string } | null;
+    // `= null as ReceivedBody`, not `= null`: a bare `null` initializer keeps
+    // this narrowed to the literal `null` type at every read in this
+    // function, including after the fetch handler below reassigns it (TS
+    // does not widen `let` narrowing back out for closure-only writes).
+    let received: ReceivedBody = null as ReceivedBody;
     const server = startServer(async (req) => {
       const u = new URL(req.url);
       if (u.pathname === '/answer' && req.method === 'POST') {
-        received = (await req.json()) as typeof received;
+        received = (await req.json()) as ReceivedBody;
         return new Response(JSON.stringify({ result: 'delivered' }), {
           headers: { 'Content-Type': 'application/json' },
         });
@@ -199,12 +209,18 @@ describe('relayAnswerDirect (#575 P4a)', () => {
     const unencrypted = await createIdentity(); // no passphrase => signable without a prompt
     store.setItem('remi-identity', serializeIdentity(unencrypted));
 
-    let body: {
+    type AuthBody = {
       sessionId?: string;
       auth?: { signature?: string; clientPublicKey?: string; clientFingerprint?: string };
-    } | null = null;
+    } | null;
+    // `= null as AuthBody`, not `= null`: TS narrows a bare `= null`
+    // initializer to the literal `null` type and never widens it back for
+    // reads outside the closure that reassigns it below (a known control-flow
+    // analysis gap, not specific to this repo), which turns every `body.auth`
+    // read after the guard into "Property does not exist on type 'never'".
+    let body: AuthBody = null as AuthBody;
     const server = startServer(async (req) => {
-      body = (await req.json()) as typeof body;
+      body = (await req.json()) as AuthBody;
       return new Response(JSON.stringify({ result: 'delivered' }), {
         headers: { 'Content-Type': 'application/json' },
       });
@@ -218,10 +234,13 @@ describe('relayAnswerDirect (#575 P4a)', () => {
         authRequired: true,
       });
       expect(result).toEqual({ kind: 'delivered' });
-      expect(body?.auth?.clientPublicKey).toBe(unencrypted.publicKey);
-      expect(body?.auth?.clientFingerprint).toBe(unencrypted.fingerprint);
-      expect(typeof body?.auth?.signature).toBe('string');
-      expect((body?.auth?.signature ?? '').length).toBeGreaterThan(0);
+      // `body` is only ever written from inside the fetch handler above; the
+      // awaited `relayAnswerDirect` call proves that handler ran.
+      if (body === null) throw new Error('expected the daemon to have received a body');
+      expect(body.auth?.clientPublicKey).toBe(unencrypted.publicKey);
+      expect(body.auth?.clientFingerprint).toBe(unencrypted.fingerprint);
+      expect(typeof body.auth?.signature).toBe('string');
+      expect((body.auth?.signature ?? '').length).toBeGreaterThan(0);
     } finally {
       server.stop();
     }
@@ -260,12 +279,13 @@ describe('relayAnswerViaSignaling (#591)', () => {
 
   test('no-auth: POSTs to /answer/{code} and returns delivered', async () => {
     let path = '';
-    let received: { sessionId: string; questionId: string; answer: string } | null = null;
+    type ReceivedBody = { sessionId: string; questionId: string; answer: string } | null;
+    let received: ReceivedBody = null as ReceivedBody;
     const server = startServer(async (req) => {
       const u = new URL(req.url);
       path = u.pathname;
       if (req.method === 'POST') {
-        received = (await req.json()) as typeof received;
+        received = (await req.json()) as ReceivedBody;
         return new Response(JSON.stringify({ result: 'delivered' }), {
           headers: { 'Content-Type': 'application/json' },
         });
@@ -280,6 +300,9 @@ describe('relayAnswerViaSignaling (#591)', () => {
         questionId: 'q1',
         answer: 'Yes',
         authRequired: false,
+        // Pre-#875 daemon: publishes no answer key, so there is nothing to
+        // seal to. The sealed path has its own tests below.
+        sealRequired: false,
       });
       expect(result).toEqual({ kind: 'delivered' });
       expect(path).toBe('/answer/WXYZ-2345');
@@ -305,6 +328,9 @@ describe('relayAnswerViaSignaling (#591)', () => {
         questionId: 'q1',
         answer: 'Yes',
         authRequired: false,
+        // Pre-#875 daemon: publishes no answer key, so there is nothing to
+        // seal to. The sealed path has its own tests below.
+        sealRequired: false,
       });
       expect(result.kind).toBe('unreachable');
     } finally {
@@ -315,11 +341,12 @@ describe('relayAnswerViaSignaling (#591)', () => {
   test('auth required + unencrypted identity: signs and the Worker receives the auth block', async () => {
     const unencrypted = await createIdentity();
     store.setItem('remi-identity', serializeIdentity(unencrypted));
-    let body: {
+    type AuthBody = {
       auth?: { signature?: string; clientPublicKey?: string; clientFingerprint?: string };
-    } | null = null;
+    } | null;
+    let body: AuthBody = null as AuthBody;
     const server = startServer(async (req) => {
-      body = (await req.json()) as typeof body;
+      body = (await req.json()) as AuthBody;
       return new Response(JSON.stringify({ result: 'delivered' }), {
         headers: { 'Content-Type': 'application/json' },
       });
@@ -332,6 +359,7 @@ describe('relayAnswerViaSignaling (#591)', () => {
         questionId: 'q1',
         answer: 'Yes',
         authRequired: true,
+        sealRequired: false,
       });
       expect(result).toEqual({ kind: 'delivered' });
       expect(body?.auth?.clientPublicKey).toBe(unencrypted.publicKey);
@@ -369,6 +397,9 @@ describe('relayAnswerViaSignaling (#591)', () => {
         questionId: 'q1',
         answer: 'Yes',
         authRequired: false,
+        // Pre-#875 daemon: publishes no answer key, so there is nothing to
+        // seal to. The sealed path has its own tests below.
+        sealRequired: false,
       });
       expect(result.kind).toBe('unreachable');
     } finally {
@@ -392,10 +423,126 @@ describe('relayAnswerViaSignaling (#591)', () => {
         questionId: 'q1',
         answer: 'Yes',
         authRequired: false,
+        // Pre-#875 daemon: publishes no answer key, so there is nothing to
+        // seal to. The sealed path has its own tests below.
+        sealRequired: false,
       });
       expect(result.kind).toBe('rejected');
     } finally {
       server.stop();
     }
+  });
+
+  describe('sealed answers (#875)', () => {
+    test('with a pinned key the Worker receives an opaque envelope', async () => {
+      const daemon = await generateAnswerKeyPair();
+      let received: Record<string, unknown> | null = null;
+      const server = Bun.serve({
+        port: 0,
+        fetch: async (req) => {
+          received = (await req.json()) as Record<string, unknown>;
+          return new Response(JSON.stringify({ result: 'delivered' }), { status: 200 });
+        },
+      });
+      try {
+        const result = await relayAnswerViaSignaling({
+          signalingUrl: `http://127.0.0.1:${server.port}`,
+          code: 'WXYZ-2345',
+          // Hyphenated UUIDs, NOT short tokens. The assertions below check the
+          // base64 envelope does not CONTAIN these. Base64's alphabet includes
+          // s, q and 1, so 's1'/'q1' appear in a ~250-char random envelope
+          // roughly 6% of the time each -- this test failed on unrelated PRs at
+          // about that rate. '-' is outside the base64 alphabet, so a
+          // hyphenated UUID can never occur by chance. `shared/tests/
+          // sealed-answer.test.ts` already used full UUIDs for this reason.
+          sessionId: '0199f3a1-0000-7000-8000-000000000001',
+          questionId: '0199f3a1-0000-7000-8000-000000000002',
+          answer: 'Yes, deploy',
+          authRequired: false,
+          answerEncryptionKey: daemon.publicKeyBase64,
+        });
+        expect(result).toEqual({ kind: 'delivered' });
+
+        // The Worker's entire view.
+        const body = received as unknown as Record<string, unknown>;
+        const wire = JSON.stringify(body);
+        expect(wire).not.toContain('Yes, deploy');
+        expect(wire).not.toContain('0199f3a1-0000-7000-8000-000000000001');
+        expect(wire).not.toContain('0199f3a1-0000-7000-8000-000000000002');
+        expect(typeof body['sealed']).toBe('string');
+        expect(typeof body['ephemeralPublicKey']).toBe('string');
+
+        // ...and the daemon still gets everything it needs.
+        const opened = (await openSealedAnswer(
+          daemon.privateKeyPkcs8Base64,
+          body as unknown as { ephemeralPublicKey: string; sealed: string },
+        )) as Record<string, unknown>;
+        expect(opened['sessionId']).toBe('0199f3a1-0000-7000-8000-000000000001');
+        expect(opened['answer']).toBe('Yes, deploy');
+      } finally {
+        server.stop();
+      }
+    });
+
+    test('without a pinned key it refuses instead of sending plaintext', async () => {
+      // The whole point: a fallback here would hand the Worker the answer.
+      let called = false;
+      const server = Bun.serve({
+        port: 0,
+        fetch: () => {
+          called = true;
+          return new Response(JSON.stringify({ result: 'delivered' }), { status: 200 });
+        },
+      });
+      try {
+        const result = await relayAnswerViaSignaling({
+          signalingUrl: `http://127.0.0.1:${server.port}`,
+          code: 'WXYZ-2345',
+          sessionId: 's1',
+          questionId: 'q1',
+          answer: 'Yes',
+          authRequired: false,
+        });
+        expect(result.kind).toBe('unreachable');
+        expect(called).toBe(false);
+      } finally {
+        server.stop();
+      }
+    });
+
+    test('the auth block is sealed too, so the Worker cannot see who answered', async () => {
+      // Signing needs an identity present, same setup the auth tests above use.
+      const unencrypted = await createIdentity();
+      store.setItem('remi-identity', serializeIdentity(unencrypted));
+      const daemon = await generateAnswerKeyPair();
+      let received: Record<string, unknown> | null = null;
+      const server = Bun.serve({
+        port: 0,
+        fetch: async (req) => {
+          received = (await req.json()) as Record<string, unknown>;
+          return new Response(JSON.stringify({ result: 'delivered' }), { status: 200 });
+        },
+      });
+      try {
+        await relayAnswerViaSignaling({
+          signalingUrl: `http://127.0.0.1:${server.port}`,
+          code: 'WXYZ-2345',
+          sessionId: 's1',
+          questionId: 'q1',
+          answer: 'Yes',
+          authRequired: true,
+          answerEncryptionKey: daemon.publicKeyBase64,
+        });
+        const body = received as unknown as Record<string, unknown>;
+        expect(JSON.stringify(body)).not.toContain('clientFingerprint');
+        const opened = (await openSealedAnswer(
+          daemon.privateKeyPkcs8Base64,
+          body as unknown as { ephemeralPublicKey: string; sealed: string },
+        )) as Record<string, unknown>;
+        expect(opened['auth']).toBeTruthy();
+      } finally {
+        server.stop();
+      }
+    });
   });
 });

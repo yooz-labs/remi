@@ -37,8 +37,10 @@ describe('HookServer -> HookEventBridge (HTTP integration)', () => {
       onStatusChange: (status, context) => {
         statuses.push(context !== undefined ? { status, context } : { status });
       },
-      onQuestion: (q) => questions.push(q),
-      onSessionInfo: () => {},
+      onQuestion: (q) => {
+        questions.push(q);
+        return undefined;
+      },
     });
 
     server = new HookServer({ port: 0 });
@@ -129,8 +131,10 @@ describe('HookServer -> HookEventBridge (HTTP integration)', () => {
     const questions: Question[] = [];
     const bridge = new HookEventBridge('session-1' as UUID, {
       onStatusChange: () => {},
-      onQuestion: (q) => questions.push(q),
-      onSessionInfo: () => {},
+      onQuestion: (q) => {
+        questions.push(q);
+        return undefined;
+      },
     });
     server = new HookServer({ port: 0 });
     const h = bridge.hookHandlers();
@@ -178,8 +182,7 @@ describe('HookServer -> HookEventBridge (HTTP integration)', () => {
   test('PreToolUse without tool_use_id degrades gracefully (no context)', async () => {
     const bridge = new HookEventBridge('session-1' as UUID, {
       onStatusChange: () => {},
-      onQuestion: () => {},
-      onSessionInfo: () => {},
+      onQuestion: () => undefined,
     });
 
     server = new HookServer({ port: 0 });

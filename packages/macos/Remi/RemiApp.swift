@@ -35,6 +35,15 @@ struct RemiApp: App {
                     NSApp.activate(ignoringOtherApps: true)
                 }
             }
+            // A hub answered but rejected this app's identity (#872) — the
+            // onboarding panel explains why in words, same call-to-action
+            // shape as "Set Up Hub…" above.
+            if case .rejected = hubClient.phase {
+                Button("Hub Doesn't Trust This App…") {
+                    openWindow(id: "main")
+                    NSApp.activate(ignoringOtherApps: true)
+                }
+            }
             // The hub confirmed no LaunchAgent is installed (#788): remote
             // access silently stops working after the next logout/reboot.
             // Routes to Settings, the same place the fix lives, via the

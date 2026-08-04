@@ -1,0 +1,8 @@
+{
+  "type": "hello",
+  "id": "9221b526-c6aa-43c7-af64-5b84ab3738f8",
+  "timestamp": "2026-07-29T11:27:08.612Z",
+  "clientVersion": "1.0.0",
+  "clientId": "fixture-client-id",
+  "directory": "/Users/fixture/project"
+}

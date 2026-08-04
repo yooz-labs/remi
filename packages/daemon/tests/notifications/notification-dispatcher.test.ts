@@ -1126,3 +1126,146 @@ describe('isTokenInvalidError (#603 Phase 6)', () => {
     expect(isTokenInvalidError(new TypeError('Failed to fetch'))).toBe(false);
   });
 });
+
+describe('NotificationDispatcher per-device push preferences (#968)', () => {
+  let registry: SessionRegistry;
+  let deviceTokens: Map<string, DeviceTokenEntry>;
+  let pushed: Array<{ token: string; opts: Record<string, unknown> }>;
+  const SID = 's0000000-0000-0000-0000-000000000000' as UUID;
+  const CID = 'c0000000-0000-0000-0000-000000000000' as UUID;
+  const QID = 'q0000000-0000-0000-0000-000000000000' as UUID;
+
+  const pushFn: PushFn = async (_url, token, opts) => {
+    pushed.push({ token, opts: opts as unknown as Record<string, unknown> });
+  };
+
+  function make(): NotificationDispatcher {
+    return new NotificationDispatcher(
+      {
+        sessionRegistry: registry,
+        deviceTokens,
+        pushConfig: () => ({ signalingUrl: 'ws://x' }),
+        getPrimarySessionId: () => null,
+        pushFn,
+      },
+      SID,
+    );
+  }
+
+  function register(attach: boolean): void {
+    registry.registerSession(SID, '/d', fakePTY(), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    if (attach) registry.attachConnection(SID, CID);
+  }
+
+  function token(
+    name: string,
+    prefs?: { questions: boolean; turnComplete: boolean },
+  ): DeviceTokenEntry {
+    return {
+      token: name,
+      platform: 'ios',
+      registeredAt: 1,
+      connectionId: SID,
+      ...(prefs !== undefined && { pushPrefs: prefs }),
+    };
+  }
+
+  beforeEach(() => {
+    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    deviceTokens = new Map();
+    pushed = [];
+    configureLogger({ writeLog: () => {} });
+  });
+
+  afterEach(async () => {
+    __resetLoggerForTests();
+    await registry.shutdown();
+  });
+
+  test('maybePush skips a device that muted questions and pushes the others', async () => {
+    register(false);
+    deviceTokens.set('muted', token('muted', { questions: false, turnComplete: true }));
+    deviceTokens.set('wants', token('wants', { questions: true, turnComplete: true }));
+
+    const outcome = await make().maybePush(SID, question('q1', [yesOpt, noOpt]));
+
+    expect(pushed.map((p) => p.token)).toEqual(['wants']);
+    expect(outcome).toBe('pushed');
+  });
+
+  test('a legacy entry with no stored preferences still receives question pushes', async () => {
+    register(false);
+    deviceTokens.set('legacy', token('legacy'));
+
+    const outcome = await make().maybePush(SID, question('q1', [yesOpt, noOpt]));
+
+    expect(pushed.map((p) => p.token)).toEqual(['legacy']);
+    expect(outcome).toBe('pushed');
+  });
+
+  test('every device muted + no client attached reports no_channel, not pushed', async () => {
+    // The load-bearing case. `awaitDelivery` decides whether a HELD hook keeps
+    // Claude blocked; reporting `pushed` for a fan-out of zero would block the
+    // hook on a card that will never appear on any lock screen. `no_channel`
+    // fails the hold open fast instead.
+    register(false);
+    deviceTokens.set('a', token('a', { questions: false, turnComplete: true }));
+    deviceTokens.set('b', token('b', { questions: false, turnComplete: false }));
+
+    const outcome = await make().maybePush(SID, question('q1', [yesOpt, noOpt]), { held: true });
+
+    expect(pushed).toHaveLength(0);
+    expect(outcome).toBe('no_channel');
+  });
+
+  test('every device muted WITH a client attached still reports in_app', async () => {
+    // The user is reachable over the socket, so the held hook may keep waiting;
+    // only the push channel is gone.
+    register(true);
+    deviceTokens.set('a', token('a', { questions: false, turnComplete: true }));
+
+    const outcome = await make().maybePush(SID, question('q1', [yesOpt, noOpt]), { held: true });
+
+    expect(pushed).toHaveLength(0);
+    expect(outcome).toBe('in_app');
+  });
+
+  test('question pushes carry kind=question', async () => {
+    register(false);
+    deviceTokens.set('a', token('a'));
+
+    await make().maybePush(SID, question('q1', [yesOpt, noOpt]));
+
+    expect(pushed[0]?.opts['kind']).toBe('question');
+  });
+
+  test('dismiss still reaches a device that muted BOTH classes', () => {
+    // Muting must never strand an already-delivered card on the lock screen of
+    // the very device that asked for less noise.
+    register(false);
+    deviceTokens.set('muted', token('muted', { questions: false, turnComplete: false }));
+
+    make().dismiss(SID, QID);
+
+    expect(pushed.map((p) => p.token)).toEqual(['muted']);
+    expect(pushed[0]?.opts['dismiss']).toBe(true);
+    expect(pushed[0]?.opts['kind']).toBe('dismiss');
+  });
+
+  test('pushHoldTimeoutHandoff skips a device that muted questions', () => {
+    // Unlike dismiss, the handoff is a visible buzzing card about a question and
+    // clears nothing, so skipping it strands nothing.
+    register(false);
+    deviceTokens.set('muted', token('muted', { questions: false, turnComplete: true }));
+    deviceTokens.set('wants', token('wants', { questions: true, turnComplete: false }));
+
+    make().pushHoldTimeoutHandoff(SID, QID);
+
+    expect(pushed.map((p) => p.token)).toEqual(['wants']);
+    expect(pushed[0]?.opts['kind']).toBe('question');
+  });
+});

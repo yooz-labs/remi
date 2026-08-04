@@ -34,13 +34,55 @@
  * still open for THAT agent (the terminal-rejection case a matching tool
  * call can never signal, since a deny produces no tool call at all).
  *
+ * #889 (Q4) adds two more observe-only resolution/surfacing paths, both
+ * registered in `REMI_REGISTERED_HOOK_EVENTS` for the first time here:
+ *   - `PermissionDenied` routes into the SAME external-resolution funnel as
+ *     PreToolUse/PostToolUse (`gate.cancelExternallyResolved`) — a classifier
+ *     denial fires no tool call, so without this a still-open escalation for
+ *     it would linger with no other resolution signal.
+ *   - `Elicitation` builds an answerable card (`hookBridge.handleElicitation`,
+ *     source `'elicitation'`, direct-emitted like a source-less StopFailure
+ *     card) instead of leaving an MCP dialog as a PTY orphan; `elicitationQuestions`
+ *     (below) remembers its `elicitation_id` so a later `ElicitationResult`
+ *     can resolve the SAME card by exact id, mirroring PermissionDenied's
+ *     "close the lingering-card gap" shape.
+ *
+ * #893 (Q9) adds a 4th newly-registered event: `UserPromptSubmit`. Unlike
+ * Q4's three (resolution/surfacing), this one FEEDS a decision input rather
+ * than resolving a question: its listener pushes the human's typed `prompt`
+ * into `authorityStore` (an `AuthorityStore`, `auto-approve/authority.ts`),
+ * the PRIMARY source for the auto-approve prompt's CONVERSATION CONTEXT block
+ * (`AutoApproveGateDeps.getAuthority`, wired into the gate below). A filtered
+ * transcript read is the FALLBACK for a resumed session's prior turns, which
+ * this registration never saw fire for. See `authority.ts`'s module doc for
+ * the trust boundary this feature is built around, INCLUDING why the
+ * listener also runs `isWrappedNonHumanText` over `input.prompt` before
+ * recording it -- defense in depth for an unverified premise (#938), not
+ * proof the primary source is clean.
+ *
  * This listener block IS the per-session hook router (admit-then-fan-out); a
  * formal HookRouter class is deferred to a later refactor (#470). The function
- * registers 11 hookServer listeners — the original 7 (SessionStart, PreToolUse,
- * PostToolUse, Notification, PermissionRequest, Stop, SessionEnd) plus the 4
+ * registers 13 hookServer `.on()` listeners — the original 5 still standing
+ * (PreToolUse, PostToolUse, Notification, Stop, SessionEnd; PermissionRequest
+ * is installed separately via `setPermissionResolver`, not `.on()`) plus the 4
  * wired in phase 4 (StopFailure, PostToolUseFailure, SubagentStart, SubagentStop)
- * — and returns void. It runs once per session at createNewSession time, only
- * when a hookServer is configured.
+ * plus the 3 wired for Q4 (#889: PermissionDenied, Elicitation,
+ * ElicitationResult) plus the 1 wired for Q9 (#893: UserPromptSubmit) — and
+ * returns void. It runs once per session at createNewSession time, only when
+ * a hookServer is configured.
+ *
+ * #930 REMOVES the `SessionStart` listener that used to make this 14 (the
+ * "original 6"): Claude Code hard-discards `http`-type hook registrations for
+ * `SessionStart`/`Setup` before dispatch, confirmed by binary extraction
+ * against 2.1.220 and independently by 5,000+ captured events containing zero
+ * `SessionStart` records, so the listener never ran. Its three legs were each
+ * already covered elsewhere: the restart pre-empt has a designed no-hooks
+ * mirror (`TranscriptBinder.feedSyntheticRotation`, #452/#453), every other
+ * listener below already calls `binder.onHookEvent` as its first line, and
+ * the subagent-context reset + `onSessionInfo` leg (`HookEventBridge.
+ * handleSessionStart`) was deleted outright -- `onSessionInfo` was wired to a
+ * literal no-op regardless. `TranscriptBinder.preemptOnSessionStart` itself
+ * is KEPT; `feedSyntheticRotation` is its only remaining caller.
  *
  * The inline session-binding path this file used to also carry (pre-#453) and
  * the shadow-mode differential wiring (#453 phase 3, commit 3) were deleted in
@@ -50,14 +92,25 @@
 import { createSessionUpdate, createSessionViews, errorToString } from '@remi/shared';
 import type { AgentStatus, ProtocolMessage, UUID } from '@remi/shared';
 
-import type { MessageAPI } from '../../api/message-api.ts';
+import type { MessageAPI, QuestionRegistrationOutcome } from '../../api/message-api.ts';
 import type { QuestionPresenceTracker } from '../../api/question-presence-tracker.ts';
 import type { SubagentViewRegistry } from '../../api/subagent-view-registry.ts';
-import { AutoApproveGate } from '../../auto-approve/index.ts';
+import {
+  AuthorityStore,
+  AutoApproveGate,
+  isNonHumanForAuthority,
+  resolveAuthority,
+} from '../../auto-approve/index.ts';
 import type { AutoApproveService } from '../../auto-approve/index.ts';
+// Not re-exported from `auto-approve/index.ts` on purpose (#976 prerequisite
+// scope: that barrel is being edited concurrently by other work on the same
+// epic). Imported directly from its own module instead.
+import { PrecedentStore } from '../../auto-approve/precedent.ts';
+import type { DenySource } from '../../auto-approve/types.ts';
 import { HookEventBridge } from '../../hooks/index.ts';
 import type {
   ForeignSessionEscalator,
+  HookInput,
   HookServer,
   PermissionRequestHookInput,
 } from '../../hooks/index.ts';
@@ -72,6 +125,30 @@ import type { TranscriptWatcher } from '../../transcript/index.ts';
 import type { TranscriptDiscovery } from '../../transcript/transcript-discovery.ts';
 import { log, logError } from '../logger.ts';
 import type { StatusWriter } from '../status-writer.ts';
+
+/**
+ * Cap for the Stop-turn log line (#891). `last_assistant_message` can run
+ * several paragraphs (real captures in `~/.remi/hook-diag.jsonl` include
+ * multi-paragraph reviewer summaries); this is a LOG line, not a client
+ * surface, so it is bounded so one verbose turn cannot dominate the daemon
+ * log. Whitespace (including embedded newlines) is collapsed for the same
+ * reason `notification-dispatcher.ts` normalizes push text.
+ */
+const STOP_LOG_MESSAGE_MAX = 200;
+
+/** Truncate + collapse whitespace in a hook-carried message for a single log line. */
+function summarizeForLog(text: string, max: number): string {
+  const collapsed = text.replace(/\s+/g, ' ').trim();
+  return collapsed.length > max ? `${collapsed.slice(0, max)}…` : collapsed;
+}
+
+/**
+ * Threshold above which a PostToolUse `duration_ms` is logged (#891). Tool
+ * calls are frequent (1220 in one real `~/.remi/hook-diag.jsonl` capture, 100%
+ * carrying `duration_ms`) so logging every one would be pure noise; only a
+ * genuinely slow call is operationally interesting.
+ */
+const SLOW_TOOL_MS = 5_000;
 
 export interface HookBridgeDeps {
   sessionRegistry: SessionRegistry;
@@ -181,6 +258,17 @@ export interface HookBridgeDeps {
    * `foreignSessionEscalator` above). Absent => no alert, no audit line.
    */
   onSubagentPassthrough?: (input: PermissionRequestHookInput) => void;
+  /**
+   * Observer for every `deny` the gate returns to the hook (#1015). Forwarded
+   * verbatim to the gate's `onAutoDenied`; see that dep's doc for why a deny
+   * is the one verdict with no user-facing surface of its own.
+   *
+   * Supplied by `cli.ts`, which owns the push transport — same reasoning as
+   * `onSubagentPassthrough` above. Absent => a deny stays invisible, which is
+   * the pre-#1015 behavior and is correct for tests that build their own
+   * bridge without push wiring.
+   */
+  onAutoDenied?: (input: PermissionRequestHookInput, source: DenySource, reasoning: string) => void;
 }
 
 export interface HookBridgeArgs {
@@ -241,6 +329,18 @@ export interface HookBridgeHandle {
    *  not surfaced to the user. */
   bridge: HookEventBridge;
   /**
+   * Does this session's binder claim the event? (#914)
+   *
+   * Every listener inside `setupHookBridge` already consults `binder.admits()`;
+   * this exposes the same filter to listeners registered OUTSIDE it. Needed
+   * because two daemons in the SAME project directory each append their own
+   * matcher to the shared `.claude/settings.local.json` hooks array
+   * (`HookConfigManager.install` matches on `h.url`, so a second daemon adds
+   * rather than replaces), and Claude Code POSTs every event to both. A
+   * listener without this filter cannot tell whose turn it is looking at.
+   */
+  admits: (input: HookInput) => boolean;
+  /**
    * Tear down the `TranscriptBinder` for this session (its watcher, fallback
    * timer, and the #452 rotation dir-poll). The caller must invoke this on
    * session teardown so the binder's rotation dir-poll interval — which the
@@ -254,6 +354,16 @@ export interface HookBridgeHandle {
    * this exact session. Always present (the gate is constructed unconditionally).
    */
   gate: SessionGateHandle;
+  /**
+   * This session's precedent store (#976 prerequisite,
+   * `auto-approve/precedent.ts`). cli.ts collects this (keyed by sessionId,
+   * mirroring `sessionGateHandles`) so `input-events.ts`'s `handleAnswer` can
+   * reach the RIGHT session's store through the `recordPrecedent` dependency.
+   * Always present (constructed unconditionally, like `gate`); cleared on
+   * session restart inside this closure (see the `onRotation` callback
+   * above), not by the caller.
+   */
+  precedentStore: PrecedentStore;
 }
 
 export function setupHookBridge(
@@ -272,6 +382,27 @@ export function setupHookBridge(
     subagentViews,
   } = deps;
   const { hookServer, sessionId, workingDirectory, messageApi, sendAndRecord, tracker } = args;
+
+  // ---- Authority (#893, Q9) --------------------------------------------------
+  // PRIMARY source: `UserPromptSubmit`'s `prompt` field, recorded verbatim by
+  // the listener registered below (a cheap in-memory push; see the policy
+  // comment at hook-types.ts:660). FALLBACK: the transcript, for a resumed
+  // session's prior turns, which this daemon's `UserPromptSubmit` registration
+  // never saw fire (`resolveAuthority`, `auto-approve/authority.ts`, filters
+  // out tool-result and wrapper-tagged transcript entries the hook path never
+  // has to worry about). Read fresh per eval via `AutoApproveGateDeps.
+  // getAuthority` below, so a turn submitted mid-eval is picked up for the
+  // NEXT permission, not stale.
+  const authorityStore = new AuthorityStore();
+
+  // ---- Precedent (#976 prerequisite, ADR 0015 amendment) --------------------
+  // Per-session, in-memory record of operations a HUMAN actually answered
+  // (`auto-approve/precedent.ts`). Recorded ONLY from `handleAnswer`
+  // (`input-events.ts`) via the `recordPrecedent` callback cli.ts wires
+  // through this handle's `precedentStore` field below — see that module's
+  // doc for the full provenance-safety argument. ADDITIVE ONLY here: nothing
+  // reads from it yet.
+  const precedentStore = new PrecedentStore();
 
   // Push the session's subagent views to clients (epic #499 phase 3). Declared
   // here (before the binder/handlers reference it) so there is no fragile
@@ -320,6 +451,130 @@ export function setupHookBridge(
     sessionRegistry.clearQuestions(sessionId, 'session_restart');
   };
 
+  // ---- Elicitation correlation (#889, Q4) ----------------------------------
+  //
+  // `Elicitation` builds a card via `hookBridge.handleElicitation`, direct-
+  // emitted (source 'elicitation', not stashed by the tracker -- see the
+  // module doc above). `ElicitationResult` is the resolution signal: both
+  // events carry `elicitation_id` (optional -- absent on either side means no
+  // correlation is possible, same graceful-degradation as PermissionRequest's
+  // missing tool_use_id), an EXACT key, so this map is a simple id->id lookup
+  // rather than the tool-signature matching `openQuestionSignatures` needs.
+  // Scoped to this session's closure (dropped with the bridge on teardown, so
+  // it cannot outlive the session); capped defensively so a pathological
+  // stream of never-resolved elicitations cannot grow it unbounded within one
+  // session's lifetime. Same motivation as `AutoApproveGate`'s
+  // `MAX_PARKED_INPUTS` but deliberately a smaller number, not a mirror of it
+  // (that one is 64, `auto-approve-gate.ts`): an MCP dialog per session is far
+  // rarer than a parked permission input.
+  const MAX_PENDING_ELICITATIONS = 32;
+  const elicitationQuestions = new Map<string, UUID>();
+  /**
+   * Record `elicitation_id -> questionId`, but NEVER let an id that is not a
+   * live registered card displace one that is (review finding on #889).
+   *
+   * `handleElicitation` mints an id and returns it unconditionally, but the
+   * emission behind it is fire-and-forget and can be dropped: `MessageAPI.
+   * handleQuestion` skips `addQuestion` when `QuestionDedup.shouldEmit` is
+   * false (`message-api.ts`) -- reported honestly today via its
+   * `QuestionRegistrationOutcome` return (#888 criterion iii; before that
+   * fix, `handleQuestion` returned `void` and the caller had to re-query
+   * `SessionRegistry` to find out). A re-fired `Elicitation` for the SAME
+   * `elicitation_id` is exactly that dedup case — same `mcp_server_name`/
+   * `message` text, same `options: []` + `allowsFreeText: true`, so never
+   * "richer" — and the dedup baseline is still live because `handleElicitation`
+   * emits the question BEFORE its `onStatusChange('waiting')`, so status
+   * never leaves 'waiting' to reset it. Overwriting blindly therefore
+   * pointed the map at a card that was never registered, leaving the FIRST
+   * card (the one the user can actually see) unreachable: `ElicitationResult`
+   * resolved the phantom, and the live card could only clear by the user
+   * answering it or LRU eviction. Same defect class as #925 — a resolution
+   * path that cannot reach the question it is for — so the same guard:
+   * confirm the target is really registered.
+   *
+   * Note the rule is the OPPOSITE of `cancelExternallyResolved`-before-
+   * register (`auto-approve-gate.ts`), which resolves the earlier entry so the
+   * newer one wins. There, a re-requested permission genuinely re-renders, so
+   * newest is the live prompt. Here a re-fired `Elicitation` is the SAME MCP
+   * dialog, and the newer card is the one that does not exist; keeping the
+   * older, still-live card is what makes `ElicitationResult` able to close it.
+   */
+  const rememberElicitation = (
+    elicitationId: string,
+    questionId: UUID,
+    outcome: QuestionRegistrationOutcome | undefined,
+  ): void => {
+    const previous = elicitationQuestions.get(elicitationId);
+    if (previous !== undefined && previous !== questionId) {
+      // Distinct question, about the PREVIOUSLY tracked entry: whether THAT
+      // card is still live right now cannot come from this call's own return
+      // value (it is about a different id, possibly minutes old), so this
+      // half genuinely has to ask the store.
+      const previousIsLive = sessionRegistry.getQuestion(sessionId, previous) !== null;
+      if (previousIsLive) {
+        logError(
+          `[Hooks] Elicitation re-fired for ${elicitationId} while its card ${previous} is still live; keeping it (not tracking ${questionId}) so ElicitationResult resolves the card the user can see`,
+        );
+        return;
+      }
+    }
+    // Confirmed delivery, the #925 gate (#888 criterion iii): consumes the
+    // `QuestionRegistrationOutcome` `handleElicitation` already returned for
+    // THIS exact call, instead of re-querying `SessionRegistry` after the
+    // fact -- the information flows from the call itself, which is
+    // synchronous end to end (`handleElicitation` -> `onQuestion` ->
+    // `MessageAPI.handleQuestion` -> `QuestionDedup` -> `addQuestion`), so the
+    // returned outcome is exactly as current as a post-hoc query would have
+    // been. Tracking an id that never registered would make
+    // `ElicitationResult` broadcast a dismiss for a card no client ever saw
+    // and consume a slot under `MAX_PENDING_ELICITATIONS` for nothing.
+    if (outcome?.status !== 'registered') {
+      logError(
+        `[Hooks] Elicitation card ${questionId} for ${elicitationId} was not registered (deduped as a repeat of a still-open prompt); not tracking it`,
+      );
+      return;
+    }
+    if (elicitationQuestions.size >= MAX_PENDING_ELICITATIONS) {
+      const oldest = elicitationQuestions.keys().next();
+      if (!oldest.done) {
+        elicitationQuestions.delete(oldest.value);
+        logError(
+          `[Hooks] elicitationQuestions at cap (${MAX_PENDING_ELICITATIONS}) for ${sessionId}; evicted the oldest tracked elicitation -- its ElicitationResult (if any) will no longer resolve its card`,
+        );
+      }
+    }
+    elicitationQuestions.set(elicitationId, questionId);
+  };
+  /** Resolve + clear a previously-pushed elicitation card by its exact
+   *  `elicitation_id`. A no-op when nothing is tracked under that id (no
+   *  correlation was possible, already resolved, or evicted at the cap) --
+   *  mirrors `cancelExternallyResolved`'s own no-op-on-no-match safety. */
+  const resolveElicitation = (elicitationId: string): void => {
+    const questionId = elicitationQuestions.get(elicitationId);
+    if (!questionId) return;
+    elicitationQuestions.delete(elicitationId);
+    try {
+      deps.broadcastQuestionResolved?.(sessionId, questionId, 'cancelled');
+    } catch (err) {
+      logError(
+        `[Hooks] question_resolved broadcast (ElicitationResult) failed for ${questionId}: ${errorToString(err)}`,
+      );
+    }
+    try {
+      sessionRegistry.removeQuestion(
+        sessionId,
+        questionId,
+        'ElicitationResult',
+        undefined,
+        'setupHookBridge.resolveElicitation',
+      );
+    } catch (err) {
+      logError(
+        `[Hooks] removeQuestion (ElicitationResult) failed for ${questionId}: ${errorToString(err)}`,
+      );
+    }
+  };
+
   // ---- Bridge + hook handler registration ---------------------------------
 
   const hookBridge = new HookEventBridge(sessionId, {
@@ -333,28 +588,28 @@ export function setupHookBridge(
       // via onHeldEscalate, passthrough via escalatePassthrough). recordPendingHook
       // only stashes; it never emits on its own.
       //   - 'permission_request' (rich: tool + command + options) is the one the gate
-      //     escalates and pushes by id.
-      //   - 'notification' is Claude's redundant generic "needs your permission"
-      //     prompt; it is INTENTIONALLY stashed-and-suppressed (NOT routed to the
-      //     direct-emit path), because direct-emitting it would push for EVERY
-      //     permission — including auto-approved ones — which is exactly the phantom
-      //     #625 removes. It is bounded (one per agent) and cleared on status-leaves-
-      //     waiting. (Assumes Claude pairs it with a PermissionRequest, true today.)
+      //     escalates and pushes by id. This is the ONLY source stashed here now:
+      //     `HookEventBridge` used to also synthesize a redundant generic
+      //     'notification' question from Claude's Notification(permission_prompt)
+      //     (Claude still fires it — it just pairs with the PermissionRequest above
+      //     rather than producing a second Question); #890/Q5 deleted that
+      //     synthesis after a capture corpus found 0 unpaired occurrences across
+      //     4244 events / 5 sessions / one day (see `handleNotification`'s own
+      //     comment for the full argument + residual failure mode).
       // A STANDALONE hook question that no gate pushes (e.g. a Stop-failure "Retry?",
-      // source-less) is emitted directly to the client + lock screen, since the
-      // PTY-render push that used to deliver it is suppressed for hooked sessions.
-      if (question.source === 'permission_request' || question.source === 'notification') {
+      // source-less, or an 'elicitation' card, #889) is emitted directly to the
+      // client + lock screen, since the PTY-render push that used to deliver it
+      // is suppressed for hooked sessions.
+      if (question.source === 'permission_request') {
+        // recordPendingHook only stashes -- no `handleQuestion` call happens
+        // here, so there is no registration outcome to report (#888 criterion
+        // iii). This question is not registered until a later PTY render
+        // pairs with it (`QuestionPresenceTracker.pairAndPush`).
         tracker.recordPendingHook(question);
-      } else {
-        messageApi.handleQuestion(question);
+        return undefined;
       }
+      return messageApi.handleQuestion(question);
     },
-    // The binder's onHookEvent (fired from the SessionStart listener) already
-    // subsumes the bind/rotation this callback used to perform inline (#470).
-    // The bridge still fires it (status/subagent tracking lives on
-    // handlers.onSessionStart), but the binding control plane is the binder's
-    // alone, so there is nothing left to do here.
-    onSessionInfo: () => {},
   });
 
   const handlers = hookBridge.hookHandlers();
@@ -381,6 +636,56 @@ export function setupHookBridge(
     }
   };
 
+  /**
+   * Return clients to the session's REAL status after an eval ended without a
+   * verdict (#970).
+   *
+   * Because `broadcastAutoApproveStatus` is client-only by design (see the note
+   * above), the daemon holds no record that clients are showing `evaluating` —
+   * the pill is fire-and-forget display state, and only another broadcast or a
+   * later hook can move it off. That made the client cue NOT total over the
+   * gate's end paths, unlike the terminal one, whose own invariant
+   * (`status-writer.ts`: "the count returns to 0 and the 'evaluating' cue can
+   * never get stuck") holds precisely because every end path decrements it.
+   * The full enumeration, corrected against the live code (an earlier pass at
+   * this table, ADR 0020, asserted two rows below without checking their call
+   * sites — see the #970 note on `AutoApproveGate.resolveHeld`):
+   *
+   *   onHandled                    -> 'approved' broadcast (covered)
+   *   onEscalate                   -> the question path's 'waiting' (covered, indirectly)
+   *   onCancelled                  -> NOTHING                (closed by this function, PR #973)
+   *   resolveHeld (Part-B allow/deny) -> markHandled -> onHandled -> 'approved' (ALREADY covered;
+   *                                    resolveHeld calls markHandled unconditionally, #711)
+   *   releaseHeld, hold-timeout / undelivered fail-open -> NOTHING NEEDED ('waiting' from
+   *                                    the hold's own onEscalate is still accurate: same
+   *                                    permission, now rendered in the terminal instead)
+   *   releaseHeld, Part-B cancelled -> NOTHING            (closed by onHeldCancelled below)
+   *   releaseHeld, Stop/SessionEnd/external-resolve/SubagentStop -> NOTHING NEEDED (the
+   *                                    driving hook event's own onStatusChange covers it,
+   *                                    or — SubagentStop — no MAIN pill was ever moved)
+   *
+   * A cancelled verdict self-healed only when a later `Stop`/`SessionEnd`
+   * `idle` or a `PreToolUse` `executing` happened to follow. None is guaranteed
+   * — and by construction none arrives when the eval was cancelled at the end
+   * of a turn or during a disconnect, which is exactly when it was observed
+   * stuck. The same reasoning applies to a HELD hook's Part-B cancelled
+   * branch, which is why `onHeldCancelled` reuses this exact function.
+   *
+   * Broadcasts the registry's CURRENT status rather than a chosen constant. The
+   * gate does not know what the session became (nothing was approved, denied,
+   * or escalated), so any fixed value would be a guess, and a wrong status is
+   * the same class of bug as a stuck one. Reading the status the daemon already
+   * tracks is honest by construction: "stop showing evaluating; here is what
+   * this session actually is."
+   */
+  const broadcastCurrentStatus = (): void => {
+    const current = sessionRegistry.getSession(sessionId)?.currentStatus;
+    // No session (torn down mid-eval): nothing to correct, and inventing a
+    // status for a session that no longer exists would be worse than silence.
+    if (current === undefined) return;
+    broadcastAutoApproveStatus(current);
+  };
+
   // Auto-approve control plane (#453 phase 1): owns the PermissionRequest eval +
   // inject + escalate + cancelStale. Constructed after the bridge + handlers so it
   // can wrap the two outward couplings (isInSubagentContext, onPermissionRequest) as
@@ -391,6 +696,30 @@ export function setupHookBridge(
       sessionRegistry,
       tracker,
       isInSubagentContext: () => hookBridge.isInSubagentContext(),
+      // #893 (Q9): resolve this eval's authority text fresh — the live
+      // UserPromptSubmit-fed store, or the filtered transcript fallback when
+      // the store has recorded nothing yet this session. Both reads are
+      // synchronous and in-memory (see the module doc above); no disk I/O on
+      // this call path.
+      getAuthority: () =>
+        resolveAuthority(
+          authorityStore,
+          () => transcriptWatchers.get(sessionId)?.getUserMessages() ?? [],
+        ),
+      // #976: THIS session's precedent, read-only. The store itself is never
+      // handed out — `handleAnswer` stays the single writer by construction,
+      // which is what keeps the gate from recording its own ADR-0004
+      // arbitration verdicts as human precedent (see `precedent.ts`).
+      //
+      // The `PrecedentStore` methods are read via a fresh object rather than
+      // by passing the store: passing it would satisfy `PrecedentReader`
+      // structurally (TypeScript is structural, so the extra `record` comes
+      // along) and the write surface would be one cast away at any future call
+      // site. This closes it over the two methods and hands out nothing else.
+      getPrecedent: () => ({
+        matchApproved: (tool, signature) => precedentStore.matchApproved(tool, signature),
+        matchDenied: (tool, signature) => precedentStore.matchDenied(tool, signature),
+      }),
       // #710: lets the gate recover from a tracker leak (a MAIN-tagged
       // PermissionRequest observing isInSubagentContext() stuck true) instead
       // of denying the main agent forever.
@@ -414,6 +743,7 @@ export function setupHookBridge(
         return question.id;
       },
       ...(deps.onSubagentPassthrough ? { onSubagentPassthrough: deps.onSubagentPassthrough } : {}),
+      ...(deps.onAutoDenied ? { onAutoDenied: deps.onAutoDenied } : {}),
       // #484: buffer the PTY prompt while the eval runs; release it only on an
       // escalate verdict, so silently auto-approved permissions never push APNS.
       // #560: the same lifecycle drives the auto-approve cue in Claude's native
@@ -463,7 +793,30 @@ export function setupHookBridge(
         // #711: same subagent skip as onEvalStart above -- see that comment.
         if (!ctx.isSubagent) broadcastAutoApproveStatus('approved');
       },
-      onCancelled: () => deps.statusWriter?.autoApproveEnd('cancelled', Date.now()),
+      onCancelled: () => {
+        deps.statusWriter?.autoApproveEnd('cancelled', Date.now());
+        // #970: the client pill was moved to 'evaluating' by onEvalStart and
+        // this was the only end path that never moved it back. See
+        // `broadcastCurrentStatus` for why it re-broadcasts the real status
+        // instead of picking one.
+        //
+        // Unconditional, with no `isSubagent` skip like onEvalStart/onHandled
+        // have: this cue is reachable only from a MAIN-context eval, which is
+        // exactly the case that DID broadcast 'evaluating'. See the cue's own
+        // doc on `AutoApproveGateDeps` for why the subagent path cannot reach
+        // it (a cancelled parked render escalates instead).
+        broadcastCurrentStatus();
+      },
+      // #970 (follow-up to the onCancelled fix above): the HELD-hook sibling
+      // gap ADR 0020 left open. `reconcileLateVerdict`'s cancelled branch
+      // (Part B: the slow eval decides Claude already advanced past the
+      // prompt while the early push+hold was showing) calls `releaseHeld`,
+      // never `markHandled` -- so unlike a Part-B ALLOW/DENY late verdict
+      // (which already broadcasts 'approved' via `onHandled`, see the note on
+      // `AutoApproveGate.resolveHeld`), nothing corrected the pill here before
+      // this cue existed. Same fix as `onCancelled`: re-broadcast whatever the
+      // registry's CURRENT status actually is, not a guessed constant.
+      onHeldCancelled: () => broadcastCurrentStatus(),
       // #585: a held question that resolves without a user answer (Part-B late
       // verdict / hold timeout / cancelStale) tells the daemon to dismiss the
       // pushed card on every client. Forwarded with this session's id.
@@ -514,7 +867,7 @@ export function setupHookBridge(
   // transcript, so session-id filtering cannot distinguish them.
   //
   // Split policy:
-  //   - `PreToolUse` / `PostToolUse` / `SessionStart`: STATUS updates and
+  //   - `PreToolUse` / `PostToolUse`: STATUS updates and
   //     Task-tool tracking are dropped here so they stay scoped to the main
   //     interactive session. #799: Pre/PostToolUse additionally call
   //     `autoApproveGate.cancelExternallyResolved` (agent-scoped) before
@@ -564,6 +917,21 @@ export function setupHookBridge(
         // stale answers are refused.
         tracker.clearPending();
         resolveAndClearQuestions();
+        // #889: drop any elicitation_id correlations too -- their target
+        // questions were just cleared above, and a stale entry surviving into
+        // the new session could (in principle, if Claude Code ever reused an
+        // elicitation_id) resolve an unrelated future card.
+        elicitationQuestions.clear();
+        // #893: a PRIOR conversation's authority must not leak into a fresh
+        // one -- /clear, /resume, and /compact's restart case all start over.
+        // The transcript fallback re-derives naturally from the new
+        // transcript path once the binder re-adopts; only the live store
+        // needs an explicit drop.
+        authorityStore.clear();
+        // #976 prerequisite: same reasoning applies to precedent -- a PRIOR
+        // conversation's human answers must not authorize or block anything
+        // in a fresh one (ADR 0015 amendment, "Obligations this creates").
+        precedentStore.clear();
         // The new session starts with no subagents (#499 phase 3).
         if (subagentViews) {
           subagentViews.clear();
@@ -598,14 +966,6 @@ export function setupHookBridge(
       `[Binder] No pre-assigned claudeSessionId for ${sessionId.slice(0, 8)}; fallback poll + dir-watch not armed`,
     );
   }
-
-  hookServer.on('SessionStart', (input) => {
-    // The binder owns the pre-empt + bind. Pre-empt (flip its own
-    // mainSessionEnded) BEFORE onHookEvent, mirroring the pre-#453 order.
-    binder.preemptOnSessionStart(input);
-    binder.onHookEvent(input);
-    handlers.onSessionStart?.(input);
-  });
 
   hookServer.on('PreToolUse', (input) => {
     binder.onHookEvent(input);
@@ -660,6 +1020,15 @@ export function setupHookBridge(
   hookServer.on('PostToolUse', (input) => {
     binder.onHookEvent(input);
     if (!binder.admits(input)) return;
+    // #891: PostToolUse now carries duration_ms. No dedicated tool-activity
+    // tracker/UI exists to put it in yet (the epic notes a live view needs
+    // Q6's bus) -- this only stops discarding the signal that is actually
+    // operationally interesting: a genuinely slow tool call, for BOTH main
+    // and subagent activity (logged before the subagent-branch early return
+    // below).
+    if (typeof input.duration_ms === 'number' && input.duration_ms >= SLOW_TOOL_MS) {
+      log(`[Hooks] Slow tool: ${input.tool_name} took ${input.duration_ms}ms (${sessionId})`);
+    }
     if (isSubagentEvent(input)) {
       // #710: the subagent-context tracker pop must see EVERY admitted
       // PostToolUse, even one Claude Code stamps with the SPAWNED agent's own
@@ -765,6 +1134,18 @@ export function setupHookBridge(
     // nothing) and killed their in-flight evals. SessionEnd below is real
     // teardown and keeps the wholesale release/cancel.
     autoApproveGate.cancelStale('Stop', { mainOnly: true });
+    // #891: Stop now carries the turn's real content (last_assistant_message),
+    // previously dropped entirely. There is no client-facing surface to carry
+    // it to a phone/lock-screen yet -- `Session`/`SessionUpdateMessage` have no
+    // text field, and adding one is a protocol change out of scope here (see
+    // PR body). Until that lands, at least stop discarding it at the point it
+    // enters the daemon: log it (truncated) so the real turn-complete content
+    // is observable operationally instead of a bare "Status: idle".
+    if (!input.stop_hook_active && input.last_assistant_message) {
+      log(
+        `[Hooks] Turn complete (${sessionId}): ${summarizeForLog(input.last_assistant_message, STOP_LOG_MESSAGE_MAX)}`,
+      );
+    }
     handlers.onStop?.(input);
   });
   hookServer.on('SessionEnd', (input) => {
@@ -850,7 +1231,10 @@ export function setupHookBridge(
     binder.onHookEvent(input);
     if (!binder.admits(input)) return;
     try {
-      subagentViews?.recordStop(input.agent_id);
+      // #891: SubagentStop now carries agent_transcript_path directly;
+      // recordStop prefers it over the SubagentStart-time derivation (see
+      // subagent-view-registry.ts for the fallback + validation rules).
+      subagentViews?.recordStop(input.agent_id, input.agent_transcript_path);
       pushSubagentViews();
       handlers.onSubagentStop?.(input);
     } catch (err) {
@@ -877,10 +1261,108 @@ export function setupHookBridge(
     }
   });
 
+  // ---- Q4 (#889): PermissionDenied + Elicitation/ElicitationResult --------
+  // Newly registered in REMI_REGISTERED_HOOK_EVENTS by this change (see
+  // hook-types.ts for why). Both stay observe-only: neither hook response
+  // encodes a decision -- `handleRequest` (hook-server.ts) never installs a
+  // resolver for these event names, so they always fall through to the plain
+  // `{}` 200 response, exactly like Stop/SessionEnd/StopFailure today.
+
+  hookServer.on('PermissionDenied', (input) => {
+    binder.onHookEvent(input);
+    if (!binder.admits(input)) return;
+    // A classifier denial fires no tool call, so PreToolUse/PostToolUse never
+    // observe it -- this is the ONLY external-resolution signal for it. Same
+    // funnel, same signature-then-tool_use_id matching as PreToolUse/
+    // PostToolUse above; a no-op when nothing open matches (the codebase-wide
+    // rule from `auto-approve-gate.ts`, "every ambiguous path resolves toward
+    // showing the user" -- see `question-presence-tracker.ts`'s own citation of
+    // it; NOT something #889 introduced -- this never guesses,
+    // it only clears an escalation THIS gate is still tracking under the
+    // exact same tool_name+tool_input+agentId, and tool_use_id when both
+    // sides carry one).
+    autoApproveGate.cancelExternallyResolved(
+      {
+        toolName: input.tool_name,
+        toolInput: input.tool_input,
+        toolUseId: input.tool_use_id,
+        agentId: input.agent_id,
+      },
+      'PermissionDenied',
+    );
+  });
+
+  hookServer.on('Elicitation', (input) => {
+    binder.onHookEvent(input);
+    if (!binder.admits(input)) return;
+    try {
+      const { questionId, outcome } = hookBridge.handleElicitation(input);
+      if (input.elicitation_id) {
+        rememberElicitation(input.elicitation_id, questionId, outcome);
+      }
+    } catch (err) {
+      logError(`[Hooks] Elicitation handling failed for ${sessionId}: ${errorToString(err)}`);
+    }
+  });
+
+  hookServer.on('ElicitationResult', (input) => {
+    binder.onHookEvent(input);
+    if (!binder.admits(input)) return;
+    if (!input.elicitation_id) return;
+    resolveElicitation(input.elicitation_id);
+  });
+
+  // ---- Q9 (#893): UserPromptSubmit -> AuthorityStore (primary source) -----
+  // Newly registered in REMI_REGISTERED_HOOK_EVENTS by this change. STRICT
+  // policy (hook-types.ts:660): `HookServer.dispatch` runs this listener
+  // SYNCHRONOUSLY before Claude Code's blocked hook response, and an HTTP hook
+  // has no async escape hatch -- see the module doc's Q9 paragraph. This
+  // handler is therefore intentionally minimal on top of what every other
+  // listener in this file already pays: `binder.onHookEvent` +
+  // `binder.admits` each call `adoptLockFromStore`
+  // (`transcript-binder.ts`), which does a synchronous `fs.readFileSync`
+  // per call (`session-binding-store.ts:11,16-17`) -- so TWO reads per
+  // event, shared, pre-existing infrastructure, not something Q9
+  // introduces (documented elsewhere as microseconds, not a budget risk
+  // against the 1s timeout). What Q9 ADDS on top of that shared cost is
+  // one string-prefix scan (`isWrappedNonHumanText`) and one array push
+  // (`AuthorityStore.record`) -- no NEW file I/O, no network, no LLM call.
+  //
+  // The `isWrappedNonHumanText` check is DEFENSE IN DEPTH, not confirmation
+  // that this source is safe (#893 review, #938). `authority.ts`'s module doc
+  // documents the premise it guards -- that Claude Code only ever puts the
+  // human's own keystrokes in `UserPromptSubmit.prompt` -- as UNVERIFIED. If
+  // that premise holds, this line is a permanent no-op. If it is wrong in the
+  // same wrapped-string shape the transcript fallback was hardened against,
+  // this is what catches it on the primary path too. #938 tracks getting a
+  // live capture to actually settle the premise; do not read this line as
+  // having settled it.
+  hookServer.on('UserPromptSubmit', (input) => {
+    binder.onHookEvent(input);
+    if (!binder.admits(input)) return;
+    // #982: 35% of live UserPromptSubmit prompts were machine-generated
+    // (<task-notification>, <agent-message>) and ALL passed the old denylist.
+    if (isNonHumanForAuthority(input.prompt)) return;
+    authorityStore.record(input.prompt);
+  });
+
   log(`[Hooks] Event bridge active for session ${sessionId}`);
 
   return {
     bridge: hookBridge,
+    /**
+     * Does this session's binder claim the event? (#914)
+     *
+     * Every listener inside this module already consults `binder.admits()`;
+     * this exposes the same filter to listeners registered OUTSIDE it. The
+     * turn-complete notification in `cli.ts` needs it because two daemons in
+     * the SAME project directory both append their own matcher to the shared
+     * `.claude/settings.local.json` hooks array (`hook-config-manager.ts`
+     * matches on `h.url`, so a second daemon adds rather than replaces), and
+     * Claude Code then POSTs every event to both. Without this filter that
+     * notification would report a sibling daemon's turn as this session's.
+     */
+    admits: (input: HookInput) => binder.admits(input),
     closeBinder: () => {
       binder.close();
       // Drop the per-session PermissionRequest resolver (#496) so a stale
@@ -897,5 +1379,6 @@ export function setupHookBridge(
         autoApproveGate.cancelEvalForQuestion(questionId, reason),
       forceRelease: (reason) => autoApproveGate.forceRelease(reason),
     },
+    precedentStore,
   };
 }

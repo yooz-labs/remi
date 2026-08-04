@@ -108,6 +108,82 @@ final class HubProtocolTests: XCTestCase {
         XCTAssertEqual(envelope.type, "ack")
     }
 
+    // #872: auth handshake frames. serverPublicKey/challenge here are
+    // arbitrary well-formed base64, not a live capture (a real hub with
+    // require_local_auth needs a client identity to reach — covered instead
+    // by HubClientIntegrationTests' real end-to-end handshake). This test
+    // is about the wire SHAPE: extra fields the daemon may send
+    // (relayEphemeralKey/relayKexSignature/answerEncryptionKey, #543/#875)
+    // must decode cleanly without being declared.
+    private let authChallengeFixture = """
+        {"type":"auth_challenge","id":"b165ec10-6d38-4fc1-b733-fcabd58d1430","timestamp":"2026-07-08T01:29:44.322Z","challenge":"hbGyBAveiwqpVe4KOI9Ph3WjQ5rEBAjNBAY8JzZ0HSA=","serverFingerprint":"f851bb1f053baacf","serverPublicKey":"hTsqoOoMHpkLCHTMC3fmWZ0dPf944WBgvCA/zIkd1Lc=","relayEphemeralKey":"unrelated","relayKexSignature":"unrelated","answerEncryptionKey":"unrelated"}
+        """
+    private let authResultSuccessFixture = """
+        {"type":"auth_result","id":"fd070ecd-17da-4569-9509-55760a9b4ae5","timestamp":"2026-07-08T01:29:44.322Z","success":true,"serverSignature":"8OJYmBhAA/4694uebtoQssikFbMYHIhdmlxTAYZQTkon9EGlv1VQhKqsyDbwWahp3dcIf1EVWX2sfrZ3q/5mAw=="}
+        """
+    private let authResultFailureFixture = """
+        {"type":"auth_result","id":"fd070ecd-17da-4569-9509-55760a9b4ae5","timestamp":"2026-07-08T01:29:44.322Z","success":false,"error":"UNKNOWN_KEY"}
+        """
+
+    func testDecodesAuthChallengeIgnoringUnknownRelayFields() throws {
+        let frame = try JSONDecoder().decode(
+            AuthChallengeFrame.self, from: Data(authChallengeFixture.utf8))
+        XCTAssertEqual(frame.challenge, "hbGyBAveiwqpVe4KOI9Ph3WjQ5rEBAjNBAY8JzZ0HSA=")
+        XCTAssertEqual(frame.serverFingerprint, "f851bb1f053baacf")
+        XCTAssertEqual(frame.serverPublicKey, "hTsqoOoMHpkLCHTMC3fmWZ0dPf944WBgvCA/zIkd1Lc=")
+    }
+
+    func testDecodesSuccessfulAuthResult() throws {
+        let frame = try JSONDecoder().decode(
+            AuthResultFrame.self, from: Data(authResultSuccessFixture.utf8))
+        XCTAssertTrue(frame.success)
+        XCTAssertNil(frame.error)
+        XCTAssertEqual(
+            frame.serverSignature,
+            "8OJYmBhAA/4694uebtoQssikFbMYHIhdmlxTAYZQTkon9EGlv1VQhKqsyDbwWahp3dcIf1EVWX2sfrZ3q/5mAw=="
+        )
+    }
+
+    func testDecodesFailedAuthResult() throws {
+        let frame = try JSONDecoder().decode(
+            AuthResultFrame.self, from: Data(authResultFailureFixture.utf8))
+        XCTAssertFalse(frame.success)
+        XCTAssertEqual(frame.error, "UNKNOWN_KEY")
+        XCTAssertNil(frame.serverSignature)
+    }
+
+    func testAuthResponseFrameEncodesRawBase64Fields() throws {
+        let frame = AuthResponseFrame(
+            clientPublicKey: "hTsqoOoMHpkLCHTMC3fmWZ0dPf944WBgvCA/zIkd1Lc=",
+            signature: "8OJYmBhAA/4694uebtoQssikFbMYHIhdmlxTAYZQTkon9EGlv1VQhKqsyDbwWahp3dcIf1EVWX2sfrZ3q/5mAw==",
+            clientFingerprint: "f851bb1f053baacf")
+        let data = try JSONEncoder().encode(frame)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(object["type"] as? String, "auth_response")
+        XCTAssertEqual(
+            object["clientPublicKey"] as? String, "hTsqoOoMHpkLCHTMC3fmWZ0dPf944WBgvCA/zIkd1Lc=")
+        XCTAssertEqual(object["clientFingerprint"] as? String, "f851bb1f053baacf")
+        let id = try XCTUnwrap(object["id"] as? String)
+        XCTAssertNotNil(UUID(uuidString: id))
+        let timestamp = try XCTUnwrap(object["timestamp"] as? String)
+        XCTAssertNotNil(ISO8601DateFormatter.withFractionalSeconds.date(from: timestamp))
+    }
+
+    /// #872: the daemon's real error codes (authenticator.ts) each get
+    /// specific copy; anything else falls back to a generic-but-labeled
+    /// message rather than a blank "authentication failed".
+    func testDescribeAuthErrorCoversKnownAndUnknownCodes() {
+        XCTAssertEqual(
+            HubClient.describeAuthError("UNKNOWN_KEY"), "the hub does not trust this app yet")
+        XCTAssertEqual(
+            HubClient.describeAuthError("INVALID_SIGNATURE"), "signature verification failed")
+        XCTAssertEqual(
+            HubClient.describeAuthError("NO_PENDING_CHALLENGE"), "the handshake timed out")
+        XCTAssertEqual(
+            HubClient.describeAuthError("TOFU_FAILED"), "authentication failed (TOFU_FAILED)")
+        XCTAssertEqual(HubClient.describeAuthError(nil), "authentication failed")
+    }
+
     func testHelloFrameEncodesQueryModeAndWireBasics() throws {
         let hello = HelloFrame(clientVersion: "0.1.0", clientId: "client-1")
         let data = try JSONEncoder().encode(hello)
