@@ -28,7 +28,7 @@ import type {
   RemiStatus,
   UUID,
 } from '@remi/shared';
-import { runAttachClient } from '../../src/cli/attach-client.ts';
+import { formatQuestionBanner, runAttachClient } from '../../src/cli/attach-client.ts';
 
 const TEST_PORT = 9873;
 
@@ -308,6 +308,31 @@ describe('runAttachClient', () => {
       ...(held ? { held: true } : {}),
     };
   }
+
+  // #1026: pin the exact byte sequence so the clear-line lead (`\r\x1b[2K`)
+  // and the trailing `\r\n` on every line — the shape that keeps the TUI
+  // spinner off the cue's row and lets it resume on a fresh row below —
+  // can't regress back to a bare `\r\n` lead without this test failing.
+  test('formatQuestionBanner clears the current row before the cue text', () => {
+    const question = makeQuestion('Allow file edit?');
+    const banner = formatQuestionBanner(question);
+
+    expect(banner).toBe(
+      '\r\x1b[2K\x1b[36m[remi] pending question: Allow file edit?\x1b[0m\r\n' +
+        '\x1b[36m[remi] options: 1) Yes  2) No\x1b[0m\r\n' +
+        "\x1b[2m[remi] answer on your phone, or run 'remi unstick' to answer here\x1b[0m\r\n",
+    );
+  });
+
+  test('formatQuestionBanner omits the options line when there are none', () => {
+    const question: Question = { ...makeQuestion('Allow file edit?'), options: [] };
+    const banner = formatQuestionBanner(question);
+
+    expect(banner).toBe(
+      '\r\x1b[2K\x1b[36m[remi] pending question: Allow file edit?\x1b[0m\r\n' +
+        "\x1b[2m[remi] answer on your phone, or run 'remi unstick' to answer here\x1b[0m\r\n",
+    );
+  });
 
   // #753: a HELD permission (Model B) blocks Claude inside the hook, so no
   // raw PTY bytes for the prompt ever exist — the LIVE question message is

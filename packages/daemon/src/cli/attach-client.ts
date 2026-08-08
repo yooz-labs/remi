@@ -44,6 +44,26 @@ export interface AttachClientResult {
   reason: 'detached' | 'session_ended' | 'error' | 'timeout' | 'connection_closed';
 }
 
+/**
+ * #1026: pure formatter for the held-question terminal cue, pinned by a byte-
+ * sequence test. Leads with `\r\x1b[2K` (return to column 0, erase the whole
+ * line) instead of a bare `\r\n`: a held permission blocks Claude inside the
+ * hook call, but the TUI spinner keeps animating on its own timer regardless
+ * (elapsed-time display), so the row this cue lands on can already hold a
+ * half-drawn spinner frame. `\r\n` alone moved past that row without erasing
+ * it, so the next spinner repaint and this cue's text could occupy the same
+ * row. Clearing first means the cue always takes the row cleanly; every
+ * following line (and the last) still ends `\r\n`, so the spinner resumes on
+ * its own fresh row below the cue block, same as before.
+ */
+export function formatQuestionBanner(question: Question): string {
+  const options = question.options.map((o, i) => `${i + 1}) ${o.label}`).join('  ');
+  const lines = [`\r\x1b[2K\x1b[36m[remi] pending question: ${question.text}\x1b[0m\r\n`];
+  if (options) lines.push(`\x1b[36m[remi] options: ${options}\x1b[0m\r\n`);
+  lines.push(`\x1b[2m[remi] answer on your phone, or run 'remi unstick' to answer here\x1b[0m\r\n`);
+  return lines.join('');
+}
+
 export async function runAttachClient(opts: AttachClientOptions): Promise<AttachClientResult> {
   const { host, port, sessionId, timeout = 5000, outputFd = 1 } = opts;
   const url = `ws://${host}:${port}/ws`;
@@ -273,22 +293,18 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
    * `question` messages per visible prompt cycle (hook bridge + PTY parser,
    * different ids), so bannering those would double- or triple-print around
    * the native prompt — the exact noise the old blanket suppression avoided.
-   * Held questions also guarantee an idle PTY, so the banner can never
-   * interleave mid-ANSI-sequence with streaming output. Plain text through
-   * writeOutput (raw mode: \r\n), cyan so it stands apart from Claude's own
-   * output.
+   * #1026 correction: a held permission blocking Claude's hook call does NOT
+   * guarantee an idle PTY — the TUI spinner keeps animating on its own timer
+   * while the hook is pending, and a live session showed the cue's old bare
+   * `\r\n` lead interleaving with that spinner's redraw on the same row.
+   * `formatQuestionBanner` now clears the row first (see its own docstring).
+   * Cyan so it stands apart from Claude's own output.
    */
   function renderQuestionBanner(question: Question): void {
     if (question.held !== true) return;
     if (banneredQuestionIds.has(question.id)) return;
     banneredQuestionIds.add(question.id);
-    const options = question.options.map((o, i) => `${i + 1}) ${o.label}`).join('  ');
-    const lines = [`\r\n\x1b[36m[remi] pending question: ${question.text}\x1b[0m\r\n`];
-    if (options) lines.push(`\x1b[36m[remi] options: ${options}\x1b[0m\r\n`);
-    lines.push(
-      `\x1b[2m[remi] answer on your phone, or run 'remi unstick' to answer here\x1b[0m\r\n`,
-    );
-    writeOutput(lines.join(''));
+    writeOutput(formatQuestionBanner(question));
   }
 
   /**
