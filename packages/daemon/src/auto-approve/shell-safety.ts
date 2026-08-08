@@ -324,22 +324,146 @@ export function rewriteRedirectClauses(
   );
 }
 
-/** True if the segment carries shell control that could escape the matched prefix. */
+/**
+ * Render a same-length view of a segment in which every character that is
+ * PROVABLY literal text — inside a quoted span, or the second half of a
+ * backslash escape — is replaced by `_`. Everything the function cannot
+ * prove is literal is left VISIBLE, unchanged, at its original position.
+ *
+ * Exists because `hasShellControl` used to run its checks against raw
+ * segment text, so `--body "prose with \`code\` and a > sign"` vetoed a `gh
+ * issue create` the user had explicitly allowed: the backtick and `>` inside
+ * the quoted, escaped prose are not shell metacharacters at all, but a
+ * substring search cannot tell the difference (#1023). Masking only ever
+ * REMOVES characters that are provably inert; anything it cannot classify
+ * stays visible, so it can only shrink the set of segments that veto, never
+ * grow it — same philosophy as `shellWords`, applied to the veto instead of
+ * the flag/positional checks.
+ *
+ * Quote handling, matched to real shell semantics:
+ *
+ *   - single-quoted spans are fully literal: every character inside, and the
+ *     quotes themselves, is masked. No escapes exist inside single quotes,
+ *     not even for the quote character itself.
+ *   - double-quoted spans mask everything EXCEPT an unescaped `$` or
+ *     backtick, because those two still substitute inside double quotes
+ *     (`"$(rm -rf ~)"` and `` "`x`" `` must keep vetoing). `\$`, `` \` ``,
+ *     `\\` and `\"` are escape pairs and are masked whole; a `$` left
+ *     visible directly before `(` keeps the `(` visible too, because the
+ *     substitution check below matches the two-character substring `$(`,
+ *     not a lone `$`.
+ *   - outside quotes, a backslash-escaped character is literal and the pair
+ *     is masked; everything else stays visible, since that is exactly the
+ *     text a real shell would treat as live.
+ *
+ * A quote that never closes is reported honestly: masking a partial span
+ * would be a guess about where it ends, so the function fails closed and
+ * returns the segment UNCHANGED — exactly today's quote-blind behavior for
+ * that input.
+ *
+ * The placeholder is `_` on purpose: it is already a member of
+ * `PLAIN_PATH_TARGET_RE`, so a masked redirect target (`> "file"` becomes
+ * `> ______`) still classifies as a `path` and still vetoes, rather than
+ * silently reclassifying to something this module has never seen before.
+ */
+export function maskQuotedSpans(segment: string): string {
+  const n = segment.length;
+  const out: string[] = new Array(n);
+  let i = 0;
+
+  while (i < n) {
+    const c = segment[i];
+    if (c === undefined) break;
+
+    if (c === '\\') {
+      const next = segment[i + 1];
+      if (next === undefined) {
+        out[i] = '_';
+        i++;
+        continue;
+      }
+      out[i] = '_';
+      out[i + 1] = '_';
+      i += 2;
+      continue;
+    }
+
+    if (c === "'") {
+      const start = i;
+      let j = i + 1;
+      while (j < n && segment[j] !== "'") j++;
+      if (j >= n) return segment; // unterminated: fail closed
+      for (let k = start; k <= j; k++) out[k] = '_';
+      i = j + 1;
+      continue;
+    }
+
+    if (c === '"') {
+      const start = i;
+      let j = i + 1;
+      const visible = new Set<number>();
+      while (j < n && segment[j] !== '"') {
+        const cur = segment[j];
+        if (cur === '\\') {
+          const next = segment[j + 1];
+          if (next !== undefined && ['"', '\\', '$', '`', '\n'].includes(next)) {
+            j += 2;
+            continue;
+          }
+          j += 1; // lone backslash: literal, masked; next char judged on its own
+          continue;
+        }
+        if (cur === '$' || cur === '`') visible.add(j);
+        j++;
+      }
+      if (j >= n) return segment; // unterminated: fail closed
+      for (let k = start; k <= j; k++) out[k] = visible.has(k) ? (segment[k] ?? '_') : '_';
+      i = j + 1;
+      continue;
+    }
+
+    out[i] = c;
+    i++;
+  }
+
+  // A `$` left visible directly before `(` keeps the `(` visible too: the
+  // substitution check matches the substring `$(`, and a lone `$` with its
+  // paren masked would silently defeat it.
+  for (let k = 0; k < n - 1; k++) {
+    if (out[k] === '$' && segment[k + 1] === '(') out[k + 1] = '(';
+  }
+
+  return out.join('');
+}
+
+/**
+ * True if the segment carries shell control that could escape the matched
+ * prefix.
+ *
+ * Runs against a `maskQuotedSpans` view rather than the raw segment (#1023):
+ * quoted, escaped prose (a `--body` that mentions a backtick, a `>`
+ * comparison, an `&` ampersand) is not shell control, and checking the raw
+ * text could not tell the difference from the real thing. Masking only
+ * removes characters proven literal, so an actual `$(...)`, backtick,
+ * `<(...)`, backgrounding `&`, or non-`/dev/null` redirect is exactly as
+ * visible after masking as before, and still vetoes.
+ */
 export function hasShellControl(segment: string): boolean {
+  const masked = maskQuotedSpans(segment);
   // Command / process substitution.
-  if (segment.includes('$(') || segment.includes('`') || segment.includes('<(')) {
+  if (masked.includes('$(') || masked.includes('`') || masked.includes('<(')) {
     return true;
   }
   // Backgrounding / control operator: a lone `&` anywhere that is not part of
   // `&&` (already split out), an fd-dup (`2>&1`, `>&2`), nor an `&>` redirect
   // (caught as redirection below). Catches `cmd &`, `cmd & other`, `a&b`.
-  if (/(^|[^&>])&(?![&>0-9])/.test(segment)) {
+  if (/(^|[^&>])&(?![&>0-9])/.test(masked)) {
     return true;
   }
   // Output redirection to anything other than /dev/null or an fd dup (2>&1).
   // `path` and `opaque` both veto, so this is unchanged by the classifier: it
   // recognizes exactly the two safe shapes and refuses everything else.
-  for (const clause of findRedirectClauses(segment)) {
+  for (const clause of findRedirectClauses(masked)) {
     if (clause.target.kind !== 'discard' && clause.target.kind !== 'fd-dup') {
       return true;
     }
@@ -452,7 +576,10 @@ export function matchCoveredCommand(
     const seg = raw.trim();
     if (seg === '') continue;
     // On the ORIGINAL segment, before any grammar is removed: whatever a
-    // keyword introduces, it cannot make a redirect or a `&` safe.
+    // keyword introduces, it cannot make a redirect or a `&` safe. `seg` is
+    // NOT the raw segment by the time `hasShellControl` sees it — it masks
+    // quoted/escaped spans first (#1023) — but no grammar keyword has been
+    // peeled off, which is the property this comment is guarding.
     if (hasShellControl(seg)) return null;
     // Shell grammar is peeled off so the command inside is judged on its own
     // merits (#999). `body` is what actually runs; a segment that is pure
