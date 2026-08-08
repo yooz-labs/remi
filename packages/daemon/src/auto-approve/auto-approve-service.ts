@@ -35,7 +35,7 @@ import { type PrecedentReader, precedentMayAuthorize, signatureForOperation } fr
 import { buildPrompt } from './prompt-builder.ts';
 import { classifyRisk, formatMatrixContext } from './risk-bands.ts';
 import { enforceRiskCeiling } from './risk-ceiling.ts';
-import type { AutoApproveConfig, AutoApproveResult, MultiChoiceMode } from './types.ts';
+import type { AutoApproveConfig, AutoApproveResult, DenySource, MultiChoiceMode } from './types.ts';
 
 type BinaryDecision = 'approve' | 'deny' | 'escalate';
 const VALID_DECISIONS = new Set<BinaryDecision>(['approve', 'deny', 'escalate']);
@@ -627,6 +627,80 @@ export class AutoApproveService {
   }
 
   /**
+   * The deterministic, pre-LLM portion of `evaluate()` ONLY: the user's own
+   * `deny`/`deny_groups` (checked first, always win), then `allow`
+   * (`matchAllowPattern`), then the level's `approve_groups` (`matchGroups`)
+   * -- the exact matcher calls, in the exact order, `evaluate()` runs before
+   * it ever considers precedent or the LLM. A pure function of (toolName,
+   * toolInput) and this service's own config: no network, no model, no
+   * queue, no precedent, no design-question routing.
+   *
+   * #1024: extracted so a caller that must decide BEFORE the LLM may ever
+   * run (the gate's subagent-tagged hook-time path, which ADR 0004 forbids
+   * from reaching the LLM at all) can reuse these checks instead of
+   * re-implementing them -- the exact drift ADR 0015/0017 warn about for
+   * the shared catastrophic-pattern list, here avoided by construction:
+   * `evaluate()` below calls this and must never duplicate its checks
+   * inline.
+   *
+   * Returns:
+   *   - `{decision: 'approve', reasoning}` -- the user's own `allow` list or
+   *     `approve_groups` covers this call. Safe to act on directly; this is
+   *     the same 0ms verdict `evaluate()` returns for the identical match.
+   *   - `{decision: 'deny-covered', reasoning, denySource}` -- the user's own
+   *     `deny` list or `deny_groups` covers this call. NOT a verdict a
+   *     hook-time caller may act on by itself: `evaluate()` turns this into
+   *     a full `deny` `AutoApproveResult` because a MAIN-context deny has a
+   *     human-visible channel (`buildDenyMessage` tells Claude why). A
+   *     subagent-tagged hook-time caller has no such channel before the
+   *     prompt renders, so ADR 0004's PTY-arbiter policy requires this case
+   *     to fall through to the render-time path exactly like `null` below --
+   *     it exists as its own variant (rather than folding into `null`) only
+   *     so a caller that DOES want the reasoning (`evaluate()`) does not have
+   *     to re-run the deny matchers to get it.
+   *   - `null` -- nothing here decides it; the caller falls back to whatever
+   *     handles the undecided case (the LLM, for `evaluate()`; parking for
+   *     PTY arbitration, for the gate's subagent branch).
+   */
+  evaluateDeterministic(
+    toolName: string,
+    toolInput: Record<string, unknown>,
+  ):
+    | { decision: 'approve'; reasoning: string }
+    | { decision: 'deny-covered'; reasoning: string; denySource: DenySource }
+    | null {
+    const denyMatch = matchSubstringPattern(toolName, toolInput, this.deny);
+    if (denyMatch !== null) {
+      return {
+        decision: 'deny-covered',
+        reasoning: `deny-matched pattern: "${denyMatch}"`,
+        denySource: { kind: 'config', pattern: denyMatch },
+      };
+    }
+    // BROAD, not precise (#1001, ADR 0010). `matchGroups` requires the WHOLE
+    // command to be covered and is right for the allow question below; asking
+    // it a deny question meant `mkdir /tmp/x && ls -la` defeated a
+    // `deny_groups = ["fs-write"]` that stopped the bare `mkdir`.
+    const denyGroupMatch = matchGroupsBroad(toolName, toolInput, this.denyGroups);
+    if (denyGroupMatch !== null) {
+      return {
+        decision: 'deny-covered',
+        reasoning: `deny-matched group: "${denyGroupMatch}"`,
+        denySource: { kind: 'config', pattern: denyGroupMatch },
+      };
+    }
+    const allowMatch = matchAllowPattern(toolName, toolInput, this.allow);
+    if (allowMatch !== null) {
+      return { decision: 'approve', reasoning: `allow-matched pattern: "${allowMatch}"` };
+    }
+    const approveGroupMatch = matchGroups(toolName, toolInput, this.approveGroups);
+    if (approveGroupMatch !== null) {
+      return { decision: 'approve', reasoning: `approve-matched group: "${approveGroupMatch}"` };
+    }
+    return null;
+  }
+
+  /**
    * Evaluate a permission request. Never throws.
    * On any error, returns escalate so the user gets the question as normal.
    *
@@ -712,52 +786,25 @@ export class AutoApproveService {
     // Entire body wrapped in try/catch so the "never throws" contract holds
     // even if the matchers or other sync code fail (e.g. malformed config).
     try {
-      // Deny list + deny groups: checked first, always win. No LLM call.
-      const denyMatch = matchSubstringPattern(toolName, toolInput, this.deny);
-      if (denyMatch !== null) {
-        const reasoning = `deny-matched pattern: "${denyMatch}"`;
-        this.logFn(`${prefix} DENIED ${toolName}: ${reasoning} (0ms)`);
-        return {
-          decision: 'deny',
-          reasoning,
-          durationMs: 0,
-          model,
-          denySource: { kind: 'config', pattern: denyMatch },
-        };
-      }
-      // BROAD, not precise (#1001, ADR 0010). `matchGroups` requires the WHOLE
-      // command to be covered and is right for the allow question below; asking
-      // it a deny question meant `mkdir /tmp/x && ls -la` defeated a
-      // `deny_groups = ["fs-write"]` that stopped the bare `mkdir`.
-      const denyGroupMatch = matchGroupsBroad(toolName, toolInput, this.denyGroups);
-      if (denyGroupMatch !== null) {
-        const reasoning = `deny-matched group: "${denyGroupMatch}"`;
-        this.logFn(`${prefix} DENIED ${toolName}: ${reasoning} (0ms)`);
-        return {
-          decision: 'deny',
-          reasoning,
-          durationMs: 0,
-          model,
-          denySource: { kind: 'config', pattern: denyGroupMatch },
-        };
-      }
-
-      // Allow list + approve groups: bypass the LLM for known-safe operations.
-      const allowMatch = matchAllowPattern(toolName, toolInput, this.allow);
-      if (allowMatch !== null) {
-        const reasoning = `allow-matched pattern: "${allowMatch}"`;
-        if (this.logDecisions) {
-          this.logFn(`${prefix} ${toolName}: approve (0ms) - ${reasoning}`);
+      // Deny/allow/group: checked first, always win, no LLM call. Shared with
+      // the gate's subagent hook-time path (#1024) via `evaluateDeterministic`
+      // so the two can never drift apart -- see that method's doc.
+      const deterministic = this.evaluateDeterministic(toolName, toolInput);
+      if (deterministic !== null) {
+        if (deterministic.decision === 'deny-covered') {
+          this.logFn(`${prefix} DENIED ${toolName}: ${deterministic.reasoning} (0ms)`);
+          return {
+            decision: 'deny',
+            reasoning: deterministic.reasoning,
+            durationMs: 0,
+            model,
+            denySource: deterministic.denySource,
+          };
         }
-        return { decision: 'approve', reasoning, durationMs: 0, model };
-      }
-      const approveGroupMatch = matchGroups(toolName, toolInput, this.approveGroups);
-      if (approveGroupMatch !== null) {
-        const reasoning = `approve-matched group: "${approveGroupMatch}"`;
         if (this.logDecisions) {
-          this.logFn(`${prefix} ${toolName}: approve (0ms) - ${reasoning}`);
+          this.logFn(`${prefix} ${toolName}: approve (0ms) - ${deterministic.reasoning}`);
         }
-        return { decision: 'approve', reasoning, durationMs: 0, model };
+        return { decision: 'approve', reasoning: deterministic.reasoning, durationMs: 0, model };
       }
 
       // #976 PRECEDENT, approve direction: the user already answered YES to

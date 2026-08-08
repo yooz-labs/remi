@@ -297,6 +297,25 @@ export interface AutoApproveEvaluator {
    *  legitimate wait. Returns the number drained. Optional: a minimal
    *  evaluator under test may omit it. */
   drainScope?(scope: string, opts?: { mainOnly?: boolean }): number;
+  /**
+   * #1024: the deterministic, pre-LLM portion of `evaluate()` ONLY -- deny
+   * (list + groups) checked first, then `allow`, then `approve_groups`. No
+   * network, no model, no queue. Lets `resolvePermission`'s subagent branch
+   * answer a config-authorized request at hook time without ever reaching
+   * the LLM (ADR 0004 still forbids that unconditionally).
+   *
+   * Optional: a minimal test double that never exercises the hook-time
+   * subagent shortcut may omit it, in which case the gate treats every
+   * subagent-tagged event as having no deterministic verdict -- i.e. the
+   * pre-#1024 park-unconditionally behavior.
+   */
+  evaluateDeterministic?(
+    toolName: string,
+    toolInput: Record<string, unknown>,
+  ):
+    | { decision: 'approve'; reasoning: string }
+    | { decision: 'deny-covered'; reasoning: string; denySource: DenySource }
+    | null;
 }
 
 export interface AutoApproveGateDeps {
@@ -1341,22 +1360,31 @@ export class AutoApproveGate {
    *   - approve -> 'allow', deny -> 'deny' (Claude proceeds; NO PTY inject).
    *   - escalate (main) -> escalateToUser + 'passthrough' (Claude renders the
    *     prompt; the user answers).
-   *   - ANY SUBAGENT-TAGGED event (`agent_id` present) -> park the rich
-   *     question in the presence tracker + 'passthrough' (#751 PTY-arbiter)
-   *     WITHOUT evaluating it (#807), and REGARDLESS of
-   *     `isInSubagentContext()` (the tracker only brackets synchronous
-   *     Task/Agent spawns, so team members and async/background subagents
-   *     always observe it false — the tag on the event itself is the truth).
-   *     Claude then runs its NORMAL permission flow: the session allowlist
-   *     may absorb the request silently, or the native prompt renders on the
-   *     main PTY — where `arbitrateParkedRender` (#814) evaluates it and
-   *     either answers it on screen or pushes the merged card (answers
-   *     inject; nothing is held). Replaces three prior behaviors:
-   *     silent default-deny (sync-Task shape, broke teammates with no trace),
-   *     hold+push-as-main (async/team shape, pushed cards for prompts the
-   *     user never saw asked), and evaluate-then-route (#751's shape, which
-   *     spent a GPU-backed LLM call per background tool call and silently
-   *     applied its allow/deny verdict to a prompt no human ever saw).
+   *   - a SUBAGENT-TAGGED event (`agent_id` present) the config's own
+   *     deterministic layers already APPROVE (deny checked first, then
+   *     `allow`, then `approve_groups` -- `service.evaluateDeterministic`,
+   *     #1024) -> answer the hook 'allow' directly. No park, no PTY render,
+   *     no LLM: ADR 0004 still holds, this is a 0ms config match, not a
+   *     model evaluation.
+   *   - every OTHER subagent-tagged event (config does not deterministically
+   *     approve it -- including one its `deny`/`deny_groups` covers, which
+   *     is NOT turned into a hook-time deny; see `evaluateDeterministic`'s
+   *     doc for why) -> park the rich question in the presence tracker +
+   *     'passthrough' (#751 PTY-arbiter) WITHOUT ever running the LLM at
+   *     hook time (#807), and REGARDLESS of `isInSubagentContext()` (the
+   *     tracker only brackets synchronous Task/Agent spawns, so team members
+   *     and async/background subagents always observe it false — the tag on
+   *     the event itself is the truth). Claude then runs its NORMAL
+   *     permission flow: the session allowlist may absorb the request
+   *     silently, or the native prompt renders on the main PTY — where
+   *     `arbitrateParkedRender` (#814) evaluates it and either answers it on
+   *     screen or pushes the merged card (answers inject; nothing is held).
+   *     Replaces three prior behaviors: silent default-deny (sync-Task
+   *     shape, broke teammates with no trace), hold+push-as-main (async/team
+   *     shape, pushed cards for prompts the user never saw asked), and
+   *     evaluate-then-route (#751's shape, which spent a GPU-backed LLM call
+   *     per background tool call and silently applied its allow/deny verdict
+   *     to a prompt no human ever saw).
    *   - a MAIN-tagged event (no `agent_id`) with `isInSubagentContext()` true
    *     -> this is the #710 tracker-leak signature (a PostToolUse(Task/Agent)
    *     completion tagged with the spawned agent's own agent_id was dropped
@@ -1375,28 +1403,61 @@ export class AutoApproveGate {
     // subagent/team-member (`agent_id` present) or the main agent.
     const isSubagent = this.isSubagentEvent(input);
 
-    // #807: a subagent-tagged permission NEVER reaches the evaluator, with or
-    // without auto-approve configured.
+    // #807: a subagent-tagged permission NEVER reaches the LLM at hook time,
+    // with or without auto-approve configured.
     //
     // Claude blocks on this hook response, so at decision time we cannot know
     // whether the prompt will ever render on the main PTY — and empirically
     // most never do (a live 0.6.22 session logged 16 subagent
-    // PermissionRequests against 2 renders). Evaluating them all meant one
-    // GPU-backed LLM call per background tool call, and every approve/deny
-    // verdict was applied to a prompt no human ever saw and no card ever
-    // recorded.
+    // PermissionRequests against 2 renders). Evaluating them ALL with the LLM
+    // meant one GPU-backed call per background tool call, and every
+    // approve/deny verdict was applied to a prompt no human ever saw and no
+    // card ever recorded.
     //
-    // So park + passthrough unconditionally: Claude runs its own permission
-    // flow, and either its allowlist absorbs the request silently or the
-    // native prompt renders on the main PTY, where the parked record merges
-    // onto it and pushes a card. The PTY — not the hook — decides whether a
-    // human is asked, which is the arbiter policy #756 asked for.
+    // #1024 amendment: that reasoning applies to the LLM specifically (GPU
+    // cost + unknowable render state), not to a 0ms config-authorized match.
+    // So before parking, ask ONLY the deterministic layers -- deny, then
+    // allow, then approve_groups, the exact matcher calls `evaluate()` itself
+    // runs first (`evaluateDeterministic`, shared so the two can never drift).
+    // A deterministic APPROVE answers the hook directly, no park, no render,
+    // no LLM. Anything else -- no deterministic verdict, OR the config's own
+    // deny layer covers it -- parks + passthroughs exactly as before #1024:
+    // a hook-time deny still has no human-visible channel for a subagent (no
+    // render has happened yet to carry `buildDenyMessage`), so ADR 0004's
+    // PTY-arbiter policy still owns that case.
     //
-    // The evaluation itself is not skipped, only DEFERRED: if this prompt does
-    // render, `arbitrateParkedRender` (#814) evaluates it at that point and
-    // answers it by PTY inject, or pushes a card the phone can answer. That is
-    // the async route this hook response could never take.
+    // Either way, the evaluation itself is not skipped, only DEFERRED for
+    // anything not deterministically approved: if the prompt renders,
+    // `arbitrateParkedRender` (#814) evaluates it at that point (LLM
+    // included) and answers it by PTY inject, or pushes a card the phone can
+    // answer. That is the async route this hook response could never take.
     if (isSubagent) {
+      const deterministic = service?.evaluateDeterministic?.(input.tool_name, input.tool_input);
+      if (deterministic?.decision === 'approve') {
+        log(
+          `[Hooks] Subagent PermissionRequest answered allow at hook time (deterministic): agent=${input.agent_id?.slice(0, 8)} type=${input.agent_type} tool=${input.tool_name} - ${deterministic.reasoning}`,
+        );
+        // Observation only, the SAME cue the park path fires below:
+        // subagent_alert visibility must not depend on whether this call was
+        // ALSO deterministically approved -- e.g. a `curl` command an
+        // approve group covers still deserves the same audit trail a parked
+        // one gets (subagent-alert.ts matches on the raw input, not on how
+        // the hook was answered).
+        //
+        // Deliberately NOT `markHandled()`: every existing `markHandled(true)`
+        // call site (see `arbitrateParkedRender`) is preceded by its own
+        // `onEvalStart({isSubagent:true})`, which is what keeps the shared
+        // per-session `inFlight` eval count (#560/#576, `status-writer.ts`)
+        // balanced. This path never opens that counter -- firing only the
+        // "end" half here could decrement a genuinely in-flight MAIN eval's
+        // count if one happens to be running concurrently, which is exactly
+        // the kind of miscounted cue ADR 0020 exists to catch. Nothing else
+        // `markHandled` does applies here either: the tracker's
+        // `onAutoApproveHandled(isSubagent=true)` and the client status
+        // broadcast are both already no-ops for a subagent permission.
+        this.safeCueWithArg('onSubagentPassthrough', this.deps.onSubagentPassthrough, input);
+        return 'allow';
+      }
       log(
         `[Hooks] Subagent PermissionRequest passed through UNEVALUATED (PTY arbitrates): agent=${input.agent_id?.slice(0, 8)} type=${input.agent_type} tool=${input.tool_name}`,
       );
