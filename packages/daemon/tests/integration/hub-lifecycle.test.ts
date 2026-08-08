@@ -1,15 +1,20 @@
 /**
  * Integration tests for the hub lifecycle races and CLI round-trip (#542,
  * #731 review): the PID-file split-brain branches, `remi start`/`remi stop`
- * through the real CLI, and REMI_SPAWNED_CHILD per-port status routing.
+ * through the real CLI, REMI_SPAWNED_CHILD per-port status routing, and
+ * (#1025) the hub's own status.repo/branch staying cwd-based.
  *
  * Same harness as hub-serve.test.ts: REAL cli.ts subprocesses under an
  * isolated $HOME, no mocks.
  *
  * NOT covered here (covered by on-machine verification instead): a hub
- * spawning a real `--daemon` session child and `remi stop` sparing it — the
- * child wraps a real `claude` process, which CI does not have, and a stub
- * claude binary would violate the no-mocks rule.
+ * spawning a real `--daemon` session child and `remi stop` sparing it, or
+ * that child reporting its OWN directory's repo/branch (#1025) rather than
+ * the hub's — the child wraps a real `claude` process, which CI does not
+ * have, and a stub claude binary would violate the no-mocks rule. Verified
+ * manually (isolated $HOME, real `claude`): hub cwd A ("hub-repo-A"/"main"),
+ * child requested for cwd B ("session-repo-B"/a feature branch) — the
+ * child's status-<port>.json reported B's repo/branch, not A's.
  */
 
 import { afterEach, describe, expect, test } from 'bun:test';
@@ -225,6 +230,32 @@ describe('cleanupFiles ownership guard (#740 review)', () => {
     await runCleanupFiles(home, 4242);
     expect(fs.readFileSync(pidFile, 'utf-8')).toBe('5555');
     expect(JSON.parse(fs.readFileSync(statusFile, 'utf-8')).pid).toBe(5555);
+  }, 30000);
+});
+
+describe('hub status reports its own cwd git info, unaffected (#1025)', () => {
+  // The #1025 fix refreshes the status snapshot's repo/branch from the
+  // resolved SESSION directory after --dir/--recent/--resume chdirs. Hub
+  // (serve) mode never chdirs, so it must keep reporting its own cwd exactly
+  // as before. A hub-spawned child correctly reporting ITS OWN directory
+  // instead of the hub's is covered by on-machine verification only (see
+  // file header): the child wraps a real `claude` process CI does not have,
+  // and it exits (PTY spawn ENOENT) before the debounced status write can
+  // ever reach disk without one.
+  test('serve mode reports the repo/branch of its own working directory', async () => {
+    const { home, work } = makeIsolatedDirs();
+    extraDirs.push(home, work);
+    fs.mkdirSync(path.join(work, '.git'));
+    fs.writeFileSync(path.join(work, '.git', 'HEAD'), 'ref: refs/heads/hub-own-branch\n');
+
+    const hub = await spawnHub({ home, work });
+    hubs.push(hub);
+
+    const status = JSON.parse(
+      fs.readFileSync(path.join(home, '.remi', 'daemon-status.json'), 'utf-8'),
+    );
+    expect(status.repo).toBe(path.basename(work));
+    expect(status.branch).toBe('hub-own-branch');
   }, 30000);
 });
 
