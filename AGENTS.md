@@ -192,6 +192,11 @@ amended #1024 2026-08-08, see [ADR 0004](.context/decisions/0004-pty-as-arbiter-
   informational push (`auto-approve/subagent-alert.ts`) is the visibility path for both cases,
   fired via the same `onSubagentPassthrough` cue regardless of which path answered the hook,
   deliberately alerting rather than blocking.
+- A bare tool-name `allow` entry (`allow = ["Write"]`, `["Edit"]`) carries no destination veto
+  by design (ADR 0010) and, since #1024, now grants a subagent silent hook-time write access to
+  sensitive destinations a curated `approve_groups` write group would block. Already true for
+  main-context requests; #1024 is the first time it applies with zero chance of a human ever
+  seeing the prompt. Tracked as #1032 (not yet decided).
 
 **Notification channel — APNS push only** (no local notifications for questions):
 

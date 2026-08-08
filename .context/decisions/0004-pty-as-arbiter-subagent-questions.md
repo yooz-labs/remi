@@ -134,6 +134,17 @@ not deterministically approve.
   already no-ops for a subagent permission (`onAutoApproveHandled` returns
   early on `isSubagent`; the client broadcast is skipped the same way), so
   omitting the call costs nothing.
+- **A bare tool-name `allow` entry (`allow = ["Write"]`, `["Edit"]`) now
+  grants a subagent silent, hook-time, unrendered approval to sensitive
+  destinations a curated group would veto.** `matchAllowPattern` applies no
+  destination check by design (ADR 0010: "a user allow entry may legitimately
+  be a write"), unlike `approve_groups`, whose write groups carry
+  `vetoSensitiveToolPath`. This was already true for main-context requests;
+  #1024 is the first time it applies to subagent traffic with zero chance of
+  a human ever seeing the prompt. Not a defect in this change — it faithfully
+  extends existing allow semantics, and the config validator already warns on
+  tool-name-shaped allow entries — but the blast radius of a loose config is
+  now wider and quieter. Tracked as #1032.
 
 ## Receipts
 
