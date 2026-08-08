@@ -167,20 +167,31 @@ See `.context/notification-and-session-flow.md` for the full flow diagram.
 - `HookEventBridge` — emits questions from `PermissionRequest` hooks; suppresses redundant notifications.
 - `OutputProcessor` — PTY-output parsing (fallback when hooks are unavailable).
 
-**Subagent permissions: the PTY is the arbiter** (#756 policy, #807 + #814):
+**Subagent permissions: the PTY is the arbiter** (#756 policy, #807 + #814;
+amended #1024 2026-08-08, see [ADR 0004](.context/decisions/0004-pty-as-arbiter-subagent-questions.md)):
 
-- An `agent_id`-tagged `PermissionRequest` is NEVER evaluated at hook time. `AutoApproveGate`
-  parks it (`parkForPTY` → `QuestionPresenceTracker.parkAwaitingPTY`) and answers the hook
-  `passthrough` immediately. Claude blocks on that response, so at hook time nothing can know
-  whether the prompt will ever render — and most never do (16 hooks → 2 renders in a live
-  0.6.22 session).
-- If the prompt DOES render, `arbitrateParkedRender` evaluates it then: `approve`/`deny`/`pick`
-  are typed into the prompt on screen (never a persisting "always" option), and only an
-  `escalate` verdict pushes a card. Every failure direction escalates; nothing is ever
+- An `agent_id`-tagged `PermissionRequest` NEVER reaches the LLM at hook time — that part of
+  the original policy is unchanged. `AutoApproveGate` first asks ONLY the deterministic
+  pre-LLM layers (`AutoApproveService.evaluateDeterministic`: deny — list + groups — checked
+  first, then user `allow`, then the level's `approve_groups`; the exact matcher calls
+  `evaluate()` itself runs, shared so the two can never drift). A deterministic **approve**
+  (no deny match) answers the hook `{behavior:'allow'}` immediately — no park, no render, no
+  LLM, no GPU queue. Everything else — no deterministic verdict, or a **deny** match — parks
+  it (`parkForPTY` → `QuestionPresenceTracker.parkAwaitingPTY`) and answers the hook
+  `passthrough`, exactly as before #1024. A subagent's config-level deny is never turned into
+  a hook-time deny: it has no human-visible channel until a render happens, so it stays on the
+  render-time path below. Claude blocks on the hook response, so for anything that parks,
+  nothing can know whether the prompt will ever render — and most never do (16 hooks → 2
+  renders in a live 0.6.22 session).
+- If the prompt DOES render, `arbitrateParkedRender` evaluates it then (LLM included): `approve`/
+  `deny`/`pick` are typed into the prompt on screen (never a persisting "always" option), and
+  only an `escalate` verdict pushes a card. Every failure direction escalates; nothing is ever
   auto-answered by guess.
-- An allowlist-covered subagent command never renders and so is never evaluated; the
-  `subagent_alert` informational push (`auto-approve/subagent-alert.ts`) is the visibility
-  path for those, deliberately alerting rather than blocking.
+- An allowlist-covered subagent command — whether answered at hook time (#1024) or absorbed
+  silently after parking — never surfaces to a human by itself; the `subagent_alert`
+  informational push (`auto-approve/subagent-alert.ts`) is the visibility path for both cases,
+  fired via the same `onSubagentPassthrough` cue regardless of which path answered the hook,
+  deliberately alerting rather than blocking.
 
 **Notification channel — APNS push only** (no local notifications for questions):
 
