@@ -2,7 +2,7 @@
  * #1023: `hasShellControl` was quote-blind, so quoted/escaped PROSE tripped
  * it exactly like the real thing.
  *
- * Verified in the 2026-08-08 transit session (c77ba8f8): a `gh issue create`
+ * Verified in the 2026-08-08 transit session (see #1023): a `gh issue create`
  * whose `--body` mentioned code (escaped backticks, a `>` comparison, an `&`
  * ampersand, all inside double quotes) escalated to the phone even though
  * `gh issue` was in the config `allow` list. `splitCompoundParts` was already
