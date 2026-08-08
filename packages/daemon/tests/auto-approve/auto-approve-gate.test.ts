@@ -625,6 +625,195 @@ describe('AutoApproveGate', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #1024: a subagent-tagged PermissionRequest that the config's own
+// deterministic layers (deny, then allow, then approve_groups --
+// `evaluateDeterministic`) already approve is answered 'allow' at hook time
+// instead of parked. The LLM must still never run for a subagent at hook
+// time (ADR 0004); anything not deterministically approved -- including a
+// deny match -- parks + passthroughs exactly as before this issue.
+// ---------------------------------------------------------------------------
+describe('AutoApproveGate subagent hook-time deterministic answer (#1024)', () => {
+  const SID = generateId() as UUID;
+  let registry: SessionRegistry;
+  let submits: string[];
+  let escalations: PermissionRequestHookInput[];
+  let parks: PermissionRequestHookInput[];
+  let observed: PermissionRequestHookInput[];
+  let evaluateCalls: number;
+  let tracker: QuestionPresenceTracker;
+
+  type Deterministic =
+    | { decision: 'approve'; reasoning: string }
+    | { decision: 'deny-covered'; reasoning: string; denySource: DenySource }
+    | null;
+
+  function gateWithDeterministic(det: Deterministic): AutoApproveGate {
+    registry.registerSession(SID, '/d', fakePTY(submits), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    const service: AutoApproveEvaluator = {
+      evaluate: async () => {
+        evaluateCalls++;
+        return approve;
+      },
+      cancel: () => true,
+      evaluateDeterministic: () => det,
+    };
+    return new AutoApproveGate(
+      {
+        service,
+        sessionRegistry: registry,
+        tracker,
+        isInSubagentContext: () => false,
+        escalate: (i) => {
+          escalations.push(i);
+          return generateId();
+        },
+        parkForPTY: (i) => {
+          parks.push(i);
+          return undefined;
+        },
+        onSubagentPassthrough: (i) => observed.push(i),
+      },
+      SID,
+    );
+  }
+
+  function pr(over: Partial<PermissionRequestHookInput> = {}): PermissionRequestHookInput {
+    return {
+      session_id: 'claude-test',
+      transcript_path: '/tmp/t.jsonl',
+      cwd: '/d',
+      permission_mode: 'default',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'grep foo src/' },
+      agent_id: 'agent-1',
+      ...over,
+    };
+  }
+
+  beforeEach(() => {
+    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    submits = [];
+    escalations = [];
+    parks = [];
+    observed = [];
+    evaluateCalls = 0;
+    tracker = new QuestionPresenceTracker(() => undefined);
+    configureLogger({ writeLog: () => {} });
+  });
+
+  afterEach(async () => {
+    __resetLoggerForTests();
+    await registry.shutdown();
+  });
+
+  test('approve_groups-covered command answers "allow", does not park, LLM never runs', async () => {
+    const det: Deterministic = {
+      decision: 'approve',
+      reasoning: 'approve-matched group: "read-only:Bash"',
+    };
+    const d = await gateWithDeterministic(det).resolvePermission(pr());
+    expect(d).toBe('allow');
+    expect(parks).toHaveLength(0);
+    expect(submits).toHaveLength(0);
+    expect(escalations).toHaveLength(0);
+    expect(evaluateCalls).toBe(0);
+  });
+
+  test('user allow-covered tool name (WebFetch) answers "allow"', async () => {
+    const det: Deterministic = {
+      decision: 'approve',
+      reasoning: 'allow-matched pattern: "WebFetch"',
+    };
+    const d = await gateWithDeterministic(det).resolvePermission(
+      pr({ tool_name: 'WebFetch', tool_input: { url: 'https://example.com' } }),
+    );
+    expect(d).toBe('allow');
+    expect(parks).toHaveLength(0);
+    expect(evaluateCalls).toBe(0);
+  });
+
+  test('deterministic approve still fires the subagent_alert observation cue', async () => {
+    const det: Deterministic = {
+      decision: 'approve',
+      reasoning: 'approve-matched group: "read-only:Bash"',
+    };
+    const input = pr({ tool_input: { command: 'curl https://example.com' } });
+    const d = await gateWithDeterministic(det).resolvePermission(input);
+    expect(d).toBe('allow');
+    expect(observed).toHaveLength(1);
+    expect(observed[0]?.tool_input).toEqual({ command: 'curl https://example.com' });
+  });
+
+  test('deny-covered match parks (deny wins; no hook-time allow)', async () => {
+    const det: Deterministic = {
+      decision: 'deny-covered',
+      reasoning: 'deny-matched pattern: "rm -rf /"',
+      denySource: { kind: 'config', pattern: 'rm -rf /' },
+    };
+    const d = await gateWithDeterministic(det).resolvePermission(
+      pr({ tool_input: { command: 'rm -rf /tmp/x' } }),
+    );
+    expect(d).toBe('passthrough');
+    expect(parks).toHaveLength(1);
+    expect(evaluateCalls).toBe(0);
+    // Still observed via the same park-path cue, exactly as before #1024.
+    expect(observed).toHaveLength(1);
+  });
+
+  test('no deterministic verdict parks + passthrough exactly as before #1024', async () => {
+    const d = await gateWithDeterministic(null).resolvePermission(
+      pr({ tool_input: { command: 'npm install' } }),
+    );
+    expect(d).toBe('passthrough');
+    expect(parks).toHaveLength(1);
+    expect(evaluateCalls).toBe(0);
+    expect(observed).toHaveLength(1);
+  });
+
+  test('a test double omitting evaluateDeterministic parks exactly as before #1024', async () => {
+    registry.registerSession(SID, '/d', fakePTY(submits), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    const minimal: AutoApproveEvaluator = {
+      evaluate: async () => {
+        evaluateCalls++;
+        return approve;
+      },
+      cancel: () => true,
+    };
+    const g = new AutoApproveGate(
+      {
+        service: minimal,
+        sessionRegistry: registry,
+        tracker,
+        isInSubagentContext: () => false,
+        escalate: (i) => {
+          escalations.push(i);
+          return generateId();
+        },
+        parkForPTY: (i) => {
+          parks.push(i);
+          return undefined;
+        },
+        onSubagentPassthrough: (i) => observed.push(i),
+      },
+      SID,
+    );
+    const d = await g.resolvePermission(pr());
+    expect(d).toBe('passthrough');
+    expect(parks).toHaveLength(1);
+    expect(evaluateCalls).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Lifecycle callbacks that drive the terminal cue (#513). They must fire on the
 // matching verdict and never cross-fire (a leaked spinner / missed notification
 // would be the symptom).
