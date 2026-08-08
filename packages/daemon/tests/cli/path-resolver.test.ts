@@ -6,6 +6,7 @@ import {
   normalizeProjectPath,
   resolveDirectory,
   resolveExistingDirectory,
+  resolveRequestedSessionDirectory,
 } from '../../src/cli/path-resolver.ts';
 
 describe('resolveDirectory', () => {
@@ -111,6 +112,30 @@ describe('resolveExistingDirectory (#1025)', () => {
     const file = path.join(sandbox, 'file.txt');
     fs.writeFileSync(file, 'hello');
     expect(resolveExistingDirectory(file)).toBeUndefined();
+  });
+});
+
+describe('resolveRequestedSessionDirectory (#1025)', () => {
+  test('maps undefined to the home directory', () => {
+    expect(resolveRequestedSessionDirectory(undefined)).toBe(os.homedir());
+  });
+
+  test('maps an empty string to the home directory', () => {
+    expect(resolveRequestedSessionDirectory('')).toBe(os.homedir());
+  });
+
+  test('maps a whitespace-only string to the home directory', () => {
+    expect(resolveRequestedSessionDirectory('   ')).toBe(os.homedir());
+  });
+
+  test('passes a real path through, trimmed', () => {
+    expect(resolveRequestedSessionDirectory('  /tmp/some-project  ')).toBe('/tmp/some-project');
+  });
+
+  test("does not expand `~` — that is the child daemon's own --dir job", () => {
+    expect(resolveRequestedSessionDirectory('~/Documents/git/project')).toBe(
+      '~/Documents/git/project',
+    );
   });
 });
 

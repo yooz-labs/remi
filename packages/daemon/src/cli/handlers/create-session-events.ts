@@ -17,6 +17,7 @@ import type { SessionRegistryFile } from '../../session/index.ts';
 import { findAvailableTcpPort as defaultFindAvailableTcpPort } from '../../session/port-utils.ts';
 import { spawnRemiDaemon as defaultSpawnRemiDaemon } from '../daemon-manager.ts';
 import { log, logError } from '../logger.ts';
+import { resolveRequestedSessionDirectory } from '../path-resolver.ts';
 import type { SendToConnection } from './trivial-events.ts';
 
 export interface SpawnResult {
@@ -93,10 +94,14 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
           return;
         }
 
-        log(`Spawning new daemon on port ${freePort} for directory ${directory || '(cwd)'}`);
+        // #1025: no/empty/whitespace directory means "home", never the
+        // hub's own cwd (an accident of where `remi serve` was started) —
+        // see resolveRequestedSessionDirectory for the full rationale.
+        const resolvedDirectory = resolveRequestedSessionDirectory(directory);
+        log(`Spawning new daemon on port ${freePort} for directory ${resolvedDirectory}`);
         spawningPorts.add(freePort);
         try {
-          const result = await spawnDaemon(freePort, directory, [...inheritedArgs()]);
+          const result = await spawnDaemon(freePort, resolvedDirectory, [...inheritedArgs()]);
           send(
             connectionId,
             createCreateSessionResponse(
