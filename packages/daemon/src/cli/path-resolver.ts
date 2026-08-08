@@ -49,3 +49,18 @@ export function resolveDirectory(inputPath: string | null | undefined): ResolveD
   }
   return { resolved };
 }
+
+/**
+ * Resolve a directory to an absolute path suitable for a spawned child
+ * process's `cwd` option, or `undefined` if it isn't a real, existing
+ * directory. Unlike `resolveDirectory`, silent on failure by design: the
+ * caller (`spawnRemiDaemon`) uses this only as a best-effort belt-and-braces
+ * fix (#1025) and leaves invalid input for the child's OWN `--dir` handling
+ * — which calls `resolveDirectory` and reports the error — to catch.
+ */
+export function resolveExistingDirectory(inputPath: string | null | undefined): string | undefined {
+  if (!inputPath) return undefined;
+  const resolved = normalizeProjectPath(inputPath);
+  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) return undefined;
+  return resolved;
+}
