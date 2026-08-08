@@ -777,6 +777,14 @@ if ((cliSubcommand === 'new' || cliSubcommand === undefined) && cliDir && !cliHo
   process.chdir(dirResult.resolved);
 }
 
+// #1025: `gitInfo` above was computed from process.cwd() at module load,
+// before args were parsed — a hub-spawned child inherits the hub's cwd, so
+// that snapshot named the hub's repo/branch. The --resume/--recent/--dir
+// chdirs above (if any) have now settled process.cwd() on the real session
+// directory; refresh the status snapshot from it. `remi serve` never chdirs
+// here, so this is a no-op and the hub keeps reporting its own cwd.
+updateRemiStatus(detectGitInfo());
+
 // Every read-only / remote-client subcommand (ls, recent, kill, detach, attach,
 // code, start/stop/status/logs, keys, autostart, --host remote-new) has already
 // exited above. Everything past this point boots a daemon or a local wrapper

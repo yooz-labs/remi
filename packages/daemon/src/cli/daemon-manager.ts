@@ -14,6 +14,7 @@ import * as path from 'node:path';
 import { errorToString } from '@remi/shared';
 import { SessionRegistryFile } from '../session/session-registry-file.ts';
 import { rotateIfNeeded } from './log-rotation.ts';
+import { resolveExistingDirectory } from './path-resolver.ts';
 import { formatVersionDrift } from './version-drift.ts';
 
 // Re-exported for existing importers/tests; the definition moved to
@@ -560,12 +561,19 @@ export async function spawnRemiDaemon(
   // own ~/.remi/daemon-status.json.
   childEnv['REMI_SPAWNED_CHILD'] = '1';
 
+  // #1025: without this, the child inherits OUR cwd (the hub's, for a
+  // hub-spawned child), so anything the child reads from process.cwd()
+  // before its own --dir chdir logic runs — e.g. gitInfo at module load —
+  // names the wrong project.
+  const childCwd = resolveExistingDirectory(directory);
+
   let child: ReturnType<typeof spawn>;
   try {
     child = spawn(command, spawnArgs, {
       detached: true,
       stdio: ['ignore', logFd, logFd],
       env: childEnv,
+      ...(childCwd !== undefined && { cwd: childCwd }),
     });
   } catch (err) {
     fs.closeSync(logFd);

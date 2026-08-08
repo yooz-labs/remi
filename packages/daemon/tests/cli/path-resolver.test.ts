@@ -2,7 +2,12 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { normalizeProjectPath, resolveDirectory } from '../../src/cli/path-resolver.ts';
+import {
+  normalizeProjectPath,
+  resolveDirectory,
+  resolveExistingDirectory,
+  resolveRequestedSessionDirectory,
+} from '../../src/cli/path-resolver.ts';
 
 describe('resolveDirectory', () => {
   let sandbox: string;
@@ -71,6 +76,66 @@ describe('resolveDirectory', () => {
     if ('error' in result) {
       expect(result.error).toStartWith('Not a directory: ');
     }
+  });
+});
+
+describe('resolveExistingDirectory (#1025)', () => {
+  let sandbox: string;
+
+  beforeEach(() => {
+    sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-existing-dir-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  });
+
+  test('returns undefined for null / undefined / empty string', () => {
+    expect(resolveExistingDirectory(null)).toBeUndefined();
+    expect(resolveExistingDirectory(undefined)).toBeUndefined();
+    expect(resolveExistingDirectory('')).toBeUndefined();
+  });
+
+  test('returns the resolved path for an existing directory', () => {
+    expect(resolveExistingDirectory(sandbox)).toBe(sandbox);
+  });
+
+  test('expands `~` before checking existence', () => {
+    expect(resolveExistingDirectory('~')).toBe(os.homedir());
+  });
+
+  test('returns undefined for a non-existent path', () => {
+    expect(resolveExistingDirectory(path.join(sandbox, 'nope'))).toBeUndefined();
+  });
+
+  test('returns undefined when the path is a file, not a directory', () => {
+    const file = path.join(sandbox, 'file.txt');
+    fs.writeFileSync(file, 'hello');
+    expect(resolveExistingDirectory(file)).toBeUndefined();
+  });
+});
+
+describe('resolveRequestedSessionDirectory (#1025)', () => {
+  test('maps undefined to the home directory', () => {
+    expect(resolveRequestedSessionDirectory(undefined)).toBe(os.homedir());
+  });
+
+  test('maps an empty string to the home directory', () => {
+    expect(resolveRequestedSessionDirectory('')).toBe(os.homedir());
+  });
+
+  test('maps a whitespace-only string to the home directory', () => {
+    expect(resolveRequestedSessionDirectory('   ')).toBe(os.homedir());
+  });
+
+  test('passes a real path through, trimmed', () => {
+    expect(resolveRequestedSessionDirectory('  /tmp/some-project  ')).toBe('/tmp/some-project');
+  });
+
+  test("does not expand `~` — that is the child daemon's own --dir job", () => {
+    expect(resolveRequestedSessionDirectory('~/Documents/git/project')).toBe(
+      '~/Documents/git/project',
+    );
   });
 });
 
