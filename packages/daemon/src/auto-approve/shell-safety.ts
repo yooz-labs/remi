@@ -184,9 +184,23 @@ export interface CompoundPart {
 /**
  * Split a command into compound segments on `&&`, `||`, `;`, `|`, and newlines
  * (`\n`/`\r` — the shell treats an unquoted newline as a command separator,
- * exactly like `;`), respecting single/double quotes (best-effort), retaining
- * which operator joined each segment to the previous one.
+ * exactly like `;`), respecting single/double quotes and double-quote /
+ * unquoted backslash escapes, retaining which operator joined each segment
+ * to the previous one.
  * Backgrounding `&` is left in the segment for the shell-control veto to catch.
+ *
+ * Escape handling (#1031): a backslash-escaped quote outside quotes (`\"`)
+ * does not open a quote, and a backslash-escaped `"` inside a double-quoted
+ * span does not close it — in real bash neither toggles quote state, so
+ * treating them as literal is what keeps a LIVE separator after them (a real
+ * `;`/`&&`/`||`/`|`) from being misread as still inside an "unterminated"
+ * quote and swallowed into one segment. Single quotes are unaffected: bash has
+ * no escapes inside them, so only a literal `'` closes one.
+ *
+ * NOT handled (#1034): bash ANSI-C `$'...'` quoting, where `\'` does NOT close
+ * the span. This parser (and `maskQuotedSpans`) still toggles on the inner `'`,
+ * desyncing quote state and leaving a `$'...'`-based separator bypass open — a
+ * distinct pre-existing P0 of the same class as #1031, tracked in #1034.
  */
 export function splitCompoundParts(command: string): CompoundPart[] {
   const parts: CompoundPart[] = [];
@@ -201,9 +215,41 @@ export function splitCompoundParts(command: string): CompoundPart[] {
   for (let i = 0; i < command.length; i++) {
     const c = command[i];
     const next = command[i + 1];
-    if (quote !== null) {
+
+    if (quote === '"') {
+      // Every backslash inside double quotes is consumed with the character
+      // after it, so an escaped `"` cannot close the quote. This is broader
+      // than bash's real rule (only `$ \` " \\` newline are special inside
+      // double quotes), but that is safe here: over-consuming an escape can
+      // only keep already-quoted text together, never merge a live operator —
+      // a live operator requires being OUTSIDE quotes in the first place.
+      if (c === '\\' && next !== undefined) {
+        current += c + next;
+        i++;
+        continue;
+      }
       current += c;
-      if (c === quote) quote = null;
+      if (c === '"') quote = null;
+      continue;
+    }
+
+    if (quote === "'") {
+      // No escapes exist inside bash single quotes; only a literal `'` closes.
+      current += c;
+      if (c === "'") quote = null;
+      continue;
+    }
+
+    // quote === null from here.
+    if (c === '\\') {
+      // Outside quotes, the next character is escaped: it cannot toggle quote
+      // state, and cannot act as a separator/operator either way.
+      if (next !== undefined) {
+        current += c + next;
+        i++;
+        continue;
+      }
+      current += c; // trailing lone backslash: literal, string ends
       continue;
     }
     if (c === '"' || c === "'") {
