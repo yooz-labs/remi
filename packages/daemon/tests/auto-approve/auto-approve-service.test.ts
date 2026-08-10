@@ -655,6 +655,92 @@ describe('AutoApproveService - permission groups (#494)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// evaluateDeterministic (#1024) — the shared pre-LLM layer `evaluate()` and
+// the gate's subagent hook-time shortcut both call. No network involved, so
+// these do not need the unreachable-base_url trick the tests above use.
+// ---------------------------------------------------------------------------
+
+describe('AutoApproveService - evaluateDeterministic (#1024)', () => {
+  function detService(over: Partial<AutoApproveConfig>): AutoApproveService {
+    return new AutoApproveService(makeConfig({ base_url: 'http://10.255.255.1', ...over }), logFn);
+  }
+
+  test('allow pattern match returns approve', () => {
+    const service = detService({ allow: ['git push'] });
+    const result = service.evaluateDeterministic('Bash', {
+      command: 'cd /foo && git push origin main',
+    });
+    expect(result?.decision).toBe('approve');
+    expect(result && 'reasoning' in result ? result.reasoning : '').toContain('allow-matched');
+  });
+
+  test('approve_groups match returns approve', () => {
+    const service = detService({ approve_groups: ['read-only'] });
+    const result = service.evaluateDeterministic('Grep', { pattern: 'foo' });
+    expect(result?.decision).toBe('approve');
+    expect(result && 'reasoning' in result ? result.reasoning : '').toContain(
+      'approve-matched group',
+    );
+  });
+
+  test('deny pattern match returns deny-covered, never approve', () => {
+    const service = detService({ deny: ['rm -rf /'] });
+    const result = service.evaluateDeterministic('Bash', { command: 'rm -rf /tmp/foo' });
+    expect(result?.decision).toBe('deny-covered');
+    if (result?.decision === 'deny-covered') {
+      expect(result.reasoning).toContain('deny-matched pattern');
+      expect(result.denySource).toEqual({ kind: 'config', pattern: 'rm -rf /' });
+    }
+  });
+
+  test('deny_groups match returns deny-covered with a group denySource', () => {
+    const service = detService({ deny_groups: ['build-test'] });
+    const result = service.evaluateDeterministic('Bash', { command: 'bun test' });
+    expect(result?.decision).toBe('deny-covered');
+    if (result?.decision === 'deny-covered') {
+      expect(result.reasoning).toContain('deny-matched group');
+      expect(result.denySource.kind).toBe('config');
+    }
+  });
+
+  test('deny wins over allow: a command matching both returns deny-covered', () => {
+    const service = detService({ allow: ['git'], deny: ['git push --force'] });
+    const result = service.evaluateDeterministic('Bash', {
+      command: 'git push --force origin main',
+    });
+    expect(result?.decision).toBe('deny-covered');
+  });
+
+  test('no match returns null', () => {
+    const service = detService({ allow: [], deny: [], approve_groups: [], deny_groups: [] });
+    const result = service.evaluateDeterministic('Bash', { command: 'npm install' });
+    expect(result).toBeNull();
+  });
+
+  test('agrees with evaluate() on the same allow-matched input (no drift)', async () => {
+    const service = detService({ allow: ['git push'] });
+    const direct = service.evaluateDeterministic('Bash', { command: 'git push origin main' });
+    const viaEvaluate = await service.evaluate('Bash', { command: 'git push origin main' });
+    expect(direct?.decision).toBe('approve');
+    expect(viaEvaluate.decision).toBe('approve');
+    expect(viaEvaluate.reasoning).toBe(direct && 'reasoning' in direct ? direct.reasoning : '');
+    expect(viaEvaluate.durationMs).toBe(0);
+  });
+
+  test('agrees with evaluate() on the same deny-matched input (no drift)', async () => {
+    const service = detService({ deny: ['rm -rf /'] });
+    const direct = service.evaluateDeterministic('Bash', { command: 'rm -rf /tmp/foo' });
+    const viaEvaluate = await service.evaluate('Bash', { command: 'rm -rf /tmp/foo' });
+    expect(direct?.decision).toBe('deny-covered');
+    expect(viaEvaluate.decision).toBe('deny');
+    expect(viaEvaluate.reasoning).toBe(direct && 'reasoning' in direct ? direct.reasoning : '');
+    expect(viaEvaluate.decision === 'deny' ? viaEvaluate.denySource : undefined).toEqual(
+      direct?.decision === 'deny-covered' ? direct.denySource : undefined,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Instructions injected into LLM prompt (behavioral - uses the real engine)
 // ---------------------------------------------------------------------------
 describeEngine('AutoApproveService - instructions affect LLM decision', () => {
