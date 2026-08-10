@@ -197,16 +197,18 @@ export interface CompoundPart {
  * quote and swallowed into one segment. Single quotes are unaffected: bash has
  * no escapes inside them, so only a literal `'` closes one.
  *
- * NOT handled (#1034): bash ANSI-C `$'...'` quoting, where `\'` does NOT close
- * the span. This parser (and `maskQuotedSpans`) still toggles on the inner `'`,
- * desyncing quote state and leaving a `$'...'`-based separator bypass open — a
- * distinct pre-existing P0 of the same class as #1031, tracked in #1034.
+ * ANSI-C handling (#1034): bash `$'...'` applies C-style escapes inside, so
+ * `\'` does NOT close the span — only an unescaped `'` does. This parser (and
+ * `maskQuotedSpans`) recognizes `$'...'` and consumes those escapes, so an
+ * escaped `'` cannot close early and desync quote state, which would otherwise
+ * leave a live separator after the real closing quote swallowed into one
+ * segment (the bypass #1033 left open, same class as #1031).
  */
 export function splitCompoundParts(command: string): CompoundPart[] {
   const parts: CompoundPart[] = [];
   let current = '';
   let joiner: CompoundJoiner = null;
-  let quote: '"' | "'" | null = null;
+  let quote: '"' | "'" | "$'" | null = null;
   const push = (nextJoiner: CompoundJoiner) => {
     parts.push({ text: current, joiner });
     current = '';
@@ -240,6 +242,22 @@ export function splitCompoundParts(command: string): CompoundPart[] {
       continue;
     }
 
+    if (quote === "$'") {
+      // ANSI-C quoting (`$'...'`): bash applies C-style escapes inside, so a
+      // backslash-escaped `'` does NOT close the span — only an UNescaped `'`
+      // does (#1034). Consuming the backslash with its next char is what keeps
+      // an escaped `'` from ending the span early and leaving a LIVE separator
+      // after the real closing quote misread as still inside it.
+      if (c === '\\' && next !== undefined) {
+        current += c + next;
+        i++;
+        continue;
+      }
+      current += c;
+      if (c === "'") quote = null;
+      continue;
+    }
+
     // quote === null from here.
     if (c === '\\') {
       // Outside quotes, the next character is escaped: it cannot toggle quote
@@ -250,6 +268,17 @@ export function splitCompoundParts(command: string): CompoundPart[] {
         continue;
       }
       current += c; // trailing lone backslash: literal, string ends
+      continue;
+    }
+    if (c === '$' && next === "'") {
+      // ANSI-C `$'...'` opens here, recognized explicitly: unlike a plain
+      // single quote it honours backslash escapes inside, so parsing it as a
+      // plain `'...'` span desyncs from bash and can swallow a live separator
+      // that actually sits OUTSIDE the quotes (#1034). `$"..."` needs no such
+      // case — its `"` opens a real double-quote span either way.
+      quote = "$'";
+      current += c + next;
+      i++;
       continue;
     }
     if (c === '"' || c === "'") {
@@ -431,6 +460,28 @@ export function maskQuotedSpans(segment: string): string {
       out[i] = '_';
       out[i + 1] = '_';
       i += 2;
+      continue;
+    }
+
+    if (c === '$' && segment[i + 1] === "'") {
+      // ANSI-C `$'...'`: bash honours C-style escapes inside, so `\'` does NOT
+      // close — only an UNescaped `'` does (#1034). A plain-single-quote scan
+      // ends at the escaped `'` and desyncs, corrupting the mask here and (in
+      // `splitCompoundParts`) hiding a live separator. The whole span is a
+      // string literal, so mask it all — masking only removes proven-literal
+      // text, never a live operator.
+      const start = i;
+      let j = i + 2;
+      while (j < n && segment[j] !== "'") {
+        if (segment[j] === '\\' && segment[j + 1] !== undefined) {
+          j += 2;
+          continue;
+        }
+        j++;
+      }
+      if (j >= n) return segment; // unterminated: fail closed
+      for (let k = start; k <= j; k++) out[k] = '_';
+      i = j + 1;
       continue;
     }
 
