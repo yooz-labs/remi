@@ -49,3 +49,37 @@ export function resolveDirectory(inputPath: string | null | undefined): ResolveD
   }
   return { resolved };
 }
+
+/**
+ * Resolve a directory to an absolute path suitable for a spawned child
+ * process's `cwd` option, or `undefined` if it isn't a real, existing
+ * directory. Unlike `resolveDirectory`, silent on failure by design: the
+ * caller (`spawnRemiDaemon`) uses this only as a best-effort belt-and-braces
+ * fix (#1025). A non-empty but invalid directory is left for the child's OWN
+ * `--dir` handling — which calls `resolveDirectory` and reports the error —
+ * to catch; falsy input (no directory requested) is handled upstream by
+ * `resolveRequestedSessionDirectory` for a remote request, so by the time a
+ * LOCAL spawn reaches here with no directory, "inherit the parent's cwd" is
+ * the intended behavior, not an error to catch.
+ */
+export function resolveExistingDirectory(inputPath: string | null | undefined): string | undefined {
+  if (!inputPath) return undefined;
+  const resolved = normalizeProjectPath(inputPath);
+  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) return undefined;
+  return resolved;
+}
+
+/**
+ * Resolve the directory for a REMOTE create-session request (#1025): no
+ * directory, or an empty/whitespace-only string, means "home" — the
+ * contract `NewSessionModal.tsx` documents ("empty string = home/cwd") and
+ * what `RecentProjects`'s default entry sends. The hub's own cwd is an
+ * accident of wherever `remi serve` happened to be started and is never a
+ * meaningful default for a request that arrived over the wire, unlike a
+ * LOCAL `remi new` from a shell, which correctly inherits the invoking
+ * shell's cwd — this helper is for the remote path only, never the local one.
+ */
+export function resolveRequestedSessionDirectory(directory: string | undefined): string {
+  const trimmed = directory?.trim();
+  return trimmed || os.homedir();
+}

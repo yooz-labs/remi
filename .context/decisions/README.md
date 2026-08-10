@@ -19,7 +19,7 @@ add a row below.
 | [0001](0001-transcript-path-source-of-truth.md) | Transcript path is the session source of truth |
 | [0002](0002-model-b-hold-the-hook-notifications.md) | Hold-the-hook notification model |
 | [0003](0003-synchronous-permission-decisions.md) | Synchronous permission decisions |
-| [0004](0004-pty-as-arbiter-subagent-questions.md) | PTY is the arbiter for subagent questions |
+| [0004](0004-pty-as-arbiter-subagent-questions.md) | PTY is the arbiter for subagent questions — amended 2026-08-08: a config-deterministic approve answers at hook time, the LLM still never runs there |
 | [0005](0005-hub-and-attach-only-clients.md) | Hub mode and attach-only clients |
 | [0006](0006-cc-ref-disavowed.md) | `cc-ref` is not ground truth for Claude Code |
 | [0007](0007-release-automation-and-pins.md) | Release automation and toolchain pins |

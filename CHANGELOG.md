@@ -4,6 +4,61 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-08-10
+
+Closes two P0 holes in the deterministic allow-list, both the same shape: a
+crafted quote desynced the shell splitter so a live command separator was read
+as quoted text, collapsing an injected command into a segment that prefix-
+matched a covered read — and the 0ms allow path approved the whole thing,
+tail included. One rode an escaped quote (`\"`), the other bash ANSI-C `$'...'`
+quoting; the second was found while adversarially reviewing the fix for the
+first. Same class as #536. Alongside them: subagent permissions with a
+deterministic verdict are now answered at hook time instead of parking, quoted
+prose no longer trips the shell-control veto, and two smaller UX fixes.
+
+### Fixed
+- **P0: an escaped quote could smuggle a command past the allow-list** (#1031,
+  #1033). `splitCompoundParts` tracked quotes but not backslash escapes, so an
+  escaped quote outside quotes (`\"`) opened a spurious quote span and a live
+  separator after it (`;`/`&&`/`||`/`|`/newline) was swallowed into one segment
+  — hidden from the per-segment veto in `matchCoveredCommand`. A covered read
+  prefix then approved the injected tail. Now backslash escapes are consumed so
+  an escaped quote never toggles quote state.
+- **P0: bash ANSI-C `$'...'` quoting could smuggle a command past the
+  allow-list** (#1034, #1035). The same desync via `$'\''` (the idiom for a
+  literal single quote), mishandled by both `splitCompoundParts` and
+  `maskQuotedSpans`, which treated `$'...'` as a plain single-quoted span. Both
+  now recognize `$'...'` and apply C-style escapes inside it. Found during
+  adversarial review of #1033.
+- **Quoted prose no longer escalates** (#1023, #1028). `hasShellControl` was
+  quote-blind, so a `gh issue create --body "…"` that mentioned a backtick, a
+  `>` comparison, or an `&` tripped the veto and escalated even though `gh
+  issue` was allow-listed. It now runs against a quote-masked view that removes
+  only characters it can prove are literal, so real `$(…)`/backtick/redirect
+  still veto.
+- **Statusline reports the session's repo and branch, not the hub's** (#1025,
+  #1029). A hub-spawned session daemon inherited the hub's working directory; a
+  directory-less remote create-session request now lands the child in home
+  rather than wherever the hub was started, and the statusline reflects the
+  session's own directory.
+- **Terminal status cue no longer collides with the spinner** (#1026, #1027).
+
+### Changed
+- **Deterministic subagent permissions are answered at hook time** (#1024,
+  #1030; amends [ADR 0004]). An `agent_id`-tagged `PermissionRequest` whose
+  deterministic layers return a plain approve (no deny match) is answered
+  `{behavior:"allow"}` immediately — no park, no render, no LLM, no GPU queue.
+  Everything else (no deterministic verdict, or a deny match) still parks for
+  the PTY to arbitrate on render, exactly as before.
+
+### Known open
+- A bare tool-name `allow` entry (e.g. `["Write"]`) carries no destination veto,
+  so since #1024 it grants a subagent silent hook-time write access to
+  sensitive destinations a curated `approve_groups` write group would block
+  (#1032, not yet decided).
+
+[ADR 0004]: .context/decisions/0004-pty-as-arbiter-subagent-questions.md
+
 ## [0.7.4] - 2026-08-03
 
 Closes four security holes and rebuilds auto-approve around deterministic

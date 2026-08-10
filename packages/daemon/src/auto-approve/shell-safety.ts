@@ -184,15 +184,31 @@ export interface CompoundPart {
 /**
  * Split a command into compound segments on `&&`, `||`, `;`, `|`, and newlines
  * (`\n`/`\r` — the shell treats an unquoted newline as a command separator,
- * exactly like `;`), respecting single/double quotes (best-effort), retaining
- * which operator joined each segment to the previous one.
+ * exactly like `;`), respecting single/double quotes and double-quote /
+ * unquoted backslash escapes, retaining which operator joined each segment
+ * to the previous one.
  * Backgrounding `&` is left in the segment for the shell-control veto to catch.
+ *
+ * Escape handling (#1031): a backslash-escaped quote outside quotes (`\"`)
+ * does not open a quote, and a backslash-escaped `"` inside a double-quoted
+ * span does not close it — in real bash neither toggles quote state, so
+ * treating them as literal is what keeps a LIVE separator after them (a real
+ * `;`/`&&`/`||`/`|`) from being misread as still inside an "unterminated"
+ * quote and swallowed into one segment. Single quotes are unaffected: bash has
+ * no escapes inside them, so only a literal `'` closes one.
+ *
+ * ANSI-C handling (#1034): bash `$'...'` applies C-style escapes inside, so
+ * `\'` does NOT close the span — only an unescaped `'` does. This parser (and
+ * `maskQuotedSpans`) recognizes `$'...'` and consumes those escapes, so an
+ * escaped `'` cannot close early and desync quote state, which would otherwise
+ * leave a live separator after the real closing quote swallowed into one
+ * segment (the bypass #1033 left open, same class as #1031).
  */
 export function splitCompoundParts(command: string): CompoundPart[] {
   const parts: CompoundPart[] = [];
   let current = '';
   let joiner: CompoundJoiner = null;
-  let quote: '"' | "'" | null = null;
+  let quote: '"' | "'" | "$'" | null = null;
   const push = (nextJoiner: CompoundJoiner) => {
     parts.push({ text: current, joiner });
     current = '';
@@ -201,9 +217,68 @@ export function splitCompoundParts(command: string): CompoundPart[] {
   for (let i = 0; i < command.length; i++) {
     const c = command[i];
     const next = command[i + 1];
-    if (quote !== null) {
+
+    if (quote === '"') {
+      // Every backslash inside double quotes is consumed with the character
+      // after it, so an escaped `"` cannot close the quote. This is broader
+      // than bash's real rule (only `$ \` " \\` newline are special inside
+      // double quotes), but that is safe here: over-consuming an escape can
+      // only keep already-quoted text together, never merge a live operator —
+      // a live operator requires being OUTSIDE quotes in the first place.
+      if (c === '\\' && next !== undefined) {
+        current += c + next;
+        i++;
+        continue;
+      }
       current += c;
-      if (c === quote) quote = null;
+      if (c === '"') quote = null;
+      continue;
+    }
+
+    if (quote === "'") {
+      // No escapes exist inside bash single quotes; only a literal `'` closes.
+      current += c;
+      if (c === "'") quote = null;
+      continue;
+    }
+
+    if (quote === "$'") {
+      // ANSI-C quoting (`$'...'`): bash applies C-style escapes inside, so a
+      // backslash-escaped `'` does NOT close the span — only an UNescaped `'`
+      // does (#1034). Consuming the backslash with its next char is what keeps
+      // an escaped `'` from ending the span early and leaving a LIVE separator
+      // after the real closing quote misread as still inside it.
+      if (c === '\\' && next !== undefined) {
+        current += c + next;
+        i++;
+        continue;
+      }
+      current += c;
+      if (c === "'") quote = null;
+      continue;
+    }
+
+    // quote === null from here.
+    if (c === '\\') {
+      // Outside quotes, the next character is escaped: it cannot toggle quote
+      // state, and cannot act as a separator/operator either way.
+      if (next !== undefined) {
+        current += c + next;
+        i++;
+        continue;
+      }
+      current += c; // trailing lone backslash: literal, string ends
+      continue;
+    }
+    if (c === '$' && next === "'") {
+      // ANSI-C `$'...'` opens here, recognized explicitly: unlike a plain
+      // single quote it honours backslash escapes inside, so parsing it as a
+      // plain `'...'` span desyncs from bash and can swallow a live separator
+      // that actually sits OUTSIDE the quotes (#1034). `$"..."` needs no such
+      // case — its `"` opens a real double-quote span either way.
+      quote = "$'";
+      current += c + next;
+      i++;
       continue;
     }
     if (c === '"' || c === "'") {
@@ -324,22 +399,168 @@ export function rewriteRedirectClauses(
   );
 }
 
-/** True if the segment carries shell control that could escape the matched prefix. */
+/**
+ * Render a same-length view of a segment in which every character that is
+ * PROVABLY literal text — inside a quoted span, or the second half of a
+ * backslash escape — is replaced by `_`. Everything the function cannot
+ * prove is literal is left VISIBLE, unchanged, at its original position.
+ *
+ * Exists because `hasShellControl` used to run its checks against raw
+ * segment text, so `--body "prose with \`code\` and a > sign"` vetoed a `gh
+ * issue create` the user had explicitly allowed: the backtick and `>` inside
+ * the quoted, escaped prose are not shell metacharacters at all, but a
+ * substring search cannot tell the difference (#1023). Masking only ever
+ * REMOVES characters that are provably inert; anything it cannot classify
+ * stays visible, so it can only shrink the set of segments that veto, never
+ * grow it — same philosophy as `shellWords`, applied to the veto instead of
+ * the flag/positional checks.
+ *
+ * Quote handling, matched to real shell semantics:
+ *
+ *   - single-quoted spans are fully literal: every character inside, and the
+ *     quotes themselves, is masked. No escapes exist inside single quotes,
+ *     not even for the quote character itself.
+ *   - double-quoted spans mask everything EXCEPT an unescaped `$` or
+ *     backtick, because those two still substitute inside double quotes
+ *     (`"$(rm -rf ~)"` and `` "`x`" `` must keep vetoing). `\$`, `` \` ``,
+ *     `\\` and `\"` are escape pairs and are masked whole; a `$` left
+ *     visible directly before `(` keeps the `(` visible too, because the
+ *     substitution check below matches the two-character substring `$(`,
+ *     not a lone `$`.
+ *   - outside quotes, a backslash-escaped character is literal and the pair
+ *     is masked; everything else stays visible, since that is exactly the
+ *     text a real shell would treat as live.
+ *
+ * A quote that never closes is reported honestly: masking a partial span
+ * would be a guess about where it ends, so the function fails closed and
+ * returns the segment UNCHANGED — exactly today's quote-blind behavior for
+ * that input.
+ *
+ * The placeholder is `_` on purpose: it is already a member of
+ * `PLAIN_PATH_TARGET_RE`, so a masked redirect target (`> "file"` becomes
+ * `> ______`) still classifies as a `path` and still vetoes, rather than
+ * silently reclassifying to something this module has never seen before.
+ */
+export function maskQuotedSpans(segment: string): string {
+  const n = segment.length;
+  const out: string[] = new Array(n);
+  let i = 0;
+
+  while (i < n) {
+    const c = segment[i];
+    if (c === undefined) break;
+
+    if (c === '\\') {
+      const next = segment[i + 1];
+      if (next === undefined) {
+        out[i] = '_';
+        i++;
+        continue;
+      }
+      out[i] = '_';
+      out[i + 1] = '_';
+      i += 2;
+      continue;
+    }
+
+    if (c === '$' && segment[i + 1] === "'") {
+      // ANSI-C `$'...'`: bash honours C-style escapes inside, so `\'` does NOT
+      // close — only an UNescaped `'` does (#1034). A plain-single-quote scan
+      // ends at the escaped `'` and desyncs, corrupting the mask here and (in
+      // `splitCompoundParts`) hiding a live separator. The whole span is a
+      // string literal, so mask it all — masking only removes proven-literal
+      // text, never a live operator.
+      const start = i;
+      let j = i + 2;
+      while (j < n && segment[j] !== "'") {
+        if (segment[j] === '\\' && segment[j + 1] !== undefined) {
+          j += 2;
+          continue;
+        }
+        j++;
+      }
+      if (j >= n) return segment; // unterminated: fail closed
+      for (let k = start; k <= j; k++) out[k] = '_';
+      i = j + 1;
+      continue;
+    }
+
+    if (c === "'") {
+      const start = i;
+      let j = i + 1;
+      while (j < n && segment[j] !== "'") j++;
+      if (j >= n) return segment; // unterminated: fail closed
+      for (let k = start; k <= j; k++) out[k] = '_';
+      i = j + 1;
+      continue;
+    }
+
+    if (c === '"') {
+      const start = i;
+      let j = i + 1;
+      const visible = new Set<number>();
+      while (j < n && segment[j] !== '"') {
+        const cur = segment[j];
+        if (cur === '\\') {
+          const next = segment[j + 1];
+          if (next !== undefined && ['"', '\\', '$', '`', '\n'].includes(next)) {
+            j += 2;
+            continue;
+          }
+          j += 1; // lone backslash: literal, masked; next char judged on its own
+          continue;
+        }
+        if (cur === '$' || cur === '`') visible.add(j);
+        j++;
+      }
+      if (j >= n) return segment; // unterminated: fail closed
+      for (let k = start; k <= j; k++) out[k] = visible.has(k) ? (segment[k] ?? '_') : '_';
+      i = j + 1;
+      continue;
+    }
+
+    out[i] = c;
+    i++;
+  }
+
+  // A `$` left visible directly before `(` keeps the `(` visible too: the
+  // substitution check matches the substring `$(`, and a lone `$` with its
+  // paren masked would silently defeat it.
+  for (let k = 0; k < n - 1; k++) {
+    if (out[k] === '$' && segment[k + 1] === '(') out[k + 1] = '(';
+  }
+
+  return out.join('');
+}
+
+/**
+ * True if the segment carries shell control that could escape the matched
+ * prefix.
+ *
+ * Runs against a `maskQuotedSpans` view rather than the raw segment (#1023):
+ * quoted, escaped prose (a `--body` that mentions a backtick, a `>`
+ * comparison, an `&` ampersand) is not shell control, and checking the raw
+ * text could not tell the difference from the real thing. Masking only
+ * removes characters proven literal, so an actual `$(...)`, backtick,
+ * `<(...)`, backgrounding `&`, or non-`/dev/null` redirect is exactly as
+ * visible after masking as before, and still vetoes.
+ */
 export function hasShellControl(segment: string): boolean {
+  const masked = maskQuotedSpans(segment);
   // Command / process substitution.
-  if (segment.includes('$(') || segment.includes('`') || segment.includes('<(')) {
+  if (masked.includes('$(') || masked.includes('`') || masked.includes('<(')) {
     return true;
   }
   // Backgrounding / control operator: a lone `&` anywhere that is not part of
   // `&&` (already split out), an fd-dup (`2>&1`, `>&2`), nor an `&>` redirect
   // (caught as redirection below). Catches `cmd &`, `cmd & other`, `a&b`.
-  if (/(^|[^&>])&(?![&>0-9])/.test(segment)) {
+  if (/(^|[^&>])&(?![&>0-9])/.test(masked)) {
     return true;
   }
   // Output redirection to anything other than /dev/null or an fd dup (2>&1).
   // `path` and `opaque` both veto, so this is unchanged by the classifier: it
   // recognizes exactly the two safe shapes and refuses everything else.
-  for (const clause of findRedirectClauses(segment)) {
+  for (const clause of findRedirectClauses(masked)) {
     if (clause.target.kind !== 'discard' && clause.target.kind !== 'fd-dup') {
       return true;
     }
@@ -452,7 +673,10 @@ export function matchCoveredCommand(
     const seg = raw.trim();
     if (seg === '') continue;
     // On the ORIGINAL segment, before any grammar is removed: whatever a
-    // keyword introduces, it cannot make a redirect or a `&` safe.
+    // keyword introduces, it cannot make a redirect or a `&` safe. `seg` is
+    // NOT the raw segment by the time `hasShellControl` sees it — it masks
+    // quoted/escaped spans first (#1023) — but no grammar keyword has been
+    // peeled off, which is the property this comment is guarding.
     if (hasShellControl(seg)) return null;
     // Shell grammar is peeled off so the command inside is judged on its own
     // merits (#999). `body` is what actually runs; a segment that is pure

@@ -109,6 +109,29 @@ describe('createCreateSessionHandlers', () => {
     expect(spawningPorts.has(20005)).toBe(false);
   });
 
+  test('maps a missing directory to the home directory, not the hub cwd (#1025)', async () => {
+    const spawnHistory: Array<string | undefined> = [];
+    const handlers = createCreateSessionHandlers({
+      liveSessionsRegistry,
+      spawningPorts,
+      basePort: 20000,
+      portRange: 10,
+      inheritedArgs: () => [],
+      send,
+      findAvailableTcpPort: async () => 20008,
+      spawnDaemon: async (port, directory) => {
+        spawnHistory.push(directory);
+        return { sessionId: 's', port, pid: 1 };
+      },
+    });
+
+    await handlers.onCreateSessionRequest(CID, undefined, REQ);
+    await handlers.onCreateSessionRequest(CID, '', REQ);
+    await handlers.onCreateSessionRequest(CID, '   ', REQ);
+
+    expect(spawnHistory).toEqual([os.homedir(), os.homedir(), os.homedir()]);
+  });
+
   test('reserves the port during spawn then releases it', async () => {
     let sawReservedDuringSpawn = false;
     const handlers = createCreateSessionHandlers({
