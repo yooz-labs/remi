@@ -45,6 +45,22 @@ describe('detectGitInfo', () => {
     expect(info.repo).toBe(path.basename(sandbox));
     expect(info.branch).toBe('?');
   });
+
+  // #1025: a session daemon spawned by the hub inherits the hub's cwd, so
+  // calling detectGitInfo() with no argument (defaulting to process.cwd())
+  // before the session directory is resolved reports the HUB's repo/branch.
+  // Pins that an explicit dir argument always wins over the ambient cwd.
+  test('an explicit dir overrides process.cwd(), even when both are git repos', () => {
+    fs.mkdirSync(path.join(sandbox, '.git'));
+    fs.writeFileSync(path.join(sandbox, '.git', 'HEAD'), 'ref: refs/heads/session-branch\n');
+
+    const info = detectGitInfo(sandbox);
+    expect(info.repo).toBe(path.basename(sandbox));
+    expect(info.branch).toBe('session-branch');
+    // The sandbox is a fresh mkdtemp dir, never process.cwd() during a test
+    // run — this would fail if the argument were ever silently ignored.
+    expect(info.repo).not.toBe(path.basename(process.cwd()));
+  });
 });
 
 describe('parseEnvLine', () => {
