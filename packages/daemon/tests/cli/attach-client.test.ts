@@ -667,7 +667,7 @@ describe('runAttachClient', () => {
   // StatusBar unit test): the deferred first paint doubling as the onset
   // paint, freeze through a status change made during the freeze, forced
   // paint reflecting that change on the transition back out.
-  test('a live question (question_snapshot) suppresses the bar, then the resumed paint reflects a status change made during the freeze', async () => {
+  test('the bar keeps tracking status while a question (question_snapshot) stays live', async () => {
     setupOutput();
     const targetSessionId = generateId();
     const questionId = generateId() as UUID;
@@ -708,7 +708,8 @@ describe('runAttachClient', () => {
               ws.send(serialize(createQuestionSnapshot(targetSessionId as UUID, [questionId])));
             }, 150);
             // Status changes to B ("thinking") WHILE the question is still
-            // live -- must not paint until the freeze ends.
+            // live -- #1038: this must reach the row now, not when the
+            // question eventually resolves.
             setTimeout(() => {
               ws.send(
                 serialize(
@@ -730,18 +731,14 @@ describe('runAttachClient', () => {
       },
     });
 
-    // Peek the output mid-freeze (t=900: after the status-B send at t=600,
-    // well ahead of the resolve at t=1200), via a separate read handle so
-    // the write fd stays open. This is what actually proves suppression is
-    // holding rather than merely coinciding on a final count: if
-    // hasLiveQuestions() were broken (e.g. wired to a constant), the status
-    // change at t=600 would have produced its own repaint by the very next
-    // ~250ms tick, long before t=900 -- and the final bars.length could
-    // still land on 2 by coincidence (a plain dedup repaint at t=600 plus
-    // nothing else), masking the regression.
-    let midFreezeOutput = '';
+    // Peek at t=900 -- after the status-B send at t=600, well ahead of the
+    // resolve at t=1200 -- via a separate read handle so the write fd stays
+    // open. Reading MID-question is the whole point: a final-count assertion
+    // alone cannot tell "tracked it while the prompt was open" (the fix)
+    // apart from "caught up once the prompt closed" (the bug).
+    let midQuestionOutput = '';
     setTimeout(() => {
-      midFreezeOutput = fs.readFileSync(outputPath, 'utf-8');
+      midQuestionOutput = fs.readFileSync(outputPath, 'utf-8');
     }, 900);
 
     await runAttachClient({
@@ -753,21 +750,22 @@ describe('runAttachClient', () => {
       statusBarEligible: true,
     });
 
-    const midBars = [...midFreezeOutput.matchAll(/\x1b\[7m([^\x1b]*)\x1b\[0m/g)].map((m) => m[1]);
-    expect(midBars.length).toBe(1); // still frozen: only the onset paint so far
-    expect(midBars[0]).toContain('idle'); // not yet "thinking" -- the freeze held
+    const midBars = [...midQuestionOutput.matchAll(/\x1b\[7m([^\x1b]*)\x1b\[0m/g)].map((m) => m[1]);
+    // The bar's first-ever paint is deferred until question_snapshot arrives
+    // and so doubles as the onset paint (status A, stored earlier); the
+    // status-B change at t=600 then repaints on the next ~250ms tick, with
+    // the question still open. Before #1038 this row still read "idle" here
+    // and stayed that way for as long as the prompt did.
+    expect(midBars[0]).toContain('idle');
+    expect(midBars.at(-1)).toContain('thinking');
 
     const output = readOutput();
     const bars = [...output.matchAll(/\x1b\[7m([^\x1b]*)\x1b\[0m/g)].map((m) => m[1]);
-    // Exactly two real paints total: the bar's first-ever paint (deferred
-    // until question_snapshot arrives, which doubles as the onset paint
-    // since the question is already live by then -- status A, stored
-    // earlier), and the resumed paint on the transition back out (status B,
-    // reflecting the change made during the freeze). Every tick while
-    // frozen wrote nothing, despite the status having changed mid-freeze.
-    expect(bars.length).toBe(2);
-    expect(bars[0]).toContain('idle');
-    expect(bars[1]).toContain('thinking');
+    expect(bars.at(-1)).toContain('thinking');
+    // The dedup still holds: an unchanged status is not repainted on every
+    // one of the ~250ms ticks across this 1.7s run, only on the two status
+    // values plus bounded HEARTBEAT_MS re-assertions.
+    expect(bars.length).toBeLessThan(7);
   });
 
   // #932: an older daemon that never sends question_snapshot must not lose

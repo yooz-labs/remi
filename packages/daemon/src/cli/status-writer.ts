@@ -64,6 +64,10 @@ export interface StatusWriterDeps {
    * earliest boot phase run without it.
    */
   readonly getAttachState?: () => { attached: boolean; queuedCount: number } | null;
+  /** Interval (ms) for `startAttachRefresh`'s pull loop. Default 250 — matches
+   *  the StatusBar's repaint cadence, so the terminal bar and the clients see
+   *  an attach within one tick of each other. Tests override. */
+  readonly refreshMs?: number;
   /**
    * #754: broadcast the freshly-flushed snapshot to connected clients
    * (`remi_status`), on the same debounce as the disk write. Optional and
@@ -82,6 +86,8 @@ export class StatusWriter {
   private attachStateErrorLogged = false;
   private broadcastErrorLogged = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  /** Handle for `startAttachRefresh`'s pull loop, or null when not started. */
+  private refreshTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(initial: RemiStatus, deps: StatusWriterDeps) {
     this.status = { ...initial };
@@ -100,6 +106,39 @@ export class StatusWriter {
   update(patch: Partial<RemiStatus>): void {
     Object.assign(this.status, patch);
     this.schedule();
+  }
+
+  /**
+   * Re-read the pull-based fields (`attached` / `queuedCount`) and schedule a
+   * flush only when one of them actually changed.
+   *
+   * `getAttachState` is pulled inside `write()` (#755), which is right about
+   * the VALUE but says nothing about WHEN a write happens — and no attach or
+   * detach path calls `update()`. So before this existed, a phone attaching
+   * changed nothing anybody could see: the reserved-row bar, `status-<PORT>.json`
+   * and the `remi_status` broadcast all kept reading "no clients" until some
+   * unrelated status change happened to trigger a flush.
+   *
+   * Polled (see `startAttachRefresh`) rather than called from each attach site
+   * on purpose: attach/detach happens in `connection-events`,
+   * `resume-session-events`, `session-events` and the orphan timeout, and a cue
+   * that is only correct on the paths someone remembered to wire is exactly the
+   * failure [ADR 0020](../../../.context/decisions/0020-client-status-cue-totality.md)
+   * is about. A pull that is total over every path costs one `Set.size` read.
+   */
+  refresh(): void {
+    if (this.pullAttachState()) this.schedule();
+  }
+
+  /**
+   * Start the pull-refresh loop (idempotent). The timer is `unref`'d so it can
+   * never keep the process alive, and it only reaches disk or the wire when
+   * `refresh()` finds a real change, so an idle session writes nothing.
+   */
+  startAttachRefresh(): void {
+    if (this.refreshTimer) return;
+    this.refreshTimer = setInterval(() => this.refresh(), this.deps.refreshMs ?? 250);
+    this.refreshTimer.unref?.();
   }
 
   /**
@@ -163,6 +202,10 @@ export class StatusWriter {
       clearTimeout(this.timer);
       this.timer = null;
     }
+    if (this.refreshTimer) {
+      clearInterval(this.refreshTimer);
+      this.refreshTimer = null;
+    }
     try {
       fs.unlinkSync(this.deps.getTargetFile());
     } catch {
@@ -178,23 +221,40 @@ export class StatusWriter {
     }, this.deps.debounceMs);
   }
 
-  private write(): void {
-    // #755: refresh the attach-state fields from the registry at flush time so
-    // every scheduled write (status changes, evals, connection churn) carries
-    // current values; a pull here beats scattering updates over every attach /
-    // disconnect / auto-promotion site.
+  /**
+   * Pull `attached` / `queuedCount` from the registry into the in-memory
+   * status. Returns true iff either value changed, which is what lets
+   * `refresh()` poll cheaply without writing on every tick.
+   *
+   * A read failure is logged once per streak on its own latch: a stuck
+   * attach-state read must not mute the first report of a broken `remi_status`
+   * broadcast (which the #754 attach status bar depends on), or vice versa.
+   */
+  private pullAttachState(): boolean {
     try {
       const attach = this.deps.getAttachState?.();
-      if (attach) {
-        this.status.attached = attach.attached;
-        this.status.queuedCount = attach.queuedCount;
-      }
+      if (!attach) return false;
+      const changed =
+        this.status.attached !== attach.attached || this.status.queuedCount !== attach.queuedCount;
+      this.status.attached = attach.attached;
+      this.status.queuedCount = attach.queuedCount;
+      return changed;
     } catch (err) {
       if (!this.attachStateErrorLogged) {
         this.deps.writeLog(`[error] Status attach-state read failed: ${err}`);
         this.attachStateErrorLogged = true;
       }
+      return false;
     }
+  }
+
+  private write(): void {
+    // #755: refresh the attach-state fields from the registry at flush time so
+    // every scheduled write (status changes, evals, connection churn) carries
+    // current values; a pull here beats scattering updates over every attach /
+    // disconnect / auto-promotion site. `refresh()` polls the same pull so an
+    // attach that changes nothing else still reaches the bar and the clients.
+    this.pullAttachState();
     // #754: clients get the same debounced snapshot the disk gets, regardless
     // of whether the file write itself is enabled.
     try {

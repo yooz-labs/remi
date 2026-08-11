@@ -37,6 +37,7 @@ add a row below.
 | [0019](0019-push-kind-mutability-asymmetry.md) | Push kinds are named on the wire; muting them is asymmetric |
 | [0020](0020-client-status-cue-totality.md) | A client status cue must be total over its gate's end paths |
 | [0021](0021-registration-outcome-not-requery.md) | Question registration outcome flows from the call, not a re-query |
+| [0022](0022-status-bar-never-freezes.md) | The status bar waits for a quiet PTY; it never stops painting |
 
 ## By area
 
@@ -45,7 +46,7 @@ each other — reading one without its siblings is how a "fix" reopens the case
 another one closed.
 
 - **Permission decisions / auto-approve:** 0003, 0010, 0015, 0016, 0017, 0018
-- **Questions + notifications:** 0002, 0004, 0019, 0020, 0021
+- **Questions + notifications:** 0002, 0004, 0019, 0020, 0021, 0022
 - **Protocol + contracts:** 0012, 0013, 0014, 0006
 - **Sessions + transport:** 0001, 0005, 0009
 - **Process:** 0007, 0008, 0011

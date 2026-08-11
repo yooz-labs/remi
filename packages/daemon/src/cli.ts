@@ -1934,6 +1934,14 @@ remiAttachState = () => {
     queuedCount: 0,
   };
 };
+// #1038: that pull only ran when something ELSE scheduled a flush, and no
+// attach or detach path calls updateRemiStatus -- so a phone attaching left
+// the reserved-row bar, status-<PORT>.json and every connected client reading
+// "no clients" until an unrelated status change happened along. Poll it (see
+// `StatusWriter.refresh`'s doc for why a poll beats wiring five call sites);
+// a tick with nothing new costs one Set.size read and writes nothing. The
+// interval is unref'd, so this never keeps a short-lived CLI alive.
+statusWriter.startAttachRefresh();
 
 /**
  * Cross-client question dismissal (#585, P7). Fired when a pending question stops
@@ -2917,11 +2925,11 @@ if (cliDaemonMode) {
   );
 
   // Start drawing the reserved-row bar now that the PTY is up. Reads the live
-  // StatusWriter state and repaints on a 1Hz timer (the cadence of the
-  // `evaluating Ns` counter). Inert until started, and a no-op when detached
-  // or while a question is pending (#932 -- see status-bar.ts's module doc:
-  // the bar and Claude's own output share one fd, so painting over a live
-  // prompt risks corrupting or erasing it).
+  // StatusWriter state and repaints on a 250ms timer (the cadence of the
+  // `evaluating Ns` counter). Inert until started, and a no-op when detached.
+  // The bar and Claude's own output share one fd, so a paint must never land
+  // mid-render; while a question is pending that means waiting for PTY
+  // quiescence on every paint (#932, #1038 -- see status-bar.ts's module doc).
   if (statusBarActive) {
     statusBar = new StatusBar({
       getStdoutFd: getPtyStdoutFd,

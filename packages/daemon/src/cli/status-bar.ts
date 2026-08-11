@@ -35,14 +35,26 @@
  * own escape sequences (the DECSC/DECRC pair above shares Claude's own
  * cursor-save slot -- 166/421 occurrences in the installed binary). PR #933
  * did not fix that; it only cut how often a paint is attempted:
- *   1. `render()` no-ops while `hasLiveQuestions()` reports a pending
- *      question -- except for one fresh paint on the transition INTO that
- *      state (see `render()`'s `onset`), so the bar is current the moment
- *      Claude's native statusLine (#560) disappears for an AskUserQuestion
- *      dialog, then freezes rather than risk a later paint landing
- *      mid-render. One more forced paint on the transition back OUT (see
- *      `resumed`) recovers row N before normal cadence resumes, since the
- *      dialog may have redrawn it while it owned the screen.
+ *   1. While `hasLiveQuestions()` reports a pending question, EVERY paint
+ *      waits for PTY quiescence: `isQuiescent()` is promoted to a hard gate
+ *      there, with none of the exemptions the heartbeat and the onset/resumed
+ *      edges otherwise get (see `render()`). Originally (#933) this was a
+ *      blanket freeze -- one paint on the transition INTO the state, then
+ *      nothing until it ended. #1038 replaced that, because the freeze had no
+ *      upper bound: a prompt a human sits on for ten minutes froze row N for
+ *      ten minutes, and since the escalate that raises the prompt is also
+ *      what makes the state read "needs you", the frozen frame was almost
+ *      always that one -- a cue contractually bounded by `ESCALATE_FRESH_S`,
+ *      pinned on screen indefinitely (reproduced verbatim from a user report:
+ *      `remi:18766 website:main | no clients | needs you`, unchanged across
+ *      20 simulated minutes and a phone attaching). The quiescence gate is
+ *      strictly stronger per-write -- the freeze still permitted its onset
+ *      paint mid-render, this permits nothing mid-render -- and it lets the
+ *      bar stay current in exactly the window where a human is deliberating
+ *      and the PTY is idle. The transition back OUT still forces a paint (see
+ *      `resumed`) since the dialog may have redrawn row N while it owned the
+ *      screen; the transition IN no longer needs one, because the bar no
+ *      longer stops.
  *   2. A paint whose built escape sequence is byte-identical to the last one
  *      actually written is skipped -- most ticks rewrite identical bytes, and
  *      every write is an exposure window -- but only up to `HEARTBEAT_MS`: an
@@ -230,14 +242,14 @@ export interface StatusBarDeps {
   readonly isEnabled: () => boolean;
   /** True iff the session currently has at least one pending question
    *  (mirrors `hasLiveQuestions` in `question-presence-tracker.ts`, backed by
-   *  `sessionRegistry.getSession(id)?.currentQuestions.size > 0`). #932:
-   *  `render()` paints once on the transition into this being true, then
-   *  freezes for as long as it stays true, then paints once more on the
-   *  transition back out before resuming normal cadence -- so the bar can
-   *  never paint over a live prompt but also never freezes on stale content
-   *  (see `render()`'s `onset` / `resumed`). Optional; defaults to
-   *  always-false (no suppression) so a caller that omits it keeps the
-   *  pre-#932 behavior instead of silently losing the bar.
+   *  `sessionRegistry.getSession(id)?.currentQuestions.size > 0`). #932/#1038:
+   *  while this is true, `render()` still paints on the normal cadence but
+   *  every paint must additionally pass `isQuiescent()` -- no heartbeat or
+   *  edge exemption -- so the bar can never paint while Claude is mid-render
+   *  of a prompt, and never goes stale for the (unbounded) time a human takes
+   *  to answer one. Optional; defaults to always-false (no extra gating) so a
+   *  caller that omits it keeps the pre-#932 behavior instead of silently
+   *  losing the bar.
    *
    *  Session-wide, not agent-scoped: it is true whenever ANY agent in the
    *  session has a pending question, so in a concurrent multi-agent session
@@ -267,8 +279,16 @@ export interface StatusBarDeps {
    *  continuously streaming Claude session could starve the heartbeat's
    *  DECSTBM reassertion or delay an onset/resumed capture past the moment
    *  it is meant to capture. Only a routine (content-changed,
-   *  non-edge/non-heartbeat) paint waits on this. Optional; defaults to
-   *  always-true, same fail-open pattern as the other predicates here. */
+   *  non-edge/non-heartbeat) paint waits on this.
+   *
+   *  #1038: those exceptions are themselves suspended while
+   *  `hasLiveQuestions()` is true. There this gate is hard, because it is
+   *  what took over from the old blanket freeze -- see protection 1 in the
+   *  module doc. Optional; defaults to always-true, same fail-open pattern as
+   *  the other predicates here. Note the fail-open interaction: a caller that
+   *  omits BOTH this and `hasLiveQuestions` gets the pre-#932 bar, which is
+   *  the documented behavior for tests and for a bar not wired to a PTY
+   *  forwarder. */
   readonly isQuiescent?: () => boolean;
   /** Write to the terminal fd. Injectable for tests; defaults to fs.writeSync. */
   readonly writeToFd?: (fd: number, data: string) => void;
@@ -292,11 +312,11 @@ export interface StatusBarDeps {
  * write -- so a byte-identical status (the common case) mostly costs no
  * write, while the DECSTBM re-assertion `buildBarSequence` depends on still
  * happens at least every `HEARTBEAT_MS` regardless. While a question is
- * live, every tick is a no-op EXCEPT the first one after the transition
- * into "live" and the first one after the transition back out, both of
- * which always write (edge-triggered onset/resume paints, not the
- * dedup/heartbeat path). `stop()` clears the row and halts the loop. All
- * draws are no-ops unless `isEnabled()` and a live fd and enough rows.
+ * live, the cadence is unchanged but each paint must also find the PTY
+ * quiescent (#1038), so the bar tracks a long-open prompt instead of
+ * freezing on the frame that raised it. `stop()` clears the row and halts
+ * the loop. All draws are no-ops unless `isEnabled()` and a live fd and
+ * enough rows.
  */
 export class StatusBar {
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -320,7 +340,11 @@ export class StatusBar {
    *  `render()` compares this against the current `hasLiveQuestions()` read
    *  to detect both transitions -- INTO "live" and back OUT (edge, not
    *  level) -- see `render()` for why each edge forces a fresh paint. Reset
-   *  by `stop()` so a restart starts from "not live" again. */
+   *  by `stop()` so a restart starts from "not live" again. Still edge-
+   *  tracked after #1038 even though the bar no longer freezes between the
+   *  edges: `resumed` remains load-bearing (the dialog can redraw row N
+   *  while it owns the screen, so the physical row cannot be trusted to
+   *  match `lastRendered` once it closes). */
   private wasQuestionLive = false;
   /** Set by `notifyScrollRegionReset()`; cleared only once a write actually
    *  lands. #932: the ESC[r bonus signal -- if `isBoundaryClean()` refuses
@@ -401,10 +425,9 @@ export class StatusBar {
 
   /** Paint the reserved row now. Safe no-op when disabled / detached / no
    *  room / a dirty escape-sequence boundary. While a question is live
-   *  (#932), paints once on the transition into that state and freezes
-   *  after; paints once more on the transition back out, then resumes
-   *  normal cadence -- see the `onset`/`resumed` comment below for why both
-   *  edges force a fresh paint. */
+   *  (#932, #1038), the normal cadence continues but every paint -- forced
+   *  ones included -- must also find the PTY quiescent; see the
+   *  `onset`/`resumed` comment below and protection 1 in the module doc. */
   render(): void {
     if (this.disabled || !this.isEnabled()) return;
     // fd/room/boundary checks come BEFORE hasLiveQuestions() is read and
@@ -436,23 +459,19 @@ export class StatusBar {
     const questionLive = this.hasLiveQuestions();
     const wasLive = this.wasQuestionLive;
     this.wasQuestionLive = questionLive;
-    // #932 protection 1 is edge-triggered, not level-triggered. Freezing row
-    // N while a question is live is right, but freezing it on WHATEVER was
-    // last painted is wrong: Claude's native statusLine (#560) disappears
-    // entirely while an AskUserQuestion dialog is open, so this bar is
-    // exactly the cue that has to be current the moment that happens -- not
-    // up to `HEARTBEAT_MS` stale. `onset` is true only on the first
-    // render() call after the transition into "live"; it forces one fresh
-    // paint below, capturing the status at that instant. Every later call
-    // while still live hits the early return just below. `resumed` is the
-    // mirror on the way back out: the dialog may have redrawn or consumed
-    // row N while it owned the screen, so the physical row cannot be
-    // trusted to still match `lastRendered` either -- the very first
-    // render() after the question clears also forces a fresh paint, then
-    // normal dedup/heartbeat cadence takes back over.
+    // Claude's native statusLine (#560) disappears entirely while an
+    // AskUserQuestion dialog is open, so this bar is the only cue left --
+    // which is why #932's answer to "don't race the dialog" cannot be "stop
+    // updating." `onset` is true only on the first render() call after the
+    // transition into "live", `resumed` only on the first one after the
+    // transition back out; both skip the dedup below so the bar re-paints at
+    // each edge. `resumed` is the one that is load-bearing: the dialog may
+    // have redrawn or consumed row N while it owned the screen, so the
+    // physical row cannot be trusted to still match `lastRendered`. Neither
+    // edge escapes the quiescence gate while a question is live (#1038) --
+    // the edges say "don't dedup this", never "write regardless."
     const onset = questionLive && !wasLive;
     const resumed = !questionLive && wasLive;
-    if (questionLive && !onset) return;
     // The whole draw stays inside the try: an exception escaping into the
     // setInterval callback would surface as an uncaughtException and could take
     // the wrapper down — the one thing a cosmetic bar must never do. The
@@ -474,17 +493,31 @@ export class StatusBar {
       // window": it cannot -- the heartbeat is exempt from the soft gate,
       // so it still fires within HEARTBEAT_MS of the last write regardless
       // of how busy the PTY is, same as before this fix.
-      const bypassesQuiescence = onset || resumed || heartbeatDue || this.forceRepaintPending;
+      const forced = onset || resumed || heartbeatDue || this.forceRepaintPending;
       // #932 protection 2 (unchanged): skip the write when nothing changed
       // since the last successful paint, UNLESS this is one of the forced
       // paths above.
-      if (!bypassesQuiescence && sequence === this.lastRendered) return;
+      if (!forced && sequence === this.lastRendered) return;
       // #932 durable fix, SOFT gate: a routine paint (content changed, none
       // of the forced reasons above) additionally waits for PTY quiescence
       // -- reduces "mode 2" exposure (a paint landing inside a save/restore
       // pair that spans a quiet gap). See `isQuiescent`'s doc for why this
       // check does not apply to the forced paths.
-      if (!bypassesQuiescence && !this.isQuiescent()) return;
+      //
+      // #1038: while a question is live the gate applies to EVERY paint,
+      // forced ones included -- that is what replaced the old blanket freeze
+      // (`if (questionLive && !onset) return;`). The freeze was written
+      // before the quiescence/boundary scanner existed and outlived it: a
+      // prompt a human sits on for ten minutes froze the bar for ten
+      // minutes, and because the escalate that raises the prompt is also
+      // what makes the state read "needs you", the frozen frame was almost
+      // always that one -- a cue whose whole contract is that it decays
+      // after ESCALATE_FRESH_S, pinned on screen indefinitely. Waiting on
+      // quiescence gives the prompt strictly stronger protection than the
+      // freeze did per-write (nothing paints while Claude is mid-render),
+      // while a human deliberating leaves the PTY quiet, which is exactly
+      // when the bar is free to stay current.
+      if ((questionLive || !forced) && !this.isQuiescent()) return;
       this.writeToFd(fd, sequence);
       this.lastRendered = sequence;
       this.lastWriteAtMs = nowMs;

@@ -332,4 +332,84 @@ describe('StatusWriter', () => {
       expect(broadcastCount).toBe(1);
     });
   });
+
+  // #1038: `getAttachState` was pulled only inside write(), and no attach or
+  // detach path calls update() -- so an attaching phone changed nothing the
+  // bar, the status file or any client could see until an unrelated status
+  // change happened along. refresh() is the pull that closes that.
+  describe('attach-state refresh (#1038)', () => {
+    function attachHarness(debounceMs = 0) {
+      const broadcasts: Array<boolean | undefined> = [];
+      const attach = { attached: false, queuedCount: 0 };
+      const writer = new StatusWriter(baseStatus(), {
+        getTargetFile: () => target,
+        isEnabled: () => true,
+        writeLog: (m) => logs.push(m),
+        debounceMs,
+        getAttachState: () => ({ ...attach }),
+        broadcast: (s) => broadcasts.push(s.attached),
+      });
+      return { writer, attach, broadcasts };
+    }
+
+    /** refresh() only SCHEDULES; even at debounceMs 0 the flush is a task. */
+    const settle = () => new Promise((r) => setTimeout(r, 5));
+
+    test('refresh flushes when the attach state changed', async () => {
+      const { writer, attach, broadcasts } = attachHarness();
+      writer.refresh(); // first pull: undefined -> false, a real change
+      await settle();
+      expect(broadcasts).toEqual([false]);
+      attach.attached = true; // a phone attaches; nothing else in the status moves
+      writer.refresh();
+      await settle();
+      expect(writer.state.attached).toBe(true);
+      expect(broadcasts).toEqual([false, true]);
+      expect(JSON.parse(fs.readFileSync(target, 'utf-8')).attached).toBe(true);
+    });
+
+    test('refresh writes nothing when the attach state is unchanged', async () => {
+      const { writer, broadcasts } = attachHarness();
+      writer.refresh();
+      await settle();
+      expect(broadcasts).toHaveLength(1);
+      // The poll runs several times a second; an idle session must not turn
+      // that into a disk write and a client broadcast per tick.
+      writer.refresh();
+      writer.refresh();
+      await settle();
+      expect(broadcasts).toHaveLength(1);
+    });
+
+    test('startAttachRefresh polls, is idempotent, and stops on cleanup', async () => {
+      const { writer, attach, broadcasts } = attachHarness();
+      writer.startAttachRefresh();
+      writer.startAttachRefresh();
+      attach.attached = true; // changes with nothing calling update()
+      await new Promise((r) => setTimeout(r, 400)); // > the 250ms default
+      expect(broadcasts).toEqual([true]);
+      // cleanup() clears exactly one handle, so a second timer created by the
+      // second start() would survive it and pick this change up.
+      writer.cleanup();
+      attach.attached = false;
+      await new Promise((r) => setTimeout(r, 400));
+      expect(broadcasts).toEqual([true]);
+    });
+
+    test('a throwing getAttachState is logged once and leaves refresh a no-op', () => {
+      const writer = new StatusWriter(baseStatus(), {
+        getTargetFile: () => target,
+        isEnabled: () => true,
+        writeLog: (m) => logs.push(m),
+        debounceMs: 0,
+        getAttachState: () => {
+          throw new Error('registry down');
+        },
+      });
+      writer.refresh();
+      writer.refresh();
+      expect(fs.existsSync(target)).toBe(false); // nothing scheduled
+      expect(logs.filter((l) => l.includes('attach-state read failed'))).toHaveLength(1);
+    });
+  });
 });
