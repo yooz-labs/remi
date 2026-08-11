@@ -464,6 +464,10 @@ describe('auto_approve config', () => {
   test('defaults are present', () => {
     expect(DEFAULT_CONFIG.auto_approve).toEqual({
       enabled: false,
+      // ADR 0025: empty by default. No shipped config grants any agent type
+      // anything the base does not already grant — a non-empty default here
+      // would be a per-role permission nobody asked for.
+      agents: {},
       // Resolved per platform (#822), so the expectation is too — but derived
       // from `detectLocalLLMPlatform` rather than from `DEFAULT_CONFIG`, which
       // would assert the value against itself and prove nothing.

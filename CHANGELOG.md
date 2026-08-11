@@ -5,6 +5,38 @@ All notable changes to Remi are documented here.
 ## [Unreleased]
 
 ### Added
+- **Permissions can be scoped per agent type** ([ADR 0025]). A
+  `[auto_approve.agents.<type>]` section keyed by the hook's `agent_type` lets
+  one role get what another does not:
+  ```toml
+  [auto_approve.agents.Explore]
+  approve_groups = ["read-only", "vcs-read", "net-read"]
+
+  [auto_approve.agents.pr-review]
+  approve_groups = ["read-only", "vcs-read"]
+  allow = ["gh pr view", "gh pr diff"]
+  ```
+  The deterministic layers are the **only** ones a subagent reaches at hook time
+  (the LLM never runs there — [ADR 0004]), so they are also the only place a
+  per-role grant can live. `deny`/`deny_groups` **union** with the base, so a
+  section can never weaken a machine-wide prohibition; `allow`/`approve_groups`
+  **replace** it, because the motivating case is giving a role *less*. An
+  unmatched agent type falls through to the base, which also means a typo in a
+  section name silently does nothing — there is no registry of agent types to
+  validate against, and ADR 0025 records that rather than pretending otherwise.
+- **A `net-read` group** (`WebFetch`, `WebSearch`), in **no** preset and no
+  default. It exists because those tools previously matched *nothing*: every web
+  call from every subagent parked, rendered, and entered the serial eval queue.
+  Measured on a live 0.7.6 session, a fan-out of five concurrent
+  `general-purpose` agents saturated that queue and the waiters escalated on
+  `queue_timeout` **without the LLM ever running** — so the most common thing a
+  research subagent does took the most expensive path available, and under load
+  degraded to "escalate everything" while looking like the model was broken.
+  Deliberately not added to `trusted`: that level is chosen for git mutation and
+  proved-derived deletion, and silently attaching outbound egress to it on
+  upgrade is the same quiet widening ADR 0023 fixed in `matchGroups` one release
+  earlier. A wrongly-escalated fetch is a nuisance; a wrongly-approved one is an
+  exfiltration channel.
 - **remi supervises `llama-server` on Linux** (#822). Auto-approve's local
   backend no longer has to be started by hand: remi spawns it on demand,
   health-probes it, and stops what it started — the same `EngineHost` the macOS
@@ -23,6 +55,9 @@ All notable changes to Remi are documented here.
   The GGUF is not remi's job either — `-hf` pulls it — which narrows what #822
   assumed ("Download is remi's job"). Still open there: acquiring the binary,
   idle-stop, and the `escalate_model` design question.
+
+[ADR 0004]: .context/decisions/0004-pty-as-arbiter-subagent-questions.md
+[ADR 0025]: .context/decisions/0025-agent-scoped-permissions.md
 
 ### Fixed
 - **The `escalate_model` warning could be silenced for the users it was for**

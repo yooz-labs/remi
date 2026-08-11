@@ -931,6 +931,34 @@ export const BUILTIN_GROUPS: Readonly<Record<string, PermissionGroup>> = {
       // code by design (and may write coverage/report artifacts).
     ],
   },
+  /**
+   * Outbound reads (ADR 0025). In NO level preset and in no shipped default —
+   * every preset stays entirely local, and this one must be asked for by name.
+   *
+   * It exists because `WebFetch`/`WebSearch` previously matched nothing at all,
+   * so every web call from every subagent parked, rendered and entered the
+   * serial eval queue. Measured on a live 0.7.6 session: a fan-out of five
+   * concurrent `general-purpose` agents saturated that queue and the waiters
+   * escalated on `queue_timeout` WITHOUT the LLM ever running. The most common
+   * thing a research subagent does took the most expensive path available.
+   *
+   * Deliberately NOT added to `trusted`: that level is chosen for git mutation
+   * and proved-derived deletion, and someone who selected it for those reasons
+   * would silently gain arbitrary outbound egress on upgrade — the exact
+   * quiet-widening ADR 0023 fixed in `matchGroups` one release earlier.
+   *
+   * The asymmetry that settles it: a wrongly-escalated fetch is a nuisance, a
+   * wrongly-approved one is an exfiltration channel. `WebFetch` takes an
+   * arbitrary URL and a subagent is the context no human is watching.
+   */
+  'net-read': {
+    tools: ['WebFetch', 'WebSearch'],
+    // No commands. `curl`/`wget` are deliberately absent: they are general
+    // process-executing tools whose flags write files (`-o`, `-O`) and whose
+    // output is routinely piped into a shell. Covering them here would smuggle
+    // a write and an exec path into a group whose name promises a read.
+    commands: [],
+  },
   // --- Write-side groups (#959). Opt-in via `approve_groups`; none is on by
   // --- default, so this addition changes no shipped behavior on its own.
   'fs-write': {

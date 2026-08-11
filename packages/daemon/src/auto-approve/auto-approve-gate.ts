@@ -273,6 +273,10 @@ export interface AutoApproveEvaluator {
      *  `AutoApproveGateDeps.getPrecedent`; the matrix that bounds what a
      *  precedent may authorize lives inside the evaluator, not here. */
     precedent?: PrecedentReader,
+    /** ADR 0025: the hook's `agent_type`, selecting a
+     *  `[auto_approve.agents.<type>]` section for the deterministic layers.
+     *  Undefined = base policy, so every pre-0025 caller is unchanged. */
+    agentType?: string,
   ): Promise<AutoApproveResult>;
   /**
    * Abort an in-flight `evaluate`. With `evalId`, aborts ONLY when that id is the
@@ -312,6 +316,11 @@ export interface AutoApproveEvaluator {
   evaluateDeterministic?(
     toolName: string,
     toolInput: Record<string, unknown>,
+    /** ADR 0025: selects this agent's `[auto_approve.agents.<type>]` section.
+     *  This is the only layer a subagent reaches at hook time, so a per-agent
+     *  grant that did not arrive here would be unreachable for exactly the
+     *  requests it was written for. */
+    agentType?: string,
   ):
     | { decision: 'approve'; reasoning: string }
     | { decision: 'deny-covered'; reasoning: string; denySource: DenySource }
@@ -1432,7 +1441,15 @@ export class AutoApproveGate {
     // included) and answers it by PTY inject, or pushes a card the phone can
     // answer. That is the async route this hook response could never take.
     if (isSubagent) {
-      const deterministic = service?.evaluateDeterministic?.(input.tool_name, input.tool_input);
+      // ADR 0025: the agent's own section decides here. This is the ONLY layer
+      // a subagent can reach at hook time (the LLM never runs -- ADR 0004), so
+      // without this a per-agent grant would be unreachable for exactly the
+      // requests it was written for.
+      const deterministic = service?.evaluateDeterministic?.(
+        input.tool_name,
+        input.tool_input,
+        input.agent_type,
+      );
       if (deterministic?.decision === 'approve') {
         log(
           `[Hooks] Subagent PermissionRequest answered allow at hook time (deterministic): agent=${input.agent_id?.slice(0, 8)} type=${input.agent_type} tool=${input.tool_name} - ${deterministic.reasoning}`,
@@ -2068,6 +2085,10 @@ export class AutoApproveGate {
         true,
         this.authorityForEval(),
         this.precedentForEval(),
+        // ADR 0025: the same agent section that governs the hook-time path must
+        // govern the render-time one, or a parked request would be judged under
+        // a different policy than the one that declined to approve it.
+        input.agent_type,
       );
     } catch (err) {
       logError(`[AutoApprove ${this.sessionTag}] Parked-render eval threw; escalating:`, err);

@@ -10,6 +10,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { DAEMON_BASE_PORT, DAEMON_PORT_RANGE, errorToString } from '@remi/shared';
 import { parse as parseToml } from 'smol-toml';
+import { validateAgents } from '../auto-approve/agent-policy.ts';
 import {
   AUTO_APPROVE_LEVELS,
   DEFAULT_AUTO_APPROVE_LEVEL,
@@ -500,6 +501,9 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // Always escalate these to the user; never auto-decided by the LLM (#572):
     // AskUserQuestion + plan-mode. Extend with custom question-posing tools.
     always_escalate_tools: [...DEFAULT_ALWAYS_ESCALATE_TOOLS],
+    // ADR 0025. Empty = every agent uses the base policy, i.e. exactly the
+    // pre-0025 behaviour. No shipped default grants any agent anything extra.
+    agents: {},
     // Reuse an answer the user already gave THIS SESSION for the identical
     // operation (#976). Session-scoped, in-memory, cleared on rotation -- a
     // durable rule is what `allow` is for. The deny-direction half (an earlier
@@ -624,6 +628,10 @@ export function loadConfig(configPath: string = CONFIG_PATH): RemiConfig {
     const parsed = parseToml(raw) as Record<string, unknown>;
     const merged = deepMerge(DEFAULT_CONFIG, parsed);
     validateAutoApprove(merged.auto_approve, configPath);
+    // ADR 0025. Validated against the MERGED value, which is safe here because
+    // `mergeSection` replaces the `agents` table wholesale rather than deep-
+    // merging it -- a user table never blends with the empty default.
+    validateAgents(merged.auto_approve.agents, configPath);
     // Apply the level preset AFTER merge, but decide from the RAW parsed
     // table (#963). By this point `merged.approve_groups` is populated either
     // way, so it cannot answer "did the user write this?" — reading it here
@@ -1369,6 +1377,26 @@ turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_sec
 # level = "strict"
 # approve_groups = ["read-only", "vcs-read", "build-test"]
 # deny_groups = []
+#
+# "net-read" (WebFetch + WebSearch) is a real group but is in NO preset and no
+# default -- every shipped preset is entirely local. Ask for it by name, and
+# prefer asking per agent (below) over machine-wide: WebFetch takes an
+# arbitrary URL, and a subagent is the context nobody is watching (ADR 0025).
+#
+# Per-agent-type overrides, keyed by the hook's agent_type. This is the only
+# layer a subagent reaches at hook time (the LLM never runs there -- ADR 0004),
+# so it is where "let research agents read the web, and nothing else" belongs.
+#
+#   deny / deny_groups   UNION with the base -- a section can never weaken a
+#                        machine-wide prohibition.
+#   allow / approve_groups   REPLACE the base, so a role can be given LESS.
+#
+# [auto_approve.agents.Explore]
+# approve_groups = ["read-only", "vcs-read", "net-read"]
+#
+# [auto_approve.agents.pr-review]
+# approve_groups = ["read-only", "vcs-read"]
+# allow = ["gh pr view", "gh pr diff"]
 #
 # Natural-language guidance appended to the LLM system prompt:
 # instructions = """

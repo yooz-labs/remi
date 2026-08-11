@@ -107,6 +107,30 @@ export type MultiChoiceMode = 'skip' | 'evaluate';
  */
 export const DEFAULT_ALWAYS_ESCALATE_TOOLS: readonly string[] = ['AskUserQuestion', 'ExitPlanMode'];
 
+/**
+ * One agent type's policy overrides (ADR 0025).
+ *
+ * Every key optional: a section that sets only `approve_groups` leaves `allow`
+ * and the deny side inheriting the base, so the common case ("this role also
+ * gets net-read") is one line.
+ *
+ * The merge is NOT uniform, and the asymmetry is the security contract:
+ *
+ * - `deny` / `deny_groups` UNION with the base. A per-agent section must never
+ *   be able to weaken a machine-wide prohibition, so adding one cannot remove
+ *   a deny. Pinned by test, per ADR 0025's verification obligation.
+ * - `allow` / `approve_groups` REPLACE the base. Per-role scoping is the point:
+ *   if these merged additively, a section could only ever widen, and "give
+ *   pr-review LESS than the base" — the case that motivated the feature —
+ *   would be inexpressible.
+ */
+export interface AgentPolicyOverride {
+  readonly allow?: readonly string[];
+  readonly deny?: readonly string[];
+  readonly approve_groups?: readonly string[];
+  readonly deny_groups?: readonly string[];
+}
+
 /** Configuration for the auto-approve feature */
 export interface AutoApproveConfig {
   readonly enabled: boolean;
@@ -190,6 +214,29 @@ export interface AutoApproveConfig {
    * Default: empty.
    */
   readonly deny_groups: readonly string[];
+  /**
+   * Per-agent-type policy overrides (ADR 0025), keyed by the hook's
+   * `agent_type` (`Explore`, `general-purpose`, `pr-review`, ...).
+   *
+   * ```toml
+   * [auto_approve.agents.Explore]
+   * approve_groups = ["read-only", "vcs-read", "net-read"]
+   * ```
+   *
+   * Exists because the deterministic layers are the ONLY ones a subagent can
+   * reach at hook time (ADR 0004: an `agent_id`-tagged request never sees the
+   * LLM there), so "let research agents read the web, and nothing else" was
+   * previously inexpressible except as a machine-wide grant.
+   *
+   * Empty object = no overrides; every agent uses the base policy, which is
+   * exactly the pre-ADR-0025 behaviour.
+   *
+   * OPTIONAL rather than required-and-defaulted, deliberately: the service
+   * already reads it as `config.agents ?? {}`, and making it required would
+   * force a meaningless `agents: {}` into every existing construction site
+   * (and every test fixture) to assert something none of them are about.
+   */
+  readonly agents?: Readonly<Record<string, AgentPolicyOverride>>;
   /**
    * Natural-language guidance appended to the LLM system prompt.
    * Lets users steer the LLM for ambiguous cases not covered by allow/deny.

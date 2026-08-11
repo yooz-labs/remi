@@ -14,8 +14,9 @@ import {
 const ALL = ['read-only', 'vcs-read', 'build-test'];
 
 /** The write-side groups added in #959. Never enabled by default.
- *  `net-read` was designed alongside these and CUT before merge -- see the
- *  `no network group` block for what that absence must keep looking like. */
+ *  `net-read` was designed alongside these and CUT before merge; it is back as
+ *  of ADR 0025 but TOOLS ONLY, which is the distinction that permitted the
+ *  re-add -- see the '#959 superseded' block. */
 const WRITE_GROUPS = ['fs-write', 'vcs-write'];
 
 /** The scratch group (#994 follow-up). Never enabled by default. */
@@ -25,6 +26,11 @@ const SCRATCH_GROUPS = ['scratch'];
  *  corpus lives in artifact-clean.test.ts. */
 const ARTIFACT_GROUPS = ['artifact-clean'];
 
+/** The net-read group (ADR 0025). TOOLS ONLY, and in no level preset -- see
+ *  the '#959 superseded' block below for why the distinction is the whole
+ *  reason it was allowed back. */
+const NET_GROUPS = ['net-read'];
+
 /** Convenience: match a Bash command against the named groups. */
 function bash(command: string, groups: readonly string[] = ALL): string | null {
   return matchGroups('Bash', { command }, groups);
@@ -32,7 +38,13 @@ function bash(command: string, groups: readonly string[] = ALL): string | null {
 
 describe('permission-groups: known groups', () => {
   test('isKnownGroup', () => {
-    for (const name of [...ALL, ...WRITE_GROUPS, ...SCRATCH_GROUPS, ...ARTIFACT_GROUPS]) {
+    for (const name of [
+      ...ALL,
+      ...WRITE_GROUPS,
+      ...SCRATCH_GROUPS,
+      ...ARTIFACT_GROUPS,
+      ...NET_GROUPS,
+    ]) {
       expect(isKnownGroup(name)).toBe(true);
     }
     expect(isKnownGroup('bogus')).toBe(false);
@@ -41,7 +53,7 @@ describe('permission-groups: known groups', () => {
 
   test('knownGroupNames lists exactly the built-ins', () => {
     expect(knownGroupNames().sort()).toEqual(
-      [...ALL, ...WRITE_GROUPS, ...SCRATCH_GROUPS, ...ARTIFACT_GROUPS].sort(),
+      [...ALL, ...WRITE_GROUPS, ...SCRATCH_GROUPS, ...ARTIFACT_GROUPS, ...NET_GROUPS].sort(),
     );
   });
 });
@@ -504,11 +516,24 @@ describe('#960 regression: long-option abbreviation', () => {
   });
 });
 
-describe('#959: no network group ships', () => {
-  // `net-read` was cut after three review rounds found ten bypasses, five of
-  // them curl's. These assert the ABSENCE is real, so a future re-add has to
-  // delete a test rather than silently widen coverage.
-  test('curl, wget and gh api are covered by nothing', () => {
+describe('#959 superseded by ADR 0025: net-read ships, but TOOLS ONLY', () => {
+  // #959 cut `net-read` after three review rounds found ten bypasses, five of
+  // them curl's, and left a test asserting the absence so that any re-add had
+  // to be deliberate rather than a silent widening. This is that deliberate
+  // re-add, and the distinction that permits it is narrow and load-bearing:
+  //
+  //   #959's net-read covered COMMANDS (curl, wget, gh api). Every bypass it
+  //   died of was command-shaped -- curl's `-o`/`-O` write files, its output
+  //   is routinely piped into a shell, and `gh api` reaches mutating verbs.
+  //
+  //   ADR 0025's net-read covers TOOLS ONLY (`WebFetch`, `WebSearch`) and
+  //   ships `commands: []`. None of those five bypasses has a path back,
+  //   which the first test below proves rather than asserts.
+  //
+  // So the absence test is not deleted, it is INVERTED in the only direction
+  // that was ever the point: the commands must still be covered by nothing,
+  // now including when net-read itself is enabled.
+  test('curl, wget and gh api are covered by nothing — even with net-read on', () => {
     for (const cmd of [
       'curl https://example.com/data.json',
       'curl -sSL https://api.github.com/repos/o/r',
@@ -517,11 +542,24 @@ describe('#959: no network group ships', () => {
     ]) {
       expect(bash(cmd, WRITE_GROUPS)).toBeNull();
       expect(bash(cmd, [...ALL, ...WRITE_GROUPS])).toBeNull();
+      // The new coverage: enabling net-read must not resurrect #959's bypasses.
+      expect(bash(cmd, NET_GROUPS)).toBeNull();
+      expect(bash(cmd, [...ALL, ...WRITE_GROUPS, ...NET_GROUPS])).toBeNull();
     }
   });
 
-  test('knownGroupNames does not advertise one', () => {
-    expect(knownGroupNames()).not.toContain('net-read');
+  test('net-read carries NO commands at all', () => {
+    // The structural guarantee behind the test above. A future edit adding
+    // even one command to this group turns the bypass test's premise false,
+    // so this fails first and says why.
+    expect(BUILTIN_GROUPS['net-read']?.commands).toEqual([]);
+  });
+
+  test('net-read covers exactly WebFetch and WebSearch', () => {
+    expect(matchGroups('WebFetch', {}, NET_GROUPS)).toBe('net-read:WebFetch');
+    expect(matchGroups('WebSearch', {}, NET_GROUPS)).toBe('net-read:WebSearch');
+    // Not a blanket network grant: Bash is still Bash.
+    expect(bash('echo hi', NET_GROUPS)).toBeNull();
   });
 });
 describe('#960 regression: case-insensitive filesystem', () => {

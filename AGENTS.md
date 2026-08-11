@@ -210,6 +210,22 @@ amended #1024 2026-08-08, see [ADR 0004](.context/decisions/0004-pty-as-arbiter-
   sensitive destinations a curated `approve_groups` write group would block. Already true for
   main-context requests; #1024 is the first time it applies with zero chance of a human ever
   seeing the prompt. Tracked as #1032 (not yet decided).
+- **Permissions can be scoped per `agent_type`**
+  ([ADR 0025](.context/decisions/0025-agent-scoped-permissions.md)). Because the deterministic
+  layers are the ONLY ones a subagent reaches at hook time, they are also the only place a
+  per-role grant can live: `[auto_approve.agents.Explore]` with
+  `approve_groups = [..., "net-read"]` lets research agents read the web while nothing else
+  does. `deny`/`deny_groups` UNION with the base (a section can never weaken a machine-wide
+  prohibition — pinned by test); `allow`/`approve_groups` REPLACE it (the motivating case is
+  giving a role LESS). An unmatched agent type falls through to the base, so a typo in a
+  section name silently does nothing — there is no registry to validate against.
+- **`net-read` (WebFetch + WebSearch) is in no preset and no default.** It exists because
+  those tools previously matched *nothing*, so every web call from every subagent parked,
+  rendered and entered the serial eval queue; a measured fan-out of five `general-purpose`
+  agents saturated it and the waiters escalated on `queue_timeout` **without the LLM ever
+  running**. Not added to `trusted`: that level is chosen for git mutation, and quietly
+  attaching outbound egress to it is the same widening ADR 0023 fixed in `matchGroups`.
+  A wrongly-escalated fetch is a nuisance; a wrongly-approved one is an exfil channel.
 
 **Notification channel — APNS push only** (no local notifications for questions):
 
