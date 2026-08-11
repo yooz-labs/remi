@@ -115,6 +115,16 @@ const ADVERSARIAL: ReadonlyArray<[string, string]> = [
   ['rm -rf dist/*', 'glob in a CHILD segment: same'],
   ['rm -rf {a,b}/dist', 'brace in a parent segment: same'],
   ['rm -rf dist/.env', 'sensitive basename under an artifact dir: the deny axis wins'],
+  // A quoted `>` inside a target used to TRUNCATE the token the proof saw:
+  // `rewriteRedirectClauses` is quote-blind and runs on raw text, so
+  // `isProvedArtifactTarget` only ever got `dist` and the `..` segments were
+  // invisible. Executed against a real filesystem, it deleted a sibling above
+  // the cwd. An earlier ADR draft called this a bounded junk-name residual;
+  // the PR review showed it reaches source and, with enough `..`, anywhere.
+  ["rm -rf 'dist>x/../../src'", 'quoted > truncated the token: this names ../../src'],
+  ["rm -rf 'coverage>x/../..'", 'same, ascending out of the tree'],
+  ["rm -rf 'node_modules>x/../../../../Documents'", 'same, reaching $HOME/Documents'],
+  ["rm -rf 'dist<x/../../src'", 'input redirect, same truncation shape'],
   ['rm -rf', 'no target, no proof'],
   // --- flag axis: exact allowlist (5)
   ['rm --no-preserve-root -rf dist', 'long flag outside the exact allowlist'],
@@ -162,13 +172,13 @@ const ADVERSARIAL: ReadonlyArray<[string, string]> = [
   ['git clean -xfd', 'git clean is excluded in every form: untracked is not derived'],
 ];
 
-describe('the adversarial corpus: 48 refusals (ADR 0023)', () => {
-  test('the corpus is the full 48 entries', () => {
+describe('the adversarial corpus: 52 refusals (ADR 0023)', () => {
+  test('the corpus is the full 52 entries', () => {
     // 40 from the design's own corpus; 8 added by the independent adversarial
     // pass ADR 0023 requires before merge: 5 for the `cd -<option>` family
     // (#1047) and 3 that actually pin the expansion guard the two shipped
     // glob/brace entries only appeared to.
-    expect(ADVERSARIAL.length).toBe(48);
+    expect(ADVERSARIAL.length).toBe(52);
   });
 
   for (const [cmd, why] of ADVERSARIAL) {

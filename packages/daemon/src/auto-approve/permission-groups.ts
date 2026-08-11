@@ -667,6 +667,26 @@ function artifactCleanPoisonWalk(command: string): boolean[] {
  */
 function artifactCleanVeto(segment: string, matchedPrefix: string, poisoned: boolean): boolean {
   if (poisoned) return true;
+  // A redirect character INSIDE a target token vetoes outright, before the
+  // rewrite below can hide it. Found by the ADR 0023 PR review, and it was a
+  // real bypass rather than the bounded residual an earlier draft of the ADR
+  // claimed:
+  //
+  //     rm -rf 'dist>x/../../src'   ->  approved, and it deletes ../src
+  //
+  // `rewriteRedirectClauses` is quote-BLIND and runs on raw text, so it
+  // truncated the token at the quoted `>` and `isProvedArtifactTarget` only
+  // ever saw `dist`. The `..` segments the ascent guard exists to catch were
+  // invisible to it. `hasShellControl` reads a quote-MASKED view and correctly
+  // treats that `>` as literal, so nothing else objected. Verified against a
+  // real filesystem: with a directory named `dist>x`, the command deleted a
+  // sibling above the cwd -- and `mkdir 'dist>x'` is itself auto-approved by
+  // `fs-write`, making it a two-step, both-silent chain.
+  //
+  // A genuine redirect clause is its own token (`2>/dev/null`, `>out.txt`), so
+  // requiring the redirect shape to START the token keeps those working while
+  // refusing an embedded one. Allow-side narrowing: the safe direction.
+  if (shellWords(segment).some((w) => /[<>]/.test(w) && !/^\d*(?:>>?|<)/.test(w))) return true;
   const stripped = rewriteRedirectClauses(segment, () => '').trim();
   const words = shellWords(stripped);
 

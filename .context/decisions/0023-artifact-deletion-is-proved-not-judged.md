@@ -65,9 +65,13 @@ The group covers four command shapes, each with its own veto profile
    on a RUNTIME veto: git itself refuses any path that is not a registered
    linked worktree of this repository, refuses the main worktree always, and
    requires a second `--force` for a locked one — which this group never
-   supplies. Committed work survives in the shared object store by
-   construction; only the worktree's uncommitted files are at stake, which
-   is the owner's explicit "disposable worktree" call.
+   supplies. Committed work on a NAMED BRANCH survives in the shared object
+   store; only the worktree's uncommitted files are at stake, which is the
+   owner's explicit "disposable worktree" call. **Not "by construction"**, as
+   an earlier draft said: `git worktree remove` deletes the per-worktree `HEAD`
+   and reflog, so a DETACHED-HEAD worktree's commits become unreachable and
+   GC-eligible. Verified in a scratch repo — after remove, `git rev-list --all`
+   names none of them and `git fsck` reports them unreachable.
 3. Bare `bun install` (zero positional arguments, flag allowlist of
    `--frozen-lockfile` only): a lockfile-faithful reinstall of dependencies
    already vetted, whose lockfile and `package.json` no write group can
@@ -237,17 +241,51 @@ refuse); no lexical ascent escapes (`../dist`, `dist/../src` refuse, because
 `git worktree remove`'s flag handling is tight (`-C`, `--git-dir`, `--force=`,
 a second `--force` all fail closed), though its safety still rests entirely on
 git's runtime refusal, exactly as the Decision states; ANSI-C `$'...'` decoding
-diverges from bash but fails SAFE; and #1024's stated visibility path was
-confirmed accurate — `onSubagentPassthrough` does fire on the deterministic
-hook-time approve, so `subagent_alert` can surface it, but only if the user
-configured a matching pattern. A default install is silent, as the ADR says.
+diverges from bash but fails SAFE; and #1024's visibility path fires
+(`onSubagentPassthrough` on the deterministic hook-time approve, so
+`subagent_alert` surfaces it).
 
-Two accepted, not fixed: `--` end-of-options hides a dash-leading target from
-the proof, and a QUOTED `>` truncates the target the proof sees. Both were
-executed and both are bounded to deleting a relative junk-named path whose
-spelling is constrained to flag-shaped tokens — neither reaches source, an
-absolute path, or code execution, and any real co-target is still checked.
-Recorded so a future reader knows they were found and weighed, not missed.
+On that last point an earlier draft of THIS section added "but only if the user
+configured a matching pattern. A default install is silent, as the ADR says."
+Wrong twice over, and caught by the PR review.
+`DEFAULT_CONFIG.auto_approve.subagent_alert` already ships `rm -rf` and
+`rm -f`, and matching is substring, so a subagent's `rm -rf dist` at
+`trusted` DOES alert on a stock install. And the Consequences section never made
+that claim, so "as the ADR says" attributed it to a section that says no such
+thing. Both errors sat inside the list whose whole value is being trustable
+without re-checking.
+
+One accepted, one FIXED — and the correction matters more than either.
+
+The `--` end-of-options residual stands: a dash-leading target after `--` is
+dropped from the proof, bounded to a relative path whose spelling is
+constrained to flag-shaped tokens. Executed; no real co-target escapes.
+
+The quoted-`>` residual was **not** bounded, and an earlier draft of this
+section said it was ("neither reaches source, an absolute path, or code
+execution"). The PR review disproved that:
+
+    rm -rf 'dist>x/../../src'                       -> approved at trusted
+    rm -rf 'node_modules>x/../../../../Documents'    -> approved at trusted
+
+`rewriteRedirectClauses` is quote-BLIND and runs on raw text, so it truncated
+the token at the `>` and `isProvedArtifactTarget` only ever saw `dist` — the
+`..` segments the ascent guard exists to catch were invisible to it. Verified
+against a real filesystem: with a directory named `dist>x` present, the command
+deleted a sibling *above* the cwd. Worse, `mkdir 'dist>x'` is itself approved by
+`fs-write` at `balanced`, so it is a two-step chain in which both steps are
+silent.
+
+Fixed: a redirect character inside a target token now vetoes outright, before
+the rewrite can hide it. A genuine redirect clause is its own token
+(`2>/dev/null`), so requiring the redirect shape to START the token keeps those
+working. Four corpus entries added (now 52).
+
+**This is the lesson, not the bug.** The finding was recorded as an accepted
+residual on the strength of one adversary's bounding, and that bounding was
+wrong. A residual is only as trustworthy as the measurement behind it — and
+"we looked at this and decided it was fine" is exactly the shape ADR 0011 says
+stops people looking again.
 
 ## Alternatives considered
 

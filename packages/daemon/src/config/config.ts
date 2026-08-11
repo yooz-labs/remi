@@ -1281,12 +1281,22 @@ turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_sec
 # dot-dot; artifact-clean's name match is deliberately exact-case (an allow
 # check that lowercased would conflate Dist with dist on Linux).
 #
-# Blanket rm, package installs, git push, and any --force are still in no
-# group: deletion approves only through scratch's and artifact-clean's
-# proofs above, "git worktree remove --force" approves only single-force
-# against git's own runtime refusals, and bare "bun install" is a
-# lockfile-faithful reinstall ("bun install <pkg>" still escalates).
-# Remote mutation and arbitrary install scripts stay escalations everywhere.
+# Blanket rm, package installs, git push, and BLANKET --force are still in
+# no group: deletion approves only through scratch's and artifact-clean's
+# proofs above. Read the narrow exceptions literally -- artifact-clean does
+# accept -f/--force on rm (they are on its exact flag allowlist), and one
+# --force on "git worktree remove", which approves only single-force against
+# git's own runtime refusals.
+#
+# Bare "bun install" is approved and is NOT lockfile-faithful: only
+# --frozen-lockfile guarantees that. Bare install reconciles package.json
+# against the lockfile, so it may resolve new versions, rewrite the lockfile,
+# and run lifecycle scripts of what it installs. It is covered because it is
+# the measured case this exists for, as a DECLARED residual (ADR 0023) --
+# which is also why "arbitrary install scripts stay escalations everywhere"
+# below is scoped to installs this group does not name.
+# ("bun install <pkg>" is "bun add" in disguise and still escalates.)
+# Remote mutation stays an escalation everywhere.
 # Strictness preset. Selects which of the groups above are auto-approved:
 #
 #   strict     read-only + vcs-read + build-test   (the default; today's behavior)
