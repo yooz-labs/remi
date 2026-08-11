@@ -117,6 +117,10 @@ const ADVERSARIAL: ReadonlyArray<[string, string]> = [
   ['rm -rf */dist', 'glob in a PARENT segment: the name check passes on `dist`'],
   ['rm -rf dist/*', 'glob in a CHILD segment: same'],
   ['rm -rf {a,b}/dist', 'brace in a parent segment: same'],
+  // `?` and `[` sit in the same character class as `*` and `{}` and were left
+  // uncovered when those two were fixed -- dropping either turned nothing red.
+  ['rm -rf ?/dist', 'single-char glob in a parent segment'],
+  ['rm -rf dist/[ab]', 'bracket glob in a child segment'],
   ['rm -rf dist/.env', 'sensitive basename under an artifact dir: the deny axis wins'],
   // A quoted `>` inside a target used to TRUNCATE the token the proof saw:
   // `rewriteRedirectClauses` is quote-blind and runs on raw text, so
@@ -127,7 +131,11 @@ const ADVERSARIAL: ReadonlyArray<[string, string]> = [
   ["rm -rf 'dist>x/../../src'", 'quoted > truncated the token: this names ../../src'],
   ["rm -rf 'coverage>x/../..'", 'same, ascending out of the tree'],
   ["rm -rf 'node_modules>x/../../../../Documents'", 'same, reaching $HOME/Documents'],
-  ["rm -rf 'dist<x/../../src'", 'input redirect, same truncation shape'],
+  // NOT the same truncation shape, despite the guard accepting `<`:
+  // REDIRECT_CLAUSE_RE is />>?/ and never matches `<`, so this token is never
+  // truncated and the ASCENT guard is what refuses it. Kept as a control with
+  // an honest reason -- dropping the `<` arm of the guard changes nothing.
+  ["rm -rf 'dist<x/../../src'", 'refused by the ascent guard, not the redirect guard'],
   ['rm -rf', 'no target, no proof'],
   // --- flag axis: exact allowlist (5)
   ['rm --no-preserve-root -rf dist', 'long flag outside the exact allowlist'],
@@ -135,6 +143,9 @@ const ADVERSARIAL: ReadonlyArray<[string, string]> = [
   ['rm --force=yes dist', 'a value-carrying spelling is not the exact token'],
   ['rm -rfd dist', 'unknown short flag inside a cluster'],
   ['rmdir --ignore-fail-on-non-empty build', 'rmdir long flag outside the allowlist'],
+  // rmdir's SHORT-flag allowlist was unpinned: widening it to accept `r`
+  // turned nothing red, while rm's equivalent is pinned by `rm -rfd dist`.
+  ['rmdir -pr build', 'unknown short flag inside an rmdir cluster'],
   // --- shell structure (6)
   ['rm -rf $(pwd)/dist', 'command substitution'],
   ['rm -rf dist > deleted.txt', 'redirect to a real file'],
@@ -179,6 +190,15 @@ const ADVERSARIAL: ReadonlyArray<[string, string]> = [
     'idempotent: three of them climb three levels, to ~/.venv',
   ],
   ['if true; then cd /etc; fi\nrm -rf dist', 'a grammar-wrapped cd runs zero or more times'],
+  // The entry above cannot fail on its stated reason: `/etc` is absolute, so
+  // `cdTargetIsPlainDescendant` already refuses it and the `body !== trimmed`
+  // grammar clause is never reached. Deleting that clause turned NOTHING red.
+  // This one has a GOOD target, so only the grammar clause stands between it
+  // and an approval.
+  [
+    'if true; then cd sub; fi\nrm -rf dist',
+    'grammar-wrapped cd poisons even with a good target: it runs zero or more times',
+  ],
   // --- git worktree remove structure (5)
   ['git worktree remove --force --force ../wt', 'a second --force overrides a LOCK'],
   ['git worktree remove .', 'the current worktree'],
@@ -191,13 +211,13 @@ const ADVERSARIAL: ReadonlyArray<[string, string]> = [
   ['git clean -xfd', 'git clean is excluded in every form: untracked is not derived'],
 ];
 
-describe('the adversarial corpus: 58 refusals (ADR 0023)', () => {
-  test('the corpus is the full 58 entries', () => {
+describe('the adversarial corpus: 62 refusals (ADR 0023)', () => {
+  test('the corpus is the full 62 entries', () => {
     // 40 from the design's own corpus; 8 added by the independent adversarial
     // pass ADR 0023 requires before merge: 5 for the `cd -<option>` family
     // (#1047) and 3 that actually pin the expansion guard the two shipped
     // glob/brace entries only appeared to.
-    expect(ADVERSARIAL.length).toBe(58);
+    expect(ADVERSARIAL.length).toBe(62);
   });
 
   for (const [cmd, why] of ADVERSARIAL) {
@@ -322,6 +342,42 @@ describe('the sensitive-destination axis survives the owner union', () => {
     // and broke `jq .version package.json` plus two /dev/null redirect cases.
     // Reading a sensitive path is exactly what `read-only` exists to allow.
     expect(bash('jq .version package.json', BALANCED)).not.toBeNull();
+  });
+});
+
+/**
+ * ADR 0023 says the name list "is an allow surface and will attract additions",
+ * and sets the bar an entry must clear. Nothing enforced it: adding `vendor` or
+ * `tmp` — the two the ADR names as NOT clearing the bar — approved
+ * `rm -rf vendor` at 0ms with the whole suite green.
+ *
+ * A closed-world assertion is the only thing that makes an allow surface's
+ * membership a decision rather than a diff nobody notices.
+ */
+describe('the artifact name list is closed', () => {
+  const EXPECTED = [
+    'node_modules',
+    'dist',
+    'build',
+    'out',
+    'target',
+    'coverage',
+    '__pycache__',
+    '.venv',
+  ];
+
+  for (const name of EXPECTED) {
+    test(`${name} is a proved artifact name`, () => {
+      expect(bash(`rm -rf ${name}`)).toBe('artifact-clean:rm');
+    });
+  }
+
+  test('names the ADR explicitly rejects are NOT on the list', () => {
+    // `vendor` is often tracked; `tmp` proclaims temporariness but regenerates
+    // nothing. Both are called out in ADR 0023 as failing the bar.
+    for (const name of ['vendor', 'tmp', 'src', 'lib', 'assets', 'public', 'data', 'logs']) {
+      expect(bash(`rm -rf ${name}`)).toBeNull();
+    }
   });
 });
 

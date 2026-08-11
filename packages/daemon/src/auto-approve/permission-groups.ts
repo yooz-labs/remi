@@ -96,9 +96,28 @@ function hasWriteGroupPositionalVeto(segment: string): boolean {
  * paths, so `cp /tmp/a /tmp/.env` approved at `balanced` where develop
  * escalated it.
  *
- * A new mutating group MUST be added here. Forgetting is not caught by types;
- * it is caught by `permission-groups.test.ts`'s per-group sensitive-destination
- * cases, which is why those exist per group rather than once.
+ * A new mutating group MUST be added here, and NOTHING CATCHES YOU IF YOU
+ * FORGET. An earlier version of this comment claimed
+ * `permission-groups.test.ts`'s per-group cases did. Measured, and all three
+ * clauses were wrong: those cases live in `artifact-clean.test.ts`, not here;
+ * removing `'artifact-clean'` from this set flips no test; and removing
+ * `'fs-write'` flips none either, because its own `writeGroupVeto` re-checks
+ * the axis independently. Only `'scratch'` is genuinely pinned (10 failures) —
+ * it is the one group with no second copy of the check.
+ *
+ * The two checks masking each other is the real hazard: drop
+ * `isProvedArtifactTarget`'s `isSensitiveWritePath` call alone and nothing
+ * moves; drop `'artifact-clean'` here alone and nothing moves; drop BOTH and
+ * `rm -rf dist/.env` approves at 0ms. Deliberate defence in depth, but it means
+ * neither half is individually load-bearing in the test suite, so read a green
+ * run as evidence about the PAIR and not about either member.
+ *
+ * The stated invariant is also weaker than the load-bearing one. What actually
+ * prevents the escape is: every group sharing a PREFIX with a mutating group
+ * must be in this set. A future non-mutating group that happened to list `cp`
+ * would route around the axis without ever looking like a "mutating group".
+ * No live instance today — the seven current groups' mutating and non-mutating
+ * halves share no prefix — so this is a note on the comment, not on the code.
  */
 const MUTATING_GROUPS: ReadonlySet<string> = new Set([
   'fs-write',
