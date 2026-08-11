@@ -945,6 +945,23 @@ export function classifyRisk(
  * whether there was any text to grade. The eligible population is the
  * intersection, and it has never been counted.
  */
-export function formatMatrixContext(band: RiskBand, authorityPresent: boolean): string {
-  return `[band=${band} authority=${authorityPresent ? 'yes' : 'no'}]`;
+/**
+ * Which layer produced the verdict that actually shipped (#1040).
+ *
+ * The reasoning string already says this in prose ("Risk ceiling (#976):
+ * model approved a high-risk operation..."), which is why answering "why did
+ * this escalate" means reading paragraphs and why the answer cannot be
+ * counted across a session at all. A field can be grepped and tallied.
+ *
+ * Diagnostic only. Nothing reads it back to decide anything, so it cannot
+ * drift into being a second, competing copy of the decision.
+ */
+export type DecidingLayer = 'model' | 'deny_floor' | 'risk_ceiling';
+
+export function formatMatrixContext(
+  band: RiskBand,
+  authorityPresent: boolean,
+  decidedBy: DecidingLayer = 'model',
+): string {
+  return `[band=${band} authority=${authorityPresent ? 'yes' : 'no'} decided_by=${decidedBy}]`;
 }

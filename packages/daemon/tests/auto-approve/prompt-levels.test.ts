@@ -30,8 +30,20 @@ function systemPrompt(level?: (typeof AUTO_APPROVE_LEVELS)[number]): string {
   return messages[0]?.content ?? '';
 }
 
-describe('strict is byte-identical to pre-#966', () => {
-  test('matches the baseline captured from develop', async () => {
+// #966 pinned this to prove that introducing LEVELS changed nothing for
+// existing (strict) users. The pin still does that job, but the baseline is
+// no longer "pre-#966 develop" verbatim: #1040 corrected the shared header,
+// which every level carries, because it claimed the DENY FLOOR was the only
+// thing that could override USER GUIDANCE when `enforceRiskCeiling` (#976)
+// does too. That correction is deliberately not level-scoped -- the ceiling
+// applies at every level, so the prompt must say so at every level.
+//
+// Regenerate ONLY with a reason of that kind, never to make a diff go green:
+//   bun -e "import {buildPrompt} from './packages/daemon/src/auto-approve/prompt-builder.ts'; \
+//     await Bun.write('packages/daemon/tests/auto-approve/fixtures/prompt-strict-baseline.txt', \
+//     buildPrompt('Bash',{command:'PLACEHOLDER'},undefined,undefined,'strict')[0].content)"
+describe('the strict prompt is pinned; every change to it is deliberate', () => {
+  test('matches the captured baseline', async () => {
     const baseline = await Bun.file(BASELINE_PATH).text();
     expect(systemPrompt('strict')).toBe(baseline);
   });

@@ -33,6 +33,7 @@ import { matchAllowPattern, matchSubstringPattern } from './pattern-matcher.ts';
 import { matchGroups, matchGroupsBroad } from './permission-groups.ts';
 import { type PrecedentReader, precedentMayAuthorize, signatureForOperation } from './precedent.ts';
 import { buildPrompt } from './prompt-builder.ts';
+import type { DecidingLayer } from './risk-bands.ts';
 import { classifyRisk, formatMatrixContext } from './risk-bands.ts';
 import { enforceRiskCeiling } from './risk-ceiling.ts';
 import type { AutoApproveConfig, AutoApproveResult, DenySource, MultiChoiceMode } from './types.ts';
@@ -995,6 +996,13 @@ export class AutoApproveService {
         ]);
         const durationMs = Date.now() - start;
 
+        // #1040: which LAYER produced the verdict that ships. The reasoning
+        // string says so in prose today, which is why "why did this escalate"
+        // costs a paragraph to answer and cannot be counted at all. Set by
+        // each guard below as it fires; 'model' until one does. Diagnostic
+        // only -- no control flow reads it, so it can never become a second,
+        // drifting copy of the decision.
+        let decidedBy: DecidingLayer = 'model';
         let result: AutoApproveResult = useMultiChoice
           ? (() => {
               const parsedMc = parseMultiChoiceDecision(
@@ -1057,6 +1065,7 @@ export class AutoApproveService {
         // MODEL-produced denies only.
         if (!useMultiChoice && result.decision === 'deny') {
           const floored = enforceDenyFloor(toolName, toolInput, result.decision);
+          if (floored.overridden) decidedBy = 'deny_floor';
           if (floored.overridden) {
             const original = result;
             result = {
@@ -1119,6 +1128,7 @@ export class AutoApproveService {
         if (!useMultiChoice && result.decision === 'approve') {
           const ceilinged = enforceRiskCeiling(toolName, toolInput, result.decision);
           if (ceilinged.overridden) {
+            decidedBy = 'risk_ceiling';
             const original = result;
             result = {
               decision: 'escalate',
@@ -1254,6 +1264,7 @@ export class AutoApproveService {
             `${denyPrefix} ${toolName}: ${result.decision} (${durationMs}ms) ${formatMatrixContext(
               classifyRisk(toolName, toolInput),
               authorityPresent,
+              decidedBy,
             )} - ${result.reasoning}`,
           );
         }

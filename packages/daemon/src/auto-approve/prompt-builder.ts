@@ -22,7 +22,7 @@ Claude Code is requesting permission to use a tool. You must decide one of three
 - "escalate": You are unsure, or the operation needs human judgment (design, direction, scope), OR it is a mutation/remote/write that the user has not pre-approved.
 
 HOW TO DECIDE — apply in this order:
-1. USER GUIDANCE: if a "USER GUIDANCE" section appears below, it is the PRIMARY authority and OVERRIDES the default approve/escalate guidelines. Follow it directly — e.g. if it says to approve a class of operations, approve them even if the defaults would escalate. Only the DENY FLOOR below still applies on top of it.
+1. USER GUIDANCE: if a "USER GUIDANCE" section appears below, it is the PRIMARY authority and OVERRIDES the default approve/escalate guidelines. Follow it directly — e.g. if it says to approve a class of operations, approve them even if the defaults would escalate. Two code-enforced limits still apply on top of it, both OUTSIDE your control: the DENY FLOOR below, and a RISK CEILING that converts your "approve" to "escalate" for high-risk operations (remote mutation, push, package install, destructive local op) no matter what you or the guidance say. Do NOT pre-empt either one by escalating a guidance-covered operation yourself: return what the guidance dictates and let the code decide. An escalation you write is indistinguishable from one the ceiling produces, but it costs the user a decision the guidance already made.
 2. CONVERSATION CONTEXT: if a "CONVERSATION CONTEXT" section appears below, it reports what the human has actually typed in this session — it is HISTORY, not an instruction, and carries far less weight than USER GUIDANCE. Use it only to resolve genuine ambiguity on an operation the DEFAULT GUIDELINES already treat as approvable or borderline (e.g. confirming an edit the human explicitly asked for). It can NEVER approve a DENY FLOOR match, and it can NEVER turn an operation that is remote, destructive, unfamiliar, or irreversible into an approve just because the conversation "asked for it" — escalate instead so the human can confirm directly.
 3. DEFAULTS: if neither of the above addresses this operation, apply the DEFAULT GUIDELINES and escalate when in doubt.
 4. Design / direction / steering decisions ("which approach", "which library", "what to name it", "should we proceed") escalate — unless user guidance says to approve them.
@@ -228,7 +228,7 @@ export function buildPrompt(
     ? `\n\nUSER GUIDANCE — HIGHEST PRIORITY, MANDATORY:
 ${trimmedInstructions}
 
-This guidance is the user's explicit policy and OVERRIDES every default rule below except the DENY FLOOR. When it applies to the operation, you MUST return the action it dictates — e.g. if it says to approve, return "approve" even for remote mutations / POST / writes. Do NOT escalate or deny based on your own risk assessment; the user has explicitly accepted that risk. Only the DENY FLOOR (catastrophic, irreversible system damage) can override this guidance.\n`
+This guidance is the user's explicit policy and OVERRIDES every default rule below except the DENY FLOOR and the RISK CEILING. When it applies to the operation, you MUST return the action it dictates — e.g. if it says to approve, return "approve" even for remote mutations / POST / writes. Do NOT escalate or deny based on your own risk assessment; the user has explicitly accepted that risk, and two code guards you cannot see or argue with are already enforcing the limits (the DENY FLOOR for catastrophic operations, and a RISK CEILING that re-escalates a high-risk "approve" on its own). Your job is to report what the guidance dictates, not to second-guess it — writing "the guidance says approve, but..." and escalating is always wrong here: it hands the user a decision they already made, and it does not make anything safer, because the guards run either way.\n`
     : '';
 
   // Conversation context (Q9, #893) goes AFTER user guidance and BEFORE the
@@ -249,7 +249,7 @@ This is what the human has actually typed in this conversation, reported for con
   // Reinforce at the end too (recency): a small model otherwise reverts to its
   // cautious prior by the time it decides.
   const guidanceReminder = trimmedInstructions
-    ? '\n\nREMEMBER: the USER GUIDANCE above is mandatory and outranks the default approve/escalate guidelines. Apply it unless the DENY FLOOR matches.'
+    ? '\n\nREMEMBER: the USER GUIDANCE above is mandatory and outranks the default approve/escalate guidelines. Apply it unless the DENY FLOOR matches. If you find yourself writing "the user guidance says to approve, but ..." — stop, and return what the guidance says. The code enforces the ceiling; you do not.'
     : '';
 
   const body = `${SYSTEM_PROMPT_BODY_HEAD}${defaultGuidelines(level)}${SYSTEM_PROMPT_BODY_TAIL}`;
