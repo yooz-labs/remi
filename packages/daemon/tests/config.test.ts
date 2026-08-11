@@ -1079,3 +1079,72 @@ describe('#880 the shipped defaults do not expose an unauthenticated daemon', ()
     expect(loadConfig(TEST_CONFIG).daemon.bind).toBe('127.0.0.1');
   });
 });
+
+describe('per-agent policy survives the config LOAD path (ADR 0025)', () => {
+  // Review found this untested end to end: `validateAgents`, `resolvePolicy`
+  // and the service were each covered in isolation, but nothing wrote a real
+  // TOML section and asserted it arrived. Deleting the `validateAgents(...)`
+  // call from `loadConfig` left the whole suite green.
+  //
+  // It guards a live coupling, not just wiring: `mergeSection` iterates
+  // `Object.keys(defaults)`, so a key absent from DEFAULT_CONFIG is silently
+  // DROPPED. `agents: {}` in the defaults is the only reason a user's section
+  // is reachable at all — and before this test, removing that line was pinned
+  // solely by a `toEqual` snapshot that anyone deleting it would "fix".
+  test('a real [auto_approve.agents.<type>] section reaches the loaded config', () => {
+    fs.writeFileSync(
+      TEST_CONFIG,
+      `[auto_approve]
+approve_groups = ["read-only"]
+
+[auto_approve.agents.Explore]
+approve_groups = ["read-only", "net-read"]
+deny = ["curl"]
+`,
+    );
+    const config = loadConfig(TEST_CONFIG);
+    expect(config.auto_approve.agents?.['Explore']?.approve_groups).toEqual([
+      'read-only',
+      'net-read',
+    ]);
+    expect(config.auto_approve.agents?.['Explore']?.deny).toEqual(['curl']);
+    // The base is untouched by the section.
+    expect(config.auto_approve.approve_groups).toEqual(['read-only']);
+  });
+
+  test('an unknown KEY inside a section is rejected at load', () => {
+    fs.writeFileSync(
+      TEST_CONFIG,
+      `[auto_approve.agents.Explore]
+approve_group = ["read-only"]
+`,
+    );
+    expect(() => loadConfig(TEST_CONFIG)).toThrow(/approve_group/);
+  });
+
+  test('an unknown GROUP name inside a section warns but loads', () => {
+    // Warn, not throw: a throw reaches cli.ts's exit(1), and under the
+    // --install LaunchAgent (KeepAlive.SuccessfulExit=false) that is a
+    // crash-restart loop over a one-character typo. Matches the base path.
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.join(' '));
+    };
+    try {
+      fs.writeFileSync(
+        TEST_CONFIG,
+        `[auto_approve.agents.Explore]
+approve_groups = ["net-reed"]
+`,
+      );
+      const config = loadConfig(TEST_CONFIG);
+      expect(config.auto_approve.agents?.['Explore']?.approve_groups).toEqual(['net-reed']);
+    } finally {
+      console.warn = original;
+    }
+    // Because approve_groups REPLACES, this typo silently narrows the agent
+    // below base — which is exactly why it must be reported.
+    expect(warnings.join('\n')).toContain('net-reed');
+  });
+});

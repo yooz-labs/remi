@@ -558,8 +558,11 @@ describe('#959 superseded by ADR 0025: net-read ships, but TOOLS ONLY', () => {
   test('net-read covers exactly WebFetch and WebSearch', () => {
     expect(matchGroups('WebFetch', {}, NET_GROUPS)).toBe('net-read:WebFetch');
     expect(matchGroups('WebSearch', {}, NET_GROUPS)).toBe('net-read:WebSearch');
-    // Not a blanket network grant: Bash is still Bash.
-    expect(bash('echo hi', NET_GROUPS)).toBeNull();
+    // NOT asserted here: "Bash is still Bash". That reads like a guard and is
+    // vacuous -- `matchGroups` never consults a group's `tools` list for Bash
+    // (it routes through the command machinery), so the assertion holds for any
+    // possible `tools` content, including `tools: ['Bash']`. The live defence is
+    // `commands: []`, pinned directly by the test above.
   });
 });
 describe('#960 regression: case-insensitive filesystem', () => {

@@ -134,13 +134,56 @@ describe('allow / approve_groups REPLACE — per-role scoping must be able to na
   });
 });
 
+/** A real service with only `agents` varying. Module-scope so both the
+ *  deterministic and the async-evaluate describes drive the SAME construction. */
+function svcWithAgents(agents: Record<string, unknown>) {
+  return new AutoApproveService(
+    {
+      enabled: true,
+      provider: 'yooz',
+      model: 'm',
+      api_key: '',
+      base_url: 'http://127.0.0.1:19924',
+      timeout: 30,
+      log_decisions: false,
+      allow: [],
+      deny: [],
+      subagent_alert: [],
+      approve_groups: ['read-only'],
+      level: 'strict',
+      deny_groups: [],
+      instructions: '',
+      multichoice: 'skip',
+      multichoice_model: '',
+      escalate_model: '',
+      escalate_timeout: 0,
+      queue_timeout: 240,
+      cache_idle: 0,
+      keep_alive: 0,
+      engine: 'owned' as const,
+      engine_path: '',
+      model_cache: '',
+      disable_thinking: false,
+      always_escalate_tools: [],
+      session_precedent: true,
+      hold_timeout: 0,
+      push_hold_timeout: 0,
+      delivery_confirm_timeout: 0,
+      hold_unconfirmed_timeout: 0,
+      agents,
+    } as never,
+    () => {},
+  );
+}
+
 describe('the real AutoApproveService applies the agent section', () => {
   // Everything above is a pure function. Without this block, all of it would
   // stay green if the service never passed `agentType` through -- the feature
   // would be inert and the suite would not notice. No LLM is involved: these
   // are deterministic-layer decisions, which is exactly the layer a subagent
   // reaches at hook time (ADR 0004).
-  function service(agents: Record<string, unknown>) {
+  const service = svcWithAgents;
+  function _unusedService(agents: Record<string, unknown>) {
     return new AutoApproveService(
       {
         enabled: true,
@@ -349,13 +392,15 @@ describe('the gate actually threads agent_type to every evaluation site', () => 
     expect(gate.slice(i, i + 200)).toContain('input.agent_type');
   });
 
-  test('all three evaluation sites pass it', () => {
-    // hook-time deterministic, parked-render evaluate, escalate_model second
-    // opinion. The third was missed in the first draft and re-ran the
-    // deterministic layers under the BASE policy, silently undoing a per-agent
-    // narrowing — so the count, not just the presence, is the assertion.
-    const sites = gate.split('input.agent_type,').length - 1;
-    expect(sites).toBe(3);
+  test('the parked-render evaluate receives agent_type', () => {
+    // Its own bounded assertion, not a whole-file count. A count of 3 was the
+    // first draft and had a proven false negative: delete this site and add any
+    // unrelated fourth occurrence and the count still reads 3. This was the one
+    // of the three sites left unguarded by that version.
+    const i = gate.indexOf('arbitrateParkedRender(');
+    expect(i).toBeGreaterThan(-1);
+    const body = gate.slice(i, gate.indexOf('\n  }', i));
+    expect(body).toContain('input.agent_type,');
   });
 
   test('runSecondOpinion specifically forwards it', () => {
@@ -363,5 +408,59 @@ describe('the gate actually threads agent_type to every evaluation site', () => 
     expect(i).toBeGreaterThan(-1);
     const body = gate.slice(i, gate.indexOf('\n  }', i));
     expect(body).toContain('input.agent_type,');
+  });
+});
+
+describe('the async evaluate() path also honours the agent policy', () => {
+  // Criticality-8 gap found by review: deleting the `agentType` argument from
+  // `evaluate()`'s internal `evaluateDeterministic` call left the ENTIRE suite
+  // green. That is the async path — parked-render arbitration, the second
+  // opinion, main-context evals — so a per-agent narrowing silently reverted to
+  // base policy on every non-hook-time decision. Same class as the
+  // `runSecondOpinion` bug one layer up, and equally invisible.
+  //
+  // Driven through the real `evaluate()`, which short-circuits on a
+  // deterministic match and never reaches the network, so no engine is needed.
+  const NET_AGENTS = { Explore: { approve_groups: ['read-only', 'net-read'] } };
+
+  test('an agent-granted group approves through evaluate(), not just evaluateDeterministic()', async () => {
+    const svc = svcWithAgents(NET_AGENTS);
+    const r = await svc.evaluate(
+      'WebFetch',
+      { url: 'https://x' },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      true,
+      undefined,
+      undefined,
+      'Explore',
+    );
+    expect(r.decision).toBe('approve');
+    expect(r.durationMs).toBe(0);
+    expect(r.reasoning).toContain('net-read');
+  });
+
+  test('and an agent WITHOUT the section does not get it', async () => {
+    // Without a network call this cannot reach a decision, so assert the thing
+    // that distinguishes: it did NOT short-circuit to a 0ms deterministic
+    // approve the way the granted agent did.
+    const svc = svcWithAgents(NET_AGENTS);
+    const r = await svc.evaluate(
+      'WebFetch',
+      { url: 'https://x' },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      true,
+      undefined,
+      undefined,
+      'general-purpose',
+    );
+    expect(r.decision === 'approve' && r.durationMs === 0).toBe(false);
   });
 });

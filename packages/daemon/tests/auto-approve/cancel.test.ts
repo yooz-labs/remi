@@ -305,7 +305,12 @@ describe('a prompt leaving the screen cancels its eval (terminal-answered permis
     // first version of this pin scanned 3000 chars from the handler and so
     // reached input-events.ts's own `cancelEvalForQuestion` call sites, which
     // meant deleting this one left it green. Verified by mutation.
-    expect(cli).toContain('onHooklessQuestionGone:');
-    expect(cli).toContain('cancelEvalForQuestion?.(questionId as UUID, reason)');
+    // Bounded to the handler BODY, not the whole file. A whole-file
+    // `toContain` stayed green when the call was deleted from the handler and
+    // the same string added to a never-called function -- verified by mutation.
+    const i = cli.indexOf('onHooklessQuestionGone:');
+    expect(i).toBeGreaterThan(-1);
+    const handler = cli.slice(i, cli.indexOf('\n  });', i));
+    expect(handler).toContain('cancelEvalForQuestion');
   });
 });
