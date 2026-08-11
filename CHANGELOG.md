@@ -4,6 +4,181 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+## [0.7.6] - 2026-08-11
+
+Closes a P0 that shipped in every release to date: the daemon bound `0.0.0.0`
+with auth resolving to off, so any host on the LAN could approve a pending
+permission prompt — arbitrary tool execution on the developer's machine — or
+type into the live Claude session. **The default is now loopback, and that
+breaks LAN direct, Tailscale direct and mDNS discovery until you opt back in**
+(see Breaking). Alongside it, this release's adversarial pass found a second
+P0-class bypass in *shipped* `scratch` code, the deny floor stopped being blind
+to any command tool not literally named `Bash`, deletion of provably-derived
+artifacts is now approved deterministically instead of costing ~3.5s of GPU and
+a human interruption, Linux gets a working eval backend, and the status bar no
+longer freezes for as long as you deliberate.
+
+### Breaking
+- **The daemon binds `127.0.0.1` by default** (#880, #1046, [ADR 0024]). Was
+  `0.0.0.0`. LAN direct, **Tailscale direct** and mDNS discovery stop working
+  until you opt in with `bind` in `config.toml` or `--bind`; SSH tunnels and the
+  relay are untouched. mDNS does not refuse — it stops advertising, so the
+  daemon *disappears* rather than erroring, which is the confusing half.
+  `tailscale serve` is **not** the workaround: it is a same-host reverse proxy,
+  so every tailnet peer arrives as `127.0.0.1` and inherits the loopback auth
+  exemption (#869). Installs that already materialized `bind = "0.0.0.0"` via
+  `remi config init` keep the old behavior — a value on disk beats a changed
+  default — and nothing breaks to make them look, so the boot warning is their
+  only signal. It now names the remedy and goes to `logError`, since
+  `console.warn` is dropped in wrapper mode (#1043).
+
+### Fixed
+- **P0: any LAN host could drive the daemon** (#880, #1046, [ADR 0024]). Five
+  defaults composed into an unauthenticated remote-control surface: the
+  wildcard bind, `auth.enabled = "auto"` resolving to `false` on every bind, a
+  missing authenticator letting a bare `hello` reach `connected` so `answer` /
+  `user_input` route straight to the handler map, an Origin gate that admits the
+  absent Origin a non-browser client sends, and mDNS advertising the port.
+  Verified against live daemons: `/auth-info` returned
+  `{"authRequired":false,"fingerprint":null}`. `"auto"` is deliberately **not**
+  made bind-aware — that alone is insufficient, because `cli.ts` builds the
+  Authenticator with `tofuMode: 'auto-accept'` unless `--no-tofu`, making
+  auth-on-a-network-bind first-comer-wins *and* persisting the unknown key. That
+  fix belongs with the phone pairing flow.
+- **P0-class: a `cd` option was read as a directory** (#1047, #1048). `cd` treats
+  any leading-dash token as options, so `cd -P`, `cd -L`, `cd --` and `cd -LP`
+  have **no operand** and go to `$HOME` (verified in bash on darwin 25.6). Both
+  cwd models rejected only the exact string `-`. In shipped, live-at-`balanced`
+  `scratch` code, `-P` was tracked as a *subdirectory name*, so the tracked cwd
+  stayed under the proved root while bash had left for `$HOME`:
+  `cd /tmp/work && cd -P && rm -rf out` approved at 0ms and deleted `~/out`.
+  Found by the adversarial pass required by [ADR 0023], which reported `scratch`
+  as failing safe here — checking that rather than accepting it is what found
+  the live half.
+- **The owner union silently discarded `fs-write`'s sensitive-destination veto**
+  (#1048). `matchGroups`' first-registrant-wins → union rewrite fixed a real
+  non-monotonicity, but the union was disjunctive over **vetoes** too: for the
+  five prefixes owned by both `fs-write` and `scratch` (`cp`, `mv`, `mkdir`,
+  `touch`, `tee`), scratch's laxer proof discarded fs-write's veto at
+  `balanced` — `cp /tmp/a /tmp/.env` went from escalate to `scratch:cp` at 0ms.
+  Now `segmentTouchesSensitivePath` is checked before any owner's proof, for a
+  new `MUTATING_GROUPS` set; scoped to mutating groups because reading a
+  sensitive path is what `read-only` exists to allow. This narrows `scratch`
+  slightly beyond the old scratch-alone behavior (a genuinely disposable
+  `/tmp/.env` now escalates) — deliberate, and `config.ts`'s documentation of
+  the old carve-out is corrected in the same change.
+- **The deny floor and risk ceiling ignored every command tool not named `Bash`**
+  (#1020, #1046). `classifyRisk('terminal', {command: 'rm -rf /'})` returned
+  `moderate` — the tier plain conversation text can supply — and
+  `matchesCatastrophicPattern` returned `null`, leaving `enforceDenyFloor`
+  nothing to stand on, so #976's "critical never approves, at any
+  authorization" did not apply. Both sides now gate on the **input shape** via a
+  shared `extractToolCommand`, not a tool-name list (a list cannot be complete —
+  an MCP server can register a command-carrying tool under any name). Measured
+  against `hook-diag.jsonl`, no tool but `Bash` carries a `command` field, so
+  this was **latent, not live**. `precedent.ts`'s stale justification is
+  corrected in the same change.
+- **The free-port probe asked about the wrong host** (#1046). It defaulted to
+  `0.0.0.0` while every caller listened on `daemon.bind`; the two agreed only
+  because that config default was also `0.0.0.0`. A live bug for anyone already
+  setting `bind = "127.0.0.1"`: on BSD a wildcard probe **succeeds** on a port
+  another process holds on loopback, so the probe reports "free" and the real
+  bind dies on `EADDRINUSE`. `bindHost` is now required on `isPortAvailable` /
+  `findAvailableTcpPort` / `findAvailablePort` — there is no safe default, only
+  "the host you are about to listen on". The hub test harness had the same
+  mismatch, and it was not cosmetic: the rival hub died on `EADDRINUSE` before
+  reaching the PID-file guard, so the #542 split-brain test had silently stopped
+  testing #542.
+- **The status bar froze for as long as a question was pending** (#1038, #1039,
+  [ADR 0022]). `status-bar.ts` returned early while any question was live, with
+  no upper bound, so a prompt a human sits on for ten minutes froze the row for
+  ten minutes — usually on `needs you`, a cue contractually bounded at 60s. The
+  freeze was subsumed by `PtyQuiescenceGate` the same evening it landed but never
+  removed, and shipped in v0.7.4 and v0.7.5. Liveness is now bounded by
+  `HEARTBEAT_MS` (~2s) and may never depend on the PTY going quiet — the case
+  that most needs a live bar is exactly the case where it never does, because
+  Claude's TUI spinner keeps animating while a permission is held.
+- **`no clients` while a phone was attached** (#1039). No attach or detach path
+  called `update()`, so attaching changed nothing visible until an unrelated
+  status change flushed — hitting all four consumers of the shared snapshot
+  (reserved-row bar, `status-<PORT>.json`, remote attach client, `remi_status`).
+  Now `SessionRegistry.onAttachStateChanged` fires from the only two lines that
+  mutate `attachedConnections`, so it is total over every attach path by
+  construction, with no timer and no lag.
+- **The eval model id was MLX-only on every platform** (#822, #1042).
+  `auto_approve.provider` was platform-resolved but `auto_approve.model` was
+  not, so Linux got an id llama.cpp cannot load. Adds `defaultModel()`; Linux
+  resolves to `YoozLabs/Qwen3.5-4B-qat-GGUF:Q4_0`, where the `:Q4_0` suffix is
+  **load-bearing** (`-hf` defaults to `:Q4_K_M`, which the YoozLabs repos do not
+  publish, so the bare repo id resolves no file). `config.test.ts` asserted the
+  MLX id unconditionally and would have turned CI red on merge, since CI runs
+  `ubuntu-latest`.
+- **The prompt promised what the risk ceiling revokes** (#1040, #1042).
+  `prompt-builder` told the model in three places that user guidance was
+  mandatory and only the deny floor could override it — untrue since #976:
+  `enforceRiskCeiling` takes no config and no authority, so it structurally
+  cannot honor the "unless the user's own config says otherwise" clause, and any
+  model `approve` at `high`/`critical` becomes `escalate` regardless. Handed
+  that contradiction the model either explained why it was disobeying or obeyed
+  and was overridden anyway — both costing a full LLM call to reach `escalate`.
+  The prompt now says what ships. The strict prompt baseline fixture moves with
+  it, deliberately and once.
+
+### Changed
+- **Deletion approves when the target is provably derived** (#1048,
+  [ADR 0023]), amending #956's blanket "deletion escalates at every level".
+  Measured on a live daemon, that rule was the single largest cost centre of the
+  mechanism — 134 escalate vs 129 approve (51%), 123 of the 134 Bash — spending
+  ~3.5s of GPU and a human interruption on deletions regenerable by a command
+  the repo already runs (`rm -rf dist`, `rm -rf node_modules && bun install`,
+  `git worktree remove --force …`). Covering them moves a cold replay of the
+  real escalation population from 17/21 (81%) to 20/21 (95.2%). **The
+  prompt-side rule is untouched** — deletion still escalates on every path that
+  reaches the LLM, at every level; the amendment lives entirely in the
+  deterministic layer. This is not a new kind of exception: `scratch` has
+  deterministically approved `rm`/`rmdir` under a proved scratch root since
+  #994, and this extends the proof from "under `/tmp`" to "at or under a
+  directory whose exact name proclaims derived state".
+- **`remi model` verbs refuse on single-model llama.cpp** (#822, #1042). Every
+  verb but `use` targets the engine's `/v1/llm/*` control plane, which
+  `llama-server` does not serve; they surfaced as opaque 404s from a server that
+  was running and answering evals, and now refuse with the reason and the
+  restart command. Relatedly, `llama-server` ignores the request's `model` field
+  in single-model mode, so a configured `escalate_model` is answered by the
+  **primary** model and reported as if a heavier one had agreed — the daemon now
+  says so.
+- **The decision log records the deciding layer** (#1042):
+  `decided_by=model|deny_floor|risk_ceiling`. Previously that existed only in
+  reasoning prose, so "why did this escalate" cost a paragraph to answer and
+  could not be counted — which is how a 51% escalate config went undiagnosed.
+  Diagnostic only; no control flow reads it back.
+
+### Known open
+- **The relay is unaffected by the bind change** (#881). Default-on, dials
+  outward, and still plaintext through the Worker in rotating-code mode. Name
+  the direction: outbound `sendRaw` refuses without session keys (a breakage),
+  while inbound still accepts plaintext (the leak).
+- **Any local process while `require_local_auth` is false** (#869) — including,
+  via `tailscale serve`, every tailnet peer.
+- **Installs with `bind = "0.0.0.0"` already on disk** keep the exposure (#880);
+  the boot warning is the only signal.
+- **A bare tool-name `allow` entry carries no destination veto** (#1032, carried
+  forward from 0.7.5, not yet decided).
+- **Two deletion-proof residuals, weighed and accepted** ([ADR 0023]): `--`
+  end-of-options hides a dash-leading target from the proof, and a quoted `>`
+  truncates the target the proof sees. Both are bounded to deleting a relative
+  junk-named path whose spelling is constrained to flag-shaped tokens; neither
+  reaches source, an absolute path, or code execution.
+- **`bun install` in the artifact corpus is not lockfile-faithful** ([ADR 0023]).
+  Only `--frozen-lockfile` guarantees that; bare `bun install` may resolve new
+  versions, rewrite the lockfile, and run lifecycle scripts. It stays covered
+  because it is the measured miss, but as a declared residual rather than a
+  claim of inertness.
+
+[ADR 0022]: .context/decisions/0022-status-bar-never-freezes.md
+[ADR 0023]: .context/decisions/0023-artifact-deletion-is-proved-not-judged.md
+[ADR 0024]: .context/decisions/0024-loopback-bind-default.md
+
 ## [0.7.5] - 2026-08-10
 
 Closes two P0 holes in the deterministic allow-list, both the same shape: a
