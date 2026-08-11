@@ -96,9 +96,10 @@ All notable changes to Remi are documented here.
   stays at `"auto"` (which resolves to `false`) walks straight back into the
   #880 exposure.
 - **A `typos` false positive that a version bump would have turned into a CI
-  failure.** `ACCEPTs` in `port-discovery.ts` is flagged by typos ≥1.49 but not
-  by the pinned 1.28.4, so the repo was one dependency bump away from a red
-  gate on a comment. Unrelated to the above; called out rather than folded in
+  failure.** A mixed-case word in a `port-discovery.ts` comment is flagged by
+  typos >=1.49 but not by the pinned 1.28.4, so the repo was one dependency
+  bump away from a red gate on a comment. (Spelled around here deliberately:
+  quoting the word verbatim would reintroduce the very hit this describes.) Unrelated to the above; called out rather than folded in
   silently.
 - **The `escalate_model` warning could be silenced for the users it was for**
   (#822). It was nested inside the llamacpp boot warning, which was harmless
