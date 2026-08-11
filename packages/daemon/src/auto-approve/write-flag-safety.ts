@@ -47,6 +47,13 @@
  * Long options are handled by two-way prefix matching against a dangerous
  * list, because git accepts unambiguous abbreviations: `--forc` must be
  * caught by the `--force` entry, and `--force-with-lease` must be too.
+ *
+ * The `rm`/`rmdir` families (ADR 0023) invert the long-option rule: an
+ * EXACT-spelling allowlist (`safeLongFlags`) instead of the dangerous
+ * denylist. For a deletion command the dangerous set is open-ended — GNU rm
+ * accepts any unambiguous abbreviation, so `--recur` IS `--recursive` and
+ * `--no-p` IS `--no-preserve-root` — and a denylist under-reaches on every
+ * spelling nobody listed. Only exact membership fails closed.
  */
 
 import { shellWords } from './shell-safety.ts';
@@ -65,8 +72,19 @@ interface FlagPolicy {
    * Long options that veto, matched in BOTH prefix directions so an
    * abbreviation (`--forc`) and an extension (`--force-with-lease`) are each
    * caught by the `--force` entry. Written without the leading dashes.
+   * Ignored when `safeLongFlags` is present.
    */
   readonly dangerousLongFlags: readonly string[];
+  /**
+   * When present, long options are EXACT-membership allowlisted instead: a
+   * `--token` whose body (everything after the dashes, INCLUDING any
+   * `=value`) is not literally in this set vetoes the segment, so an
+   * abbreviation (`--recur`) and a value-carrying spelling (`--force=yes`)
+   * both fall outside it and fail closed. Written without the leading
+   * dashes. The inversion is for families whose dangerous long-option set is
+   * open-ended (ADR 0023) — see the module doc.
+   */
+  readonly safeLongFlags?: readonly string[];
 }
 
 const FLAG_POLICIES: readonly FlagPolicy[] = [
@@ -103,6 +121,25 @@ const FLAG_POLICIES: readonly FlagPolicy[] = [
     family: /^tee\b/,
     safeShortFlags: 'aip',
     dangerousLongFlags: ['output-error'],
+  },
+  {
+    // rm/rmdir (ADR 0023): consumed only by `artifact-clean`'s veto — no
+    // other group lists either prefix through this module (`scratch` covers
+    // rm too, but its safety is destination proof, not flag policy). Long
+    // flags are the EXACT-spelling allowlist, not the dangerous denylist:
+    // GNU rm accepts unambiguous abbreviations, so `--recur`,
+    // `--no-preserve-root`, `--interactive=never` and every spelling nobody
+    // listed all veto by falling OUTSIDE the set.
+    family: /^rm\b/,
+    safeShortFlags: 'rRfv',
+    dangerousLongFlags: [], // unused: safeLongFlags governs
+    safeLongFlags: ['recursive', 'force', 'verbose'],
+  },
+  {
+    family: /^rmdir\b/,
+    safeShortFlags: 'pv',
+    dangerousLongFlags: [], // unused: safeLongFlags governs
+    safeLongFlags: ['parents', 'verbose'],
   },
   {
     // cp/mv: -f forces past a permission error. NOTE the real clobber
@@ -182,6 +219,14 @@ export function hasUnsafeWriteFlag(segment: string): boolean {
     if (!token.startsWith('-') || token === '-' || token === '--') continue;
 
     if (token.startsWith('--')) {
+      if (policy.safeLongFlags !== undefined) {
+        // EXACT spelling or veto (ADR 0023). Compared against the WHOLE
+        // token body — `--force=yes` is `force=yes`, not `force` — so an
+        // abbreviated or value-carrying spelling falls outside the set and
+        // fails closed, the direction the module doc requires.
+        if (!policy.safeLongFlags.includes(token.slice(2))) return true;
+        continue;
+      }
       const name = token.slice(2).split('=')[0] ?? '';
       for (const dangerous of policy.dangerousLongFlags) {
         if (longFlagMatches(name, dangerous)) return true;

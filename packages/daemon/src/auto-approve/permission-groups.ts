@@ -412,6 +412,255 @@ function scratchTargetVeto(segment: string, cwd: ScratchCwd): boolean {
   return false;
 }
 
+// ---------------------------------------------------------------------------
+// `artifact-clean` group (ADR 0023): deletion approves ONLY when every target
+// is PROVABLY derived state. #956's blanket rule — deletion escalates at
+// every level — already had one shipped exception: `scratch` (above) approves
+// rm/rmdir whose every target provably resolves under a scratch root. So the
+// real shipped rule since #994 is "deletion escalates unless the destination
+// is PROVED disposable by lexical reasoning", and this section extends that
+// proof from "under /tmp" to "at or under a directory whose exact name
+// proclaims derived state".
+//
+// Three command families, each with its own veto profile (ADR 0018: a
+// mutating group supplies its own vetoes or it does not ship):
+//
+//   - `rm`/`rmdir`: every non-flag token must be a relative, non-ascending,
+//     expansion-free path with some exact-case segment on ARTIFACT_DIR_NAMES
+//     and no `isSensitiveWritePath` hit. Flags are allowlisted
+//     (write-flag-safety.ts: `-rRfv`/`-pv`, exact long spellings only).
+//   - `git worktree remove`: structural check only (at most one `--force`,
+//     no other flags, exactly one positional that is not `.`). Its safety
+//     rests on a RUNTIME veto: git refuses any path that is not a registered
+//     linked worktree of this repository, always refuses the main worktree,
+//     and requires a SECOND `--force` for a locked one — which this group
+//     never supplies. Committed work survives in the shared object store by
+//     construction; only the worktree's uncommitted files are at stake.
+//   - bare `bun install` (`--frozen-lockfile` only): a lockfile-faithful
+//     reinstall of dependencies already vetted, whose lockfile and
+//     package.json no write group can touch (BUILD_SURFACE,
+//     sensitive-paths.ts). `bun install <pkg>` is `bun add` and escalates.
+//
+// `/tmp`/`$TMPDIR` deletion is NOT re-implemented here — `scratch` covers it,
+// and `matchGroups` tries every owning group's proof for a shared prefix.
+// `git clean` is excluded in every form: its population is UNTRACKED files,
+// and untracked is not derived — a file the agent created five minutes ago is
+// untracked source (ADR 0023).
+//
+// Accepted residuals, DECLARED rather than open bugs (ADR 0023):
+//
+//   - The name list is a convention, not a guarantee: a SOURCE directory
+//     genuinely named `build/` or `coverage/` is deletable at `trusted`.
+//     Bounded honestly: tracked contents come back via `git checkout --
+//     <path>` (shared history is untouched by rm); untracked contents are
+//     lost — the same residual the owner accepted for worktree `--force`.
+//   - Symlinks are invisible to every lexical check here, exactly as
+//     `scratch` documents above: an INTERMEDIATE segment that is a symlink
+//     (`packages/web` pointing elsewhere) makes `rm -rf packages/web/dist`
+//     delete through it. The one lexically VISIBLE trigger — a trailing `/`
+//     on a target, which makes `rm -rf link/` traverse the link target on
+//     some platforms — is vetoed.
+//
+// #1024 makes this group a silent subagent grant: a subagent's `rm -rf dist`
+// at `trusted` answers the hook with no render and no card. The visibility
+// path is `auto_approve.subagent_alert` (an `rm` entry there alerts without
+// blocking) — chosen, not overlooked (ADR 0023).
+// ---------------------------------------------------------------------------
+
+/**
+ * Directory names whose EXACT spelling proclaims derived state.
+ *
+ * This is an allow surface and will attract additions (ADR 0023). An entry
+ * qualifies only if the exact name proclaims derived state AND a command the
+ * repo already runs regenerates it. `vendor` (often tracked), `tmp`
+ * (proclaims temporariness but regenerates nothing), and any suffix/glob
+ * form (`*.egg-info`) do not clear the bar.
+ *
+ * Matching is EXACT-CASE while `sensitive-paths.ts` lowercases, and the
+ * asymmetry is deliberate (ADR 0010 applied to names): the deny check
+ * lowercases to WIDEN; an allow check that lowercased would treat `Dist` as
+ * `dist` on case-sensitive Linux, where they are different directories.
+ * "Cleaning up" the inconsistency reopens a hole.
+ */
+const ARTIFACT_DIR_NAMES: ReadonlySet<string> = new Set([
+  'node_modules',
+  'dist',
+  'build',
+  'out',
+  'target',
+  'coverage',
+  '__pycache__',
+  '.venv',
+]);
+
+/**
+ * Characters whose presence means the token rm receives is not the token
+ * written: variable expansion, glob, or brace expansion would rewrite it
+ * first, so no lexical proof about the written text can hold. `shellWords`
+ * has removed quotes by the time this runs, so a QUOTED glob (`'dist*'`,
+ * genuinely literal to the shell) is refused too — over-refusal, the safe
+ * direction, costing an escalation on a filename that really contains one of
+ * these characters.
+ */
+const ARTIFACT_EXPANSION_RE = /[$`*?[{}]/;
+
+/**
+ * True if `token` is PROVABLY at or under an exact-named derived-state
+ * directory: relative, non-ascending, expansion-free, some path segment on
+ * `ARTIFACT_DIR_NAMES`, and no sensitive hit. The proof is name-based, not
+ * cwd-based — which is why a poisoning `cd` (see `artifactCleanPoisonWalk`)
+ * has to be checked separately: the name `dist` proves the same thing in any
+ * directory REACHED BY relative descent, and nothing at all in `/etc`.
+ */
+function isProvedArtifactTarget(token: string): boolean {
+  if (token === '') return false;
+  if (ARTIFACT_EXPANSION_RE.test(token)) return false;
+  // Relative paths only: an absolute or home-rooted target can name any tree
+  // on the machine, and the measured population this group exists for is
+  // in-project relative cleanup (ADR 0023).
+  if (token.startsWith('/') || token.startsWith('~')) return false;
+  // Trailing-slash veto: `rm -rf link/` traverses a symlinked directory's
+  // TARGET on some platforms. The one symlink trigger that is lexically
+  // visible; the residuals note above records the rest. Checked on the RAW
+  // token — `resolveDotDot` would silently drop the slash.
+  if (token.endsWith('/')) return false;
+  // Resolve `.`/`..` BEFORE the name scan, the same ordering
+  // `sensitive-paths.ts` documents for its prefix axis: `dist/../src` names
+  // `src` and must be judged as `src`.
+  const resolved = resolveDotDot(token);
+  if (resolved === '' || resolved === '..' || resolved.startsWith('../')) return false;
+  if (!resolved.split('/').some((s) => ARTIFACT_DIR_NAMES.has(s))) return false;
+  // The deny axis still applies ON TOP of the allow proof (ADR 0018):
+  // `dist/.env` carries a qualifying segment AND a sensitive basename, and
+  // the deny check wins.
+  return !isSensitiveWritePath(token);
+}
+
+/**
+ * True if a `cd`'s argument list is a single plain relative descendant —
+ * the only `cd` shape that does not poison `artifact-clean` (see
+ * `artifactCleanPoisonWalk`). Anything else (bare `cd` → `$HOME`, `cd -` →
+ * unknowable, absolute, `~`, expansion, ascending, extra arguments) fails.
+ */
+function cdTargetIsPlainDescendant(words: readonly string[]): boolean {
+  if (words.length !== 2) return false;
+  const target = words[1];
+  if (target === undefined || target === '' || target === '-') return false;
+  if (ARTIFACT_EXPANSION_RE.test(target)) return false;
+  if (target.startsWith('/') || target.startsWith('~')) return false;
+  const resolved = resolveDotDot(target);
+  return resolved !== '..' && !resolved.startsWith('../');
+}
+
+/**
+ * Pre-walk for `artifact-clean` (ADR 0023), beside
+ * `sanitizeCommandForScratch`: for each compound segment BY INDEX, whether a
+ * poisoning `cd` occurred anywhere earlier. A `cd` poisons unless its single
+ * target is a plain relative descendant; a grammar-wrapped `cd` (`if ...;
+ * then cd sub; fi`) poisons regardless of target, because it runs zero or
+ * more times and the directory afterwards is unknowable from the text.
+ * Poison is NEVER un-poisoned: after `cd /etc`, a later `rm -rf dist` names
+ * `/etc/dist`, and no subsequent `cd` can make the tracked directory
+ * trustworthy again for an ALLOW decision.
+ *
+ * Unlike `scratch`'s cwd tracking, the joining operators (`|`, `||`) need no
+ * special handling here, because poison is one-directional: a GOOD `cd` that
+ * may not have run is harmless either way (the artifact proof is name-based
+ * and holds in the old directory too), and a BAD `cd` that may not have run
+ * still poisons — over-escalation, the safe direction.
+ */
+function artifactCleanPoisonWalk(command: string): boolean[] {
+  const poisonedBySegment: boolean[] = [];
+  let poisoned = false;
+  for (const part of splitCompoundParts(command)) {
+    // Like the scratch walk: the state RECORDED for a segment is the one in
+    // effect when the shell reaches it — a `cd` poisons the segments after
+    // it, not itself (a `cd` segment is neutral and never matches anyway).
+    poisonedBySegment.push(poisoned);
+    const trimmed = part.text.trim();
+    if (trimmed === '') continue;
+    // Detect the `cd` in the PEELED body, not the raw text, for the same
+    // reason the scratch walk does: `then cd /etc` is a `cd` that moves the
+    // shell, and judging raw text here while `matchCoveredCommand` judges
+    // the peeled body is the two-walks-that-must-agree defect shape (#1000).
+    const body = stripShellGrammar(trimmed).command;
+    if (body === '') continue;
+    const words = shellWords(body);
+    if (words[0] !== 'cd') continue;
+    if (body !== trimmed || !cdTargetIsPlainDescendant(words)) poisoned = true;
+  }
+  return poisonedBySegment;
+}
+
+/**
+ * Veto for a segment `artifact-clean`'s own prefix matched, dispatching by
+ * the matched family. Returns true to REFUSE — fall through to the LLM,
+ * where deletion still escalates at every level: the prompt half of #956's
+ * rule is untouched by ADR 0023.
+ *
+ * Any redirect clause still present in `segment` is discard/fd-dup by
+ * construction (`hasShellControl` vetoed everything else before this ran);
+ * it is stripped so a leftover token like `2>/dev/null` is not mistaken for
+ * a positional target — the same reasoning as `scratchTargetVeto`.
+ */
+function artifactCleanVeto(segment: string, matchedPrefix: string, poisoned: boolean): boolean {
+  if (poisoned) return true;
+  const stripped = rewriteRedirectClauses(segment, () => '').trim();
+  const words = shellWords(stripped);
+
+  if (matchedPrefix === 'rm' || matchedPrefix === 'rmdir') {
+    // Flag axis first: the exact allowlist in write-flag-safety.ts.
+    if (hasUnsafeWriteFlag(stripped)) return true;
+    const targets = words.slice(1).filter((w) => w !== '' && !w.startsWith('-'));
+    // No target, no proof: a bare `rm -rf` approves nothing. And EVERY
+    // token is checked rather than guessing which one is "the destination",
+    // mirroring `segmentTouchesSensitivePath`'s reasoning: getting a
+    // command's flag grammar wrong can only fail in the safe direction here
+    // (an extra escalation, never a wrongly-approved delete).
+    if (targets.length === 0) return true;
+    return !targets.every(isProvedArtifactTarget);
+  }
+
+  if (matchedPrefix === 'git worktree remove') {
+    // Defensive re-anchor: a prefix match guarantees the raw text starts
+    // with the entry, and this guarantees the TOKENIZED view agrees.
+    if (words[0] !== 'git' || words[1] !== 'worktree' || words[2] !== 'remove') return true;
+    let force = 0;
+    const positionals: string[] = [];
+    for (const w of words.slice(3)) {
+      if (w === '') continue;
+      if (w === '-f' || w === '--force') {
+        force++;
+        continue;
+      }
+      // ANY other flag fails closed — `-C`, `--git-dir`, a bare `--`, a
+      // value-carrying `--force=...`: the safety argument is git's runtime
+      // refusal profile, and an unmodeled flag could change it.
+      if (w.startsWith('-')) return true;
+      positionals.push(w);
+    }
+    // A LOCKED worktree needs a second --force, which this group never
+    // grants: the lock is a human's explicit "do not clean this up".
+    if (force > 1) return true;
+    if (positionals.length !== 1) return true;
+    return positionals[0] === '.';
+  }
+
+  if (matchedPrefix === 'bun install') {
+    if (words[0] !== 'bun' || words[1] !== 'install') return true;
+    for (const w of words.slice(2)) {
+      if (w === '' || w === '--frozen-lockfile') continue;
+      // A positional makes it `bun add` in disguise; any other flag
+      // (`--force`, `-g`, ...) is outside the lockfile-faithful shape.
+      return true;
+    }
+    return false;
+  }
+
+  // A prefix this dispatch does not model is refused, not guessed.
+  return true;
+}
+
 export interface PermissionGroup {
   /** Bare tool names this group approves (e.g. "Read", "Glob"). */
   readonly tools: readonly string[];
@@ -561,10 +810,16 @@ export const BUILTIN_GROUPS: Readonly<Record<string, PermissionGroup>> = {
       'tee',
       'cp',
       'mv',
-      // `rm`, `rmdir`, `truncate`, `dd`, `shred`, `chmod` and `chown` are
-      // deliberately absent at every strictness level (#956). Deletion and
-      // permission changes are where escalation earns its cost; a write group
-      // that quietly covered them would be the #536 mistake in a new place.
+      // `truncate`, `dd`, `shred`, `chmod` and `chown` are deliberately
+      // absent at every strictness level (#956). `rm`/`rmdir` are absent
+      // from THIS group for a polarity reason (ADR 0023): fs-write's
+      // destination axis is a DENYlist ("not a known-bad path"), which is
+      // the right shape for writes and fails OPEN for deletion — `rm -rf
+      // src` touches nothing sensitive. Deletion approves only through a
+      // destination-PROOF group, where the target must be shown disposable:
+      // `scratch` (under a scratch root) and `artifact-clean` (exact-named
+      // derived directories; `trusted` only). Everything else
+      // deletion-shaped still escalates at every level.
     ],
     segmentVeto: writeGroupVeto,
     toolVeto: vetoSensitiveToolPath,
@@ -601,6 +856,16 @@ export const BUILTIN_GROUPS: Readonly<Record<string, PermissionGroup>> = {
   scratch: {
     tools: [],
     commands: SCRATCH_COMMANDS,
+  },
+  // See the "`artifact-clean` group" section above `PermissionGroup` for the
+  // full design writeup (ADR 0023). Like `scratch`, no `segmentVeto` field:
+  // its veto needs the cd-poison state for the segment's INDEX, which the
+  // stateless `(segment) => boolean` signature has no room for, so
+  // `matchGroups` calls `artifactCleanVeto` directly. Gated into `trusted`
+  // only (levels.ts).
+  'artifact-clean': {
+    tools: [],
+    commands: ['rm', 'rmdir', 'git worktree remove', 'bun install'],
   },
 };
 
@@ -713,38 +978,72 @@ export function matchGroups(
     const scratchActive = known.includes('scratch');
     const scratch = scratchActive ? sanitizeCommandForScratch(rawCommand) : null;
     const command = scratch?.command ?? rawCommand;
-    // Map each prefix back to its owning group for the descriptive return.
-    const prefixToGroup = new Map<string, string>();
+    // The cd-poison pre-walk for `artifact-clean` (ADR 0023). Like the
+    // scratch pre-pass: run only when the group was actually requested, and
+    // walked over the SAME string `matchCoveredCommand` receives, so the two
+    // agree by segment index (the scratch sanitize preserves segment count
+    // and joiners; it only rewrites redirect clauses inside segments).
+    const artifactPoison = known.includes('artifact-clean')
+      ? artifactCleanPoisonWalk(command)
+      : null;
+    // Map each prefix to EVERY owning group that lists it, in request order.
+    // Multiple owners are real, and load-bearing since ADR 0023: at
+    // `trusted`, `rm` belongs to BOTH `scratch` (destination proof: under a
+    // scratch root) and `artifact-clean` (name proof: an exact-named derived
+    // directory), and a segment is approved when EITHER proof holds. The
+    // previous first-registrant-wins map would have let `scratch` eat the
+    // prefix and veto `rm -rf dist` outright. Trying every owner also makes
+    // this matcher monotone in its group list — adding a group can only add
+    // approvals — which first-wins quietly was not (a scratch-provable `cp`
+    // under /tmp escalated the moment `fs-write` was requested alongside).
+    const prefixOwners = new Map<string, string[]>();
     for (const name of known) {
       for (const cmd of BUILTIN_GROUPS[name]?.commands ?? []) {
-        if (!prefixToGroup.has(cmd)) prefixToGroup.set(cmd, name);
+        const owners = prefixOwners.get(cmd);
+        if (owners === undefined) prefixOwners.set(cmd, [name]);
+        else owners.push(name);
       }
     }
     // Per-segment veto (#957/#959): each matched segment is judged by the
     // profile of the group that matched IT, not by one blanket rule for the
     // whole command. A group with no `segmentVeto` gets the historical read
     // profile, so read-only/vcs-read/build-test behave exactly as before.
-    // `scratch` is special-cased directly (its veto needs the tracked scratch
-    // directory, which the stateless `PermissionGroup.segmentVeto` signature
-    // has no room for). That directory is looked up BY SEGMENT INDEX from the
-    // single walk done in the pre-pass, rather than re-tracked by a closure
-    // here — see `ScratchSanitized`.
+    // `scratch` and `artifact-clean` are special-cased directly (their vetoes
+    // need per-INDEX state — the tracked scratch directory, the cd-poison
+    // flag — which the stateless `PermissionGroup.segmentVeto` signature has
+    // no room for). That state is looked up BY SEGMENT INDEX from the single
+    // walk done in each pre-pass, rather than re-tracked by a closure here —
+    // see `ScratchSanitized`.
+    const vetoedByOwner = (owner: string, segment: string, prefix: string, index: number) => {
+      if (owner === 'scratch') {
+        return scratchTargetVeto(segment, scratch?.cwdBySegment[index] ?? null);
+      }
+      if (owner === 'artifact-clean') {
+        return artifactCleanVeto(segment, prefix, artifactPoison?.[index] ?? true);
+      }
+      const veto = BUILTIN_GROUPS[owner]?.segmentVeto ?? readSegmentVeto;
+      return veto(segment);
+    };
+    // The owner whose proof passed for the FIRST matched segment — the
+    // segment whose prefix `matchCoveredCommand` returns — so the label
+    // names the group that actually approved it, not the first registrant.
+    let hitOwner: string | null = null;
     const hit = matchCoveredCommand(
       command,
-      [...prefixToGroup.keys()],
+      [...prefixOwners.keys()],
       readSegmentVeto,
       (segment, matchedPrefix, index) => {
-        const owner = prefixToGroup.get(matchedPrefix);
-        if (owner === 'scratch') {
-          return scratchTargetVeto(segment, scratch?.cwdBySegment[index] ?? null);
+        for (const owner of prefixOwners.get(matchedPrefix) ?? []) {
+          if (!vetoedByOwner(owner, segment, matchedPrefix, index)) {
+            if (hitOwner === null) hitOwner = owner;
+            return false;
+          }
         }
-        const group = owner === undefined ? undefined : BUILTIN_GROUPS[owner];
-        const veto = group?.segmentVeto ?? readSegmentVeto;
-        return veto(segment);
+        return true;
       },
     );
     if (hit === null) return null;
-    return `${prefixToGroup.get(hit) ?? 'group'}:${hit}`;
+    return `${hitOwner ?? prefixOwners.get(hit)?.[0] ?? 'group'}:${hit}`;
   }
 
   for (const name of known) {

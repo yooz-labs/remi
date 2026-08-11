@@ -59,9 +59,14 @@ export const DEFAULT_AUTO_APPROVE_LEVEL: AutoApproveLevel = 'strict';
  * - `net-read` — cut from #959 after five of eleven bypasses turned out to be
  *   curl's (#961). Re-adding it means a policy derived from `man curl` rather
  *   than remembered.
- * - `rm`, package installs, `git push`, any `--force` — not groups at all, at
- *   any strictness (#956). Deletion, remote mutation and arbitrary install
- *   scripts are where escalation earns its cost.
+ * - `git push`, remote mutation, arbitrary install scripts — not groups at
+ *   all, at any strictness (#956). Blanket `rm` and blanket `--force` are
+ *   not either; what ADR 0023 gates into `trusted` is narrower:
+ *   `artifact-clean` approves a deletion only when EVERY target is provably
+ *   derived state (exact-named artifact directories, structural `git
+ *   worktree remove`, bare lockfile-faithful `bun install`), extending the
+ *   destination-proof exception `scratch` already shipped at `balanced`.
+ *   Deletion that reaches the LLM still escalates at every level.
  */
 const LEVEL_GROUPS: Readonly<Record<AutoApproveLevel, readonly string[]>> = {
   // Exactly today's shipped `approve_groups` default. Asserted against
@@ -75,7 +80,21 @@ const LEVEL_GROUPS: Readonly<Record<AutoApproveLevel, readonly string[]>> = {
   balanced: ['read-only', 'vcs-read', 'build-test', 'fs-write', 'scratch'],
   // Adds local git mutation (add/commit/checkout/switch/merge/stash/worktree).
   // NOT `git push` — that stays an escalation at every level.
-  trusted: ['read-only', 'vcs-read', 'build-test', 'fs-write', 'scratch', 'vcs-write'],
+  // Also adds `artifact-clean` (ADR 0023): proved-derived deletion. The
+  // measured misses it exists for — `rm -rf dist`, `rm -rf node_modules &&
+  // bun install`, `git worktree remove --force ../remi-1031` — each burned
+  // ~3.5s of LLM time reaching an escalation a human then overrode. Trusted
+  // ONLY: the measurement is one machine running `trusted`, and ADR 0016's
+  // precedent is to ship narrow and widen in a deliberate one-line follow-up.
+  trusted: [
+    'read-only',
+    'vcs-read',
+    'build-test',
+    'fs-write',
+    'scratch',
+    'vcs-write',
+    'artifact-clean',
+  ],
 };
 
 /** True if `value` names a level. */

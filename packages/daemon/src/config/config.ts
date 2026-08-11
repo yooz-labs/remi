@@ -1250,6 +1250,10 @@ turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_sec
 #   vcs-write   git add/commit/checkout/switch/merge, stash push, worktree add
 #   scratch     touch/cp/mv/tee/mkdir/rm/rmdir + output redirection, ONLY when
 #               every target resolves under /tmp, /private/tmp, or $TMPDIR
+#   artifact-clean  rm/rmdir ONLY when every target is a relative path at or
+#               under an exact-named derived-state dir (node_modules, dist,
+#               build, out, target, coverage, __pycache__, .venv), plus
+#               structural "git worktree remove" and bare "bun install"
 #
 # The write groups refuse sensitive destinations regardless of prefix: system
 # trees (/etc, /usr, /System, ...), credentials (~/.ssh, ~/.aws, .env, id_rsa),
@@ -1260,19 +1264,26 @@ turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_sec
 # (package.json, tsconfig.json, lockfiles, Makefile, ...), because build-test
 # is enabled by DEFAULT and executes what those files say. scratch instead
 # gets its safety entirely from the destination being confined to a scratch
-# root, which is why it is the one group allowed to cover deletion and output
-# redirection -- rm/rmdir and >/>> are excluded from every OTHER group.
+# root -- and artifact-clean from the target's exact NAME proving derived
+# state -- which is why those two are the only groups allowed to cover
+# deletion: the target must be PROVED disposable, not merely "not known-bad".
+# rm/rmdir and >/>> are excluded from every OTHER group.
 #
-# Matching is case-insensitive (macOS filesystems are) and resolves dot-dot.
+# Deny matching is case-insensitive (macOS filesystems are) and resolves
+# dot-dot; artifact-clean's name match is deliberately exact-case (an allow
+# check that lowercased would conflate Dist with dist on Linux).
 #
-# rm, package installs, git push, and any --force are in NO group EXCEPT
-# scratch's own deletion coverage, which stays confined to scratch roots.
+# Blanket rm, package installs, git push, and any --force are still in no
+# group: deletion approves only through scratch's and artifact-clean's
+# proofs above, "git worktree remove --force" approves only single-force
+# against git's own runtime refusals, and bare "bun install" is a
+# lockfile-faithful reinstall ("bun install <pkg>" still escalates).
 # Remote mutation and arbitrary install scripts stay escalations everywhere.
 # Strictness preset. Selects which of the groups above are auto-approved:
 #
 #   strict     read-only + vcs-read + build-test   (the default; today's behavior)
 #   balanced   strict   + fs-write + scratch
-#   trusted    balanced + vcs-write
+#   trusted    balanced + vcs-write + artifact-clean
 #
 # An explicit approve_groups below OVERRIDES the preset entirely, and the
 # daemon logs that it did -- so a config written before levels existed keeps

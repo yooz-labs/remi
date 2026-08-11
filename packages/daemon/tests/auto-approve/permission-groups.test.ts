@@ -21,6 +21,10 @@ const WRITE_GROUPS = ['fs-write', 'vcs-write'];
 /** The scratch group (#994 follow-up). Never enabled by default. */
 const SCRATCH_GROUPS = ['scratch'];
 
+/** The artifact-clean group (ADR 0023). Gated into `trusted` only; its own
+ *  corpus lives in artifact-clean.test.ts. */
+const ARTIFACT_GROUPS = ['artifact-clean'];
+
 /** Convenience: match a Bash command against the named groups. */
 function bash(command: string, groups: readonly string[] = ALL): string | null {
   return matchGroups('Bash', { command }, groups);
@@ -28,7 +32,7 @@ function bash(command: string, groups: readonly string[] = ALL): string | null {
 
 describe('permission-groups: known groups', () => {
   test('isKnownGroup', () => {
-    for (const name of [...ALL, ...WRITE_GROUPS, ...SCRATCH_GROUPS]) {
+    for (const name of [...ALL, ...WRITE_GROUPS, ...SCRATCH_GROUPS, ...ARTIFACT_GROUPS]) {
       expect(isKnownGroup(name)).toBe(true);
     }
     expect(isKnownGroup('bogus')).toBe(false);
@@ -36,7 +40,9 @@ describe('permission-groups: known groups', () => {
   });
 
   test('knownGroupNames lists exactly the built-ins', () => {
-    expect(knownGroupNames().sort()).toEqual([...ALL, ...WRITE_GROUPS, ...SCRATCH_GROUPS].sort());
+    expect(knownGroupNames().sort()).toEqual(
+      [...ALL, ...WRITE_GROUPS, ...SCRATCH_GROUPS, ...ARTIFACT_GROUPS].sort(),
+    );
   });
 });
 
@@ -650,7 +656,13 @@ describe('#959 final pass: every write prefix is covered by a flag policy', () =
   //
   // Walking BUILTIN_GROUPS means this cannot go stale: adding a prefix to a
   // write group without adding a policy turns it red.
-  const WRITE_GROUP_NAMES = ['fs-write', 'vcs-write'];
+  //
+  // `artifact-clean` (ADR 0023) walks here too. Its rm/rmdir prefixes carry
+  // FLAG_POLICIES entries; `git worktree remove` and `bun install` carry
+  // their flag policy inside `artifactCleanVeto` itself (an exact structural
+  // allowlist) -- the probe asserts the same PROPERTY either way: an
+  // unclassified flag is refused, wherever the policy lives.
+  const WRITE_GROUP_NAMES = ['fs-write', 'vcs-write', 'artifact-clean'];
 
   for (const groupName of WRITE_GROUP_NAMES) {
     const group = BUILTIN_GROUPS[groupName];

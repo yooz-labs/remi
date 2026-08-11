@@ -13,7 +13,10 @@
  *  2. Raising a level widens what is ROUTINE, never what is dangerous. The
  *     DENY FLOOR, deletion, remote mutation, package install and design
  *     questions are fixed at every level, and each is asserted rather than
- *     described.
+ *     described. "Fixed" is a claim about THIS PROMPT: ADR 0023's
+ *     `artifact-clean` approves proved-derived deletion deterministically,
+ *     before any prompt is built, and everything that does reach the model
+ *     still escalates deletion at every level.
  */
 
 import { describe, expect, test } from 'bun:test';
@@ -84,7 +87,11 @@ describe('what every level shares', () => {
 
   test('deletion escalates at every level', () => {
     // #956's rule: deletion is where escalation earns its cost. No level,
-    // including `trusted`, may move it.
+    // including `trusted`, may move it. Amended, not weakened, by ADR 0023:
+    // `artifact-clean` approves proved-derived deletion in the DETERMINISTIC
+    // layer, which never builds a prompt — so what this pins is exactly the
+    // surviving half of the rule: every deletion that REACHES the LLM still
+    // escalates, at every level.
     //
     // Case-insensitive on purpose: `strict` carries develop's original
     // wording ("file creation, modification, or deletion") verbatim, because
@@ -102,7 +109,9 @@ describe('what every level shares', () => {
   test('at balanced and trusted, deletion is the ONLY file operation left escalating', () => {
     // The replace-not-delete property. The pre-#966 line bundles "creation,
     // modification, or deletion" into one entry -- dropping it wholesale to
-    // approve writes would have silently promoted `rm` too.
+    // approve writes would have silently promoted `rm` too. Still true after
+    // ADR 0023: `artifact-clean` lives in the deterministic layer and this
+    // prompt is what governs everything that layer did NOT prove.
     for (const level of ['balanced', 'trusted'] as const) {
       const text = systemPrompt(level);
       const escalate = text.slice(

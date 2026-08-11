@@ -53,7 +53,13 @@ describe('the levels are ordered and additive', () => {
       'fs-write',
       'scratch',
     ]);
-    expect(added(groupsForLevel('balanced'), groupsForLevel('trusted'))).toEqual(['vcs-write']);
+    // `artifact-clean` (ADR 0023) is trusted-only by decision, not accident:
+    // the measurement behind it is one machine running `trusted`, and the
+    // precedent (ADR 0016) is to ship narrow and widen deliberately.
+    expect(added(groupsForLevel('balanced'), groupsForLevel('trusted'))).toEqual([
+      'vcs-write',
+      'artifact-clean',
+    ]);
   });
 
   test('every group named by a level actually exists', () => {
