@@ -34,9 +34,15 @@ export interface CreateSessionHandlerDeps {
   basePort: number;
   portRange: number;
   /**
+   * The host the spawned child will listen on -- the hub forwards its own
+   * `--bind` to every child, so this is the hub's bind host. The port probe
+   * must use it: probing a different host reports "free" for a port the child
+   * then fails to bind (#880).
+   */
+  bindHost: string;
+  /**
    * CLI flags inherited by the spawned child so it has matching config.
-   * Getter so the caller can populate the array after handler construction
-   * (bindHost in cli.ts is declared after sharedEvents is wired up).
+   * Getter so the caller can populate the array after handler construction.
    */
   inheritedArgs: () => readonly string[];
   send: SendToConnection;
@@ -58,6 +64,7 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
     spawningPorts,
     basePort,
     portRange,
+    bindHost,
     inheritedArgs,
     send,
     findAvailableTcpPort = defaultFindAvailableTcpPort,
@@ -79,7 +86,7 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
           ...liveSessionsRegistry.listLive().map((e) => e.wsPort),
           ...spawningPorts,
         ]);
-        const freePort = await findAvailableTcpPort(basePort, portRange, liveUsed);
+        const freePort = await findAvailableTcpPort(basePort, portRange, liveUsed, bindHost);
         if (freePort === null) {
           const rangeEnd = basePort + portRange - 1;
           send(

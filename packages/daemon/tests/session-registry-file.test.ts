@@ -8,7 +8,7 @@ import {
   SessionRegistryFile,
   claudeChildLooksAlive,
 } from '../src/session/session-registry-file.ts';
-import { reserveRange } from './session/port-test-helpers.ts';
+import { TEST_BIND_HOST, reserveRange } from './session/port-test-helpers.ts';
 
 /** Spawn a trivial process and await its exit to obtain a really-dead pid. */
 async function deadChildPid(): Promise<number> {
@@ -169,7 +169,7 @@ describe('SessionRegistryFile', () => {
 
   test('findAvailablePort returns first port when no sessions', async () => {
     const base = await reserveRange(10);
-    const port = await registry.findAvailablePort(base, 10);
+    const port = await registry.findAvailablePort(base, 10, TEST_BIND_HOST);
     expect(port).toBe(base);
   });
 
@@ -178,7 +178,7 @@ describe('SessionRegistryFile', () => {
     registry.register(makeEntry({ sessionId: 'a', wsPort: base }));
     registry.register(makeEntry({ sessionId: 'b', wsPort: base + 1 }));
 
-    const port = await registry.findAvailablePort(base, 10);
+    const port = await registry.findAvailablePort(base, 10, TEST_BIND_HOST);
     expect(port).toBe(base + 2);
   });
 
@@ -187,7 +187,7 @@ describe('SessionRegistryFile', () => {
     registry.register(makeEntry({ sessionId: 'a', wsPort: base }));
     registry.register(makeEntry({ sessionId: 'b', wsPort: base + 2 }));
 
-    const port = await registry.findAvailablePort(base, 10);
+    const port = await registry.findAvailablePort(base, 10, TEST_BIND_HOST);
     expect(port).toBe(base + 1);
   });
 
@@ -199,7 +199,7 @@ describe('SessionRegistryFile', () => {
       registry.register(makeEntry({ sessionId: `s-${i}`, wsPort: base + i }));
     }
 
-    const port = await registry.findAvailablePort(base, 3);
+    const port = await registry.findAvailablePort(base, 3, TEST_BIND_HOST);
     expect(port).toBeNull();
   });
 

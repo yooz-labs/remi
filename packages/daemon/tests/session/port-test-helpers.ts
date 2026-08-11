@@ -21,13 +21,24 @@
 import * as net from 'node:net';
 import { isPortAvailable } from '../../src/session/port-utils.ts';
 
+/**
+ * The host these helpers occupy on, and the host the tests using them must
+ * probe with. A holder and a probe on DIFFERENT hosts do not answer the same
+ * question -- that mismatch was #880 -- so it is one named constant here
+ * rather than a `'0.0.0.0'` literal repeated at each call site.
+ */
+export const TEST_BIND_HOST = '0.0.0.0';
+
 /** Bind to an OS-assigned port and report which one. Never collides. */
-export function occupyEphemeral(): Promise<{ server: net.Server; port: number }> {
+export function occupyEphemeral(host = TEST_BIND_HOST): Promise<{
+  server: net.Server;
+  port: number;
+}> {
   return new Promise((resolve, reject) => {
     const srv = net.createServer();
     // biome-ignore lint/suspicious/noExplicitAny: Bun's net.Server type is incomplete
     (srv as any).on('error', reject);
-    srv.listen({ port: 0, host: '0.0.0.0', exclusive: true }, () => {
+    srv.listen({ port: 0, host, exclusive: true }, () => {
       const addr = srv.address();
       if (addr === null || typeof addr === 'string') {
         reject(new Error('no address assigned'));
@@ -39,12 +50,12 @@ export function occupyEphemeral(): Promise<{ server: net.Server; port: number }>
 }
 
 /** Bind one specific port; rejects if it is taken (callers must have checked). */
-export function occupyPort(port: number): Promise<net.Server> {
+export function occupyPort(port: number, host = TEST_BIND_HOST): Promise<net.Server> {
   return new Promise((resolve, reject) => {
     const srv = net.createServer();
     // biome-ignore lint/suspicious/noExplicitAny: Bun's net.Server type is incomplete
     (srv as any).on('error', reject);
-    srv.listen({ port, host: '0.0.0.0', exclusive: true }, () => resolve(srv));
+    srv.listen({ port, host, exclusive: true }, () => resolve(srv));
   });
 }
 
@@ -60,7 +71,7 @@ export async function reserveRange(count: number, attempts = 50): Promise<number
     const base = 45000 + Math.floor(Math.random() * 5000);
     let allFree = true;
     for (let i = 0; i < count; i++) {
-      if (!(await isPortAvailable(base + i))) {
+      if (!(await isPortAvailable(base + i, TEST_BIND_HOST))) {
         allFree = false;
         break;
       }

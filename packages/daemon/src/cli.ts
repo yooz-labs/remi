@@ -334,6 +334,14 @@ const cliAuth = parsedArgs.auth;
 const cliLabel = parsedArgs.label;
 const cliPublicOnly = parsedArgs.publicOnly;
 const cliBindHost = parsedArgs.bindHost;
+/**
+ * The host every listener in this process binds -- and therefore the ONLY host
+ * a port bind-probe may be run against (#880). Declared here, next to the flag
+ * it comes from, because the first probe happens during port auto-selection far
+ * above where the auth block used to compute it; a probe against a different
+ * host reports "free" for a port the real bind then fails on. See port-utils.ts.
+ */
+const bindHost = cliBindHost ?? remiConfig.daemon.bind;
 const cliRemoveFingerprint = parsedArgs.removeFingerprint;
 const cliNoMdns = parsedArgs.noMdns;
 const cliNetwork = parsedArgs.network;
@@ -523,6 +531,7 @@ if (
     await runDaemonLifecycleCommand(cliSubcommand, {
       ...(cliPort !== undefined && { port: cliPort }),
       ...(cliBindHost !== undefined && { bindHost: cliBindHost }),
+      resolvedBindHost: bindHost,
       ...(cliAuth !== undefined && { auth: cliAuth }),
       noMdns: cliNoMdns,
       noRelay: cliNoRelay,
@@ -818,6 +827,7 @@ if (!portExplicitlySet) {
   const autoPort = await liveSessionsRegistry.findAvailablePort(
     remiConfig.daemon.base_port,
     remiConfig.daemon.port_range,
+    bindHost,
   );
   if (autoPort === null) {
     const rangeEnd = remiConfig.daemon.base_port + remiConfig.daemon.port_range - 1;
@@ -2114,15 +2124,19 @@ const createSessionHandlers_: CreateSessionHandlers = createCreateSessionHandler
   spawningPorts,
   basePort: remiConfig.daemon.base_port,
   portRange: remiConfig.daemon.port_range,
-  // Lazy: bindHost is declared after sharedEvents is wired up, so compute
-  // the inherited-args array on each spawn rather than capturing it here.
+  bindHost,
   inheritedArgs: () => {
     const args: string[] = [];
     if (cliAuth === true) args.push('--auth');
     if (cliAuth === false) args.push('--no-auth');
     if (cliNoRelay) args.push('--no-relay');
     if (cliNoMdns) args.push('--no-mdns');
-    if (bindHost !== '0.0.0.0') args.push('--bind', bindHost);
+    // Always forwarded, never "only when non-default" (#880). This used to
+    // compare against a hardcoded '0.0.0.0', which silently stopped meaning
+    // "is the default" the moment the default changed -- and a child that
+    // falls back to its own default instead of inheriting the hub's bind is
+    // exactly the drift that makes an exposure reappear on one process.
+    args.push('--bind', bindHost);
     return args;
   },
   send: sendToConnection,
@@ -2186,7 +2200,8 @@ const sharedEvents = {
 // Auth setup: disabled by default. Enable with --auth flag.
 // Local/private networks don't need auth; relay/public access does.
 // ---------------------------------------------------------------------------
-const bindHost = cliBindHost ?? remiConfig.daemon.bind;
+// `bindHost` is declared near the CLI flags above, not here: port
+// auto-selection probes with it long before this point (#880).
 
 // Local capability token (#869). Created on first run with mode 0600 so the
 // CLI can prove it is a local client without a TOFU round trip. Generated
@@ -2498,7 +2513,7 @@ if (cliDaemonMode) {
   // Phase 2: Probe for available WebSocket port, then start
   if (!portExplicitlySet) {
     const liveUsed = new Set(liveSessionsRegistry.listLive().map((e) => e.wsPort));
-    const probed = await findAvailableTcpPort(PORT, DEFAULT_PORT_RANGE, liveUsed);
+    const probed = await findAvailableTcpPort(PORT, DEFAULT_PORT_RANGE, liveUsed, bindHost);
     if (probed === null) {
       console.error(
         `All remi ports in range ${DEFAULT_BASE_PORT}-${DEFAULT_BASE_PORT + DEFAULT_PORT_RANGE - 1} are in use.`,
@@ -2823,7 +2838,7 @@ if (cliDaemonMode) {
   let wsProbeSucceeded = true;
   if (!portExplicitlySet) {
     const liveUsed = new Set(liveSessionsRegistry.listLive().map((e) => e.wsPort));
-    const probed = await findAvailableTcpPort(PORT, DEFAULT_PORT_RANGE, liveUsed);
+    const probed = await findAvailableTcpPort(PORT, DEFAULT_PORT_RANGE, liveUsed, bindHost);
     if (probed !== null && probed !== PORT) {
       log(`Port ${PORT} in use, using ${probed}`);
       try {
