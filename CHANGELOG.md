@@ -29,8 +29,11 @@ longer freezes for as long as you deliberate.
   exemption (#869). Installs that already materialized `bind = "0.0.0.0"` via
   `remi config init` keep the old behavior — a value on disk beats a changed
   default — and nothing breaks to make them look, so the boot warning is their
-  only signal. It now names the remedy and goes to `logError`, since
-  `console.warn` is dropped in wrapper mode (#1043).
+  only signal. It now names the exact remedy, and is emitted with
+  `console.error` — deliberately **not** `logError`, which at that point in
+  module init routes to a `writeToLog` that is still a no-op until
+  `startLogFileSession` runs ~490 lines later, so the message would go nowhere
+  (#1043).
 
 ### Fixed
 - **P0: any LAN host could drive the daemon** (#880, #1046, [ADR 0024]). Five
