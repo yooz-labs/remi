@@ -58,6 +58,9 @@ describe('positive controls: ordinary artifact cleanup', () => {
     // A discard redirect is permitted by hasShellControl and must not be
     // mistaken for a positional target.
     ['rm -rf coverage 2>/dev/null', 'artifact-clean:rm'],
+    // Earned by the cd-redirect fix: stripping redirects before tokenizing the
+    // cd means a real descent with a real redirect is now provable.
+    ['cd sub 2>/dev/null && rm -rf dist', 'artifact-clean:rm'],
     // Exact long spellings are on the allowlist.
     ['rm --recursive --force dist', 'artifact-clean:rm'],
     ['rmdir build', 'artifact-clean:rmdir'],
@@ -159,6 +162,22 @@ const ADVERSARIAL: ReadonlyArray<[string, string]> = [
     'cd -P && cd projectX && rm -rf node_modules',
     'the worst case: a second PLAIN cd descends normally from $HOME, reaching any project',
   ],
+  // The SECOND PR-review round: the same worst case, one spelling over. The
+  // #1047 fix rejected a leading dash, but `shellWords('cd ..>/dev/null')`
+  // glues the operand to the redirect, so the token is neither `..` nor
+  // `../…` and no poison was set. Real bash ascends, and the segment is
+  // idempotent — N of them climb N levels, reaching ~/.venv. Every one of
+  // these is a TOKEN-BOUNDARY variation; the entries above are all
+  // TOKEN-SHAPE variations, which is exactly why none of them caught it.
+  ['cd ..>/dev/null && rm -rf dist', 'redirect glued to the operand hides the ascent'],
+  ['cd ..>&1 && rm -rf dist', 'fd-dup spelling of the same'],
+  ['cd ..>>/dev/null && rm -rf dist', 'append spelling'],
+  ['cd ..&>/dev/null && rm -rf dist', '&> is not even modelled by rewriteRedirectClauses'],
+  ['cd "..">/dev/null && rm -rf dist', 'quoted operand, same glue'],
+  [
+    'cd ..>/dev/null && cd ..>/dev/null && cd ..>/dev/null && rm -rf .venv',
+    'idempotent: three of them climb three levels, to ~/.venv',
+  ],
   ['if true; then cd /etc; fi\nrm -rf dist', 'a grammar-wrapped cd runs zero or more times'],
   // --- git worktree remove structure (5)
   ['git worktree remove --force --force ../wt', 'a second --force overrides a LOCK'],
@@ -172,13 +191,13 @@ const ADVERSARIAL: ReadonlyArray<[string, string]> = [
   ['git clean -xfd', 'git clean is excluded in every form: untracked is not derived'],
 ];
 
-describe('the adversarial corpus: 52 refusals (ADR 0023)', () => {
-  test('the corpus is the full 52 entries', () => {
+describe('the adversarial corpus: 58 refusals (ADR 0023)', () => {
+  test('the corpus is the full 58 entries', () => {
     // 40 from the design's own corpus; 8 added by the independent adversarial
     // pass ADR 0023 requires before merge: 5 for the `cd -<option>` family
     // (#1047) and 3 that actually pin the expansion guard the two shipped
     // glob/brace entries only appeared to.
-    expect(ADVERSARIAL.length).toBe(52);
+    expect(ADVERSARIAL.length).toBe(58);
   });
 
   for (const [cmd, why] of ADVERSARIAL) {

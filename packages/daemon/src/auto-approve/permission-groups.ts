@@ -269,9 +269,23 @@ function isStrictlyUnderScratchRoot(token: string, cwd: ScratchCwd): boolean {
  */
 function advanceScratchCwd(cwd: ScratchCwd, trimmedSegment: string): ScratchCwd {
   if (trimmedSegment === '') return cwd;
-  const words = shellWords(trimmedSegment);
+  // Strip redirect clauses BEFORE tokenizing. `shellWords('cd ..>/dev/null')`
+  // is `['cd', '..>/dev/null']`, and that glued token is neither `..` nor
+  // `../…`, so the ascent was invisible and the tracked cwd became
+  // `<scratch>/..>/dev/null` -- a name that never pops below the root. Real
+  // bash ascends. Chained, `cd /tmp/x && cd ..>/dev/null && cd ..>/dev/null &&
+  // rm -rf etc` reached `rm -rf /etc` at `balanced`, on SHIPPED releases.
+  const words = shellWords(rewriteRedirectClauses(trimmedSegment, () => '').trim());
   if (words[0] !== 'cd') return cwd;
   const target = words[1];
+  // POSITIVE allowlist on the operand, not another round of subtracting known
+  // -bad spellings. The #1047 fix rejected a leading dash; this found the same
+  // hole one spelling over (`..>/dev/null`, `..>&1`, `..&>/dev/null`), and
+  // `&>` is not even modelled by `rewriteRedirectClauses`. So the rule is now
+  // "does this look like a path at all" -- shell metacharacters, whitespace and
+  // quotes all disqualify. `$TMPDIR`, `${TMPDIR}`, `~` and `/tmp/x` are the
+  // shapes `resolveScratchTarget` genuinely handles, so they stay in.
+  if (target !== undefined && !/^[A-Za-z0-9._+/@~$:{}-]+$/.test(target)) return null;
   // ANY leading dash resets, not just the exact `-` (#1047). `cd` reads a
   // leading-dash token as OPTIONS, so `cd -P` / `cd -L` / `cd --` / `cd -LP`
   // are an option with NO operand -- and a bare `cd` goes to `$HOME`. Testing
@@ -608,6 +622,13 @@ function cdTargetIsPlainDescendant(words: readonly string[]): boolean {
   // reached by `cd -foo` in bash either. It needs `cd ./-foo` (no leading
   // dash, still allowed) or `cd -- -foo` (three words, already poisons).
   if (target.startsWith('-')) return false;
+  // POSITIVE allowlist, added after the leading-dash fix above proved too
+  // narrow: `cd ..>/dev/null` and `cd ..&>/dev/null` carry the ascent inside a
+  // token that is not dash-led, and `&>` is not modelled by
+  // `rewriteRedirectClauses` at all. Enumerating bad spellings loses; asking
+  // "does this look like a path" does not. Shell metacharacters, whitespace
+  // and quotes all disqualify.
+  if (!/^[A-Za-z0-9._+/@-]+$/.test(target)) return false;
   if (ARTIFACT_EXPANSION_RE.test(target)) return false;
   if (target.startsWith('/') || target.startsWith('~')) return false;
   const resolved = resolveDotDot(target);
@@ -647,7 +668,18 @@ function artifactCleanPoisonWalk(command: string): boolean[] {
     // the peeled body is the two-walks-that-must-agree defect shape (#1000).
     const body = stripShellGrammar(trimmed).command;
     if (body === '') continue;
-    const words = shellWords(body);
+    // Redirect clauses stripped BEFORE tokenizing, matching what
+    // `artifactCleanVeto` already does to the same text -- two walks of one
+    // command computed from two different strings is the #1000 defect shape,
+    // and here it was live: `shellWords('cd ..>/dev/null')` glues the operand
+    // to the redirect, so `cdTargetIsPlainDescendant` saw a token that was
+    // neither `..` nor `../…` and set no poison. `cd ..>/dev/null && rm -rf
+    // dist` approved at 0ms, and the segment is idempotent, so N of them climb
+    // N levels -- reaching `~/.venv`, verbatim the outcome #1047 was supposed
+    // to have closed. Stripping first also EARNS coverage:
+    // `cd sub 2>/dev/null && rm -rf dist` now approves correctly.
+    const stripped = rewriteRedirectClauses(body, () => '').trim();
+    const words = shellWords(stripped);
     if (words[0] !== 'cd') continue;
     if (body !== trimmed || !cdTargetIsPlainDescendant(words)) poisoned = true;
   }
