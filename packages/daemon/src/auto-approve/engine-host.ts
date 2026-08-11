@@ -66,13 +66,60 @@ import { errorToString } from '@remi/shared';
 import { ensureHelperInstalled } from './engine-install.ts';
 import { probeEngine } from './engine-models.ts';
 import { FileEnginePidStore, spawnDetachedEngine } from './engine-process.ts';
+import {
+  LLAMACPP_LOG_FILE,
+  llamaServerArgs,
+  llamaServerMissingHint,
+  probeLlamaCpp,
+  resolveLlamaServer,
+} from './llamacpp-backend.ts';
 
 /** How remi relates to the engine on its port. */
 export type EngineOwnership = 'owned' | 'shared';
 
+/**
+ * Which local backend answers on the port (#822). The platform probe decides —
+ * Apple Silicon gets the Yooz engine, Linux gets llama.cpp — and by
+ * construction the two never coexist, so this is a discriminator, not a
+ * preference.
+ *
+ * Everything `EngineHost` does ABOVE the launch is identical for both: attach
+ * first, claim before spawning, resolve the redundant-start race, never reap on
+ * exit. Only the argv, the readiness question and how the executable is
+ * acquired differ, which is why this is a field rather than a subclass.
+ */
+export type EngineBackendKind = 'yooz' | 'llamacpp';
+
+/**
+ * Reachability, which is ALL this class asks of a probe.
+ *
+ * Narrower than `probeEngine`'s return on purpose: `EngineHost` reads only
+ * `.reachable` at every one of its four probe sites and never touches
+ * `.status`. Typing the seam as what it actually uses lets llama.cpp's
+ * `/health` satisfy it without inventing an `EngineStatus` it cannot produce
+ * (#822 — llama-server serves none of the `/v1/llm/*` control plane).
+ * `probeEngine` remains assignable, so nothing on the engine path changes.
+ */
+export type ReachabilityProbe = (
+  baseUrl: string,
+  timeoutMs?: number,
+) => Promise<{ readonly reachable: boolean }>;
+
 export interface EngineHostConfig {
   /** Loopback root, e.g. `http://127.0.0.1:19924`. */
   readonly baseUrl: string;
+  /**
+   * Which backend to launch and probe. Defaults to `yooz` so every existing
+   * construction keeps its behaviour unchanged.
+   */
+  readonly backend?: EngineBackendKind;
+  /**
+   * The model id, needed only by `llamacpp`: llama-server loads one GGUF at
+   * process start (`-hf`), so the id is a LAUNCH argument there rather than a
+   * per-request field. On the engine path the model is chosen per request and
+   * this is ignored.
+   */
+  readonly model?: string | undefined;
   /** `owned` (spawn + supervise) or `shared` (read-only guest). */
   readonly ownership: EngineOwnership;
   /**
@@ -101,11 +148,11 @@ export interface EngineHostDeps {
    * engine survives this process; it returns only the pid because there is no
    * child handle to hold onto afterwards. Tests supply a fake.
    */
-  readonly spawn?: (path: string, env: Record<string, string>) => number;
+  readonly spawn?: (path: string, args: readonly string[], env: Record<string, string>) => number;
   /** Kill a pid. Needed on the failure paths: a helper we started that lost
    *  the race, or never bound, must not be left running. */
   readonly kill?: (pid: number) => void;
-  readonly probe?: typeof probeEngine;
+  readonly probe?: ReachabilityProbe;
   readonly sleep?: (ms: number) => Promise<void>;
   /** Pidfile seam (`~/.remi/engine.pid` in production). */
   readonly pidStore?: PidStore;
@@ -150,7 +197,7 @@ export class EngineHost {
   /** In-flight helper download, so concurrent callers share one fetch. */
   private installInFlight: Promise<string | undefined> | undefined;
   private readonly log: EngineHostDeps['log'];
-  private readonly probe: typeof probeEngine;
+  private readonly probe: ReachabilityProbe;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly spawnFn: EngineHostDeps['spawn'];
   private readonly killFn: (pid: number) => void;
@@ -162,12 +209,34 @@ export class EngineHost {
     deps: EngineHostDeps,
   ) {
     this.log = deps.log;
-    this.probe = deps.probe ?? probeEngine;
+    // Probe by backend: llama.cpp has never served `/v1/llm/status`, so the
+    // engine probe would report a permanently-unreachable server that is in
+    // fact answering evals (#822).
+    this.probe = deps.probe ?? (this.isLlamaCpp ? probeLlamaCpp : probeEngine);
     this.sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.spawnFn = deps.spawn;
     this.killFn = deps.kill ?? ((pid) => process.kill(pid));
     this.pids = deps.pidStore;
-    this.installFn = deps.installHelper ?? (() => ensureHelperInstalled({ log: this.log }));
+    // Acquisition by backend. The engine FETCHES its helper (#834, a pinned
+    // artifact remi controls); llama.cpp only RESOLVES one the user installed.
+    // remi deliberately does not download llama-server -- see the module doc in
+    // llamacpp-backend.ts for why that line is drawn here.
+    this.installFn =
+      deps.installHelper ??
+      (this.isLlamaCpp
+        ? () => Promise.resolve(resolveLlamaServer())
+        : () => ensureHelperInstalled({ log: this.log }));
+  }
+
+  private get isLlamaCpp(): boolean {
+    return this.config.backend === 'llamacpp';
+  }
+
+  /** How this backend is named in logs and reasons. Not cosmetic: "the engine
+   *  did not come up" pointing at a llama-server is the wrong-but-plausible
+   *  description ADR 0011 is about. */
+  private get label(): string {
+    return this.isLlamaCpp ? 'llama-server' : 'engine';
   }
 
   /** True when remi may load/unload/delete models on this engine. The single
@@ -218,6 +287,16 @@ export class EngineHost {
       return { kind: 'unavailable', reason };
     }
 
+    // llama.cpp loads ONE model at process start, so an empty id is not a
+    // degraded launch -- it is `-hf ''`, which fails in the child where the
+    // only trace is a log file nobody is looking at. The engine path cannot hit
+    // this: it picks a model per request, long after startup.
+    if (this.isLlamaCpp && (this.config.model === undefined || this.config.model.length === 0)) {
+      const reason = `cannot start ${this.label}: auto_approve.model is empty and llama.cpp needs the model id at launch (it serves one GGUF per process)`;
+      this.log(`[Engine] ${reason}`);
+      return { kind: 'unavailable', reason };
+    }
+
     // Resolve, then acquire. `engine_path` wins when set -- someone pointing at
     // their own build is making a deliberate choice and must not have it
     // second-guessed by a download. Otherwise use the helper remi has already
@@ -234,7 +313,14 @@ export class EngineHost {
       helperPath = await this.installHelper();
     }
     if (helperPath === undefined || helperPath.length === 0) {
-      const reason = `no engine on ${this.config.baseUrl} and no helper available to start it`;
+      // Name the ACTIONABLE thing. On the engine path "no helper available"
+      // means a download failed and retrying may fix it; on llama.cpp it means
+      // the user has not installed anything, and remi will never install it for
+      // them (#822) -- so the generic wording would leave them waiting for an
+      // acquisition that is never coming.
+      const reason = this.isLlamaCpp
+        ? `no ${this.label} on ${this.config.baseUrl}: ${llamaServerMissingHint()}`
+        : `no engine on ${this.config.baseUrl} and no helper available to start it`;
       this.log(`[Engine] ${reason}`);
       return { kind: 'unavailable', reason };
     }
@@ -293,9 +379,17 @@ export class EngineHost {
    * booting daemon and the two would fight over the port.
    */
   static real(config: EngineHostConfig, log: (msg: string) => void): EngineHost {
+    // Same pidfile for both backends, deliberately: it is a mutual-exclusion
+    // record for "something remi started owns port 19924", and only one backend
+    // can hold that port. Separate records would let a stale engine entry and a
+    // live llama-server entry coexist and both believe they had the claim.
+    const logFile = config.backend === 'llamacpp' ? LLAMACPP_LOG_FILE : undefined;
     return new EngineHost(config, {
       log,
-      spawn: spawnDetachedEngine,
+      spawn:
+        logFile === undefined
+          ? spawnDetachedEngine
+          : (p, args, env) => spawnDetachedEngine(p, args, env, logFile),
       pidStore: new FileEnginePidStore(),
     });
   }
@@ -325,17 +419,8 @@ export class EngineHost {
 
     let pid: number;
     try {
-      const cache = this.config.modelCache;
-      pid = spawnFn(helperPath, {
-        // Headless: no menu-bar UI for a helper nobody looks at.
-        YOOZ_ENGINE_HEADLESS: '1',
-        // remi's reserved port, in every configuration (see the module doc).
-        YOOZ_ENGINE_PORT: String(portOf(this.config.baseUrl)),
-        // Weights location, via the standard HuggingFace variable the engine
-        // already reads. Omitted entirely when unset so the engine keeps its
-        // own default rather than being handed an empty path.
-        ...(cache !== undefined && cache.length > 0 ? { HF_HUB_CACHE: cache } : {}),
-      });
+      const launch = this.buildLaunch();
+      pid = spawnFn(helperPath, launch.args, launch.env);
     } catch (err) {
       // Release the claim we took above, or the next attempt is blocked by a
       // record for a process that never existed.
@@ -389,6 +474,42 @@ export class EngineHost {
     const reason = `engine started (pid ${pid}) but never answered on ${this.config.baseUrl}`;
     this.log(`[Engine] ${reason}`);
     return { kind: 'unavailable', reason };
+  }
+
+  /**
+   * How this backend is launched: argv plus environment.
+   *
+   * The split is not arbitrary. The Yooz engine is configured entirely through
+   * the environment and takes NO arguments (`spawn(helperPath, [], ...)` was
+   * literal before #822); llama.cpp is the mirror image, taking everything on
+   * the command line. Keeping both in one place means the difference is data a
+   * reader can see at once, rather than a branch buried in the spawn path.
+   */
+  private buildLaunch(): { args: string[]; env: Record<string, string> } {
+    const cache = this.config.modelCache;
+    if (this.isLlamaCpp) {
+      return {
+        args: llamaServerArgs(this.config.model ?? '', portOf(this.config.baseUrl)),
+        // `LLAMA_CACHE` is llama.cpp's own download location for `-hf`, NOT
+        // `HF_HUB_CACHE` (which is the Python huggingface_hub variable the Yooz
+        // engine reads). Naming the wrong one would silently ignore a
+        // configured cache and re-download multi-GB weights into the default.
+        env: cache !== undefined && cache.length > 0 ? { LLAMA_CACHE: cache } : {},
+      };
+    }
+    return {
+      args: [],
+      env: {
+        // Headless: no menu-bar UI for a helper nobody looks at.
+        YOOZ_ENGINE_HEADLESS: '1',
+        // remi's reserved port, in every configuration (see the module doc).
+        YOOZ_ENGINE_PORT: String(portOf(this.config.baseUrl)),
+        // Weights location, via the standard HuggingFace variable the engine
+        // already reads. Omitted entirely when unset so the engine keeps its
+        // own default rather than being handed an empty path.
+        ...(cache !== undefined && cache.length > 0 ? { HF_HUB_CACHE: cache } : {}),
+      },
+    };
   }
 
   /**

@@ -38,7 +38,11 @@ function host(
 ) {
   const logs: string[] = [];
   const killed: number[] = [];
-  const spawnCalls: Array<{ path: string; env: Record<string, string> }> = [];
+  const spawnCalls: Array<{
+    path: string;
+    args: readonly string[];
+    env: Record<string, string>;
+  }> = [];
   const probes = opts.probes ?? [UNREACHABLE];
   let probeIndex = 0;
   const h = new EngineHost(
@@ -54,8 +58,8 @@ function host(
       log: (m) => logs.push(m),
       sleep: async () => {},
       probe: async () => probes[Math.min(probeIndex++, probes.length - 1)] as EngineProbe,
-      spawn: (path, env) => {
-        spawnCalls.push({ path, env });
+      spawn: (path, args, env) => {
+        spawnCalls.push({ path, args, env });
         if (opts.spawnThrows) throw new Error(opts.spawnThrows);
         return opts.spawnPid ?? 4242;
       },

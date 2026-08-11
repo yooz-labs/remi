@@ -268,7 +268,7 @@ from it. One hardcoded default is wrong on one of the two supported targets.
 | Target | `provider` | `model` default | Who runs it |
 |---|---|---|---|
 | macOS Apple Silicon | `yooz` | `YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx` | remi fetches + supervises the helper (#834) |
-| Linux (any arch) | `llamacpp` | `YoozLabs/Qwen3.5-4B-qat-GGUF:Q4_0` | **you**, for now — remi prints the command at boot |
+| Linux (any arch) | `llamacpp` | `YoozLabs/Qwen3.5-4B-qat-GGUF:Q4_0` | **you** install `llama-server` once; remi spawns + supervises it (#822) |
 | macOS Intel, Windows | `yooz` (kept deliberately, so the boot warning fires) | (engine's, unused) | nothing; boot says so |
 
 Same trained weights, but **not the same artifact**: QAT was trained against
@@ -291,6 +291,19 @@ differs is everything *around* the weights, and three things bite:
   `/v1`, so it would be requested at `/v1/v1/models`. Every verb but `use`
   refuses with the restart command instead of emitting a 404. Router mode
   (`--models-dir`) is out of scope for all of remi's engine shapes.
+
+**remi supervises `llama-server` but never installs it** (#822 slice 1). It
+spawns it on demand through the same `EngineHost` the engine uses — attach
+first, claim the pidfile before spawning, health-probe `/health` (NOT
+`/v1/llm/status`, which llama.cpp has never served), stop what it started — and
+reports an actionable "install it" reason when the binary is absent. The line is
+drawn there deliberately: the macOS path fetches a **pinned artifact remi
+controls** (#834), while `llama-server` is a third-party binary across an arch
+matrix, so supervising one the user installed is a different trust proposition
+from downloading and executing one. The GGUF is not remi's job either — `-hf`
+makes llama.cpp pull it — which narrows what #822 originally assumed
+("Download is remi's job"). Still open on that issue: acquiring the binary,
+`keep_alive`/idle-stop, and the `escalate_model` design question.
 
 `warmModel()` is engine-only for the same reason, and the `llamacpp` base URL
 already carries `/v1` — calling it there requests `/v1/v1/llm/preload`. Its one

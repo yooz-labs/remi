@@ -216,14 +216,21 @@ export class FileEnginePidStore implements PidStore {
  */
 export function spawnDetachedEngine(
   helperPath: string,
+  args: readonly string[],
   env: Record<string, string>,
   logFile: string = ENGINE_LOG_FILE,
 ): number {
   fs.mkdirSync(path.dirname(logFile), { recursive: true });
   const logFd = fs.openSync(logFile, 'a');
   try {
-    fs.writeSync(logFd, `\n--- Engine starting at ${new Date().toISOString()} ---\n`);
-    const child = spawn(helperPath, [], {
+    // Name the executable rather than saying "Engine": since #822 this also
+    // launches `llama-server`, and a log banner that calls it the engine is the
+    // kind of wrong-but-plausible description ADR 0011 exists to prevent.
+    fs.writeSync(
+      logFd,
+      `\n--- ${path.basename(helperPath)} starting at ${new Date().toISOString()} ---\n`,
+    );
+    const child = spawn(helperPath, [...args], {
       detached: true,
       stdio: ['ignore', logFd, logFd],
       env: { ...process.env, ...env },
