@@ -16,35 +16,41 @@
 /** Benign segments that may appear in a compound command without needing coverage. */
 export const NEUTRAL_PREFIXES: readonly string[] = ['cd', 'pwd', 'true', 'echo', ':'];
 
-/**
- * A segment that is ENTIRELY variable assignments, e.g. `S=/tmp/x` or
- * `A=1 B=2`. Such a segment runs no command at all, so it needs no coverage.
+/*
+ * ATTEMPT 5, REVERTED BEFORE MERGE: "a segment whose every word is an
+ * assignment runs no command, so it needs no coverage."
  *
- * Measured cause of escalation: agents habitually open a script by assigning a
- * path, and `SCRIPTS_DIR="/a/b"; ls "$SCRIPTS_DIR"` matched NOTHING — because
- * `matchCoveredCommand` requires every segment covered and an assignment
- * matched neither a neutral prefix nor a read prefix. The rest of the command
- * was pure `ls`/`cat`, so an 8-second LLM eval was spent on a read.
+ * It rejected `PATH=/evil ls` (the glued form) and AUTO-APPROVED the
+ * semicolon form, which is strictly worse because a bare assignment persists
+ * for every later segment:
  *
- * EVERY word must be an assignment, and that is the whole safety argument.
- * An assignment PREFIX to a command (`PATH=/evil ls`, `LD_PRELOAD=x cat f`) is
- * not inert: it runs `ls`, and it chooses WHICH `ls`. Accepting a segment that
- * merely STARTS with an assignment would auto-approve exactly that, so the
- * predicate is all-or-nothing and a trailing command disqualifies the segment.
+ *     PATH=/tmp/evil ls     -> escalate            (guarded)
+ *     PATH=/tmp/evil; ls    -> APPROVE read-only:ls  at 0ms
  *
- * Command substitution needs no handling here: `hasShellControl` has already
- * rejected the segment for `$(…)` and backticks before this is reached, so
- * `FOO=$(rm -rf /)` never gets this far. That ordering is load-bearing — this
- * predicate on its own would call it inert.
+ * `splitCompound` splits on `;`/`&&`/`||`/newline, so identical shell
+ * semantics arrive as two segments — an "inert" assignment plus a covered
+ * read. Verified against real bash: both spellings run the attacker's binary
+ * (`PATH`/`HOME` are already exported, so a bare assignment keeps the export
+ * attribute). `export PATH=…; git status` was a second route, since `export`
+ * is peeled by `stripShellGrammar` first. This lands on `read-only`, which is
+ * in EVERY preset including the default, and via #1024 is answered at hook
+ * time for a subagent with no render and no card.
+ *
+ * This is attempt (1) of the post-mortem below, and that post-mortem's
+ * conclusion stands: no property of an assignment inspected IN ISOLATION
+ * separates benign from dangerous, because the danger is what the assignment
+ * does to LATER segments. A correct fix must carry inertness FORWARD — a
+ * pure-assignment segment poisoning every subsequent non-neutral segment, the
+ * way `artifactCleanPoisonWalk` poisons on `cd` — not judge the segment alone.
+ * Name-denylisting (`PATH`/`LD_*`/`BASH_ENV`/…) is item (2) and is rejected
+ * there.
+ *
+ * Do not re-add without the forward-poison walk AND test cases in the `;`,
+ * `&&` and newline spellings. The reverted version's own test block was named
+ * "an assignment PREFIX to a command is NOT inert" and pinned five cases,
+ * every one the glued spelling that already worked — so it passed green while
+ * the hole was open.
  */
-export function isPureAssignment(body: string): boolean {
-  const words = body.trim().split(/\s+/).filter(Boolean);
-  if (words.length === 0) return false;
-  // NAME=..., POSIX name rules. The value may be empty (`FOO=`) and may be
-  // quoted; anything after the first `=` is data, not a command, because a
-  // substitution would already have been vetoed above.
-  return words.every((w) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
-}
 
 /**
  * Shell keywords that PREFIX a real command (#999).
@@ -714,7 +720,7 @@ export function matchCoveredCommand(
     const stripped = stripShellGrammar(seg);
     if (stripped.structural) continue;
     const body = stripped.command;
-    if (matchPrefix(body, NEUTRAL_PREFIXES) !== null || isPureAssignment(body)) {
+    if (matchPrefix(body, NEUTRAL_PREFIXES) !== null) {
       // Neutral segments are vetoed before they can be waved through. Ordering
       // note: `extraVeto` used to run ahead of this neutral check for EVERY
       // segment, so moving it inside is behavior-preserving only because a

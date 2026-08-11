@@ -1445,11 +1445,7 @@ export class AutoApproveGate {
       // a subagent can reach at hook time (the LLM never runs -- ADR 0004), so
       // without this a per-agent grant would be unreachable for exactly the
       // requests it was written for.
-      const deterministic = service?.evaluateDeterministic?.(
-        input.tool_name,
-        input.tool_input,
-        input.agent_type,
-      );
+      const deterministic = service?.evaluateDeterministic?.(input.tool_name, input.tool_input);
       if (deterministic?.decision === 'approve') {
         log(
           `[Hooks] Subagent PermissionRequest answered allow at hook time (deterministic): agent=${input.agent_id?.slice(0, 8)} type=${input.agent_type} tool=${input.tool_name} - ${deterministic.reasoning}`,

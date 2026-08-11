@@ -60,26 +60,13 @@ All notable changes to Remi are documented here.
 [ADR 0025]: .context/decisions/0025-agent-scoped-permissions.md
 
 ### Fixed
-- **A leading variable assignment sank otherwise-covered reads.**
-  `matchCoveredCommand` requires every compound segment covered, and `S=/tmp/x`
-  matched neither a neutral prefix nor a read prefix — so
-  `SCRIPTS_DIR="…"; ls "$SCRIPTS_DIR"; cat "$SCRIPTS_DIR/x.py" | head -100`
-  matched nothing and cost an 8-second LLM eval despite being pure `ls`/`cat`.
-  Agents habitually open a script by assigning a path, which is why
-  agent-written commands escalated so reliably. A segment is now inert when it
-  is **entirely** assignments — and that is the whole safety argument, because
-  an assignment *prefix* is not inert: `PATH=/evil ls` runs `ls` and chooses
-  which one. Command substitution needs no handling here, since
-  `hasShellControl` rejects `$(…)` and backticks first; that ordering is
-  load-bearing and pinned by a test.
 - **`which`, `basename`, `dirname`, `realpath`, `mdfind`, `du` and `df` join
   `read-only`.** None opens a file for writing or takes an output-path flag,
   and `which` resolves a PATH entry rather than running it. `mdutil` — the
   mutating Spotlight sibling — is deliberately absent and pinned as such.
-- **Answering a permission on the terminal now cancels its eval.**
-  `onHooklessQuestionGone` is the only evidence remi gets that a prompt was
-  answered directly in the terminal: no hook fires, the render just disappears.
-  It cleared the card and released the hold but never cancelled the evaluation,
+- **A superseded prompt now cancels its eval.** When
+  `onHooklessQuestionGone` fires, it cleared the card and released the hold but
+  never cancelled the evaluation,
   so a queued waiter kept its place in the **serial** eval lane to decide a
   question a human had already answered — then pushed a card for it. Measured
   on a live 0.7.6 session where evals cost 7–10s each, every such survivor
@@ -87,6 +74,12 @@ All notable changes to Remi are documented here.
   exactly `240001ms` having never reached the model. `cancelEvalForQuestion`
   already handled both the running eval and splicing a queued waiter; it simply
   was not wired to this path.
+  **Scope, stated so it does not read as more than it is:** that callback has
+  exactly one trigger — a confirmed replacement render from the SAME agent
+  (`adoptRenderOwnedQuestion`). A prompt answered in the terminal with no
+  follow-up prompt rendering does NOT fire it, and still burns the full
+  `queue_timeout`. Covering that case needs a second trigger and is not in this
+  release.
 - **The `escalate_model` warning could be silenced for the users it was for**
   (#822). It was nested inside the llamacpp boot warning, which was harmless
   only while that warning fired on every llamacpp boot. Now that the boot

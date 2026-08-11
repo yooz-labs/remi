@@ -7,7 +7,7 @@
 ## Context
 
 A live 0.7.6 session on the owner's machine escalated a burst of subagent
-permissions without the LLM ever running. Traced from `~/.remi/remi.log`, the
+permissions without the LLM ever running. Traced from `~/.remi/daemon.log`, the
 mechanism was not the one the daemon's own docs would suggest:
 
 - The #1024 hook-time deterministic path worked exactly as designed
@@ -38,7 +38,11 @@ Two things are wrong here, and they are separable.
 reaching for a bare tool-name `allow` to get them.
 
 It is **not** in `strict`, `balanced`, or `trusted`, and not in
-`DEFAULT_CONFIG.approve_groups`. Every shipped preset stays entirely local.
+`DEFAULT_CONFIG.approve_groups`. No shipped preset grants **arbitrary-URL
+egress** — stated that way because "the presets are entirely local" would be
+false: `vcs-read` carries fifteen `gh` subcommands that call api.github.com and
+`build-test` has `uv run pytest`, which resolves from PyPI. The line `net-read`
+crosses is not network-vs-local, it is *whose choice the destination is*.
 
 Adding it to `trusted` was considered and rejected. `trusted` is selected for
 git mutation and proved-derived deletion; someone who chose it for those reasons
@@ -105,11 +109,14 @@ it to nobody.
   unchanged here.
 - `deny` remains substring-matched and `approve_groups` whole-command-matched
   (ADR 0010); per-agent scoping inherits both behaviours unchanged.
-- Agent *names* are not validated against anything. There is no registry of
-  agent types to check against, so a typo in `[auto_approve.agents.Explor]`
-  silently never matches. The daemon logs the agent types it has actually seen
-  resolve a policy, which is the only honest mitigation available without
-  inventing a registry.
+- Agent *names* are not validated against anything, and **a typo in a section
+  name is currently undetectable**. There is no registry of agent types to
+  check against, so `[auto_approve.agents.Explor]` silently never matches and
+  NOTHING reports it — not at load, not at evaluation. An earlier draft of this
+  ADR claimed "the daemon logs the agent types it has actually seen resolve a
+  policy"; it does not, and shipping that sentence would have been the ADR 0011
+  failure inside the ADR itself. Group names inside a section ARE validated
+  (they have a registry), which is the half that was closeable.
 
 ## Verification obligation
 
