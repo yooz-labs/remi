@@ -860,6 +860,19 @@ export const BUILTIN_GROUPS: Readonly<Record<string, PermissionGroup>> = {
       'uniq',
       'jq',
       'ls',
+      // Pure lookups and string operations, added after a live session showed
+      // them sinking otherwise-covered compound reads. None opens a file for
+      // writing, none takes an output-path flag, and none executes what it
+      // finds -- `which` resolves a PATH entry, it does not run it.
+      'which',
+      'basename',
+      'dirname',
+      'realpath',
+      // macOS Spotlight query. Read-only by construction (`mdutil` is the
+      // mutating sibling and is deliberately absent).
+      'mdfind',
+      'du',
+      'df',
     ],
   },
   'vcs-read': {

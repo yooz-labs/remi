@@ -1217,3 +1217,75 @@ describe('#1001 matchGroupsBroad: a stop rule matches ANY segment', () => {
     );
   });
 });
+
+describe('a pure variable-assignment segment is inert (measured escalation cause)', () => {
+  // Agents habitually open a script by assigning a path, and that one segment
+  // matched neither a neutral prefix nor a read prefix -- sinking commands that
+  // were otherwise pure `ls`/`cat` into an 8-second LLM eval. Taken verbatim
+  // from a live 0.7.6 session.
+  test('the reported figure-qa command', () => {
+    const cmd =
+      'SCRIPTS_DIR="/Users/y/.claude/figure-qa-scripts"\n' +
+      'ls "$SCRIPTS_DIR/examples" 2>/dev/null\n' +
+      'cat "$SCRIPTS_DIR/check_raster.py" | head -100';
+    expect(bash(cmd)).toBe('read-only:ls');
+  });
+
+  test('semicolon form', () => {
+    expect(bash('SCRIPTS_DIR="/a/b"; ls "$SCRIPTS_DIR"')).toBe('read-only:ls');
+    expect(bash('S=/tmp/x; grep -o "a" $S')).toBe('read-only:grep');
+  });
+
+  test('multiple assignments in one segment', () => {
+    expect(bash('A=1 B=2; ls')).toBe('read-only:ls');
+  });
+
+  test('assignments alone are still not "a read"', () => {
+    // Same rule every neutral segment obeys: a command that runs nothing is
+    // not a read, so it must not be approved on its own.
+    expect(bash('S=/tmp/x')).toBeNull();
+  });
+});
+
+describe('an assignment PREFIX to a command is NOT inert', () => {
+  // The whole safety argument for the rule above. `PATH=/evil ls` runs `ls`
+  // AND chooses which one; accepting a segment that merely STARTS with an
+  // assignment would auto-approve exactly that.
+  const mustBeNull = [
+    'PATH=/evil ls',
+    'LD_PRELOAD=/evil.so cat /etc/passwd',
+    'PATH=/evil ls && cat x',
+    'FOO=bar cat /etc/shadow',
+    'FOO=bar; PATH=/evil ls',
+  ];
+  for (const cmd of mustBeNull) {
+    test(cmd, () => expect(bash(cmd)).toBeNull());
+  }
+
+  test('command substitution in the value is refused before the assignment rule is reached', () => {
+    // `hasShellControl` rejects `$(...)`/backticks first. That ordering is
+    // load-bearing: the assignment predicate alone would call these inert.
+    const R = ['r', 'm', ' ', '-', 'r', 'f', ' ', '/'].join('');
+    expect(bash(`FOO=$(${R})`)).toBeNull();
+    expect(bash(`FOO=\`${R}\``)).toBeNull();
+  });
+});
+
+describe('read-only utilities added after the live-session measurement', () => {
+  const cases: Array<[string, string]> = [
+    ['which inkscape rsvg-convert', 'read-only:which'],
+    ['basename /a/b/c.txt', 'read-only:basename'],
+    ['dirname /a/b/c.txt', 'read-only:dirname'],
+    ['realpath ./x', 'read-only:realpath'],
+    ['mdfind "kMDItemFSName == \'X.app\'" 2>/dev/null | head -3', 'read-only:mdfind'],
+    ['du -sh node_modules', 'read-only:du'],
+    ['df -h', 'read-only:df'],
+  ];
+  for (const [cmd, expected] of cases) {
+    test(cmd, () => expect(bash(cmd)).toBe(expected));
+  }
+
+  test('the mutating Spotlight sibling is deliberately absent', () => {
+    expect(bash('mdutil -E /')).toBeNull();
+  });
+});

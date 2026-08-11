@@ -17,6 +17,36 @@
 export const NEUTRAL_PREFIXES: readonly string[] = ['cd', 'pwd', 'true', 'echo', ':'];
 
 /**
+ * A segment that is ENTIRELY variable assignments, e.g. `S=/tmp/x` or
+ * `A=1 B=2`. Such a segment runs no command at all, so it needs no coverage.
+ *
+ * Measured cause of escalation: agents habitually open a script by assigning a
+ * path, and `SCRIPTS_DIR="/a/b"; ls "$SCRIPTS_DIR"` matched NOTHING — because
+ * `matchCoveredCommand` requires every segment covered and an assignment
+ * matched neither a neutral prefix nor a read prefix. The rest of the command
+ * was pure `ls`/`cat`, so an 8-second LLM eval was spent on a read.
+ *
+ * EVERY word must be an assignment, and that is the whole safety argument.
+ * An assignment PREFIX to a command (`PATH=/evil ls`, `LD_PRELOAD=x cat f`) is
+ * not inert: it runs `ls`, and it chooses WHICH `ls`. Accepting a segment that
+ * merely STARTS with an assignment would auto-approve exactly that, so the
+ * predicate is all-or-nothing and a trailing command disqualifies the segment.
+ *
+ * Command substitution needs no handling here: `hasShellControl` has already
+ * rejected the segment for `$(…)` and backticks before this is reached, so
+ * `FOO=$(rm -rf /)` never gets this far. That ordering is load-bearing — this
+ * predicate on its own would call it inert.
+ */
+export function isPureAssignment(body: string): boolean {
+  const words = body.trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return false;
+  // NAME=..., POSIX name rules. The value may be empty (`FOO=`) and may be
+  // quoted; anything after the first `=` is data, not a command, because a
+  // substitution would already have been vetoed above.
+  return words.every((w) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
+}
+
+/**
  * Shell keywords that PREFIX a real command (#999).
  *
  * Every one of these is followed by a command that actually runs, so the ONLY
@@ -684,7 +714,7 @@ export function matchCoveredCommand(
     const stripped = stripShellGrammar(seg);
     if (stripped.structural) continue;
     const body = stripped.command;
-    if (matchPrefix(body, NEUTRAL_PREFIXES) !== null) {
+    if (matchPrefix(body, NEUTRAL_PREFIXES) !== null || isPureAssignment(body)) {
       // Neutral segments are vetoed before they can be waved through. Ordering
       // note: `extraVeto` used to run ahead of this neutral check for EVERY
       // segment, so moving it inside is behavior-preserving only because a
