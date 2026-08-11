@@ -318,14 +318,20 @@ export class SessionRegistryFile {
    * Combines file-registry check (skip known sessions) with real TCP
    * bind-probe (detect ports occupied by non-remi processes).
    * Returns null if all ports are exhausted.
+   *
+   * No parameter defaults, on purpose. `bindHost` must be the host the caller
+   * is about to listen on, or the probe answers the wrong question (#880), and
+   * a required parameter cannot follow defaulted ones -- so the range defaults
+   * go too. Both call sites passed them explicitly anyway.
    */
   async findAvailablePort(
-    basePort: number = DEFAULT_BASE_PORT,
-    range: number = DEFAULT_PORT_RANGE,
+    basePort: number,
+    range: number,
+    bindHost: string,
   ): Promise<number | null> {
     const live = this.listLive();
     const usedPorts = new Set(live.map((e) => e.wsPort));
-    return findAvailableTcpPort(basePort, range, usedPorts);
+    return findAvailableTcpPort(basePort, range, usedPorts, bindHost);
   }
 
   /** Find a live session by session ID. */

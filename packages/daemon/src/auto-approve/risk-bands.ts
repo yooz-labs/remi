@@ -106,6 +106,7 @@
  * rather than silently stopping, per the same err-broad direction.
  */
 
+import { extractToolCommand } from './command-tools.ts';
 import { matchesCatastrophicPattern } from './deny-floor.ts';
 import { isSensitiveWritePath, segmentTouchesSensitivePath } from './sensitive-paths.ts';
 import { hasExecPrimitive, shellWords, splitCompound } from './shell-safety.ts';
@@ -919,14 +920,25 @@ export function classifyRisk(
     return 'critical';
   }
 
-  if (toolName !== 'Bash') {
+  // #1020: gate on the INPUT SHAPE, not the literal name `Bash`. A
+  // command-carrying tool under any other name was permanently `moderate` --
+  // the tier plain conversation text can supply (ADR 0015) -- so
+  // `enforceRiskCeiling` could never cap it. Shares `extractToolCommand` with
+  // `matchesCatastrophicPattern` so the risk side and the deny side cannot
+  // widen independently.
+  const command = extractToolCommand(toolInput);
+  if (command === null || command.trim() === '') {
     return classifyNonBashTool(toolName, toolInput);
   }
 
-  const command = typeof toolInput['command'] === 'string' ? toolInput['command'] : '';
-  if (command.trim() === '') return 'moderate';
-
-  return classifyCommandMax(command, 0);
+  // MAX of both readings, not either one. A tool can carry a command AND a
+  // sensitive path (`Write`-shaped input with a `command` field is unusual but
+  // nothing forbids it), and taking only the command band would silently drop
+  // the `isSensitiveWritePath` elevation this function used to apply. Folding
+  // is total; choosing is not.
+  const commandBand = classifyCommandMax(command, 0);
+  const toolBand = classifyNonBashTool(toolName, toolInput);
+  return riskBandRank(toolBand) > riskBandRank(commandBand) ? toolBand : commandBand;
 }
 
 /**

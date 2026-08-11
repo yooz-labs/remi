@@ -181,6 +181,7 @@ import { installStatusLine } from './cli/statusline-installer.ts';
 import { installSuspendHandler } from './cli/suspend-handler.ts';
 import { isRemiBinaryPath, startUpdateWatcher } from './cli/update-watcher.ts';
 import {
+  DEFAULT_CONFIG,
   applyEnvOverrides,
   detectLocalLLMPlatform,
   llamaServerCommand,
@@ -334,6 +335,14 @@ const cliAuth = parsedArgs.auth;
 const cliLabel = parsedArgs.label;
 const cliPublicOnly = parsedArgs.publicOnly;
 const cliBindHost = parsedArgs.bindHost;
+/**
+ * The host every listener in this process binds -- and therefore the ONLY host
+ * a port bind-probe may be run against (#880). Declared here, next to the flag
+ * it comes from, because the first probe happens during port auto-selection far
+ * above where the auth block used to compute it; a probe against a different
+ * host reports "free" for a port the real bind then fails on. See port-utils.ts.
+ */
+const bindHost = cliBindHost ?? remiConfig.daemon.bind;
 const cliRemoveFingerprint = parsedArgs.removeFingerprint;
 const cliNoMdns = parsedArgs.noMdns;
 const cliNetwork = parsedArgs.network;
@@ -523,6 +532,7 @@ if (
     await runDaemonLifecycleCommand(cliSubcommand, {
       ...(cliPort !== undefined && { port: cliPort }),
       ...(cliBindHost !== undefined && { bindHost: cliBindHost }),
+      resolvedBindHost: bindHost,
       ...(cliAuth !== undefined && { auth: cliAuth }),
       noMdns: cliNoMdns,
       noRelay: cliNoRelay,
@@ -818,6 +828,7 @@ if (!portExplicitlySet) {
   const autoPort = await liveSessionsRegistry.findAvailablePort(
     remiConfig.daemon.base_port,
     remiConfig.daemon.port_range,
+    bindHost,
   );
   if (autoPort === null) {
     const rangeEnd = remiConfig.daemon.base_port + remiConfig.daemon.port_range - 1;
@@ -2114,15 +2125,19 @@ const createSessionHandlers_: CreateSessionHandlers = createCreateSessionHandler
   spawningPorts,
   basePort: remiConfig.daemon.base_port,
   portRange: remiConfig.daemon.port_range,
-  // Lazy: bindHost is declared after sharedEvents is wired up, so compute
-  // the inherited-args array on each spawn rather than capturing it here.
+  bindHost,
   inheritedArgs: () => {
     const args: string[] = [];
     if (cliAuth === true) args.push('--auth');
     if (cliAuth === false) args.push('--no-auth');
     if (cliNoRelay) args.push('--no-relay');
     if (cliNoMdns) args.push('--no-mdns');
-    if (bindHost !== '0.0.0.0') args.push('--bind', bindHost);
+    // Always forwarded, never "only when non-default" (#880). This used to
+    // compare against a hardcoded '0.0.0.0', which silently stopped meaning
+    // "is the default" the moment the default changed -- and a child that
+    // falls back to its own default instead of inheriting the hub's bind is
+    // exactly the drift that makes an exposure reappear on one process.
+    args.push('--bind', bindHost);
     return args;
   },
   send: sendToConnection,
@@ -2186,7 +2201,8 @@ const sharedEvents = {
 // Auth setup: disabled by default. Enable with --auth flag.
 // Local/private networks don't need auth; relay/public access does.
 // ---------------------------------------------------------------------------
-const bindHost = cliBindHost ?? remiConfig.daemon.bind;
+// `bindHost` is declared near the CLI flags above, not here: port
+// auto-selection probes with it long before this point (#880).
 
 // Local capability token (#869). Created on first run with mode 0600 so the
 // CLI can prove it is a local client without a TOFU round trip. Generated
@@ -2292,9 +2308,36 @@ if (authEnabled) {
   console.log(`Authentication enabled (fingerprint: ${serverFingerprint}, TOFU: ${tofuMode})`);
 } else {
   if (!isLocalhostBind) {
-    console.warn(
-      'WARNING: Authentication disabled on non-localhost bind. ' +
-        'The daemon is accessible without authentication on the network.',
+    // #880. This is the ONLY signal an install that pre-dates the loopback
+    // default gets: `remi config init` materialized `bind = "0.0.0.0"` into
+    // config.toml, a value on disk beats a changed default, and nothing about
+    // their setup breaks to make them look. So it names the exact remedy rather
+    // than only describing the state.
+    //
+    // `console.error`, NOT `logError`, and that is load-bearing. A first draft
+    // used `logError` "because console.warn is dropped in wrapper mode
+    // (#1043)". That reasoning is backwards: in wrapper mode `logError` routes
+    // to `writeToLog`, a no-op until `startLogFileSession`, which runs ~490
+    // lines below this point -- so the message went nowhere, while the
+    // `console.warn` it replaced reached the terminal.
+    //
+    // SCOPE that correctly, because a second review round caught the fix's own
+    // comment overstating it. Wrapper mode is NOT simply "the default": line
+    // ~325 is `cliDaemonMode = parsedArgs.daemonMode || serveMode`, so `remi
+    // serve` -- the LaunchAgent/systemd entrypoint, and the long-lived install
+    // most likely to carry a materialized `0.0.0.0` -- already took the
+    // console branch and printed both lines either way. The regression was real
+    // but confined to the plain-`remi` wrapper session path.
+    //
+    // At THIS point in module init the console is not yet redirected (the
+    // overrides are installed alongside the log session, far below), so
+    // `console.error` reaches the terminal in wrapper mode and stderr in daemon
+    // mode -- both destinations a human sees.
+    console.error(
+      `WARNING: bound to ${bindHost} with authentication disabled. Any host that can reach this port can approve permission prompts and type into your Claude session.`,
+    );
+    console.error(
+      `  Remedy: set daemon.bind = "${DEFAULT_CONFIG.daemon.bind}" in ~/.remi/config.toml (the default since #880), or pass --auth to require authentication on this bind.`,
     );
   } else {
     console.log('Authentication disabled (localhost binding)');
@@ -2498,7 +2541,7 @@ if (cliDaemonMode) {
   // Phase 2: Probe for available WebSocket port, then start
   if (!portExplicitlySet) {
     const liveUsed = new Set(liveSessionsRegistry.listLive().map((e) => e.wsPort));
-    const probed = await findAvailableTcpPort(PORT, DEFAULT_PORT_RANGE, liveUsed);
+    const probed = await findAvailableTcpPort(PORT, DEFAULT_PORT_RANGE, liveUsed, bindHost);
     if (probed === null) {
       console.error(
         `All remi ports in range ${DEFAULT_BASE_PORT}-${DEFAULT_BASE_PORT + DEFAULT_PORT_RANGE - 1} are in use.`,
@@ -2823,7 +2866,7 @@ if (cliDaemonMode) {
   let wsProbeSucceeded = true;
   if (!portExplicitlySet) {
     const liveUsed = new Set(liveSessionsRegistry.listLive().map((e) => e.wsPort));
-    const probed = await findAvailableTcpPort(PORT, DEFAULT_PORT_RANGE, liveUsed);
+    const probed = await findAvailableTcpPort(PORT, DEFAULT_PORT_RANGE, liveUsed, bindHost);
     if (probed !== null && probed !== PORT) {
       log(`Port ${PORT} in use, using ${probed}`);
       try {

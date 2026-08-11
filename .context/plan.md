@@ -24,10 +24,16 @@ uploaded for macOS and iOS.
    passes `onConnectCode`, `mode: 'relay'` is never assigned). Fix it **with**
    whatever re-enables code-pairing, not before.
 2. **#880 — `auth.enabled = "auto"` resolves to `false` on every bind**,
-   including `0.0.0.0`. Documented, deliberately not fixed: changing the default
-   alters how running daemons accept connections and is the owner's call. Gates
-   #873, and makes #869/#875/#543 inert on a default install since each hangs
-   off an authenticator that does not exist when auth is off.
+   including `0.0.0.0`. **The LAN exposure is closed**: `daemon.bind` now
+   defaults to `127.0.0.1`, so a stock daemon is not reachable off-machine. The
+   `'auto'` semantics are UNCHANGED and still resolve false — fixing them needs
+   TOFU fixed in the same change, because `cli.ts` builds the Authenticator with
+   `tofuMode: 'auto-accept'`, so auth-on-a-network-bind is first-comer-wins and
+   persists the attacker's key. Still gates #873, and #869/#875/#543 remain
+   inert on a default install since each hangs off an authenticator that does
+   not exist when auth is off. Two paths the bind change does NOT cover: the
+   relay (default-on, dials outward, plaintext in rotating mode — #881) and any
+   local process (#869).
 3. **#883 — protocol-message fan-out**: 13 non-test files per message type, and
    a missed consumer fails silently.
 

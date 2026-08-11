@@ -11,7 +11,16 @@ import * as dm from './daemon-manager.ts';
 /** Subset of CLI flags needed for the `start` path. */
 export interface StartDaemonOptions {
   readonly port?: number;
+  /** The `--bind` flag as given, or undefined. Decides arg forwarding only. */
   readonly bindHost?: string;
+  /**
+   * The host the SPAWNED daemon will actually listen on -- `--bind` if given,
+   * else `daemon.bind` from config. Required, and distinct from `bindHost`
+   * above: `remi start` probes for a free port on the parent's behalf, and a
+   * probe against any other host reports "free" for a port the child then
+   * fails to bind (#880). Only `start` uses it.
+   */
+  readonly resolvedBindHost: string;
   readonly auth?: boolean;
   readonly noMdns?: boolean;
   readonly noRelay?: boolean;
@@ -34,7 +43,7 @@ export type DaemonSubcommand = 'start' | 'stop' | 'status' | 'logs';
  * spawned daemon process. Isolated so it can be unit-tested without
  * exercising the full daemon-manager path.
  */
-export function buildStartDaemonArgs(opts: StartDaemonOptions): string[] {
+export function buildStartDaemonArgs(opts: Omit<StartDaemonOptions, 'resolvedBindHost'>): string[] {
   const extraArgs: string[] = [];
   if (opts.bindHost) extraArgs.push('--bind', opts.bindHost);
   if (opts.auth === true) extraArgs.push('--auth');
@@ -60,13 +69,17 @@ export function buildStartDaemonArgs(opts: StartDaemonOptions): string[] {
  */
 export async function runDaemonLifecycleCommand(
   sub: DaemonSubcommand,
-  opts: StartDaemonOptions = {},
+  opts: StartDaemonOptions,
 ): Promise<number> {
   if (sub === 'start') {
     // Only pass port if user explicitly set --port flag.
     // Do NOT inherit REMI_PORT from env (it's set by wrapper sessions and
     // would conflict). The daemon finds its own free port.
-    await dm.startDaemon({ port: opts.port, extraArgs: buildStartDaemonArgs(opts) });
+    await dm.startDaemon({
+      port: opts.port,
+      extraArgs: buildStartDaemonArgs(opts),
+      bindHost: opts.resolvedBindHost,
+    });
     return 0;
   }
   if (sub === 'stop') {

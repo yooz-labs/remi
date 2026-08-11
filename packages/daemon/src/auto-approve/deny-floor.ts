@@ -40,6 +40,7 @@
  * of denies that the "deny is rare" rule was written to constrain.
  */
 
+import { extractToolCommand } from './command-tools.ts';
 import { matchSubstringPattern } from './pattern-matcher.ts';
 import type { DenySource } from './types.ts';
 
@@ -338,11 +339,16 @@ export function matchesCatastrophicPattern(
   toolName: string,
   toolInput: Record<string, unknown>,
 ): string | null {
-  if (toolName !== 'Bash') {
+  // #1020: the gate is the INPUT SHAPE, not the literal name `Bash`. An
+  // MCP-registered tool can carry a shell command under any name, and this used
+  // to fall through to bare tool-name equality, which no catastrophic label
+  // matches -- so `rm -rf /` through such a tool was never floored. Must stay
+  // in lockstep with `classifyRisk`'s use of the same helper: a `critical` band
+  // the floor cannot match is a worse inconsistency than the gap it replaces.
+  const command = extractToolCommand(toolInput);
+  if (command === null) {
     return matchSubstringPattern(toolName, toolInput, CATASTROPHIC_LABELS);
   }
-  const command = typeof toolInput['command'] === 'string' ? toolInput['command'] : '';
-  if (!command) return null;
   for (const rule of CATASTROPHIC_RULES) {
     if (rule.test(command)) return rule.label;
   }

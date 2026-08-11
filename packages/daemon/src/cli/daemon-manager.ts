@@ -140,6 +140,12 @@ export interface StartOptions {
   port?: number | undefined;
   /** Extra args to pass to the daemon */
   extraArgs?: string[] | undefined;
+  /**
+   * The host the spawned daemon will listen on. Required and undefaulted: the
+   * free-port probe below has to ask about the host the child actually binds,
+   * or it reports "free" for a port the child then fails on (#880).
+   */
+  bindHost: string;
 }
 
 import { findAvailableTcpPort } from '../session/port-utils.ts';
@@ -151,7 +157,7 @@ import { DEFAULT_BASE_PORT, DEFAULT_PORT_RANGE } from '../session/session-regist
  * Claude in the caller's cwd; that junk-conversation behavior is gone.
  * Returns the PID of the spawned process.
  */
-export async function startDaemon(opts?: StartOptions): Promise<number> {
+export async function startDaemon(opts: StartOptions): Promise<number> {
   ensureRemiDir();
   const existingPid = readPidFileLive() ?? readStatusFilePidIfAlive();
   if (existingPid) {
@@ -165,7 +171,12 @@ export async function startDaemon(opts?: StartOptions): Promise<number> {
   // Find a free port before spawning the daemon to avoid EADDRINUSE
   let daemonPort = opts?.port;
   if (!daemonPort) {
-    const freePort = await findAvailableTcpPort(DEFAULT_BASE_PORT, DEFAULT_PORT_RANGE);
+    const freePort = await findAvailableTcpPort(
+      DEFAULT_BASE_PORT,
+      DEFAULT_PORT_RANGE,
+      new Set(),
+      opts.bindHost,
+    );
     if (freePort === null) {
       console.error(
         `All remi ports in range ${DEFAULT_BASE_PORT}-${DEFAULT_BASE_PORT + DEFAULT_PORT_RANGE - 1} are in use.`,

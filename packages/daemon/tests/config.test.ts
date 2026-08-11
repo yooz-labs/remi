@@ -72,7 +72,7 @@ authorized_chat_ids = [123, 456]
     const config = loadConfig(TEST_CONFIG);
     expect(config.daemon.base_port).toBe(19000);
     expect(config.daemon.port_range).toBe(10);
-    expect(config.daemon.bind).toBe('0.0.0.0'); // default preserved
+    expect(config.daemon.bind).toBe('127.0.0.1'); // default preserved
     expect(config.telegram.enabled).toBe(true);
     expect(config.telegram.bot_token).toBe('test-token');
     expect(config.telegram.authorized_chat_ids).toEqual([123, 456]);
@@ -1023,5 +1023,55 @@ describe('auto_approve.level (#963)', () => {
   test('no config file at all yields the strict default', () => {
     const c = loadConfig(path.join(TEST_DIR, 'nope.toml'));
     expect(c.auto_approve.level).toBe('strict');
+  });
+});
+
+// #880: the exposure was the PAIRING of a network bind with auth resolving off,
+// so pin both halves. Either one alone is defensible; together they admit
+// unauthenticated `answer`/`user_input` from any LAN host, and mDNS advertises
+// the port. A future change that flips the bind back without also settling the
+// auth default should fail here.
+describe('#880 the shipped defaults do not expose an unauthenticated daemon', () => {
+  test('the default bind is loopback', () => {
+    expect(DEFAULT_CONFIG.daemon.bind).toBe('127.0.0.1');
+  });
+
+  test('auth still defaults to "auto", which resolves OFF — so the bind is what protects', () => {
+    // Documenting the coupling rather than asserting a fix that has not
+    // happened: `"auto"` is still false on every bind (#880 remains open for
+    // the semantics + TOFU work). That is exactly why the bind default is
+    // load-bearing and must not be widened casually.
+    expect(DEFAULT_CONFIG.auth.enabled).toBe('auto');
+  });
+
+  test('a network bind in config.toml still wins — remote access stays opt-in', () => {
+    // Round-trips a real file through loadConfig. An earlier draft of this test
+    // spread DEFAULT_CONFIG, wrote '0.0.0.0' into the literal, and asserted the
+    // value it had just written -- it exercised no parsing, no merge, and could
+    // not fail on its own claim. That is the ADR 0011 anti-pattern verbatim, in
+    // a test defending a P0.
+    fs.writeFileSync(TEST_CONFIG, '[daemon]\nbind = "0.0.0.0"\n');
+    expect(loadConfig(TEST_CONFIG).daemon.bind).toBe('0.0.0.0');
+  });
+
+  test('an install that materialized the OLD default keeps it — the boot warning is their only signal', () => {
+    // `remi config init` writes the bind value into config.toml, so a user who
+    // ran it before this change has `bind = "0.0.0.0"` on disk and a value on
+    // disk beats a changed default. Pinned because it bounds what the fix
+    // claims: new installs are protected, pre-existing config-init installs are
+    // not, and nothing in their setup breaks to make them look.
+    fs.writeFileSync(TEST_CONFIG, '[daemon]\nbind = "0.0.0.0"\n');
+    const cfg = loadConfig(TEST_CONFIG);
+    expect(cfg.daemon.bind).not.toBe(DEFAULT_CONFIG.daemon.bind);
+    expect(cfg.auth.enabled).toBe('auto'); // still resolves off — still exposed
+  });
+
+  test('a freshly generated config carries the loopback default, not a stale literal', () => {
+    // generateDefaultConfig interpolates DEFAULT_CONFIG.daemon.bind. If that
+    // ever drifts from the shipped default, `remi config init` would hand new
+    // users the exposure this change removed.
+    const generated = generateDefaultConfig();
+    fs.writeFileSync(TEST_CONFIG, generated);
+    expect(loadConfig(TEST_CONFIG).daemon.bind).toBe('127.0.0.1');
   });
 });

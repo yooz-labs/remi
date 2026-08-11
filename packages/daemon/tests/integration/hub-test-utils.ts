@@ -10,6 +10,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { createHello, deserialize, serialize } from '@remi/shared/protocol.ts';
 import type { ProtocolMessage } from '@remi/shared/protocol.ts';
+import { DEFAULT_CONFIG } from '../../src/config/config.ts';
 import { findAvailableTcpPort } from '../../src/session/port-utils.ts';
 
 export const CLI_TS = path.resolve(import.meta.dir, '../../src/cli.ts');
@@ -40,8 +41,20 @@ export function makeIsolatedDirs(): { home: string; work: string } {
   };
 }
 
+/**
+ * A free port for a spawned hub, probed on the host that hub will actually
+ * bind. `spawnServeRaw` passes no `--bind`, and each hub runs under an
+ * isolated `$HOME` with no config file, so the host is `DEFAULT_CONFIG` --
+ * read from there rather than restated, so this cannot drift from the shipped
+ * default the way the probe's own `'0.0.0.0'` default did (#880).
+ *
+ * Probing a different host than the hub binds is not a harmless approximation.
+ * It handed the second hub the port the FIRST hub was already using, so the
+ * rival died on EADDRINUSE before reaching the PID-file guard it was written
+ * to exercise -- the #542 split-brain test silently stopped testing #542.
+ */
 export async function findTestPort(): Promise<number> {
-  const port = await findAvailableTcpPort(19200, 200);
+  const port = await findAvailableTcpPort(19200, 200, new Set(), DEFAULT_CONFIG.daemon.bind);
   if (port === null) throw new Error('No free test port');
   return port;
 }
