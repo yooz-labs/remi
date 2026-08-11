@@ -64,8 +64,19 @@ where it never does.
 
 Staleness while Claude streams is bounded by `HEARTBEAT_MS` (2 s), not by the
 250 ms cadence — a status change during a spinning prompt reaches the row on the
-next heartbeat. That is the honest guarantee and is what the docs and tests now
-state; the 250 ms figure applies only when the PTY is quiescent.
+next heartbeat. The 250 ms figure applies only when the PTY is quiescent.
+
+That bound is conditional on the HARD boundary gate, and the condition is not a
+technicality. `isBoundaryClean()` has no exception — not even the heartbeat —
+and `render()` is only attempted on the timer, so a tick landing on a dirty
+boundary is dropped with no retry. Measured residuals, none introduced by this
+decision: an unterminated OSC followed by silence holds the gate dirty
+indefinitely (the `MAX_*_RUN_BYTES` escape hatches are byte-counted, so they
+never trip when no further bytes arrive) — 1 paint in ten minutes; alternating
+mid-CSI chunk boundaries stretch the worst gap to ~2750 ms, over the stated
+bound. The honest guarantee is therefore "`HEARTBEAT_MS` whenever the stream
+reaches a clean boundary", which is every realistic stream. Closing the rest
+means owning a VT parser, which is the same answer mode 2 gets.
 
 The DECSTBM re-assertion `buildBarSequence` carries is restored during a live
 question. The freeze suppressed it for the question's entire life — precisely
