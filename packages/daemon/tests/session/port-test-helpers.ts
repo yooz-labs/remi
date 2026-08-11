@@ -66,12 +66,21 @@ export function occupyPort(port: number, host = TEST_BIND_HOST): Promise<net.Ser
  * across `attempts` tries, which is a genuine environment problem worth
  * failing loudly on rather than papering over.
  */
-export async function reserveRange(count: number, attempts = 50): Promise<number> {
+export async function reserveRange(
+  count: number,
+  attempts = 50,
+  host = TEST_BIND_HOST,
+): Promise<number> {
   for (let attempt = 0; attempt < attempts; attempt++) {
     const base = 45000 + Math.floor(Math.random() * 5000);
     let allFree = true;
     for (let i = 0; i < count; i++) {
-      if (!(await isPortAvailable(base + i, TEST_BIND_HOST))) {
+      // Probed on the SAME host the caller will occupy. Reserving on the
+      // wildcard and then occupying loopback is the very asymmetry this file's
+      // sibling module documents: a port free on `0.0.0.0` can be held on
+      // `127.0.0.1`, and `occupyPort` would then REJECT — the test errors
+      // instead of failing on its claim, which reads as a flake.
+      if (!(await isPortAvailable(base + i, host))) {
         allFree = false;
         break;
       }

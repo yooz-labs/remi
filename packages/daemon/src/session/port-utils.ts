@@ -10,10 +10,14 @@
  * `'0.0.0.0'` while every caller went on to listen on `daemon.bind`, and the two
  * agreed only because that config default was also `'0.0.0.0'` -- an invisible
  * coupling between a probe default and a config default in a different file.
- * Setting `bind = "127.0.0.1"` broke it, and the failure is silent in the worst
- * direction: a wildcard probe SUCCEEDS on a port another process already holds
- * on loopback, so the probe reports "free" and the real bind then fails with
- * EADDRINUSE. Measured on darwin 25.6:
+ * Setting `bind = "127.0.0.1"` broke it. On BSD/darwin the failure is silent in
+ * the worst direction: a wildcard probe SUCCEEDS on a port another process
+ * already holds on loopback, so the probe reports "free" and the real bind then
+ * fails with EADDRINUSE. On Linux `SO_REUSEADDR` does not permit overlapping
+ * listen binds, so the same mismatch fails SAFE there — a false "taken" that
+ * skips a usable port. remi ships on Linux under systemd, so say which is which
+ * rather than let a Linux reader take the darwin row as universal. The
+ * conclusion below is the same on both. Measured on darwin 25.6:
  *
  *   held=127.0.0.1  probe=0.0.0.0    -> probe says FREE, loopback bind fails
  *   held=127.0.0.1  probe=127.0.0.1  -> probe says taken (correct)

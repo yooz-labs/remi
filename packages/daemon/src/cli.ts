@@ -2308,16 +2308,29 @@ if (authEnabled) {
   console.log(`Authentication enabled (fingerprint: ${serverFingerprint}, TOFU: ${tofuMode})`);
 } else {
   if (!isLocalhostBind) {
-    // #880. This is now the ONLY signal an install that pre-dates the loopback
+    // #880. This is the ONLY signal an install that pre-dates the loopback
     // default gets: `remi config init` materialized `bind = "0.0.0.0"` into
     // config.toml, a value on disk beats a changed default, and nothing about
     // their setup breaks to make them look. So it names the exact remedy rather
-    // than only describing the state, and goes to logError -- console.warn is
-    // dropped in wrapper mode (#1043), which is where most users run.
-    logError(
+    // than only describing the state.
+    //
+    // `console.error`, NOT `logError`, and that is load-bearing. A first draft
+    // used `logError` "because console.warn is dropped in wrapper mode
+    // (#1043)". That reasoning is backwards and the PR review caught it: in
+    // wrapper mode -- the DEFAULT, since `setWrapperMode(false)` fires only for
+    // `--daemon` -- `logError` routes to `writeToLog`, which is a no-op until
+    // `startLogFileSession` runs. That happens ~490 lines below this point, so
+    // the message went nowhere at all, while the `console.warn` it replaced had
+    // reached the terminal. The switch deleted the warning it claimed to save.
+    //
+    // At THIS point in module init the console is not yet redirected (the
+    // overrides are installed alongside the log session, far below), so
+    // `console.error` reaches the terminal in wrapper mode and stderr in daemon
+    // mode -- both destinations a human sees.
+    console.error(
       `WARNING: bound to ${bindHost} with authentication disabled. Any host that can reach this port can approve permission prompts and type into your Claude session.`,
     );
-    logError(
+    console.error(
       `  Remedy: set daemon.bind = "${DEFAULT_CONFIG.daemon.bind}" in ~/.remi/config.toml (the default since #880), or pass --auth to require authentication on this bind.`,
     );
   } else {

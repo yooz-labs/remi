@@ -53,16 +53,27 @@ off-machine.
 **Not closed, and this ADR claims nothing about them:**
 
 - **The relay.** Default-on, dials outward, unaffected by any bind, and still
-  plaintext through the Worker in rotating-code mode (#881). Whoever holds the
-  current code has the same `answer` / `user_input` power the LAN peer had.
+  plaintext through the Worker in rotating-code mode (#881). **Name the
+  direction** — an earlier draft of this bullet said "the same `answer` /
+  `user_input` power the LAN peer had", conflating the two halves, which is the
+  exact error AGENTS.md records a previous draft of *its* #881 row making.
+  Traced: outbound `sendRaw` REFUSES without `sessionKeys` (which rotating-code
+  mode never derives); inbound falls through to `handleRelayMessage(rawPayload)`
+  in plaintext. So whoever holds the current code gets inbound INJECTION, not
+  the LAN peer's bidirectional control — the daemon cannot answer back.
 - **Any local process.** While `require_local_auth` is false, a process on this
   machine is exempt from auth (#869).
 - **Installs that materialized the old default.** `remi config init` writes the
   bind value into `config.toml`, and a value on disk beats a changed default.
   Those users keep the exposure, and nothing in their setup breaks to make them
   look. The boot warning is their only signal — which is why it now names the
-  remedy and goes to `logError` rather than `console.warn` (dropped in wrapper
-  mode, #1043).
+  remedy, and why it goes through `console.error`. A first draft used `logError`
+  "because console.warn is dropped in wrapper mode (#1043)"; the PR review
+  showed that reasoning is backwards. In wrapper mode — the DEFAULT — `logError`
+  routes to `writeToLog`, a no-op until `startLogFileSession`, which runs ~490
+  lines later. The switch deleted the warning it claimed to save. The original
+  live-smoke receipt below used `serve` (daemon mode), the one mode that could
+  not have caught it; re-verified in wrapper mode after the fix.
 
 **Broken on purpose.** LAN direct, Tailscale direct (100.x) and mDNS discovery
 all stop until the user opts in. SSH tunnels and the relay are untouched.

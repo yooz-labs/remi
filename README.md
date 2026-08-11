@@ -12,7 +12,7 @@ You start a Claude Code session on your workstation. It's working on a complex t
 
 **1. Session Persistence** - Like tmux for AI agents. Close your terminal, your session survives. Detach with `Ctrl+B d`, reattach from anywhere with `remi attach`.
 
-**2. Multi-Machine Discovery** - Run agents across multiple machines. Remi discovers all your sessions on the local network automatically. One command to see everything: `remi ls --network`.
+**2. Multi-Machine Discovery** - Run agents across multiple machines. One command to see everything: `remi ls --network`. **Opt-in since #880:** the daemon binds `127.0.0.1` by default, and mDNS does not advertise on a loopback bind — so discovery finds nothing until you set `daemon.bind` (and read the auth warning that comes with it).
 
 **3. Chat Interface** - Monitor your agents from a clean chat view on your phone. See the conversation without the code noise. Answer questions, approve actions, keep things moving.
 
@@ -53,7 +53,7 @@ remi attach --host 192.168.1.5 macbook/remi/main
 
 - **Session persistence** - Survives terminal close (SIGHUP), detach/reattach like tmux
 - **Human-readable session names** - `hostname/project/branch` instead of UUIDs
-- **LAN discovery** - mDNS/Bonjour finds all Remi daemons on your network
+- **LAN discovery** - mDNS/Bonjour finds Remi daemons on your network, once you widen `daemon.bind`. Not on by default (#880): a stock daemon is loopback-only and does not advertise
 - **Multiple connection methods** - Direct WebSocket, relay via Cloudflare, SSH tunnel, Tailscale
 - **Chat view** - Clean conversation interface without terminal noise
 - **Live updates** - Agent messages stream in real-time as work progresses
@@ -61,12 +61,12 @@ remi attach --host 192.168.1.5 macbook/remi/main
 - **macOS menu-bar app** - a status "r" tracking live connections plus the full web UI in a native window; see [docs/MACOS_APP.md](docs/MACOS_APP.md)
 - **Notifications** - Push alerts when Claude needs your input
 - **Encrypted relay, when authenticated** - with an authenticated permanent code (`--auth --permanent-code`, or `[auth] enabled = true` plus `--permanent-code`), relay traffic is end-to-end encrypted (P-256 ECDH signed by each side's Ed25519 identity, AES-256-GCM) and the Cloudflare Worker cannot read it. The default rotating-code mode never derives session keys, where the daemon **refuses to send** rather than downgrade, and **accepts unencrypted inbound messages** — so the relay does not currently work end to end without auth, and what a client did send arrived in the clear (#881). Even when encrypted, the Worker still sees the room code and who talks to whom and when: this hides content, not metadata
-- **No cloud dependency** - direct connections (same network, Tailscale, VPN, SSH tunnel) never touch a server at all. The relay is the exception, and see the caveat above
+- **No cloud dependency** - direct connections never touch a server at all. On a stock install only the SSH tunnel works out of the box: LAN and Tailscale direct need `daemon.bind` widened first (#880). Do **not** use `tailscale serve` for this — it is a same-host reverse proxy, so every tailnet peer arrives as `127.0.0.1` and inherits the loopback auth exemption (#869). The relay is the other exception, and see the caveat above
 
 ## Connection Methods
 
 ```
-Phone/Browser ──► Direct WebSocket (same network, Tailscale, VPN)
+Phone/Browser ──► Direct WebSocket (same network, Tailscale, VPN — needs daemon.bind widened)
                 ──► SSH Tunnel (ssh -L 28765:localhost:28765 server)
                 ──► Relay (connection code, works from anywhere)
 ```
@@ -94,7 +94,7 @@ Phone/Browser ──► Direct WebSocket (same network, Tailscale, VPN)
 - **Backend:** Bun + TypeScript, native PTY support
 - **Frontend:** React + Vite + Capacitor (iOS/Android/Web)
 - **Transport:** WebSocket (direct) or Cloudflare Workers relay
-- **Discovery:** mDNS/Bonjour (`_remi._tcp`)
+- **Discovery:** mDNS/Bonjour (`_remi._tcp`), off unless `daemon.bind` is non-loopback
 - **Protocol:** Structured messages with delivery states and deduplication
 
 ## Development

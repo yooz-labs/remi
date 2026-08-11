@@ -195,9 +195,11 @@ export interface AuthConfig {
    * `user_input` from any host on the LAN. So anyone WIDENING the bind -- in
    * config or in the default -- is turning that exposure back on, and owes the
    * auth story first. Note that "turn auth on" is not by itself enough either:
-   * TOFU defaults to auto-accept (`cli.ts`, `authenticator.ts`), so an
-   * authenticator on a network bind admits any freshly-generated key on first
-   * sight.
+   * TOFU is auto-accept unless `--no-tofu` is passed -- decided at the CALL
+   * SITE in `cli.ts`, not by `Authenticator`, whose own default is `'reject'`.
+   * Do not "correct" this by checking `authenticator.ts` alone; it says the
+   * opposite and the call site wins. So an authenticator on a network bind
+   * admits any freshly-generated key on first sight, and persists it.
    */
   readonly enabled: 'auto' | boolean;
 }
@@ -314,8 +316,16 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // dials outward, unaffected by the bind, and still plaintext through the
     // worker in rotating-code mode (#881) -- nor the local-process path, where
     // any process on this machine is exempted from auth while
-    // `require_local_auth` is false (#869). Someone holding the current relay
-    // code has the same `answer` / `user_input` power the LAN peer had.
+    // `require_local_auth` is false (#869).
+    //
+    // NAME THE DIRECTION on the relay -- an earlier draft of this comment said
+    // "the same `answer`/`user_input` power the LAN peer had", which conflates
+    // the two halves, the exact error AGENTS.md records a previous draft making.
+    // Traced: outbound `sendRaw` REFUSES without `sessionKeys`
+    // (`relay-adapter.ts`), which rotating-code mode never derives; inbound
+    // falls through to `handleRelayMessage(rawPayload)` in plaintext. So it is
+    // inbound INJECTION, not the LAN peer's bidirectional control -- the daemon
+    // cannot answer back at all (#881).
     //
     // It also does not reach an install that already MATERIALIZED the old
     // default: `remi config init` writes `bind = "${DEFAULT_CONFIG.daemon.bind}"`

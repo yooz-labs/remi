@@ -63,7 +63,8 @@ describe('#880 the probe answers for the host it is given', () => {
     });
 
     test(`findAvailableTcpPort skips a port held on ${host} when probing ${host}`, async () => {
-      const base = await reserveRange(2);
+      // Reserve on the same host we are about to occupy — see reserveRange.
+      const base = await reserveRange(2, 50, host);
       servers.push(await occupyPort(base, host));
       expect(await findAvailableTcpPort(base, 5, new Set(), host)).toBe(base + 1);
     });
