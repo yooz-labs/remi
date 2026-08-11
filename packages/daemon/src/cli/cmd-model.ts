@@ -75,6 +75,7 @@ import {
 import { FileEnginePidStore } from '../auto-approve/engine-process.ts';
 import { resolveProviderUrl } from '../auto-approve/llm-client.ts';
 import { displayId, findModel, lookupModel, matchesModel } from '../auto-approve/model-identity.ts';
+import { llamaServerCommand } from '../config/config.ts';
 import type { RemiConfig } from '../config/config.ts';
 
 export interface ModelCommandIO {
@@ -345,6 +346,27 @@ export async function runModelCommand(
     io.err(
       'No LLM endpoint configured. Set [auto_approve] provider (e.g. provider = "yooz") in your remi config.',
     );
+    return 1;
+  }
+
+  // #822: `llama-server` has none of the engine's `/v1/llm/{models,status,
+  // preload,unload}` or `/v1/models` control plane -- it loads one GGUF at
+  // process start and holds it for the process lifetime. Every verb here but
+  // `use` talks to that control plane, so against llamacpp they would fail as
+  // opaque 404s from a server that IS running and IS answering evals, which
+  // reads as "remi is broken" rather than "this backend has no model
+  // management." Refuse with the reason and the lever that does exist.
+  //
+  // `use` is exempt because it only writes remi's own config; it is answered
+  // below with the llama-server command that makes the choice take effect,
+  // since on this backend the model is chosen by the process, not by a
+  // request.
+  if (aa.provider === 'llamacpp' && verb !== 'use') {
+    io.err(
+      `"remi model ${verb}" is not available on provider = "llamacpp": llama-server serves the single GGUF it was started with and has no model-management API (#822).`,
+    );
+    io.err('Its model is whatever you passed to -hf, so switch models by restarting it:');
+    io.err(`    ${llamaServerCommand(aa.model)}`);
     return 1;
   }
 

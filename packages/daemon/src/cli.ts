@@ -180,7 +180,12 @@ import { StatusBar, childRows } from './cli/status-bar.ts';
 import { installStatusLine } from './cli/statusline-installer.ts';
 import { installSuspendHandler } from './cli/suspend-handler.ts';
 import { isRemiBinaryPath, startUpdateWatcher } from './cli/update-watcher.ts';
-import { applyEnvOverrides, detectLocalLLMPlatform, loadConfig } from './config/index.ts';
+import {
+  applyEnvOverrides,
+  detectLocalLLMPlatform,
+  llamaServerCommand,
+  loadConfig,
+} from './config/index.ts';
 import type { RemiConfig } from './config/index.ts';
 import { ForeignSessionEscalator, HookConfigManager, HookServer } from './hooks/index.ts';
 import type { HookInput, PermissionRequestHookInput, StopHookInput } from './hooks/index.ts';
@@ -879,10 +884,26 @@ let autoApproveService: AutoApproveService | null = null;
       // degradation #818 was filed to remove, reintroduced on another platform.
       // The macOS path fetches its own helper (#834); this one cannot yet, so
       // the honest thing is to say so at boot rather than at the first
-      // permission.
+      // permission -- and to say exactly what to run, since the weights and
+      // the transport both already exist. `-hf` pulls from HuggingFace on
+      // first run; the `:Q4_0` suffix is load-bearing (see `defaultModel`).
       writeToLog(
-        `[AutoApprove] provider = "llamacpp" is selected for ${process.platform}, but remi does not yet download or supervise a llama.cpp server (#822). Auto-approve will escalate every permission unless you run llama-server yourself on ${baseUrl}, or point auto_approve.provider at a remote backend.`,
+        `[AutoApprove] provider = "llamacpp": remi does not yet download or supervise a llama.cpp server (#822), so start one yourself and auto-approve works:
+    ${llamaServerCommand(aaCfg.model)}
+  Until it answers on ${baseUrl}, every permission escalates. A remote provider (openrouter, a custom URL) also works.`,
       );
+      // llama-server ignores the request's `model` field in single-model mode
+      // (verified against its README), so a configured escalate_model is
+      // answered by whatever GGUF was loaded at process start -- a "second
+      // opinion" from the same weights, reported as if a heavier model had
+      // agreed. Silent, and it makes escalate_model actively misleading rather
+      // than merely absent. #822's own scope calls this out as an open design
+      // question ("one model per process"); until it is decided, say so.
+      if (aaCfg.escalate_model && aaCfg.escalate_model !== aaCfg.model) {
+        writeToLog(
+          `[AutoApprove] escalate_model = "${aaCfg.escalate_model}" has no effect on provider = "llamacpp": llama-server serves the one model it was started with and ignores the requested model id, so the "second opinion" would come from the primary model (#822). Run a separate backend and point escalate_model at it via a full URL, or leave it empty.`,
+        );
+      }
     }
 
     // #818: who starts the engine. Only meaningful for the engine transport —

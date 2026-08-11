@@ -13,6 +13,7 @@ import {
   formatConfig,
   generateDefaultConfig,
   initConfigFile,
+  llamaServerCommand,
   loadConfig,
 } from '../src/config/config.ts';
 
@@ -22,6 +23,17 @@ import {
 function expectedDefaultProvider(): string {
   const detected = detectLocalLLMPlatform();
   return detected === 'unsupported' ? 'yooz' : detected;
+}
+
+/** #822: the evaluator model default is platform-resolved too — an MLX id
+ *  cannot be loaded by llama.cpp. Derived from `detectLocalLLMPlatform`, not
+ *  from DEFAULT_CONFIG, so it is a real expectation rather than a tautology.
+ *  Without this these assertions pass on a macOS dev machine and fail on CI,
+ *  which runs ubuntu-latest. */
+function expectedDefaultModel(): string {
+  return detectLocalLLMPlatform() === 'llamacpp'
+    ? 'YoozLabs/Qwen3.5-4B-qat-GGUF:Q4_0'
+    : 'YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx';
 }
 
 const TEST_DIR = path.join(os.tmpdir(), `remi-config-test-${process.pid}`);
@@ -319,8 +331,41 @@ describe('formatConfig', () => {
   });
 
   test('default model is a fast 4b-class engine model; escalate_model empty (#522)', () => {
-    expect(DEFAULT_CONFIG.auto_approve.model).toBe('YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx');
+    expect(DEFAULT_CONFIG.auto_approve.model).toBe(expectedDefaultModel());
     expect(DEFAULT_CONFIG.auto_approve.escalate_model).toBe('');
+  });
+
+  // #822: the same weights in the container each backend can load. Asserted
+  // as an explicit platform->id table rather than through the helper above,
+  // so a wrong mapping cannot pass by matching a wrong expectation.
+  test('the default model matches the backend the platform resolves to (#822)', () => {
+    const backend = detectLocalLLMPlatform();
+    const model = DEFAULT_CONFIG.auto_approve.model;
+    if (backend === 'llamacpp') {
+      expect(model).toContain('GGUF');
+      // -hf defaults to :Q4_K_M and these repos publish only Q4_0, so the
+      // quant suffix is load-bearing, not decoration.
+      expect(model).toContain(':Q4_0');
+      expect(model).not.toContain('mlx');
+    } else {
+      expect(model).toContain('mlx');
+      expect(model).not.toContain('GGUF');
+    }
+  });
+
+  test('the llama-server command remi prints is runnable and matches the config default (#822)', () => {
+    // The command in the boot message is the one thing a Linux user copies,
+    // so it must carry the quant suffix, bind loopback, and name remi's
+    // reserved port. Built from the same constant as the config default so
+    // the two cannot drift.
+    const cmd = llamaServerCommand('YoozLabs/Qwen3.5-4B-qat-GGUF:Q4_0');
+    expect(cmd).toBe(
+      'llama-server -hf YoozLabs/Qwen3.5-4B-qat-GGUF:Q4_0 --host 127.0.0.1 --port 19924',
+    );
+    // 19924 is remi's reserved port (see the ecosystem port table) and is what
+    // LLM_PROVIDERS.llamacpp points the client at.
+    expect(cmd).toContain('19924');
+    expect(DEFAULT_CONFIG.auto_approve.base_url).toContain('19924');
   });
 
   // The TouchUp tiers read 38/38 on the permission grid but reach it partly by
@@ -392,7 +437,7 @@ describe('auto_approve config', () => {
       // from `detectLocalLLMPlatform` rather than from `DEFAULT_CONFIG`, which
       // would assert the value against itself and prove nothing.
       provider: expectedDefaultProvider(),
-      model: 'YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx',
+      model: expectedDefaultModel(),
       api_key: '',
       base_url: 'http://127.0.0.1:19924',
       timeout: 30,

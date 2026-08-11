@@ -64,6 +64,43 @@ function defaultProvider(): string {
   return detected === 'unsupported' ? 'yooz' : detected;
 }
 
+/**
+ * The engine's MLX build of the default evaluator model, and the llama.cpp
+ * GGUF build of the SAME weights. Same QAT-lean Qwen3.5-4B that #809 Phase D
+ * measured at 38/38 on the permission grid — only the container differs, so
+ * the Linux path inherits that evidence rather than needing its own.
+ *
+ * The GGUF value is deliberately written in `-hf` argument form
+ * (`<user>/<repo>:<quant>`) so it can be pasted straight into the
+ * `llama-server` command remi prints at boot. The quant suffix is NOT
+ * optional here: `-hf` defaults to `Q4_K_M`, and these repos publish only
+ * `Q4_0`, so the bare repo id fails to resolve a file.
+ */
+const DEFAULT_EVAL_MODEL_MLX = 'YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx';
+const DEFAULT_EVAL_MODEL_GGUF = 'YoozLabs/Qwen3.5-4B-qat-GGUF:Q4_0';
+
+/**
+ * The `auto_approve.model` default for THIS machine (#822). An MLX id cannot
+ * be loaded by llama.cpp and a GGUF id means nothing to the engine, so a
+ * single hardcoded default is wrong on one of the two supported targets —
+ * exactly the reasoning `defaultProvider` already applies to the transport.
+ *
+ * An `unsupported` target follows `defaultProvider` and keeps the engine's
+ * value, so the config shape stays stable and the boot warning (see `cli.ts`)
+ * is what tells the user their machine has no local backend at all.
+ */
+function defaultModel(): string {
+  return detectLocalLLMPlatform() === 'llamacpp' ? DEFAULT_EVAL_MODEL_GGUF : DEFAULT_EVAL_MODEL_MLX;
+}
+
+/** The `llama-server` invocation remi tells a Linux user to run (#822). Built
+ *  from the same constant as the config default so the two can never drift.
+ *  Verified against llama.cpp's server README: `-hf <user>/<repo>[:quant]`,
+ *  `--port`, `--host`. */
+export function llamaServerCommand(model: string = DEFAULT_EVAL_MODEL_GGUF, port = 19924): string {
+  return `llama-server -hf ${model} --host 127.0.0.1 --port ${port}`;
+}
+
 /** Daemon settings (restart required to apply changes) */
 export interface DaemonConfig {
   readonly base_port: number;
@@ -280,7 +317,11 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // predating it serve only the two TouchUp tiers and reject this id with
     // 400 `invalid_model`; auto-approve is off by default, so that surfaces as
     // "every question escalates" rather than as a broken daemon.
-    model: 'YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx',
+    //
+    // #822: resolved by platform, like `provider` above. The MLX and GGUF
+    // builds are the same weights, so the measurement above covers both; an
+    // MLX id simply cannot be loaded by llama.cpp. See `defaultModel`.
+    model: defaultModel(),
     api_key: '',
     base_url: 'http://127.0.0.1:19924',
     timeout: 30,
@@ -647,7 +688,7 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
   // must fail loudly with an actionable next step.
   if (cfg.provider === 'ollama') {
     throw new Error(
-      `Invalid auto_approve.provider "ollama" in ${configPath}: ollama support was removed (#809). Switch to provider = "yooz" (the Yooz engine's local LLM module, loopback :19924 on macOS) or provider = "llamacpp" (a thin llama.cpp server, also loopback :19924, elsewhere), and set model to an id the chosen backend serves (e.g. "${DEFAULT_CONFIG.auto_approve.model}" for the engine). Note "llamacpp" currently expects you to run llama-server on 19924 yourself; remi does not download or supervise it yet (#822).`,
+      `Invalid auto_approve.provider "ollama" in ${configPath}: ollama support was removed (#809). Switch to provider = "yooz" (the Yooz engine's local LLM module, loopback :19924 on macOS) or provider = "llamacpp" (a thin llama.cpp server, also loopback :19924, elsewhere), and set model to an id the chosen backend serves (e.g. "${DEFAULT_CONFIG.auto_approve.model}" for the engine). Note "llamacpp" currently expects you to run llama-server yourself (remi does not download or supervise it yet, #822): ${llamaServerCommand()}`,
     );
   }
   expectString('model', cfg.model);
@@ -1141,9 +1182,10 @@ turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_sec
 
 # [auto_approve]
 # enabled = false
-# provider = "yooz"             # "yooz" (engine, macOS) | "llamacpp" (thin
-                                # llama.cpp server, elsewhere) | "openrouter"
-                                # | custom base URL
+# provider = "${DEFAULT_CONFIG.auto_approve.provider}"
+                                # "yooz" (engine, Apple Silicon) | "llamacpp"
+                                # (thin llama.cpp server, Linux) | "openrouter"
+                                # | custom base URL. Defaulted by platform.
 # model = "${DEFAULT_CONFIG.auto_approve.model}"
                                 # Fast small default; the eval blocks Claude (#496).
                                 # 38/38 on the permission grid, p95 2.26s. The

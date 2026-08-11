@@ -3,6 +3,7 @@ export {
   CONFIG_PATH,
   DEFAULT_CONFIG,
   detectLocalLLMPlatform,
+  llamaServerCommand,
   formatConfig,
   generateDefaultConfig,
   initConfigFile,
