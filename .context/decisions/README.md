@@ -38,6 +38,7 @@ add a row below.
 | [0020](0020-client-status-cue-totality.md) | A client status cue must be total over its gate's end paths |
 | [0021](0021-registration-outcome-not-requery.md) | Question registration outcome flows from the call, not a re-query |
 | [0022](0022-status-bar-never-freezes.md) | Status-bar liveness is bounded by `HEARTBEAT_MS`, never by a human |
+| [0023](0023-artifact-deletion-is-proved-not-judged.md) | (proposed) Deletion approves only when the target is provably derived — amends #956's blanket escalate rule |
 
 ## By area
 
@@ -45,7 +46,7 @@ Most work touches one of these clusters, and the ADRs in a cluster constrain
 each other — reading one without its siblings is how a "fix" reopens the case
 another one closed.
 
-- **Permission decisions / auto-approve:** 0003, 0010, 0015, 0016, 0017, 0018
+- **Permission decisions / auto-approve:** 0003, 0010, 0015, 0016, 0017, 0018, 0023
 - **Questions + notifications:** 0002, 0004, 0019, 0020, 0021, 0022
 - **Protocol + contracts:** 0012, 0013, 0014, 0006
 - **Sessions + transport:** 0001, 0005, 0009

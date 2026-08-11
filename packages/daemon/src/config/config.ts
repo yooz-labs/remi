@@ -1250,6 +1250,10 @@ turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_sec
 #   vcs-write   git add/commit/checkout/switch/merge, stash push, worktree add
 #   scratch     touch/cp/mv/tee/mkdir/rm/rmdir + output redirection, ONLY when
 #               every target resolves under /tmp, /private/tmp, or $TMPDIR
+#   artifact-clean  rm/rmdir ONLY when every target is a relative path at or
+#               under an exact-named derived-state dir (node_modules, dist,
+#               build, out, target, coverage, __pycache__, .venv), plus
+#               structural "git worktree remove" and bare "bun install"
 #
 # The write groups refuse sensitive destinations regardless of prefix: system
 # trees (/etc, /usr, /System, ...), credentials (~/.ssh, ~/.aws, .env, id_rsa),
@@ -1258,21 +1262,46 @@ turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_sec
 # ~/.remi + ~/.claude -- config that governs this very mechanism, which an
 # auto-approved write must never be able to widen -- and the BUILD SURFACE
 # (package.json, tsconfig.json, lockfiles, Makefile, ...), because build-test
-# is enabled by DEFAULT and executes what those files say. scratch instead
-# gets its safety entirely from the destination being confined to a scratch
-# root, which is why it is the one group allowed to cover deletion and output
-# redirection -- rm/rmdir and >/>> are excluded from every OTHER group.
+# is enabled by DEFAULT and executes what those files say. This axis applies
+# to EVERY mutating group, scratch and artifact-clean included -- narrowed
+# from "the write groups" by the ADR 0023 adversarial pass. It used to live
+# inside fs-write's veto alone, so once matchGroups began trying every owning
+# group's proof for a shared prefix, scratch's laxer proof became a way around
+# it: cp /tmp/a /tmp/.env approved at balanced where it had escalated. A
+# deny-shaped check must not be escapable by finding an owner whose positive
+# proof is laxer (ADR 0010), so it is now checked before any owner's proof.
+# The cost is real and accepted: a genuinely disposable /tmp/.env now
+# escalates. scratch still gets its POSITIVE proof from the destination being
+# confined to a scratch root -- and artifact-clean from the target's exact NAME
+# proving derived state -- which is why those two are the only groups allowed to cover
+# deletion: the target must be PROVED disposable, not merely "not known-bad".
+# rm/rmdir and >/>> are excluded from every OTHER group.
 #
-# Matching is case-insensitive (macOS filesystems are) and resolves dot-dot.
+# Deny matching is case-insensitive (macOS filesystems are) and resolves
+# dot-dot; artifact-clean's name match is deliberately exact-case (an allow
+# check that lowercased would conflate Dist with dist on Linux).
 #
-# rm, package installs, git push, and any --force are in NO group EXCEPT
-# scratch's own deletion coverage, which stays confined to scratch roots.
-# Remote mutation and arbitrary install scripts stay escalations everywhere.
+# Blanket rm, package installs, git push, and BLANKET --force are still in
+# no group: deletion approves only through scratch's and artifact-clean's
+# proofs above. Read the narrow exceptions literally -- artifact-clean does
+# accept -f/--force on rm (they are on its exact flag allowlist), and one
+# --force on "git worktree remove", which approves only single-force against
+# git's own runtime refusals.
+#
+# Bare "bun install" is approved and is NOT lockfile-faithful: only
+# --frozen-lockfile guarantees that. Bare install reconciles package.json
+# against the lockfile, so it may resolve new versions, rewrite the lockfile,
+# and run lifecycle scripts of what it installs. It is covered because it is
+# the measured case this exists for, as a DECLARED residual (ADR 0023) --
+# which is also why "arbitrary install scripts stay escalations everywhere"
+# below is scoped to installs this group does not name.
+# ("bun install <pkg>" is "bun add" in disguise and still escalates.)
+# Remote mutation stays an escalation everywhere.
 # Strictness preset. Selects which of the groups above are auto-approved:
 #
 #   strict     read-only + vcs-read + build-test   (the default; today's behavior)
 #   balanced   strict   + fs-write + scratch
-#   trusted    balanced + vcs-write
+#   trusted    balanced + vcs-write + artifact-clean
 #
 # An explicit approve_groups below OVERRIDES the preset entirely, and the
 # daemon logs that it did -- so a config written before levels existed keeps
