@@ -4,6 +4,35 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### Added
+- **remi supervises `llama-server` on Linux** (#822). Auto-approve's local
+  backend no longer has to be started by hand: remi spawns it on demand,
+  health-probes it, and stops what it started — the same `EngineHost` the macOS
+  engine path already used, so it inherits attach-first, claim-the-pidfile-
+  before-spawning, and the redundant-start race resolution rather than
+  reimplementing them. What differs is only the launch (`-hf`, argv rather than
+  env), the readiness question (`/health`, since llama.cpp has never served
+  `/v1/llm/status`), and how the executable is found.
+  **remi still does not install it** — `brew install llama.cpp`, your distro's
+  package, or a prebuilt binary, once. That line is deliberate: the macOS helper
+  is a pinned artifact remi controls (#834), whereas `llama-server` is a
+  third-party binary across an arch matrix, so supervising one the user
+  installed is a different trust proposition from downloading and executing one.
+  A missing binary now reports how to install it instead of the engine path's
+  generic "no helper available", which implied a download that was never coming.
+  The GGUF is not remi's job either — `-hf` pulls it — which narrows what #822
+  assumed ("Download is remi's job"). Still open there: acquiring the binary,
+  idle-stop, and the `escalate_model` design question.
+
+### Fixed
+- **The `escalate_model` warning could be silenced for the users it was for**
+  (#822). It was nested inside the llamacpp boot warning, which was harmless
+  only while that warning fired on every llamacpp boot. Now that the boot
+  warning fires only for a *missing* binary, the nesting would have hidden the
+  "your second opinion comes from the primary model" notice from exactly the
+  people whose setup works. Lifted out to its own condition. Introduced and
+  fixed within this change; it never shipped.
+
 ## [0.7.6] - 2026-08-11
 
 Closes a P0 that shipped in every release to date: the daemon bound `0.0.0.0`

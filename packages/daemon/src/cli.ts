@@ -134,6 +134,8 @@ import {
   SubagentAlerter,
   alertBody,
   alertTitle,
+  llamaServerMissingHint,
+  resolveLlamaServer,
   resolveProviderUrl,
 } from './auto-approve/index.ts';
 import type { PrecedentStore } from './auto-approve/precedent.ts';
@@ -887,53 +889,68 @@ let autoApproveService: AutoApproveService | null = null;
       logError(
         `[AutoApprove] No local LLM backend exists for ${process.platform}/${process.arch}: the Yooz engine needs Apple Silicon (MLX) and the llama.cpp path is Linux. Auto-approve will escalate every permission until you point auto_approve.provider at a reachable backend (e.g. openrouter, or a custom URL).`,
       );
-    } else if (provider === 'llamacpp') {
-      // Linux resolves to `llamacpp`, but NOTHING installs or supervises a
-      // llama-server yet (#822) -- remi only supervises the engine transport.
-      // Left unsaid, a Linux user enabling auto-approve gets silence and then
-      // every permission escalated, which is precisely the unexplained
-      // degradation #818 was filed to remove, reintroduced on another platform.
-      // The macOS path fetches its own helper (#834); this one cannot yet, so
-      // the honest thing is to say so at boot rather than at the first
-      // permission -- and to say exactly what to run, since the weights and
-      // the transport both already exist. `-hf` pulls from HuggingFace on
-      // first run; the quant suffix is explicit for determinism, not
-      // because a bare id fails (see `defaultModel`).
+    } else if (provider === 'llamacpp' && resolveLlamaServer() === undefined) {
+      // remi SUPERVISES llama-server since #822 (spawn, health-probe, stop) but
+      // deliberately never INSTALLS it -- see llamacpp-backend.ts for where that
+      // line is drawn. So the only remaining boot-time gap is a missing binary,
+      // and it is worth saying here rather than at the first permission: left
+      // unsaid, a Linux user enabling auto-approve gets silence and then every
+      // permission escalated, which is precisely the unexplained degradation
+      // #818 was filed to remove, reintroduced on another platform.
+      //
+      // Nothing is printed when the binary IS present: remi starts it on
+      // demand, so there is no action for the user to take and a warning would
+      // describe a problem that does not exist.
       logError(
-        `[AutoApprove] provider = "llamacpp": remi does not yet download or supervise a llama.cpp server (#822), so start one yourself and auto-approve works:
-    ${llamaServerCommand(model)}
-  Until it answers on ${baseUrl}, every permission escalates. A remote provider (openrouter, a custom URL) also works.`,
+        `[AutoApprove] provider = "llamacpp": ${llamaServerMissingHint()}
+  Until something answers on ${baseUrl}, every permission escalates. A remote provider (openrouter, a custom URL) also works.
+  Once installed, remi runs it for you as: ${llamaServerCommand(model)}`,
       );
-      // llama-server ignores the request's `model` field in single-model mode
-      // (verified against its README), so a configured escalate_model is
-      // answered by whatever GGUF was loaded at process start -- a "second
-      // opinion" from the same weights, reported as if a heavier model had
-      // agreed. Silent, and it makes escalate_model actively misleading rather
-      // than merely absent. #822's own scope calls this out as an open design
-      // question ("one model per process"); until it is decided, say so.
-      if (aaCfg.escalate_model && aaCfg.escalate_model !== model) {
-        logError(
-          `[AutoApprove] escalate_model = "${aaCfg.escalate_model}" has no effect on provider = "llamacpp": llama-server serves the one model it was started with and ignores the requested model id, so the "second opinion" would come from the primary model (#822). There is no per-model base URL in the config, so there is no way to route it elsewhere today (#822 owns that design question) -- leave it empty until then.`,
-        );
-      }
+    }
+
+    // llama-server ignores the request's `model` field in single-model mode
+    // (verified against its README), so a configured escalate_model is
+    // answered by whatever GGUF was loaded at process start -- a "second
+    // opinion" from the same weights, reported as if a heavier model had
+    // agreed. Silent, and it makes escalate_model actively misleading rather
+    // than merely absent. #822's own scope calls this out as an open design
+    // question ("one model per process"); until it is decided, say so.
+    //
+    // Deliberately OUTSIDE the branch above. It used to be nested inside the
+    // llamacpp warning, which was harmless only because that warning fired for
+    // every llamacpp boot. Now that it fires just for a MISSING binary, nesting
+    // would silence this for exactly the users whose setup works -- i.e.
+    // everyone who would actually get the misleading second opinion.
+    if (provider === 'llamacpp' && aaCfg.escalate_model && aaCfg.escalate_model !== model) {
+      logError(
+        `[AutoApprove] escalate_model = "${aaCfg.escalate_model}" has no effect on provider = "llamacpp": llama-server serves the one model it was started with and ignores the requested model id, so the "second opinion" would come from the primary model (#822). There is no per-model base URL in the config, so there is no way to route it elsewhere today (#822 owns that design question) -- leave it empty until then.`,
+      );
     }
 
     // #818: who starts the engine. Only meaningful for the engine transport —
     // an OpenRouter or llama.cpp base URL is not something remi supervises, and
     // handing those an EngineHost would mean spawning a Yooz helper for a
     // provider that never talks to one.
-    const engineHost =
-      provider === 'yooz'
-        ? EngineHost.real(
-            {
-              baseUrl,
-              ownership: aaCfg.engine,
-              helperPath: aaCfg.engine_path,
-              modelCache: aaCfg.model_cache,
-            },
-            writeToLog,
-          )
-        : undefined;
+    // #822: llamacpp is supervised too now. Both are local sidecars remi owns
+    // on its reserved port; what differs is the launch and the readiness probe,
+    // which `EngineHost` takes as configuration. A remote provider (OpenRouter,
+    // a custom URL) is still never supervised -- handing those a host would
+    // mean spawning a local backend for something that never talks to one.
+    const engineHost = localProvider
+      ? EngineHost.real(
+          {
+            baseUrl,
+            backend: provider === 'llamacpp' ? 'llamacpp' : 'yooz',
+            // llama.cpp needs the id at launch (one GGUF per process); the
+            // engine ignores it and selects per request.
+            model,
+            ownership: aaCfg.engine,
+            helperPath: aaCfg.engine_path,
+            modelCache: aaCfg.model_cache,
+          },
+          writeToLog,
+        )
+      : undefined;
 
     autoApproveService = new AutoApproveService(
       {
