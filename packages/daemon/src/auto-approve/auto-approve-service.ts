@@ -33,6 +33,7 @@ import { matchAllowPattern, matchSubstringPattern } from './pattern-matcher.ts';
 import { matchGroups, matchGroupsBroad } from './permission-groups.ts';
 import { type PrecedentReader, precedentMayAuthorize, signatureForOperation } from './precedent.ts';
 import { buildPrompt } from './prompt-builder.ts';
+import type { DecidingLayer } from './risk-bands.ts';
 import { classifyRisk, formatMatrixContext } from './risk-bands.ts';
 import { enforceRiskCeiling } from './risk-ceiling.ts';
 import type { AutoApproveConfig, AutoApproveResult, DenySource, MultiChoiceMode } from './types.ts';
@@ -995,6 +996,13 @@ export class AutoApproveService {
         ]);
         const durationMs = Date.now() - start;
 
+        // #1040: which LAYER produced the verdict that ships. The reasoning
+        // string says so in prose today, which is why "why did this escalate"
+        // costs a paragraph to answer and cannot be counted at all. Set by
+        // each guard below as it fires; 'model' until one does. Diagnostic
+        // only -- no control flow reads it, so it can never become a second,
+        // drifting copy of the decision.
+        let decidedBy: DecidingLayer = 'model';
         let result: AutoApproveResult = useMultiChoice
           ? (() => {
               const parsedMc = parseMultiChoiceDecision(
@@ -1058,6 +1066,7 @@ export class AutoApproveService {
         if (!useMultiChoice && result.decision === 'deny') {
           const floored = enforceDenyFloor(toolName, toolInput, result.decision);
           if (floored.overridden) {
+            decidedBy = 'deny_floor';
             const original = result;
             result = {
               decision: 'escalate',
@@ -1084,6 +1093,7 @@ export class AutoApproveService {
         if (!useMultiChoice && authorityPresent && result.decision === 'approve') {
           const guarded = enforceAuthorityBoundary(toolName, toolInput, result.decision, true);
           if (guarded.overridden) {
+            decidedBy = 'trust_boundary';
             const original = result;
             result = {
               decision: 'escalate',
@@ -1119,6 +1129,7 @@ export class AutoApproveService {
         if (!useMultiChoice && result.decision === 'approve') {
           const ceilinged = enforceRiskCeiling(toolName, toolInput, result.decision);
           if (ceilinged.overridden) {
+            decidedBy = 'risk_ceiling';
             const original = result;
             result = {
               decision: 'escalate',
@@ -1158,6 +1169,7 @@ export class AutoApproveService {
             signatureForOperation(toolName, toolInput),
           );
           if (deniedMatch !== null) {
+            decidedBy = 'precedent';
             const original = result;
             result = {
               decision: 'escalate',
@@ -1210,6 +1222,7 @@ export class AutoApproveService {
             const cfParsed = parseDecision(cfResponse.content);
             const reconciled = reconcileCounterfactual(cfParsed.decision);
             if (reconciled.overridden) {
+              decidedBy = 'counterfactual';
               const original = result;
               result = {
                 decision: 'escalate',
@@ -1226,6 +1239,11 @@ export class AutoApproveService {
             // The counterfactual is a SAFETY check, so failing to run it must
             // not leave the authority-influenced approve standing. Escalate --
             // the same direction every other failure in this module takes.
+            // Labelled distinctly from a counterfactual that RAN and
+            // overrode: this escalate says nothing about the operation, only
+            // that the check was unavailable, and a reader tuning a config
+            // needs to tell "the guard judged you" from "the guard broke".
+            decidedBy = 'counterfactual_failed';
             result = {
               decision: 'escalate',
               reasoning: `Authority counterfactual (#954) could not be evaluated (${errorToString(err)}); escalating rather than trusting an authority-influenced approve. Original: ${result.reasoning}`,
@@ -1254,6 +1272,7 @@ export class AutoApproveService {
             `${denyPrefix} ${toolName}: ${result.decision} (${durationMs}ms) ${formatMatrixContext(
               classifyRisk(toolName, toolInput),
               authorityPresent,
+              decidedBy,
             )} - ${result.reasoning}`,
           );
         }

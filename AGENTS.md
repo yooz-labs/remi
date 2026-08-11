@@ -17,7 +17,7 @@ real problems for months. Known cases, all confirmed:
 | The claim | The reality | Cost |
 |---|---|---|
 | "peer-to-peer, TURN relays encrypted blobs" (this file) | no WebRTC exists; the Worker was the data path in plaintext | #543, unnoticed for months |
-| "auto = based on bind address" (`AuthConfig.enabled`) | `'auto'` resolves to `false` on every bind, `0.0.0.0` included | #880, still open |
+| "auto = based on bind address" (`AuthConfig.enabled`) | `'auto'` resolves to `false` on every bind, `0.0.0.0` included | #880; `'auto'` is STILL unfixed — the LAN exposure was closed by defaulting `bind` to loopback instead |
 | allow-patterns match tool names (`config.ts`) | substring match, so `Read` covered `cat x \| sh` | #536, a P0 |
 | `relay-adapter-auth.test.ts` "tests the relay adapter" | never constructed one; 8 tests that could not fail on that claim (corrected from a stale "29" — ADR 0014) | mandatory kex shipped uncovered |
 | "the relay is now end-to-end encrypted" (#543, believed done) | engages only when an authenticator exists, i.e. never by default | #881, found while *writing the README fix for the previous row* |
@@ -151,6 +151,19 @@ registers itself in live-sessions.
 | Direct connection | Same Wi-Fi, Tailscale, VPN, SSH tunnel |
 | Signaling relay | No direct access. Every protocol message is carried by the Cloudflare Worker |
 
+**Direct connection now requires setting `daemon.bind` (#880).** The default is
+`127.0.0.1`, so a stock daemon accepts only loopback: SSH tunnels and the relay
+still work untouched, but **LAN direct, Tailscale direct (100.x) and mDNS
+discovery all stop** until the user opts in. mDNS does not even advertise on a
+loopback bind (`cli.ts` skips the publisher), so the daemon does not fail — it
+disappears, which is the confusing half.
+
+Do NOT recommend `tailscale serve` as the workaround. It is a same-host reverse
+proxy, so every tailnet peer arrives as `127.0.0.1` and inherits the loopback
+auth exemption (`peer-helpers.ts`, #869) — it reinstates the hole behind a
+safer-looking front. Recommend an SSH tunnel, or an explicit `bind` plus
+`--auth`.
+
 **There is no WebRTC.** No `RTCPeerConnection` or data channel exists anywhere
 in this repo. The worker was built to relay a *handshake*, with WebRTC intended
 to carry the session; that second half was never implemented, so the relay
@@ -245,6 +258,43 @@ those two are both exactly `{token, title, body}`.
 - `HookEventBridge` emits the option set immediately; no parsing or merge timer needed.
 - A "Yes, always allow: ..." option answered on a HELD hook resolves it with `{behavior:"allow", updatedPermissions:[<the original permission_suggestions entry>]}` — echoing a received suggestion back is, per the hooks docs, "equivalent to the user selecting that 'always allow' option in the dialog." `QuestionOption.suggestionIndex` carries which original entry to echo.
 - Redeploy the signaling server after any `packages/signaling/` change.
+
+### Local LLM backend is chosen by platform (#822)
+
+`detectLocalLLMPlatform()` decides what answers on remi's reserved port
+**19924**, and both `auto_approve.provider` and `auto_approve.model` default
+from it. One hardcoded default is wrong on one of the two supported targets.
+
+| Target | `provider` | `model` default | Who runs it |
+|---|---|---|---|
+| macOS Apple Silicon | `yooz` | `YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx` | remi fetches + supervises the helper (#834) |
+| Linux (any arch) | `llamacpp` | `YoozLabs/Qwen3.5-4B-qat-GGUF:Q4_0` | **you**, for now — remi prints the command at boot |
+| macOS Intel, Windows | `yooz` (kept deliberately, so the boot warning fires) | (engine's, unused) | nothing; boot says so |
+
+Same trained weights, but **not the same artifact**: QAT was trained against
+the MLX 4-bit grid and the GGUF is those weights re-quantized to `Q4_0`. So
+#809 Phase D's 38/38 permission-grid result is evidence for the **MLX build
+only** — it has never been run against llama.cpp, and `SWEEP_PROVIDER=llamacpp`
+in `run-model-sweep.ts` exists precisely to close that. Owed by #822. What else
+differs is everything *around* the weights, and three things bite:
+
+- **Name the quant explicitly.** `-hf` with no tag prefers `Q4_K_M`/`Q8_0` then
+  falls back to the first `.gguf` in the repo, so a bare id works today but is
+  order-dependent if a second quant is ever published.
+- **`llama-server` ignores the request's `model` field** in single-model mode.
+  So `auto_approve.model` is cosmetic there — and a configured `escalate_model`
+  would be answered by the *primary* model, reported as if a heavier model had
+  agreed. The daemon warns; deciding the real story is #822's open question.
+- **`remi model *` has no meaning on single-model llamacpp.** The engine
+  control plane (`/v1/llm/*`, `/v1/touchup/*`, `/v1/modules`) does not exist
+  there; `GET /v1/models` does, but remi's llamacpp base URL already ends in
+  `/v1`, so it would be requested at `/v1/v1/models`. Every verb but `use`
+  refuses with the restart command instead of emitting a 404. Router mode
+  (`--models-dir`) is out of scope for all of remi's engine shapes.
+
+`warmModel()` is engine-only for the same reason, and the `llamacpp` base URL
+already carries `/v1` — calling it there requests `/v1/v1/llm/preload`. Its one
+caller guards on `providerIsYooz`; keep it that way.
 
 ### PTY-fallback question patterns
 

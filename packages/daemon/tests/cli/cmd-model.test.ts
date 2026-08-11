@@ -32,7 +32,15 @@ function run(
   cmdIo: ModelCommandIO,
   deps: ModelCommandDeps = {},
 ): Promise<number> {
-  return runModelCommand(args, config, cmdIo, { ensureEngine: async () => false, ...deps });
+  // persistModel defaults to a no-op for the same reason ensureEngine does:
+  // the real one rewrites the DEVELOPER's ~/.remi/config.toml in place, and a
+  // test that forgets to inject it silently does so. That already happened
+  // once on this branch. Safe by construction now, not by convention.
+  return runModelCommand(args, config, cmdIo, {
+    ensureEngine: async () => false,
+    persistModel: () => {},
+    ...deps,
+  });
 }
 
 /** Real config object with the yooz provider, as a fresh engine install has. */
@@ -1603,5 +1611,74 @@ describe('remi model restart (#852)', () => {
     });
     expect(code).toBe(1);
     expect(t.err.join('\n')).toContain('shared engine');
+  });
+});
+
+// #822: llama-server serves the one GGUF it was started with and has none of
+// the engine's /v1/llm/* control plane. Without a guard these verbs reach a
+// server that IS running and IS answering evals, and come back as opaque
+// 404s -- which reads as "remi is broken", the exact unexplained degradation
+// #818 exists to remove, on another platform.
+describe('remi model — provider = "llamacpp" (#822)', () => {
+  const ENGINE_VERBS = [
+    'ls',
+    'ps',
+    'pull',
+    'cancel',
+    'rm',
+    'cleanup',
+    'load',
+    'unload',
+    'restart',
+  ] as const;
+
+  for (const verb of ENGINE_VERBS) {
+    test(`"${verb}" refuses with the reason and the lever that exists`, async () => {
+      const t = io();
+      const code = await run([verb, 'some-model'], configWith({ provider: 'llamacpp' }), t.io);
+      expect(code).toBe(1);
+      const err = t.err.join('\n');
+      expect(err).toContain('llamacpp');
+      // The actionable half: the model is chosen by the process, so the
+      // command to restart it is the answer, not an apology.
+      expect(err).toContain('llama-server -hf');
+      expect(err).toContain('#822');
+    });
+  }
+
+  test('"use" still works and persists through the injected seam, never the real config', async () => {
+    // The one verb that never needed a backend. Gating it would make the
+    // model impossible to configure while llama-server is down -- exactly
+    // when someone is setting this up.
+    //
+    // `persistModel` MUST be injected. The first draft of this test passed a
+    // misspelled dep behind an `as ModelCommandDeps` cast, so the real
+    // persister ran and rewrote the developer's own ~/.remi/config.toml to a
+    // GGUF id -- which the macOS engine cannot load, i.e. the test silently
+    // broke auto-approve on the machine running it. No cast here, so a
+    // misspelling is a compile error.
+    const t = io();
+    let persisted = '';
+    const code = await run(
+      ['use', 'YoozLabs/Qwen3.5-0.8B-qat-GGUF:Q4_0'],
+      {
+        ...configWith({ provider: 'llamacpp' }),
+      },
+      t.io,
+      {
+        persistModel: (id) => {
+          persisted = id;
+        },
+      },
+    );
+    expect(code).toBe(0);
+    expect(persisted).toBe('YoozLabs/Qwen3.5-0.8B-qat-GGUF:Q4_0');
+    expect(t.err.join('\n')).not.toContain('not available');
+  });
+
+  test('the guard does not fire for the engine provider', async () => {
+    const t = io();
+    await run(['status'], configWith({ provider: 'yooz' }), t.io, { probe: async () => REACHABLE });
+    expect(t.err.join('\n')).not.toContain('llamacpp');
   });
 });

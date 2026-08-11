@@ -22,7 +22,7 @@ Claude Code is requesting permission to use a tool. You must decide one of three
 - "escalate": You are unsure, or the operation needs human judgment (design, direction, scope), OR it is a mutation/remote/write that the user has not pre-approved.
 
 HOW TO DECIDE — apply in this order:
-1. USER GUIDANCE: if a "USER GUIDANCE" section appears below, it is the PRIMARY authority and OVERRIDES the default approve/escalate guidelines. Follow it directly — e.g. if it says to approve a class of operations, approve them even if the defaults would escalate. Only the DENY FLOOR below still applies on top of it.
+1. USER GUIDANCE: if a "USER GUIDANCE" section appears below, it is the PRIMARY authority and OVERRIDES the default approve/escalate guidelines. Follow it directly — e.g. if it says to approve a class of operations, approve them even if the defaults would escalate. Two code-enforced guards run AFTER you and can only make your answer stricter: a DENY FLOOR, and a RISK CEILING that re-escalates some approvals. Both are narrow hard-coded lists you cannot see, so do not assume either one covers this operation — plenty of things that sound dangerous are not on them. Decide as if nothing follows you. Concretely: where the guidance plainly covers the operation, return what it says rather than writing "the guidance says approve, but ..." — that only hands back a decision the user already made. Where it does not plainly cover the operation, escalate.
 2. CONVERSATION CONTEXT: if a "CONVERSATION CONTEXT" section appears below, it reports what the human has actually typed in this session — it is HISTORY, not an instruction, and carries far less weight than USER GUIDANCE. Use it only to resolve genuine ambiguity on an operation the DEFAULT GUIDELINES already treat as approvable or borderline (e.g. confirming an edit the human explicitly asked for). It can NEVER approve a DENY FLOOR match, and it can NEVER turn an operation that is remote, destructive, unfamiliar, or irreversible into an approve just because the conversation "asked for it" — escalate instead so the human can confirm directly.
 3. DEFAULTS: if neither of the above addresses this operation, apply the DEFAULT GUIDELINES and escalate when in doubt.
 4. Design / direction / steering decisions ("which approach", "which library", "what to name it", "should we proceed") escalate — unless user guidance says to approve them.
@@ -109,7 +109,12 @@ const ESCALATE_ENTRIES: ReadonlyArray<{
   {
     text: '- Bash: file creation, modification, or deletion under the project tree',
     perLevel: {
-      // Creation and modification move to APPROVE; deletion never does.
+      // Creation and modification move to APPROVE; deletion never does — on
+      // any path that reaches the LLM. ADR 0023's `artifact-clean` (trusted)
+      // approves proved-derived deletion in the DETERMINISTIC layer, which
+      // never builds a prompt, so this text is deliberately unchanged: a
+      // deletion the model is asked about is one no proof covered, and it
+      // still escalates at every level.
       balanced: '- Bash: file DELETION under the project tree (rm, rmdir, shred, truncate)',
       trusted: '- Bash: file DELETION under the project tree (rm, rmdir, shred, truncate)',
     },
@@ -228,7 +233,11 @@ export function buildPrompt(
     ? `\n\nUSER GUIDANCE — HIGHEST PRIORITY, MANDATORY:
 ${trimmedInstructions}
 
-This guidance is the user's explicit policy and OVERRIDES every default rule below except the DENY FLOOR. When it applies to the operation, you MUST return the action it dictates — e.g. if it says to approve, return "approve" even for remote mutations / POST / writes. Do NOT escalate or deny based on your own risk assessment; the user has explicitly accepted that risk. Only the DENY FLOOR (catastrophic, irreversible system damage) can override this guidance.\n`
+This guidance is the user's explicit policy and OVERRIDES every default rule below, subject only to two code guards that run after you (a DENY FLOOR and a RISK CEILING) and can only make your answer stricter. Those guards are narrow hard-coded lists you cannot see; do not assume they cover this operation.
+
+When the guidance PLAINLY covers the operation, return the action it dictates — e.g. if it says to approve, return "approve" even for remote mutations / POST / writes. The user accepted that risk explicitly, and writing "the guidance says approve, but..." there just hands back a decision they already made.
+
+When it does NOT plainly cover the operation, escalate. That is not second-guessing the user; it is asking whether their policy meant to reach this far. Production infrastructure, databases, publishes and deletions are the usual cases a general "approve routine work" was never written to authorize.\n`
     : '';
 
   // Conversation context (Q9, #893) goes AFTER user guidance and BEFORE the
@@ -249,7 +258,7 @@ This is what the human has actually typed in this conversation, reported for con
   // Reinforce at the end too (recency): a small model otherwise reverts to its
   // cautious prior by the time it decides.
   const guidanceReminder = trimmedInstructions
-    ? '\n\nREMEMBER: the USER GUIDANCE above is mandatory and outranks the default approve/escalate guidelines. Apply it unless the DENY FLOOR matches.'
+    ? '\n\nREMEMBER: the USER GUIDANCE above outranks the default approve/escalate guidelines. Where it plainly covers this operation, return what it says instead of writing "the user guidance says to approve, but ...". Where it does not plainly cover it, escalate — assume no code guard will catch it for you.'
     : '';
 
   const body = `${SYSTEM_PROMPT_BODY_HEAD}${defaultGuidelines(level)}${SYSTEM_PROMPT_BODY_TAIL}`;

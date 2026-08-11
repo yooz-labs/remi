@@ -9,10 +9,12 @@ import * as path from 'node:path';
 import {
   DEFAULT_CONFIG,
   applyEnvOverrides,
+  defaultModel,
   detectLocalLLMPlatform,
   formatConfig,
   generateDefaultConfig,
   initConfigFile,
+  llamaServerCommand,
   loadConfig,
 } from '../src/config/config.ts';
 
@@ -22,6 +24,17 @@ import {
 function expectedDefaultProvider(): string {
   const detected = detectLocalLLMPlatform();
   return detected === 'unsupported' ? 'yooz' : detected;
+}
+
+/** #822: the evaluator model default is platform-resolved too — an MLX id
+ *  cannot be loaded by llama.cpp. Derived from `detectLocalLLMPlatform`, not
+ *  from DEFAULT_CONFIG, so it is a real expectation rather than a tautology.
+ *  Without this these assertions pass on a macOS dev machine and fail on CI,
+ *  which runs ubuntu-latest. */
+function expectedDefaultModel(): string {
+  return detectLocalLLMPlatform() === 'llamacpp'
+    ? 'YoozLabs/Qwen3.5-4B-qat-GGUF:Q4_0'
+    : 'YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx';
 }
 
 const TEST_DIR = path.join(os.tmpdir(), `remi-config-test-${process.pid}`);
@@ -59,7 +72,7 @@ authorized_chat_ids = [123, 456]
     const config = loadConfig(TEST_CONFIG);
     expect(config.daemon.base_port).toBe(19000);
     expect(config.daemon.port_range).toBe(10);
-    expect(config.daemon.bind).toBe('0.0.0.0'); // default preserved
+    expect(config.daemon.bind).toBe('127.0.0.1'); // default preserved
     expect(config.telegram.enabled).toBe(true);
     expect(config.telegram.bot_token).toBe('test-token');
     expect(config.telegram.authorized_chat_ids).toEqual([123, 456]);
@@ -319,8 +332,71 @@ describe('formatConfig', () => {
   });
 
   test('default model is a fast 4b-class engine model; escalate_model empty (#522)', () => {
-    expect(DEFAULT_CONFIG.auto_approve.model).toBe('YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx');
+    expect(DEFAULT_CONFIG.auto_approve.model).toBe(expectedDefaultModel());
     expect(DEFAULT_CONFIG.auto_approve.escalate_model).toBe('');
+  });
+
+  // #822: the same weights in the container each backend can load. Asserted
+  // as an explicit platform->id table rather than through the helper above,
+  // so a wrong mapping cannot pass by matching a wrong expectation.
+  test('the default model matches the backend the platform resolves to (#822)', () => {
+    const backend = detectLocalLLMPlatform();
+    const model = DEFAULT_CONFIG.auto_approve.model;
+    if (backend === 'llamacpp') {
+      expect(model).toContain('GGUF');
+      // Explicit for determinism: `-hf` with no tag prefers Q4_K_M/Q8_0 then
+      // falls back to the FIRST .gguf in the repo, which is order-dependent
+      // if a second quant is ever published.
+      expect(model).toContain(':Q4_0');
+      expect(model).not.toContain('mlx');
+    } else {
+      expect(model).toContain('mlx');
+      expect(model).not.toContain('GGUF');
+    }
+  });
+
+  // CI runs ubuntu-latest ONLY, so detectLocalLLMPlatform() there is always
+  // 'llamacpp' and the tests above exercise only the GGUF branch. The macOS
+  // branch -- the primary shipping platform -- would be unprotected: making
+  // defaultModel return the GGUF id unconditionally passes the merge gate
+  // while shipping an id the engine rejects with 400 invalid_model, which
+  // surfaces as "every question escalates" rather than as a broken daemon.
+  // Injected args, like detectLocalLLMPlatform's own table test.
+  test('defaultModel maps every platform, on every platform (#822)', () => {
+    expect(defaultModel('darwin', 'arm64')).toBe('YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx');
+    expect(defaultModel('linux', 'x64')).toBe('YoozLabs/Qwen3.5-4B-qat-GGUF:Q4_0');
+    expect(defaultModel('linux', 'arm64')).toBe('YoozLabs/Qwen3.5-4B-qat-GGUF:Q4_0');
+    // unsupported targets inherit the engine's value, matching defaultProvider's
+    // 'yooz' fallback so the pair stays coherent.
+    expect(defaultModel('darwin', 'x64')).toBe('YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx');
+    expect(defaultModel('win32', 'x64')).toBe('YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx');
+  });
+
+  test('llamaServerCommand never prints an unrunnable -hf argument (#822)', () => {
+    // provider = "llamacpp" on Apple Silicon is a real setup and nothing
+    // validates provider/model consistency, so the configured id can be the
+    // MLX default or empty. Printing `-hf ...-mlx` hands the user a command
+    // that cannot load, which is worse than printing none.
+    expect(llamaServerCommand()).toContain(':Q4_0');
+    expect(llamaServerCommand('YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx')).toContain('GGUF');
+    expect(llamaServerCommand('')).toContain('GGUF');
+    // A real GGUF id is passed through untouched.
+    expect(llamaServerCommand('YoozLabs/Qwen3.5-0.8B-qat-GGUF:Q4_0')).toContain('0.8B');
+  });
+
+  test('the llama-server command remi prints is runnable and matches the config default (#822)', () => {
+    // The command in the boot message is the one thing a Linux user copies,
+    // so it must carry the quant suffix, bind loopback, and name remi's
+    // reserved port. Built from the same constant as the config default so
+    // the two cannot drift.
+    const cmd = llamaServerCommand('YoozLabs/Qwen3.5-4B-qat-GGUF:Q4_0');
+    expect(cmd).toBe(
+      'llama-server -hf YoozLabs/Qwen3.5-4B-qat-GGUF:Q4_0 --host 127.0.0.1 --port 19924',
+    );
+    // 19924 is remi's reserved port (see the ecosystem port table) and is what
+    // LLM_PROVIDERS.llamacpp points the client at.
+    expect(cmd).toContain('19924');
+    expect(DEFAULT_CONFIG.auto_approve.base_url).toContain('19924');
   });
 
   // The TouchUp tiers read 38/38 on the permission grid but reach it partly by
@@ -392,7 +468,7 @@ describe('auto_approve config', () => {
       // from `detectLocalLLMPlatform` rather than from `DEFAULT_CONFIG`, which
       // would assert the value against itself and prove nothing.
       provider: expectedDefaultProvider(),
-      model: 'YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx',
+      model: expectedDefaultModel(),
       api_key: '',
       base_url: 'http://127.0.0.1:19924',
       timeout: 30,
@@ -947,5 +1023,55 @@ describe('auto_approve.level (#963)', () => {
   test('no config file at all yields the strict default', () => {
     const c = loadConfig(path.join(TEST_DIR, 'nope.toml'));
     expect(c.auto_approve.level).toBe('strict');
+  });
+});
+
+// #880: the exposure was the PAIRING of a network bind with auth resolving off,
+// so pin both halves. Either one alone is defensible; together they admit
+// unauthenticated `answer`/`user_input` from any LAN host, and mDNS advertises
+// the port. A future change that flips the bind back without also settling the
+// auth default should fail here.
+describe('#880 the shipped defaults do not expose an unauthenticated daemon', () => {
+  test('the default bind is loopback', () => {
+    expect(DEFAULT_CONFIG.daemon.bind).toBe('127.0.0.1');
+  });
+
+  test('auth still defaults to "auto", which resolves OFF — so the bind is what protects', () => {
+    // Documenting the coupling rather than asserting a fix that has not
+    // happened: `"auto"` is still false on every bind (#880 remains open for
+    // the semantics + TOFU work). That is exactly why the bind default is
+    // load-bearing and must not be widened casually.
+    expect(DEFAULT_CONFIG.auth.enabled).toBe('auto');
+  });
+
+  test('a network bind in config.toml still wins — remote access stays opt-in', () => {
+    // Round-trips a real file through loadConfig. An earlier draft of this test
+    // spread DEFAULT_CONFIG, wrote '0.0.0.0' into the literal, and asserted the
+    // value it had just written -- it exercised no parsing, no merge, and could
+    // not fail on its own claim. That is the ADR 0011 anti-pattern verbatim, in
+    // a test defending a P0.
+    fs.writeFileSync(TEST_CONFIG, '[daemon]\nbind = "0.0.0.0"\n');
+    expect(loadConfig(TEST_CONFIG).daemon.bind).toBe('0.0.0.0');
+  });
+
+  test('an install that materialized the OLD default keeps it — the boot warning is their only signal', () => {
+    // `remi config init` writes the bind value into config.toml, so a user who
+    // ran it before this change has `bind = "0.0.0.0"` on disk and a value on
+    // disk beats a changed default. Pinned because it bounds what the fix
+    // claims: new installs are protected, pre-existing config-init installs are
+    // not, and nothing in their setup breaks to make them look.
+    fs.writeFileSync(TEST_CONFIG, '[daemon]\nbind = "0.0.0.0"\n');
+    const cfg = loadConfig(TEST_CONFIG);
+    expect(cfg.daemon.bind).not.toBe(DEFAULT_CONFIG.daemon.bind);
+    expect(cfg.auth.enabled).toBe('auto'); // still resolves off — still exposed
+  });
+
+  test('a freshly generated config carries the loopback default, not a stale literal', () => {
+    // generateDefaultConfig interpolates DEFAULT_CONFIG.daemon.bind. If that
+    // ever drifts from the shipped default, `remi config init` would hand new
+    // users the exposure this change removed.
+    const generated = generateDefaultConfig();
+    fs.writeFileSync(TEST_CONFIG, generated);
+    expect(loadConfig(TEST_CONFIG).daemon.bind).toBe('127.0.0.1');
   });
 });

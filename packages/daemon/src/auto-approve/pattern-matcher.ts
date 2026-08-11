@@ -45,6 +45,7 @@
  * Deny is evaluated before allow; any deny match wins.
  */
 
+import { extractToolCommand } from './command-tools.ts';
 import { matchCoveredCommand } from './shell-safety.ts';
 
 /**
@@ -152,6 +153,34 @@ export function matchSubstringPattern(
       }
     }
     return null;
+  }
+
+  // #1020, third function. `classifyRisk` and `matchesCatastrophicPattern` were
+  // moved off the literal `'Bash'` test; this one was left, so a user's
+  // `deny = ["rm -rf"]` fired for `Bash` and silently did NOT fire for a
+  // command-carrying tool under any other name -- in the DENY direction, which
+  // ADR 0010 says must be the broad one. Caller-traced before changing it: this
+  // backs `auto_approve.deny` (`auto-approve-service.ts`, inside
+  // `evaluateDeterministic`, the pre-LLM layer subagent hooks consult) and
+  // `subagent_alert` (`auto-approve/subagent-alert.ts`). Both are live.
+  //
+  // UNION, not a replacement, and that is the whole design. A bare
+  // `deny = ["terminal"]` matches the tool NAME today and must keep doing so --
+  // measured, not assumed. Adding the command scan on top is strictly broader,
+  // so no deny that fires today stops firing.
+  //
+  // `Bash` deliberately keeps its command-only branch above. There, a
+  // tool-name-shaped entry is already documented as being tested against the
+  // command string (see the module doc), so folding in a name match would newly
+  // make `deny = ["Bash"]` refuse every Bash call -- a real behavior change on
+  // upgrade, and a separate decision from closing this gap.
+  const command = extractToolCommand(toolInput);
+  if (command !== null) {
+    for (const pattern of patterns) {
+      if (pattern.length > 0 && command.includes(pattern)) {
+        return pattern;
+      }
+    }
   }
 
   return matchToolName(toolName, patterns);

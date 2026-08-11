@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { PtyQuiescenceGate } from '../../src/cli/pty-quiescence-gate.ts';
 import {
   HEARTBEAT_MS,
   MAX_RENDER_ERRORS,
@@ -10,7 +11,7 @@ import {
   childRows,
   formatStatusBar,
 } from '../../src/cli/status-bar.ts';
-import type { RemiStatus } from '../../src/cli/status-writer.ts';
+import { ESCALATE_FRESH_S, type RemiStatus } from '../../src/cli/status-writer.ts';
 
 const NOW_MS = 1_000_000_000; // fixed clock; NOW_MS/1000 = 1_000_000 s
 const NOW_S = Math.floor(NOW_MS / 1000);
@@ -328,11 +329,10 @@ describe('StatusBar', () => {
   // question prompt. These prove the mitigations directly against the
   // fd-write count, independent of the timer.
   test('the onset paint happens on the transition into a live question and reflects its state', () => {
-    // Edge-triggered, not level-triggered: freezing row N is right, but
-    // freezing it on whatever was last painted is wrong -- Claude's native
-    // statusLine disappears entirely while a question dialog is open, so the
-    // bar has to be current the MOMENT that happens, not up to HEARTBEAT_MS
-    // stale. The first render() after the transition must still paint.
+    // Claude's native statusLine disappears entirely while a question dialog
+    // is open, so the bar has to be current the MOMENT that happens, not up
+    // to HEARTBEAT_MS stale. The first render() after the transition must
+    // still paint (a quiet PTY -- see the gate test below for the busy case).
     const { bar, writes } = harness({
       hasLiveQuestions: () => true,
       getStatus: () => mkStatus({ connections: 3 }),
@@ -342,63 +342,125 @@ describe('StatusBar', () => {
     expect(writes[0]).toContain('3 client(s)');
   });
 
-  test('repaints are suppressed while a question stays live, after the onset paint', () => {
-    // #932 review finding 4: status content must vary DURING the freeze, or
-    // this can't distinguish "the suppression guard held" from "nothing
-    // changed so the dedup check alone produced the same write count" --
-    // neutering `if (questionLive && !onset) return;` previously left this
-    // green because mkStatus() never changed between calls.
+  test('the bar keeps tracking status while a question stays live', () => {
+    // #1038: the old contract was a blanket freeze after the onset paint,
+    // which had no upper bound -- a prompt a human sits on for ten minutes
+    // froze row N for ten minutes. Content varies on every getStatus() read
+    // so this measures repaints, not a dedup coincidence.
     let connections = 0;
     const { bar, writes } = harness({
       hasLiveQuestions: () => true,
       getStatus: () => mkStatus({ connections: connections++ }),
     });
-    bar.render(); // onset: paints once
-    expect(writes).toHaveLength(1);
-    bar.render(); // still live: frozen, despite connections having changed
-    bar.render(); // still live: frozen again
-    expect(writes).toHaveLength(1);
+    bar.render(); // onset
+    bar.render();
+    bar.render();
+    expect(writes).toHaveLength(3);
+    expect(writes[2]).toContain('2 client(s)');
   });
 
-  test('repaints resume once the question resolves', () => {
-    // Same fix as above: content changes on every getStatus() read so a
-    // neutered suppression guard would produce an extra write during the
-    // freeze, not just the same count by coincidence.
-    let live = true;
-    let connections = 0;
+  test('a NEVER-quiescent PTY still paints while a question is live, bounded by HEARTBEAT_MS', () => {
+    // The regression that #1038's own first attempt introduced, and the
+    // single most important test in this file. That attempt made
+    // `isQuiescent()` hard while a question was live, reasoning that a
+    // deliberating human leaves the PTY quiet. A held permission does NOT
+    // idle the PTY -- the TUI spinner keeps animating on its own timer
+    // (#1026, observed live) -- so `isQuiescent()` stayed false for the
+    // whole prompt and the bar painted ZERO times. Worse than the freeze it
+    // replaced, which at least guaranteed its onset paint.
+    //
+    // isQuiescent is pinned false for the entire run: whatever gating exists
+    // here, liveness must come from the heartbeat, never from the PTY going
+    // quiet.
+    let nowMs = NOW_MS;
     const { bar, writes } = harness({
-      hasLiveQuestions: () => live,
-      getStatus: () => mkStatus({ connections: connections++ }),
+      hasLiveQuestions: () => true,
+      isQuiescent: () => false,
+      isBoundaryClean: () => true,
+      now: () => nowMs,
     });
-    bar.render(); // onset paint
+    bar.render(); // onset: must paint even mid-spinner
     expect(writes).toHaveLength(1);
-    bar.render(); // frozen, despite connections having changed
+    for (let i = 0; i < 10; i++) {
+      nowMs += HEARTBEAT_MS;
+      bar.render();
+    }
+    expect(writes).toHaveLength(11); // one per heartbeat, never starved
+  });
+
+  test('a live question does NOT suspend the heartbeat exemption from the quiescence gate', () => {
+    // The heartbeat bypasses quiescence so a streaming session cannot starve
+    // the DECSTBM re-assertion -- and that exemption must NOT be conditioned
+    // on whether a question is open, because a held permission is precisely
+    // when the PTY streams indefinitely. Mirrors the same-named test in the
+    // no-question case, so the two cannot drift apart again.
+    let nowMs = NOW_MS;
+    const { bar, writes } = harness({
+      hasLiveQuestions: () => true,
+      isQuiescent: () => false,
+      now: () => nowMs,
+    });
+    bar.render();
     expect(writes).toHaveLength(1);
-    live = false;
-    bar.render(); // resumes
+    nowMs += HEARTBEAT_MS;
+    bar.render();
     expect(writes).toHaveLength(2);
   });
 
-  test('the onset paint captures state at the transition, and the resumed repaint reflects a status change made during the freeze', () => {
-    // The regression this guards against: a status change while a question is
-    // live must not be lost -- the bar has to catch up, not stay stale
-    // forever once the question resolves.
+  test('a live question does not stop a status change from reaching the row', () => {
+    // The user-visible half: content varies on every getStatus() read, so
+    // this measures repaints rather than a dedup coincidence.
+    let connections = 0;
+    const { bar, writes } = harness({
+      hasLiveQuestions: () => true,
+      getStatus: () => mkStatus({ connections: connections++ }),
+    });
+    bar.render(); // onset
+    bar.render();
+    bar.render();
+    expect(writes).toHaveLength(3);
+    expect(writes[2]).toContain('2 client(s)');
+  });
+
+  test('a "needs you" cue still decays while the question that raised it is open', () => {
+    // The reported bug, end to end: an escalate is what raises the prompt, so
+    // the frozen frame was almost always the one reading "needs you" -- a cue
+    // whose whole contract is that it decays after ESCALATE_FRESH_S, pinned
+    // on screen for as long as the prompt stayed open.
+    let nowMs = NOW_MS;
+    const status = mkStatus({
+      sessionStatus: 'waiting',
+      autoApprove: { inFlight: 0, sinceS: 0, lastVerdict: 'escalated', lastVerdictAtS: NOW_S },
+    });
+    const { bar, writes } = harness({
+      hasLiveQuestions: () => true,
+      getStatus: () => status,
+      now: () => nowMs,
+    });
+    bar.render();
+    expect(writes[0]).toContain('needs you');
+    nowMs += ESCALATE_FRESH_S * 1000; // the escalate is no longer fresh
+    bar.render();
+    expect(writes.at(-1)).toContain('waiting');
+    expect(writes.at(-1)).not.toContain('needs you');
+  });
+
+  test('the resumed repaint reflects a status change made while the question was open', () => {
+    // Still load-bearing after #1038: the dialog can redraw or consume row N
+    // while it owns the screen, so the physical row cannot be trusted to
+    // match lastRendered once the question clears.
     let live = true;
     let connections = 0;
     const { bar, writes } = harness({
       hasLiveQuestions: () => live,
       getStatus: () => mkStatus({ connections }),
     });
-    bar.render(); // onset: paints the status AT the transition
-    expect(writes).toHaveLength(1);
+    bar.render();
     expect(writes[0]).toContain('no clients');
-    connections = 5; // status changes while the question is still live
-    bar.render(); // frozen: no write
-    expect(writes).toHaveLength(1);
+    connections = 5;
     live = false;
-    bar.render(); // question resolved: must repaint with the NEW status
-    expect(writes).toHaveLength(2);
-    expect(writes[1]).toContain('5 client(s)');
+    bar.render(); // question resolved: repaints with the NEW status
+    expect(writes.at(-1)).toContain('5 client(s)');
   });
 
   test('an unchanged status does not write a second time', () => {
@@ -534,6 +596,12 @@ describe('StatusBar — #932 durable fix (quiescence + clean-boundary gate)', ()
     // Onset must fire the instant a question goes live, even mid-burst --
     // see status-bar.ts's HEARTBEAT_MS doc for why the soft gate has
     // documented exceptions.
+    //
+    // #1038 tried to remove this exemption (onset implies a live question,
+    // and that attempt made quiescence hard there). It must stay: a held
+    // permission keeps the TUI spinner animating (#1026), so an onset that
+    // waited for quiescence would never fire at all -- the bar would keep
+    // whatever it painted BEFORE the escalate, for the whole prompt.
     const { bar, writes } = harness({
       hasLiveQuestions: () => true,
       isQuiescent: () => false,
@@ -558,15 +626,20 @@ describe('StatusBar — #932 durable fix (quiescence + clean-boundary gate)', ()
 
   test('the resumed paint bypasses the quiescence gate but still honors the boundary gate', () => {
     let live = true;
+    let quiescent = true;
     const { bar, writes } = harness({
       hasLiveQuestions: () => live,
-      isQuiescent: () => false,
+      isQuiescent: () => quiescent,
       isBoundaryClean: () => true,
     });
-    bar.render(); // onset
+    bar.render(); // onset, PTY quiet: paints
     expect(writes).toHaveLength(1);
+    // The question clears just as Claude starts writing again. `resumed`
+    // still paints: once no question is live, the soft gate's documented
+    // exemptions are back in force (#1038 suspends them only while one is).
     live = false;
-    bar.render(); // resumed, still not quiescent
+    quiescent = false;
+    bar.render();
     expect(writes).toHaveLength(2);
   });
 
@@ -649,6 +722,113 @@ describe('StatusBar — #932 durable fix (quiescence + clean-boundary gate)', ()
 
   test('omitting isBoundaryClean/isQuiescent keeps pre-durable-fix behavior (always paintable)', () => {
     const { bar, writes } = harness({});
+    bar.render();
+    expect(writes).toHaveLength(1);
+  });
+});
+
+// #1038: the unit tests above inject `isQuiescent` directly, which is how the
+// first attempt at this fix passed its own suite while being broken in
+// production. These drive the REAL PtyQuiescenceGate with real chunk bytes,
+// at the cadence Claude's TUI spinner actually runs, so the starvation case
+// cannot hide behind a hand-flipped boolean.
+describe('StatusBar against the real PtyQuiescenceGate (#1038)', () => {
+  /** Claude's spinner glyphs, redrawn in place on their own timer. */
+  const SPINNER = ['✶', '⠻', '✢', '✳'];
+  /** Well under QUIESCENCE_MS (500), which is the whole point. */
+  const SPINNER_MS = 150;
+  const TICK_MS = 250;
+
+  /**
+   * Run `minutes` of a live question during which the PTY never goes quiet
+   * for QUIESCENCE_MS, and report how often row N was actually painted.
+   */
+  function runWithSpinner(minutes: number): { writes: string[]; status: RemiStatus } {
+    let nowMs = NOW_MS;
+    const gate = new PtyQuiescenceGate(() => nowMs);
+    const status = mkStatus({
+      sessionStatus: 'waiting',
+      attached: false,
+      queuedCount: 0,
+      autoApprove: { inFlight: 0, sinceS: 0, lastVerdict: 'escalated', lastVerdictAtS: NOW_S },
+    });
+    const writes: string[] = [];
+    const bar = new StatusBar({
+      getStdoutFd: () => 1,
+      getStatus: () => status,
+      getSize: () => ({ cols: 80, rows: 24 }),
+      isEnabled: () => true,
+      hasLiveQuestions: () => true,
+      isBoundaryClean: () => gate.isBoundaryClean(),
+      isQuiescent: () => gate.isQuiescent(),
+      writeToFd: (_fd, data) => writes.push(data),
+      now: () => nowMs,
+      log: () => {},
+    });
+
+    let spinnerAt = NOW_MS;
+    let tickAt = NOW_MS;
+    let frame = 0;
+    const end = NOW_MS + minutes * 60_000;
+    while (nowMs < end) {
+      nowMs = Math.min(spinnerAt, tickAt);
+      if (nowMs === spinnerAt) {
+        gate.observe(Buffer.from(`\r${SPINNER[frame++ % SPINNER.length]} Running...`));
+        spinnerAt += SPINNER_MS;
+      }
+      if (nowMs === tickAt) {
+        bar.render();
+        tickAt += TICK_MS;
+        status.attached = true; // a phone attaches while the prompt is open
+      }
+    }
+    return { writes, status };
+  }
+
+  test('a held permission whose spinner never lets the PTY go quiet still paints', () => {
+    // The exact production scenario. `isQuiescent()` is never true for the
+    // whole ten minutes; if liveness depended on it, this is 0.
+    const { writes } = runWithSpinner(10);
+    expect(writes.length).toBeGreaterThan(0);
+    // Bounded by HEARTBEAT_MS, so ~1 paint per 2s over 10 minutes.
+    expect(writes.length).toBeGreaterThanOrEqual((10 * 60_000) / HEARTBEAT_MS - 1);
+  });
+
+  test('the row reflects state that changed during the prompt, not the frame that raised it', () => {
+    // The user-visible bug: "needs you" is contractually bounded by
+    // ESCALATE_FRESH_S and the attach label changed mid-prompt. Both must
+    // reach the row even though Claude never stopped writing.
+    const { writes } = runWithSpinner(10);
+    expect(writes[0]).toContain('needs you');
+    expect(writes.at(-1)).toContain('attached');
+    expect(writes.at(-1)).not.toContain('needs you');
+  });
+
+  test('no paint ever lands at a dirty escape-sequence boundary', () => {
+    // The hard gate is what makes the hazard #932 documents impossible, and
+    // it is the reason painting through a spinner is safe at all. Feed a
+    // deliberately unterminated sequence and confirm the bar refuses.
+    let nowMs = NOW_MS;
+    const gate = new PtyQuiescenceGate(() => nowMs);
+    const writes: string[] = [];
+    const bar = new StatusBar({
+      getStdoutFd: () => 1,
+      getStatus: () => mkStatus(),
+      getSize: () => ({ cols: 80, rows: 24 }),
+      isEnabled: () => true,
+      hasLiveQuestions: () => true,
+      isBoundaryClean: () => gate.isBoundaryClean(),
+      isQuiescent: () => gate.isQuiescent(),
+      writeToFd: (_fd, data) => writes.push(data),
+      now: () => nowMs,
+      log: () => {},
+    });
+    gate.observe(Buffer.from('\x1b[')); // truncated CSI: mid-sequence
+    expect(gate.isBoundaryClean()).toBe(false);
+    nowMs += HEARTBEAT_MS * 3; // heartbeat long overdue
+    bar.render();
+    expect(writes).toHaveLength(0);
+    gate.observe(Buffer.from('0m')); // sequence completes
     bar.render();
     expect(writes).toHaveLength(1);
   });

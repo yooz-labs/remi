@@ -64,6 +64,69 @@ function defaultProvider(): string {
   return detected === 'unsupported' ? 'yooz' : detected;
 }
 
+/**
+ * The engine's MLX build of the default evaluator model, and the llama.cpp
+ * GGUF build of the SAME weights. Same QAT-lean Qwen3.5-4B that #809 Phase D
+ * measured at 38/38 on the permission grid — only the container differs, so
+ * the Linux path inherits that evidence rather than needing its own.
+ *
+ * The GGUF value is deliberately written in `-hf` argument form
+ * (`<user>/<repo>:<quant>`) so it can be pasted straight into the
+ * `llama-server` command remi prints at boot.
+ *
+ * The quant suffix is explicit rather than load-bearing. `-hf` with no tag
+ * prefers `Q4_K_M` then `Q8_0`, and FALLS BACK to the first `.gguf` in the
+ * repo (llama.cpp `common/download.cpp`, `find_best_model`; its own `-hf`
+ * help says so), so the bare id does resolve today -- these repos publish
+ * exactly one file each, `Q4_0`, verified against the HF API. Naming the
+ * quant keeps that deterministic if a second one is ever published, since
+ * the fallback is order-dependent. An earlier draft of this comment claimed
+ * the bare id "fails to resolve a file"; that was wrong and unattributed.
+ */
+const DEFAULT_EVAL_MODEL_MLX = 'YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx';
+const DEFAULT_EVAL_MODEL_GGUF = 'YoozLabs/Qwen3.5-4B-qat-GGUF:Q4_0';
+
+/**
+ * The `auto_approve.model` default for THIS machine (#822). An MLX id cannot
+ * be loaded by llama.cpp and a GGUF id means nothing to the engine, so a
+ * single hardcoded default is wrong on one of the two supported targets —
+ * exactly the reasoning `defaultProvider` already applies to the transport.
+ *
+ * An `unsupported` target follows `defaultProvider` and keeps the engine's
+ * value, so the config shape stays stable and the boot warning (see `cli.ts`)
+ * is what tells the user their machine has no local backend at all.
+ */
+export function defaultModel(
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch,
+): string {
+  return detectLocalLLMPlatform(platform, arch) === 'llamacpp'
+    ? DEFAULT_EVAL_MODEL_GGUF
+    : DEFAULT_EVAL_MODEL_MLX;
+}
+
+/** The `llama-server` invocation remi tells a Linux user to run (#822). Built
+ *  from the same constant as the config default so the two can never drift.
+ *  Verified against llama.cpp's server README: `-hf <user>/<repo>[:quant]`,
+ *  `--port`, `--host`. */
+export function llamaServerCommand(model: string = DEFAULT_EVAL_MODEL_GGUF, port = 19924): string {
+  // `provider = "llamacpp"` on Apple Silicon is a real setup, and nothing
+  // validates provider/model consistency -- so `model` can be the MLX default,
+  // or empty. Printing `-hf <something>-mlx` hands the user a command that
+  // cannot load, which is worse than handing them none: the whole point of
+  // this string is that it is the lever that works. Fall back to the GGUF
+  // default unless the id actually looks like one.
+  const looksGguf = model.includes('GGUF') || model.includes('gguf');
+  const usable = looksGguf ? model : DEFAULT_EVAL_MODEL_GGUF;
+  const cmd = `llama-server -hf ${usable} --host 127.0.0.1 --port ${port}`;
+  // Disclose the swap. A fix for a silent substitution must not introduce one:
+  // handing someone `-hf <a model they never configured>` with remi's own
+  // message as the source is worse than the unrunnable command it replaced.
+  return looksGguf
+    ? cmd
+    : `${cmd}\n  (auto_approve.model = "${model}" is not a GGUF id, so this shows remi's default)`;
+}
+
 /** Daemon settings (restart required to apply changes) */
 export interface DaemonConfig {
   readonly base_port: number;
@@ -125,6 +188,18 @@ export interface AuthConfig {
    * suggests and what the code does not do; #880 tracks whether the code or the
    * name is wrong. Until that is settled, read `"auto"` as "off", and do not
    * assume exposing the daemon on a network turns authentication on.
+   *
+   * This is now load-bearing in the other direction. `daemon.bind` defaults to
+   * LOOPBACK precisely because this resolves off (#880): together, the previous
+   * `0.0.0.0` default and this one admitted unauthenticated `answer` /
+   * `user_input` from any host on the LAN. So anyone WIDENING the bind -- in
+   * config or in the default -- is turning that exposure back on, and owes the
+   * auth story first. Note that "turn auth on" is not by itself enough either:
+   * TOFU is auto-accept unless `--no-tofu` is passed -- decided at the CALL
+   * SITE in `cli.ts`, not by `Authenticator`, whose own default is `'reject'`.
+   * Do not "correct" this by checking `authenticator.ts` alone; it says the
+   * opposite and the call site wins. So an authenticator on a network bind
+   * admits any freshly-generated key on first sight, and persists it.
    */
   readonly enabled: 'auto' | boolean;
 }
@@ -221,7 +296,55 @@ export const DEFAULT_CONFIG: RemiConfig = {
   daemon: {
     base_port: DAEMON_BASE_PORT,
     port_range: DAEMON_PORT_RANGE,
-    bind: '0.0.0.0',
+    // #880: LOOPBACK, not 0.0.0.0. The pairing of this default with
+    // `auth.enabled = "auto"` -- which resolves to `false` on every bind (see
+    // AuthConfig.enabled) -- meant every default install accepted UNAUTHENTICATED
+    // control from any host on the LAN. Traced end to end: no authenticator
+    // means the connection never enters `authenticating` and routes messages
+    // straight to the handler map (`connection.ts`); the Origin gate admits a
+    // null/absent Origin, which is exactly what a non-browser client sends
+    // (`origin-policy.ts`); and mDNS advertises the port by default. A LAN peer
+    // could send `answer` (approve any pending permission -- i.e. arbitrary tool
+    // execution) or `user_input` (type into the live Claude session).
+    //
+    // Loopback is the correct default for a tool whose whole job is answering
+    // permission prompts. Remote access is now an explicit opt-in: set `bind`
+    // and read the auth warning that comes with it.
+    //
+    // SCOPE, stated so this does not read as more than it is: this closes the
+    // unauthenticated LAN path. It does NOT touch the relay path -- default-on,
+    // dials outward, unaffected by the bind, and still plaintext through the
+    // worker in rotating-code mode (#881) -- nor the local-process path, where
+    // any process on this machine is exempted from auth while
+    // `require_local_auth` is false (#869).
+    //
+    // NAME THE DIRECTION on the relay -- an earlier draft of this comment said
+    // "the same `answer`/`user_input` power the LAN peer had", which conflates
+    // the two halves, the exact error AGENTS.md records a previous draft making.
+    // Traced: outbound `sendRaw` REFUSES without `sessionKeys`
+    // (`relay-adapter.ts`), which rotating-code mode never derives; inbound
+    // falls through to `handleRelayMessage(rawPayload)` in plaintext. So it is
+    // inbound INJECTION, not the LAN peer's bidirectional control -- the daemon
+    // cannot answer back at all (#881).
+    //
+    // It also does not reach an install that already MATERIALIZED the old
+    // default: `remi config init` writes `bind = "${DEFAULT_CONFIG.daemon.bind}"`
+    // into config.toml (see initConfigFile below), and a value on disk beats a
+    // changed default. Those users keep the exposure and get no breakage to
+    // notice it by -- hence the boot warning in cli.ts, which is the only signal
+    // they will get.
+    //
+    // Deliberately NOT fixed by making `"auto"` bind-aware, which is what #880's
+    // title asks for. That alone is insufficient: `cli.ts` constructs the
+    // Authenticator with `tofuMode: 'auto-accept'` unless `--no-tofu` is passed
+    // (the Authenticator class itself defaults to `'reject'`, so checking only
+    // authenticator.ts would say this claim is wrong -- the call site is what
+    // decides), and an auto-accept TOFU admits any freshly-generated key on
+    // first sight AND persists it as authorized. Auth-on-network without a real
+    // pairing flow is first-comer-wins, which reads as "handled" while it is
+    // not. The `"auto"` semantics + TOFU belong in one tested change with the
+    // phone pairing flow; this one closes the LAN path without depending on it.
+    bind: '127.0.0.1',
     orphan_timeout: 300,
     persist_sessions: true,
     allowed_origins: [],
@@ -280,7 +403,11 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // predating it serve only the two TouchUp tiers and reject this id with
     // 400 `invalid_model`; auto-approve is off by default, so that surfaces as
     // "every question escalates" rather than as a broken daemon.
-    model: 'YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx',
+    //
+    // #822: resolved by platform, like `provider` above -- an MLX id simply
+    // cannot be loaded by llama.cpp. The measurement above is MLX-only; see
+    // `defaultModel` for why the Linux path does not yet inherit it.
+    model: defaultModel(),
     api_key: '',
     base_url: 'http://127.0.0.1:19924',
     timeout: 30,
@@ -647,7 +774,7 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
   // must fail loudly with an actionable next step.
   if (cfg.provider === 'ollama') {
     throw new Error(
-      `Invalid auto_approve.provider "ollama" in ${configPath}: ollama support was removed (#809). Switch to provider = "yooz" (the Yooz engine's local LLM module, loopback :19924 on macOS) or provider = "llamacpp" (a thin llama.cpp server, also loopback :19924, elsewhere), and set model to an id the chosen backend serves (e.g. "${DEFAULT_CONFIG.auto_approve.model}" for the engine). Note "llamacpp" currently expects you to run llama-server on 19924 yourself; remi does not download or supervise it yet (#822).`,
+      `Invalid auto_approve.provider "ollama" in ${configPath}: ollama support was removed (#809). Switch to provider = "yooz" (the Yooz engine's local LLM module, loopback :19924 on macOS) or provider = "llamacpp" (a thin llama.cpp server, also loopback :19924, elsewhere), and set model to an id the chosen backend serves (e.g. "${DEFAULT_EVAL_MODEL_MLX}" for the engine, "${DEFAULT_EVAL_MODEL_GGUF}" for llama.cpp). Note "llamacpp" currently expects you to run llama-server yourself (remi does not download or supervise it yet, #822): ${llamaServerCommand()}`,
     );
   }
   expectString('model', cfg.model);
@@ -1141,9 +1268,10 @@ turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_sec
 
 # [auto_approve]
 # enabled = false
-# provider = "yooz"             # "yooz" (engine, macOS) | "llamacpp" (thin
-                                # llama.cpp server, elsewhere) | "openrouter"
-                                # | custom base URL
+# provider = "${DEFAULT_CONFIG.auto_approve.provider}"
+                                # "yooz" (engine, Apple Silicon) | "llamacpp"
+                                # (thin llama.cpp server, Linux) | "openrouter"
+                                # | custom base URL. Defaulted by platform.
 # model = "${DEFAULT_CONFIG.auto_approve.model}"
                                 # Fast small default; the eval blocks Claude (#496).
                                 # 38/38 on the permission grid, p95 2.26s. The
@@ -1182,6 +1310,10 @@ turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_sec
 #   vcs-write   git add/commit/checkout/switch/merge, stash push, worktree add
 #   scratch     touch/cp/mv/tee/mkdir/rm/rmdir + output redirection, ONLY when
 #               every target resolves under /tmp, /private/tmp, or $TMPDIR
+#   artifact-clean  rm/rmdir ONLY when every target is a relative path at or
+#               under an exact-named derived-state dir (node_modules, dist,
+#               build, out, target, coverage, __pycache__, .venv), plus
+#               structural "git worktree remove" and bare "bun install"
 #
 # The write groups refuse sensitive destinations regardless of prefix: system
 # trees (/etc, /usr, /System, ...), credentials (~/.ssh, ~/.aws, .env, id_rsa),
@@ -1190,21 +1322,46 @@ turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_sec
 # ~/.remi + ~/.claude -- config that governs this very mechanism, which an
 # auto-approved write must never be able to widen -- and the BUILD SURFACE
 # (package.json, tsconfig.json, lockfiles, Makefile, ...), because build-test
-# is enabled by DEFAULT and executes what those files say. scratch instead
-# gets its safety entirely from the destination being confined to a scratch
-# root, which is why it is the one group allowed to cover deletion and output
-# redirection -- rm/rmdir and >/>> are excluded from every OTHER group.
+# is enabled by DEFAULT and executes what those files say. This axis applies
+# to EVERY mutating group, scratch and artifact-clean included -- narrowed
+# from "the write groups" by the ADR 0023 adversarial pass. It used to live
+# inside fs-write's veto alone, so once matchGroups began trying every owning
+# group's proof for a shared prefix, scratch's laxer proof became a way around
+# it: cp /tmp/a /tmp/.env approved at balanced where it had escalated. A
+# deny-shaped check must not be escapable by finding an owner whose positive
+# proof is laxer (ADR 0010), so it is now checked before any owner's proof.
+# The cost is real and accepted: a genuinely disposable /tmp/.env now
+# escalates. scratch still gets its POSITIVE proof from the destination being
+# confined to a scratch root -- and artifact-clean from the target's exact NAME
+# proving derived state -- which is why those two are the only groups allowed to cover
+# deletion: the target must be PROVED disposable, not merely "not known-bad".
+# rm/rmdir and >/>> are excluded from every OTHER group.
 #
-# Matching is case-insensitive (macOS filesystems are) and resolves dot-dot.
+# Deny matching is case-insensitive (macOS filesystems are) and resolves
+# dot-dot; artifact-clean's name match is deliberately exact-case (an allow
+# check that lowercased would conflate Dist with dist on Linux).
 #
-# rm, package installs, git push, and any --force are in NO group EXCEPT
-# scratch's own deletion coverage, which stays confined to scratch roots.
-# Remote mutation and arbitrary install scripts stay escalations everywhere.
+# Blanket rm, package installs, git push, and BLANKET --force are still in
+# no group: deletion approves only through scratch's and artifact-clean's
+# proofs above. Read the narrow exceptions literally -- artifact-clean does
+# accept -f/--force on rm (they are on its exact flag allowlist), and one
+# --force on "git worktree remove", which approves only single-force against
+# git's own runtime refusals.
+#
+# Bare "bun install" is approved and is NOT lockfile-faithful: only
+# --frozen-lockfile guarantees that. Bare install reconciles package.json
+# against the lockfile, so it may resolve new versions, rewrite the lockfile,
+# and run lifecycle scripts of what it installs. It is covered because it is
+# the measured case this exists for, as a DECLARED residual (ADR 0023) --
+# which is also why "arbitrary install scripts stay escalations everywhere"
+# below is scoped to installs this group does not name.
+# ("bun install <pkg>" is "bun add" in disguise and still escalates.)
+# Remote mutation stays an escalation everywhere.
 # Strictness preset. Selects which of the groups above are auto-approved:
 #
 #   strict     read-only + vcs-read + build-test   (the default; today's behavior)
 #   balanced   strict   + fs-write + scratch
-#   trusted    balanced + vcs-write
+#   trusted    balanced + vcs-write + artifact-clean
 #
 # An explicit approve_groups below OVERRIDES the preset entirely, and the
 # daemon logs that it did -- so a config written before levels existed keeps

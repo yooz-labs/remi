@@ -550,24 +550,25 @@ export function signatureForOperation(
  *
  * `summarizeToolInput` treats `terminal` like `bash` and extracts the real
  * command, so its signature IS complete — and it is still excluded, because
- * completeness is necessary and not sufficient. The bands that bound what a
- * precedent may authorize do not recognize the name:
+ * completeness is necessary and not sufficient.
  *
- *     classifyRisk('Bash',     {command: 'rm -rf /'})  -> critical
- *     classifyRisk('terminal', {command: 'rm -rf /'})  -> moderate
- *     matchesCatastrophicPattern('terminal', ...)      -> null
+ * **The reason it used to be excluded is now GONE (#1020, fixed).** That reason
+ * was that the bounding bands did not recognize the name:
  *
- * `classifyRisk`, `matchesCatastrophicPattern` and `matchSubstringPattern` all
- * branch on the literal string `'Bash'`, so a `terminal`-named tool is capped
- * at `moderate` — the tier `implicit` reaches — and can never be floored. An
- * entry here whose risk cannot be classified is an entry whose matrix bound is
- * fictional.
+ *     classifyRisk('terminal', {command: 'rm -rf /'})  -> moderate   [before]
+ *     matchesCatastrophicPattern('terminal', ...)      -> null       [before]
  *
- * **That gap is bigger than this list and is tracked separately (#1020):** it
- * applies to ANY command-executing tool not literally named `Bash`, including
- * one an MCP server registers, and it bypasses the deny floor and risk ceiling
- * with or without precedent. Excluding `terminal` here does not fix it; it
- * only keeps this module from depending on it.
+ * Both now gate on the INPUT SHAPE via `extractToolCommand` (command-tools.ts),
+ * so any command-carrying tool — `terminal`, a lowercase `bash`, an MCP tool
+ * under any name — bands and floors exactly like `Bash`. An entry here would no
+ * longer have a fictional matrix bound.
+ *
+ * It stays `Bash`-only anyway, for a narrower reason that outlives that fix:
+ * **who may be precedent-authorized is an authority decision (ADR 0015), not a
+ * consequence of the risk layer learning to classify.** Keeping the list narrow
+ * costs an LLM evaluation on a `terminal` repeat. Widening it grants silent
+ * repeats to a tool surface nobody has measured. The first is a latency cost;
+ * the second is an authority grant, and the two are not tradeable.
  *
  * ## The deny direction deliberately ignores this
  *
@@ -583,18 +584,22 @@ const PRECEDENT_ELIGIBLE_TOOLS: ReadonlySet<string> = new Set(['Bash']);
  * `PRECEDENT_ELIGIBLE_TOOLS` for the rule and the two measured failures that
  * produced it.
  *
- * **Case-SENSITIVE, deliberately, and this is the load-bearing detail.** The
- * obvious implementation lowercases — it reads as defensive, and a first draft
- * of this function did exactly that. It is the bug. `classifyRisk`,
- * `matchesCatastrophicPattern` and `matchSubstringPattern` all compare
- * `toolName === 'Bash'` exactly, so a tool named `bash` in lowercase would be
- * ELIGIBLE here while banding as a non-Bash tool there: capped at `moderate`,
- * never floored, precedent-approvable — the same hole excluding `terminal`
- * closes, reopened by the normalization meant to prevent it.
+ * **Case-SENSITIVE, deliberately** — but no longer for the reason first
+ * recorded here, and the correction matters because the old reason argued
+ * against widening while the new one argues for staying narrow on its own.
  *
- * So this set must contain exactly the strings the RISK layer recognizes, and
- * compare them the same way. When #1020 fixes that layer's literal-`'Bash'`
- * assumption, this gate should be updated in the same change, not before.
+ * The original argument: `classifyRisk` / `matchesCatastrophicPattern` /
+ * `matchSubstringPattern` all compared `toolName === 'Bash'` exactly, so a
+ * lowercase `bash` would be ELIGIBLE here while banding as a non-Bash tool
+ * there — capped at `moderate`, never floored, precedent-approvable. #1020
+ * fixed that layer: it gates on input shape now, so a lowercase `bash` bands
+ * and floors correctly and that specific hole no longer exists.
+ *
+ * It stays case-sensitive because this is an ALLOW-shaped gate, and a
+ * case-insensitive allowlist is broader than the one anyone wrote (ADR 0010:
+ * allow precise, deny broad). `Bash` is the name Claude Code ships; anything
+ * else is a tool nobody has measured, and it should cost an LLM evaluation
+ * rather than inherit a past human's approval by spelling.
  */
 export function precedentMayAuthorize(
   toolName: string,

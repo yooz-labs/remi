@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.7.5'; // REMI_COMPILED_VERSION
+      return '0.7.6-dev.7'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.7.5'; // REMI_COMPILED_VERSION
+    return '0.7.6-dev.7'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -180,7 +180,13 @@ import { StatusBar, childRows } from './cli/status-bar.ts';
 import { installStatusLine } from './cli/statusline-installer.ts';
 import { installSuspendHandler } from './cli/suspend-handler.ts';
 import { isRemiBinaryPath, startUpdateWatcher } from './cli/update-watcher.ts';
-import { applyEnvOverrides, detectLocalLLMPlatform, loadConfig } from './config/index.ts';
+import {
+  DEFAULT_CONFIG,
+  applyEnvOverrides,
+  detectLocalLLMPlatform,
+  llamaServerCommand,
+  loadConfig,
+} from './config/index.ts';
 import type { RemiConfig } from './config/index.ts';
 import { ForeignSessionEscalator, HookConfigManager, HookServer } from './hooks/index.ts';
 import type { HookInput, PermissionRequestHookInput, StopHookInput } from './hooks/index.ts';
@@ -329,6 +335,14 @@ const cliAuth = parsedArgs.auth;
 const cliLabel = parsedArgs.label;
 const cliPublicOnly = parsedArgs.publicOnly;
 const cliBindHost = parsedArgs.bindHost;
+/**
+ * The host every listener in this process binds -- and therefore the ONLY host
+ * a port bind-probe may be run against (#880). Declared here, next to the flag
+ * it comes from, because the first probe happens during port auto-selection far
+ * above where the auth block used to compute it; a probe against a different
+ * host reports "free" for a port the real bind then fails on. See port-utils.ts.
+ */
+const bindHost = cliBindHost ?? remiConfig.daemon.bind;
 const cliRemoveFingerprint = parsedArgs.removeFingerprint;
 const cliNoMdns = parsedArgs.noMdns;
 const cliNetwork = parsedArgs.network;
@@ -518,6 +532,7 @@ if (
     await runDaemonLifecycleCommand(cliSubcommand, {
       ...(cliPort !== undefined && { port: cliPort }),
       ...(cliBindHost !== undefined && { bindHost: cliBindHost }),
+      resolvedBindHost: bindHost,
       ...(cliAuth !== undefined && { auth: cliAuth }),
       noMdns: cliNoMdns,
       noRelay: cliNoRelay,
@@ -813,6 +828,7 @@ if (!portExplicitlySet) {
   const autoPort = await liveSessionsRegistry.findAvailablePort(
     remiConfig.daemon.base_port,
     remiConfig.daemon.port_range,
+    bindHost,
   );
   if (autoPort === null) {
     const rangeEnd = remiConfig.daemon.base_port + remiConfig.daemon.port_range - 1;
@@ -868,7 +884,7 @@ let autoApproveService: AutoApproveService | null = null;
     const localProvider = provider === 'yooz' || provider === 'llamacpp';
     const detectedBackend = detectLocalLLMPlatform();
     if (localProvider && detectedBackend === 'unsupported') {
-      writeToLog(
+      logError(
         `[AutoApprove] No local LLM backend exists for ${process.platform}/${process.arch}: the Yooz engine needs Apple Silicon (MLX) and the llama.cpp path is Linux. Auto-approve will escalate every permission until you point auto_approve.provider at a reachable backend (e.g. openrouter, or a custom URL).`,
       );
     } else if (provider === 'llamacpp') {
@@ -879,10 +895,27 @@ let autoApproveService: AutoApproveService | null = null;
       // degradation #818 was filed to remove, reintroduced on another platform.
       // The macOS path fetches its own helper (#834); this one cannot yet, so
       // the honest thing is to say so at boot rather than at the first
-      // permission.
-      writeToLog(
-        `[AutoApprove] provider = "llamacpp" is selected for ${process.platform}, but remi does not yet download or supervise a llama.cpp server (#822). Auto-approve will escalate every permission unless you run llama-server yourself on ${baseUrl}, or point auto_approve.provider at a remote backend.`,
+      // permission -- and to say exactly what to run, since the weights and
+      // the transport both already exist. `-hf` pulls from HuggingFace on
+      // first run; the quant suffix is explicit for determinism, not
+      // because a bare id fails (see `defaultModel`).
+      logError(
+        `[AutoApprove] provider = "llamacpp": remi does not yet download or supervise a llama.cpp server (#822), so start one yourself and auto-approve works:
+    ${llamaServerCommand(model)}
+  Until it answers on ${baseUrl}, every permission escalates. A remote provider (openrouter, a custom URL) also works.`,
       );
+      // llama-server ignores the request's `model` field in single-model mode
+      // (verified against its README), so a configured escalate_model is
+      // answered by whatever GGUF was loaded at process start -- a "second
+      // opinion" from the same weights, reported as if a heavier model had
+      // agreed. Silent, and it makes escalate_model actively misleading rather
+      // than merely absent. #822's own scope calls this out as an open design
+      // question ("one model per process"); until it is decided, say so.
+      if (aaCfg.escalate_model && aaCfg.escalate_model !== model) {
+        logError(
+          `[AutoApprove] escalate_model = "${aaCfg.escalate_model}" has no effect on provider = "llamacpp": llama-server serves the one model it was started with and ignores the requested model id, so the "second opinion" would come from the primary model (#822). There is no per-model base URL in the config, so there is no way to route it elsewhere today (#822 owns that design question) -- leave it empty until then.`,
+        );
+      }
     }
 
     // #818: who starts the engine. Only meaningful for the engine transport —
@@ -1174,6 +1207,14 @@ const sessionRegistry = new SessionRegistry(
     onSessionResumed: (sessionId, connectionId) => {
       log(`Session resumed: ${sessionId} by connection ${connectionId}`);
     },
+    // #1038: `attached`/`queuedCount` are PULLED from this registry at flush
+    // time, and nothing on an attach path calls updateRemiStatus -- so
+    // without this a connected phone read as "no clients" on the reserved-row
+    // bar, in status-<PORT>.json, in the attach client and in the app, until
+    // some unrelated status change happened to flush. Emitted from the two
+    // lines that mutate the set, so it covers every attach path by
+    // construction; `refresh()` schedules only on a real change.
+    onAttachStateChanged: () => statusWriter.refresh(),
     onQuestionsChanged: (sessionId, questions) => {
       // Best-effort: a registry-file hiccup here must never take down the
       // question pipeline itself (the live WS `question`/`question_resolved`
@@ -2084,15 +2125,19 @@ const createSessionHandlers_: CreateSessionHandlers = createCreateSessionHandler
   spawningPorts,
   basePort: remiConfig.daemon.base_port,
   portRange: remiConfig.daemon.port_range,
-  // Lazy: bindHost is declared after sharedEvents is wired up, so compute
-  // the inherited-args array on each spawn rather than capturing it here.
+  bindHost,
   inheritedArgs: () => {
     const args: string[] = [];
     if (cliAuth === true) args.push('--auth');
     if (cliAuth === false) args.push('--no-auth');
     if (cliNoRelay) args.push('--no-relay');
     if (cliNoMdns) args.push('--no-mdns');
-    if (bindHost !== '0.0.0.0') args.push('--bind', bindHost);
+    // Always forwarded, never "only when non-default" (#880). This used to
+    // compare against a hardcoded '0.0.0.0', which silently stopped meaning
+    // "is the default" the moment the default changed -- and a child that
+    // falls back to its own default instead of inheriting the hub's bind is
+    // exactly the drift that makes an exposure reappear on one process.
+    args.push('--bind', bindHost);
     return args;
   },
   send: sendToConnection,
@@ -2156,7 +2201,8 @@ const sharedEvents = {
 // Auth setup: disabled by default. Enable with --auth flag.
 // Local/private networks don't need auth; relay/public access does.
 // ---------------------------------------------------------------------------
-const bindHost = cliBindHost ?? remiConfig.daemon.bind;
+// `bindHost` is declared near the CLI flags above, not here: port
+// auto-selection probes with it long before this point (#880).
 
 // Local capability token (#869). Created on first run with mode 0600 so the
 // CLI can prove it is a local client without a TOFU round trip. Generated
@@ -2262,9 +2308,36 @@ if (authEnabled) {
   console.log(`Authentication enabled (fingerprint: ${serverFingerprint}, TOFU: ${tofuMode})`);
 } else {
   if (!isLocalhostBind) {
-    console.warn(
-      'WARNING: Authentication disabled on non-localhost bind. ' +
-        'The daemon is accessible without authentication on the network.',
+    // #880. This is the ONLY signal an install that pre-dates the loopback
+    // default gets: `remi config init` materialized `bind = "0.0.0.0"` into
+    // config.toml, a value on disk beats a changed default, and nothing about
+    // their setup breaks to make them look. So it names the exact remedy rather
+    // than only describing the state.
+    //
+    // `console.error`, NOT `logError`, and that is load-bearing. A first draft
+    // used `logError` "because console.warn is dropped in wrapper mode
+    // (#1043)". That reasoning is backwards: in wrapper mode `logError` routes
+    // to `writeToLog`, a no-op until `startLogFileSession`, which runs ~490
+    // lines below this point -- so the message went nowhere, while the
+    // `console.warn` it replaced reached the terminal.
+    //
+    // SCOPE that correctly, because a second review round caught the fix's own
+    // comment overstating it. Wrapper mode is NOT simply "the default": line
+    // ~325 is `cliDaemonMode = parsedArgs.daemonMode || serveMode`, so `remi
+    // serve` -- the LaunchAgent/systemd entrypoint, and the long-lived install
+    // most likely to carry a materialized `0.0.0.0` -- already took the
+    // console branch and printed both lines either way. The regression was real
+    // but confined to the plain-`remi` wrapper session path.
+    //
+    // At THIS point in module init the console is not yet redirected (the
+    // overrides are installed alongside the log session, far below), so
+    // `console.error` reaches the terminal in wrapper mode and stderr in daemon
+    // mode -- both destinations a human sees.
+    console.error(
+      `WARNING: bound to ${bindHost} with authentication disabled. Any host that can reach this port can approve permission prompts and type into your Claude session.`,
+    );
+    console.error(
+      `  Remedy: set daemon.bind = "${DEFAULT_CONFIG.daemon.bind}" in ~/.remi/config.toml (the default since #880), or pass --auth to require authentication on this bind.`,
     );
   } else {
     console.log('Authentication disabled (localhost binding)');
@@ -2468,7 +2541,7 @@ if (cliDaemonMode) {
   // Phase 2: Probe for available WebSocket port, then start
   if (!portExplicitlySet) {
     const liveUsed = new Set(liveSessionsRegistry.listLive().map((e) => e.wsPort));
-    const probed = await findAvailableTcpPort(PORT, DEFAULT_PORT_RANGE, liveUsed);
+    const probed = await findAvailableTcpPort(PORT, DEFAULT_PORT_RANGE, liveUsed, bindHost);
     if (probed === null) {
       console.error(
         `All remi ports in range ${DEFAULT_BASE_PORT}-${DEFAULT_BASE_PORT + DEFAULT_PORT_RANGE - 1} are in use.`,
@@ -2793,7 +2866,7 @@ if (cliDaemonMode) {
   let wsProbeSucceeded = true;
   if (!portExplicitlySet) {
     const liveUsed = new Set(liveSessionsRegistry.listLive().map((e) => e.wsPort));
-    const probed = await findAvailableTcpPort(PORT, DEFAULT_PORT_RANGE, liveUsed);
+    const probed = await findAvailableTcpPort(PORT, DEFAULT_PORT_RANGE, liveUsed, bindHost);
     if (probed !== null && probed !== PORT) {
       log(`Port ${PORT} in use, using ${probed}`);
       try {
@@ -2917,11 +2990,11 @@ if (cliDaemonMode) {
   );
 
   // Start drawing the reserved-row bar now that the PTY is up. Reads the live
-  // StatusWriter state and repaints on a 1Hz timer (the cadence of the
-  // `evaluating Ns` counter). Inert until started, and a no-op when detached
-  // or while a question is pending (#932 -- see status-bar.ts's module doc:
-  // the bar and Claude's own output share one fd, so painting over a live
-  // prompt risks corrupting or erasing it).
+  // StatusWriter state and repaints on a 250ms timer (the cadence of the
+  // `evaluating Ns` counter). Inert until started, and a no-op when detached.
+  // The bar and Claude's own output share one fd, so a paint must never land
+  // mid-render; while a question is pending that means waiting for PTY
+  // quiescence on every paint (#932, #1038 -- see status-bar.ts's module doc).
   if (statusBarActive) {
     statusBar = new StatusBar({
       getStdoutFd: getPtyStdoutFd,

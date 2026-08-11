@@ -646,7 +646,7 @@ describe('runAttachClient', () => {
       host: 'localhost',
       port: TEST_PORT + 12,
       sessionId: targetSessionId,
-      timeout: 3000,
+      timeout: 6000,
       outputFd,
       statusBarEligible: true,
     });
@@ -665,9 +665,10 @@ describe('runAttachClient', () => {
   // "no question" for a session that already has one live. Proves the
   // mechanism end to end on the REAL attach-client code path (not a
   // StatusBar unit test): the deferred first paint doubling as the onset
-  // paint, freeze through a status change made during the freeze, forced
-  // paint reflecting that change on the transition back out.
-  test('a live question (question_snapshot) suppresses the bar, then the resumed paint reflects a status change made during the freeze', async () => {
+  // paint, and — since #1038 removed the freeze — the bar continuing to
+  // track status for as long as the question stays open, with raw_pty_output
+  // flowing the whole time so the PTY is never quiescent.
+  test('the bar keeps tracking status while a question (question_snapshot) stays live', async () => {
     setupOutput();
     const targetSessionId = generateId();
     const questionId = generateId() as UUID;
@@ -707,8 +708,30 @@ describe('runAttachClient', () => {
             setTimeout(() => {
               ws.send(serialize(createQuestionSnapshot(targetSessionId as UUID, [questionId])));
             }, 150);
+            // #1038: keep the PTY BUSY for the whole question, the way a
+            // held permission's TUI spinner does (#1026). Without this the
+            // gate's `lastObservedAtMs` stays null, `isQuiescent()` is
+            // trivially true, and this test cannot tell a working bar from
+            // one that only paints when Claude falls silent -- which is
+            // exactly how #1038's own broken first attempt passed its suite.
+            // 150ms is well inside QUIESCENCE_MS (500), so quiescence is
+            // NEVER reached while the question is open. That makes the
+            // heartbeat the only thing that can carry a status change to the
+            // row, which is precisely the bound being asserted below.
+            const spinnerTimer = setInterval(() => {
+              ws.send(
+                serialize(
+                  createRawPtyOutput(
+                    targetSessionId as UUID,
+                    Buffer.from('\r* Running...').toString('base64'),
+                  ),
+                ),
+              );
+            }, 150);
+            setTimeout(() => clearInterval(spinnerTimer), 3400);
             // Status changes to B ("thinking") WHILE the question is still
-            // live -- must not paint until the freeze ends.
+            // live -- #1038: this must reach the row before the question
+            // resolves, not because of it.
             setTimeout(() => {
               ws.send(
                 serialize(
@@ -719,55 +742,58 @@ describe('runAttachClient', () => {
                 ),
               );
             }, 600);
-            // Question resolves, well ahead of the next timer tick.
+            // Question resolves only AFTER the peek below, so anything the
+            // row shows at that point was painted with the prompt still open.
             setTimeout(() => {
               ws.send(serialize(createQuestionSnapshot(targetSessionId as UUID, [])));
-            }, 1200);
-            setTimeout(() => ws.close(), 1700);
+            }, 3000);
+            setTimeout(() => ws.close(), 3400);
           }
         },
         close() {},
       },
     });
 
-    // Peek the output mid-freeze (t=900: after the status-B send at t=600,
-    // well ahead of the resolve at t=1200), via a separate read handle so
-    // the write fd stays open. This is what actually proves suppression is
-    // holding rather than merely coinciding on a final count: if
-    // hasLiveQuestions() were broken (e.g. wired to a constant), the status
-    // change at t=600 would have produced its own repaint by the very next
-    // ~250ms tick, long before t=900 -- and the final bars.length could
-    // still land on 2 by coincidence (a plain dedup repaint at t=600 plus
-    // nothing else), masking the regression.
-    let midFreezeOutput = '';
+    // Peek at t=2600: after status B (t=600) and after the first heartbeat
+    // past the bar's first paint (~t=150 + HEARTBEAT_MS = ~2150), but well
+    // before the question resolves (t=3000). Reading MID-question is the
+    // whole point -- a final-count assertion alone cannot tell "tracked it
+    // while the prompt was open" (the fix) from "caught up once the prompt
+    // closed" (the bug).
+    let midQuestionOutput = '';
     setTimeout(() => {
-      midFreezeOutput = fs.readFileSync(outputPath, 'utf-8');
-    }, 900);
+      midQuestionOutput = fs.readFileSync(outputPath, 'utf-8');
+    }, 2600);
 
     await runAttachClient({
       host: 'localhost',
       port: TEST_PORT + 13,
       sessionId: targetSessionId,
-      timeout: 3000,
+      timeout: 6000,
       outputFd,
       statusBarEligible: true,
     });
 
-    const midBars = [...midFreezeOutput.matchAll(/\x1b\[7m([^\x1b]*)\x1b\[0m/g)].map((m) => m[1]);
-    expect(midBars.length).toBe(1); // still frozen: only the onset paint so far
-    expect(midBars[0]).toContain('idle'); // not yet "thinking" -- the freeze held
+    const midBars = [...midQuestionOutput.matchAll(/\x1b\[7m([^\x1b]*)\x1b\[0m/g)].map((m) => m[1]);
+    // The bar's first-ever paint is deferred until question_snapshot arrives
+    // and so doubles as the onset paint (status A, stored earlier). With the
+    // PTY never quiescent, the status-B change reaches the row on the
+    // HEARTBEAT (~2s), not the 250ms tick -- staleness while Claude streams
+    // is bounded by HEARTBEAT_MS, which is the honest guarantee. Before
+    // #1038 this row read "idle" here and stayed that way for as long as the
+    // prompt did.
+    expect(midBars[0]).toContain('idle');
+    expect(midBars.at(-1)).toContain('thinking');
 
     const output = readOutput();
     const bars = [...output.matchAll(/\x1b\[7m([^\x1b]*)\x1b\[0m/g)].map((m) => m[1]);
-    // Exactly two real paints total: the bar's first-ever paint (deferred
-    // until question_snapshot arrives, which doubles as the onset paint
-    // since the question is already live by then -- status A, stored
-    // earlier), and the resumed paint on the transition back out (status B,
-    // reflecting the change made during the freeze). Every tick while
-    // frozen wrote nothing, despite the status having changed mid-freeze.
-    expect(bars.length).toBe(2);
-    expect(bars[0]).toContain('idle');
-    expect(bars[1]).toContain('thinking');
+    expect(bars.at(-1)).toContain('thinking');
+    // The dedup still holds. ~3.25s of bar life at a 250ms cadence is ~13
+    // ticks; expected paints are the onset, one or two heartbeats and the
+    // resumed paint, so a bound of 5 proves ticks were deduped rather than
+    // painted. A bound loose enough to cover every tick could not fail if
+    // the dedup were deleted outright, which is the regression it guards.
+    expect(bars.length).toBeLessThanOrEqual(5);
   });
 
   // #932: an older daemon that never sends question_snapshot must not lose
@@ -811,7 +837,7 @@ describe('runAttachClient', () => {
       host: 'localhost',
       port: TEST_PORT + 14,
       sessionId: targetSessionId,
-      timeout: 3000,
+      timeout: 6000,
       outputFd,
       statusBarEligible: true,
     });
@@ -905,7 +931,7 @@ describe('runAttachClient', () => {
       host: 'localhost',
       port: TEST_PORT + 15,
       sessionId: targetSessionId,
-      timeout: 3000,
+      timeout: 6000,
       outputFd,
       statusBarEligible: true,
     });
@@ -1000,7 +1026,7 @@ describe('runAttachClient', () => {
       host: 'localhost',
       port: TEST_PORT + 16,
       sessionId: targetSessionId,
-      timeout: 3000,
+      timeout: 6000,
       outputFd,
       statusBarEligible: true,
     });

@@ -103,6 +103,31 @@ export class StatusWriter {
   }
 
   /**
+   * Re-read the pull-based fields (`attached` / `queuedCount`) and schedule a
+   * flush only when one of them actually changed.
+   *
+   * `getAttachState` is pulled inside `write()` (#755), which is right about
+   * the VALUE but says nothing about WHEN a write happens — and no attach or
+   * detach path calls `update()`. So before this existed, a phone attaching
+   * changed nothing anybody could see: the reserved-row bar,
+   * `status-<PORT>.json`, the attach client and the app all kept reading
+   * "no clients" until some unrelated status change happened to trigger a
+   * flush (#1038).
+   *
+   * Driven by `SessionRegistry`'s `onAttachStateChanged`, which is emitted
+   * from the only two lines that mutate `attachedConnections` — so it is
+   * total over every attach path by construction rather than by anyone
+   * remembering to wire one, which is the requirement
+   * [ADR 0020](../../../../.context/decisions/0020-client-status-cue-totality.md)
+   * states. Safe to call from anywhere and cheap when nothing moved: it
+   * schedules only on a real change, so a spurious call costs one
+   * `Set.size` read.
+   */
+  refresh(): void {
+    if (this.pullAttachState()) this.schedule();
+  }
+
+  /**
    * An auto-approve eval started (#560). Increments the in-flight count; stamps
    * the batch start on the 0->1 edge so the statusline can show elapsed time.
    * `nowMs` is Date.now() (floored to seconds for the shell script).
@@ -178,23 +203,46 @@ export class StatusWriter {
     }, this.deps.debounceMs);
   }
 
-  private write(): void {
-    // #755: refresh the attach-state fields from the registry at flush time so
-    // every scheduled write (status changes, evals, connection churn) carries
-    // current values; a pull here beats scattering updates over every attach /
-    // disconnect / auto-promotion site.
+  /**
+   * Pull `attached` / `queuedCount` from the registry into the in-memory
+   * status. Returns true iff either value changed, which is what lets
+   * `refresh()` poll cheaply without writing on every tick.
+   *
+   * A read failure is logged once per streak on its own latch: a stuck
+   * attach-state read must not mute the first report of a broken `remi_status`
+   * broadcast (which the #754 attach status bar depends on), or vice versa.
+   */
+  private pullAttachState(): boolean {
     try {
       const attach = this.deps.getAttachState?.();
-      if (attach) {
-        this.status.attached = attach.attached;
-        this.status.queuedCount = attach.queuedCount;
-      }
+      if (!attach) return false;
+      const changed =
+        this.status.attached !== attach.attached || this.status.queuedCount !== attach.queuedCount;
+      this.status.attached = attach.attached;
+      this.status.queuedCount = attach.queuedCount;
+      // Clear the streak so a LATER failure is reported too. Without this the
+      // latch is once-per-process, not once-per-streak as documented, and an
+      // intermittently-throwing registry read (session teardown) would be
+      // silently swallowed for the life of the daemon after the first one --
+      // the same asymmetry `errorLogged` already avoids for the file write.
+      this.attachStateErrorLogged = false;
+      return changed;
     } catch (err) {
       if (!this.attachStateErrorLogged) {
         this.deps.writeLog(`[error] Status attach-state read failed: ${err}`);
         this.attachStateErrorLogged = true;
       }
+      return false;
     }
+  }
+
+  private write(): void {
+    // #755: refresh the attach-state fields from the registry at flush time so
+    // every scheduled write (status changes, evals, connection churn) carries
+    // current values; a pull here beats scattering updates over every attach /
+    // disconnect / auto-promotion site. `refresh()` polls the same pull so an
+    // attach that changes nothing else still reaches the bar and the clients.
+    this.pullAttachState();
     // #754: clients get the same debounced snapshot the disk gets, regardless
     // of whether the file write itself is enabled.
     try {
