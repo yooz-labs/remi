@@ -873,7 +873,7 @@ let autoApproveService: AutoApproveService | null = null;
     const localProvider = provider === 'yooz' || provider === 'llamacpp';
     const detectedBackend = detectLocalLLMPlatform();
     if (localProvider && detectedBackend === 'unsupported') {
-      writeToLog(
+      logError(
         `[AutoApprove] No local LLM backend exists for ${process.platform}/${process.arch}: the Yooz engine needs Apple Silicon (MLX) and the llama.cpp path is Linux. Auto-approve will escalate every permission until you point auto_approve.provider at a reachable backend (e.g. openrouter, or a custom URL).`,
       );
     } else if (provider === 'llamacpp') {
@@ -886,10 +886,11 @@ let autoApproveService: AutoApproveService | null = null;
       // the honest thing is to say so at boot rather than at the first
       // permission -- and to say exactly what to run, since the weights and
       // the transport both already exist. `-hf` pulls from HuggingFace on
-      // first run; the `:Q4_0` suffix is load-bearing (see `defaultModel`).
-      writeToLog(
+      // first run; the quant suffix is explicit for determinism, not
+      // because a bare id fails (see `defaultModel`).
+      logError(
         `[AutoApprove] provider = "llamacpp": remi does not yet download or supervise a llama.cpp server (#822), so start one yourself and auto-approve works:
-    ${llamaServerCommand(aaCfg.model)}
+    ${llamaServerCommand(model)}
   Until it answers on ${baseUrl}, every permission escalates. A remote provider (openrouter, a custom URL) also works.`,
       );
       // llama-server ignores the request's `model` field in single-model mode
@@ -899,9 +900,9 @@ let autoApproveService: AutoApproveService | null = null;
       // agreed. Silent, and it makes escalate_model actively misleading rather
       // than merely absent. #822's own scope calls this out as an open design
       // question ("one model per process"); until it is decided, say so.
-      if (aaCfg.escalate_model && aaCfg.escalate_model !== aaCfg.model) {
-        writeToLog(
-          `[AutoApprove] escalate_model = "${aaCfg.escalate_model}" has no effect on provider = "llamacpp": llama-server serves the one model it was started with and ignores the requested model id, so the "second opinion" would come from the primary model (#822). Run a separate backend and point escalate_model at it via a full URL, or leave it empty.`,
+      if (aaCfg.escalate_model && aaCfg.escalate_model !== model) {
+        logError(
+          `[AutoApprove] escalate_model = "${aaCfg.escalate_model}" has no effect on provider = "llamacpp": llama-server serves the one model it was started with and ignores the requested model id, so the "second opinion" would come from the primary model (#822). There is no per-model base URL in the config, so there is no way to route it elsewhere today (#822 owns that design question) -- leave it empty until then.`,
         );
       }
     }

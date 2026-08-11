@@ -930,6 +930,34 @@ export function classifyRisk(
 }
 
 /**
+ * Which layer produced the verdict that actually shipped (#1040).
+ *
+ * The reasoning string already says this in prose ("Risk ceiling (#976):
+ * model approved a high-risk operation..."), which is why answering "why did
+ * this escalate" means reading paragraphs and why the answer cannot be
+ * counted across a session at all. A field can be grepped and tallied.
+ *
+ * MUST stay total over the set of guards in `auto-approve-service.ts` that can
+ * replace the model's verdict after it returns. A guard with no member here
+ * does not merely lose a label — it falls through to the `'model'` default and
+ * reports that the model produced a verdict it did not produce, which is worse
+ * than no field at all because it will be counted. The first cut of this type
+ * shipped covering two of six guards and was caught in review; `'model'` being
+ * the default is exactly what made the omission invisible.
+ *
+ * Diagnostic only. Nothing reads it back to decide anything, so it cannot
+ * drift into being a second, competing copy of the decision.
+ */
+export type DecidingLayer =
+  | 'model'
+  | 'deny_floor'
+  | 'trust_boundary'
+  | 'risk_ceiling'
+  | 'precedent'
+  | 'counterfactual'
+  | 'counterfactual_failed';
+
+/**
  * The matrix context a decision was taken in, for the decision log (#976).
  *
  * Extracted as a pure function rather than inlined into the template so the
@@ -945,19 +973,6 @@ export function classifyRisk(
  * whether there was any text to grade. The eligible population is the
  * intersection, and it has never been counted.
  */
-/**
- * Which layer produced the verdict that actually shipped (#1040).
- *
- * The reasoning string already says this in prose ("Risk ceiling (#976):
- * model approved a high-risk operation..."), which is why answering "why did
- * this escalate" means reading paragraphs and why the answer cannot be
- * counted across a session at all. A field can be grepped and tallied.
- *
- * Diagnostic only. Nothing reads it back to decide anything, so it cannot
- * drift into being a second, competing copy of the decision.
- */
-export type DecidingLayer = 'model' | 'deny_floor' | 'risk_ceiling';
-
 export function formatMatrixContext(
   band: RiskBand,
   authorityPresent: boolean,

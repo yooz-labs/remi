@@ -1065,8 +1065,8 @@ export class AutoApproveService {
         // MODEL-produced denies only.
         if (!useMultiChoice && result.decision === 'deny') {
           const floored = enforceDenyFloor(toolName, toolInput, result.decision);
-          if (floored.overridden) decidedBy = 'deny_floor';
           if (floored.overridden) {
+            decidedBy = 'deny_floor';
             const original = result;
             result = {
               decision: 'escalate',
@@ -1093,6 +1093,7 @@ export class AutoApproveService {
         if (!useMultiChoice && authorityPresent && result.decision === 'approve') {
           const guarded = enforceAuthorityBoundary(toolName, toolInput, result.decision, true);
           if (guarded.overridden) {
+            decidedBy = 'trust_boundary';
             const original = result;
             result = {
               decision: 'escalate',
@@ -1168,6 +1169,7 @@ export class AutoApproveService {
             signatureForOperation(toolName, toolInput),
           );
           if (deniedMatch !== null) {
+            decidedBy = 'precedent';
             const original = result;
             result = {
               decision: 'escalate',
@@ -1220,6 +1222,7 @@ export class AutoApproveService {
             const cfParsed = parseDecision(cfResponse.content);
             const reconciled = reconcileCounterfactual(cfParsed.decision);
             if (reconciled.overridden) {
+              decidedBy = 'counterfactual';
               const original = result;
               result = {
                 decision: 'escalate',
@@ -1236,6 +1239,11 @@ export class AutoApproveService {
             // The counterfactual is a SAFETY check, so failing to run it must
             // not leave the authority-influenced approve standing. Escalate --
             // the same direction every other failure in this module takes.
+            // Labelled distinctly from a counterfactual that RAN and
+            // overrode: this escalate says nothing about the operation, only
+            // that the check was unavailable, and a reader tuning a config
+            // needs to tell "the guard judged you" from "the guard broke".
+            decidedBy = 'counterfactual_failed';
             result = {
               decision: 'escalate',
               reasoning: `Authority counterfactual (#954) could not be evaluated (${errorToString(err)}); escalating rather than trusting an authority-influenced approve. Original: ${result.reasoning}`,

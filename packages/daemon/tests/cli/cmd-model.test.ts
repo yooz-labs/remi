@@ -32,7 +32,15 @@ function run(
   cmdIo: ModelCommandIO,
   deps: ModelCommandDeps = {},
 ): Promise<number> {
-  return runModelCommand(args, config, cmdIo, { ensureEngine: async () => false, ...deps });
+  // persistModel defaults to a no-op for the same reason ensureEngine does:
+  // the real one rewrites the DEVELOPER's ~/.remi/config.toml in place, and a
+  // test that forgets to inject it silently does so. That already happened
+  // once on this branch. Safe by construction now, not by convention.
+  return runModelCommand(args, config, cmdIo, {
+    ensureEngine: async () => false,
+    persistModel: () => {},
+    ...deps,
+  });
 }
 
 /** Real config object with the yooz provider, as a fresh engine install has. */
@@ -1615,7 +1623,6 @@ describe('remi model — provider = "llamacpp" (#822)', () => {
   const ENGINE_VERBS = [
     'ls',
     'ps',
-    'status',
     'pull',
     'cancel',
     'rm',

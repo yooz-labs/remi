@@ -3,10 +3,13 @@
  *
  * Two properties matter more than the wording:
  *
- *  1. `strict` is BYTE-IDENTICAL to what shipped before levels existed. The
- *     baseline is captured from `develop`'s own `buildPrompt`, not
- *     hand-transcribed, so it is a real comparison rather than a copy of this
- *     branch's output agreeing with itself.
+ *  1. `strict`'s prompt is PINNED, so every change to it is deliberate.
+ *     Through #1040 the baseline was `develop`'s own pre-levels output, which
+ *     made this a differential check ("introducing levels changed nothing for
+ *     existing users"). #1040 had to correct the shared header at EVERY level,
+ *     so the baseline is now this branch's output and the pin is a
+ *     change-gate, not a comparison. See the `describe` block below for the
+ *     standard that governs regenerating it.
  *  2. Raising a level widens what is ROUTINE, never what is dangerous. The
  *     DENY FLOOR, deletion, remote mutation, package install and design
  *     questions are fixed at every level, and each is asserted rather than
@@ -247,5 +250,49 @@ describe('instructions and authority still work at every level', () => {
       expect(text, `level ${level}`).toContain('CONVERSATION CONTEXT — reported history');
       expect(text, `level ${level}`).toContain('I asked for this');
     }
+  });
+});
+
+// #1040. The fixture above is generated with `instructions === undefined`, so
+// it pins ONLY the shared header. The two rewrites that matter most render
+// exclusively when guidance is present -- i.e. in the one scenario where the
+// ceiling conflict actually bites -- and were pinned by nothing: reverting
+// either to the old "only the DENY FLOOR" wording passed the whole suite.
+describe('the guidance blocks name BOTH code-enforced guards (#1040)', () => {
+  function withGuidance(): string {
+    return (
+      buildPrompt(
+        'Bash',
+        { command: 'PLACEHOLDER' },
+        'Approve routine work.',
+        undefined,
+        'strict',
+      )[0]?.content ?? ''
+    );
+  }
+
+  test('the USER GUIDANCE block names the risk ceiling, not the deny floor alone', () => {
+    const p = withGuidance();
+    expect(p).toContain('RISK CEILING');
+    // The exact false claim this commit removed. If it comes back, so does the
+    // hedging it produced ("While User Guidance says to approve...").
+    expect(p).not.toContain('OVERRIDES every default rule below except the DENY FLOOR.');
+  });
+
+  test('the trailing REMEMBER reminder names both guards too', () => {
+    // This is the RECENCY slot, placed last precisely because a small model
+    // reverts to its cautious prior by the time it decides -- so it is the
+    // worst place to leave the stale claim, and it is where the first cut of
+    // #1040 left it.
+    const p = withGuidance();
+    const reminder = p.slice(p.lastIndexOf('REMEMBER:'));
+    expect(reminder).toContain('RISK CEILING');
+    expect(reminder).not.toContain('unless the DENY FLOOR matches');
+  });
+
+  test('none of it renders when there is no guidance', () => {
+    const bare = systemPrompt('strict');
+    expect(bare).not.toContain('USER GUIDANCE — HIGHEST PRIORITY');
+    expect(bare).not.toContain('REMEMBER:');
   });
 });

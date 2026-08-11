@@ -9,6 +9,7 @@ import * as path from 'node:path';
 import {
   DEFAULT_CONFIG,
   applyEnvOverrides,
+  defaultModel,
   detectLocalLLMPlatform,
   formatConfig,
   generateDefaultConfig,
@@ -343,14 +344,44 @@ describe('formatConfig', () => {
     const model = DEFAULT_CONFIG.auto_approve.model;
     if (backend === 'llamacpp') {
       expect(model).toContain('GGUF');
-      // -hf defaults to :Q4_K_M and these repos publish only Q4_0, so the
-      // quant suffix is load-bearing, not decoration.
+      // Explicit for determinism: `-hf` with no tag prefers Q4_K_M/Q8_0 then
+      // falls back to the FIRST .gguf in the repo, which is order-dependent
+      // if a second quant is ever published.
       expect(model).toContain(':Q4_0');
       expect(model).not.toContain('mlx');
     } else {
       expect(model).toContain('mlx');
       expect(model).not.toContain('GGUF');
     }
+  });
+
+  // CI runs ubuntu-latest ONLY, so detectLocalLLMPlatform() there is always
+  // 'llamacpp' and the tests above exercise only the GGUF branch. The macOS
+  // branch -- the primary shipping platform -- would be unprotected: making
+  // defaultModel return the GGUF id unconditionally passes the merge gate
+  // while shipping an id the engine rejects with 400 invalid_model, which
+  // surfaces as "every question escalates" rather than as a broken daemon.
+  // Injected args, like detectLocalLLMPlatform's own table test.
+  test('defaultModel maps every platform, on every platform (#822)', () => {
+    expect(defaultModel('darwin', 'arm64')).toBe('YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx');
+    expect(defaultModel('linux', 'x64')).toBe('YoozLabs/Qwen3.5-4B-qat-GGUF:Q4_0');
+    expect(defaultModel('linux', 'arm64')).toBe('YoozLabs/Qwen3.5-4B-qat-GGUF:Q4_0');
+    // unsupported targets inherit the engine's value, matching defaultProvider's
+    // 'yooz' fallback so the pair stays coherent.
+    expect(defaultModel('darwin', 'x64')).toBe('YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx');
+    expect(defaultModel('win32', 'x64')).toBe('YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx');
+  });
+
+  test('llamaServerCommand never prints an unrunnable -hf argument (#822)', () => {
+    // provider = "llamacpp" on Apple Silicon is a real setup and nothing
+    // validates provider/model consistency, so the configured id can be the
+    // MLX default or empty. Printing `-hf ...-mlx` hands the user a command
+    // that cannot load, which is worse than printing none.
+    expect(llamaServerCommand()).toContain(':Q4_0');
+    expect(llamaServerCommand('YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx')).toContain('GGUF');
+    expect(llamaServerCommand('')).toContain('GGUF');
+    // A real GGUF id is passed through untouched.
+    expect(llamaServerCommand('YoozLabs/Qwen3.5-0.8B-qat-GGUF:Q4_0')).toContain('0.8B');
   });
 
   test('the llama-server command remi prints is runnable and matches the config default (#822)', () => {
