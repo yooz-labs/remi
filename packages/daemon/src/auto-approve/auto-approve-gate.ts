@@ -1445,7 +1445,11 @@ export class AutoApproveGate {
       // a subagent can reach at hook time (the LLM never runs -- ADR 0004), so
       // without this a per-agent grant would be unreachable for exactly the
       // requests it was written for.
-      const deterministic = service?.evaluateDeterministic?.(input.tool_name, input.tool_input);
+      const deterministic = service?.evaluateDeterministic?.(
+        input.tool_name,
+        input.tool_input,
+        input.agent_type,
+      );
       if (deterministic?.decision === 'approve') {
         log(
           `[Hooks] Subagent PermissionRequest answered allow at hook time (deterministic): agent=${input.agent_id?.slice(0, 8)} type=${input.agent_type} tool=${input.tool_name} - ${deterministic.reasoning}`,
@@ -2265,6 +2269,12 @@ export class AutoApproveGate {
     isSubagent: boolean,
     evalId?: number,
   ): Promise<AutoApproveResult | null> {
+    // ADR 0025: the second opinion re-runs `evaluateDeterministic`, so it needs
+    // the SAME agent policy the first eval used. Omitting it resolved to the
+    // BASE policy and silently undid a per-agent narrowing: a `pr-review`
+    // section restricting `approve_groups` is escalated by the first eval, then
+    // deterministically approved at 0ms by this one under the base groups --
+    // and logged as if the heavy model had agreed.
     const escalateModel = this.deps.escalateModel;
     const service = this.deps.service;
     if (!escalateModel || service === null) return null;
@@ -2280,6 +2290,7 @@ export class AutoApproveGate {
         isSubagent,
         this.authorityForEval(),
         this.precedentForEval(),
+        input.agent_type,
       );
     } catch (err) {
       logError(`[AutoApprove ${this.sessionTag}] escalate_model second opinion threw:`, err);

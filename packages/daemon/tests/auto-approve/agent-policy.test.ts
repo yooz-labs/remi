@@ -10,6 +10,8 @@
  */
 
 import { describe, expect, test } from 'bun:test';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import {
   type ResolvedPolicy,
   resolvePolicy,
@@ -321,5 +323,45 @@ describe('validateAgents', () => {
     expect(() => validateAgents({ Explore: { approve_group: ['read-only'] } }, '/c.toml')).toThrow(
       /Unknown key.*approve_group/s,
     );
+  });
+});
+
+describe('the gate actually threads agent_type to every evaluation site', () => {
+  // Proven necessary by incident, not by imagination: during this PR's review a
+  // mutation removed `input.agent_type` from the hook-time
+  // `evaluateDeterministic` call and the ENTIRE suite stayed green, because
+  // every test above calls the service directly. The feature was inert on the
+  // path that matters most (ADR 0004: the hook-time deterministic layer is the
+  // only one a subagent reaches) and nothing said so.
+  //
+  // A behavioural test cannot reach these: `AutoApproveGate`'s call sites are
+  // reached only through a live hook dispatch. So this pins the three sites by
+  // source, which is the same shape `cancel.test.ts` uses and has the same
+  // limitation — it proves the argument is passed, not that it is honoured.
+  const gate = fs.readFileSync(
+    path.join(import.meta.dir, '..', '..', 'src', 'auto-approve', 'auto-approve-gate.ts'),
+    'utf8',
+  );
+
+  test('hook-time evaluateDeterministic receives agent_type', () => {
+    const i = gate.indexOf('evaluateDeterministic?.(');
+    expect(i).toBeGreaterThan(-1);
+    expect(gate.slice(i, i + 200)).toContain('input.agent_type');
+  });
+
+  test('all three evaluation sites pass it', () => {
+    // hook-time deterministic, parked-render evaluate, escalate_model second
+    // opinion. The third was missed in the first draft and re-ran the
+    // deterministic layers under the BASE policy, silently undoing a per-agent
+    // narrowing — so the count, not just the presence, is the assertion.
+    const sites = gate.split('input.agent_type,').length - 1;
+    expect(sites).toBe(3);
+  });
+
+  test('runSecondOpinion specifically forwards it', () => {
+    const i = gate.indexOf('private async runSecondOpinion(');
+    expect(i).toBeGreaterThan(-1);
+    const body = gate.slice(i, gate.indexOf('\n  }', i));
+    expect(body).toContain('input.agent_type,');
   });
 });

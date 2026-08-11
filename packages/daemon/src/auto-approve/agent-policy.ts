@@ -11,6 +11,7 @@
  * gets tested loosely.
  */
 
+import { isKnownGroup, knownGroupNames } from './permission-groups.ts';
 import type { AgentPolicyOverride } from './types.ts';
 
 /** The four deterministic lists, resolved for one request. */
@@ -104,6 +105,29 @@ export function validateAgents(value: unknown, configPath: string): void {
         throw new Error(
           `Invalid auto_approve.agents.${agentType}.${key} in ${configPath}: must be an array of strings, got ${JSON.stringify(v)}.`,
         );
+      }
+    }
+    // Group NAMES are checkable and must be checked, unlike agent names (no
+    // registry exists for those -- ADR 0025 records that). Skipping this was
+    // worse than a no-op: because `approve_groups` REPLACES, a typo does not
+    // merely fail to grant the group, it drops the agent's inherited base
+    // grants too. `approve_groups = ["net-reed"]` silently leaves that agent
+    // with less than the base, and the user-visible result is the 240s queue
+    // stall this feature exists to remove. The base path already warns for the
+    // same typo one section up, so the asymmetry was indefensible.
+    //
+    // WARN, not throw, matching the base. A throw reaches `cli.ts`'s exit(1),
+    // and under the `--install` LaunchAgent (`KeepAlive.SuccessfulExit=false`)
+    // that is a crash-restart loop over a one-character typo.
+    for (const key of ['approve_groups', 'deny_groups'] as const) {
+      const groups = (section as Record<string, unknown>)[key];
+      if (!Array.isArray(groups)) continue;
+      for (const g of groups) {
+        if (typeof g === 'string' && !isKnownGroup(g)) {
+          console.warn(
+            `[AutoApprove] Warning: unknown permission group "${g}" in auto_approve.agents.${agentType}.${key} (${configPath}); ignored. Known groups: ${knownGroupNames().join(', ')}.`,
+          );
+        }
       }
     }
     for (const key of Object.keys(section as Record<string, unknown>)) {
