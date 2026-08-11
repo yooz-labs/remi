@@ -170,7 +170,7 @@ describe('spawnDetachedEngine', () => {
   const SLEEP = '/bin/sleep';
 
   test('starts a real process and returns its pid', () => {
-    const pid = spawnDetachedEngine(SLEEP, { YOOZ_ENGINE_PORT: '19924' }, LOG_FILE);
+    const pid = spawnDetachedEngine(SLEEP, [], { YOOZ_ENGINE_PORT: '19924' }, LOG_FILE);
     try {
       expect(pid).toBeGreaterThan(0);
       // Signal 0: alive without delivering anything.
@@ -189,15 +189,18 @@ describe('spawnDetachedEngine', () => {
     // A silent failure would leave a record for a process that never existed,
     // blocking every later attempt.
     const missing = path.join(TEST_DIR, 'no-such-helper');
-    expect(() => spawnDetachedEngine(missing, {}, LOG_FILE)).toThrow();
+    expect(() => spawnDetachedEngine(missing, [], {}, LOG_FILE)).toThrow();
   });
 
   test('writes a start banner to the log file', () => {
     // The helper's own diagnostics are the only evidence available when it
     // starts but never binds, so the log has to exist and be appended to.
-    const pid = spawnDetachedEngine(SLEEP, {}, LOG_FILE);
+    const pid = spawnDetachedEngine(SLEEP, [], {}, LOG_FILE);
     try {
-      expect(fs.readFileSync(LOG_FILE, 'utf8')).toContain('Engine starting at');
+      // Names the EXECUTABLE, not "Engine" (#822): the same function now also
+      // launches llama-server, and a banner calling that the engine is the
+      // wrong-but-plausible description ADR 0011 exists to prevent.
+      expect(fs.readFileSync(LOG_FILE, 'utf8')).toContain('sleep starting at');
     } finally {
       try {
         process.kill(pid);
@@ -213,7 +216,7 @@ describe('spawnDetachedEngine', () => {
     const before = process.report?.getReport() as { openFileDescriptors?: unknown[] } | undefined;
     const pids: number[] = [];
     try {
-      for (let i = 0; i < 12; i++) pids.push(spawnDetachedEngine(SLEEP, {}, LOG_FILE));
+      for (let i = 0; i < 12; i++) pids.push(spawnDetachedEngine(SLEEP, [], {}, LOG_FILE));
       const after = process.report?.getReport() as { openFileDescriptors?: unknown[] } | undefined;
       const beforeCount = before?.openFileDescriptors?.length;
       const afterCount = after?.openFileDescriptors?.length;

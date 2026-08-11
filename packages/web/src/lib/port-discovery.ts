@@ -31,7 +31,7 @@ export const DEFAULT_PORT_RANGE = DAEMON_PORT_RANGE;
  *
  * Budget: a healthy LAN daemon answers `/auth-info` in single-digit ms; an
  * unreachable host returns ECONNREFUSED in microseconds. The interesting
- * case is a host that ACCEPTs the TCP connection but never responds (broken
+ * case is a host that ACCEPTS the TCP connection but never responds (broken
  * proxy, half-dead daemon). 1500 ms gives enough slack for slow VPN paths
  * while keeping the worst-case scan under ~2 s before the modal surfaces an
  * error.

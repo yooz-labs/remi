@@ -9,6 +9,8 @@
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { AutoApproveService } from '../../src/auto-approve/auto-approve-service.ts';
 import type { AutoApproveConfig } from '../../src/auto-approve/types.ts';
 
@@ -277,5 +279,38 @@ describe('AutoApproveService.cancel()', () => {
     // Reasoning should NOT include 'Hard kill' or 'Cancelled' — the leak
     // would surface as one of those.
     expect(second.reasoning).not.toMatch(/hard kill|cancelled/i);
+  });
+});
+
+describe('a prompt leaving the screen cancels its eval (terminal-answered permissions)', () => {
+  // `onHooklessQuestionGone` is the ONLY evidence remi gets that a permission
+  // was answered directly in the terminal: no hook fires, the prompt simply
+  // disappears. It cleared the card and released the hold, but did NOT cancel
+  // the eval -- so a queued waiter kept its place in the serial lane and ran,
+  // or burned the full queue_timeout, to decide something a human had already
+  // answered, then pushed a card for it.
+  //
+  // Measured on a live 0.7.6 session: 7-10s per eval, run one at a time, with
+  // WebFetch/WebSearch escalating at exactly 240001ms having never reached the
+  // model. Every already-answered survivor delayed every real question behind
+  // it.
+  const cli = fs.readFileSync(path.join(import.meta.dir, '..', '..', 'src', 'cli.ts'), 'utf8');
+
+  test('the disappearance handler cancels the eval', () => {
+    // A behavioural test cannot reach this: the wiring lives in module-level
+    // startup code in cli.ts with no seam. Without this pin, the queued-waiter
+    // cancel below stays green while nothing calls it -- the ADR 0011 row-5
+    // shape, in a fix for a measured production stall.
+    // Asserted on the EXACT call, not on a window around the handler: the
+    // first version of this pin scanned 3000 chars from the handler and so
+    // reached input-events.ts's own `cancelEvalForQuestion` call sites, which
+    // meant deleting this one left it green. Verified by mutation.
+    // Bounded to the handler BODY, not the whole file. A whole-file
+    // `toContain` stayed green when the call was deleted from the handler and
+    // the same string added to a never-called function -- verified by mutation.
+    const i = cli.indexOf('onHooklessQuestionGone:');
+    expect(i).toBeGreaterThan(-1);
+    const handler = cli.slice(i, cli.indexOf('\n  });', i));
+    expect(handler).toContain('cancelEvalForQuestion');
   });
 });

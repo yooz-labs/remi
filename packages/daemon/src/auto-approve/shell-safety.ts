@@ -16,6 +16,42 @@
 /** Benign segments that may appear in a compound command without needing coverage. */
 export const NEUTRAL_PREFIXES: readonly string[] = ['cd', 'pwd', 'true', 'echo', ':'];
 
+/*
+ * ATTEMPT 5, REVERTED BEFORE MERGE: "a segment whose every word is an
+ * assignment runs no command, so it needs no coverage."
+ *
+ * It rejected `PATH=/evil ls` (the glued form) and AUTO-APPROVED the
+ * semicolon form, which is strictly worse because a bare assignment persists
+ * for every later segment:
+ *
+ *     PATH=/tmp/evil ls     -> escalate            (guarded)
+ *     PATH=/tmp/evil; ls    -> APPROVE read-only:ls  at 0ms
+ *
+ * `splitCompound` splits on `;`/`&&`/`||`/newline, so identical shell
+ * semantics arrive as two segments — an "inert" assignment plus a covered
+ * read. Verified against real bash: both spellings run the attacker's binary
+ * (`PATH`/`HOME` are already exported, so a bare assignment keeps the export
+ * attribute). `export PATH=…; git status` was a second route, since `export`
+ * is peeled by `stripShellGrammar` first. This lands on `read-only`, which is
+ * in EVERY preset including the default, and via #1024 is answered at hook
+ * time for a subagent with no render and no card.
+ *
+ * This is attempt (1) of the post-mortem below, and that post-mortem's
+ * conclusion stands: no property of an assignment inspected IN ISOLATION
+ * separates benign from dangerous, because the danger is what the assignment
+ * does to LATER segments. A correct fix must carry inertness FORWARD — a
+ * pure-assignment segment poisoning every subsequent non-neutral segment, the
+ * way `artifactCleanPoisonWalk` poisons on `cd` — not judge the segment alone.
+ * Name-denylisting (`PATH`/`LD_*`/`BASH_ENV`/…) is item (2) and is rejected
+ * there.
+ *
+ * Do not re-add without the forward-poison walk AND test cases in the `;`,
+ * `&&` and newline spellings. The reverted version's own test block was named
+ * "an assignment PREFIX to a command is NOT inert" and pinned five cases,
+ * every one the glued spelling that already worked — so it passed green while
+ * the hole was open.
+ */
+
 /**
  * Shell keywords that PREFIX a real command (#999).
  *

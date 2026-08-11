@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.7.6'; // REMI_COMPILED_VERSION
+      return '0.7.7-dev.4'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.7.6'; // REMI_COMPILED_VERSION
+    return '0.7.7-dev.4'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -134,6 +134,8 @@ import {
   SubagentAlerter,
   alertBody,
   alertTitle,
+  llamaServerMissingHint,
+  resolveLlamaServer,
   resolveProviderUrl,
 } from './auto-approve/index.ts';
 import type { PrecedentStore } from './auto-approve/precedent.ts';
@@ -190,6 +192,10 @@ import {
 import type { RemiConfig } from './config/index.ts';
 import { ForeignSessionEscalator, HookConfigManager, HookServer } from './hooks/index.ts';
 import type { HookInput, PermissionRequestHookInput, StopHookInput } from './hooks/index.ts';
+// Static, unlike the publisher below it: this is a pure decision with no
+// side effects and nothing to load, so there is nothing for a dynamic import
+// to defer -- and it is needed on the path where mDNS never starts at all.
+import { mdnsSuppression, mdnsSuppressionMessage } from './mdns/advertise-decision.ts';
 import { DeviceTokenStore } from './notifications/device-token-store.ts';
 import type { NotificationDispatcher } from './notifications/notification-dispatcher.ts';
 import { sendPushTrigger } from './notifications/push-client.ts';
@@ -887,53 +893,68 @@ let autoApproveService: AutoApproveService | null = null;
       logError(
         `[AutoApprove] No local LLM backend exists for ${process.platform}/${process.arch}: the Yooz engine needs Apple Silicon (MLX) and the llama.cpp path is Linux. Auto-approve will escalate every permission until you point auto_approve.provider at a reachable backend (e.g. openrouter, or a custom URL).`,
       );
-    } else if (provider === 'llamacpp') {
-      // Linux resolves to `llamacpp`, but NOTHING installs or supervises a
-      // llama-server yet (#822) -- remi only supervises the engine transport.
-      // Left unsaid, a Linux user enabling auto-approve gets silence and then
-      // every permission escalated, which is precisely the unexplained
-      // degradation #818 was filed to remove, reintroduced on another platform.
-      // The macOS path fetches its own helper (#834); this one cannot yet, so
-      // the honest thing is to say so at boot rather than at the first
-      // permission -- and to say exactly what to run, since the weights and
-      // the transport both already exist. `-hf` pulls from HuggingFace on
-      // first run; the quant suffix is explicit for determinism, not
-      // because a bare id fails (see `defaultModel`).
+    } else if (provider === 'llamacpp' && resolveLlamaServer() === undefined) {
+      // remi SUPERVISES llama-server since #822 (spawn, health-probe, stop) but
+      // deliberately never INSTALLS it -- see llamacpp-backend.ts for where that
+      // line is drawn. So the only remaining boot-time gap is a missing binary,
+      // and it is worth saying here rather than at the first permission: left
+      // unsaid, a Linux user enabling auto-approve gets silence and then every
+      // permission escalated, which is precisely the unexplained degradation
+      // #818 was filed to remove, reintroduced on another platform.
+      //
+      // Nothing is printed when the binary IS present: remi starts it on
+      // demand, so there is no action for the user to take and a warning would
+      // describe a problem that does not exist.
       logError(
-        `[AutoApprove] provider = "llamacpp": remi does not yet download or supervise a llama.cpp server (#822), so start one yourself and auto-approve works:
-    ${llamaServerCommand(model)}
-  Until it answers on ${baseUrl}, every permission escalates. A remote provider (openrouter, a custom URL) also works.`,
+        `[AutoApprove] provider = "llamacpp": ${llamaServerMissingHint()}
+  Until something answers on ${baseUrl}, every permission escalates. A remote provider (openrouter, a custom URL) also works.
+  Once installed, remi runs it for you as: ${llamaServerCommand(model)}`,
       );
-      // llama-server ignores the request's `model` field in single-model mode
-      // (verified against its README), so a configured escalate_model is
-      // answered by whatever GGUF was loaded at process start -- a "second
-      // opinion" from the same weights, reported as if a heavier model had
-      // agreed. Silent, and it makes escalate_model actively misleading rather
-      // than merely absent. #822's own scope calls this out as an open design
-      // question ("one model per process"); until it is decided, say so.
-      if (aaCfg.escalate_model && aaCfg.escalate_model !== model) {
-        logError(
-          `[AutoApprove] escalate_model = "${aaCfg.escalate_model}" has no effect on provider = "llamacpp": llama-server serves the one model it was started with and ignores the requested model id, so the "second opinion" would come from the primary model (#822). There is no per-model base URL in the config, so there is no way to route it elsewhere today (#822 owns that design question) -- leave it empty until then.`,
-        );
-      }
+    }
+
+    // llama-server ignores the request's `model` field in single-model mode
+    // (verified against its README), so a configured escalate_model is
+    // answered by whatever GGUF was loaded at process start -- a "second
+    // opinion" from the same weights, reported as if a heavier model had
+    // agreed. Silent, and it makes escalate_model actively misleading rather
+    // than merely absent. #822's own scope calls this out as an open design
+    // question ("one model per process"); until it is decided, say so.
+    //
+    // Deliberately OUTSIDE the branch above. It used to be nested inside the
+    // llamacpp warning, which was harmless only because that warning fired for
+    // every llamacpp boot. Now that it fires just for a MISSING binary, nesting
+    // would silence this for exactly the users whose setup works -- i.e.
+    // everyone who would actually get the misleading second opinion.
+    if (provider === 'llamacpp' && aaCfg.escalate_model && aaCfg.escalate_model !== model) {
+      logError(
+        `[AutoApprove] escalate_model = "${aaCfg.escalate_model}" has no effect on provider = "llamacpp": llama-server serves the one model it was started with and ignores the requested model id, so the "second opinion" would come from the primary model (#822). There is no per-model base URL in the config, so there is no way to route it elsewhere today (#822 owns that design question) -- leave it empty until then.`,
+      );
     }
 
     // #818: who starts the engine. Only meaningful for the engine transport —
     // an OpenRouter or llama.cpp base URL is not something remi supervises, and
     // handing those an EngineHost would mean spawning a Yooz helper for a
     // provider that never talks to one.
-    const engineHost =
-      provider === 'yooz'
-        ? EngineHost.real(
-            {
-              baseUrl,
-              ownership: aaCfg.engine,
-              helperPath: aaCfg.engine_path,
-              modelCache: aaCfg.model_cache,
-            },
-            writeToLog,
-          )
-        : undefined;
+    // #822: llamacpp is supervised too now. Both are local sidecars remi owns
+    // on its reserved port; what differs is the launch and the readiness probe,
+    // which `EngineHost` takes as configuration. A remote provider (OpenRouter,
+    // a custom URL) is still never supervised -- handing those a host would
+    // mean spawning a local backend for something that never talks to one.
+    const engineHost = localProvider
+      ? EngineHost.real(
+          {
+            baseUrl,
+            backend: provider === 'llamacpp' ? 'llamacpp' : 'yooz',
+            // llama.cpp needs the id at launch (one GGUF per process); the
+            // engine ignores it and selects per request.
+            model,
+            ownership: aaCfg.engine,
+            helperPath: aaCfg.engine_path,
+            modelCache: aaCfg.model_cache,
+          },
+          writeToLog,
+        )
+      : undefined;
 
     autoApproveService = new AutoApproveService(
       {
@@ -1607,7 +1628,21 @@ const wrapperPtyGate = new PtyQuiescenceGate();
 async function startMdnsIfNeeded(
   logFn: (msg: string) => void,
 ): Promise<import('./mdns/mdns-publisher.ts').MdnsPublisher | null> {
-  if (cliNoMdns || !remiConfig.network.mdns || isLocalhostBind) return null;
+  // #1051: say WHICH condition suppressed it. This used to be a bare
+  // `return null` while every other exit from this function logged, and since
+  // #880 moved the bind default to loopback it became the path every stock
+  // install takes -- so the daemon silently stopped being discoverable and
+  // nothing in its own output said why.
+  const suppression = mdnsSuppression({
+    cliNoMdns,
+    configMdns: remiConfig.network.mdns,
+    isLocalhostBind,
+    bindHost,
+  });
+  if (suppression !== null) {
+    logFn(mdnsSuppressionMessage(suppression));
+    return null;
+  }
   try {
     const { MdnsPublisher } = await import('./mdns/mdns-publisher.ts');
     const publisher = new MdnsPublisher({
@@ -1724,6 +1759,29 @@ async function createNewSession(
       } catch (err) {
         logError(
           `[QuestionPresenceTracker] gate cleanup for superseded ${questionId.slice(0, 8)} threw: ${errorToString(err)}`,
+        );
+      }
+      // The prompt left the screen, which for a permission answered directly in
+      // the terminal is the ONLY evidence remi gets. Until this call the card
+      // cleared but the EVAL did not: a queued waiter kept its place in the
+      // serial lane and ran (or burned the full `queue_timeout`) to decide a
+      // question a human had already answered — then pushed a card for it.
+      //
+      // Measured on a live 0.7.6 session: evals cost 7-10s each and run one at
+      // a time, so every already-answered survivor delayed every real one
+      // behind it, and WebFetch/WebSearch escalated at exactly 240001ms having
+      // never reached the model.
+      //
+      // Separately guarded from the release above, deliberately: these are two
+      // independent cleanups and a throw in either must not skip the other —
+      // the zombie-card pattern #661 fixed in input-events.ts's answer paths.
+      // `cancelEvalForQuestion` is a no-op when no eval is tracked, so this is
+      // safe to call on every disappearance.
+      try {
+        sessionGateHandles.get(sessionId)?.cancelEvalForQuestion?.(questionId as UUID, reason);
+      } catch (err) {
+        logError(
+          `[QuestionPresenceTracker] eval cancel for gone ${questionId.slice(0, 8)} threw: ${errorToString(err)}`,
         );
       }
     },
