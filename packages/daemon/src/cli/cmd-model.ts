@@ -75,6 +75,7 @@ import {
 import { FileEnginePidStore } from '../auto-approve/engine-process.ts';
 import { resolveProviderUrl } from '../auto-approve/llm-client.ts';
 import { displayId, findModel, lookupModel, matchesModel } from '../auto-approve/model-identity.ts';
+import { llamaServerCommand } from '../config/config.ts';
 import type { RemiConfig } from '../config/config.ts';
 
 export interface ModelCommandIO {
@@ -345,6 +346,65 @@ export async function runModelCommand(
     io.err(
       'No LLM endpoint configured. Set [auto_approve] provider (e.g. provider = "yooz") in your remi config.',
     );
+    return 1;
+  }
+
+  // #822: in SINGLE-MODEL mode `llama-server` loads one GGUF at process start
+  // and holds it for the process lifetime, with none of the engine's control
+  // plane (`/v1/llm/*`, `/v1/touchup/*`, `/v1/modules`) that every verb here
+  // but `use` talks to. It DOES serve `GET /v1/models` -- but remi's llamacpp
+  // base URL already ends in `/v1` (see `PROVIDER_URLS`), so even that would
+  // be requested at `/v1/v1/models`. Either way the result is an opaque 404
+  // from a server that IS running and IS answering evals, which reads as
+  // "remi is broken" rather than "this backend has no model management."
+  //
+  // Scoped to the `llamacpp` shortname, so a router-mode server (--models-dir,
+  // which does have dynamic load/unload) reached via a custom base URL is not
+  // covered by this refusal -- nor by any of remi's engine shapes.
+  // Refuse with the reason and the lever that does exist.
+  //
+  // `use` is exempt because it only writes remi's own config -- but it cannot
+  // fall through to the normal path either. That path probes the engine
+  // (`probeEngine` -> `GET {baseUrl}/v1/llm/status`, and the llamacpp base URL
+  // already ends in `/v1`, so it requests `/v1/v1/llm/status`) and gets a 404
+  // from a llama-server that is running fine, then reports "no engine is
+  // answering" and tells the user to check with `remi model ls` -- which the
+  // guard above has just refused. A closed loop, invented by this guard. It
+  // also prints "Restart running daemons to pick it up", which is wrong here:
+  // llama-server ignores the requested model id, so restarting remi changes
+  // nothing and restarting llama-server with a new `-hf` is the only lever.
+  // Persist, then say exactly that.
+  if (aa.provider === 'llamacpp' && verb === 'use') {
+    const requested = args[1];
+    if (requested === undefined || requested === '') {
+      io.err('Usage: remi model use <model-id>');
+      return 2;
+    }
+    const persist = deps.persistModel ?? persistModelInConfig;
+    try {
+      persist(requested);
+    } catch (err) {
+      io.err(`Failed to persist the model choice: ${errorToString(err)}`);
+      return 1;
+    }
+    io.out(`Default model set to ${requested}.`);
+    io.out('llama-server serves the model it was started with, so restart it to apply:');
+    io.out(`    ${llamaServerCommand(requested)}`);
+    return 0;
+  }
+
+  // `status` is spared for the same reason the `shared`-engine guard spares
+  // read-only verbs: it is the DIAGNOSTIC verb, and on the one platform where
+  // remi does not supervise the backend it is exactly the command someone runs
+  // to ask "is my llama-server up, and what will remi use?". Its unreachable
+  // path already reports config + base URL + "auto-approve escalates every
+  // permission while this is down", which is the right answer here too.
+  if (aa.provider === 'llamacpp' && verb !== 'use' && verb !== 'status') {
+    io.err(
+      `"remi model ${verb}" is not available on provider = "llamacpp": llama-server serves the single GGUF it was started with and has no model-management API (#822).`,
+    );
+    io.err('Its model is whatever you passed to -hf, so switch models by restarting it:');
+    io.err(`    ${llamaServerCommand(aa.model)}`);
     return 1;
   }
 

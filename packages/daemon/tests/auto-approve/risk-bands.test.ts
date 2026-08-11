@@ -476,10 +476,39 @@ describe('RISK_BANDS / riskBandRank / riskBandAtLeast', () => {
  */
 describe('#976 formatMatrixContext', () => {
   test('carries both axes, because neither is sufficient alone', () => {
-    expect(formatMatrixContext('moderate', true)).toBe('[band=moderate authority=yes]');
-    expect(formatMatrixContext('moderate', false)).toBe('[band=moderate authority=no]');
-    expect(formatMatrixContext('critical', true)).toBe('[band=critical authority=yes]');
-    expect(formatMatrixContext('high', false)).toBe('[band=high authority=no]');
+    expect(formatMatrixContext('moderate', true)).toBe(
+      '[band=moderate authority=yes decided_by=model]',
+    );
+    expect(formatMatrixContext('moderate', false)).toBe(
+      '[band=moderate authority=no decided_by=model]',
+    );
+    expect(formatMatrixContext('critical', true)).toBe(
+      '[band=critical authority=yes decided_by=model]',
+    );
+    expect(formatMatrixContext('high', false)).toBe('[band=high authority=no decided_by=model]');
+  });
+
+  // #1040: which LAYER produced the verdict. Before this, "why did this
+  // escalate" was answerable only by reading the reasoning prose, so it could
+  // not be counted across a session -- which is how a 51%-escalation config
+  // went undiagnosed.
+  test('names the deciding layer, and defaults to the model', () => {
+    expect(formatMatrixContext('high', true, 'risk_ceiling')).toContain('decided_by=risk_ceiling');
+    expect(formatMatrixContext('critical', false, 'deny_floor')).toContain('decided_by=deny_floor');
+    // Omitted = the model decided unaided, which is the common case and must
+    // not require every caller to say so.
+    expect(formatMatrixContext('low', false)).toContain('decided_by=model');
+  });
+
+  test('a guard-produced escalate is greppable apart from a model-produced one', () => {
+    // The distinction that matters when tuning a config: an escalate the
+    // model chose is a prompt/policy question, one the ceiling produced is a
+    // deterministic-allow question. Conflating them sends you to the wrong fix.
+    const byModel = `AutoApprove Bash: escalate (5000ms) ${formatMatrixContext('moderate', true)}`;
+    const byCeiling = `AutoApprove Bash: escalate (12ms) ${formatMatrixContext('high', true, 'risk_ceiling')}`;
+    expect(byModel).toContain('decided_by=model');
+    expect(byCeiling).toContain('decided_by=risk_ceiling');
+    expect(byModel).not.toContain('decided_by=risk_ceiling');
   });
 
   test('the eligible population is greppable as one token', () => {

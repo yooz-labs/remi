@@ -137,6 +137,13 @@ function withNoThink(messages: readonly ChatMessage[]): ChatMessage[] {
 export async function warmModel(
   baseUrl: string,
   model: string,
+  // #822 caller contract: this is ENGINE-ONLY. `/v1/llm/preload` exists on the
+  // Yooz engine and nowhere else, and the `llamacpp` base URL already carries
+  // a `/v1` suffix (see PROVIDER_URLS), so calling this with it would request
+  // `.../v1/v1/llm/preload` -- a 404 dressed up as a warm-up failure. The sole
+  // caller, `AutoApproveService.warmEscalateModel`, guards on `providerIsYooz`
+  // for exactly this reason; do not relax that guard without moving the path
+  // construction here behind the same check.
   timeoutMs = 120_000,
 ): Promise<void> {
   const controller = new AbortController();
