@@ -441,21 +441,34 @@ describe('#976 a signature that is not the whole operation cannot authorize', ()
     expect(precedentMayAuthorize('', cmd)).toBe(false);
   });
 
-  test('case-SENSITIVE: a lowercase `bash` is not eligible', () => {
-    // Lowercasing reads as defensive and is the bug. `classifyRisk` and the
-    // deny floor compare `toolName === 'Bash'` exactly, so a lowercase `bash`
-    // bands as a NON-Bash tool -- capped at moderate, never floored. Eligible
-    // + unbandable is precisely the hole excluding `terminal` closes.
-    expect(classifyRisk('bash', { command: 'rm -rf /' })).not.toBe('critical');
+  // The next two tests used to assert that a lowercase `bash` and a `terminal`
+  // could not be BANDED -- `classifyRisk(...) !== 'critical'`, floor match null
+  // -- and used that as the reason they were precedent-ineligible. #1020 fixed
+  // the risk layer (it gates on input shape now, not the literal name `Bash`),
+  // so those assertions are false and the stated reason is gone. The
+  // CONCLUSION is unchanged and still pinned; only its justification moved.
+
+  test('case-SENSITIVE: a lowercase `bash` is not eligible, though it now bands correctly', () => {
+    // Post-#1020 the old hazard is gone: a lowercase `bash` bands and floors
+    // exactly like `Bash`, so eligibility would no longer imply a fictional
+    // matrix bound.
+    expect(classifyRisk('bash', { command: 'rm -rf /' })).toBe('critical');
+    expect(matchesCatastrophicPattern('bash', { command: 'rm -rf /' })).not.toBeNull();
+    // Still ineligible, for a reason that outlives that fix: this is an
+    // ALLOW-shaped gate, and a case-insensitive allowlist is broader than the
+    // one anyone wrote (ADR 0010). An unmeasured tool surface should cost an
+    // LLM evaluation, not inherit a past human's approval by spelling.
     expect(precedentMayAuthorize('bash', cmd)).toBe(false);
   });
 
-  test('`terminal` is not eligible: its risk cannot be classified', () => {
-    // `summarizeToolInput` DOES understand `terminal` and extracts the real
-    // command, so its signature is complete -- and completeness is necessary,
-    // not sufficient. The matrix bound would be fictional.
-    expect(classifyRisk('terminal', { command: 'rm -rf /' })).toBe('moderate');
-    expect(matchesCatastrophicPattern('terminal', { command: 'rm -rf /' })).toBeNull();
+  test('`terminal` is not eligible: who may be precedent-authorized is an authority call', () => {
+    // Its signature was always complete (`summarizeToolInput` understands
+    // `terminal`), and since #1020 its risk classifies too.
+    expect(classifyRisk('terminal', { command: 'rm -rf /' })).toBe('critical');
+    expect(matchesCatastrophicPattern('terminal', { command: 'rm -rf /' })).not.toBeNull();
+    // Excluded anyway: widening who may be precedent-authorized is an authority
+    // decision (ADR 0015), not a consequence of the risk layer learning to
+    // classify. Narrow costs a latency; wide grants silent repeats.
     expect(precedentMayAuthorize('terminal', cmd)).toBe(false);
   });
 
