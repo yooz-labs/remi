@@ -188,6 +188,16 @@ export interface AuthConfig {
    * suggests and what the code does not do; #880 tracks whether the code or the
    * name is wrong. Until that is settled, read `"auto"` as "off", and do not
    * assume exposing the daemon on a network turns authentication on.
+   *
+   * This is now load-bearing in the other direction. `daemon.bind` defaults to
+   * LOOPBACK precisely because this resolves off (#880): together, the previous
+   * `0.0.0.0` default and this one admitted unauthenticated `answer` /
+   * `user_input` from any host on the LAN. So anyone WIDENING the bind -- in
+   * config or in the default -- is turning that exposure back on, and owes the
+   * auth story first. Note that "turn auth on" is not by itself enough either:
+   * TOFU defaults to auto-accept (`cli.ts`, `authenticator.ts`), so an
+   * authenticator on a network bind admits any freshly-generated key on first
+   * sight.
    */
   readonly enabled: 'auto' | boolean;
 }
@@ -284,7 +294,47 @@ export const DEFAULT_CONFIG: RemiConfig = {
   daemon: {
     base_port: DAEMON_BASE_PORT,
     port_range: DAEMON_PORT_RANGE,
-    bind: '0.0.0.0',
+    // #880: LOOPBACK, not 0.0.0.0. The pairing of this default with
+    // `auth.enabled = "auto"` -- which resolves to `false` on every bind (see
+    // AuthConfig.enabled) -- meant every default install accepted UNAUTHENTICATED
+    // control from any host on the LAN. Traced end to end: no authenticator
+    // means the connection never enters `authenticating` and routes messages
+    // straight to the handler map (`connection.ts`); the Origin gate admits a
+    // null/absent Origin, which is exactly what a non-browser client sends
+    // (`origin-policy.ts`); and mDNS advertises the port by default. A LAN peer
+    // could send `answer` (approve any pending permission -- i.e. arbitrary tool
+    // execution) or `user_input` (type into the live Claude session).
+    //
+    // Loopback is the correct default for a tool whose whole job is answering
+    // permission prompts. Remote access is now an explicit opt-in: set `bind`
+    // and read the auth warning that comes with it.
+    //
+    // SCOPE, stated so this does not read as more than it is: this closes the
+    // unauthenticated LAN path. It does NOT touch the relay path -- default-on,
+    // dials outward, unaffected by the bind, and still plaintext through the
+    // worker in rotating-code mode (#881) -- nor the local-process path, where
+    // any process on this machine is exempted from auth while
+    // `require_local_auth` is false (#869). Someone holding the current relay
+    // code has the same `answer` / `user_input` power the LAN peer had.
+    //
+    // It also does not reach an install that already MATERIALIZED the old
+    // default: `remi config init` writes `bind = "${DEFAULT_CONFIG.daemon.bind}"`
+    // into config.toml (see initConfigFile below), and a value on disk beats a
+    // changed default. Those users keep the exposure and get no breakage to
+    // notice it by -- hence the boot warning in cli.ts, which is the only signal
+    // they will get.
+    //
+    // Deliberately NOT fixed by making `"auto"` bind-aware, which is what #880's
+    // title asks for. That alone is insufficient: `cli.ts` constructs the
+    // Authenticator with `tofuMode: 'auto-accept'` unless `--no-tofu` is passed
+    // (the Authenticator class itself defaults to `'reject'`, so checking only
+    // authenticator.ts would say this claim is wrong -- the call site is what
+    // decides), and an auto-accept TOFU admits any freshly-generated key on
+    // first sight AND persists it as authorized. Auth-on-network without a real
+    // pairing flow is first-comer-wins, which reads as "handled" while it is
+    // not. The `"auto"` semantics + TOFU belong in one tested change with the
+    // phone pairing flow; this one closes the LAN path without depending on it.
+    bind: '127.0.0.1',
     orphan_timeout: 300,
     persist_sessions: true,
     allowed_origins: [],

@@ -17,7 +17,7 @@ real problems for months. Known cases, all confirmed:
 | The claim | The reality | Cost |
 |---|---|---|
 | "peer-to-peer, TURN relays encrypted blobs" (this file) | no WebRTC exists; the Worker was the data path in plaintext | #543, unnoticed for months |
-| "auto = based on bind address" (`AuthConfig.enabled`) | `'auto'` resolves to `false` on every bind, `0.0.0.0` included | #880, still open |
+| "auto = based on bind address" (`AuthConfig.enabled`) | `'auto'` resolves to `false` on every bind, `0.0.0.0` included | #880; `'auto'` is STILL unfixed — the LAN exposure was closed by defaulting `bind` to loopback instead |
 | allow-patterns match tool names (`config.ts`) | substring match, so `Read` covered `cat x \| sh` | #536, a P0 |
 | `relay-adapter-auth.test.ts` "tests the relay adapter" | never constructed one; 8 tests that could not fail on that claim (corrected from a stale "29" — ADR 0014) | mandatory kex shipped uncovered |
 | "the relay is now end-to-end encrypted" (#543, believed done) | engages only when an authenticator exists, i.e. never by default | #881, found while *writing the README fix for the previous row* |
@@ -150,6 +150,19 @@ registers itself in live-sessions.
 |---|---|
 | Direct connection | Same Wi-Fi, Tailscale, VPN, SSH tunnel |
 | Signaling relay | No direct access. Every protocol message is carried by the Cloudflare Worker |
+
+**Direct connection now requires setting `daemon.bind` (#880).** The default is
+`127.0.0.1`, so a stock daemon accepts only loopback: SSH tunnels and the relay
+still work untouched, but **LAN direct, Tailscale direct (100.x) and mDNS
+discovery all stop** until the user opts in. mDNS does not even advertise on a
+loopback bind (`cli.ts` skips the publisher), so the daemon does not fail — it
+disappears, which is the confusing half.
+
+Do NOT recommend `tailscale serve` as the workaround. It is a same-host reverse
+proxy, so every tailnet peer arrives as `127.0.0.1` and inherits the loopback
+auth exemption (`peer-helpers.ts`, #869) — it reinstates the hole behind a
+safer-looking front. Recommend an SSH tunnel, or an explicit `bind` plus
+`--auth`.
 
 **There is no WebRTC.** No `RTCPeerConnection` or data channel exists anywhere
 in this repo. The worker was built to relay a *handshake*, with WebRTC intended

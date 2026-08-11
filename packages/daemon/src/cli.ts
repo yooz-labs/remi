@@ -181,6 +181,7 @@ import { installStatusLine } from './cli/statusline-installer.ts';
 import { installSuspendHandler } from './cli/suspend-handler.ts';
 import { isRemiBinaryPath, startUpdateWatcher } from './cli/update-watcher.ts';
 import {
+  DEFAULT_CONFIG,
   applyEnvOverrides,
   detectLocalLLMPlatform,
   llamaServerCommand,
@@ -2307,9 +2308,17 @@ if (authEnabled) {
   console.log(`Authentication enabled (fingerprint: ${serverFingerprint}, TOFU: ${tofuMode})`);
 } else {
   if (!isLocalhostBind) {
-    console.warn(
-      'WARNING: Authentication disabled on non-localhost bind. ' +
-        'The daemon is accessible without authentication on the network.',
+    // #880. This is now the ONLY signal an install that pre-dates the loopback
+    // default gets: `remi config init` materialized `bind = "0.0.0.0"` into
+    // config.toml, a value on disk beats a changed default, and nothing about
+    // their setup breaks to make them look. So it names the exact remedy rather
+    // than only describing the state, and goes to logError -- console.warn is
+    // dropped in wrapper mode (#1043), which is where most users run.
+    logError(
+      `WARNING: bound to ${bindHost} with authentication disabled. Any host that can reach this port can approve permission prompts and type into your Claude session.`,
+    );
+    logError(
+      `  Remedy: set daemon.bind = "${DEFAULT_CONFIG.daemon.bind}" in ~/.remi/config.toml (the default since #880), or pass --auth to require authentication on this bind.`,
     );
   } else {
     console.log('Authentication disabled (localhost binding)');
