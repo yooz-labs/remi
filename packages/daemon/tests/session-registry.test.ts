@@ -7,6 +7,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ProtocolMessage } from '@remi/shared';
+import type { UUID } from '@remi/shared';
 import { generateId, now } from '@remi/shared';
 import type { MessageAPI } from '../src/api/message-api.ts';
 import type { PTYSession } from '../src/pty/pty-session.ts';
@@ -36,6 +37,7 @@ describe('SessionRegistry', () => {
     onSessionOrphaned: ReturnType<typeof mock>;
     onSessionResumed: ReturnType<typeof mock>;
     onQuestionsChanged: ReturnType<typeof mock>;
+    onAttachStateChanged: ReturnType<typeof mock>;
   };
 
   beforeEach(() => {
@@ -45,6 +47,7 @@ describe('SessionRegistry', () => {
       onSessionOrphaned: mock(() => {}),
       onSessionResumed: mock(() => {}),
       onQuestionsChanged: mock(() => {}),
+      onAttachStateChanged: mock(() => {}),
     };
 
     registry = new SessionRegistry(
@@ -1037,6 +1040,65 @@ describe('SessionRegistry', () => {
     test('is safe to call with no session', async () => {
       await registry.shutdown();
       expect(registry.sessionCount).toBe(0);
+    });
+  });
+
+  // #1038: the status snapshot's `attached`/`queuedCount` are derived from
+  // `attachedConnections`, and nothing on an attach path calls
+  // updateRemiStatus -- so this event is the ONLY thing that tells the
+  // StatusWriter a phone arrived. It is emitted from the two lines that
+  // mutate the set (rather than from any caller) precisely so it cannot be
+  // missed on a path someone forgets to wire; these prove both of them, and
+  // that it is NOT edge-only like onSessionResumed/onSessionOrphaned.
+  describe('onAttachStateChanged (#1038)', () => {
+    function liveSession(): UUID {
+      const sid = registry.createSessionId();
+      registry.registerSession(sid, '/test/dir', createMockPTY(), createMockMessageAPI());
+      return sid;
+    }
+
+    test('fires on attach', () => {
+      const sid = liveSession();
+      registry.attachConnection(sid, generateId());
+      expect(events.onAttachStateChanged).toHaveBeenCalledTimes(1);
+    });
+
+    test('fires on detach', () => {
+      const sid = liveSession();
+      const conn = generateId();
+      registry.attachConnection(sid, conn);
+      registry.detachConnection(conn);
+      expect(events.onAttachStateChanged).toHaveBeenCalledTimes(2);
+    });
+
+    test('fires for a SECOND attach, which is not a resume', () => {
+      // onSessionResumed only fires on the zero->nonzero edge. The derived
+      // fields change on every membership change, so this must not be
+      // edge-scoped too.
+      const sid = liveSession();
+      registry.attachConnection(sid, generateId());
+      registry.attachConnection(sid, generateId());
+      expect(events.onAttachStateChanged).toHaveBeenCalledTimes(2);
+    });
+
+    test('fires for a detach that leaves others attached, which is not an orphan', () => {
+      // The mirror case, and the one the ordering inside detachConnection
+      // gets wrong if the emit is placed after the still-attached early
+      // return.
+      const sid = liveSession();
+      const first = generateId();
+      registry.attachConnection(sid, first);
+      registry.attachConnection(sid, generateId());
+      registry.detachConnection(first);
+      expect(events.onSessionOrphaned).not.toHaveBeenCalled();
+      expect(events.onAttachStateChanged).toHaveBeenCalledTimes(3);
+    });
+
+    test('does not fire for a detach of a connection that was never attached', () => {
+      const sid = liveSession();
+      registry.attachConnection(sid, generateId());
+      registry.detachConnection(generateId()); // unknown connection: no-op
+      expect(events.onAttachStateChanged).toHaveBeenCalledTimes(1);
     });
   });
 });

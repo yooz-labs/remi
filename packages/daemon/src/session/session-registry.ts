@@ -83,6 +83,26 @@ export interface SessionRegistryEvents {
    *  that already has an attached connection, which is not a "resume"). */
   onSessionResumed?: (sessionId: UUID, connectionId: UUID) => void;
   /**
+   * `attachedConnections` changed — a connection attached or detached (#1038).
+   *
+   * Distinct from `onSessionResumed`/`onSessionOrphaned`, which fire only on
+   * the zero<->nonzero EDGES. This fires on every membership change, because
+   * the status snapshot's `attached`/`queuedCount` are derived from the set
+   * itself and a consumer cannot reconstruct them from edges alone.
+   *
+   * Emitted from the two lines that own the mutation (`attachConnection`,
+   * `detachConnection`), not from their callers, which is what makes it total
+   * over every attach path — `connection-events`, `resume-session-events`,
+   * `session-events`, the orphan timeout, and anything added later — without
+   * anyone having to remember to wire it. That totality requirement is
+   * [ADR 0020](../../../../.context/decisions/0020-client-status-cue-totality.md);
+   * before it existed, `StatusWriter` learned about an attach only when some
+   * unrelated status change happened to trigger a flush, so a connected phone
+   * read as "no clients" on the bar, in `status-<PORT>.json`, in the attach
+   * client and in the app.
+   */
+  onAttachStateChanged?: (sessionId: UUID) => void;
+  /**
    * The session's pending-question set changed: one was added, one was
    * resolved (from any surface — terminal, push, web), or all were cleared
    * (#786/#787). Fires with the FULL current set (not a delta) from
@@ -341,6 +361,11 @@ export class SessionRegistry {
     // Mark all as delivered
     this.session.lastDeliveredIndex = this.session.messageHistory.length - 1;
 
+    // #1038: before the edge-only events below, so a consumer that derives
+    // state from the SET (the status snapshot) is current by the time an
+    // edge consumer reacts to it.
+    this.events.onAttachStateChanged?.(sessionId);
+
     if (isResume) {
       this.events.onSessionResumed?.(sessionId, connectionId);
     }
@@ -375,6 +400,12 @@ export class SessionRegistry {
 
     const { sessionId } = this.session;
     this.session.attachedConnections.delete(connectionId);
+
+    // #1038: BEFORE the still-attached early return below. A detach that
+    // leaves others attached is not an orphan, but it did change the set, and
+    // `queuedCount`/`attached` are derived from the set -- returning first
+    // would make this event edge-only, which is the bug it exists to fix.
+    this.events.onAttachStateChanged?.(sessionId);
 
     // Other connections are still attached; the session is not orphaned.
     if (this.session.attachedConnections.size > 0) {

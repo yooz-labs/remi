@@ -1174,6 +1174,14 @@ const sessionRegistry = new SessionRegistry(
     onSessionResumed: (sessionId, connectionId) => {
       log(`Session resumed: ${sessionId} by connection ${connectionId}`);
     },
+    // #1038: `attached`/`queuedCount` are PULLED from this registry at flush
+    // time, and nothing on an attach path calls updateRemiStatus -- so
+    // without this a connected phone read as "no clients" on the reserved-row
+    // bar, in status-<PORT>.json, in the attach client and in the app, until
+    // some unrelated status change happened to flush. Emitted from the two
+    // lines that mutate the set, so it covers every attach path by
+    // construction; `refresh()` schedules only on a real change.
+    onAttachStateChanged: () => statusWriter.refresh(),
     onQuestionsChanged: (sessionId, questions) => {
       // Best-effort: a registry-file hiccup here must never take down the
       // question pipeline itself (the live WS `question`/`question_resolved`
@@ -2917,11 +2925,11 @@ if (cliDaemonMode) {
   );
 
   // Start drawing the reserved-row bar now that the PTY is up. Reads the live
-  // StatusWriter state and repaints on a 1Hz timer (the cadence of the
-  // `evaluating Ns` counter). Inert until started, and a no-op when detached
-  // or while a question is pending (#932 -- see status-bar.ts's module doc:
-  // the bar and Claude's own output share one fd, so painting over a live
-  // prompt risks corrupting or erasing it).
+  // StatusWriter state and repaints on a 250ms timer (the cadence of the
+  // `evaluating Ns` counter). Inert until started, and a no-op when detached.
+  // The bar and Claude's own output share one fd, so a paint must never land
+  // mid-render; while a question is pending that means waiting for PTY
+  // quiescence on every paint (#932, #1038 -- see status-bar.ts's module doc).
   if (statusBarActive) {
     statusBar = new StatusBar({
       getStdoutFd: getPtyStdoutFd,
