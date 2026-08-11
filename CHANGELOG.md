@@ -25,6 +25,26 @@ All notable changes to Remi are documented here.
   idle-stop, and the `escalate_model` design question.
 
 ### Fixed
+- **A loopback bind stopped mDNS advertising with no log line at all** (#1051).
+  `startMdnsIfNeeded` collapsed three suppression conditions into one bare
+  `return null`, while every other exit from that function logged something.
+  Before #880 that was nearly harmless because `isLocalhostBind` was false on a
+  stock install; since the bind default moved to loopback it is the path
+  **every** stock install takes. The cost was specific: mDNS does not refuse a
+  discovery attempt, it stops answering, so from the phone's side the daemon
+  does not error — it *vanishes*, and nothing in the daemon's own output
+  contradicts "Remi is broken". Each condition now says which one fired, and
+  only the loopback case — the one the user did not ask for, since it arrived
+  with a changed default — names a remedy. `--no-mdns` and `network.mdns =
+  false` state the fact without nagging. The loopback message names
+  `auth.enabled` alongside `daemon.bind`, because widening the bind while auth
+  stays at `"auto"` (which resolves to `false`) walks straight back into the
+  #880 exposure.
+- **A `typos` false positive that a version bump would have turned into a CI
+  failure.** `ACCEPTs` in `port-discovery.ts` is flagged by typos ≥1.49 but not
+  by the pinned 1.28.4, so the repo was one dependency bump away from a red
+  gate on a comment. Unrelated to the above; called out rather than folded in
+  silently.
 - **The `escalate_model` warning could be silenced for the users it was for**
   (#822). It was nested inside the llamacpp boot warning, which was harmless
   only while that warning fired on every llamacpp boot. Now that the boot
