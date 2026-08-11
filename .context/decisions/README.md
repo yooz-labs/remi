@@ -37,7 +37,7 @@ add a row below.
 | [0019](0019-push-kind-mutability-asymmetry.md) | Push kinds are named on the wire; muting them is asymmetric |
 | [0020](0020-client-status-cue-totality.md) | A client status cue must be total over its gate's end paths |
 | [0021](0021-registration-outcome-not-requery.md) | Question registration outcome flows from the call, not a re-query |
-| [0022](0022-status-bar-never-freezes.md) | The status bar waits for a quiet PTY; it never stops painting |
+| [0022](0022-status-bar-never-freezes.md) | Status-bar liveness is bounded by `HEARTBEAT_MS`, never by a human |
 
 ## By area
 

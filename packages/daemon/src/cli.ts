@@ -1174,6 +1174,14 @@ const sessionRegistry = new SessionRegistry(
     onSessionResumed: (sessionId, connectionId) => {
       log(`Session resumed: ${sessionId} by connection ${connectionId}`);
     },
+    // #1038: `attached`/`queuedCount` are PULLED from this registry at flush
+    // time, and nothing on an attach path calls updateRemiStatus -- so
+    // without this a connected phone read as "no clients" on the reserved-row
+    // bar, in status-<PORT>.json, in the attach client and in the app, until
+    // some unrelated status change happened to flush. Emitted from the two
+    // lines that mutate the set, so it covers every attach path by
+    // construction; `refresh()` schedules only on a real change.
+    onAttachStateChanged: () => statusWriter.refresh(),
     onQuestionsChanged: (sessionId, questions) => {
       // Best-effort: a registry-file hiccup here must never take down the
       // question pipeline itself (the live WS `question`/`question_resolved`
@@ -1934,14 +1942,6 @@ remiAttachState = () => {
     queuedCount: 0,
   };
 };
-// #1038: that pull only ran when something ELSE scheduled a flush, and no
-// attach or detach path calls updateRemiStatus -- so a phone attaching left
-// the reserved-row bar, status-<PORT>.json and every connected client reading
-// "no clients" until an unrelated status change happened along. Poll it (see
-// `StatusWriter.refresh`'s doc for why a poll beats wiring five call sites);
-// a tick with nothing new costs one Set.size read and writes nothing. The
-// interval is unref'd, so this never keeps a short-lived CLI alive.
-statusWriter.startAttachRefresh();
 
 /**
  * Cross-client question dismissal (#585, P7). Fired when a pending question stops

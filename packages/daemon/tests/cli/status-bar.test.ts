@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { PtyQuiescenceGate } from '../../src/cli/pty-quiescence-gate.ts';
 import {
   HEARTBEAT_MS,
   MAX_RENDER_ERRORS,
@@ -358,31 +359,41 @@ describe('StatusBar', () => {
     expect(writes[2]).toContain('2 client(s)');
   });
 
-  test('a live question makes quiescence a HARD gate: no paint while the PTY is busy', () => {
-    // This is what replaced the freeze. A routine paint already waits for
-    // quiescence; while a question is live EVERY paint does, including the
-    // forced ones (onset here, plus the heartbeat below) -- so nothing can
-    // land mid-render of the prompt.
-    let quiescent = false;
-    let connections = 0;
+  test('a NEVER-quiescent PTY still paints while a question is live, bounded by HEARTBEAT_MS', () => {
+    // The regression that #1038's own first attempt introduced, and the
+    // single most important test in this file. That attempt made
+    // `isQuiescent()` hard while a question was live, reasoning that a
+    // deliberating human leaves the PTY quiet. A held permission does NOT
+    // idle the PTY -- the TUI spinner keeps animating on its own timer
+    // (#1026, observed live) -- so `isQuiescent()` stayed false for the
+    // whole prompt and the bar painted ZERO times. Worse than the freeze it
+    // replaced, which at least guaranteed its onset paint.
+    //
+    // isQuiescent is pinned false for the entire run: whatever gating exists
+    // here, liveness must come from the heartbeat, never from the PTY going
+    // quiet.
+    let nowMs = NOW_MS;
     const { bar, writes } = harness({
       hasLiveQuestions: () => true,
-      isQuiescent: () => quiescent,
-      getStatus: () => mkStatus({ connections: connections++ }),
+      isQuiescent: () => false,
+      isBoundaryClean: () => true,
+      now: () => nowMs,
     });
-    bar.render(); // onset, but PTY busy: refused
-    bar.render();
-    expect(writes).toHaveLength(0);
-    quiescent = true; // the human is deliberating; Claude has gone quiet
-    bar.render();
+    bar.render(); // onset: must paint even mid-spinner
     expect(writes).toHaveLength(1);
+    for (let i = 0; i < 10; i++) {
+      nowMs += HEARTBEAT_MS;
+      bar.render();
+    }
+    expect(writes).toHaveLength(11); // one per heartbeat, never starved
   });
 
-  test('a live question suspends the heartbeat exemption from the quiescence gate', () => {
-    // The heartbeat normally bypasses quiescence so a streaming session
-    // cannot starve the DECSTBM re-assertion. While a question is live that
-    // exemption is off: re-asserting the scroll region is not worth a write
-    // landing inside the dialog's own render.
+  test('a live question does NOT suspend the heartbeat exemption from the quiescence gate', () => {
+    // The heartbeat bypasses quiescence so a streaming session cannot starve
+    // the DECSTBM re-assertion -- and that exemption must NOT be conditioned
+    // on whether a question is open, because a held permission is precisely
+    // when the PTY streams indefinitely. Mirrors the same-named test in the
+    // no-question case, so the two cannot drift apart again.
     let nowMs = NOW_MS;
     const { bar, writes } = harness({
       hasLiveQuestions: () => true,
@@ -390,9 +401,25 @@ describe('StatusBar', () => {
       now: () => nowMs,
     });
     bar.render();
+    expect(writes).toHaveLength(1);
     nowMs += HEARTBEAT_MS;
     bar.render();
-    expect(writes).toHaveLength(0);
+    expect(writes).toHaveLength(2);
+  });
+
+  test('a live question does not stop a status change from reaching the row', () => {
+    // The user-visible half: content varies on every getStatus() read, so
+    // this measures repaints rather than a dedup coincidence.
+    let connections = 0;
+    const { bar, writes } = harness({
+      hasLiveQuestions: () => true,
+      getStatus: () => mkStatus({ connections: connections++ }),
+    });
+    bar.render(); // onset
+    bar.render();
+    bar.render();
+    expect(writes).toHaveLength(3);
+    expect(writes[2]).toContain('2 client(s)');
   });
 
   test('a "needs you" cue still decays while the question that raised it is open', () => {
@@ -565,20 +592,21 @@ describe('StatusBar — #932 durable fix (quiescence + clean-boundary gate)', ()
     expect(writes).toHaveLength(1);
   });
 
-  test('the onset paint does NOT bypass the quiescence gate (it implies a live question)', () => {
-    // #1038 flipped this: onset used to fire even mid-burst. Onset only
-    // happens when a question just went live, and that is precisely the
-    // window where quiescence is a hard requirement -- so the capture waits
-    // for the next quiet tick rather than racing the dialog's own render.
-    let quiescent = false;
+  test('the onset paint bypasses the quiescence gate but still honors the boundary gate', () => {
+    // Onset must fire the instant a question goes live, even mid-burst --
+    // see status-bar.ts's HEARTBEAT_MS doc for why the soft gate has
+    // documented exceptions.
+    //
+    // #1038 tried to remove this exemption (onset implies a live question,
+    // and that attempt made quiescence hard there). It must stay: a held
+    // permission keeps the TUI spinner animating (#1026), so an onset that
+    // waited for quiescence would never fire at all -- the bar would keep
+    // whatever it painted BEFORE the escalate, for the whole prompt.
     const { bar, writes } = harness({
       hasLiveQuestions: () => true,
-      isQuiescent: () => quiescent,
+      isQuiescent: () => false,
       isBoundaryClean: () => true,
     });
-    bar.render();
-    expect(writes).toHaveLength(0);
-    quiescent = true;
     bar.render();
     expect(writes).toHaveLength(1);
   });
@@ -694,6 +722,113 @@ describe('StatusBar — #932 durable fix (quiescence + clean-boundary gate)', ()
 
   test('omitting isBoundaryClean/isQuiescent keeps pre-durable-fix behavior (always paintable)', () => {
     const { bar, writes } = harness({});
+    bar.render();
+    expect(writes).toHaveLength(1);
+  });
+});
+
+// #1038: the unit tests above inject `isQuiescent` directly, which is how the
+// first attempt at this fix passed its own suite while being broken in
+// production. These drive the REAL PtyQuiescenceGate with real chunk bytes,
+// at the cadence Claude's TUI spinner actually runs, so the starvation case
+// cannot hide behind a hand-flipped boolean.
+describe('StatusBar against the real PtyQuiescenceGate (#1038)', () => {
+  /** Claude's spinner glyphs, redrawn in place on their own timer. */
+  const SPINNER = ['✶', '⠻', '✢', '✳'];
+  /** Well under QUIESCENCE_MS (500), which is the whole point. */
+  const SPINNER_MS = 150;
+  const TICK_MS = 250;
+
+  /**
+   * Run `minutes` of a live question during which the PTY never goes quiet
+   * for QUIESCENCE_MS, and report how often row N was actually painted.
+   */
+  function runWithSpinner(minutes: number): { writes: string[]; status: RemiStatus } {
+    let nowMs = NOW_MS;
+    const gate = new PtyQuiescenceGate(() => nowMs);
+    const status = mkStatus({
+      sessionStatus: 'waiting',
+      attached: false,
+      queuedCount: 0,
+      autoApprove: { inFlight: 0, sinceS: 0, lastVerdict: 'escalated', lastVerdictAtS: NOW_S },
+    });
+    const writes: string[] = [];
+    const bar = new StatusBar({
+      getStdoutFd: () => 1,
+      getStatus: () => status,
+      getSize: () => ({ cols: 80, rows: 24 }),
+      isEnabled: () => true,
+      hasLiveQuestions: () => true,
+      isBoundaryClean: () => gate.isBoundaryClean(),
+      isQuiescent: () => gate.isQuiescent(),
+      writeToFd: (_fd, data) => writes.push(data),
+      now: () => nowMs,
+      log: () => {},
+    });
+
+    let spinnerAt = NOW_MS;
+    let tickAt = NOW_MS;
+    let frame = 0;
+    const end = NOW_MS + minutes * 60_000;
+    while (nowMs < end) {
+      nowMs = Math.min(spinnerAt, tickAt);
+      if (nowMs === spinnerAt) {
+        gate.observe(Buffer.from(`\r${SPINNER[frame++ % SPINNER.length]} Running...`));
+        spinnerAt += SPINNER_MS;
+      }
+      if (nowMs === tickAt) {
+        bar.render();
+        tickAt += TICK_MS;
+        status.attached = true; // a phone attaches while the prompt is open
+      }
+    }
+    return { writes, status };
+  }
+
+  test('a held permission whose spinner never lets the PTY go quiet still paints', () => {
+    // The exact production scenario. `isQuiescent()` is never true for the
+    // whole ten minutes; if liveness depended on it, this is 0.
+    const { writes } = runWithSpinner(10);
+    expect(writes.length).toBeGreaterThan(0);
+    // Bounded by HEARTBEAT_MS, so ~1 paint per 2s over 10 minutes.
+    expect(writes.length).toBeGreaterThanOrEqual((10 * 60_000) / HEARTBEAT_MS - 1);
+  });
+
+  test('the row reflects state that changed during the prompt, not the frame that raised it', () => {
+    // The user-visible bug: "needs you" is contractually bounded by
+    // ESCALATE_FRESH_S and the attach label changed mid-prompt. Both must
+    // reach the row even though Claude never stopped writing.
+    const { writes } = runWithSpinner(10);
+    expect(writes[0]).toContain('needs you');
+    expect(writes.at(-1)).toContain('attached');
+    expect(writes.at(-1)).not.toContain('needs you');
+  });
+
+  test('no paint ever lands at a dirty escape-sequence boundary', () => {
+    // The hard gate is what makes the hazard #932 documents impossible, and
+    // it is the reason painting through a spinner is safe at all. Feed a
+    // deliberately unterminated sequence and confirm the bar refuses.
+    let nowMs = NOW_MS;
+    const gate = new PtyQuiescenceGate(() => nowMs);
+    const writes: string[] = [];
+    const bar = new StatusBar({
+      getStdoutFd: () => 1,
+      getStatus: () => mkStatus(),
+      getSize: () => ({ cols: 80, rows: 24 }),
+      isEnabled: () => true,
+      hasLiveQuestions: () => true,
+      isBoundaryClean: () => gate.isBoundaryClean(),
+      isQuiescent: () => gate.isQuiescent(),
+      writeToFd: (_fd, data) => writes.push(data),
+      now: () => nowMs,
+      log: () => {},
+    });
+    gate.observe(Buffer.from('\x1b[')); // truncated CSI: mid-sequence
+    expect(gate.isBoundaryClean()).toBe(false);
+    nowMs += HEARTBEAT_MS * 3; // heartbeat long overdue
+    bar.render();
+    expect(writes).toHaveLength(0);
+    gate.observe(Buffer.from('0m')); // sequence completes
     bar.render();
     expect(writes).toHaveLength(1);
   });

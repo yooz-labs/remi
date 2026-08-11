@@ -64,10 +64,6 @@ export interface StatusWriterDeps {
    * earliest boot phase run without it.
    */
   readonly getAttachState?: () => { attached: boolean; queuedCount: number } | null;
-  /** Interval (ms) for `startAttachRefresh`'s pull loop. Default 250 — matches
-   *  the StatusBar's repaint cadence, so the terminal bar and the clients see
-   *  an attach within one tick of each other. Tests override. */
-  readonly refreshMs?: number;
   /**
    * #754: broadcast the freshly-flushed snapshot to connected clients
    * (`remi_status`), on the same debounce as the disk write. Optional and
@@ -86,8 +82,6 @@ export class StatusWriter {
   private attachStateErrorLogged = false;
   private broadcastErrorLogged = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
-  /** Handle for `startAttachRefresh`'s pull loop, or null when not started. */
-  private refreshTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(initial: RemiStatus, deps: StatusWriterDeps) {
     this.status = { ...initial };
@@ -115,30 +109,22 @@ export class StatusWriter {
    * `getAttachState` is pulled inside `write()` (#755), which is right about
    * the VALUE but says nothing about WHEN a write happens — and no attach or
    * detach path calls `update()`. So before this existed, a phone attaching
-   * changed nothing anybody could see: the reserved-row bar, `status-<PORT>.json`
-   * and the `remi_status` broadcast all kept reading "no clients" until some
-   * unrelated status change happened to trigger a flush.
+   * changed nothing anybody could see: the reserved-row bar,
+   * `status-<PORT>.json`, the attach client and the app all kept reading
+   * "no clients" until some unrelated status change happened to trigger a
+   * flush (#1038).
    *
-   * Polled (see `startAttachRefresh`) rather than called from each attach site
-   * on purpose: attach/detach happens in `connection-events`,
-   * `resume-session-events`, `session-events` and the orphan timeout, and a cue
-   * that is only correct on the paths someone remembered to wire is exactly the
-   * failure [ADR 0020](../../../.context/decisions/0020-client-status-cue-totality.md)
-   * is about. A pull that is total over every path costs one `Set.size` read.
+   * Driven by `SessionRegistry`'s `onAttachStateChanged`, which is emitted
+   * from the only two lines that mutate `attachedConnections` — so it is
+   * total over every attach path by construction rather than by anyone
+   * remembering to wire one, which is the requirement
+   * [ADR 0020](../../../../.context/decisions/0020-client-status-cue-totality.md)
+   * states. Safe to call from anywhere and cheap when nothing moved: it
+   * schedules only on a real change, so a spurious call costs one
+   * `Set.size` read.
    */
   refresh(): void {
     if (this.pullAttachState()) this.schedule();
-  }
-
-  /**
-   * Start the pull-refresh loop (idempotent). The timer is `unref`'d so it can
-   * never keep the process alive, and it only reaches disk or the wire when
-   * `refresh()` finds a real change, so an idle session writes nothing.
-   */
-  startAttachRefresh(): void {
-    if (this.refreshTimer) return;
-    this.refreshTimer = setInterval(() => this.refresh(), this.deps.refreshMs ?? 250);
-    this.refreshTimer.unref?.();
   }
 
   /**
@@ -202,10 +188,6 @@ export class StatusWriter {
       clearTimeout(this.timer);
       this.timer = null;
     }
-    if (this.refreshTimer) {
-      clearInterval(this.refreshTimer);
-      this.refreshTimer = null;
-    }
     try {
       fs.unlinkSync(this.deps.getTargetFile());
     } catch {
@@ -238,6 +220,12 @@ export class StatusWriter {
         this.status.attached !== attach.attached || this.status.queuedCount !== attach.queuedCount;
       this.status.attached = attach.attached;
       this.status.queuedCount = attach.queuedCount;
+      // Clear the streak so a LATER failure is reported too. Without this the
+      // latch is once-per-process, not once-per-streak as documented, and an
+      // intermittently-throwing registry read (session teardown) would be
+      // silently swallowed for the life of the daemon after the first one --
+      // the same asymmetry `errorLogged` already avoids for the file write.
+      this.attachStateErrorLogged = false;
       return changed;
     } catch (err) {
       if (!this.attachStateErrorLogged) {

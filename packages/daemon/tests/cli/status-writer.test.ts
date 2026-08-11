@@ -381,19 +381,23 @@ describe('StatusWriter', () => {
       expect(broadcasts).toHaveLength(1);
     });
 
-    test('startAttachRefresh polls, is idempotent, and stops on cleanup', async () => {
+    test('a detach that leaves other connections attached still flushes', async () => {
+      // queuedCount/attached are derived from the SET, not from the
+      // zero<->nonzero edges, so a membership change that is not an edge must
+      // still reach the snapshot. Guards the ordering in
+      // `detachConnection`: the emit sits BEFORE the still-attached early
+      // return.
       const { writer, attach, broadcasts } = attachHarness();
-      writer.startAttachRefresh();
-      writer.startAttachRefresh();
-      attach.attached = true; // changes with nothing calling update()
-      await new Promise((r) => setTimeout(r, 400)); // > the 250ms default
+      attach.attached = true;
+      attach.queuedCount = 2;
+      writer.refresh();
+      await settle();
       expect(broadcasts).toEqual([true]);
-      // cleanup() clears exactly one handle, so a second timer created by the
-      // second start() would survive it and pick this change up.
-      writer.cleanup();
-      attach.attached = false;
-      await new Promise((r) => setTimeout(r, 400));
-      expect(broadcasts).toEqual([true]);
+      attach.queuedCount = 1; // one of several detached; still attached
+      writer.refresh();
+      await settle();
+      expect(writer.state.queuedCount).toBe(1);
+      expect(broadcasts).toEqual([true, true]); // flushed again, same attached
     });
 
     test('a throwing getAttachState is logged once and leaves refresh a no-op', () => {
@@ -410,6 +414,31 @@ describe('StatusWriter', () => {
       writer.refresh();
       expect(fs.existsSync(target)).toBe(false); // nothing scheduled
       expect(logs.filter((l) => l.includes('attach-state read failed'))).toHaveLength(1);
+    });
+
+    test('the attach-state error latch is per-streak, not per-process', () => {
+      // The docstring says "once per streak"; without a reset on success it
+      // is once per process, and an intermittently-throwing registry read
+      // (session teardown) would go unreported for the life of the daemon
+      // after the first occurrence.
+      let broken = true;
+      const writer = new StatusWriter(baseStatus(), {
+        getTargetFile: () => target,
+        isEnabled: () => true,
+        writeLog: (m) => logs.push(m),
+        debounceMs: 0,
+        getAttachState: () => {
+          if (broken) throw new Error('registry down');
+          return { attached: false, queuedCount: 0 };
+        },
+      });
+      writer.refresh();
+      expect(logs.filter((l) => l.includes('attach-state read failed'))).toHaveLength(1);
+      broken = false;
+      writer.refresh(); // succeeds: clears the streak
+      broken = true;
+      writer.refresh(); // a NEW streak must report again
+      expect(logs.filter((l) => l.includes('attach-state read failed'))).toHaveLength(2);
     });
   });
 });

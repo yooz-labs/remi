@@ -1,4 +1,4 @@
-# ADR 0022: The status bar waits for a quiet PTY; it never stops painting
+# ADR 0022: Status-bar liveness is bounded by HEARTBEAT_MS, never by a human
 
 **Status:** accepted
 **Date:** 2026-08-10
@@ -7,104 +7,119 @@
 ## Context
 
 The reserved-row status bar (#565) and Claude's own PTY output are two
-unsynchronized writers on one fd. #932 named the real hazard precisely: not
-byte-level interleaving (both writes are synchronous `fs.writeSync` on the same
-thread) but a paint landing BETWEEN two forwarded chunks, at a boundary that
-splits one of Claude's own escape sequences — the bar's DECSC/DECRC pair shares
-Claude's cursor-save slot, 166 of 421 occurrences in the installed binary.
+unsynchronized writers on one fd. #932 named the hazard precisely: not
+byte-level interleaving (both are synchronous `fs.writeSync` on one thread) but
+a paint landing BETWEEN two forwarded chunks, at a boundary that splits one of
+Claude's own escape sequences.
 
 Two fixes were written for it, two hours apart on 2026-07-30:
 
 - **PR #933 (19:35), a blanket freeze.** `render()` returned early for as long
-  as `hasLiveQuestions()` was true, painting once on the transition in and once
-  on the way out.
+  as `hasLiveQuestions()` was true, painting once on the transition in.
 - **PR #942 (21:28), the durable fix.** `PtyQuiescenceGate`: `isBoundaryClean()`
   as a hard gate (a write can never land mid-sequence) plus `isQuiescent()` as a
-  soft one (500 ms since the last chunk).
+  soft one (500 ms since the last chunk), the latter with documented exemptions
+  for the heartbeat and the onset/resumed edges.
 
-The durable fix subsumed the freeze, but the freeze was never removed. It
-shipped in v0.7.4 and v0.7.5, and the freeze has **no upper bound**: a prompt a
-human sits on for ten minutes freezes row N for ten minutes. Worse, the frame it
-freezes on is not arbitrary. The escalate that raises the prompt is also what
-sets the state to `needs you` — a cue whose entire contract is that it decays
-after `ESCALATE_FRESH_S` (60 s). So the common case was a decaying cue pinned on
-screen indefinitely, reported from the field as:
+The freeze was never removed and shipped in v0.7.4 and v0.7.5. It has **no upper
+bound**: a prompt a human sits on for ten minutes freezes row N for ten minutes.
+The frame it freezes on is not arbitrary — the escalate that raises the prompt
+is also what sets the state to `needs you`, a cue whose contract is that it
+decays after `ESCALATE_FRESH_S` (60 s). Field report, reproduced verbatim and
+held across 20 simulated minutes and a phone attaching:
 
 ```
 remi:18766 website:main | no clients | needs you
 ```
 
-reproduced verbatim, unchanged across 20 simulated minutes and a phone
-attaching. This is the [ADR 0020](0020-client-status-cue-totality.md) failure
-mode — a status cue with no path back off itself — arriving through the
-renderer instead of through the gate's end paths.
+This is the [ADR 0020](0020-client-status-cue-totality.md) failure mode — a cue
+with no path back off itself — arriving through the renderer rather than through
+the gate's end paths.
+
+**#1038's first attempt got this wrong in an instructive way.** Rather than just
+deleting the freeze, it replaced it: `isQuiescent()` was promoted to a hard gate
+while a question was live, removing the heartbeat and edge exemptions there. The
+stated reasoning was that this is "strictly stronger per-write" (true) and that
+a deliberating human leaves the PTY quiet (**false**). This repo had already
+recorded the counter-evidence, from a live session: a held permission does not
+idle the PTY, because Claude's TUI spinner keeps animating on its own timer
+(#1026, see `attach-client.ts`'s `renderQuestionBanner`). Driven against the real
+`PtyQuiescenceGate` with 150 ms spinner frames, `isQuiescent()` never once became
+true and the bar painted **zero times in ten minutes** — worse than the freeze,
+which at least guaranteed its onset paint. It passed its own test suite because
+every test injected `isQuiescent` as a hand-flipped boolean.
 
 ## Decision
 
-While a question is live, `isQuiescent()` is promoted to a **hard** gate on every
-paint — no heartbeat exemption, no onset/resumed exemption — and the bar keeps
-its normal cadence. It does not freeze.
+Delete the freeze and add nothing in its place: a live question suppresses no
+paint. #942's gates are the protection, unchanged and unconditioned on whether a
+question is open.
+
+Consequently, **no suppression in this file may be scoped to a question being
+live.** Liveness is bounded by `HEARTBEAT_MS`; it may never depend on the PTY
+going quiet, because the case that most needs a live bar is exactly the case
+where it never does.
 
 ## Consequences
 
-Strictly stronger per-write than the freeze it replaces: the freeze still
-permitted its onset paint while Claude was mid-render of the prompt; this
-permits nothing mid-render. It is also strictly better for the DECSTBM
-re-assertion `buildBarSequence` carries — the freeze suppressed that for the
-entire life of a question, where the heartbeat now still fires every
-`HEARTBEAT_MS` whenever the PTY is quiet.
+Staleness while Claude streams is bounded by `HEARTBEAT_MS` (2 s), not by the
+250 ms cadence — a status change during a spinning prompt reaches the row on the
+next heartbeat. That is the honest guarantee and is what the docs and tests now
+state; the 250 ms figure applies only when the PTY is quiescent.
 
-What is given up: the onset paint is no longer instantaneous. It waits for the
-next tick that finds the PTY quiescent, so up to ~750 ms (250 ms cadence +
-500 ms `QUIESCENCE_MS`) can pass between a question going live and the row
-reflecting it. That was an explicit exemption before, justified by Claude's
-native statusLine disappearing while a dialog is open. It is affordable now
-precisely because the bar no longer stops: the value arrives one tick later
-instead of being the only value for the whole window.
+The DECSTBM re-assertion `buildBarSequence` carries is restored during a live
+question. The freeze suppressed it for the question's entire life — precisely
+the window where row N is least protected from Claude resetting the region — and
+so did the first attempt, for the same reason.
 
-"Mode 2" exposure (a paint inside a save/restore pair spanning a quiet gap)
-remains an accepted residual, unchanged — it was already accepted for every
-paint outside a live question, and closing it needs a full VT emulator.
+`notifyScrollRegionReset()` works again during a live question. It is called
+synchronously from the chunk observer, so `isQuiescent()` is false by
+construction at that moment; under either the freeze or the first attempt its
+repaint could never land.
 
-**Obligation this creates:** anything that suppresses paints must be bounded by
-something other than a human's attention span. A future gate keyed on "is a
-prompt showing" is this bug again.
+Mode-2 exposure (a paint inside a save/restore pair spanning a quiet gap) is
+unchanged and remains an accepted residual — it already applied to every paint
+outside a live question, and closing it needs a full VT emulator.
+
+**Obligation:** a test that injects `isQuiescent` proves nothing about
+starvation. The suite must also drive the real `PtyQuiescenceGate` with real
+chunk bytes at spinner cadence, which is what
+`StatusBar against the real PtyQuiescenceGate` exists for.
 
 ## Alternatives considered
 
-- **Keep the freeze, make the frozen content time-independent.** Would stop
-  `needs you` sticking, but leaves `attached`/`no clients` and the session
-  status stale for the whole window — and the bar is the *only* cue on screen
-  while a dialog hides Claude's native statusLine. Treats the symptom.
-- **Bound the freeze with a timeout.** Picks an arbitrary number, and every
-  value is either too short to protect or too long to be useful. The quiescence
-  gate already answers the underlying question ("is it safe to paint right
-  now?") with a measurement instead of a guess.
-- **Remove the live-question gating entirely, relying on #942's gates as-is.**
-  Rejected as too loose: the soft gate has documented exemptions (heartbeat,
-  edges) that would then let a paint land mid-render of a prompt. Promoting it
-  to hard *only* while a question is live keeps those exemptions where they were
-  justified and removes them where they are not.
+- **Promote `isQuiescent()` to a hard gate while a question is live.** The first
+  attempt. Measured at zero paints in ten minutes against a spinning PTY. Its
+  premise — that a deliberating human means an idle PTY — is contradicted by
+  #1026.
+- **Keep the freeze, make the frozen content time-independent.** Stops `needs
+  you` sticking, but leaves the attach label and session status stale for the
+  whole window, and the bar is the *only* cue on screen while a dialog hides
+  Claude's native statusLine. Treats the symptom.
+- **Bound the freeze with its own timeout.** A second arbitrary constant beside
+  `HEARTBEAT_MS`, which already means "the row must be rewritten at least this
+  often." Two bounds that must agree is one more than necessary.
 
 ## Receipts
 
 - #1038 (issue) — the field report, both defects, and the reproduction
-- `ad8ec6e4` (PR #933, 2026-07-30 19:35) — the freeze, `if (questionLive &&
-  !onset) return;`
-- `635d1403` (PR #942, 2026-07-30 21:28) — the quiescence + boundary gate that
-  subsumed it two hours later
-- `git tag --contains ad8ec6e4` → `v0.7.4`; v0.7.5 shipped after, matching the
-  field report's "at least two releases ago"
-- `packages/daemon/src/cli/status-bar.ts` — module doc protection 1, and
-  `render()`'s `(questionLive || !forced) && !this.isQuiescent()`
+- `ad8ec6e4` (PR #933, 2026-07-30 19:35) — the freeze
+- `635d1403` (PR #942, 2026-07-30 21:28) — the gates that subsumed it two hours
+  later; `git tag --contains ad8ec6e4` -> `v0.7.4`, and v0.7.5 shipped after
+- `packages/daemon/src/cli/attach-client.ts` — `renderQuestionBanner`'s #1026
+  note: "a held permission blocking Claude's hook call does NOT guarantee an
+  idle PTY — the TUI spinner keeps animating on its own timer while the hook is
+  pending", observed live
 - `packages/daemon/src/cli/pty-quiescence-gate.ts` — `QUIESCENCE_MS = 500`,
   measured from a real capture
-- `packages/daemon/tests/cli/status-bar.test.ts` — `a live question makes
-  quiescence a HARD gate`, `a live question suspends the heartbeat exemption`,
-  `a "needs you" cue still decays while the question that raised it is open`
-- `packages/daemon/tests/cli/attach-client.test.ts` — `the bar keeps tracking
-  status while a question (question_snapshot) stays live`, which reads the row
-  MID-question so it cannot pass by catching up after the prompt closes
+- `packages/daemon/tests/cli/status-bar.test.ts` — `a NEVER-quiescent PTY still
+  paints while a question is live, bounded by HEARTBEAT_MS`; the
+  `against the real PtyQuiescenceGate` block, which drives real chunks at 150 ms
+  and would have caught the first attempt
+- `packages/daemon/tests/cli/attach-client.test.ts` — the end-to-end path with
+  `raw_pty_output` flowing throughout, reading the row mid-question so it cannot
+  pass by catching up after the prompt closes
 - [ADR 0020](0020-client-status-cue-totality.md) — the same "cue with no path
-  back off itself" failure, found via the gate's end paths rather than the
-  renderer
+  back off itself" failure, and the totality requirement that
+  `onAttachStateChanged` (this PR's second half) is emitted from the two
+  mutation sites to satisfy
