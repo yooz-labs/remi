@@ -21,6 +21,10 @@ const WRITE_GROUPS = ['fs-write', 'vcs-write'];
 /** The scratch group (#994 follow-up). Never enabled by default. */
 const SCRATCH_GROUPS = ['scratch'];
 
+/** The artifact-clean group (ADR 0023). Gated into `trusted` only; its own
+ *  corpus lives in artifact-clean.test.ts. */
+const ARTIFACT_GROUPS = ['artifact-clean'];
+
 /** Convenience: match a Bash command against the named groups. */
 function bash(command: string, groups: readonly string[] = ALL): string | null {
   return matchGroups('Bash', { command }, groups);
@@ -28,7 +32,7 @@ function bash(command: string, groups: readonly string[] = ALL): string | null {
 
 describe('permission-groups: known groups', () => {
   test('isKnownGroup', () => {
-    for (const name of [...ALL, ...WRITE_GROUPS, ...SCRATCH_GROUPS]) {
+    for (const name of [...ALL, ...WRITE_GROUPS, ...SCRATCH_GROUPS, ...ARTIFACT_GROUPS]) {
       expect(isKnownGroup(name)).toBe(true);
     }
     expect(isKnownGroup('bogus')).toBe(false);
@@ -36,7 +40,9 @@ describe('permission-groups: known groups', () => {
   });
 
   test('knownGroupNames lists exactly the built-ins', () => {
-    expect(knownGroupNames().sort()).toEqual([...ALL, ...WRITE_GROUPS, ...SCRATCH_GROUPS].sort());
+    expect(knownGroupNames().sort()).toEqual(
+      [...ALL, ...WRITE_GROUPS, ...SCRATCH_GROUPS, ...ARTIFACT_GROUPS].sort(),
+    );
   });
 });
 
@@ -650,7 +656,13 @@ describe('#959 final pass: every write prefix is covered by a flag policy', () =
   //
   // Walking BUILTIN_GROUPS means this cannot go stale: adding a prefix to a
   // write group without adding a policy turns it red.
-  const WRITE_GROUP_NAMES = ['fs-write', 'vcs-write'];
+  //
+  // `artifact-clean` (ADR 0023) walks here too. Its rm/rmdir prefixes carry
+  // FLAG_POLICIES entries; `git worktree remove` and `bun install` carry
+  // their flag policy inside `artifactCleanVeto` itself (an exact structural
+  // allowlist) -- the probe asserts the same PROPERTY either way: an
+  // unclassified flag is refused, wherever the policy lives.
+  const WRITE_GROUP_NAMES = ['fs-write', 'vcs-write', 'artifact-clean'];
 
   for (const groupName of WRITE_GROUP_NAMES) {
     const group = BUILTIN_GROUPS[groupName];
@@ -770,6 +782,42 @@ describe('scratch: leading cd establishes the root for later relative targets', 
   for (const [cmd, expected] of cases) {
     test(cmd, () => expect(bash(cmd, SCRATCH_GROUPS)).toBe(expected));
   }
+});
+
+/**
+ * #1047, found by the independent adversarial pass on ADR 0023. LIVE on
+ * shipped releases, not new-code-only: `advanceScratchCwd` reset its tracked
+ * cwd for a bare `cd` and for `cd -`, testing the exact string `'-'`. But `cd`
+ * reads ANY leading-dash token as OPTIONS, so `cd -P` / `cd -L` / `cd --` /
+ * `cd -LP` are an option with NO operand — and a `cd` with no operand goes to
+ * `$HOME`. Verified in bash on darwin 25.6:
+ *
+ *     $ bash -c 'cd /tmp/work && cd -P && pwd'
+ *     /Users/yahya
+ *
+ * `-P` was therefore tracked as a SUBDIRECTORY NAME: the tracked cwd became
+ * `<scratch>/-P`, still under the root, while the real shell had left for
+ * `$HOME`. So `cd /tmp/work && cd -P && rm -rf out` proved "strictly under a
+ * scratch root", approved at 0ms with no LLM and no card, and deleted
+ * `~/out`. `scratch` is gated into `balanced`, so this was reachable at
+ * `balanced` and `trusted`; under #1024 a subagent got it with no render.
+ */
+describe('#1047 a cd OPTION is not a subdirectory: it resets the tracked root', () => {
+  for (const opt of ['-P', '-L', '--', '-LP']) {
+    test(`cd ${opt} goes to $HOME, so a later relative delete is not proved`, () => {
+      expect(bash(`cd /tmp/work && cd ${opt} && rm -rf out`, SCRATCH_GROUPS)).toBeNull();
+    });
+  }
+
+  test('a plain relative descent still tracks — the fix costs no coverage', () => {
+    expect(bash('cd /tmp/work && cd sub && rm -rf out', SCRATCH_GROUPS)).toBe('scratch:rm');
+  });
+
+  test('./-foo is still reachable: only a LEADING dash is an option', () => {
+    // A directory literally named `-foo` cannot be reached by `cd -foo` in
+    // bash either, so rejecting the leading dash costs nothing real.
+    expect(bash('cd /tmp/work && cd ./-foo && rm -rf out', SCRATCH_GROUPS)).toBe('scratch:rm');
+  });
 });
 
 describe('scratch: output redirection to a scratch target', () => {

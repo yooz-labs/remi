@@ -109,7 +109,12 @@ const ESCALATE_ENTRIES: ReadonlyArray<{
   {
     text: '- Bash: file creation, modification, or deletion under the project tree',
     perLevel: {
-      // Creation and modification move to APPROVE; deletion never does.
+      // Creation and modification move to APPROVE; deletion never does — on
+      // any path that reaches the LLM. ADR 0023's `artifact-clean` (trusted)
+      // approves proved-derived deletion in the DETERMINISTIC layer, which
+      // never builds a prompt, so this text is deliberately unchanged: a
+      // deletion the model is asked about is one no proof covered, and it
+      // still escalates at every level.
       balanced: '- Bash: file DELETION under the project tree (rm, rmdir, shred, truncate)',
       trusted: '- Bash: file DELETION under the project tree (rm, rmdir, shred, truncate)',
     },
