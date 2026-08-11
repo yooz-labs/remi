@@ -84,6 +84,30 @@ function hasWriteGroupPositionalVeto(segment: string): boolean {
 }
 
 /**
+ * Every group that can MUTATE the filesystem, and therefore every group whose
+ * matches must clear the sensitive-destination axis (`sensitive-paths.ts`).
+ *
+ * Consulted by `matchGroups`'s per-owner dispatch, because that dispatch is a
+ * UNION: a prefix owned by two groups is approved when EITHER proof holds, so
+ * the axis cannot live only inside one owner's veto or the other owner is a
+ * way around it. That is not hypothetical — it is what the ADR 0023
+ * adversarial pass found: `cp`/`mv`/`mkdir`/`touch`/`tee` are owned by both
+ * `fs-write` and `scratch`, and `scratchTargetVeto` never checked sensitive
+ * paths, so `cp /tmp/a /tmp/.env` approved at `balanced` where develop
+ * escalated it.
+ *
+ * A new mutating group MUST be added here. Forgetting is not caught by types;
+ * it is caught by `permission-groups.test.ts`'s per-group sensitive-destination
+ * cases, which is why those exist per group rather than once.
+ */
+const MUTATING_GROUPS: ReadonlySet<string> = new Set([
+  'fs-write',
+  'vcs-write',
+  'scratch',
+  'artifact-clean',
+]);
+
+/**
  * The veto profile every write-side group shares: the flag boundaries above,
  * plus the sensitive-destination axis a read group never needed
  * (`sensitive-paths.ts`).
@@ -446,10 +470,21 @@ function scratchTargetVeto(segment: string, cwd: ScratchCwd): boolean {
 //     and requires a SECOND `--force` for a locked one — which this group
 //     never supplies. Committed work survives in the shared object store by
 //     construction; only the worktree's uncommitted files are at stake.
-//   - bare `bun install` (`--frozen-lockfile` only): a lockfile-faithful
-//     reinstall of dependencies already vetted, whose lockfile and
-//     package.json no write group can touch (BUILD_SURFACE,
-//     sensitive-paths.ts). `bun install <pkg>` is `bun add` and escalates.
+//   - bare `bun install` (flag allowlist: `--frozen-lockfile` only). Its
+//     lockfile and package.json are on BUILD_SURFACE (sensitive-paths.ts), so
+//     no write group can edit them into something else first, and
+//     `bun install <pkg>` is `bun add` in disguise and escalates.
+//
+//     "Lockfile-faithful" is what an EARLIER version of this comment claimed,
+//     and it is only true of the `--frozen-lockfile` form. The ADR 0023
+//     adversarial pass caught it: BARE `bun install` reconciles package.json
+//     against the lockfile, so it may resolve new versions, rewrite the
+//     lockfile, and run lifecycle scripts of whatever it installs. The bare
+//     form is covered anyway because it is the measured miss this group exists
+//     for (`rm -rf node_modules && bun install`) and narrowing to
+//     `--frozen-lockfile` would drop that back below the 95% target — but it
+//     is covered as a DECLARED residual, not because it is inert. Anyone
+//     tightening this should tighten the coverage, not the wording.
 //
 // `/tmp`/`$TMPDIR` deletion is NOT re-implemented here — `scratch` covers it,
 // and `matchGroups` tries every owning group's proof for a shared prefix.
@@ -1042,6 +1077,35 @@ export function matchGroups(
     // walk done in each pre-pass, rather than re-tracked by a closure here —
     // see `ScratchSanitized`.
     const vetoedByOwner = (owner: string, segment: string, prefix: string, index: number) => {
+      // The sensitive-destination axis is a GLOBAL conjunct, checked before any
+      // owner's own proof and never delegated to one. Found by the ADR 0023
+      // adversarial pass: the owner union below is disjunctive, so a prefix
+      // owned by both `fs-write` and `scratch` (`cp`, `mv`, `mkdir`, `touch`,
+      // `tee`) was approved the moment scratch's laxer proof held — and
+      // `scratchTargetVeto` never consulted `isSensitiveWritePath`. Measured
+      // develop -> this branch at BALANCED, a level this ADR does not even
+      // claim to touch:
+      //
+      //   cp /tmp/a /tmp/.env         develop: escalate -> branch: scratch:cp
+      //   mv /tmp/a /tmp/id_rsa       develop: escalate -> branch: scratch:mv
+      //   cp /tmp/a /tmp/.git/config  develop: escalate -> branch: scratch:cp
+      //
+      // It also falsified a shipped claim in `config.ts` ("the write groups
+      // refuse sensitive destinations regardless of prefix ... credentials
+      // (.env, id_rsa)"), which is exactly the ADR 0011 failure mode.
+      //
+      // Hoisting it here keeps the monotonicity the union was written for --
+      // adding a group cannot introduce a sensitive destination, so it still
+      // can only ADD approvals -- while restoring the property ADR 0010 wants:
+      // a deny-shaped check is broad, and must not be escapable by finding
+      // some OTHER owner whose positive proof happens to be laxer.
+      //
+      // Scoped to the MUTATING owners, not applied globally. A first cut
+      // applied it to every owner and broke three read tests
+      // (`jq .version package.json`, and two `/dev/null` redirect cases):
+      // `segmentTouchesSensitivePath` is a WRITE-side axis, and READING a
+      // sensitive path is exactly what `read-only` exists to allow.
+      if (MUTATING_GROUPS.has(owner) && segmentTouchesSensitivePath(segment)) return true;
       if (owner === 'scratch') {
         return scratchTargetVeto(segment, scratch?.cwdBySegment[index] ?? null);
       }

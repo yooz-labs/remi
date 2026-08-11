@@ -85,7 +85,12 @@ describe('what every level shares', () => {
     for (const format of formats) expect(format).toBe(formats[0] as string);
   });
 
-  test('deletion escalates at every level', () => {
+  // Renamed by the ADR 0023 adversarial pass. It was 'deletion escalates at
+  // every level', which the body already qualified — but the NAME is a claim
+  // too, and at `trusted` a proved-derived deletion does not escalate: it is
+  // approved deterministically before any prompt exists. A name that overstates
+  // what a test pins is the ADR 0011 failure mode in the place it hides best.
+  test('every deletion that REACHES the prompt escalates, at every level', () => {
     // #956's rule: deletion is where escalation earns its cost. No level,
     // including `trusted`, may move it. Amended, not weakened, by ADR 0023:
     // `artifact-clean` approves proved-derived deletion in the DETERMINISTIC

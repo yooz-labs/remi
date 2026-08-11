@@ -103,6 +103,17 @@ const ADVERSARIAL: ReadonlyArray<[string, string]> = [
   ['rm -rf dist src', 'EVERY target must prove, not just one'],
   ['rm -rf dist*', 'glob'],
   ['rm -rf {dist,build}', 'brace expansion'],
+  // The two entries above do NOT pin the expansion guard, which the ADR 0023
+  // adversarial pass caught by mutation: delete `*` or `{}` from
+  // ARTIFACT_EXPANSION_RE and both stay GREEN, because `dist*` and
+  // `{dist,build}` are refused by the EXACT-NAME check anyway — neither is an
+  // artifact name. A corpus entry named for a guard it does not exercise is
+  // the ADR 0011 row-5 anti-pattern. These three do exercise it: each carries
+  // a real artifact segment, so the name check passes and only the expansion
+  // guard stands between them and an approval.
+  ['rm -rf */dist', 'glob in a PARENT segment: the name check passes on `dist`'],
+  ['rm -rf dist/*', 'glob in a CHILD segment: same'],
+  ['rm -rf {a,b}/dist', 'brace in a parent segment: same'],
   ['rm -rf dist/.env', 'sensitive basename under an artifact dir: the deny axis wins'],
   ['rm -rf', 'no target, no proof'],
   // --- flag axis: exact allowlist (5)
@@ -151,11 +162,13 @@ const ADVERSARIAL: ReadonlyArray<[string, string]> = [
   ['git clean -xfd', 'git clean is excluded in every form: untracked is not derived'],
 ];
 
-describe('the adversarial corpus: 45 refusals (ADR 0023)', () => {
-  test('the corpus is the full 45 entries', () => {
-    // 40 from the design's own corpus; 5 added by the independent adversarial
-    // pass ADR 0023 requires before merge (#1047, the `cd -<option>` family).
-    expect(ADVERSARIAL.length).toBe(45);
+describe('the adversarial corpus: 48 refusals (ADR 0023)', () => {
+  test('the corpus is the full 48 entries', () => {
+    // 40 from the design's own corpus; 8 added by the independent adversarial
+    // pass ADR 0023 requires before merge: 5 for the `cd -<option>` family
+    // (#1047) and 3 that actually pin the expansion guard the two shipped
+    // glob/brace entries only appeared to.
+    expect(ADVERSARIAL.length).toBe(48);
   });
 
   for (const [cmd, why] of ADVERSARIAL) {
@@ -226,6 +239,60 @@ describe('owner fallback: a shared prefix is judged by every owner', () => {
     const cmd = 'cd /tmp/s && cp --force a b';
     expect(matchGroups('Bash', { command: cmd }, ['scratch'])).toBe('scratch:cp');
     expect(matchGroups('Bash', { command: cmd }, ['fs-write', 'scratch'])).toBe('scratch:cp');
+  });
+});
+
+/**
+ * Found by the ADR 0023 adversarial pass, and it is this branch's own
+ * regression rather than a pre-existing one. `matchGroups` was rewritten from
+ * first-registrant-wins to a UNION over every owning group, which fixed a real
+ * non-monotonicity — but the union is disjunctive over VETOES too. For the
+ * five prefixes owned by both `fs-write` and `scratch` (cp/mv/mkdir/touch/tee),
+ * `scratch`'s laxer proof discarded `fs-write`'s sensitive-destination veto,
+ * which `scratchTargetVeto` never had. Measured develop -> branch at BALANCED,
+ * a level ADR 0023 does not claim to touch:
+ *
+ *     cp /tmp/a /tmp/.env         develop: escalate -> was: scratch:cp @ 0ms
+ *     mv /tmp/a /tmp/id_rsa       develop: escalate -> was: scratch:mv
+ *     cp /tmp/a /tmp/.git/config  develop: escalate -> was: scratch:cp
+ *
+ * It also falsified a shipped claim in config.ts ("the write groups refuse
+ * sensitive destinations regardless of prefix ... credentials (.env, id_rsa)").
+ *
+ * Per group, not once, so that adding a mutating group and forgetting
+ * `MUTATING_GROUPS` fails here rather than shipping.
+ */
+describe('the sensitive-destination axis survives the owner union', () => {
+  const BALANCED = groupsForLevel('balanced');
+  const TRUSTED_ALL = groupsForLevel('trusted');
+
+  const sensitive: Array<[string, string]> = [
+    ['cp /tmp/a /tmp/.env', 'a credential basename, inside a scratch root'],
+    ['mv /tmp/a /tmp/id_rsa', 'a private key'],
+    ['tee /tmp/bun.lock', 'a build-surface lockfile'],
+    ['cp /tmp/a /tmp/.git/config', 'git config: core.hooksPath is a code-exec pivot'],
+    ['mv /tmp/pkg /tmp/package.json', 'build surface'],
+  ];
+
+  for (const [cmd, why] of sensitive) {
+    test(`${JSON.stringify(cmd)} escalates at balanced — ${why}`, () => {
+      expect(bash(cmd, BALANCED)).toBeNull();
+    });
+    test(`${JSON.stringify(cmd)} escalates at trusted too`, () => {
+      expect(bash(cmd, TRUSTED_ALL)).toBeNull();
+    });
+  }
+
+  test('an ordinary scratch write is untouched — the fix costs no coverage', () => {
+    expect(bash('cp /tmp/a /tmp/b', BALANCED)).not.toBeNull();
+    expect(bash('rm -rf /tmp/junk', BALANCED)).not.toBeNull();
+  });
+
+  test('READING a sensitive path is still allowed: the axis is write-side only', () => {
+    // A first cut applied the axis to every owner, not just the mutating ones,
+    // and broke `jq .version package.json` plus two /dev/null redirect cases.
+    // Reading a sensitive path is exactly what `read-only` exists to allow.
+    expect(bash('jq .version package.json', BALANCED)).not.toBeNull();
   });
 });
 

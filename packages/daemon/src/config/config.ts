@@ -1262,10 +1262,18 @@ turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_sec
 # ~/.remi + ~/.claude -- config that governs this very mechanism, which an
 # auto-approved write must never be able to widen -- and the BUILD SURFACE
 # (package.json, tsconfig.json, lockfiles, Makefile, ...), because build-test
-# is enabled by DEFAULT and executes what those files say. scratch instead
-# gets its safety entirely from the destination being confined to a scratch
-# root -- and artifact-clean from the target's exact NAME proving derived
-# state -- which is why those two are the only groups allowed to cover
+# is enabled by DEFAULT and executes what those files say. This axis applies
+# to EVERY mutating group, scratch and artifact-clean included -- narrowed
+# from "the write groups" by the ADR 0023 adversarial pass. It used to live
+# inside fs-write's veto alone, so once matchGroups began trying every owning
+# group's proof for a shared prefix, scratch's laxer proof became a way around
+# it: cp /tmp/a /tmp/.env approved at balanced where it had escalated. A
+# deny-shaped check must not be escapable by finding an owner whose positive
+# proof is laxer (ADR 0010), so it is now checked before any owner's proof.
+# The cost is real and accepted: a genuinely disposable /tmp/.env now
+# escalates. scratch still gets its POSITIVE proof from the destination being
+# confined to a scratch root -- and artifact-clean from the target's exact NAME
+# proving derived state -- which is why those two are the only groups allowed to cover
 # deletion: the target must be PROVED disposable, not merely "not known-bad".
 # rm/rmdir and >/>> are excluded from every OTHER group.
 #

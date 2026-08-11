@@ -181,13 +181,73 @@ That two independent authors encoded "the weird `cd` forms" as the single
 literal `-` is the finding under the finding: the check wanted to be "is this
 token an OPTION", not "is it one specific option".
 
+**The monotonicity refactor silently weakened `fs-write` — and at `balanced`,
+a level this ADR does not claim to touch.** `matchGroups` was rewritten from
+first-registrant-wins to a union that tries EVERY owning group and approves if
+any one's proof holds. That fixed a real non-monotonicity (a scratch-provable
+`cp` under `/tmp` escalated the moment `fs-write` was requested alongside), but
+the union is disjunctive over vetoes too — so for the five prefixes owned by
+both `fs-write` and `scratch` (`cp`, `mv`, `mkdir`, `touch`, `tee`),
+`scratch`'s laxer proof discarded `fs-write`'s sensitive-destination veto,
+which `scratchTargetVeto` never had. Measured develop → branch at `balanced`:
+
+| command | develop | before the fix |
+|---|---|---|
+| `cp /tmp/a /tmp/.env` | escalate | `scratch:cp` at 0ms |
+| `mv /tmp/a /tmp/id_rsa` | escalate | `scratch:mv` |
+| `cp /tmp/a /tmp/.git/config` | escalate | `scratch:cp` |
+
+It also falsified a shipped claim in `config.ts` ("the write groups refuse
+sensitive destinations regardless of prefix ... credentials (.env, id_rsa)").
+
+Fixed by hoisting `segmentTouchesSensitivePath` out of the per-owner dispatch
+into a global conjunct checked before any owner's proof. Monotonicity survives
+— adding a group cannot introduce a sensitive destination — and ADR 0010's
+shape is restored: a deny-shaped check must not be escapable by finding some
+other owner whose positive proof is laxer.
+
+This is ADR 0018's pattern repeating exactly: **the bypass was in code written
+to make the feature composable, not in the feature.** Three of #959's eleven
+were the same.
+
+**Two corpus entries could not fail on their claim.** `rm -rf dist*` ('glob')
+and `rm -rf {dist,build}` ('brace expansion') stay GREEN with `*` and `{}`
+deleted from `ARTIFACT_EXPANSION_RE`, because neither is an exact artifact name
+and the NAME check refuses them anyway. The guard they are named for was
+unpinned. Three entries added that do pin it (`*/dist`, `dist/*`, `{a,b}/dist`
+— each carries a real artifact segment, so only the expansion guard stands
+between them and approval); mutation-verified, corpus now 48.
+
+**"Bare `bun install` is lockfile-faithful" was false.** Only
+`--frozen-lockfile` guarantees that; bare `bun install` reconciles
+`package.json` against the lockfile and may resolve new versions, rewrite the
+lockfile, and run lifecycle scripts. The bare form stays covered — it is the
+measured miss, and narrowing drops the result back below 95% — but as a
+DECLARED residual, not because it is inert.
+
+**The pinned prompt test's NAME overclaimed.** `'deletion escalates at every
+level'` is false at the system level once this ships; its body was already
+qualified, but a name is a claim too. Renamed to
+`'every deletion that REACHES the prompt escalates, at every level'`.
+
 Verified non-findings worth recording, so a later reader does not re-derive
 them: the deny axis holds on top of the name proof (`dist/.env`, `dist/.git`
 refuse); no lexical ascent escapes (`../dist`, `dist/../src` refuse, because
 `resolveDotDot` pops the artifact ancestor before any `..` can escape past it);
-and `git worktree remove`'s flag handling is tight (`-C`, `--git-dir`,
-`--force=`, a second `--force` all fail closed), though its safety still rests
-entirely on git's runtime refusal, exactly as the Decision states.
+`git worktree remove`'s flag handling is tight (`-C`, `--git-dir`, `--force=`,
+a second `--force` all fail closed), though its safety still rests entirely on
+git's runtime refusal, exactly as the Decision states; ANSI-C `$'...'` decoding
+diverges from bash but fails SAFE; and #1024's stated visibility path was
+confirmed accurate — `onSubagentPassthrough` does fire on the deterministic
+hook-time approve, so `subagent_alert` can surface it, but only if the user
+configured a matching pattern. A default install is silent, as the ADR says.
+
+Two accepted, not fixed: `--` end-of-options hides a dash-leading target from
+the proof, and a QUOTED `>` truncates the target the proof sees. Both were
+executed and both are bounded to deleting a relative junk-named path whose
+spelling is constrained to flag-shaped tokens — neither reaches source, an
+absolute path, or code execution, and any real co-target is still checked.
+Recorded so a future reader knows they were found and weighed, not missed.
 
 ## Alternatives considered
 

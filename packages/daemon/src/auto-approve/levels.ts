@@ -64,7 +64,8 @@ export const DEFAULT_AUTO_APPROVE_LEVEL: AutoApproveLevel = 'strict';
  *   not either; what ADR 0023 gates into `trusted` is narrower:
  *   `artifact-clean` approves a deletion only when EVERY target is provably
  *   derived state (exact-named artifact directories, structural `git
- *   worktree remove`, bare lockfile-faithful `bun install`), extending the
+ *   worktree remove`, bare `bun install` — NOT lockfile-faithful, see that
+ *   group's declared residual), extending the
  *   destination-proof exception `scratch` already shipped at `balanced`.
  *   Deletion that reaches the LLM still escalates at every level.
  */
