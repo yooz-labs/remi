@@ -192,6 +192,10 @@ import {
 import type { RemiConfig } from './config/index.ts';
 import { ForeignSessionEscalator, HookConfigManager, HookServer } from './hooks/index.ts';
 import type { HookInput, PermissionRequestHookInput, StopHookInput } from './hooks/index.ts';
+// Static, unlike the publisher below it: this is a pure decision with no
+// side effects and nothing to load, so there is nothing for a dynamic import
+// to defer -- and it is needed on the path where mDNS never starts at all.
+import { mdnsSuppression, mdnsSuppressionMessage } from './mdns/advertise-decision.ts';
 import { DeviceTokenStore } from './notifications/device-token-store.ts';
 import type { NotificationDispatcher } from './notifications/notification-dispatcher.ts';
 import { sendPushTrigger } from './notifications/push-client.ts';
@@ -1624,7 +1628,21 @@ const wrapperPtyGate = new PtyQuiescenceGate();
 async function startMdnsIfNeeded(
   logFn: (msg: string) => void,
 ): Promise<import('./mdns/mdns-publisher.ts').MdnsPublisher | null> {
-  if (cliNoMdns || !remiConfig.network.mdns || isLocalhostBind) return null;
+  // #1051: say WHICH condition suppressed it. This used to be a bare
+  // `return null` while every other exit from this function logged, and since
+  // #880 moved the bind default to loopback it became the path every stock
+  // install takes -- so the daemon silently stopped being discoverable and
+  // nothing in its own output said why.
+  const suppression = mdnsSuppression({
+    cliNoMdns,
+    configMdns: remiConfig.network.mdns,
+    isLocalhostBind,
+    bindHost,
+  });
+  if (suppression !== null) {
+    logFn(mdnsSuppressionMessage(suppression));
+    return null;
+  }
   try {
     const { MdnsPublisher } = await import('./mdns/mdns-publisher.ts');
     const publisher = new MdnsPublisher({
