@@ -248,7 +248,17 @@ function advanceScratchCwd(cwd: ScratchCwd, trimmedSegment: string): ScratchCwd 
   const words = shellWords(trimmedSegment);
   if (words[0] !== 'cd') return cwd;
   const target = words[1];
-  if (target === undefined || target === '-') return null;
+  // ANY leading dash resets, not just the exact `-` (#1047). `cd` reads a
+  // leading-dash token as OPTIONS, so `cd -P` / `cd -L` / `cd --` / `cd -LP`
+  // are an option with NO operand -- and a bare `cd` goes to `$HOME`. Testing
+  // only `-` let `-P` be treated as a SUBDIRECTORY NAME: the tracked cwd
+  // became `<scratch>/-P`, still under the root, while bash had left for
+  // `$HOME`. So `cd /tmp/work && cd -P && rm -rf out` approved at 0ms and
+  // deleted `~/out`. Verified in bash on darwin: the chain ends in `$HOME`.
+  //
+  // Resetting to null is the safe direction -- an unknowable cwd means no
+  // relative target can be proved to land under a scratch root.
+  if (target === undefined || target.startsWith('-')) return null;
   return resolveScratchTarget(target, cwd);
 }
 
@@ -545,7 +555,24 @@ function isProvedArtifactTarget(token: string): boolean {
 function cdTargetIsPlainDescendant(words: readonly string[]): boolean {
   if (words.length !== 2) return false;
   const target = words[1];
-  if (target === undefined || target === '' || target === '-') return false;
+  if (target === undefined || target === '') return false;
+  // ANY leading dash, not just the exact `-`. Found by the ADR 0023
+  // adversarial pass, and it was the whole group's worst case: `cd` treats a
+  // leading-dash token as OPTIONS, not a directory, so `cd -P` / `cd -L` /
+  // `cd --` / `cd -LP` parse as an option with NO operand -- and a bare `cd`
+  // goes to `$HOME`. Verified in bash on darwin: each of those four lands in
+  // `/Users/<user>`.
+  //
+  // Rejecting only `-` therefore let `cd -P && rm -rf .venv` read as "plain
+  // relative descent", approve at 0ms, and delete the user's `~/.venv`. Worse,
+  // a SECOND plain `cd` still descends normally from there, so
+  // `cd -P && cd <anyproject> && rm -rf node_modules` reached any project
+  // under `$HOME` -- with no card, and under #1024 as a silent subagent grant.
+  //
+  // Costs nothing real: a directory whose name starts with `-` cannot be
+  // reached by `cd -foo` in bash either. It needs `cd ./-foo` (no leading
+  // dash, still allowed) or `cd -- -foo` (three words, already poisons).
+  if (target.startsWith('-')) return false;
   if (ARTIFACT_EXPANSION_RE.test(target)) return false;
   if (target.startsWith('/') || target.startsWith('~')) return false;
   const resolved = resolveDotDot(target);

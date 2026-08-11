@@ -125,6 +125,19 @@ const ADVERSARIAL: ReadonlyArray<[string, string]> = [
   ['cd $TMPDIR && rm -rf build', 'expansion cd (scratch may prove this; THIS group must not)'],
   ['cd - && rm -rf dist', 'cd -: the previous directory is unknowable statically'],
   ['cd && rm -rf dist', 'bare cd goes to $HOME'],
+  // The independent adversarial pass's one confirmed bypass (#1047). `cd`
+  // reads a leading-dash token as OPTIONS, so these are an option with NO
+  // operand -- and a bare `cd` goes to $HOME. Verified in bash on darwin: each
+  // lands in /Users/<user>. Only the exact `-` was rejected, so `cd -P` read as
+  // plain relative descent and `cd -P && rm -rf .venv` deleted ~/.venv at 0ms.
+  ['cd -P && rm -rf dist', 'cd -P is an option with no operand: goes to $HOME'],
+  ['cd -L && rm -rf node_modules', 'cd -L likewise'],
+  ['cd -- && rm -rf .venv', 'cd -- likewise: end-of-options, no operand'],
+  ['cd -LP && rm -rf dist', 'a combined option cluster, still no operand'],
+  [
+    'cd -P && cd projectX && rm -rf node_modules',
+    'the worst case: a second PLAIN cd descends normally from $HOME, reaching any project',
+  ],
   ['if true; then cd /etc; fi\nrm -rf dist', 'a grammar-wrapped cd runs zero or more times'],
   // --- git worktree remove structure (5)
   ['git worktree remove --force --force ../wt', 'a second --force overrides a LOCK'],
@@ -138,9 +151,11 @@ const ADVERSARIAL: ReadonlyArray<[string, string]> = [
   ['git clean -xfd', 'git clean is excluded in every form: untracked is not derived'],
 ];
 
-describe('the adversarial corpus: 40 refusals (ADR 0023)', () => {
-  test('the corpus is the full 40 entries', () => {
-    expect(ADVERSARIAL.length).toBe(40);
+describe('the adversarial corpus: 45 refusals (ADR 0023)', () => {
+  test('the corpus is the full 45 entries', () => {
+    // 40 from the design's own corpus; 5 added by the independent adversarial
+    // pass ADR 0023 requires before merge (#1047, the `cd -<option>` family).
+    expect(ADVERSARIAL.length).toBe(45);
   });
 
   for (const [cmd, why] of ADVERSARIAL) {

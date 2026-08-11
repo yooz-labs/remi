@@ -784,6 +784,42 @@ describe('scratch: leading cd establishes the root for later relative targets', 
   }
 });
 
+/**
+ * #1047, found by the independent adversarial pass on ADR 0023. LIVE on
+ * shipped releases, not new-code-only: `advanceScratchCwd` reset its tracked
+ * cwd for a bare `cd` and for `cd -`, testing the exact string `'-'`. But `cd`
+ * reads ANY leading-dash token as OPTIONS, so `cd -P` / `cd -L` / `cd --` /
+ * `cd -LP` are an option with NO operand — and a `cd` with no operand goes to
+ * `$HOME`. Verified in bash on darwin 25.6:
+ *
+ *     $ bash -c 'cd /tmp/work && cd -P && pwd'
+ *     /Users/yahya
+ *
+ * `-P` was therefore tracked as a SUBDIRECTORY NAME: the tracked cwd became
+ * `<scratch>/-P`, still under the root, while the real shell had left for
+ * `$HOME`. So `cd /tmp/work && cd -P && rm -rf out` proved "strictly under a
+ * scratch root", approved at 0ms with no LLM and no card, and deleted
+ * `~/out`. `scratch` is gated into `balanced`, so this was reachable at
+ * `balanced` and `trusted`; under #1024 a subagent got it with no render.
+ */
+describe('#1047 a cd OPTION is not a subdirectory: it resets the tracked root', () => {
+  for (const opt of ['-P', '-L', '--', '-LP']) {
+    test(`cd ${opt} goes to $HOME, so a later relative delete is not proved`, () => {
+      expect(bash(`cd /tmp/work && cd ${opt} && rm -rf out`, SCRATCH_GROUPS)).toBeNull();
+    });
+  }
+
+  test('a plain relative descent still tracks — the fix costs no coverage', () => {
+    expect(bash('cd /tmp/work && cd sub && rm -rf out', SCRATCH_GROUPS)).toBe('scratch:rm');
+  });
+
+  test('./-foo is still reachable: only a LEADING dash is an option', () => {
+    // A directory literally named `-foo` cannot be reached by `cd -foo` in
+    // bash either, so rejecting the leading dash costs nothing real.
+    expect(bash('cd /tmp/work && cd ./-foo && rm -rf out', SCRATCH_GROUPS)).toBe('scratch:rm');
+  });
+});
+
 describe('scratch: output redirection to a scratch target', () => {
   test('a redirect carve-out lets an OTHER covered prefix through, unmodified', () => {
     // `hasShellControl` vetoes any non-/dev/null redirect unconditionally for

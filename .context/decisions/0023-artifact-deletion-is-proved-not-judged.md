@@ -143,6 +143,52 @@ New obligations, and the reason this ADR exists:
   test (`artifact-clean.test.ts`), and at least one independent adversarial
   pass happens before merge.
 
+## Adversarial pass, 2026-08-11 (the obligation above, discharged)
+
+Three independent adversaries, given distinct lenses (lexical/tokenization,
+destination/state, integration/composition) and required to EXECUTE every
+candidate through `matchGroups` rather than reason about it.
+
+**One confirmed bypass, and it was the group's worst case.**
+`cdTargetIsPlainDescendant` rejected the exact string `'-'` as a non-descendant
+`cd` target. But `cd` reads ANY leading-dash token as OPTIONS, so `cd -P`,
+`cd -L`, `cd --` and `cd -LP` are an option with **no operand** — and a `cd`
+with no operand goes to `$HOME`. Verified in bash on darwin 25.6: all four land
+in `/Users/<user>`.
+
+So `cd -P && rm -rf .venv` read as plain relative descent, approved at 0ms, and
+deleted the user's `~/.venv`. Worse, a SECOND plain `cd` descends normally from
+there, so `cd -P && cd <anyproject> && rm -rf node_modules` reached any project
+under `$HOME` — no card, and under #1024 a silent subagent grant. The
+one-directional poison model is what converted the blind spot into an approval
+rather than an escalation.
+
+Fixed by rejecting any leading dash, which costs nothing: a directory named
+`-foo` cannot be reached by `cd -foo` in bash either. Five entries added to the
+corpus (now 45), mutation-verified.
+
+**The same defect was live in shipped code, and the adversary got that half
+wrong.** It reported `scratch`'s `advanceScratchCwd` as failing safe here.
+Checking rather than accepting that showed it does not: `-P` fell through to
+`resolveScratchTarget` and was tracked as a SUBDIRECTORY NAME, so the tracked
+cwd became `<scratch>/-P` — still under the root — while bash had left for
+`$HOME`. `cd /tmp/work && cd -P && rm -rf out` approved at 0ms and deleted
+`~/out`, reachable at `balanced` and above. Filed as **#1047** and fixed in the
+same change, since one root cause split across two commits would ship a fix for
+the new code while leaving the shipped one open.
+
+That two independent authors encoded "the weird `cd` forms" as the single
+literal `-` is the finding under the finding: the check wanted to be "is this
+token an OPTION", not "is it one specific option".
+
+Verified non-findings worth recording, so a later reader does not re-derive
+them: the deny axis holds on top of the name proof (`dist/.env`, `dist/.git`
+refuse); no lexical ascent escapes (`../dist`, `dist/../src` refuse, because
+`resolveDotDot` pops the artifact ancestor before any `..` can escape past it);
+and `git worktree remove`'s flag handling is tight (`-C`, `--git-dir`,
+`--force=`, a second `--force` all fail closed), though its safety still rests
+entirely on git's runtime refusal, exactly as the Decision states.
+
 ## Alternatives considered
 
 - **Widen the prompt instead ("at trusted, approve artifact deletion").**
