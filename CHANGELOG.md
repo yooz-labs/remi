@@ -5,6 +5,38 @@ All notable changes to Remi are documented here.
 ## [Unreleased]
 
 ### Added
+- **Permissions can be scoped per agent type** ([ADR 0025]). A
+  `[auto_approve.agents.<type>]` section keyed by the hook's `agent_type` lets
+  one role get what another does not:
+  ```toml
+  [auto_approve.agents.Explore]
+  approve_groups = ["read-only", "vcs-read", "net-read"]
+
+  [auto_approve.agents.pr-review]
+  approve_groups = ["read-only", "vcs-read"]
+  allow = ["gh pr view", "gh pr diff"]
+  ```
+  The deterministic layers are the **only** ones a subagent reaches at hook time
+  (the LLM never runs there — [ADR 0004]), so they are also the only place a
+  per-role grant can live. `deny`/`deny_groups` **union** with the base, so a
+  section can never weaken a machine-wide prohibition; `allow`/`approve_groups`
+  **replace** it, because the motivating case is giving a role *less*. An
+  unmatched agent type falls through to the base, which also means a typo in a
+  section name silently does nothing — there is no registry of agent types to
+  validate against, and ADR 0025 records that rather than pretending otherwise.
+- **A `net-read` group** (`WebFetch`, `WebSearch`), in **no** preset and no
+  default. It exists because those tools previously matched *nothing*: every web
+  call from every subagent parked, rendered, and entered the serial eval queue.
+  Measured on a live 0.7.6 session, a fan-out of five concurrent
+  `general-purpose` agents saturated that queue and the waiters escalated on
+  `queue_timeout` **without the LLM ever running** — so the most common thing a
+  research subagent does took the most expensive path available, and under load
+  degraded to "escalate everything" while looking like the model was broken.
+  Deliberately not added to `trusted`: that level is chosen for git mutation and
+  proved-derived deletion, and silently attaching outbound egress to it on
+  upgrade is the same quiet widening ADR 0023 fixed in `matchGroups` one release
+  earlier. A wrongly-escalated fetch is a nuisance; a wrongly-approved one is an
+  exfiltration channel.
 - **remi supervises `llama-server` on Linux** (#822). Auto-approve's local
   backend no longer has to be started by hand: remi spawns it on demand,
   health-probes it, and stops what it started — the same `EngineHost` the macOS
@@ -24,7 +56,30 @@ All notable changes to Remi are documented here.
   assumed ("Download is remi's job"). Still open there: acquiring the binary,
   idle-stop, and the `escalate_model` design question.
 
+[ADR 0004]: .context/decisions/0004-pty-as-arbiter-subagent-questions.md
+[ADR 0025]: .context/decisions/0025-agent-scoped-permissions.md
+
 ### Fixed
+- **`which`, `basename`, `dirname`, `realpath`, `mdfind`, `du` and `df` join
+  `read-only`.** None opens a file for writing or takes an output-path flag,
+  and `which` resolves a PATH entry rather than running it. `mdutil` — the
+  mutating Spotlight sibling — is deliberately absent and pinned as such.
+- **A superseded prompt now cancels its eval.** When
+  `onHooklessQuestionGone` fires, it cleared the card and released the hold but
+  never cancelled the evaluation,
+  so a queued waiter kept its place in the **serial** eval lane to decide a
+  question a human had already answered — then pushed a card for it. Measured
+  on a live 0.7.6 session where evals cost 7–10s each, every such survivor
+  delayed every real question behind it, and `WebFetch`/`WebSearch` escalated at
+  exactly `240001ms` having never reached the model. `cancelEvalForQuestion`
+  already handled both the running eval and splicing a queued waiter; it simply
+  was not wired to this path.
+  **Scope, stated so it does not read as more than it is:** that callback has
+  exactly one trigger — a confirmed replacement render from the SAME agent
+  (`adoptRenderOwnedQuestion`). A prompt answered in the terminal with no
+  follow-up prompt rendering does NOT fire it, and still burns the full
+  `queue_timeout`. Covering that case needs a second trigger and is not in this
+  release.
 - **A loopback bind stopped mDNS advertising with no log line at all** (#1051).
   `startMdnsIfNeeded` collapsed three suppression conditions into one bare
   `return null`, while every other exit from that function logged something.
@@ -41,9 +96,10 @@ All notable changes to Remi are documented here.
   stays at `"auto"` (which resolves to `false`) walks straight back into the
   #880 exposure.
 - **A `typos` false positive that a version bump would have turned into a CI
-  failure.** `ACCEPTs` in `port-discovery.ts` is flagged by typos ≥1.49 but not
-  by the pinned 1.28.4, so the repo was one dependency bump away from a red
-  gate on a comment. Unrelated to the above; called out rather than folded in
+  failure.** A mixed-case word in a `port-discovery.ts` comment is flagged by
+  typos >=1.49 but not by the pinned 1.28.4, so the repo was one dependency
+  bump away from a red gate on a comment. (Spelled around here deliberately:
+  quoting the word verbatim would reintroduce the very hit this describes.) Unrelated to the above; called out rather than folded in
   silently.
 - **The `escalate_model` warning could be silenced for the users it was for**
   (#822). It was nested inside the llamacpp boot warning, which was harmless

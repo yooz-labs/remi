@@ -10,6 +10,7 @@
  */
 
 import { errorToString } from '@remi/shared';
+import { resolvePolicy } from './agent-policy.ts';
 import { reconcileCounterfactual, shouldCounterfactual } from './authority-counterfactual.ts';
 import { enforceAuthorityBoundary } from './authority.ts';
 import { AuthorizationAssessment, matrixDecision } from './authorization-assessment.ts';
@@ -144,6 +145,8 @@ export class AutoApproveService {
   private readonly deny: readonly string[];
   private readonly approveGroups: readonly string[];
   private readonly denyGroups: readonly string[];
+  /** Per-agent-type overrides (ADR 0025). Empty = every agent uses the base. */
+  private readonly agents: Readonly<Record<string, import('./types.ts').AgentPolicyOverride>>;
   private readonly instructions: string;
   /** Strictness preset, threaded into the prompt's default guidelines (#966). */
   private readonly level: AutoApproveLevel;
@@ -266,6 +269,7 @@ export class AutoApproveService {
     this.deny = config.deny;
     this.approveGroups = config.approve_groups;
     this.denyGroups = config.deny_groups;
+    this.agents = config.agents ?? {};
     this.instructions = config.instructions;
     // #966: the LLM handles whatever no group covers, so its DEFAULT
     // GUIDELINES must agree with the level the user chose. Without this the
@@ -666,11 +670,24 @@ export class AutoApproveService {
   evaluateDeterministic(
     toolName: string,
     toolInput: Record<string, unknown>,
+    agentType?: string,
   ):
     | { decision: 'approve'; reasoning: string }
     | { decision: 'deny-covered'; reasoning: string; denySource: DenySource }
     | null {
-    const denyMatch = matchSubstringPattern(toolName, toolInput, this.deny);
+    // ADR 0025. Undefined agentType (main context, or a hook without one)
+    // resolves to the base, so every pre-0025 caller is unchanged.
+    const policy = resolvePolicy(
+      {
+        allow: this.allow,
+        deny: this.deny,
+        approveGroups: this.approveGroups,
+        denyGroups: this.denyGroups,
+      },
+      this.agents,
+      agentType,
+    );
+    const denyMatch = matchSubstringPattern(toolName, toolInput, policy.deny);
     if (denyMatch !== null) {
       return {
         decision: 'deny-covered',
@@ -682,7 +699,7 @@ export class AutoApproveService {
     // command to be covered and is right for the allow question below; asking
     // it a deny question meant `mkdir /tmp/x && ls -la` defeated a
     // `deny_groups = ["fs-write"]` that stopped the bare `mkdir`.
-    const denyGroupMatch = matchGroupsBroad(toolName, toolInput, this.denyGroups);
+    const denyGroupMatch = matchGroupsBroad(toolName, toolInput, policy.denyGroups);
     if (denyGroupMatch !== null) {
       return {
         decision: 'deny-covered',
@@ -690,11 +707,11 @@ export class AutoApproveService {
         denySource: { kind: 'config', pattern: denyGroupMatch },
       };
     }
-    const allowMatch = matchAllowPattern(toolName, toolInput, this.allow);
+    const allowMatch = matchAllowPattern(toolName, toolInput, policy.allow);
     if (allowMatch !== null) {
       return { decision: 'approve', reasoning: `allow-matched pattern: "${allowMatch}"` };
     }
-    const approveGroupMatch = matchGroups(toolName, toolInput, this.approveGroups);
+    const approveGroupMatch = matchGroups(toolName, toolInput, policy.approveGroups);
     if (approveGroupMatch !== null) {
       return { decision: 'approve', reasoning: `approve-matched group: "${approveGroupMatch}"` };
     }
@@ -757,6 +774,13 @@ export class AutoApproveService {
      * omits it behaves exactly as it did pre-#976.
      */
     precedent?: PrecedentReader,
+    /**
+     * The hook's `agent_type` (ADR 0025). Selects a
+     * `[auto_approve.agents.<type>]` section for the deterministic layers.
+     * Undefined = main context, or a subagent hook that carried none; both
+     * resolve to the base policy, so every pre-0025 caller is unchanged.
+     */
+    agentType?: string,
   ): Promise<AutoApproveResult> {
     const start = Date.now();
     // #820: push the idle-unload deadline out. Called at the START so a long
@@ -790,7 +814,7 @@ export class AutoApproveService {
       // Deny/allow/group: checked first, always win, no LLM call. Shared with
       // the gate's subagent hook-time path (#1024) via `evaluateDeterministic`
       // so the two can never drift apart -- see that method's doc.
-      const deterministic = this.evaluateDeterministic(toolName, toolInput);
+      const deterministic = this.evaluateDeterministic(toolName, toolInput, agentType);
       if (deterministic !== null) {
         if (deterministic.decision === 'deny-covered') {
           this.logFn(`${prefix} DENIED ${toolName}: ${deterministic.reasoning} (0ms)`);

@@ -1761,6 +1761,29 @@ async function createNewSession(
           `[QuestionPresenceTracker] gate cleanup for superseded ${questionId.slice(0, 8)} threw: ${errorToString(err)}`,
         );
       }
+      // The prompt left the screen, which for a permission answered directly in
+      // the terminal is the ONLY evidence remi gets. Until this call the card
+      // cleared but the EVAL did not: a queued waiter kept its place in the
+      // serial lane and ran (or burned the full `queue_timeout`) to decide a
+      // question a human had already answered — then pushed a card for it.
+      //
+      // Measured on a live 0.7.6 session: evals cost 7-10s each and run one at
+      // a time, so every already-answered survivor delayed every real one
+      // behind it, and WebFetch/WebSearch escalated at exactly 240001ms having
+      // never reached the model.
+      //
+      // Separately guarded from the release above, deliberately: these are two
+      // independent cleanups and a throw in either must not skip the other —
+      // the zombie-card pattern #661 fixed in input-events.ts's answer paths.
+      // `cancelEvalForQuestion` is a no-op when no eval is tracked, so this is
+      // safe to call on every disappearance.
+      try {
+        sessionGateHandles.get(sessionId)?.cancelEvalForQuestion?.(questionId as UUID, reason);
+      } catch (err) {
+        logError(
+          `[QuestionPresenceTracker] eval cancel for gone ${questionId.slice(0, 8)} threw: ${errorToString(err)}`,
+        );
+      }
     },
   });
   // #920: register this session's tracker so the answer handler's
