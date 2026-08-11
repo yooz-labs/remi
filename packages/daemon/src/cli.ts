@@ -2316,12 +2316,18 @@ if (authEnabled) {
     //
     // `console.error`, NOT `logError`, and that is load-bearing. A first draft
     // used `logError` "because console.warn is dropped in wrapper mode
-    // (#1043)". That reasoning is backwards and the PR review caught it: in
-    // wrapper mode -- the DEFAULT, since `setWrapperMode(false)` fires only for
-    // `--daemon` -- `logError` routes to `writeToLog`, which is a no-op until
-    // `startLogFileSession` runs. That happens ~490 lines below this point, so
-    // the message went nowhere at all, while the `console.warn` it replaced had
-    // reached the terminal. The switch deleted the warning it claimed to save.
+    // (#1043)". That reasoning is backwards: in wrapper mode `logError` routes
+    // to `writeToLog`, a no-op until `startLogFileSession`, which runs ~490
+    // lines below this point -- so the message went nowhere, while the
+    // `console.warn` it replaced reached the terminal.
+    //
+    // SCOPE that correctly, because a second review round caught the fix's own
+    // comment overstating it. Wrapper mode is NOT simply "the default": line
+    // ~325 is `cliDaemonMode = parsedArgs.daemonMode || serveMode`, so `remi
+    // serve` -- the LaunchAgent/systemd entrypoint, and the long-lived install
+    // most likely to carry a materialized `0.0.0.0` -- already took the
+    // console branch and printed both lines either way. The regression was real
+    // but confined to the plain-`remi` wrapper session path.
     //
     // At THIS point in module init the console is not yet redirected (the
     // overrides are installed alongside the log session, far below), so
