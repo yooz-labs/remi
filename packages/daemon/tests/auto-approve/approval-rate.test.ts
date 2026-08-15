@@ -23,6 +23,7 @@ import {
   classifyMiss,
   loadCorpusRecords,
   parseDecisionLog,
+  percentile,
   replayDeterministic,
 } from './approval-rate.ts';
 import type { CorpusRecord } from './approval-rate.ts';
@@ -78,6 +79,35 @@ describe('classifyMiss', () => {
 
   test('single: plain command', () => {
     expect(classifyMiss('echo hello')).toBe('single');
+  });
+
+  test('redirection: stderr discard (2>/dev/null)', () => {
+    expect(classifyMiss('cmd 2>/dev/null')).toBe('redirection');
+  });
+
+  test('redirection: fd duplication (>&2)', () => {
+    expect(classifyMiss('cmd >&2')).toBe('redirection');
+  });
+
+  // Precedence beats pipeline, and deliberately so: `2>&1 | tee f` is a
+  // ubiquitous stderr-merge idiom, and REDIRECT_CLAUSE_RE matches the `2>&1`
+  // before the pipeline check ever runs -- draining this shape out of the
+  // pipeline bucket and into redirection, per classifyMiss's own documented
+  // precedence order (heredoc > redirection > pipeline > chained > single).
+  test('precedence: stderr-merge-then-pipe is redirection, not pipeline', () => {
+    expect(classifyMiss('cmd 2>&1 | tee f')).toBe('redirection');
+  });
+
+  test('chained: multiline command (newline joiner)', () => {
+    expect(classifyMiss('echo a\necho b')).toBe('chained');
+  });
+
+  test('redirection: process substitution (tee >(wc -l))', () => {
+    expect(classifyMiss('tee >(wc -l)')).toBe('redirection');
+  });
+
+  test('single: empty string', () => {
+    expect(classifyMiss('')).toBe('single');
   });
 });
 
@@ -208,6 +238,50 @@ describe('parseDecisionLog', () => {
     expect(tally.riskCeilingCount).toBe(1);
     expect(tally.latenciesByVerdict.escalate).toEqual([842, 241007, 301]);
   });
+
+  // The RISK CEILING sideband line (auto-approve-service.ts:1165) is emitted
+  // UNCONDITIONALLY, alongside -- never instead of -- the final :1295 matrix
+  // line that carries the actual decision. Pins that the pair counts as ONE
+  // escalate, not two, and that the sideband itself lands in
+  // autoApproveNonDecision rather than being silently dropped or double-
+  // counted as a second verdict.
+  test('risk-ceiling sideband + final line: one escalate, sideband is non-decision', () => {
+    const sideband =
+      '[AutoApprove sess-x] RISK CEILING Bash: approve -> escalate (band=high) (301ms)';
+    const text = [sideband, riskCeiling].join('\n');
+
+    const { tally } = parseDecisionLog(text);
+
+    expect(tally.byVerdict.escalate).toBe(1);
+    expect(tally.autoApproveNonDecision).toBe(1);
+  });
+
+  // Round-trips the two most common real shapes in a live log (baseline
+  // 2026-08-15: the deterministic approve and PRECEDENT approve templates
+  // together account for the bulk of fast-path approves).
+  test('round-trips the deterministic-approve template (:830)', () => {
+    const line = '[AutoApprove sess1] Bash: approve (0ms) - allow-matched pattern: "git status"';
+    const { lines } = parseDecisionLog(line);
+    const parsed = lines[0];
+    expect(parsed?.matched).toBe(true);
+    expect(parsed?.verdict).toBe('approve');
+    expect(parsed?.durationMs).toBe(0);
+    expect(parsed?.band).toBeUndefined();
+    expect(parsed?.fastPath).toBe(true);
+  });
+
+  test('round-trips the PRECEDENT-approve template (:875)', () => {
+    const line =
+      '[AutoApprove sess1] PRECEDENT Bash: approve (0ms) - session precedent (#976): you approved this exact operation at 2026-08-15T00:00:00.000Z (band=low, grade=strong)';
+    const { lines } = parseDecisionLog(line);
+    const parsed = lines[0];
+    expect(parsed?.matched).toBe(true);
+    expect(parsed?.tag).toBe('sess1');
+    expect(parsed?.verdict).toBe('approve');
+    expect(parsed?.durationMs).toBe(0);
+    expect(parsed?.band).toBeUndefined();
+    expect(parsed?.fastPath).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -252,6 +326,64 @@ describe('loadCorpusRecords', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test('a non-default eventName (PostToolUse) returns the record the default event drops', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'approval-rate-loader-posttooluse-'));
+    const file = path.join(dir, 'corpus.jsonl');
+    const lines = [
+      JSON.stringify({
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'git status' },
+      }),
+      JSON.stringify({
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Read',
+        tool_input: { file_path: '/tmp/y' },
+      }),
+    ];
+    fs.writeFileSync(file, lines.join('\n'));
+
+    try {
+      const defaultRecords = loadCorpusRecords(file);
+      expect(defaultRecords).toHaveLength(1);
+      expect(defaultRecords[0]?.toolName).toBe('Bash');
+
+      const postToolUseRecords = loadCorpusRecords(file, 'PostToolUse');
+      expect(postToolUseRecords).toHaveLength(1);
+      expect(postToolUseRecords[0]?.toolName).toBe('Read');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// percentile
+// ---------------------------------------------------------------------------
+
+describe('percentile', () => {
+  test('empty array is null', () => {
+    expect(percentile([], 50)).toBeNull();
+  });
+
+  test('a single sample returns that sample at any percentile', () => {
+    expect(percentile([42], 50)).toBe(42);
+    expect(percentile([42], 95)).toBe(42);
+  });
+
+  test('two samples: p50 picks the lower, p95 the upper', () => {
+    expect(percentile([10, 20], 50)).toBe(10);
+    expect(percentile([10, 20], 95)).toBe(20);
+  });
+
+  // n=4, p50: nearest-rank ceil gives idx = ceil(0.5*4) - 1 = 1 -> the LOWER
+  // of the middle pair (20). A floor-rank convention (idx = floor(0.5*4) = 2)
+  // would instead pick the UPPER middle value (30) -- this pins which one
+  // this function actually returns.
+  test('n=4 p50: ceil-rank and floor-rank diverge, and this is the ceil answer', () => {
+    expect(percentile([10, 20, 30, 40], 50)).toBe(20);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -259,7 +391,10 @@ describe('loadCorpusRecords', () => {
 // ---------------------------------------------------------------------------
 
 // Mirrors auto-approve-service.test.ts's own `makeConfig` (that file's
-// :36-70), not imported from it -- it is a local, unexported helper there.
+// :36-71), not imported from it -- it is a local, unexported helper there.
+// One field deliberately differs: `base_url` here is the non-routable
+// 10.255.255.1 (nothing this suite does should ever dial out), where that
+// file's mirror points at the production loopback 127.0.0.1:19924.
 function makeConfig(overrides?: Partial<AutoApproveConfig>): AutoApproveConfig {
   return {
     enabled: true,
@@ -358,5 +493,85 @@ describe('replayDeterministic', () => {
     expect(deduped.tally.total).toBe(2);
     const notDeduped = replayDeterministic(dupeRecords, config);
     expect(notDeduped.tally.total).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// replayDeterministic: agent-scoped permissions (ADR 0025)
+// ---------------------------------------------------------------------------
+
+describe('replayDeterministic: agent-scoped permissions', () => {
+  // `net-read` (WebFetch/WebSearch) is in no preset and no default (ADR
+  // 0025), so the base policy never approves it; only a matched
+  // `[auto_approve.agents.<type>]` section's own `approve_groups` does --
+  // and that key REPLACES the base rather than unioning with it.
+  const record: CorpusRecord = {
+    toolName: 'WebFetch',
+    toolInput: { url: 'https://example.com' },
+    agentType: undefined,
+    index: 0,
+  };
+  const config = makeConfig({
+    approve_groups: [],
+    agents: { Explore: { approve_groups: ['net-read'] } },
+  });
+
+  test('a matched agent type (Explore) approves via its own section', () => {
+    const result = replayDeterministic([{ ...record, agentType: 'Explore' }], config);
+    expect(result.tally.approve).toBe(1);
+    expect(result.records[0]?.source).toBe('group');
+  });
+
+  test('undefined agentType resolves to the base policy and stays residual', () => {
+    const result = replayDeterministic([{ ...record, agentType: undefined }], config);
+    expect(result.tally.residual).toBe(1);
+  });
+
+  test('an unmatched agent type falls through to the base policy, also residual', () => {
+    const result = replayDeterministic([{ ...record, agentType: 'pr-review' }], config);
+    expect(result.tally.residual).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// replayDeterministic: deny/allow source splits
+// ---------------------------------------------------------------------------
+
+describe('replayDeterministic: source splits', () => {
+  test('deny-covered splits pattern vs. group', () => {
+    const config = makeConfig({ deny: ['rm -rf'], deny_groups: ['fs-write'] });
+    const records: CorpusRecord[] = [
+      // Matches the user's own `deny` pattern (substring).
+      {
+        toolName: 'Bash',
+        toolInput: { command: 'rm -rf /tmp/junk' },
+        agentType: undefined,
+        index: 0,
+      },
+      // `rm`/`rmdir` are deliberately absent from `fs-write` (ADR 0023), so
+      // this one is caught only by `deny_groups`, not the pattern above.
+      {
+        toolName: 'Bash',
+        toolInput: { command: 'mkdir /tmp/new-dir' },
+        agentType: undefined,
+        index: 1,
+      },
+    ];
+    const result = replayDeterministic(records, config);
+    expect(result.tally.denyCovered).toBe(2);
+    expect(result.tally.denyCoveredBySource).toEqual({ pattern: 1, group: 1 });
+  });
+
+  test('approve splits allow vs. approve_groups', () => {
+    const config = makeConfig({ allow: ['git status'], approve_groups: ['read-only'] });
+    const records: CorpusRecord[] = [
+      // Matches the user's own `allow` list.
+      { toolName: 'Bash', toolInput: { command: 'git status' }, agentType: undefined, index: 0 },
+      // Matches only the curated `read-only` group.
+      { toolName: 'Read', toolInput: { file_path: '/tmp/x' }, agentType: undefined, index: 1 },
+    ];
+    const result = replayDeterministic(records, config);
+    expect(result.tally.approve).toBe(2);
+    expect(result.tally.approveBySource).toEqual({ allow: 1, group: 1 });
   });
 });
