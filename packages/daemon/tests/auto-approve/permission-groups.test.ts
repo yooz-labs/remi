@@ -1103,6 +1103,95 @@ describe('#1000: a cd whose effect is not guaranteed does not move the tracked r
 });
 
 /**
+ * #1041: 58% of trusted Bash escalations measured on a real machine were
+ * plain file writes -- `cat a.txt > notes.md`, `bun test > out.log 2>&1`,
+ * `git diff > review.diff` -- heads already covered by `read-only`,
+ * `build-test` and `vcs-read`, escalating only because the redirect target
+ * looked like shell control to `hasShellControl`. `fs-write` already approves
+ * exactly this operation through the `Write` tool, so this grant lets it
+ * approve the Bash spelling too: a path-kind redirect clause may be deleted
+ * when its cwd-resolved target is a RELATIVE path that does not ascend out of
+ * the directory the command started in, and is not a sensitive destination.
+ *
+ * `WRITE_GROUPS_NO_SCRATCH` deliberately omits `scratch`, to isolate the
+ * fs-write grant from the pre-existing absolute-root one -- a command that
+ * needs `scratch` to pass here would be pinning the wrong grant.
+ */
+describe('#1041: fs-write grants a relative, non-ascending, non-sensitive redirect', () => {
+  const WRITE_GROUPS_NO_SCRATCH = [...ALL, 'fs-write'];
+
+  describe('covered', () => {
+    const covered: Array<[string, string]> = [
+      ['cat a.txt > notes.md', 'read-only:cat'],
+      ['cat a >> log.txt', 'read-only:cat'],
+      ['bun test > out.log 2>&1', 'build-test:bun test'],
+      ['git diff > review.diff', 'vcs-read:git diff'],
+      ['cd sub && cat a > out.txt', 'read-only:cat'],
+      ['cat a > docs/notes.md', 'read-only:cat'],
+    ];
+    for (const [cmd, expected] of covered) {
+      test(`${JSON.stringify(cmd)} -> ${expected}`, () => {
+        expect(bash(cmd, WRITE_GROUPS_NO_SCRATCH)).toBe(expected);
+      });
+    }
+  });
+
+  describe('MUST NOT cover (falls through to the LLM)', () => {
+    const mustBeNull: Array<[string, string]> = [
+      ['cat a > /etc/hosts', 'absolute target, outside any scratch root'],
+      ['cat a > ~/x', 'home-rooted target'],
+      ['cat a > $HOME/x', '$HOME is absolute-shaped, never composed'],
+      ['cat a > ../escape.txt', 'ascends above the start with no cd at all'],
+      ['cat a > sub/../../escape.txt', 'composes to an ascent above the start'],
+      ['cat a > .env', 'a credential basename'],
+      ['cat a > package.json', 'a build surface'],
+      ['cat a > .git/hooks/pre-commit', 'git hook: code execution on the next commit'],
+      ['cd /opt && cat a > x', 'an absolute cd kills the relative grant, sticky'],
+      ['cd $DIR && cat a > x', 'an unresolvable cd target kills the grant, sticky'],
+      ['cat a > "quoted path.txt"', 'opaque target: quoting is never composed'],
+      ['cat a >| x', 'clobber redirect: opaque target'],
+      ['cat a &> x', 'merge redirect: the residual & still backgrounds'],
+      ['cat a > >(tee x)', 'process substitution: hasShellControl catches <( and >('],
+      ['cat a >/tmp/a>/etc/passwd', 'glued redirect (#1000): opaque target'],
+      ['echo hi > notes.md', 'echo is neutral, so nothing ever matches a prefix'],
+    ];
+    for (const [cmd, why] of mustBeNull) {
+      test(`${JSON.stringify(cmd)} — ${why}`, () => {
+        expect(bash(cmd, WRITE_GROUPS_NO_SCRATCH)).toBeNull();
+      });
+    }
+
+    test('fs-write not in groups: the same redirect stays refused', () => {
+      expect(bash('cat a > notes.md', ALL)).toBeNull();
+    });
+  });
+
+  test('cd composition: a relative cd chain that returns to the start still grants', () => {
+    expect(bash('cd sub && cd .. && cat a > out.txt', WRITE_GROUPS_NO_SCRATCH)).toBe(
+      'read-only:cat',
+    );
+  });
+
+  test('cd composition: ascending past the start kills the grant', () => {
+    expect(bash('cd sub && cd .. && cd .. && cat a > out.txt', WRITE_GROUPS_NO_SCRATCH)).toBeNull();
+  });
+
+  test('the two grants compose: either proof deletes the clause', () => {
+    const BOTH = [...ALL, 'fs-write', 'scratch'];
+    // scratch's own absolute-root grant, unaffected by fs-write being active too.
+    expect(bash('cat a > /tmp/out.txt', BOTH)).toBe('read-only:cat');
+    // fs-write's relative grant, unaffected by scratch being active too.
+    expect(bash('cat a > notes.md', BOTH)).toBe('read-only:cat');
+  });
+
+  test('every existing scratch-only behavior is unaffected by the generalization', () => {
+    expect(bash('rm -rf /tmp/x', SCRATCH_GROUPS)).toBe('scratch:rm');
+    expect(bash('cat file.txt > /tmp/out.txt', ['scratch', 'read-only'])).toBe('read-only:cat');
+    expect(bash('cat file.txt > /etc/passwd', ['scratch', 'read-only'])).toBeNull();
+  });
+});
+
+/**
  * #1001. `deny_groups` was answered by `matchGroups`, the same function that
  * answers the allow question. ADR 0010 says allow matching is PRECISE and deny
  * matching is BROAD; this was the one place a deny question was asked of a
