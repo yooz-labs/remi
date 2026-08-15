@@ -894,6 +894,39 @@ describe('scratch: output redirection to a scratch target', () => {
   });
 });
 
+/**
+ * #1060 + ADR 0018 axis 3. The scratch redirect carve-out proved a target
+ * was under a scratch root and stopped there -- it never asked WHAT the
+ * target named, so a redirect INTO `/tmp/.env`, `/tmp/.git/hooks/pre-commit`
+ * or `/tmp/sub/package.json` had its clause deleted before
+ * `segmentTouchesSensitivePath` ever saw the token it exists to veto.
+ * Measured live before the fix: all three approved at 0ms on
+ * `['scratch', 'read-only']`.
+ */
+describe('#1060: a scratch-granted redirect target must not be sensitive', () => {
+  const READ_PLUS_SCRATCH = ['scratch', 'read-only'];
+
+  const sensitiveTargets: Array<[string, string]> = [
+    ['cat a > /tmp/.env', 'a credential basename, inside a scratch root'],
+    ['cat a > /tmp/.git/hooks/pre-commit', 'git hook: code execution on the next commit'],
+    ['cat a > /tmp/sub/package.json', 'build surface, nested under the scratch root'],
+  ];
+
+  for (const [cmd, why] of sensitiveTargets) {
+    test(`${JSON.stringify(cmd)} — ${why}`, () => {
+      expect(bash(cmd, READ_PLUS_SCRATCH)).toBeNull();
+    });
+  }
+
+  test('the fix does not over-narrow: an ordinary scratch redirect still matches', () => {
+    expect(bash('cat a > /tmp/out.txt', READ_PLUS_SCRATCH)).toBe('read-only:cat');
+  });
+
+  test('the fix does not over-narrow: a nested non-sensitive redirect still matches', () => {
+    expect(bash('cat a > /tmp/nested/ok.txt', READ_PLUS_SCRATCH)).toBe('read-only:cat');
+  });
+});
+
 describe('scratch: level membership', () => {
   test('scratch alone does not need fs-write or vcs-write', () => {
     expect(bash('rm -rf /tmp/x', ['scratch'])).toBe('scratch:rm');

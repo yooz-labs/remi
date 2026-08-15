@@ -342,6 +342,38 @@ function cdEffectIsUnreliable(joiner: CompoundJoiner, nextJoiner: CompoundJoiner
 }
 
 /**
+ * True if a redirect clause targeting `path` may be DELETED rather than left
+ * for `hasShellControl` to veto: the target resolves STRICTLY under a scratch
+ * root, AND is not itself a sensitive destination.
+ *
+ * #1060 + ADR 0018 axis 3. `isStrictlyUnderScratchRoot` alone proves only the
+ * destination-root half of a write-side match (axis 3's "under `/tmp`" half);
+ * it never asked WHAT the target names, so `cat a > /tmp/.env`,
+ * `cat a > /tmp/.git/hooks/pre-commit` and `cat a > /tmp/sub/package.json` all
+ * qualified and had their redirect clause deleted before
+ * `segmentTouchesSensitivePath` — this file's own axis-3 conjunct — ever got a
+ * token to look at: the clause it would have vetoed was gone by the time that
+ * check ran. Same "one proof holds, the other owner's veto never runs" shape
+ * ADR 0018 exists to name for every other write-side match; this is that gap
+ * inside `scratch`'s own redirect carve-out.
+ *
+ * Checked on the RESOLVED path, not the raw token, so a cd-established root
+ * composed with a relative target still lands on the real destination before
+ * the sensitivity check runs — `cd /tmp && cat a > .git/hooks/pre-commit` must
+ * be caught exactly like the absolute spelling.
+ */
+function isGrantedScratchRedirectTarget(path: string, cwd: ScratchCwd): boolean {
+  const resolved = resolveScratchTarget(path, cwd);
+  if (resolved === null || resolved.segments.length <= resolved.rootLen) return false;
+  return !isSensitiveWritePath(scratchSegmentsToPath(resolved.segments));
+}
+
+/** Render resolved scratch-root segments back into a path `isSensitiveWritePath` can read. */
+function scratchSegmentsToPath(segments: readonly string[]): string {
+  return segments[0] === '$TMPDIR' ? segments.join('/') : `/${segments.join('/')}`;
+}
+
+/**
  * Remove every redirect clause in `segment` whose target is a plain path under
  * a scratch root. REMOVES the clause entirely rather than retargeting it to
  * `/dev/null`: a retargeted clause would still leave a token like
@@ -357,7 +389,7 @@ function cdEffectIsUnreliable(joiner: CompoundJoiner, nextJoiner: CompoundJoiner
 function sanitizeSegmentRedirects(segment: string, cwd: ScratchCwd): string {
   return rewriteRedirectClauses(segment, (target, text) => {
     if (target.kind !== 'path') return text;
-    return isStrictlyUnderScratchRoot(target.path, cwd) ? '' : text;
+    return isGrantedScratchRedirectTarget(target.path, cwd) ? '' : text;
   });
 }
 
