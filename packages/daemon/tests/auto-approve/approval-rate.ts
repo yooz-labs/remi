@@ -73,8 +73,21 @@ export interface CorpusRecord {
  * generalized to take a path (that file's version is hardcoded to the one
  * fixture) and to carry `agent_type` through (ADR 0025 per-agent-type
  * policy needs it; the guard chain this mirrors does not).
+ *
+ * `eventName` defaults to `PermissionRequest` -- the population that actually
+ * asked remi for a decision, the one #996 measured. It exists because
+ * hook-diag capture is gated on `REMI_HOOK_DEBUG=1` (hook-server.ts) and a
+ * machine's capture window may hold no PermissionRequest at all (this repo's
+ * dev machine: 142 events, zero of them). `PreToolUse` records carry the same
+ * `tool_name`/`tool_input` and can stand in as a PROXY corpus, with a caveat
+ * the CLI prints: PreToolUse fires for every tool call, including ones Claude
+ * Code's own settings allowlist approved without ever asking remi, so
+ * coverage measured on it is not the same population as #996's.
  */
-export function loadCorpusRecords(filePath: string): CorpusRecord[] {
+export function loadCorpusRecords(
+  filePath: string,
+  eventName = 'PermissionRequest',
+): CorpusRecord[] {
   const raw = fs.readFileSync(filePath, 'utf8');
   const lines = raw.split('\n').filter((line) => line.trim().length > 0);
   const records: CorpusRecord[] = [];
@@ -85,7 +98,7 @@ export function loadCorpusRecords(filePath: string): CorpusRecord[] {
     } catch {
       return;
     }
-    if (parsed['hook_event_name'] !== 'PermissionRequest') return;
+    if (parsed['hook_event_name'] !== eventName) return;
     const toolName = parsed['tool_name'];
     const toolInput = parsed['tool_input'];
     if (typeof toolName !== 'string') return;
@@ -372,7 +385,8 @@ export function classifyMiss(command: string): MissBucket {
 export type LogVerdict = 'approve' | 'deny' | 'escalate' | 'cancelled' | 'error';
 
 /** One parsed (or unrecognized) decision line. `matched: false` carries
- *  every other field `undefined` -- the caller counts it as `unparsed`. */
+ *  every other field `undefined` -- `parseDecisionLog` then either ignores
+ *  the line or counts it under `autoApproveNonDecision` (see that doc). */
 export interface ParsedLogLine {
   readonly raw: string;
   readonly matched: boolean;
@@ -446,10 +460,9 @@ function unmatchedLine(raw: string): ParsedLogLine {
 /**
  * Parses one line of `auto-approve-service.ts`'s `logFn` output. Templates
  * read from source (this file's module doc), not guessed. Never throws on
- * an unrecognized line -- returns `{matched: false, ...}` instead, so a line
- * from a future log format, or ordinary non-decision daemon output mixed
- * into the same file, is counted as `unparsed` by `parseDecisionLog` rather
- * than crashing the report.
+ * an unrecognized line -- returns `{matched: false, ...}` instead; what
+ * `parseDecisionLog` does with a non-match depends on whether the line is
+ * `[AutoApprove`-tagged at all (see its doc).
  */
 function parseLine(raw: string): ParsedLogLine {
   const m2 = FAMILY2_RE.exec(raw);
@@ -500,7 +513,18 @@ function parseLine(raw: string): ParsedLogLine {
 
 export interface DecisionLogTally {
   readonly totalLines: number;
-  readonly unparsed: number;
+  /**
+   * `[AutoApprove`-tagged lines that matched no DECISION shape. Mostly the
+   * service's lifecycle lines (`Externally resolved`, `Parked subagent
+   * prompt`, `Releasing N held hook(s)`, `Held hook ... resolved`), which are
+   * real AutoApprove output this report deliberately does not tally -- but a
+   * decision line from a future log format lands here too, so a sudden jump
+   * in this count against a similar decision count is the drift signal.
+   * Lines with no `[AutoApprove` tag at all (the rest of the daemon's log)
+   * are ignored entirely: counting them as "unparsed" made a healthy report
+   * read as 98% parser failure (28489 of 28921 on the first real run).
+   */
+  readonly autoApproveNonDecision: number;
   readonly fastPathCount: number;
   readonly llmPathCount: number;
   readonly byVerdict: Readonly<Record<LogVerdict, number>>;
@@ -527,8 +551,11 @@ function emptyVerdictLatencies(): Record<LogVerdict, number[]> {
 /**
  * Parses a `remi.log` (or any text carrying `[AutoApprove ...]` decision
  * lines mixed with other daemon output) into per-verdict/band/layer counts
- * and latency samples. No printing here -- percentile computation and
- * rendering are `run-approval-rate-report.ts`'s job.
+ * and latency samples. Lines without an `[AutoApprove` tag are ignored;
+ * tagged lines that match no decision shape are counted as
+ * `autoApproveNonDecision` (see that field's doc for why the split exists).
+ * No printing here -- percentile computation and rendering are
+ * `run-approval-rate-report.ts`'s job.
  */
 export function parseDecisionLog(text: string): ParsedDecisionLog {
   const lines = text.split('\n').filter((line) => line.trim().length > 0);
@@ -537,7 +564,7 @@ export function parseDecisionLog(text: string): ParsedDecisionLog {
   const byVerdict = emptyVerdictCounts();
   const latenciesByVerdict = emptyVerdictLatencies();
   const byVerdictBandDecidedBy: Record<string, number> = {};
-  let unparsed = 0;
+  let autoApproveNonDecision = 0;
   let fastPathCount = 0;
   let llmPathCount = 0;
   let queueTimeoutCount = 0;
@@ -545,7 +572,7 @@ export function parseDecisionLog(text: string): ParsedDecisionLog {
 
   for (const line of parsedLines) {
     if (!line.matched || line.verdict === undefined) {
-      unparsed += 1;
+      if (line.raw.includes('[AutoApprove')) autoApproveNonDecision += 1;
       continue;
     }
     byVerdict[line.verdict] += 1;
@@ -563,7 +590,7 @@ export function parseDecisionLog(text: string): ParsedDecisionLog {
   return {
     tally: {
       totalLines: parsedLines.length,
-      unparsed,
+      autoApproveNonDecision,
       fastPathCount,
       llmPathCount,
       byVerdict,

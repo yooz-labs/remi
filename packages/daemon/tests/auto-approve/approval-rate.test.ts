@@ -103,6 +103,8 @@ describe('parseDecisionLog', () => {
   const queueTimeout =
     '[AutoApprove sess-q] Bash: escalate (241007ms) - eval queue wait exceeded 240000ms; escalating to user';
   const garbage = 'some unrelated daemon log line about nothing decision-shaped';
+  const lifecycle =
+    '[AutoApprove 17a90c4f] Externally resolved 75704a96 (PostToolUse); clearing stale escalation';
 
   test('round-trips a real formatMatrixContext post-LLM escalate line', () => {
     const { lines } = parseDecisionLog(postLlmEscalate);
@@ -159,10 +161,17 @@ describe('parseDecisionLog', () => {
     expect(line?.queueTimeout).toBe(true);
   });
 
-  test('an unrecognized line is unparsed, never thrown on', () => {
+  test('a non-AutoApprove line is ignored, never thrown on', () => {
     const { lines, tally } = parseDecisionLog(garbage);
     expect(lines[0]?.matched).toBe(false);
-    expect(tally.unparsed).toBe(1);
+    expect(tally.autoApproveNonDecision).toBe(0);
+  });
+
+  test('an AutoApprove lifecycle line counts as non-decision, not a verdict', () => {
+    const { lines, tally } = parseDecisionLog(lifecycle);
+    expect(lines[0]?.matched).toBe(false);
+    expect(tally.autoApproveNonDecision).toBe(1);
+    expect(tally.byVerdict.approve + tally.byVerdict.escalate + tally.byVerdict.deny).toBe(0);
   });
 
   test('tallies a mixed log across all known shapes', () => {
@@ -176,12 +185,13 @@ describe('parseDecisionLog', () => {
       queueTimeout,
       riskCeiling,
       garbage,
+      lifecycle,
     ].join('\n');
 
     const { tally } = parseDecisionLog(text);
 
-    expect(tally.totalLines).toBe(9);
-    expect(tally.unparsed).toBe(1);
+    expect(tally.totalLines).toBe(10);
+    expect(tally.autoApproveNonDecision).toBe(1);
     expect(tally.byVerdict).toEqual({
       approve: 1,
       deny: 2,

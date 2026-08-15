@@ -9,8 +9,8 @@
  *
  * Usage:
  *   bun packages/daemon/tests/auto-approve/run-approval-rate-report.ts \
- *     [--input <path>] [--config <path>] [--level strict|balanced|trusted] \
- *     [--log <path>] [--unique] [--json]
+ *     [--input <path>] [--event <name>] [--config <path>] \
+ *     [--level strict|balanced|trusted] [--log <path>] [--unique] [--json]
  *
  * Flags:
  *   --input <path>   JSONL corpus to replay (`loadCorpusRecords`). Default:
@@ -22,6 +22,14 @@
  *   --level <name>   Overrides the resolved config's `approve_groups` with
  *                     `groupsForLevel(<name>)` -- lets one config be swept
  *                     across all three strictness presets without editing it.
+ *   --event <name>   Hook event to replay from the corpus. Default:
+ *                     `PermissionRequest` (the population that asked remi --
+ *                     what #996 measured). `PreToolUse` is a usable PROXY on
+ *                     a machine whose `REMI_HOOK_DEBUG=1` capture window
+ *                     holds no PermissionRequest, but it is a different
+ *                     population (it includes calls Claude Code's own
+ *                     allowlist approved without asking remi); the header
+ *                     carries a caveat line whenever this is non-default.
  *   --log <path>     A `remi.log` (or any text carrying `[AutoApprove ...]`
  *                     lines) to additionally run through `parseDecisionLog`.
  *                     Omitted: the log section is skipped entirely.
@@ -82,6 +90,7 @@ function expandHome(p: string): string {
 const DEFAULT_INPUT_PATH = path.join(import.meta.dir, 'fixtures', '.local-command-corpus.jsonl');
 
 const inputPath = expandHome(argValue('--input') ?? DEFAULT_INPUT_PATH);
+const eventName = argValue('--event') ?? 'PermissionRequest';
 const configPath = expandHome(argValue('--config') ?? CONFIG_PATH);
 const logPathArg = argValue('--log');
 const logPath = logPathArg !== undefined ? expandHome(logPathArg) : undefined;
@@ -105,6 +114,7 @@ const levelOverride: AutoApproveLevel | undefined = levelArg as AutoApproveLevel
 interface ProvenanceInfo {
   readonly date: string;
   readonly inputPath: string;
+  readonly eventName: string;
   readonly rawRecordCount: number;
   readonly effectiveRecordCount: number;
   readonly unique: boolean;
@@ -159,7 +169,7 @@ interface LatencyStats {
 
 interface LogReport {
   readonly totalLines: number;
-  readonly unparsed: number;
+  readonly autoApproveNonDecision: number;
   readonly fastPathCount: number;
   readonly llmPathCount: number;
   readonly byVerdict: Readonly<Record<LogVerdict, number>>;
@@ -291,7 +301,7 @@ function buildLogReport(text: string): LogReport {
   }
   return {
     totalLines: tally.totalLines,
-    unparsed: tally.unparsed,
+    autoApproveNonDecision: tally.autoApproveNonDecision,
     fastPathCount: tally.fastPathCount,
     llmPathCount: tally.llmPathCount,
     byVerdict: tally.byVerdict,
@@ -321,6 +331,12 @@ function printReport(report: Report): void {
   rule();
   console.log(`  date:              ${report.provenance.date}`);
   console.log(`  input:             ${report.provenance.inputPath}`);
+  console.log(`  event:             ${report.provenance.eventName}`);
+  if (report.provenance.eventName !== 'PermissionRequest') {
+    console.log(
+      '                     CAVEAT: not the asked-remi population #996 measured -- includes calls approved without a PermissionRequest.',
+    );
+  }
   console.log(
     `  records:           ${report.provenance.rawRecordCount} raw, ${report.provenance.effectiveRecordCount} replayed${report.provenance.unique ? ' (--unique)' : ''}`,
   );
@@ -374,7 +390,7 @@ function printReport(report: Report): void {
     const log = report.log;
     console.log('\n(d) Live decision log\n');
     console.log(
-      `  lines: ${log.totalLines}   unparsed: ${log.unparsed}   fast-path: ${log.fastPathCount}   llm-path: ${log.llmPathCount}   queue-timeout: ${log.queueTimeoutCount}   risk-ceiling: ${log.riskCeilingCount}`,
+      `  lines: ${log.totalLines}   aa-non-decision: ${log.autoApproveNonDecision}   fast-path: ${log.fastPathCount}   llm-path: ${log.llmPathCount}   queue-timeout: ${log.queueTimeoutCount}   risk-ceiling: ${log.riskCeilingCount}`,
     );
     console.log('\n  verdict rates:\n');
     for (const verdict of LOG_VERDICTS) {
@@ -420,7 +436,7 @@ function main(): void {
     process.exit(1);
   }
 
-  const rawRecords = loadCorpusRecords(inputPath);
+  const rawRecords = loadCorpusRecords(inputPath, eventName);
   const recordsByIndex = new Map(rawRecords.map((r) => [r.index, r] as const));
   const { config, configFound } = resolveAutoApproveConfig();
 
@@ -436,6 +452,7 @@ function main(): void {
     provenance: {
       date: new Date().toISOString(),
       inputPath,
+      eventName,
       rawRecordCount: rawRecords.length,
       effectiveRecordCount: replay.tally.total,
       unique: uniqueFlag,
