@@ -9,7 +9,7 @@
  * runner, and this keeps the two consumers importing the exact same code
  * path rather than the CLI re-deriving anything.
  *
- * Four independent units, each documented at its own definition below:
+ * Five independent units, each documented at its own definition below:
  *
  *   - `loadCorpusRecords` -- JSONL -> `PermissionRequest` records. Same
  *     shape as `guard-chain-replay.test.ts`'s local loader, generalized to
@@ -23,6 +23,9 @@
  *   - `parseDecisionLog` -- parses `auto-approve-service.ts`'s own `logFn`
  *     output (the exact templates it writes, read from source, not
  *     reimplemented logic) into verdict/band/layer counts and latencies.
+ *   - `percentile` -- nearest-rank (ceil) percentile over a latency sample,
+ *     shared so both the CLI and this file's own tests exercise the exact
+ *     same rank math.
  *
  * NO MOCKS (repo rule): every unit here either calls a real exported
  * function (`evaluateDeterministic`, `classifyRisk`, `maskQuotedSpans`,
@@ -69,7 +72,7 @@ export interface CorpusRecord {
  * unrelated line must not fail the whole replay.
  *
  * Mirrors `guard-chain-replay.test.ts`'s `loadLocalCorpusReplayRecords`
- * (that file's :385-407) -- same filter, same skip-on-malformed posture,
+ * (that file's :385-408) -- same filter, same skip-on-malformed posture,
  * generalized to take a path (that file's version is hardcoded to the one
  * fixture) and to carry `agent_type` through (ADR 0025 per-agent-type
  * policy needs it; the guard chain this mirrors does not).
@@ -89,9 +92,10 @@ export function loadCorpusRecords(
   eventName = 'PermissionRequest',
 ): CorpusRecord[] {
   const raw = fs.readFileSync(filePath, 'utf8');
-  const lines = raw.split('\n').filter((line) => line.trim().length > 0);
+  const lines = raw.split('\n');
   const records: CorpusRecord[] = [];
   lines.forEach((line, i) => {
+    if (line.trim().length === 0) return;
     let parsed: Record<string, unknown>;
     try {
       parsed = JSON.parse(line) as Record<string, unknown>;
@@ -143,6 +147,15 @@ export interface ReplayTally {
   readonly total: number;
   readonly approve: number;
   readonly approveBySource: { readonly allow: number; readonly group: number };
+  /** Matched the user's own `deny`/`deny_groups`. A no-LLM outcome ONLY for
+   *  MAIN-context traffic -- `evaluate()` returns `deny` immediately at 0ms
+   *  for those. For an agent-tagged record it is NOT: the gate's hook-time
+   *  path (ADR 0004) short-circuits before the LLM only on a deterministic
+   *  APPROVE, and a config-level deny for an agent-tagged request instead
+   *  PARKS for render-time arbitration, which may still reach the LLM if the
+   *  prompt renders. So "deny-covered" does not mean "decided with no LLM
+   *  call" for every record this tally counts it against -- only for the
+   *  ones with no `agentType`. */
   readonly denyCovered: number;
   readonly denyCoveredBySource: { readonly pattern: number; readonly group: number };
   /** Nothing deterministic decided it -- what would reach the LLM in a live
@@ -201,6 +214,11 @@ function ensureToolTally(
  * decided it -- would reach the LLM in a live `evaluate()` call) is
  * additionally banded with `classifyRisk`, so the residual's RISK, not just
  * its size, is visible.
+ *
+ * See `ReplayTally.denyCovered`'s own doc for why a `deny-covered` verdict
+ * is a no-LLM outcome for MAIN-context traffic only -- an agent-tagged
+ * record hitting the same config deny instead parks for render-time
+ * arbitration (ADR 0004) and may still reach the LLM.
  */
 export function replayDeterministic(
   records: readonly CorpusRecord[],
@@ -362,7 +380,24 @@ function hasHeredocOperator(masked: string): boolean {
  * this bucket. Narrower than the plan's "redirection" name might suggest;
  * stated here rather than left for a reader to discover missing.
  *
- * REPORT-ONLY. Never imported by `src/` -- `permission-groups.ts` and
+ * The gap above is under-matching; this classifier also OVER-matches, in
+ * three verified ways -- all report-only mislabels, not decision-path bugs:
+ *
+ *   - `REDIRECT_CLAUSE_RE` (`\d*>>?\s*&?\S+`) has no lookbehind, so it
+ *     matches the `->` in `make build -> dist` as a redirect onto `dist`;
+ *     that `>` is the second character of an arrow, not shell syntax.
+ *   - `hasHeredocOperator` matches `<<` wherever it appears, so
+ *     `$((1 << 3))` (a plain arithmetic left shift) grades `heredoc`, not
+ *     `single`.
+ *   - When `maskQuotedSpans` fails closed on an unterminated quote (its own
+ *     doc: "a quote that never closes ... returns the segment UNCHANGED"),
+ *     the raw, unmasked text is what both checks above scan --
+ *     `echo 'unterminated << here` (no closing `'`) grades `heredoc` off the
+ *     literal `<<` inside what was meant to be a quoted string.
+ *
+ * All three are acceptable precisely because this classifier is
+ * REPORT-ONLY: err-broad here costs a mislabeled report row, never a wrong
+ * permission decision. Never imported by `src/` -- `permission-groups.ts` and
  * `shell-safety.ts` already decide coverage; this classifier exists purely
  * to explain, after the fact, WHY a command missed it, and folding an
  * explanatory classification into the decision path is exactly the kind of
@@ -398,13 +433,17 @@ export interface ParsedLogLine {
   readonly authorityPresent: boolean | undefined;
   readonly decidedBy: DecidingLayer | undefined;
   readonly reasoning: string | undefined;
-  /** True for every shape that never reached the LLM: the deterministic
-   *  DENIED/approve lines, the pre-LLM PRECEDENT shortcut, the
-   *  always-escalate design/multichoice/index-mismatch/queue-timeout lines,
-   *  CANCELLED, ERROR. False only for the post-LLM line (the one carrying
-   *  the `[band=...]` bracket `formatMatrixContext` produces) -- every
-   *  earlier `return` in `evaluate()` logs its own line first and never
-   *  reaches that call. */
+  /** True for every shape that never produced a model verdict. The
+   *  deterministic DENIED/approve lines, the pre-LLM PRECEDENT shortcut, and
+   *  the always-escalate design/multichoice/index-mismatch/queue-timeout
+   *  lines are genuinely pre-LLM: no `chatCompletion` call was ever made.
+   *  CANCELLED and ERROR are also `fastPath: true` but are NOT pre-LLM --
+   *  both are logged from the `catch` block AFTER a real LLM dispatch
+   *  (CANCELLED aborts an in-flight `chatCompletion`; ERROR is dominated by
+   *  the 30s LLM timeout) -- they simply never got a parsed verdict back.
+   *  False only for the post-LLM line (the one carrying the `[band=...]`
+   *  bracket `formatMatrixContext` produces) -- every earlier `return` in
+   *  `evaluate()` logs its own line first and never reaches that call. */
   readonly fastPath: boolean;
   /** Reasoning contains "eval queue wait exceeded" -- `evaluate()`'s
    *  `acquireSlot` timeout path (#551). */
@@ -514,15 +553,35 @@ function parseLine(raw: string): ParsedLogLine {
 export interface DecisionLogTally {
   readonly totalLines: number;
   /**
-   * `[AutoApprove`-tagged lines that matched no DECISION shape. Mostly the
-   * service's lifecycle lines (`Externally resolved`, `Parked subagent
-   * prompt`, `Releasing N held hook(s)`, `Held hook ... resolved`), which are
-   * real AutoApprove output this report deliberately does not tally -- but a
-   * decision line from a future log format lands here too, so a sudden jump
-   * in this count against a similar decision count is the drift signal.
-   * Lines with no `[AutoApprove` tag at all (the rest of the daemon's log)
-   * are ignored entirely: counting them as "unparsed" made a healthy report
-   * read as 98% parser failure (28489 of 28921 on the first real run).
+   * `[AutoApprove`-tagged lines that matched no DECISION shape. Two
+   * deliberate populations land here BY DESIGN, plus one known gap in the
+   * current format:
+   *
+   * - Lifecycle lines, logged by `auto-approve-gate.ts` (NOT the service):
+   *   `Externally resolved`, `Parked subagent prompt`, `Releasing N held
+   *   hook(s)`, `Held hook ... resolved`.
+   * - Seven guard/sideband lines the SERVICE emits unconditionally --
+   *   proportional to decision volume, never gated on `log_decisions`:
+   *   DENY FLOOR (auto-approve-service.ts:1102), TRUST BOUNDARY (:1129),
+   *   RISK CEILING (:1165), PRECEDENT approve->escalate (:1205), the two
+   *   COUNTERFACTUAL shapes (:1258 overridden, :1278 check-failed), and the
+   *   PRECEDENT band-refusal fall-through (:883). Each of these fires
+   *   ALONGSIDE, never instead of, the :1295 post-LLM matrix line that
+   *   carries the actual decision -- dropping them here is what prevents
+   *   double-counting a single verdict as two.
+   * - KNOWN CURRENT-FORMAT EXCLUSION: with `multichoice = 'evaluate'`
+   *   (default `'skip'`, config.ts:454) a post-LLM `pick` verdict is logged
+   *   through the same :1295 call and carries the same `[band=...]`
+   *   bracket as approve/deny/escalate, but `FAMILY2_RE`'s verdict group
+   *   only matches `approve|deny|escalate`, so a real `pick` decision lands
+   *   here too, not in `byVerdict`.
+   *
+   * A decision line from a future log format also lands here, so a sudden
+   * jump in this count against a similar decision count is the drift
+   * signal. Lines with no `[AutoApprove` tag at all (the rest of the
+   * daemon's log) are ignored entirely: counting them as "unparsed" made a
+   * healthy report read as 98% parser failure (28489 of 28921 on the first
+   * real run).
    */
   readonly autoApproveNonDecision: number;
   readonly fastPathCount: number;
@@ -554,8 +613,18 @@ function emptyVerdictLatencies(): Record<LogVerdict, number[]> {
  * and latency samples. Lines without an `[AutoApprove` tag are ignored;
  * tagged lines that match no decision shape are counted as
  * `autoApproveNonDecision` (see that field's doc for why the split exists).
- * No printing here -- percentile computation and rendering are
- * `run-approval-rate-report.ts`'s job.
+ * No printing here -- this module's `percentile()` and the rendering that
+ * consumes it are `run-approval-rate-report.ts`'s job.
+ *
+ * Gated on `log_decisions` (default `true`, config.ts:415): the post-LLM
+ * matrix line (auto-approve-service.ts:1295), the deterministic-approve line
+ * (:830), and the multichoice-skip escalate (:912) are each wrapped in
+ * `if (this.logDecisions)` and simply do not exist in the log when that
+ * setting is off. On a log captured from a `log_decisions = false` machine,
+ * `llmPathCount` is exactly 0 and the verdict counts collapse to whatever
+ * the unconditional guard/sideband lines (see `autoApproveNonDecision`'s
+ * doc) and CANCELLED/ERROR contribute -- this parser has no way to
+ * distinguish that from a machine that is genuinely quiet.
  */
 export function parseDecisionLog(text: string): ParsedDecisionLog {
   const lines = text.split('\n').filter((line) => line.trim().length > 0);
@@ -601,4 +670,21 @@ export function parseDecisionLog(text: string): ParsedDecisionLog {
     },
     lines: parsedLines,
   };
+}
+
+// ---------------------------------------------------------------------------
+// (e) percentile
+// ---------------------------------------------------------------------------
+
+/** Nearest-rank percentile (ceil, not floor): for a 2-sample array, `p50`
+ *  lands on the lower value and `p95` on the upper one, matching what a
+ *  reader expects a median of two samples to mean. A floor-based index
+ *  instead picks the UPPER value for `p50` at every even small `n` --
+ *  technically a valid discrete-percentile convention, but confusing in a
+ *  report meant to be read directly. */
+export function percentile(values: readonly number[], p: number): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1));
+  return sorted[idx] ?? null;
 }
