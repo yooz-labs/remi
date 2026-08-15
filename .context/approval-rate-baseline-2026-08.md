@@ -99,13 +99,14 @@ Headline config: `~/.remi/config.toml`, `level = "trusted"`.
 
 Per-tool (trusted): Bash 2/4, Edit 1/1, Read 2/2, SendMessage 0/4,
 ToolSearch 0/1. (SendMessage/ToolSearch are session-tooling events the proxy
-population includes; they never reach the auto-approve gate in production.)
+population includes; no PermissionRequest for these has been observed.)
 
 ### (b) Miss classification (residual Bash commands, by shape)
 
 Small-N on this corpus: 2 residual Bash commands, both `redirection`, both
 `moderate`. The reference distribution for the real asked-remi population is
-#996's: redirection 50%, pipeline 25%, heredoc 13%, chained 7%, single 6%.
+#996's: redirection 50%, pipeline 25%, heredoc 13%, chained 7%, single 6%
+(percentages sum to 101 from rounding).
 
 ### (c) Band distribution of the LLM-bound residue
 
@@ -116,9 +117,17 @@ the LOG half below shows them at volume).
 ### (d) Live decision log
 
 Format note: lines WITHOUT a `[band=...]` bracket are counted `fast-path`.
-On logs predating #1040 (mba's log reaches back before it) that bucket also
-contains OLD-format post-LLM verdict lines, so mba's fast-path count is
-inflated; a `0ms` duration is the reliable deterministic marker.
+The `[band=... authority=...]` bracket itself landed with #976 (commit
+ea3cf82f, Aug 3 2026); #1040 later added only the trailing `decided_by=`
+clause onto an already-bracketed line (that legacy bracket-no-`decided_by`
+shape parses correctly as llm-path, band present). The real source of
+inflation is older still: mba's log reaches back to versions that predate
+#976 itself, where the post-LLM verdict line carried no bracket at all, so
+those lines land in `fast-path` despite being real post-LLM decisions; a
+`0ms` duration is the reliable deterministic marker. Separately, every
+post-LLM matrix line is gated on `log_decisions` (default `true`); a log
+captured from a machine with that setting off shows `llm-path 0` regardless
+of how much real LLM traffic it saw.
 
 **local** (`~/.remi/remi.log`, through 2026-08-15): 29198 lines,
 aa-non-decision 314, fast-path 157, llm-path 275, queue-timeout 0,
@@ -134,8 +143,11 @@ Notable: `escalate|high|*` = 88 vs `approve|high|*` = 0 — the high band is
 structurally unapprovable by the model (#976's unwired matrix half);
 `approve|moderate` = 87 vs `escalate|moderate` = 100 — the model escalates
 the majority of moderate-band operations despite `authority=yes` (#972).
-Overall approve rate 228/432 = 52.8%; excluding the 141 deterministic
-`approve|none` fast-path lines, the LLM layer approves 87/287 = 30.3%.
+Decided (approve + deny + escalate, excluding cancelled/error) = 427; overall
+approve rate 228/427 = 53.4%. Restricted to the banded post-LLM matrix lines
+only (llm-path = 275: 87 approves vs 188 escalates), the LLM layer approves
+87/275 = 31.6% — the 141 deterministic `approve|none` and 11 always-escalate
+`escalate|none` lines are excluded as never model-evaluated.
 
 **mba** (`~/.remi/remi.log`, spans multiple versions through 2026-08-14):
 139943 lines, aa-non-decision 4669, fast-path 3528, llm-path 525,
@@ -154,7 +166,8 @@ Notable: 498 ERROR verdicts with p50 30001ms — the engine timing out at its
 9423ms (the Air's LLM is slow enough that "approved" still means a ~10s
 hang); `escalate|high|*` = 141 vs `approve|high|*` = 0 (same ceiling wall);
 `escalate|none` = 513 (always-escalate + queue-timeout + old-format lines).
-Overall approve rate 2301/3555 decided = 64.7%.
+Decided (approve + deny + escalate, excluding cancelled/error) = 3188;
+overall approve rate 2301/3188 = 72.2%.
 
 ## Open questions for Phase 2
 
