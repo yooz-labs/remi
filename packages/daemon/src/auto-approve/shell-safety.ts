@@ -714,6 +714,19 @@ export function maskQuotedSpans(segment: string): string {
  * visible after masking as before, and still vetoes.
  */
 export function hasShellControl(segment: string): boolean {
+  // Backslash-newline line continuation is deleted by bash's INPUT READER,
+  // before tokenization and before every check below runs on `maskQuotedSpans`,
+  // which instead masks the pair to `__` and leaves a two-character desync.
+  // That desync let `cat < /dev/t\<nl>cp/...` synthesize `/dev/tcp` past the
+  // device veto AND `cat $\<nl>(whoami)` split the `$(` substitution veto into
+  // RCE (#1063 seventh re-review; the `$(` half is a latent #1023 gap). This
+  // veto operates one layer above the input reader, so rather than reproduce
+  // bash's continuation-removal (which must honor single-quote/here-doc
+  // literalness -- see the follow-up issue), fail closed on the raw pair: a
+  // line-continued command is refused (escalated), never silently miscovered.
+  if (/\\\r?\n/.test(segment)) {
+    return true;
+  }
   const masked = maskQuotedSpans(segment);
   // Command / process substitution.
   if (masked.includes('$(') || masked.includes('`') || masked.includes('<(')) {

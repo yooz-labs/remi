@@ -134,6 +134,18 @@ describe('hasShellControl - #1023 quote-aware veto', () => {
     expect(hasShellControl("echo 'a > b")).toBe(true);
   });
 
+  test('MUST VETO: backslash-newline line continuation (bash deletes it pre-token)', () => {
+    // bash's input reader removes `\<newline>` before tokenization, so it can
+    // synthesize `/dev/tcp` (`/dev/t\<nl>cp`) or split the `$(` substitution
+    // veto (`$\<nl>(whoami)` = RCE). maskQuotedSpans masks the pair to `__`, a
+    // two-char desync. Fail closed on the raw pair until #1065 normalizes it.
+    expect(hasShellControl('cat < /dev/t\\\ncp/127.0.0.1/1')).toBe(true);
+    expect(hasShellControl('cat $\\\n(whoami)')).toBe(true);
+    expect(hasShellControl('cat <\\\n/dev/tcp/h/p')).toBe(true);
+    // A plain (non-continued) command is unaffected.
+    expect(hasShellControl('cat < /dev/null')).toBe(false);
+  });
+
   test('MUST STILL VETO: real shell control survives alongside masked prose', () => {
     // The `--body` prose is inert, but the trailing `$(...)` outside any
     // quote is a real command substitution and must still veto the whole
