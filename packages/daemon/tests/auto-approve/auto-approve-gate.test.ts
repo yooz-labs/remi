@@ -625,6 +625,181 @@ describe('AutoApproveGate', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #1045 phase 6: residual_action converts what would have been a main-agent
+// BINARY escalate into a deny-with-reason. Covers all three `escalateMain`
+// call sites (no-service edge, eval-error, primary escalate verdict), and
+// pins that a NON-binary escalate (multichoice/design, e.g. ExitPlanMode)
+// stays a passthrough regardless of the setting -- `escalateMain` routes
+// those to `escalatePassthrough` internally, so residualAction must never be
+// consulted on that branch.
+// ---------------------------------------------------------------------------
+describe('AutoApproveGate residual_action (#1045 phase 6)', () => {
+  const SID = generateId() as UUID;
+  let registry: SessionRegistry;
+  let escalations: PermissionRequestHookInput[];
+  let denied: Array<{ tool: string; source: DenySource; reasoning: string }>;
+
+  function evaluator(
+    result: AutoApproveResult,
+    opts: { throws?: boolean } = {},
+  ): AutoApproveEvaluator {
+    return {
+      evaluate: async () => {
+        if (opts.throws) throw new Error('test: llm provider down');
+        return result;
+      },
+      cancel: () => true,
+    };
+  }
+
+  function gate(
+    service: AutoApproveEvaluator | null,
+    opts: { residualAction?: 'escalate' | 'deny' } = {},
+  ): AutoApproveGate {
+    registry.registerSession(SID, '/d', fakePTY([]), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    return new AutoApproveGate(
+      {
+        service,
+        sessionRegistry: registry,
+        tracker: new QuestionPresenceTracker(() => undefined),
+        isInSubagentContext: () => false,
+        escalate: (i) => {
+          escalations.push(i);
+          return generateId();
+        },
+        onAutoDenied: (input, source, reasoning) => {
+          denied.push({ tool: input.tool_name, source, reasoning });
+        },
+        ...(opts.residualAction ? { residualAction: opts.residualAction } : {}),
+      },
+      SID,
+    );
+  }
+
+  function pr(over: Partial<PermissionRequestHookInput> = {}): PermissionRequestHookInput {
+    return {
+      session_id: 'claude-test',
+      transcript_path: '/tmp/t.jsonl',
+      cwd: '/d',
+      permission_mode: 'default',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'git push' },
+      ...over,
+    };
+  }
+
+  beforeEach(() => {
+    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    escalations = [];
+    denied = [];
+    configureLogger({ writeLog: () => {} });
+  });
+
+  afterEach(async () => {
+    __resetLoggerForTests();
+    await registry.shutdown();
+  });
+
+  test('default (residualAction absent): a binary escalate still holds/pushes, byte-for-byte unchanged', async () => {
+    const d = await gate(evaluator(escalate)).resolvePermission(pr());
+    expect(d).toBe('passthrough'); // no holdMs configured here -> immediate passthrough
+    expect(escalations).toHaveLength(1);
+    expect(denied).toEqual([]);
+  });
+
+  test('residualAction: "escalate" explicitly: same as default, still escalates', async () => {
+    const d = await gate(evaluator(escalate), { residualAction: 'escalate' }).resolvePermission(
+      pr(),
+    );
+    expect(d).toBe('passthrough');
+    expect(escalations).toHaveLength(1);
+    expect(denied).toEqual([]);
+  });
+
+  test('residualAction: "deny" -- no-service edge converts to a reasoned deny', async () => {
+    const d = await gate(null, { residualAction: 'deny' }).resolvePermission(pr());
+    expect(d).toEqual({
+      behavior: 'deny',
+      message: expect.stringContaining('auto-approve had no evaluation service'),
+    });
+    expect(escalations).toHaveLength(0); // never asked the human
+    expect(denied).toEqual([
+      {
+        tool: 'Bash',
+        source: { kind: 'residual', pattern: '' },
+        reasoning: 'auto-approve had no evaluation service for this operation',
+      },
+    ]);
+  });
+
+  test('residualAction: "deny" -- an eval error converts to a reasoned deny', async () => {
+    const d = await gate(evaluator(escalate, { throws: true }), {
+      residualAction: 'deny',
+    }).resolvePermission(pr());
+    expect(d).toEqual({
+      behavior: 'deny',
+      message: expect.stringContaining('auto-approve evaluation failed'),
+    });
+    expect(escalations).toHaveLength(0);
+    expect(denied).toHaveLength(1);
+    expect(denied[0]?.source).toEqual({ kind: 'residual', pattern: '' });
+    expect(denied[0]?.reasoning).toContain('auto-approve evaluation failed');
+    expect(denied[0]?.reasoning).toContain('test: llm provider down');
+  });
+
+  test('residualAction: "deny" -- a primary escalate verdict converts, carrying its reasoning', async () => {
+    const withReasoning: AutoApproveResult = {
+      decision: 'escalate',
+      reasoning: 'ambiguous: could delete user data',
+      durationMs: 5,
+      model: 'm',
+    };
+    const d = await gate(evaluator(withReasoning), {
+      residualAction: 'deny',
+    }).resolvePermission(pr());
+    expect(d).toEqual({
+      behavior: 'deny',
+      message: expect.stringContaining('ambiguous: could delete user data'),
+    });
+    expect(escalations).toHaveLength(0);
+    expect(denied).toEqual([
+      {
+        tool: 'Bash',
+        source: { kind: 'residual', pattern: '' },
+        reasoning: 'ambiguous: could delete user data',
+      },
+    ]);
+  });
+
+  test('residualAction: "deny" does NOT affect a NON-binary (design/multichoice) escalate', async () => {
+    // ExitPlanMode is ALWAYS multi-choice (ALWAYS_MULTI_CHOICE_TOOLS), so this
+    // must stay a passthrough even under deny mode -- escalateMain routes it
+    // to escalatePassthrough before the residualAction check is ever reached.
+    // Uses the no-service edge (service: null) the same way the pre-existing
+    // #799 "Stop resolves a still-open MAIN passthrough question" test does.
+    const d = await gate(null, { residualAction: 'deny' }).resolvePermission(
+      pr({ tool_name: 'ExitPlanMode', tool_input: {}, permission_mode: 'plan' }),
+    );
+    expect(d).toBe('passthrough');
+    expect(escalations).toHaveLength(1); // still pushed to the user, not denied
+    expect(denied).toEqual([]); // never reaches the deny sink
+  });
+
+  test('residualAction: "deny" leaves an approve/deny/pick primary verdict untouched', async () => {
+    // escalateMain is reached ONLY on the escalate path; approve/deny/pick
+    // return long before it, so this setting cannot affect them.
+    const d = await gate(evaluator(approve), { residualAction: 'deny' }).resolvePermission(pr());
+    expect(d).toBe('allow');
+    expect(denied).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // #1024: a subagent-tagged PermissionRequest that the config's own
 // deterministic layers (deny, then allow, then approve_groups --
 // `evaluateDeterministic`) already approve is answered 'allow' at hook time
@@ -3596,6 +3771,10 @@ describe('AutoApproveGate parked-render arbitration (#814)', () => {
       secondResult?: AutoApproveResult;
       ptyThrows?: boolean;
       customService?: AutoApproveEvaluator;
+      /** #1045 phase 6: parked-render arbitration never calls `escalateMain`
+       *  (it uses `escalateRenderedParked` instead), so this must have no
+       *  effect here -- see the dedicated test below. */
+      residualAction?: 'escalate' | 'deny';
     } = {},
   ): AutoApproveGate {
     registry.registerSession(SID, '/d', fakePTY(submits, { throws: opts.ptyThrows ?? false }), {
@@ -3639,6 +3818,7 @@ describe('AutoApproveGate parked-render arbitration (#814)', () => {
         },
         onResolved: (qid, reason) => resolvedLog.push({ qid, reason }),
         ...(opts.secondResult ? { escalateModel: 'big-model' } : {}),
+        ...(opts.residualAction ? { residualAction: opts.residualAction } : {}),
       },
       SID,
     );
@@ -3754,6 +3934,21 @@ describe('AutoApproveGate parked-render arbitration (#814)', () => {
 
   test('escalate becomes a push carrying the model summary', async () => {
     const g = gate(escalateWithSummary);
+    await g.resolvePermission(pr());
+    const r = rendered(generateId() as UUID);
+    promptOnScreen(r);
+
+    const verdict = await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r));
+
+    expect(verdict).toEqual({ outcome: 'push', summary: 'Force-push to main?' });
+    expect(submits).toHaveLength(0);
+  });
+
+  test('#1045 phase 6: residual_action="deny" does NOT affect a subagent parked-render escalate', async () => {
+    // ADR 0004 render-time arbitration is its own path -- arbitrateParkedRender
+    // calls escalateRenderedParked, never escalateMain -- so this setting must
+    // have zero effect here, deliberately out of scope for this phase.
+    const g = gate(escalateWithSummary, { residualAction: 'deny' });
     await g.resolvePermission(pr());
     const r = rendered(generateId() as UUID);
     promptOnScreen(r);

@@ -57,6 +57,7 @@ function makeConfig(overrides?: Partial<AutoApproveConfig>): AutoApproveConfig {
     base_url: 'http://127.0.0.1:19924',
     timeout: 30,
     log_decisions: true,
+    residual_action: 'escalate',
     allow: [],
     deny: [],
     subagent_alert: [],
