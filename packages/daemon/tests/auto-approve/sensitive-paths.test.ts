@@ -92,6 +92,64 @@ describe('config governing this mechanism', () => {
   });
 });
 
+describe('build surface (#960 review, extended by #1061)', () => {
+  // `build-test` ships enabled by default and reads its behaviour out of
+  // these files -- see BUILD_SURFACE's own module doc in sensitive-paths.ts.
+  // Mirrors every BUILD_SURFACE basename, original and added, none of which
+  // had a direct `isSensitiveWritePath` test before this block: they were
+  // only exercised indirectly through permission-groups.test.ts's higher-
+  // level `bash()` cases.
+  for (const p of [
+    'package.json',
+    'package-lock.json',
+    'bun.lock',
+    'bun.lockb',
+    'pnpm-lock.yaml',
+    'yarn.lock',
+    'tsconfig.json',
+    'biome.json',
+    'biome.jsonc',
+    'makefile',
+    'justfile',
+    'pyproject.toml',
+    'uv.lock',
+    'setup.py',
+    'conftest.py',
+    'cargo.toml',
+    'dockerfile',
+    'lefthook.yml',
+    'lefthook.yaml',
+    '.pre-commit-config.yaml',
+    'vitest.config.ts',
+    'bunfig.toml',
+    // Added (#1061): the missing jest/webpack/rollup/babel/vite forms.
+    'vitest.config.js',
+    'jest.config.js',
+    'jest.config.ts',
+    'webpack.config.js',
+    'webpack.config.ts',
+    'rollup.config.js',
+    'rollup.config.ts',
+    'babel.config.js',
+    '.babelrc',
+    'vite.config.js',
+    'vite.config.ts',
+  ]) {
+    test(`sensitive: ${p}`, () => expect(isSensitiveWritePath(p)).toBe(true));
+    test(`sensitive (nested): /Users/x/project/${p}`, () =>
+      expect(isSensitiveWritePath(`/Users/x/project/${p}`)).toBe(true));
+  }
+
+  test('a file merely NAMED like one is ordinary (over-block boundary)', () => {
+    // Exact-basename matching, not substring: these carry the real basename
+    // as a mere PREFIX or SUFFIX and must be unaffected.
+    expect(isSensitiveWritePath('jest.config.js.example')).toBe(false);
+    expect(isSensitiveWritePath('my-webpack.config.js')).toBe(false);
+    expect(isSensitiveWritePath('vite.config.js.bak')).toBe(false);
+    expect(isSensitiveWritePath('not-a-babelrc.js')).toBe(false);
+  });
+});
+
 describe('.git internals', () => {
   for (const p of ['.git/hooks/pre-commit', '/Users/x/project/.git/config', '~/repo/.git/HEAD']) {
     test(`sensitive: ${p}`, () => expect(isSensitiveWritePath(p)).toBe(true));

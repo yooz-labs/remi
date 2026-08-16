@@ -94,6 +94,7 @@ function makeConfig(overrides?: Partial<AutoApproveConfig>): AutoApproveConfig {
     base_url: gate.url,
     timeout: 30,
     log_decisions: false,
+    residual_action: 'escalate',
     allow: [],
     deny: [],
     subagent_alert: [],

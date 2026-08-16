@@ -235,7 +235,7 @@ ${trimmedInstructions}
 
 This guidance is the user's explicit policy and OVERRIDES every default rule below, subject only to two code guards that run after you (a DENY FLOOR and a RISK CEILING) and can only make your answer stricter. Those guards are narrow hard-coded lists you cannot see; do not assume they cover this operation.
 
-When the guidance PLAINLY covers the operation, return the action it dictates — e.g. if it says to approve, return "approve" even for remote mutations / POST / writes. The user accepted that risk explicitly, and writing "the guidance says approve, but..." there just hands back a decision they already made.
+When the guidance PLAINLY covers the operation, return the action it dictates for routine or moderate-risk work — e.g. if it says to approve file edits or local commands, return "approve" rather than writing "the guidance says approve, but..." there; that just hands back a decision they already made. Remote mutations, network POSTs, git push, package installs, and deletions are different even when guidance plainly covers them: a code-level RISK CEILING re-escalates these regardless of what you return, so escalate them directly instead of approving — approving there only gets silently overridden by that later guard.
 
 When it does NOT plainly cover the operation, escalate. That is not second-guessing the user; it is asking whether their policy meant to reach this far. Production infrastructure, databases, publishes and deletions are the usual cases a general "approve routine work" was never written to authorize.\n`
     : '';

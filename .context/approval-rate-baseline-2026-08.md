@@ -1,0 +1,239 @@
+# Approval-rate baseline (Phase 1, epic #1057 / #992)
+
+Baseline numbers for how much of a real corpus the deterministic layers
+(`allow`/`deny`/`approve_groups`/`deny_groups`, #1024's `evaluateDeterministic`)
+already decide with no LLM call, what shape the misses have, and how the live
+LLM path itself behaves. Produced by
+`packages/daemon/tests/auto-approve/run-approval-rate-report.ts` over
+`packages/daemon/tests/auto-approve/approval-rate.ts`.
+
+Every number below was read off a real run on 2026-08-15 (repo rule, AGENTS.md
+"Verify before you describe"). Two machines: the primary dev Mac ("local",
+remi 0.7.7, `level = "trusted"`) and a MacBook Air ("mba", remi 0.7.7 — its
+`remi.log` spans older versions too; until 2026-08-15 it silently ran
+`strict` because its config had no `level` key, see #1058).
+
+## Prerequisites
+
+A real corpus is gitignored and never committed
+(`packages/daemon/tests/auto-approve/fixtures/.local-command-corpus.jsonl`).
+Generate one from a machine that has been running remi with
+`REMI_HOOK_DEBUG=1` (so `~/.remi/hook-diag.jsonl` has real captures):
+
+```bash
+bun run packages/daemon/tests/hooks/fixtures/build-hook-corpus.ts \
+  --mode structure-preserving [--input ~/.remi/hook-diag.jsonl]
+```
+
+This writes
+`packages/daemon/tests/auto-approve/fixtures/.local-command-corpus.jsonl`,
+the report's default `--input`.
+
+## Commands
+
+Coverage report against the default corpus, at the shipped default level
+(reads `~/.remi/config.toml`, or built-in defaults if absent):
+
+```bash
+bun packages/daemon/tests/auto-approve/run-approval-rate-report.ts
+```
+
+Sweep all three strictness presets against the same corpus, ignoring
+whatever `approve_groups` the config file happens to have:
+
+```bash
+for level in strict balanced trusted; do
+  echo "=== $level ==="
+  bun packages/daemon/tests/auto-approve/run-approval-rate-report.ts --level "$level"
+done
+```
+
+Dedupe repeated `Bash` commands before replay (closer to "distinct
+operations seen" than "raw hook-event volume"):
+
+```bash
+bun packages/daemon/tests/auto-approve/run-approval-rate-report.ts --level trusted --unique
+```
+
+Add the live decision-log section (verdict/band/decided_by rates, latency
+p50/p95, queue-timeout and risk-ceiling counts) from a real `remi.log`:
+
+```bash
+bun packages/daemon/tests/auto-approve/run-approval-rate-report.ts \
+  --level trusted --log ~/.remi/remi.log
+```
+
+Machine-readable output (same computed data as the tables, one JSON object):
+
+```bash
+bun packages/daemon/tests/auto-approve/run-approval-rate-report.ts --level trusted --json | jq .
+```
+
+## Corpus caveat for this baseline
+
+Neither machine had a usable `PermissionRequest` corpus on 2026-08-15:
+hook-diag capture is gated on `REMI_HOOK_DEBUG=1` (hook-server.ts) and the
+local machine's only capture window (142 events, ending 2026-08-08) contains
+ZERO PermissionRequest events; mba has no `hook-diag.jsonl` at all. The
+corpus half below therefore uses `--event PreToolUse` (12 unique records — a
+PROXY population that includes calls Claude Code's own allowlist approved
+without asking remi) and is small-N; the LOG half is the load-bearing part of
+this baseline. #996's corpus numbers (1183 PermissionRequests, 12.9%
+coverage at trusted) remain the reference for the asked-remi population.
+Re-run the corpus half after a capture window with `REMI_HOOK_DEBUG=1` on a
+working session.
+
+## Numbers
+
+Corpus captured: 2026-08-15, local machine, `--event PreToolUse --unique`,
+12 unique records (see caveat above).
+Headline config: `~/.remi/config.toml`, `level = "trusted"`.
+
+### (a) Deterministic coverage (PreToolUse proxy corpus, --unique)
+
+| Level | Total records | Approve | Deny-covered | Residual | Coverage % |
+|---|---|---|---|---|---|
+| strict | 12 | 4 | 0 | 8 | 33.3 |
+| balanced | 12 | 5 | 0 | 7 | 41.7 |
+| trusted | 12 | 5 | 0 | 7 | 41.7 |
+
+Per-tool (trusted): Bash 2/4, Edit 1/1, Read 2/2, SendMessage 0/4,
+ToolSearch 0/1. (SendMessage/ToolSearch are session-tooling events the proxy
+population includes; no PermissionRequest for these has been observed.)
+
+### (b) Miss classification (residual Bash commands, by shape)
+
+Small-N on this corpus: 2 residual Bash commands, both `redirection`, both
+`moderate`. The reference distribution for the real asked-remi population is
+#996's: redirection 50%, pipeline 25%, heredoc 13%, chained 7%, single 6%
+(percentages sum to 101 from rounding).
+
+### (c) Band distribution of the LLM-bound residue
+
+7 residual records, all `moderate` on this corpus (the high-band shapes —
+ssh/scp, git push, package installs — did not occur in the 12-record window;
+the LOG half below shows them at volume).
+
+### (d) Live decision log
+
+Format note: lines WITHOUT a `[band=...]` bracket are counted `fast-path`.
+The `[band=... authority=...]` bracket itself landed with #976 (commit
+ea3cf82f, Aug 3 2026); #1040 later added only the trailing `decided_by=`
+clause onto an already-bracketed line (that legacy bracket-no-`decided_by`
+shape parses correctly as llm-path, band present). The real source of
+inflation is older still: mba's log reaches back to versions that predate
+#976 itself, where the post-LLM verdict line carried no bracket at all, so
+those lines land in `fast-path` despite being real post-LLM decisions; a
+`0ms` duration is the reliable deterministic marker. Separately, every
+post-LLM matrix line is gated on `log_decisions` (default `true`); a log
+captured from a machine with that setting off shows `llm-path 0` regardless
+of how much real LLM traffic it saw.
+
+**local** (`~/.remi/remi.log`, through 2026-08-15): 29198 lines,
+aa-non-decision 314, fast-path 157, llm-path 275, queue-timeout 0,
+risk-ceiling 4.
+
+| verdict | n | p50 | p95 |
+|---|---|---|---|
+| approve | 228 | 0ms | 17672ms |
+| escalate | 199 | 5258ms | 25124ms |
+| cancelled | 5 | 10778ms | 15725ms |
+
+Notable: `escalate|high|*` = 88 vs `approve|high|*` = 0 — the high band is
+structurally unapprovable by the model (#976's unwired matrix half);
+`approve|moderate` = 87 vs `escalate|moderate` = 100 — the model escalates
+the majority of moderate-band operations despite `authority=yes` (#972).
+Decided (approve + deny + escalate, excluding cancelled/error) = 427; overall
+approve rate 228/427 = 53.4%. Restricted to the banded post-LLM matrix lines
+only (llm-path = 275: 87 approves vs 188 escalates), the LLM layer approves
+87/275 = 31.6% — the 141 deterministic `approve|none` and 11 always-escalate
+`escalate|none` lines are excluded as never model-evaluated.
+
+**mba** (`~/.remi/remi.log`, spans multiple versions through 2026-08-14):
+139943 lines, aa-non-decision 4669, fast-path 3528, llm-path 525,
+queue-timeout 15, risk-ceiling 19.
+
+| verdict | n | p50 | p95 |
+|---|---|---|---|
+| approve | 2301 | 9423ms | 41442ms |
+| deny | 9 | 24778ms | 33186ms |
+| escalate | 878 | 11595ms | 32767ms |
+| cancelled | 367 | 5684ms | 26226ms |
+| error | 498 | 30001ms | 175736ms |
+
+Notable: 498 ERROR verdicts with p50 30001ms — the engine timing out at its
+30s ceiling, an entire failure class invisible until this tally; approve p50
+9423ms (the Air's LLM is slow enough that "approved" still means a ~10s
+hang); `escalate|high|*` = 141 vs `approve|high|*` = 0 (same ceiling wall);
+`escalate|none` = 513 (always-escalate + queue-timeout + old-format lines).
+Decided (approve + deny + escalate, excluding cancelled/error) = 3188;
+overall approve rate 2301/3188 = 72.2%.
+
+## Open questions for Phase 2
+
+- Redirection is the top miss bucket in both #996 (50%) and this proxy corpus
+  (2/2) — Phase 2's destination-checked redirect/heredoc coverage attacks the
+  right bucket first.
+- mba's 498 engine-timeout errors and 9.4s approve p50 are a latency/
+  reliability problem no coverage phase fixes — they cap how good the LLM
+  path can ever feel on that hardware and strengthen the case for Phases 4-5
+  (deterministic widening + precedent) carrying more of the load.
+- Whether to turn `REMI_HOOK_DEBUG=1` on by default for a capture window (or
+  add a dedicated, structure-preserving-only capture flag) so the next
+  baseline has a real PermissionRequest corpus on both machines.
+
+## Phase 2 addendum (2026-08-15, same day — after ADR 0026 grants)
+
+The 12-record PreToolUse proxy corpus contains zero Phase-2-shaped commands
+(its two "redirection" misses are for-loops with stderr-discards — Phase 3
+shapes), so corpus coverage is unchanged at 41.7% and the honest measurement
+is direct probes of the #996/#1041 shapes at `trusted`, all verified on this
+branch:
+
+| shape (issue sample) | before | after |
+|---|---|---|
+| `cat > notes.md` / `cat a.txt >> log.txt` | null | `read-only:cat` |
+| `bun test > out.log 2>&1` | null | `build-test:bun test` |
+| `git diff > review.diff` | null | `vcs-read:git diff` |
+| `cat >> src/...test.ts <<'EOF' ... EOF` (#996 sample) | null | `read-only:cat` |
+| `sed -i '' 's/.../.../g' src/lib/api.ts` (#996 sample, BSD) | null | `fs-write:sed -i` |
+| `cat > .env`, and `cat > /tmp/.env` (#1060) | the /tmp form approved at 0ms | null |
+| bash heredoc with destructive body | null | null (pinned invariant) |
+| sed script with a `w /etc/cron.d/evil` command | n/a | null |
+
+Re-measure against a real PermissionRequest corpus (REMI_HOOK_DEBUG capture)
+once one exists; #996's 50%+13% miss buckets are the population these grants
+target.
+
+## Phase 3 addendum (2026-08-15 — composed coverage, loop residue, curation, #962)
+
+Probes under the owner's REAL `~/.remi/config.toml` (trusted + allow list),
+through the real `evaluateDeterministic`, all on this branch:
+
+| shape | before | after |
+|---|---|---|
+| `ssh hallu nvidia-smi \| head -5` | null | approve (composed: "ssh hallu" + "head") |
+| `python3 analyze.py \| grep -c error` | null | approve (composed) |
+| `uv run pytest \| tail -5` | approve (already: `build-test:uv run pytest`) | approve (unchanged — not a phase-3 win; listed as a control) |
+| `git switch -c feature/new-thing` (#962) | null | approve (`vcs-write:git switch`) |
+| `git commit -c abc123 -m redo` (#962) | null | approve (`vcs-write:git commit`) |
+| `git status \| head && git checkout main && git pull -q` (#996 s3) | null | approve |
+| `for p in ...; do printf ...; gh pr checks $p \| head; done` (#996 s4) | null | approve |
+| `while read l; do grep x $l; done < list.txt` | null | approve (`read-only:grep`) |
+| `git -c core.hooksPath=/tmp/evil commit` | null | null (positional veto holds) |
+| `ssh hallu $(cat secret)` | null | null (`hasShellControl` refuses the command substitution before matching) |
+
+Curation: find/tr/comm/paste/nl/rev + sort/tree/diff (the latter three WITH
+scoped `-o`/`--output` vetoes — `sort -o out in` stays null), printf/read
+neutral, git fetch (vcs-read), git pull (vcs-write). #999's grammar table was
+found already implemented; the composed allow+group pass was the actual
+remaining blocker for allow-only prefixes.
+
+**Correction (#1062, adversarial review of this branch):** `awk` was
+curated here on the mistaken belief that `EXEC_SCOPED_VETOES`'s
+system()/pipe-to-shell regex covered every dangerous awk program. It does
+not — awk is Turing-complete and the regex is raw-text pattern matching, not
+a parser — and the bypass was proven by execution (arbitrary command exec via
+`cmd | getline`, file write/read via `print > "path"` / `getline < "path"`
+entirely inside the program's own quoted string). `awk` was removed from
+`read-only` entirely; see `permission-groups.ts`'s comment at that list.

@@ -30,13 +30,20 @@ export type AutoApproveDecision = 'approve' | 'deny' | 'escalate' | 'pick' | 'ca
  *   and the floor's match is measurably wrong most of the time it fires (7 of
  *   8 hits on 918 real commands were prose that merely QUOTED a dangerous
  *   string — #997). This is the class that must not be silent.
+ * - `residual` — `AutoApproveGate.escalateMain` converted what would have been
+ *   an escalation-to-the-user into a deny, because `residual_action = "deny"`
+ *   (#1045 phase 6). The user opted INTO fewer pings via this setting, so
+ *   unlike `model-floor` this never pushes — but it is still logged
+ *   unconditionally, for the same reason every deny is: silence is the bug
+ *   `onAutoDenied` exists to end, not a feature of quiet mode.
  *
  * `pattern` is what matched in either case (the config entry, the group name,
  * or the catastrophic label), so a report can say WHY without re-running any
- * matcher.
+ * matcher. `residual` carries no pattern — there is nothing to match, only a
+ * setting — so it is always `''`.
  */
 export interface DenySource {
-  readonly kind: 'config' | 'model-floor';
+  readonly kind: 'config' | 'model-floor' | 'residual';
   readonly pattern: string;
 }
 
@@ -99,6 +106,44 @@ export type AutoApproveResult = AutoApproveDecisionResult | AutoApproveCancelled
 export type MultiChoiceMode = 'skip' | 'evaluate';
 
 /**
+ * What `AutoApproveGate.escalateMain` does with a main-agent BINARY operation
+ * it cannot approve (#1045 phase 6, #1015). Never applies to multichoice /
+ * design / plan-mode escalates (`escalatePassthrough`) or to a subagent's
+ * parked-render residue (ADR 0004) — both are structural questions with their
+ * own paths, out of scope for this setting.
+ *
+ * - `escalate` (default) — ask the human: hold the hook (or passthrough) and
+ *   push a card. No reason travels with an escalate; the `PermissionRequest`
+ *   hook response carries a model-visible reason ONLY on `deny`
+ *   (`decision.message`, per the hooks reference), so this is the only shape
+ *   able to put the human in the loop at all.
+ * - `deny` — refuse with a reason (`buildDenyMessage`) instead of asking, so
+ *   the agent can self-correct or explicitly ask the user itself, and the
+ *   human is not pinged for something auto-approve could not decide.
+ *
+ * "Not pinged" is the fast-path truth, not an absolute: `deny` converts only
+ * the FINAL residual verdict, and Part B (`push_hold_timeout`, default 60s)
+ * fires FIRST. A binary eval that runs longer than that budget pushes + holds
+ * a real, answerable card (`maybePushOnSlowEval`) before `escalateMain` is
+ * ever reached, so a slow-to-decide operation still reaches the human even
+ * under `deny`. That is the safe direction — more visibility, not less, and
+ * never a silent deny — but it means `deny` suppresses the FAST residual
+ * pings, not every ping. Set `push_hold_timeout = 0` to disarm Part B if you
+ * want deny-mode to be fully quiet.
+ *
+ * Fewer pings is a real win, but it trades on the gate's approval rate: deny
+ * mode converts every wrongful escalation into a wrongful deny with no card
+ * to catch it, where escalate mode would merely have interrupted the user
+ * once. It is only sound once that rate is genuinely high (~95%+) — on a
+ * poorly-tuned gate the agent hits walls instead of the user seeing a card,
+ * which is a worse failure than an extra ping. Ship-now, soak-and-correct-later:
+ * `escalate` stays the default for exactly this reason, and every conversion
+ * is still logged unconditionally (`DenySource.kind: 'residual'`) so a
+ * poorly-tuned deny is auditable even though it is deliberately not pushed.
+ */
+export type ResidualAction = 'escalate' | 'deny';
+
+/**
  * Tools whose invocation is, by definition, a request for user intent the
  * auto-approve LLM must never answer (#572): `AskUserQuestion` (Claude
  * explicitly solicited the user) and `ExitPlanMode` (plan-mode accept /
@@ -150,6 +195,29 @@ export interface AutoApproveConfig {
   readonly timeout: number;
   /** Whether to log all decisions */
   readonly log_decisions: boolean;
+  /**
+   * What `AutoApproveGate.escalateMain` does with a main-agent BINARY
+   * operation auto-approve cannot approve (#1045 phase 6, #1015): ask the
+   * human (`"escalate"`, a card) or refuse with a reason (`"deny"`, via
+   * `buildDenyMessage`) so the agent can self-correct instead of the user
+   * being pinged. Scope is deliberately narrow — multichoice / design /
+   * plan-mode escalates and a subagent's parked-render residue are
+   * unaffected; see `ResidualAction`'s own doc for why and for the wire-level
+   * reason this exists at all (a `PermissionRequest` escalate is a bare `{}`
+   * passthrough — it CANNOT carry a reason; only `deny` can).
+   *
+   * **Default `"escalate"`, and not a placeholder default.** Deny-mode is
+   * only beneficial once the auto-approve gate's approval rate is genuinely
+   * ~95%-plus; on a poorly-tuned gate it converts every wrongful escalation
+   * (a case the human needed to see) into a wrongful deny (a case the agent
+   * just hits a wall on, silently to the human), which is a worse failure
+   * than the extra ping `escalate` would have cost. Ship-now,
+   * soak-and-correct-later: start on `escalate`, and only flip once your own
+   * measured approval rate earns it. See `ResidualAction` for the full
+   * semantics, `DenySource.kind: 'residual'` for how a converted deny stays
+   * auditable, and the `residual_action` ADR for the wire-reason evidence.
+   */
+  readonly residual_action: ResidualAction;
   /**
    * Patterns that short-circuit to approve without calling the LLM.
    *

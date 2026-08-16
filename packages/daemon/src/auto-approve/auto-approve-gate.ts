@@ -83,6 +83,7 @@
  *     the single-agent mirror of the Stop reasoning above.
  */
 
+import { errorToString } from '@remi/shared';
 import type { Question, QuestionOption, UUID } from '@remi/shared';
 
 import type {
@@ -559,6 +560,18 @@ export interface AutoApproveGateDeps {
    *  open immediately (epic #603 Phase 1, D2 — hold-always-no-phone). <=0 (or
    *  absent) => fail open fast. From `auto_approve.hold_unconfirmed_timeout`. */
   holdUnconfirmedMs?: number;
+  /**
+   * What `escalateMain` does with a main-agent BINARY operation it cannot
+   * approve (#1045 phase 6). `'escalate'` (absent = default) holds/pushes as
+   * before, byte-for-byte; `'deny'` refuses with a reason instead of asking,
+   * so the agent self-corrects and the human is not pinged. Never consulted
+   * for a non-binary (multichoice / design / plan-mode) escalate — those
+   * always passthrough regardless of this setting — nor for a subagent's
+   * parked-render residue (ADR 0004), which has its own path and does not
+   * call `escalateMain` at all. From `auto_approve.residual_action`; see
+   * `ResidualAction`'s doc for the full semantics and the caveat on when
+   * `'deny'` is actually a good idea. */
+  residualAction?: 'escalate' | 'deny';
 }
 
 /** A held PermissionRequest hook awaiting a user answer (#573). The `resolve`
@@ -723,6 +736,21 @@ export class AutoApproveGate {
     private readonly sessionId: UUID,
   ) {
     this.sessionTag = sessionId.slice(0, 8);
+    // Make the residual-deny audit coupling LOUD, not a silent no-op. A
+    // residual deny (`residualAction: 'deny'`) fires unconditionally, but
+    // `reportDeny` no-ops when `onAutoDenied` is absent -- so this pairing is
+    // the only thing standing between deny-mode and the exact invisible refusal
+    // #1015 exists to end. Today `cli.ts` (the sole gate constructor) wires
+    // both, but the two are independent deps; a future caller that sets
+    // `deny` without the sink would silently un-audit every residual deny. Warn
+    // once at construction rather than let it drift (epic-wide review,
+    // 2026-08-16). Cheap: one line per session-daemon start, only on a real
+    // misconfiguration.
+    if (deps.residualAction === 'deny' && deps.onAutoDenied === undefined) {
+      logError(
+        `[AutoApprove ${this.sessionTag}] residual_action='deny' configured without an onAutoDenied sink; residual denies will NOT be audited (see #1015). Wire onAutoDenied or use residual_action='escalate'.`,
+      );
+    }
   }
 
   /**
@@ -1300,15 +1328,55 @@ export class AutoApproveGate {
    * 'passthrough' immediately (Claude renders the native prompt and the pick is
    * delivered by the legacy PTY path / a later phase). Always main context — the
    * subagent escalate paths default-deny and never reach here.
+   *
+   * #1045 phase 6: when `residualAction === 'deny'` AND the escalation is
+   * BINARY, this refuses with a reason instead of asking — deliberately gated
+   * on `isBinaryEscalation`, not on the caller, because all three call sites
+   * (no-service edge, eval-error, primary escalate verdict) can carry a
+   * non-binary input (e.g. `ExitPlanMode`) straight into this method. A
+   * multi-choice / design escalate must stay a passthrough regardless of this
+   * setting, so the deny conversion sits in the SAME branch that would
+   * otherwise have held it, never in the passthrough branch. `reasoning` is
+   * required (unlike `summary`, still cosmetic) because it is what
+   * `buildDenyMessage` puts in front of Claude — the whole point of choosing
+   * `deny` over `escalate` is that the agent gets told why.
    */
   private escalateMain(
     input: PermissionRequestHookInput,
+    reasoning: string,
     summary?: string,
   ): Promise<PermissionDecision> {
-    if (this.isBinaryEscalation(input)) {
-      return this.escalateAndHold(input, summary);
+    if (!this.isBinaryEscalation(input)) {
+      return Promise.resolve(this.escalatePassthrough(input, summary));
     }
-    return Promise.resolve(this.escalatePassthrough(input, summary));
+    if (this.deps.residualAction === 'deny') {
+      // Balance the buffer-window counter, exactly as the synchronous model-deny
+      // branch does before returning `{behavior:'deny'}` (the `markHandled` a
+      // screen up). `resolvePermission` already fired `onEvalStart` ->
+      // `onAutoApproveStart()` for this main-context eval; converting to a deny
+      // here without `markHandled` leaves `mainEvalsInFlight` stuck > 0, which
+      // buffers and then silently drops the NEXT escalated prompt's push
+      // (`QuestionPresenceTracker`'s "every onAutoApproveStart must be matched"
+      // invariant). Found in the epic-wide review (2026-08-16); the existing
+      // residual tests use `service:null`, which hits the no-service edge that
+      // returns before `onEvalStart`, so they never exercised this. `escalateMain`
+      // is always main context, so `isSubagentEvent` is false, but derive it
+      // rather than hardcode to stay correct if that ever changes.
+      this.markHandled(this.isSubagentEvent(input));
+      // #1015: a residual-converted deny is exactly as invisible to the user
+      // as any other deny -- report it through the same sink so cli.ts logs
+      // it unconditionally, even though (unlike model-floor) it deliberately
+      // does not push. See DenySource's 'residual' doc for why.
+      this.reportDeny(input, {
+        decision: 'deny',
+        reasoning,
+        durationMs: 0,
+        model: '',
+        denySource: { kind: 'residual', pattern: '' },
+      });
+      return Promise.resolve({ behavior: 'deny', message: buildDenyMessage(reasoning) });
+    }
+    return this.escalateAndHold(input, summary);
   }
 
   /**
@@ -1506,7 +1574,7 @@ export class AutoApproveGate {
         );
         this.deps.resetSubagentContext?.();
       }
-      return this.escalateMain(input);
+      return this.escalateMain(input, 'auto-approve had no evaluation service for this operation');
     }
 
     // Everything below is MAIN-context by construction: the #807 early return
@@ -1577,7 +1645,7 @@ export class AutoApproveGate {
         );
         this.deps.resetSubagentContext?.();
       }
-      return this.escalateMain(input);
+      return this.escalateMain(input, `auto-approve evaluation failed: ${errorToString(err)}`);
     }
 
     if (result.decision === 'cancelled') {
@@ -1673,7 +1741,11 @@ export class AutoApproveGate {
     }
     // #628: result is the primary escalate verdict here (approve/deny/pick/cancelled
     // returned earlier), so carry its lock-screen summary onto the escalation.
-    return this.escalateMain(input, result.decision === 'escalate' ? result.summary : undefined);
+    return this.escalateMain(
+      input,
+      result.reasoning,
+      result.decision === 'escalate' ? result.summary : undefined,
+    );
   }
 
   // -------------------------------------------------------------------------

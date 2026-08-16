@@ -329,6 +329,9 @@ describe('formatConfig', () => {
     // cache_idle visible (#820 stage 1), alongside its stage-2 sibling.
     expect(output).toContain('cache_idle = 300');
     expect(output).toContain('keep_alive = 1800');
+    // residual_action visible (#1045 phase 6) -- same #517-class regression
+    // guard as delivery_confirm_timeout/hold_unconfirmed_timeout above.
+    expect(output).toContain('residual_action = "escalate"');
   });
 
   test('default model is a fast 4b-class engine model; escalate_model empty (#522)', () => {
@@ -477,6 +480,8 @@ describe('auto_approve config', () => {
       base_url: 'http://127.0.0.1:19924',
       timeout: 30,
       log_decisions: true,
+      // #1045 phase 6: escalate is the safe, byte-for-byte pre-#1045 default.
+      residual_action: 'escalate' as const,
       allow: ['Read', 'Glob', 'Grep'],
       deny: [],
       // #807: irreversible-only by default; broad patterns (curl/ssh) are
@@ -1027,6 +1032,67 @@ describe('auto_approve.level (#963)', () => {
   test('no config file at all yields the strict default', () => {
     const c = loadConfig(path.join(TEST_DIR, 'nope.toml'));
     expect(c.auto_approve.level).toBe('strict');
+  });
+});
+
+describe('auto_approve.residual_action (#1045 phase 6)', () => {
+  /** Write a config and load it. Real file, real TOML parse -- no mocks. */
+  function load(toml: string) {
+    fs.writeFileSync(TEST_CONFIG, toml);
+    return loadConfig(TEST_CONFIG);
+  }
+
+  test('a config with no residual_action defaults to escalate, i.e. today unchanged', () => {
+    const c = load('[auto_approve]\nenabled = true\n');
+    expect(c.auto_approve.residual_action).toBe('escalate');
+  });
+
+  test('no config file at all also yields the escalate default', () => {
+    const c = loadConfig(path.join(TEST_DIR, 'nope.toml'));
+    expect(c.auto_approve.residual_action).toBe('escalate');
+  });
+
+  test('residual_action = "deny" parses', () => {
+    const c = load('[auto_approve]\nresidual_action = "deny"\n');
+    expect(c.auto_approve.residual_action).toBe('deny');
+  });
+
+  test('residual_action = "escalate" parses (explicit, same as default)', () => {
+    const c = load('[auto_approve]\nresidual_action = "escalate"\n');
+    expect(c.auto_approve.residual_action).toBe('escalate');
+  });
+
+  // Deliberately WARN + fall back, unlike `level` (which throws): a garbage
+  // enum value here should not refuse to start the daemon, because the
+  // fallback (`escalate`) is always the safe, pre-#1045 behavior.
+  test('an invalid residual_action falls back to escalate and warns, does NOT throw', () => {
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (msg?: unknown) => warnings.push(String(msg));
+    try {
+      const c = load('[auto_approve]\nresidual_action = "block"\n');
+      expect(c.auto_approve.residual_action).toBe('escalate');
+      expect(
+        warnings.some(
+          (w) => w.includes('residual_action') && w.includes('escalate') && w.includes('block'),
+        ),
+      ).toBe(true);
+    } finally {
+      console.warn = original;
+    }
+  });
+
+  test('a non-string residual_action also falls back to escalate and warns', () => {
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (msg?: unknown) => warnings.push(String(msg));
+    try {
+      const c = load('[auto_approve]\nresidual_action = 3\n');
+      expect(c.auto_approve.residual_action).toBe('escalate');
+      expect(warnings.some((w) => w.includes('residual_action'))).toBe(true);
+    } finally {
+      console.warn = original;
+    }
   });
 });
 

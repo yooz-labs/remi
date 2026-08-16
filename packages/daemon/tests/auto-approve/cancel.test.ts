@@ -109,6 +109,7 @@ function makeConfig(timeoutSeconds: number, baseUrl?: string): AutoApproveConfig
     base_url: url,
     timeout: timeoutSeconds,
     log_decisions: false,
+    residual_action: 'escalate',
     allow: [],
     deny: [],
     subagent_alert: [],

