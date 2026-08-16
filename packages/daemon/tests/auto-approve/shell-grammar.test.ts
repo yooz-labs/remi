@@ -340,3 +340,73 @@ describe('#1004 only an opaque-token value is peeled', () => {
     }
   });
 });
+
+/**
+ * #1057 phase 3, commit 2: loop residue. Two independent gaps left over in the
+ * `while read l; do ...; done < file` idiom after #999 taught this module to
+ * peel grammar keywords:
+ *
+ *   1. `read` is a bash BUILTIN that assigns stdin to variables and executes
+ *      nothing of its own, but it was not in `NEUTRAL_PREFIXES`, so a `while
+ *      read l` header segment matched no prefix and was not neutral either --
+ *      the WHOLE command failed on the header alone, regardless of what the
+ *      body did.
+ *   2. `done < file` peels to a residue of `< file`, which matched no prefix
+ *      and was not structural, so the loop's own TERMINATOR refused a command
+ *      whose body was otherwise fully covered.
+ */
+describe('#1057 phase 3 commit 2: `read` is a neutral builtin', () => {
+  test('read alone is neutral, not a matched prefix -- all-neutral stays uncovered by design', () => {
+    expect(covered('read x')).toBeNull();
+  });
+
+  test('a `while read l` header no longer independently refuses the rest of the loop', () => {
+    // Before this commit, "while read l" itself matched no prefix and was
+    // not neutral, so the whole command failed on the header segment alone.
+    // `cat` is read-only, so the body is what decides coverage now.
+    expect(covered('while read l; do cat $l; done')).not.toBeNull();
+  });
+
+  test('read does not bless a later, unrelated segment', () => {
+    expect(covered('read x; rm -rf /')).toBeNull();
+  });
+
+  test('read is neutral by word-boundary prefix match; its flags are just data to it', () => {
+    for (const cmd of ['read -r l', 'read -p "prompt" x', 'read -a arr']) {
+      // Not a GRAMMAR_PREFIX_KEYWORD -- read is a real command, not shell
+      // grammar, so stripShellGrammar hands it back unchanged for the
+      // NEUTRAL_PREFIXES check downstream to recognize.
+      expect(stripShellGrammar(cmd)).toEqual({ command: cmd, structural: false });
+    }
+  });
+});
+
+describe('#1057 phase 3 commit 2: a peel residue of only input-redirect clauses is structural', () => {
+  test('a single plain input-redirect clause is structural', () => {
+    expect(stripShellGrammar('done < f')).toEqual({ command: '', structural: true });
+    expect(stripShellGrammar('done < ./data.txt')).toEqual({ command: '', structural: true });
+    expect(stripShellGrammar('fi <<< abc')).toEqual({ command: '', structural: true });
+  });
+
+  test('several clauses in a row are still structural', () => {
+    expect(stripShellGrammar('done < a < b').structural).toBe(true);
+  });
+
+  test('must-refuse: a target this recognizer cannot prove literal is NOT structural', () => {
+    // `$` expansion, a quoted target (raw text -- no quote-masking has run),
+    // and process substitution all fall through as an ordinary command
+    // instead of being waved through as structural.
+    expect(stripShellGrammar('done < $F').structural).toBe(false);
+    expect(stripShellGrammar('done < "f"').structural).toBe(false);
+    expect(stripShellGrammar('done < <(cmd)').structural).toBe(false);
+  });
+
+  test('trailing text after the last clause is not waved through', () => {
+    // A redirect clause is not ALL the residue contains here.
+    expect(stripShellGrammar('done < f g').structural).toBe(false);
+  });
+
+  test("the report's own idiom, end to end: while read l; do grep x $l; done < list.txt", () => {
+    expect(covered('while read l; do grep x $l; done < list.txt')).toBe('read-only:grep');
+  });
+});

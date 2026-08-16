@@ -13,8 +13,23 @@
  * `extraVeto` hook of `matchCoveredCommand`.
  */
 
-/** Benign segments that may appear in a compound command without needing coverage. */
-export const NEUTRAL_PREFIXES: readonly string[] = ['cd', 'pwd', 'true', 'echo', ':'];
+/**
+ * Benign segments that may appear in a compound command without needing
+ * coverage.
+ *
+ * `read` (#1057 phase 3, commit 2) is a bash BUILTIN that assigns stdin to
+ * shell variables and executes nothing of its own -- its flags (`-r`, `-p`,
+ * `-a`, `-e`, ...) only change how it parses stdin, none of them run a
+ * command. It is the loop-header half of the `while read l; do ...; done`
+ * idiom (#999 already peels `while`/`do`/`done`), and before this addition
+ * the `read l` segment itself matched no prefix and had no path to being
+ * judged benign, so a body the rest of this module would otherwise cover
+ * (`grep`, `cat`, ...) still escalated on the header segment alone. Neutral,
+ * not a matched prefix: a command of ONLY neutral segments still matches
+ * nothing (`matchCoveredCommand` requires at least one real hit), so bare
+ * `read` alone stays uncovered by design -- see the paired test.
+ */
+export const NEUTRAL_PREFIXES: readonly string[] = ['cd', 'pwd', 'true', 'echo', ':', 'read'];
 
 /*
  * ATTEMPT 5, REVERTED BEFORE MERGE: "a segment whose every word is an
@@ -155,6 +170,73 @@ const CASE_HEADER_RE = /^case\s+\S+\s+in$/;
 /** `break`/`continue` take an optional LEVEL COUNT, never a command. */
 const LOOP_CONTROL_RE = /^(?:break|continue)(?:\s+\d+)?$/;
 
+/**
+ * Characters a bare input-redirect PATH may contain once proven free of
+ * expansion: letters, digits, `_ . / ~ -`. No `$`, no quotes -- either would
+ * mean the shell rewrites the token before this text is what actually gets
+ * opened, and `isPlainInputRedirectResidue` runs on RAW residue text (no
+ * quote-masking has happened by this point), so a quote character has to be
+ * refused rather than trusted to bound a literal.
+ */
+const INPUT_REDIRECT_PATH_RE = /^[A-Za-z0-9_./~-]+$/;
+
+/**
+ * One input-redirect clause inside a peeled residue: `< PATH` or `<<< WORD`
+ * (a here-string). `<<<` is tried before the single-`<` alternative so a
+ * here-string is never misread as a file redirect whose target happens to
+ * start with `<`.
+ */
+const RESIDUE_REDIRECT_CLAUSE_RE = /(<<<|<)\s*(\S+)/g;
+
+/**
+ * True if `rest` -- a `stripShellGrammar` peel residue -- consists SOLELY of
+ * one or more plain input-redirect clauses, each provably free of expansion:
+ * `< f`, `< ./data.txt`, `<<< abc`, or several of these in a row.
+ *
+ * Why this is safe to treat as structural exactly like an empty residue: the
+ * terminator or header this residue trails (`done`, `fi`, ...) already runs
+ * no command of its own -- that is the entire premise `stripShellGrammar`
+ * rests on -- and a bare input redirect on that same segment does not add
+ * one either. It only rebinds the compound's stdin to a file the shell opens
+ * for reading; nothing here runs, writes, or executes anything.
+ *
+ * Deliberately conservative, matching this module's established idiom of
+ * removing only what is PROVEN inert and leaving everything else visible so
+ * it still fails closed:
+ *
+ *   - a target containing `$` is refused -- expansion means this text is not
+ *     what the shell will actually open;
+ *   - a quoted target (`< "f"`) is refused -- this function runs on RAW text,
+ *     so a quote character is not provably a literal delimiter here, only a
+ *     character this recognizer does not understand;
+ *   - `<(...)` process substitution is refused by construction: its target
+ *     starts with `(`, outside both character classes below, and it is
+ *     independently vetoed by `hasShellControl` on the UNPEELED segment
+ *     regardless (that check runs before `stripShellGrammar` is ever called
+ *     -- see `matchCoveredCommand`), so this function does not need to, and
+ *     must not, weaken that.
+ *
+ * Any gap between clauses that is not pure whitespace, or any trailing text
+ * after the last clause, fails the whole residue: a redirect clause is not
+ * ALL the residue contains, so nothing here is safe to wave through
+ * unexamined.
+ */
+function isPlainInputRedirectResidue(rest: string): boolean {
+  if (rest === '') return false;
+  const matches = [...rest.matchAll(RESIDUE_REDIRECT_CLAUSE_RE)];
+  if (matches.length === 0) return false;
+  let consumed = 0;
+  for (const match of matches) {
+    if (rest.slice(consumed, match.index).trim() !== '') return false;
+    const [whole, op, target] = match;
+    if (target === undefined) return false;
+    const targetOk = op === '<<<' ? !/[$`(\s]/.test(target) : INPUT_REDIRECT_PATH_RE.test(target);
+    if (!targetOk) return false;
+    consumed = match.index + whole.length;
+  }
+  return rest.slice(consumed).trim() === '';
+}
+
 /** A segment reduced to the command it actually runs, if any. */
 export interface StrippedSegment {
   /** What remains once leading grammar keywords are removed. */
@@ -193,6 +275,16 @@ export function stripShellGrammar(segment: string): StrippedSegment {
     if (FOR_HEADER_RE.test(rest) || CASE_HEADER_RE.test(rest) || LOOP_CONTROL_RE.test(rest)) {
       return { command: '', structural: true };
     }
+  }
+  // #1057 phase 3, commit 2: a residue that is SOLELY a plain input-redirect
+  // clause (`done < f`, `fi <<< abc`) trails a terminator/header that already
+  // runs no command -- see `isPlainInputRedirectResidue` for why rebinding
+  // stdin does not change that. Checked once, here, after every keyword has
+  // been peeled (including stacked ones), rather than inside the loop: a
+  // redirect clause never itself matches `GRAMMAR_PREFIX_KEYWORDS`, so it can
+  // only ever be reached as the loop's final residue.
+  if (isPlainInputRedirectResidue(rest)) {
+    return { command: '', structural: true };
   }
   return { command: rest, structural: rest === '' };
 }
