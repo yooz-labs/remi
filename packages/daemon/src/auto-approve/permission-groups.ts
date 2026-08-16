@@ -35,6 +35,7 @@ import {
 } from './sensitive-paths.ts';
 import {
   type CompoundJoiner,
+  maskQuotedSpans,
   matchCoveredCommand,
   matchPrefix,
   rewriteRedirectClauses,
@@ -663,6 +664,196 @@ function scratchTargetVeto(segment: string, cwd: ScratchCwd): boolean {
     if (!isStrictlyUnderScratchRoot(word, cwd)) return true;
   }
   return false;
+}
+
+// ---------------------------------------------------------------------------
+// Heredoc excision (#1057 phase 2, commit 3). A pre-pass SIBLING of
+// `sanitizeCommandForRedirectGrants`, run in the `matchGroups` path only --
+// never the user allow-list path in `pattern-matcher.ts`. That asymmetry is
+// deliberate and is documented alongside this in the phase's ADR.
+//
+// Heredocs appear NOWHERE in the decision code before this commit, and what
+// happens today is a coincidence, not a policy. `tee /tmp/x <<EOF` (one
+// physical line, no real newline in the string) approves, because `<<EOF`
+// just sits as an inert extra token nothing looks at. A genuine MULTI-LINE
+// heredoc escalates only by ACCIDENT: `splitCompoundParts` treats an
+// unquoted newline as a command separator exactly like `;`, so the body
+// becomes its own segment(s), and a body line essentially never happens to
+// prefix-match a curated command. That is not a designed safety property --
+// it is two unrelated mechanisms colliding -- and it is what this excision
+// replaces with a deliberate one: give the heredoc body a real disposition
+// instead of an accidental one.
+//
+// The rule, fail-closed at every step: find the heredoc operator (`<<` or
+// `<<-`) on a physical line, read its delimiter WORD (bare, `'quoted'`, or
+// `"quoted"`), and if the WORD is a plain `[A-Za-z0-9_]+` token, look for a
+// LATER line that equals it exactly (leading tabs only, stripped, for
+// `<<-`). Found: the operator, its word, every body line and the terminator
+// line are all removed from the command text. Everything that remains flows
+// through the EXISTING machinery completely unchanged (compound split,
+// redirect grants, `hasShellControl`, group prefix coverage, every veto).
+// Excision itself grants nothing -- it only deletes syntax that was inert to
+// begin with, so whatever coverage decision the remaining text earns is the
+// same decision it would earn had a human deleted the heredoc by hand.
+//
+// ANY of the following aborts excision for the WHOLE command, restoring it
+// byte-for-byte and falling back to today's (safe, if accidental) behavior:
+//
+//   - a second `<<` on the same physical line (`cat <<A <<B`) -- rare, and
+//     stacked heredocs are refused rather than modeled;
+//   - a delimiter that is not a plain word once unquoted (empty, containing
+//     `$`, a backslash, or other punctuation);
+//   - no later line matches the delimiter exactly -- an unterminated
+//     heredoc is exactly today's accidental-escalation shape, so leaving it
+//     alone reproduces it rather than guessing where it ends;
+//   - an UNQUOTED delimiter (`<<EOF`, not `<<'EOF'`/`<<"EOF"`) whose body
+//     contains `$(`, a backtick, or `<(`. An unquoted heredoc body is LIVE:
+//     the shell performs command/process substitution on it BEFORE it is
+//     ever handed to the reading command. Excising it would DELETE that
+//     execution from the text the matcher ever sees --
+//     `cat > x <<EOF` / `$(rm -rf /)` / `EOF` would collapse to `cat > x`,
+//     approve via the fs-write redirect grant, and the shell would still
+//     run `rm -rf /` as a side effect of expanding the body nobody looked
+//     at. A QUOTED delimiter needs no such scan: bash performs no expansion
+//     at all on a quoted-delimiter body, so it is inert by construction.
+//
+// Quote masking is done PER LINE, not once over the whole multi-line
+// command. A heredoc body is literal data and may contain an apostrophe or
+// an unmatched quote character with no bearing on shell grammar at all
+// (`it's done` is valid body text) -- masking the ENTIRE command in one pass
+// would let that single stray quote desync `maskQuotedSpans`'s state for
+// everything after it (an unterminated quote makes that function return its
+// input completely UNMASKED, per its own contract), which could misread a
+// LATER line's real operator as quoted, or vice versa. Per-line masking
+// confines the blast radius of a body line's stray quote to that one line,
+// which is never consulted for operator detection: operators are only
+// looked for on lines a body has not yet started under.
+// ---------------------------------------------------------------------------
+
+/** Characters a heredoc delimiter must be made of, once unquoted. */
+const HEREDOC_WORD_RE = /^[A-Za-z0-9_]+$/;
+
+/** What scanning one physical line for a heredoc operator found. */
+type HeredocOperatorScan =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'multiple' }
+  | { readonly kind: 'invalid' }
+  | {
+      readonly kind: 'found';
+      /** Index in the line where the `<<` starts. */
+      readonly opStart: number;
+      /** Index in the line right after the (possibly quoted) delimiter word. */
+      readonly opEnd: number;
+      readonly dashed: boolean;
+      readonly word: string;
+      readonly quoted: boolean;
+    };
+
+/**
+ * Find a heredoc operator on ONE physical line, quote-masked so a `<<` that
+ * is really inside a quoted argument (`echo "a << b"`) is not mistaken for
+ * one. `<<<` (here-strings) and any longer run of `<` are excluded outright
+ * -- a run of 3+ `<` is never a heredoc operator.
+ *
+ * `kind: 'multiple'` and `kind: 'invalid'` are both reported rather than
+ * silently treating the line as `'none'`, because the caller has to abort
+ * the WHOLE excision on either -- a line this function cannot fully make
+ * sense of must not have its *other* content silently reinterpreted.
+ */
+function scanHeredocOperator(line: string): HeredocOperatorScan {
+  const masked = maskQuotedSpans(line);
+  const starts: number[] = [];
+  for (let i = 0; i < masked.length - 1; i++) {
+    if (masked[i] !== '<' || masked[i + 1] !== '<') continue;
+    if (masked[i - 1] === '<' || masked[i + 2] === '<') continue; // <<< / <<<<
+    starts.push(i);
+  }
+  if (starts.length === 0) return { kind: 'none' };
+  if (starts.length > 1) return { kind: 'multiple' };
+  const opStart = starts[0] as number;
+  let idx = opStart + 2;
+  let dashed = false;
+  if (masked[idx] === '-') {
+    dashed = true;
+    idx++;
+  }
+  while (masked[idx] === ' ' || masked[idx] === '\t') idx++;
+  // From here, read the RAW line (not the masked view): the masked view has
+  // replaced a quoted delimiter's characters, quotes included, with `_`.
+  const quoteChar = line[idx];
+  let word: string;
+  let opEnd: number;
+  if (quoteChar === "'" || quoteChar === '"') {
+    const close = line.indexOf(quoteChar, idx + 1);
+    if (close === -1) return { kind: 'invalid' };
+    word = line.slice(idx + 1, close);
+    opEnd = close + 1;
+  } else {
+    let end = idx;
+    while (end < line.length && !/\s/.test(line[end] ?? '')) end++;
+    word = line.slice(idx, end);
+    opEnd = end;
+  }
+  if (!HEREDOC_WORD_RE.test(word)) return { kind: 'invalid' };
+  return {
+    kind: 'found',
+    opStart,
+    opEnd,
+    dashed,
+    word,
+    quoted: quoteChar === "'" || quoteChar === '"',
+  };
+}
+
+/** True if an UNQUOTED heredoc body carries live substitution the shell
+ *  would execute while expanding it, before the reading command ever runs. */
+function heredocBodyHasLiveSubstitution(bodyLines: readonly string[]): boolean {
+  return bodyLines.some((l) => l.includes('$(') || l.includes('`') || l.includes('<('));
+}
+
+/**
+ * Excise every heredoc this command contains, or return `command` completely
+ * UNCHANGED the instant any single one cannot be proven safe to remove -- see
+ * the section comment above for the full fail-closed rule.
+ *
+ * Run unconditionally in `matchGroups`'s Bash path, before every other
+ * pre-pass and before compound splitting. That is safe rather than a
+ * widening: excision does not grant coverage by itself, it only deletes
+ * syntax that was inert (or, on any abort, leaves the command exactly as it
+ * was), so it can only ever hand the EXISTING machinery a command that means
+ * the same thing with less noise in it -- coverage is still decided entirely
+ * by that machinery, same as if a human had deleted the heredoc by hand.
+ */
+function exciseHeredocsForGroups(command: string): string {
+  if (!command.includes('<<')) return command;
+  const lines = command.split('\n');
+  const out: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i] as string;
+    const op = scanHeredocOperator(line);
+    if (op.kind === 'none') {
+      out.push(line);
+      i++;
+      continue;
+    }
+    if (op.kind === 'multiple' || op.kind === 'invalid') return command;
+    let terminatorAt = -1;
+    for (let j = i + 1; j < lines.length; j++) {
+      const raw = lines[j] as string;
+      const candidate = op.dashed ? raw.replace(/^\t+/, '') : raw;
+      if (candidate === op.word) {
+        terminatorAt = j;
+        break;
+      }
+    }
+    if (terminatorAt === -1) return command; // unterminated: fail closed
+    const body = lines.slice(i + 1, terminatorAt);
+    if (!op.quoted && heredocBodyHasLiveSubstitution(body)) return command; // live body: fail closed
+    out.push(line.slice(0, op.opStart) + line.slice(op.opEnd));
+    i = terminatorAt + 1; // skip every body line and the terminator line
+  }
+  return out.join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -1328,20 +1519,30 @@ export function matchGroups(
   if (toolName === 'Bash') {
     const rawCommand = typeof toolInput['command'] === 'string' ? toolInput['command'].trim() : '';
     if (rawCommand === '') return null;
+    // Heredoc excision (#1057 phase 2, commit 3), UNCONDITIONALLY, before
+    // every other pre-pass and before compound splitting -- see the section
+    // above `exciseHeredocsForGroups` for the full rule. Unlike the redirect
+    // grants below, this does not need to be gated on which groups were
+    // requested: excision cannot grant coverage by itself (it only deletes
+    // syntax that was inert, or leaves the command untouched on any
+    // ambiguity), so running it for every caller changes no group's
+    // approvals except by removing noise the rest of this function would
+    // otherwise have judged the accidental (pre-#1057) way.
+    const heredocExcised = exciseHeredocsForGroups(rawCommand);
     // `scratch` and `fs-write` (see the section above `PermissionGroup`) each
     // need a redirect clause removed BEFORE `hasShellControl` ever sees it,
     // which has to happen on the whole command ahead of the per-segment
     // machinery below. Only run the pre-pass when at least one of the two
     // grants was actually requested, so every OTHER caller (in particular
     // `strict`, which lists neither) gets back out exactly the string it put
-    // in and nothing here can change its behavior.
+    // in (heredoc excision aside) and nothing here can change its behavior.
     const scratchActive = known.includes('scratch');
     const fsWriteActive = known.includes('fs-write');
     const redirectGrants =
       scratchActive || fsWriteActive
-        ? sanitizeCommandForRedirectGrants(rawCommand, { scratchActive, fsWriteActive })
+        ? sanitizeCommandForRedirectGrants(heredocExcised, { scratchActive, fsWriteActive })
         : null;
-    const command = redirectGrants?.command ?? rawCommand;
+    const command = redirectGrants?.command ?? heredocExcised;
     // The cd-poison pre-walk for `artifact-clean` (ADR 0023). Like the
     // redirect-grant pre-pass: run only when the group was actually
     // requested, and walked over the SAME string `matchCoveredCommand`

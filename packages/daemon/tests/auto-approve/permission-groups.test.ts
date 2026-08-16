@@ -1192,6 +1192,126 @@ describe('#1041: fs-write grants a relative, non-ascending, non-sensitive redire
 });
 
 /**
+ * #1057 phase 2, commit 3: heredoc excision. Heredocs appear NOWHERE in the
+ * decision code before this. Today `tee /tmp/x <<EOF` (one physical line, no
+ * real newline) approves because `<<EOF` just sits as an inert extra token;
+ * a genuine MULTI-LINE heredoc escalates only by ACCIDENT, because
+ * `splitCompoundParts` treats an unquoted newline as a separator and a body
+ * line essentially never happens to prefix-match a curated command. This
+ * block pins the deliberate replacement: excise the operator + body when it
+ * can be proven safe to do so, and fall back to that same accidental (but
+ * safe) behavior the instant it cannot be proven.
+ */
+describe('#1057 phase 2 commit 3: heredoc excision (group path only)', () => {
+  const WRITE_GROUPS_NO_SCRATCH = [...ALL, 'fs-write'];
+  const EVERYTHING = [...ALL, ...WRITE_GROUPS, ...SCRATCH_GROUPS, ...ARTIFACT_GROUPS];
+
+  describe('covered: excision composes with the existing redirect grants', () => {
+    const cases: Array<[string, string, string[], string]> = [
+      [
+        "cat > notes.md <<'EOF'\nhello\nEOF",
+        'quoted delimiter: excised, then the fs-write relative redirect grant deletes "> notes.md"',
+        WRITE_GROUPS_NO_SCRATCH,
+        'read-only:cat',
+      ],
+      [
+        'tee notes.md <<EOF\nplain text\nEOF',
+        'unquoted delimiter, inert body: excised outright, tee itself is the fs-write-owned prefix, no redirect grant needed',
+        WRITE_GROUPS,
+        'fs-write:tee',
+      ],
+    ];
+    for (const [cmd, why, groups, expected] of cases) {
+      test(`${JSON.stringify(cmd)} — ${why}`, () => {
+        expect(bash(cmd, groups)).toBe(expected);
+      });
+    }
+    test("tee /tmp/x <<'EOF'\\nbody\\nEOF — scratch: absolute root grant, unaffected", () => {
+      expect(bash("tee /tmp/x <<'EOF'\nbody\nEOF", SCRATCH_GROUPS)).toBe('scratch:tee');
+    });
+    test('notes.md case actually resolves via fs-write, not just read-only', () => {
+      // Sanity: the fs-write group's own redirect grant is what let this through
+      // -- without it requested, the same command must fall back to null.
+      expect(bash("cat > notes.md <<'EOF'\nhello\nEOF", ALL)).toBeNull();
+    });
+  });
+
+  test("regression guard: today's single-line accidental approval is unaffected", () => {
+    // No real newline in this string at all -- there is no terminator to find,
+    // so excision aborts (unterminated, fails closed) and the command reaches
+    // the existing machinery byte-for-byte, exactly as it did before commit 3.
+    expect(bash('tee /tmp/x <<EOF', WRITE_GROUPS)).toBe('fs-write:tee');
+    // Under `scratch` alone the same string was ALREADY refused before this
+    // commit (`scratchTargetVeto` treats the glued `<<EOF` token as a
+    // non-scratch-rooted positional target) -- unaffected either way.
+    expect(bash('tee /tmp/x <<EOF', SCRATCH_GROUPS)).toBeNull();
+  });
+
+  test("safety invariant: no interpreter is in any group's command list, before or after excision", () => {
+    for (const cmd of [
+      "bash <<'EOF'\nrm -rf /\nEOF",
+      "python3 - <<'PY'\nprint(1)\nPY",
+      'sh <<X\necho hi\nX',
+    ]) {
+      expect(bash(cmd, EVERYTHING)).toBeNull();
+    }
+  });
+
+  describe("MUST NOT excise (falls through to today's accidental, still-safe behavior)", () => {
+    const mustBeNull: Array<[string, string]> = [
+      [
+        'cat > x <<EOF\n$(rm -rf /)\nEOF',
+        'unquoted delimiter, LIVE body: the shell would run $(...) expanding it, so excision must not hide that execution from the matcher',
+      ],
+      [
+        "cat > x <<'EOF'\nbody",
+        'unterminated: no line ever matches the delimiter, so nothing is proven removable',
+      ],
+      [
+        'cat > x <<\'EOF\'\n"EOF"\nrm -rf /',
+        'terminator-inside-quotes spoof with NO real terminator: a quoted lookalike must not count as the delimiter line, so this stays unterminated and falls through',
+      ],
+      [
+        'cat > x <<E$OF\nbody\nE$OF',
+        'delimiter contains $: fails the plain-word shape, so no excision is attempted',
+      ],
+    ];
+    for (const [cmd, why] of mustBeNull) {
+      test(`${JSON.stringify(cmd)} — ${why}`, () => {
+        expect(bash(cmd, WRITE_GROUPS_NO_SCRATCH)).toBeNull();
+      });
+    }
+  });
+
+  test('a quoted lookalike inside the body does not end the heredoc early, when a real terminator follows', () => {
+    // Same body as the spoof case above, but with a genuine trailing bare
+    // `EOF`. The quoted "EOF" line must be skipped as a candidate terminator,
+    // so the WHOLE body -- including the "rm -rf /"-shaped line -- is proven
+    // to be inert heredoc data and excised along with the real terminator,
+    // never examined as a command in its own right.
+    expect(bash('cat > x <<\'EOF\'\n"EOF"\nrm -rf /\nEOF', WRITE_GROUPS_NO_SCRATCH)).toBe(
+      'read-only:cat',
+    );
+  });
+
+  test('<<< here-strings are excluded outright and behave exactly as before', () => {
+    // A run of 3+ `<` is never a heredoc operator, so this command is not
+    // even a candidate for excision -- `exciseHeredocsForGroups` returns it
+    // unchanged, and today's (pre-commit-3) behavior is reproduced exactly.
+    expect(bash('cat <<< "hello"', ALL)).toBe('read-only:cat');
+  });
+
+  test('a body line that looks like a covered command must not leak coverage', () => {
+    // "git status" is BODY, wholly excised along with the operator and the
+    // terminator -- the command's coverage is decided by the `cat` head
+    // alone, which takes no arguments here, so this must equal bare `cat`.
+    const withHeredoc = bash("cat <<'EOF'\ngit status\nEOF", WRITE_GROUPS_NO_SCRATCH);
+    expect(withHeredoc).toBe(bash('cat', WRITE_GROUPS_NO_SCRATCH));
+    expect(withHeredoc).toBe('read-only:cat');
+  });
+});
+
+/**
  * #1001. `deny_groups` was answered by `matchGroups`, the same function that
  * answers the allow question. ADR 0010 says allow matching is PRECISE and deny
  * matching is BROAD; this was the one place a deny question was asked of a
