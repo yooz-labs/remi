@@ -12,7 +12,7 @@
 import { createBulletExpandResponse, createError, errorToString } from '@remi/shared';
 import type { AnswerExtras, AnswerSelection, Question, QuestionOption, UUID } from '@remi/shared';
 
-import { parsePermissionQuestionText } from '../../auto-approve/precedent.ts';
+import { toolNameFromSignature } from '../../auto-approve/precedent.ts';
 import { clearAuqRunActive, markAuqRunActive } from '../../hooks/auq-active-runs.ts';
 import { AUQ_KEYS } from '../../hooks/auq-answer.ts';
 import { type AuqRunOutcome, runAuqAnswer } from '../../hooks/auq-runner.ts';
@@ -775,22 +775,34 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       //     which both `return` earlier, so those are skipped by
       //     construction, not by an extra check here.
       //   - `active.source === 'permission_request'` restricts to the ONE
-      //     Question shape that carries genuine tool+command text,
+      //     Question shape that carries genuine tool+command identity,
       //     deterministically built by `HookEventBridge.buildPermissionQuestion`
       //     (hook-event-bridge.ts). A `source: 'pty'` / `'notification'` /
       //     `'elicitation'` question, or the source-less StopFailure "Retry?"
       //     prompt, carries no reliable tool/command identity and is skipped
       //     — recording "Retry?" -> yes as an approval of some tool would be
       //     exactly the unrecoverable mistake this module's doc warns about.
-      //   - `parsePermissionQuestionText` can still return null (defensive;
-      //     see its own doc) — skipped rather than guessed.
+      //   - `active.precedentSignature` (#990) is the UNTRUNCATED signature
+      //     `buildPermissionQuestion` computed once, via the same
+      //     `signatureForOperation` the consult side calls -- NOT the
+      //     truncated, human-facing `active.text`. It is present only for a
+      //     precedent-eligible operation (`precedentMayAuthorize`'s
+      //     allowlist); absent for everything else, INCLUDING a legacy/
+      //     synthetic `Question` built before this field existed. Absent =>
+      //     FAIL CLOSED, skip recording entirely. Do NOT fall back to
+      //     parsing `active.text` (the pre-#990 approach,
+      //     `parsePermissionQuestionText`) -- that reintroduces the exact
+      //     collision #990 closes: two different >120-character commands
+      //     sharing their first 117 characters truncate to the identical
+      //     `text`, so recording from it would let approving one silently
+      //     authorize the other.
       if (decision !== null && active.source === 'permission_request') {
-        const parsed = parsePermissionQuestionText(active.text);
-        if (parsed) {
+        const signature = active.precedentSignature;
+        if (signature !== undefined) {
           recordPrecedent?.(
             session.sessionId,
-            parsed.toolName,
-            parsed.signature,
+            toolNameFromSignature(signature),
+            signature,
             decision.decision === 'allow' ? 'approved' : 'denied',
           );
         }

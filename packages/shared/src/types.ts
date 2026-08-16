@@ -260,6 +260,33 @@ export interface Question {
    * carry it.
    */
   readonly held?: boolean | undefined;
+
+  /**
+   * The exact-match precedent signature for this operation (#990), UNTRUNCATED
+   * — distinct from `text`, which is the human-facing DISPLAY string and may
+   * be truncated to a bounded length for a lock-screen card or terminal
+   * prompt. NOT for display: this field exists solely so `handleAnswer`
+   * (`daemon/cli/handlers/input-events.ts`) can record a provenance-safe
+   * human answer into session precedent (`daemon/auto-approve/precedent.ts`,
+   * ADR 0015) without reconstructing it by parsing the (possibly truncated)
+   * `text` — the previous approach, and the source of the #990 collision: two
+   * different >120-character Bash commands sharing their first 117 characters
+   * truncated to the identical `text`, so approving one silently authorized
+   * the other.
+   *
+   * Built by `HookEventBridge.buildPermissionQuestion` from
+   * `signatureForOperation(toolName, tool_input)` — the SAME function the
+   * consult side calls at decision time — so the recorded and consulted
+   * signatures are byte-identical by construction, not by care.
+   *
+   * Present only for a precedent-eligible operation (today: `Bash` with a
+   * `command` field — see `precedentMayAuthorize`); `undefined` for every
+   * other question, including a question-bearing-tool prompt (AskUserQuestion
+   * / ExitPlanMode) and any question predating this field. `handleAnswer`
+   * treats an absent value as FAIL CLOSED: it records nothing rather than
+   * falling back to parsing `text`.
+   */
+  readonly precedentSignature?: string | undefined;
 }
 
 /**

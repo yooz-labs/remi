@@ -2458,6 +2458,13 @@ describe('createInputHandlers', () => {
       sessionRegistry.addQuestion(sessionId, {
         id: QID,
         text: 'Allow Bash: git status',
+        // #990: the untruncated signature `buildPermissionQuestion` would
+        // compute for this same operation -- kept identical to `text`'s
+        // embedded detail by default so the pre-#990 assertions below
+        // ("recorded signature equals X") keep meaning the same thing; a
+        // dedicated test below overrides this to differ from `text` and
+        // proves the recorder reads THIS field, not `text`.
+        precedentSignature: 'Bash: git status',
         options: [
           { value: '1', label: 'Yes', isRecommended: true, isYes: true, isNo: false },
           { value: '2', label: 'No', isRecommended: false, isYes: false, isNo: true },
@@ -2538,6 +2545,60 @@ describe('createInputHandlers', () => {
       expect(calls).toEqual([
         { sessionId, toolName: 'Bash', signature: 'Bash: git status', decision: 'approved' },
       ]);
+    });
+
+    // #990: the core fix. `active.precedentSignature` -- not `active.text` --
+    // is the recorded signature. Constructed so the two DISAGREE, so a
+    // regression that reads `text` instead (or falls back to parsing it)
+    // would record the wrong value and this test would catch it, not just
+    // silently pass for the wrong reason.
+    test('records from precedentSignature, not from the (possibly different) display text', async () => {
+      const { sessionId, calls, handlers } = setUp();
+      const longCommand = `cp ${'a'.repeat(200)} safe.ts`;
+      registerPermissionQuestion(sessionId, {
+        text: `Allow Bash: ${longCommand.slice(0, 117)}...`, // the truncated DISPLAY form
+        precedentSignature: `Bash: ${longCommand}`, // the untruncated SIGNATURE form
+      });
+
+      await handlers.onAnswer(CID, sessionId, QID, 'Yes');
+
+      expect(calls).toEqual([
+        { sessionId, toolName: 'Bash', signature: `Bash: ${longCommand}`, decision: 'approved' },
+      ]);
+    });
+
+    // #990: the recorded tool name is DERIVED from the signature
+    // (`toolNameFromSignature`), never hardcoded. Bash is the only
+    // precedent-eligible tool `buildPermissionQuestion` emits today, so every
+    // other test here would pass equally if `handleAnswer` recorded a constant
+    // 'Bash' -- a latent gap the moment the eligible set grows. This pins the
+    // derivation with a NON-Bash embedded name: a constant 'Bash' regresses it.
+    test('derives the recorded tool name from the signature, not a hardcoded Bash', async () => {
+      const { sessionId, calls, handlers } = setUp();
+      registerPermissionQuestion(sessionId, {
+        text: 'Allow Foo: bar baz',
+        precedentSignature: 'Foo: bar baz',
+      });
+
+      await handlers.onAnswer(CID, sessionId, QID, 'Yes');
+
+      expect(calls).toEqual([
+        { sessionId, toolName: 'Foo', signature: 'Foo: bar baz', decision: 'approved' },
+      ]);
+    });
+
+    // #990 fail-closed: a `permission_request`-sourced question with NO
+    // `precedentSignature` (a legacy `Question` predating this field, or any
+    // future producer that forgets to set it) must record NOTHING -- never
+    // fall back to parsing `text`, which is exactly the truncated-signature
+    // collision #990 exists to close.
+    test('does NOT record when precedentSignature is absent, even for an otherwise-parseable permission_request question', async () => {
+      const { sessionId, calls, handlers } = setUp();
+      registerPermissionQuestion(sessionId, { precedentSignature: undefined });
+
+      await handlers.onAnswer(CID, sessionId, QID, 'Yes');
+
+      expect(calls).toEqual([]);
     });
 
     test('does NOT record for a non-permission_request source (source: pty), even with otherwise-parseable text', async () => {
