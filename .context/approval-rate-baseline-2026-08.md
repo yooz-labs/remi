@@ -204,3 +204,27 @@ branch:
 Re-measure against a real PermissionRequest corpus (REMI_HOOK_DEBUG capture)
 once one exists; #996's 50%+13% miss buckets are the population these grants
 target.
+
+## Phase 3 addendum (2026-08-15 — composed coverage, loop residue, curation, #962)
+
+Probes under the owner's REAL `~/.remi/config.toml` (trusted + allow list),
+through the real `evaluateDeterministic`, all on this branch:
+
+| shape | before | after |
+|---|---|---|
+| `ssh hallu nvidia-smi \| head -5` | null | approve (composed: "ssh hallu" + "head") |
+| `python3 analyze.py \| grep -c error` | null | approve (composed) |
+| `uv run pytest \| tail -5` | null | approve (`build-test:uv run pytest`) |
+| `git switch -c feature/new-thing` (#962) | null | approve (`vcs-write:git switch`) |
+| `git commit -c abc123 -m redo` (#962) | null | approve (`vcs-write:git commit`) |
+| `git status \| head && git checkout main && git pull -q` (#996 s3) | null | approve |
+| `for p in ...; do printf ...; gh pr checks $p \| head; done` (#996 s4) | null | approve |
+| `while read l; do grep x $l; done < list.txt` | null | approve (`read-only:grep`) |
+| `git -c core.hooksPath=/tmp/evil commit` | null | null (positional veto holds) |
+| `ssh hallu $(cat secret)` | null | null (exec-primitive binds allow matches) |
+
+Curation: awk/find/tr/comm/paste/nl/rev + sort/tree/diff (the latter three WITH
+scoped `-o`/`--output` vetoes — `sort -o out in` stays null), printf/read
+neutral, git fetch (vcs-read), git pull (vcs-write). #999's grammar table was
+found already implemented; the composed allow+group pass was the actual
+remaining blocker for allow-only prefixes.

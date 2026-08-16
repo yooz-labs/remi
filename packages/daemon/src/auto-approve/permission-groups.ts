@@ -1575,10 +1575,16 @@ export const BUILTIN_GROUPS: Readonly<Record<string, PermissionGroup>> = {
       // pipe-to-shell entry, `find` via `EXEC_PRIMITIVE_TOKEN`'s
       // `-delete`/`-exec`/`-execdir`/`-ok`/`-okdir`/`-fprint*`/`-fls` entries
       // (both shell-safety.ts, consulted by `matchCoveredCommand`
-      // unconditionally). So, unlike `sort -o` (still excluded above: no such
-      // veto exists for it), the bare command name is safe to curate here.
+      // unconditionally). So the bare command name is safe to curate here.
       'awk',
       'find',
+      // `sort`/`tree`/`diff` are read transforms whose one write escape
+      // (`-o`/`--output`) is refused by their SCOPED_VETOES entries below --
+      // added together with the veto, never bare, because `sort -o out in`
+      // is a real file write the name alone cannot reveal.
+      'sort',
+      'tree',
+      'diff',
       // Pure text/stream transforms verified to carry no destination-writing
       // flag on either BSD or GNU builds: stdin/stdout (or their file
       // operands, read-only) only.
@@ -1811,6 +1817,17 @@ const SCOPED_VETOES: ReadonlyArray<{ family: RegExp; flag: RegExp }> = [
   { family: /^sed\b/, flag: /(^|\s)(-i|--in-place)/ },
   // `bun test --preload <file>` executes an arbitrary file before the suite.
   { family: /^bunx?\b/, flag: /(^|\s)--preload(\s|=|$)/ },
+  // `sort` is a pure stream transform except `-o`/`--output`, which writes
+  // the result to an arbitrary file. No read sort flag starts with `-o`, and
+  // the prefix form catches the attached spelling (`-ofile`) too.
+  { family: /^sort\b/, flag: /(^|\s)(-o|--output)/ },
+  // `tree -o filename` writes the listing to a file (no long form exists).
+  { family: /^tree\b/, flag: /(^|\s)-o/ },
+  // Neither BSD nor GNU diff has a `-o`/`--output` write flag today; this
+  // entry is defensive parity with `sort`/`tree` so a build that grows one
+  // (or a lookalike binary) stays refused, and the long-standing
+  // `diff ... -o /tmp/patch` adversarial pin keeps its null outcome.
+  { family: /^diff\b/, flag: /(^|\s)(-o|--output)/ },
 ];
 
 /** True if a family-scoped veto flag applies to this segment. */

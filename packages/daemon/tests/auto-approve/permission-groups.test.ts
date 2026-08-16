@@ -101,6 +101,12 @@ describe('permission-groups: read-only Bash (positive)', () => {
     ['rev file.txt', 'read-only:rev'],
     ["awk '{print $1}' file.txt", 'read-only:awk'],
     ['find . -name "*.ts"', 'read-only:find'],
+    // sort/tree/diff land WITH their SCOPED_VETOES `-o`/`--output` entries --
+    // never bare (sort -o is the module doc's canonical write-escape example).
+    ['ls | sort', 'read-only:ls'],
+    ['sort -u f.txt', 'read-only:sort'],
+    ['diff a.txt b.txt', 'read-only:diff'],
+    ['tree -L 2', 'read-only:tree'],
   ];
   for (const [cmd, expected] of cases) {
     test(cmd, () => expect(bash(cmd)).toBe(expected));
@@ -116,6 +122,14 @@ describe('#1057 phase 3 commit 3: awk/find are curated, their ambiguous forms ar
 
   test('awk system() is refused regardless of which prefix it matched', () => {
     expect(bash('awk \'BEGIN{system("rm -rf /")}\' f')).toBeNull();
+  });
+
+  test('sort attached -o spelling (-ohack) is refused by the scoped veto', () => {
+    expect(bash('sort -ohack in.txt')).toBeNull();
+  });
+
+  test('sort --output long form is refused', () => {
+    expect(bash('sort --output=out.txt in.txt')).toBeNull();
   });
 
   test('awk piping its own output into a shell is refused', () => {
