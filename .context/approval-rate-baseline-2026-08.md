@@ -223,8 +223,17 @@ through the real `evaluateDeterministic`, all on this branch:
 | `git -c core.hooksPath=/tmp/evil commit` | null | null (positional veto holds) |
 | `ssh hallu $(cat secret)` | null | null (exec-primitive binds allow matches) |
 
-Curation: awk/find/tr/comm/paste/nl/rev + sort/tree/diff (the latter three WITH
+Curation: find/tr/comm/paste/nl/rev + sort/tree/diff (the latter three WITH
 scoped `-o`/`--output` vetoes — `sort -o out in` stays null), printf/read
 neutral, git fetch (vcs-read), git pull (vcs-write). #999's grammar table was
 found already implemented; the composed allow+group pass was the actual
 remaining blocker for allow-only prefixes.
+
+**Correction (#1062, adversarial review of this branch):** `awk` was
+curated here on the mistaken belief that `EXEC_SCOPED_VETOES`'s
+system()/pipe-to-shell regex covered every dangerous awk program. It does
+not — awk is Turing-complete and the regex is raw-text pattern matching, not
+a parser — and the bypass was proven by execution (arbitrary command exec via
+`cmd | getline`, file write/read via `print > "path"` / `getline < "path"`
+entirely inside the program's own quoted string). `awk` was removed from
+`read-only` entirely; see `permission-groups.ts`'s comment at that list.

@@ -1566,17 +1566,34 @@ export const BUILTIN_GROUPS: Readonly<Record<string, PermissionGroup>> = {
       'mdfind',
       'du',
       'df',
-      // #1057 phase 3 commit 3: evidence-based additions from the #996/#999
-      // corpora. `awk` and `find` each have a read form flippable to code
-      // execution / deletion by a flag or program body this list cannot see
-      // by name alone -- but BOTH already have a veto that fires on exactly
-      // that shape for EVERY matched segment, regardless of which curated
-      // prefix matched it: `awk` via `EXEC_SCOPED_VETOES`'s system()/
-      // pipe-to-shell entry, `find` via `EXEC_PRIMITIVE_TOKEN`'s
-      // `-delete`/`-exec`/`-execdir`/`-ok`/`-okdir`/`-fprint*`/`-fls` entries
-      // (both shell-safety.ts, consulted by `matchCoveredCommand`
-      // unconditionally). So the bare command name is safe to curate here.
-      'awk',
+      // #1057 phase 3 commit 3: evidence-based addition from the #996/#999
+      // corpora. `find` has a read form flippable to deletion / arbitrary
+      // file-write by a flag this list cannot see by name alone -- but it
+      // has a veto that fires on exactly that shape for EVERY matched
+      // segment, regardless of which curated prefix matched it:
+      // `EXEC_PRIMITIVE_TOKEN`'s `-delete`/`-exec`/`-execdir`/`-ok`/`-okdir`/
+      // `-fprint*`/`-fls` entries (shell-safety.ts, consulted by
+      // `matchCoveredCommand` unconditionally) PLUS the mirrored spellings in
+      // `MUTATION_TOKEN` (below) that close the quote-splitting gap the raw
+      // `EXEC_PRIMITIVE_TOKEN` regex alone missed (#1062 C3: `find . -fprin"t"
+      // /tmp/x` unquotes to `-fprint` and was never checked against anything
+      // but the still-quoted raw text). So the bare command name is safe to
+      // curate here.
+      //
+      // `awk` is deliberately ABSENT (#1062 C1, CRITICAL RCE, adversarial
+      // review of this branch). It was curated on the same theory as `find`
+      // above -- that `EXEC_SCOPED_VETOES`'s system()/pipe-to-shell entry
+      // covers every dangerous shape -- and that theory is false: awk is
+      // Turing-complete, and the veto is a raw-text regex looking for
+      // `system(`/`| sh` literally in the program text. Proven bypasses that
+      // regex never sees: `cmd | getline r` (arbitrary command execution with
+      // no `system(` token at all), `print > "/path"` and `getline < "/path"`
+      // (file write/read entirely inside the program's own quoted string,
+      // invisible to a check that only looks for shell redirection), and
+      // trivial string-splicing of the literal token itself (`sys""tem(`).
+      // None of these can be curated by a better flag/pattern rule -- the
+      // program body is an arbitrary script, not an argument list -- so `awk`
+      // is refused unconditionally at every level, like `curl`/`wget`/`perl`.
       'find',
       // `sort`/`tree`/`diff` are read transforms whose one write escape
       // (`-o`/`--output`) is refused by their SCOPED_VETOES entries below --

