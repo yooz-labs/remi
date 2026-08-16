@@ -257,13 +257,33 @@ describe('hasShellControl - #1063 network-device input redirect', () => {
     expect(hasShellControl('head < ${x}/dev/udp/h/1')).toBe(true);
   });
 
-  test('ACCEPTED over-refusal: a variable input-redirect target escalates', () => {
-    // The fail-closed `$`-in-target rule cannot tell `< $LOG` from
-    // `< $x/dev/tcp/...`, so it refuses both. A `<`-redirect from a variable
-    // path is uncommon and escalate is the safe direction; the reverse was a
-    // live socket. NOTE: a `$` OUTSIDE the redirect target does not trigger it.
+  test('MUST VETO: brace expansion that materializes the device path', () => {
+    // The brace RANGE `{p..p}` collapses to `p` with NO `$`, so `/dev/tc{p..p}`
+    // opens the socket -- the transformation that defeated the $-only rule
+    // (#1063 sixth re-review). Any `{` in the target now fails closed.
+    expect(hasShellControl('cat < /dev/tc{p..p}/127.0.0.1/9')).toBe(true);
+    expect(hasShellControl('cat < /d{e..e}v/tcp/h/p')).toBe(true);
+    expect(hasShellControl('grep x < /dev/tc{p,p}/h/p')).toBe(true);
+  });
+
+  test('MUST NOT VETO: glob and tilde targets (cannot synthesize the device)', () => {
+    // `/dev/tcp` is virtual (no directory entry) so a glob never matches it,
+    // and `~` expands to a home dir -- neither can form the device path, so
+    // they stay approvable (no over-refusal beyond `$`/`{`).
+    expect(hasShellControl('cat < /dev/tc?/h/p')).toBe(false);
+    expect(hasShellControl('cat < /dev/tc[p]/h/p')).toBe(false);
+    expect(hasShellControl('cat < ~/notes.txt')).toBe(false);
+  });
+
+  test('ACCEPTED over-refusal: a variable or brace input-redirect target escalates', () => {
+    // The fail-closed rule cannot tell `< $LOG` / `< a{1,2}.txt` from a
+    // device-synthesizing expansion, so it refuses both toward escalate. A
+    // `<`-redirect from a variable or brace path is uncommon and escalate is
+    // the safe direction; the reverse was a live socket. A `$`/`{` OUTSIDE the
+    // redirect target does not trigger it.
     expect(hasShellControl('sort < $TMPFILE')).toBe(true);
     expect(hasShellControl('cat < $HOME/notes.txt')).toBe(true);
+    expect(hasShellControl('cat < a{1,2}.txt')).toBe(true);
   });
 
   test('MUST NOT VETO: a dollar-quote with NO input redirect present', () => {

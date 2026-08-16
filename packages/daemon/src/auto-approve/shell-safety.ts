@@ -775,19 +775,24 @@ export function hasShellControl(segment: string): boolean {
  * whitespace or `<` (a second glued redirect is its own operator, found in its
  * own pass).
  *
- * A target containing `$` FAILS CLOSED. bash processes a redirect target through
- * quote removal AND expansion (parameter `$x`/`${x}`, ANSI-C `$'\xNN'`, locale
- * `$"..."`, arithmetic `$((...))`), any of which can materialize `/dev/tcp/...`
- * from a literal that does not contain it -- `$x/dev/tcp/h/p`, `/dev/t${x}cp/h/p`
- * (empty `x`), `$'\x2fdev\x2ftcp...'` all open the socket. Five re-reviews chased
- * these one transformation at a time; the general truth is that a `$`-bearing
- * target is not statically resolvable, so it is refused (ADR 0010, err broad in
- * the deny direction). This over-refuses an ordinary variable target like
- * `< $LOG` / `< $HOME/notes.txt` toward escalate -- accepted; a `<`-redirect
- * from a variable path is uncommon, and the reverse was a live egress. A target
- * with NO `$` is a static literal: dequote `'`/`"`/`\` and match the device
- * prefix (command substitution `$(...)`/backtick and process substitution `<(`
- * are already refused by `hasShellControl` before this runs).
+ * A target that is not a STATIC LITERAL fails closed. bash processes a redirect
+ * target through brace expansion, tilde, parameter/arithmetic/command expansion,
+ * quote removal, then globbing -- and several of those can materialize
+ * `/dev/tcp/...` from a literal that does not contain the substring: `$x/dev/tcp`
+ * and `/dev/t${x}cp` (empty `x`), `$'\x2fdev\x2ftcp...'`, and the brace RANGE
+ * `/dev/tc{p..p}/...` (collapses to `/dev/tcp/...`, no `$` needed). Six
+ * re-reviews chased these one transformation at a time; the durable rule is to
+ * refuse anything not statically resolvable rather than enumerate what is
+ * dangerous. The two expansion families that can SYNTHESIZE the device path are
+ * `$` (all `$`-expansions) and `{` (brace) -- both refuse (ADR 0010, err broad).
+ * Glob (`*?[]`) and tilde cannot: `/dev/tcp` is a virtual path with no directory
+ * entry, so a glob never matches it, and `~` expands to a home dir, so those
+ * stay approvable. This over-refuses an ordinary variable/brace target like
+ * `< $LOG` / `< a{1,2}.txt` toward escalate -- accepted; the reverse was a live
+ * egress. A target with no `$`/`{` is dequoted of `'`/`"`/`\` (non-expanding,
+ * purely literal) and matched against the device prefix. Command substitution
+ * `$(...)`/backtick and process substitution `<(` are refused by `hasShellControl`
+ * before this runs.
  */
 function hasNetworkDeviceInputRedirect(segment: string, masked: string): boolean {
   for (let i = 0; i < masked.length; i++) {
@@ -803,8 +808,8 @@ function hasNetworkDeviceInputRedirect(segment: string, masked: string): boolean
     while (k < masked.length && masked[k] !== ' ' && masked[k] !== '\t' && masked[k] !== '<') k++;
     if (k === j) continue;
     const rawTarget = segment.slice(j, k);
-    // Any expansion in the target is unresolvable -> refuse (see doc).
-    if (rawTarget.includes('$')) return true;
+    // Any device-synthesizing expansion in the target is unresolvable -> refuse.
+    if (rawTarget.includes('$') || rawTarget.includes('{')) return true;
     const dequoted = rawTarget.replace(/['"\\]/g, '');
     if (NETWORK_DEV_PATH_RE.test(dequoted)) return true;
   }
