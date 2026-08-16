@@ -1371,17 +1371,22 @@ function onSubagentPassthrough(input: PermissionRequestHookInput): void {
  *
  * Two channels, deliberately asymmetric:
  *
- * - **Log, always, both sources.** Unconditional and NOT gated on
+ * - **Log, always, all three sources.** Unconditional and NOT gated on
  *   `log_decisions` — that flag governs the routine per-decision trace, and a
  *   refusal is not routine. Same reasoning as `onSubagentPassthrough` above:
  *   the push can fail or be throttled downstream, so the local record is what
  *   makes the decision auditable at all.
- * - **Push, `model-floor` only.** A `config` deny is the user's own standing
- *   rule in `config.toml` firing exactly as written; notifying them about it
- *   is telling them what they already decided. A `model-floor` deny is the
+ * - **Push, `model-floor` only** (the `!== 'model-floor'` early return below
+ *   covers both other kinds). A `config` deny is the user's own standing rule
+ *   in `config.toml` firing exactly as written; notifying them about it is
+ *   telling them what they already decided. A `model-floor` deny is the
  *   opposite — the model refused and `matchesCatastrophicPattern` happened to
  *   agree, which #997 measured going wrong 7 times in 8 on real traffic. That
- *   is the one nobody chose.
+ *   is the one nobody chose. A `residual` deny (#1045 phase 6) is what
+ *   `escalateMain` converts an escalation into under `residual_action =
+ *   "deny"` — the user opted INTO fewer pings via that setting, so, unlike
+ *   `model-floor`, telling them about each one would defeat the point; the
+ *   log line is still the audit trail.
  *
  * Fire-and-forget: the gate has already answered the hook, so this must never
  * delay or throw into it.
@@ -1876,6 +1881,10 @@ async function createNewSession(
         // native prompt immediately (the pre-0.6.12 behavior). 0 => no hold.
         holdTimeoutSec: autoApproveService ? remiConfig.auto_approve.hold_timeout : 0,
         pushHoldTimeoutSec: autoApproveService ? remiConfig.auto_approve.push_hold_timeout : 0,
+        // #1045 phase 6: NOT guarded on autoApproveService, unlike the two
+        // lines above -- the no-service edge is itself one of escalateMain's
+        // three call sites, so residual_action must apply there too.
+        residualAction: remiConfig.auto_approve.residual_action,
         // #603 Phase 1: gate a held hook on confirmed notification delivery. Same
         // AA-enabled guard as holdTimeoutSec — gating is only meaningful when the
         // gate can hold. The dispatcher records the per-question delivery outcome.

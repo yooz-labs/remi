@@ -83,6 +83,7 @@
  *     the single-agent mirror of the Stop reasoning above.
  */
 
+import { errorToString } from '@remi/shared';
 import type { Question, QuestionOption, UUID } from '@remi/shared';
 
 import type {
@@ -559,6 +560,18 @@ export interface AutoApproveGateDeps {
    *  open immediately (epic #603 Phase 1, D2 — hold-always-no-phone). <=0 (or
    *  absent) => fail open fast. From `auto_approve.hold_unconfirmed_timeout`. */
   holdUnconfirmedMs?: number;
+  /**
+   * What `escalateMain` does with a main-agent BINARY operation it cannot
+   * approve (#1045 phase 6). `'escalate'` (absent = default) holds/pushes as
+   * before, byte-for-byte; `'deny'` refuses with a reason instead of asking,
+   * so the agent self-corrects and the human is not pinged. Never consulted
+   * for a non-binary (multichoice / design / plan-mode) escalate — those
+   * always passthrough regardless of this setting — nor for a subagent's
+   * parked-render residue (ADR 0004), which has its own path and does not
+   * call `escalateMain` at all. From `auto_approve.residual_action`; see
+   * `ResidualAction`'s doc for the full semantics and the caveat on when
+   * `'deny'` is actually a good idea. */
+  residualAction?: 'escalate' | 'deny';
 }
 
 /** A held PermissionRequest hook awaiting a user answer (#573). The `resolve`
@@ -1300,15 +1313,42 @@ export class AutoApproveGate {
    * 'passthrough' immediately (Claude renders the native prompt and the pick is
    * delivered by the legacy PTY path / a later phase). Always main context — the
    * subagent escalate paths default-deny and never reach here.
+   *
+   * #1045 phase 6: when `residualAction === 'deny'` AND the escalation is
+   * BINARY, this refuses with a reason instead of asking — deliberately gated
+   * on `isBinaryEscalation`, not on the caller, because all three call sites
+   * (no-service edge, eval-error, primary escalate verdict) can carry a
+   * non-binary input (e.g. `ExitPlanMode`) straight into this method. A
+   * multi-choice / design escalate must stay a passthrough regardless of this
+   * setting, so the deny conversion sits in the SAME branch that would
+   * otherwise have held it, never in the passthrough branch. `reasoning` is
+   * required (unlike `summary`, still cosmetic) because it is what
+   * `buildDenyMessage` puts in front of Claude — the whole point of choosing
+   * `deny` over `escalate` is that the agent gets told why.
    */
   private escalateMain(
     input: PermissionRequestHookInput,
+    reasoning: string,
     summary?: string,
   ): Promise<PermissionDecision> {
-    if (this.isBinaryEscalation(input)) {
-      return this.escalateAndHold(input, summary);
+    if (!this.isBinaryEscalation(input)) {
+      return Promise.resolve(this.escalatePassthrough(input, summary));
     }
-    return Promise.resolve(this.escalatePassthrough(input, summary));
+    if (this.deps.residualAction === 'deny') {
+      // #1015: a residual-converted deny is exactly as invisible to the user
+      // as any other deny -- report it through the same sink so cli.ts logs
+      // it unconditionally, even though (unlike model-floor) it deliberately
+      // does not push. See DenySource's 'residual' doc for why.
+      this.reportDeny(input, {
+        decision: 'deny',
+        reasoning,
+        durationMs: 0,
+        model: '',
+        denySource: { kind: 'residual', pattern: '' },
+      });
+      return Promise.resolve({ behavior: 'deny', message: buildDenyMessage(reasoning) });
+    }
+    return this.escalateAndHold(input, summary);
   }
 
   /**
@@ -1506,7 +1546,7 @@ export class AutoApproveGate {
         );
         this.deps.resetSubagentContext?.();
       }
-      return this.escalateMain(input);
+      return this.escalateMain(input, 'auto-approve had no evaluation service for this operation');
     }
 
     // Everything below is MAIN-context by construction: the #807 early return
@@ -1577,7 +1617,7 @@ export class AutoApproveGate {
         );
         this.deps.resetSubagentContext?.();
       }
-      return this.escalateMain(input);
+      return this.escalateMain(input, `auto-approve evaluation failed: ${errorToString(err)}`);
     }
 
     if (result.decision === 'cancelled') {
@@ -1673,7 +1713,11 @@ export class AutoApproveGate {
     }
     // #628: result is the primary escalate verdict here (approve/deny/pick/cancelled
     // returned earlier), so carry its lock-screen summary onto the escalation.
-    return this.escalateMain(input, result.decision === 'escalate' ? result.summary : undefined);
+    return this.escalateMain(
+      input,
+      result.reasoning,
+      result.decision === 'escalate' ? result.summary : undefined,
+    );
   }
 
   // -------------------------------------------------------------------------

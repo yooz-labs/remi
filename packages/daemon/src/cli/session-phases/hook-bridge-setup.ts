@@ -200,6 +200,16 @@ export interface HookBridgeDeps {
    */
   pushHoldTimeoutSec?: number;
   /**
+   * What a main-agent BINARY escalation `escalateMain` cannot approve becomes:
+   * `'escalate'` (default) asks the user as before; `'deny'` refuses with a
+   * reason instead (#1045 phase 6). From `config.auto_approve.residual_action`.
+   * Absent => the gate's own default (`'escalate'`), unaffected by whether
+   * auto-approve is enabled — unlike `holdTimeoutSec`/`pushHoldTimeoutSec`,
+   * this is NOT guarded on `autoApproveService` existing, because the
+   * no-service edge is itself one of `escalateMain`'s three call sites.
+   */
+  residualAction?: 'escalate' | 'deny';
+  /**
    * Probe a held escalation's notification delivery outcome (epic #603 Phase 1).
    * Wired from this session's `NotificationDispatcher.awaitDelivery`. Lets the
    * gate fail a hold open fast when no notification reached the user instead of
@@ -832,6 +842,9 @@ export function setupHookBridge(
       alwaysEscalateTools: deps.alwaysEscalateTools ?? new Set<string>(),
       holdMs: (deps.holdTimeoutSec ?? 0) * 1000,
       pushHoldMs: (deps.pushHoldTimeoutSec ?? 0) * 1000,
+      // #1045 phase 6: escalate (default) vs deny-with-reason for a main-agent
+      // binary residual. No unit conversion needed, unlike the *Sec fields above.
+      residualAction: deps.residualAction ?? 'escalate',
       // #603 Phase 1: gate a held hook on confirmed notification delivery, so a
       // dead push channel fails open fast instead of stalling for holdMs.
       ...(deps.awaitDelivery ? { awaitDelivery: deps.awaitDelivery } : {}),
