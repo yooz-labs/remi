@@ -213,6 +213,18 @@ const INPUT_REDIRECT_PATH_RE = /^[A-Za-z0-9_./~-]+$/;
 const NETWORK_DEV_PATH_RE = /^\/dev\/(tcp|udp)\//;
 
 /**
+ * A single input-redirect operator and its target, for `hasShellControl`'s
+ * network-device egress check (#1063). Matches an optional leading fd number
+ * and one `<`, capturing the following target word. The lookbehind excludes
+ * the trailing `<` of `<<`/`<<<` (heredoc / here-string — neither opens a
+ * socket), and the lookahead excludes `<(` (process substitution, refused
+ * earlier). Deliberately scans anywhere (no whitespace anchor) so `cat</dev/...`
+ * without a space is still caught; the target is then filtered by
+ * `NETWORK_DEV_PATH_RE`, so an ordinary `< file` never triggers.
+ */
+const INPUT_REDIRECT_TARGET_RE = /(?<!<)\d*<(?![<(])\s*(\S+)/g;
+
+/**
  * One input-redirect clause inside a peeled residue: `< PATH` or `<<< WORD`
  * (a here-string). `<<<` is tried before the single-`<` alternative so a
  * here-string is never misread as a file redirect whose target happens to
@@ -730,6 +742,20 @@ export function hasShellControl(segment: string): boolean {
   // recognizes exactly the two safe shapes and refuses everything else.
   for (const clause of findRedirectClauses(masked)) {
     if (clause.target.kind !== 'discard' && clause.target.kind !== 'fd-dup') {
+      return true;
+    }
+  }
+  // Input redirection FROM a bash network device (`< /dev/tcp/host/port`,
+  // `N< /dev/udp/...`) opens an OUTBOUND socket -- an egress primitive a
+  // read-only prefix must never carry (#1063). `findRedirectClauses` models
+  // output redirects only, so ordinary `< file` input redirects are otherwise
+  // invisible here ON PURPOSE (they read, they neither run nor write, so
+  // `grep x < f` stays approvable). This narrows that only for the two device
+  // prefixes bash gives socket semantics; every other `< target` is untouched.
+  // `<<`/`<<<` (heredoc / here-string) do NOT open a socket and are excluded
+  // by the lookbehind/lookahead; `<(` (process substitution) already vetoed.
+  for (const match of masked.matchAll(INPUT_REDIRECT_TARGET_RE)) {
+    if (NETWORK_DEV_PATH_RE.test(match[1] ?? '')) {
       return true;
     }
   }

