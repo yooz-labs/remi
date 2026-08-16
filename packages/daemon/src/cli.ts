@@ -125,9 +125,6 @@ import { loadOrCreateAnswerKey } from './auth/answer-key.ts';
 import { Authenticator } from './auth/authenticator.ts';
 import { loadOrCreateCapabilityToken } from './auth/capability-token.ts';
 import { IdentityStore } from './auth/identity-store.ts';
-// #976 prerequisite: not re-exported from auto-approve/index.ts on purpose
-// (that barrel is being edited concurrently by other work on the same epic).
-import { deniedBody, deniedOperation, deniedTitle } from './auto-approve/deny-floor.ts';
 import {
   AutoApproveService,
   EngineHost,
@@ -172,6 +169,7 @@ import { buildHubQuestionCensus } from './cli/hub-question-census.ts';
 import type { LiveSessionsCollectResult } from './cli/live-sessions-watcher.ts';
 import { startLiveSessionsWatcher } from './cli/live-sessions-watcher.ts';
 import { endLogFileSession, startLogFileSession, writeToLog } from './cli/log-file.ts';
+import { handleAutoDenied } from './cli/on-auto-denied.ts';
 import { installProcessGuards } from './cli/process-guards.ts';
 import { PtyQuiescenceGate } from './cli/pty-quiescence-gate.ts';
 import { setupHookBridge } from './cli/session-phases/hook-bridge-setup.ts';
@@ -1396,27 +1394,33 @@ function onAutoDenied(
   source: DenySource,
   reasoning: string,
 ): void {
-  const op = deniedOperation(input.tool_name, input.tool_input, source.pattern);
-  const title = deniedTitle(op);
-  const body = deniedBody(op);
-  log(`[AutoDenied ${source.kind}] ${title} - ${body} (${reasoning})`);
-
-  if (source.kind !== 'model-floor') return;
-  if (deviceTokens.size === 0) return;
-  const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
-  for (const dt of deviceTokens.values()) {
-    // Deliberately no `category` / `options` / `questionId`: the operation is
-    // already refused and there is nothing for the user to answer. Same
-    // dismiss-only convention as the subagent alert above.
-    void sendPushTrigger(signalingUrl, dt.token, {
-      title,
-      body,
-      ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
-      kind: 'auto_denied',
-    }).catch((err) => {
-      logError('[AutoDenied] push failed:', err);
-    });
-  }
+  // Logic (log-always, push-only-for-model-floor) lives in the tested
+  // `handleAutoDenied`; this wrapper only supplies the daemon's real sink.
+  handleAutoDenied(
+    {
+      log,
+      pushToDevices: (title, body) => {
+        if (deviceTokens.size === 0) return;
+        const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
+        for (const dt of deviceTokens.values()) {
+          // Deliberately no `category` / `options` / `questionId`: the operation
+          // is already refused and there is nothing for the user to answer. Same
+          // dismiss-only convention as the subagent alert above.
+          void sendPushTrigger(signalingUrl, dt.token, {
+            title,
+            body,
+            ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
+            kind: 'auto_denied',
+          }).catch((err) => {
+            logError('[AutoDenied] push failed:', err);
+          });
+        }
+      },
+    },
+    input,
+    source,
+    reasoning,
+  );
 }
 
 // Daemon-wide turn-duration tracker (#914). Fed from HookServer's onAnyEvent

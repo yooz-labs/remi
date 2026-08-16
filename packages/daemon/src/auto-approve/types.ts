@@ -121,6 +121,16 @@ export type MultiChoiceMode = 'skip' | 'evaluate';
  *   the agent can self-correct or explicitly ask the user itself, and the
  *   human is not pinged for something auto-approve could not decide.
  *
+ * "Not pinged" is the fast-path truth, not an absolute: `deny` converts only
+ * the FINAL residual verdict, and Part B (`push_hold_timeout`, default 60s)
+ * fires FIRST. A binary eval that runs longer than that budget pushes + holds
+ * a real, answerable card (`maybePushOnSlowEval`) before `escalateMain` is
+ * ever reached, so a slow-to-decide operation still reaches the human even
+ * under `deny`. That is the safe direction — more visibility, not less, and
+ * never a silent deny — but it means `deny` suppresses the FAST residual
+ * pings, not every ping. Set `push_hold_timeout = 0` to disarm Part B if you
+ * want deny-mode to be fully quiet.
+ *
  * Fewer pings is a real win, but it trades on the gate's approval rate: deny
  * mode converts every wrongful escalation into a wrongful deny with no card
  * to catch it, where escalate mode would merely have interrupted the user
