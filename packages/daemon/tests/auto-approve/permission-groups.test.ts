@@ -6,6 +6,7 @@ import {
   matchGroups,
   matchGroupsBroad,
   matchReadOnlyCommand,
+  sedScriptShapeVeto,
 } from '../../src/auto-approve/permission-groups.ts';
 
 /** The READ groups. Kept as the default for `bash()` so every pre-#959 test
@@ -720,6 +721,21 @@ describe('#959 final pass: every write prefix is covered by a flag policy', () =
   // their flag policy inside `artifactCleanVeto` itself (an exact structural
   // allowlist) -- the probe asserts the same PROPERTY either way: an
   // unclassified flag is refused, wherever the policy lives.
+  //
+  // NOTE for the "sed -i" prefix specifically (review pass, #1061):
+  // `writeGroupVeto` is `hasUnsafeWriteFlag(...) || ... || sedScriptShapeVeto(...)`,
+  // and `hasUnsafeWriteFlag` runs FIRST, so for `sed -i -Zqx target` it is
+  // genuinely the flag axis that produces `null` here -- verified directly:
+  // `hasUnsafeWriteFlag('sed -i -Zqx target')` is `true` on its own, which
+  // short-circuits the `||` before `sedScriptShapeVeto` (which would ALSO
+  // refuse "target" as an invalid script) is ever called. What this specific
+  // generated case does NOT do is isolate which of the cluster's three
+  // letters (`Z`, `q`, `x`) is doing the work -- none of them is individually
+  // on sed's safe list, so a mutation that flipped only ONE of the three to
+  // "safe" would not flip this test's outcome. The dedicated `sed -i -Z
+  // 's/a/b/' f` / `sed -i -w 's/a/b/' f` cases in the "#1057 phase 2 commit
+  // 4" describe block below use a single unsafe letter against an otherwise
+  // VALID script, closing that gap.
   const WRITE_GROUP_NAMES = ['fs-write', 'vcs-write', 'artifact-clean'];
 
   for (const groupName of WRITE_GROUP_NAMES) {
@@ -1292,6 +1308,10 @@ describe('#1057 phase 2 commit 3: heredoc excision (group path only)', () => {
         'cat > x <<E$OF\nbody\nE$OF',
         'delimiter contains $: fails the plain-word shape, so no excision is attempted',
       ],
+      [
+        'cat > a.txt <<EOF\nfirst\nEOF\ncat > b.txt <<BAD!\nsecond\nBAD!',
+        'a VALID first heredoc followed by a second heredoc with an invalid delimiter (BAD! contains a non-word character): excision must abort for the WHOLE command and return it byte-for-byte -- pinning the `return command` path, not a partial reconstruction that keeps the first heredoc already excised',
+      ],
     ];
     for (const [cmd, why] of mustBeNull) {
       test(`${JSON.stringify(cmd)} — ${why}`, () => {
@@ -1366,7 +1386,22 @@ describe('#1057 phase 2 commit 4: sed -i script-shape allowlist', () => {
       ],
       [
         'sed --file=evil.sed -i f',
-        '--file loads an ARBITRARY external script, refused by the flag axis',
+        // #1061 review: relabeled. `matchPrefix` requires the curated prefix
+        // to be followed by a literal space (`sed -i `); this segment does
+        // not even START with that text (it starts `sed --file=`), so it is
+        // refused by PREFIX MISMATCH before `writeGroupVeto`/the flag axis is
+        // ever consulted -- not because `--file` was recognized and rejected.
+        // See `sed -i --file=evil.sed f` below for a spelling that actually
+        // reaches, and is refused by, the flag axis.
+        'refused by PREFIX MISMATCH (does not start with the curated "sed -i " prefix), not the flag axis',
+      ],
+      [
+        'sed -i --file=evil.sed f',
+        // This spelling DOES start with `sed -i `, so it reaches
+        // `writeGroupVeto`, where `--file=evil.sed` fails `hasUnsafeWriteFlag`
+        // ('file' is not in sed's `safeLongFlags`) and that check runs FIRST
+        // in the `||` chain -- genuinely the flag axis, not prefix mismatch.
+        '--file loads an ARBITRARY external script; this spelling reaches and is refused by the flag axis',
       ],
     ];
     for (const [cmd, why] of mustBeNull) {
@@ -1392,20 +1427,73 @@ describe('#1057 phase 2 commit 4: sed -i script-shape allowlist', () => {
     expect(bash("sed -i 's/a/b/' f", ALL)).toBeNull();
   });
 
-  test('the backup-suffix VALUE is checked independently of the destination axis', () => {
-    // A `*` or `/` in an ATTACHED suffix can redirect GNU sed's backup write
-    // to an arbitrary path (sed expands `*` to the target's own name and
-    // treats the result as a path) -- a bypass `segmentTouchesSensitivePath`
-    // cannot see, since the suffix is a flag VALUE, not the final file
-    // argument. Both refused before the script or destination is even reached.
+  test('the backup-suffix VALUE, reached through the FULL group path, is null via PREFIX MISMATCH', () => {
+    // #1061 review: relabeled -- this used to claim the destination-axis
+    // check on the suffix was what refused these. It is not, TODAY: an
+    // attached `-i'...'` (no space before the quote) does not start with the
+    // curated `sed -i ` prefix any more than `sed -i.bak` does (same
+    // `matchPrefix` residual), so `writeGroupVeto` -- and the suffix check
+    // inside `sedScriptShapeVeto` these commands were meant to exercise -- is
+    // never reached at all. Both commands really are null, just for a
+    // different reason than this test's own name used to say. See the
+    // "documented residual" block below for the general case, and the
+    // "backup-suffix VALUE, reached directly" block below for tests that
+    // actually reach and exercise the suffix check.
     expect(bash("sed -i'*/tmp/../../etc/cron.d/evil' 's/a/b/' f", WRITE_GROUPS)).toBeNull();
     expect(bash("sed -i'../../../etc/passwd' 's/a/b/' f", WRITE_GROUPS)).toBeNull();
+  });
+
+  describe('backup-suffix VALUE, reached directly: defense-in-depth for the ADR 0026 residual', () => {
+    // The two branches these tests exercise (permission-groups.ts,
+    // `sedScriptShapeVeto`'s `-i<suffix>` and `--in-place=<suffix>` checks)
+    // are UNREACHABLE through `matchGroups`/`bash()` today for the reason the
+    // test above and the "documented residual" block below both demonstrate:
+    // `matchPrefix` requires a literal space after `sed -i`, which neither
+    // attached spelling has. Calling the exported veto function directly
+    // (mirrors `MUTATION_TOKEN`'s "exported for tests ONLY" convention)
+    // bypasses that prefix-matching layer entirely, so these ARE genuine
+    // direct exercises of the suffix check, kept as defense-in-depth for the
+    // day attached-suffix prefix matching is added.
+    test("-i'<suffix>' containing a path separator and a glob is vetoed", () => {
+      expect(sedScriptShapeVeto("sed -i'*/tmp/../../etc/cron.d/evil' 's/a/b/' f")).toBe(true);
+    });
+    test('--in-place=<suffix> containing an ascent is vetoed', () => {
+      expect(sedScriptShapeVeto("sed --in-place=../../../etc/passwd 's/a/b/' f")).toBe(true);
+    });
+    test('an ordinary attached suffix (no separator or glob) is NOT vetoed by this check', () => {
+      expect(sedScriptShapeVeto("sed -i.bak 's/a/b/' f")).toBe(false);
+    });
   });
 
   test('#959 final pass invariant: sed -i -Zqx is refused by the flag axis', () => {
     // Pinned directly here too (in addition to the machine-checked walk over
     // BUILTIN_GROUPS above): an unclassified flag must be refused.
     expect(bash('sed -i -Zqx target', WRITE_GROUPS)).toBeNull();
+  });
+
+  describe('#1061: the sed FLAG_POLICY, pinned on a VALID script (isolates the flag axis)', () => {
+    // `sed -i -Zqx target` (above, and in the machine-checked walk) bundles
+    // THREE unsafe letters against an INVALID script, so it does not isolate
+    // any one letter, and -- since `hasUnsafeWriteFlag` runs first in
+    // `writeGroupVeto`'s `||` chain and short-circuits -- it never even
+    // reaches `sedScriptShapeVeto` to find out the script was invalid too.
+    // These two use a SINGLE unsafe flag against an otherwise-valid `s///`
+    // script, which is the only shape that actually distinguishes "the flag
+    // axis caught this" from "the script-shape veto would have caught it
+    // anyway".
+    test("sed -i -Z 's/a/b/' f", () =>
+      expect(bash("sed -i -Z 's/a/b/' f", WRITE_GROUPS)).toBeNull());
+    test("sed -i -w 's/a/b/' f", () =>
+      expect(bash("sed -i -w 's/a/b/' f", WRITE_GROUPS)).toBeNull());
+  });
+
+  test("sed -i 's;a;b;g' f — ; used AS THE DELIMITER is refused conservatively", () => {
+    // The `;`-inclusion check's unique observable effect (see
+    // `sedScriptShapeOk`'s doc comment): this script otherwise has exactly 4
+    // fields and a valid trailing class ('g'), so it would PASS the
+    // field-count and trailing-class checks on their own. It is refused only
+    // because `;` is refused outright, regardless of role.
+    expect(bash("sed -i 's;a;b;g' f", WRITE_GROUPS)).toBeNull();
   });
 
   describe('documented residual: matchPrefix cannot see an ATTACHED -i suffix', () => {

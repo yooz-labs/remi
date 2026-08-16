@@ -156,10 +156,21 @@ function splitOnUnescapedDelimiter(text: string, d: string): string[] {
  * `1,5s///`) and a brace block both fail the leading-letter check below (the
  * first character is not literally `s`/`y`); a trailing side-command
  * (`w file`, `W`, `e`, `r`, `R`) fails the `y`'s empty-trailer or the `s`'s
- * `[gIp0-9]*` check; a `;`-chained second command is refused outright,
- * rather than trusted to the shape checks alone, because it is the one
- * adversary this function must make trivially auditable: this script
- * contains no `;`, full stop.
+ * `[gIp0-9]*` check.
+ *
+ * The explicit `;`-inclusion check is NOT what catches a `;`-chained second
+ * command appended after the closing delimiter — the field-count and
+ * trailing-class checks already do, on their own: appending `; rm -rf /` (or
+ * any other chained command) after a real `s///`/`y///` script inserts an
+ * extra unescaped delimiter-free field, so `splitOnUnescapedDelimiter` no
+ * longer returns exactly 4 fields and the shape fails regardless. What the
+ * `;` check's own presence UNIQUELY refuses is `;` used AS THE DELIMITER
+ * itself (`s;a;b;g`) — a shape that genuinely passes the field-count and
+ * trailing-class checks on its own (4 fields, trailing `g`) and is refused
+ * ONLY because this line runs first. It is kept, conservative, for a second
+ * reason beyond that one refusal: it makes "this script contains no chained
+ * command" a property auditable by reading ONE line, rather than by trusting
+ * the delimiter-counting math above to have no adversarial case left in it.
  */
 function sedScriptShapeOk(script: string): boolean {
   if (script.includes(';')) return false;
@@ -187,8 +198,31 @@ function sedScriptShapeOk(script: string): boolean {
  * target's own name and treats the result as a path), which is a
  * destination-axis bypass `segmentTouchesSensitivePath` never sees — the
  * suffix is a flag VALUE, not the command's final file argument.
+ *
+ * BOTH branches below that check this suffix (the attached `-i<suffix>` form
+ * and `--in-place=<suffix>`) are UNREACHABLE through the actual group-match
+ * path today, probe-verified: `matchPrefix` (shell-safety.ts) requires the
+ * curated `sed -i` prefix to be followed by a literal SPACE
+ * (`segment.startsWith('sed -i ')`), which neither attached spelling
+ * satisfies — an attached, glob-carrying `-i` suffix quoted directly onto the
+ * flag does not start with `sed -i ` (the character right after `-i` is a
+ * quote, not a space), and `sed --in-place=... ...` does not start with
+ * `sed -i ` at all. Both fall
+ * through UNMATCHED before this function, or any veto, is ever reached — see
+ * the "documented residual" test block and the residuals comment above
+ * `sedScriptShapeVeto`'s call site for the same limit stated from the
+ * `matchPrefix` side. The branches are kept anyway, as defense-in-depth for
+ * the day attached-suffix prefix matching is added (the ADR 0026 residual):
+ * removing them now would silently reopen this exact bypass the moment that
+ * prefix-matching gap closes. Reached directly by calling this exported
+ * function with a crafted segment in tests, since the group path cannot
+ * reach them today.
+ *
+ * Exported for tests ONLY (mirrors `MUTATION_TOKEN`'s convention above): the
+ * two branches this comment describes have no OTHER way to be exercised
+ * while `matchPrefix`'s space requirement stands.
  */
-function sedScriptShapeVeto(segment: string): boolean {
+export function sedScriptShapeVeto(segment: string): boolean {
   if (!/^sed\b/.test(segment)) return false;
   const words = shellWords(segment);
   const hasScriptFlag = words.some(
