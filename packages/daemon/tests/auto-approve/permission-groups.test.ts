@@ -2012,17 +2012,41 @@ describe('#1057 phase 3 commit 1: matchComposedCommand', () => {
     });
   });
 
-  describe('ADR 0026 pre-passes are gated on GROUP membership only, never allow', () => {
+  describe('ADR 0026 pre-passes never run on this path at all (#1062 C5, CONFIRMED RCE-adjacent bypass)', () => {
     test('no fs-write group: the redirect stays and hasShellControl refuses, even though allow covers python3', () => {
       expect(
         matchComposedCommand('python3 gen.py > out.txt', ['python3'], ['read-only']),
       ).toBeNull();
     });
 
-    test('fs-write active: the grant proves the target, python3 covers via allow -- correct composition', () => {
+    // Was: {allowHit: 'python3', groupHit: null} -- APPROVED, before #1062. The
+    // `fs-write` redirect-grant pre-pass used to run over the WHOLE command
+    // before per-segment judgment, deleting `> out.txt` from an ALLOW-owned
+    // segment (`python3 gen.py`) that `matchAllowPattern` alone refuses outright
+    // (`hasShellControl` sees the live, non-`/dev/null` redirect). Proven by
+    // execution as a real bypass: `python3 evil.py > out.txt && ls` approved
+    // with `python3` allow-listed for read-only use and `fs-write` merely
+    // ENABLED (not even naming `python3`). `matchComposedCommand` no longer
+    // runs the pre-pass in this path at all -- see its function doc -- so an
+    // allow-owned segment now gets exactly `matchAllowPattern`'s raw treatment,
+    // and this composition (which needs the pre-pass AND the allow prefix
+    // together) fails closed instead of approving. `fs-write` alone, with no
+    // allow entry, still gets its redirect grant via `matchGroups` (the
+    // pure-group path) -- see `permission-groups.test.ts`'s fs-write section.
+    test('fs-write active: allow-owned segment still gets no redirect grant -- fails closed (#1062 C5)', () => {
       expect(
         matchComposedCommand('python3 gen.py > out.txt', ['python3'], ['read-only', 'fs-write']),
-      ).toEqual({ allowHit: 'python3', groupHit: null });
+      ).toBeNull();
+    });
+
+    test('heredoc excision does not run here either: allow-owned heredoc body is not made invisible', () => {
+      expect(
+        matchComposedCommand(
+          'ssh hallu bash <<EOF\nrm -rf /\nEOF\nls',
+          ['ssh hallu'],
+          ['read-only'],
+        ),
+      ).toBeNull();
     });
   });
 });

@@ -2162,25 +2162,52 @@ export interface ComposedMatch {
  * segment it matches:
  *
  *   - A segment whose matched prefix is owned ONLY by `allow` gets exactly
- *     `matchAllowPattern`'s treatment — no group veto is layered on top. The
- *     exec-primitive rule (`hasExecPrimitive(seg) && !hasExecPrimitive(hit)`)
- *     still applies, because `matchCoveredCommand` runs it unconditionally
- *     after any `vetoForMatched` verdict, allow included.
+ *     `matchAllowPattern`'s treatment — no group veto is layered on top, and
+ *     (as of #1062 C5, below) no ADR 0026 pre-pass rewrites the text it is
+ *     judged against either. The exec-primitive rule
+ *     (`hasExecPrimitive(seg) && !hasExecPrimitive(hit)`) still applies,
+ *     because `matchCoveredCommand` runs it unconditionally after any
+ *     `vetoForMatched` verdict, allow included.
  *   - A segment whose matched prefix is owned by a GROUP gets `matchGroups`'s
  *     own `vetoedByOwnerFor` dispatch, unchanged (sensitive-path conjunct,
- *     `segmentVeto`, the scratch/artifact-clean per-index state walks).
+ *     `segmentVeto`, the scratch/artifact-clean per-index state walks) —
+ *     MINUS the redirect-grant pre-pass, per the note below.
  *   - A prefix owned by BOTH sources approves the segment when EITHER
  *     source's veto passes — the same first-passing-owner disjunction
  *     `matchGroups` already uses across multiple group owners, with "allow"
  *     simply added as one more candidate owner.
  *
- * The ADR 0026 pre-passes (heredoc excision, redirect grants) run exactly as
- * they do in `matchGroups`: heredoc excision unconditionally, redirect grants
- * gated on `scratch`/`fs-write` GROUP membership only. Allow membership never
- * extends that gate — `allow = ["python3"]` with no `fs-write` group must NOT
- * make a redirect grant available that group membership alone would not have
- * granted; see the paired test for the positive case (both active, and the
- * grant composes with an allow-covered head).
+ * This function does NOT run the ADR 0026 pre-passes (heredoc excision,
+ * `sanitizeCommandForRedirectGrants`) that `matchGroups` runs, and that is a
+ * DELIBERATE divergence from `matchGroups`, not an oversight to bring back in
+ * line. Those two pre-passes DELETE syntax (a redirect clause, a heredoc
+ * body) from the whole command text before per-segment judgment ever begins
+ * — they are a GROUP-ONLY feature (ADR 0026: the grant is earned by group
+ * membership, e.g. `fs-write`/`scratch`), and running them here applied that
+ * deletion to EVERY segment regardless of which source owns it, allow
+ * included. That was #1062's C5, a CONFIRMED bypass proven by execution:
+ * `python3 evil.py > out.txt && ls` (allow=["python3"], groups=["read-only",
+ * "fs-write"]) approved, because the `> out.txt` redirect was deleted by the
+ * `fs-write` grant before `python3 evil.py` — an ALLOW-owned segment — was
+ * ever handed to `hasShellControl`. `matchAllowPattern` alone refuses that
+ * exact segment (`hasShellControl` sees the live `>` and vetoes the whole
+ * command), so the composed pass was granting `allow` a capability
+ * `matchAllowPattern` itself does not have. Same story for a heredoc body
+ * on an allow-owned head (`ssh hallu bash <<EOF\n...\nEOF`): excision made
+ * the body invisible to judgment entirely.
+ *
+ * `matchGroups` (the pure-group path, called by `evaluateDeterministic`
+ * BEFORE this function) still runs both pre-passes exactly as before — a
+ * command whose ONLY qualifying segments are group-owned, and that NEEDS a
+ * redirect grant or heredoc excision to pass, already matched there and
+ * never reaches this function at all. The consequence is narrow and
+ * accepted: a chain that genuinely needs BOTH a group redirect grant AND an
+ * allow-owned prefix in the SAME command (`cat a > notes.md && ssh hallu x`,
+ * group redirect grant on the first segment, allow prefix on the second) now
+ * fails closed here and escalates, where before it silently approved. No
+ * group's redirect grant was ever scoped to interact with the allow list, so
+ * losing that composition is the same shape of loss as any other
+ * over-cautious escalation, not a missing feature.
  */
 export function matchComposedCommand(
   command: string,
@@ -2196,19 +2223,12 @@ export function matchComposedCommand(
   const known = groupNames.filter(isKnownGroup);
   if (commandAllowPrefixes.length === 0 && known.length === 0) return null;
 
-  // Same pre-passes as `matchGroups`, same gating (group membership only --
-  // see the function doc for why allow membership must never extend it).
-  const heredocExcised = exciseHeredocsForGroups(trimmed);
-  const scratchActive = known.includes('scratch');
-  const fsWriteActive = known.includes('fs-write');
-  const redirectGrants =
-    scratchActive || fsWriteActive
-      ? sanitizeCommandForRedirectGrants(heredocExcised, { scratchActive, fsWriteActive })
-      : null;
-  const sanitized = redirectGrants?.command ?? heredocExcised;
-  const artifactPoison = known.includes('artifact-clean')
-    ? artifactCleanPoisonWalk(sanitized)
-    : null;
+  // No heredoc-excision / redirect-grant pre-pass here — see the function
+  // doc's #1062 C5 note for why this path evaluates the RAW command, unlike
+  // `matchGroups`. `artifactCleanPoisonWalk` is still run, over the SAME
+  // `trimmed` text `matchCoveredCommand` below receives, so the two agree by
+  // segment index exactly as `matchGroups` requires of its own pre-pass.
+  const artifactPoison = known.includes('artifact-clean') ? artifactCleanPoisonWalk(trimmed) : null;
 
   // Map each prefix to every owning source, in request order, `allow` first.
   // A prefix present in both an allow entry and a group's command list keeps
@@ -2228,11 +2248,15 @@ export function matchComposedCommand(
     }
   }
 
-  const groupVeto = vetoedByOwnerFor(redirectGrants, artifactPoison);
+  // `redirectGrants` is always null on this path (no pre-pass ran), so
+  // `scratch`'s owner-check below falls back to `scratchTargetVeto`'s
+  // no-tracked-directory case for every segment -- fails closed, same
+  // direction as the heredoc/redirect loss documented above.
+  const groupVeto = vetoedByOwnerFor(null, artifactPoison);
   let allowHit: string | null = null;
   let groupHit: string | null = null;
   const hit = matchCoveredCommand(
-    sanitized,
+    trimmed,
     [...prefixOwners.keys()],
     readSegmentVeto,
     (segment, matchedPrefix, index) => {
