@@ -124,6 +124,27 @@ describe('#1057 phase 3 commit 3: find is curated, its ambiguous forms are still
     expect(bash('sort --output=out.txt in.txt')).toBeNull();
   });
 
+  // Prefix ABBREVIATIONS (epic-wide review, 2026-08-16): GNU sort accepts
+  // `--out`/`--outp`/… as unambiguous abbreviations of `--output` and writes
+  // the file — a live arbitrary-write bypass past the old exact `--output`
+  // regex. `read-only` is active at every level, so this was broadly reachable.
+  test.each([
+    ['sort --out abbrev', 'sort --out=out.txt in.txt'],
+    ['sort --outp abbrev', 'sort --outp=~/.zshrc in.txt'],
+  ])('%s is refused', (_label, cmd) => {
+    expect(bash(cmd)).toBeNull();
+  });
+
+  // Positive controls: safe sort long flags that merely are NOT prefixes of
+  // `output` must stay COVERED — the abbreviation match is one-way, so it does
+  // not over-veto (`output`.startsWith('stable') is false).
+  test.each([
+    ['sort --stable', 'sort --stable in.txt'],
+    ['sort --reverse', 'sort --reverse in.txt'],
+  ])('%s stays covered (not over-vetoed)', (_label, cmd) => {
+    expect(bash(cmd)).toBe('read-only:sort');
+  });
+
   test('find -delete is refused', () => {
     expect(bash('find . -delete')).toBeNull();
   });
@@ -257,6 +278,15 @@ describe('#1062 C4 (CRITICAL RCE): git remote-exec flags on git fetch (vcs-read)
     ['--upload-pack= after a remote URL', 'git fetch ssh://h/r --upload-pack=/tmp/e'],
     ['--exec=', 'git fetch --exec=/tmp/evil origin'],
     ['--receive-pack=', 'git fetch --receive-pack=x r'],
+    // Prefix ABBREVIATIONS (epic-wide review, 2026-08-16): git resolves an
+    // unambiguous abbreviation to the full flag and runs it identically
+    // (`git fetch --upl` errors with "option `upload-pack' requires a value").
+    // The old exact-spelling regex walked straight past these — a live RCE
+    // bypass. Now caught by `hasDangerousLongFlagAbbrev`.
+    ['--upl= (upload-pack abbrev)', 'git fetch --upl=/tmp/evil.sh /tmp/repo'],
+    ['--upload-pac= (upload-pack abbrev)', 'git fetch --upload-pac=/tmp/evil /tmp/repo'],
+    ['--ex= (exec abbrev)', 'git fetch --ex=/tmp/evil origin'],
+    ['--receive-pac= (receive-pack abbrev)', 'git fetch --receive-pac=x r'],
   ];
   for (const [label, cmd] of bypasses) {
     test(`${label}: null`, () => expect(matchGroups('Bash', { command: cmd }, STRICT)).toBeNull());

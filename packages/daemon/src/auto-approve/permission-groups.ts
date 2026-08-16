@@ -1846,14 +1846,30 @@ export function knownGroupNames(): string[] {
  * write or code-execution, but whose flag letter is overloaded (it reads for
  * other commands), so it cannot live in the global MUTATION_TOKEN.
  */
-const SCOPED_VETOES: ReadonlyArray<{ family: RegExp; flag: RegExp }> = [
+/**
+ * A family-scoped read-side veto. `flag` (a regex) catches SHORT-option
+ * spellings — bundled clusters like `sort -ro`, `sed -i.bak` — where the raw
+ * text is the right unit. `longFlags` catches `--long` spellings the
+ * ABBREVIATION-AWARE way (see `hasDangerousLongFlagAbbrev`): a raw regex over
+ * `--output` walks straight past `--out`, which GNU/git accept and execute
+ * identically (verified: `git fetch --upl` errors with "option `upload-pack'
+ * requires a value" — it resolved the abbreviation). An exact-spelling long
+ * regex here was a real RCE / arbitrary-write bypass (found in epic-wide
+ * review, 2026-08-16): `git fetch --upl=/tmp/evil.sh` and `sort --out=~/.zshrc`
+ * both sailed past the `--upload-pack` / `--output` regexes.
+ */
+const SCOPED_VETOES: ReadonlyArray<{
+  family: RegExp;
+  flag?: RegExp;
+  longFlags?: readonly string[];
+}> = [
   // `sed -n` is read; `sed -n -i`/`--in-place` rewrites the file. The suffix
   // can attach directly (`-i.bak`), so match any `-i` token (no read sed flag
   // starts with `-i`). `-i` is case-insensitive for grep, so it cannot be a
   // global mutation token — this veto is scoped to sed.
-  { family: /^sed\b/, flag: /(^|\s)(-i|--in-place)/ },
+  { family: /^sed\b/, flag: /(^|\s)-i/, longFlags: ['in-place'] },
   // `bun test --preload <file>` executes an arbitrary file before the suite.
-  { family: /^bunx?\b/, flag: /(^|\s)--preload(\s|=|$)/ },
+  { family: /^bunx?\b/, longFlags: ['preload'] },
   // `sort` is a pure stream transform except `-o`/`--output`, which writes
   // the result to an arbitrary file. Neither BSD nor GNU `sort` has any OTHER
   // short flag containing the letter `o` (`-b -c -C -d -f -g -i -k -m -M -n
@@ -1869,9 +1885,10 @@ const SCOPED_VETOES: ReadonlyArray<{ family: RegExp; flag: RegExp }> = [
   // another `-` (the second dash of a long flag) breaks `[A-Za-z]*`'s
   // required all-letters run at that starting position, and starting the
   // match at the SECOND dash instead fails the `(^|\s)` boundary (it is
-  // preceded by the first dash, not whitespace/start) — hence the explicit
-  // `--output` alternative alongside it.
-  { family: /^sort\b/, flag: /(^|\s)-[A-Za-z]*o|(^|\s)--output/ },
+  // preceded by the first dash, not whitespace/start). The `--output` long
+  // form (and its abbreviations `--out`/`--outp`/…) is handled by `longFlags`
+  // below, not this regex — see `hasDangerousLongFlagAbbrev`.
+  { family: /^sort\b/, flag: /(^|\s)-[A-Za-z]*o/, longFlags: ['output'] },
   // `tree -o filename` writes the listing to a file (no long form exists).
   // Same bundled-cluster reasoning as `sort` above: no other `tree` short
   // flag contains `o` (`-a -d -f -i -L -n ...`), so `tree -no out.txt`
@@ -1885,7 +1902,7 @@ const SCOPED_VETOES: ReadonlyArray<{ family: RegExp; flag: RegExp }> = [
   // not curated bare here — it is excluded from `read-only` entirely, see
   // that list's comment — so the narrower word-boundary form is left as-is;
   // widening it costs nothing today but buys no proven case either).
-  { family: /^diff\b/, flag: /(^|\s)(-o|--output)/ },
+  { family: /^diff\b/, flag: /(^|\s)-o/, longFlags: ['output'] },
   // `git fetch --upload-pack=/tmp/evil.sh <repo>` runs `/tmp/evil.sh` LOCALLY
   // instead of the real `git-upload-pack` on the far end (proven by
   // execution, #1062 C4, CRITICAL RCE) — `git`'s own manual documents this
@@ -1900,7 +1917,10 @@ const SCOPED_VETOES: ReadonlyArray<{ family: RegExp; flag: RegExp }> = [
   // change), so this entry closes the matching gap on the READ side, where
   // `git fetch` sits in `vcs-read` with no `segmentVeto` of its own and
   // therefore falls through to this module's default `readSegmentVeto` /
-  // `hasScopedVeto`.
+  // `hasScopedVeto`. Matched via `longFlags` (abbreviation-aware), NOT an
+  // exact regex: `git fetch --upl=/tmp/evil.sh` resolves to `--upload-pack`
+  // and executes identically, and the original exact `--upload-pack` regex
+  // let it through — a live RCE found in the epic-wide review (2026-08-16).
   //
   // Known, deliberately UNFIXED residuals of the same remote-exec family
   // (documented per review instruction, not silently left as an assumed
@@ -1915,13 +1935,49 @@ const SCOPED_VETOES: ReadonlyArray<{ family: RegExp; flag: RegExp }> = [
   //   - `--config-env=` is not matched by this veto at all; it is inert on
   //     its own without a second, matching environment-variable segment
   //     already present, and adding that detection is out of scope here.
-  { family: /^git\b/, flag: /(^|\s)(--upload-pack|--receive-pack|--exec)(\s|=)/ },
+  { family: /^git\b/, longFlags: ['upload-pack', 'receive-pack', 'exec'] },
 ];
 
-/** True if a family-scoped veto flag applies to this segment. */
+/**
+ * True if `segment` carries a long flag (`--name[=value]`) that is a prefix
+ * ABBREVIATION of any `dangerous` name. GNU/git resolve unambiguous prefix
+ * abbreviations to the full flag and execute them identically, so an
+ * exact-spelling regex misses them (verified: `git fetch --upl` → "option
+ * `upload-pack' requires a value"; `sort --out=x in` writes `x`).
+ *
+ * The match is the ABBREVIATION direction ONLY — `dangerous.startsWith(name)`
+ * — deliberately NOT `write-flag-safety.ts`'s two-way `longFlagMatches`. The
+ * write side must ALSO catch extensions (`--force-with-lease` via `--force`);
+ * the read side must NOT, because a longer SAFE flag can share a dangerous
+ * prefix: `git --exec-path` (prints git's exec path, harmless) must survive
+ * even though `--exec` is a fetch RCE alias — and `'exec'.startsWith('exec-path')`
+ * is false while the two-way `'exec-path'.startsWith('exec')` is true. One-way
+ * keeps `--exec-path` while still refusing `--exec`, `--ex`, `--exe`.
+ *
+ * This over-refuses AMBIGUOUS abbreviations (`git fetch --rec`, which git
+ * itself rejects as ambiguous) — a false veto is an escalation, the safe
+ * direction; a missed veto is a command that ran. Same allowlist-what-is-safe,
+ * fail-closed discipline as `write-flag-safety.ts` and ADR 0018.
+ */
+function hasDangerousLongFlagAbbrev(segment: string, dangerous: readonly string[]): boolean {
+  for (const token of shellWords(segment)) {
+    if (!token.startsWith('--') || token === '--') continue;
+    const name = token.slice(2).split('=', 1)[0] ?? '';
+    if (name === '') continue;
+    for (const d of dangerous) {
+      if (d.startsWith(name)) return true;
+    }
+  }
+  return false;
+}
+
+/** True if a family-scoped veto (short-flag regex OR long-flag abbreviation)
+ *  applies to this segment. */
 function hasScopedVeto(segment: string): boolean {
-  for (const { family, flag } of SCOPED_VETOES) {
-    if (family.test(segment) && flag.test(segment)) return true;
+  for (const { family, flag, longFlags } of SCOPED_VETOES) {
+    if (!family.test(segment)) continue;
+    if (flag?.test(segment)) return true;
+    if (longFlags !== undefined && hasDangerousLongFlagAbbrev(segment, longFlags)) return true;
   }
   return false;
 }
