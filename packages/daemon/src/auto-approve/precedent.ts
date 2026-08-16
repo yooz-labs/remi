@@ -354,16 +354,38 @@ const TRUNCATION_MARKER = '...';
  * flag it, reopening the truncation-collision vulnerability this function
  * exists to close. A floor keeps catching it. The cost is symmetrical with
  * the heuristic already accepted below (a longer genuine value that happens
- * to end in the marker is also refused) — both failure directions land on
- * "missed precedent," the safe one, never "false match."
+ * to end in the marker is also refused) — both land on "missed precedent,"
+ * never on a "false match" (the direction this function guards). "Missed
+ * precedent" is the safe direction for an APPROVE but weakens the stop rule
+ * for a DENY; see the approve/deny split under the heuristic note below
+ * (#1067).
  *
  * This is a heuristic, not a certainty: a genuine, untruncated value that
  * happens to be at least 120 characters and end in `...` (e.g. a command
  * that legitimately prints `"loading..."`) would also match and be refused.
- * That false positive costs a missed precedent — the safe direction, not
- * the dangerous one — so no attempt is made to distinguish it from a real
- * truncation; the alternative (treating it as untruncated) risks the exact
- * false-match this function exists to prevent.
+ * No attempt is made to distinguish it from a real truncation; the
+ * alternative (treating it as untruncated) risks the exact false-match this
+ * function exists to prevent.
+ *
+ * That false positive is NOT symmetric across the two record decisions, and
+ * the older "missed precedent — the safe direction" framing understated one
+ * half (adversarial review, 2026-08-16). Post-#990 the normal record/consult
+ * path never produces a truly truncated signature, so on that path this
+ * check only ever fires as a false positive; what it costs then depends on
+ * the decision:
+ *   - APPROVE (record or match): the operation is not auto-approved by
+ *     precedent and is simply re-asked. Fail-closed — the safe direction.
+ *   - DENY: a human "no" is not persisted as a stop rule (`record()` drops
+ *     it, and `findDeniedPrecedent` would skip it as a query), so a later
+ *     model `approve` of the identical operation stands instead of being
+ *     escalated back — the deny stop rule is silently weakened, the
+ *     LESS-safe direction. It never manufactures a false approve on its own
+ *     (the model still evaluates), and this is not a #990 regression
+ *     (pre-#990 dropped EVERY >120-char denial; #990 shrinks it to only
+ *     `...`-ending ones) — but it is a real gap, tracked as #1067. The
+ *     record-side refusal is kept unchanged here: removing it for denials
+ *     needs the deny-MATCH side handled too, without reopening the round-2
+ *     substring hole, which is #1067's own delicate change, not this one.
  *
  * ## No `': '` separator: the whole signature is the detail
  *
@@ -678,7 +700,15 @@ export function precedentMayAuthorize(
   // risk layer reads `command` and nothing else — so a `cmd`-only call has an
   // unclassifiable band and must not be authorizable. Requiring the field the
   // BOUND depends on is what keeps the two in agreement.
-  return typeof toolInput['command'] === 'string' && toolInput['command'].length > 0;
+  //
+  // `.trim().length`, not `.length` (adversarial review, 2026-08-16): a
+  // whitespace-only command is an inert no-op whose signature trims to a bare
+  // `Bash:`, so every whitespace-only command would collapse to the same
+  // precedent entry and cross-match. Harmless (nothing executes), but a
+  // precedent nobody can meaningfully act on has no business being eligible.
+  // Gating both the record and consult sides here keeps them in agreement.
+  const command = toolInput['command'];
+  return typeof command === 'string' && command.trim().length > 0;
 }
 
 /**
@@ -878,6 +908,12 @@ export class PrecedentStore {
    * reach `this.records`, so a stored record is never truncated in
    * practice (see `isTruncatedSignature`'s doc on why the match functions'
    * stored-side check is therefore redundant, not the reverse).
+   *
+   * This refusal runs for BOTH decisions, and dropping a `denied` record is
+   * not purely safe the way dropping an `approved` one is: it weakens the
+   * deny stop rule for a genuine, untruncated command that happens to end in
+   * `...` (>=120 chars). See the approve/deny split in `isTruncatedSignature`'s
+   * doc — kept unchanged here, tracked as #1067.
    *
    * The truncation check MUST run on the RAW `signature` parameter, BEFORE
    * `normalizeSignature` touches it (round 2, review 2026-08-02):

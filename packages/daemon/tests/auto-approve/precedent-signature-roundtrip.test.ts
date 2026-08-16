@@ -80,6 +80,15 @@ const OPERATIONS: Array<[string, Record<string, unknown>]> = [
   // (nothing here normalizes), so normalization elsewhere is not papering
   // over a drift.
   ['Bash', { command: 'echo  "two  spaces"' }],
+  // A command whose OWN text contains `': '` -- `git commit -m "fix: bug"`,
+  // `echo "key: value"`, extremely common shapes. The eligible-case assert
+  // below (`toolNameFromSignature(...) === toolName`) pins that the tool name
+  // is recovered from the FIRST `': '` (the `Bash: ` prefix), not a later one
+  // buried in the command. A mutation to `lastIndexOf(': ')` would parse this
+  // to `Bash: git commit -m "fix` and fail here; it silently loses precedent
+  // coverage for every colon-space command otherwise (safe direction — missed
+  // precedent — but invisible, exactly the failure mode this file guards).
+  ['Bash', { command: 'git commit -m "fix: bug"' }],
 ];
 
 describe('#990 Question.precedentSignature agrees byte-for-byte with the consult side', () => {

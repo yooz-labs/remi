@@ -2567,6 +2567,26 @@ describe('createInputHandlers', () => {
       ]);
     });
 
+    // #990: the recorded tool name is DERIVED from the signature
+    // (`toolNameFromSignature`), never hardcoded. Bash is the only
+    // precedent-eligible tool `buildPermissionQuestion` emits today, so every
+    // other test here would pass equally if `handleAnswer` recorded a constant
+    // 'Bash' -- a latent gap the moment the eligible set grows. This pins the
+    // derivation with a NON-Bash embedded name: a constant 'Bash' regresses it.
+    test('derives the recorded tool name from the signature, not a hardcoded Bash', async () => {
+      const { sessionId, calls, handlers } = setUp();
+      registerPermissionQuestion(sessionId, {
+        text: 'Allow Foo: bar baz',
+        precedentSignature: 'Foo: bar baz',
+      });
+
+      await handlers.onAnswer(CID, sessionId, QID, 'Yes');
+
+      expect(calls).toEqual([
+        { sessionId, toolName: 'Foo', signature: 'Foo: bar baz', decision: 'approved' },
+      ]);
+    });
+
     // #990 fail-closed: a `permission_request`-sourced question with NO
     // `precedentSignature` (a legacy `Question` predating this field, or any
     // future producer that forgets to set it) must record NOTHING -- never
