@@ -125,9 +125,6 @@ import { loadOrCreateAnswerKey } from './auth/answer-key.ts';
 import { Authenticator } from './auth/authenticator.ts';
 import { loadOrCreateCapabilityToken } from './auth/capability-token.ts';
 import { IdentityStore } from './auth/identity-store.ts';
-// #976 prerequisite: not re-exported from auto-approve/index.ts on purpose
-// (that barrel is being edited concurrently by other work on the same epic).
-import { deniedBody, deniedOperation, deniedTitle } from './auto-approve/deny-floor.ts';
 import {
   AutoApproveService,
   EngineHost,
@@ -172,6 +169,7 @@ import { buildHubQuestionCensus } from './cli/hub-question-census.ts';
 import type { LiveSessionsCollectResult } from './cli/live-sessions-watcher.ts';
 import { startLiveSessionsWatcher } from './cli/live-sessions-watcher.ts';
 import { endLogFileSession, startLogFileSession, writeToLog } from './cli/log-file.ts';
+import { handleAutoDenied } from './cli/on-auto-denied.ts';
 import { installProcessGuards } from './cli/process-guards.ts';
 import { PtyQuiescenceGate } from './cli/pty-quiescence-gate.ts';
 import { setupHookBridge } from './cli/session-phases/hook-bridge-setup.ts';
@@ -1371,17 +1369,22 @@ function onSubagentPassthrough(input: PermissionRequestHookInput): void {
  *
  * Two channels, deliberately asymmetric:
  *
- * - **Log, always, both sources.** Unconditional and NOT gated on
+ * - **Log, always, all three sources.** Unconditional and NOT gated on
  *   `log_decisions` — that flag governs the routine per-decision trace, and a
  *   refusal is not routine. Same reasoning as `onSubagentPassthrough` above:
  *   the push can fail or be throttled downstream, so the local record is what
  *   makes the decision auditable at all.
- * - **Push, `model-floor` only.** A `config` deny is the user's own standing
- *   rule in `config.toml` firing exactly as written; notifying them about it
- *   is telling them what they already decided. A `model-floor` deny is the
+ * - **Push, `model-floor` only** (the `!== 'model-floor'` early return below
+ *   covers both other kinds). A `config` deny is the user's own standing rule
+ *   in `config.toml` firing exactly as written; notifying them about it is
+ *   telling them what they already decided. A `model-floor` deny is the
  *   opposite — the model refused and `matchesCatastrophicPattern` happened to
  *   agree, which #997 measured going wrong 7 times in 8 on real traffic. That
- *   is the one nobody chose.
+ *   is the one nobody chose. A `residual` deny (#1045 phase 6) is what
+ *   `escalateMain` converts an escalation into under `residual_action =
+ *   "deny"` — the user opted INTO fewer pings via that setting, so, unlike
+ *   `model-floor`, telling them about each one would defeat the point; the
+ *   log line is still the audit trail.
  *
  * Fire-and-forget: the gate has already answered the hook, so this must never
  * delay or throw into it.
@@ -1391,27 +1394,33 @@ function onAutoDenied(
   source: DenySource,
   reasoning: string,
 ): void {
-  const op = deniedOperation(input.tool_name, input.tool_input, source.pattern);
-  const title = deniedTitle(op);
-  const body = deniedBody(op);
-  log(`[AutoDenied ${source.kind}] ${title} - ${body} (${reasoning})`);
-
-  if (source.kind !== 'model-floor') return;
-  if (deviceTokens.size === 0) return;
-  const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
-  for (const dt of deviceTokens.values()) {
-    // Deliberately no `category` / `options` / `questionId`: the operation is
-    // already refused and there is nothing for the user to answer. Same
-    // dismiss-only convention as the subagent alert above.
-    void sendPushTrigger(signalingUrl, dt.token, {
-      title,
-      body,
-      ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
-      kind: 'auto_denied',
-    }).catch((err) => {
-      logError('[AutoDenied] push failed:', err);
-    });
-  }
+  // Logic (log-always, push-only-for-model-floor) lives in the tested
+  // `handleAutoDenied`; this wrapper only supplies the daemon's real sink.
+  handleAutoDenied(
+    {
+      log,
+      pushToDevices: (title, body) => {
+        if (deviceTokens.size === 0) return;
+        const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
+        for (const dt of deviceTokens.values()) {
+          // Deliberately no `category` / `options` / `questionId`: the operation
+          // is already refused and there is nothing for the user to answer. Same
+          // dismiss-only convention as the subagent alert above.
+          void sendPushTrigger(signalingUrl, dt.token, {
+            title,
+            body,
+            ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
+            kind: 'auto_denied',
+          }).catch((err) => {
+            logError('[AutoDenied] push failed:', err);
+          });
+        }
+      },
+    },
+    input,
+    source,
+    reasoning,
+  );
 }
 
 // Daemon-wide turn-duration tracker (#914). Fed from HookServer's onAnyEvent
@@ -1876,6 +1885,10 @@ async function createNewSession(
         // native prompt immediately (the pre-0.6.12 behavior). 0 => no hold.
         holdTimeoutSec: autoApproveService ? remiConfig.auto_approve.hold_timeout : 0,
         pushHoldTimeoutSec: autoApproveService ? remiConfig.auto_approve.push_hold_timeout : 0,
+        // #1045 phase 6: NOT guarded on autoApproveService, unlike the two
+        // lines above -- the no-service edge is itself one of escalateMain's
+        // three call sites, so residual_action must apply there too.
+        residualAction: remiConfig.auto_approve.residual_action,
         // #603 Phase 1: gate a held hook on confirmed notification delivery. Same
         // AA-enabled guard as holdTimeoutSec — gating is only meaningful when the
         // gate can hold. The dispatcher records the per-question delivery outcome.

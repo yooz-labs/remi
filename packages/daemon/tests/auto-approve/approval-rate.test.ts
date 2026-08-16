@@ -404,6 +404,7 @@ function makeConfig(overrides?: Partial<AutoApproveConfig>): AutoApproveConfig {
     base_url: 'http://10.255.255.1',
     timeout: 30,
     log_decisions: false,
+    residual_action: 'escalate',
     allow: [],
     deny: [],
     subagent_alert: [],

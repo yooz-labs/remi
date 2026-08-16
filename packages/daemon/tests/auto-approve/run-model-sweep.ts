@@ -333,6 +333,7 @@ function makeConfig(model: string): AutoApproveConfig {
     base_url: process.env['SWEEP_BASE_URL'] ?? 'http://127.0.0.1:19924',
     timeout: 60,
     log_decisions: false,
+    residual_action: 'escalate',
     allow: [],
     deny: [],
     subagent_alert: [],

@@ -102,6 +102,7 @@ function makeConfig(server: GatedServer): AutoApproveConfig {
     base_url: server.url,
     timeout: 30,
     log_decisions: false,
+    residual_action: 'escalate',
     allow: [],
     deny: [],
     subagent_alert: [],
