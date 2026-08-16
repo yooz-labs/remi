@@ -217,6 +217,25 @@ describe('hasShellControl - #1063 network-device input redirect', () => {
     expect(hasShellControl('cat < x/dev/tcp/h/1')).toBe(false);
   });
 
+  test("MUST VETO: an ANSI-C $'...' input-redirect target (shellWords under-decodes it)", () => {
+    // `shellWords` copies the literal char after a `$'...'` escape's backslash
+    // (`\x2f` -> `x2f`), so the device prefix is corrupted and the anchored
+    // device check misses -- but bash fully decodes and opens the socket
+    // (#1063 fourth re-review). Fail closed on ANSI-C in a redirect context.
+    expect(hasShellControl("cat <$'\\x2fdev\\x2ftcp\\x2f127.0.0.1\\x2f1'")).toBe(true);
+    expect(hasShellControl("cat < $'/dev/tcp/h/p'")).toBe(true);
+    expect(hasShellControl("cat < /dev/tc$'\\x70'/h/p")).toBe(true);
+    expect(hasShellControl("cat foo<$'/dev/tcp/h/p'")).toBe(true);
+  });
+
+  test("MUST NOT VETO: ANSI-C $'...' with NO input redirect present", () => {
+    // The fail-closed rule needs a real (unmasked) input-redirect operator, so
+    // an ordinary ANSI-C arg is untouched -- these are common idioms.
+    expect(hasShellControl("echo $'\\n'")).toBe(false);
+    expect(hasShellControl("grep $'\\t' f")).toBe(false);
+    expect(hasShellControl("printf $'%s\\n' a")).toBe(false);
+  });
+
   test('a quoted literal with the device SPACED after < is not a redirect', () => {
     // `'< /dev/tcp/x is bad'` is one grep argument: the `<` is spaced from the
     // path, so the target capture is empty and nothing vetoes. This is the
