@@ -180,6 +180,19 @@ describe('hasShellControl - #1063 network-device input redirect', () => {
     expect(hasShellControl('cat a<b</dev/udp/h/53')).toBe(true);
   });
 
+  test('MUST VETO: `<` glued to a word tail with the device in the next token', () => {
+    // bash treats `<` glued to the end of ANY word as a fresh stdin-redirect
+    // operator, target = next token: `cat foo< /dev/tcp/h/p` opens the socket.
+    // Recognizing only bare `<`/`N<` as operators missed it (#1063 third
+    // re-review). Every token ending in a single `<` is an operator.
+    expect(hasShellControl('cat foo< /dev/tcp/127.0.0.1/1')).toBe(true);
+    expect(hasShellControl('grep pat file< /dev/tcp/h/1')).toBe(true);
+    expect(hasShellControl('cat 2x< /dev/tcp/h/1')).toBe(true);
+    expect(hasShellControl('cat abc< /dev/udp/h/1')).toBe(true);
+    // ...but a word-glued `<` to an ordinary file is still fine.
+    expect(hasShellControl('cat foo< data.txt')).toBe(false);
+  });
+
   test('MUST NOT VETO: an ordinary file input redirect (reads, never sockets)', () => {
     expect(hasShellControl('grep x < list.txt')).toBe(false);
     expect(hasShellControl('cat < ./config.ini')).toBe(false);

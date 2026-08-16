@@ -784,12 +784,19 @@ function hasNetworkDeviceInputRedirect(segment: string): boolean {
   const tokens = shellWords(segment);
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i] ?? '';
-    // Standalone redirect operator: the device is the following token.
-    if (t === '<' || /^\d+<$/.test(t)) {
-      if (NETWORK_DEV_PATH_RE.test(tokens[i + 1] ?? '')) return true;
-      continue;
+    // A token ENDING in a single `<` is a stdin-redirect operator whose target
+    // is the NEXT token -- bare `<`, an fd `N<`, and (bash treats `<` glued to
+    // the tail of any word as a fresh operator) `foo<`, `file<`, `{fd}<`. The
+    // lookbehind excludes `<<`/`<<<` (heredoc / here-string), whose next token
+    // is a delimiter/word bash never opens as a path. Recognizing only bare
+    // `<`/`N<` here let `cat foo< /dev/tcp/h/p` open a socket unseen (#1063
+    // third re-review).
+    if (/(?<!<)<$/.test(t) && NETWORK_DEV_PATH_RE.test(tokens[i + 1] ?? '')) {
+      return true;
     }
-    // One or more `<`-glued targets inside this (quote-removed) token.
+    // Also one or more `<`-glued targets WITHIN this (quote-removed) token. Not
+    // an `else`: a token can carry both (`foo<bar</dev/tcp/h/p` -- a glued
+    // target AND a trailing operator), so both are checked.
     for (const m of t.matchAll(GLUED_INPUT_REDIRECT_RE)) {
       if (NETWORK_DEV_PATH_RE.test(m[1] ?? '')) return true;
     }
