@@ -92,10 +92,54 @@ describe('permission-groups: read-only Bash (positive)', () => {
     ['wc -l file', 'read-only:wc'],
     ['ls -la', 'read-only:ls'],
     ['jq .version package.json', 'read-only:jq'],
+    // #1057 phase 3 commit 3.
+    ['tr a-z A-Z', 'read-only:tr'],
+    ['comm f1 f2', 'read-only:comm'],
+    ['paste f1 f2', 'read-only:paste'],
+    ['nl file.txt', 'read-only:nl'],
+    ['rev file.txt', 'read-only:rev'],
+    ["awk '{print $1}' file.txt", 'read-only:awk'],
+    ['find . -name "*.ts"', 'read-only:find'],
   ];
   for (const [cmd, expected] of cases) {
     test(cmd, () => expect(bash(cmd)).toBe(expected));
   }
+});
+
+describe('#1057 phase 3 commit 3: awk/find are curated, their ambiguous forms are still vetoed', () => {
+  test('awk piped into a read is covered', () => {
+    // read-only carries both `ls` and `awk`; the compound is judged per
+    // segment (the pipe splits it, matching's existing behavior).
+    expect(bash("ls | awk '{print $1}'")).toBe('read-only:ls');
+  });
+
+  test('awk system() is refused regardless of which prefix it matched', () => {
+    expect(bash('awk \'BEGIN{system("rm -rf /")}\' f')).toBeNull();
+  });
+
+  test('awk piping its own output into a shell is refused', () => {
+    expect(bash('ls | awk \'{print | "sh"}\'')).toBeNull();
+  });
+
+  test('find -delete is refused', () => {
+    expect(bash('find . -delete')).toBeNull();
+  });
+
+  test('find -exec is refused', () => {
+    expect(bash('find . -exec rm {} \\;')).toBeNull();
+  });
+});
+
+describe('#1057 phase 3 commit 3: printf is neutral (NEUTRAL_PREFIXES)', () => {
+  test('the #996 sample: a for-loop header using printf for progress text', () => {
+    expect(
+      bash('for p in 11 14; do printf "obs #%s: " $p; gh pr checks $p 2>&1|head -1; done'),
+    ).toBe('vcs-read:gh pr checks');
+  });
+
+  test('bare printf alone is not a read (neutral-only commands match nothing)', () => {
+    expect(bash('printf "hi"')).toBeNull();
+  });
 });
 
 describe('permission-groups: vcs-read Bash (positive)', () => {
@@ -109,6 +153,7 @@ describe('permission-groups: vcs-read Bash (positive)', () => {
     ['git rev-parse --abbrev-ref HEAD', 'vcs-read:git rev-parse'],
     ['git reflog show --oneline', 'vcs-read:git reflog show'],
     ['git config --get user.email', 'vcs-read:git config --get'],
+    ['git fetch --all', 'vcs-read:git fetch'],
     ['gh pr diff 494', 'vcs-read:gh pr diff'],
     ['gh pr view 494 --json title', 'vcs-read:gh pr view'],
     ['gh run list --limit 5', 'vcs-read:gh run list'],
@@ -216,11 +261,15 @@ describe('permission-groups: adversarial (MUST fall through to LLM, never group-
     'git diff HEAD \ngit commit --allow-empty -m pwned',
     'cat README.md \nchmod 777 /etc/passwd',
     'git log \t\ngit push', // whitespace-then-newline
-    // commands intentionally excluded from the curated set
+    // `find`/`awk` are curated as of #1057 phase 3 commit 3, but their
+    // ambiguous-flag forms are still refused -- by `hasExecPrimitive`
+    // (shell-safety.ts), not by the prefix being absent.
     'find . -name x -delete',
     'find . -exec rm {} +',
-    'sort -o out.txt in.txt', // -o writes
     'awk \'{system("rm x")}\'',
+    // commands intentionally excluded from the curated set (no veto exists
+    // for the ambiguous flag, unlike `find`/`awk` above)
+    'sort -o out.txt in.txt', // -o writes
     'gh api -X POST /repos/o/r/issues', // gh api excluded entirely
     // word-boundary: must not match a longer command sharing the prefix text
     'git showoff --now',
@@ -375,10 +424,16 @@ describe('vcs-write: covered', () => {
     ['git stash pop', 'vcs-write:git stash'],
     ['git stash pop -q', 'vcs-write:git stash'],
     ['git worktree add ../x -b feature/y', 'vcs-write:git worktree add'],
+    // #1057 phase 3 commit 3.
+    ['git pull -q', 'vcs-write:git pull'],
   ];
   for (const [cmd, expected] of cases) {
     test(cmd, () => expect(bash(cmd, WRITE_GROUPS)).toBe(expected));
   }
+
+  test('git pull needs vcs-write requested -- read groups alone do not cover it', () => {
+    expect(bash('git pull', ALL)).toBeNull();
+  });
 });
 
 describe('vcs-write: MUST NOT cover', () => {

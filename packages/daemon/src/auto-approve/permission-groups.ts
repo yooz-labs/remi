@@ -18,9 +18,19 @@
  *    of those tokens legitimately appears in a curated read command, so the
  *    veto can only catch a write that slipped past a read prefix.
  *  - Commands whose read form can be flipped to a write by an AMBIGUOUS short
- *    flag (`sort -o`, `find -delete`, `awk` system(), `gh api -X`) are
- *    intentionally EXCLUDED from the curated set. Users can add them via the
- *    `allow` list at their own discretion (per-segment prefix, not substring).
+ *    flag are EXCLUDED from the curated set whenever no veto already closes
+ *    that specific flag: `sort -o`, `gh api -X`. `find -delete` and `awk`
+ *    system()/pipe-to-shell are the opposite shape (#1057 phase 3, commit 3)
+ *    — the bare command IS curated, because `shell-safety.ts`'s
+ *    `hasExecPrimitive` already refuses exactly the dangerous forms
+ *    (`EXEC_PRIMITIVE_TOKEN` for `-delete`/`-exec`/..., `EXEC_SCOPED_VETOES`
+ *    for awk's `system()`/pipe-to-shell), consulted by `matchCoveredCommand`
+ *    for every matched segment regardless of which group owns the prefix.
+ *    `sort -o` has no such veto and stays excluded; the two are not
+ *    interchangeable, and a future addition must check which shape it is
+ *    before assuming either precedent applies. Users can add an excluded
+ *    command via the `allow` list at their own discretion (per-segment
+ *    prefix, not substring).
  *  - Non-Bash tools match by bare tool name.
  *
  * The segment splitter and shell-control veto live in `shell-safety.ts`; the
@@ -1556,6 +1566,27 @@ export const BUILTIN_GROUPS: Readonly<Record<string, PermissionGroup>> = {
       'mdfind',
       'du',
       'df',
+      // #1057 phase 3 commit 3: evidence-based additions from the #996/#999
+      // corpora. `awk` and `find` each have a read form flippable to code
+      // execution / deletion by a flag or program body this list cannot see
+      // by name alone -- but BOTH already have a veto that fires on exactly
+      // that shape for EVERY matched segment, regardless of which curated
+      // prefix matched it: `awk` via `EXEC_SCOPED_VETOES`'s system()/
+      // pipe-to-shell entry, `find` via `EXEC_PRIMITIVE_TOKEN`'s
+      // `-delete`/`-exec`/`-execdir`/`-ok`/`-okdir`/`-fprint*`/`-fls` entries
+      // (both shell-safety.ts, consulted by `matchCoveredCommand`
+      // unconditionally). So, unlike `sort -o` (still excluded above: no such
+      // veto exists for it), the bare command name is safe to curate here.
+      'awk',
+      'find',
+      // Pure text/stream transforms verified to carry no destination-writing
+      // flag on either BSD or GNU builds: stdin/stdout (or their file
+      // operands, read-only) only.
+      'tr',
+      'comm',
+      'paste',
+      'nl',
+      'rev',
     ],
   },
   'vcs-read': {
@@ -1574,6 +1605,12 @@ export const BUILTIN_GROUPS: Readonly<Record<string, PermissionGroup>> = {
       'git show-ref',
       'git for-each-ref',
       'git shortlog',
+      // #1057 phase 3 commit 3: a remote READ. `git fetch` updates
+      // remote-tracking refs (`origin/main`, ...) from the remote; it never
+      // touches the working tree or the current branch -- that is `git
+      // merge`/`git pull`'s job, not fetch's. `git push` (the write half of
+      // remote sync) stays excluded at every level, unaffected by this.
+      'git fetch',
       // `git reflog` alone exposes `git reflog expire|delete` (history loss);
       // pin to the read-only subcommands.
       'git reflog show',
@@ -1694,6 +1731,12 @@ export const BUILTIN_GROUPS: Readonly<Record<string, PermissionGroup>> = {
       'git checkout',
       'git switch',
       'git merge',
+      // #1057 phase 3 commit 3: remote read (`git fetch`) + local merge into
+      // the current branch -- the write half is entirely local, exactly what
+      // this group already covers via `git merge` on its own. `git push`
+      // (the actual remote MUTATION) stays excluded at every level below,
+      // untouched by this addition.
+      'git pull',
       // #972: bare, not `git stash push`. `git stash` with no subcommand IS
       // push (git's own default), and `git stash pop` restores — both purely
       // local, both what this group exists to cover, and both were escalating

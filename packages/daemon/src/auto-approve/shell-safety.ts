@@ -28,8 +28,22 @@
  * not a matched prefix: a command of ONLY neutral segments still matches
  * nothing (`matchCoveredCommand` requires at least one real hit), so bare
  * `read` alone stays uncovered by design -- see the paired test.
+ *
+ * `printf` (#1057 phase 3, commit 3) is the same inert class as `echo`: it
+ * writes only to stdout, takes no destination flag, and executes nothing of
+ * its own. Added after the #996 corpus showed a `for`-loop header using it
+ * purely for formatted progress text (`printf "obs #%s: " $p`) sinking an
+ * otherwise-covered read segment in the same loop body.
  */
-export const NEUTRAL_PREFIXES: readonly string[] = ['cd', 'pwd', 'true', 'echo', ':', 'read'];
+export const NEUTRAL_PREFIXES: readonly string[] = [
+  'cd',
+  'pwd',
+  'true',
+  'echo',
+  ':',
+  'read',
+  'printf',
+];
 
 /*
  * ATTEMPT 5, REVERTED BEFORE MERGE: "a segment whose every word is an
