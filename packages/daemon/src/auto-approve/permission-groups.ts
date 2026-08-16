@@ -1802,6 +1802,23 @@ export const BUILTIN_GROUPS: Readonly<Record<string, PermissionGroup>> = {
  * command, so matching one can only mean a write snuck past a read prefix
  * (e.g. `git diff --output=f`, `biome check --write`, `find . -delete`).
  *
+ * `find`'s file-writing/exec primitives (`-fprintf`/`-fprint0`/`-fprint`/
+ * `-fls`/`-okdir`, alongside the pre-existing `-delete`/`-exec`/`-execdir`/
+ * `-ok`) are listed here too, in addition to `EXEC_PRIMITIVE_TOKEN`
+ * (shell-safety.ts) which already vetoes all of them (#1062 C3). The two are
+ * not redundant: `EXEC_PRIMITIVE_TOKEN` is consulted by `matchCoveredCommand`
+ * only against the RAW segment text, while THIS token is the one
+ * `readSegmentVeto` re-checks against the quote-NORMALIZED word list
+ * (`shellWords`, below). Before this addition, `find . -fprin"t" /tmp/x`
+ * unquoted to `-fprint` — a spelling `EXEC_PRIMITIVE_TOKEN`'s raw-text regex
+ * never saw (it only matched the still-quoted original) and that was ALSO
+ * absent from this list, so nothing caught it on either pass. `-fprint` is
+ * ordered ahead of `-fprintf`/`-fprint0` deliberately, but order does not
+ * actually matter for a `.test()` alternation with a trailing boundary
+ * group: a failed boundary check on the shorter alternative backtracks into
+ * the longer one at the same position, so both are still verified to match
+ * their full spelling by the adversarial test suite.
+ *
  * Exported for tests ONLY (#957 review). `shell-safety`'s per-segment-veto
  * tests need the real predicate rather than a hand-copied one: a duplicate
  * stays byte-identical right up until someone widens this list, at which
@@ -1809,7 +1826,7 @@ export const BUILTIN_GROUPS: Readonly<Record<string, PermissionGroup>> = {
  * they no longer have.
  */
 export const MUTATION_TOKEN =
-  /(^|\s)(-X|--method|--field|--raw-field|--input|--output|--write|--apply|--fix|-delete|-exec|-execdir|-ok)(\s|=|$)/;
+  /(^|\s)(-X|--method|--field|--raw-field|--input|--output|--write|--apply|--fix|-delete|-exec|-execdir|-okdir|-ok|-fprintf|-fprint0|-fprint|-fls)(\s|=|$)/;
 
 /** True if a name is a built-in group. */
 export function isKnownGroup(name: string): boolean {
@@ -1835,16 +1852,67 @@ const SCOPED_VETOES: ReadonlyArray<{ family: RegExp; flag: RegExp }> = [
   // `bun test --preload <file>` executes an arbitrary file before the suite.
   { family: /^bunx?\b/, flag: /(^|\s)--preload(\s|=|$)/ },
   // `sort` is a pure stream transform except `-o`/`--output`, which writes
-  // the result to an arbitrary file. No read sort flag starts with `-o`, and
-  // the prefix form catches the attached spelling (`-ofile`) too.
-  { family: /^sort\b/, flag: /(^|\s)(-o|--output)/ },
+  // the result to an arbitrary file. Neither BSD nor GNU `sort` has any OTHER
+  // short flag containing the letter `o` (`-b -c -C -d -f -g -i -k -m -M -n
+  // -R -r -S -s -t -T -u -V -z -h` — none), so 'o' appearing ANYWHERE in a
+  // leading short-flag cluster can only mean `-o` is bundled into it, no
+  // matter which position: `-ro`/`-uo`/`-rno` all write exactly like bare
+  // `-o` (#1062 C2 — the previous `/(^|\s)(-o|--output)/` only matched `-o`
+  // at a word boundary, so `sort -ro out.txt in.txt` and `sort -uo
+  // ~/.ssh/authorized_keys pub.txt` walked straight past it). The trailing
+  // `-[A-Za-z]*o` half needs no boundary after its own `o` and no anchor at
+  // the flag's start beyond the leading `-`, only `(^|\s)` before it, so it
+  // cannot false-positive on `--output`: a `-` immediately followed by
+  // another `-` (the second dash of a long flag) breaks `[A-Za-z]*`'s
+  // required all-letters run at that starting position, and starting the
+  // match at the SECOND dash instead fails the `(^|\s)` boundary (it is
+  // preceded by the first dash, not whitespace/start) — hence the explicit
+  // `--output` alternative alongside it.
+  { family: /^sort\b/, flag: /(^|\s)-[A-Za-z]*o|(^|\s)--output/ },
   // `tree -o filename` writes the listing to a file (no long form exists).
-  { family: /^tree\b/, flag: /(^|\s)-o/ },
+  // Same bundled-cluster reasoning as `sort` above: no other `tree` short
+  // flag contains `o` (`-a -d -f -i -L -n ...`), so `tree -no out.txt`
+  // bundling `-n` (no indent) ahead of `-o` was the same bypass (#1062 C2).
+  { family: /^tree\b/, flag: /(^|\s)-[A-Za-z]*o/ },
   // Neither BSD nor GNU diff has a `-o`/`--output` write flag today; this
   // entry is defensive parity with `sort`/`tree` so a build that grows one
   // (or a lookalike binary) stays refused, and the long-standing
-  // `diff ... -o /tmp/patch` adversarial pin keeps its null outcome.
+  // `diff ... -o /tmp/patch` adversarial pin keeps its null outcome. diff has
+  // no SHORT flag containing `o` besides `-o` itself (unlike sort/tree, it is
+  // not curated bare here — it is excluded from `read-only` entirely, see
+  // that list's comment — so the narrower word-boundary form is left as-is;
+  // widening it costs nothing today but buys no proven case either).
   { family: /^diff\b/, flag: /(^|\s)(-o|--output)/ },
+  // `git fetch --upload-pack=/tmp/evil.sh <repo>` runs `/tmp/evil.sh` LOCALLY
+  // instead of the real `git-upload-pack` on the far end (proven by
+  // execution, #1062 C4, CRITICAL RCE) — `git`'s own manual documents this
+  // exact mechanism. `--receive-pack` is the identical primitive for the
+  // push/receive side, and `--exec` is `git fetch`'s own alias for
+  // `--upload-pack` (git-fetch(1): "When given, and the repository to fetch
+  // from is handled by git fetch-pack, --exec=<upload-pack> is passed to the
+  // command"). This fires for ANY `git` segment, not just `fetch` — the
+  // write-side `vcs-write` group already refuses all three via
+  // `write-flag-safety.ts`'s `dangerousLongFlags` (verified: `git pull
+  // --upload-pack=/tmp/evil.sh /tmp/repo` was already null before this
+  // change), so this entry closes the matching gap on the READ side, where
+  // `git fetch` sits in `vcs-read` with no `segmentVeto` of its own and
+  // therefore falls through to this module's default `readSegmentVeto` /
+  // `hasScopedVeto`.
+  //
+  // Known, deliberately UNFIXED residuals of the same remote-exec family
+  // (documented per review instruction, not silently left as an assumed
+  // gap):
+  //   - `git fetch ext::sh -c id` is inert UNLESS the user's own gitconfig
+  //     sets `protocol.ext.allow` (git refuses the `ext::` transport by
+  //     default); not a bypass of anything this veto promises.
+  //   - `--recurse-submodules` fetches each submodule's remote-configured
+  //     `.gitmodules` URL, which is within `git fetch`'s ordinary
+  //     remote-read nature (the same trust `git fetch origin` already
+  //     carries), not a new primitive.
+  //   - `--config-env=` is not matched by this veto at all; it is inert on
+  //     its own without a second, matching environment-variable segment
+  //     already present, and adding that detection is out of scope here.
+  { family: /^git\b/, flag: /(^|\s)(--upload-pack|--receive-pack|--exec)(\s|=)/ },
 ];
 
 /** True if a family-scoped veto flag applies to this segment. */

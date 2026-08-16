@@ -181,6 +181,113 @@ describe('#1062 C1 (CRITICAL RCE): awk is UNCOVERED, not merely vetoed', () => {
   });
 });
 
+describe('#1062 C2: sort/tree -o bundled into a leading short-flag cluster', () => {
+  // Neither GNU nor BSD `sort` has any OTHER short flag containing the
+  // letter `o` (`-b -c -C -d -f -g -i -k -m -M -n -R -r -S -s -t -T -u -V -z
+  // -h`), and `tree` likewise has none besides `-o` itself. So `o` bundled
+  // ANYWHERE into a leading short-flag cluster can only mean the write flag
+  // is present -- the previous `/(^|\s)(-o|--output)/` matched `-o` only at
+  // a word boundary and missed every bundled spelling (CONFIRMED bypass,
+  // proven: `sort -ro out.txt in.txt` and `sort -uo ~/.ssh/authorized_keys
+  // pub.txt` both approved before this fix).
+  const bypasses: Array<[string, string]> = [
+    ['sort -ro', 'sort -ro out.txt in.txt'],
+    ['sort -uo (sensitive target)', 'sort -uo /Users/yahya/.ssh/authorized_keys pub.txt'],
+    ['sort -rno (sensitive target)', 'sort -rno /etc/sudoers in.txt'],
+    ['tree -no', 'tree -no out.txt'],
+    ['tree -nio', 'tree -nio t2'],
+  ];
+  for (const [label, cmd] of bypasses) {
+    test(`${label}: null`, () => expect(bash(cmd)).toBeNull());
+  }
+
+  // Positive controls: none of these bundle the letter `o`, so the scoped
+  // veto must not fire on them.
+  test('sort -u f.txt is still covered', () =>
+    expect(bash('sort -u f.txt')).toBe('read-only:sort'));
+  test('sort -rn f is still covered', () => expect(bash('sort -rn f')).toBe('read-only:sort'));
+  test('tree -L 2 is still covered', () => expect(bash('tree -L 2')).toBe('read-only:tree'));
+  test('tree -a is still covered', () => expect(bash('tree -a')).toBe('read-only:tree'));
+});
+
+describe('#1062 C3: find write/exec primitives that a quote splits past the raw-text check', () => {
+  // `EXEC_PRIMITIVE_TOKEN` (shell-safety.ts) vetoes these primitives on RAW
+  // segment text, consulted unconditionally by `matchCoveredCommand`. But
+  // that check runs against the STILL-QUOTED text, so a quote embedded
+  // inside the flag spelling (`-fprin"t"`) defeats the raw-text regex
+  // entirely, and (before this fix) `MUTATION_TOKEN` -- the quote-NORMALIZED
+  // check `readSegmentVeto` re-runs via `shellWords` -- did not list these
+  // spellings either, so nothing caught the unquoted form (CONFIRMED
+  // bypass).
+  const bypasses: Array<[string, string]> = [
+    ['-fprint (quote-split)', 'find . -fprin"t" /tmp/x'],
+    ['-fprintf (quote-split)', "find . -fprintf /tmp/x '%p'"],
+    [
+      '-fprintf (quote-split, sensitive target)',
+      'find . -fprint"f" /Users/yahya/.ssh/authorized_keys \'%p\'',
+    ],
+    ['-fls (quote-split)', 'find . -f"ls" /tmp/x'],
+    ['-okdir (quote-split)', 'find . -okd"ir" rm {} ;'],
+  ];
+  for (const [label, cmd] of bypasses) {
+    test(`${label}: null`, () => expect(bash(cmd)).toBeNull());
+  }
+
+  test('positive control: plain find stays covered', () => {
+    expect(bash('find . -name "*.ts"')).toBe('read-only:find');
+    expect(bash('find . -type f')).toBe('read-only:find');
+  });
+});
+
+describe('#1062 C4 (CRITICAL RCE): git remote-exec flags on git fetch (vcs-read)', () => {
+  // `git fetch --upload-pack=/tmp/evil.sh <repo>` runs `/tmp/evil.sh`
+  // LOCALLY in place of the real `git-upload-pack` on the remote end --
+  // proven by execution. `--receive-pack` is the identical primitive for
+  // the push/receive side; `--exec` is `git fetch`'s own alias for
+  // `--upload-pack`. `git fetch` sits in `vcs-read` with no `segmentVeto` of
+  // its own, so before this fix nothing on the read side refused it
+  // (CONFIRMED bypass; the write-side `vcs-write` group already refused the
+  // `git pull` spelling via `write-flag-safety.ts`'s `dangerousLongFlags` --
+  // see the positive control below).
+  const STRICT = ['read-only', 'vcs-read', 'build-test'];
+  const bypasses: Array<[string, string]> = [
+    ['--upload-pack=', 'git fetch --upload-pack=/tmp/evil.sh /tmp/repo'],
+    ['--upload-pack (space-separated)', 'git fetch --upload-pack /tmp/evil.sh /tmp/repo'],
+    ['--upload-pack="..."', 'git fetch --upload-pack="/tmp/evil.sh" /tmp/repo'],
+    ['--upload-pack= after a remote URL', 'git fetch ssh://h/r --upload-pack=/tmp/e'],
+    ['--exec=', 'git fetch --exec=/tmp/evil origin'],
+    ['--receive-pack=', 'git fetch --receive-pack=x r'],
+  ];
+  for (const [label, cmd] of bypasses) {
+    test(`${label}: null`, () => expect(matchGroups('Bash', { command: cmd }, STRICT)).toBeNull());
+  }
+
+  test('positive controls: ordinary git fetch stays covered', () => {
+    const bash2 = (cmd: string) => matchGroups('Bash', { command: cmd }, STRICT);
+    expect(bash2('git fetch --all')).toBe('vcs-read:git fetch');
+    expect(bash2('git fetch origin main')).toBe('vcs-read:git fetch');
+    expect(bash2('git fetch -q')).toBe('vcs-read:git fetch');
+  });
+
+  test('git pull --upload-pack=... was already refused at vcs-write (write-flag-safety.ts), unaffected by this change', () => {
+    const TRUSTED = [
+      'read-only',
+      'vcs-read',
+      'build-test',
+      'fs-write',
+      'scratch',
+      'vcs-write',
+      'artifact-clean',
+    ];
+    expect(
+      matchGroups('Bash', { command: 'git pull --upload-pack=/tmp/evil.sh /tmp/repo' }, TRUSTED),
+    ).toBeNull();
+    expect(matchGroups('Bash', { command: 'git pull origin main' }, TRUSTED)).toBe(
+      'vcs-write:git pull',
+    );
+  });
+});
+
 describe('#1057 phase 3 commit 3: printf is neutral (NEUTRAL_PREFIXES)', () => {
   test('the #996 sample: a for-loop header using printf for progress text', () => {
     expect(
