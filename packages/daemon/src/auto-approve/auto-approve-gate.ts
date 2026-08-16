@@ -1335,6 +1335,19 @@ export class AutoApproveGate {
       return Promise.resolve(this.escalatePassthrough(input, summary));
     }
     if (this.deps.residualAction === 'deny') {
+      // Balance the buffer-window counter, exactly as the synchronous model-deny
+      // branch does before returning `{behavior:'deny'}` (the `markHandled` a
+      // screen up). `resolvePermission` already fired `onEvalStart` ->
+      // `onAutoApproveStart()` for this main-context eval; converting to a deny
+      // here without `markHandled` leaves `mainEvalsInFlight` stuck > 0, which
+      // buffers and then silently drops the NEXT escalated prompt's push
+      // (`QuestionPresenceTracker`'s "every onAutoApproveStart must be matched"
+      // invariant). Found in the epic-wide review (2026-08-16); the existing
+      // residual tests use `service:null`, which hits the no-service edge that
+      // returns before `onEvalStart`, so they never exercised this. `escalateMain`
+      // is always main context, so `isSubagentEvent` is false, but derive it
+      // rather than hardcode to stay correct if that ever changes.
+      this.markHandled(this.isSubagentEvent(input));
       // #1015: a residual-converted deny is exactly as invisible to the user
       // as any other deny -- report it through the same sink so cli.ts logs
       // it unconditionally, even though (unlike model-floor) it deliberately

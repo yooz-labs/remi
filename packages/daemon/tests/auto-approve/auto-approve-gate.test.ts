@@ -638,6 +638,10 @@ describe('AutoApproveGate residual_action (#1045 phase 6)', () => {
   let registry: SessionRegistry;
   let escalations: PermissionRequestHookInput[];
   let denied: Array<{ tool: string; source: DenySource; reasoning: string }>;
+  // Buffer-window cue balance (#484/#711): every `onEvalStart` for a main eval
+  // must be matched by exactly one `onHandled` or `onEscalate`, or
+  // `mainEvalsInFlight` sticks > 0 and the NEXT prompt's push is dropped.
+  let cues: { start: number; handled: number; escalate: number };
 
   function evaluator(
     result: AutoApproveResult,
@@ -674,6 +678,15 @@ describe('AutoApproveGate residual_action (#1045 phase 6)', () => {
         onAutoDenied: (input, source, reasoning) => {
           denied.push({ tool: input.tool_name, source, reasoning });
         },
+        onEvalStart: () => {
+          cues.start += 1;
+        },
+        onHandled: () => {
+          cues.handled += 1;
+        },
+        onEscalate: () => {
+          cues.escalate += 1;
+        },
         ...(opts.residualAction ? { residualAction: opts.residualAction } : {}),
       },
       SID,
@@ -697,6 +710,7 @@ describe('AutoApproveGate residual_action (#1045 phase 6)', () => {
     registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
     escalations = [];
     denied = [];
+    cues = { start: 0, handled: 0, escalate: 0 };
     configureLogger({ writeLog: () => {} });
   });
 
@@ -735,6 +749,13 @@ describe('AutoApproveGate residual_action (#1045 phase 6)', () => {
         reasoning: 'auto-approve had no evaluation service for this operation',
       },
     ]);
+    // The no-service edge returns before `onEvalStart` (no `start`), so the
+    // residual deny's `markHandled` closes a window that was never opened --
+    // exactly as the DEFAULT no-service edge fires `onEscalate` without a
+    // start (both via a close cue; the tracker floors `mainEvalsInFlight` at 0,
+    // so neither underflows). `markHandled` covers a silently-denied permission
+    // by its own doc, so this is the correct parallel, not a leak.
+    expect(cues).toEqual({ start: 0, handled: 1, escalate: 0 });
   });
 
   test('residualAction: "deny" -- an eval error converts to a reasoned deny', async () => {
@@ -750,6 +771,11 @@ describe('AutoApproveGate residual_action (#1045 phase 6)', () => {
     expect(denied[0]?.source).toEqual({ kind: 'residual', pattern: '' });
     expect(denied[0]?.reasoning).toContain('auto-approve evaluation failed');
     expect(denied[0]?.reasoning).toContain('test: llm provider down');
+    // Buffer-window balance (regression, epic-wide review 2026-08-16): the real
+    // eval opened the window (`start`), and the residual deny MUST close it via
+    // `markHandled` (`handled`) -- else `mainEvalsInFlight` sticks > 0 and the
+    // NEXT escalated prompt's push is silently dropped. Was start:1 handled:0.
+    expect(cues).toEqual({ start: 1, handled: 1, escalate: 0 });
   });
 
   test('residualAction: "deny" -- a primary escalate verdict converts, carrying its reasoning', async () => {
@@ -774,6 +800,8 @@ describe('AutoApproveGate residual_action (#1045 phase 6)', () => {
         reasoning: 'ambiguous: could delete user data',
       },
     ]);
+    // Same buffer-window balance on the primary-escalate-verdict path.
+    expect(cues).toEqual({ start: 1, handled: 1, escalate: 0 });
   });
 
   test('residualAction: "deny" does NOT affect a NON-binary (design/multichoice) escalate', async () => {
