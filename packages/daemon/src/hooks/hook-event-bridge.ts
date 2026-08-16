@@ -31,6 +31,7 @@
 import { DEFAULT_PERMISSION_LABELS, generateId } from '@remi/shared';
 import type { AgentStatus, Question, QuestionOption, UUID } from '@remi/shared';
 import type { QuestionRegistrationOutcome } from '../api/message-api.ts';
+import { precedentMayAuthorize, signatureForOperation } from '../auto-approve/precedent.ts';
 import type { HookServerEvents } from './hook-server.ts';
 import type {
   ElicitationHookInput,
@@ -506,6 +507,24 @@ export class HookEventBridge {
       // (e.g. "Force-push to main?"). AskUserQuestion carries authored content, so a
       // summary is only threaded for non-AUQ permission escalations.
       ...(summary ? { summary } : {}),
+      // #990: the untruncated, exact-match precedent signature -- see
+      // `precedentSignature`'s own doc on `Question` and `signatureForOperation`
+      // in `precedent.ts`. Set ONLY when `precedentMayAuthorize` would actually
+      // consult a signature for this (toolName, tool_input) -- today, `Bash`
+      // with a `command` field -- so the field's mere presence signals
+      // eligibility rather than leaving every reader to re-run the predicate.
+      // Harmless either way (a signature for an ineligible tool would simply
+      // never be consulted), but mirroring eligibility here keeps "does this
+      // question carry a usable precedent signature" a one-field check. Never
+      // set for a `toolQuestion` (AskUserQuestion/ExitPlanMode): those tool
+      // names are never in the eligible set, so this is always `{}` for them
+      // regardless -- computed unconditionally below rather than duplicated
+      // into both branches above, since the two are mutually exclusive by
+      // construction (`toolQuestion` only matches question-bearing tools,
+      // never `Bash`).
+      ...(precedentMayAuthorize(toolName, input.tool_input)
+        ? { precedentSignature: signatureForOperation(toolName, input.tool_input) }
+        : {}),
     };
   }
 
