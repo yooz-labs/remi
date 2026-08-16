@@ -44,6 +44,17 @@ describe('buildPrompt', () => {
     expect(system?.content).toContain('Approve bun test runs.');
   });
 
+  test('guidance block tells the model high-band ops escalate, not approve (#1040)', () => {
+    // #1040: the block used to say "return approve even for remote mutations /
+    // POST / writes", which the RISK CEILING then re-escalates -- a wasted call
+    // and a source of the model hedging against "mandatory" guidance. The block
+    // must instead name the high-band classes as escalate-directly.
+    const [system] = buildPrompt('Bash', { command: 'git push' }, 'Approve everything.');
+    expect(system?.content).not.toContain('return "approve" even for remote mutations');
+    expect(system?.content).toContain('RISK CEILING re-escalates these');
+    expect(system?.content).toContain('escalate them directly');
+  });
+
   test('empty instructions omit the USER GUIDANCE section', () => {
     const [system] = buildPrompt('Bash', { command: 'ls' }, '');
     expect(system?.content).not.toContain('HIGHEST PRIORITY, MANDATORY');
