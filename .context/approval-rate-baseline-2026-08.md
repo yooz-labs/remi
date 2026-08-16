@@ -204,3 +204,36 @@ branch:
 Re-measure against a real PermissionRequest corpus (REMI_HOOK_DEBUG capture)
 once one exists; #996's 50%+13% miss buckets are the population these grants
 target.
+
+## Phase 3 addendum (2026-08-15 — composed coverage, loop residue, curation, #962)
+
+Probes under the owner's REAL `~/.remi/config.toml` (trusted + allow list),
+through the real `evaluateDeterministic`, all on this branch:
+
+| shape | before | after |
+|---|---|---|
+| `ssh hallu nvidia-smi \| head -5` | null | approve (composed: "ssh hallu" + "head") |
+| `python3 analyze.py \| grep -c error` | null | approve (composed) |
+| `uv run pytest \| tail -5` | approve (already: `build-test:uv run pytest`) | approve (unchanged — not a phase-3 win; listed as a control) |
+| `git switch -c feature/new-thing` (#962) | null | approve (`vcs-write:git switch`) |
+| `git commit -c abc123 -m redo` (#962) | null | approve (`vcs-write:git commit`) |
+| `git status \| head && git checkout main && git pull -q` (#996 s3) | null | approve |
+| `for p in ...; do printf ...; gh pr checks $p \| head; done` (#996 s4) | null | approve |
+| `while read l; do grep x $l; done < list.txt` | null | approve (`read-only:grep`) |
+| `git -c core.hooksPath=/tmp/evil commit` | null | null (positional veto holds) |
+| `ssh hallu $(cat secret)` | null | null (`hasShellControl` refuses the command substitution before matching) |
+
+Curation: find/tr/comm/paste/nl/rev + sort/tree/diff (the latter three WITH
+scoped `-o`/`--output` vetoes — `sort -o out in` stays null), printf/read
+neutral, git fetch (vcs-read), git pull (vcs-write). #999's grammar table was
+found already implemented; the composed allow+group pass was the actual
+remaining blocker for allow-only prefixes.
+
+**Correction (#1062, adversarial review of this branch):** `awk` was
+curated here on the mistaken belief that `EXEC_SCOPED_VETOES`'s
+system()/pipe-to-shell regex covered every dangerous awk program. It does
+not — awk is Turing-complete and the regex is raw-text pattern matching, not
+a parser — and the bypass was proven by execution (arbitrary command exec via
+`cmd | getline`, file write/read via `print > "path"` / `getline < "path"`
+entirely inside the program's own quoted string). `awk` was removed from
+`read-only` entirely; see `permission-groups.ts`'s comment at that list.

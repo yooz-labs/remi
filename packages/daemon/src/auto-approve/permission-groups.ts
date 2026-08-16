@@ -18,15 +18,29 @@
  *    of those tokens legitimately appears in a curated read command, so the
  *    veto can only catch a write that slipped past a read prefix.
  *  - Commands whose read form can be flipped to a write by an AMBIGUOUS short
- *    flag (`sort -o`, `find -delete`, `awk` system(), `gh api -X`) are
- *    intentionally EXCLUDED from the curated set. Users can add them via the
- *    `allow` list at their own discretion (per-segment prefix, not substring).
+ *    flag are curated ONLY together with a veto that closes that specific flag:
+ *    `sort`/`tree`/`diff` are curated with a `SCOPED_VETOES` `-o`/`--output`
+ *    entry (#1057 phase 3), and `find` with `EXEC_PRIMITIVE_TOKEN` +
+ *    `MUTATION_TOKEN` covering `-delete`/`-exec`/`-fprint*`/`-fls`/`-okdir`,
+ *    consulted by `matchCoveredCommand` for every matched segment regardless
+ *    of which group owns the prefix. `gh api -X` remains genuinely EXCLUDED:
+ *    no veto closes its write flag. `awk` was tried and REMOVED (#1057 phase 3
+ *    adversarial review): it is a Turing-complete interpreter whose
+ *    `cmd | getline`, in-program `print > "file"`/`getline < "file"`, and
+ *    quote-spliced `sys""tem(` cannot be closed by any flag or pattern rule —
+ *    the exec-scoped regex caught three spellings, not the forms.
+ *    The two shapes are not interchangeable, and a future addition must check
+ *    whether a veto genuinely closes the flag (not merely a few spellings of it)
+ *    before assuming either precedent applies. Users can add an excluded
+ *    command via the `allow` list at their own discretion (per-segment
+ *    prefix, not substring).
  *  - Non-Bash tools match by bare tool name.
  *
  * The segment splitter and shell-control veto live in `shell-safety.ts`; the
  * user allow list uses the same primitives (#536).
  */
 
+import { looksLikeToolName } from './pattern-matcher.ts';
 import { COMMAND_WRAPPERS, SHELL_C_BINARIES } from './risk-bands.ts';
 import {
   isSensitiveWritePath,
@@ -1555,6 +1569,50 @@ export const BUILTIN_GROUPS: Readonly<Record<string, PermissionGroup>> = {
       'mdfind',
       'du',
       'df',
+      // #1057 phase 3 commit 3: evidence-based addition from the #996/#999
+      // corpora. `find` has a read form flippable to deletion / arbitrary
+      // file-write by a flag this list cannot see by name alone -- but it
+      // has a veto that fires on exactly that shape for EVERY matched
+      // segment, regardless of which curated prefix matched it:
+      // `EXEC_PRIMITIVE_TOKEN`'s `-delete`/`-exec`/`-execdir`/`-ok`/`-okdir`/
+      // `-fprint*`/`-fls` entries (shell-safety.ts, consulted by
+      // `matchCoveredCommand` unconditionally) PLUS the mirrored spellings in
+      // `MUTATION_TOKEN` (below) that close the quote-splitting gap the raw
+      // `EXEC_PRIMITIVE_TOKEN` regex alone missed (#1062 C3: `find . -fprin"t"
+      // /tmp/x` unquotes to `-fprint` and was never checked against anything
+      // but the still-quoted raw text). So the bare command name is safe to
+      // curate here.
+      //
+      // `awk` is deliberately ABSENT (#1062 C1, CRITICAL RCE, adversarial
+      // review of this branch). It was curated on the same theory as `find`
+      // above -- that `EXEC_SCOPED_VETOES`'s system()/pipe-to-shell entry
+      // covers every dangerous shape -- and that theory is false: awk is
+      // Turing-complete, and the veto is a raw-text regex looking for
+      // `system(`/`| sh` literally in the program text. Proven bypasses that
+      // regex never sees: `cmd | getline r` (arbitrary command execution with
+      // no `system(` token at all), `print > "/path"` and `getline < "/path"`
+      // (file write/read entirely inside the program's own quoted string,
+      // invisible to a check that only looks for shell redirection), and
+      // trivial string-splicing of the literal token itself (`sys""tem(`).
+      // None of these can be curated by a better flag/pattern rule -- the
+      // program body is an arbitrary script, not an argument list -- so `awk`
+      // is refused unconditionally at every level, like `curl`/`wget`/`perl`.
+      'find',
+      // `sort`/`tree`/`diff` are read transforms whose one write escape
+      // (`-o`/`--output`) is refused by their SCOPED_VETOES entries below --
+      // added together with the veto, never bare, because `sort -o out in`
+      // is a real file write the name alone cannot reveal.
+      'sort',
+      'tree',
+      'diff',
+      // Pure text/stream transforms verified to carry no destination-writing
+      // flag on either BSD or GNU builds: stdin/stdout (or their file
+      // operands, read-only) only.
+      'tr',
+      'comm',
+      'paste',
+      'nl',
+      'rev',
     ],
   },
   'vcs-read': {
@@ -1573,6 +1631,12 @@ export const BUILTIN_GROUPS: Readonly<Record<string, PermissionGroup>> = {
       'git show-ref',
       'git for-each-ref',
       'git shortlog',
+      // #1057 phase 3 commit 3: a remote READ. `git fetch` updates
+      // remote-tracking refs (`origin/main`, ...) from the remote; it never
+      // touches the working tree or the current branch -- that is `git
+      // merge`/`git pull`'s job, not fetch's. `git push` (the write half of
+      // remote sync) stays excluded at every level, unaffected by this.
+      'git fetch',
       // `git reflog` alone exposes `git reflog expire|delete` (history loss);
       // pin to the read-only subcommands.
       'git reflog show',
@@ -1693,6 +1757,12 @@ export const BUILTIN_GROUPS: Readonly<Record<string, PermissionGroup>> = {
       'git checkout',
       'git switch',
       'git merge',
+      // #1057 phase 3 commit 3: remote read (`git fetch`) + local merge into
+      // the current branch -- the write half is entirely local, exactly what
+      // this group already covers via `git merge` on its own. `git push`
+      // (the actual remote MUTATION) stays excluded at every level below,
+      // untouched by this addition.
+      'git pull',
       // #972: bare, not `git stash push`. `git stash` with no subcommand IS
       // push (git's own default), and `git stash pop` restores — both purely
       // local, both what this group exists to cover, and both were escalating
@@ -1735,6 +1805,23 @@ export const BUILTIN_GROUPS: Readonly<Record<string, PermissionGroup>> = {
  * command, so matching one can only mean a write snuck past a read prefix
  * (e.g. `git diff --output=f`, `biome check --write`, `find . -delete`).
  *
+ * `find`'s file-writing/exec primitives (`-fprintf`/`-fprint0`/`-fprint`/
+ * `-fls`/`-okdir`, alongside the pre-existing `-delete`/`-exec`/`-execdir`/
+ * `-ok`) are listed here too, in addition to `EXEC_PRIMITIVE_TOKEN`
+ * (shell-safety.ts) which already vetoes all of them (#1062 C3). The two are
+ * not redundant: `EXEC_PRIMITIVE_TOKEN` is consulted by `matchCoveredCommand`
+ * only against the RAW segment text, while THIS token is the one
+ * `readSegmentVeto` re-checks against the quote-NORMALIZED word list
+ * (`shellWords`, below). Before this addition, `find . -fprin"t" /tmp/x`
+ * unquoted to `-fprint` — a spelling `EXEC_PRIMITIVE_TOKEN`'s raw-text regex
+ * never saw (it only matched the still-quoted original) and that was ALSO
+ * absent from this list, so nothing caught it on either pass. `-fprint` is
+ * ordered ahead of `-fprintf`/`-fprint0` deliberately, but order does not
+ * actually matter for a `.test()` alternation with a trailing boundary
+ * group: a failed boundary check on the shorter alternative backtracks into
+ * the longer one at the same position, so both are still verified to match
+ * their full spelling by the adversarial test suite.
+ *
  * Exported for tests ONLY (#957 review). `shell-safety`'s per-segment-veto
  * tests need the real predicate rather than a hand-copied one: a duplicate
  * stays byte-identical right up until someone widens this list, at which
@@ -1742,7 +1829,7 @@ export const BUILTIN_GROUPS: Readonly<Record<string, PermissionGroup>> = {
  * they no longer have.
  */
 export const MUTATION_TOKEN =
-  /(^|\s)(-X|--method|--field|--raw-field|--input|--output|--write|--apply|--fix|-delete|-exec|-execdir|-ok)(\s|=|$)/;
+  /(^|\s)(-X|--method|--field|--raw-field|--input|--output|--write|--apply|--fix|-delete|-exec|-execdir|-okdir|-ok|-fprintf|-fprint0|-fprint|-fls)(\s|=|$)/;
 
 /** True if a name is a built-in group. */
 export function isKnownGroup(name: string): boolean {
@@ -1767,6 +1854,68 @@ const SCOPED_VETOES: ReadonlyArray<{ family: RegExp; flag: RegExp }> = [
   { family: /^sed\b/, flag: /(^|\s)(-i|--in-place)/ },
   // `bun test --preload <file>` executes an arbitrary file before the suite.
   { family: /^bunx?\b/, flag: /(^|\s)--preload(\s|=|$)/ },
+  // `sort` is a pure stream transform except `-o`/`--output`, which writes
+  // the result to an arbitrary file. Neither BSD nor GNU `sort` has any OTHER
+  // short flag containing the letter `o` (`-b -c -C -d -f -g -i -k -m -M -n
+  // -R -r -S -s -t -T -u -V -z -h` — none), so 'o' appearing ANYWHERE in a
+  // leading short-flag cluster can only mean `-o` is bundled into it, no
+  // matter which position: `-ro`/`-uo`/`-rno` all write exactly like bare
+  // `-o` (#1062 C2 — the previous `/(^|\s)(-o|--output)/` only matched `-o`
+  // at a word boundary, so `sort -ro out.txt in.txt` and `sort -uo
+  // ~/.ssh/authorized_keys pub.txt` walked straight past it). The trailing
+  // `-[A-Za-z]*o` half needs no boundary after its own `o` and no anchor at
+  // the flag's start beyond the leading `-`, only `(^|\s)` before it, so it
+  // cannot false-positive on `--output`: a `-` immediately followed by
+  // another `-` (the second dash of a long flag) breaks `[A-Za-z]*`'s
+  // required all-letters run at that starting position, and starting the
+  // match at the SECOND dash instead fails the `(^|\s)` boundary (it is
+  // preceded by the first dash, not whitespace/start) — hence the explicit
+  // `--output` alternative alongside it.
+  { family: /^sort\b/, flag: /(^|\s)-[A-Za-z]*o|(^|\s)--output/ },
+  // `tree -o filename` writes the listing to a file (no long form exists).
+  // Same bundled-cluster reasoning as `sort` above: no other `tree` short
+  // flag contains `o` (`-a -d -f -i -L -n ...`), so `tree -no out.txt`
+  // bundling `-n` (no indent) ahead of `-o` was the same bypass (#1062 C2).
+  { family: /^tree\b/, flag: /(^|\s)-[A-Za-z]*o/ },
+  // Neither BSD nor GNU diff has a `-o`/`--output` write flag today; this
+  // entry is defensive parity with `sort`/`tree` so a build that grows one
+  // (or a lookalike binary) stays refused, and the long-standing
+  // `diff ... -o /tmp/patch` adversarial pin keeps its null outcome. diff has
+  // no SHORT flag containing `o` besides `-o` itself (unlike sort/tree, it is
+  // not curated bare here — it is excluded from `read-only` entirely, see
+  // that list's comment — so the narrower word-boundary form is left as-is;
+  // widening it costs nothing today but buys no proven case either).
+  { family: /^diff\b/, flag: /(^|\s)(-o|--output)/ },
+  // `git fetch --upload-pack=/tmp/evil.sh <repo>` runs `/tmp/evil.sh` LOCALLY
+  // instead of the real `git-upload-pack` on the far end (proven by
+  // execution, #1062 C4, CRITICAL RCE) — `git`'s own manual documents this
+  // exact mechanism. `--receive-pack` is the identical primitive for the
+  // push/receive side, and `--exec` is `git fetch`'s own alias for
+  // `--upload-pack` (git-fetch(1): "When given, and the repository to fetch
+  // from is handled by git fetch-pack, --exec=<upload-pack> is passed to the
+  // command"). This fires for ANY `git` segment, not just `fetch` — the
+  // write-side `vcs-write` group already refuses all three via
+  // `write-flag-safety.ts`'s `dangerousLongFlags` (verified: `git pull
+  // --upload-pack=/tmp/evil.sh /tmp/repo` was already null before this
+  // change), so this entry closes the matching gap on the READ side, where
+  // `git fetch` sits in `vcs-read` with no `segmentVeto` of its own and
+  // therefore falls through to this module's default `readSegmentVeto` /
+  // `hasScopedVeto`.
+  //
+  // Known, deliberately UNFIXED residuals of the same remote-exec family
+  // (documented per review instruction, not silently left as an assumed
+  // gap):
+  //   - `git fetch ext::sh -c id` is inert UNLESS the user's own gitconfig
+  //     sets `protocol.ext.allow` (git refuses the `ext::` transport by
+  //     default); not a bypass of anything this veto promises.
+  //   - `--recurse-submodules` fetches each submodule's remote-configured
+  //     `.gitmodules` URL, which is within `git fetch`'s ordinary
+  //     remote-read nature (the same trust `git fetch origin` already
+  //     carries), not a new primitive.
+  //   - `--config-env=` is not matched by this veto at all; it is inert on
+  //     its own without a second, matching environment-variable segment
+  //     already present, and adding that detection is out of scope here.
+  { family: /^git\b/, flag: /(^|\s)(--upload-pack|--receive-pack|--exec)(\s|=)/ },
 ];
 
 /** True if a family-scoped veto flag applies to this segment. */
@@ -1811,6 +1960,62 @@ function readSegmentVeto(segment: string): boolean {
   const unquoted = shellWords(segment).join(' ');
   if (unquoted === segment) return false;
   return MUTATION_TOKEN.test(unquoted) || hasScopedVeto(unquoted);
+}
+
+/**
+ * The group-owned per-segment veto dispatch, shared by `matchGroups` and
+ * `matchComposedCommand` (#1057 phase 3, commit 1) — the SAME function, not a
+ * copy, for the reason `evaluateDeterministic` gives for its own extraction:
+ * a duplicated security check drifts the moment one copy is edited and the
+ * other is not (ADR 0015/0017's warning, applied here to this dispatch
+ * instead of the catastrophic-pattern list). Built once per Bash command from
+ * that command's own ADR 0026 pre-pass state (`redirectGrants`,
+ * `artifactPoison`), then called per matched segment with the OWNER whose
+ * prefix matched.
+ */
+function vetoedByOwnerFor(
+  redirectGrants: RedirectGrantWalk | null,
+  artifactPoison: readonly boolean[] | null,
+): (owner: string, segment: string, prefix: string, index: number) => boolean {
+  return (owner, segment, prefix, index) => {
+    // The sensitive-destination axis is a GLOBAL conjunct, checked before any
+    // owner's own proof and never delegated to one. Found by the ADR 0023
+    // adversarial pass: the owner union below is disjunctive, so a prefix
+    // owned by both `fs-write` and `scratch` (`cp`, `mv`, `mkdir`, `touch`,
+    // `tee`) was approved the moment scratch's laxer proof held — and
+    // `scratchTargetVeto` never consulted `isSensitiveWritePath`. Measured
+    // develop -> this branch at BALANCED, a level this ADR does not even
+    // claim to touch:
+    //
+    //   cp /tmp/a /tmp/.env         develop: escalate -> branch: scratch:cp
+    //   mv /tmp/a /tmp/id_rsa       develop: escalate -> branch: scratch:mv
+    //   cp /tmp/a /tmp/.git/config  develop: escalate -> branch: scratch:cp
+    //
+    // It also falsified a shipped claim in `config.ts` ("the write groups
+    // refuse sensitive destinations regardless of prefix ... credentials
+    // (.env, id_rsa)"), which is exactly the ADR 0011 failure mode.
+    //
+    // Hoisting it here keeps the monotonicity the union was written for --
+    // adding a group cannot introduce a sensitive destination, so it still
+    // can only ADD approvals -- while restoring the property ADR 0010 wants:
+    // a deny-shaped check is broad, and must not be escapable by finding
+    // some OTHER owner whose positive proof happens to be laxer.
+    //
+    // Scoped to the MUTATING owners, not applied globally. A first cut
+    // applied it to every owner and broke three read tests
+    // (`jq .version package.json`, and two `/dev/null` redirect cases):
+    // `segmentTouchesSensitivePath` is a WRITE-side axis, and READING a
+    // sensitive path is exactly what `read-only` exists to allow.
+    if (MUTATING_GROUPS.has(owner) && segmentTouchesSensitivePath(segment)) return true;
+    if (owner === 'scratch') {
+      return scratchTargetVeto(segment, redirectGrants?.stateBySegment[index]?.scratch ?? null);
+    }
+    if (owner === 'artifact-clean') {
+      return artifactCleanVeto(segment, prefix, artifactPoison?.[index] ?? true);
+    }
+    const veto = BUILTIN_GROUPS[owner]?.segmentVeto ?? readSegmentVeto;
+    return veto(segment);
+  };
 }
 
 /**
@@ -1890,45 +2095,7 @@ export function matchGroups(
     // no room for). That state is looked up BY SEGMENT INDEX from the single
     // walk done in the pre-pass, rather than re-tracked by a closure here —
     // see `RedirectGrantWalk`.
-    const vetoedByOwner = (owner: string, segment: string, prefix: string, index: number) => {
-      // The sensitive-destination axis is a GLOBAL conjunct, checked before any
-      // owner's own proof and never delegated to one. Found by the ADR 0023
-      // adversarial pass: the owner union below is disjunctive, so a prefix
-      // owned by both `fs-write` and `scratch` (`cp`, `mv`, `mkdir`, `touch`,
-      // `tee`) was approved the moment scratch's laxer proof held — and
-      // `scratchTargetVeto` never consulted `isSensitiveWritePath`. Measured
-      // develop -> this branch at BALANCED, a level this ADR does not even
-      // claim to touch:
-      //
-      //   cp /tmp/a /tmp/.env         develop: escalate -> branch: scratch:cp
-      //   mv /tmp/a /tmp/id_rsa       develop: escalate -> branch: scratch:mv
-      //   cp /tmp/a /tmp/.git/config  develop: escalate -> branch: scratch:cp
-      //
-      // It also falsified a shipped claim in `config.ts` ("the write groups
-      // refuse sensitive destinations regardless of prefix ... credentials
-      // (.env, id_rsa)"), which is exactly the ADR 0011 failure mode.
-      //
-      // Hoisting it here keeps the monotonicity the union was written for --
-      // adding a group cannot introduce a sensitive destination, so it still
-      // can only ADD approvals -- while restoring the property ADR 0010 wants:
-      // a deny-shaped check is broad, and must not be escapable by finding
-      // some OTHER owner whose positive proof happens to be laxer.
-      //
-      // Scoped to the MUTATING owners, not applied globally. A first cut
-      // applied it to every owner and broke three read tests
-      // (`jq .version package.json`, and two `/dev/null` redirect cases):
-      // `segmentTouchesSensitivePath` is a WRITE-side axis, and READING a
-      // sensitive path is exactly what `read-only` exists to allow.
-      if (MUTATING_GROUPS.has(owner) && segmentTouchesSensitivePath(segment)) return true;
-      if (owner === 'scratch') {
-        return scratchTargetVeto(segment, redirectGrants?.stateBySegment[index]?.scratch ?? null);
-      }
-      if (owner === 'artifact-clean') {
-        return artifactCleanVeto(segment, prefix, artifactPoison?.[index] ?? true);
-      }
-      const veto = BUILTIN_GROUPS[owner]?.segmentVeto ?? readSegmentVeto;
-      return veto(segment);
-    };
+    const vetoedByOwner = vetoedByOwnerFor(redirectGrants, artifactPoison);
     // The owner whose proof passed for the FIRST matched segment — the
     // segment whose prefix `matchCoveredCommand` returns — so the label
     // names the group that actually approved it, not the first registrant.
@@ -1960,6 +2127,162 @@ export function matchGroups(
     return `${name}:${toolName}`;
   }
   return null;
+}
+
+/** One `matchComposedCommand` verdict: the first allow-owned and first
+ *  group-owned prefix that contributed to covering the command, so the
+ *  caller's reasoning string can name one prefix from EACH source (proof
+ *  that the union, not either source alone, is what covered it). Either
+ *  field is null when that source contributed no segment at all — the
+ *  degenerate case exercised by an empty `allowPrefixes` or empty
+ *  `groupNames` (see the function doc). */
+export interface ComposedMatch {
+  readonly allowHit: string | null;
+  readonly groupHit: string | null;
+}
+
+/**
+ * Match a Bash command against the UNION of the user's own `allow` command
+ * prefixes and the enabled permission groups (#1057 phase 3, commit 1).
+ *
+ * `matchAllowPattern` and `matchGroups` each run their OWN independent
+ * `matchCoveredCommand` walk, and each demands EVERY segment be covered by
+ * ITS OWN source alone. A chain whose segments are covered only by the UNION
+ * of the two fails both walks even though a human reading the config would
+ * call it obviously covered:
+ *
+ *     ssh hallu nvidia-smi | head -2     allow=["ssh hallu"]; head in read-only
+ *     uv run pytest | tail -5            allow=["uv run"]; tail in read-only
+ *
+ * This runs ONE `matchCoveredCommand` walk over the union of prefixes instead,
+ * so `ssh hallu` and `head` can each cover their own segment in the same pass.
+ * `evaluateDeterministic` calls this ONLY after both `matchAllowPattern` and
+ * `matchGroups` have already missed on the SAME command — see that method's
+ * doc for why the ordering matters (unchanged reasoning strings, and outcomes,
+ * for every single-source chain).
+ *
+ * Composition never widens what either source alone would approve for a
+ * segment it matches:
+ *
+ *   - A segment whose matched prefix is owned ONLY by `allow` gets exactly
+ *     `matchAllowPattern`'s treatment — no group veto is layered on top, and
+ *     (as of #1062 C5, below) no ADR 0026 pre-pass rewrites the text it is
+ *     judged against either. The exec-primitive rule
+ *     (`hasExecPrimitive(seg) && !hasExecPrimitive(hit)`) still applies,
+ *     because `matchCoveredCommand` runs it unconditionally after any
+ *     `vetoForMatched` verdict, allow included.
+ *   - A segment whose matched prefix is owned by a GROUP gets `matchGroups`'s
+ *     own `vetoedByOwnerFor` dispatch, unchanged (sensitive-path conjunct,
+ *     `segmentVeto`, the scratch/artifact-clean per-index state walks) —
+ *     MINUS the redirect-grant pre-pass, per the note below.
+ *   - A prefix owned by BOTH sources approves the segment when EITHER
+ *     source's veto passes — the same first-passing-owner disjunction
+ *     `matchGroups` already uses across multiple group owners, with "allow"
+ *     simply added as one more candidate owner.
+ *
+ * This function does NOT run the ADR 0026 pre-passes (heredoc excision,
+ * `sanitizeCommandForRedirectGrants`) that `matchGroups` runs, and that is a
+ * DELIBERATE divergence from `matchGroups`, not an oversight to bring back in
+ * line. Those two pre-passes DELETE syntax (a redirect clause, a heredoc
+ * body) from the whole command text before per-segment judgment ever begins
+ * — they are a GROUP-ONLY feature (ADR 0026: the grant is earned by group
+ * membership, e.g. `fs-write`/`scratch`), and running them here applied that
+ * deletion to EVERY segment regardless of which source owns it, allow
+ * included. That was #1062's C5, a CONFIRMED bypass proven by execution:
+ * `python3 evil.py > out.txt && ls` (allow=["python3"], groups=["read-only",
+ * "fs-write"]) approved, because the `> out.txt` redirect was deleted by the
+ * `fs-write` grant before `python3 evil.py` — an ALLOW-owned segment — was
+ * ever handed to `hasShellControl`. `matchAllowPattern` alone refuses that
+ * exact segment (`hasShellControl` sees the live `>` and vetoes the whole
+ * command), so the composed pass was granting `allow` a capability
+ * `matchAllowPattern` itself does not have. Same story for a heredoc body
+ * on an allow-owned head (`ssh hallu bash <<EOF\n...\nEOF`): excision made
+ * the body invisible to judgment entirely.
+ *
+ * `matchGroups` (the pure-group path, called by `evaluateDeterministic`
+ * BEFORE this function) still runs both pre-passes exactly as before — a
+ * command whose ONLY qualifying segments are group-owned, and that NEEDS a
+ * redirect grant or heredoc excision to pass, already matched there and
+ * never reaches this function at all. The consequence is narrow and
+ * accepted: a chain that genuinely needs BOTH a group redirect grant AND an
+ * allow-owned prefix in the SAME command (`cat a > notes.md && ssh hallu x`,
+ * group redirect grant on the first segment, allow prefix on the second) now
+ * fails closed here and escalates, where before it silently approved. No
+ * group's redirect grant was ever scoped to interact with the allow list, so
+ * losing that composition is the same shape of loss as any other
+ * over-cautious escalation, not a missing feature.
+ */
+export function matchComposedCommand(
+  command: string,
+  allowPrefixes: readonly string[],
+  groupNames: readonly string[],
+): ComposedMatch | null {
+  const trimmed = command.trim();
+  if (trimmed === '') return null;
+  // Tool-name-shaped entries say nothing about shell commands (same filter
+  // `matchAllowPattern` applies) -- dropping them here is what stops
+  // `allow = ['Read']` from feeding "Read" into the union as a command prefix.
+  const commandAllowPrefixes = allowPrefixes.filter((p) => p.length > 0 && !looksLikeToolName(p));
+  const known = groupNames.filter(isKnownGroup);
+  if (commandAllowPrefixes.length === 0 && known.length === 0) return null;
+
+  // No heredoc-excision / redirect-grant pre-pass here — see the function
+  // doc's #1062 C5 note for why this path evaluates the RAW command, unlike
+  // `matchGroups`. `artifactCleanPoisonWalk` is still run, over the SAME
+  // `trimmed` text `matchCoveredCommand` below receives, so the two agree by
+  // segment index exactly as `matchGroups` requires of its own pre-pass.
+  const artifactPoison = known.includes('artifact-clean') ? artifactCleanPoisonWalk(trimmed) : null;
+
+  // Map each prefix to every owning source, in request order, `allow` first.
+  // A prefix present in both an allow entry and a group's command list keeps
+  // BOTH owners, exactly like `matchGroups` already does for a prefix two
+  // groups both list.
+  const prefixOwners = new Map<string, string[]>();
+  for (const p of commandAllowPrefixes) {
+    const owners = prefixOwners.get(p);
+    if (owners === undefined) prefixOwners.set(p, ['allow']);
+    else if (!owners.includes('allow')) owners.push('allow');
+  }
+  for (const name of known) {
+    for (const cmd of BUILTIN_GROUPS[name]?.commands ?? []) {
+      const owners = prefixOwners.get(cmd);
+      if (owners === undefined) prefixOwners.set(cmd, [name]);
+      else if (!owners.includes(name)) owners.push(name);
+    }
+  }
+
+  // `redirectGrants` is always null on this path (no pre-pass ran), so
+  // `scratch`'s owner-check below falls back to `scratchTargetVeto`'s
+  // no-tracked-directory case for every segment -- fails closed, same
+  // direction as the heredoc/redirect loss documented above.
+  const groupVeto = vetoedByOwnerFor(null, artifactPoison);
+  let allowHit: string | null = null;
+  let groupHit: string | null = null;
+  const hit = matchCoveredCommand(
+    trimmed,
+    [...prefixOwners.keys()],
+    readSegmentVeto,
+    (segment, matchedPrefix, index) => {
+      for (const owner of prefixOwners.get(matchedPrefix) ?? []) {
+        // `allow` carries no group veto of its own -- the allow path's only
+        // per-segment check is the exec-primitive rule, and
+        // `matchCoveredCommand` already applies that unconditionally after
+        // this callback returns, allow-owned or not.
+        const vetoed = owner === 'allow' ? false : groupVeto(owner, segment, matchedPrefix, index);
+        if (!vetoed) {
+          if (owner === 'allow') {
+            if (allowHit === null) allowHit = matchedPrefix;
+          } else if (groupHit === null) {
+            groupHit = matchedPrefix;
+          }
+          return false;
+        }
+      }
+      return true;
+    },
+  );
+  if (hit === null) return null;
+  return { allowHit, groupHit };
 }
 
 /**

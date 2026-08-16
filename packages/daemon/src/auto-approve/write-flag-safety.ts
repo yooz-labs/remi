@@ -187,13 +187,14 @@ const FLAG_POLICIES: readonly FlagPolicy[] = [
     // quiet/verbose. Absent, and therefore vetoed: -f (force / discard),
     // -D (force-delete), -n (--no-verify on commit), -B (force-create).
     //
-    // `c` is listed but currently DEAD (#962). `shell-safety.ts`'s
-    // `EXEC_SCOPED_VETOES` refuses any git segment carrying a standalone `-c`
-    // — it exists to stop `git -c core.hooksPath=… commit`, and cannot tell
-    // that from `git switch -c newbranch`, so it blocks both. Keeping the
-    // letter here documents the intent; #962 is the position-scoped fix that
-    // would make it real. Do not read its presence as "git switch -c is
-    // auto-approved" — it is not.
+    // `c` is now LIVE (#962, fixed): `git switch -c newbranch` and
+    // `git commit -c abc123` reach this list and are approved through it.
+    // `shell-safety.ts`'s `hasExecPrimitive` special-cases git with a
+    // position-scoped token walk (`gitSubcommandIndex`) instead of the old
+    // presence-only `EXEC_SCOPED_VETOES` entry: a `-c` BEFORE the subcommand
+    // (`git -c core.hooksPath=… commit`) is still refused there, before this
+    // list is ever consulted; a `-c` at or after the subcommand falls through
+    // to here, where `c` being on the safe list finally means what it says.
     family: /^git\b/,
     safeShortFlags: 'amAubcqv',
     dangerousLongFlags: [
