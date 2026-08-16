@@ -741,25 +741,10 @@ export function hasShellControl(segment: string): boolean {
   // `grep x < f` stays approvable). This narrows that only for the two device
   // prefixes bash gives socket semantics; every other `< target` is untouched.
   //
-  // Operator position from `masked`, target content dequoted from raw -- see
-  // the helper's doc for why neither view alone is sound.
+  // Operator position from `masked`, target content from raw -- see the
+  // helper's doc for why neither view alone is sound, and why a `$` in the
+  // target fails closed.
   if (hasNetworkDeviceInputRedirect(segment, masked)) {
-    return true;
-  }
-  // An input-redirect target built with a DOLLAR-QUOTE -- ANSI-C `$'...'` or
-  // locale `$"..."` -- cannot be vetted by the device check above, whose
-  // dequote (`replace(/['"\\]/g,'')`) leaves a stray `$` (`$'\x2fdev...'` ->
-  // `$/dev...`, `$"/dev/tcp/h/p"` -> `$/dev/tcp/h/p`), so the anchored device
-  // regex misses while bash decodes to a real socket path (#1063 fourth/fifth
-  // re-reviews). Rather than reimplement bash's `$'...'` decoder, fail closed:
-  // an input-redirect operator (detected on the MASKED text so a QUOTED `<`
-  // does not count) together with any `$'`/`$"` dollar-quote in the raw segment
-  // is refused. Over-refuses the rare `grep $'\t' < f` shape (a dollar-quoted
-  // arg + an unrelated file redirect) toward escalate, never toward a silent
-  // socket -- the safe direction (ADR 0010). A bare `$VAR` target stays the
-  // documented residual (it needs an ambient env value the command text cannot
-  // set without a separate, escalating assignment segment).
-  if (/(?<!<)<(?![<(])/.test(masked) && /\$['"]/.test(segment)) {
     return true;
   }
   return false;
@@ -788,9 +773,21 @@ export function hasShellControl(segment: string): boolean {
  * (read-write, carries a `>` the output-redirect check already vetoes) is not
  * an input-file operator. The target is the word after it, up to the next
  * whitespace or `<` (a second glued redirect is its own operator, found in its
- * own pass); its raw slice is dequoted of `'`/`"`/`\` before the device test.
- * ANSI-C `$'...'` targets are handled separately in `hasShellControl` (this
- * simple dequote cannot decode `\xNN`), by a fail-closed rule.
+ * own pass).
+ *
+ * A target containing `$` FAILS CLOSED. bash processes a redirect target through
+ * quote removal AND expansion (parameter `$x`/`${x}`, ANSI-C `$'\xNN'`, locale
+ * `$"..."`, arithmetic `$((...))`), any of which can materialize `/dev/tcp/...`
+ * from a literal that does not contain it -- `$x/dev/tcp/h/p`, `/dev/t${x}cp/h/p`
+ * (empty `x`), `$'\x2fdev\x2ftcp...'` all open the socket. Five re-reviews chased
+ * these one transformation at a time; the general truth is that a `$`-bearing
+ * target is not statically resolvable, so it is refused (ADR 0010, err broad in
+ * the deny direction). This over-refuses an ordinary variable target like
+ * `< $LOG` / `< $HOME/notes.txt` toward escalate -- accepted; a `<`-redirect
+ * from a variable path is uncommon, and the reverse was a live egress. A target
+ * with NO `$` is a static literal: dequote `'`/`"`/`\` and match the device
+ * prefix (command substitution `$(...)`/backtick and process substitution `<(`
+ * are already refused by `hasShellControl` before this runs).
  */
 function hasNetworkDeviceInputRedirect(segment: string, masked: string): boolean {
   for (let i = 0; i < masked.length; i++) {
@@ -805,7 +802,10 @@ function hasNetworkDeviceInputRedirect(segment: string, masked: string): boolean
     let k = j;
     while (k < masked.length && masked[k] !== ' ' && masked[k] !== '\t' && masked[k] !== '<') k++;
     if (k === j) continue;
-    const dequoted = segment.slice(j, k).replace(/['"\\]/g, '');
+    const rawTarget = segment.slice(j, k);
+    // Any expansion in the target is unresolvable -> refuse (see doc).
+    if (rawTarget.includes('$')) return true;
+    const dequoted = rawTarget.replace(/['"\\]/g, '');
     if (NETWORK_DEV_PATH_RE.test(dequoted)) return true;
   }
   return false;

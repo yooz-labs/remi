@@ -245,6 +245,27 @@ describe('hasShellControl - #1063 network-device input redirect', () => {
     expect(hasShellControl('cat foo< $"/dev/tcp/h/p"')).toBe(true);
   });
 
+  test('MUST VETO: parameter expansion that materializes the device path', () => {
+    // bash expands a redirect target: an empty `$x` prefix (`$x/dev/tcp/...`)
+    // or infix (`/dev/t${x}cp/...`) opens the socket while the literal does not
+    // begin `/dev/tcp/`. The general rule -- a `$` in the target is
+    // unresolvable, so fail closed -- subsumes ANSI-C, locale, and this (#1063
+    // sixth re-review).
+    expect(hasShellControl('cat < $x/dev/tcp/127.0.0.1/1')).toBe(true);
+    expect(hasShellControl('cat < ${x}/dev/tcp/h/p')).toBe(true);
+    expect(hasShellControl('cat < /dev/t${x}cp/127.0.0.1/1')).toBe(true);
+    expect(hasShellControl('head < ${x}/dev/udp/h/1')).toBe(true);
+  });
+
+  test('ACCEPTED over-refusal: a variable input-redirect target escalates', () => {
+    // The fail-closed `$`-in-target rule cannot tell `< $LOG` from
+    // `< $x/dev/tcp/...`, so it refuses both. A `<`-redirect from a variable
+    // path is uncommon and escalate is the safe direction; the reverse was a
+    // live socket. NOTE: a `$` OUTSIDE the redirect target does not trigger it.
+    expect(hasShellControl('sort < $TMPFILE')).toBe(true);
+    expect(hasShellControl('cat < $HOME/notes.txt')).toBe(true);
+  });
+
   test('MUST NOT VETO: a dollar-quote with NO input redirect present', () => {
     // The fail-closed rule needs a real (unmasked) input-redirect operator, so
     // an ordinary dollar-quoted arg is untouched -- these are common idioms.
