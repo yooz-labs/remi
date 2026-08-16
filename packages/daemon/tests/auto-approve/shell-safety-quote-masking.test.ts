@@ -171,6 +171,15 @@ describe('hasShellControl - #1063 network-device input redirect', () => {
     expect(hasShellControl('cat<"/dev/tcp/h/1"')).toBe(true);
   });
 
+  test('MUST VETO: a SECOND glued redirect to the device behind a benign first', () => {
+    // `cat /dev/null</dev/null</dev/tcp/H/P` opens the socket in bash (both
+    // redirects apply left-to-right); a greedy first-`<` capture read only
+    // `/dev/null` and approved it (#1063 second re-review). Every `<`-glued
+    // field must be checked.
+    expect(hasShellControl('cat /dev/null</dev/null</dev/tcp/127.0.0.1/1')).toBe(true);
+    expect(hasShellControl('cat a<b</dev/udp/h/53')).toBe(true);
+  });
+
   test('MUST NOT VETO: an ordinary file input redirect (reads, never sockets)', () => {
     expect(hasShellControl('grep x < list.txt')).toBe(false);
     expect(hasShellControl('cat < ./config.ini')).toBe(false);
@@ -195,10 +204,20 @@ describe('hasShellControl - #1063 network-device input redirect', () => {
     expect(hasShellControl('cat < x/dev/tcp/h/1')).toBe(false);
   });
 
-  test('MUST NOT VETO: a quoted literal that merely CONTAINS the device text', () => {
-    // `'< /dev/tcp/x is bad'` is one data argument to grep, not a redirect --
-    // shellWords keeps it a single token, so the operator scan never sees a
-    // `<` operator. Pins that the quote-aware fix did not over-refuse.
+  test('a quoted literal with the device SPACED after < is not a redirect', () => {
+    // `'< /dev/tcp/x is bad'` is one grep argument: the `<` is spaced from the
+    // path, so the target capture is empty and nothing vetoes. This is the
+    // boundary a real spaced redirect (`cat < /dev/tcp/h/p`) does NOT share --
+    // there shellWords splits `<` into its own operator token.
     expect(hasShellControl("grep '< /dev/tcp/x is bad' f")).toBe(false);
+  });
+
+  test('ACCEPTED over-refusal: a space-less quoted device literal vetoes', () => {
+    // After shellWords removes the quotes, `x</dev/tcp/y` is byte-identical to
+    // an unquoted glued redirect, so it vetoes even though this grep opens no
+    // socket. Documented, not a bug: quote-safe socket detection cannot tell
+    // the two apart, and erring toward escalate (ADR 0010) beats the reverse,
+    // which was a live egress. Niche; nobody greps for that literal.
+    expect(hasShellControl("grep 'x</dev/tcp/y' f")).toBe(true);
   });
 });

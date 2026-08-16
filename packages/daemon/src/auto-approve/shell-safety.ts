@@ -754,14 +754,31 @@ export function hasShellControl(segment: string): boolean {
 }
 
 /**
+ * Every single-`<` input-redirect target glued inside one whitespace-free
+ * token. A `<` that is NOT part of `<<`/`<<<` (heredoc / here-string, which
+ * open no socket) nor `<(` (process substitution, refused upstream), with the
+ * target being the run of non-`<`, non-space chars after it. Global so a token
+ * carrying MORE THAN ONE redirect (`/dev/null</dev/null</dev/tcp/h/p`) yields
+ * EACH target, not just the first -- a greedy first-capture missed the second
+ * `<` and approved the socket behind a benign first target (#1063 re-review).
+ * A `<` immediately followed by a space captures the empty string, so a
+ * quoted literal whose `<` is spaced from the device (`'< /dev/tcp/x is bad'`)
+ * does not read as a redirect here.
+ */
+const GLUED_INPUT_REDIRECT_RE = /(?<!<)<(?!<)([^<\s]*)/g;
+
+/**
  * True if `segment` redirects input from a bash network device
  * (`/dev/tcp/...` or `/dev/udp/...`) -- an outbound socket open. Scans the
  * `shellWords` tokenization so quoting/escaping of the target cannot hide it
- * (#1063). Two operator shapes: a standalone `<`/`N<` token whose NEXT token
- * is the device, and a glued `cmd</dev/tcp/...` token (no space). Heredoc
- * (`<<`)/here-string (`<<<`) tokens open no socket and are skipped; process
- * substitution (`<(`) is already refused by `hasShellControl`'s substitution
- * check before this runs.
+ * (#1063): a standalone `<`/`N<` operator token whose NEXT token is the
+ * device, or one or more `<`-glued targets inside a single token.
+ *
+ * Accepted over-refusal (ADR 0010, err broad in the deny direction): once
+ * `shellWords` has removed the quotes, a space-less quoted literal that
+ * happens to contain `x</dev/tcp/y` is indistinguishable from a real glued
+ * redirect, so it vetoes. That is a niche nuisance escalation; the reverse
+ * (a masked-text scan that let `< "/dev/tcp/..."` through) was a live egress.
  */
 function hasNetworkDeviceInputRedirect(segment: string): boolean {
   const tokens = shellWords(segment);
@@ -772,9 +789,10 @@ function hasNetworkDeviceInputRedirect(segment: string): boolean {
       if (NETWORK_DEV_PATH_RE.test(tokens[i + 1] ?? '')) return true;
       continue;
     }
-    // Glued form `cmd</dev/tcp/...` (quote-removed, so no space in the token).
-    const glued = /(?<!<)\d*<(?![<(])(\S+)$/.exec(t);
-    if (glued && NETWORK_DEV_PATH_RE.test(glued[1] ?? '')) return true;
+    // One or more `<`-glued targets inside this (quote-removed) token.
+    for (const m of t.matchAll(GLUED_INPUT_REDIRECT_RE)) {
+      if (NETWORK_DEV_PATH_RE.test(m[1] ?? '')) return true;
+    }
   }
   return false;
 }
