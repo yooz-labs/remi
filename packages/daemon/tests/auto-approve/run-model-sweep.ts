@@ -488,7 +488,16 @@ async function runModel(model: string): Promise<Result[]> {
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
-const defaultModels = ['yooz-light-v3', 'yooz-quality-v3'];
+// The SHIPPING default on macOS Apple Silicon (#822/#834): `auto_approve.model`
+// defaults to the HF id `YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx`, which the
+// engine serves under the internal id `yooz-instruct-4b`. That is what a stock
+// gate actually evaluates with, so it leads the sweep. `yooz-quality-v3` (the
+// older 4B tier) is kept as a contrast; `yooz-light-v3` (0.8B) is NOT a default
+// — pass it explicitly to reproduce the "everything is a remote write" failure
+// it exhibits. (The old default here was the two engine tiers, from before the
+// qat-lean model became the product default — a stale "measures what ships"
+// claim, corrected #972.)
+const defaultModels = ['YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx', 'yooz-quality-v3'];
 const models = process.argv.length > 2 ? process.argv.slice(2) : defaultModels;
 
 /**
