@@ -74,7 +74,7 @@ The first run over-flagged; both were fixed and are pinned by unit tests:
 - **Post-guard reasoning is excluded.** `rm /tmp/pp.bak` came back with
   "Risk ceiling (#976): …", i.e. a post-LLM guard made the decision, not the
   model. Attributing that to the model reading the scratch rule backwards
-  (`scratch-inverted`) is a mis-attribution; the classifier now returns `[]`
+  (`scratch-inverted`) is a misattribution; the classifier now returns `[]`
   when the reasoning starts with a guard marker (deny floor / risk ceiling /
   trust boundary / counterfactual / session precedent / authority boundary).
 

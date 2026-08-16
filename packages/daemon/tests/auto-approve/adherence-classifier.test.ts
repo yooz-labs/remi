@@ -50,7 +50,7 @@ describe('invented-remote', () => {
 });
 
 describe('post-guard override is not model adherence', () => {
-  // Live-sweep mis-attribution (2026-08-16): `rm /tmp/pp.bak` came back
+  // Live-sweep misattribution (2026-08-16): `rm /tmp/pp.bak` came back
   // `escalate` with "Risk ceiling (#976): model approved a high-risk
   // operation…". The MODEL approved correctly; a post-LLM guard escalated. That
   // is not the model reading the scratch rule backwards, so it must not flag.

@@ -43,7 +43,7 @@ const GUIDANCE_PATTERN =
  * came back `escalate` with "Risk ceiling (#976): model approved a high-risk
  * operation…", i.e. the MODEL approved correctly and the CEILING escalated —
  * flagging that as the model reading the scratch rule backwards
- * (`scratch-inverted`) is a mis-attribution. Exclude these from classification.
+ * (`scratch-inverted`) is a misattribution. Exclude these from classification.
  */
 const POST_GUARD_PATTERN =
   /^\s*(deny floor|risk ceiling|trust boundary|counterfactual|session precedent|authority boundary)\b/i;
@@ -63,7 +63,7 @@ export function classifyAdherence(
 
   // A decision a post-LLM guard produced is not the model's judgment, so it
   // carries no signal about model adherence (see POST_GUARD_PATTERN). Skip it
-  // rather than mis-attribute the guard's reasoning to the model.
+  // rather than misattribute the guard's reasoning to the model.
   if (POST_GUARD_PATTERN.test(reasoning)) return [];
 
   const violations: AdherenceViolation[] = [];
