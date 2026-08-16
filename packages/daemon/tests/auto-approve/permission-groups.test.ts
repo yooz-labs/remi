@@ -1312,6 +1312,99 @@ describe('#1057 phase 2 commit 3: heredoc excision (group path only)', () => {
 });
 
 /**
+ * #1057 phase 2, commit 4: `sed -i` under a strict script-shape allowlist.
+ * Every script the command would actually run must be a single, unconditional
+ * `s///` or `y///` -- no address prefix, no brace block, no `w`/`e`/`r`/`R`
+ * side-command, no chained `;`. Destinations still go through the same
+ * `segmentTouchesSensitivePath` axis every other fs-write prefix does.
+ */
+describe('#1057 phase 2 commit 4: sed -i script-shape allowlist', () => {
+  describe('covered', () => {
+    const cases: Array<[string, string]> = [
+      ["sed -i 's/a/b/' file.txt", 'fs-write:sed -i'],
+      ["sed -i 's/a/b/g' f", 'fs-write:sed -i'],
+      ["sed -i -e 's/a/b/' f", 'fs-write:sed -i'],
+      ["sed -i 'y/abc/xyz/' f", 'fs-write:sed -i'],
+      // BSD empty-suffix form: `-i` and the following literal `''` are TWO
+      // tokens, so this still starts with the curated `sed -i ` prefix.
+      ["sed -i '' 's/a/b/' f", 'fs-write:sed -i'],
+    ];
+    for (const [cmd, expected] of cases) {
+      test(cmd, () => expect(bash(cmd, WRITE_GROUPS)).toBe(expected));
+    }
+  });
+
+  describe('MUST NOT cover: named adversaries (falls through to the LLM)', () => {
+    const mustBeNull: Array<[string, string]> = [
+      [
+        "sed -i 's/x/y/w /etc/cron.d/evil' f",
+        'the w side-command writes an ARBITRARY second file, unrelated to the destination axis',
+      ],
+      ["sed -i 's/x/y/e' f", 'the e flag executes the substitution result as a shell command'],
+      ["sed -i '1,5d' f", 'an address-range prefix, not a bare s/// or y///'],
+      ["sed -i '/x/d' f", 'an address-regex prefix, not a bare s/// or y///'],
+      [
+        "sed -i -e 's/a/b/' -e 'e date' f",
+        'a SECOND -e script fails the shape even though the first one passes',
+      ],
+      [
+        'sed --file=evil.sed -i f',
+        '--file loads an ARBITRARY external script, refused by the flag axis',
+      ],
+    ];
+    for (const [cmd, why] of mustBeNull) {
+      test(`${JSON.stringify(cmd)} — ${why}`, () => expect(bash(cmd, WRITE_GROUPS)).toBeNull());
+    }
+  });
+
+  describe('destination axis: still refused regardless of script shape', () => {
+    for (const target of ['.env', 'package.json']) {
+      test(`sed -i 's/a/b/' ${target}`, () =>
+        expect(bash(`sed -i 's/a/b/' ${target}`, WRITE_GROUPS)).toBeNull());
+    }
+  });
+
+  test('read-side SCOPED_VETO is untouched: sed -n with -i still refuses', () => {
+    // Matched via read-only's `sed -n` prefix, not fs-write's `sed -i` --
+    // `hasScopedVeto` (permission-groups.ts) refuses any sed segment
+    // carrying `-i`/`--in-place` regardless of which prefix it matched.
+    expect(bash("sed -n -i 's/a/b/' f", ALL)).toBeNull();
+  });
+
+  test('without fs-write requested, sed -i matches no prefix at all', () => {
+    expect(bash("sed -i 's/a/b/' f", ALL)).toBeNull();
+  });
+
+  test('the backup-suffix VALUE is checked independently of the destination axis', () => {
+    // A `*` or `/` in an ATTACHED suffix can redirect GNU sed's backup write
+    // to an arbitrary path (sed expands `*` to the target's own name and
+    // treats the result as a path) -- a bypass `segmentTouchesSensitivePath`
+    // cannot see, since the suffix is a flag VALUE, not the final file
+    // argument. Both refused before the script or destination is even reached.
+    expect(bash("sed -i'*/tmp/../../etc/cron.d/evil' 's/a/b/' f", WRITE_GROUPS)).toBeNull();
+    expect(bash("sed -i'../../../etc/passwd' 's/a/b/' f", WRITE_GROUPS)).toBeNull();
+  });
+
+  test('#959 final pass invariant: sed -i -Zqx is refused by the flag axis', () => {
+    // Pinned directly here too (in addition to the machine-checked walk over
+    // BUILTIN_GROUPS above): an unclassified flag must be refused.
+    expect(bash('sed -i -Zqx target', WRITE_GROUPS)).toBeNull();
+  });
+
+  describe('documented residual: matchPrefix cannot see an ATTACHED -i suffix', () => {
+    // `matchPrefix` requires a literal space after the curated prefix
+    // (`segment.startsWith('sed -i ')`), which GNU's no-separator spelling
+    // never satisfies -- `sed -i.bak ...` does not start with `sed -i `, so
+    // it never reaches `sedScriptShapeVeto`, or any veto at all: it matches
+    // NO curated prefix and falls through, unconditionally safe (escalate),
+    // never unsafe. See the residuals comment above `sedScriptShapeVeto`.
+    test("sed -i.bak 's/a/b/' f — verified null, not covered", () => {
+      expect(bash("sed -i.bak 's/a/b/' f", WRITE_GROUPS)).toBeNull();
+    });
+  });
+});
+
+/**
  * #1001. `deny_groups` was answered by `matchGroups`, the same function that
  * answers the allow question. ADR 0010 says allow matching is PRECISE and deny
  * matching is BROAD; this was the one place a deny question was asked of a

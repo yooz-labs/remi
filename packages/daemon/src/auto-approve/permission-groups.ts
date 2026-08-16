@@ -84,6 +84,194 @@ function hasWriteGroupPositionalVeto(segment: string): boolean {
   return false;
 }
 
+// ---------------------------------------------------------------------------
+// `sed -i` under a strict script-shape allowlist (#1057 phase 2, commit 4).
+// Placed here, in `permission-groups.ts` alongside the rest of fs-write's
+// veto plumbing, rather than in `write-flag-safety.ts`: the flag axis there
+// answers "is every FLAG safe", but what a permitted sed SCRIPT is allowed
+// to say is a shape no flag-letter allowlist can express, and it needs to
+// interact with `hasUnsafeWriteFlag`'s call site to normalize `-i`'s attached
+// suffix first (see `normalizeSedInPlaceSuffix`) -- both are decisions this
+// file already owns for every other write prefix (`artifactCleanVeto`,
+// `scratchTargetVeto`).
+// ---------------------------------------------------------------------------
+
+/**
+ * `sed -i` accepts an attached backup suffix with no separator (`-i.bak`).
+ * `write-flag-safety.ts`'s short-option scan checks every alphabetic
+ * character of a `-`-prefixed token as a possible flag letter (by design —
+ * see that module's doc), so an unnormalized `.bak` would need ITS OWN
+ * letters on the safe list, which is not what that list means. Normalizes
+ * every `-i<suffix>` token on a `sed` segment to bare `-i` before handing it
+ * to `hasUnsafeWriteFlag`; every other token, and every non-sed segment,
+ * passes through untouched.
+ *
+ * This is also exactly correct GNU getopt semantics, not a hack: `-i` takes
+ * an OPTIONAL argument, so once it appears, getopt consumes the REST of that
+ * token as its value regardless of what letters are in it — `-in` really is
+ * `-i` with suffix `n`, not `-i -n`. The suffix's own SHAPE (must contain no
+ * path separator or `*`) is verified independently by `sedScriptShapeVeto`,
+ * which sees the original, unnormalized token.
+ */
+function normalizeSedInPlaceSuffix(segment: string): string {
+  if (!/^sed\b/.test(segment)) return segment;
+  return shellWords(segment)
+    .map((w) => (/^-i.+$/.test(w) ? '-i' : w))
+    .join(' ');
+}
+
+/**
+ * Split `text` on UNESCAPED occurrences of the single delimiter character
+ * `d`: a `d` preceded by a backslash is literal and does not split, and the
+ * backslash+`d` pair is kept verbatim in the field (exactly as sed's own
+ * parser would see it — this function only needs to find the field
+ * boundaries, not unescape their contents).
+ */
+function splitOnUnescapedDelimiter(text: string, d: string): string[] {
+  const fields: string[] = [];
+  let current = '';
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '\\' && i + 1 < text.length) {
+      current += c + text[i + 1];
+      i++;
+      continue;
+    }
+    if (c === d) {
+      fields.push(current);
+      current = '';
+      continue;
+    }
+    current += c;
+  }
+  fields.push(current);
+  return fields;
+}
+
+/**
+ * True if `script` is EXACTLY one `s<D>...<D>...<D>[gIp0-9]*` or
+ * `y<D>...<D>...<D>` sed command — `D` any single non-alphanumeric,
+ * non-backslash delimiter, the three delimited fields containing no
+ * unescaped `D`. Anything else fails closed: an address prefix (`/re/s///`,
+ * `1,5s///`) and a brace block both fail the leading-letter check below (the
+ * first character is not literally `s`/`y`); a trailing side-command
+ * (`w file`, `W`, `e`, `r`, `R`) fails the `y`'s empty-trailer or the `s`'s
+ * `[gIp0-9]*` check; a `;`-chained second command is refused outright,
+ * rather than trusted to the shape checks alone, because it is the one
+ * adversary this function must make trivially auditable: this script
+ * contains no `;`, full stop.
+ */
+function sedScriptShapeOk(script: string): boolean {
+  if (script.includes(';')) return false;
+  const cmd = script[0];
+  if (cmd !== 's' && cmd !== 'y') return false;
+  const d = script[1];
+  if (d === undefined || d === '\\' || /[A-Za-z0-9]/.test(d)) return false;
+  const fields = splitOnUnescapedDelimiter(script.slice(1), d);
+  if (fields.length !== 4) return false;
+  const trailing = fields[3] ?? '';
+  return cmd === 'y' ? trailing === '' : /^[gIp0-9]*$/.test(trailing);
+}
+
+/**
+ * Script-shape veto for a `sed` segment: every script the command would
+ * actually run — the bare positional script, or each `-e`/`--expression`
+ * value — must pass `sedScriptShapeOk`. A `-f`/`--file` script (loaded from
+ * an arbitrary external file) is not modeled here at all, because it is
+ * already refused by the flag axis (`-f`/`--file` are not on `sed`'s safe
+ * list in `write-flag-safety.ts`) before this veto's verdict can matter.
+ *
+ * `-i`'s own backup-suffix VALUE gets a second, independent check here, on
+ * the ORIGINAL (unnormalized) token: a suffix containing `/` or `*` can
+ * redirect GNU sed's backup to an arbitrary path (sed expands `*` to the
+ * target's own name and treats the result as a path), which is a
+ * destination-axis bypass `segmentTouchesSensitivePath` never sees — the
+ * suffix is a flag VALUE, not the command's final file argument.
+ */
+function sedScriptShapeVeto(segment: string): boolean {
+  if (!/^sed\b/.test(segment)) return false;
+  const words = shellWords(segment);
+  const hasScriptFlag = words.some(
+    (w) => w === '-e' || w === '--expression' || w.startsWith('--expression='),
+  );
+  let positionalConsumed = false;
+  for (let i = 1; i < words.length; i++) {
+    const w = words[i] as string;
+    if (w === '') continue;
+    if (w === '-i' || /^-i.+$/.test(w)) {
+      const suffix = w === '-i' ? '' : w.slice(2);
+      if (!/^[A-Za-z0-9._-]*$/.test(suffix)) return true;
+      if (w === '-i' && words[i + 1] === '') i++; // BSD `-i ''`: consume the empty suffix
+      continue;
+    }
+    if (w === '--in-place' || w.startsWith('--in-place=')) {
+      const suffix = w.startsWith('--in-place=') ? w.slice('--in-place='.length) : '';
+      if (!/^[A-Za-z0-9._-]*$/.test(suffix)) return true;
+      continue;
+    }
+    if (w === '-e' || w === '--expression') {
+      const script = words[i + 1];
+      if (script === undefined || !sedScriptShapeOk(script)) return true;
+      i++;
+      continue;
+    }
+    if (w.startsWith('--expression=')) {
+      if (!sedScriptShapeOk(w.slice('--expression='.length))) return true;
+      continue;
+    }
+    // Every other flag this family allows takes no argument; an unrecognized
+    // one is the flag axis's job, not this veto's.
+    if (w.startsWith('-')) continue;
+    // The bare positional script -- only the FIRST such token, and only when
+    // no `-e`/`--expression` supplied one instead; every later positional is
+    // a FILE argument (covered independently by `segmentTouchesSensitivePath`).
+    if (!hasScriptFlag && !positionalConsumed) {
+      positionalConsumed = true;
+      if (!sedScriptShapeOk(w)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Two residuals, DECLARED rather than open bugs, mirroring how `scratch` and
+ * `artifact-clean` document their own honest limits above.
+ *
+ * 1. `matchPrefix` (shell-safety.ts) requires the curated prefix to be
+ *    followed by a literal SPACE (`segment === p || segment.startsWith(p +
+ *    ' ')`), which is exactly right for every OTHER prefix in this file but
+ *    cannot match GNU's ATTACHED `-i` suffix spelling: `sed -i.bak 's/a/b/'
+ *    f` does not start with `sed -i ` (the fifth character after `-i` is
+ *    `.`, not a space), so it never reaches `sedScriptShapeVeto` at all --
+ *    the whole command falls through UNMATCHED. Verified, not assumed:
+ *    `sed -i.bak 's/a/b/' f` returns null under every group. Fixing this
+ *    would mean rewriting the command text before prefix-matching runs (the
+ *    same shape of pre-pass `sanitizeCommandForRedirectGrants` and
+ *    `exciseHeredocsForGroups` use), and doing so safely requires the
+ *    downstream veto to agree on which token is the suffix versus the
+ *    script -- a second, independent walk that must never disagree with the
+ *    first (#1000's law) for a feature already safe on its escalate side.
+ *    Descoped rather than built under time pressure; the fallback is
+ *    unconditionally safe (escalate to the LLM), never unsafe.
+ * 2. This veto's `-i`/`-e` token walk assumes GNU getopt semantics
+ *    throughout (a bare `-i` takes no argument unless one is attached in
+ *    the SAME token; a BSD-style separate, non-empty suffix argument is not
+ *    recognized). Real BSD/macOS sed disagrees: its `-i` MANDATORILY
+ *    consumes the very next token as the backup suffix, so
+ *    `sed -i 's/a/b/' file` -- this file's own first positive example --
+ *    would, on a real BSD sed, use `'s/a/b/'` as the suffix and `file` as
+ *    the (almost certainly invalid) script. This matcher cannot know which
+ *    `sed` a bare `$PATH` lookup will resolve to, and there is no shape
+ *    that reads identically under both getopt conventions once anything
+ *    beyond a bare `-i ''` is involved -- the "BSD/GNU `-i` ambiguity ... at
+ *    the token layer" this feature's design brief named as a legitimate
+ *    stop condition. Accepted rather than solved because it is not a
+ *    SAFETY gap: the divergent (BSD) reading fails closed on its own --
+ *    sed errors out on a bogus script, or at worst writes a confusingly
+ *    named backup -- never a sensitive-destination write or code execution,
+ *    which remains this veto's only chartered property.
+ */
+
 /**
  * Every group that can MUTATE the filesystem, and therefore every group whose
  * matches must clear the sensitive-destination axis (`sensitive-paths.ts`).
@@ -134,9 +322,10 @@ const MUTATING_GROUPS: ReadonlySet<string> = new Set([
  */
 function writeGroupVeto(segment: string): boolean {
   return (
-    hasUnsafeWriteFlag(segment) ||
+    hasUnsafeWriteFlag(normalizeSedInPlaceSuffix(segment)) ||
     hasWriteGroupPositionalVeto(segment) ||
-    segmentTouchesSensitivePath(segment)
+    segmentTouchesSensitivePath(segment) ||
+    sedScriptShapeVeto(segment)
   );
 }
 
@@ -1361,6 +1550,11 @@ export const BUILTIN_GROUPS: Readonly<Record<string, PermissionGroup>> = {
       'tee',
       'cp',
       'mv',
+      // #1057 phase 2 commit 4: in-place edits under a strict script-shape
+      // allowlist (`sedScriptShapeVeto`, above) — every script must be a
+      // single, unconditional `s///` or `y///`, so no address prefix, brace
+      // block, or side-command (`w`/`e`/`r`/`R`) can ride through it.
+      'sed -i',
       // `truncate`, `dd`, `shred`, `chmod` and `chown` are deliberately
       // absent at every strictness level (#956). `rm`/`rmdir` are absent
       // from THIS group for a polarity reason (ADR 0023): fs-write's
