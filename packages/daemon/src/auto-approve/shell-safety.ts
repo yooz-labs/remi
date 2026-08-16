@@ -714,6 +714,19 @@ export function maskQuotedSpans(segment: string): string {
  * visible after masking as before, and still vetoes.
  */
 export function hasShellControl(segment: string): boolean {
+  // Backslash-newline line continuation is deleted by bash's INPUT READER,
+  // before tokenization and before every check below runs on `maskQuotedSpans`,
+  // which instead masks the pair to `__` and leaves a two-character desync.
+  // That desync let `cat < /dev/t\<nl>cp/...` synthesize `/dev/tcp` past the
+  // device veto AND `cat $\<nl>(whoami)` split the `$(` substitution veto into
+  // RCE (#1063 seventh re-review; the `$(` half is a latent #1023 gap). This
+  // veto operates one layer above the input reader, so rather than reproduce
+  // bash's continuation-removal (which must honor single-quote/here-doc
+  // literalness -- see the follow-up issue), fail closed on the raw pair: a
+  // line-continued command is refused (escalated), never silently miscovered.
+  if (/\\\r?\n/.test(segment)) {
+    return true;
+  }
   const masked = maskQuotedSpans(segment);
   // Command / process substitution.
   if (masked.includes('$(') || masked.includes('`') || masked.includes('<(')) {
@@ -732,6 +745,86 @@ export function hasShellControl(segment: string): boolean {
     if (clause.target.kind !== 'discard' && clause.target.kind !== 'fd-dup') {
       return true;
     }
+  }
+  // Input redirection FROM a bash network device (`< /dev/tcp/host/port`,
+  // `N< /dev/udp/...`) opens an OUTBOUND socket -- an egress primitive a
+  // read-only prefix must never carry (#1063). `findRedirectClauses` models
+  // output redirects only, so ordinary `< file` input redirects are otherwise
+  // invisible here ON PURPOSE (they read, they neither run nor write, so
+  // `grep x < f` stays approvable). This narrows that only for the two device
+  // prefixes bash gives socket semantics; every other `< target` is untouched.
+  //
+  // Operator position from `masked`, target content from raw -- see the
+  // helper's doc for why neither view alone is sound, and why a `$` in the
+  // target fails closed.
+  if (hasNetworkDeviceInputRedirect(segment, masked)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * True if `segment` redirects input from a bash network device
+ * (`/dev/tcp/...` or `/dev/udp/...`) -- an outbound socket open (#1063).
+ *
+ * Operator POSITION is decided from the MASKED view, target CONTENT from the
+ * raw text. This split is the whole design, learned over five re-reviews:
+ *
+ * - Masked (`maskQuotedSpans`, length-preserving so indices align with raw) is
+ *   the only view that locates operators correctly. A `<` that is quoted or
+ *   backslash-escaped (`'x<'`, `\<`) is a LITERAL argument, not an operator,
+ *   and masking rewrites it to `_` -- so it can neither be mistaken for an
+ *   operator nor GLUE onto the real one. A `shellWords`-token scan failed here:
+ *   quote-removal concatenated `'x<'<` into the token `x<<`, which the
+ *   heredoc-exclusion then skipped, opening the socket unseen.
+ * - Raw (dequoted) is the only view with the real target. Masking rewrites a
+ *   quoted target (`< "/dev/tcp/h/p"`) to `_`, which no anchored device regex
+ *   can match, while bash still opens it.
+ *
+ * A `<` that is part of `<<`/`<<<` (heredoc/here-string, no socket), `<(`
+ * (process substitution, refused earlier), `<&` (fd dup, not a path), or `<>`
+ * (read-write, carries a `>` the output-redirect check already vetoes) is not
+ * an input-file operator. The target is the word after it, up to the next
+ * whitespace or `<` (a second glued redirect is its own operator, found in its
+ * own pass).
+ *
+ * A target that is not a STATIC LITERAL fails closed. bash processes a redirect
+ * target through brace expansion, tilde, parameter/arithmetic/command expansion,
+ * quote removal, then globbing -- and several of those can materialize
+ * `/dev/tcp/...` from a literal that does not contain the substring: `$x/dev/tcp`
+ * and `/dev/t${x}cp` (empty `x`), `$'\x2fdev\x2ftcp...'`, and the brace RANGE
+ * `/dev/tc{p..p}/...` (collapses to `/dev/tcp/...`, no `$` needed). Six
+ * re-reviews chased these one transformation at a time; the durable rule is to
+ * refuse anything not statically resolvable rather than enumerate what is
+ * dangerous. The two expansion families that can SYNTHESIZE the device path are
+ * `$` (all `$`-expansions) and `{` (brace) -- both refuse (ADR 0010, err broad).
+ * Glob (`*?[]`) and tilde cannot: `/dev/tcp` is a virtual path with no directory
+ * entry, so a glob never matches it, and `~` expands to a home dir, so those
+ * stay approvable. This over-refuses an ordinary variable/brace target like
+ * `< $LOG` / `< a{1,2}.txt` toward escalate -- accepted; the reverse was a live
+ * egress. A target with no `$`/`{` is dequoted of `'`/`"`/`\` (non-expanding,
+ * purely literal) and matched against the device prefix. Command substitution
+ * `$(...)`/backtick and process substitution `<(` are refused by `hasShellControl`
+ * before this runs.
+ */
+function hasNetworkDeviceInputRedirect(segment: string, masked: string): boolean {
+  for (let i = 0; i < masked.length; i++) {
+    if (masked[i] !== '<') continue;
+    const prev = masked[i - 1];
+    const next = masked[i + 1];
+    if (prev === '<' || next === '<' || next === '(' || next === '&' || next === '>') continue;
+    // Skip whitespace after the operator, then take the target word up to the
+    // next whitespace or `<`.
+    let j = i + 1;
+    while (j < masked.length && (masked[j] === ' ' || masked[j] === '\t')) j++;
+    let k = j;
+    while (k < masked.length && masked[k] !== ' ' && masked[k] !== '\t' && masked[k] !== '<') k++;
+    if (k === j) continue;
+    const rawTarget = segment.slice(j, k);
+    // Any device-synthesizing expansion in the target is unresolvable -> refuse.
+    if (rawTarget.includes('$') || rawTarget.includes('{')) return true;
+    const dequoted = rawTarget.replace(/['"\\]/g, '');
+    if (NETWORK_DEV_PATH_RE.test(dequoted)) return true;
   }
   return false;
 }
