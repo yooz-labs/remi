@@ -40,6 +40,8 @@ add a row below.
 | [0022](0022-status-bar-never-freezes.md) | Status-bar liveness is bounded by `HEARTBEAT_MS`, never by a human |
 | [0023](0023-artifact-deletion-is-proved-not-judged.md) | (proposed) Deletion approves only when the target is provably derived — amends #956's blanket escalate rule |
 | [0024](0024-loopback-bind-default.md) | The daemon binds loopback by default; off-machine access is opt-in (0023 is claimed by an un-merged branch) |
+| [0025](0025-agent-scoped-permissions.md) | Permissions scope per agent_type: deny unions with base, allow/groups replace it |
+| [0026](0026-destination-checked-write-grants.md) | Write grants for decidable shell shapes (redirects, heredocs, sed -i), proven by destination |
 
 ## By area
 
@@ -47,7 +49,7 @@ Most work touches one of these clusters, and the ADRs in a cluster constrain
 each other — reading one without its siblings is how a "fix" reopens the case
 another one closed.
 
-- **Permission decisions / auto-approve:** 0003, 0010, 0015, 0016, 0017, 0018, 0023
+- **Permission decisions / auto-approve:** 0003, 0010, 0015, 0016, 0017, 0018, 0023, 0025, 0026
 - **Questions + notifications:** 0002, 0004, 0019, 0020, 0021, 0022
 - **Protocol + contracts:** 0012, 0013, 0014, 0006
 - **Sessions + transport:** 0001, 0005, 0009, 0024
