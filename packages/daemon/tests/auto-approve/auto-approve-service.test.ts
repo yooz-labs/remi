@@ -7,6 +7,8 @@ import {
   normalisePermissionSuggestion,
   parseDecision,
 } from '../../src/auto-approve/auto-approve-service.ts';
+import { matchAllowPattern } from '../../src/auto-approve/pattern-matcher.ts';
+import { matchGroups } from '../../src/auto-approve/permission-groups.ts';
 import type { AutoApproveConfig } from '../../src/auto-approve/types.ts';
 import { applyEnvOverrides, loadConfig } from '../../src/config/config.ts';
 
@@ -737,6 +739,95 @@ describe('AutoApproveService - evaluateDeterministic (#1024)', () => {
     expect(viaEvaluate.decision === 'deny' ? viaEvaluate.denySource : undefined).toEqual(
       direct?.decision === 'deny-covered' ? direct.denySource : undefined,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// evaluateDeterministic composed pass (#1057 phase 3 commit 1) -- the union
+// of allow ∪ approve_groups, tried only when both single-source passes miss.
+// ---------------------------------------------------------------------------
+
+describe('AutoApproveService - evaluateDeterministic composed allow+group coverage', () => {
+  function detService(over: Partial<AutoApproveConfig>): AutoApproveService {
+    return new AutoApproveService(makeConfig({ base_url: 'http://10.255.255.1', ...over }), logFn);
+  }
+
+  test('ssh <alias> (allow) piped into head (read-only group) approves with composed reasoning', () => {
+    const service = detService({ allow: ['ssh hallu'], approve_groups: ['read-only'] });
+    const cmd = 'ssh hallu nvidia-smi | head -2';
+    const result = service.evaluateDeterministic('Bash', { command: cmd });
+    expect(result?.decision).toBe('approve');
+    const reasoning = result && 'reasoning' in result ? result.reasoning : '';
+    expect(reasoning).toBe('composed allow+group coverage: "ssh hallu" + "head"');
+    // Composition, not allow-widening: neither single-source matcher decides
+    // this chain on its own.
+    expect(matchAllowPattern('Bash', { command: cmd }, ['ssh hallu'])).toBeNull();
+    expect(matchGroups('Bash', { command: cmd }, ['read-only'])).toBeNull();
+  });
+
+  test('uv run (allow) piped into tail (read-only group) approves with composed reasoning', () => {
+    const service = detService({ allow: ['uv run'], approve_groups: ['read-only'] });
+    const cmd = 'uv run pytest | tail -5';
+    const result = service.evaluateDeterministic('Bash', { command: cmd });
+    expect(result?.decision).toBe('approve');
+    const reasoning = result && 'reasoning' in result ? result.reasoning : '';
+    expect(reasoning).toBe('composed allow+group coverage: "uv run" + "tail"');
+    expect(matchAllowPattern('Bash', { command: cmd }, ['uv run'])).toBeNull();
+    expect(matchGroups('Bash', { command: cmd }, ['read-only'])).toBeNull();
+  });
+
+  test('allow-only chain keeps the exact matchAllowPattern reasoning (zero churn)', () => {
+    const service = detService({ allow: ['git push'], approve_groups: ['read-only'] });
+    const result = service.evaluateDeterministic('Bash', { command: 'git push origin main' });
+    expect(result?.decision).toBe('approve');
+    const reasoning = result && 'reasoning' in result ? result.reasoning : '';
+    expect(reasoning).toBe('allow-matched pattern: "git push"');
+  });
+
+  test('group-only chain keeps the exact matchGroups reasoning (zero churn)', () => {
+    const service = detService({ allow: ['ssh hallu'], approve_groups: ['read-only'] });
+    const result = service.evaluateDeterministic('Bash', { command: 'cat notes.txt' });
+    expect(result?.decision).toBe('approve');
+    const reasoning = result && 'reasoning' in result ? result.reasoning : '';
+    expect(reasoning).toBe('approve-matched group: "read-only:cat"');
+  });
+
+  test('deny still wins over composition: a denied segment refuses the whole chain', () => {
+    const service = detService({
+      allow: ['ssh hallu'],
+      approve_groups: ['read-only'],
+      deny: ['nvidia-smi'],
+    });
+    const result = service.evaluateDeterministic('Bash', {
+      command: 'ssh hallu nvidia-smi | head -2',
+    });
+    expect(result?.decision).toBe('deny-covered');
+  });
+
+  test('deny_groups still wins over composition', () => {
+    const service = detService({
+      allow: ['ssh hallu'],
+      approve_groups: ['read-only'],
+      deny_groups: ['read-only'],
+    });
+    const result = service.evaluateDeterministic('Bash', {
+      command: 'ssh hallu nvidia-smi | head -2',
+    });
+    expect(result?.decision).toBe('deny-covered');
+  });
+
+  test('non-Bash tool never reaches the composed pass, even carrying a command-shaped field', () => {
+    const service = detService({ allow: ['ssh hallu'], approve_groups: ['read-only'] });
+    const result = service.evaluateDeterministic('SomeTool', {
+      command: 'ssh hallu nvidia-smi | head -2',
+    });
+    expect(result).toBeNull();
+  });
+
+  test('empty allow and empty approve_groups: composed pass never fires', () => {
+    const service = detService({ allow: [], approve_groups: [] });
+    const result = service.evaluateDeterministic('Bash', { command: 'git status' });
+    expect(result).toBeNull();
   });
 });
 

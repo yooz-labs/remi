@@ -27,6 +27,7 @@
  * user allow list uses the same primitives (#536).
  */
 
+import { looksLikeToolName } from './pattern-matcher.ts';
 import { COMMAND_WRAPPERS, SHELL_C_BINARIES } from './risk-bands.ts';
 import {
   isSensitiveWritePath,
@@ -1814,6 +1815,62 @@ function readSegmentVeto(segment: string): boolean {
 }
 
 /**
+ * The group-owned per-segment veto dispatch, shared by `matchGroups` and
+ * `matchComposedCommand` (#1057 phase 3, commit 1) — the SAME function, not a
+ * copy, for the reason `evaluateDeterministic` gives for its own extraction:
+ * a duplicated security check drifts the moment one copy is edited and the
+ * other is not (ADR 0015/0017's warning, applied here to this dispatch
+ * instead of the catastrophic-pattern list). Built once per Bash command from
+ * that command's own ADR 0026 pre-pass state (`redirectGrants`,
+ * `artifactPoison`), then called per matched segment with the OWNER whose
+ * prefix matched.
+ */
+function vetoedByOwnerFor(
+  redirectGrants: RedirectGrantWalk | null,
+  artifactPoison: readonly boolean[] | null,
+): (owner: string, segment: string, prefix: string, index: number) => boolean {
+  return (owner, segment, prefix, index) => {
+    // The sensitive-destination axis is a GLOBAL conjunct, checked before any
+    // owner's own proof and never delegated to one. Found by the ADR 0023
+    // adversarial pass: the owner union below is disjunctive, so a prefix
+    // owned by both `fs-write` and `scratch` (`cp`, `mv`, `mkdir`, `touch`,
+    // `tee`) was approved the moment scratch's laxer proof held — and
+    // `scratchTargetVeto` never consulted `isSensitiveWritePath`. Measured
+    // develop -> this branch at BALANCED, a level this ADR does not even
+    // claim to touch:
+    //
+    //   cp /tmp/a /tmp/.env         develop: escalate -> branch: scratch:cp
+    //   mv /tmp/a /tmp/id_rsa       develop: escalate -> branch: scratch:mv
+    //   cp /tmp/a /tmp/.git/config  develop: escalate -> branch: scratch:cp
+    //
+    // It also falsified a shipped claim in `config.ts` ("the write groups
+    // refuse sensitive destinations regardless of prefix ... credentials
+    // (.env, id_rsa)"), which is exactly the ADR 0011 failure mode.
+    //
+    // Hoisting it here keeps the monotonicity the union was written for --
+    // adding a group cannot introduce a sensitive destination, so it still
+    // can only ADD approvals -- while restoring the property ADR 0010 wants:
+    // a deny-shaped check is broad, and must not be escapable by finding
+    // some OTHER owner whose positive proof happens to be laxer.
+    //
+    // Scoped to the MUTATING owners, not applied globally. A first cut
+    // applied it to every owner and broke three read tests
+    // (`jq .version package.json`, and two `/dev/null` redirect cases):
+    // `segmentTouchesSensitivePath` is a WRITE-side axis, and READING a
+    // sensitive path is exactly what `read-only` exists to allow.
+    if (MUTATING_GROUPS.has(owner) && segmentTouchesSensitivePath(segment)) return true;
+    if (owner === 'scratch') {
+      return scratchTargetVeto(segment, redirectGrants?.stateBySegment[index]?.scratch ?? null);
+    }
+    if (owner === 'artifact-clean') {
+      return artifactCleanVeto(segment, prefix, artifactPoison?.[index] ?? true);
+    }
+    const veto = BUILTIN_GROUPS[owner]?.segmentVeto ?? readSegmentVeto;
+    return veto(segment);
+  };
+}
+
+/**
  * Match a permission request against the named groups. Returns a descriptive
  * `"group:pattern"` string when matched, or null. Unknown group names are
  * ignored (validated separately at config load).
@@ -1890,45 +1947,7 @@ export function matchGroups(
     // no room for). That state is looked up BY SEGMENT INDEX from the single
     // walk done in the pre-pass, rather than re-tracked by a closure here —
     // see `RedirectGrantWalk`.
-    const vetoedByOwner = (owner: string, segment: string, prefix: string, index: number) => {
-      // The sensitive-destination axis is a GLOBAL conjunct, checked before any
-      // owner's own proof and never delegated to one. Found by the ADR 0023
-      // adversarial pass: the owner union below is disjunctive, so a prefix
-      // owned by both `fs-write` and `scratch` (`cp`, `mv`, `mkdir`, `touch`,
-      // `tee`) was approved the moment scratch's laxer proof held — and
-      // `scratchTargetVeto` never consulted `isSensitiveWritePath`. Measured
-      // develop -> this branch at BALANCED, a level this ADR does not even
-      // claim to touch:
-      //
-      //   cp /tmp/a /tmp/.env         develop: escalate -> branch: scratch:cp
-      //   mv /tmp/a /tmp/id_rsa       develop: escalate -> branch: scratch:mv
-      //   cp /tmp/a /tmp/.git/config  develop: escalate -> branch: scratch:cp
-      //
-      // It also falsified a shipped claim in `config.ts` ("the write groups
-      // refuse sensitive destinations regardless of prefix ... credentials
-      // (.env, id_rsa)"), which is exactly the ADR 0011 failure mode.
-      //
-      // Hoisting it here keeps the monotonicity the union was written for --
-      // adding a group cannot introduce a sensitive destination, so it still
-      // can only ADD approvals -- while restoring the property ADR 0010 wants:
-      // a deny-shaped check is broad, and must not be escapable by finding
-      // some OTHER owner whose positive proof happens to be laxer.
-      //
-      // Scoped to the MUTATING owners, not applied globally. A first cut
-      // applied it to every owner and broke three read tests
-      // (`jq .version package.json`, and two `/dev/null` redirect cases):
-      // `segmentTouchesSensitivePath` is a WRITE-side axis, and READING a
-      // sensitive path is exactly what `read-only` exists to allow.
-      if (MUTATING_GROUPS.has(owner) && segmentTouchesSensitivePath(segment)) return true;
-      if (owner === 'scratch') {
-        return scratchTargetVeto(segment, redirectGrants?.stateBySegment[index]?.scratch ?? null);
-      }
-      if (owner === 'artifact-clean') {
-        return artifactCleanVeto(segment, prefix, artifactPoison?.[index] ?? true);
-      }
-      const veto = BUILTIN_GROUPS[owner]?.segmentVeto ?? readSegmentVeto;
-      return veto(segment);
-    };
+    const vetoedByOwner = vetoedByOwnerFor(redirectGrants, artifactPoison);
     // The owner whose proof passed for the FIRST matched segment — the
     // segment whose prefix `matchCoveredCommand` returns — so the label
     // names the group that actually approved it, not the first registrant.
@@ -1960,6 +1979,138 @@ export function matchGroups(
     return `${name}:${toolName}`;
   }
   return null;
+}
+
+/** One `matchComposedCommand` verdict: the first allow-owned and first
+ *  group-owned prefix that contributed to covering the command, so the
+ *  caller's reasoning string can name one prefix from EACH source (proof
+ *  that the union, not either source alone, is what covered it). Either
+ *  field is null when that source contributed no segment at all — the
+ *  degenerate case exercised by an empty `allowPrefixes` or empty
+ *  `groupNames` (see the function doc). */
+export interface ComposedMatch {
+  readonly allowHit: string | null;
+  readonly groupHit: string | null;
+}
+
+/**
+ * Match a Bash command against the UNION of the user's own `allow` command
+ * prefixes and the enabled permission groups (#1057 phase 3, commit 1).
+ *
+ * `matchAllowPattern` and `matchGroups` each run their OWN independent
+ * `matchCoveredCommand` walk, and each demands EVERY segment be covered by
+ * ITS OWN source alone. A chain whose segments are covered only by the UNION
+ * of the two fails both walks even though a human reading the config would
+ * call it obviously covered:
+ *
+ *     ssh hallu nvidia-smi | head -2     allow=["ssh hallu"]; head in read-only
+ *     uv run pytest | tail -5            allow=["uv run"]; tail in read-only
+ *
+ * This runs ONE `matchCoveredCommand` walk over the union of prefixes instead,
+ * so `ssh hallu` and `head` can each cover their own segment in the same pass.
+ * `evaluateDeterministic` calls this ONLY after both `matchAllowPattern` and
+ * `matchGroups` have already missed on the SAME command — see that method's
+ * doc for why the ordering matters (unchanged reasoning strings, and outcomes,
+ * for every single-source chain).
+ *
+ * Composition never widens what either source alone would approve for a
+ * segment it matches:
+ *
+ *   - A segment whose matched prefix is owned ONLY by `allow` gets exactly
+ *     `matchAllowPattern`'s treatment — no group veto is layered on top. The
+ *     exec-primitive rule (`hasExecPrimitive(seg) && !hasExecPrimitive(hit)`)
+ *     still applies, because `matchCoveredCommand` runs it unconditionally
+ *     after any `vetoForMatched` verdict, allow included.
+ *   - A segment whose matched prefix is owned by a GROUP gets `matchGroups`'s
+ *     own `vetoedByOwnerFor` dispatch, unchanged (sensitive-path conjunct,
+ *     `segmentVeto`, the scratch/artifact-clean per-index state walks).
+ *   - A prefix owned by BOTH sources approves the segment when EITHER
+ *     source's veto passes — the same first-passing-owner disjunction
+ *     `matchGroups` already uses across multiple group owners, with "allow"
+ *     simply added as one more candidate owner.
+ *
+ * The ADR 0026 pre-passes (heredoc excision, redirect grants) run exactly as
+ * they do in `matchGroups`: heredoc excision unconditionally, redirect grants
+ * gated on `scratch`/`fs-write` GROUP membership only. Allow membership never
+ * extends that gate — `allow = ["python3"]` with no `fs-write` group must NOT
+ * make a redirect grant available that group membership alone would not have
+ * granted; see the paired test for the positive case (both active, and the
+ * grant composes with an allow-covered head).
+ */
+export function matchComposedCommand(
+  command: string,
+  allowPrefixes: readonly string[],
+  groupNames: readonly string[],
+): ComposedMatch | null {
+  const trimmed = command.trim();
+  if (trimmed === '') return null;
+  // Tool-name-shaped entries say nothing about shell commands (same filter
+  // `matchAllowPattern` applies) -- dropping them here is what stops
+  // `allow = ['Read']` from feeding "Read" into the union as a command prefix.
+  const commandAllowPrefixes = allowPrefixes.filter((p) => p.length > 0 && !looksLikeToolName(p));
+  const known = groupNames.filter(isKnownGroup);
+  if (commandAllowPrefixes.length === 0 && known.length === 0) return null;
+
+  // Same pre-passes as `matchGroups`, same gating (group membership only --
+  // see the function doc for why allow membership must never extend it).
+  const heredocExcised = exciseHeredocsForGroups(trimmed);
+  const scratchActive = known.includes('scratch');
+  const fsWriteActive = known.includes('fs-write');
+  const redirectGrants =
+    scratchActive || fsWriteActive
+      ? sanitizeCommandForRedirectGrants(heredocExcised, { scratchActive, fsWriteActive })
+      : null;
+  const sanitized = redirectGrants?.command ?? heredocExcised;
+  const artifactPoison = known.includes('artifact-clean')
+    ? artifactCleanPoisonWalk(sanitized)
+    : null;
+
+  // Map each prefix to every owning source, in request order, `allow` first.
+  // A prefix present in both an allow entry and a group's command list keeps
+  // BOTH owners, exactly like `matchGroups` already does for a prefix two
+  // groups both list.
+  const prefixOwners = new Map<string, string[]>();
+  for (const p of commandAllowPrefixes) {
+    const owners = prefixOwners.get(p);
+    if (owners === undefined) prefixOwners.set(p, ['allow']);
+    else if (!owners.includes('allow')) owners.push('allow');
+  }
+  for (const name of known) {
+    for (const cmd of BUILTIN_GROUPS[name]?.commands ?? []) {
+      const owners = prefixOwners.get(cmd);
+      if (owners === undefined) prefixOwners.set(cmd, [name]);
+      else if (!owners.includes(name)) owners.push(name);
+    }
+  }
+
+  const groupVeto = vetoedByOwnerFor(redirectGrants, artifactPoison);
+  let allowHit: string | null = null;
+  let groupHit: string | null = null;
+  const hit = matchCoveredCommand(
+    sanitized,
+    [...prefixOwners.keys()],
+    readSegmentVeto,
+    (segment, matchedPrefix, index) => {
+      for (const owner of prefixOwners.get(matchedPrefix) ?? []) {
+        // `allow` carries no group veto of its own -- the allow path's only
+        // per-segment check is the exec-primitive rule, and
+        // `matchCoveredCommand` already applies that unconditionally after
+        // this callback returns, allow-owned or not.
+        const vetoed = owner === 'allow' ? false : groupVeto(owner, segment, matchedPrefix, index);
+        if (!vetoed) {
+          if (owner === 'allow') {
+            if (allowHit === null) allowHit = matchedPrefix;
+          } else if (groupHit === null) {
+            groupHit = matchedPrefix;
+          }
+          return false;
+        }
+      }
+      return true;
+    },
+  );
+  if (hit === null) return null;
+  return { allowHit, groupHit };
 }
 
 /**

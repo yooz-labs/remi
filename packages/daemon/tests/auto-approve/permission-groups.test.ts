@@ -1,8 +1,10 @@
 import { describe, expect, test } from 'bun:test';
+import { matchAllowPattern } from '../../src/auto-approve/pattern-matcher.ts';
 import {
   BUILTIN_GROUPS,
   isKnownGroup,
   knownGroupNames,
+  matchComposedCommand,
   matchGroups,
   matchGroupsBroad,
   matchReadOnlyCommand,
@@ -1677,5 +1679,137 @@ describe('read-only utilities added after the live-session measurement', () => {
 
   test('the mutating Spotlight sibling is deliberately absent', () => {
     expect(bash('mdutil -E /')).toBeNull();
+  });
+});
+
+/**
+ * #1057 phase 3, commit 1: `matchComposedCommand` runs ONE `matchCoveredCommand`
+ * walk over the UNION of the user's own `allow` command-prefixes and the
+ * enabled groups' prefixes, so a compound chain whose segments are covered
+ * only by the union of the two -- neither `matchAllowPattern` nor `matchGroups`
+ * alone -- is approved instead of falling through to the LLM.
+ */
+describe('#1057 phase 3 commit 1: matchComposedCommand', () => {
+  describe('covered: union-only chains that neither single source covers alone', () => {
+    test('ssh <alias> (allow) piped into head (read-only group)', () => {
+      const cmd = 'ssh hallu nvidia-smi | head -2';
+      expect(matchComposedCommand(cmd, ['ssh hallu'], ['read-only'])).toEqual({
+        allowHit: 'ssh hallu',
+        groupHit: 'head',
+      });
+      // Pin the premise: neither single-source matcher can decide this alone.
+      expect(matchAllowPattern('Bash', { command: cmd }, ['ssh hallu'])).toBeNull();
+      expect(matchGroups('Bash', { command: cmd }, ['read-only'])).toBeNull();
+    });
+
+    test('uv run (allow) piped into tail (read-only group)', () => {
+      const cmd = 'uv run pytest | tail -5';
+      expect(matchComposedCommand(cmd, ['uv run'], ['read-only'])).toEqual({
+        allowHit: 'uv run',
+        groupHit: 'tail',
+      });
+      expect(matchAllowPattern('Bash', { command: cmd }, ['uv run'])).toBeNull();
+      expect(matchGroups('Bash', { command: cmd }, ['read-only'])).toBeNull();
+    });
+  });
+
+  describe('single-source chains: matchComposedCommand agrees, adds nothing new', () => {
+    test('allow-only chain: composed result names only the allow hit', () => {
+      const result = matchComposedCommand('git push origin main', ['git push'], ['read-only']);
+      expect(result).toEqual({ allowHit: 'git push', groupHit: null });
+    });
+
+    test('group-only chain: composed result names only the group hit', () => {
+      const result = matchComposedCommand('cat notes.txt', ['ssh hallu'], ['read-only']);
+      expect(result).toEqual({ allowHit: null, groupHit: 'cat' });
+    });
+  });
+
+  describe('exec-primitive still binds a matched segment, allow-owned or not', () => {
+    test('find -exec: an allow-owned "find" prefix does not spell out the primitive', () => {
+      // `matchCoveredCommand` applies its exec-primitive check to EVERY matched
+      // segment unconditionally, after the owner dispatch -- allow-owned matches
+      // are not exempt just because the allow path adds no group veto.
+      expect(
+        matchComposedCommand('find . -exec rm -rf {} + | head -1', ['find'], ['read-only']),
+      ).toBeNull();
+    });
+
+    test('--exec flag on an allow-owned "uv run" prefix', () => {
+      expect(
+        matchComposedCommand(
+          "uv run x --exec sh -c 'rm -rf /' | head -1",
+          ['uv run'],
+          ['read-only'],
+        ),
+      ).toBeNull();
+    });
+
+    test('spelling the primitive out in the allow entry itself still works', () => {
+      // Mirrors matchAllowPattern's own documented exception: an entry that
+      // spells the primitive out means the user saw and approved it.
+      expect(
+        matchComposedCommand(
+          'find . -exec echo {} \\; | head -1',
+          ['find . -exec echo'],
+          ['read-only'],
+        ),
+      ).toEqual({ allowHit: 'find . -exec echo', groupHit: 'head' });
+    });
+  });
+
+  test('a group-vetoed segment is NOT rescued by an allow prefix that does not cover it', () => {
+    // The bad-script `sed -i .../e` segment is refused by fs-write's own
+    // `sedScriptShapeVeto`; `allow` here covers an unrelated command ("ls"),
+    // so no owner of the "sed -i" prefix passes and the whole chain stays null.
+    expect(
+      matchComposedCommand("sed -i 's/x/y/e' f && head -1 f", ['ls'], ['fs-write', 'read-only']),
+    ).toBeNull();
+  });
+
+  test('a tool-name-shaped allow entry never leaks into command matching (looksLikeToolName filter)', () => {
+    // Without the filter, "WebFetch" would be treated as a literal Bash
+    // command-prefix and would match the segment below by pure text luck.
+    expect(
+      matchComposedCommand('WebFetch something | head -1', ['WebFetch'], ['read-only']),
+    ).toBeNull();
+  });
+
+  describe('degenerate inputs: composition degrades to single-source behavior', () => {
+    test('empty groups: covered iff matchAllowPattern alone covers it', () => {
+      const allow = ['git commit', 'git status'];
+      for (const cmd of ['git commit -m x', 'git status', 'rm -rf /', 'git push origin main']) {
+        const composed = matchComposedCommand(cmd, allow, []);
+        const direct = matchAllowPattern('Bash', { command: cmd }, allow);
+        expect(composed !== null).toBe(direct !== null);
+        if (composed !== null) expect(composed.allowHit).toBe(direct);
+      }
+    });
+
+    test('empty allow: covered iff matchGroups alone covers it', () => {
+      for (const cmd of ['cat notes.txt', 'git push origin main', 'head -5 f', 'rm -rf /']) {
+        const composed = matchComposedCommand(cmd, [], ['read-only']);
+        const direct = matchGroups('Bash', { command: cmd }, ['read-only']);
+        expect(composed !== null).toBe(direct !== null);
+      }
+    });
+
+    test('both empty: never covers anything', () => {
+      expect(matchComposedCommand('git status', [], [])).toBeNull();
+    });
+  });
+
+  describe('ADR 0026 pre-passes are gated on GROUP membership only, never allow', () => {
+    test('no fs-write group: the redirect stays and hasShellControl refuses, even though allow covers python3', () => {
+      expect(
+        matchComposedCommand('python3 gen.py > out.txt', ['python3'], ['read-only']),
+      ).toBeNull();
+    });
+
+    test('fs-write active: the grant proves the target, python3 covers via allow -- correct composition', () => {
+      expect(
+        matchComposedCommand('python3 gen.py > out.txt', ['python3'], ['read-only', 'fs-write']),
+      ).toEqual({ allowHit: 'python3', groupHit: null });
+    });
   });
 });
