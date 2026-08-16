@@ -825,6 +825,64 @@ describe('AutoApproveGate residual_action (#1045 phase 6)', () => {
     expect(d).toBe('allow');
     expect(denied).toEqual([]);
   });
+
+  // The #1015 audit coupling: a residual deny fires unconditionally but
+  // `reportDeny` no-ops without an `onAutoDenied` sink. cli.ts (the sole
+  // constructor) wires both, but the deps are independent -- so the gate warns
+  // LOUDLY at construction rather than let a `deny`-without-sink misconfig
+  // silently un-audit every residual deny (epic-wide review, 2026-08-16).
+  test('residualAction="deny" with NO onAutoDenied sink warns at construction', () => {
+    const errors: string[] = [];
+    configureLogger({
+      writeLog: (m) => errors.push(String(m)),
+      consoleError: (...a) => errors.push(a.map(String).join(' ')),
+    });
+    // Minimal deps, deliberately omitting onAutoDenied.
+    new AutoApproveGate(
+      {
+        service: null,
+        sessionRegistry: registry,
+        tracker: new QuestionPresenceTracker(() => undefined),
+        isInSubagentContext: () => false,
+        escalate: () => generateId(),
+        residualAction: 'deny',
+      },
+      SID,
+    );
+    expect(
+      errors.some((e) => e.includes("residual_action='deny'") && e.includes('onAutoDenied')),
+    ).toBe(true);
+  });
+
+  test('residualAction="deny" WITH an onAutoDenied sink does not warn', () => {
+    const errors: string[] = [];
+    configureLogger({
+      writeLog: (m) => errors.push(String(m)),
+      consoleError: (...a) => errors.push(a.map(String).join(' ')),
+    });
+    // gate() wires onAutoDenied.
+    gate(null, { residualAction: 'deny' });
+    expect(errors.filter((e) => e.includes('residual_action'))).toEqual([]);
+  });
+
+  test('default (escalate) with no onAutoDenied sink does not warn', () => {
+    const errors: string[] = [];
+    configureLogger({
+      writeLog: (m) => errors.push(String(m)),
+      consoleError: (...a) => errors.push(a.map(String).join(' ')),
+    });
+    new AutoApproveGate(
+      {
+        service: null,
+        sessionRegistry: registry,
+        tracker: new QuestionPresenceTracker(() => undefined),
+        isInSubagentContext: () => false,
+        escalate: () => generateId(),
+      },
+      SID,
+    );
+    expect(errors.filter((e) => e.includes('residual_action'))).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------

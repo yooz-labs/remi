@@ -736,6 +736,21 @@ export class AutoApproveGate {
     private readonly sessionId: UUID,
   ) {
     this.sessionTag = sessionId.slice(0, 8);
+    // Make the residual-deny audit coupling LOUD, not a silent no-op. A
+    // residual deny (`residualAction: 'deny'`) fires unconditionally, but
+    // `reportDeny` no-ops when `onAutoDenied` is absent -- so this pairing is
+    // the only thing standing between deny-mode and the exact invisible refusal
+    // #1015 exists to end. Today `cli.ts` (the sole gate constructor) wires
+    // both, but the two are independent deps; a future caller that sets
+    // `deny` without the sink would silently un-audit every residual deny. Warn
+    // once at construction rather than let it drift (epic-wide review,
+    // 2026-08-16). Cheap: one line per session-daemon start, only on a real
+    // misconfiguration.
+    if (deps.residualAction === 'deny' && deps.onAutoDenied === undefined) {
+      logError(
+        `[AutoApprove ${this.sessionTag}] residual_action='deny' configured without an onAutoDenied sink; residual denies will NOT be audited (see #1015). Wire onAutoDenied or use residual_action='escalate'.`,
+      );
+    }
   }
 
   /**
