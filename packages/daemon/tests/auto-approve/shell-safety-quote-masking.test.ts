@@ -239,14 +239,19 @@ describe('hasShellControl - #1063 network-device input redirect', () => {
     expect(hasShellControl("cat < $'/dev/tcp/h/p'")).toBe(true);
     expect(hasShellControl("cat < /dev/tc$'\\x70'/h/p")).toBe(true);
     expect(hasShellControl("cat foo<$'/dev/tcp/h/p'")).toBe(true);
+    // Locale `$"..."` is the same class: the dequote leaves a stray `$`, so the
+    // fail-closed rule covers both dollar-quote forms (#1063 fifth re-review).
+    expect(hasShellControl('cat < $"/dev/tcp/h/p"')).toBe(true);
+    expect(hasShellControl('cat foo< $"/dev/tcp/h/p"')).toBe(true);
   });
 
-  test("MUST NOT VETO: ANSI-C $'...' with NO input redirect present", () => {
+  test('MUST NOT VETO: a dollar-quote with NO input redirect present', () => {
     // The fail-closed rule needs a real (unmasked) input-redirect operator, so
-    // an ordinary ANSI-C arg is untouched -- these are common idioms.
+    // an ordinary dollar-quoted arg is untouched -- these are common idioms.
     expect(hasShellControl("echo $'\\n'")).toBe(false);
     expect(hasShellControl("grep $'\\t' f")).toBe(false);
     expect(hasShellControl("printf $'%s\\n' a")).toBe(false);
+    expect(hasShellControl('echo $"hi"')).toBe(false);
   });
 
   test('MUST NOT VETO: a quoted device literal is NOT a redirect (masked-scan)', () => {

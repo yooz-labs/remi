@@ -746,20 +746,20 @@ export function hasShellControl(segment: string): boolean {
   if (hasNetworkDeviceInputRedirect(segment, masked)) {
     return true;
   }
-  // An input redirect whose target uses ANSI-C `$'...'` quoting cannot be
-  // vetted by the device check above: `shellWords` UNDER-decodes `$'...'`
-  // (`\x2f` -> `x2f`, `\x74` -> `x74`), so `< $'\x2fdev\x2ftcp\x2fhost\x2fport'`
-  // reads as a benign token while bash decodes it to a real socket path (#1063
-  // fourth re-review). shellWords' under-decode is safe for the flag/positional
-  // vetoes it was built for (a hidden flag can only get longer, never shrink
-  // into a safe-looking one) but NOT for a `^`-anchored prefix membership test,
-  // where under-decoding corrupts the `/dev/tcp/` prefix. Rather than reimplement
-  // bash's ANSI-C decoder, fail closed: an input-redirect operator (detected on
-  // the MASKED text so a quoted `<` does not count) together with any `$'` span
-  // in the raw segment is refused. Over-refuses the rare `grep $'\t' < f` shape
-  // (ANSI-C arg + unrelated file redirect) toward escalate, never toward a
-  // silent socket -- the safe direction (ADR 0010).
-  if (/(?<!<)<(?![<(])/.test(masked) && segment.includes("$'")) {
+  // An input-redirect target built with a DOLLAR-QUOTE -- ANSI-C `$'...'` or
+  // locale `$"..."` -- cannot be vetted by the device check above, whose
+  // dequote (`replace(/['"\\]/g,'')`) leaves a stray `$` (`$'\x2fdev...'` ->
+  // `$/dev...`, `$"/dev/tcp/h/p"` -> `$/dev/tcp/h/p`), so the anchored device
+  // regex misses while bash decodes to a real socket path (#1063 fourth/fifth
+  // re-reviews). Rather than reimplement bash's `$'...'` decoder, fail closed:
+  // an input-redirect operator (detected on the MASKED text so a QUOTED `<`
+  // does not count) together with any `$'`/`$"` dollar-quote in the raw segment
+  // is refused. Over-refuses the rare `grep $'\t' < f` shape (a dollar-quoted
+  // arg + an unrelated file redirect) toward escalate, never toward a silent
+  // socket -- the safe direction (ADR 0010). A bare `$VAR` target stays the
+  // documented residual (it needs an ambient env value the command text cannot
+  // set without a separate, escalating assignment segment).
+  if (/(?<!<)<(?![<(])/.test(masked) && /\$['"]/.test(segment)) {
     return true;
   }
   return false;
