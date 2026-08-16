@@ -2085,7 +2085,7 @@ describe('#962: git -c position-scoped exec veto', () => {
       // parser stops looking the moment it commits to a subcommand. Real git
       // would reject the unrecognised option at parse time (harmless: no
       // config-injection code path is ever reached), so this is a benign
-      // mis-approval of invalid syntax, not a security regression.
+      // misapproval of invalid syntax, not a security regression.
       ['git worktree add -c x', 'vcs-write:git worktree add'],
     ];
     for (const [cmd, expected] of cases) {
