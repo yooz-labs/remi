@@ -327,6 +327,56 @@ describe('loadCorpusRecords', () => {
     }
   });
 
+  test('warns with the unparseable-line count so the denominator is not silently shrunk', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'approval-rate-loader-warn-'));
+    const file = path.join(dir, 'corpus.jsonl');
+    fs.writeFileSync(
+      file,
+      [
+        JSON.stringify({
+          hook_event_name: 'PermissionRequest',
+          tool_name: 'Bash',
+          tool_input: { command: 'git status' },
+        }),
+        '{ broken',
+        'also broken}',
+      ].join('\n'),
+    );
+    const warnings: string[] = [];
+    const orig = console.warn;
+    console.warn = (...a: unknown[]) => warnings.push(a.map(String).join(' '));
+    try {
+      const records = loadCorpusRecords(file);
+      expect(records).toHaveLength(1); // the good record survives
+      expect(warnings.some((w) => w.includes('skipped 2 unparseable'))).toBe(true);
+    } finally {
+      console.warn = orig;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('does NOT warn on a corpus whose only skips are non-matching events (expected, not corruption)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'approval-rate-loader-clean-'));
+    const file = path.join(dir, 'corpus.jsonl');
+    fs.writeFileSync(
+      file,
+      [
+        JSON.stringify({ hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: {} }),
+        JSON.stringify({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: {} }),
+      ].join('\n'),
+    );
+    const warnings: string[] = [];
+    const orig = console.warn;
+    console.warn = (...a: unknown[]) => warnings.push(a.map(String).join(' '));
+    try {
+      loadCorpusRecords(file);
+      expect(warnings).toEqual([]);
+    } finally {
+      console.warn = orig;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('a non-default eventName (PostToolUse) returns the record the default event drops', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'approval-rate-loader-posttooluse-'));
     const file = path.join(dir, 'corpus.jsonl');
