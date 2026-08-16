@@ -18,16 +18,19 @@
  *    of those tokens legitimately appears in a curated read command, so the
  *    veto can only catch a write that slipped past a read prefix.
  *  - Commands whose read form can be flipped to a write by an AMBIGUOUS short
- *    flag are EXCLUDED from the curated set whenever no veto already closes
- *    that specific flag: `sort -o`, `gh api -X`. `find -delete` and `awk`
- *    system()/pipe-to-shell are the opposite shape (#1057 phase 3, commit 3)
- *    — the bare command IS curated, because `shell-safety.ts`'s
- *    `hasExecPrimitive` already refuses exactly the dangerous forms
- *    (`EXEC_PRIMITIVE_TOKEN` for `-delete`/`-exec`/..., `EXEC_SCOPED_VETOES`
- *    for awk's `system()`/pipe-to-shell), consulted by `matchCoveredCommand`
- *    for every matched segment regardless of which group owns the prefix.
- *    `sort -o` has no such veto and stays excluded; the two are not
- *    interchangeable, and a future addition must check which shape it is
+ *    flag are curated ONLY together with a veto that closes that specific flag:
+ *    `sort`/`tree`/`diff` are curated with a `SCOPED_VETOES` `-o`/`--output`
+ *    entry (#1057 phase 3), and `find` with `EXEC_PRIMITIVE_TOKEN` +
+ *    `MUTATION_TOKEN` covering `-delete`/`-exec`/`-fprint*`/`-fls`/`-okdir`,
+ *    consulted by `matchCoveredCommand` for every matched segment regardless
+ *    of which group owns the prefix. `gh api -X` remains genuinely EXCLUDED:
+ *    no veto closes its write flag. `awk` was tried and REMOVED (#1057 phase 3
+ *    adversarial review): it is a Turing-complete interpreter whose
+ *    `cmd | getline`, in-program `print > "file"`/`getline < "file"`, and
+ *    quote-spliced `sys""tem(` cannot be closed by any flag or pattern rule —
+ *    the exec-scoped regex caught three spellings, not the forms.
+ *    The two shapes are not interchangeable, and a future addition must check
+ *    whether a veto genuinely closes the flag (not merely a few spellings of it)
  *    before assuming either precedent applies. Users can add an excluded
  *    command via the `allow` list at their own discretion (per-segment
  *    prefix, not substring).

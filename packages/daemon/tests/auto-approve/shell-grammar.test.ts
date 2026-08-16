@@ -399,6 +399,12 @@ describe('#1057 phase 3 commit 2: a peel residue of only input-redirect clauses 
     expect(stripShellGrammar('done < $F').structural).toBe(false);
     expect(stripShellGrammar('done < "f"').structural).toBe(false);
     expect(stripShellGrammar('done < <(cmd)').structural).toBe(false);
+    // The here-string (`<<<`) branch carries the SAME literal-only exclusions
+    // as the `<` branch; pin them symmetrically so removing either keeps a
+    // red test (the `<<<` side was previously only covered by the general
+    // hasShellControl backstop, not a direct residue pin).
+    expect(stripShellGrammar('done <<< $LIST').structural).toBe(false);
+    expect(stripShellGrammar('done <<< "$(id)"').structural).toBe(false);
   });
 
   test('trailing text after the last clause is not waved through', () => {

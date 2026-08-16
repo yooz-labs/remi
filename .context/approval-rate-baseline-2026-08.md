@@ -214,14 +214,14 @@ through the real `evaluateDeterministic`, all on this branch:
 |---|---|---|
 | `ssh hallu nvidia-smi \| head -5` | null | approve (composed: "ssh hallu" + "head") |
 | `python3 analyze.py \| grep -c error` | null | approve (composed) |
-| `uv run pytest \| tail -5` | null | approve (`build-test:uv run pytest`) |
+| `uv run pytest \| tail -5` | approve (already: `build-test:uv run pytest`) | approve (unchanged — not a phase-3 win; listed as a control) |
 | `git switch -c feature/new-thing` (#962) | null | approve (`vcs-write:git switch`) |
 | `git commit -c abc123 -m redo` (#962) | null | approve (`vcs-write:git commit`) |
 | `git status \| head && git checkout main && git pull -q` (#996 s3) | null | approve |
 | `for p in ...; do printf ...; gh pr checks $p \| head; done` (#996 s4) | null | approve |
 | `while read l; do grep x $l; done < list.txt` | null | approve (`read-only:grep`) |
 | `git -c core.hooksPath=/tmp/evil commit` | null | null (positional veto holds) |
-| `ssh hallu $(cat secret)` | null | null (exec-primitive binds allow matches) |
+| `ssh hallu $(cat secret)` | null | null (`hasShellControl` refuses the command substitution before matching) |
 
 Curation: find/tr/comm/paste/nl/rev + sort/tree/diff (the latter three WITH
 scoped `-o`/`--output` vetoes — `sort -o out in` stays null), printf/read

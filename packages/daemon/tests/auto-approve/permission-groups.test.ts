@@ -2123,6 +2123,14 @@ describe('#962: git -c position-scoped exec veto', () => {
       ['git -pc user.name=x status', 'c bundled into a cluster before the subcommand'],
       ['git -c', 'trailing -c, end of string, no subcommand at all'],
       ['git --no-pager -c k=v log', 'a recognised global flag does not reset the boundary'],
+      // A VALUE-consuming global flag before the -c: the scan must walk raw
+      // tokens up to the subcommand index (not jump by skipFlags' semantics),
+      // or `/path` would be mistaken for the subcommand and the -c read as
+      // post-subcommand. This is the one shape whose safety hinges on that.
+      [
+        'git -C /tmp -c core.hooksPath=/tmp/e status',
+        '-c after a value-consuming global flag, still pre-subcommand',
+      ],
     ];
     for (const [cmd, why] of stillExecPrimitive) {
       test(`${JSON.stringify(cmd)} -- ${why}`, () => expect(hasExecPrimitive(cmd)).toBe(true));

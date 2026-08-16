@@ -792,6 +792,18 @@ describe('AutoApproveService - evaluateDeterministic composed allow+group covera
     expect(reasoning).toBe('approve-matched group: "read-only:cat"');
   });
 
+  test('OVERLAP config: a chain a group alone covers keeps group reasoning, not composed', () => {
+    // `cat` sits in BOTH allow and read-only, and every segment is group-covered,
+    // so matchGroups resolves the whole chain first -- the composed pass never runs.
+    // Pins that the composed block is placed AFTER the single-source passes: moving
+    // it ahead would relabel this `composed allow+group coverage: "cat" + "head"`.
+    const service = detService({ allow: ['cat'], approve_groups: ['read-only'] });
+    const result = service.evaluateDeterministic('Bash', { command: 'cat a.txt | head -1' });
+    expect(result?.decision).toBe('approve');
+    const reasoning = result && 'reasoning' in result ? result.reasoning : '';
+    expect(reasoning).toBe('approve-matched group: "read-only:cat"');
+  });
+
   test('deny still wins over composition: a denied segment refuses the whole chain', () => {
     const service = detService({
       allow: ['ssh hallu'],
