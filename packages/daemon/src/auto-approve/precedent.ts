@@ -156,26 +156,41 @@
  * measurement first — same discipline ADR 0015 imposed on authority grading —
  * not an inline judgment call. None is attempted here.
  *
- * ## Truncation (CRITICAL, found in independent review, 2026-08-02)
+ * ## Truncation (CRITICAL, found in independent review, 2026-08-02; FIXED #990)
  *
- * `Question.text` — this module's ONLY source for a signature — is not the
- * raw command. `HookEventBridge.summarizeToolInput` (`hooks/hook-event-
- * bridge.ts:621` for Bash, `:647` for the generic path/url/description
- * fallback) truncates anything over 120 characters to exactly `117 chars +
- * "..."`. Left unhandled, two DIFFERENT commands sharing their first 117
- * characters collapse to the identical signature, so approving one
- * exact-matches the other — reachable in ordinary use in this very repo,
- * whose paths routinely exceed 120 characters, not just adversarially.
- * `isTruncatedSignature` below detects that shape; `record()` and both
- * match functions refuse it outright, in both directions. A missed
- * precedent (nothing is recorded/matched for a >120-character command) is
- * the safe direction; a false exact-match on a truncated signature is the
- * privilege-escalation direction this whole module exists to prevent.
- * **Precedent does not currently cover any command/path/url/description
- * over 120 characters** — a real, user-visible gap, not a theoretical one.
- * The proper long-term fix is threading the untruncated value through
- * `Question` and `buildPermissionQuestion` itself; that touches the shared
- * protocol type and is out of scope for this store, tracked as #990.
+ * Before #990, `Question.text` was this module's ONLY source for a RECORDED
+ * signature (`parsePermissionQuestionText` parsed it back apart), and it is
+ * not the raw command: `HookEventBridge.summarizeToolInput` truncated
+ * anything over 120 characters to exactly `117 chars + "..."` for display.
+ * Two DIFFERENT commands sharing their first 117 characters collapsed to the
+ * identical signature, so approving one exact-matched the other — reachable
+ * in ordinary use in this very repo, whose paths routinely exceed 120
+ * characters, not just adversarially. `isTruncatedSignature` below detects
+ * that shape; `record()` and both match functions refuse it outright, in
+ * both directions — the interim mitigation (#989): a missed precedent
+ * (nothing recorded/matched for a >120-character command) is the safe
+ * direction, a false exact-match on a truncated signature is the
+ * privilege-escalation direction this whole module exists to prevent, but
+ * the cost was that precedent covered NO command/path/url/description over
+ * 120 characters at all.
+ *
+ * **#990 fixes this at the source.** `Question` now carries a separate
+ * `precedentSignature` field (`@remi/shared`), populated by
+ * `buildPermissionQuestion` from `signatureForOperation(toolName,
+ * tool_input)` — the SAME function the consult side calls, which itself
+ * calls `summarizeToolInput` with `{ forSignature: true }`, the untruncated
+ * form. `text` is still built from the truncated DISPLAY form and is
+ * unchanged for the card/terminal prompt. `handleAnswer`
+ * (`input-events.ts`) now records from `precedentSignature` directly —
+ * never by parsing `text` — so a >120-character command is recorded and
+ * matched at full length, and `isTruncatedSignature` should no longer fire
+ * on this path in ordinary operation. It remains as a defense-in-depth
+ * backstop below (a legacy/synthetic `Question` with no
+ * `precedentSignature`, or a `PrecedentRecord[]` built directly by a test or
+ * a future caller) — see `isTruncatedSignature`'s own doc, and
+ * `handleAnswer`'s FAIL-CLOSED behavior when `precedentSignature` is absent
+ * (it does not fall back to parsing `text`, which would reintroduce exactly
+ * this collision).
  *
  * ### Round 2 (independent review, 2026-08-02): the check was evadable
  *
@@ -195,7 +210,11 @@
  * module's own test suite). See `isTruncatedSignature`'s doc for the full
  * argument, including why the check is also now a floor (`>=120`) rather
  * than an exact match, and why `record()`'s raw-value check — not the match
- * functions' stored-side check — is the authoritative boundary.
+ * functions' stored-side check — is the authoritative boundary. This round's
+ * reasoning is about `isTruncatedSignature` itself and is unaffected by #990
+ * — it still applies wherever that function is still consulted (defense in
+ * depth, and `parsePermissionQuestionText`'s own now-uncalled-in-production
+ * refusal, kept for its test coverage — see that function's doc).
  */
 
 import { summarizeToolInput } from '../hooks/tool-summary.ts';
@@ -395,7 +414,28 @@ function isTruncatedSignature(signature: string): boolean {
  * as to classifying the answer. This INCLUDES a truncated `action` (see
  * `isTruncatedSignature`, and "Truncation" in this module's doc): a
  * truncated value cannot be a precise signature, so it is refused here at
- * the source, before `handleAnswer` ever has something to hand `record()`.
+ * the source.
+ *
+ * ## No production caller as of #990
+ *
+ * `handleAnswer` (`input-events.ts`) used to be this function's one and only
+ * production caller, feeding it `active.text` to reconstruct a signature by
+ * PARSING the truncated display string back apart. #990 replaced that: the
+ * record side now reads `active.precedentSignature` — the untruncated value
+ * `buildPermissionQuestion` already computed once, via the same
+ * `signatureForOperation` the consult side calls — and fails closed (records
+ * nothing) when that field is absent, rather than falling back to this
+ * parser. Falling back here would reintroduce the exact collision #990
+ * fixes, since `text` is still truncated for display.
+ *
+ * Retained rather than deleted: its truncation-refusal behavior is still
+ * exercised by this module's test suite (documenting the #989/#990 incident
+ * history is worth more than the ~150 lines it costs), and it stays a
+ * correct, defensive fallback IF some future `Question` shape ever needs a
+ * signature reconstructed from text with no `precedentSignature` available —
+ * though no code path does that today, and one that reached for this
+ * function instead of fixing `precedentSignature`'s absence would be making
+ * the same mistake #990 just closed.
  */
 export function parsePermissionQuestionText(
   text: string,
@@ -423,36 +463,63 @@ export function parsePermissionQuestionText(
 }
 
 /**
- * Build the signature for an operation being CONSULTED (#976), from the raw
- * `(toolName, toolInput)` the gate has at decision time — before any
- * `Question` exists to parse.
+ * Build the signature for an operation, from the raw `(toolName, toolInput)`.
+ * This is the ONE canonical signature derivation (#990) — used by BOTH the
+ * CONSULT side (the gate, at decision time, before any `Question` exists) and
+ * the RECORD side (`HookEventBridge.buildPermissionQuestion`, which stamps its
+ * result onto `Question.precedentSignature` at question-construction time, for
+ * `handleAnswer` to hand back to `record()` unchanged when the human answers).
+ * The two must produce byte-identical strings for the same operation or an
+ * exact match silently never fires. That failure is invisible: precedent just
+ * never matches, which is indistinguishable from "the user has not approved
+ * this before."
  *
- * This is the mirror of `parsePermissionQuestionText`, which is the RECORD
- * side, and the two must produce byte-identical strings for the same operation
- * or an exact match silently never fires. That failure is invisible: precedent
- * just never matches, which is indistinguishable from "the user has not
- * approved this before."
- *
- * The identity is structural, not careful: both sides bottom out in
- * `summarizeToolInput` (`hooks/tool-summary.ts`), which is why that function
- * was lifted out of `HookEventBridge` in this same change. Record side parses
- * `Allow <tool>: <detail>` off a question BUILT from it; this side composes
- * `<tool>: <detail>` from it directly. A second implementation here is the
- * exact defect shape this module's area has produced repeatedly.
+ * The identity is structural, not careful: both sides call this ONE function
+ * (`buildPermissionQuestion` directly; the gate indirectly through whatever
+ * calls this at consult time), which itself calls `summarizeToolInput`
+ * (`hooks/tool-summary.ts`) with `{ forSignature: true }` — the untruncated
+ * form (#990; before that, the record side instead PARSED the truncated
+ * display text back apart, a second, drift-prone derivation of the same
+ * value — see "Truncation" in this module's doc for that incident). A second
+ * implementation of either half is the exact defect shape this module's area
+ * has produced repeatedly.
  *
  * Returns the bare tool name when there is no summarizable argument, matching
  * `buildPermissionQuestion`'s own `Allow <tool>` shape.
  *
- * No truncation check here: `findApprovedPrecedent` / `findDeniedPrecedent`
- * both refuse a truncated QUERY on the raw value (`isTruncatedSignature`), and
- * doing it in two places invites the two checks to disagree.
+ * No truncation check here: nothing this function produces can BE truncated
+ * (`forSignature: true` guarantees that), and `findApprovedPrecedent` /
+ * `findDeniedPrecedent` both still refuse a truncated QUERY on the raw value
+ * (`isTruncatedSignature`) as defense-in-depth against some other caller
+ * constructing a signature a different way.
  */
 export function signatureForOperation(
   toolName: string,
   toolInput: Record<string, unknown>,
 ): string {
-  const detail = summarizeToolInput(toolName, toolInput);
+  const detail = summarizeToolInput(toolName, toolInput, { forSignature: true });
   return detail === null ? toolName : `${toolName}: ${detail}`;
+}
+
+/**
+ * Recover the tool name `signatureForOperation` embedded in its own output —
+ * the structural inverse of that function's `<tool>: <detail>` / bare
+ * `<tool>` construction. Exists so a caller holding only a
+ * `Question.precedentSignature` string (`handleAnswer`, `input-events.ts` —
+ * `Question` carries no separate tool-name field) can still supply
+ * `PrecedentStore.record`'s required `toolName` without re-deriving it from
+ * the human-facing, truncated `text` — the exact regression #990 exists to
+ * close.
+ *
+ * Safe by construction, not by convention: a Claude Code tool name is always
+ * a plain identifier and never itself contains `': '`, so the first `': '` in
+ * a `signatureForOperation` output is always the boundary that function
+ * inserted, never a colon-space sequence buried inside `detail` that happens
+ * to precede it (`signatureForOperation` puts `toolName` first, always).
+ */
+export function toolNameFromSignature(signature: string): string {
+  const colonIndex = signature.indexOf(': ');
+  return colonIndex === -1 ? signature : signature.slice(0, colonIndex);
 }
 
 /**
@@ -795,8 +862,10 @@ export class PrecedentStore {
 
   /**
    * Record one human-classified answer. `toolName` and `signature` are
-   * expected pre-extracted (e.g. via `parsePermissionQuestionText`) — this
-   * method only normalizes and stores, it does not parse. A blank tool name
+   * expected pre-extracted (as of #990: `toolNameFromSignature` +
+   * `Question.precedentSignature`, both untruncated — see that field's doc)
+   * — this method only normalizes and stores, it does not parse. A blank
+   * tool name
    * or signature (after normalization), OR a truncated signature
    * (`isTruncatedSignature` — see "Truncation" in this module's doc,
    * CRITICAL, found in review), is refused rather than stored: the first is
