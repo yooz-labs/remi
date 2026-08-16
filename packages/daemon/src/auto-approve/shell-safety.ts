@@ -213,18 +213,6 @@ const INPUT_REDIRECT_PATH_RE = /^[A-Za-z0-9_./~-]+$/;
 const NETWORK_DEV_PATH_RE = /^\/dev\/(tcp|udp)\//;
 
 /**
- * A single input-redirect operator and its target, for `hasShellControl`'s
- * network-device egress check (#1063). Matches an optional leading fd number
- * and one `<`, capturing the following target word. The lookbehind excludes
- * the trailing `<` of `<<`/`<<<` (heredoc / here-string — neither opens a
- * socket), and the lookahead excludes `<(` (process substitution, refused
- * earlier). Deliberately scans anywhere (no whitespace anchor) so `cat</dev/...`
- * without a space is still caught; the target is then filtered by
- * `NETWORK_DEV_PATH_RE`, so an ordinary `< file` never triggers.
- */
-const INPUT_REDIRECT_TARGET_RE = /(?<!<)\d*<(?![<(])\s*(\S+)/g;
-
-/**
  * One input-redirect clause inside a peeled residue: `< PATH` or `<<< WORD`
  * (a here-string). `<<<` is tried before the single-`<` alternative so a
  * here-string is never misread as a file redirect whose target happens to
@@ -752,12 +740,41 @@ export function hasShellControl(segment: string): boolean {
   // invisible here ON PURPOSE (they read, they neither run nor write, so
   // `grep x < f` stays approvable). This narrows that only for the two device
   // prefixes bash gives socket semantics; every other `< target` is untouched.
-  // `<<`/`<<<` (heredoc / here-string) do NOT open a socket and are excluded
-  // by the lookbehind/lookahead; `<(` (process substitution) already vetoed.
-  for (const match of masked.matchAll(INPUT_REDIRECT_TARGET_RE)) {
-    if (NETWORK_DEV_PATH_RE.test(match[1] ?? '')) {
-      return true;
+  //
+  // Checked against the QUOTE-REMOVED tokens (`shellWords`), NOT the masked
+  // text: `NETWORK_DEV_PATH_RE` matches a literal prefix, and masking rewrites
+  // a quoted target to `_`, so `< "/dev/tcp/h/p"` / `< /dev/"tcp"/h/p` /
+  // `< /d\ev/tcp/h/p` each defeated a masked-text scan while bash still opened
+  // the socket. `shellWords` recovers the real target the program receives --
+  // the module's own law (see its doc): match what runs, not the raw text.
+  if (hasNetworkDeviceInputRedirect(segment)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * True if `segment` redirects input from a bash network device
+ * (`/dev/tcp/...` or `/dev/udp/...`) -- an outbound socket open. Scans the
+ * `shellWords` tokenization so quoting/escaping of the target cannot hide it
+ * (#1063). Two operator shapes: a standalone `<`/`N<` token whose NEXT token
+ * is the device, and a glued `cmd</dev/tcp/...` token (no space). Heredoc
+ * (`<<`)/here-string (`<<<`) tokens open no socket and are skipped; process
+ * substitution (`<(`) is already refused by `hasShellControl`'s substitution
+ * check before this runs.
+ */
+function hasNetworkDeviceInputRedirect(segment: string): boolean {
+  const tokens = shellWords(segment);
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i] ?? '';
+    // Standalone redirect operator: the device is the following token.
+    if (t === '<' || /^\d+<$/.test(t)) {
+      if (NETWORK_DEV_PATH_RE.test(tokens[i + 1] ?? '')) return true;
+      continue;
     }
+    // Glued form `cmd</dev/tcp/...` (quote-removed, so no space in the token).
+    const glued = /(?<!<)\d*<(?![<(])(\S+)$/.exec(t);
+    if (glued && NETWORK_DEV_PATH_RE.test(glued[1] ?? '')) return true;
   }
   return false;
 }

