@@ -6,6 +6,7 @@ import {
   matchGroups,
   matchGroupsBroad,
   matchReadOnlyCommand,
+  sedScriptShapeVeto,
 } from '../../src/auto-approve/permission-groups.ts';
 
 /** The READ groups. Kept as the default for `bash()` so every pre-#959 test
@@ -627,10 +628,27 @@ describe('#960 regression: build surface + the DEFAULT-ON build-test group', () 
     'cp x pyproject.toml',
     'cp x bunfig.toml',
     'mv evil bun.lock',
+    // #1061 additions: jest/webpack/rollup/babel/vite build-surface configs.
+    'cp x jest.config.js',
+    'cp x webpack.config.ts',
+    'cp x rollup.config.js',
+    'cp x babel.config.js',
+    'cp x .babelrc',
+    'cp x vite.config.ts',
   ];
   for (const cmd of mustBeNull) {
     test(JSON.stringify(cmd), () => expect(bash(cmd, WRITE_GROUPS)).toBeNull());
   }
+
+  test('#1061: the redirect-grant path is covered too, not just the direct-argument path', () => {
+    // `jest.config.js` is a read-side redirect TARGET here (`cat` is
+    // read-only, `fs-write` is what would otherwise delete the `>` clause) --
+    // exercising BUILD_SURFACE through `isGrantedFsWriteRedirectTarget`
+    // rather than through `segmentTouchesSensitivePath`'s direct-argument
+    // scan, so a future regression that only re-checks one of the two paths
+    // is caught by this pairing.
+    expect(bash('cat payload > jest.config.js', [...ALL, ...WRITE_GROUPS])).toBeNull();
+  });
 
   test('the mutating tools are guarded too', () => {
     for (const file_path of [
@@ -703,6 +721,21 @@ describe('#959 final pass: every write prefix is covered by a flag policy', () =
   // their flag policy inside `artifactCleanVeto` itself (an exact structural
   // allowlist) -- the probe asserts the same PROPERTY either way: an
   // unclassified flag is refused, wherever the policy lives.
+  //
+  // NOTE for the "sed -i" prefix specifically (review pass, #1061):
+  // `writeGroupVeto` is `hasUnsafeWriteFlag(...) || ... || sedScriptShapeVeto(...)`,
+  // and `hasUnsafeWriteFlag` runs FIRST, so for `sed -i -Zqx target` it is
+  // genuinely the flag axis that produces `null` here -- verified directly:
+  // `hasUnsafeWriteFlag('sed -i -Zqx target')` is `true` on its own, which
+  // short-circuits the `||` before `sedScriptShapeVeto` (which would ALSO
+  // refuse "target" as an invalid script) is ever called. What this specific
+  // generated case does NOT do is isolate which of the cluster's three
+  // letters (`Z`, `q`, `x`) is doing the work -- none of them is individually
+  // on sed's safe list, so a mutation that flipped only ONE of the three to
+  // "safe" would not flip this test's outcome. The dedicated `sed -i -Z
+  // 's/a/b/' f` / `sed -i -w 's/a/b/' f` cases in the "#1057 phase 2 commit
+  // 4" describe block below use a single unsafe letter against an otherwise
+  // VALID script, closing that gap.
   const WRITE_GROUP_NAMES = ['fs-write', 'vcs-write', 'artifact-clean'];
 
   for (const groupName of WRITE_GROUP_NAMES) {
@@ -894,6 +927,39 @@ describe('scratch: output redirection to a scratch target', () => {
   });
 });
 
+/**
+ * #1060 + ADR 0018 axis 3. The scratch redirect carve-out proved a target
+ * was under a scratch root and stopped there -- it never asked WHAT the
+ * target named, so a redirect INTO `/tmp/.env`, `/tmp/.git/hooks/pre-commit`
+ * or `/tmp/sub/package.json` had its clause deleted before
+ * `segmentTouchesSensitivePath` ever saw the token it exists to veto.
+ * Measured live before the fix: all three approved at 0ms on
+ * `['scratch', 'read-only']`.
+ */
+describe('#1060: a scratch-granted redirect target must not be sensitive', () => {
+  const READ_PLUS_SCRATCH = ['scratch', 'read-only'];
+
+  const sensitiveTargets: Array<[string, string]> = [
+    ['cat a > /tmp/.env', 'a credential basename, inside a scratch root'],
+    ['cat a > /tmp/.git/hooks/pre-commit', 'git hook: code execution on the next commit'],
+    ['cat a > /tmp/sub/package.json', 'build surface, nested under the scratch root'],
+  ];
+
+  for (const [cmd, why] of sensitiveTargets) {
+    test(`${JSON.stringify(cmd)} — ${why}`, () => {
+      expect(bash(cmd, READ_PLUS_SCRATCH)).toBeNull();
+    });
+  }
+
+  test('the fix does not over-narrow: an ordinary scratch redirect still matches', () => {
+    expect(bash('cat a > /tmp/out.txt', READ_PLUS_SCRATCH)).toBe('read-only:cat');
+  });
+
+  test('the fix does not over-narrow: a nested non-sensitive redirect still matches', () => {
+    expect(bash('cat a > /tmp/nested/ok.txt', READ_PLUS_SCRATCH)).toBe('read-only:cat');
+  });
+});
+
 describe('scratch: level membership', () => {
   test('scratch alone does not need fs-write or vcs-write', () => {
     expect(bash('rm -rf /tmp/x', ['scratch'])).toBe('scratch:rm');
@@ -1066,6 +1132,380 @@ describe('#1000: a cd whose effect is not guaranteed does not move the tracked r
   test('&& and ; still establish the root', () => {
     expect(bash('cd /tmp && rm -rf junk', SCRATCH_GROUPS)).toBe('scratch:rm');
     expect(bash('cd /tmp; rm -rf junk', SCRATCH_GROUPS)).toBe('scratch:rm');
+  });
+});
+
+/**
+ * #1041: 58% of trusted Bash escalations measured on a real machine were
+ * plain file writes -- `cat a.txt > notes.md`, `bun test > out.log 2>&1`,
+ * `git diff > review.diff` -- heads already covered by `read-only`,
+ * `build-test` and `vcs-read`, escalating only because the redirect target
+ * looked like shell control to `hasShellControl`. `fs-write` already approves
+ * exactly this operation through the `Write` tool, so this grant lets it
+ * approve the Bash spelling too: a path-kind redirect clause may be deleted
+ * when its cwd-resolved target is a RELATIVE path that does not ascend out of
+ * the directory the command started in, and is not a sensitive destination.
+ *
+ * `WRITE_GROUPS_NO_SCRATCH` deliberately omits `scratch`, to isolate the
+ * fs-write grant from the pre-existing absolute-root one -- a command that
+ * needs `scratch` to pass here would be pinning the wrong grant.
+ */
+describe('#1041: fs-write grants a relative, non-ascending, non-sensitive redirect', () => {
+  const WRITE_GROUPS_NO_SCRATCH = [...ALL, 'fs-write'];
+
+  describe('covered', () => {
+    const covered: Array<[string, string]> = [
+      ['cat a.txt > notes.md', 'read-only:cat'],
+      ['cat a >> log.txt', 'read-only:cat'],
+      ['bun test > out.log 2>&1', 'build-test:bun test'],
+      ['git diff > review.diff', 'vcs-read:git diff'],
+      ['cd sub && cat a > out.txt', 'read-only:cat'],
+      ['cat a > docs/notes.md', 'read-only:cat'],
+    ];
+    for (const [cmd, expected] of covered) {
+      test(`${JSON.stringify(cmd)} -> ${expected}`, () => {
+        expect(bash(cmd, WRITE_GROUPS_NO_SCRATCH)).toBe(expected);
+      });
+    }
+  });
+
+  describe('MUST NOT cover (falls through to the LLM)', () => {
+    const mustBeNull: Array<[string, string]> = [
+      ['cat a > /etc/hosts', 'absolute target, outside any scratch root'],
+      ['cat a > ~/x', 'home-rooted target'],
+      ['cat a > $HOME/x', '$HOME is absolute-shaped, never composed'],
+      ['cat a > ../escape.txt', 'ascends above the start with no cd at all'],
+      ['cat a > sub/../../escape.txt', 'composes to an ascent above the start'],
+      ['cat a > .env', 'a credential basename'],
+      ['cat a > package.json', 'a build surface'],
+      ['cat a > .git/hooks/pre-commit', 'git hook: code execution on the next commit'],
+      ['cd /opt && cat a > x', 'an absolute cd kills the relative grant, sticky'],
+      ['cd $DIR && cat a > x', 'an unresolvable cd target kills the grant, sticky'],
+      ['cat a > "quoted path.txt"', 'opaque target: quoting is never composed'],
+      ['cat a >| x', 'clobber redirect: opaque target'],
+      ['cat a &> x', 'merge redirect: the residual & still backgrounds'],
+      ['cat a > >(tee x)', 'process substitution: hasShellControl catches <( and >('],
+      ['cat a >/tmp/a>/etc/passwd', 'glued redirect (#1000): opaque target'],
+      ['echo hi > notes.md', 'echo is neutral, so nothing ever matches a prefix'],
+    ];
+    for (const [cmd, why] of mustBeNull) {
+      test(`${JSON.stringify(cmd)} — ${why}`, () => {
+        expect(bash(cmd, WRITE_GROUPS_NO_SCRATCH)).toBeNull();
+      });
+    }
+
+    test('fs-write not in groups: the same redirect stays refused', () => {
+      expect(bash('cat a > notes.md', ALL)).toBeNull();
+    });
+  });
+
+  test('cd composition: a relative cd chain that returns to the start still grants', () => {
+    expect(bash('cd sub && cd .. && cat a > out.txt', WRITE_GROUPS_NO_SCRATCH)).toBe(
+      'read-only:cat',
+    );
+  });
+
+  test('cd composition: ascending past the start kills the grant', () => {
+    expect(bash('cd sub && cd .. && cd .. && cat a > out.txt', WRITE_GROUPS_NO_SCRATCH)).toBeNull();
+  });
+
+  test('the two grants compose: either proof deletes the clause', () => {
+    const BOTH = [...ALL, 'fs-write', 'scratch'];
+    // scratch's own absolute-root grant, unaffected by fs-write being active too.
+    expect(bash('cat a > /tmp/out.txt', BOTH)).toBe('read-only:cat');
+    // fs-write's relative grant, unaffected by scratch being active too.
+    expect(bash('cat a > notes.md', BOTH)).toBe('read-only:cat');
+  });
+
+  test('every existing scratch-only behavior is unaffected by the generalization', () => {
+    expect(bash('rm -rf /tmp/x', SCRATCH_GROUPS)).toBe('scratch:rm');
+    expect(bash('cat file.txt > /tmp/out.txt', ['scratch', 'read-only'])).toBe('read-only:cat');
+    expect(bash('cat file.txt > /etc/passwd', ['scratch', 'read-only'])).toBeNull();
+  });
+});
+
+/**
+ * #1057 phase 2, commit 3: heredoc excision. Heredocs appear NOWHERE in the
+ * decision code before this. Today `tee /tmp/x <<EOF` (one physical line, no
+ * real newline) approves because `<<EOF` just sits as an inert extra token;
+ * a genuine MULTI-LINE heredoc escalates only by ACCIDENT, because
+ * `splitCompoundParts` treats an unquoted newline as a separator and a body
+ * line essentially never happens to prefix-match a curated command. This
+ * block pins the deliberate replacement: excise the operator + body when it
+ * can be proven safe to do so, and fall back to that same accidental (but
+ * safe) behavior the instant it cannot be proven.
+ */
+describe('#1057 phase 2 commit 3: heredoc excision (group path only)', () => {
+  const WRITE_GROUPS_NO_SCRATCH = [...ALL, 'fs-write'];
+  const EVERYTHING = [...ALL, ...WRITE_GROUPS, ...SCRATCH_GROUPS, ...ARTIFACT_GROUPS];
+
+  describe('covered: excision composes with the existing redirect grants', () => {
+    const cases: Array<[string, string, string[], string]> = [
+      [
+        "cat > notes.md <<'EOF'\nhello\nEOF",
+        'quoted delimiter: excised, then the fs-write relative redirect grant deletes "> notes.md"',
+        WRITE_GROUPS_NO_SCRATCH,
+        'read-only:cat',
+      ],
+      [
+        'tee notes.md <<EOF\nplain text\nEOF',
+        'unquoted delimiter, inert body: excised outright, tee itself is the fs-write-owned prefix, no redirect grant needed',
+        WRITE_GROUPS,
+        'fs-write:tee',
+      ],
+    ];
+    for (const [cmd, why, groups, expected] of cases) {
+      test(`${JSON.stringify(cmd)} — ${why}`, () => {
+        expect(bash(cmd, groups)).toBe(expected);
+      });
+    }
+    test("tee /tmp/x <<'EOF'\\nbody\\nEOF — scratch: absolute root grant, unaffected", () => {
+      expect(bash("tee /tmp/x <<'EOF'\nbody\nEOF", SCRATCH_GROUPS)).toBe('scratch:tee');
+    });
+    test('notes.md case actually resolves via fs-write, not just read-only', () => {
+      // Sanity: the fs-write group's own redirect grant is what let this through
+      // -- without it requested, the same command must fall back to null.
+      expect(bash("cat > notes.md <<'EOF'\nhello\nEOF", ALL)).toBeNull();
+    });
+  });
+
+  test("regression guard: today's single-line accidental approval is unaffected", () => {
+    // No real newline in this string at all -- there is no terminator to find,
+    // so excision aborts (unterminated, fails closed) and the command reaches
+    // the existing machinery byte-for-byte, exactly as it did before commit 3.
+    expect(bash('tee /tmp/x <<EOF', WRITE_GROUPS)).toBe('fs-write:tee');
+    // Under `scratch` alone the same string was ALREADY refused before this
+    // commit (`scratchTargetVeto` treats the glued `<<EOF` token as a
+    // non-scratch-rooted positional target) -- unaffected either way.
+    expect(bash('tee /tmp/x <<EOF', SCRATCH_GROUPS)).toBeNull();
+  });
+
+  test("safety invariant: no interpreter is in any group's command list, before or after excision", () => {
+    for (const cmd of [
+      "bash <<'EOF'\nrm -rf /\nEOF",
+      "python3 - <<'PY'\nprint(1)\nPY",
+      'sh <<X\necho hi\nX',
+    ]) {
+      expect(bash(cmd, EVERYTHING)).toBeNull();
+    }
+  });
+
+  describe("MUST NOT excise (falls through to today's accidental, still-safe behavior)", () => {
+    const mustBeNull: Array<[string, string]> = [
+      [
+        'cat > x <<EOF\n$(rm -rf /)\nEOF',
+        'unquoted delimiter, LIVE body: the shell would run $(...) expanding it, so excision must not hide that execution from the matcher',
+      ],
+      [
+        "cat > x <<'EOF'\nbody",
+        'unterminated: no line ever matches the delimiter, so nothing is proven removable',
+      ],
+      [
+        'cat > x <<\'EOF\'\n"EOF"\nrm -rf /',
+        'terminator-inside-quotes spoof with NO real terminator: a quoted lookalike must not count as the delimiter line, so this stays unterminated and falls through',
+      ],
+      [
+        'cat > x <<E$OF\nbody\nE$OF',
+        'delimiter contains $: fails the plain-word shape, so no excision is attempted',
+      ],
+      [
+        'cat > a.txt <<EOF\nfirst\nEOF\ncat > b.txt <<BAD!\nsecond\nBAD!',
+        'a VALID first heredoc followed by a second heredoc with an invalid delimiter (BAD! contains a non-word character): excision must abort for the WHOLE command and return it byte-for-byte -- pinning the `return command` path, not a partial reconstruction that keeps the first heredoc already excised',
+      ],
+    ];
+    for (const [cmd, why] of mustBeNull) {
+      test(`${JSON.stringify(cmd)} — ${why}`, () => {
+        expect(bash(cmd, WRITE_GROUPS_NO_SCRATCH)).toBeNull();
+      });
+    }
+  });
+
+  test('a quoted lookalike inside the body does not end the heredoc early, when a real terminator follows', () => {
+    // Same body as the spoof case above, but with a genuine trailing bare
+    // `EOF`. The quoted "EOF" line must be skipped as a candidate terminator,
+    // so the WHOLE body -- including the "rm -rf /"-shaped line -- is proven
+    // to be inert heredoc data and excised along with the real terminator,
+    // never examined as a command in its own right.
+    expect(bash('cat > x <<\'EOF\'\n"EOF"\nrm -rf /\nEOF', WRITE_GROUPS_NO_SCRATCH)).toBe(
+      'read-only:cat',
+    );
+  });
+
+  test('<<< here-strings are excluded outright and behave exactly as before', () => {
+    // A run of 3+ `<` is never a heredoc operator, so this command is not
+    // even a candidate for excision -- `exciseHeredocsForGroups` returns it
+    // unchanged, and today's (pre-commit-3) behavior is reproduced exactly.
+    expect(bash('cat <<< "hello"', ALL)).toBe('read-only:cat');
+  });
+
+  test('a body line that looks like a covered command must not leak coverage', () => {
+    // "git status" is BODY, wholly excised along with the operator and the
+    // terminator -- the command's coverage is decided by the `cat` head
+    // alone, which takes no arguments here, so this must equal bare `cat`.
+    const withHeredoc = bash("cat <<'EOF'\ngit status\nEOF", WRITE_GROUPS_NO_SCRATCH);
+    expect(withHeredoc).toBe(bash('cat', WRITE_GROUPS_NO_SCRATCH));
+    expect(withHeredoc).toBe('read-only:cat');
+  });
+});
+
+/**
+ * #1057 phase 2, commit 4: `sed -i` under a strict script-shape allowlist.
+ * Every script the command would actually run must be a single, unconditional
+ * `s///` or `y///` -- no address prefix, no brace block, no `w`/`e`/`r`/`R`
+ * side-command, no chained `;`. Destinations still go through the same
+ * `segmentTouchesSensitivePath` axis every other fs-write prefix does.
+ */
+describe('#1057 phase 2 commit 4: sed -i script-shape allowlist', () => {
+  describe('covered', () => {
+    const cases: Array<[string, string]> = [
+      ["sed -i 's/a/b/' file.txt", 'fs-write:sed -i'],
+      ["sed -i 's/a/b/g' f", 'fs-write:sed -i'],
+      ["sed -i -e 's/a/b/' f", 'fs-write:sed -i'],
+      ["sed -i 'y/abc/xyz/' f", 'fs-write:sed -i'],
+      // BSD empty-suffix form: `-i` and the following literal `''` are TWO
+      // tokens, so this still starts with the curated `sed -i ` prefix.
+      ["sed -i '' 's/a/b/' f", 'fs-write:sed -i'],
+    ];
+    for (const [cmd, expected] of cases) {
+      test(cmd, () => expect(bash(cmd, WRITE_GROUPS)).toBe(expected));
+    }
+  });
+
+  describe('MUST NOT cover: named adversaries (falls through to the LLM)', () => {
+    const mustBeNull: Array<[string, string]> = [
+      [
+        "sed -i 's/x/y/w /etc/cron.d/evil' f",
+        'the w side-command writes an ARBITRARY second file, unrelated to the destination axis',
+      ],
+      ["sed -i 's/x/y/e' f", 'the e flag executes the substitution result as a shell command'],
+      ["sed -i '1,5d' f", 'an address-range prefix, not a bare s/// or y///'],
+      ["sed -i '/x/d' f", 'an address-regex prefix, not a bare s/// or y///'],
+      [
+        "sed -i -e 's/a/b/' -e 'e date' f",
+        'a SECOND -e script fails the shape even though the first one passes',
+      ],
+      [
+        'sed --file=evil.sed -i f',
+        // #1061 review: relabeled. `matchPrefix` requires the curated prefix
+        // to be followed by a literal space (`sed -i `); this segment does
+        // not even START with that text (it starts `sed --file=`), so it is
+        // refused by PREFIX MISMATCH before `writeGroupVeto`/the flag axis is
+        // ever consulted -- not because `--file` was recognized and rejected.
+        // See `sed -i --file=evil.sed f` below for a spelling that actually
+        // reaches, and is refused by, the flag axis.
+        'refused by PREFIX MISMATCH (does not start with the curated "sed -i " prefix), not the flag axis',
+      ],
+      [
+        'sed -i --file=evil.sed f',
+        // This spelling DOES start with `sed -i `, so it reaches
+        // `writeGroupVeto`, where `--file=evil.sed` fails `hasUnsafeWriteFlag`
+        // ('file' is not in sed's `safeLongFlags`) and that check runs FIRST
+        // in the `||` chain -- genuinely the flag axis, not prefix mismatch.
+        '--file loads an ARBITRARY external script; this spelling reaches and is refused by the flag axis',
+      ],
+    ];
+    for (const [cmd, why] of mustBeNull) {
+      test(`${JSON.stringify(cmd)} — ${why}`, () => expect(bash(cmd, WRITE_GROUPS)).toBeNull());
+    }
+  });
+
+  describe('destination axis: still refused regardless of script shape', () => {
+    for (const target of ['.env', 'package.json']) {
+      test(`sed -i 's/a/b/' ${target}`, () =>
+        expect(bash(`sed -i 's/a/b/' ${target}`, WRITE_GROUPS)).toBeNull());
+    }
+  });
+
+  test('read-side SCOPED_VETO is untouched: sed -n with -i still refuses', () => {
+    // Matched via read-only's `sed -n` prefix, not fs-write's `sed -i` --
+    // `hasScopedVeto` (permission-groups.ts) refuses any sed segment
+    // carrying `-i`/`--in-place` regardless of which prefix it matched.
+    expect(bash("sed -n -i 's/a/b/' f", ALL)).toBeNull();
+  });
+
+  test('without fs-write requested, sed -i matches no prefix at all', () => {
+    expect(bash("sed -i 's/a/b/' f", ALL)).toBeNull();
+  });
+
+  test('the backup-suffix VALUE, reached through the FULL group path, is null via PREFIX MISMATCH', () => {
+    // #1061 review: relabeled -- this used to claim the destination-axis
+    // check on the suffix was what refused these. It is not, TODAY: an
+    // attached `-i'...'` (no space before the quote) does not start with the
+    // curated `sed -i ` prefix any more than `sed -i.bak` does (same
+    // `matchPrefix` residual), so `writeGroupVeto` -- and the suffix check
+    // inside `sedScriptShapeVeto` these commands were meant to exercise -- is
+    // never reached at all. Both commands really are null, just for a
+    // different reason than this test's own name used to say. See the
+    // "documented residual" block below for the general case, and the
+    // "backup-suffix VALUE, reached directly" block below for tests that
+    // actually reach and exercise the suffix check.
+    expect(bash("sed -i'*/tmp/../../etc/cron.d/evil' 's/a/b/' f", WRITE_GROUPS)).toBeNull();
+    expect(bash("sed -i'../../../etc/passwd' 's/a/b/' f", WRITE_GROUPS)).toBeNull();
+  });
+
+  describe('backup-suffix VALUE, reached directly: defense-in-depth for the ADR 0026 residual', () => {
+    // The two branches these tests exercise (permission-groups.ts,
+    // `sedScriptShapeVeto`'s `-i<suffix>` and `--in-place=<suffix>` checks)
+    // are UNREACHABLE through `matchGroups`/`bash()` today for the reason the
+    // test above and the "documented residual" block below both demonstrate:
+    // `matchPrefix` requires a literal space after `sed -i`, which neither
+    // attached spelling has. Calling the exported veto function directly
+    // (mirrors `MUTATION_TOKEN`'s "exported for tests ONLY" convention)
+    // bypasses that prefix-matching layer entirely, so these ARE genuine
+    // direct exercises of the suffix check, kept as defense-in-depth for the
+    // day attached-suffix prefix matching is added.
+    test("-i'<suffix>' containing a path separator and a glob is vetoed", () => {
+      expect(sedScriptShapeVeto("sed -i'*/tmp/../../etc/cron.d/evil' 's/a/b/' f")).toBe(true);
+    });
+    test('--in-place=<suffix> containing an ascent is vetoed', () => {
+      expect(sedScriptShapeVeto("sed --in-place=../../../etc/passwd 's/a/b/' f")).toBe(true);
+    });
+    test('an ordinary attached suffix (no separator or glob) is NOT vetoed by this check', () => {
+      expect(sedScriptShapeVeto("sed -i.bak 's/a/b/' f")).toBe(false);
+    });
+  });
+
+  test('#959 final pass invariant: sed -i -Zqx is refused by the flag axis', () => {
+    // Pinned directly here too (in addition to the machine-checked walk over
+    // BUILTIN_GROUPS above): an unclassified flag must be refused.
+    expect(bash('sed -i -Zqx target', WRITE_GROUPS)).toBeNull();
+  });
+
+  describe('#1061: the sed FLAG_POLICY, pinned on a VALID script (isolates the flag axis)', () => {
+    // `sed -i -Zqx target` (above, and in the machine-checked walk) bundles
+    // THREE unsafe letters against an INVALID script, so it does not isolate
+    // any one letter, and -- since `hasUnsafeWriteFlag` runs first in
+    // `writeGroupVeto`'s `||` chain and short-circuits -- it never even
+    // reaches `sedScriptShapeVeto` to find out the script was invalid too.
+    // These two use a SINGLE unsafe flag against an otherwise-valid `s///`
+    // script, which is the only shape that actually distinguishes "the flag
+    // axis caught this" from "the script-shape veto would have caught it
+    // anyway".
+    test("sed -i -Z 's/a/b/' f", () =>
+      expect(bash("sed -i -Z 's/a/b/' f", WRITE_GROUPS)).toBeNull());
+    test("sed -i -w 's/a/b/' f", () =>
+      expect(bash("sed -i -w 's/a/b/' f", WRITE_GROUPS)).toBeNull());
+  });
+
+  test("sed -i 's;a;b;g' f — ; used AS THE DELIMITER is refused conservatively", () => {
+    // The `;`-inclusion check's unique observable effect (see
+    // `sedScriptShapeOk`'s doc comment): this script otherwise has exactly 4
+    // fields and a valid trailing class ('g'), so it would PASS the
+    // field-count and trailing-class checks on their own. It is refused only
+    // because `;` is refused outright, regardless of role.
+    expect(bash("sed -i 's;a;b;g' f", WRITE_GROUPS)).toBeNull();
+  });
+
+  describe('documented residual: matchPrefix cannot see an ATTACHED -i suffix', () => {
+    // `matchPrefix` requires a literal space after the curated prefix
+    // (`segment.startsWith('sed -i ')`), which GNU's no-separator spelling
+    // never satisfies -- `sed -i.bak ...` does not start with `sed -i `, so
+    // it never reaches `sedScriptShapeVeto`, or any veto at all: it matches
+    // NO curated prefix and falls through, unconditionally safe (escalate),
+    // never unsafe. See the residuals comment above `sedScriptShapeVeto`.
+    test("sed -i.bak 's/a/b/' f — verified null, not covered", () => {
+      expect(bash("sed -i.bak 's/a/b/' f", WRITE_GROUPS)).toBeNull();
+    });
   });
 });
 

@@ -35,6 +35,7 @@ import {
 } from './sensitive-paths.ts';
 import {
   type CompoundJoiner,
+  maskQuotedSpans,
   matchCoveredCommand,
   matchPrefix,
   rewriteRedirectClauses,
@@ -82,6 +83,228 @@ function hasWriteGroupPositionalVeto(segment: string): boolean {
   }
   return false;
 }
+
+// ---------------------------------------------------------------------------
+// `sed -i` under a strict script-shape allowlist (#1057 phase 2, commit 4).
+// Placed here, in `permission-groups.ts` alongside the rest of fs-write's
+// veto plumbing, rather than in `write-flag-safety.ts`: the flag axis there
+// answers "is every FLAG safe", but what a permitted sed SCRIPT is allowed
+// to say is a shape no flag-letter allowlist can express, and it needs to
+// interact with `hasUnsafeWriteFlag`'s call site to normalize `-i`'s attached
+// suffix first (see `normalizeSedInPlaceSuffix`) -- both are decisions this
+// file already owns for every other write prefix (`artifactCleanVeto`,
+// `scratchTargetVeto`).
+// ---------------------------------------------------------------------------
+
+/**
+ * `sed -i` accepts an attached backup suffix with no separator (`-i.bak`).
+ * `write-flag-safety.ts`'s short-option scan checks every alphabetic
+ * character of a `-`-prefixed token as a possible flag letter (by design —
+ * see that module's doc), so an unnormalized `.bak` would need ITS OWN
+ * letters on the safe list, which is not what that list means. Normalizes
+ * every `-i<suffix>` token on a `sed` segment to bare `-i` before handing it
+ * to `hasUnsafeWriteFlag`; every other token, and every non-sed segment,
+ * passes through untouched.
+ *
+ * This is also exactly correct GNU getopt semantics, not a hack: `-i` takes
+ * an OPTIONAL argument, so once it appears, getopt consumes the REST of that
+ * token as its value regardless of what letters are in it — `-in` really is
+ * `-i` with suffix `n`, not `-i -n`. The suffix's own SHAPE (must contain no
+ * path separator or `*`) is verified independently by `sedScriptShapeVeto`,
+ * which sees the original, unnormalized token.
+ */
+function normalizeSedInPlaceSuffix(segment: string): string {
+  if (!/^sed\b/.test(segment)) return segment;
+  return shellWords(segment)
+    .map((w) => (/^-i.+$/.test(w) ? '-i' : w))
+    .join(' ');
+}
+
+/**
+ * Split `text` on UNESCAPED occurrences of the single delimiter character
+ * `d`: a `d` preceded by a backslash is literal and does not split, and the
+ * backslash+`d` pair is kept verbatim in the field (exactly as sed's own
+ * parser would see it — this function only needs to find the field
+ * boundaries, not unescape their contents).
+ */
+function splitOnUnescapedDelimiter(text: string, d: string): string[] {
+  const fields: string[] = [];
+  let current = '';
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '\\' && i + 1 < text.length) {
+      current += c + text[i + 1];
+      i++;
+      continue;
+    }
+    if (c === d) {
+      fields.push(current);
+      current = '';
+      continue;
+    }
+    current += c;
+  }
+  fields.push(current);
+  return fields;
+}
+
+/**
+ * True if `script` is EXACTLY one `s<D>...<D>...<D>[gIp0-9]*` or
+ * `y<D>...<D>...<D>` sed command — `D` any single non-alphanumeric,
+ * non-backslash delimiter, the three delimited fields containing no
+ * unescaped `D`. Anything else fails closed: an address prefix (`/re/s///`,
+ * `1,5s///`) and a brace block both fail the leading-letter check below (the
+ * first character is not literally `s`/`y`); a trailing side-command
+ * (`w file`, `W`, `e`, `r`, `R`) fails the `y`'s empty-trailer or the `s`'s
+ * `[gIp0-9]*` check.
+ *
+ * The explicit `;`-inclusion check is NOT what catches a `;`-chained second
+ * command appended after the closing delimiter — the field-count and
+ * trailing-class checks already do, on their own: appending `; rm -rf /` (or
+ * any other chained command) after a real `s///`/`y///` script inserts an
+ * extra unescaped delimiter-free field, so `splitOnUnescapedDelimiter` no
+ * longer returns exactly 4 fields and the shape fails regardless. What the
+ * `;` check's own presence UNIQUELY refuses is `;` used AS THE DELIMITER
+ * itself (`s;a;b;g`) — a shape that genuinely passes the field-count and
+ * trailing-class checks on its own (4 fields, trailing `g`) and is refused
+ * ONLY because this line runs first. It is kept, conservative, for a second
+ * reason beyond that one refusal: it makes "this script contains no chained
+ * command" a property auditable by reading ONE line, rather than by trusting
+ * the delimiter-counting math above to have no adversarial case left in it.
+ */
+function sedScriptShapeOk(script: string): boolean {
+  if (script.includes(';')) return false;
+  const cmd = script[0];
+  if (cmd !== 's' && cmd !== 'y') return false;
+  const d = script[1];
+  if (d === undefined || d === '\\' || /[A-Za-z0-9]/.test(d)) return false;
+  const fields = splitOnUnescapedDelimiter(script.slice(1), d);
+  if (fields.length !== 4) return false;
+  const trailing = fields[3] ?? '';
+  return cmd === 'y' ? trailing === '' : /^[gIp0-9]*$/.test(trailing);
+}
+
+/**
+ * Script-shape veto for a `sed` segment: every script the command would
+ * actually run — the bare positional script, or each `-e`/`--expression`
+ * value — must pass `sedScriptShapeOk`. A `-f`/`--file` script (loaded from
+ * an arbitrary external file) is not modeled here at all, because it is
+ * already refused by the flag axis (`-f`/`--file` are not on `sed`'s safe
+ * list in `write-flag-safety.ts`) before this veto's verdict can matter.
+ *
+ * `-i`'s own backup-suffix VALUE gets a second, independent check here, on
+ * the ORIGINAL (unnormalized) token: a suffix containing `/` or `*` can
+ * redirect GNU sed's backup to an arbitrary path (sed expands `*` to the
+ * target's own name and treats the result as a path), which is a
+ * destination-axis bypass `segmentTouchesSensitivePath` never sees — the
+ * suffix is a flag VALUE, not the command's final file argument.
+ *
+ * BOTH branches below that check this suffix (the attached `-i<suffix>` form
+ * and `--in-place=<suffix>`) are UNREACHABLE through the actual group-match
+ * path today, probe-verified: `matchPrefix` (shell-safety.ts) requires the
+ * curated `sed -i` prefix to be followed by a literal SPACE
+ * (`segment.startsWith('sed -i ')`), which neither attached spelling
+ * satisfies — an attached, glob-carrying `-i` suffix quoted directly onto the
+ * flag does not start with `sed -i ` (the character right after `-i` is a
+ * quote, not a space), and `sed --in-place=... ...` does not start with
+ * `sed -i ` at all. Both fall
+ * through UNMATCHED before this function, or any veto, is ever reached — see
+ * the "documented residual" test block and the residuals comment above
+ * `sedScriptShapeVeto`'s call site for the same limit stated from the
+ * `matchPrefix` side. The branches are kept anyway, as defense-in-depth for
+ * the day attached-suffix prefix matching is added (the ADR 0026 residual):
+ * removing them now would silently reopen this exact bypass the moment that
+ * prefix-matching gap closes. Reached directly by calling this exported
+ * function with a crafted segment in tests, since the group path cannot
+ * reach them today.
+ *
+ * Exported for tests ONLY (mirrors `MUTATION_TOKEN`'s convention above): the
+ * two branches this comment describes have no OTHER way to be exercised
+ * while `matchPrefix`'s space requirement stands.
+ */
+export function sedScriptShapeVeto(segment: string): boolean {
+  if (!/^sed\b/.test(segment)) return false;
+  const words = shellWords(segment);
+  const hasScriptFlag = words.some(
+    (w) => w === '-e' || w === '--expression' || w.startsWith('--expression='),
+  );
+  let positionalConsumed = false;
+  for (let i = 1; i < words.length; i++) {
+    const w = words[i] as string;
+    if (w === '') continue;
+    if (w === '-i' || /^-i.+$/.test(w)) {
+      const suffix = w === '-i' ? '' : w.slice(2);
+      if (!/^[A-Za-z0-9._-]*$/.test(suffix)) return true;
+      if (w === '-i' && words[i + 1] === '') i++; // BSD `-i ''`: consume the empty suffix
+      continue;
+    }
+    if (w === '--in-place' || w.startsWith('--in-place=')) {
+      const suffix = w.startsWith('--in-place=') ? w.slice('--in-place='.length) : '';
+      if (!/^[A-Za-z0-9._-]*$/.test(suffix)) return true;
+      continue;
+    }
+    if (w === '-e' || w === '--expression') {
+      const script = words[i + 1];
+      if (script === undefined || !sedScriptShapeOk(script)) return true;
+      i++;
+      continue;
+    }
+    if (w.startsWith('--expression=')) {
+      if (!sedScriptShapeOk(w.slice('--expression='.length))) return true;
+      continue;
+    }
+    // Every other flag this family allows takes no argument; an unrecognized
+    // one is the flag axis's job, not this veto's.
+    if (w.startsWith('-')) continue;
+    // The bare positional script -- only the FIRST such token, and only when
+    // no `-e`/`--expression` supplied one instead; every later positional is
+    // a FILE argument (covered independently by `segmentTouchesSensitivePath`).
+    if (!hasScriptFlag && !positionalConsumed) {
+      positionalConsumed = true;
+      if (!sedScriptShapeOk(w)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Two residuals, DECLARED rather than open bugs, mirroring how `scratch` and
+ * `artifact-clean` document their own honest limits above.
+ *
+ * 1. `matchPrefix` (shell-safety.ts) requires the curated prefix to be
+ *    followed by a literal SPACE (`segment === p || segment.startsWith(p +
+ *    ' ')`), which is exactly right for every OTHER prefix in this file but
+ *    cannot match GNU's ATTACHED `-i` suffix spelling: `sed -i.bak 's/a/b/'
+ *    f` does not start with `sed -i ` (the fifth character after `-i` is
+ *    `.`, not a space), so it never reaches `sedScriptShapeVeto` at all --
+ *    the whole command falls through UNMATCHED. Verified, not assumed:
+ *    `sed -i.bak 's/a/b/' f` returns null under every group. Fixing this
+ *    would mean rewriting the command text before prefix-matching runs (the
+ *    same shape of pre-pass `sanitizeCommandForRedirectGrants` and
+ *    `exciseHeredocsForGroups` use), and doing so safely requires the
+ *    downstream veto to agree on which token is the suffix versus the
+ *    script -- a second, independent walk that must never disagree with the
+ *    first (#1000's law) for a feature already safe on its escalate side.
+ *    Descoped rather than built under time pressure; the fallback is
+ *    unconditionally safe (escalate to the LLM), never unsafe.
+ * 2. This veto's `-i`/`-e` token walk assumes GNU getopt semantics
+ *    throughout (a bare `-i` takes no argument unless one is attached in
+ *    the SAME token; a BSD-style separate, non-empty suffix argument is not
+ *    recognized). Real BSD/macOS sed disagrees: its `-i` MANDATORILY
+ *    consumes the very next token as the backup suffix, so
+ *    `sed -i 's/a/b/' file` -- this file's own first positive example --
+ *    would, on a real BSD sed, use `'s/a/b/'` as the suffix and `file` as
+ *    the (almost certainly invalid) script. This matcher cannot know which
+ *    `sed` a bare `$PATH` lookup will resolve to, and there is no shape
+ *    that reads identically under both getopt conventions once anything
+ *    beyond a bare `-i ''` is involved -- the "BSD/GNU `-i` ambiguity ... at
+ *    the token layer" this feature's design brief named as a legitimate
+ *    stop condition. Accepted rather than solved because it is not a
+ *    SAFETY gap: the divergent (BSD) reading fails closed on its own --
+ *    sed errors out on a bogus script, or at worst writes a confusingly
+ *    named backup -- never a sensitive-destination write or code execution,
+ *    which remains this veto's only chartered property.
+ */
 
 /**
  * Every group that can MUTATE the filesystem, and therefore every group whose
@@ -133,9 +356,10 @@ const MUTATING_GROUPS: ReadonlySet<string> = new Set([
  */
 function writeGroupVeto(segment: string): boolean {
   return (
-    hasUnsafeWriteFlag(segment) ||
+    hasUnsafeWriteFlag(normalizeSedInPlaceSuffix(segment)) ||
     hasWriteGroupPositionalVeto(segment) ||
-    segmentTouchesSensitivePath(segment)
+    segmentTouchesSensitivePath(segment) ||
+    sedScriptShapeVeto(segment)
   );
 }
 
@@ -146,34 +370,47 @@ function writeGroupVeto(segment: string): boolean {
 // provably resolves under a scratch root: `/tmp/...`, `/private/tmp/...`
 // (macOS's real path for `/tmp`), `$TMPDIR/...`, `${TMPDIR}/...`.
 //
-// This is deliberately NOT expressed as a stateless `PermissionGroup.
-// segmentVeto` the way `fs-write`/`vcs-write` are. Two things it needs that a
-// pure `(segment) => boolean` cannot express:
+// A second, independent redirect grant lives in this same machinery:
+// `fs-write` (#1041 — 58% of trusted Bash escalations measured were plain
+// file writes). `cat a.txt > notes.md`, `bun test > out.log 2>&1` and
+// `git diff > review.diff` are read-side prefixes owned by OTHER groups
+// (`read-only`, `build-test`, `vcs-read`) whose output redirect targets a
+// RELATIVE, non-ascending, non-sensitive destination — exactly the operation
+// `fs-write` already approves through the `Write` tool. `fs-write` itself
+// never grants an ABSOLUTE target or one reached through an unprovable `cd`;
+// that is scratch's grant to make, not this one's, and the two compose (a
+// clause deletable by either grant is deleted).
 //
-//   - A leading `cd` into a scratch root must make later RELATIVE targets in
-//     the SAME compound command count as scratch-rooted (the owner's real
-//     traffic: `cd /private/tmp/.../scratchpad && <work>`). That is state
-//     carried ACROSS segments, in order, which `matchCoveredCommand`'s
-//     per-segment veto hooks do not thread through.
+// Neither grant is expressed as a stateless `PermissionGroup.segmentVeto` the
+// way `fs-write`/`vcs-write`'s own prefix-matched segments are. Two things
+// they need that a pure `(segment) => boolean` cannot express:
+//
+//   - A leading `cd` must make later RELATIVE targets in the SAME compound
+//     command count as rooted (scratch's real traffic:
+//     `cd /private/tmp/.../scratchpad && <work>`; fs-write's:
+//     `cd sub && cat a > out.txt`). That is state carried ACROSS segments, in
+//     order, which `matchCoveredCommand`'s per-segment veto hooks do not
+//     thread through.
 //   - `hasShellControl` (shell-safety.ts) vetoes ANY non-`/dev/null` output
 //     redirect unconditionally, for every group, and runs before any
-//     group-specific veto gets a look. A scratch-rooted redirect target has
-//     to be recognised BEFORE that check runs, not after.
+//     group-specific veto gets a look. A granted redirect target has to be
+//     recognised BEFORE that check runs, not after.
 //
 // Both are handled here, in `matchGroups` itself, rather than through the
-// `PermissionGroup` interface: `sanitizeCommandForScratch` removes a
-// scratch-granted redirect clause before `matchCoveredCommand` ever sees it,
-// and `scratchTargetVeto` is called directly by `matchGroups`'s own
-// `vetoForMatched` closure, which threads a single `cwd` variable across the
-// whole command the way a segment-by-segment veto function structurally
-// cannot.
+// `PermissionGroup` interface: `sanitizeCommandForRedirectGrants` removes a
+// granted redirect clause before `matchCoveredCommand` ever sees it, tracking
+// BOTH a scratch-rooted cwd and an fs-write relative offset in ONE walk over
+// the command (never two walks that could disagree — #1000's law), and
+// `scratchTargetVeto` is called directly by `matchGroups`'s own
+// `vetoForMatched` closure, which threads that per-segment state the way a
+// segment-by-segment veto function structurally cannot.
 //
 // Honest limits, not solved here, because static analysis cannot cover them:
 //
-//   - A symlink under `/tmp` pointing outside it. Every check in this section
-//     is LEXICAL (path-segment text analysis, like every other guard in this
-//     file); none of them resolve the filesystem, and a symlink's target is
-//     invisible to a lexical check.
+//   - A symlink under `/tmp`, or under the relative start directory, pointing
+//     outside it. Every check in this section is LEXICAL (path-segment text
+//     analysis, like every other guard in this file); none of them resolve
+//     the filesystem, and a symlink's target is invisible to a lexical check.
 //   - `$TMPDIR`'s actual value is never expanded. `$TMPDIR/x` is matched by
 //     SPELLING against the literal token, not by resolving to whatever
 //     directory the shell would actually substitute at runtime.
@@ -229,12 +466,22 @@ function classifyScratchAbsolute(token: string): { segments: string[]; rootLen: 
   for (const marker of ['$TMPDIR', '${TMPDIR}']) {
     if (token === marker || token.startsWith(`${marker}/`)) {
       const rest = token.slice(marker.length).replace(/^\//, '');
+      // The $TMPDIR/-PREFIX carve-out is consumed above; the REMAINDER must
+      // contain no FURTHER `$`/`~` anywhere (#1061 -- see the anywhere-check
+      // note on `resolveRelativeTarget` below for the mid-path bypass this
+      // closes). `$TMPDIR/x` and `$TMPDIR/sub/file` stay granted; `$TMPDIR/$FOO`
+      // does not, even though it starts with the trusted marker.
+      if (rest.includes('$') || rest.includes('~')) return null;
       const extra = rest === '' ? [] : rest.split('/');
       const segs = joinScratchSegments(['$TMPDIR'], 1, extra);
       return segs === null ? null : { segments: segs, rootLen: 1 };
     }
   }
   if (token.startsWith('/')) {
+    // Same anywhere-check as the `$TMPDIR` arm above, applied before dot-dot
+    // resolution: a plain `/tmp/...`/`/private/tmp/...` token gets no
+    // trusted-prefix carve-out at all, so ANY `$`/`~` anywhere refuses it.
+    if (token.includes('$') || token.includes('~')) return null;
     const resolved = resolveDotDot(token);
     const segs = resolved.split('/').filter((s) => s !== '');
     if (segs[0] === 'tmp') return { segments: segs, rootLen: 1 };
@@ -261,7 +508,16 @@ function resolveScratchTarget(
 ): { segments: readonly string[]; rootLen: number } | null {
   const absolute = classifyScratchAbsolute(token);
   if (absolute !== null) return absolute;
-  if (token.startsWith('/') || token.startsWith('~') || token.startsWith('$')) return null;
+  if (token.startsWith('/')) return null;
+  // Anywhere-check, not just a leading-character one (#1061). A relative
+  // token composed onto a scratch-rooted cwd may contain NO `$`/`~` at ANY
+  // position: `sub/$FOO`, `sub/${FOO}` and `../$FOO` all named an unresolved
+  // shell expansion mid-path while starting with an ordinary-looking
+  // character, so the old `token.startsWith('~') || token.startsWith('$')`
+  // check (which only inspected the first character) granted them the
+  // instant a `cd` had put the tracked cwd under a scratch root. Probe-
+  // verified: `cd /tmp/$FOO && cat a > x` approved before this fix.
+  if (token.includes('$') || token.includes('~')) return null;
   if (cwd === null) return null;
   const segs = joinScratchSegments(cwd.segments, cwd.rootLen, token.split('/'));
   return segs === null ? null : { segments: segs, rootLen: cwd.rootLen };
@@ -281,21 +537,33 @@ function isStrictlyUnderScratchRoot(token: string, cwd: ScratchCwd): boolean {
 }
 
 /**
- * Advance the tracked scratch `cwd` across one trimmed segment. A no-op for
- * anything other than a `cd`. Bare `cd` (goes to `$HOME`) and `cd -`
- * (previous directory, unknowable statically) both reset to null rather than
- * guess.
+ * A `cd`'s parsed operand, or the fact that one could not be extracted —
+ * shared by BOTH cwd walks (`scratch`'s absolute-root tracking and
+ * `fs-write`'s relative-offset tracking) so the two can never derive a
+ * different operand from the same segment, which is exactly the
+ * two-walks-that-must-agree defect #1000 found and fixed once already.
+ * `target: null` covers every case NEITHER walk can resolve: a bare `cd`
+ * (goes to `$HOME`), `cd -` (previous directory), any leading-dash option
+ * (#1047 — `cd` reads it as OPTIONS, not an operand), and any operand shape a
+ * redirect clause could hide inside (`cd ..>/dev/null`).
  */
-function advanceScratchCwd(cwd: ScratchCwd, trimmedSegment: string): ScratchCwd {
-  if (trimmedSegment === '') return cwd;
+type CdOperand = { readonly isCd: false } | { readonly isCd: true; readonly target: string | null };
+
+/**
+ * Parse a trimmed, grammar-peeled segment's `cd` operand, if it is a `cd` at
+ * all. Both `advanceScratchCwd` and `advanceRelativeCwd` call this rather
+ * than each re-deriving the operand from the segment text.
+ */
+function extractCdOperand(trimmedSegment: string): CdOperand {
+  if (trimmedSegment === '') return { isCd: false };
   // Strip redirect clauses BEFORE tokenizing. `shellWords('cd ..>/dev/null')`
   // is `['cd', '..>/dev/null']`, and that glued token is neither `..` nor
-  // `../…`, so the ascent was invisible and the tracked cwd became
-  // `<scratch>/..>/dev/null` -- a name that never pops below the root. Real
-  // bash ascends. Chained, `cd /tmp/x && cd ..>/dev/null && cd ..>/dev/null &&
-  // rm -rf etc` reached `rm -rf /etc` at `balanced`, on SHIPPED releases.
+  // `../…`, so the ascent was invisible and a tracked cwd never popped below
+  // the root. Real bash ascends. Chained, `cd /tmp/x && cd ..>/dev/null && cd
+  // ..>/dev/null && rm -rf etc` reached `rm -rf /etc` at `balanced`, on
+  // SHIPPED releases.
   const words = shellWords(rewriteRedirectClauses(trimmedSegment, () => '').trim());
-  if (words[0] !== 'cd') return cwd;
+  if (words[0] !== 'cd') return { isCd: false };
   const target = words[1];
   // POSITIVE allowlist on the operand, not another round of subtracting known
   // -bad spellings. The #1047 fix rejected a leading dash; this found the same
@@ -303,8 +571,11 @@ function advanceScratchCwd(cwd: ScratchCwd, trimmedSegment: string): ScratchCwd 
   // `&>` is not even modelled by `rewriteRedirectClauses`. So the rule is now
   // "does this look like a path at all" -- shell metacharacters, whitespace and
   // quotes all disqualify. `$TMPDIR`, `${TMPDIR}`, `~` and `/tmp/x` are the
-  // shapes `resolveScratchTarget` genuinely handles, so they stay in.
-  if (target !== undefined && !/^[A-Za-z0-9._+/@~$:{}-]+$/.test(target)) return null;
+  // shapes `resolveScratchTarget`/`resolveRelativeTarget` genuinely handle, so
+  // they stay in.
+  if (target !== undefined && !/^[A-Za-z0-9._+/@~$:{}-]+$/.test(target)) {
+    return { isCd: true, target: null };
+  }
   // ANY leading dash resets, not just the exact `-` (#1047). `cd` reads a
   // leading-dash token as OPTIONS, so `cd -P` / `cd -L` / `cd --` / `cd -LP`
   // are an option with NO operand -- and a bare `cd` goes to `$HOME`. Testing
@@ -314,9 +585,78 @@ function advanceScratchCwd(cwd: ScratchCwd, trimmedSegment: string): ScratchCwd 
   // deleted `~/out`. Verified in bash on darwin: the chain ends in `$HOME`.
   //
   // Resetting to null is the safe direction -- an unknowable cwd means no
-  // relative target can be proved to land under a scratch root.
-  if (target === undefined || target.startsWith('-')) return null;
-  return resolveScratchTarget(target, cwd);
+  // relative target can be proved to land under either tracked root.
+  if (target === undefined || target.startsWith('-')) return { isCd: true, target: null };
+  return { isCd: true, target };
+}
+
+/**
+ * Advance the tracked scratch `cwd` across one `cd` operand. A no-op for a
+ * non-`cd` segment; a null operand (bare `cd`, `cd -`, or an unresolvable
+ * shape — see `extractCdOperand`) resets to null rather than guess.
+ */
+function advanceScratchCwd(cwd: ScratchCwd, operand: CdOperand): ScratchCwd {
+  if (!operand.isCd) return cwd;
+  if (operand.target === null) return null;
+  return resolveScratchTarget(operand.target, cwd);
+}
+
+/**
+ * The tracked relative offset from wherever `fs-write`'s command runs, while
+ * walking a compound command — the same shape of state `ScratchCwd` tracks
+ * for an absolute scratch root, but for a starting directory this matcher
+ * never learns the name of.
+ *
+ * `[]` means "still at the start" — the INITIAL state, which a command with
+ * no `cd` at all never leaves. A non-empty array is a composed, non-ascending
+ * relative path from there (`['sub']` after `cd sub`). `null` means "not
+ * provable relative to the start": an absolute or `$VAR`/`~` cd, an
+ * unreliable one (`|`/`||`), a #1047-shaped dash reset, or a composed offset
+ * that tried to ascend above the start. `null` is STICKY — once the offset
+ * from the start is unprovable, no later RELATIVE `cd` can rebuild it, the
+ * same rule #1000 pins for scratch ("a relative cd after an unreliable one
+ * does not rebuild the root").
+ */
+type RelativeCwd = readonly string[] | null;
+
+/**
+ * Resolve `token` to its offset from the fs-write start directory given
+ * `relCwd`, or null if it cannot be shown to stay inside it.
+ *
+ * An absolute-shaped token (leading `/`) is refused outright, never composed
+ * with `relCwd`: fs-write's grant is for a target IN TREE relative to
+ * wherever the command runs, and an absolute path names a location this
+ * matcher has no basis to trust regardless of the tracked offset — that is
+ * `scratch`'s grant to make, for its own four rooted shapes, not this one's.
+ *
+ * A `~`/`$` ANYWHERE in the token also refuses it, not only when leading
+ * (#1061). The old check only inspected the first character, so `sub/$FOO`
+ * and `sub/${FOO}` — an unresolved shell expansion sitting mid-path — were
+ * composed onto `relCwd` and granted like an ordinary relative path. Probe-
+ * verified: `cat a > sub/$FOO` approved before this fix.
+ *
+ * Reuses `joinScratchSegments` with `floorLen: 0` — the start directory
+ * itself is the floor a composed offset may never pop below, exactly the
+ * same "may not ascend past the root" shape scratch's own walk already
+ * enforces, just with the floor at 0 instead of scratch's root length.
+ */
+function resolveRelativeTarget(token: string, relCwd: RelativeCwd): RelativeCwd {
+  if (token.startsWith('/')) return null;
+  if (token.includes('$') || token.includes('~')) return null;
+  if (relCwd === null) return null;
+  return joinScratchSegments(relCwd, 0, token.split('/'));
+}
+
+/**
+ * Advance the tracked fs-write relative offset across one `cd` operand.
+ * Mirrors `advanceScratchCwd` exactly — same operand, same null-on-unknown
+ * handling — composing through `resolveRelativeTarget` instead of
+ * `resolveScratchTarget`.
+ */
+function advanceRelativeCwd(relCwd: RelativeCwd, operand: CdOperand): RelativeCwd {
+  if (!operand.isCd) return relCwd;
+  if (operand.target === null) return null;
+  return resolveRelativeTarget(operand.target, relCwd);
 }
 
 /**
@@ -332,64 +672,200 @@ function advanceScratchCwd(cwd: ScratchCwd, trimmedSegment: string): ScratchCwd 
  *   one FOLLOWED by `|`, since either position makes it a stage.
  *
  * Both directions matter because the consequence is not a missed match but a
- * tracked scratch root that differs from the real one, under which a later
- * relative `rm -rf` is approved against a directory nobody checked. Returning
- * true makes the caller forget the directory rather than guess it, the same
- * fail-closed handling bare `cd` and `cd -` already get.
+ * tracked cwd that differs from the real one, under which a later relative
+ * target is approved against a directory nobody checked. Returning true makes
+ * the caller forget the directory rather than guess it, the same fail-closed
+ * handling bare `cd` and `cd -` already get. Shared by both walks (`scratch`
+ * and `fs-write`'s relative offset): a `cd`'s reliability does not depend on
+ * which grant is asking.
  */
 function cdEffectIsUnreliable(joiner: CompoundJoiner, nextJoiner: CompoundJoiner): boolean {
   return joiner === '|' || joiner === '||' || nextJoiner === '|';
 }
 
 /**
- * Remove every redirect clause in `segment` whose target is a plain path under
- * a scratch root. REMOVES the clause entirely rather than retargeting it to
- * `/dev/null`: a retargeted clause would still leave a token like
- * `2>/dev/null` sitting in the word list `scratchTargetVeto` scans for
- * positional arguments, which is neither a flag nor a real target and would
- * wrongly fail that scan.
+ * True if a redirect clause targeting `path` may be DELETED under the
+ * `scratch` grant: the target resolves STRICTLY under a scratch root, AND is
+ * not itself a sensitive destination.
+ *
+ * #1060 + ADR 0018 axis 3. `isStrictlyUnderScratchRoot` alone proves only the
+ * destination-root half of a write-side match (axis 3's "under `/tmp`" half);
+ * it never asked WHAT the target names, so `cat a > /tmp/.env`,
+ * `cat a > /tmp/.git/hooks/pre-commit` and `cat a > /tmp/sub/package.json` all
+ * qualified and had their redirect clause deleted before
+ * `segmentTouchesSensitivePath` — this file's own axis-3 conjunct — ever got a
+ * token to look at: the clause it would have vetoed was gone by the time that
+ * check ran. Same "one proof holds, the other owner's veto never runs" shape
+ * ADR 0018 exists to name for every other write-side match; this is that gap
+ * inside `scratch`'s own redirect carve-out.
+ *
+ * Checked on the RESOLVED path, not the raw token, so a cd-established root
+ * composed with a relative target still lands on the real destination before
+ * the sensitivity check runs — `cd /tmp && cat a > .git/hooks/pre-commit` must
+ * be caught exactly like the absolute spelling.
+ */
+function isGrantedScratchRedirectTarget(path: string, cwd: ScratchCwd): boolean {
+  const resolved = resolveScratchTarget(path, cwd);
+  if (resolved === null || resolved.segments.length <= resolved.rootLen) return false;
+  return !isSensitiveWritePath(scratchSegmentsToPath(resolved.segments));
+}
+
+/** Render resolved scratch-root segments back into a path `isSensitiveWritePath` can read. */
+function scratchSegmentsToPath(segments: readonly string[]): string {
+  return segments[0] === '$TMPDIR' ? segments.join('/') : `/${segments.join('/')}`;
+}
+
+/**
+ * True if a redirect clause targeting `path` may be DELETED under the
+ * `fs-write` grant (#1041): it composes to a RELATIVE, non-ascending offset
+ * from wherever the command runs, and is not a sensitive destination.
+ *
+ * fs-write's own axis-3 destination veto (`isSensitiveWritePath`) is reused
+ * rather than re-derived, checked on the RESOLVED (cwd-composed) path for the
+ * same reason `isGrantedScratchRedirectTarget` does: `cd sub && cat a >
+ * .git/hooks/pre-commit` must be caught exactly like the un-cd'd spelling.
+ * `resolveRelativeTarget` already refuses an absolute-shaped target and an
+ * ascending composition, so an empty (root-itself) result is the only other
+ * non-grant case left to check here.
+ */
+function isGrantedFsWriteRedirectTarget(path: string, relCwd: RelativeCwd): boolean {
+  const resolved = resolveRelativeTarget(path, relCwd);
+  if (resolved === null || resolved.length === 0) return false;
+  return !isSensitiveWritePath(resolved.join('/'));
+}
+
+/** Which redirect grants are active for the current command — gates both the
+ *  pre-pass itself and each individual clause deletion decision. */
+interface RedirectGrants {
+  readonly scratchActive: boolean;
+  readonly fsWriteActive: boolean;
+}
+
+/** The per-segment cwd state both grants read, from ONE walk: the tracked
+ *  scratch root (absolute) and the tracked fs-write offset (relative). */
+interface RedirectGrantCwd {
+  readonly scratch: ScratchCwd;
+  readonly relative: RelativeCwd;
+}
+
+/**
+ * Mirrors shell-safety.ts's PRIVATE `REDIRECT_CLAUSE_RE` (`/\d*>>?\s*&?\S+/g`)
+ * so this module can find clause OFFSETS without that module exporting one
+ * (ADR 0026: shell-safety.ts stays untouched). Used ONLY to decide whether a
+ * clause is eligible for deletion below; the actual deletion still runs
+ * through `rewriteRedirectClauses`, so a drift between the two patterns could
+ * only ever change which segments this pre-scan is cautious about, never what
+ * gets deleted once a segment passes it.
+ */
+const REDIRECT_CLAUSE_OFFSET_RE = /\d*>>?\s*&?\S+/g;
+
+/**
+ * True if `segment` contains a redirect-clause-shaped match whose start is
+ * NOT preceded by whitespace or the start of the segment — i.e. it is glued
+ * onto the end of a preceding word, the way `2>x` is glued onto `cat` in
+ * `cat2>x`. Bash parses that as the single command name `cat2` (verified:
+ * exit 127), not `cat` followed by a redirect, so deleting the glued clause
+ * (as the grant pass below otherwise would) makes the matcher approve `cat`
+ * while a DIFFERENT command actually runs. A real fd-redirect always has
+ * whitespace, or nothing, before its digit: `cat 2>x`.
+ *
+ * Deliberately NOT the `/(^|\s)(clause)/`-with-a-captured-preceding-char
+ * shape: that alternation requires CONSUMING the preceding character as part
+ * of the match, so on `cat2>x` it never matches the `2>x` substring AT ALL
+ * (the character before it, `t`, is neither whitespace nor start-of-string) —
+ * it does not report the glued clause as "bad", it simply never sees it,
+ * which would make a scan built that way vacuously pass. Finding every
+ * REDIRECT_CLAUSE_RE-shaped match by its own offset, unconditionally, and
+ * then inspecting the character immediately before that offset, is what
+ * actually distinguishes the two shapes.
+ */
+function segmentHasGluedRedirectClause(segment: string): boolean {
+  for (const m of segment.matchAll(REDIRECT_CLAUSE_OFFSET_RE)) {
+    const idx = m.index ?? 0;
+    if (idx > 0 && !/\s/.test(segment[idx - 1] as string)) return true;
+  }
+  return false;
+}
+
+/**
+ * Remove every redirect clause in `segment` whose target an ACTIVE grant
+ * covers: `scratch`'s absolute-root proof, `fs-write`'s relative-offset
+ * proof, or both — a clause deletable by either grant is deleted. REMOVES the
+ * clause entirely rather than retargeting it to `/dev/null`: a retargeted
+ * clause would still leave a token like `2>/dev/null` sitting in the word
+ * list `scratchTargetVeto` scans for positional arguments, which is neither a
+ * flag nor a real target and would wrongly fail that scan.
  *
  * Only a `path` target is ever removed. `discard`/`fd-dup` need no help —
  * `hasShellControl` already permits them — and `opaque` must never be removed,
  * since removing it is exactly how a second operator hidden inside the greedy
  * match would escape the veto that was going to catch it.
+ *
+ * Callers MUST check `segmentHasGluedRedirectClause` first and skip calling
+ * this at all when it is true (see the call site in
+ * `sanitizeCommandForRedirectGrants`) — a glued clause is not modeled here,
+ * because by the time a clause reaches this function's callback there is no
+ * way to recover whether ITS particular match was glued or not: the deletion
+ * has to be refused for the whole segment, before any deletion is attempted.
  */
-function sanitizeSegmentRedirects(segment: string, cwd: ScratchCwd): string {
+function sanitizeSegmentRedirects(
+  segment: string,
+  cwd: RedirectGrantCwd,
+  grants: RedirectGrants,
+): string {
   return rewriteRedirectClauses(segment, (target, text) => {
     if (target.kind !== 'path') return text;
-    return isStrictlyUnderScratchRoot(target.path, cwd) ? '' : text;
+    if (grants.scratchActive && isGrantedScratchRedirectTarget(target.path, cwd.scratch)) return '';
+    if (grants.fsWriteActive && isGrantedFsWriteRedirectTarget(target.path, cwd.relative))
+      return '';
+    return text;
   });
 }
 
 /**
- * Pre-pass over the WHOLE command, run only when `scratch` is among the
- * requested groups: removes every redirect clause whose target is
- * scratch-rooted, tracking `cd` across segments exactly like the real match
- * that follows will. This has to run BEFORE `matchCoveredCommand`, not
- * alongside it: `hasShellControl` cannot be told "except this one clause", it
- * returns one boolean for the whole segment, so the only way to let a
- * scratch-rooted redirect through it is to remove the clause before that
- * check ever sees it.
+ * Pre-pass over the WHOLE command, run when EITHER grant is active: removes
+ * every redirect clause a granted proof covers, tracking `cd` across segments
+ * exactly like the real match that follows will. This has to run BEFORE
+ * `matchCoveredCommand`, not alongside it: `hasShellControl` cannot be told
+ * "except this one clause", it returns one boolean for the whole segment, so
+ * the only way to let a granted redirect through it is to remove the clause
+ * before that check ever sees it.
+ *
+ * ONE walk over the command produces BOTH tracked states (`scratch` and
+ * `relative`), from the same extracted `cd` operand at each step — never two
+ * separate passes that could disagree, exactly the defect shape #1000 found
+ * and fixed once already. `grants` only gates which state a clause deletion
+ * may CONSULT; both states are always tracked regardless, so enabling
+ * `fs-write` alone never changes what a `scratch`-only caller would have
+ * computed, and vice versa — every existing scratch-only behavior is
+ * bit-identical to before this function was generalized.
  *
  * The rebuilt string keeps each segment's ORIGINAL joining operator. An
  * earlier draft rebuilt with a uniform `&&`, reasoning that
  * `matchCoveredCommand` re-splits via `splitCompound` and never inspects which
  * separator joined two segments. That was true of `matchCoveredCommand` and
- * false of the scratch veto downstream of it, which tracks `cd` across
- * segments and so depends on exactly the operator a uniform `&&` erased:
- * flattening `true | cd /tmp` to `true && cd /tmp` converts a discarded
- * subshell `cd` into one the veto believes moved the shell.
+ * false of the cwd walks downstream of it, which track `cd` across segments
+ * and so depend on exactly the operator a uniform `&&` erased: flattening
+ * `true | cd /tmp` to `true && cd /tmp` converts a discarded subshell `cd`
+ * into one the walk believes moved the shell.
  */
-function sanitizeCommandForScratch(command: string): ScratchSanitized {
+function sanitizeCommandForRedirectGrants(
+  command: string,
+  grants: RedirectGrants,
+): RedirectGrantWalk {
   const parts = splitCompoundParts(command);
-  const cwdBySegment: ScratchCwd[] = [];
-  let cwd: ScratchCwd = null;
+  const stateBySegment: RedirectGrantCwd[] = [];
+  let scratchCwd: ScratchCwd = null;
+  // fs-write's relative offset starts at the INITIAL state — `[]`, not null —
+  // because the grant is available from the very first segment: a command
+  // that never `cd`s at all is exactly as in-tree as one could hope to prove.
+  let relativeCwd: RelativeCwd = [];
   let rebuilt = '';
   for (const [i, part] of parts.entries()) {
-    // The cwd RECORDED for a segment is the one in effect when the shell
+    // The state RECORDED for a segment is the one in effect when the shell
     // reaches it, i.e. before its own effect: a `cd` moves the segments after
     // it, not itself.
-    cwdBySegment.push(cwd);
+    stateBySegment.push({ scratch: scratchCwd, relative: relativeCwd });
     const trimmed = part.text.trim();
     // Detect the `cd` in the PEELED body, not the raw text. Judging raw text
     // here while `matchCoveredCommand` judges the peeled body is what made
@@ -405,26 +881,42 @@ function sanitizeCommandForScratch(command: string): ScratchSanitized {
     if (words[0] === 'cd') {
       // A `cd` that needed grammar peeled off it sits inside a conditional or
       // a loop body, so it runs zero or more times and the shell's directory
-      // afterwards is not knowable from the text. Forget the directory rather
-      // than carry a stale one forward — carrying it forward is what made the
+      // afterwards is not knowable from the text. Forget it rather than carry
+      // a stale one forward — carrying it forward is what made the scratch
       // escape above auto-approve, so here "unknown" must mean null, never
-      // "whatever it was before".
+      // "whatever it was before", for BOTH tracked states.
       const wrappedInGrammar = body !== trimmed;
-      cwd =
-        wrappedInGrammar || cdEffectIsUnreliable(part.joiner, parts[i + 1]?.joiner ?? null)
-          ? null
-          : advanceScratchCwd(cwd, body);
+      const unreliable =
+        wrappedInGrammar || cdEffectIsUnreliable(part.joiner, parts[i + 1]?.joiner ?? null);
+      const operand = extractCdOperand(body);
+      scratchCwd = unreliable ? null : advanceScratchCwd(scratchCwd, operand);
+      relativeCwd = unreliable ? null : advanceRelativeCwd(relativeCwd, operand);
     } else if (trimmed !== '') {
-      text = sanitizeSegmentRedirects(part.text, cwd);
+      // A glued clause (`cat2>x`) means bash reads a DIFFERENT command name
+      // than the one this matcher is about to judge (#1061). Deleting even a
+      // different, legitimately-spaced clause in the same segment would leave
+      // that glued absorption behind, unexamined, in the command handed to
+      // `matchCoveredCommand` — so ANY glued clause in the segment skips
+      // deletion for the WHOLE segment, leaving `text` as the original
+      // `part.text`. That fails closed exactly like every other unproven
+      // redirect: `hasShellControl` sees the still-present, non-`/dev/null`
+      // clause and vetoes the segment, same as before this grant existed.
+      text = segmentHasGluedRedirectClause(part.text)
+        ? part.text
+        : sanitizeSegmentRedirects(
+            part.text,
+            { scratch: scratchCwd, relative: relativeCwd },
+            grants,
+          );
     }
     rebuilt += i === 0 ? text : `${joinerText(part.joiner)}${text}`;
   }
-  return { command: rebuilt, cwdBySegment };
+  return { command: rebuilt, stateBySegment };
 }
 
 /**
- * A scratch pre-pass result: the rewritten command, plus the tracked scratch
- * directory in effect at each of its compound segments, BY INDEX.
+ * A redirect-grant pre-pass result: the rewritten command, plus BOTH tracked
+ * cwd states in effect at each of its compound segments, BY INDEX.
  *
  * The trajectory is published rather than recomputed downstream because the
  * two used to be computed twice — once here and once by a closure threaded
@@ -432,9 +924,9 @@ function sanitizeCommandForScratch(command: string): ScratchSanitized {
  * agree are exactly the shape that produced the `|`/`||` desync this type
  * exists to prevent recurring. One walk, one answer, read by index.
  */
-interface ScratchSanitized {
+interface RedirectGrantWalk {
   readonly command: string;
-  readonly cwdBySegment: readonly ScratchCwd[];
+  readonly stateBySegment: readonly RedirectGrantCwd[];
 }
 
 /** Render a joiner back into command text, preserving `splitCompoundParts`'s split. */
@@ -456,11 +948,11 @@ function joinerText(joiner: CompoundJoiner): string {
  * escalation, never a wrongly-approved write).
  *
  * Any redirect clause still present in `segment` at this point is exempt by
- * construction: `sanitizeCommandForScratch` already removed every
- * scratch-granted one, and a non-exempt, non-granted clause would have
- * tripped `hasShellControl` before `matchCoveredCommand` ever reached this
- * veto. It is stripped here purely so a leftover token like `2>&1` is not
- * mistaken for a positional target.
+ * construction: `sanitizeCommandForRedirectGrants` already removed every
+ * clause EITHER grant covered (scratch's or fs-write's), and a non-exempt,
+ * non-granted clause would have tripped `hasShellControl` before
+ * `matchCoveredCommand` ever reached this veto. It is stripped here purely so
+ * a leftover token like `2>&1` is not mistaken for a positional target.
  */
 function scratchTargetVeto(segment: string, cwd: ScratchCwd): boolean {
   const stripped = rewriteRedirectClauses(segment, () => '').trim();
@@ -477,6 +969,196 @@ function scratchTargetVeto(segment: string, cwd: ScratchCwd): boolean {
     if (!isStrictlyUnderScratchRoot(word, cwd)) return true;
   }
   return false;
+}
+
+// ---------------------------------------------------------------------------
+// Heredoc excision (#1057 phase 2, commit 3). A pre-pass SIBLING of
+// `sanitizeCommandForRedirectGrants`, run in the `matchGroups` path only --
+// never the user allow-list path in `pattern-matcher.ts`. That asymmetry is
+// deliberate and is documented alongside this in the phase's ADR.
+//
+// Heredocs appear NOWHERE in the decision code before this commit, and what
+// happens today is a coincidence, not a policy. `tee /tmp/x <<EOF` (one
+// physical line, no real newline in the string) approves, because `<<EOF`
+// just sits as an inert extra token nothing looks at. A genuine MULTI-LINE
+// heredoc escalates only by ACCIDENT: `splitCompoundParts` treats an
+// unquoted newline as a command separator exactly like `;`, so the body
+// becomes its own segment(s), and a body line essentially never happens to
+// prefix-match a curated command. That is not a designed safety property --
+// it is two unrelated mechanisms colliding -- and it is what this excision
+// replaces with a deliberate one: give the heredoc body a real disposition
+// instead of an accidental one.
+//
+// The rule, fail-closed at every step: find the heredoc operator (`<<` or
+// `<<-`) on a physical line, read its delimiter WORD (bare, `'quoted'`, or
+// `"quoted"`), and if the WORD is a plain `[A-Za-z0-9_]+` token, look for a
+// LATER line that equals it exactly (leading tabs only, stripped, for
+// `<<-`). Found: the operator, its word, every body line and the terminator
+// line are all removed from the command text. Everything that remains flows
+// through the EXISTING machinery completely unchanged (compound split,
+// redirect grants, `hasShellControl`, group prefix coverage, every veto).
+// Excision itself grants nothing -- it only deletes syntax that was inert to
+// begin with, so whatever coverage decision the remaining text earns is the
+// same decision it would earn had a human deleted the heredoc by hand.
+//
+// ANY of the following aborts excision for the WHOLE command, restoring it
+// byte-for-byte and falling back to today's (safe, if accidental) behavior:
+//
+//   - a second `<<` on the same physical line (`cat <<A <<B`) -- rare, and
+//     stacked heredocs are refused rather than modeled;
+//   - a delimiter that is not a plain word once unquoted (empty, containing
+//     `$`, a backslash, or other punctuation);
+//   - no later line matches the delimiter exactly -- an unterminated
+//     heredoc is exactly today's accidental-escalation shape, so leaving it
+//     alone reproduces it rather than guessing where it ends;
+//   - an UNQUOTED delimiter (`<<EOF`, not `<<'EOF'`/`<<"EOF"`) whose body
+//     contains `$(`, a backtick, or `<(`. An unquoted heredoc body is LIVE:
+//     the shell performs command/process substitution on it BEFORE it is
+//     ever handed to the reading command. Excising it would DELETE that
+//     execution from the text the matcher ever sees --
+//     `cat > x <<EOF` / `$(rm -rf /)` / `EOF` would collapse to `cat > x`,
+//     approve via the fs-write redirect grant, and the shell would still
+//     run `rm -rf /` as a side effect of expanding the body nobody looked
+//     at. A QUOTED delimiter needs no such scan: bash performs no expansion
+//     at all on a quoted-delimiter body, so it is inert by construction.
+//
+// Quote masking is done PER LINE, not once over the whole multi-line
+// command. A heredoc body is literal data and may contain an apostrophe or
+// an unmatched quote character with no bearing on shell grammar at all
+// (`it's done` is valid body text) -- masking the ENTIRE command in one pass
+// would let that single stray quote desync `maskQuotedSpans`'s state for
+// everything after it (an unterminated quote makes that function return its
+// input completely UNMASKED, per its own contract), which could misread a
+// LATER line's real operator as quoted, or vice versa. Per-line masking
+// confines the blast radius of a body line's stray quote to that one line,
+// which is never consulted for operator detection: operators are only
+// looked for on lines a body has not yet started under.
+// ---------------------------------------------------------------------------
+
+/** Characters a heredoc delimiter must be made of, once unquoted. */
+const HEREDOC_WORD_RE = /^[A-Za-z0-9_]+$/;
+
+/** What scanning one physical line for a heredoc operator found. */
+type HeredocOperatorScan =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'multiple' }
+  | { readonly kind: 'invalid' }
+  | {
+      readonly kind: 'found';
+      /** Index in the line where the `<<` starts. */
+      readonly opStart: number;
+      /** Index in the line right after the (possibly quoted) delimiter word. */
+      readonly opEnd: number;
+      readonly dashed: boolean;
+      readonly word: string;
+      readonly quoted: boolean;
+    };
+
+/**
+ * Find a heredoc operator on ONE physical line, quote-masked so a `<<` that
+ * is really inside a quoted argument (`echo "a << b"`) is not mistaken for
+ * one. `<<<` (here-strings) and any longer run of `<` are excluded outright
+ * -- a run of 3+ `<` is never a heredoc operator.
+ *
+ * `kind: 'multiple'` and `kind: 'invalid'` are both reported rather than
+ * silently treating the line as `'none'`, because the caller has to abort
+ * the WHOLE excision on either -- a line this function cannot fully make
+ * sense of must not have its *other* content silently reinterpreted.
+ */
+function scanHeredocOperator(line: string): HeredocOperatorScan {
+  const masked = maskQuotedSpans(line);
+  const starts: number[] = [];
+  for (let i = 0; i < masked.length - 1; i++) {
+    if (masked[i] !== '<' || masked[i + 1] !== '<') continue;
+    if (masked[i - 1] === '<' || masked[i + 2] === '<') continue; // <<< / <<<<
+    starts.push(i);
+  }
+  if (starts.length === 0) return { kind: 'none' };
+  if (starts.length > 1) return { kind: 'multiple' };
+  const opStart = starts[0] as number;
+  let idx = opStart + 2;
+  let dashed = false;
+  if (masked[idx] === '-') {
+    dashed = true;
+    idx++;
+  }
+  while (masked[idx] === ' ' || masked[idx] === '\t') idx++;
+  // From here, read the RAW line (not the masked view): the masked view has
+  // replaced a quoted delimiter's characters, quotes included, with `_`.
+  const quoteChar = line[idx];
+  let word: string;
+  let opEnd: number;
+  if (quoteChar === "'" || quoteChar === '"') {
+    const close = line.indexOf(quoteChar, idx + 1);
+    if (close === -1) return { kind: 'invalid' };
+    word = line.slice(idx + 1, close);
+    opEnd = close + 1;
+  } else {
+    let end = idx;
+    while (end < line.length && !/\s/.test(line[end] ?? '')) end++;
+    word = line.slice(idx, end);
+    opEnd = end;
+  }
+  if (!HEREDOC_WORD_RE.test(word)) return { kind: 'invalid' };
+  return {
+    kind: 'found',
+    opStart,
+    opEnd,
+    dashed,
+    word,
+    quoted: quoteChar === "'" || quoteChar === '"',
+  };
+}
+
+/** True if an UNQUOTED heredoc body carries live substitution the shell
+ *  would execute while expanding it, before the reading command ever runs. */
+function heredocBodyHasLiveSubstitution(bodyLines: readonly string[]): boolean {
+  return bodyLines.some((l) => l.includes('$(') || l.includes('`') || l.includes('<('));
+}
+
+/**
+ * Excise every heredoc this command contains, or return `command` completely
+ * UNCHANGED the instant any single one cannot be proven safe to remove -- see
+ * the section comment above for the full fail-closed rule.
+ *
+ * Run unconditionally in `matchGroups`'s Bash path, before every other
+ * pre-pass and before compound splitting. That is safe rather than a
+ * widening: excision does not grant coverage by itself, it only deletes
+ * syntax that was inert (or, on any abort, leaves the command exactly as it
+ * was), so it can only ever hand the EXISTING machinery a command that means
+ * the same thing with less noise in it -- coverage is still decided entirely
+ * by that machinery, same as if a human had deleted the heredoc by hand.
+ */
+function exciseHeredocsForGroups(command: string): string {
+  if (!command.includes('<<')) return command;
+  const lines = command.split('\n');
+  const out: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i] as string;
+    const op = scanHeredocOperator(line);
+    if (op.kind === 'none') {
+      out.push(line);
+      i++;
+      continue;
+    }
+    if (op.kind === 'multiple' || op.kind === 'invalid') return command;
+    let terminatorAt = -1;
+    for (let j = i + 1; j < lines.length; j++) {
+      const raw = lines[j] as string;
+      const candidate = op.dashed ? raw.replace(/^\t+/, '') : raw;
+      if (candidate === op.word) {
+        terminatorAt = j;
+        break;
+      }
+    }
+    if (terminatorAt === -1) return command; // unterminated: fail closed
+    const body = lines.slice(i + 1, terminatorAt);
+    if (!op.quoted && heredocBodyHasLiveSubstitution(body)) return command; // live body: fail closed
+    out.push(line.slice(0, op.opStart) + line.slice(op.opEnd));
+    i = terminatorAt + 1; // skip every body line and the terminator line
+  }
+  return out.join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -656,8 +1338,8 @@ function cdTargetIsPlainDescendant(words: readonly string[]): boolean {
 
 /**
  * Pre-walk for `artifact-clean` (ADR 0023), beside
- * `sanitizeCommandForScratch`: for each compound segment BY INDEX, whether a
- * poisoning `cd` occurred anywhere earlier. A `cd` poisons unless its single
+ * `sanitizeCommandForRedirectGrants`: for each compound segment BY INDEX,
+ * whether a poisoning `cd` occurred anywhere earlier. A `cd` poisons unless its single
  * target is a plain relative descendant; a grammar-wrapped `cd` (`if ...;
  * then cd sub; fi`) poisons regardless of target, because it runs zero or
  * more times and the directory afterwards is unknowable from the text.
@@ -984,6 +1666,11 @@ export const BUILTIN_GROUPS: Readonly<Record<string, PermissionGroup>> = {
       'tee',
       'cp',
       'mv',
+      // #1057 phase 2 commit 4: in-place edits under a strict script-shape
+      // allowlist (`sedScriptShapeVeto`, above) — every script must be a
+      // single, unconditional `s///` or `y///`, so no address prefix, brace
+      // block, or side-command (`w`/`e`/`r`/`R`) can ride through it.
+      'sed -i',
       // `truncate`, `dd`, `shred`, `chmod` and `chown` are deliberately
       // absent at every strictness level (#956). `rm`/`rmdir` are absent
       // from THIS group for a polarity reason (ADR 0023): fs-write's
@@ -1142,21 +1829,36 @@ export function matchGroups(
   if (toolName === 'Bash') {
     const rawCommand = typeof toolInput['command'] === 'string' ? toolInput['command'].trim() : '';
     if (rawCommand === '') return null;
-    // `scratch` (see the section above `PermissionGroup`) needs a redirect
-    // clause removed BEFORE `hasShellControl` ever sees it, which has to
-    // happen on the whole command ahead of the per-segment machinery below.
-    // Only run the pre-pass when `scratch` was actually requested, so every
-    // OTHER caller (in particular `strict`, which never lists it) gets back
-    // out exactly the string it put in and nothing here can change its
-    // behavior.
+    // Heredoc excision (#1057 phase 2, commit 3), UNCONDITIONALLY, before
+    // every other pre-pass and before compound splitting -- see the section
+    // above `exciseHeredocsForGroups` for the full rule. Unlike the redirect
+    // grants below, this does not need to be gated on which groups were
+    // requested: excision cannot grant coverage by itself (it only deletes
+    // syntax that was inert, or leaves the command untouched on any
+    // ambiguity), so running it for every caller changes no group's
+    // approvals except by removing noise the rest of this function would
+    // otherwise have judged the accidental (pre-#1057) way.
+    const heredocExcised = exciseHeredocsForGroups(rawCommand);
+    // `scratch` and `fs-write` (see the section above `PermissionGroup`) each
+    // need a redirect clause removed BEFORE `hasShellControl` ever sees it,
+    // which has to happen on the whole command ahead of the per-segment
+    // machinery below. Only run the pre-pass when at least one of the two
+    // grants was actually requested, so every OTHER caller (in particular
+    // `strict`, which lists neither) gets back out exactly the string it put
+    // in (heredoc excision aside) and nothing here can change its behavior.
     const scratchActive = known.includes('scratch');
-    const scratch = scratchActive ? sanitizeCommandForScratch(rawCommand) : null;
-    const command = scratch?.command ?? rawCommand;
+    const fsWriteActive = known.includes('fs-write');
+    const redirectGrants =
+      scratchActive || fsWriteActive
+        ? sanitizeCommandForRedirectGrants(heredocExcised, { scratchActive, fsWriteActive })
+        : null;
+    const command = redirectGrants?.command ?? heredocExcised;
     // The cd-poison pre-walk for `artifact-clean` (ADR 0023). Like the
-    // scratch pre-pass: run only when the group was actually requested, and
-    // walked over the SAME string `matchCoveredCommand` receives, so the two
-    // agree by segment index (the scratch sanitize preserves segment count
-    // and joiners; it only rewrites redirect clauses inside segments).
+    // redirect-grant pre-pass: run only when the group was actually
+    // requested, and walked over the SAME string `matchCoveredCommand`
+    // receives, so the two agree by segment index (the redirect-grant
+    // sanitize preserves segment count and joiners; it only rewrites redirect
+    // clauses inside segments).
     const artifactPoison = known.includes('artifact-clean')
       ? artifactCleanPoisonWalk(command)
       : null;
@@ -1186,8 +1888,8 @@ export function matchGroups(
     // need per-INDEX state — the tracked scratch directory, the cd-poison
     // flag — which the stateless `PermissionGroup.segmentVeto` signature has
     // no room for). That state is looked up BY SEGMENT INDEX from the single
-    // walk done in each pre-pass, rather than re-tracked by a closure here —
-    // see `ScratchSanitized`.
+    // walk done in the pre-pass, rather than re-tracked by a closure here —
+    // see `RedirectGrantWalk`.
     const vetoedByOwner = (owner: string, segment: string, prefix: string, index: number) => {
       // The sensitive-destination axis is a GLOBAL conjunct, checked before any
       // owner's own proof and never delegated to one. Found by the ADR 0023
@@ -1219,7 +1921,7 @@ export function matchGroups(
       // sensitive path is exactly what `read-only` exists to allow.
       if (MUTATING_GROUPS.has(owner) && segmentTouchesSensitivePath(segment)) return true;
       if (owner === 'scratch') {
-        return scratchTargetVeto(segment, scratch?.cwdBySegment[index] ?? null);
+        return scratchTargetVeto(segment, redirectGrants?.stateBySegment[index]?.scratch ?? null);
       }
       if (owner === 'artifact-clean') {
         return artifactCleanVeto(segment, prefix, artifactPoison?.[index] ?? true);

@@ -123,6 +123,33 @@ const FLAG_POLICIES: readonly FlagPolicy[] = [
     dangerousLongFlags: ['output-error'],
   },
   {
+    // sed -i (fs-write, #1057 phase 2 commit 4). This axis only has to keep
+    // `-f`/`--file` (loads a script from an ARBITRARY external file) and
+    // every other unlisted flag off the safe set -- what a permitted script
+    // is actually allowed to SAY (no `w`/`e`/`r`/`R` side-commands, no
+    // address prefix, exactly one `s///` or `y///`) is a shape a flag-letter
+    // allowlist cannot express at all, so it is a SEPARATE veto in
+    // `permission-groups.ts` (`sedScriptShapeVeto`, alongside the fs-write
+    // veto plumbing) layered on top of this one, exactly like ADR 0018's
+    // three independent axes.
+    //
+    // `-i`'s own value is unlike every other flag here: GNU sed accepts an
+    // attached backup suffix with NO separator (`-i.bak`), which is not a
+    // flag CLUSTER at all -- the short-option scan below checks every
+    // alphabetic character of a `-`-prefixed token as a possible flag
+    // letter, so an unnormalized `.bak` would need ITS OWN letters on this
+    // list, which is not what this list means. `permission-groups.ts`
+    // normalizes a `-i<suffix>` token to bare `-i` (and separately verifies
+    // the suffix's own shape) before this family ever sees it -- see
+    // `normalizeSedInPlaceSuffix`. BSD's `-i ''` form needs no such handling:
+    // the empty string is its own token and never starts with `-`, so the
+    // scan below skips it already.
+    family: /^sed\b/,
+    safeShortFlags: 'eEinrsuz',
+    dangerousLongFlags: [], // unused: safeLongFlags governs
+    safeLongFlags: ['in-place', 'expression', 'quiet', 'silent', 'regexp-extended', 'sandbox'],
+  },
+  {
     // rm/rmdir (ADR 0023): consumed only by `artifact-clean`'s veto — no
     // other group lists either prefix through this module (`scratch` covers
     // rm too, but its safety is destination proof, not flag policy). Long

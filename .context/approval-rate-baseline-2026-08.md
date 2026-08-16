@@ -181,3 +181,26 @@ overall approve rate 2301/3188 = 72.2%.
 - Whether to turn `REMI_HOOK_DEBUG=1` on by default for a capture window (or
   add a dedicated, structure-preserving-only capture flag) so the next
   baseline has a real PermissionRequest corpus on both machines.
+
+## Phase 2 addendum (2026-08-15, same day — after ADR 0026 grants)
+
+The 12-record PreToolUse proxy corpus contains zero Phase-2-shaped commands
+(its two "redirection" misses are for-loops with stderr-discards — Phase 3
+shapes), so corpus coverage is unchanged at 41.7% and the honest measurement
+is direct probes of the #996/#1041 shapes at `trusted`, all verified on this
+branch:
+
+| shape (issue sample) | before | after |
+|---|---|---|
+| `cat > notes.md` / `cat a.txt >> log.txt` | null | `read-only:cat` |
+| `bun test > out.log 2>&1` | null | `build-test:bun test` |
+| `git diff > review.diff` | null | `vcs-read:git diff` |
+| `cat >> src/...test.ts <<'EOF' ... EOF` (#996 sample) | null | `read-only:cat` |
+| `sed -i '' 's/.../.../g' src/lib/api.ts` (#996 sample, BSD) | null | `fs-write:sed -i` |
+| `cat > .env`, and `cat > /tmp/.env` (#1060) | the /tmp form approved at 0ms | null |
+| bash heredoc with destructive body | null | null (pinned invariant) |
+| sed script with a `w /etc/cron.d/evil` command | n/a | null |
+
+Re-measure against a real PermissionRequest corpus (REMI_HOOK_DEBUG capture)
+once one exists; #996's 50%+13% miss buckets are the population these grants
+target.
