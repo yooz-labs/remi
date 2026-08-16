@@ -432,12 +432,22 @@ function classifyScratchAbsolute(token: string): { segments: string[]; rootLen: 
   for (const marker of ['$TMPDIR', '${TMPDIR}']) {
     if (token === marker || token.startsWith(`${marker}/`)) {
       const rest = token.slice(marker.length).replace(/^\//, '');
+      // The $TMPDIR/-PREFIX carve-out is consumed above; the REMAINDER must
+      // contain no FURTHER `$`/`~` anywhere (#1061 -- see the anywhere-check
+      // note on `resolveRelativeTarget` below for the mid-path bypass this
+      // closes). `$TMPDIR/x` and `$TMPDIR/sub/file` stay granted; `$TMPDIR/$FOO`
+      // does not, even though it starts with the trusted marker.
+      if (rest.includes('$') || rest.includes('~')) return null;
       const extra = rest === '' ? [] : rest.split('/');
       const segs = joinScratchSegments(['$TMPDIR'], 1, extra);
       return segs === null ? null : { segments: segs, rootLen: 1 };
     }
   }
   if (token.startsWith('/')) {
+    // Same anywhere-check as the `$TMPDIR` arm above, applied before dot-dot
+    // resolution: a plain `/tmp/...`/`/private/tmp/...` token gets no
+    // trusted-prefix carve-out at all, so ANY `$`/`~` anywhere refuses it.
+    if (token.includes('$') || token.includes('~')) return null;
     const resolved = resolveDotDot(token);
     const segs = resolved.split('/').filter((s) => s !== '');
     if (segs[0] === 'tmp') return { segments: segs, rootLen: 1 };
@@ -464,7 +474,16 @@ function resolveScratchTarget(
 ): { segments: readonly string[]; rootLen: number } | null {
   const absolute = classifyScratchAbsolute(token);
   if (absolute !== null) return absolute;
-  if (token.startsWith('/') || token.startsWith('~') || token.startsWith('$')) return null;
+  if (token.startsWith('/')) return null;
+  // Anywhere-check, not just a leading-character one (#1061). A relative
+  // token composed onto a scratch-rooted cwd may contain NO `$`/`~` at ANY
+  // position: `sub/$FOO`, `sub/${FOO}` and `../$FOO` all named an unresolved
+  // shell expansion mid-path while starting with an ordinary-looking
+  // character, so the old `token.startsWith('~') || token.startsWith('$')`
+  // check (which only inspected the first character) granted them the
+  // instant a `cd` had put the tracked cwd under a scratch root. Probe-
+  // verified: `cd /tmp/$FOO && cat a > x` approved before this fix.
+  if (token.includes('$') || token.includes('~')) return null;
   if (cwd === null) return null;
   const segs = joinScratchSegments(cwd.segments, cwd.rootLen, token.split('/'));
   return segs === null ? null : { segments: segs, rootLen: cwd.rootLen };
@@ -570,12 +589,17 @@ type RelativeCwd = readonly string[] | null;
  * Resolve `token` to its offset from the fs-write start directory given
  * `relCwd`, or null if it cannot be shown to stay inside it.
  *
- * An absolute-shaped token (leading `/`, `~`, or `$`) is refused outright,
- * never composed with `relCwd`: fs-write's grant is for a target IN TREE
- * relative to wherever the command runs, and an absolute path names a
- * location this matcher has no basis to trust regardless of the tracked
- * offset — that is `scratch`'s grant to make, for its own four rooted
- * shapes, not this one's.
+ * An absolute-shaped token (leading `/`) is refused outright, never composed
+ * with `relCwd`: fs-write's grant is for a target IN TREE relative to
+ * wherever the command runs, and an absolute path names a location this
+ * matcher has no basis to trust regardless of the tracked offset — that is
+ * `scratch`'s grant to make, for its own four rooted shapes, not this one's.
+ *
+ * A `~`/`$` ANYWHERE in the token also refuses it, not only when leading
+ * (#1061). The old check only inspected the first character, so `sub/$FOO`
+ * and `sub/${FOO}` — an unresolved shell expansion sitting mid-path — were
+ * composed onto `relCwd` and granted like an ordinary relative path. Probe-
+ * verified: `cat a > sub/$FOO` approved before this fix.
  *
  * Reuses `joinScratchSegments` with `floorLen: 0` — the start directory
  * itself is the floor a composed offset may never pop below, exactly the
@@ -583,7 +607,8 @@ type RelativeCwd = readonly string[] | null;
  * enforces, just with the floor at 0 instead of scratch's root length.
  */
 function resolveRelativeTarget(token: string, relCwd: RelativeCwd): RelativeCwd {
-  if (token.startsWith('/') || token.startsWith('~') || token.startsWith('$')) return null;
+  if (token.startsWith('/')) return null;
+  if (token.includes('$') || token.includes('~')) return null;
   if (relCwd === null) return null;
   return joinScratchSegments(relCwd, 0, token.split('/'));
 }
@@ -690,6 +715,45 @@ interface RedirectGrantCwd {
 }
 
 /**
+ * Mirrors shell-safety.ts's PRIVATE `REDIRECT_CLAUSE_RE` (`/\d*>>?\s*&?\S+/g`)
+ * so this module can find clause OFFSETS without that module exporting one
+ * (ADR 0026: shell-safety.ts stays untouched). Used ONLY to decide whether a
+ * clause is eligible for deletion below; the actual deletion still runs
+ * through `rewriteRedirectClauses`, so a drift between the two patterns could
+ * only ever change which segments this pre-scan is cautious about, never what
+ * gets deleted once a segment passes it.
+ */
+const REDIRECT_CLAUSE_OFFSET_RE = /\d*>>?\s*&?\S+/g;
+
+/**
+ * True if `segment` contains a redirect-clause-shaped match whose start is
+ * NOT preceded by whitespace or the start of the segment — i.e. it is glued
+ * onto the end of a preceding word, the way `2>x` is glued onto `cat` in
+ * `cat2>x`. Bash parses that as the single command name `cat2` (verified:
+ * exit 127), not `cat` followed by a redirect, so deleting the glued clause
+ * (as the grant pass below otherwise would) makes the matcher approve `cat`
+ * while a DIFFERENT command actually runs. A real fd-redirect always has
+ * whitespace, or nothing, before its digit: `cat 2>x`.
+ *
+ * Deliberately NOT the `/(^|\s)(clause)/`-with-a-captured-preceding-char
+ * shape: that alternation requires CONSUMING the preceding character as part
+ * of the match, so on `cat2>x` it never matches the `2>x` substring AT ALL
+ * (the character before it, `t`, is neither whitespace nor start-of-string) —
+ * it does not report the glued clause as "bad", it simply never sees it,
+ * which would make a scan built that way vacuously pass. Finding every
+ * REDIRECT_CLAUSE_RE-shaped match by its own offset, unconditionally, and
+ * then inspecting the character immediately before that offset, is what
+ * actually distinguishes the two shapes.
+ */
+function segmentHasGluedRedirectClause(segment: string): boolean {
+  for (const m of segment.matchAll(REDIRECT_CLAUSE_OFFSET_RE)) {
+    const idx = m.index ?? 0;
+    if (idx > 0 && !/\s/.test(segment[idx - 1] as string)) return true;
+  }
+  return false;
+}
+
+/**
  * Remove every redirect clause in `segment` whose target an ACTIVE grant
  * covers: `scratch`'s absolute-root proof, `fs-write`'s relative-offset
  * proof, or both — a clause deletable by either grant is deleted. REMOVES the
@@ -702,6 +766,13 @@ interface RedirectGrantCwd {
  * `hasShellControl` already permits them — and `opaque` must never be removed,
  * since removing it is exactly how a second operator hidden inside the greedy
  * match would escape the veto that was going to catch it.
+ *
+ * Callers MUST check `segmentHasGluedRedirectClause` first and skip calling
+ * this at all when it is true (see the call site in
+ * `sanitizeCommandForRedirectGrants`) — a glued clause is not modeled here,
+ * because by the time a clause reaches this function's callback there is no
+ * way to recover whether ITS particular match was glued or not: the deletion
+ * has to be refused for the whole segment, before any deletion is attempted.
  */
 function sanitizeSegmentRedirects(
   segment: string,
@@ -787,11 +858,22 @@ function sanitizeCommandForRedirectGrants(
       scratchCwd = unreliable ? null : advanceScratchCwd(scratchCwd, operand);
       relativeCwd = unreliable ? null : advanceRelativeCwd(relativeCwd, operand);
     } else if (trimmed !== '') {
-      text = sanitizeSegmentRedirects(
-        part.text,
-        { scratch: scratchCwd, relative: relativeCwd },
-        grants,
-      );
+      // A glued clause (`cat2>x`) means bash reads a DIFFERENT command name
+      // than the one this matcher is about to judge (#1061). Deleting even a
+      // different, legitimately-spaced clause in the same segment would leave
+      // that glued absorption behind, unexamined, in the command handed to
+      // `matchCoveredCommand` — so ANY glued clause in the segment skips
+      // deletion for the WHOLE segment, leaving `text` as the original
+      // `part.text`. That fails closed exactly like every other unproven
+      // redirect: `hasShellControl` sees the still-present, non-`/dev/null`
+      // clause and vetoes the segment, same as before this grant existed.
+      text = segmentHasGluedRedirectClause(part.text)
+        ? part.text
+        : sanitizeSegmentRedirects(
+            part.text,
+            { scratch: scratchCwd, relative: relativeCwd },
+            grants,
+          );
     }
     rebuilt += i === 0 ? text : `${joinerText(part.joiner)}${text}`;
   }

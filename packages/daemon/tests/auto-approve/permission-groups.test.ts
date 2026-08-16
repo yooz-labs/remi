@@ -627,10 +627,27 @@ describe('#960 regression: build surface + the DEFAULT-ON build-test group', () 
     'cp x pyproject.toml',
     'cp x bunfig.toml',
     'mv evil bun.lock',
+    // #1061 additions: jest/webpack/rollup/babel/vite build-surface configs.
+    'cp x jest.config.js',
+    'cp x webpack.config.ts',
+    'cp x rollup.config.js',
+    'cp x babel.config.js',
+    'cp x .babelrc',
+    'cp x vite.config.ts',
   ];
   for (const cmd of mustBeNull) {
     test(JSON.stringify(cmd), () => expect(bash(cmd, WRITE_GROUPS)).toBeNull());
   }
+
+  test('#1061: the redirect-grant path is covered too, not just the direct-argument path', () => {
+    // `jest.config.js` is a read-side redirect TARGET here (`cat` is
+    // read-only, `fs-write` is what would otherwise delete the `>` clause) --
+    // exercising BUILD_SURFACE through `isGrantedFsWriteRedirectTarget`
+    // rather than through `segmentTouchesSensitivePath`'s direct-argument
+    // scan, so a future regression that only re-checks one of the two paths
+    // is caught by this pairing.
+    expect(bash('cat payload > jest.config.js', [...ALL, ...WRITE_GROUPS])).toBeNull();
+  });
 
   test('the mutating tools are guarded too', () => {
     for (const file_path of [

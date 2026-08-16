@@ -160,6 +160,17 @@ const BUILD_SURFACE: readonly string[] = [
   'lefthook.yaml',
   '.pre-commit-config.yaml',
   'vitest.config.ts',
+  'vitest.config.js',
+  'jest.config.js',
+  'jest.config.ts',
+  'webpack.config.js',
+  'webpack.config.ts',
+  'rollup.config.js',
+  'rollup.config.ts',
+  'babel.config.js',
+  '.babelrc',
+  'vite.config.js',
+  'vite.config.ts',
   'bunfig.toml',
 ];
 
