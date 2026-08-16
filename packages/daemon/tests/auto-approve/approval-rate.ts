@@ -94,20 +94,20 @@ export function loadCorpusRecords(
   const raw = fs.readFileSync(filePath, 'utf8');
   const lines = raw.split('\n');
   const records: CorpusRecord[] = [];
-  // Unparseable (corrupt JSON) lines are dropped, but tallied and surfaced: a
+  // Unparsable (corrupt JSON) lines are dropped, but tallied and surfaced: a
   // silently-shrunk denominator would report a rate over FEWER records than
   // the operator believes, and that rate is what gates whether
   // `residual_action = "deny"` is safe to enable (~95%+). Non-matching-event
   // lines are NOT counted here -- the corpus legitimately holds many event
   // types, so those are expected, not corruption. (Epic-wide review, 2026-08-16.)
-  let unparseable = 0;
+  let unparsable = 0;
   lines.forEach((line, i) => {
     if (line.trim().length === 0) return;
     let parsed: Record<string, unknown>;
     try {
       parsed = JSON.parse(line) as Record<string, unknown>;
     } catch {
-      unparseable += 1;
+      unparsable += 1;
       return;
     }
     if (parsed['hook_event_name'] !== eventName) return;
@@ -123,9 +123,9 @@ export function loadCorpusRecords(
       index: i,
     });
   });
-  if (unparseable > 0) {
+  if (unparsable > 0) {
     console.warn(
-      `[approval-rate] skipped ${unparseable} unparseable line(s) of ${lines.length} in ${filePath} — the reported rate is over ${records.length} matched records, a smaller denominator than the file's line count.`,
+      `[approval-rate] skipped ${unparsable} unparsable line(s) of ${lines.length} in ${filePath} — the reported rate is over ${records.length} matched records, a smaller denominator than the file's line count.`,
     );
   }
   return records;

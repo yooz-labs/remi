@@ -327,7 +327,7 @@ describe('loadCorpusRecords', () => {
     }
   });
 
-  test('warns with the unparseable-line count so the denominator is not silently shrunk', () => {
+  test('warns with the unparsable-line count so the denominator is not silently shrunk', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'approval-rate-loader-warn-'));
     const file = path.join(dir, 'corpus.jsonl');
     fs.writeFileSync(
@@ -348,7 +348,7 @@ describe('loadCorpusRecords', () => {
     try {
       const records = loadCorpusRecords(file);
       expect(records).toHaveLength(1); // the good record survives
-      expect(warnings.some((w) => w.includes('skipped 2 unparseable'))).toBe(true);
+      expect(warnings.some((w) => w.includes('skipped 2 unparsable'))).toBe(true);
     } finally {
       console.warn = orig;
       fs.rmSync(dir, { recursive: true, force: true });
