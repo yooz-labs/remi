@@ -95,10 +95,13 @@
  *    and allow-list matchers) is reused as-is for `find -exec`,
  *    `git -c core.hooksPath=`, `awk 'system(...)'` and the rest of that
  *    family — not reimplemented.
- * 6. `gitSubcommandIndex`/`ghTopIndex` walk past a RECOGNISED global flag
- *    (`git --no-pager`, `gh --repo x/y`, ...) to find the actual subcommand,
- *    the same walk `unwrapCommand` already does for wrapper flags — replacing
- *    the fixed `words[1]`/`words[2]` indexing that broke on one.
+ * 6. `gitSubcommandIndex`/`ghTopIndex` (shell-safety.ts, moved there in #1057
+ *    phase 3 commit 4 so `hasExecPrimitive`'s own git `-c` veto can share the
+ *    same walk rather than a second one that could disagree — #962) walk past
+ *    a RECOGNISED global flag (`git --no-pager`, `gh --repo x/y`, ...) to find
+ *    the actual subcommand, the same walk `unwrapCommand` already does for
+ *    wrapper flags — replacing the fixed `words[1]`/`words[2]` indexing that
+ *    broke on one.
  *
  * (3) and (4) both recurse through `classifyCommandMax`/`classifySegmentBand`
  * with a bounded depth (`MAX_RECURSION_DEPTH`) so a maliciously (or just
@@ -109,7 +112,13 @@
 import { extractToolCommand } from './command-tools.ts';
 import { matchesCatastrophicPattern } from './deny-floor.ts';
 import { isSensitiveWritePath, segmentTouchesSensitivePath } from './sensitive-paths.ts';
-import { hasExecPrimitive, shellWords, splitCompound } from './shell-safety.ts';
+import {
+  ghTopIndex,
+  gitSubcommandIndex,
+  hasExecPrimitive,
+  shellWords,
+  splitCompound,
+} from './shell-safety.ts';
 
 export const RISK_BANDS = ['low', 'moderate', 'high', 'critical'] as const;
 
@@ -528,58 +537,6 @@ function isPackageInstall(words: readonly string[]): boolean {
     return false;
   }
   return PACKAGE_INSTALL_SUBCOMMANDS[bin]?.includes(sub) ?? false;
-}
-
-/**
- * Walk `words` from `fromIndex`, skipping recognised flags (and, for a flag
- * in `valueFlags`, its separate value token too), and return the index of
- * the first non-flag token found — the actual subcommand once global flags
- * are skipped past. Returns -1 if every remaining token is a flag.
- *
- * The same walk `unwrapCommand` already does for wrapper flags, reused here
- * to fix a DIFFERENT bug: `words[1] === 'push'`-style fixed-index checks
- * silently miss the subcommand when an intervening global flag shifts it
- * (`git --no-pager push`, `gh --repo x/y pr merge`) — not a wrapper hiding a
- * command, just an ordinary flag nobody accounted for.
- */
-function skipFlags(
-  words: readonly string[],
-  fromIndex: number,
-  valueFlags: ReadonlySet<string>,
-): number {
-  let i = fromIndex;
-  while (i < words.length) {
-    const token = words[i] ?? '';
-    if (!token.startsWith('-')) return i;
-    i++;
-    if (valueFlags.has(token)) i++;
-  }
-  return -1;
-}
-
-/** Global git flags that take a separate value token (not exhaustive — see `skipFlags`'s doc). */
-const GIT_GLOBAL_VALUE_FLAGS: ReadonlySet<string> = new Set([
-  '-C',
-  '--git-dir',
-  '--work-tree',
-  '--namespace',
-  '--super-prefix',
-  '--exec-path',
-]);
-
-/** Index of `git`'s subcommand (`push`, `status`, ...), skipping global flags, or -1. */
-function gitSubcommandIndex(words: readonly string[]): number {
-  if (words[0] !== 'git') return -1;
-  return skipFlags(words, 1, GIT_GLOBAL_VALUE_FLAGS);
-}
-
-/** Global gh flags that take a separate value token. */
-const GH_GLOBAL_VALUE_FLAGS: ReadonlySet<string> = new Set(['--repo', '-R', '--hostname']);
-
-/** Index of `gh`'s top-level subcommand (`pr`, `issue`, `api`, ...), skipping global flags, or -1. */
-function ghTopIndex(words: readonly string[]): number {
-  if (words[0] !== 'gh') return -1;
-  return skipFlags(words, 1, GH_GLOBAL_VALUE_FLAGS);
 }
 
 /**

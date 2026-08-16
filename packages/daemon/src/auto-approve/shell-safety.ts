@@ -741,14 +741,116 @@ const EXEC_PRIMITIVE_TOKEN =
   /(^|\s)(-exec|-execdir|-ok|-okdir|-delete|-fprintf|-fprint|-fprint0|-fls|--to-command|--use-compress-program|--rmt-command|--rsh-command|--checkpoint-action|--preload|--require|--eval|--exec)(\s|=|$)/;
 
 /**
+ * Walk `words` from `fromIndex`, skipping recognised flags (and, for a flag
+ * in `valueFlags`, its separate value token too), and return the index of
+ * the first non-flag token found — the actual subcommand once global flags
+ * are skipped past. Returns -1 if every remaining token is a flag.
+ *
+ * Moved here from `risk-bands.ts` (#1057 phase 3, commit 4) so
+ * `hasExecPrimitive`'s git `-c` veto (below) can share the SAME subcommand
+ * walk `risk-bands.ts` already uses for its own git/gh checks, rather than a
+ * second one that could disagree with it (#1000's law: two walks of the same
+ * question must never be able to drift). This module cannot import FROM
+ * `risk-bands.ts` — that module already imports `hasExecPrimitive` and
+ * friends from here, and the reverse would be a cycle — so the shared
+ * primitive lives on this side and `risk-bands.ts` imports it back.
+ */
+export function skipFlags(
+  words: readonly string[],
+  fromIndex: number,
+  valueFlags: ReadonlySet<string>,
+): number {
+  let i = fromIndex;
+  while (i < words.length) {
+    const token = words[i] ?? '';
+    if (!token.startsWith('-')) return i;
+    i++;
+    if (valueFlags.has(token)) i++;
+  }
+  return -1;
+}
+
+/** Global git flags that take a separate value token (not exhaustive — see `skipFlags`'s doc). */
+export const GIT_GLOBAL_VALUE_FLAGS: ReadonlySet<string> = new Set([
+  '-C',
+  '--git-dir',
+  '--work-tree',
+  '--namespace',
+  '--super-prefix',
+  '--exec-path',
+]);
+
+/** Index of `git`'s subcommand (`push`, `status`, ...), skipping global flags, or -1. */
+export function gitSubcommandIndex(words: readonly string[]): number {
+  if (words[0] !== 'git') return -1;
+  return skipFlags(words, 1, GIT_GLOBAL_VALUE_FLAGS);
+}
+
+/** Global gh flags that take a separate value token. */
+const GH_GLOBAL_VALUE_FLAGS: ReadonlySet<string> = new Set(['--repo', '-R', '--hostname']);
+
+/** Index of `gh`'s top-level subcommand (`pr`, `issue`, `api`, ...), skipping global flags, or -1. */
+export function ghTopIndex(words: readonly string[]): number {
+  if (words[0] !== 'gh') return -1;
+  return skipFlags(words, 1, GH_GLOBAL_VALUE_FLAGS);
+}
+
+/**
+ * `git -c <key>=<value> <subcommand>` runs arbitrary code (`core.hooksPath`,
+ * `core.fsmonitor`, ...) before the subcommand ever starts. `git switch -c
+ * <name>` and `git commit -c <commit>` reuse the SAME letter for an entirely
+ * unrelated, harmless, SUBCOMMAND-level flag (#962). A raw-text regex cannot
+ * tell those apart from presence alone — `EXEC_SCOPED_VETOES`'s uniform
+ * `(family, flag-regex)` shape below is exactly that, presence-only — so git
+ * is the one family that needs a token walk instead of an entry in that list,
+ * scoped by `gitSubcommandIndex` (shared with `risk-bands.ts`, never a second
+ * independent derivation of "where is the subcommand").
+ *
+ * git's own parser draws the identical line: a global option like `-c` is
+ * only recognised BEFORE the first non-option argument (the subcommand);
+ * everything from there on belongs to the subcommand's own parser, which may
+ * give the same letter a completely different meaning, or none at all. So a
+ * `-c` strictly before `gitSubcommandIndex` — or anywhere at all when no
+ * subcommand token exists (an all-flags command, including a bare trailing
+ * `git -c`, where `gitSubcommandIndex` returns -1) — is the exec primitive;
+ * a `-c` at or after it is not, REGARDLESS of whether that particular
+ * subcommand happens to define `-c` for itself. (`git worktree add`, for
+ * instance, has no `-c` of its own — verified via `git worktree add -h` — so
+ * `-c` there is simply an invalid option git will reject at parse time; that
+ * is a usability non-event, not a bypass, because git never reaches the
+ * global config-injection code path for a flag positioned after the
+ * subcommand it already committed to.)
+ *
+ * A token "carries" `-c` when it is: the standalone token `-c`; a
+ * `=`-attached `-c=value` (real git takes the value as a SEPARATE token, but
+ * matching the glued spelling too costs nothing and errs the safe direction,
+ * ADR 0010); or `c` bundled into a short-option cluster with other
+ * single-dash letters (`-uc`). Over-matching a shape git would itself reject
+ * is fine — this function only ever REFUSES on a match, so a false positive
+ * costs an extra escalation, never a wrongly-approved command.
+ */
+function hasPreSubcommandGitDashC(segment: string): boolean {
+  if (!/^git\b/.test(segment)) return false;
+  const words = shellWords(segment);
+  const subIdx = gitSubcommandIndex(words);
+  const end = subIdx === -1 ? words.length : subIdx;
+  for (let i = 1; i < end; i++) {
+    const token = words[i] ?? '';
+    if (token === '-c' || token.startsWith('-c=')) return true;
+    if (/^-[A-Za-z]+$/.test(token) && token.includes('c')) return true;
+  }
+  return false;
+}
+
+/**
  * Command families whose read form is flipped to code execution by a flag that
  * is harmless elsewhere, so the veto has to know which command it is looking at.
+ *
+ * git is deliberately NOT an entry here (#962) — see `hasPreSubcommandGitDashC`
+ * above for why it alone needs token position rather than a raw-text regex.
+ * Every other family keeps the original presence-only shape.
  */
 const EXEC_SCOPED_VETOES: ReadonlyArray<{ family: RegExp; flag: RegExp }> = [
-  // `git -c core.hooksPath=/tmp/evil status` and `git -c core.fsmonitor='...'`
-  // run arbitrary code on an otherwise read-only git command. No read form of
-  // git needs `-c`.
-  { family: /^git\b/, flag: /(^|\s)-c(\s|=)/ },
   // awk's program text can call system() or pipe into a shell.
   { family: /^(g|m|n)?awk\b/, flag: /(system\s*\(|\|\s*&?\s*"?\s*(sh|bash|zsh)\b|print\s*\|)/ },
   // `rsync -e 'sh -c ...'` / `--rsh` runs the "remote shell" locally.
@@ -761,6 +863,7 @@ const EXEC_SCOPED_VETOES: ReadonlyArray<{ family: RegExp; flag: RegExp }> = [
 /** True if a segment carries a code-execution primitive. */
 export function hasExecPrimitive(segment: string): boolean {
   if (EXEC_PRIMITIVE_TOKEN.test(segment)) return true;
+  if (hasPreSubcommandGitDashC(segment)) return true;
   for (const { family, flag } of EXEC_SCOPED_VETOES) {
     if (family.test(segment) && flag.test(segment)) return true;
   }

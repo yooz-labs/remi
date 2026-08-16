@@ -10,6 +10,7 @@ import {
   matchReadOnlyCommand,
   sedScriptShapeVeto,
 } from '../../src/auto-approve/permission-groups.ts';
+import { hasExecPrimitive } from '../../src/auto-approve/shell-safety.ts';
 
 /** The READ groups. Kept as the default for `bash()` so every pre-#959 test
  *  keeps asking exactly what it asked before: adding a write group must not
@@ -1866,5 +1867,98 @@ describe('#1057 phase 3 commit 1: matchComposedCommand', () => {
         matchComposedCommand('python3 gen.py > out.txt', ['python3'], ['read-only', 'fs-write']),
       ).toEqual({ allowHit: 'python3', groupHit: null });
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1057 phase 3, commit 4 (#962): `git -c` is a subcommand flag AFTER git's
+// subcommand and an exec primitive BEFORE it (or with no subcommand at all).
+//
+// None of the curated `vcs-read`/`vcs-write` prefixes below ever textually
+// START with `git -c ...` -- every curated entry is `git <subcommand>`, and
+// `-c` sitting between `git` and the subcommand means the text does not
+// begin with any of them. So a "must still refuse" case with `-c` BEFORE the
+// subcommand never even reaches `hasExecPrimitive` through `matchGroups`: it
+// is refused by ordinary prefix non-match, exactly as it always was, which
+// makes `bash()` non-diagnostic of THIS fix for that half. The positional
+// proof itself -- that `hasExecPrimitive` still says true for a pre-subcommand
+// `-c` and now says false for a post-subcommand one -- is pinned directly
+// against `hasExecPrimitive`, imported above (mirrors why `sedScriptShapeVeto`
+// is imported and called directly elsewhere in this file: some cases have no
+// other way to be reached).
+// ---------------------------------------------------------------------------
+
+describe('#962: git -c position-scoped exec veto', () => {
+  describe('matchGroups: a real curated prefix now sees past a post-subcommand -c', () => {
+    const cases: Array<[string, string]> = [
+      ['git switch -c newbranch', 'vcs-write:git switch'],
+      // Control: no `-c` at all, unaffected by this change either way.
+      ['git checkout -b nb', 'vcs-write:git checkout'],
+      ['git commit -c abc123 -m x', 'vcs-write:git commit'],
+      ['git commit --amend -c HEAD', 'vcs-write:git commit'],
+      // `git worktree add` has no `-c` of its own -- verified via
+      // `git worktree add -h` (only `-b`/`-B` create a branch; `--checkout`
+      // is long-only). This `-c` sits AFTER the top-level subcommand index
+      // (`worktree`), so the positional rule treats it as a subcommand-local
+      // flag and does not veto -- matching real git, whose global `-c`
+      // parser stops looking the moment it commits to a subcommand. Real git
+      // would reject the unrecognised option at parse time (harmless: no
+      // config-injection code path is ever reached), so this is a benign
+      // mis-approval of invalid syntax, not a security regression.
+      ['git worktree add -c x', 'vcs-write:git worktree add'],
+    ];
+    for (const [cmd, expected] of cases) {
+      test(cmd, () => expect(bash(cmd, WRITE_GROUPS)).toBe(expected));
+    }
+  });
+
+  describe('matchGroups: pre-subcommand -c still refuses (via ordinary prefix non-match)', () => {
+    // See the section comment above: none of these reach `hasExecPrimitive`
+    // at all through `matchGroups`, because `-c` before the subcommand means
+    // the text does not start with any curated `git <subcommand>` prefix.
+    // Included for completeness against the shipped entry point; the
+    // `hasExecPrimitive` block below is what actually proves the position
+    // logic.
+    for (const cmd of [
+      'git -c core.hooksPath=/tmp/e commit -m x',
+      'git -c user.name=x status',
+      'git -c=k.v status',
+      'git --no-pager -c k=v log', // global flag then -c: still pre-subcommand
+    ]) {
+      test(JSON.stringify(cmd), () => expect(bash(cmd, [...ALL, ...WRITE_GROUPS])).toBeNull());
+    }
+  });
+
+  describe('hasExecPrimitive: direct, position-scoped (the actual proof)', () => {
+    const stillExecPrimitive: Array<[string, string]> = [
+      ['git -c core.hooksPath=/tmp/e commit -m x', 'standalone -c before the subcommand'],
+      ['git -c user.name=x status', 'standalone -c before the subcommand'],
+      ['git -c=k.v status', '=-attached -c before the subcommand'],
+      // A bundled short-option cluster containing `c`, positioned before the
+      // subcommand (`-p`/`--paginate` is a real global git flag; bundling it
+      // with `c` here is a synthetic worst case for the CLUSTER detector, not
+      // a claim about real git's own bundling support for `-c`'s mandatory
+      // value).
+      ['git -pc user.name=x status', 'c bundled into a cluster before the subcommand'],
+      ['git -c', 'trailing -c, end of string, no subcommand at all'],
+      ['git --no-pager -c k=v log', 'a recognised global flag does not reset the boundary'],
+    ];
+    for (const [cmd, why] of stillExecPrimitive) {
+      test(`${JSON.stringify(cmd)} -- ${why}`, () => expect(hasExecPrimitive(cmd)).toBe(true));
+    }
+
+    const noLongerExecPrimitive: Array<[string, string]> = [
+      ['git switch -c newbranch', '-c after the subcommand'],
+      ['git checkout -b nb', 'control: no -c present at all'],
+      ['git commit -c abc123 -m x', '-c after the subcommand'],
+      ['git commit --amend -c HEAD', '-c after the subcommand, alongside --amend'],
+      [
+        'git worktree add -c x',
+        '-c after the subcommand (even though worktree add has no -c of its own)',
+      ],
+    ];
+    for (const [cmd, why] of noLongerExecPrimitive) {
+      test(`${JSON.stringify(cmd)} -- ${why}`, () => expect(hasExecPrimitive(cmd)).toBe(false));
+    }
   });
 });
