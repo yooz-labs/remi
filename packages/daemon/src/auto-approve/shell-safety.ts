@@ -741,13 +741,9 @@ export function hasShellControl(segment: string): boolean {
   // `grep x < f` stays approvable). This narrows that only for the two device
   // prefixes bash gives socket semantics; every other `< target` is untouched.
   //
-  // Checked against the QUOTE-REMOVED tokens (`shellWords`), NOT the masked
-  // text: `NETWORK_DEV_PATH_RE` matches a literal prefix, and masking rewrites
-  // a quoted target to `_`, so `< "/dev/tcp/h/p"` / `< /dev/"tcp"/h/p` /
-  // `< /d\ev/tcp/h/p` each defeated a masked-text scan while bash still opened
-  // the socket. `shellWords` recovers the real target the program receives --
-  // the module's own law (see its doc): match what runs, not the raw text.
-  if (hasNetworkDeviceInputRedirect(segment)) {
+  // Operator position from `masked`, target content dequoted from raw -- see
+  // the helper's doc for why neither view alone is sound.
+  if (hasNetworkDeviceInputRedirect(segment, masked)) {
     return true;
   }
   // An input redirect whose target uses ANSI-C `$'...'` quoting cannot be
@@ -770,52 +766,47 @@ export function hasShellControl(segment: string): boolean {
 }
 
 /**
- * Every single-`<` input-redirect target glued inside one whitespace-free
- * token. A `<` that is NOT part of `<<`/`<<<` (heredoc / here-string, which
- * open no socket) nor `<(` (process substitution, refused upstream), with the
- * target being the run of non-`<`, non-space chars after it. Global so a token
- * carrying MORE THAN ONE redirect (`/dev/null</dev/null</dev/tcp/h/p`) yields
- * EACH target, not just the first -- a greedy first-capture missed the second
- * `<` and approved the socket behind a benign first target (#1063 re-review).
- * A `<` immediately followed by a space captures the empty string, so a
- * quoted literal whose `<` is spaced from the device (`'< /dev/tcp/x is bad'`)
- * does not read as a redirect here.
- */
-const GLUED_INPUT_REDIRECT_RE = /(?<!<)<(?!<)([^<\s]*)/g;
-
-/**
  * True if `segment` redirects input from a bash network device
- * (`/dev/tcp/...` or `/dev/udp/...`) -- an outbound socket open. Scans the
- * `shellWords` tokenization so quoting/escaping of the target cannot hide it
- * (#1063): a standalone `<`/`N<` operator token whose NEXT token is the
- * device, or one or more `<`-glued targets inside a single token.
+ * (`/dev/tcp/...` or `/dev/udp/...`) -- an outbound socket open (#1063).
  *
- * Accepted over-refusal (ADR 0010, err broad in the deny direction): once
- * `shellWords` has removed the quotes, a space-less quoted literal that
- * happens to contain `x</dev/tcp/y` is indistinguishable from a real glued
- * redirect, so it vetoes. That is a niche nuisance escalation; the reverse
- * (a masked-text scan that let `< "/dev/tcp/..."` through) was a live egress.
+ * Operator POSITION is decided from the MASKED view, target CONTENT from the
+ * raw text. This split is the whole design, learned over five re-reviews:
+ *
+ * - Masked (`maskQuotedSpans`, length-preserving so indices align with raw) is
+ *   the only view that locates operators correctly. A `<` that is quoted or
+ *   backslash-escaped (`'x<'`, `\<`) is a LITERAL argument, not an operator,
+ *   and masking rewrites it to `_` -- so it can neither be mistaken for an
+ *   operator nor GLUE onto the real one. A `shellWords`-token scan failed here:
+ *   quote-removal concatenated `'x<'<` into the token `x<<`, which the
+ *   heredoc-exclusion then skipped, opening the socket unseen.
+ * - Raw (dequoted) is the only view with the real target. Masking rewrites a
+ *   quoted target (`< "/dev/tcp/h/p"`) to `_`, which no anchored device regex
+ *   can match, while bash still opens it.
+ *
+ * A `<` that is part of `<<`/`<<<` (heredoc/here-string, no socket), `<(`
+ * (process substitution, refused earlier), `<&` (fd dup, not a path), or `<>`
+ * (read-write, carries a `>` the output-redirect check already vetoes) is not
+ * an input-file operator. The target is the word after it, up to the next
+ * whitespace or `<` (a second glued redirect is its own operator, found in its
+ * own pass); its raw slice is dequoted of `'`/`"`/`\` before the device test.
+ * ANSI-C `$'...'` targets are handled separately in `hasShellControl` (this
+ * simple dequote cannot decode `\xNN`), by a fail-closed rule.
  */
-function hasNetworkDeviceInputRedirect(segment: string): boolean {
-  const tokens = shellWords(segment);
-  for (let i = 0; i < tokens.length; i++) {
-    const t = tokens[i] ?? '';
-    // A token ENDING in a single `<` is a stdin-redirect operator whose target
-    // is the NEXT token -- bare `<`, an fd `N<`, and (bash treats `<` glued to
-    // the tail of any word as a fresh operator) `foo<`, `file<`, `{fd}<`. The
-    // lookbehind excludes `<<`/`<<<` (heredoc / here-string), whose next token
-    // is a delimiter/word bash never opens as a path. Recognizing only bare
-    // `<`/`N<` here let `cat foo< /dev/tcp/h/p` open a socket unseen (#1063
-    // third re-review).
-    if (/(?<!<)<$/.test(t) && NETWORK_DEV_PATH_RE.test(tokens[i + 1] ?? '')) {
-      return true;
-    }
-    // Also one or more `<`-glued targets WITHIN this (quote-removed) token. Not
-    // an `else`: a token can carry both (`foo<bar</dev/tcp/h/p` -- a glued
-    // target AND a trailing operator), so both are checked.
-    for (const m of t.matchAll(GLUED_INPUT_REDIRECT_RE)) {
-      if (NETWORK_DEV_PATH_RE.test(m[1] ?? '')) return true;
-    }
+function hasNetworkDeviceInputRedirect(segment: string, masked: string): boolean {
+  for (let i = 0; i < masked.length; i++) {
+    if (masked[i] !== '<') continue;
+    const prev = masked[i - 1];
+    const next = masked[i + 1];
+    if (prev === '<' || next === '<' || next === '(' || next === '&' || next === '>') continue;
+    // Skip whitespace after the operator, then take the target word up to the
+    // next whitespace or `<`.
+    let j = i + 1;
+    while (j < masked.length && (masked[j] === ' ' || masked[j] === '\t')) j++;
+    let k = j;
+    while (k < masked.length && masked[k] !== ' ' && masked[k] !== '\t' && masked[k] !== '<') k++;
+    if (k === j) continue;
+    const dequoted = segment.slice(j, k).replace(/['"\\]/g, '');
+    if (NETWORK_DEV_PATH_RE.test(dequoted)) return true;
   }
   return false;
 }

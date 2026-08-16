@@ -193,6 +193,19 @@ describe('hasShellControl - #1063 network-device input redirect', () => {
     expect(hasShellControl('cat foo< data.txt')).toBe(false);
   });
 
+  test('MUST VETO: a quoted/escaped literal `<` glued before the real operator', () => {
+    // `cat 'x<'< /dev/tcp/h/p`: the quoted `x<` is a literal ARGUMENT, the
+    // trailing `<` is the live operator. shellWords concatenated them into the
+    // token `x<<`, read as a heredoc and skipped, opening the socket (#1063
+    // fifth re-review). Operator position now comes from the masked view,
+    // where the quoted `<` is `_` and cannot glue onto the operator.
+    expect(hasShellControl("cat 'x<'< /dev/tcp/127.0.0.1/1")).toBe(true);
+    expect(hasShellControl("cat '<'< /dev/tcp/h/p")).toBe(true);
+    expect(hasShellControl('cat \\<< /dev/tcp/h/p')).toBe(true);
+    // A quoted `<` INSIDE the target word must not fragment it (still a file).
+    expect(hasShellControl('cat < "a<b"')).toBe(false);
+  });
+
   test('MUST NOT VETO: an ordinary file input redirect (reads, never sockets)', () => {
     expect(hasShellControl('grep x < list.txt')).toBe(false);
     expect(hasShellControl('cat < ./config.ini')).toBe(false);
@@ -236,20 +249,15 @@ describe('hasShellControl - #1063 network-device input redirect', () => {
     expect(hasShellControl("printf $'%s\\n' a")).toBe(false);
   });
 
-  test('a quoted literal with the device SPACED after < is not a redirect', () => {
-    // `'< /dev/tcp/x is bad'` is one grep argument: the `<` is spaced from the
-    // path, so the target capture is empty and nothing vetoes. This is the
-    // boundary a real spaced redirect (`cat < /dev/tcp/h/p`) does NOT share --
-    // there shellWords splits `<` into its own operator token.
+  test('MUST NOT VETO: a quoted device literal is NOT a redirect (masked-scan)', () => {
+    // Both the spaced (`'< /dev/tcp/x is bad'`) and the space-less
+    // (`'x</dev/tcp/y'`) forms are ONE grep argument: the `<` is quoted, so the
+    // masked view shows `_` where a literal `<` sits and never reads it as an
+    // operator. Deciding operator position from the masked view (not the
+    // quote-removed shellWords tokens) removed the over-refusal an earlier
+    // token-based cut had here, AND closed the `'x<'< /dev/tcp` operator-glue
+    // bypass -- the same architectural fix does both (#1063 fifth re-review).
     expect(hasShellControl("grep '< /dev/tcp/x is bad' f")).toBe(false);
-  });
-
-  test('ACCEPTED over-refusal: a space-less quoted device literal vetoes', () => {
-    // After shellWords removes the quotes, `x</dev/tcp/y` is byte-identical to
-    // an unquoted glued redirect, so it vetoes even though this grep opens no
-    // socket. Documented, not a bug: quote-safe socket detection cannot tell
-    // the two apart, and erring toward escalate (ADR 0010) beats the reverse,
-    // which was a live egress. Niche; nobody greps for that literal.
-    expect(hasShellControl("grep 'x</dev/tcp/y' f")).toBe(true);
+    expect(hasShellControl("grep 'x</dev/tcp/y' f")).toBe(false);
   });
 });
