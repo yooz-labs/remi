@@ -877,7 +877,7 @@ function isPrivilegeElevation(words: readonly string[], segment: string): boolea
  * unpeeled group (`( git push )` -> moderate -> a model approve stands) where
  * the coverage matcher errs safe (no group match -> escalate).
  */
-function peelGrammarAndGroups(segment: string): string {
+function peelGrammarAndGroups(segment: string): { command: string; exhausted: boolean } {
   let cmd = segment.trim();
   for (let i = 0; i <= MAX_RECURSION_DEPTH; i++) {
     // Leading `(`/`{` (one or more, whitespace after) — standalone `( cmd` or
@@ -886,10 +886,14 @@ function peelGrammarAndGroups(segment: string): string {
     const degrouped = cmd.replace(/^[({]+\s*/, '');
     const grammarPeeled = stripShellGrammar(degrouped).command || degrouped;
     const next = grammarPeeled.trim();
-    if (next === cmd) return cmd;
+    if (next === cmd) return { command: cmd, exhausted: false };
     cmd = next;
   }
-  return cmd;
+  // Still peeling at the bound: a pathologically nested `keyword ( keyword ( …`
+  // stack. The head is still hidden, so the caller must err `high` rather than
+  // judge a wrapped head — the same err-broad-at-the-bound rule the
+  // substitution / `sh -c` / `env -S` recursions below already follow (ADR 0010).
+  return { command: cmd, exhausted: true };
 }
 
 function classifySegmentBand(rawSegment: string, depth: number): 'moderate' | 'high' {
@@ -910,9 +914,12 @@ function classifySegmentBand(rawSegment: string, depth: number): 'moderate' | 'h
   // honest; reusing it keeps the risk axis and the coverage axis from drifting.
   // It only ever REMOVES grammar/grouping and hands back a command, so it cannot
   // lower a band — a wrapped SAFE command still peels to a safe head and stays
-  // `moderate`. The raw-text checks below (`hasDangerousWholeWord`,
-  // `hasExecPrimitive`) still run on the unpeeled text as an independent layer.
-  const peeled = peelGrammarAndGroups(sanitized);
+  // `moderate`. `hasDangerousWholeWord` runs on the raw text as an independent
+  // layer; `hasExecPrimitive` runs on BOTH readings (see its call below).
+  const { command: peeled, exhausted } = peelGrammarAndGroups(sanitized);
+  // Head still hidden at the peel depth bound (pathological `keyword ( keyword (
+  // …` nesting): err `high`, matching the substitution / `sh -c` recursions.
+  if (exhausted) return 'high';
   const rawWords = shellWords(peeled);
   // Read BEFORE unwrapping: `unwrapCommand` strips `env` and its flags, so by
   // the time `words` exists the `-S` marker is gone. The first draft of this
@@ -944,7 +951,14 @@ function classifySegmentBand(rawSegment: string, depth: number): 'moderate' | 'h
     }
   }
 
-  if (hasExecPrimitive(sanitized)) return 'high';
+  // BOTH readings. Several `hasExecPrimitive` sub-checks are `^`-anchored
+  // (`^git ... -c core.hooksPath=`, `^awk 'system(...)'`, `^rsync -e`, `^ssh`),
+  // so a leading grammar keyword or `(`/`{` group on the unpeeled text defeats
+  // the anchor — `( git -c core.hooksPath=/tmp/evil status )` is exec-primitive
+  // RCE that graded `moderate` until the peeled reading was added here
+  // (adversarial review of #1076). The unpeeled reading stays for any primitive
+  // the peel does not sit in front of (`find … -exec` mid-segment).
+  if (hasExecPrimitive(sanitized) || hasExecPrimitive(peeled)) return 'high';
 
   // A leading assignment sets the environment the following command runs in,
   // and what that does is defined by the TOOL, not by anything visible here:

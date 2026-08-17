@@ -586,6 +586,31 @@ describe('classifyRisk — #1076 shell grammar and grouping cannot hide a high-b
     expect(r).toEqual({ decision: 'escalate', overridden: true, band: 'high' });
   });
 
+  // Adversarial review of #1076, finding B: `hasExecPrimitive`'s sub-checks are
+  // `^`-anchored (`^git … -c core.hooksPath=`, `^awk system()`, `^rsync -e`),
+  // so a leading grammar keyword or group defeated the anchor and an
+  // exec-primitive RCE graded `moderate`. It now runs on the peeled command too.
+  const execPrimitiveWrapped = [
+    '( git -c core.hooksPath=/tmp/evil status )',
+    '{ git -c core.hooksPath=/tmp/evil status; }',
+    'while true; do git -c core.hooksPath=/tmp/evil status; done',
+    'if x; then awk \'BEGIN{system("touch /tmp/x")}\'; fi',
+  ];
+  for (const command of execPrimitiveWrapped) {
+    test(`high (exec primitive behind grammar/group): ${command}`, () => {
+      expect(classifyRisk('Bash', bash(command))).toBe('high');
+    });
+  }
+
+  // Finding A: a pathologically nested `keyword ( keyword ( …` stack that the
+  // peel cannot resolve within its bound must err `high`, not fall through to a
+  // wrapped head — the same err-broad-at-the-bound rule the other recursions use.
+  test('a peel that exhausts its depth bound errs high, not moderate', () => {
+    expect(
+      classifyRisk('Bash', bash('while ( while ( while ( while ( while ( git push --force')),
+    ).toBe('high');
+  });
+
   // Discrimination: peeling only REMOVES grammar/grouping, so a SAFE command
   // behind the same shapes stays moderate — the fix does not blanket-escalate
   // every loop and conditional.
