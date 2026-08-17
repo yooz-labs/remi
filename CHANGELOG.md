@@ -4,6 +4,90 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+The auto-approve **approval-rate epic** (#1057) plus follow-ups. The epic's
+diagnosis: overall approve rate 52% local / 72% on a second machine against a
+90–95% target, with band=high 0/85 approvable — routine agent work was being
+escalated to the phone in volume. This release makes in-context authorization
+actually approve that work while keeping every security veto fail-closed. Every
+phase was independently reviewed (adversarial + mutation on the
+security-sensitive ones), and the composed-gate review before this release
+caught a pre-existing ceiling bypass (#1076), fixed here.
+
+### Added
+
+- **`auto_approve.residual_action`** (`escalate` default, opt-in `deny`) —
+  [ADR 0027] (#1045). Default is byte-unchanged: residual work the model does
+  not approve still escalates to you. Set to `deny` and that work is refused
+  *with a reason* the agent sees, so it self-corrects to a safer approach
+  instead of pinging you — only worth flipping once your measured approval rate
+  is genuinely sound, since it converts a wrongful escalation into a wrongful
+  deny.
+- **Destination-checked write grants** — [ADR 0026] (#996, #1041, #1060). File
+  writes by shell redirection, heredocs, and `sed -i` are now covered by the
+  write groups (they previously escalated because the groups matched the tool,
+  not the Bash command), but only when the destination provably resolves inside
+  the project or a scratch root and is not sensitive. Any target that cannot be
+  proven safe still escalates, fail-closed.
+
+### Changed
+
+- **Composed commands, loops, and conditionals stop over-escalating** (#999,
+  #962). A safe body inside `for`/`while`/`if` no longer escalates the whole
+  line (measured at 25.9% of real main-agent commands), composed `allow`+group
+  segments are recognized, and `git -c` is scoped so `git -c core.hooksPath=…`
+  still escalates while an ordinary `git -c` does not.
+
+### Fixed
+
+- **The prompt promised what the risk ceiling revoked** (#1040). High-band
+  operations now escalate directly under user guidance instead of being approved
+  and then silently overridden a layer later; the model is told the honest rule.
+  The unsafe half of #976's text-widening (which would have auto-approved
+  persistence/credential ops on benign authority) was deliberately dropped.
+- **Session precedent could authorize the wrong command** (#990). Its signature
+  was the truncated display string, so approving a long command could
+  exact-match a *different* command sharing its first 117 characters — reachable
+  in ordinary use in this repo, whose paths routinely exceed that. The signature
+  is now derived untruncated by construction (new `Question.precedentSignature`
+  field); record and consult share one derivation.
+- **A genuine long DENY was silently dropped from precedent** (#1067). A real
+  command ≥120 chars that legitimately ends in `...` looked like a display
+  truncation to the heuristic, so a human "no" was not persisted as a stop rule.
+  It now persists via a signature-provenance bit, without reopening the
+  truncation-collision it guards.
+- **The risk ceiling force-escalated scratch-confined deletes** (#1071). A
+  deletion whose every target resolves under a scratch root — which the
+  `scratch` group already approves — no longer bands high, so the ceiling stops
+  re-escalating a delete the model correctly approved.
+- **Eight command wrappers hid a high-band command from the ceiling** (#1013).
+  `setsid`, `runuser`, `ionice`, `script`, `chrt`, `taskset`, `proxychains`,
+  and `systemd-run` are unwrapped now, so `setsid git push --force` bands high
+  like the bare command.
+- **Model-adherence, measured** (#972). On the shipping default model
+  (qat-lean 4B) the "`git stash` is a remote mutation" failure does not
+  reproduce — that was the 0.8B light tier, never a default.
+
+### Security
+
+- **`/dev/tcp` / `/dev/udp` input redirects are vetoed fail-closed** (#1063). An
+  input redirect from these paths opens an outbound socket; it was approved by
+  `read-only` at `strict`. Closed over nine adversarial rounds.
+- **Shell grammar and grouping no longer hide a must-escalate op from the
+  ceiling** (#1076). `while ! git push; do …; done`, `if …; then git push; fi`,
+  `for pkg in …; do npm install`, and `( git push --force )` graded `moderate`
+  and a model approve stood silently, because the ceiling's head-token checks
+  never saw past the keyword or the group. They are graded `high` again. (The
+  narrower unenumerated-wrapper vector — `flock … git push` — remains open on
+  the issue.)
+- **A brace-expansion escape is refused** in both the risk ceiling and the
+  `scratch` group: `rm -rf /tmp/{x,../etc/passwd}` deletes a file outside
+  scratch, and the glued `..` was invisible to the path resolver.
+
+[ADR 0026]: .context/decisions/0026-destination-checked-write-grants.md
+[ADR 0027]: .context/decisions/0027-residual-action-deny-vs-escalate.md
+
+## [0.7.7] - 2026-08-11
+
 ### Added
 - **Permissions can be scoped per agent type** ([ADR 0025]). A
   `[auto_approve.agents.<type>]` section keyed by the hook's `agent_type` lets

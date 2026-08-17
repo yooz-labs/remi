@@ -225,6 +225,73 @@ describe('HookEventBridge', () => {
     expect(questions[0]?.submitLabel).toBeUndefined();
   });
 
+  // #990: buildPermissionQuestion stamps the untruncated, exact-match
+  // precedent signature onto a precedent-eligible question (see
+  // `Question.precedentSignature`'s doc and `precedent.ts`'s
+  // `signatureForOperation` / `precedentMayAuthorize`).
+  describe('precedentSignature (#990)', () => {
+    it('sets precedentSignature for an eligible Bash command, distinct from the display text', () => {
+      const { bridge, questions } = createBridge();
+
+      bridge.handlePermissionRequest({
+        ...makeCommon(),
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'git push origin main' },
+      } as PermissionRequestHookInput);
+
+      expect(questions[0]?.precedentSignature).toBe('Bash: git push origin main');
+      expect(questions[0]?.text).toBe('Allow Bash: git push origin main');
+    });
+
+    it('does NOT set precedentSignature for an ineligible tool (Write)', () => {
+      const { bridge, questions } = createBridge();
+
+      bridge.handlePermissionRequest({
+        ...makeCommon(),
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Write',
+        tool_input: { file_path: '/tmp/a.txt', content: 'x' },
+      } as PermissionRequestHookInput);
+
+      expect(questions[0]?.precedentSignature).toBeUndefined();
+    });
+
+    it('does NOT set precedentSignature for a Bash call using cmd instead of command (unclassifiable band)', () => {
+      const { bridge, questions } = createBridge();
+
+      bridge.handlePermissionRequest({
+        ...makeCommon(),
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { cmd: 'ls -la' },
+      } as PermissionRequestHookInput);
+
+      // `precedentMayAuthorize` requires the `command` field specifically
+      // (see its own doc: the risk layer never reads `cmd`), even though
+      // `summarizeToolInput` would happily build a complete-looking summary
+      // from it. text still gets a summary either way.
+      expect(questions[0]?.precedentSignature).toBeUndefined();
+      expect(questions[0]?.text).toBe('Allow Bash: ls -la');
+    });
+
+    it('the SIGNATURE is untruncated past 120 characters; the DISPLAY text still truncates', () => {
+      const { bridge, questions } = createBridge();
+      const command = `echo ${'x'.repeat(300)}`;
+
+      bridge.handlePermissionRequest({
+        ...makeCommon(),
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command },
+      } as PermissionRequestHookInput);
+
+      expect(questions[0]?.precedentSignature).toBe(`Bash: ${command}`);
+      expect(questions[0]?.text?.endsWith('...')).toBe(true);
+      expect(questions[0]?.text).not.toContain(command);
+    });
+  });
+
   // #628: the gate passes the LLM's lock-screen summary; the bridge must set it on
   // the emitted Question (the push prefers it over the raw "Allow Bash: …").
   it('sets Question.summary from the summary argument', () => {

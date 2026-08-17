@@ -28,7 +28,11 @@ correct for both.
 Allow is precise. A Bash command is split on `; && || |`, and every segment must
 either match one of the user's prefixes or be a neutral no-op (`cd`, `pwd`,
 `echo`, `true`, `:`). Any segment carrying shell control (backticks, `$()`,
-redirects, `-exec` and its family) is refused even when a prefix matches. An
+redirects, `-exec` and its family) is refused even when a prefix matches --
+except that, in the GROUP path only, ADR 0026's destination-checked grants may
+delete a specific redirect clause or heredoc whose target was positively
+proven before matching runs; the veto itself is unchanged and still refuses
+whatever no grant proved. An
 entry shaped like a tool name (`Read`, `mcp__*`) matches that **tool** and never
 a Bash command containing the word.
 

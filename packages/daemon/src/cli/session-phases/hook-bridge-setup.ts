@@ -105,7 +105,7 @@ import type { AutoApproveService } from '../../auto-approve/index.ts';
 // Not re-exported from `auto-approve/index.ts` on purpose (#976 prerequisite
 // scope: that barrel is being edited concurrently by other work on the same
 // epic). Imported directly from its own module instead.
-import { PrecedentStore } from '../../auto-approve/precedent.ts';
+import { PrecedentStore, readerFrom } from '../../auto-approve/precedent.ts';
 import type { DenySource } from '../../auto-approve/types.ts';
 import { HookEventBridge } from '../../hooks/index.ts';
 import type {
@@ -199,6 +199,16 @@ export interface HookBridgeDeps {
    * Part B disabled (the eval/timer race never arms).
    */
   pushHoldTimeoutSec?: number;
+  /**
+   * What a main-agent BINARY escalation `escalateMain` cannot approve becomes:
+   * `'escalate'` (default) asks the user as before; `'deny'` refuses with a
+   * reason instead (#1045 phase 6). From `config.auto_approve.residual_action`.
+   * Absent => the gate's own default (`'escalate'`), unaffected by whether
+   * auto-approve is enabled — unlike `holdTimeoutSec`/`pushHoldTimeoutSec`,
+   * this is NOT guarded on `autoApproveService` existing, because the
+   * no-service edge is itself one of `escalateMain`'s three call sites.
+   */
+  residualAction?: 'escalate' | 'deny';
   /**
    * Probe a held escalation's notification delivery outcome (epic #603 Phase 1).
    * Wired from this session's `NotificationDispatcher.awaitDelivery`. Lets the
@@ -710,16 +720,10 @@ export function setupHookBridge(
       // handed out — `handleAnswer` stays the single writer by construction,
       // which is what keeps the gate from recording its own ADR-0004
       // arbitration verdicts as human precedent (see `precedent.ts`).
-      //
-      // The `PrecedentStore` methods are read via a fresh object rather than
-      // by passing the store: passing it would satisfy `PrecedentReader`
-      // structurally (TypeScript is structural, so the extra `record` comes
-      // along) and the write surface would be one cast away at any future call
-      // site. This closes it over the two methods and hands out nothing else.
-      getPrecedent: () => ({
-        matchApproved: (tool, signature) => precedentStore.matchApproved(tool, signature),
-        matchDenied: (tool, signature) => precedentStore.matchDenied(tool, signature),
-      }),
+      // `readerFrom` (precedent.ts) hands out only the two matchers — never the
+      // store's `record` — and forwards the `whole` provenance bit (#1067). See
+      // its doc for why both properties are load-bearing.
+      getPrecedent: () => readerFrom(precedentStore),
       // #710: lets the gate recover from a tracker leak (a MAIN-tagged
       // PermissionRequest observing isInSubagentContext() stuck true) instead
       // of denying the main agent forever.
@@ -832,6 +836,9 @@ export function setupHookBridge(
       alwaysEscalateTools: deps.alwaysEscalateTools ?? new Set<string>(),
       holdMs: (deps.holdTimeoutSec ?? 0) * 1000,
       pushHoldMs: (deps.pushHoldTimeoutSec ?? 0) * 1000,
+      // #1045 phase 6: escalate (default) vs deny-with-reason for a main-agent
+      // binary residual. No unit conversion needed, unlike the *Sec fields above.
+      residualAction: deps.residualAction ?? 'escalate',
       // #603 Phase 1: gate a held hook on confirmed notification delivery, so a
       // dead push channel fails open fast instead of stalling for holdMs.
       ...(deps.awaitDelivery ? { awaitDelivery: deps.awaitDelivery } : {}),

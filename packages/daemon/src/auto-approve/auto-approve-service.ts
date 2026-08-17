@@ -31,7 +31,7 @@ import {
   parseMultiChoiceDecision,
 } from './multichoice.ts';
 import { matchAllowPattern, matchSubstringPattern } from './pattern-matcher.ts';
-import { matchGroups, matchGroupsBroad } from './permission-groups.ts';
+import { matchComposedCommand, matchGroups, matchGroupsBroad } from './permission-groups.ts';
 import { type PrecedentReader, precedentMayAuthorize, signatureForOperation } from './precedent.ts';
 import { buildPrompt } from './prompt-builder.ts';
 import type { DecidingLayer } from './risk-bands.ts';
@@ -634,11 +634,24 @@ export class AutoApproveService {
   /**
    * The deterministic, pre-LLM portion of `evaluate()` ONLY: the user's own
    * `deny`/`deny_groups` (checked first, always win), then `allow`
-   * (`matchAllowPattern`), then the level's `approve_groups` (`matchGroups`)
-   * -- the exact matcher calls, in the exact order, `evaluate()` runs before
+   * (`matchAllowPattern`), then the level's `approve_groups` (`matchGroups`),
+   * then -- only when both of those miss and the request is a Bash command --
+   * the UNION of the two (`matchComposedCommand`, #1057 phase 3 commit 1) --
+   * the exact matcher calls, in the exact order, `evaluate()` runs before
    * it ever considers precedent or the LLM. A pure function of (toolName,
    * toolInput) and this service's own config: no network, no model, no
    * queue, no precedent, no design-question routing.
+   *
+   * The composed pass exists because `matchAllowPattern` and `matchGroups`
+   * each require EVERY segment of a compound Bash command to be covered by
+   * THEIR OWN source alone, so a chain covered only by the union of the two
+   * -- `ssh hallu nvidia-smi | head -2` (allow owns `ssh hallu`; `read-only`
+   * owns `head`) -- fails both and reaches the LLM for something the user's
+   * own config already covers twice over, once per segment. Placed AFTER
+   * both single-source passes so their reasoning strings and outcomes are
+   * unchanged for every chain either one alone already covers -- composition
+   * only ever adds approvals for chains that need BOTH sources at once. See
+   * `matchComposedCommand`'s own doc for the per-segment veto dispatch.
    *
    * #1024: extracted so a caller that must decide BEFORE the LLM may ever
    * run (the gate's subagent-tagged hook-time path, which ADR 0004 forbids
@@ -646,12 +659,15 @@ export class AutoApproveService {
    * re-implementing them -- the exact drift ADR 0015/0017 warn about for
    * the shared catastrophic-pattern list, here avoided by construction:
    * `evaluate()` below calls this and must never duplicate its checks
-   * inline.
+   * inline. The composed pass applies identically at hook time for a
+   * subagent -- no special-casing; ADR 0004 already routes anything this
+   * method does not decide to the same render-time path either way.
    *
    * Returns:
-   *   - `{decision: 'approve', reasoning}` -- the user's own `allow` list or
-   *     `approve_groups` covers this call. Safe to act on directly; this is
-   *     the same 0ms verdict `evaluate()` returns for the identical match.
+   *   - `{decision: 'approve', reasoning}` -- the user's own `allow` list,
+   *     `approve_groups`, or their union covers this call. Safe to act on
+   *     directly; this is the same 0ms verdict `evaluate()` returns for the
+   *     identical match.
    *   - `{decision: 'deny-covered', reasoning, denySource}` -- the user's own
    *     `deny` list or `deny_groups` covers this call. NOT a verdict a
    *     hook-time caller may act on by itself: `evaluate()` turns this into
@@ -714,6 +730,22 @@ export class AutoApproveService {
     const approveGroupMatch = matchGroups(toolName, toolInput, policy.approveGroups);
     if (approveGroupMatch !== null) {
       return { decision: 'approve', reasoning: `approve-matched group: "${approveGroupMatch}"` };
+    }
+    // #1057 phase 3 commit 1: only Bash carries a compound command that could
+    // need the union -- every other tool already decided above via a bare
+    // tool-name match against either list, and `matchComposedCommand` only
+    // knows how to walk a Bash command string.
+    if (toolName === 'Bash') {
+      const command = typeof toolInput['command'] === 'string' ? toolInput['command'] : '';
+      if (command !== '') {
+        const composed = matchComposedCommand(command, policy.allow, policy.approveGroups);
+        if (composed !== null && composed.allowHit !== null && composed.groupHit !== null) {
+          return {
+            decision: 'approve',
+            reasoning: `composed allow+group coverage: "${composed.allowHit}" + "${composed.groupHit}"`,
+          };
+        }
+      }
     }
     return null;
   }
@@ -861,7 +893,9 @@ export class AutoApproveService {
       // that path, with any content, at `high`, at 0ms).
       if (this.sessionPrecedent && precedent && precedentMayAuthorize(toolName, toolInput)) {
         const signature = signatureForOperation(toolName, toolInput);
-        const approvedMatch = precedent.matchApproved(toolName, signature);
+        // `whole: true` (#1067): this signature is untruncated by construction,
+        // so the precedent matcher must not apply the truncation refusal to it.
+        const approvedMatch = precedent.matchApproved(toolName, signature, true);
         if (approvedMatch !== null) {
           const band = classifyRisk(toolName, toolInput);
           const assessment = AuthorizationAssessment.fromPrecedent(approvedMatch);
@@ -1191,6 +1225,9 @@ export class AutoApproveService {
           const deniedMatch = precedent.matchDenied(
             toolName,
             signatureForOperation(toolName, toolInput),
+            // `whole: true` (#1067): untruncated by construction. Also what lets
+            // a genuine >=120-char DENY that ends in `...` re-match here.
+            true,
           );
           if (deniedMatch !== null) {
             decidedBy = 'precedent';

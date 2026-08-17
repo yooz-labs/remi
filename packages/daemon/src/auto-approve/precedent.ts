@@ -156,26 +156,41 @@
  * measurement first — same discipline ADR 0015 imposed on authority grading —
  * not an inline judgment call. None is attempted here.
  *
- * ## Truncation (CRITICAL, found in independent review, 2026-08-02)
+ * ## Truncation (CRITICAL, found in independent review, 2026-08-02; FIXED #990)
  *
- * `Question.text` — this module's ONLY source for a signature — is not the
- * raw command. `HookEventBridge.summarizeToolInput` (`hooks/hook-event-
- * bridge.ts:621` for Bash, `:647` for the generic path/url/description
- * fallback) truncates anything over 120 characters to exactly `117 chars +
- * "..."`. Left unhandled, two DIFFERENT commands sharing their first 117
- * characters collapse to the identical signature, so approving one
- * exact-matches the other — reachable in ordinary use in this very repo,
- * whose paths routinely exceed 120 characters, not just adversarially.
- * `isTruncatedSignature` below detects that shape; `record()` and both
- * match functions refuse it outright, in both directions. A missed
- * precedent (nothing is recorded/matched for a >120-character command) is
- * the safe direction; a false exact-match on a truncated signature is the
- * privilege-escalation direction this whole module exists to prevent.
- * **Precedent does not currently cover any command/path/url/description
- * over 120 characters** — a real, user-visible gap, not a theoretical one.
- * The proper long-term fix is threading the untruncated value through
- * `Question` and `buildPermissionQuestion` itself; that touches the shared
- * protocol type and is out of scope for this store, tracked as #990.
+ * Before #990, `Question.text` was this module's ONLY source for a RECORDED
+ * signature (`parsePermissionQuestionText` parsed it back apart), and it is
+ * not the raw command: `HookEventBridge.summarizeToolInput` truncated
+ * anything over 120 characters to exactly `117 chars + "..."` for display.
+ * Two DIFFERENT commands sharing their first 117 characters collapsed to the
+ * identical signature, so approving one exact-matched the other — reachable
+ * in ordinary use in this very repo, whose paths routinely exceed 120
+ * characters, not just adversarially. `isTruncatedSignature` below detects
+ * that shape; `record()` and both match functions refuse it outright, in
+ * both directions — the interim mitigation (#989): a missed precedent
+ * (nothing recorded/matched for a >120-character command) is the safe
+ * direction, a false exact-match on a truncated signature is the
+ * privilege-escalation direction this whole module exists to prevent, but
+ * the cost was that precedent covered NO command/path/url/description over
+ * 120 characters at all.
+ *
+ * **#990 fixes this at the source.** `Question` now carries a separate
+ * `precedentSignature` field (`@remi/shared`), populated by
+ * `buildPermissionQuestion` from `signatureForOperation(toolName,
+ * tool_input)` — the SAME function the consult side calls, which itself
+ * calls `summarizeToolInput` with `{ forSignature: true }`, the untruncated
+ * form. `text` is still built from the truncated DISPLAY form and is
+ * unchanged for the card/terminal prompt. `handleAnswer`
+ * (`input-events.ts`) now records from `precedentSignature` directly —
+ * never by parsing `text` — so a >120-character command is recorded and
+ * matched at full length, and `isTruncatedSignature` should no longer fire
+ * on this path in ordinary operation. It remains as a defense-in-depth
+ * backstop below (a legacy/synthetic `Question` with no
+ * `precedentSignature`, or a `PrecedentRecord[]` built directly by a test or
+ * a future caller) — see `isTruncatedSignature`'s own doc, and
+ * `handleAnswer`'s FAIL-CLOSED behavior when `precedentSignature` is absent
+ * (it does not fall back to parsing `text`, which would reintroduce exactly
+ * this collision).
  *
  * ### Round 2 (independent review, 2026-08-02): the check was evadable
  *
@@ -195,7 +210,26 @@
  * module's own test suite). See `isTruncatedSignature`'s doc for the full
  * argument, including why the check is also now a floor (`>=120`) rather
  * than an exact match, and why `record()`'s raw-value check — not the match
- * functions' stored-side check — is the authoritative boundary.
+ * functions' stored-side check — is the authoritative boundary. This round's
+ * reasoning is about `isTruncatedSignature` itself and is unaffected by #990
+ * — it still applies wherever that function is still consulted (defense in
+ * depth, and `parsePermissionQuestionText`'s own now-uncalled-in-production
+ * refusal, kept for its test coverage — see that function's doc).
+ *
+ * ### #1067: the heuristic's false positive weakened a DENY
+ *
+ * Post-#990 the production path never produces a truly truncated signature, so
+ * `isTruncatedSignature` firing there is always a FALSE positive — and for a
+ * `denied` record that dropped a human "no" as a stop rule (the deny half is
+ * the less-safe direction; the approve half just re-asks). A truncation and a
+ * genuine `>=120`-char command ending in `...` are the same shape, so they
+ * cannot be told apart by inspecting the string. #1067 adds a `whole`
+ * provenance bit (`PrecedentRecord.whole`, and a param on `record()` / the two
+ * match functions): a `signatureForOperation` signature is untruncated by
+ * construction and the refusal is skipped for it, while an unknown-provenance
+ * signature keeps the full defensive treatment above. The refusal — "in both
+ * directions", above — is therefore now conditional on `!whole` everywhere it
+ * appears.
  */
 
 import { summarizeToolInput } from '../hooks/tool-summary.ts';
@@ -227,6 +261,24 @@ export interface PrecedentRecord {
    * it captured at the point of truth rather than reconstructed later.
    */
   readonly recordedAt: number;
+  /**
+   * Provenance: `true` when this signature came from a producer that
+   * guarantees it is UNTRUNCATED — `signatureForOperation` (`forSignature:
+   * true`), the canonical derivation both production paths use (#1067). A
+   * `whole` record is trusted by the match loops, which therefore do NOT skip
+   * it even if its text happens to be `>=120` chars ending in `...` — that
+   * shape is a genuine command (`curl … # fetching…`), not a truncation
+   * artifact, and skipping it silently weakened a human DENY into a
+   * non-stop-rule (the deny half of the `isTruncatedSignature` false positive).
+   *
+   * `false`/absent means "provenance unknown" — a signature built some other
+   * way (a future caller, a test, a `PrecedentRecord[]` constructed directly).
+   * For those the defensive `isTruncatedSignature` refusal still applies, since
+   * an unknown source genuinely might hand over a truncated value. Optional so
+   * a directly-built record keeps the conservative (defensive) treatment
+   * without every existing test having to set it.
+   */
+  readonly whole?: boolean;
 }
 
 /**
@@ -335,16 +387,48 @@ const TRUNCATION_MARKER = '...';
  * flag it, reopening the truncation-collision vulnerability this function
  * exists to close. A floor keeps catching it. The cost is symmetrical with
  * the heuristic already accepted below (a longer genuine value that happens
- * to end in the marker is also refused) — both failure directions land on
- * "missed precedent," the safe one, never "false match."
+ * to end in the marker is also refused) — both land on "missed precedent,"
+ * never on a "false match" (the direction this function guards). "Missed
+ * precedent" is the safe direction for an APPROVE but weakens the stop rule
+ * for a DENY — which is why, as of #1067, this refusal is SKIPPED for a
+ * `whole` (untruncated-by-construction) signature and applies only to an
+ * unknown-provenance one; see the "Fixed by provenance" note below.
  *
  * This is a heuristic, not a certainty: a genuine, untruncated value that
  * happens to be at least 120 characters and end in `...` (e.g. a command
  * that legitimately prints `"loading..."`) would also match and be refused.
- * That false positive costs a missed precedent — the safe direction, not
- * the dangerous one — so no attempt is made to distinguish it from a real
- * truncation; the alternative (treating it as untruncated) risks the exact
- * false-match this function exists to prevent.
+ * No attempt is made to distinguish it from a real truncation; the
+ * alternative (treating it as untruncated) risks the exact false-match this
+ * function exists to prevent.
+ *
+ * That false positive is NOT symmetric across the two record decisions, and
+ * the older "missed precedent — the safe direction" framing understated one
+ * half (adversarial review, 2026-08-16). Post-#990 the normal record/consult
+ * path never produces a truly truncated signature, so on that path this
+ * check only ever fires as a false positive; what it costs depended on the
+ * decision:
+ *   - APPROVE (record or match): the operation is not auto-approved by
+ *     precedent and is simply re-asked. Fail-closed — the safe direction.
+ *   - DENY: a human "no" was not persisted as a stop rule (`record()` dropped
+ *     it, and `findDeniedPrecedent` skipped it as a query), so a later model
+ *     `approve` of the identical operation stood instead of being escalated
+ *     back — the deny stop rule silently weakened, the LESS-safe direction.
+ *
+ * ## Fixed by provenance (#1067), not by softening the heuristic
+ *
+ * The false positive cannot be told from a real truncation by inspecting the
+ * string — they are the same shape. So the fix does not touch this function; it
+ * gives `record()` and the two match functions a `whole` bit (see
+ * `PrecedentRecord.whole`). A signature from `signatureForOperation`
+ * (untruncated by construction — the only producer either PRODUCTION path uses)
+ * is `whole`, and this check is SKIPPED for it: a genuine `>=120`-char command
+ * ending in `...` now records and re-matches, including a DENY, which persists
+ * as a stop rule. This function is unchanged and still applies — as
+ * defense-in-depth — to any UNKNOWN-provenance signature (a future caller, a
+ * test, or a value reconstructed from truncated display text via
+ * `parsePermissionQuestionText`), which genuinely might be truncated. The
+ * deny-match side is safe to open for a `whole` query specifically because a
+ * whole query is not opaque (see `findDeniedPrecedent`).
  *
  * ## No `': '` separator: the whole signature is the detail
  *
@@ -395,7 +479,28 @@ function isTruncatedSignature(signature: string): boolean {
  * as to classifying the answer. This INCLUDES a truncated `action` (see
  * `isTruncatedSignature`, and "Truncation" in this module's doc): a
  * truncated value cannot be a precise signature, so it is refused here at
- * the source, before `handleAnswer` ever has something to hand `record()`.
+ * the source.
+ *
+ * ## No production caller as of #990
+ *
+ * `handleAnswer` (`input-events.ts`) used to be this function's one and only
+ * production caller, feeding it `active.text` to reconstruct a signature by
+ * PARSING the truncated display string back apart. #990 replaced that: the
+ * record side now reads `active.precedentSignature` — the untruncated value
+ * `buildPermissionQuestion` already computed once, via the same
+ * `signatureForOperation` the consult side calls — and fails closed (records
+ * nothing) when that field is absent, rather than falling back to this
+ * parser. Falling back here would reintroduce the exact collision #990
+ * fixes, since `text` is still truncated for display.
+ *
+ * Retained rather than deleted: its truncation-refusal behavior is still
+ * exercised by this module's test suite (documenting the #989/#990 incident
+ * history is worth more than the ~150 lines it costs), and it stays a
+ * correct, defensive fallback IF some future `Question` shape ever needs a
+ * signature reconstructed from text with no `precedentSignature` available —
+ * though no code path does that today, and one that reached for this
+ * function instead of fixing `precedentSignature`'s absence would be making
+ * the same mistake #990 just closed.
  */
 export function parsePermissionQuestionText(
   text: string,
@@ -423,36 +528,63 @@ export function parsePermissionQuestionText(
 }
 
 /**
- * Build the signature for an operation being CONSULTED (#976), from the raw
- * `(toolName, toolInput)` the gate has at decision time — before any
- * `Question` exists to parse.
+ * Build the signature for an operation, from the raw `(toolName, toolInput)`.
+ * This is the ONE canonical signature derivation (#990) — used by BOTH the
+ * CONSULT side (the gate, at decision time, before any `Question` exists) and
+ * the RECORD side (`HookEventBridge.buildPermissionQuestion`, which stamps its
+ * result onto `Question.precedentSignature` at question-construction time, for
+ * `handleAnswer` to hand back to `record()` unchanged when the human answers).
+ * The two must produce byte-identical strings for the same operation or an
+ * exact match silently never fires. That failure is invisible: precedent just
+ * never matches, which is indistinguishable from "the user has not approved
+ * this before."
  *
- * This is the mirror of `parsePermissionQuestionText`, which is the RECORD
- * side, and the two must produce byte-identical strings for the same operation
- * or an exact match silently never fires. That failure is invisible: precedent
- * just never matches, which is indistinguishable from "the user has not
- * approved this before."
- *
- * The identity is structural, not careful: both sides bottom out in
- * `summarizeToolInput` (`hooks/tool-summary.ts`), which is why that function
- * was lifted out of `HookEventBridge` in this same change. Record side parses
- * `Allow <tool>: <detail>` off a question BUILT from it; this side composes
- * `<tool>: <detail>` from it directly. A second implementation here is the
- * exact defect shape this module's area has produced repeatedly.
+ * The identity is structural, not careful: both sides call this ONE function
+ * (`buildPermissionQuestion` directly; the gate indirectly through whatever
+ * calls this at consult time), which itself calls `summarizeToolInput`
+ * (`hooks/tool-summary.ts`) with `{ forSignature: true }` — the untruncated
+ * form (#990; before that, the record side instead PARSED the truncated
+ * display text back apart, a second, drift-prone derivation of the same
+ * value — see "Truncation" in this module's doc for that incident). A second
+ * implementation of either half is the exact defect shape this module's area
+ * has produced repeatedly.
  *
  * Returns the bare tool name when there is no summarizable argument, matching
  * `buildPermissionQuestion`'s own `Allow <tool>` shape.
  *
- * No truncation check here: `findApprovedPrecedent` / `findDeniedPrecedent`
- * both refuse a truncated QUERY on the raw value (`isTruncatedSignature`), and
- * doing it in two places invites the two checks to disagree.
+ * No truncation check here: nothing this function produces can BE truncated
+ * (`forSignature: true` guarantees that), and `findApprovedPrecedent` /
+ * `findDeniedPrecedent` both still refuse a truncated QUERY on the raw value
+ * (`isTruncatedSignature`) as defense-in-depth against some other caller
+ * constructing a signature a different way.
  */
 export function signatureForOperation(
   toolName: string,
   toolInput: Record<string, unknown>,
 ): string {
-  const detail = summarizeToolInput(toolName, toolInput);
+  const detail = summarizeToolInput(toolName, toolInput, { forSignature: true });
   return detail === null ? toolName : `${toolName}: ${detail}`;
+}
+
+/**
+ * Recover the tool name `signatureForOperation` embedded in its own output —
+ * the structural inverse of that function's `<tool>: <detail>` / bare
+ * `<tool>` construction. Exists so a caller holding only a
+ * `Question.precedentSignature` string (`handleAnswer`, `input-events.ts` —
+ * `Question` carries no separate tool-name field) can still supply
+ * `PrecedentStore.record`'s required `toolName` without re-deriving it from
+ * the human-facing, truncated `text` — the exact regression #990 exists to
+ * close.
+ *
+ * Safe by construction, not by convention: a Claude Code tool name is always
+ * a plain identifier and never itself contains `': '`, so the first `': '` in
+ * a `signatureForOperation` output is always the boundary that function
+ * inserted, never a colon-space sequence buried inside `detail` that happens
+ * to precede it (`signatureForOperation` puts `toolName` first, always).
+ */
+export function toolNameFromSignature(signature: string): string {
+  const colonIndex = signature.indexOf(': ');
+  return colonIndex === -1 ? signature : signature.slice(0, colonIndex);
 }
 
 /**
@@ -611,7 +743,15 @@ export function precedentMayAuthorize(
   // risk layer reads `command` and nothing else — so a `cmd`-only call has an
   // unclassifiable band and must not be authorizable. Requiring the field the
   // BOUND depends on is what keeps the two in agreement.
-  return typeof toolInput['command'] === 'string' && toolInput['command'].length > 0;
+  //
+  // `.trim().length`, not `.length` (adversarial review, 2026-08-16): a
+  // whitespace-only command is an inert no-op whose signature trims to a bare
+  // `Bash:`, so every whitespace-only command would collapse to the same
+  // precedent entry and cross-match. Harmless (nothing executes), but a
+  // precedent nobody can meaningfully act on has no business being eligible.
+  // Gating both the record and consult sides here keeps them in agreement.
+  const command = toolInput['command'];
+  return typeof command === 'string' && command.trim().length > 0;
 }
 
 /**
@@ -627,8 +767,15 @@ export function precedentMayAuthorize(
  * instead of relying on nobody calling `record`.
  */
 export interface PrecedentReader {
-  matchApproved(toolName: string, signature: string): PrecedentMatch | null;
-  matchDenied(toolName: string, signature: string): PrecedentMatch | null;
+  /**
+   * `whole` (#1067) declares the query signature came from
+   * `signatureForOperation` (untruncated by construction). Both production
+   * call sites pass `true`; it defaults to the conservative `false` for any
+   * caller that does not, so an unknown-provenance query keeps the defensive
+   * truncation refusal.
+   */
+  matchApproved(toolName: string, signature: string, whole?: boolean): PrecedentMatch | null;
+  matchDenied(toolName: string, signature: string, whole?: boolean): PrecedentMatch | null;
 }
 
 /**
@@ -680,8 +827,12 @@ export function findApprovedPrecedent(
   records: readonly PrecedentRecord[],
   toolName: string,
   signature: string,
+  whole = false,
 ): PrecedentMatch | null {
-  if (isTruncatedSignature(signature)) return null;
+  // Provenance (#1067): a `whole` query is untruncated by construction, so the
+  // truncation refusal — whose purpose is to reject an OPAQUE truncated query —
+  // does not apply to it. An unknown-provenance query still gets the refusal.
+  if (!whole && isTruncatedSignature(signature)) return null;
   // RAW, not `normalizeSignature`. See "Whitespace collapsing is a LOOSENING"
   // in the module doc: collapsing runs on the ALLOW side is exactly the
   // over-matching ADR 0010 forbids, and it was measured equating a dead-code
@@ -692,7 +843,10 @@ export function findApprovedPrecedent(
     if (!record) continue;
     if (record.toolName !== toolName) continue;
     const storedSignature = record.signature.trim();
-    if (isTruncatedSignature(storedSignature)) continue;
+    // A `whole` stored record is trusted; only an unknown-provenance one is
+    // skipped when it looks truncated (defense in depth for a directly-built
+    // `PrecedentRecord[]`). See `PrecedentRecord.whole`.
+    if (!record.whole && isTruncatedSignature(storedSignature)) continue;
     if (storedSignature !== target) continue;
     // First hit while scanning newest-first: the FRESHEST record for this
     // exact (tool, signature) pair. If the human's most recent word on it
@@ -747,8 +901,17 @@ export function findDeniedPrecedent(
   records: readonly PrecedentRecord[],
   toolName: string,
   signature: string,
+  whole = false,
 ): PrecedentMatch | null {
-  if (isTruncatedSignature(signature)) return null;
+  // Provenance (#1067). The query-side refusal here guards a DIFFERENT hazard
+  // than the approve side's: a truncated OPAQUE query could substring-match a
+  // short stored deny somewhere inside its unverifiable tail. A `whole` query
+  // is NOT opaque — it is the full command — so a substring hit is a REAL
+  // containment (the stop rule working), not a coincidence in hidden text. That
+  // is why skipping the refusal for a whole query does not reopen the round-2
+  // substring hole, which was specifically about opaque truncated queries. An
+  // unknown-provenance query still gets refused when truncated-shaped.
+  if (!whole && isTruncatedSignature(signature)) return null;
   const target = normalizeSignature(signature);
   for (let i = records.length - 1; i >= 0; i--) {
     const record = records[i];
@@ -756,7 +919,10 @@ export function findDeniedPrecedent(
     if (record.decision !== 'denied') continue;
     if (record.toolName !== toolName) continue;
     const storedSignature = normalizeSignature(record.signature);
-    if (isTruncatedSignature(storedSignature)) continue;
+    // Trust a `whole` stored deny (a genuine `>=120`-char command ending in
+    // `...` must persist as a stop rule, #1067); skip only an unknown-provenance
+    // record that looks truncated.
+    if (!record.whole && isTruncatedSignature(storedSignature)) continue;
     if (!target.includes(storedSignature) && !storedSignature.includes(target)) continue;
     return {
       decision: 'denied',
@@ -795,20 +961,32 @@ export class PrecedentStore {
 
   /**
    * Record one human-classified answer. `toolName` and `signature` are
-   * expected pre-extracted (e.g. via `parsePermissionQuestionText`) — this
-   * method only normalizes and stores, it does not parse. A blank tool name
-   * or signature (after normalization), OR a truncated signature
-   * (`isTruncatedSignature` — see "Truncation" in this module's doc,
-   * CRITICAL, found in review), is refused rather than stored: the first is
-   * a useless entry that could still occupy a cap slot, the second is a
-   * signature this store cannot safely match precisely. `record()` checking
-   * this too (not just `parsePermissionQuestionText`) is defense in depth
-   * for any future caller that builds a signature some other way — and this
-   * IS the authoritative truncation boundary for whatever is actually
-   * stored: once this check is correct, no truncated raw signature can ever
-   * reach `this.records`, so a stored record is never truncated in
-   * practice (see `isTruncatedSignature`'s doc on why the match functions'
-   * stored-side check is therefore redundant, not the reverse).
+   * expected pre-extracted (as of #990: `toolNameFromSignature` +
+   * `Question.precedentSignature`, both untruncated — see that field's doc)
+   * — this method only normalizes and stores, it does not parse. A blank
+   * tool name or signature (after normalization) is always refused (a useless
+   * entry that would occupy a cap slot). A truncated signature
+   * (`isTruncatedSignature` — see "Truncation" in this module's doc, CRITICAL,
+   * found in review) is refused ONLY when `whole` is false: a signature this
+   * store cannot safely match precisely.
+   *
+   * `whole` (#1067) is the provenance bit. When true, the signature is
+   * untruncated by construction (`signatureForOperation`, the derivation both
+   * production paths use), so the truncation refusal is skipped and the record
+   * is stored marked `whole` — fixing the deny-side weakening below. When false
+   * (an unknown-provenance caller, or a test), the refusal still applies:
+   * `record()` checking this (not just `parsePermissionQuestionText`) is
+   * defense in depth, and for a non-`whole` signature this IS the authoritative
+   * truncation boundary — a non-`whole` truncated raw signature can never reach
+   * `this.records`, so a stored non-`whole` record is never truncated in
+   * practice (which is why the match functions' stored-side check skips only
+   * non-`whole` records: see `isTruncatedSignature`'s doc).
+   *
+   * Before #1067 this refusal ran for BOTH decisions unconditionally, and
+   * dropping a `denied` record was not purely safe the way dropping an
+   * `approved` one is: it weakened the deny stop rule for a genuine, untruncated
+   * command that happens to end in `...` (>=120 chars). Passing `whole: true`
+   * from the production record path is what closes that.
    *
    * The truncation check MUST run on the RAW `signature` parameter, BEFORE
    * `normalizeSignature` touches it (round 2, review 2026-08-02):
@@ -818,8 +996,19 @@ export class PrecedentStore {
    * command), not just an adversarial construction — and a check running
    * on the already-shrunk value would silently miss it.
    */
-  record(toolName: string, signature: string, decision: 'approved' | 'denied'): void {
-    if (isTruncatedSignature(signature)) return;
+  record(
+    toolName: string,
+    signature: string,
+    decision: 'approved' | 'denied',
+    whole = false,
+  ): void {
+    // Provenance decides whether the truncation heuristic applies (#1067). A
+    // `whole` signature is untruncated BY CONSTRUCTION (`signatureForOperation`),
+    // so `isTruncatedSignature` firing on it is a false positive — and dropping
+    // a genuine DENY here silently weakened the stop rule. Skip the refusal for
+    // a trusted signature; keep it for an unknown-provenance one, which really
+    // might be a truncated value this store cannot match precisely.
+    if (!whole && isTruncatedSignature(signature)) return;
     const normalizedToolName = toolName.trim();
     // Stored RAW (trimmed only), NOT whitespace-collapsed. Each matcher then
     // applies its OWN strictness: the approve side compares raw, the deny side
@@ -831,6 +1020,7 @@ export class PrecedentStore {
       signature: normalizedSignature,
       decision,
       recordedAt: Date.now(),
+      whole,
     });
     if (this.records.length > this.maxEntries) this.records.shift();
   }
@@ -840,14 +1030,16 @@ export class PrecedentStore {
     return this.records.length;
   }
 
-  /** Precise, allow-shaped lookup — see `findApprovedPrecedent`. */
-  matchApproved(toolName: string, signature: string): PrecedentMatch | null {
-    return findApprovedPrecedent(this.records, toolName, signature);
+  /** Precise, allow-shaped lookup — see `findApprovedPrecedent`. `whole`
+   *  (#1067) forwards the query's provenance. */
+  matchApproved(toolName: string, signature: string, whole = false): PrecedentMatch | null {
+    return findApprovedPrecedent(this.records, toolName, signature, whole);
   }
 
-  /** Broad, deny-shaped lookup — see `findDeniedPrecedent`. */
-  matchDenied(toolName: string, signature: string): PrecedentMatch | null {
-    return findDeniedPrecedent(this.records, toolName, signature);
+  /** Broad, deny-shaped lookup — see `findDeniedPrecedent`. `whole` (#1067)
+   *  forwards the query's provenance. */
+  matchDenied(toolName: string, signature: string, whole = false): PrecedentMatch | null {
+    return findDeniedPrecedent(this.records, toolName, signature, whole);
   }
 
   /** Drop every recorded precedent (session rotation — /clear, /resume,
@@ -856,4 +1048,53 @@ export class PrecedentStore {
   clear(): void {
     this.records.length = 0;
   }
+}
+
+/**
+ * Build the read-only `PrecedentReader` the gate consumes, over `store`.
+ *
+ * Extracted from `hook-bridge-setup.ts`'s inline `getPrecedent` (so it is
+ * unit-testable in its own right) but keeping that call site's TWO deliberate
+ * properties, both load-bearing:
+ *
+ * - It hands out a FRESH object exposing only the two matchers, never the store
+ *   — passing the store would satisfy `PrecedentReader` structurally (TypeScript
+ *   is structural, so `record` would come along) and the write surface would be
+ *   one cast away, breaking the "`handleAnswer` is the single writer" invariant
+ *   ADR 0015 rests on.
+ * - It FORWARDS the `whole` provenance bit (#1067) rather than dropping it.
+ *   Dropping it here silently re-imposes the truncation refusal on a query the
+ *   consult site already vouched for as untruncated, which would re-break the
+ *   genuine long DENY this exists to keep.
+ */
+export function readerFrom(store: PrecedentStore): PrecedentReader {
+  return {
+    matchApproved: (tool, signature, whole) => store.matchApproved(tool, signature, whole),
+    matchDenied: (tool, signature, whole) => store.matchDenied(tool, signature, whole),
+  };
+}
+
+/**
+ * Record a human's answer into `store` as a `whole` (untruncated-by-
+ * construction) precedent (#1067). The write-side companion to `readerFrom`,
+ * extracted from `cli.ts`'s `recordPrecedent` closure so the `whole=true`
+ * decision is a NAMED, tested unit rather than an inline literal on the
+ * entrypoint.
+ *
+ * `whole=true` is sound because the ONE production caller (`cli.ts`'s
+ * `recordPrecedent`, fed by `handleAnswer` -> `active.precedentSignature`) only
+ * ever passes a `signatureForOperation` value — untruncated by construction,
+ * and `undefined`/skipped otherwise (`handleAnswer` fails closed, never falling
+ * back to the truncated `active.text`). A future caller handing this a signature
+ * built some other way would wrongly mark it `whole`; keep this reserved for the
+ * record path whose signature provenance is guaranteed, exactly as the inline
+ * literal was.
+ */
+export function recordHumanAnswer(
+  store: PrecedentStore,
+  toolName: string,
+  signature: string,
+  decision: 'approved' | 'denied',
+): void {
+  store.record(toolName, signature, decision, true);
 }

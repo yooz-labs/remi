@@ -20,7 +20,7 @@ import {
 import { KNOWN_TOOL_NAMES, looksLikeToolName } from '../auto-approve/pattern-matcher.ts';
 import { isKnownGroup, knownGroupNames } from '../auto-approve/permission-groups.ts';
 import { DEFAULT_ALWAYS_ESCALATE_TOOLS } from '../auto-approve/types.ts';
-import type { AutoApproveConfig } from '../auto-approve/types.ts';
+import type { AutoApproveConfig, ResidualAction } from '../auto-approve/types.ts';
 
 const REMI_DIR = path.join(os.homedir(), '.remi');
 export const CONFIG_PATH = path.join(REMI_DIR, 'config.toml');
@@ -413,6 +413,13 @@ export const DEFAULT_CONFIG: RemiConfig = {
     base_url: 'http://127.0.0.1:19924',
     timeout: 30,
     log_decisions: true,
+    // What escalateMain does with a main-agent BINARY operation it cannot
+    // approve (#1045 phase 6): "escalate" (default, ask the human, no reason
+    // possible on the wire) or "deny" (refuse with a reason, no ping). Deny
+    // mode only pays off once the gate's approval rate is genuinely high --
+    // see ResidualAction's doc -- so escalate is the safe, unconditional
+    // default; garbage in config.toml also falls back here (applyResidualAction).
+    residual_action: 'escalate',
     // Safe read-only TOOLS, fast-pathed without an LLM call. These are
     // tool-name matches: `Read` matches the Read tool and is never tested
     // against a Bash command string (#536 — until that fix it was, so this
@@ -638,10 +645,13 @@ export function loadConfig(configPath: string = CONFIG_PATH): RemiConfig {
     // would make every install look explicit and no level would ever apply.
     const rawAutoApprove = parsed['auto_approve'] as Record<string, unknown> | undefined;
     const levelled = applyLevel(merged, rawAutoApprove, configPath);
+    // #1045 phase 6: same raw-table-driven shape as applyLevel above, but
+    // warn + fall back instead of throw -- see applyResidualAction's own doc.
+    const withResidualAction = applyResidualAction(levelled, rawAutoApprove, configPath);
     validateTerminal(merged.terminal, configPath);
     validateDaemon(merged.daemon, configPath);
     validateNotifications(merged.notifications, configPath);
-    return levelled;
+    return withResidualAction;
   } catch (err) {
     throw new Error(
       `Invalid TOML in ${configPath}: ${errorToString(err)}. Fix the syntax or delete the file to use defaults.`,
@@ -706,6 +716,41 @@ function applyLevel(
   return {
     ...merged,
     auto_approve: { ...merged.auto_approve, level, approve_groups: resolved.groups },
+  };
+}
+
+const VALID_RESIDUAL_ACTIONS: readonly ResidualAction[] = ['escalate', 'deny'];
+const DEFAULT_RESIDUAL_ACTION: ResidualAction = 'escalate';
+
+/**
+ * Apply `[auto_approve] residual_action` to the merged config (#1045 phase 6).
+ *
+ * Deliberately WARN + FALL BACK rather than throw, unlike every other
+ * enum-ish `auto_approve` field (`level`, `engine`, `multichoice`, all of
+ * which refuse to start the daemon on an invalid value). This field decides
+ * escalate-vs-deny for operations auto-approve could not otherwise resolve —
+ * `escalate` is always a safe fallback for a garbage value (it is the
+ * default, unconditionally the pre-#1045 behavior), so refusing to start over
+ * a typo here would trade a working daemon for a stricter one no other
+ * `auto_approve` field enforces this way. Reads the RAW parsed table for the
+ * same reason `applyLevel` does: by the time `merged` exists, a garbage value
+ * already replaced the default (`mergeSection` overwrites wholesale), so only
+ * the raw table can distinguish "the user wrote this" from "unset".
+ */
+function applyResidualAction(
+  merged: RemiConfig,
+  rawAutoApprove: Record<string, unknown> | undefined,
+  configPath: string,
+): RemiConfig {
+  const raw = rawAutoApprove?.['residual_action'];
+  if (raw === undefined) return merged;
+  if ((VALID_RESIDUAL_ACTIONS as readonly unknown[]).includes(raw)) return merged;
+  console.warn(
+    `[AutoApprove] Warning: invalid auto_approve.residual_action in ${configPath}: got ${JSON.stringify(raw)}. Valid values: ${VALID_RESIDUAL_ACTIONS.join(', ')}. Falling back to "${DEFAULT_RESIDUAL_ACTION}". Example: residual_action = "deny"`,
+  );
+  return {
+    ...merged,
+    auto_approve: { ...merged.auto_approve, residual_action: DEFAULT_RESIDUAL_ACTION },
   };
 }
 
@@ -1475,6 +1520,20 @@ turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_sec
 #                                  # false does NOT discard an earlier "no";
 #                                  # that half always applies. OFF by default
 #                                  # until #1019 (a signature carries no cwd).
+# residual_action = "escalate"     # What a main-agent binary operation
+#                                  # auto-approve cannot approve becomes:
+#                                  # "escalate" (default; ask the human, a
+#                                  # card, no reason -- the PermissionRequest
+#                                  # hook cannot carry one on an escalate) or
+#                                  # "deny" (refuse with a reason instead, so
+#                                  # the agent self-corrects and the human is
+#                                  # not pinged). Only multichoice / design /
+#                                  # plan-mode escalates and a subagent's
+#                                  # parked-render residue are unaffected.
+#                                  # "deny" only pays off once your own
+#                                  # approval rate is genuinely ~95%+ -- on a
+#                                  # poorly-tuned gate it turns every wrongful
+#                                  # escalation into a wrongful deny instead.
 `;
 }
 
@@ -1547,6 +1606,7 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(`  base_url = "${config.auto_approve.base_url}"`);
   lines.push(`  timeout = ${config.auto_approve.timeout}`);
   lines.push(`  log_decisions = ${config.auto_approve.log_decisions}`);
+  lines.push(`  residual_action = "${config.auto_approve.residual_action}"`);
   lines.push(`  allow = [${config.auto_approve.allow.map((s) => `"${s}"`).join(', ')}]`);
   lines.push(`  deny = [${config.auto_approve.deny.map((s) => `"${s}"`).join(', ')}]`);
   lines.push(

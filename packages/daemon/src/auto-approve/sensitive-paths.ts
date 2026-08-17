@@ -160,6 +160,17 @@ const BUILD_SURFACE: readonly string[] = [
   'lefthook.yaml',
   '.pre-commit-config.yaml',
   'vitest.config.ts',
+  'vitest.config.js',
+  'jest.config.js',
+  'jest.config.ts',
+  'webpack.config.js',
+  'webpack.config.ts',
+  'rollup.config.js',
+  'rollup.config.ts',
+  'babel.config.js',
+  '.babelrc',
+  'vite.config.js',
+  'vite.config.ts',
   'bunfig.toml',
 ];
 
@@ -287,6 +298,109 @@ export function resolveDotDot(path: string): string {
     out.push(segment);
   }
   return `${absolute ? '/' : ''}${out.join('/')}`;
+}
+
+/**
+ * Join `relParts` onto `base`, collapsing `.`/`..` lexically, and refusing to
+ * pop below `floorLen` segments — the scratch-root boundary a target may never
+ * be navigated above. Returns null on an attempted escape.
+ *
+ * Lives here (not in `permission-groups.ts`) so the ONE absolute-scratch
+ * classifier below is shared by BOTH the `scratch` group (which composes it
+ * with `cd`-tracked relative offsets) and `risk-bands.ts`'s ceiling carve-out
+ * (which needs only the pure, cwd-free absolute case). `permission-groups.ts`
+ * imports `risk-bands.ts` already, so risk-bands cannot import back from it —
+ * this module, which both import and which imports neither, is the one place a
+ * shared predicate can live without a cycle.
+ */
+export function joinScratchSegments(
+  base: readonly string[],
+  floorLen: number,
+  relParts: readonly string[],
+): string[] | null {
+  const segs = [...base];
+  for (const part of relParts) {
+    if (part === '' || part === '.') continue;
+    if (part === '..') {
+      if (segs.length <= floorLen) return null;
+      segs.pop();
+    } else {
+      segs.push(part);
+    }
+  }
+  return segs;
+}
+
+/**
+ * Classify an ABSOLUTE-shaped token (`/tmp/...`, `/private/tmp/...`,
+ * `$TMPDIR/...`, `${TMPDIR}/...`) into its scratch-root segments and the length
+ * of the root itself, or null if it is not one of those four shapes. `..`/`.`
+ * are resolved via `resolveDotDot` BEFORE the root check runs, the same
+ * ordering that function documents and for the same reason: `/tmp/../etc`
+ * fails every `startsWith('/tmp')` test only AFTER resolution, not before.
+ *
+ * Any `$`/`~` beyond the recognised `$TMPDIR` marker refuses the token (#1061),
+ * and any brace `{`/`}` refuses it too (adversarial review of #1071): an
+ * unresolved shell expansion mid-path (`$TMPDIR/$FOO`, `/tmp/$FOO`) or a brace
+ * expansion (`/tmp/{x,../etc/passwd}`) is not a path this pure check can prove
+ * stays under a scratch root. Braces are the subtle one — `shellWords` does not
+ * expand them, so a glued `../etc/passwd` inside `{x,..}` never becomes a
+ * standalone `..` segment for `resolveDotDot` to collapse, and the token still
+ * reads as `/tmp/...`. Refusing braces outright closes that for BOTH the risk
+ * ceiling (#1071) and the `scratch` group (which shares this classifier for
+ * absolute targets); a genuine scratch path with a literal brace just stays
+ * high/escalated, the ADR 0010 safe direction.
+ */
+export function classifyScratchAbsolute(
+  token: string,
+): { segments: string[]; rootLen: number } | null {
+  for (const marker of ['$TMPDIR', '${TMPDIR}']) {
+    if (token === marker || token.startsWith(`${marker}/`)) {
+      const rest = token.slice(marker.length).replace(/^\//, '');
+      if (hasUnprovableExpansion(rest)) return null;
+      const extra = rest === '' ? [] : rest.split('/');
+      const segs = joinScratchSegments(['$TMPDIR'], 1, extra);
+      return segs === null ? null : { segments: segs, rootLen: 1 };
+    }
+  }
+  if (token.startsWith('/')) {
+    if (hasUnprovableExpansion(token)) return null;
+    const resolved = resolveDotDot(token);
+    const segs = resolved.split('/').filter((s) => s !== '');
+    if (segs[0] === 'tmp') return { segments: segs, rootLen: 1 };
+    if (segs[0] === 'private' && segs[1] === 'tmp') return { segments: segs, rootLen: 2 };
+    return null;
+  }
+  return null;
+}
+
+/**
+ * True if `value` carries a shell expansion this pure, cwd-free classifier
+ * cannot resolve to a definite path: a variable/tilde expansion (`$`/`~`,
+ * #1061) or a brace expansion (`{`/`}`, adversarial review of #1071). Any of
+ * them means the string as written is not the path the shell would act on, so a
+ * scratch-root proof over the literal token would be unsound.
+ */
+function hasUnprovableExpansion(value: string): boolean {
+  return value.includes('$') || value.includes('~') || value.includes('{') || value.includes('}');
+}
+
+/**
+ * True if `token` is an ABSOLUTE path that resolves STRICTLY under a scratch
+ * root (deeper than the root itself) — the pure, cwd-free half of
+ * `permission-groups.ts`'s `isStrictlyUnderScratchRoot`. Strict, not
+ * root-or-equal: `/tmp` and `/private/tmp` themselves are the roots, so
+ * deleting them (`rm -rf /tmp`) does NOT qualify. A relative token, a
+ * non-scratch absolute path (`/etc/...`, `~/...`, `$HOME/...`), or a `..`
+ * escape (`/tmp/../etc`) all return false.
+ *
+ * This is the SAME classifier the `scratch` permission group uses for absolute
+ * targets; `risk-bands.ts` consumes it so the ceiling cannot treat a deletion
+ * as high-risk that `scratch` would already approve deterministically (#1071).
+ */
+export function isAbsoluteScratchTarget(token: string): boolean {
+  const resolved = classifyScratchAbsolute(token);
+  return resolved !== null && resolved.segments.length > resolved.rootLen;
 }
 
 /**

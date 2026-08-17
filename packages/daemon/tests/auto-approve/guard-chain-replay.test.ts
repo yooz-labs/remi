@@ -116,11 +116,16 @@
  *    (`.gitignore`) and NEVER committed by this change or any test here --
  *    the owner reviews `build-hook-corpus.ts`'s stdout report and decides
  *    SEPARATELY whether any reviewed subset is ever fit to commit. When the
- *    fixture is absent (every CI run, and any contributor's machine that has
- *    not generated one), the `describe` block that reads it SKIPS cleanly
- *    (`describe.skip`) with an explanatory `test` that always runs and logs
- *    why -- CI stays green, and a human reading local output sees exactly
- *    why real-corpus coverage did not run. To generate one locally:
+ *    fixture is ABSENT (every CI run, and any contributor's machine that has
+ *    not generated one) OR PRESENT WITH ZERO `PermissionRequest` records
+ *    (exactly what `build-hook-corpus.ts` produces against a
+ *    `~/.remi/hook-diag.jsonl` that has none yet), the `describe` block that
+ *    reads it SKIPS cleanly (`describe.skip`) with an explanatory `test` that
+ *    always runs and logs which of the two cases it hit -- CI stays green,
+ *    and a human reading local output sees exactly why real-corpus coverage
+ *    did not run. Records are loaded once, at module-evaluation time, so this
+ *    gate can be computed from the actual count rather than existence alone.
+ *    To generate one locally:
  *
  *      bun run packages/daemon/tests/hooks/fixtures/build-hook-corpus.ts \
  *        --mode structure-preserving [--input ~/.remi/hook-diag.jsonl]
@@ -602,34 +607,58 @@ describe('guard chain invariants -- hand-written commands (#992, runs in CI)', (
 
 // ---------------------------------------------------------------------------
 // Local-fixture-gated: real commands. SKIPS cleanly when the fixture is
-// absent (every CI run) -- see module doc.
+// absent OR present-but-empty (every CI run, and a fresh `build-hook-corpus`
+// run against a hook-diag with no PermissionRequest records yet) -- see
+// module doc.
+//
+// Loaded ONCE, at module-evaluation time -- not lazily inside a test -- so
+// the describe-gate below can decide whether to run the real-corpus block
+// from the ACTUAL record count, not merely the fixture's existence. Gating on
+// existence alone made a present-but-empty fixture a hard test FAILURE
+// (`records.length > 0` thrown from inside a running `describe`, not a
+// skip): `build-hook-corpus.ts` produces exactly that shape on a machine
+// whose `~/.remi/hook-diag.jsonl` has no `PermissionRequest` entries yet --
+// which is what this machine's fixture is (#1061).
 // ---------------------------------------------------------------------------
 
+const localCorpusRecords: ReplayRecord[] = hasLocalCorpus ? loadLocalCorpusReplayRecords() : [];
+const hasLocalCorpusRecords = localCorpusRecords.length > 0;
+
+const HOW_TO_GENERATE_CORPUS =
+  'bun run packages/daemon/tests/hooks/fixtures/build-hook-corpus.ts --mode structure-preserving [--input ~/.remi/hook-diag.jsonl]';
+
 test('local real-command corpus fixture status', () => {
-  if (hasLocalCorpus) {
+  // Three distinct cases, reported honestly rather than collapsed into a
+  // single boolean: no fixture at all, a fixture with zero PermissionRequest
+  // records (the gate must SKIP, not fail, on this one too), and a fixture
+  // with real records to replay.
+  if (!hasLocalCorpus) {
     console.log(
-      `[guard-chain-replay] Local corpus found at ${LOCAL_CORPUS_PATH} -- real-corpus replay WILL run below.`,
+      `[guard-chain-replay] No local corpus at ${LOCAL_CORPUS_PATH} -- real-corpus replay is SKIPPED. This is expected in CI and on a fresh checkout: this repo never commits captured command data (see this file's module doc and build-hook-corpus.ts). To generate one locally: ${HOW_TO_GENERATE_CORPUS}`,
+    );
+  } else if (!hasLocalCorpusRecords) {
+    console.log(
+      `[guard-chain-replay] Local corpus found at ${LOCAL_CORPUS_PATH} but contains zero PermissionRequest records -- real-corpus replay is SKIPPED. This happens when the machine's own ~/.remi/hook-diag.jsonl has no PermissionRequest entries yet (auto-approve has not parked or rendered a prompt locally). To generate a corpus with records: ${HOW_TO_GENERATE_CORPUS}`,
     );
   } else {
     console.log(
-      `[guard-chain-replay] No local corpus at ${LOCAL_CORPUS_PATH} -- real-corpus replay is SKIPPED. This is expected in CI and on a fresh checkout: this repo never commits captured command data (see this file's module doc and build-hook-corpus.ts). To generate one locally: bun run packages/daemon/tests/hooks/fixtures/build-hook-corpus.ts --mode structure-preserving [--input ~/.remi/hook-diag.jsonl]`,
+      `[guard-chain-replay] Local corpus found at ${LOCAL_CORPUS_PATH} with ${localCorpusRecords.length} PermissionRequest record(s) -- real-corpus replay WILL run below.`,
     );
   }
   // This test only reports status; it must itself always pass so its log
-  // line is never hidden behind a failure.
+  // line is never hidden behind a failure -- and it stays HONEST about which
+  // of the three cases above it actually hit, rather than asserting only the
+  // fixture-existence boolean the way the previous version did.
   expect(typeof hasLocalCorpus).toBe('boolean');
+  expect(typeof hasLocalCorpusRecords).toBe('boolean');
+  expect(hasLocalCorpusRecords ? hasLocalCorpus : true).toBe(true);
 });
 
-const describeRealCorpus = hasLocalCorpus ? describe : describe.skip;
+const describeRealCorpus = hasLocalCorpusRecords ? describe : describe.skip;
 
 describeRealCorpus('guard chain invariants -- real local command corpus (#992, opt-in)', () => {
   test('every invariant holds for every real record x verdict x authority combination', () => {
-    const records = loadLocalCorpusReplayRecords();
-    expect(
-      records.length,
-      'local corpus fixture exists but contains zero PermissionRequest records',
-    ).toBeGreaterThan(0);
-    const report = assertGuardChainInvariants(records);
+    const report = assertGuardChainInvariants(localCorpusRecords);
     logDistribution('real local corpus', report);
   });
 });
