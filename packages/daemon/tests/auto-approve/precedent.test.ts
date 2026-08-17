@@ -16,6 +16,8 @@ import {
   findDeniedPrecedent,
   parsePermissionQuestionText,
   precedentMayAuthorize,
+  readerFrom,
+  recordHumanAnswer,
   signatureForOperation,
   toolNameFromSignature,
 } from '../../src/auto-approve/precedent.ts';
@@ -537,6 +539,169 @@ describe('truncation refusal (CRITICAL, review 2026-08-02)', () => {
       expect(match?.matchKind).toBe('exact');
       expect(match?.matchedSignature).toBe(signature);
     });
+  });
+});
+
+// #1067: the truncation heuristic is a FALSE positive on a genuine, untruncated
+// command that legitimately ends in `...` (>=120 chars). Before #1067 it dropped
+// such a record/query in BOTH directions; the deny direction silently weakened a
+// human "no" into a non-stop-rule. The `whole` provenance bit (true for a
+// `signatureForOperation` value) is what distinguishes the real command from a
+// truncation artifact, which are otherwise the same shape.
+describe('#1067 whole-provenance keeps a genuine >=120-char command ending in "..."', () => {
+  // A real command whose text is >=120 chars and legitimately ends in "..." --
+  // the exact false-positive shape. Built via signatureForOperation so it is
+  // byte-identical to what production records and consults.
+  const DOTS_COMMAND =
+    'find . -type f -name "*.ts" -not -path "./node_modules/*" -exec grep -l TODO {} + # release audit pass two, before tagging the build...';
+  const signature = signatureForOperation('Bash', { command: DOTS_COMMAND });
+
+  test('sanity: this is the false-positive shape (detail >=120 chars, ends in "...")', () => {
+    const detail = signature.slice('Bash: '.length);
+    expect(detail.length).toBeGreaterThanOrEqual(120);
+    expect(detail.endsWith('...')).toBe(true);
+    expect(precedentMayAuthorize('Bash', { command: DOTS_COMMAND })).toBe(true);
+  });
+
+  test('headline: a DENY of it persists and re-escalates its identical repeat', () => {
+    const store = new PrecedentStore();
+    store.record(toolNameFromSignature(signature), signature, 'denied', true);
+    expect(store.size).toBe(1); // NOT dropped by the truncation heuristic
+    const match = store.matchDenied('Bash', signature, true);
+    expect(match?.decision).toBe('denied');
+    expect(match?.matchedSignature).toBe(signature);
+  });
+
+  test('an APPROVE of it records and re-matches (whole), and stays exact', () => {
+    const store = new PrecedentStore();
+    store.record(toolNameFromSignature(signature), signature, 'approved', true);
+    expect(store.size).toBe(1);
+    const match = store.matchApproved('Bash', signature, true);
+    expect(match?.decision).toBe('approved');
+    expect(match?.matchKind).toBe('exact');
+  });
+
+  test('without whole (unknown provenance) the same record is still refused -- defense in depth', () => {
+    const store = new PrecedentStore();
+    store.record(toolNameFromSignature(signature), signature, 'denied'); // whole defaults false
+    expect(store.size).toBe(0);
+  });
+
+  test('a whole query is not refused, but an unknown-provenance query of the same text still is', () => {
+    // Store a whole DENY, then query it two ways. The production query (whole)
+    // matches; a hypothetical unknown-provenance query of the identical text is
+    // refused by the surviving truncation heuristic.
+    const store = new PrecedentStore();
+    store.record(toolNameFromSignature(signature), signature, 'denied', true);
+    expect(store.matchDenied('Bash', signature, true)?.decision).toBe('denied');
+    expect(store.matchDenied('Bash', signature /* whole=false */)).toBeNull();
+  });
+
+  test('a directly-built stored record is trusted iff it is marked whole', () => {
+    const denied = (whole: boolean): PrecedentRecord => ({
+      toolName: 'Bash',
+      signature,
+      decision: 'denied',
+      recordedAt: Date.now(),
+      whole,
+    });
+    // whole:true stored record is matched; whole:false is skipped as
+    // possibly-truncated (the same defensive treatment an omitted flag gets).
+    expect(findDeniedPrecedent([denied(true)], 'Bash', signature, true)?.decision).toBe('denied');
+    expect(findDeniedPrecedent([denied(false)], 'Bash', signature, true)).toBeNull();
+  });
+
+  test('the substring hole is not reopened: a whole query genuinely containing a stored short deny still matches', () => {
+    // The round-2 refusal guards an OPAQUE truncated query that could
+    // coincidentally embed a short denial. A WHOLE query is the real full
+    // command, so a substring hit is a REAL containment -- the stop rule working
+    // -- not a coincidence, and must still fire.
+    // The query must START with the denied command for `Bash: rm -rf ./build`
+    // to be a substring of `Bash: rm -rf ./build && ...` (the `Bash: ` prefix
+    // only appears at the head), which is how the deny matcher genuinely works.
+    const store = new PrecedentStore();
+    store.record('Bash', 'Bash: rm -rf ./build', 'denied', true);
+    const longWhole = signatureForOperation('Bash', {
+      command:
+        'rm -rf ./build && rm -rf ./dist && echo "cleaned every derived tree before the release run"',
+    });
+    const match = store.matchDenied('Bash', longWhole, true);
+    expect(match?.decision).toBe('denied');
+    expect(match?.matchKind).toBe('substring');
+  });
+
+  test('the genuine truncation artifact is STILL refused even when marked whole=false', () => {
+    // The heuristic must keep catching a real 117+"..." truncation from an
+    // unknown-provenance source -- #1067 only trusts signatureForOperation
+    // output, never a truncated display string.
+    const truncated = `Bash: ${'x'.repeat(117)}...`;
+    const store = new PrecedentStore();
+    store.record('Bash', truncated, 'denied'); // whole=false
+    expect(store.size).toBe(0);
+  });
+
+  test('an approve record of the genuine long command is refused too without whole (both directions)', () => {
+    // Symmetry with the deny case above: record()'s truncation check is
+    // decision-independent, so the approve direction is equally refused for an
+    // unknown-provenance signature.
+    const store = new PrecedentStore();
+    store.record(toolNameFromSignature(signature), signature, 'approved'); // whole=false
+    expect(store.size).toBe(0);
+  });
+
+  // #1067 NEWLY stores these commands (pre-#1067 both were refused, so a
+  // collision was impossible; now both are stored whole=true). Precision then
+  // rests entirely on the approve matcher comparing FULL strings -- this is the
+  // #990 collision test re-run for the "..."-ending shape, on the whole-skip
+  // branch the earlier #990 test never exercises.
+  test('two different >=120-char commands ending in "..." do NOT collide on the approve side', () => {
+    const shared = 'x'.repeat(117);
+    const cmdA = `${shared} apple ...`;
+    const cmdB = `${shared} orange ...`;
+    const sigA = signatureForOperation('Bash', { command: cmdA });
+    const sigB = signatureForOperation('Bash', { command: cmdB });
+    // Sanity: both are the false-positive shape and share their first 117 chars.
+    expect(sigA.slice('Bash: '.length).endsWith('...')).toBe(true);
+    expect(cmdA.slice(0, 117)).toBe(cmdB.slice(0, 117));
+
+    const store = new PrecedentStore();
+    store.record(toolNameFromSignature(sigA), sigA, 'approved', true);
+    store.record(toolNameFromSignature(sigB), sigB, 'approved', true);
+    expect(store.size).toBe(2); // both stored, unlike pre-#1067
+    // Each matches only its own full text, never the other.
+    expect(store.matchApproved('Bash', sigB, true)?.matchedSignature).toBe(sigB);
+
+    // With ONLY A recorded, a query for B does not match -- approving A never
+    // authorizes B despite the shared 117-char prefix.
+    const onlyA = new PrecedentStore();
+    onlyA.record(toolNameFromSignature(sigA), sigA, 'approved', true);
+    expect(onlyA.matchApproved('Bash', sigB, true)).toBeNull();
+  });
+
+  // The PRODUCTION reader adapter (hook-bridge-setup.ts hands exactly this to
+  // the gate). A revert that drops the `whole` arg re-imposes the truncation
+  // refusal on a genuine long command; a revert that leaks `record` breaks the
+  // single-writer invariant. Both are pinned here.
+  test('readerFrom forwards whole and exposes no write surface', () => {
+    const store = new PrecedentStore();
+    store.record(toolNameFromSignature(signature), signature, 'denied', true);
+    const reader = readerFrom(store);
+    // Forwards whole=true -> the genuine long deny matches through the reader.
+    expect(reader.matchDenied('Bash', signature, true)?.decision).toBe('denied');
+    // Drops whole -> the truncation refusal re-applies (proves it forwards, not
+    // hard-codes true).
+    expect(reader.matchDenied('Bash', signature)).toBeNull();
+    // No `record` method leaked (single-writer invariant, ADR 0015).
+    expect((reader as unknown as Record<string, unknown>)['record']).toBeUndefined();
+  });
+
+  // The PRODUCTION record adapter (cli.ts's recordPrecedent calls exactly this).
+  // A revert to a plain `record()` (whole omitted) drops the genuine long DENY.
+  test('recordHumanAnswer stores the genuine long command as whole (persists the DENY)', () => {
+    const store = new PrecedentStore();
+    recordHumanAnswer(store, toolNameFromSignature(signature), signature, 'denied');
+    expect(store.size).toBe(1); // a plain record() would have dropped it here
+    expect(store.matchDenied('Bash', signature, true)?.decision).toBe('denied');
   });
 });
 

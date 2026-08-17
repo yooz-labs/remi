@@ -893,7 +893,9 @@ export class AutoApproveService {
       // that path, with any content, at `high`, at 0ms).
       if (this.sessionPrecedent && precedent && precedentMayAuthorize(toolName, toolInput)) {
         const signature = signatureForOperation(toolName, toolInput);
-        const approvedMatch = precedent.matchApproved(toolName, signature);
+        // `whole: true` (#1067): this signature is untruncated by construction,
+        // so the precedent matcher must not apply the truncation refusal to it.
+        const approvedMatch = precedent.matchApproved(toolName, signature, true);
         if (approvedMatch !== null) {
           const band = classifyRisk(toolName, toolInput);
           const assessment = AuthorizationAssessment.fromPrecedent(approvedMatch);
@@ -1223,6 +1225,9 @@ export class AutoApproveService {
           const deniedMatch = precedent.matchDenied(
             toolName,
             signatureForOperation(toolName, toolInput),
+            // `whole: true` (#1067): untruncated by construction. Also what lets
+            // a genuine >=120-char DENY that ends in `...` re-match here.
+            true,
           );
           if (deniedMatch !== null) {
             decidedBy = 'precedent';
