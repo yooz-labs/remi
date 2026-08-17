@@ -1224,6 +1224,13 @@ describe('scratch: adversarial (MUST fall through, never group-approve)', () => 
     // Traversal out via `..` inside a single absolute token.
     'rm -rf /tmp/../etc',
     'rm -rf /tmp/../../Users/yahya',
+    // Traversal out via a `..` GLUED inside a brace expansion, so it never
+    // becomes a standalone `..` segment for resolveDotDot to collapse. The
+    // shared classifier now refuses any brace token (adversarial review of
+    // #1071), closing this for the scratch group and the risk ceiling at once.
+    'rm -rf /tmp/{x,../etc/passwd}',
+    'rm -rf /tmp/{x,..}',
+    'rm -rf $TMPDIR/{a,../etc}',
     // Traversal out via a relative path after a leading cd.
     'cd /tmp && rm -rf ../..',
     // The same traversal, but landing on a target that is STILL deeper than

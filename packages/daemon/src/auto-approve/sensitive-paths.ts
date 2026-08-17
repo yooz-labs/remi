@@ -339,9 +339,17 @@ export function joinScratchSegments(
  * ordering that function documents and for the same reason: `/tmp/../etc`
  * fails every `startsWith('/tmp')` test only AFTER resolution, not before.
  *
- * Any `$`/`~` beyond the recognised `$TMPDIR` marker refuses the token (#1061):
- * an unresolved shell expansion mid-path (`$TMPDIR/$FOO`, `/tmp/$FOO`) is not a
- * path this pure check can prove stays under a scratch root.
+ * Any `$`/`~` beyond the recognised `$TMPDIR` marker refuses the token (#1061),
+ * and any brace `{`/`}` refuses it too (adversarial review of #1071): an
+ * unresolved shell expansion mid-path (`$TMPDIR/$FOO`, `/tmp/$FOO`) or a brace
+ * expansion (`/tmp/{x,../etc/passwd}`) is not a path this pure check can prove
+ * stays under a scratch root. Braces are the subtle one — `shellWords` does not
+ * expand them, so a glued `../etc/passwd` inside `{x,..}` never becomes a
+ * standalone `..` segment for `resolveDotDot` to collapse, and the token still
+ * reads as `/tmp/...`. Refusing braces outright closes that for BOTH the risk
+ * ceiling (#1071) and the `scratch` group (which shares this classifier for
+ * absolute targets); a genuine scratch path with a literal brace just stays
+ * high/escalated, the ADR 0010 safe direction.
  */
 export function classifyScratchAbsolute(
   token: string,
@@ -349,14 +357,14 @@ export function classifyScratchAbsolute(
   for (const marker of ['$TMPDIR', '${TMPDIR}']) {
     if (token === marker || token.startsWith(`${marker}/`)) {
       const rest = token.slice(marker.length).replace(/^\//, '');
-      if (rest.includes('$') || rest.includes('~')) return null;
+      if (hasUnprovableExpansion(rest)) return null;
       const extra = rest === '' ? [] : rest.split('/');
       const segs = joinScratchSegments(['$TMPDIR'], 1, extra);
       return segs === null ? null : { segments: segs, rootLen: 1 };
     }
   }
   if (token.startsWith('/')) {
-    if (token.includes('$') || token.includes('~')) return null;
+    if (hasUnprovableExpansion(token)) return null;
     const resolved = resolveDotDot(token);
     const segs = resolved.split('/').filter((s) => s !== '');
     if (segs[0] === 'tmp') return { segments: segs, rootLen: 1 };
@@ -364,6 +372,17 @@ export function classifyScratchAbsolute(
     return null;
   }
   return null;
+}
+
+/**
+ * True if `value` carries a shell expansion this pure, cwd-free classifier
+ * cannot resolve to a definite path: a variable/tilde expansion (`$`/`~`,
+ * #1061) or a brace expansion (`{`/`}`, adversarial review of #1071). Any of
+ * them means the string as written is not the path the shell would act on, so a
+ * scratch-root proof over the literal token would be unsound.
+ */
+function hasUnprovableExpansion(value: string): boolean {
+  return value.includes('$') || value.includes('~') || value.includes('{') || value.includes('}');
 }
 
 /**

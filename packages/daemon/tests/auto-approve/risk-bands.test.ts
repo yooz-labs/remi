@@ -450,6 +450,10 @@ describe('classifyRisk — #1071 a scratch-confined deletion is not high (ceilin
     'rm -rf', // flags only, no provable target
     'rm /tmp/$(whoami)', // command substitution in the target
     'rm /tmp/$FOO', // unresolved parameter expansion
+    'rm -rf /tmp/{x,../etc/passwd}', // brace-glued `..` escape (adversarial review of #1071)
+    'rm -rf /tmp/{x,..}', // brace expansion reaching `/`
+    'rm -rf /tmp/{x,../home/victim}', // another brace escape target
+    'rm -rf $TMPDIR/{a,../etc}', // brace escape from the $TMPDIR root
     'shred /tmp/secret', // not an rm/rmdir -> not in scratch's command set
     'truncate -s0 /tmp/x', // same
     'find /tmp -delete', // same
