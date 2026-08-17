@@ -122,6 +122,7 @@ import {
   hasExecPrimitive,
   shellWords,
   splitCompound,
+  stripShellGrammar,
 } from './shell-safety.ts';
 
 export const RISK_BANDS = ['low', 'moderate', 'high', 'critical'] as const;
@@ -859,12 +860,60 @@ function isPrivilegeElevation(words: readonly string[], segment: string): boolea
  * Hitting `MAX_RECURSION_DEPTH` on a segment that still has more to unpack
  * classifies `high` rather than silently stopping (err broad, ADR 0010).
  */
+
+/**
+ * Reduce a segment to the command it actually runs, peeling BOTH shell grammar
+ * keywords (via the shared, tested `stripShellGrammar`) and leading
+ * subshell/group delimiters (`(`, `{`) so the head-token checks judge the real
+ * command (#1076). A leading `(`/`{` is ALWAYS grouping, never a command name,
+ * so stripping it cannot hide a command; the trailing `)`/`}` is left as an
+ * inert argument the head checks ignore.
+ *
+ * Alternates the two peels in a bounded loop so combinations resolve —
+ * `then ( git push )` (grammar then group) and `( while git push` (group then
+ * grammar) both reduce to `git push`. Only ever REMOVES tokens, so it cannot
+ * lower a band on a safe command. Mirrors why `matchCoveredCommand` peels
+ * grammar; the grouping half is added here because the ceiling errs UNSAFE on an
+ * unpeeled group (`( git push )` -> moderate -> a model approve stands) where
+ * the coverage matcher errs safe (no group match -> escalate).
+ */
+function peelGrammarAndGroups(segment: string): string {
+  let cmd = segment.trim();
+  for (let i = 0; i <= MAX_RECURSION_DEPTH; i++) {
+    // Leading `(`/`{` (one or more, whitespace after) — standalone `( cmd` or
+    // glued `(cmd`. `$`-prefixed forms (`${x}`, `$(...)`) never match: they
+    // start with `$`, and `$(...)` is already a substitution placeholder here.
+    const degrouped = cmd.replace(/^[({]+\s*/, '');
+    const grammarPeeled = stripShellGrammar(degrouped).command || degrouped;
+    const next = grammarPeeled.trim();
+    if (next === cmd) return cmd;
+    cmd = next;
+  }
+  return cmd;
+}
+
 function classifySegmentBand(rawSegment: string, depth: number): 'moderate' | 'high' {
   const segment = rawSegment.trim();
   if (segment === '') return 'moderate';
 
   const { sanitized, inner } = extractSubstitutions(segment);
-  const rawWords = shellWords(sanitized);
+  // Peel shell grammar (`while`/`do`/`then`/`if`/`until`/`for`-body/... and
+  // `!`) BEFORE the head-token checks, so a "must-escalate" op wrapped in a loop
+  // or conditional is judged as the command it runs, not the keyword (#1076).
+  // `splitCompound` leaves `while ! git push` as a segment whose head is
+  // `while`, so every head-token check below (`isRemoteMutation`,
+  // `isDestructiveLocalOp`, `isPackageInstall`, ...) missed it, and the ceiling's
+  // charter ops — `git push`, installs, remote `curl`/`scp`, `gh` — have no
+  // `hasDangerousWholeWord` backstop, so a grammar-wrapped one graded `moderate`
+  // and a model approve stood silently. `stripShellGrammar` (shell-safety.ts) is
+  // the SAME peel `matchCoveredCommand` and the deny path already use to stay
+  // honest; reusing it keeps the risk axis and the coverage axis from drifting.
+  // It only ever REMOVES grammar/grouping and hands back a command, so it cannot
+  // lower a band — a wrapped SAFE command still peels to a safe head and stays
+  // `moderate`. The raw-text checks below (`hasDangerousWholeWord`,
+  // `hasExecPrimitive`) still run on the unpeeled text as an independent layer.
+  const peeled = peelGrammarAndGroups(sanitized);
+  const rawWords = shellWords(peeled);
   // Read BEFORE unwrapping: `unwrapCommand` strips `env` and its flags, so by
   // the time `words` exists the `-S` marker is gone. The first draft of this
   // ran on `words` and never fired at all -- two cases passed anyway, by the
