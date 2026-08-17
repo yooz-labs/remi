@@ -17,6 +17,7 @@ import {
   riskBandAtLeast,
   riskBandRank,
 } from '../../src/auto-approve/risk-bands.ts';
+import { enforceRiskCeiling } from '../../src/auto-approve/risk-ceiling.ts';
 
 const bash = (command: string) => ({ command });
 
@@ -158,12 +159,19 @@ describe('classifyRisk — command-wrapper bypass (coordinator field report on #
     expect(classifyRisk('Bash', bash('timeout 30 chmod 700 /usr/local/bin/tool'))).toBe('high');
   });
 
-  test('two wrappers NOT in the enumerated list are still caught by the whole-word backstop', () => {
-    // `ionice` and `setsid` are deliberately absent from COMMAND_WRAPPERS --
-    // unwrapCommand does nothing for either, so only hasDangerousWholeWord can
-    // classify these correctly. Proves the backstop, not just the list.
+  test('ionice/setsid are now unwrapped (#1013) AND still covered by the whole-word backstop', () => {
+    // As of #1013 both are enumerated in COMMAND_WRAPPERS, so unwrapCommand
+    // reaches the wrapped head. The whole-word backstop is a SECOND,
+    // independent layer, so these stay `high` via either route.
     expect(classifyRisk('Bash', bash('ionice -c3 rm -rf ./dist'))).toBe('high');
     expect(classifyRisk('Bash', bash('setsid ssh dev@host uptime'))).toBe('high');
+  });
+
+  test('the whole-word backstop still fires for a wrapper NOT in the enumerated list', () => {
+    // `catchsegv` is genuinely absent from COMMAND_WRAPPERS, so unwrapCommand
+    // does nothing and only hasDangerousWholeWord classifies this -- proving the
+    // backstop independently of the list now that ionice/setsid are enumerated.
+    expect(classifyRisk('Bash', bash('catchsegv rm -rf ./dist'))).toBe('high');
   });
 
   test('accepted trade-off: the whole-word backstop over-fires on prose containing the word (ADR 0010, err broad)', () => {
@@ -319,10 +327,11 @@ describe('classifyRisk — command-hiding bypasses, round 2 (independent review 
     });
   }
 
-  test('(a) setsid is still NOT enumerated, but sudo is now in the whole-word backstop', () => {
-    // `setsid` stays deliberately absent from COMMAND_WRAPPERS (it already
-    // proves the backstop for ssh/rm elsewhere); this line is resolved
-    // entirely by adding 'sudo' to DANGEROUS_WHOLE_WORDS.
+  test('(a) setsid is now enumerated (#1013), and sudo is also in the whole-word backstop', () => {
+    // `setsid` is enumerated in COMMAND_WRAPPERS as of #1013, so unwrapCommand
+    // reaches the wrapped `sudo` head (`isPrivilegeElevation` -> high); adding
+    // 'sudo' to DANGEROUS_WHOLE_WORDS is a second, independent route to the same
+    // verdict. Either alone suffices here.
     expect(classifyRisk('Bash', bash('setsid sudo apt-get install curl'))).toBe('high');
   });
 
@@ -401,6 +410,137 @@ describe('classifyRisk — command-hiding bypasses, round 2 (independent review 
 
   test('(item 5) already-correct case stays high: ascent landing on a named system tree', () => {
     expect(classifyRisk('Bash', bash('chmod 700 ../../../../../var/random'))).toBe('high');
+  });
+});
+
+describe('classifyRisk — #1071 a scratch-confined deletion is not high (ceiling must not re-escalate it)', () => {
+  // The reported case: at `trusted` the model correctly approves `rm /tmp/pp.bak`,
+  // and the risk ceiling force-escalated it. A deletion the `scratch` group
+  // already grants deterministically must not band `high`.
+  const scratchDeletes = [
+    'rm /tmp/pp.bak',
+    'rm -rf /tmp/build',
+    'rm -f /tmp/a /tmp/b',
+    'rmdir /tmp/sub',
+    'rm /private/tmp/x',
+    'rm -rf /private/tmp/work/out',
+    'rm $TMPDIR/scratch.log',
+    'rm ${TMPDIR}/scratch.log',
+  ];
+  for (const command of scratchDeletes) {
+    test(`moderate: ${command}`, () => {
+      expect(classifyRisk('Bash', bash(command))).toBe('moderate');
+    });
+  }
+
+  test('the ceiling no longer overrides a model approve of a scratch delete', () => {
+    const r = enforceRiskCeiling('Bash', bash('rm /tmp/pp.bak'), 'approve');
+    expect(r).toEqual({ decision: 'approve', overridden: false });
+  });
+
+  // Everything the carve-out must NOT swallow — each stays `high`.
+  const stillHigh = [
+    'rm -rf /tmp', // the scratch ROOT itself, not something under it
+    'rm -rf /private/tmp', // same, private form
+    'rm /tmp/../etc/passwd', // `..` escape out of scratch
+    'rm pp.bak', // relative, no cwd -> cannot prove scratch
+    'rm ./build/x', // relative in-tree
+    'rm /home/user/notes.txt', // non-scratch absolute
+    'rm /tmp/a /home/user/x', // one non-scratch target vetoes the whole line
+    'rm -rf', // flags only, no provable target
+    'rm /tmp/$(whoami)', // command substitution in the target
+    'rm /tmp/$FOO', // unresolved parameter expansion
+    'shred /tmp/secret', // not an rm/rmdir -> not in scratch's command set
+    'truncate -s0 /tmp/x', // same
+    'find /tmp -delete', // same
+    'git rm /tmp/x', // git deletion, never a scratch grant
+  ];
+  for (const command of stillHigh) {
+    test(`still high: ${command}`, () => {
+      expect(classifyRisk('Bash', bash(command))).toBe('high');
+    });
+  }
+
+  test('a sensitive destination under /tmp is still high (mirrors scratch’s sensitive conjunct)', () => {
+    expect(classifyRisk('Bash', bash('rm /tmp/.env'))).toBe('high');
+    expect(classifyRisk('Bash', bash('rm /tmp/.git/hooks/pre-commit'))).toBe('high');
+  });
+
+  test('critical scratch-shaped deletes are still critical (deny floor runs first)', () => {
+    // `rm -rf /tmp/*`-style catastrophic patterns are caught by
+    // matchesCatastrophicPattern BEFORE this carve-out ever runs.
+    expect(classifyRisk('Bash', bash('rm -rf /'))).toBe('critical');
+  });
+
+  test('a scratch delete chained with a dangerous segment stays high (max across segments)', () => {
+    expect(classifyRisk('Bash', bash('rm /tmp/x && git push origin main --force'))).toBe('high');
+  });
+
+  test('a wrapper in front of a scratch delete is still moderate (unwrap then carve-out)', () => {
+    expect(classifyRisk('Bash', bash('nice rm /tmp/pp.bak'))).toBe('moderate');
+  });
+});
+
+describe('classifyRisk — #1013 wrappers hide a high-band command from the ceiling', () => {
+  // The KEY cases: `git push --force` carries no dangerous WHOLE WORD (neither
+  // "push" nor "force" is in DANGEROUS_WHOLE_WORDS), so ONLY unwrapCommand
+  // reaching the `git` head can classify these. Before #1013 every one graded
+  // `moderate` and `enforceRiskCeiling` (which acts only on `high`) was blind
+  // to them.
+  const hiddenByWrapper = [
+    'setsid git push origin main --force',
+    'runuser -u root -- git push origin main --force',
+    'ionice -c2 git push origin main --force',
+    'ionice -c 2 git push origin main --force',
+    'chrt 20 git push origin main --force',
+    'chrt -f 20 git push origin main --force',
+    'taskset 0x3 git push origin main --force',
+    'taskset -c 0,1 git push origin main --force',
+    'proxychains git push origin main --force',
+    'proxychains -f /etc/proxychains.conf git push origin main --force',
+    'proxychains4 git push origin main --force',
+    'systemd-run git push origin main --force',
+    'systemd-run --unit oneoff --scope git push origin main --force',
+  ];
+  for (const command of hiddenByWrapper) {
+    test(`high (was moderate): ${command}`, () => {
+      expect(classifyRisk('Bash', bash(command))).toBe('high');
+    });
+  }
+
+  test('the ceiling now actually fires on a wrapped high-band approve', () => {
+    // The whole point: an LLM `approve` of a wrapper-hidden force-push is now
+    // overridden, where before the wrapper kept it at `moderate` and the ceiling
+    // never ran.
+    const r = enforceRiskCeiling('Bash', bash('setsid git push origin main --force'), 'approve');
+    expect(r).toEqual({ decision: 'escalate', overridden: true, band: 'high' });
+  });
+
+  // Discrimination, not blanket escalation: a SAFE command behind the same
+  // wrappers must stay moderate, or the fix would just re-escalate everything.
+  const safeBehindWrapper = [
+    'setsid git status',
+    'ionice -c2 git log --oneline',
+    'chrt 20 bun test',
+    'taskset 0x3 cat README.md',
+    'systemd-run --scope bun run build',
+  ];
+  for (const command of safeBehindWrapper) {
+    test(`moderate (discrimination): ${command}`, () => {
+      expect(classifyRisk('Bash', bash(command))).toBe('moderate');
+    });
+  }
+
+  test('declared residual: a wrapper -c command-string is not recursed into (stays moderate)', () => {
+    // `runuser -c '<cmd>'` / `script -c '<cmd>'` carry the wrapped command as a
+    // single quoted value. Discarding it would erase the head (the `env -S`
+    // mistake, #1004), so `-c` is deliberately NOT a value flag and the string
+    // is not recursed; the force-push inside is not reached. This is unchanged
+    // from before #1013 (the wrapper hid it then too) and is pinned so the gap
+    // is visible, not silent.
+    expect(classifyRisk('Bash', bash("runuser -c 'git push origin main --force'"))).toBe(
+      'moderate',
+    );
   });
 });
 
