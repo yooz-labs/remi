@@ -111,7 +111,11 @@
 
 import { extractToolCommand } from './command-tools.ts';
 import { matchesCatastrophicPattern } from './deny-floor.ts';
-import { isSensitiveWritePath, segmentTouchesSensitivePath } from './sensitive-paths.ts';
+import {
+  isAbsoluteScratchTarget,
+  isSensitiveWritePath,
+  segmentTouchesSensitivePath,
+} from './sensitive-paths.ts';
 import {
   ghTopIndex,
   gitSubcommandIndex,
@@ -182,6 +186,22 @@ export const COMMAND_WRAPPERS: ReadonlySet<string> = new Set([
   'unshare',
   'watch',
   'chroot',
+  // #1013: eight wrappers that previously hid the head token from the ceiling,
+  // so `setsid git push --force` / `runuser -u root -- git push --force` /
+  // `ionice -c2 git push --force` all graded `moderate` and the ceiling — which
+  // only acts on `high` — could never override a wrong LLM approve of them.
+  // NOT `sudo`/`su`/`doas`: `classifyRisk` treats an elevation wrapper's mere
+  // PRESENCE as the risk (`isPrivilegeElevation`), a different question from
+  // "what is wrapped" — see `DENY_EXTRA_WRAPPERS` (permission-groups.ts).
+  'runuser',
+  'ionice',
+  'setsid',
+  'script',
+  'chrt',
+  'taskset',
+  'proxychains',
+  'proxychains4',
+  'systemd-run',
 ]);
 
 /**
@@ -222,6 +242,32 @@ const WRAPPER_VALUE_FLAGS: Readonly<Record<string, ReadonlySet<string>>> = {
   ]),
   sshpass: new Set(['-p', '-f', '-d', '-P', '-U']),
   time: new Set(['-f', '-o', '--format', '--output']),
+  // #1013. Only flags that consume a SEPARATE following token are listed —
+  // attached forms (`ionice -c2`) are single tokens the bare-flag path already
+  // skips, and command-string flags (`runuser -c '<cmd>'`, `script -c '<cmd>'`)
+  // are deliberately ABSENT: their value IS a command, so discarding it would
+  // erase the head (the `env -S` mistake, #1004). Those `-c` forms stay a
+  // declared residual — the wrapped command still grades from the `-c` string
+  // token, and `hasDangerousWholeWord` still backstops ssh/rm/sudo inside it.
+  runuser: new Set(['-u', '--user', '-g', '--group', '-G', '--supp-group', '-s', '--shell']),
+  ionice: new Set(['-c', '--class', '-n', '--classdata', '-p', '--pid']),
+  taskset: new Set(['-c', '--cpu-list', '-p', '--pid']),
+  proxychains: new Set(['-f']),
+  proxychains4: new Set(['-f']),
+  'systemd-run': new Set([
+    '-u',
+    '--unit',
+    '-p',
+    '--property',
+    '-M',
+    '--machine',
+    '-E',
+    '--setenv',
+    '--slice',
+    '--on-active',
+    '--on-calendar',
+    '--description',
+  ]),
 };
 
 /**
@@ -235,6 +281,14 @@ const WRAPPER_VALUE_FLAGS: Readonly<Record<string, ReadonlySet<string>>> = {
 const WRAPPER_POSITIONAL_ARG: Readonly<Record<string, RegExp>> = {
   timeout: /^[0-9]+(\.[0-9]+)?[smhd]?$/i,
   chroot: /^\S+$/,
+  // #1013. `chrt [policy] <priority> <cmd>` and `taskset <mask> <cmd>` bury the
+  // command behind a bare positional. The patterns match ONLY the priority
+  // number / CPU mask shape (pure decimal or `0x…` hex) — never a command name,
+  // which is never all-digits or `0x`-prefixed — so an over-skip that hides a
+  // real head cannot happen. `taskset -c <list>` takes the value-flag path
+  // instead, so this positional is only consulted for the bare-mask spelling.
+  chrt: /^\d+$/,
+  taskset: /^(0x[0-9a-fA-F]+|\d+)$/,
 };
 
 /** A bare `NAME=value` shell assignment token (`FOO=1 cmd`, valid with or without `env`). */
@@ -657,6 +711,76 @@ function isDestructiveLocalOp(words: readonly string[]): boolean {
 }
 
 /**
+ * True when a deletion is confined to scratch — an `rm`/`rmdir` whose EVERY
+ * operand resolves STRICTLY under an absolute scratch root (`/tmp/...`,
+ * `/private/tmp/...`, `$TMPDIR/...`), and which touches no sensitive
+ * destination. This is exactly what the `scratch` permission group already
+ * approves DETERMINISTICALLY at `balanced`+ (`permission-groups.ts`:
+ * `SCRATCH_COMMANDS` + `scratchTargetVeto` + the mutating-owner sensitive
+ * conjunct), so the risk ceiling must not band it `high` and re-escalate a
+ * model approve the scratch grant would never have sent to the model at all
+ * (#1071). `isAbsoluteScratchTarget` (sensitive-paths.ts) is the SAME
+ * classifier `scratch` uses for absolute targets, shared so the two cannot
+ * drift.
+ *
+ * Scoped tightly to the safe direction:
+ *
+ * - `rm`/`rmdir` ONLY. `shred`/`truncate`/`find -delete`/git deletions are NOT
+ *   in `scratch`'s command set, so they stay `high` — this carve-out never
+ *   widens past what `scratch` itself grants.
+ * - EVERY operand must be a proven absolute scratch target. A relative operand
+ *   (`rm pp.bak`), a non-scratch absolute (`rm /home/x`), a `..` escape
+ *   (`rm /tmp/../etc/passwd`), the scratch ROOT itself (`rm -rf /tmp`), or any
+ *   `$`/`~` token all fail `isAbsoluteScratchTarget` and keep the segment
+ *   `high`. This module is pure (no cwd), so it deliberately does NOT try to
+ *   prove a `cd /tmp && rm x` relative delete — that stays `high`, the
+ *   fail-safe direction.
+ * - At least one operand is required; a bare `rm -rf` with only flags proves
+ *   nothing and stays `high`.
+ * - `segmentTouchesSensitivePath` still vetoes (`rm /tmp/.env`,
+ *   `rm /tmp/.git/hooks/pre-commit`), mirroring the global sensitive-destination
+ *   conjunct `matchGroups` applies to every mutating owner.
+ *
+ * Redirect clauses are not stripped here (unlike `scratchTargetVeto`), so a
+ * scratch delete carrying a redirect (`rm /tmp/x 2>/dev/null`) leaves an
+ * unrecognised token that fails `isAbsoluteScratchTarget` and stays `high` —
+ * an extra escalation, never a wrongful downgrade.
+ *
+ * `words` is the SANITIZED, unwrapped token list its caller already built, so a
+ * command/process substitution appears as `SUBSTITUTION_PLACEHOLDER`. A target
+ * carrying one (`rm /tmp/$(whoami)`, `rm /tmp/`+backtick) is refused here —
+ * matching `scratchTargetVeto`, which sees the raw `$`/backtick and refuses it
+ * too — so this carve-out is never MORE permissive than the `scratch` grant it
+ * mirrors. A bare `$FOO`/`~` needs no special case: `isAbsoluteScratchTarget`
+ * rejects any `$`/`~` token directly.
+ */
+function isScratchConfinedDeletion(words: readonly string[], segment: string): boolean {
+  const bin = words[0];
+  if (bin !== 'rm' && bin !== 'rmdir') return false;
+  if (segmentTouchesSensitivePath(segment)) return false;
+  let sawTarget = false;
+  for (const word of words.slice(1)) {
+    if (word === '') continue;
+    if (word.includes(SUBSTITUTION_PLACEHOLDER)) return false;
+    if (word.startsWith('-')) {
+      // A `--flag=value` token's VALUE is a real destination (mirrors
+      // `scratchTargetVeto`'s `--target-directory=/etc` handling); a bare flag
+      // carries none.
+      const eq = word.indexOf('=');
+      if (eq === -1) continue;
+      const value = word.slice(eq + 1);
+      if (value === '') continue;
+      if (!isAbsoluteScratchTarget(value)) return false;
+      sawTarget = true;
+      continue;
+    }
+    if (!isAbsoluteScratchTarget(word)) return false;
+    sawTarget = true;
+  }
+  return sawTarget;
+}
+
+/**
  * True if a single word looks like it names a destination outside the
  * project tree — absolute (`/...`), home-rooted (`~...` or `$HOME`/`$home`,
  * case-insensitively — matching how `sensitive-paths.ts`'s own
@@ -709,6 +833,13 @@ function isPrivilegeElevation(words: readonly string[], segment: string): boolea
  * Order of checks, all documented in the module doc's "Command-hiding
  * bypasses" section:
  *
+ * 0. `isScratchConfinedDeletion` (#1071) — a `rm`/`rmdir` whose every operand
+ *    is a proven absolute-scratch path returns `moderate` up front, BEFORE the
+ *    whole-word backstop that would otherwise force `high` on the bare `rm`
+ *    name. Placed first, and safe there, because it is a WHITELIST: it accepts
+ *    only segments in which every token is a scratch path or a bare flag, so it
+ *    cannot let a hidden command or substitution past the checks below (see the
+ *    function's own doc).
  * 1. `hasDangerousWholeWord` on the RAW segment text (includes whatever is
  *    inside a substitution, as an extra layer — it does not depend on the
  *    extraction below finding it).
@@ -716,7 +847,9 @@ function isPrivilegeElevation(words: readonly string[], segment: string): boolea
  *    RECURSES into each (bounded by `depth`), then continues with the
  *    SANITIZED segment (placeholders instead of substitution text) for
  *    every check below, so a substitution's internal whitespace cannot
- *    corrupt this segment's own word boundaries.
+ *    corrupt this segment's own word boundaries. (The extraction itself runs
+ *    ahead of check 1 now, so `words` is available for check 0; the recursion
+ *    into the extracted spans still runs in this position.)
  * 3. `hasExecPrimitive` (shell-safety.ts, reused as-is) on the sanitized text.
  * 4. `extractShellDashC` recognises `sh -c "..."` and recurses into the `-c`
  *    argument (bounded by `depth`).
@@ -730,18 +863,7 @@ function classifySegmentBand(rawSegment: string, depth: number): 'moderate' | 'h
   const segment = rawSegment.trim();
   if (segment === '') return 'moderate';
 
-  if (hasDangerousWholeWord(segment)) return 'high';
-
   const { sanitized, inner } = extractSubstitutions(segment);
-  if (inner.length > 0) {
-    if (depth >= MAX_RECURSION_DEPTH) return 'high';
-    for (const innerCommand of inner) {
-      if (classifyCommandMax(innerCommand, depth + 1) === 'high') return 'high';
-    }
-  }
-
-  if (hasExecPrimitive(sanitized)) return 'high';
-
   const rawWords = shellWords(sanitized);
   // Read BEFORE unwrapping: `unwrapCommand` strips `env` and its flags, so by
   // the time `words` exists the `-S` marker is gone. The first draft of this
@@ -751,6 +873,29 @@ function classifySegmentBand(rawSegment: string, depth: number): 'moderate' | 'h
   // exposed it.
   const envSplit = extractEnvSplitString(rawWords);
   const words = unwrapCommand(rawWords);
+
+  // #1071: a deletion confined to scratch is what the `scratch` group already
+  // approves DETERMINISTICALLY, so the ceiling must not band it `high` and
+  // re-escalate a model approve. This is checked FIRST — ahead of the
+  // `hasDangerousWholeWord` backstop below, which fires on the bare `rm`/`rmdir`
+  // name and would otherwise force `high` before any operand is inspected. Safe
+  // to place first because `isScratchConfinedDeletion` is a WHITELIST: it
+  // returns true ONLY when every operand is a proven absolute-scratch path or a
+  // bare flag (no substitution, no `$`/`~`, no second command — any such token
+  // fails `isAbsoluteScratchTarget`), so a segment it accepts cannot hide the
+  // danger the checks below exist to catch.
+  if (isScratchConfinedDeletion(words, segment)) return 'moderate';
+
+  if (hasDangerousWholeWord(segment)) return 'high';
+
+  if (inner.length > 0) {
+    if (depth >= MAX_RECURSION_DEPTH) return 'high';
+    for (const innerCommand of inner) {
+      if (classifyCommandMax(innerCommand, depth + 1) === 'high') return 'high';
+    }
+  }
+
+  if (hasExecPrimitive(sanitized)) return 'high';
 
   // A leading assignment sets the environment the following command runs in,
   // and what that does is defined by the TOOL, not by anything visible here:

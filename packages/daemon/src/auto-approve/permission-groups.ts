@@ -43,7 +43,9 @@
 import { looksLikeToolName } from './pattern-matcher.ts';
 import { COMMAND_WRAPPERS, SHELL_C_BINARIES } from './risk-bands.ts';
 import {
+  classifyScratchAbsolute,
   isSensitiveWritePath,
+  joinScratchSegments,
   resolveDotDot,
   segmentTouchesSensitivePath,
 } from './sensitive-paths.ts';
@@ -445,65 +447,11 @@ const SCRATCH_COMMANDS: readonly string[] = ['touch', 'cp', 'mv', 'tee', 'mkdir'
  */
 type ScratchCwd = { readonly segments: readonly string[]; readonly rootLen: number } | null;
 
-/**
- * Join `relParts` onto `base`, collapsing `.`/`..` lexically, and refusing to
- * pop below `floorLen` segments — the root boundary a scratch directory may
- * never be navigated above. Returns null on an attempted escape.
- */
-function joinScratchSegments(
-  base: readonly string[],
-  floorLen: number,
-  relParts: readonly string[],
-): string[] | null {
-  const segs = [...base];
-  for (const part of relParts) {
-    if (part === '' || part === '.') continue;
-    if (part === '..') {
-      if (segs.length <= floorLen) return null;
-      segs.pop();
-    } else {
-      segs.push(part);
-    }
-  }
-  return segs;
-}
-
-/**
- * Classify an ABSOLUTE-shaped token (`/tmp/...`, `/private/tmp/...`,
- * `$TMPDIR/...`, `${TMPDIR}/...`) into its scratch-root segments, or null if
- * it is not one of those four shapes. `..`/`.` are resolved via
- * `resolveDotDot` (sensitive-paths.ts) BEFORE the root check runs, the same
- * ordering that module documents and for the same reason: `/tmp/../etc`
- * fails every `startsWith('/tmp')` test only AFTER resolution, not before.
- */
-function classifyScratchAbsolute(token: string): { segments: string[]; rootLen: number } | null {
-  for (const marker of ['$TMPDIR', '${TMPDIR}']) {
-    if (token === marker || token.startsWith(`${marker}/`)) {
-      const rest = token.slice(marker.length).replace(/^\//, '');
-      // The $TMPDIR/-PREFIX carve-out is consumed above; the REMAINDER must
-      // contain no FURTHER `$`/`~` anywhere (#1061 -- see the anywhere-check
-      // note on `resolveRelativeTarget` below for the mid-path bypass this
-      // closes). `$TMPDIR/x` and `$TMPDIR/sub/file` stay granted; `$TMPDIR/$FOO`
-      // does not, even though it starts with the trusted marker.
-      if (rest.includes('$') || rest.includes('~')) return null;
-      const extra = rest === '' ? [] : rest.split('/');
-      const segs = joinScratchSegments(['$TMPDIR'], 1, extra);
-      return segs === null ? null : { segments: segs, rootLen: 1 };
-    }
-  }
-  if (token.startsWith('/')) {
-    // Same anywhere-check as the `$TMPDIR` arm above, applied before dot-dot
-    // resolution: a plain `/tmp/...`/`/private/tmp/...` token gets no
-    // trusted-prefix carve-out at all, so ANY `$`/`~` anywhere refuses it.
-    if (token.includes('$') || token.includes('~')) return null;
-    const resolved = resolveDotDot(token);
-    const segs = resolved.split('/').filter((s) => s !== '');
-    if (segs[0] === 'tmp') return { segments: segs, rootLen: 1 };
-    if (segs[0] === 'private' && segs[1] === 'tmp') return { segments: segs, rootLen: 2 };
-    return null;
-  }
-  return null;
-}
+// `joinScratchSegments` and `classifyScratchAbsolute` moved to
+// `sensitive-paths.ts` (#1071) so `risk-bands.ts`'s ceiling carve-out can share
+// the ONE absolute-scratch classifier — see `isAbsoluteScratchTarget` there.
+// permission-groups.ts still owns the cwd-aware composition below; the two
+// combine so `scratch`'s runtime behavior is byte-identical to before the move.
 
 /**
  * Resolve any token (absolute-scratch, `$TMPDIR`-form, or a genuinely
@@ -2388,26 +2336,16 @@ export function matchComposedCommand(
  * the operation being elevated. Those are different questions about the same
  * token, which is the one situation where two sets are right.
  *
- * The other eight names have no such argument, and review showed sharing them
- * would IMPROVE risk-bands rather than harm it: `setsid git push origin main
- * --force` grades `moderate` there today while the bare command grades `high`,
- * because the wrapper hides the command from the classifier. That is a live gap
- * in a shipped module, filed separately — they stay here until it is fixed, so
- * the deny path is not waiting on it.
+ * The other eight names (`runuser`, `ionice`, `setsid`, `script`, `chrt`,
+ * `taskset`, `proxychains`/`proxychains4`, `systemd-run`) USED to live here too,
+ * for exactly the gap #1013 named: `setsid git push origin main --force` graded
+ * `moderate` in risk-bands while the bare command graded `high`, because the
+ * wrapper hid the head from the classifier. #1013 fixed that by moving them into
+ * the shared `COMMAND_WRAPPERS`, so `isDenyUnwrappableWrapper` now reaches them
+ * through that set and this list shrinks to the three elevation wrappers — the
+ * only ones with a real reason to differ between the two consumers.
  */
-const DENY_EXTRA_WRAPPERS: ReadonlySet<string> = new Set([
-  'sudo',
-  'su',
-  'doas',
-  'runuser',
-  'ionice',
-  'setsid',
-  'script',
-  'chrt',
-  'taskset',
-  'proxychains',
-  'systemd-run',
-]);
+const DENY_EXTRA_WRAPPERS: ReadonlySet<string> = new Set(['sudo', 'su', 'doas']);
 
 function isDenyUnwrappableWrapper(word: string): boolean {
   return COMMAND_WRAPPERS.has(word) || DENY_EXTRA_WRAPPERS.has(word);
