@@ -727,8 +727,13 @@ export function setupHookBridge(
       // along) and the write surface would be one cast away at any future call
       // site. This closes it over the two methods and hands out nothing else.
       getPrecedent: () => ({
-        matchApproved: (tool, signature) => precedentStore.matchApproved(tool, signature),
-        matchDenied: (tool, signature) => precedentStore.matchDenied(tool, signature),
+        // Forward the `whole` provenance bit (#1067) rather than dropping it —
+        // the consult sites pass `true` (their signature is untruncated by
+        // construction), and swallowing it here would silently re-impose the
+        // truncation refusal on a genuine long command.
+        matchApproved: (tool, signature, whole) =>
+          precedentStore.matchApproved(tool, signature, whole),
+        matchDenied: (tool, signature, whole) => precedentStore.matchDenied(tool, signature, whole),
       }),
       // #710: lets the gate recover from a tracker leak (a MAIN-tagged
       // PermissionRequest observing isInSubagentContext() stuck true) instead
