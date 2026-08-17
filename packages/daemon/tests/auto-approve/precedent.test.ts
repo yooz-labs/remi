@@ -16,6 +16,8 @@ import {
   findDeniedPrecedent,
   parsePermissionQuestionText,
   precedentMayAuthorize,
+  readerFrom,
+  recordHumanAnswer,
   signatureForOperation,
   toolNameFromSignature,
 } from '../../src/auto-approve/precedent.ts';
@@ -636,6 +638,70 @@ describe('#1067 whole-provenance keeps a genuine >=120-char command ending in ".
     const store = new PrecedentStore();
     store.record('Bash', truncated, 'denied'); // whole=false
     expect(store.size).toBe(0);
+  });
+
+  test('an approve record of the genuine long command is refused too without whole (both directions)', () => {
+    // Symmetry with the deny case above: record()'s truncation check is
+    // decision-independent, so the approve direction is equally refused for an
+    // unknown-provenance signature.
+    const store = new PrecedentStore();
+    store.record(toolNameFromSignature(signature), signature, 'approved'); // whole=false
+    expect(store.size).toBe(0);
+  });
+
+  // #1067 NEWLY stores these commands (pre-#1067 both were refused, so a
+  // collision was impossible; now both are stored whole=true). Precision then
+  // rests entirely on the approve matcher comparing FULL strings -- this is the
+  // #990 collision test re-run for the "..."-ending shape, on the whole-skip
+  // branch the earlier #990 test never exercises.
+  test('two different >=120-char commands ending in "..." do NOT collide on the approve side', () => {
+    const shared = 'x'.repeat(117);
+    const cmdA = `${shared} apple ...`;
+    const cmdB = `${shared} orange ...`;
+    const sigA = signatureForOperation('Bash', { command: cmdA });
+    const sigB = signatureForOperation('Bash', { command: cmdB });
+    // Sanity: both are the false-positive shape and share their first 117 chars.
+    expect(sigA.slice('Bash: '.length).endsWith('...')).toBe(true);
+    expect(cmdA.slice(0, 117)).toBe(cmdB.slice(0, 117));
+
+    const store = new PrecedentStore();
+    store.record(toolNameFromSignature(sigA), sigA, 'approved', true);
+    store.record(toolNameFromSignature(sigB), sigB, 'approved', true);
+    expect(store.size).toBe(2); // both stored, unlike pre-#1067
+    // Each matches only its own full text, never the other.
+    expect(store.matchApproved('Bash', sigB, true)?.matchedSignature).toBe(sigB);
+
+    // With ONLY A recorded, a query for B does not match -- approving A never
+    // authorizes B despite the shared 117-char prefix.
+    const onlyA = new PrecedentStore();
+    onlyA.record(toolNameFromSignature(sigA), sigA, 'approved', true);
+    expect(onlyA.matchApproved('Bash', sigB, true)).toBeNull();
+  });
+
+  // The PRODUCTION reader adapter (hook-bridge-setup.ts hands exactly this to
+  // the gate). A revert that drops the `whole` arg re-imposes the truncation
+  // refusal on a genuine long command; a revert that leaks `record` breaks the
+  // single-writer invariant. Both are pinned here.
+  test('readerFrom forwards whole and exposes no write surface', () => {
+    const store = new PrecedentStore();
+    store.record(toolNameFromSignature(signature), signature, 'denied', true);
+    const reader = readerFrom(store);
+    // Forwards whole=true -> the genuine long deny matches through the reader.
+    expect(reader.matchDenied('Bash', signature, true)?.decision).toBe('denied');
+    // Drops whole -> the truncation refusal re-applies (proves it forwards, not
+    // hard-codes true).
+    expect(reader.matchDenied('Bash', signature)).toBeNull();
+    // No `record` method leaked (single-writer invariant, ADR 0015).
+    expect((reader as unknown as Record<string, unknown>)['record']).toBeUndefined();
+  });
+
+  // The PRODUCTION record adapter (cli.ts's recordPrecedent calls exactly this).
+  // A revert to a plain `record()` (whole omitted) drops the genuine long DENY.
+  test('recordHumanAnswer stores the genuine long command as whole (persists the DENY)', () => {
+    const store = new PrecedentStore();
+    recordHumanAnswer(store, toolNameFromSignature(signature), signature, 'denied');
+    expect(store.size).toBe(1); // a plain record() would have dropped it here
+    expect(store.matchDenied('Bash', signature, true)?.decision).toBe('denied');
   });
 });
 

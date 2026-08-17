@@ -136,6 +136,7 @@ import {
   resolveProviderUrl,
 } from './auto-approve/index.ts';
 import type { PrecedentStore } from './auto-approve/precedent.ts';
+import { recordHumanAnswer } from './auto-approve/precedent.ts';
 import type { DenySource } from './auto-approve/types.ts';
 import { detectAutostartState } from './cli/autostart-state.ts';
 import { resolveClaudeBinding } from './cli/claude-binding.ts';
@@ -2145,14 +2146,16 @@ const inputHandlers: InputHandlers = createInputHandlers({
   // store for this sessionId (no hookServer, or the session already closed)
   // is a silent no-op -- recording is additive and must never affect the
   // answer itself.
-  // `whole: true` (#1067): the only caller (`handleAnswer`, input-events.ts)
-  // sources `signature` from `active.precedentSignature`, which
-  // `buildPermissionQuestion` set via `signatureForOperation` — untruncated by
-  // construction. Recording it as `whole` is what lets a genuine >=120-char
-  // DENY that legitimately ends in `...` persist as a stop rule instead of
-  // being dropped by the truncation heuristic.
-  recordPrecedent: (sessionId, toolName, signature, decision) =>
-    sessionPrecedentStores.get(sessionId)?.record(toolName, signature, decision, true),
+  // `recordHumanAnswer` records as `whole` (#1067): the only caller
+  // (`handleAnswer`, input-events.ts) sources `signature` from
+  // `active.precedentSignature` (set via `signatureForOperation`, untruncated by
+  // construction), so a genuine >=120-char DENY ending in `...` persists as a
+  // stop rule instead of being dropped by the truncation heuristic. See that
+  // function's doc for why `whole=true` is sound here.
+  recordPrecedent: (sessionId, toolName, signature, decision) => {
+    const store = sessionPrecedentStores.get(sessionId);
+    if (store) recordHumanAnswer(store, toolName, signature, decision);
+  },
 });
 
 const sessionHandlers: SessionHandlers = createSessionHandlers({

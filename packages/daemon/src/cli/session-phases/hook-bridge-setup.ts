@@ -105,7 +105,7 @@ import type { AutoApproveService } from '../../auto-approve/index.ts';
 // Not re-exported from `auto-approve/index.ts` on purpose (#976 prerequisite
 // scope: that barrel is being edited concurrently by other work on the same
 // epic). Imported directly from its own module instead.
-import { PrecedentStore } from '../../auto-approve/precedent.ts';
+import { PrecedentStore, readerFrom } from '../../auto-approve/precedent.ts';
 import type { DenySource } from '../../auto-approve/types.ts';
 import { HookEventBridge } from '../../hooks/index.ts';
 import type {
@@ -720,21 +720,10 @@ export function setupHookBridge(
       // handed out — `handleAnswer` stays the single writer by construction,
       // which is what keeps the gate from recording its own ADR-0004
       // arbitration verdicts as human precedent (see `precedent.ts`).
-      //
-      // The `PrecedentStore` methods are read via a fresh object rather than
-      // by passing the store: passing it would satisfy `PrecedentReader`
-      // structurally (TypeScript is structural, so the extra `record` comes
-      // along) and the write surface would be one cast away at any future call
-      // site. This closes it over the two methods and hands out nothing else.
-      getPrecedent: () => ({
-        // Forward the `whole` provenance bit (#1067) rather than dropping it —
-        // the consult sites pass `true` (their signature is untruncated by
-        // construction), and swallowing it here would silently re-impose the
-        // truncation refusal on a genuine long command.
-        matchApproved: (tool, signature, whole) =>
-          precedentStore.matchApproved(tool, signature, whole),
-        matchDenied: (tool, signature, whole) => precedentStore.matchDenied(tool, signature, whole),
-      }),
+      // `readerFrom` (precedent.ts) hands out only the two matchers — never the
+      // store's `record` — and forwards the `whole` provenance bit (#1067). See
+      // its doc for why both properties are load-bearing.
+      getPrecedent: () => readerFrom(precedentStore),
       // #710: lets the gate recover from a tracker leak (a MAIN-tagged
       // PermissionRequest observing isInSubagentContext() stuck true) instead
       // of denying the main agent forever.

@@ -1049,3 +1049,52 @@ export class PrecedentStore {
     this.records.length = 0;
   }
 }
+
+/**
+ * Build the read-only `PrecedentReader` the gate consumes, over `store`.
+ *
+ * Extracted from `hook-bridge-setup.ts`'s inline `getPrecedent` (so it is
+ * unit-testable in its own right) but keeping that call site's TWO deliberate
+ * properties, both load-bearing:
+ *
+ * - It hands out a FRESH object exposing only the two matchers, never the store
+ *   — passing the store would satisfy `PrecedentReader` structurally (TypeScript
+ *   is structural, so `record` would come along) and the write surface would be
+ *   one cast away, breaking the "`handleAnswer` is the single writer" invariant
+ *   ADR 0015 rests on.
+ * - It FORWARDS the `whole` provenance bit (#1067) rather than dropping it.
+ *   Dropping it here silently re-imposes the truncation refusal on a query the
+ *   consult site already vouched for as untruncated, which would re-break the
+ *   genuine long DENY this exists to keep.
+ */
+export function readerFrom(store: PrecedentStore): PrecedentReader {
+  return {
+    matchApproved: (tool, signature, whole) => store.matchApproved(tool, signature, whole),
+    matchDenied: (tool, signature, whole) => store.matchDenied(tool, signature, whole),
+  };
+}
+
+/**
+ * Record a human's answer into `store` as a `whole` (untruncated-by-
+ * construction) precedent (#1067). The write-side companion to `readerFrom`,
+ * extracted from `cli.ts`'s `recordPrecedent` closure so the `whole=true`
+ * decision is a NAMED, tested unit rather than an inline literal on the
+ * entrypoint.
+ *
+ * `whole=true` is sound because the ONE production caller (`cli.ts`'s
+ * `recordPrecedent`, fed by `handleAnswer` -> `active.precedentSignature`) only
+ * ever passes a `signatureForOperation` value — untruncated by construction,
+ * and `undefined`/skipped otherwise (`handleAnswer` fails closed, never falling
+ * back to the truncated `active.text`). A future caller handing this a signature
+ * built some other way would wrongly mark it `whole`; keep this reserved for the
+ * record path whose signature provenance is guaranteed, exactly as the inline
+ * literal was.
+ */
+export function recordHumanAnswer(
+  store: PrecedentStore,
+  toolName: string,
+  signature: string,
+  decision: 'approved' | 'denied',
+): void {
+  store.record(toolName, signature, decision, true);
+}

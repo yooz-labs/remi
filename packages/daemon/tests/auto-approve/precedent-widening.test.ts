@@ -19,6 +19,7 @@ import {
   type PrecedentReader,
   PrecedentStore,
   precedentMayAuthorize,
+  readerFrom,
   signatureForOperation,
 } from '../../src/auto-approve/precedent.ts';
 import { classifyRisk } from '../../src/auto-approve/risk-bands.ts';
@@ -64,23 +65,27 @@ function config(overrides?: Partial<AutoApproveConfig>): AutoApproveConfig {
   } as AutoApproveConfig;
 }
 
-/** Read-only view of a real store, exactly as `hook-bridge-setup.ts` builds it. */
+/** Read-only view of a real store — the EXACT production adapter
+ *  (`readerFrom`, precedent.ts) `hook-bridge-setup.ts` hands the gate, so these
+ *  integration tests exercise the real reader (which forwards the `whole`
+ *  provenance bit, #1067) rather than a hand-rolled double that could drift
+ *  from it. */
 function readerFor(store: PrecedentStore): PrecedentReader {
-  return {
-    matchApproved: (tool, signature) => store.matchApproved(tool, signature),
-    matchDenied: (tool, signature) => store.matchDenied(tool, signature),
-  };
+  return readerFrom(store);
 }
 
-/** Record a human answer the way `handleAnswer` does: the signature the
- *  question carried, not a hand-written string. */
+/** Record a human answer the way `handleAnswer` -> `cli.ts` does: the signature
+ *  the question carried (from `signatureForOperation`, untruncated by
+ *  construction), recorded with `whole=true` (#1067). Passing `whole=true` here
+ *  mirrors the production record path and is what lets a genuine >=120-char
+ *  `...`-ending command be stored at all. */
 function humanAnswered(
   store: PrecedentStore,
   toolName: string,
   toolInput: Record<string, unknown>,
   decision: 'approved' | 'denied',
 ): void {
-  store.record(toolName, signatureForOperation(toolName, toolInput), decision);
+  store.record(toolName, signatureForOperation(toolName, toolInput), decision, true);
 }
 
 const service = (overrides?: Partial<AutoApproveConfig>) =>
@@ -658,6 +663,46 @@ describe('#976 an earlier denial downgrades a model approve to escalate', () => 
     expect(result.decision).toBe('escalate');
     expect(result.reasoning).toContain('Session precedent');
     expect(result.reasoning).toContain('gh pr list');
+  });
+
+  test('#1067 end-to-end: a genuine >=120-char DENY ending in "..." re-escalates its repeat', async () => {
+    // The headline, through the REAL service consult (not just the store): a
+    // human denies a long command that legitimately ends in "...", the model
+    // approves its identical repeat, and the risk of standing is caught only
+    // because the consult forwards `whole=true` end to end. Revert the
+    // `whole` forwarding at `readerFor` OR the service consult site OR
+    // `humanAnswered` and this flips to `approve` -- which is exactly the
+    // silent DENY-drop #1067 fixes.
+    // Moderate-band on purpose: a high-band command (e.g. one with `-exec`)
+    // would be escalated by the risk ceiling BEFORE the precedent deny consult,
+    // masking what this test checks. `git log …` is read-only, so the model
+    // approves it and only the denied precedent moves it to escalate.
+    const longDeniedCommand =
+      'git log --oneline --graph --all --decorate --abbrev-commit --author=yahya --since="2 weeks ago" -- packages/daemon/src...';
+    const detail = signatureForOperation('Bash', { command: longDeniedCommand }).slice(
+      'Bash: '.length,
+    );
+    expect(detail.length).toBeGreaterThanOrEqual(120);
+    expect(detail.endsWith('...')).toBe(true);
+
+    const store = new PrecedentStore();
+    humanAnswered(store, 'Bash', { command: longDeniedCommand }, 'denied');
+    expect(store.size).toBe(1); // stored, not dropped by the truncation heuristic
+
+    const result = await approvingService().evaluate(
+      'Bash',
+      { command: longDeniedCommand },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      readerFor(store),
+    );
+    expect(result.decision).toBe('escalate');
+    expect(result.reasoning).toContain('Session precedent');
   });
 
   test('an UNRELATED denial leaves the approve alone', async () => {
