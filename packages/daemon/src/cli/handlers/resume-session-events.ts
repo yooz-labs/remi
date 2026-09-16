@@ -138,27 +138,34 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
       let claudeSessionId: string | null = null;
       let projectPath: string | null = null;
 
-      const storedByRemi = sessionStore.findByRemiSessionId(targetSessionId as UUID);
-      if (storedByRemi) {
-        claudeSessionId = storedByRemi.claudeSessionId;
-        projectPath = storedByRemi.projectPath;
-      }
-
-      if (!claudeSessionId) {
-        const storedByClaude = bindingStore.getByClaudeSessionId(targetSessionId);
-        if (storedByClaude) {
-          claudeSessionId = storedByClaude.claudeSessionId;
-          projectPath = storedByClaude.projectPath;
+      try {
+        const storedByRemi = sessionStore.findByRemiSessionId(targetSessionId as UUID);
+        if (storedByRemi) {
+          claudeSessionId = storedByRemi.claudeSessionId;
+          projectPath = storedByRemi.projectPath;
         }
-      }
 
-      if (!claudeSessionId) {
-        const transcriptPath = transcriptDiscovery.findTranscriptBySessionId(targetSessionId);
-        if (transcriptPath) {
-          claudeSessionId = targetSessionId;
-          const dirName = path.basename(path.dirname(transcriptPath));
-          projectPath = dirName.replace(/-/g, '/');
+        if (!claudeSessionId) {
+          const storedByClaude = bindingStore.getByClaudeSessionId(targetSessionId);
+          if (storedByClaude) {
+            claudeSessionId = storedByClaude.claudeSessionId;
+            projectPath = storedByClaude.projectPath;
+          }
         }
+
+        if (!claudeSessionId) {
+          const transcriptPath = transcriptDiscovery.findTranscriptBySessionId(targetSessionId);
+          if (transcriptPath) {
+            claudeSessionId = targetSessionId;
+            const dirName = path.basename(path.dirname(transcriptPath));
+            projectPath = dirName.replace(/-/g, '/');
+          }
+        }
+      } catch (error) {
+        const msg = `Cannot resolve session ${targetSessionId}: ${errorToString(error)}`;
+        logError(`[Resume] ${msg}`);
+        send(connectionId, createResumeSessionResponse(false, requestId, undefined, msg));
+        return;
       }
 
       if (!claudeSessionId) {
