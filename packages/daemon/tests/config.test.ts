@@ -1103,7 +1103,7 @@ describe('auto_approve.residual_action (#1045 phase 6)', () => {
   });
 });
 
-describe('auto_approve.risk_review (#1081 phase 2)', () => {
+describe('auto_approve.risk_review (#1081 phases 2-4)', () => {
   function load(toml: string) {
     fs.writeFileSync(TEST_CONFIG, toml);
     return loadConfig(TEST_CONFIG);

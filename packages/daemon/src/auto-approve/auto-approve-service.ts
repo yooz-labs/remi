@@ -41,9 +41,10 @@ import {
 import { buildPrompt } from './prompt-builder.ts';
 import { proveCompoundReadOnly } from './read-only-proof.ts';
 import type { DecidingLayer } from './risk-bands.ts';
-import { classifyRisk, formatMatrixContext } from './risk-bands.ts';
+import { classifyRisk, formatMatrixContext, normalizeVerifiedReadRisk } from './risk-bands.ts';
 import { enforceRiskCeiling } from './risk-ceiling.ts';
 import {
+  MAX_REVIEW_OPERATION_CHARS,
   type RiskReviewMode,
   type ShadowRiskReview,
   buildShadowReviewPrompt,
@@ -792,7 +793,9 @@ export class AutoApproveService {
   }
 
   /**
-   * Run the phase 2 reviewer without giving it any authority over the result.
+   * Run the shared authorization reviewer. Shadow mode records its result
+   * without changing the primary decision; verified mode consumes it only
+   * after its own proof and provenance gates pass.
    * The caller holds the normal evaluation slot and the normal hard deadline,
    * so this call cannot create a nested queue wait or extend the permission
    * evaluation beyond the existing race timer. An abort from `cancel()` is
@@ -809,9 +812,9 @@ export class AutoApproveService {
     signal: AbortSignal,
     deadlineAt: number,
   ): Promise<ShadowReviewOutcome> {
-    // The phase 2 call is advisory, but it must not extend the original
-    // permission deadline. A local hard-kill also covers providers that ignore
-    // AbortSignal, while the caller's signal still carries user cancellation.
+    // The review call must not extend the original permission deadline. A local
+    // hard-kill also covers providers that ignore AbortSignal, while the
+    // caller's signal still carries user cancellation.
     if (signal.aborted && this.cancelReason !== null) {
       throw new DOMException('Shadow review cancelled', 'AbortError');
     }
@@ -897,7 +900,16 @@ export class AutoApproveService {
       reasoning,
       durationMs: durationMs(),
       model,
+      suppressSecondOpinion: true,
     });
+
+    if (command.length > MAX_REVIEW_OPERATION_CHARS) {
+      const reasoning = `Verified read-only review (#1081): the full command is ${command.length} characters, beyond the exact reviewer input bound of ${MAX_REVIEW_OPERATION_CHARS}; escalating instead of reviewing a truncated prefix.`;
+      this.logFn(
+        `${prefix} VERIFIED REVIEW Bash: status=operation-too-long chars=${command.length} max=${MAX_REVIEW_OPERATION_CHARS}`,
+      );
+      return escalate(reasoning);
+    }
 
     const proof = proveCompoundReadOnly(command);
     if (proof.status !== 'proved') {
@@ -910,14 +922,12 @@ export class AutoApproveService {
     }
 
     const classifiedRisk = classifyRisk('Bash', toolInput);
-    // The general classifier intentionally errs high when it cannot prove
-    // shell assignments/substitutions or when a harmless argument contains a
-    // dangerous word. This proof has now established that every leaf is
-    // read-only, so retaining those non-critical false positives would make
-    // the verified path unable to handle the observed inventory loops. The
-    // critical deny-floor result is different: it is a machine-wide safety
-    // floor and survives the proof, including quoted text that matches it.
-    const riskBand = classifiedRisk === 'critical' ? 'critical' : 'moderate';
+    // The proof-aware helper removes only the classifier's assignment-shaped
+    // false positive. It deliberately preserves a high band when the raw
+    // command contains an unconditional dangerous whole word, and it never
+    // lowers critical. Other genuine high-risk shapes are rejected by the
+    // proof before this point.
+    const riskBand = normalizeVerifiedReadRisk(command, classifiedRisk);
     const authorityPresent = (authority?.trim().length ?? 0) > 0;
     if (riskBand !== 'moderate') {
       const reasoning = `Verified read-only review (#1081): deterministic proof passed, but risk band=${riskBand} is outside the moderate-risk rollout; escalating.`;
@@ -966,7 +976,56 @@ export class AutoApproveService {
       reasoning,
       durationMs: durationMs(),
       model,
+      ...(decision === 'escalate' ? { suppressSecondOpinion: true as const } : {}),
     };
+  }
+
+  /**
+   * Apply the session's latest denied precedent to an approval from either
+   * the ordinary model path or the verified reviewer. The verified path used
+   * to return before reaching this guard, which let a new reviewer approval
+   * override an explicit human refusal. Keeping the matcher and escalation
+   * construction in one helper prevents the two paths from drifting.
+   */
+  private applyDeniedPrecedent(
+    result: AutoApproveResult,
+    toolName: string,
+    toolInput: Record<string, unknown>,
+    precedent: PrecedentReader | undefined,
+    precedentContext: string | undefined,
+    prefix: string,
+    suppressSecondOpinion: boolean,
+  ): { readonly result: AutoApproveResult; readonly overridden: boolean } {
+    if (
+      result.decision !== 'approve' ||
+      precedent === undefined ||
+      precedentContext === undefined
+    ) {
+      return { result, overridden: false };
+    }
+
+    const deniedMatch = precedent.matchDenied(
+      toolName,
+      signatureForOperation(toolName, toolInput),
+      // `whole: true` (#1067): untruncated by construction. Also what lets
+      // a genuine >=120-char DENY that ends in `...` re-match here.
+      true,
+      precedentContext,
+    );
+    if (deniedMatch === null) return { result, overridden: false };
+
+    const overridden: AutoApproveResult = {
+      decision: 'escalate',
+      reasoning: `Session precedent (#976): you denied "${deniedMatch.matchedSignature}" earlier in this session, which covers this operation, so a model approve is escalated back to you instead of standing. Original model reasoning: ${result.reasoning}`,
+      durationMs: result.durationMs,
+      model: result.model,
+      summary: 'You said no to this before. Allow it now?',
+      ...(suppressSecondOpinion ? { suppressSecondOpinion: true as const } : {}),
+    };
+    this.logFn(
+      `${prefix} PRECEDENT ${toolName}: approve -> escalate (denied "${deniedMatch.matchedSignature}") (${result.durationMs}ms)`,
+    );
+    return { result: overridden, overridden: true };
   }
 
   /**
@@ -1281,10 +1340,19 @@ export class AutoApproveService {
             prefix,
             start,
           );
+          const precedentApplied = this.applyDeniedPrecedent(
+            verified,
+            toolName,
+            toolInput,
+            precedent,
+            precedentContext,
+            prefix,
+            true,
+          );
           // Match the normal success path: a cancellation that races after
           // the reviewer settled must not poison the next evaluation.
           this.cancelReason = null;
-          return verified;
+          return precedentApplied.result;
         }
 
         // Reuse the base config only when neither the model nor the timeout
@@ -1488,34 +1556,18 @@ export class AutoApproveService {
         // Post-model and approve-only, like every other guard here: it never
         // invents a deny, never touches an escalate, and moves in exactly one
         // direction.
-        if (
-          !useMultiChoice &&
-          precedent &&
-          precedentContext !== undefined &&
-          result.decision === 'approve'
-        ) {
-          const deniedMatch = precedent.matchDenied(
+        if (!useMultiChoice) {
+          const precedentApplied = this.applyDeniedPrecedent(
+            result,
             toolName,
-            signatureForOperation(toolName, toolInput),
-            // `whole: true` (#1067): untruncated by construction. Also what lets
-            // a genuine >=120-char DENY that ends in `...` re-match here.
-            true,
+            toolInput,
+            precedent,
             precedentContext,
+            prefix,
+            false,
           );
-          if (deniedMatch !== null) {
-            decidedBy = 'precedent';
-            const original = result;
-            result = {
-              decision: 'escalate',
-              reasoning: `Session precedent (#976): you denied "${deniedMatch.matchedSignature}" earlier in this session, which covers this operation, so a model approve is escalated back to you instead of standing. Original model reasoning: ${original.reasoning}`,
-              durationMs,
-              model: original.model,
-              summary: 'You said no to this before. Allow it now?',
-            };
-            this.logFn(
-              `${prefix} PRECEDENT ${toolName}: approve -> escalate (denied "${deniedMatch.matchedSignature}") (${durationMs}ms)`,
-            );
-          }
+          if (precedentApplied.overridden) decidedBy = 'precedent';
+          result = precedentApplied.result;
         }
 
         // #954 COUNTERFACTUAL: the authority trust boundary, enforced by

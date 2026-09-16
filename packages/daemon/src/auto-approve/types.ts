@@ -70,6 +70,13 @@ export type AutoApproveDecisionResult =
        *  title/body instead of the raw "Allow Bash: <command>". Absent for
        *  approve/deny, pattern-matched verdicts, or when the model omits it. */
       readonly summary?: string | undefined;
+      /**
+       * #1081 phase 4: this escalation came from the verified read-only path
+       * and is terminal for the gate. It must not be sent to `escalate_model`,
+       * because that would let an unverified second opinion undo a proof,
+       * provenance, risk, or reviewer failure.
+       */
+      readonly suppressSecondOpinion?: true;
       /** #1015: which mechanism produced a `deny`. Present on `deny` results
        *  only; absent on approve/escalate.
        *

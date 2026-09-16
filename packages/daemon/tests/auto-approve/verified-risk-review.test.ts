@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { AutoApproveService } from '../../src/auto-approve/auto-approve-service.ts';
+import {
+  PrecedentStore,
+  readerFrom,
+  signatureForOperation,
+} from '../../src/auto-approve/precedent.ts';
 import type { AutoApproveConfig } from '../../src/auto-approve/types.ts';
 
 interface ReviewServer {
@@ -243,18 +248,81 @@ describe('verified read-only risk review (#1081 phase 4)', () => {
     expect(server.calls()).toBe(0);
   });
 
-  test('the proof removes non-critical lexical false positives from the risk ceiling', async () => {
+  test('the proof removes assignment false positives but preserves dangerous read words', async () => {
     const server = startReviewServer(['implicit']);
     servers.push(server);
     const service = new AutoApproveService(makeConfig(server.url), () => undefined);
 
-    // The general classifier calls this high because `ssh` is a dangerous
-    // whole word. The effect proof establishes that it is only inert echo
-    // text, so the verified path may treat it as effective moderate risk.
-    const result = await evaluate(service, 'echo "use ssh to connect"');
+    // The general classifier calls this high because the leading assignment
+    // can alter the command environment. The proof establishes that the
+    // substitution is a read-only status query, so verified mode may treat it
+    // as effective moderate risk.
+    const result = await evaluate(service, 'b=$(git status --porcelain); echo "$b"');
 
     expect(result.decision).toBe('approve');
     expect(result.reasoning).toContain('risk=moderate');
+    expect(server.calls()).toBe(1);
+
+    // A proof-qualified read is not automatically low risk: the raw dangerous
+    // whole-word backstop still keeps a credential path at high and terminal.
+    const dangerousRead = await evaluate(service, 'cat ~/.ssh/id_rsa');
+    expect(dangerousRead.decision).toBe('escalate');
+    expect(dangerousRead.reasoning).toContain('risk band=high');
+    if (dangerousRead.decision === 'escalate') {
+      expect(dangerousRead.suppressSecondOpinion).toBe(true);
+    }
+    expect(server.calls()).toBe(1);
+  });
+
+  test('does not review a command longer than the exact reviewer bound', async () => {
+    const server = startReviewServer(['implicit']);
+    servers.push(server);
+    const service = new AutoApproveService(makeConfig(server.url), () => undefined);
+    const command = `echo "${'a'.repeat(2001)}"`;
+
+    const result = await evaluate(service, command);
+
+    expect(result.decision).toBe('escalate');
+    expect(result.reasoning).toContain('reviewer input bound');
+    if (result.decision === 'escalate') expect(result.suppressSecondOpinion).toBe(true);
+    expect(server.calls()).toBe(0);
+  });
+
+  test('a denied session precedent overrides a verified reviewer approval', async () => {
+    const server = startReviewServer(['explicit']);
+    servers.push(server);
+    const service = new AutoApproveService(
+      makeConfig(server.url, { session_precedent: true }),
+      () => undefined,
+    );
+    const command = 'git status --porcelain';
+    const store = new PrecedentStore();
+    store.record(
+      'Bash',
+      signatureForOperation('Bash', { command }),
+      'denied',
+      true,
+      '/same/project/path',
+    );
+
+    const result = await service.evaluate(
+      'Bash',
+      { command },
+      'session-a',
+      undefined,
+      undefined,
+      undefined,
+      'session-a',
+      false,
+      'Please inspect the repository.',
+      readerFrom(store),
+      undefined,
+      '/same/project/path',
+    );
+
+    expect(result.decision).toBe('escalate');
+    expect(result.reasoning).toContain('Session precedent');
+    if (result.decision === 'escalate') expect(result.suppressSecondOpinion).toBe(true);
     expect(server.calls()).toBe(1);
   });
 
