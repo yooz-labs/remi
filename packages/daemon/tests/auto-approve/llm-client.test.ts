@@ -128,11 +128,12 @@ describe('chatCompletion transports', () => {
 
   test('openai transport hits /chat/completions and parses choices[0]', async () => {
     const r = await chatCompletion(
-      { baseUrl: openaiBaseUrl, apiKey: '', model: 'm', timeoutMs: 5000 },
+      { baseUrl: openaiBaseUrl, apiKey: '', model: 'm', timeoutMs: 5000, maxTokens: 8 },
       msgs,
     );
     expect(last?.path).toBe('/v1/chat/completions');
     expect(last?.body['response_format']).toEqual({ type: 'json_object' });
+    expect(last?.body['max_tokens']).toBe(8);
     expect(last?.body['messages']).toEqual(msgs);
     expect(r.content).toContain('approve');
     expect(r.usage?.completion_tokens).toBe(5);
