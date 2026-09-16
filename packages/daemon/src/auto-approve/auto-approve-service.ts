@@ -42,10 +42,41 @@ import { buildPrompt } from './prompt-builder.ts';
 import type { DecidingLayer } from './risk-bands.ts';
 import { classifyRisk, formatMatrixContext } from './risk-bands.ts';
 import { enforceRiskCeiling } from './risk-ceiling.ts';
+import {
+  type RiskReviewMode,
+  type ShadowRiskReview,
+  buildShadowReviewPrompt,
+  formatShadowReviewOperation,
+  parseShadowRiskReview,
+} from './risk-review.ts';
 import type { AutoApproveConfig, AutoApproveResult, DenySource, MultiChoiceMode } from './types.ts';
 
 type BinaryDecision = 'approve' | 'deny' | 'escalate';
 const VALID_DECISIONS = new Set<BinaryDecision>(['approve', 'deny', 'escalate']);
+
+type ShadowReviewFailureKind = 'malformed' | 'timeout' | 'unavailable' | 'error';
+
+type ShadowReviewOutcome =
+  | { readonly kind: 'ok'; readonly review: ShadowRiskReview }
+  | { readonly kind: ShadowReviewFailureKind };
+
+function shadowErrorKind(error: unknown): ShadowReviewFailureKind {
+  const name = (error as { name?: unknown } | null)?.name;
+  const message = errorToString(error).toLowerCase();
+  if (name === 'AbortError' || message.includes('abort') || message.includes('timeout')) {
+    return 'timeout';
+  }
+  if (
+    message.includes('fetch') ||
+    message.includes('connection') ||
+    message.includes('econn') ||
+    message.includes('enotfound') ||
+    /llm api error (4|5)\d\d/.test(message)
+  ) {
+    return 'unavailable';
+  }
+  return 'error';
+}
 
 /**
  * Sentinel scope (#730) used when a caller omits `scope` from `evaluate()` /
@@ -171,6 +202,8 @@ export class AutoApproveService {
    *  fast model's timeout. The heavy model is usually cold, so it needs a longer
    *  budget than the fast path. */
   private readonly escalateTimeoutMs: number;
+  /** Phase 2 reviewer mode. `shadow` is telemetry-only; rollout is later. */
+  private readonly riskReviewMode: RiskReviewMode;
   /** True when the provider is the Yooz engine (enables the /v1/llm/preload warm-up). */
   private readonly providerIsYooz: boolean;
   /** True when remi owns this engine and may therefore mutate its disk/memory
@@ -287,6 +320,7 @@ export class AutoApproveService {
     this.multichoiceModel = config.multichoice_model;
     this.escalateModel = config.escalate_model;
     this.escalateTimeoutMs = config.escalate_timeout > 0 ? config.escalate_timeout * 1000 : 0;
+    this.riskReviewMode = config.risk_review ?? 'off';
     this.queueTimeoutMs = config.queue_timeout > 0 ? config.queue_timeout * 1000 : 0;
     this.providerIsYooz = config.provider === 'yooz';
     this.ownsEngine = this.providerIsYooz && config.engine === 'owned';
@@ -756,6 +790,69 @@ export class AutoApproveService {
   }
 
   /**
+   * Run the phase 2 reviewer without giving it any authority over the result.
+   * The caller holds the normal evaluation slot and the normal hard deadline,
+   * so this call cannot create a nested queue wait or extend the permission
+   * evaluation beyond the existing race timer. An abort from `cancel()` is
+   * rethrown: swallowing it here would let a stale primary decision escape
+   * after the user had already answered. A deadline abort is recorded as a
+   * reviewer timeout while the primary result remains unchanged.
+   */
+  private async runShadowReview(
+    toolName: string,
+    toolInput: Record<string, unknown>,
+    authority: string | undefined,
+    riskBand: ReturnType<typeof classifyRisk>,
+    model: string,
+    signal: AbortSignal,
+    deadlineAt: number,
+  ): Promise<ShadowReviewOutcome> {
+    // The phase 2 call is advisory, but it must not extend the original
+    // permission deadline. A local hard-kill also covers providers that ignore
+    // AbortSignal, while the caller's signal still carries user cancellation.
+    if (signal.aborted && this.cancelReason !== null) {
+      throw new DOMException('Shadow review cancelled', 'AbortError');
+    }
+    const remainingMs = deadlineAt - Date.now();
+    if (remainingMs <= 0) return { kind: 'timeout' };
+
+    const reviewerController = new AbortController();
+    const forwardAbort = (): void => reviewerController.abort();
+    if (signal.aborted) reviewerController.abort();
+    else signal.addEventListener('abort', forwardAbort, { once: true });
+    let hardKillTimer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      const operation = formatShadowReviewOperation(toolName, toolInput);
+      const response = await Promise.race([
+        chatCompletion(
+          { ...this.llmConfig, model, timeoutMs: remainingMs, maxTokens: 8 },
+          [{ role: 'user', content: buildShadowReviewPrompt(authority, operation) }],
+          reviewerController.signal,
+        ),
+        new Promise<never>((_, reject) => {
+          hardKillTimer = setTimeout(() => {
+            reviewerController.abort();
+            reject(
+              new DOMException(`Shadow review hard kill after ${remainingMs}ms`, 'AbortError'),
+            );
+          }, remainingMs);
+        }),
+      ]);
+      const review = parseShadowRiskReview(riskBand, response.content);
+      return review === null ? { kind: 'malformed' } : { kind: 'ok', review };
+    } catch (error) {
+      // Preserve the service's cancellation/timeout semantics. In particular,
+      // a reviewer must not turn a cancelled primary evaluation into a late
+      // approve just because its own failure is advisory.
+      if (signal.aborted && this.cancelReason !== null) throw error;
+      return { kind: shadowErrorKind(error) };
+    } finally {
+      if (hardKillTimer !== null) clearTimeout(hardKillTimer);
+      signal.removeEventListener('abort', forwardAbort);
+    }
+  }
+
+  /**
    * Evaluate a permission request. Never throws.
    * On any error, returns escalate so the user gets the question as normal.
    *
@@ -1115,6 +1212,12 @@ export class AutoApproveService {
                   : {}),
               };
             })();
+        const primaryDecision: BinaryDecision | null =
+          result.decision === 'approve' ||
+          result.decision === 'deny' ||
+          result.decision === 'escalate'
+            ? result.decision
+            : null;
 
         // Q9 (#893) trust boundary: a binary (non-multichoice) 'approve' verdict
         // reached with an authority block in the prompt is re-checked here,
@@ -1337,6 +1440,38 @@ export class AutoApproveService {
             };
             this.logFn(
               `${prefix} COUNTERFACTUAL ${toolName}: check failed, escalating - ${errorToString(err)}`,
+            );
+          }
+        }
+
+        // #1081 phase 2: collect an independent risk/authorization review only
+        // after the normal model and all existing guards have run. It is
+        // deliberately advisory: no field from the review is used to mutate
+        // `result`, and a malformed/unavailable review preserves the exact
+        // guarded decision above. Keeping the call inside this slot also means
+        // two sessions cannot run competing reviewer calls on the one local
+        // model at once.
+        if (this.riskReviewMode === 'shadow' && primaryDecision !== null && !useMultiChoice) {
+          const riskBand = classifyRisk(toolName, toolInput);
+          const shadow = await this.runShadowReview(
+            toolName,
+            toolInput,
+            authority,
+            riskBand,
+            model,
+            externalSignal,
+            start + timeoutMs,
+          );
+          const finalDecision = result.decision;
+          if (shadow.kind === 'ok') {
+            const disagreement =
+              shadow.review.matrixDecision === finalDecision ? 'none' : 'matrix_vs_final';
+            this.logFn(
+              `${prefix} SHADOW REVIEW ${toolName}: status=ok risk=${shadow.review.riskBand} authority=${authorityPresent ? 'yes' : 'no'} observed_auth=${shadow.review.observedAuthorization} auth=${shadow.review.authorization} matrix=${shadow.review.matrixDecision} primary=${primaryDecision} final=${finalDecision} decided_by=${decidedBy} disagreement=${disagreement}`,
+            );
+          } else {
+            this.logFn(
+              `${prefix} SHADOW REVIEW ${toolName}: status=${shadow.kind} risk=${riskBand} authority=${authorityPresent ? 'yes' : 'no'} primary=${primaryDecision} final=${finalDecision} decided_by=${decidedBy}`,
             );
           }
         }

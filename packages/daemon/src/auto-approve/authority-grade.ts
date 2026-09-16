@@ -2,12 +2,11 @@
  * The authorization-GRADING prompt and ladder (#976), promoted out of
  * `tests/auto-approve/run-authority-grading-sweep.ts` into shipped source.
  *
- * Nothing in production calls this module yet. It exists so the sweep can
- * IMPORT the ladder, the prompt, and the parse/cap logic instead of keeping
- * its own copy — before this change, the sweep measured a COPY of the prompt,
- * so the shipped prompt (once something wires it in) could drift from the
- * measured one with no test noticing. A later change wires
- * `buildAuthorityGradePrompt` into the actual evaluator.
+ * The phase 2 shadow reviewer imports the ladder, prompt, and parse/cap logic
+ * from this module, as does the sweep. Before that wiring, the sweep measured
+ * a COPY of the prompt, so the shipped prompt could drift from the measured
+ * one with no test noticing. The reviewer remains advisory until the later
+ * verified-rollout phase.
  *
  * ## Why the prompt text here must stay byte-identical to what was measured
  *

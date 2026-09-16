@@ -7,6 +7,9 @@
  */
 
 import type { AutoApproveLevel } from './levels.ts';
+
+/** Phase 2 advisory reviewer modes. Rollout is deliberately a later phase. */
+export type RiskReviewMode = 'off' | 'shadow';
 /**
  * Possible decisions returned by AutoApproveService.evaluate().
  *
@@ -218,6 +221,14 @@ export interface AutoApproveConfig {
    * auditable, and the `residual_action` ADR for the wire-reason evidence.
    */
   readonly residual_action: ResidualAction;
+  /**
+   * Phase 2 risk/authorization reviewer. `shadow` runs the measured
+   * authorization grader for telemetry only; it never changes the final
+   * decision. Default/off preserves the existing one-call behavior. Phase 4
+   * owns any decision-changing rollout after deterministic effect-proof and
+   * provenance gates pass.
+   */
+  readonly risk_review?: RiskReviewMode;
   /**
    * Patterns that short-circuit to approve without calling the LLM.
    *

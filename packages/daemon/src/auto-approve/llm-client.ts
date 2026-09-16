@@ -32,6 +32,12 @@ export interface LLMClientConfig {
   readonly model: string;
   readonly timeoutMs: number;
   /**
+   * Optional completion cap for OpenAI-compatible reviewers. The native Yooz
+   * `/v1/llm/generate` contract has no request-level token cap; its existing
+   * deadline and exact-output parser remain the fail-closed bounds there.
+   */
+  readonly maxTokens?: number;
+  /**
    * Transport. 'yooz' speaks the engine's native /v1/llm/generate. Defaults to
    * 'openai' (the OpenAI-compatible /v1 endpoint -- OpenRouter, llama.cpp, custom).
    */
@@ -230,6 +236,7 @@ export async function chatCompletion(
       messages: suppressedMessages,
       temperature: 0,
       response_format: { type: 'json_object' },
+      ...(config.maxTokens !== undefined ? { max_tokens: config.maxTokens } : {}),
       ...(suppress ? { chat_template_kwargs: { enable_thinking: false } } : {}),
     };
   }
