@@ -39,6 +39,7 @@ import {
   signatureForOperation,
 } from './precedent.ts';
 import { buildPrompt } from './prompt-builder.ts';
+import { proveCompoundReadOnly } from './read-only-proof.ts';
 import type { DecidingLayer } from './risk-bands.ts';
 import { classifyRisk, formatMatrixContext } from './risk-bands.ts';
 import { enforceRiskCeiling } from './risk-ceiling.ts';
@@ -202,7 +203,8 @@ export class AutoApproveService {
    *  fast model's timeout. The heavy model is usually cold, so it needs a longer
    *  budget than the fast path. */
   private readonly escalateTimeoutMs: number;
-  /** Phase 2 reviewer mode. `shadow` is telemetry-only; rollout is later. */
+  /** Phase 2 reviewer mode. `shadow` is telemetry-only; `verified` is the
+   * proof- and provenance-gated phase 4 rollout. */
   private readonly riskReviewMode: RiskReviewMode;
   /** True when the provider is the Yooz engine (enables the /v1/llm/preload warm-up). */
   private readonly providerIsYooz: boolean;
@@ -853,6 +855,121 @@ export class AutoApproveService {
   }
 
   /**
+   * Run the phase 4 decision-changing path for one narrowly proven command.
+   *
+   * The proof is checked before the model call and is the authority for effect
+   * shape. The reviewer receives the same measured authorization prompt as
+   * shadow mode, but its matrix result can influence this result only after
+   * all of these code-level gates pass:
+   *
+   * - Bash, main context, and the ordinary primary evaluation (not an
+   *   escalate_model or multi-choice dispatch);
+   * - every shell leaf is in the finite read-only proof language;
+   * - the deterministic risk classifier finds no `critical` deny-floor
+   *   match. A proven read-only command may carry a non-critical `high` band
+   *   from lexical uncertainty (for example, an assignment or a branch name
+   *   containing `rm`); the proof removes that uncertainty and normalizes it
+   *   to the effective `moderate` band. Critical matches remain a hard stop;
+   * - the session has non-empty current authority text; and
+   * - the reviewer returns a valid grade whose provenance-capped matrix says
+   *   `approve`.
+   *
+   * Once verified mode is selected for a Bash request, every proof,
+   * provenance, risk, or reviewer failure returns an escalation. Falling back
+   * to the primary model in that case would let an unverified verdict undo the
+   * very gate that selected this path. The caller still bypasses this method
+   * for deterministic rules, design questions, multi-choice prompts, and
+   * subagent permissions before a slot is acquired.
+   */
+  private async runVerifiedReadReview(
+    toolInput: Record<string, unknown>,
+    authority: string | undefined,
+    model: string,
+    signal: AbortSignal,
+    deadlineAt: number,
+    prefix: string,
+    start: number,
+  ): Promise<AutoApproveResult> {
+    const command = typeof toolInput['command'] === 'string' ? toolInput['command'] : '';
+    const durationMs = (): number => Date.now() - start;
+    const escalate = (reasoning: string): AutoApproveResult => ({
+      decision: 'escalate',
+      reasoning,
+      durationMs: durationMs(),
+      model,
+    });
+
+    const proof = proveCompoundReadOnly(command);
+    if (proof.status !== 'proved') {
+      // Unknown shell analysis is a hard failure for this mode. Falling back
+      // to the primary model here would let a model reason its way around the
+      // effect proof that is supposed to bound this rollout.
+      const reasoning = `Verified read-only review (#1081): deterministic effect proof rejected (${proof.reason}); unknown shell analysis cannot be approved in verified mode, so escalating.`;
+      this.logFn(`${prefix} VERIFIED REVIEW Bash: status=proof-rejected proof=${proof.reason}`);
+      return escalate(reasoning);
+    }
+
+    const classifiedRisk = classifyRisk('Bash', toolInput);
+    // The general classifier intentionally errs high when it cannot prove
+    // shell assignments/substitutions or when a harmless argument contains a
+    // dangerous word. This proof has now established that every leaf is
+    // read-only, so retaining those non-critical false positives would make
+    // the verified path unable to handle the observed inventory loops. The
+    // critical deny-floor result is different: it is a machine-wide safety
+    // floor and survives the proof, including quoted text that matches it.
+    const riskBand = classifiedRisk === 'critical' ? 'critical' : 'moderate';
+    const authorityPresent = (authority?.trim().length ?? 0) > 0;
+    if (riskBand !== 'moderate') {
+      const reasoning = `Verified read-only review (#1081): deterministic proof passed, but risk band=${riskBand} is outside the moderate-risk rollout; escalating.`;
+      this.logFn(
+        `${prefix} VERIFIED REVIEW Bash: status=risk-mismatch proof=proved classified_risk=${classifiedRisk} risk=${riskBand} leaves=${proof.leaves.length}`,
+      );
+      return escalate(reasoning);
+    }
+    if (!authorityPresent) {
+      const reasoning =
+        'Verified read-only review (#1081): deterministic proof passed, but this session has no current human authorization context; escalating.';
+      this.logFn(
+        `${prefix} VERIFIED REVIEW Bash: status=missing-authority proof=proved risk=moderate leaves=${proof.leaves.length}`,
+      );
+      return escalate(reasoning);
+    }
+
+    const review = await this.runShadowReview(
+      'Bash',
+      toolInput,
+      authority,
+      riskBand,
+      model,
+      signal,
+      deadlineAt,
+    );
+    if (review.kind !== 'ok') {
+      const reasoning = `Verified read-only review (#1081): deterministic proof passed, but the authorization reviewer was ${review.kind}; escalating.`;
+      this.logFn(
+        `${prefix} VERIFIED REVIEW Bash: status=${review.kind} proof=proved risk=moderate leaves=${proof.leaves.length}`,
+      );
+      return escalate(reasoning);
+    }
+
+    const matrix = review.review.matrixDecision;
+    const decision = matrix === 'approve' ? 'approve' : 'escalate';
+    const reasoning =
+      decision === 'approve'
+        ? `Verified read-only review (#1081): deterministic proof passed (${proof.leaves.length} read leaves), risk=moderate, authorization matrix=approve (grade=${review.review.authorization}).`
+        : `Verified read-only review (#1081): deterministic proof passed (${proof.leaves.length} read leaves), risk=moderate, authorization matrix=escalate (grade=${review.review.authorization}).`;
+    this.logFn(
+      `${prefix} VERIFIED REVIEW Bash: status=ok proof=proved risk=moderate leaves=${proof.leaves.length} observed_auth=${review.review.observedAuthorization} auth=${review.review.authorization} matrix=${matrix} final=${decision}`,
+    );
+    return {
+      decision,
+      reasoning,
+      durationMs: durationMs(),
+      model,
+    };
+  }
+
+  /**
    * Evaluate a permission request. Never throws.
    * On any error, returns escalate so the user gets the question as normal.
    *
@@ -1137,8 +1254,39 @@ export class AutoApproveService {
         // Multi-choice + evaluate mode: dedicated prompt, optional alt model.
         // Otherwise the binary approve/deny prompt.
         const useMultiChoice = isMultiChoice && this.multichoiceMode === 'evaluate';
+        const authorityPresent = (authority?.trim().length ?? 0) > 0;
         const callModel =
           useMultiChoice && this.multichoiceModel ? this.multichoiceModel : baseModel;
+
+        // #1081 phase 4: the verified reviewer replaces the ordinary primary
+        // call only for the finite, deterministic read-only language. It is
+        // deliberately main-context-only: subagent permissions stay with the
+        // PTY arbiter (#807/#814), and an escalate_model call is already a
+        // second opinion with its own contract. Once selected, this path is
+        // fail-closed: proof, risk, provenance, and reviewer failures all
+        // escalate rather than falling through to an unverified model result.
+        if (
+          this.riskReviewMode === 'verified' &&
+          !useMultiChoice &&
+          isSubagent !== true &&
+          modelOverride === undefined &&
+          toolName === 'Bash'
+        ) {
+          const verified = await this.runVerifiedReadReview(
+            toolInput,
+            authority,
+            callModel,
+            externalSignal,
+            start + timeoutMs,
+            prefix,
+            start,
+          );
+          // Match the normal success path: a cancellation that races after
+          // the reviewer settled must not poison the next evaluation.
+          this.cancelReason = null;
+          return verified;
+        }
+
         // Reuse the base config only when neither the model nor the timeout
         // differs; the escalate_model path overrides both.
         const callConfig: LLMClientConfig =
@@ -1267,7 +1415,6 @@ export class AutoApproveService {
           }
         }
 
-        const authorityPresent = (authority?.trim().length ?? 0) > 0;
         if (!useMultiChoice && authorityPresent && result.decision === 'approve') {
           const guarded = enforceAuthorityBoundary(toolName, toolInput, result.decision, true);
           if (guarded.overridden) {

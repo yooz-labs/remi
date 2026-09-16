@@ -1,5 +1,6 @@
 /**
- * Advisory risk/authorization review for phase 2 of epic #1081.
+ * Advisory and verified risk/authorization review for phases 2 and 4 of epic
+ * #1081.
  *
  * This module deliberately does NOT decide whether an operation runs. The
  * operation risk band comes from the deterministic classifier, and the model
@@ -12,7 +13,9 @@
  * that asking the model to decide and interpret authority in one response lets
  * topical mention move a verdict. The #976 grading sweep measured the
  * authorization question as a separate task. This module wires that measured
- * question into an opt-in, behavior-preserving review path.
+ * question into an opt-in, behavior-preserving shadow path. Phase 4 may use
+ * the same call in a decision-changing path, but only after the deterministic
+ * read-only proof, moderate-risk ceiling, and session-context gates pass.
  */
 
 import {
