@@ -7,6 +7,9 @@
  */
 
 import type { AutoApproveLevel } from './levels.ts';
+
+/** Phase 2 advisory and phase 4 verified reviewer modes. */
+export type RiskReviewMode = 'off' | 'shadow' | 'verified';
 /**
  * Possible decisions returned by AutoApproveService.evaluate().
  *
@@ -67,6 +70,13 @@ export type AutoApproveDecisionResult =
        *  title/body instead of the raw "Allow Bash: <command>". Absent for
        *  approve/deny, pattern-matched verdicts, or when the model omits it. */
       readonly summary?: string | undefined;
+      /**
+       * #1081 phase 4: this escalation came from the verified read-only path
+       * and is terminal for the gate. It must not be sent to `escalate_model`,
+       * because that would let an unverified second opinion undo a proof,
+       * provenance, risk, or reviewer failure.
+       */
+      readonly suppressSecondOpinion?: true;
       /** #1015: which mechanism produced a `deny`. Present on `deny` results
        *  only; absent on approve/escalate.
        *
@@ -218,6 +228,16 @@ export interface AutoApproveConfig {
    * auditable, and the `residual_action` ADR for the wire-reason evidence.
    */
   readonly residual_action: ResidualAction;
+  /**
+   * Risk/authorization reviewer. `shadow` runs the measured authorization
+   * grader for telemetry only; it never changes the final decision. `verified`
+   * is the opt-in phase 4 path: only a deterministic read-only effect proof,
+   * a moderate risk band, and current session authorization may reach the
+   * reviewer. Its approve is still bounded by those code-level gates; every
+   * proof, provenance, model, or risk failure escalates. Default/off preserves
+   * the existing one-call behavior.
+   */
+  readonly risk_review?: RiskReviewMode;
   /**
    * Patterns that short-circuit to approve without calling the LLM.
    *

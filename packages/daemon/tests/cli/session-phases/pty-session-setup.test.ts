@@ -259,6 +259,77 @@ describe('createPtySessionForSession', () => {
       }
     }
   });
+
+  test('onExit continues cleanup when session-store persistence is locked', async () => {
+    const fakeBin = path.join(tmpDir, 'locked-bin');
+    fs.mkdirSync(fakeBin, { recursive: true });
+    const fakeClaude = path.join(fakeBin, 'claude');
+    fs.writeFileSync(fakeClaude, '#!/bin/sh\nexit 0\n');
+    fs.chmodSync(fakeClaude, 0o755);
+
+    liveSessionsRegistry.register({
+      sessionId: SID,
+      pid: process.pid,
+      wsPort: 9999,
+      hookPort: 9998,
+      projectPath: tmpDir,
+      name: 'locked-store-exit-test',
+      startedAt: new Date().toISOString(),
+      claudeChildPid: process.pid,
+    });
+    const lockPath = path.join(tmpDir, 'sessions.json.lock');
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({
+        version: 1,
+        ownerId: 'live-owner',
+        pid: process.pid,
+        host: os.hostname(),
+        acquiredAt: Date.now(),
+      }),
+      'utf-8',
+    );
+
+    const exitCalls: number[] = [];
+    const pty = createPtySessionForSession(
+      {
+        sessionRegistry,
+        sessionStore,
+        liveSessionsRegistry,
+        outputProcessor,
+        wsPort: 9999,
+        sendMessage: (sid, message) => sendCalls.push({ sessionId: sid, message }),
+        cleanup: async () => {},
+        exitProcess: (code) => exitCalls.push(code),
+      },
+      { sessionId: SID, workingDirectory: tmpDir, extraArgs: [], passThrough: false },
+    );
+    sessionRegistry.registerSession(SID, tmpDir, pty, fakeMessageAPI);
+
+    const originalPath = process.env['PATH'];
+    process.env['PATH'] = `${fakeBin}:${originalPath ?? ''}`;
+    try {
+      await pty.start();
+      const deadline = Date.now() + 6000;
+      while (Date.now() < deadline && exitCalls.length === 0) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(exitCalls).toEqual([0]);
+      expect(liveSessionsRegistry.findBySessionId(SID)?.claudeChildExited).toBe(true);
+    } finally {
+      process.env['PATH'] = originalPath ?? '';
+      try {
+        await pty.close();
+      } catch {
+        /* already exited */
+      }
+      try {
+        fs.unlinkSync(lockPath);
+      } catch {
+        /* cleanup */
+      }
+    }
+  });
 });
 
 // #932 review finding 3: the wrapper's onRawData wiring (observeLocalPtyOutput)

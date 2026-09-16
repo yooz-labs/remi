@@ -346,7 +346,13 @@ export function createPtySessionForSession(
         log(`PTY ${ptySession.id} exited with code ${code}`);
         clearPtyOutput(sessionId); // #627: drop the rolling output buffer
         sessionRegistry.handlePTYExit(sessionId);
-        sessionStore.markExited(sessionId, code);
+        try {
+          sessionStore.markExited(sessionId, code);
+        } catch (err) {
+          // SessionStore is durable bookkeeping, but a lock timeout or disk
+          // failure must not prevent PTY cleanup and daemon shutdown.
+          logError(`[SessionStore] markExited failed for ${sessionId}: ${errorToString(err)}`);
+        }
         // The daemon process can outlive its Claude child (daemon mode). Record
         // the child as dead so co-located daemons stop counting us as a live
         // sibling and their rotation handling is not wedged (#451). Best-effort.

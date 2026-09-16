@@ -11,7 +11,14 @@ export {
   type SessionRegistryEvents,
 } from './session-registry.ts';
 
-export { SessionStore, type StoredSession } from './session-store.ts';
+export {
+  AmbiguousSessionIdentityError,
+  InterprocessFileLockError,
+  MalformedSessionStoreError,
+  resolveStoredSession,
+  SessionStore,
+  type StoredSession,
+} from './session-store.ts';
 
 export { SessionBindingStore, type SessionBinding } from './session-binding-store.ts';
 

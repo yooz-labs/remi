@@ -413,6 +413,12 @@ export const DEFAULT_CONFIG: RemiConfig = {
     base_url: 'http://127.0.0.1:19924',
     timeout: 30,
     log_decisions: true,
+    // Risk/authorization review is opt-in. Shadow is telemetry-only; verified
+    // is the phase 4 decision-changing path and is itself bounded by the
+    // deterministic read-only proof, moderate-risk ceiling, and session
+    // authorization matrix (#1081). Keep the default off until an operator
+    // explicitly enables the measured rollout.
+    risk_review: 'off',
     // What escalateMain does with a main-agent BINARY operation it cannot
     // approve (#1045 phase 6): "escalate" (default, ask the human, no reason
     // possible on the wire) or "deny" (refuse with a reason, no ping). Deny
@@ -813,6 +819,16 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
   expectBool('enabled', cfg.enabled);
   expectBool('log_decisions', cfg.log_decisions);
   expectBool('disable_thinking', cfg.disable_thinking);
+  if (
+    cfg.risk_review !== undefined &&
+    cfg.risk_review !== 'off' &&
+    cfg.risk_review !== 'shadow' &&
+    cfg.risk_review !== 'verified'
+  ) {
+    throw new Error(
+      `Invalid auto_approve.risk_review in ${configPath}: must be "off", "shadow", or "verified", got ${JSON.stringify(cfg.risk_review)}. Example: risk_review = "verified"`,
+    );
+  }
   expectString('provider', cfg.provider);
   // #809: ollama support was removed outright (no compatibility shim, no
   // silent fallback to a different provider) -- a config that still names it
@@ -1196,6 +1212,10 @@ export function applyEnvOverrides(config: RemiConfig): RemiConfig {
   if (mc === 'skip' || mc === 'evaluate') {
     (auto_approve as { multichoice: 'skip' | 'evaluate' }).multichoice = mc;
   }
+  const riskReview = env['REMI_AUTO_APPROVE_RISK_REVIEW'];
+  if (riskReview === 'off' || riskReview === 'shadow' || riskReview === 'verified') {
+    (auto_approve as { risk_review: 'off' | 'shadow' | 'verified' }).risk_review = riskReview;
+  }
   if (env['REMI_AUTO_APPROVE_MULTICHOICE_MODEL']) {
     (auto_approve as { multichoice_model: string }).multichoice_model =
       env['REMI_AUTO_APPROVE_MULTICHOICE_MODEL'];
@@ -1454,6 +1474,11 @@ turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_sec
 #                                  # model without paying its latency for
 #                                  # every binary permission. Ignored unless
 #                                  # multichoice = "evaluate".
+# risk_review = "off"              # "shadow" = telemetry-only measured
+#                                  # authorization grader; "verified" = the
+#                                  # opt-in phase 4 path for deterministic,
+#                                  # moderate-risk compound reads with current
+#                                  # session authorization. Failures escalate.
 # escalate_model = ""              # Second opinion on a primary 'escalate'
 #                                  # (main context only). Put a heavy model here
 #                                  # to honor a broad approve policy without
@@ -1600,6 +1625,7 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(`  base_url = "${config.auto_approve.base_url}"`);
   lines.push(`  timeout = ${config.auto_approve.timeout}`);
   lines.push(`  log_decisions = ${config.auto_approve.log_decisions}`);
+  lines.push(`  risk_review = "${config.auto_approve.risk_review ?? 'off'}"`);
   lines.push(`  residual_action = "${config.auto_approve.residual_action}"`);
   lines.push(`  allow = [${config.auto_approve.allow.map((s) => `"${s}"`).join(', ')}]`);
   lines.push(`  deny = [${config.auto_approve.deny.map((s) => `"${s}"`).join(', ')}]`);

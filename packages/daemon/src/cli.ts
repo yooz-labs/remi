@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.7.9'; // REMI_COMPILED_VERSION
+      return '0.7.10-dev.2'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.7.9'; // REMI_COMPILED_VERSION
+    return '0.7.10-dev.2'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -207,6 +207,7 @@ import {
 import { OutputProcessor } from './parser/output-processor.ts';
 import { PTYManager, type PTYSession } from './pty/index.ts';
 import {
+  AmbiguousSessionIdentityError,
   DEFAULT_BASE_PORT,
   DEFAULT_PORT_RANGE,
   PendingQuestionCreatedAtTracker,
@@ -216,6 +217,7 @@ import {
   SessionStore,
   type StoredSession,
   TranscriptIndex,
+  resolveStoredSession,
 } from './session/index.ts';
 import { findAvailableTcpPort } from './session/port-utils.ts';
 import { traceQuestionEvent } from './session/question-trace.ts';
@@ -670,27 +672,31 @@ if (cliResume !== undefined) {
   const store = new SessionStore();
   let session: StoredSession | null = null;
 
-  if (cliResume === true) {
-    session = store.getMostRecent();
-    if (!session) {
-      console.error('No sessions to resume. Run `remi --sessions` to see stored sessions.');
-      process.exit(1);
+  try {
+    if (cliResume === true) {
+      session = store.getMostRecent();
+      if (!session) {
+        console.error('No sessions to resume. Run `remi --sessions` to see stored sessions.');
+        process.exit(1);
+      }
+    } else {
+      // Resolve exact Remi, unique Remi prefix, then Claude identity without
+      // ever selecting the first row when the store is ambiguous.
+      session = resolveStoredSession(store.list(), cliResume as string);
     }
-  } else {
-    // Try exact match first, then prefix match
-    session = store.findByRemiSessionId(cliResume as UUID);
-    if (!session) {
-      const all = store.list();
-      session = all.find((s) => s.remiSessionId.startsWith(cliResume as string)) ?? null;
-    }
-    if (!session) {
-      session = store.findByClaudeSessionId(cliResume as string);
-    }
-    if (!session) {
-      console.error(`Session not found: ${cliResume}`);
-      console.error('Run `remi --sessions` to see stored sessions.');
-      process.exit(1);
-    }
+  } catch (err) {
+    const reason =
+      err instanceof AmbiguousSessionIdentityError
+        ? err.message
+        : `Could not read stored sessions: ${errorToString(err)}`;
+    console.error(reason);
+    process.exit(1);
+  }
+
+  if (!session) {
+    console.error(`Session not found: ${cliResume}`);
+    console.error('Run `remi --sessions` to see stored sessions.');
+    process.exit(1);
   }
 
   if (!session.claudeSessionId) {
@@ -1985,7 +1991,11 @@ async function createNewSession(
   try {
     await ptySession.start();
   } catch (err) {
-    sessionStore.markExited(sessionId, null);
+    try {
+      sessionStore.markExited(sessionId, null);
+    } catch (persistErr) {
+      logError(`[Session ${sessionId}] Failed to persist failed spawn:`, persistErr);
+    }
     throw err;
   }
 

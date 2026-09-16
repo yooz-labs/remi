@@ -307,6 +307,7 @@ describe('formatConfig', () => {
     const output = formatConfig(DEFAULT_CONFIG, path.join(TEST_DIR, 'nonexistent.toml'));
     expect(output).toContain('[auto_approve]');
     expect(output).toContain('enabled = false');
+    expect(output).toContain('risk_review = "off"');
     // Platform-dependent by design (#822): the engine on Apple Silicon, a
     // llama.cpp sidecar on Linux. Asserting a literal here passes on a macOS
     // dev machine and fails on Linux CI, which is exactly what happened.
@@ -480,6 +481,7 @@ describe('auto_approve config', () => {
       base_url: 'http://127.0.0.1:19924',
       timeout: 30,
       log_decisions: true,
+      risk_review: 'off' as const,
       // #1045 phase 6: escalate is the safe, byte-for-byte pre-#1045 default.
       residual_action: 'escalate' as const,
       allow: ['Read', 'Glob', 'Grep'],
@@ -1098,6 +1100,54 @@ describe('auto_approve.residual_action (#1045 phase 6)', () => {
     } finally {
       console.warn = original;
     }
+  });
+});
+
+describe('auto_approve.risk_review (#1081 phases 2-4)', () => {
+  function load(toml: string) {
+    fs.writeFileSync(TEST_CONFIG, toml);
+    return loadConfig(TEST_CONFIG);
+  }
+
+  test('defaults to off', () => {
+    expect(load('[auto_approve]\nenabled = true\n').auto_approve.risk_review).toBe('off');
+  });
+
+  test('accepts the opt-in shadow mode', () => {
+    expect(load('[auto_approve]\nrisk_review = "shadow"\n').auto_approve.risk_review).toBe(
+      'shadow',
+    );
+  });
+
+  test('accepts the opt-in verified mode', () => {
+    expect(load('[auto_approve]\nrisk_review = "verified"\n').auto_approve.risk_review).toBe(
+      'verified',
+    );
+  });
+
+  test('supports the explicit environment opt-in', () => {
+    process.env['REMI_AUTO_APPROVE_RISK_REVIEW'] = 'shadow';
+    try {
+      expect(applyEnvOverrides(DEFAULT_CONFIG).auto_approve.risk_review).toBe('shadow');
+    } finally {
+      // biome-ignore lint/performance/noDelete: test isolation
+      delete process.env['REMI_AUTO_APPROVE_RISK_REVIEW'];
+    }
+  });
+
+  test('supports the explicit verified environment opt-in', () => {
+    process.env['REMI_AUTO_APPROVE_RISK_REVIEW'] = 'verified';
+    try {
+      expect(applyEnvOverrides(DEFAULT_CONFIG).auto_approve.risk_review).toBe('verified');
+    } finally {
+      // biome-ignore lint/performance/noDelete: test isolation
+      delete process.env['REMI_AUTO_APPROVE_RISK_REVIEW'];
+    }
+  });
+
+  test('rejects unknown modes instead of silently enabling a new behavior', () => {
+    expect(() => load('[auto_approve]\nrisk_review = "live"\n')).toThrow(/risk_review/);
+    expect(() => load('[auto_approve]\nrisk_review = 1\n')).toThrow(/risk_review/);
   });
 });
 
