@@ -33,7 +33,8 @@ Add a narrow `gh-read` permission group and include it in every shipped level.
 It covers only syntax that can be proven to be an output-only `gh api` GET:
 one endpoint, optional read/output flags, and explicit GET method forms. POST,
 PATCH, DELETE, field/body/input flags, unknown flags, extra endpoints, and
-shell-control forms continue to fall through to the model/human path.
+shell-control forms or unquoted argv-changing shell expansions continue to
+fall through to the model/human path.
 
 This deliberately does not make arbitrary `curl`, `wget`, `ssh`, WebFetch, or
 WebSearch silently approved. Remote reads are a separate egress policy and

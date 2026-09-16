@@ -495,6 +495,8 @@ describe('gh-read: output-only GitHub API GETs', () => {
   const safe = [
     'gh api /repos/yooz-labs/remi/pulls',
     'gh api repos/yooz-labs/remi/issues --paginate --slurp',
+    'gh api repos/{owner}/{repo}/issues',
+    "gh api '/search/issues?q=remi&per_page=100'",
     "gh api /repos/yooz-labs/remi/pulls --jq '[].title'",
     "gh api /repos/yooz-labs/remi/pulls --template '{{range .}}{{.title}}{{end}}'",
     'gh api -X GET /repos/yooz-labs/remi/pulls',
@@ -527,6 +529,12 @@ describe('gh-read: output-only GitHub API GETs', () => {
     'gh api --method /repos/yooz-labs/remi/pulls',
     'gh api --unknown /repos/yooz-labs/remi/pulls',
     'gh api https://example.com/secret',
+    'gh api $GH_API_ARGS',
+    'gh api "$GH_API_ARGS"',
+    'gh api /repos/o/r/issues --preview $GH_API_ARGS',
+    'gh api /repos/o/r/issues *',
+    'gh api /repos/o/r/issues?state=*',
+    'gh api /repos/{owner,repo}/issues',
   ];
 
   for (const command of unsafe) {

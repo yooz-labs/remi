@@ -425,8 +425,9 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // against a Bash command string (#536 — until that fix it was, so this
     // very list approved `rm -rf Readme`). A Bash entry added here is matched
     // per compound segment with a shell-control veto, so an approved segment
-    // cannot carry an unapproved one. Bash git/gh commands are still not
-    // defaulted; the LLM prompt evaluates those in full.
+    // cannot carry an unapproved one. Bash git commands and arbitrary gh
+    // commands are still not defaulted; the narrow gh-read group below covers
+    // only output-only REST GETs.
     allow: ['Read', 'Glob', 'Grep'],
     deny: [],
     // Background-agent commands worth a heads-up even though they ran (#807).

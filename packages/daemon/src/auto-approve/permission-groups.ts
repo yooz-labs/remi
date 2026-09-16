@@ -1478,6 +1478,91 @@ const GH_API_READ_BOOLEAN_FLAGS = new Set(['--include', '-i', '--paginate', '--s
 const GH_API_READ_VALUE_FLAGS = new Set(['--jq', '-q', '--template', '-t', '--preview', '-p']);
 
 /**
+ * Refuse shell expansions that can change the `gh api` argv after this parser
+ * has inspected it. `shellWords` intentionally removes quotes/escapes but does
+ * not expand variables, globs, or braces; an unquoted `$ARGS` could therefore
+ * look like one endpoint here while expanding into `-X POST ...` at runtime.
+ * Quoted literals remain usable, including the braces in a quoted template.
+ */
+function hasUnsafeGhApiExpansion(segment: string): boolean {
+  let quote: '"' | "'" | "$'" | null = null;
+  let braceDepth = 0;
+  let braceExpansion = false;
+
+  for (let index = 0; index < segment.length; index++) {
+    const character = segment[index];
+    const next = segment[index + 1];
+    if (character === undefined) break;
+
+    if (quote === "'") {
+      if (character === "'") quote = null;
+      continue;
+    }
+    if (quote === "$'") {
+      if (character === '\\' && next !== undefined) {
+        index++;
+        continue;
+      }
+      if (character === "'") quote = null;
+      continue;
+    }
+    if (quote === '"') {
+      if (character === '\\' && next !== undefined && ['"', '\\', '$', '`', '\n'].includes(next)) {
+        index++;
+        continue;
+      }
+      if (character === '$' || character === '`') return true;
+      if (character === '"') quote = null;
+      continue;
+    }
+
+    if (character === '\\') {
+      if (next !== undefined) index++;
+      continue;
+    }
+    if (character === '$' && next === "'") {
+      quote = "$'";
+      index++;
+      continue;
+    }
+    if (character === "'") {
+      quote = "'";
+      continue;
+    }
+    if (character === '"') {
+      quote = '"';
+      continue;
+    }
+
+    // Unquoted variable expansion can add flags, endpoints, or body options.
+    if (character === '$' || character === '`') return true;
+    // Unquoted pathname expansion can turn one token into several argv words,
+    // including option-looking filenames.
+    if (['*', '?', '[', ']'].includes(character)) return true;
+    // Only brace forms that Bash actually expands are vetoed; simple GitHub
+    // placeholders such as `{owner}` remain valid endpoint text.
+    if (character === '{') {
+      braceDepth++;
+      continue;
+    }
+    if (braceDepth > 0) {
+      if (character === ',' || (character === '.' && next === '.')) {
+        braceExpansion = true;
+      }
+      if (character === '}') {
+        braceDepth--;
+        if (braceDepth === 0) {
+          if (braceExpansion) return true;
+          braceExpansion = false;
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
+/**
  * Refuse every `gh api` shape except an output-only GET.
  *
  * The group prefix proves only that the executable/subcommand is `gh api`; it
@@ -1493,6 +1578,7 @@ const GH_API_READ_VALUE_FLAGS = new Set(['--jq', '-q', '--template', '-t', '--pr
  * arbitrary egress into a 0 ms approval.
  */
 function ghApiReadVeto(segment: string): boolean {
+  if (hasUnsafeGhApiExpansion(segment)) return true;
   const words = shellWords(segment);
   if (words[0] !== 'gh' || words[1] !== 'api') return true;
 
@@ -1556,7 +1642,14 @@ function ghApiReadVeto(segment: string): boolean {
 /** Endpoint forms accepted by `gh-read`; relative REST paths only. */
 function isUnsafeGhApiEndpoint(endpoint: string): boolean {
   if (endpoint === '') return true;
-  if (endpoint.startsWith('//') || /^[a-z][a-z0-9+.-]*:/i.test(endpoint)) return true;
+  if (
+    endpoint.startsWith('//') ||
+    endpoint.startsWith('~') ||
+    endpoint.includes('$') ||
+    /^[a-z][a-z0-9+.-]*:/i.test(endpoint)
+  ) {
+    return true;
+  }
   const firstPathPart = endpoint.replace(/^\/+/, '').split(/[/?#]/, 1)[0]?.toLowerCase();
   // GitHub's GraphQL endpoint is POST-oriented and its query body is outside
   // the GET/output-only contract even when a caller spells a method flag.
@@ -1745,7 +1838,8 @@ export const BUILTIN_GROUPS: Readonly<Record<string, PermissionGroup>> = {
   },
   /**
    * Outbound reads (ADR 0025). In NO level preset and in no shipped default —
-   * every preset stays entirely local, and this one must be asked for by name.
+   * arbitrary-URL access still must be asked for by name. The separate
+   * `gh-read` group is a narrower, explicitly parsed GitHub REST surface.
    *
    * It exists because `WebFetch`/`WebSearch` previously matched nothing at all,
    * so every web call from every subagent parked, rendered and entered the

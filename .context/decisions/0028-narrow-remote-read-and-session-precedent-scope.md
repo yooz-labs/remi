@@ -24,7 +24,8 @@ unresolved.
 Add `gh-read` as a curated group in every level. It approves only one relative
 REST endpoint with output/formatting flags and explicit GET forms. It rejects
 mutation methods, body/input/header/cache/verbose flags, unknown options, extra
-positionals, GraphQL, absolute URLs, and shell-control forms. Arbitrary
+positionals, GraphQL, absolute URLs, shell-control forms, and unquoted
+argv-changing shell expansions. Arbitrary
 `curl`, `wget`, `ssh`, `WebFetch`, and `WebSearch` remain outside shipped
 presets; they require an explicit policy choice.
 
