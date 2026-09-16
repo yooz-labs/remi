@@ -447,14 +447,14 @@ export const DEFAULT_CONFIG: RemiConfig = {
       'chmod 777',
     ],
     // Built-in read-by-definition groups, fast-pathed without an LLM call
-    // using compound-segment-aware matching (epic #494). All three on by
-    // default so enabling auto-approve immediately stops paying LLM latency
-    // for reads / VCS queries / read-only build+test runs.
-    approve_groups: ['read-only', 'vcs-read', 'build-test'],
-    // Strictness preset (#963). `strict` reproduces exactly the
-    // `approve_groups` line above, so an install that never sets this behaves
-    // as it always has. Raising it to "balanced"/"trusted" swaps in the
-    // write-side groups (#959).
+    // using compound-segment-aware matching (epic #494). The local reads,
+    // VCS queries, output-only GitHub REST GETs, and read-only build/test runs
+    // are on by default; remote mutation and arbitrary network tools are not.
+    approve_groups: ['read-only', 'vcs-read', 'gh-read', 'build-test'],
+    // Strictness preset (#963). `strict` reproduces the
+    // `approve_groups` line above, including the separately parsed `gh-read`
+    // group. Raising it to "balanced"/"trusted" swaps in the write-side
+    // groups (#959).
     level: DEFAULT_AUTO_APPROVE_LEVEL,
     deny_groups: [],
     instructions: '',
@@ -517,22 +517,13 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // "no" downgrades a model approve to escalate) is a TIGHTENING and stays
     // on regardless of this flag.
     //
-    // OFF by default, deliberately, and not because the mechanism is unfinished.
-    // Four review rounds on #1017 each found the same defect class -- the
-    // signature used as the authorization key drops something that changes what
-    // the operation does (Write's `content`, Read's extent, `cmd` vs `command`,
-    // collapsed indentation). Each was closed. One instance is KNOWN and still
-    // OPEN: a Bash signature carries no `cwd` (#1019), so `git push origin
-    // feature/x` approved in one worktree silently authorizes the identical
-    // command in another -- and worktrees are this project's own documented
-    // workflow. Closing it needs the signature to carry more than
-    // `Question.text` can (#990).
-    //
-    // Shipping a privilege-GRANTING path on by default with a known-unfixed
-    // escalation is the wrong trade. Flip this to true once #1019 lands; until
-    // then it is opt-in for anyone who wants the convenience and understands
-    // the boundary.
-    session_precedent: false,
+    // ON by default now that the authorization key is exact command text plus
+    // a private, normalized working-directory context. The context is never
+    // put on `Question`/the wire, and a missing context fails closed. The
+    // store is still per session and in-memory; an explicit false in an
+    // existing config continues to opt out. Critical operations remain
+    // bounded by the risk matrix and ask again.
+    session_precedent: true,
     // Hold a binary main-context PermissionRequest hook open until the user
     // answers (Model B, #573). Large + human-paced; on expiry it fails open to
     // the native prompt. 0 disables holding (escalate -> passthrough as before).
@@ -959,7 +950,7 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
   }
   if (!isStringArray(cfg.approve_groups)) {
     throw new Error(
-      `Invalid auto_approve.approve_groups in ${configPath}: must be an array of group names. Known groups: ${knownGroupNames().join(', ')}. Example: approve_groups = ["read-only", "vcs-read"]`,
+      `Invalid auto_approve.approve_groups in ${configPath}: must be an array of group names. Known groups: ${knownGroupNames().join(', ')}. Example: approve_groups = ["read-only", "vcs-read", "gh-read", "build-test"]`,
     );
   }
   if (!isStringArray(cfg.subagent_alert)) {
@@ -1358,6 +1349,7 @@ turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_sec
 #
 #   read-only   Read/Glob/Grep/NotebookRead + cat, grep, ls, jq, ...
 #   vcs-read    git status/log/diff/show, gh pr view/list, ...
+#   gh-read     output-only gh api REST GETs (single endpoint; no body)
 #   build-test  bun test, tsc --noEmit, biome check, pytest, ...
 #   fs-write    Write/Edit/NotebookEdit + mkdir, touch, tee, cp, mv
 #   vcs-write   git add/commit/checkout/switch/merge, stash push, worktree add
@@ -1412,7 +1404,7 @@ turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_sec
 # Remote mutation stays an escalation everywhere.
 # Strictness preset. Selects which of the groups above are auto-approved:
 #
-#   strict     read-only + vcs-read + build-test   (the default; today's behavior)
+#   strict     read-only + vcs-read + gh-read + build-test (the default)
 #   balanced   strict   + fs-write + scratch
 #   trusted    balanced + vcs-write + artifact-clean
 #
@@ -1420,13 +1412,14 @@ turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_sec
 # daemon logs that it did -- so a config written before levels existed keeps
 # behaving exactly as it always has.
 # level = "strict"
-# approve_groups = ["read-only", "vcs-read", "build-test"]
+# approve_groups = ["read-only", "vcs-read", "gh-read", "build-test"]
 # deny_groups = []
 #
 # "net-read" (WebFetch + WebSearch) is a real group but is in NO preset and no
-# default -- every shipped preset is entirely local. Ask for it by name, and
-# prefer asking per agent (below) over machine-wide: WebFetch takes an
-# arbitrary URL, and a subagent is the context nobody is watching (ADR 0025).
+# default. The shipped remote-read surface is the narrower gh-read group above;
+# ask for arbitrary web access by name, and prefer asking per agent
+# (below) over machine-wide: WebFetch takes an arbitrary URL, and a subagent
+# is the context nobody is watching (ADR 0025).
 #
 # Per-agent-type overrides, keyed by the hook's agent_type. This is the only
 # layer a subagent reaches at hook time (the LLM never runs there -- ADR 0004),
@@ -1510,7 +1503,7 @@ turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_sec
 #                                  # auto-decided by the LLM (design / plan-mode
 #                                  # / long-form questions). Add custom MCP tools
 #                                  # that solicit user intent.
-# session_precedent = false        # Reuse an answer you already gave THIS
+# session_precedent = true         # Reuse an answer you already gave THIS
 #                                  # session for the byte-identical operation,
 #                                  # so the third "git push origin feature/x"
 #                                  # does not ask a third time. Bounded by risk
@@ -1518,8 +1511,8 @@ turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_sec
 #                                  # every time. Session-scoped and in-memory --
 #                                  # for a durable rule use "allow". Setting
 #                                  # false does NOT discard an earlier "no";
-#                                  # that half always applies. OFF by default
-#                                  # until #1019 (a signature carries no cwd).
+#                                  # that half always applies. The match is
+#                                  # private to this session and cwd-bound.
 # residual_action = "escalate"     # What a main-agent binary operation
 #                                  # auto-approve cannot approve becomes:
 #                                  # "escalate" (default; ask the human, a

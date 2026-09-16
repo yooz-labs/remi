@@ -2449,6 +2449,7 @@ describe('createInputHandlers', () => {
       toolName: string;
       signature: string;
       decision: 'approved' | 'denied';
+      workingDirectory: string;
     };
 
     function registerPermissionQuestion(
@@ -2495,8 +2496,8 @@ describe('createInputHandlers', () => {
         sessionRegistry,
         bindingStore,
         send,
-        recordPrecedent: (sessionId, toolName, signature, decision) => {
-          calls.push({ sessionId, toolName, signature, decision });
+        recordPrecedent: (sessionId, toolName, signature, decision, workingDirectory) => {
+          calls.push({ sessionId, toolName, signature, decision, workingDirectory });
         },
       });
       return { sessionId, calls, handlers };
@@ -2509,7 +2510,13 @@ describe('createInputHandlers', () => {
       await handlers.onAnswer(CID, sessionId, QID, 'Yes');
 
       expect(calls).toEqual([
-        { sessionId, toolName: 'Bash', signature: 'Bash: git status', decision: 'approved' },
+        {
+          sessionId,
+          toolName: 'Bash',
+          signature: 'Bash: git status',
+          decision: 'approved',
+          workingDirectory: '/test/dir',
+        },
       ]);
     });
 
@@ -2520,7 +2527,13 @@ describe('createInputHandlers', () => {
       await handlers.onAnswer(CID, sessionId, QID, 'No');
 
       expect(calls).toEqual([
-        { sessionId, toolName: 'Bash', signature: 'Bash: git status', decision: 'denied' },
+        {
+          sessionId,
+          toolName: 'Bash',
+          signature: 'Bash: git status',
+          decision: 'denied',
+          workingDirectory: '/test/dir',
+        },
       ]);
     });
 
@@ -2543,7 +2556,13 @@ describe('createInputHandlers', () => {
       await handlers.onAnswer(CID, sessionId, QID, 'always');
 
       expect(calls).toEqual([
-        { sessionId, toolName: 'Bash', signature: 'Bash: git status', decision: 'approved' },
+        {
+          sessionId,
+          toolName: 'Bash',
+          signature: 'Bash: git status',
+          decision: 'approved',
+          workingDirectory: '/test/dir',
+        },
       ]);
     });
 
@@ -2563,7 +2582,13 @@ describe('createInputHandlers', () => {
       await handlers.onAnswer(CID, sessionId, QID, 'Yes');
 
       expect(calls).toEqual([
-        { sessionId, toolName: 'Bash', signature: `Bash: ${longCommand}`, decision: 'approved' },
+        {
+          sessionId,
+          toolName: 'Bash',
+          signature: `Bash: ${longCommand}`,
+          decision: 'approved',
+          workingDirectory: '/test/dir',
+        },
       ]);
     });
 
@@ -2583,7 +2608,13 @@ describe('createInputHandlers', () => {
       await handlers.onAnswer(CID, sessionId, QID, 'Yes');
 
       expect(calls).toEqual([
-        { sessionId, toolName: 'Foo', signature: 'Foo: bar baz', decision: 'approved' },
+        {
+          sessionId,
+          toolName: 'Foo',
+          signature: 'Foo: bar baz',
+          decision: 'approved',
+          workingDirectory: '/test/dir',
+        },
       ]);
     });
 
@@ -2623,8 +2654,8 @@ describe('createInputHandlers', () => {
         sessionRegistry,
         bindingStore,
         send,
-        recordPrecedent: (sessionId, toolName, signature, decision) => {
-          calls.push({ sessionId, toolName, signature, decision });
+        recordPrecedent: (sessionId, toolName, signature, decision, workingDirectory) => {
+          calls.push({ sessionId, toolName, signature, decision, workingDirectory });
         },
         // `source: 'pty'` also trips the #920 prompt-currency guard earlier in
         // handleAnswer, which (with no `isPromptCurrent` wired) fails toward
@@ -2798,8 +2829,8 @@ describe('createInputHandlers', () => {
         bindingStore,
         send,
         resolveHeldPermission: () => true, // a hold existed and was resolved
-        recordPrecedent: (sessionId, toolName, signature, decision) => {
-          recorded.push({ sessionId, toolName, signature, decision });
+        recordPrecedent: (sessionId, toolName, signature, decision, workingDirectory) => {
+          recorded.push({ sessionId, toolName, signature, decision, workingDirectory });
         },
       });
 
@@ -2807,7 +2838,13 @@ describe('createInputHandlers', () => {
 
       expect(calls).toEqual([]); // the OTHER handlers instance never saw it
       expect(recorded).toEqual([
-        { sessionId, toolName: 'Bash', signature: 'Bash: git status', decision: 'approved' },
+        {
+          sessionId,
+          toolName: 'Bash',
+          signature: 'Bash: git status',
+          decision: 'approved',
+          workingDirectory: '/test/dir',
+        },
       ]);
     });
   });

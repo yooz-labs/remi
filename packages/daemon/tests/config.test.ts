@@ -315,7 +315,7 @@ describe('formatConfig', () => {
     // can confirm it (it was missed in the initial formatConfig wiring).
     expect(output).toContain('disable_thinking = true');
     // approve_groups/deny_groups likewise visible (#494 phase 1).
-    expect(output).toContain('approve_groups = ["read-only", "vcs-read", "build-test"]');
+    expect(output).toContain('approve_groups = ["read-only", "vcs-read", "gh-read", "build-test"]');
     expect(output).toContain('deny_groups = []');
     // escalate_model visible (#522).
     expect(output).toContain('escalate_model = ""');
@@ -497,7 +497,7 @@ describe('auto_approve config', () => {
         'sudo ',
         'chmod 777',
       ],
-      approve_groups: ['read-only', 'vcs-read', 'build-test'],
+      approve_groups: ['read-only', 'vcs-read', 'gh-read', 'build-test'],
       level: 'strict',
       deny_groups: [],
       instructions: '',
@@ -513,7 +513,7 @@ describe('auto_approve config', () => {
       model_cache: '',
       disable_thinking: true,
       always_escalate_tools: ['AskUserQuestion', 'ExitPlanMode'],
-      session_precedent: false,
+      session_precedent: true,
       hold_timeout: 1800,
       push_hold_timeout: 60,
       delivery_confirm_timeout: 6,
@@ -688,7 +688,12 @@ Escalate anything touching secrets.
   test('omitted *_groups inherit the default groups', () => {
     fs.writeFileSync(TEST_CONFIG, '[auto_approve]\nenabled = true\n');
     const config = loadConfig(TEST_CONFIG);
-    expect(config.auto_approve.approve_groups).toEqual(['read-only', 'vcs-read', 'build-test']);
+    expect(config.auto_approve.approve_groups).toEqual([
+      'read-only',
+      'vcs-read',
+      'gh-read',
+      'build-test',
+    ]);
     expect(config.auto_approve.deny_groups).toEqual([]);
   });
 
@@ -976,11 +981,11 @@ describe('auto_approve.level (#963)', () => {
     return loadConfig(TEST_CONFIG);
   }
 
-  test('a config with no level gets strict, i.e. today unchanged', () => {
+  test('a config with no level gets the strict local-read default', () => {
     const c = load('[auto_approve]\nenabled = true\n');
     expect(c.auto_approve.level).toBe('strict');
     expect([...c.auto_approve.approve_groups].sort()).toEqual(
-      ['build-test', 'read-only', 'vcs-read'].sort(),
+      ['build-test', 'gh-read', 'read-only', 'vcs-read'].sort(),
     );
   });
 

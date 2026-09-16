@@ -43,6 +43,7 @@ add a row below.
 | [0025](0025-agent-scoped-permissions.md) | Permissions scope per agent_type: deny unions with base, allow/groups replace it |
 | [0026](0026-destination-checked-write-grants.md) | Write grants for decidable shell shapes (redirects, heredocs, sed -i), proven by destination |
 | [0027](0027-residual-action-deny-vs-escalate.md) | `residual_action` setting: deny-with-reason vs. escalate-to-human for a residual main-agent binary permission |
+| [0028](0028-narrow-remote-read-and-session-precedent-scope.md) | Narrow `gh api` reads and private working-directory scope for session precedent |
 
 ## By area
 

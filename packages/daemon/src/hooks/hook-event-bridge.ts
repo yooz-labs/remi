@@ -270,13 +270,16 @@ export function optionsFromSuggestions(suggestions: unknown): PermissionOptionsR
 export class HookEventBridge {
   private readonly sessionId: UUID;
   private readonly events: HookBridgeEvents;
+  /** Canonical private scope for this session's precedent. */
+  private readonly workingDirectory: string | undefined;
   /** Tracks active Task tool_use_ids — secondary safety net for subagent
    *  filtering (primary is agent_id check in cli.ts hook listeners). */
   private readonly subagentContext = new SubagentContextTracker();
 
-  constructor(sessionId: UUID, events: HookBridgeEvents) {
+  constructor(sessionId: UUID, events: HookBridgeEvents, workingDirectory?: string) {
     this.sessionId = sessionId;
     this.events = events;
+    this.workingDirectory = workingDirectory;
   }
 
   /** True when the main agent is inside a *synchronous* Task tool call
@@ -522,7 +525,7 @@ export class HookEventBridge {
       // into both branches above, since the two are mutually exclusive by
       // construction (`toolQuestion` only matches question-bearing tools,
       // never `Bash`).
-      ...(precedentMayAuthorize(toolName, input.tool_input)
+      ...(precedentMayAuthorize(toolName, input.tool_input, this.workingDirectory ?? input.cwd)
         ? { precedentSignature: signatureForOperation(toolName, input.tool_input) }
         : {}),
     };

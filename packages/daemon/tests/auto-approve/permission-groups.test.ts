@@ -15,7 +15,7 @@ import { hasExecPrimitive } from '../../src/auto-approve/shell-safety.ts';
 /** The READ groups. Kept as the default for `bash()` so every pre-#959 test
  *  keeps asking exactly what it asked before: adding a write group must not
  *  change what a read-group query returns. */
-const ALL = ['read-only', 'vcs-read', 'build-test'];
+const ALL = ['read-only', 'vcs-read', 'gh-read', 'build-test'];
 
 /** The write-side groups added in #959. Never enabled by default.
  *  `net-read` was designed alongside these and CUT before merge; it is back as
@@ -34,6 +34,10 @@ const ARTIFACT_GROUPS = ['artifact-clean'];
  *  the '#959 superseded' block below for why the distinction is the whole
  *  reason it was allowed back. */
 const NET_GROUPS = ['net-read'];
+
+/** The narrow GitHub API read group. Unlike net-read, this is command-shaped
+ * and is included in the shipped local-read levels. */
+const GH_READ_GROUPS = ['gh-read'];
 
 /** Convenience: match a Bash command against the named groups. */
 function bash(command: string, groups: readonly string[] = ALL): string | null {
@@ -270,7 +274,7 @@ describe('#1062 C4 (CRITICAL RCE): git remote-exec flags on git fetch (vcs-read)
   // (CONFIRMED bypass; the write-side `vcs-write` group already refused the
   // `git pull` spelling via `write-flag-safety.ts`'s `dangerousLongFlags` --
   // see the positive control below).
-  const STRICT = ['read-only', 'vcs-read', 'build-test'];
+  const STRICT = ['read-only', 'vcs-read', 'gh-read', 'build-test'];
   const bypasses: Array<[string, string]> = [
     ['--upload-pack=', 'git fetch --upload-pack=/tmp/evil.sh /tmp/repo'],
     ['--upload-pack (space-separated)', 'git fetch --upload-pack /tmp/evil.sh /tmp/repo'],
@@ -458,7 +462,7 @@ describe('permission-groups: adversarial (MUST fall through to LLM, never group-
     // commands intentionally excluded from the curated set (no veto exists
     // for the ambiguous flag, unlike `find`/`awk` above)
     'sort -o out.txt in.txt', // -o writes
-    'gh api -X POST /repos/o/r/issues', // gh api excluded entirely
+    'gh api -X POST /repos/o/r/issues', // gh-read rejects remote mutation
     // word-boundary: must not match a longer command sharing the prefix text
     'git showoff --now',
     // unknown segment in a compound
@@ -484,6 +488,55 @@ describe('permission-groups: group selection', () => {
   test('empty group list matches nothing', () => {
     expect(bash('cat f', [])).toBeNull();
     expect(matchGroups('Read', {}, [])).toBeNull();
+  });
+});
+
+describe('gh-read: output-only GitHub API GETs', () => {
+  const safe = [
+    'gh api /repos/yooz-labs/remi/pulls',
+    'gh api repos/yooz-labs/remi/issues --paginate --slurp',
+    "gh api /repos/yooz-labs/remi/pulls --jq '[].title'",
+    "gh api /repos/yooz-labs/remi/pulls --template '{{range .}}{{.title}}{{end}}'",
+    'gh api -X GET /repos/yooz-labs/remi/pulls',
+    'gh api --method=GET /repos/yooz-labs/remi/pulls --include --silent',
+    'gh api --preview scarlet /repos/yooz-labs/remi/pulls',
+  ];
+
+  for (const command of safe) {
+    test(`approves ${command}`, () => {
+      expect(matchGroups('Bash', { command }, GH_READ_GROUPS)).toBe('gh-read:gh api');
+    });
+  }
+
+  const unsafe = [
+    'gh api -X POST /repos/o/r/issues',
+    'gh api --method PATCH /repos/o/r/issues/1',
+    'gh api --method=DELETE /repos/o/r/issues/1',
+    'gh api -f title=pwned /repos/o/r/issues',
+    'gh api --field title=pwned /repos/o/r/issues',
+    'gh api --raw-field body=@payload /repos/o/r/issues',
+    'gh api --input payload.json /repos/o/r/issues',
+    'gh api --header X-HTTP-Method-Override:DELETE /repos/o/r/issues/1',
+    'gh api --cache 1h /repos/yooz-labs/remi/pulls',
+    'gh api --verbose /repos/yooz-labs/remi/pulls',
+    'gh api graphql',
+    'gh api -X P"OST" /repos/o/r/issues',
+    'gh api --met"hod" POST /repos/o/r/issues',
+    'gh api --fi"eld" title=pwned /repos/o/r/issues',
+    'gh api /repos/yooz-labs/remi/pulls /repos/yooz-labs/remi/issues',
+    'gh api --method /repos/yooz-labs/remi/pulls',
+    'gh api --unknown /repos/yooz-labs/remi/pulls',
+    'gh api https://example.com/secret',
+  ];
+
+  for (const command of unsafe) {
+    test(`rejects ${command}`, () => {
+      expect(matchGroups('Bash', { command }, GH_READ_GROUPS)).toBeNull();
+    });
+  }
+
+  test('does not leak into vcs-read as a side effect', () => {
+    expect(bash('gh api /repos/yooz-labs/remi/pulls', ['vcs-read'])).toBeNull();
   });
 });
 
@@ -763,12 +816,13 @@ describe('#960 regression: long-option abbreviation', () => {
 });
 
 describe('#959 superseded by ADR 0025: net-read ships, but TOOLS ONLY', () => {
-  // #959 cut `net-read` after three review rounds found ten bypasses, five of
-  // them curl's, and left a test asserting the absence so that any re-add had
-  // to be deliberate rather than a silent widening. This is that deliberate
-  // re-add, and the distinction that permits it is narrow and load-bearing:
+  // #959 cut command coverage from `net-read` after three review rounds found
+  // ten bypasses, five of them curl's, and left a test asserting the absence so
+  // that any re-add had to be deliberate rather than a silent widening. The
+  // separate `gh-read` re-add is deliberate, and the distinction that permits
+  // it is narrow and load-bearing:
   //
-  //   #959's net-read covered COMMANDS (curl, wget, gh api). Every bypass it
+  //   #959's net-read proposal covered COMMANDS (curl, wget, gh api). Every bypass it
   //   died of was command-shaped -- curl's `-o`/`-O` write files, its output
   //   is routinely piped into a shell, and `gh api` reaches mutating verbs.
   //
@@ -776,15 +830,14 @@ describe('#959 superseded by ADR 0025: net-read ships, but TOOLS ONLY', () => {
   //   ships `commands: []`. None of those five bypasses has a path back,
   //   which the first test below proves rather than asserts.
   //
-  // So the absence test is not deleted, it is INVERTED in the only direction
-  // that was ever the point: the commands must still be covered by nothing,
-  // now including when net-read itself is enabled.
-  test('curl, wget and gh api are covered by nothing — even with net-read on', () => {
+  // So the absence test remains for curl and wget. `gh api` has a separate,
+  // narrower group whose parser is tested above; enabling net-read must not
+  // widen that group or resurrect curl/wget.
+  test('curl and wget are covered by nothing — even with net-read on', () => {
     for (const cmd of [
       'curl https://example.com/data.json',
       'curl -sSL https://api.github.com/repos/o/r',
       'wget https://example.com/page.html',
-      'gh api /repos/yooz-labs/remi/pulls',
     ]) {
       expect(bash(cmd, WRITE_GROUPS)).toBeNull();
       expect(bash(cmd, [...ALL, ...WRITE_GROUPS])).toBeNull();

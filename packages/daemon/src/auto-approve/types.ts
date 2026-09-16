@@ -262,14 +262,15 @@ export interface AutoApproveConfig {
    * A group is a curated set of read-by-definition operations matched with
    * compound-segment-aware prefix logic (see `permission-groups.ts`), curated
    * rather than user-supplied like the `allow` list. Known groups: "read-only",
-   * "vcs-read", "build-test". Default: all three.
+   * "vcs-read", "gh-read", "build-test". Default: all four.
    */
   readonly approve_groups: readonly string[];
   /**
    * Strictness preset (#963). Selects which permission groups are
-   * auto-approved without an LLM call. `strict` is today's behavior and the
-   * shipped default; `balanced` adds `fs-write` and `scratch` (confined to
-   * /tmp, /private/tmp, $TMPDIR); `trusted` adds `vcs-write`.
+   * auto-approved without an LLM call. `strict` is the shipped local-read
+   * default, including output-only `gh-read`; `balanced` adds `fs-write` and
+   * `scratch` (confined to /tmp, /private/tmp, $TMPDIR); `trusted` adds
+   * `vcs-write`.
    *
    * An explicit `approve_groups` in config OVERRIDES this — see
    * `resolveApproveGroups` in `auto-approve/levels.ts` for why override rather
@@ -453,13 +454,13 @@ export interface AutoApproveConfig {
    * for, and a precedent that outlived its conversation would be an allow-list
    * entry the user never wrote.
    *
-   * **Default: false**, and not because the mechanism is unfinished. Four
-   * review rounds on #1017 each found the same defect class — the signature
-   * used as the authorization key drops something that changes what the
-   * operation does. Each was closed; one is KNOWN and still OPEN (#1019: a
-   * Bash signature carries no `cwd`, so an approval in one worktree authorizes
-   * the identical command in another). A privilege-GRANTING path should not
-   * ship on by default with a known-unfixed escalation. Flip once #1019 lands.
+   * **Default: true** for new or otherwise-unconfigured installs. The
+   * authorization key is exact command text plus a private, normalized session
+   * working-directory context; a missing context fails closed, so an approval
+   * in one Remi session cannot authorize the identical command in another
+   * session's project/worktree.
+   * Existing explicit `false` values still opt out, and critical operations
+   * remain bounded by the risk matrix.
    *
    * Off means every repeat is asked again — the pre-#976 behavior.
    */

@@ -22,6 +22,8 @@ import {
   toolNameFromSignature,
 } from '../../src/auto-approve/precedent.ts';
 
+const TEST_CWD = '/tmp/remi-precedent';
+
 describe('PrecedentStore', () => {
   test('starts empty', () => {
     const store = new PrecedentStore();
@@ -38,6 +40,17 @@ describe('PrecedentStore', () => {
     expect(match?.decision).toBe('approved');
     expect(match?.matchKind).toBe('exact');
     expect(match?.matchedSignature).toBe('Bash: git status');
+  });
+
+  test('binds a record to its normalized private working directory', () => {
+    const store = new PrecedentStore();
+    const signature = 'Bash: git status';
+    store.record('Bash', signature, 'approved', true, '/tmp/remi-precedent/child/..');
+
+    expect(store.matchApproved('Bash', signature, true, TEST_CWD)).not.toBeNull();
+    expect(store.matchApproved('Bash', signature, true, '/tmp/another-project')).toBeNull();
+    // A context-free lookup cannot see a context-bound production record.
+    expect(store.matchApproved('Bash', signature, true)).toBeNull();
   });
 
   test('records a denial and matches it broadly', () => {
@@ -560,23 +573,23 @@ describe('#1067 whole-provenance keeps a genuine >=120-char command ending in ".
     const detail = signature.slice('Bash: '.length);
     expect(detail.length).toBeGreaterThanOrEqual(120);
     expect(detail.endsWith('...')).toBe(true);
-    expect(precedentMayAuthorize('Bash', { command: DOTS_COMMAND })).toBe(true);
+    expect(precedentMayAuthorize('Bash', { command: DOTS_COMMAND }, TEST_CWD)).toBe(true);
   });
 
   test('headline: a DENY of it persists and re-escalates its identical repeat', () => {
     const store = new PrecedentStore();
-    store.record(toolNameFromSignature(signature), signature, 'denied', true);
+    store.record(toolNameFromSignature(signature), signature, 'denied', true, TEST_CWD);
     expect(store.size).toBe(1); // NOT dropped by the truncation heuristic
-    const match = store.matchDenied('Bash', signature, true);
+    const match = store.matchDenied('Bash', signature, true, TEST_CWD);
     expect(match?.decision).toBe('denied');
     expect(match?.matchedSignature).toBe(signature);
   });
 
   test('an APPROVE of it records and re-matches (whole), and stays exact', () => {
     const store = new PrecedentStore();
-    store.record(toolNameFromSignature(signature), signature, 'approved', true);
+    store.record(toolNameFromSignature(signature), signature, 'approved', true, TEST_CWD);
     expect(store.size).toBe(1);
-    const match = store.matchApproved('Bash', signature, true);
+    const match = store.matchApproved('Bash', signature, true, TEST_CWD);
     expect(match?.decision).toBe('approved');
     expect(match?.matchKind).toBe('exact');
   });
@@ -592,8 +605,8 @@ describe('#1067 whole-provenance keeps a genuine >=120-char command ending in ".
     // matches; a hypothetical unknown-provenance query of the identical text is
     // refused by the surviving truncation heuristic.
     const store = new PrecedentStore();
-    store.record(toolNameFromSignature(signature), signature, 'denied', true);
-    expect(store.matchDenied('Bash', signature, true)?.decision).toBe('denied');
+    store.record(toolNameFromSignature(signature), signature, 'denied', true, TEST_CWD);
+    expect(store.matchDenied('Bash', signature, true, TEST_CWD)?.decision).toBe('denied');
     expect(store.matchDenied('Bash', signature /* whole=false */)).toBeNull();
   });
 
@@ -684,13 +697,15 @@ describe('#1067 whole-provenance keeps a genuine >=120-char command ending in ".
   // single-writer invariant. Both are pinned here.
   test('readerFrom forwards whole and exposes no write surface', () => {
     const store = new PrecedentStore();
-    store.record(toolNameFromSignature(signature), signature, 'denied', true);
+    store.record(toolNameFromSignature(signature), signature, 'denied', true, TEST_CWD);
     const reader = readerFrom(store);
     // Forwards whole=true -> the genuine long deny matches through the reader.
-    expect(reader.matchDenied('Bash', signature, true)?.decision).toBe('denied');
+    expect(reader.matchDenied('Bash', signature, true, TEST_CWD)?.decision).toBe('denied');
     // Drops whole -> the truncation refusal re-applies (proves it forwards, not
     // hard-codes true).
-    expect(reader.matchDenied('Bash', signature)).toBeNull();
+    expect(reader.matchDenied('Bash', signature, false, TEST_CWD)).toBeNull();
+    expect(reader.matchDenied('Bash', signature, true, '/tmp/another-project')).toBeNull();
+    expect(reader.matchDenied('Bash', signature, true, '')).toBeNull();
     // No `record` method leaked (single-writer invariant, ADR 0015).
     expect((reader as unknown as Record<string, unknown>)['record']).toBeUndefined();
   });
@@ -699,9 +714,9 @@ describe('#1067 whole-provenance keeps a genuine >=120-char command ending in ".
   // A revert to a plain `record()` (whole omitted) drops the genuine long DENY.
   test('recordHumanAnswer stores the genuine long command as whole (persists the DENY)', () => {
     const store = new PrecedentStore();
-    recordHumanAnswer(store, toolNameFromSignature(signature), signature, 'denied');
+    recordHumanAnswer(store, toolNameFromSignature(signature), signature, 'denied', TEST_CWD);
     expect(store.size).toBe(1); // a plain record() would have dropped it here
-    expect(store.matchDenied('Bash', signature, true)?.decision).toBe('denied');
+    expect(store.matchDenied('Bash', signature, true, TEST_CWD)?.decision).toBe('denied');
   });
 });
 
@@ -756,7 +771,7 @@ describe('precedentMayAuthorize requires non-whitespace command content', () => 
   }
 
   test('a command with real content IS eligible even if it has leading/trailing space', () => {
-    expect(precedentMayAuthorize('Bash', { command: '  ls -la  ' })).toBe(true);
+    expect(precedentMayAuthorize('Bash', { command: '  ls -la  ' }, TEST_CWD)).toBe(true);
   });
 
   test('cmd-only (no command field) is NOT eligible -- the risk layer reads command', () => {

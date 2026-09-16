@@ -2152,9 +2152,9 @@ const inputHandlers: InputHandlers = createInputHandlers({
   // construction), so a genuine >=120-char DENY ending in `...` persists as a
   // stop rule instead of being dropped by the truncation heuristic. See that
   // function's doc for why `whole=true` is sound here.
-  recordPrecedent: (sessionId, toolName, signature, decision) => {
+  recordPrecedent: (sessionId, toolName, signature, decision, workingDirectory) => {
     const store = sessionPrecedentStores.get(sessionId);
-    if (store) recordHumanAnswer(store, toolName, signature, decision);
+    if (store) recordHumanAnswer(store, toolName, signature, decision, workingDirectory);
   },
 });
 
