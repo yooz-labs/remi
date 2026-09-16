@@ -67,6 +67,8 @@ done`;
       'git log main --not --remotes --oneline --exec="rm -rf /"',
       'git -C "$wt" -c core.hooksPath=/tmp/evil status --porcelain',
       'git worktree prune',
+      'sort --compress-program=sh file',
+      'rg --pre=sh pattern .',
     ]) {
       expect(proveCompoundReadOnly(command).status).toBe('rejected');
     }
@@ -78,6 +80,10 @@ done`;
       reason: 'unsafe-redirect',
     });
     expect(proveCompoundReadOnly('PATH=/tmp/evil; git status')).toEqual({
+      status: 'rejected',
+      reason: 'sensitive-assignment',
+    });
+    expect(proveCompoundReadOnly('BASH_XTRACEFD=9; git status')).toEqual({
       status: 'rejected',
       reason: 'sensitive-assignment',
     });
@@ -98,6 +104,7 @@ done`;
       'for f in $(git status; rm -rf /); do echo "$f"; done',
       'for f in $(git status; do echo x; done',
       'for f in `git status`; do echo "$f"; done',
+      'for f in $(echo `git status)`; do echo "$f"; done',
     ]) {
       expect(proveCompoundReadOnly(command).status).toBe('rejected');
     }

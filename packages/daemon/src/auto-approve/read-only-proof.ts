@@ -272,6 +272,7 @@ function splitProofParts(command: string): SplitResult | SplitFailure {
 function findCommandSubstitutionEnd(text: string, start: number): number {
   let depth = 1;
   let quote: '"' | "'" | "$'" | null = null;
+  let backtick = false;
   for (let i = start + 2; i < text.length; i++) {
     const c = text[i];
     const next = text[i + 1];
@@ -297,6 +298,14 @@ function findCommandSubstitutionEnd(text: string, start: number): number {
       if (c === "'") quote = null;
       continue;
     }
+    if (backtick) {
+      if (c === '\\' && next !== undefined) {
+        i++;
+        continue;
+      }
+      if (c === '`') backtick = false;
+      continue;
+    }
     if (c === '\\' && next !== undefined) {
       i++;
       continue;
@@ -308,6 +317,10 @@ function findCommandSubstitutionEnd(text: string, start: number): number {
     }
     if (c === '"' || c === "'") {
       quote = c;
+      continue;
+    }
+    if (c === '`') {
+      backtick = true;
       continue;
     }
     if (c === '$' && next === '(') {
@@ -772,7 +785,7 @@ function isSafeGitWord(word: string, state: ProofState, role: GitWordRole): bool
     if (kind === undefined) return false;
     if (role === 'ref' && kind !== 'ref') return false;
     if (role === 'revision' && kind !== 'ref' && kind !== 'literal') return false;
-    if (role === 'remote' && kind !== 'literal' && kind !== 'ref') return false;
+    if (role === 'remote') return false;
   }
   if (word.includes('$') && variableReferences(word).length === 0) return false;
   if (role === 'remote' && word.includes('/')) return false;
@@ -815,6 +828,10 @@ function isSensitiveEnvironmentName(name: string): boolean {
     upper === 'ENV' ||
     upper === 'SHELLOPTS' ||
     upper === 'BASHOPTS' ||
+    upper === 'GLOBIGNORE' ||
+    upper.startsWith('BASH_') ||
+    upper.startsWith('ZSH_') ||
+    upper.startsWith('KSH_') ||
     upper.startsWith('GIT_') ||
     upper.startsWith('SSH_') ||
     upper.endsWith('_PROXY') ||
