@@ -33,8 +33,9 @@ export type AutoApproveLevel = (typeof AUTO_APPROVE_LEVELS)[number];
 /**
  * The shipped default.
  *
- * `strict` reproduces the behavior every existing install already has, so
- * upgrading to a version with levels changes nothing until the user opts up.
+ * `strict` keeps the existing local-read behavior and adds the separately
+ * parsed, output-only `gh-read` surface. Remote mutation and arbitrary
+ * network tools remain outside the preset.
  *
  * `trusted` was proposed as the default and deliberately NOT taken in this
  * change. Phase 2 (#959) needed four adversarial review rounds to close eleven
@@ -70,15 +71,16 @@ export const DEFAULT_AUTO_APPROVE_LEVEL: AutoApproveLevel = 'strict';
  *   Deletion that reaches the LLM still escalates at every level.
  */
 const LEVEL_GROUPS: Readonly<Record<AutoApproveLevel, readonly string[]>> = {
-  // Exactly today's shipped `approve_groups` default. Asserted against
-  // `config.ts`'s own default by test, so the two cannot drift apart.
-  strict: ['read-only', 'vcs-read', 'build-test'],
+  // The shipped local-read default plus the independently parsed GitHub
+  // REST GET group. Asserted against `config.ts`'s own default by test, so the
+  // two cannot drift apart.
+  strict: ['read-only', 'vcs-read', 'gh-read', 'build-test'],
   // Adds file writes (57 of 226 measured escalations, the single largest
   // cohort, and the one the user's own config already tried to approve) and
   // `scratch` (destination-confined: write/delete/redirect anywhere under
   // /tmp, /private/tmp, or $TMPDIR — see permission-groups.ts's `scratch`
   // section).
-  balanced: ['read-only', 'vcs-read', 'build-test', 'fs-write', 'scratch'],
+  balanced: ['read-only', 'vcs-read', 'gh-read', 'build-test', 'fs-write', 'scratch'],
   // Adds local git mutation (add/commit/checkout/switch/merge/stash/worktree).
   // NOT `git push` — that stays an escalation at every level.
   // Also adds `artifact-clean` (ADR 0023): proved-derived deletion. The
@@ -90,6 +92,7 @@ const LEVEL_GROUPS: Readonly<Record<AutoApproveLevel, readonly string[]>> = {
   trusted: [
     'read-only',
     'vcs-read',
+    'gh-read',
     'build-test',
     'fs-write',
     'scratch',

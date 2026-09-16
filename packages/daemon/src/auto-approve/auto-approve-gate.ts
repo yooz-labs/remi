@@ -278,6 +278,9 @@ export interface AutoApproveEvaluator {
      *  `[auto_approve.agents.<type>]` section for the deterministic layers.
      *  Undefined = base policy, so every pre-0025 caller is unchanged. */
     agentType?: string,
+    /** Private session working directory used to bind precedent; never sent
+     *  to the model or client. Missing context fails closed in the evaluator. */
+    workingDirectory?: string,
   ): Promise<AutoApproveResult>;
   /**
    * Abort an in-flight `evaluate`. With `evalId`, aborts ONLY when that id is the
@@ -364,6 +367,13 @@ export interface AutoApproveGateDeps {
    * Absent => no precedent in either direction; pre-#976 behavior exactly.
    */
   getPrecedent?: () => PrecedentReader | undefined;
+  /**
+   * Canonical private working directory for this Remi session. Production
+   * wiring supplies the session's directory so evaluation and answer
+   * recording use the same scope even when Claude emits a changed hook `cwd`.
+   * Test-only callers may omit it and fall back to the hook input's `cwd`.
+   */
+  workingDirectory?: string;
   /**
    * Reset the subagent-context tracker (#710). Called ONLY when a MAIN-tagged
    * PermissionRequest (`agent_id` absent) observes `isInSubagentContext()`
@@ -1615,6 +1625,8 @@ export class AutoApproveGate {
         isSubagent,
         this.authorityForEval(),
         this.precedentForEval(),
+        undefined,
+        this.precedentWorkingDirectory(input),
       )
       .finally(() => {
         this.evalIsSubagentById.delete(evalId);
@@ -2161,6 +2173,7 @@ export class AutoApproveGate {
         // govern the render-time one, or a parked request would be judged under
         // a different policy than the one that declined to approve it.
         input.agent_type,
+        this.precedentWorkingDirectory(input),
       );
     } catch (err) {
       logError(`[AutoApprove ${this.sessionTag}] Parked-render eval threw; escalating:`, err);
@@ -2363,6 +2376,7 @@ export class AutoApproveGate {
         this.authorityForEval(),
         this.precedentForEval(),
         input.agent_type,
+        this.precedentWorkingDirectory(input),
       );
     } catch (err) {
       logError(`[AutoApprove ${this.sessionTag}] escalate_model second opinion threw:`, err);
@@ -2457,6 +2471,16 @@ export class AutoApproveGate {
       logError(`[AutoApprove ${this.sessionTag}] getAuthority threw (ignored):`, err);
       return undefined;
     }
+  }
+
+  /**
+   * Keep precedent lookup on the same canonical private scope that the answer
+   * path records. The production session directory wins over a hook-reported
+   * cwd, which may change during a Claude session; minimal test callers keep
+   * their historical hook-cwd behavior when no session directory is wired.
+   */
+  private precedentWorkingDirectory(input: PermissionRequestHookInput): string | undefined {
+    return this.deps.workingDirectory ?? input.cwd;
   }
 
   /**

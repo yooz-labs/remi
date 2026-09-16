@@ -232,6 +232,7 @@
  * appears.
  */
 
+import { normalizeProjectPath } from '../cli/path-resolver.ts';
 import { summarizeToolInput } from '../hooks/tool-summary.ts';
 
 /** One human-classified answer to a permission-shaped question. */
@@ -245,11 +246,11 @@ export interface PrecedentRecord {
    */
   readonly toolName: string;
   /**
-   * The whitespace-normalized operation text this precedent applies to —
+   * The operation text this precedent applies to —
    * `<toolName>: <command/path/pattern/...>` for a tool with a summarizable
-   * argument, or just `<toolName>` when there was none. This is the actual
-   * match key; see `normalizeSignature` for exactly what normalization does
-   * and does not do.
+   * argument, or just `<toolName>` when there was none. The store trims only
+   * the outside; approvals compare the internal text exactly, while denials
+   * apply the broader whitespace-normalized matcher.
    */
   readonly signature: string;
   /** What the human decided for this exact operation. */
@@ -279,6 +280,13 @@ export interface PrecedentRecord {
    * without every existing test having to set it.
    */
   readonly whole?: boolean;
+  /**
+   * Private session working-directory context. This is deliberately not part of `Question` or
+   * any protocol payload: the daemon uses it to prevent an answer in one
+   * Remi session's project/worktree root from authorizing the identical
+   * command in another session.
+   */
+  readonly workingDirectory?: string;
 }
 
 /**
@@ -308,13 +316,10 @@ export interface PrecedentMatch {
 const MAX_PRECEDENT_ENTRIES = 100;
 
 /**
- * Collapse whitespace runs (including newlines) to a single space and trim.
- * This is the ONLY normalization performed — no stripping of flags, paths,
- * arguments, or redirections, per ADR 0010's precision requirement for an
- * allow-shaped match. Whitespace collapsing is the one transformation the
- * task spec calls out as provably safe; it is also the only one applied
- * anywhere else in this codebase for comparable purposes (see
- * `tool-question.ts`'s `cleanText`).
+ * Collapse whitespace runs (including newlines) to a single space and trim for
+ * the deny-shaped matcher only. The approval matcher deliberately compares
+ * trimmed raw text: collapsing internal whitespace is a loosening that could
+ * equate distinct shell/script inputs, contrary to ADR 0010's precision rule.
  *
  * Known residual imprecision, noted rather than hidden (AGENTS.md "Verify
  * before you describe"): if a command's semantics depend on the EXACT amount
@@ -328,6 +333,27 @@ const MAX_PRECEDENT_ENTRIES = 100;
  */
 function normalizeSignature(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
+}
+
+/** Normalize the private session context used by precedent, or fail closed. */
+export function normalizePrecedentWorkingDirectory(
+  workingDirectory: string | undefined,
+): string | undefined {
+  if (typeof workingDirectory !== 'string' || workingDirectory.trim() === '') return undefined;
+  return normalizeProjectPath(workingDirectory.trim());
+}
+
+/** Match the private context exactly; omitted context matches only legacy
+ * context-free records used by the low-level pure API, never production
+ * records returned through `readerFrom`. */
+function samePrecedentWorkingDirectory(
+  record: PrecedentRecord,
+  workingDirectory: string | undefined,
+): boolean {
+  return (
+    normalizePrecedentWorkingDirectory(record.workingDirectory) ===
+    normalizePrecedentWorkingDirectory(workingDirectory)
+  );
 }
 
 /** Length `summarizeToolInput` (`hooks/tool-summary.ts`, since #976; it lived
@@ -736,8 +762,13 @@ const PRECEDENT_ELIGIBLE_TOOLS: ReadonlySet<string> = new Set(['Bash']);
 export function precedentMayAuthorize(
   toolName: string,
   toolInput: Record<string, unknown>,
+  workingDirectory?: string,
 ): boolean {
   if (!PRECEDENT_ELIGIBLE_TOOLS.has(toolName)) return false;
+  // The command key is only useful when it is bound to the private session
+  // context that produced it. `Question` cannot carry that context safely, so
+  // the production path must supply a non-empty session directory separately.
+  if (normalizePrecedentWorkingDirectory(workingDirectory) === undefined) return false;
   // The INPUT SHAPE, not just the name. `summarizeToolInput` accepts `cmd` as
   // a fallback and would happily build a complete signature from it, but the
   // risk layer reads `command` and nothing else — so a `cmd`-only call has an
@@ -770,12 +801,23 @@ export interface PrecedentReader {
   /**
    * `whole` (#1067) declares the query signature came from
    * `signatureForOperation` (untruncated by construction). Both production
-   * call sites pass `true`; it defaults to the conservative `false` for any
-   * caller that does not, so an unknown-provenance query keeps the defensive
-   * truncation refusal.
+   * call sites pass `true`; the concrete store methods default to the
+   * conservative `false` for low-level callers that do not, so an
+   * unknown-provenance query keeps the defensive truncation refusal. The
+   * reader additionally requires the private working-directory context.
    */
-  matchApproved(toolName: string, signature: string, whole?: boolean): PrecedentMatch | null;
-  matchDenied(toolName: string, signature: string, whole?: boolean): PrecedentMatch | null;
+  matchApproved(
+    toolName: string,
+    signature: string,
+    whole: boolean,
+    workingDirectory: string,
+  ): PrecedentMatch | null;
+  matchDenied(
+    toolName: string,
+    signature: string,
+    whole: boolean,
+    workingDirectory: string,
+  ): PrecedentMatch | null;
 }
 
 /**
@@ -817,17 +859,17 @@ export interface PrecedentReader {
  * future caller bypassing the store).
  *
  * Pure: operates over a plain array, no I/O, safe to call on every eval once
- * a consumer exists. Normalizes the query signature (AFTER the raw
- * truncation check) and each stored record's own signature before
- * comparing — `PrecedentStore.record` already normalizes what it stores,
- * but this function must not silently rely on that: a `PrecedentRecord[]`
- * built directly is exactly as comparable as one built through it.
+ * a consumer exists. Trims the query and stored signatures before the exact
+ * comparison — `PrecedentStore.record` already trims what it stores, but this
+ * function must not silently rely on that: a `PrecedentRecord[]` built directly
+ * is exactly as comparable as one built through it.
  */
 export function findApprovedPrecedent(
   records: readonly PrecedentRecord[],
   toolName: string,
   signature: string,
   whole = false,
+  workingDirectory?: string,
 ): PrecedentMatch | null {
   // Provenance (#1067): a `whole` query is untruncated by construction, so the
   // truncation refusal — whose purpose is to reject an OPAQUE truncated query —
@@ -842,6 +884,7 @@ export function findApprovedPrecedent(
     const record = records[i];
     if (!record) continue;
     if (record.toolName !== toolName) continue;
+    if (!samePrecedentWorkingDirectory(record, workingDirectory)) continue;
     const storedSignature = record.signature.trim();
     // A `whole` stored record is trusted; only an unknown-provenance one is
     // skipped when it looks truncated (defense in depth for a directly-built
@@ -902,6 +945,7 @@ export function findDeniedPrecedent(
   toolName: string,
   signature: string,
   whole = false,
+  workingDirectory?: string,
 ): PrecedentMatch | null {
   // Provenance (#1067). The query-side refusal here guards a DIFFERENT hazard
   // than the approve side's: a truncated OPAQUE query could substring-match a
@@ -918,6 +962,7 @@ export function findDeniedPrecedent(
     if (!record) continue;
     if (record.decision !== 'denied') continue;
     if (record.toolName !== toolName) continue;
+    if (!samePrecedentWorkingDirectory(record, workingDirectory)) continue;
     const storedSignature = normalizeSignature(record.signature);
     // Trust a `whole` stored deny (a genuine `>=120`-char command ending in
     // `...` must persist as a stop rule, #1067); skip only an unknown-provenance
@@ -1001,6 +1046,7 @@ export class PrecedentStore {
     signature: string,
     decision: 'approved' | 'denied',
     whole = false,
+    workingDirectory?: string,
   ): void {
     // Provenance decides whether the truncation heuristic applies (#1067). A
     // `whole` signature is untruncated BY CONSTRUCTION (`signatureForOperation`),
@@ -1015,12 +1061,20 @@ export class PrecedentStore {
     // collapses. Storing a collapsed form would force both to the loose one.
     const normalizedSignature = signature.trim();
     if (!normalizedToolName || !normalizedSignature) return;
+    const normalizedWorkingDirectory = normalizePrecedentWorkingDirectory(workingDirectory);
+    // Omitted context keeps the low-level pure store API backward-compatible
+    // for synthetic records; an explicitly supplied blank context is not a
+    // valid production scope and must never be stored as if it were absent.
+    if (workingDirectory !== undefined && normalizedWorkingDirectory === undefined) return;
     this.records.push({
       toolName: normalizedToolName,
       signature: normalizedSignature,
       decision,
       recordedAt: Date.now(),
       whole,
+      ...(normalizedWorkingDirectory !== undefined
+        ? { workingDirectory: normalizedWorkingDirectory }
+        : {}),
     });
     if (this.records.length > this.maxEntries) this.records.shift();
   }
@@ -1032,14 +1086,24 @@ export class PrecedentStore {
 
   /** Precise, allow-shaped lookup — see `findApprovedPrecedent`. `whole`
    *  (#1067) forwards the query's provenance. */
-  matchApproved(toolName: string, signature: string, whole = false): PrecedentMatch | null {
-    return findApprovedPrecedent(this.records, toolName, signature, whole);
+  matchApproved(
+    toolName: string,
+    signature: string,
+    whole = false,
+    workingDirectory?: string,
+  ): PrecedentMatch | null {
+    return findApprovedPrecedent(this.records, toolName, signature, whole, workingDirectory);
   }
 
   /** Broad, deny-shaped lookup — see `findDeniedPrecedent`. `whole` (#1067)
    *  forwards the query's provenance. */
-  matchDenied(toolName: string, signature: string, whole = false): PrecedentMatch | null {
-    return findDeniedPrecedent(this.records, toolName, signature, whole);
+  matchDenied(
+    toolName: string,
+    signature: string,
+    whole = false,
+    workingDirectory?: string,
+  ): PrecedentMatch | null {
+    return findDeniedPrecedent(this.records, toolName, signature, whole, workingDirectory);
   }
 
   /** Drop every recorded precedent (session rotation — /clear, /resume,
@@ -1062,15 +1126,22 @@ export class PrecedentStore {
  *   is structural, so `record` would come along) and the write surface would be
  *   one cast away, breaking the "`handleAnswer` is the single writer" invariant
  *   ADR 0015 rests on.
- * - It FORWARDS the `whole` provenance bit (#1067) rather than dropping it.
- *   Dropping it here silently re-imposes the truncation refusal on a query the
- *   consult site already vouched for as untruncated, which would re-break the
- *   genuine long DENY this exists to keep.
+ * - It FORWARDS both the `whole` provenance bit (#1067) and the private
+ *   `workingDirectory` context rather than dropping either. Dropping the
+ *   former silently re-imposes the truncation refusal on a query the consult
+ *   site already vouched for as untruncated; dropping the latter lets one
+ *   project reuse another project's human answer.
  */
 export function readerFrom(store: PrecedentStore): PrecedentReader {
   return {
-    matchApproved: (tool, signature, whole) => store.matchApproved(tool, signature, whole),
-    matchDenied: (tool, signature, whole) => store.matchDenied(tool, signature, whole),
+    matchApproved: (tool, signature, whole, workingDirectory) => {
+      const context = normalizePrecedentWorkingDirectory(workingDirectory);
+      return context === undefined ? null : store.matchApproved(tool, signature, whole, context);
+    },
+    matchDenied: (tool, signature, whole, workingDirectory) => {
+      const context = normalizePrecedentWorkingDirectory(workingDirectory);
+      return context === undefined ? null : store.matchDenied(tool, signature, whole, context);
+    },
   };
 }
 
@@ -1089,12 +1160,19 @@ export function readerFrom(store: PrecedentStore): PrecedentReader {
  * built some other way would wrongly mark it `whole`; keep this reserved for the
  * record path whose signature provenance is guaranteed, exactly as the inline
  * literal was.
+ *
+ * `workingDirectory` is required for the same reason the reader requires it:
+ * an answer without a valid private session context must not become reusable
+ * precedent.
  */
 export function recordHumanAnswer(
   store: PrecedentStore,
   toolName: string,
   signature: string,
   decision: 'approved' | 'denied',
+  workingDirectory: string,
 ): void {
-  store.record(toolName, signature, decision, true);
+  const context = normalizePrecedentWorkingDirectory(workingDirectory);
+  if (context === undefined) return;
+  store.record(toolName, signature, decision, true, context);
 }

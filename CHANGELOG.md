@@ -28,6 +28,13 @@ caught a pre-existing ceiling bypass (#1076), fixed here.
   not the Bash command), but only when the destination provably resolves inside
   the project or a scratch root and is not sensitive. Any target that cannot be
   proven safe still escalates, fail-closed.
+- **Output-only GitHub API reads and context-bound session precedent.** The new
+  `gh-read` group deterministically approves only single-endpoint REST GETs
+  without body or mutation flags; arbitrary network commands remain outside
+  shipped presets. Session precedent is enabled for new/default configurations
+  after binding records to the private normalized hook working directory, so a
+  human answer in one project/worktree cannot silently authorize the identical
+  command in another. Existing explicit config values continue to win.
 
 ### Changed
 

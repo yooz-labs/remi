@@ -23,8 +23,10 @@
  *    entry (#1057 phase 3), and `find` with `EXEC_PRIMITIVE_TOKEN` +
  *    `MUTATION_TOKEN` covering `-delete`/`-exec`/`-fprint*`/`-fls`/`-okdir`,
  *    consulted by `matchCoveredCommand` for every matched segment regardless
- *    of which group owns the prefix. `gh api -X` remains genuinely EXCLUDED:
- *    no veto closes its write flag. `awk` was tried and REMOVED (#1057 phase 3
+ *    of which group owns the prefix. `gh api` has its own narrow `gh-read`
+ *    group: its parser admits only a single endpoint with GET/output-only
+ *    options, while mutation/body/unknown forms remain excluded. `awk` was
+ *    tried and REMOVED (#1057 phase 3
  *    adversarial review): it is a Turing-complete interpreter whose
  *    `cmd | getline`, in-program `print > "file"`/`getline < "file"`, and
  *    quote-spliced `sys""tem(` cannot be closed by any flag or pattern rule —
@@ -355,8 +357,8 @@ export function sedScriptShapeVeto(segment: string): boolean {
  * prevents the escape is: every group sharing a PREFIX with a mutating group
  * must be in this set. A future non-mutating group that happened to list `cp`
  * would route around the axis without ever looking like a "mutating group".
- * No live instance today — the seven current groups' mutating and non-mutating
- * halves share no prefix — so this is a note on the comment, not on the code.
+ * No live instance today — the current mutating and non-mutating groups share
+ * no prefix — so this is a note on the comment, not on the code.
  */
 const MUTATING_GROUPS: ReadonlySet<string> = new Set([
   'fs-write',
@@ -1469,6 +1471,191 @@ export interface PermissionGroup {
   readonly toolVeto?: (toolName: string, toolInput: Record<string, unknown>) => boolean;
 }
 
+/** Flags that only shape `gh api` output or select read-only metadata. */
+const GH_API_READ_BOOLEAN_FLAGS = new Set(['--include', '-i', '--paginate', '--slurp', '--silent']);
+
+/** Flags whose values are formatting/selector metadata, never request data. */
+const GH_API_READ_VALUE_FLAGS = new Set(['--jq', '-q', '--template', '-t', '--preview', '-p']);
+
+/**
+ * Refuse shell expansions that can change the `gh api` argv after this parser
+ * has inspected it. `shellWords` intentionally removes quotes/escapes but does
+ * not expand variables, globs, or braces; an unquoted `$ARGS` could therefore
+ * look like one endpoint here while expanding into `-X POST ...` at runtime.
+ * Quoted literals remain usable, including the braces in a quoted template.
+ */
+function hasUnsafeGhApiExpansion(segment: string): boolean {
+  let quote: '"' | "'" | "$'" | null = null;
+  let braceDepth = 0;
+  let braceExpansion = false;
+
+  for (let index = 0; index < segment.length; index++) {
+    const character = segment[index];
+    const next = segment[index + 1];
+    if (character === undefined) break;
+
+    if (quote === "'") {
+      if (character === "'") quote = null;
+      continue;
+    }
+    if (quote === "$'") {
+      if (character === '\\' && next !== undefined) {
+        index++;
+        continue;
+      }
+      if (character === "'") quote = null;
+      continue;
+    }
+    if (quote === '"') {
+      if (character === '\\' && next !== undefined && ['"', '\\', '$', '`', '\n'].includes(next)) {
+        index++;
+        continue;
+      }
+      if (character === '$' || character === '`') return true;
+      if (character === '"') quote = null;
+      continue;
+    }
+
+    if (character === '\\') {
+      if (next !== undefined) index++;
+      continue;
+    }
+    if (character === '$' && next === "'") {
+      quote = "$'";
+      index++;
+      continue;
+    }
+    if (character === "'") {
+      quote = "'";
+      continue;
+    }
+    if (character === '"') {
+      quote = '"';
+      continue;
+    }
+
+    // Unquoted variable expansion can add flags, endpoints, or body options.
+    if (character === '$' || character === '`') return true;
+    // Unquoted pathname expansion can turn one token into several argv words,
+    // including option-looking filenames.
+    if (['*', '?', '[', ']'].includes(character)) return true;
+    // Only brace forms that Bash actually expands are vetoed; simple GitHub
+    // placeholders such as `{owner}` remain valid endpoint text.
+    if (character === '{') {
+      braceDepth++;
+      continue;
+    }
+    if (braceDepth > 0) {
+      if (character === ',' || (character === '.' && next === '.')) {
+        braceExpansion = true;
+      }
+      if (character === '}') {
+        braceDepth--;
+        if (braceDepth === 0) {
+          if (braceExpansion) return true;
+          braceExpansion = false;
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Refuse every `gh api` shape except an output-only GET.
+ *
+ * The group prefix proves only that the executable/subcommand is `gh api`; it
+ * does not prove the request method or whether a flag supplies a body. This
+ * parser therefore owns the whole argument boundary. It accepts the known
+ * output/formatting flags, one endpoint positional, and explicit GET spellings
+ * (`-X GET`, `-XGET`, `--method GET`, `--method=GET`). Unknown flags, missing
+ * values, extra positionals, body/input/header/cache flags, non-GET methods,
+ * GraphQL, and absolute URLs fail closed.
+ *
+ * This is intentionally narrower than the full `gh api` CLI. A false negative
+ * costs an LLM evaluation; a false positive could turn a remote mutation or
+ * arbitrary egress into a 0 ms approval.
+ */
+function ghApiReadVeto(segment: string): boolean {
+  if (hasUnsafeGhApiExpansion(segment)) return true;
+  const words = shellWords(segment);
+  if (words[0] !== 'gh' || words[1] !== 'api') return true;
+
+  let endpoint: string | null = null;
+  for (let index = 2; index < words.length; index++) {
+    const token = words[index];
+    if (token === undefined || token === '') return true;
+
+    if (token === '--') {
+      // Once option parsing ends, exactly one endpoint must remain and it must
+      // be the final word. No post-separator flags are needed by this group.
+      if (endpoint !== null) return true;
+      const separatedEndpoint = words[index + 1];
+      if (separatedEndpoint === undefined || separatedEndpoint.startsWith('-')) return true;
+      endpoint = separatedEndpoint;
+      return index + 2 === words.length ? !isUnsafeGhApiEndpoint(endpoint) : true;
+    }
+
+    if (token === '-X' || token === '--method') {
+      const method = words[index + 1];
+      if (method !== 'GET') return true;
+      index++;
+      continue;
+    }
+    if (token.startsWith('--method=')) {
+      if (token.slice('--method='.length) !== 'GET') return true;
+      continue;
+    }
+    if (token.startsWith('-X') && token.length > 2) {
+      if (token.slice(2) !== 'GET') return true;
+      continue;
+    }
+
+    if (GH_API_READ_BOOLEAN_FLAGS.has(token)) continue;
+
+    const equalsIndex = token.indexOf('=');
+    const flag = equalsIndex === -1 ? token : token.slice(0, equalsIndex);
+    if (GH_API_READ_VALUE_FLAGS.has(flag)) {
+      if (equalsIndex !== -1) {
+        // An empty formatting value is harmless; `gh` may reject it later, but
+        // it still cannot change the request method or supply a request body.
+        continue;
+      }
+      const value = words[index + 1];
+      // Do not consume a flag-looking token as a value. That would hide an
+      // unsafe option from this parser and could turn a malformed invocation
+      // into an apparent one-endpoint read.
+      if (value === undefined || value.startsWith('-')) return true;
+      index++;
+      continue;
+    }
+
+    if (token.startsWith('-')) return true;
+    if (endpoint !== null) return true;
+    endpoint = token;
+  }
+
+  return endpoint === null || isUnsafeGhApiEndpoint(endpoint);
+}
+
+/** Endpoint forms accepted by `gh-read`; relative REST paths only. */
+function isUnsafeGhApiEndpoint(endpoint: string): boolean {
+  if (endpoint === '') return true;
+  if (
+    endpoint.startsWith('//') ||
+    endpoint.startsWith('~') ||
+    endpoint.includes('$') ||
+    /^[a-z][a-z0-9+.-]*:/i.test(endpoint)
+  ) {
+    return true;
+  }
+  const firstPathPart = endpoint.replace(/^\/+/, '').split(/[/?#]/, 1)[0]?.toLowerCase();
+  // GitHub's GraphQL endpoint is POST-oriented and its query body is outside
+  // the GET/output-only contract even when a caller spells a method flag.
+  return firstPathPart === 'graphql';
+}
+
 /**
  * Tool-input keys that name a destination on the mutating tools. `Write`,
  * `Edit` and `NotebookEdit` all carry exactly one of these.
@@ -1618,6 +1805,17 @@ export const BUILTIN_GROUPS: Readonly<Record<string, PermissionGroup>> = {
       'gh status',
     ],
   },
+  /**
+   * GitHub REST reads. Kept separate from `vcs-read` because its prefix is
+   * remote and its method/body grammar is not safely covered by the blanket
+   * read veto. `net-read` remains reserved for arbitrary URL tools and is not
+   * a level default; this group proves the narrower `gh api` surface only.
+   */
+  'gh-read': {
+    tools: [],
+    commands: ['gh api'],
+    segmentVeto: ghApiReadVeto,
+  },
   'build-test': {
     tools: [],
     commands: [
@@ -1640,7 +1838,8 @@ export const BUILTIN_GROUPS: Readonly<Record<string, PermissionGroup>> = {
   },
   /**
    * Outbound reads (ADR 0025). In NO level preset and in no shipped default —
-   * every preset stays entirely local, and this one must be asked for by name.
+   * arbitrary-URL access still must be asked for by name. The separate
+   * `gh-read` group is a narrower, explicitly parsed GitHub REST surface.
    *
    * It exists because `WebFetch`/`WebSearch` previously matched nothing at all,
    * so every web call from every subagent parked, rendered and entered the

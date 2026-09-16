@@ -1,9 +1,9 @@
 /**
  * #963: auto-approve strictness levels.
  *
- * The load-bearing assertion is the FIRST one: `strict` must reproduce today's
- * shipped behavior exactly. A level system whose safest setting quietly
- * differs from what users already run is worse than no level system.
+ * The load-bearing assertion is the FIRST one: `strict` must reproduce the
+ * shipped default group set exactly. A level system whose safest setting
+ * quietly differs from the resolved default is worse than no level system.
  */
 
 import { describe, expect, test } from 'bun:test';
@@ -17,7 +17,7 @@ import {
 import { knownGroupNames } from '../../src/auto-approve/permission-groups.ts';
 import { DEFAULT_CONFIG } from '../../src/config/config.ts';
 
-describe('strict reproduces today', () => {
+describe('strict matches the shipped default', () => {
   test("strict's groups equal the shipped approve_groups default", () => {
     // Compared against `DEFAULT_CONFIG` itself, not a copy of its literal, so
     // the two cannot drift apart silently.

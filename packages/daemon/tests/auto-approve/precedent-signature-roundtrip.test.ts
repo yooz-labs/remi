@@ -61,7 +61,8 @@ function permissionRequest(
 
 /** Every tool shape `summarizeToolInput` branches on, plus the no-argument
  *  case. Each is a real operation, not a synthetic string. Only `Bash` (with
- *  a `command` field) is precedent-eligible (`precedentMayAuthorize`); the
+ *  a `command` field and a valid hook cwd) is precedent-eligible
+ *  (`precedentMayAuthorize`); the
  *  rest are included specifically to pin that they do NOT get a
  *  `precedentSignature` -- see the "eligibility" describe block below. */
 const OPERATIONS: Array<[string, Record<string, unknown>]> = [
@@ -93,7 +94,7 @@ const OPERATIONS: Array<[string, Record<string, unknown>]> = [
 
 describe('#990 Question.precedentSignature agrees byte-for-byte with the consult side', () => {
   for (const [toolName, toolInput] of OPERATIONS) {
-    const eligible = precedentMayAuthorize(toolName, toolInput);
+    const eligible = precedentMayAuthorize(toolName, toolInput, '/d');
     test(`${toolName}: ${JSON.stringify(toolInput).slice(0, 50)} (eligible=${eligible})`, () => {
       const question: Question = bridge().buildPermissionQuestion(
         permissionRequest(toolName, toolInput),
@@ -129,6 +130,13 @@ describe('#990 Question.precedentSignature agrees byte-for-byte with the consult
     expect(asSubagent.text).toContain('code-reviewer · ');
     expect(asSubagent.precedentSignature).toBe(asMain.precedentSignature as string);
     expect(asSubagent.precedentSignature).toBe(signatureForOperation('Bash', input));
+  });
+
+  test('the public signature stays command-only; cwd is private to the store', () => {
+    const input = { command: 'git status' };
+    const question = bridge().buildPermissionQuestion(permissionRequest('Bash', input));
+    expect(question.precedentSignature).toBe('Bash: git status');
+    expect(question.precedentSignature).not.toContain('/d');
   });
 
   test('a question-bearing tool (AskUserQuestion) never gets a precedentSignature', () => {

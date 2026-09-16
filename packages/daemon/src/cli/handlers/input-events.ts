@@ -141,6 +141,7 @@ export interface InputHandlerDeps {
     toolName: string,
     signature: string,
     decision: 'approved' | 'denied',
+    workingDirectory: string,
   ) => void;
 }
 
@@ -804,6 +805,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
             toolNameFromSignature(signature),
             signature,
             decision.decision === 'allow' ? 'approved' : 'denied',
+            session.workingDirectory,
           );
         }
       }
