@@ -16,8 +16,8 @@
  * `config.toml` — never conversation text); `moderate` is reachable by
  * `implicit` (text-derived) authorization; `low` never reaches the model at
  * all. This module only produces the band — it makes no approve/deny/escalate
- * decision and nothing in production calls it yet. A later PR wires it into
- * the risk x authorization matrix.
+ * decision. The verified read-only path applies its separately documented
+ * proof-aware normalization only after this classifier returns.
  *
  * ## Design constraints (all load-bearing)
  *
@@ -394,6 +394,26 @@ const DANGEROUS_WHOLE_WORD_PATTERNS: readonly RegExp[] = DANGEROUS_WHOLE_WORDS.m
 /** True if `segment`'s raw text contains a `DANGEROUS_WHOLE_WORDS` entry as a whole word. */
 function hasDangerousWholeWord(segment: string): boolean {
   return DANGEROUS_WHOLE_WORD_PATTERNS.some((pattern) => pattern.test(segment));
+}
+
+/**
+ * Normalize the classifier's one safe false-positive class for #1081 phase 4.
+ *
+ * Call this ONLY after `proveCompoundReadOnly` has returned `proved`. That
+ * proof rejects every remote/destructive/elevated/opaque operation that can
+ * legitimately produce a high band here. A remaining high band without a
+ * dangerous whole-word backstop is therefore the classifier's conservative
+ * assignment/grammar uncertainty (for example `value=$(git status ...)`).
+ * Preserve the raw whole-word backstop: a proven read such as
+ * `cat ~/.ssh/id_rsa` still escalates, while the proof-qualified inventory
+ * loops stop paying for harmless assignment syntax. Critical is never lowered.
+ */
+export function normalizeVerifiedReadRisk(
+  command: string,
+  classifiedRisk: Exclude<RiskBand, 'low'>,
+): Exclude<RiskBand, 'low'> {
+  if (classifiedRisk !== 'high') return classifiedRisk;
+  return hasDangerousWholeWord(command) ? 'high' : 'moderate';
 }
 
 /**

@@ -37,6 +37,14 @@ export {
   spawnDetachedEngine,
 } from './engine-process.ts';
 export { resolveProviderUrl } from './llm-client.ts';
+export {
+  buildShadowReviewPrompt,
+  formatShadowReviewOperation,
+  parseShadowRiskReview,
+} from './risk-review.ts';
+export type { RiskReviewMode, ShadowRiskReview } from './risk-review.ts';
+export { proveCompoundReadOnly } from './read-only-proof.ts';
+export type { ReadOnlyProof, ReadOnlyProofLeaf, ReadOnlyProofReason } from './read-only-proof.ts';
 export { alertBody, alertTitle, SubagentAlerter } from './subagent-alert.ts';
 export type { SubagentAlert } from './subagent-alert.ts';
 export type {

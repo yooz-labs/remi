@@ -1713,6 +1713,12 @@ export class AutoApproveGate {
       );
       this.deps.resetSubagentContext?.();
     }
+    if (result.decision === 'escalate' && result.suppressSecondOpinion === true) {
+      // #1081 phase 4: proof, provenance, risk, and reviewer failures are
+      // terminal escalations. Sending one to `escalate_model` would let an
+      // unverified second opinion undo the verified path's fail-closed gate.
+      return this.escalateMain(input, result.reasoning, result.summary);
+    }
     // Second opinion (#522): the fast model would escalate, but a heavier
     // escalate_model may resolve it (honoring a broad approve policy) before we
     // bother the user. Its latency only hits would-escalate cases. Main context

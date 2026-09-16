@@ -27,8 +27,9 @@ import {
   startTranscriptFallback,
 } from '../../src/cli/transcript-fallback.ts';
 import type { PTYSession } from '../../src/pty/pty-session.ts';
+import { SessionBindingStore } from '../../src/session/session-binding-store.ts';
 import { SessionRegistry } from '../../src/session/session-registry.ts';
-import { SessionStore } from '../../src/session/session-store.ts';
+import { SessionStore, type StoredSession } from '../../src/session/session-store.ts';
 import { TranscriptDiscovery } from '../../src/transcript/transcript-discovery.ts';
 import type { TranscriptWatcher } from '../../src/transcript/transcript-watcher.ts';
 
@@ -94,15 +95,16 @@ describe('two daemons in the same cwd never cross-bind (#427)', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  function makeDaemon(label: string): DaemonFixture {
-    const sessionStore = new SessionStore(path.join(tmpDir, `sessions-${label}.json`));
+  function makeDaemon(label: string, sessionStore?: SessionStore): DaemonFixture {
+    const durableStore =
+      sessionStore ?? new SessionStore(path.join(tmpDir, `sessions-${label}.json`));
     const sessionRegistry = new SessionRegistry({ orphanTimeoutMs: 60000 });
     const remiSessionId = sessionRegistry.createSessionId();
     sessionRegistry.registerSession(remiSessionId, projectPath, fakePTY(), fakeMessageAPI());
     return {
       label,
       remiSessionId,
-      sessionStore,
+      sessionStore: durableStore,
       sessionRegistry,
       transcriptWatchers: new Map(),
       transcriptFallbackTimers: new Map(),
@@ -191,6 +193,50 @@ describe('two daemons in the same cwd never cross-bind (#427)', () => {
     const storedB = b.sessionStore.findByRemiSessionId(b.remiSessionId);
     expect(storedA?.claudeSessionId).toBe(a.claudeSessionId!);
     expect(storedB?.claudeSessionId).toBe(b.claudeSessionId!);
+
+    return shutdownAll([a, b]);
+  });
+
+  test('shared store preserves same-path bindings and rejects duplicate identity', () => {
+    const sharedStorePath = path.join(tmpDir, 'sessions.json');
+    const a = makeDaemon('A', new SessionStore(sharedStorePath));
+    const b = makeDaemon('B', new SessionStore(sharedStorePath));
+
+    startDaemonBinding(a);
+    startDaemonBinding(b);
+
+    const freshStore = new SessionStore(sharedStorePath);
+    const stored = freshStore.list();
+    expect(stored).toHaveLength(2);
+    expect(new SessionBindingStore(freshStore).get(a.remiSessionId)?.claudeSessionId).toBe(
+      a.claudeSessionId,
+    );
+    expect(new SessionBindingStore(freshStore).get(b.remiSessionId)?.claudeSessionId).toBe(
+      b.claudeSessionId,
+    );
+
+    // Corrupt the reverse identity deliberately: a Claude session ID cannot
+    // identify one daemon once two durable records claim it. The resolver must
+    // refuse to choose A or B rather than route to whichever row comes first.
+    const raw = JSON.parse(fs.readFileSync(sharedStorePath, 'utf-8')) as {
+      version: number;
+      sessions: StoredSession[];
+    };
+    const original = raw.sessions.find((session) => session.remiSessionId === a.remiSessionId);
+    if (!original) throw new Error('daemon A binding was not persisted');
+    const claudeSessionIdA = a.claudeSessionId;
+    if (typeof claudeSessionIdA !== 'string') throw new Error('daemon A has no Claude session ID');
+    raw.sessions.push({
+      ...original,
+      remiSessionId: generateId(),
+      port: 18770,
+    });
+    fs.writeFileSync(sharedStorePath, JSON.stringify(raw, null, 2), 'utf-8');
+
+    const reverse = new SessionBindingStore(new SessionStore(sharedStorePath));
+    expect(() => reverse.getByClaudeSessionId(claudeSessionIdA)).toThrow();
+    expect(reverse.get(a.remiSessionId)?.claudeSessionId).toBe(claudeSessionIdA);
+    expect(reverse.get(b.remiSessionId)?.claudeSessionId).toBe(b.claudeSessionId);
 
     return shutdownAll([a, b]);
   });

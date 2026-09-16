@@ -10,7 +10,7 @@ import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.
 import type { PTYSession } from '../../../src/pty/pty-session.ts';
 import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
 import { SessionRegistry } from '../../../src/session/session-registry.ts';
-import { SessionStore } from '../../../src/session/session-store.ts';
+import { AmbiguousSessionIdentityError, SessionStore } from '../../../src/session/session-store.ts';
 import { TranscriptDiscovery } from '../../../src/transcript/transcript-discovery.ts';
 
 function fakePTY(): PTYSession {
@@ -149,6 +149,60 @@ describe('createResumeSessionHandlers', () => {
     expect(msg.type).toBe('resume_session_response');
     expect(msg.success).toBe(false);
     expect(msg.error).toContain('No Claude session ID available for resume');
+  });
+
+  test('reports durable lookup failures as an explicit resume response', async () => {
+    const failingStore = {
+      findByRemiSessionId: () => {
+        throw new Error('sessions.json is unreadable');
+      },
+    } as unknown as SessionStore;
+    const handlers = createResumeSessionHandlers({
+      sessionRegistry,
+      sessionStore: failingStore,
+      bindingStore,
+      transcriptDiscovery,
+      createNewSession: async () => undefined,
+      send,
+    });
+
+    await handlers.onResumeSessionRequest(CID, 'unreadable-session', REQ);
+
+    expect(sendCalls).toHaveLength(1);
+    const msg = sendCalls[0]?.message as { type: string; success: boolean; error?: string };
+    expect(msg.type).toBe('resume_session_response');
+    expect(msg.success).toBe(false);
+    expect(msg.error).toContain('Cannot resolve session unreadable-session');
+    expect(msg.error).toContain('sessions.json is unreadable');
+  });
+
+  test('does not fall through transcript discovery after an ambiguous binding', async () => {
+    const ambiguousBindingStore = {
+      getByClaudeSessionId: () => {
+        throw new AmbiguousSessionIdentityError('Claude', 'ambiguous-claude', 2);
+      },
+    } as unknown as SessionBindingStore;
+    const noFallbackDiscovery = {
+      findTranscriptBySessionId: () => {
+        throw new Error('transcript fallback must not run');
+      },
+    } as unknown as TranscriptDiscovery;
+    const handlers = createResumeSessionHandlers({
+      sessionRegistry,
+      sessionStore,
+      bindingStore: ambiguousBindingStore,
+      transcriptDiscovery: noFallbackDiscovery,
+      createNewSession: async () => undefined,
+      send,
+    });
+
+    await handlers.onResumeSessionRequest(CID, 'ambiguous-claude', REQ);
+
+    expect(sendCalls).toHaveLength(1);
+    const msg = sendCalls[0]?.message as { type: string; success: boolean; error?: string };
+    expect(msg.type).toBe('resume_session_response');
+    expect(msg.success).toBe(false);
+    expect(msg.error).toContain('Ambiguous Claude session ID');
   });
 
   test('fails when the resolved project directory does not exist', async () => {

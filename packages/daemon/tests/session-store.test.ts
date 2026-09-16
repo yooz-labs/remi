@@ -4,7 +4,14 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { UUID } from '@remi/shared';
 import { normalizeProjectPath } from '../src/cli/path-resolver.ts';
-import { SessionStore, type StoredSession } from '../src/session/session-store.ts';
+import {
+  AmbiguousSessionIdentityError,
+  MalformedSessionStoreError,
+  SessionStore,
+  SessionStoreLockError,
+  type StoredSession,
+  resolveStoredSession,
+} from '../src/session/session-store.ts';
 
 function makeTmpPath(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-test-'));
@@ -129,20 +136,197 @@ describe('SessionStore', () => {
     expect(found?.claudeSessionId).toBe('claude-xyz');
   });
 
-  test('handles corrupt JSON gracefully', () => {
+  test('does not overwrite corrupt JSON', () => {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, 'not json', 'utf-8');
-    expect(store.list()).toEqual([]);
-    // Can still save after corruption
+    const corrupt = 'not json';
+    fs.writeFileSync(filePath, corrupt, 'utf-8');
+    expect(() => store.list()).toThrow(MalformedSessionStoreError);
     const session = makeSession();
-    store.save(session);
-    expect(store.list()).toHaveLength(1);
+    expect(() => store.save(session)).toThrow(MalformedSessionStoreError);
+    expect(fs.readFileSync(filePath, 'utf-8')).toBe(corrupt);
+    expect(fs.existsSync(`${filePath}.lock`)).toBe(false);
   });
 
-  test('handles wrong version gracefully', () => {
+  test('rejects a wrong-version store instead of treating it as empty', () => {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, JSON.stringify({ version: 99, sessions: [] }), 'utf-8');
-    expect(store.list()).toEqual([]);
+    expect(() => store.list()).toThrow(MalformedSessionStoreError);
+  });
+
+  test('refuses to select an ambiguous Claude session ID', () => {
+    const first = makeSession({ claudeSessionId: 'duplicate-claude-id' });
+    const second = makeSession({ claudeSessionId: 'duplicate-claude-id' });
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify({ version: 1, sessions: [first, second] }, null, 2),
+      'utf-8',
+    );
+
+    expect(() => store.findByClaudeSessionId('duplicate-claude-id')).toThrow(
+      AmbiguousSessionIdentityError,
+    );
+  });
+
+  test('refuses to select an ambiguous Remi session ID', () => {
+    const remiSessionId = crypto.randomUUID() as UUID;
+    const first = makeSession({ remiSessionId, claudeSessionId: 'claude-first' });
+    const second = makeSession({ remiSessionId, claudeSessionId: 'claude-second' });
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify({ version: 1, sessions: [first, second] }, null, 2),
+      'utf-8',
+    );
+
+    expect(() => store.findByRemiSessionId(remiSessionId)).toThrow(AmbiguousSessionIdentityError);
+  });
+
+  test('prefers the one active row for a resumed Claude lineage', () => {
+    const claudeSessionId = 'resumed-claude-id';
+    const historical = makeSession({
+      claudeSessionId,
+      exitedAt: new Date(Date.now() - 60_000).toISOString(),
+      exitCode: 0,
+    });
+    const current = makeSession({ claudeSessionId });
+    store.save(historical);
+    store.save(current);
+
+    expect(store.findByClaudeSessionId(claudeSessionId)?.remiSessionId).toBe(current.remiSessionId);
+    expect(resolveStoredSession(store.list(), claudeSessionId)?.remiSessionId).toBe(
+      current.remiSessionId,
+    );
+  });
+
+  test('refuses ambiguous exact and prefix Remi resume queries', () => {
+    const first = makeSession({
+      remiSessionId: 'aaaaaaaa-1111-1111-1111-111111111111' as UUID,
+    });
+    const second = makeSession({
+      remiSessionId: 'aaaaaaaa-2222-2222-2222-222222222222' as UUID,
+    });
+
+    expect(() =>
+      resolveStoredSession(
+        [
+          { ...first, remiSessionId: 'duplicate-1111' as UUID },
+          { ...second, remiSessionId: 'duplicate-1111' as UUID },
+        ],
+        'duplicate-1111',
+      ),
+    ).toThrow(AmbiguousSessionIdentityError);
+    expect(() => resolveStoredSession([first, second], 'aaaaaaaa')).toThrow(
+      AmbiguousSessionIdentityError,
+    );
+  });
+
+  test('rejects mutations that would select or create an ambiguous identity', () => {
+    const first = makeSession({ claudeSessionId: 'claude-safe' });
+    const second = makeSession({ claudeSessionId: 'claude-other' });
+    store.save(first);
+    store.save(second);
+
+    const beforeDuplicateClaude = fs.readFileSync(filePath, 'utf-8');
+    expect(() =>
+      store.save({ ...makeSession({ claudeSessionId: 'claude-safe' }), projectPath: '/tmp/next' }),
+    ).toThrow(AmbiguousSessionIdentityError);
+    expect(() => store.updateClaudeSessionId(second.remiSessionId, 'claude-safe')).toThrow(
+      AmbiguousSessionIdentityError,
+    );
+    expect(fs.readFileSync(filePath, 'utf-8')).toBe(beforeDuplicateClaude);
+
+    const duplicateRemi = first.remiSessionId;
+    const duplicateFile = {
+      version: 1,
+      sessions: [
+        first,
+        { ...second, remiSessionId: duplicateRemi, claudeSessionId: 'claude-duplicate' },
+      ],
+    };
+    fs.writeFileSync(filePath, JSON.stringify(duplicateFile, null, 2), 'utf-8');
+    const beforeDuplicateRemi = fs.readFileSync(filePath, 'utf-8');
+    expect(() => store.save(makeSession())).toThrow(AmbiguousSessionIdentityError);
+    expect(() => store.markExited(duplicateRemi, 1)).toThrow(AmbiguousSessionIdentityError);
+    expect(() => store.updateClaudeSessionId(duplicateRemi, 'claude-new')).toThrow(
+      AmbiguousSessionIdentityError,
+    );
+    expect(fs.readFileSync(filePath, 'utf-8')).toBe(beforeDuplicateRemi);
+  });
+
+  test('reclaims a stale same-host lock from a dead process', () => {
+    const lockPath = `${filePath}.lock`;
+    const staleAt = Date.now() - 60_000;
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({
+        version: 1,
+        ownerId: 'stale-owner',
+        pid: 999999,
+        host: os.hostname(),
+        acquiredAt: staleAt,
+      }),
+      'utf-8',
+    );
+    fs.utimesSync(lockPath, new Date(staleAt), new Date(staleAt));
+
+    store.save(makeSession());
+
+    expect(store.list()).toHaveLength(1);
+    expect(fs.existsSync(lockPath)).toBe(false);
+    expect(
+      fs.readdirSync(path.dirname(filePath)).filter((name) => name.includes('.recovery-')),
+    ).toEqual([]);
+  });
+
+  test('does not reclaim a live lock and preserves the store', () => {
+    const lockPath = `${filePath}.lock`;
+    const original = makeSession();
+    store.save(original);
+    const before = fs.readFileSync(filePath, 'utf-8');
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({
+        version: 1,
+        ownerId: 'live-owner',
+        pid: process.pid,
+        host: os.hostname(),
+        acquiredAt: Date.now(),
+      }),
+      'utf-8',
+    );
+
+    expect(() => store.save(makeSession())).toThrow(SessionStoreLockError);
+    expect(fs.readFileSync(filePath, 'utf-8')).toBe(before);
+    expect(fs.existsSync(lockPath)).toBe(true);
+    fs.unlinkSync(lockPath);
+  });
+
+  test('does not reclaim malformed lock metadata or leave a lock after a store error', () => {
+    const lockPath = `${filePath}.lock`;
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(lockPath, 'not lock json', 'utf-8');
+
+    expect(() => store.save(makeSession())).toThrow(SessionStoreLockError);
+    expect(fs.existsSync(lockPath)).toBe(true);
+    fs.unlinkSync(lockPath);
+
+    const corrupt = 'still not json';
+    fs.writeFileSync(filePath, corrupt, 'utf-8');
+    expect(() => store.save(makeSession())).toThrow(MalformedSessionStoreError);
+    expect(fs.readFileSync(filePath, 'utf-8')).toBe(corrupt);
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
+  test('does not hide malformed lock metadata from list()', () => {
+    const lockPath = `${filePath}.lock`;
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(lockPath, 'not lock json', 'utf-8');
+
+    expect(() => store.list()).toThrow(SessionStoreLockError);
+    expect(fs.existsSync(lockPath)).toBe(true);
+    fs.unlinkSync(lockPath);
   });
 
   test('trims oldest exited sessions when over limit', () => {

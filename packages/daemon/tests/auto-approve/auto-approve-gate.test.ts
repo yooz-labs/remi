@@ -121,9 +121,12 @@ describe('AutoApproveGate', () => {
     );
   }
 
-  /** Gate whose PRIMARY model escalates but whose escalate_model ('big-model')
-   *  returns `secondResult` (#522 second opinion). */
-  function gateWithSecondOpinion(secondResult: AutoApproveResult): AutoApproveGate {
+  /** Gate whose PRIMARY model returns `primaryResult` and whose escalate_model
+   *  ('big-model') returns `secondResult` (#522 second opinion). */
+  function gateWithSecondOpinion(
+    secondResult: AutoApproveResult,
+    primaryResult: AutoApproveResult = escalate,
+  ): AutoApproveGate {
     registry.registerSession(SID, '/d', fakePTY(submits), {
       handleMessage: () => {},
       handleQuestion: () => {},
@@ -131,7 +134,7 @@ describe('AutoApproveGate', () => {
     } as never);
     const service: AutoApproveEvaluator = {
       evaluate: async (_t, _i, _tag, _s, modelOverride) =>
-        modelOverride === 'big-model' ? secondResult : escalate,
+        modelOverride === 'big-model' ? secondResult : primaryResult,
       cancel: () => true,
     };
     return new AutoApproveGate(
@@ -404,6 +407,19 @@ describe('AutoApproveGate', () => {
     const d = await gateWithSecondOpinion(approve).resolvePermission(pr());
     expect(d).toBe('allow');
     expect(escalations).toHaveLength(0);
+    expect(submits).toHaveLength(0);
+  });
+
+  test('terminal verified escalation bypasses escalate_model (#1081 phase 4)', async () => {
+    const terminalVerifiedEscalate: AutoApproveResult = {
+      ...escalate,
+      suppressSecondOpinion: true,
+    };
+    const d = await gateWithSecondOpinion(approve, terminalVerifiedEscalate).resolvePermission(
+      pr(),
+    );
+    expect(d).toBe('passthrough');
+    expect(escalations).toHaveLength(1);
     expect(submits).toHaveLength(0);
   });
 

@@ -39,13 +39,46 @@ import {
   signatureForOperation,
 } from './precedent.ts';
 import { buildPrompt } from './prompt-builder.ts';
+import { proveCompoundReadOnly } from './read-only-proof.ts';
 import type { DecidingLayer } from './risk-bands.ts';
-import { classifyRisk, formatMatrixContext } from './risk-bands.ts';
+import { classifyRisk, formatMatrixContext, normalizeVerifiedReadRisk } from './risk-bands.ts';
 import { enforceRiskCeiling } from './risk-ceiling.ts';
+import {
+  MAX_REVIEW_OPERATION_CHARS,
+  type RiskReviewMode,
+  type ShadowRiskReview,
+  buildShadowReviewPrompt,
+  formatShadowReviewOperation,
+  parseShadowRiskReview,
+} from './risk-review.ts';
 import type { AutoApproveConfig, AutoApproveResult, DenySource, MultiChoiceMode } from './types.ts';
 
 type BinaryDecision = 'approve' | 'deny' | 'escalate';
 const VALID_DECISIONS = new Set<BinaryDecision>(['approve', 'deny', 'escalate']);
+
+type ShadowReviewFailureKind = 'malformed' | 'timeout' | 'unavailable' | 'error';
+
+type ShadowReviewOutcome =
+  | { readonly kind: 'ok'; readonly review: ShadowRiskReview }
+  | { readonly kind: ShadowReviewFailureKind };
+
+function shadowErrorKind(error: unknown): ShadowReviewFailureKind {
+  const name = (error as { name?: unknown } | null)?.name;
+  const message = errorToString(error).toLowerCase();
+  if (name === 'AbortError' || message.includes('abort') || message.includes('timeout')) {
+    return 'timeout';
+  }
+  if (
+    message.includes('fetch') ||
+    message.includes('connection') ||
+    message.includes('econn') ||
+    message.includes('enotfound') ||
+    /llm api error (4|5)\d\d/.test(message)
+  ) {
+    return 'unavailable';
+  }
+  return 'error';
+}
 
 /**
  * Sentinel scope (#730) used when a caller omits `scope` from `evaluate()` /
@@ -171,6 +204,9 @@ export class AutoApproveService {
    *  fast model's timeout. The heavy model is usually cold, so it needs a longer
    *  budget than the fast path. */
   private readonly escalateTimeoutMs: number;
+  /** Phase 2 reviewer mode. `shadow` is telemetry-only; `verified` is the
+   * proof- and provenance-gated phase 4 rollout. */
+  private readonly riskReviewMode: RiskReviewMode;
   /** True when the provider is the Yooz engine (enables the /v1/llm/preload warm-up). */
   private readonly providerIsYooz: boolean;
   /** True when remi owns this engine and may therefore mutate its disk/memory
@@ -287,6 +323,7 @@ export class AutoApproveService {
     this.multichoiceModel = config.multichoice_model;
     this.escalateModel = config.escalate_model;
     this.escalateTimeoutMs = config.escalate_timeout > 0 ? config.escalate_timeout * 1000 : 0;
+    this.riskReviewMode = config.risk_review ?? 'off';
     this.queueTimeoutMs = config.queue_timeout > 0 ? config.queue_timeout * 1000 : 0;
     this.providerIsYooz = config.provider === 'yooz';
     this.ownsEngine = this.providerIsYooz && config.engine === 'owned';
@@ -756,6 +793,242 @@ export class AutoApproveService {
   }
 
   /**
+   * Run the shared authorization reviewer. Shadow mode records its result
+   * without changing the primary decision; verified mode consumes it only
+   * after its own proof and provenance gates pass.
+   * The caller holds the normal evaluation slot and the normal hard deadline,
+   * so this call cannot create a nested queue wait or extend the permission
+   * evaluation beyond the existing race timer. An abort from `cancel()` is
+   * rethrown: swallowing it here would let a stale primary decision escape
+   * after the user had already answered. A deadline abort is recorded as a
+   * reviewer timeout while the primary result remains unchanged.
+   */
+  private async runShadowReview(
+    toolName: string,
+    toolInput: Record<string, unknown>,
+    authority: string | undefined,
+    riskBand: ReturnType<typeof classifyRisk>,
+    model: string,
+    signal: AbortSignal,
+    deadlineAt: number,
+  ): Promise<ShadowReviewOutcome> {
+    // The review call must not extend the original permission deadline. A local
+    // hard-kill also covers providers that ignore AbortSignal, while the
+    // caller's signal still carries user cancellation.
+    if (signal.aborted && this.cancelReason !== null) {
+      throw new DOMException('Shadow review cancelled', 'AbortError');
+    }
+    const remainingMs = deadlineAt - Date.now();
+    if (remainingMs <= 0) return { kind: 'timeout' };
+
+    const reviewerController = new AbortController();
+    const forwardAbort = (): void => reviewerController.abort();
+    if (signal.aborted) reviewerController.abort();
+    else signal.addEventListener('abort', forwardAbort, { once: true });
+    let hardKillTimer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      const operation = formatShadowReviewOperation(toolName, toolInput);
+      const response = await Promise.race([
+        chatCompletion(
+          { ...this.llmConfig, model, timeoutMs: remainingMs, maxTokens: 8 },
+          [{ role: 'user', content: buildShadowReviewPrompt(authority, operation) }],
+          reviewerController.signal,
+        ),
+        new Promise<never>((_, reject) => {
+          hardKillTimer = setTimeout(() => {
+            reviewerController.abort();
+            reject(
+              new DOMException(`Shadow review hard kill after ${remainingMs}ms`, 'AbortError'),
+            );
+          }, remainingMs);
+        }),
+      ]);
+      const review = parseShadowRiskReview(riskBand, response.content);
+      return review === null ? { kind: 'malformed' } : { kind: 'ok', review };
+    } catch (error) {
+      // Preserve the service's cancellation/timeout semantics. In particular,
+      // a reviewer must not turn a cancelled primary evaluation into a late
+      // approve just because its own failure is advisory.
+      if (signal.aborted && this.cancelReason !== null) throw error;
+      return { kind: shadowErrorKind(error) };
+    } finally {
+      if (hardKillTimer !== null) clearTimeout(hardKillTimer);
+      signal.removeEventListener('abort', forwardAbort);
+    }
+  }
+
+  /**
+   * Run the phase 4 decision-changing path for one narrowly proven command.
+   *
+   * The proof is checked before the model call and is the authority for effect
+   * shape. The reviewer receives the same measured authorization prompt as
+   * shadow mode, but its matrix result can influence this result only after
+   * all of these code-level gates pass:
+   *
+   * - Bash, main context, and the ordinary primary evaluation (not an
+   *   escalate_model or multi-choice dispatch);
+   * - every shell leaf is in the finite read-only proof language;
+   * - the deterministic risk classifier finds no `critical` deny-floor
+   *   match. A proven read-only command may carry a non-critical `high` band
+   *   from lexical uncertainty (for example, an assignment or a branch name
+   *   containing `rm`); the proof removes that uncertainty and normalizes it
+   *   to the effective `moderate` band. Critical matches remain a hard stop;
+   * - the session has non-empty current authority text; and
+   * - the reviewer returns a valid grade whose provenance-capped matrix says
+   *   `approve`.
+   *
+   * Once verified mode is selected for a Bash request, every proof,
+   * provenance, risk, or reviewer failure returns an escalation. Falling back
+   * to the primary model in that case would let an unverified verdict undo the
+   * very gate that selected this path. The caller still bypasses this method
+   * for deterministic rules, design questions, multi-choice prompts, and
+   * subagent permissions before a slot is acquired.
+   */
+  private async runVerifiedReadReview(
+    toolInput: Record<string, unknown>,
+    authority: string | undefined,
+    model: string,
+    signal: AbortSignal,
+    deadlineAt: number,
+    prefix: string,
+    start: number,
+  ): Promise<AutoApproveResult> {
+    const command = typeof toolInput['command'] === 'string' ? toolInput['command'] : '';
+    const durationMs = (): number => Date.now() - start;
+    const escalate = (reasoning: string): AutoApproveResult => ({
+      decision: 'escalate',
+      reasoning,
+      durationMs: durationMs(),
+      model,
+      suppressSecondOpinion: true,
+    });
+
+    if (command.length > MAX_REVIEW_OPERATION_CHARS) {
+      const reasoning = `Verified read-only review (#1081): the full command is ${command.length} characters, beyond the exact reviewer input bound of ${MAX_REVIEW_OPERATION_CHARS}; escalating instead of reviewing a truncated prefix.`;
+      this.logFn(
+        `${prefix} VERIFIED REVIEW Bash: status=operation-too-long chars=${command.length} max=${MAX_REVIEW_OPERATION_CHARS}`,
+      );
+      return escalate(reasoning);
+    }
+
+    const proof = proveCompoundReadOnly(command);
+    if (proof.status !== 'proved') {
+      // Unknown shell analysis is a hard failure for this mode. Falling back
+      // to the primary model here would let a model reason its way around the
+      // effect proof that is supposed to bound this rollout.
+      const reasoning = `Verified read-only review (#1081): deterministic effect proof rejected (${proof.reason}); unknown shell analysis cannot be approved in verified mode, so escalating.`;
+      this.logFn(`${prefix} VERIFIED REVIEW Bash: status=proof-rejected proof=${proof.reason}`);
+      return escalate(reasoning);
+    }
+
+    const classifiedRisk = classifyRisk('Bash', toolInput);
+    // The proof-aware helper removes only the classifier's assignment-shaped
+    // false positive. It deliberately preserves a high band when the raw
+    // command contains an unconditional dangerous whole word, and it never
+    // lowers critical. Other genuine high-risk shapes are rejected by the
+    // proof before this point.
+    const riskBand = normalizeVerifiedReadRisk(command, classifiedRisk);
+    const authorityPresent = (authority?.trim().length ?? 0) > 0;
+    if (riskBand !== 'moderate') {
+      const reasoning = `Verified read-only review (#1081): deterministic proof passed, but risk band=${riskBand} is outside the moderate-risk rollout; escalating.`;
+      this.logFn(
+        `${prefix} VERIFIED REVIEW Bash: status=risk-mismatch proof=proved classified_risk=${classifiedRisk} risk=${riskBand} leaves=${proof.leaves.length}`,
+      );
+      return escalate(reasoning);
+    }
+    if (!authorityPresent) {
+      const reasoning =
+        'Verified read-only review (#1081): deterministic proof passed, but this session has no current human authorization context; escalating.';
+      this.logFn(
+        `${prefix} VERIFIED REVIEW Bash: status=missing-authority proof=proved risk=moderate leaves=${proof.leaves.length}`,
+      );
+      return escalate(reasoning);
+    }
+
+    const review = await this.runShadowReview(
+      'Bash',
+      toolInput,
+      authority,
+      riskBand,
+      model,
+      signal,
+      deadlineAt,
+    );
+    if (review.kind !== 'ok') {
+      const reasoning = `Verified read-only review (#1081): deterministic proof passed, but the authorization reviewer was ${review.kind}; escalating.`;
+      this.logFn(
+        `${prefix} VERIFIED REVIEW Bash: status=${review.kind} proof=proved risk=moderate leaves=${proof.leaves.length}`,
+      );
+      return escalate(reasoning);
+    }
+
+    const matrix = review.review.matrixDecision;
+    const decision = matrix === 'approve' ? 'approve' : 'escalate';
+    const reasoning =
+      decision === 'approve'
+        ? `Verified read-only review (#1081): deterministic proof passed (${proof.leaves.length} read leaves), risk=moderate, authorization matrix=approve (grade=${review.review.authorization}).`
+        : `Verified read-only review (#1081): deterministic proof passed (${proof.leaves.length} read leaves), risk=moderate, authorization matrix=escalate (grade=${review.review.authorization}).`;
+    this.logFn(
+      `${prefix} VERIFIED REVIEW Bash: status=ok proof=proved risk=moderate leaves=${proof.leaves.length} observed_auth=${review.review.observedAuthorization} auth=${review.review.authorization} matrix=${matrix} final=${decision}`,
+    );
+    return {
+      decision,
+      reasoning,
+      durationMs: durationMs(),
+      model,
+      ...(decision === 'escalate' ? { suppressSecondOpinion: true as const } : {}),
+    };
+  }
+
+  /**
+   * Apply the session's latest denied precedent to an approval from either
+   * the ordinary model path or the verified reviewer. The verified path used
+   * to return before reaching this guard, which let a new reviewer approval
+   * override an explicit human refusal. Keeping the matcher and escalation
+   * construction in one helper prevents the two paths from drifting.
+   */
+  private applyDeniedPrecedent(
+    result: AutoApproveResult,
+    toolName: string,
+    toolInput: Record<string, unknown>,
+    precedent: PrecedentReader | undefined,
+    precedentContext: string | undefined,
+    prefix: string,
+    suppressSecondOpinion: boolean,
+  ): { readonly result: AutoApproveResult; readonly overridden: boolean } {
+    if (
+      result.decision !== 'approve' ||
+      precedent === undefined ||
+      precedentContext === undefined
+    ) {
+      return { result, overridden: false };
+    }
+
+    const deniedMatch = precedent.matchDenied(
+      toolName,
+      signatureForOperation(toolName, toolInput),
+      // `whole: true` (#1067): untruncated by construction. Also what lets
+      // a genuine >=120-char DENY that ends in `...` re-match here.
+      true,
+      precedentContext,
+    );
+    if (deniedMatch === null) return { result, overridden: false };
+
+    const overridden: AutoApproveResult = {
+      decision: 'escalate',
+      reasoning: `Session precedent (#976): you denied "${deniedMatch.matchedSignature}" earlier in this session, which covers this operation, so a model approve is escalated back to you instead of standing. Original model reasoning: ${result.reasoning}`,
+      durationMs: result.durationMs,
+      model: result.model,
+      summary: 'You said no to this before. Allow it now?',
+      ...(suppressSecondOpinion ? { suppressSecondOpinion: true as const } : {}),
+    };
+    this.logFn(
+      `${prefix} PRECEDENT ${toolName}: approve -> escalate (denied "${deniedMatch.matchedSignature}") (${result.durationMs}ms)`,
+    );
+    return { result: overridden, overridden: true };
+  }
+
+  /**
    * Evaluate a permission request. Never throws.
    * On any error, returns escalate so the user gets the question as normal.
    *
@@ -1040,8 +1313,48 @@ export class AutoApproveService {
         // Multi-choice + evaluate mode: dedicated prompt, optional alt model.
         // Otherwise the binary approve/deny prompt.
         const useMultiChoice = isMultiChoice && this.multichoiceMode === 'evaluate';
+        const authorityPresent = (authority?.trim().length ?? 0) > 0;
         const callModel =
           useMultiChoice && this.multichoiceModel ? this.multichoiceModel : baseModel;
+
+        // #1081 phase 4: the verified reviewer replaces the ordinary primary
+        // call only for the finite, deterministic read-only language. It is
+        // deliberately main-context-only: subagent permissions stay with the
+        // PTY arbiter (#807/#814), and an escalate_model call is already a
+        // second opinion with its own contract. Once selected, this path is
+        // fail-closed: proof, risk, provenance, and reviewer failures all
+        // escalate rather than falling through to an unverified model result.
+        if (
+          this.riskReviewMode === 'verified' &&
+          !useMultiChoice &&
+          isSubagent !== true &&
+          modelOverride === undefined &&
+          toolName === 'Bash'
+        ) {
+          const verified = await this.runVerifiedReadReview(
+            toolInput,
+            authority,
+            callModel,
+            externalSignal,
+            start + timeoutMs,
+            prefix,
+            start,
+          );
+          const precedentApplied = this.applyDeniedPrecedent(
+            verified,
+            toolName,
+            toolInput,
+            precedent,
+            precedentContext,
+            prefix,
+            true,
+          );
+          // Match the normal success path: a cancellation that races after
+          // the reviewer settled must not poison the next evaluation.
+          this.cancelReason = null;
+          return precedentApplied.result;
+        }
+
         // Reuse the base config only when neither the model nor the timeout
         // differs; the escalate_model path overrides both.
         const callConfig: LLMClientConfig =
@@ -1115,6 +1428,12 @@ export class AutoApproveService {
                   : {}),
               };
             })();
+        const primaryDecision: BinaryDecision | null =
+          result.decision === 'approve' ||
+          result.decision === 'deny' ||
+          result.decision === 'escalate'
+            ? result.decision
+            : null;
 
         // Q9 (#893) trust boundary: a binary (non-multichoice) 'approve' verdict
         // reached with an authority block in the prompt is re-checked here,
@@ -1164,7 +1483,6 @@ export class AutoApproveService {
           }
         }
 
-        const authorityPresent = (authority?.trim().length ?? 0) > 0;
         if (!useMultiChoice && authorityPresent && result.decision === 'approve') {
           const guarded = enforceAuthorityBoundary(toolName, toolInput, result.decision, true);
           if (guarded.overridden) {
@@ -1238,34 +1556,18 @@ export class AutoApproveService {
         // Post-model and approve-only, like every other guard here: it never
         // invents a deny, never touches an escalate, and moves in exactly one
         // direction.
-        if (
-          !useMultiChoice &&
-          precedent &&
-          precedentContext !== undefined &&
-          result.decision === 'approve'
-        ) {
-          const deniedMatch = precedent.matchDenied(
+        if (!useMultiChoice) {
+          const precedentApplied = this.applyDeniedPrecedent(
+            result,
             toolName,
-            signatureForOperation(toolName, toolInput),
-            // `whole: true` (#1067): untruncated by construction. Also what lets
-            // a genuine >=120-char DENY that ends in `...` re-match here.
-            true,
+            toolInput,
+            precedent,
             precedentContext,
+            prefix,
+            false,
           );
-          if (deniedMatch !== null) {
-            decidedBy = 'precedent';
-            const original = result;
-            result = {
-              decision: 'escalate',
-              reasoning: `Session precedent (#976): you denied "${deniedMatch.matchedSignature}" earlier in this session, which covers this operation, so a model approve is escalated back to you instead of standing. Original model reasoning: ${original.reasoning}`,
-              durationMs,
-              model: original.model,
-              summary: 'You said no to this before. Allow it now?',
-            };
-            this.logFn(
-              `${prefix} PRECEDENT ${toolName}: approve -> escalate (denied "${deniedMatch.matchedSignature}") (${durationMs}ms)`,
-            );
-          }
+          if (precedentApplied.overridden) decidedBy = 'precedent';
+          result = precedentApplied.result;
         }
 
         // #954 COUNTERFACTUAL: the authority trust boundary, enforced by
@@ -1337,6 +1639,38 @@ export class AutoApproveService {
             };
             this.logFn(
               `${prefix} COUNTERFACTUAL ${toolName}: check failed, escalating - ${errorToString(err)}`,
+            );
+          }
+        }
+
+        // #1081 phase 2: collect an independent risk/authorization review only
+        // after the normal model and all existing guards have run. It is
+        // deliberately advisory: no field from the review is used to mutate
+        // `result`, and a malformed/unavailable review preserves the exact
+        // guarded decision above. Keeping the call inside this slot also means
+        // two sessions cannot run competing reviewer calls on the one local
+        // model at once.
+        if (this.riskReviewMode === 'shadow' && primaryDecision !== null && !useMultiChoice) {
+          const riskBand = classifyRisk(toolName, toolInput);
+          const shadow = await this.runShadowReview(
+            toolName,
+            toolInput,
+            authority,
+            riskBand,
+            model,
+            externalSignal,
+            start + timeoutMs,
+          );
+          const finalDecision = result.decision;
+          if (shadow.kind === 'ok') {
+            const disagreement =
+              shadow.review.matrixDecision === finalDecision ? 'none' : 'matrix_vs_final';
+            this.logFn(
+              `${prefix} SHADOW REVIEW ${toolName}: status=ok risk=${shadow.review.riskBand} authority=${authorityPresent ? 'yes' : 'no'} observed_auth=${shadow.review.observedAuthorization} auth=${shadow.review.authorization} matrix=${shadow.review.matrixDecision} primary=${primaryDecision} final=${finalDecision} decided_by=${decidedBy} disagreement=${disagreement}`,
+            );
+          } else {
+            this.logFn(
+              `${prefix} SHADOW REVIEW ${toolName}: status=${shadow.kind} risk=${riskBand} authority=${authorityPresent ? 'yes' : 'no'} primary=${primaryDecision} final=${finalDecision} decided_by=${decidedBy}`,
             );
           }
         }
