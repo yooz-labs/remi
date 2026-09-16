@@ -280,11 +280,17 @@ export interface Question {
    * signatures are byte-identical by construction, not by care.
    *
    * Present only for a precedent-eligible operation (today: `Bash` with a
-   * `command` field — see `precedentMayAuthorize`); `undefined` for every
+   * `command` field and a valid private session working directory — see
+   * `precedentMayAuthorize`);
+   * `undefined` for every
    * other question, including a question-bearing-tool prompt (AskUserQuestion
    * / ExitPlanMode) and any question predating this field. `handleAnswer`
    * treats an absent value as FAIL CLOSED: it records nothing rather than
    * falling back to parsing `text`.
+   *
+   * The session directory that bounds a recorded precedent is intentionally
+   * NOT included in this wire-visible field. The daemon stores and compares
+   * that private context separately.
    */
   readonly precedentSignature?: string | undefined;
 }

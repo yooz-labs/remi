@@ -27,6 +27,7 @@ import type { AutoApproveConfig } from '../../src/auto-approve/types.ts';
 
 /** A URL nothing serves: reaching the model is a test failure, not a slow path. */
 const UNREACHABLE = 'http://127.0.0.1:1';
+const TEST_CWD = process.cwd();
 
 function config(overrides?: Partial<AutoApproveConfig>): AutoApproveConfig {
   return {
@@ -85,7 +86,7 @@ function humanAnswered(
   toolInput: Record<string, unknown>,
   decision: 'approved' | 'denied',
 ): void {
-  store.record(toolName, signatureForOperation(toolName, toolInput), decision, true);
+  store.record(toolName, signatureForOperation(toolName, toolInput), decision, true, TEST_CWD);
 }
 
 const service = (overrides?: Partial<AutoApproveConfig>) =>
@@ -108,6 +109,8 @@ describe('#976 an earlier approval authorizes the identical repeat, at 0ms', () 
       undefined,
       undefined,
       readerFor(store),
+      undefined,
+      TEST_CWD,
     );
     expect(result.decision).toBe('approve');
     expect(result.reasoning).toContain('session precedent');
@@ -133,6 +136,8 @@ describe('#976 an earlier approval authorizes the identical repeat, at 0ms', () 
       undefined,
       undefined,
       readerFor(store),
+      undefined,
+      TEST_CWD,
     );
     // Falls through to the LLM, which is unreachable -> escalate. The
     // assertion that matters is that it is NOT an approve.
@@ -163,6 +168,8 @@ describe('#976 an earlier approval authorizes the identical repeat, at 0ms', () 
       undefined,
       undefined,
       readerFor(store),
+      undefined,
+      TEST_CWD,
     );
     expect(result.decision).not.toBe('approve');
   });
@@ -185,6 +192,8 @@ describe('#976 an earlier approval authorizes the identical repeat, at 0ms', () 
       undefined,
       undefined,
       readerFor(store),
+      undefined,
+      TEST_CWD,
     );
     expect(result.decision).not.toBe('approve');
   });
@@ -203,6 +212,8 @@ describe('#976 an earlier approval authorizes the identical repeat, at 0ms', () 
       undefined,
       undefined,
       readerFor(store),
+      undefined,
+      TEST_CWD,
     );
     expect(result.decision).not.toBe('approve');
   });
@@ -227,6 +238,8 @@ describe('#976 the matrix still bounds what a precedent may authorize', () => {
       undefined,
       undefined,
       readerFor(store),
+      undefined,
+      TEST_CWD,
     );
     expect(result.decision).not.toBe('approve');
   });
@@ -250,6 +263,8 @@ describe('#976 the matrix still bounds what a precedent may authorize', () => {
       undefined,
       undefined,
       readerFor(store),
+      undefined,
+      TEST_CWD,
     );
     expect(result.decision).toBe('approve');
     expect(result.reasoning).toContain('band=high');
@@ -274,6 +289,8 @@ describe('#976 the freshest human decision governs', () => {
       undefined,
       undefined,
       readerFor(store),
+      undefined,
+      TEST_CWD,
     );
     expect(result.decision).not.toBe('approve');
   });
@@ -296,6 +313,8 @@ describe('#976 session_precedent gates the WIDENING only', () => {
       undefined,
       undefined,
       readerFor(store),
+      undefined,
+      TEST_CWD,
     );
     expect(result.decision).not.toBe('approve');
   });
@@ -320,6 +339,8 @@ describe('#976 session_precedent gates the WIDENING only', () => {
       undefined,
       undefined,
       readerFor(store),
+      undefined,
+      TEST_CWD,
     );
     expect(result.decision).not.toBe('approve');
   });
@@ -353,6 +374,8 @@ describe('#976 the user’s own config still wins over precedent', () => {
       undefined,
       undefined,
       readerFor(store),
+      undefined,
+      TEST_CWD,
     );
     expect(result.decision).toBe('deny');
   });
@@ -397,6 +420,8 @@ describe('#976 a signature that is not the whole operation cannot authorize', ()
       undefined,
       undefined,
       readerFor(store),
+      undefined,
+      TEST_CWD,
     );
     expect(result.decision).not.toBe('approve');
     expect(result.reasoning).not.toContain('session precedent');
@@ -423,6 +448,8 @@ describe('#976 a signature that is not the whole operation cannot authorize', ()
       undefined,
       undefined,
       readerFor(store),
+      undefined,
+      TEST_CWD,
     );
     expect(result.decision).not.toBe('approve');
   });
@@ -432,7 +459,7 @@ describe('#976 a signature that is not the whole operation cannot authorize', ()
   test('precedentMayAuthorize: Bash only', () => {
     // Bash's summary is the whole command AND the risk layer reads the same
     // field. Nothing else clears both bars.
-    expect(precedentMayAuthorize('Bash', cmd)).toBe(true);
+    expect(precedentMayAuthorize('Bash', cmd, TEST_CWD)).toBe(true);
     for (const tool of ['Write', 'Edit', 'NotebookEdit', 'Glob', 'Grep', 'WebFetch', 'SomeMcp']) {
       expect(precedentMayAuthorize(tool, cmd)).toBe(false);
     }
@@ -503,6 +530,8 @@ describe('#976 a signature that is not the whole operation cannot authorize', ()
       undefined,
       undefined,
       readerFor(store),
+      undefined,
+      TEST_CWD,
     );
     expect(result.decision).not.toBe('approve');
   });
@@ -541,6 +570,8 @@ describe('#976 a signature that is not the whole operation cannot authorize', ()
       undefined,
       undefined,
       readerFor(store),
+      undefined,
+      TEST_CWD,
     );
     expect(result.decision).not.toBe('approve');
   });
@@ -562,6 +593,8 @@ describe('#976 a signature that is not the whole operation cannot authorize', ()
       undefined,
       undefined,
       readerFor(store),
+      undefined,
+      TEST_CWD,
     );
     expect(result.decision).toBe('approve');
   });
@@ -590,6 +623,8 @@ describe('#976 a signature that is not the whole operation cannot authorize', ()
       undefined,
       undefined,
       readerFor(store),
+      undefined,
+      TEST_CWD,
     );
     expect(result.reasoning).not.toContain('session precedent');
   });
@@ -659,6 +694,8 @@ describe('#976 an earlier denial downgrades a model approve to escalate', () => 
       undefined,
       undefined,
       readerFor(store),
+      undefined,
+      TEST_CWD,
     );
     expect(result.decision).toBe('escalate');
     expect(result.reasoning).toContain('Session precedent');
@@ -700,6 +737,8 @@ describe('#976 an earlier denial downgrades a model approve to escalate', () => 
       undefined,
       undefined,
       readerFor(store),
+      undefined,
+      TEST_CWD,
     );
     expect(result.decision).toBe('escalate');
     expect(result.reasoning).toContain('Session precedent');
@@ -720,6 +759,8 @@ describe('#976 an earlier denial downgrades a model approve to escalate', () => 
       undefined,
       undefined,
       readerFor(store),
+      undefined,
+      TEST_CWD,
     );
     expect(result.decision).toBe('approve');
   });
@@ -741,6 +782,8 @@ describe('#976 an earlier denial downgrades a model approve to escalate', () => 
       undefined,
       undefined,
       readerFor(store),
+      undefined,
+      TEST_CWD,
     );
     expect(result.decision).toBe('escalate');
     expect(result.reasoning).toContain('Session precedent');
@@ -764,6 +807,8 @@ describe('#976 an earlier denial downgrades a model approve to escalate', () => 
       undefined,
       undefined,
       readerFor(store),
+      undefined,
+      TEST_CWD,
     );
     // Not a precedent approve: the risk ceiling catches the model's approve of
     // a high-band op, which is exactly what should happen with no authorization.

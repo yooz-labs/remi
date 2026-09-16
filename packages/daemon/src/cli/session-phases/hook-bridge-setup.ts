@@ -410,8 +410,8 @@ export function setupHookBridge(
   // (`auto-approve/precedent.ts`). Recorded ONLY from `handleAnswer`
   // (`input-events.ts`) via the `recordPrecedent` callback cli.ts wires
   // through this handle's `precedentStore` field below — see that module's
-  // doc for the full provenance-safety argument. ADDITIVE ONLY here: nothing
-  // reads from it yet.
+  // doc for the full provenance-safety argument. The gate receives only a
+  // context-bound read-only adapter; `handleAnswer` remains the sole writer.
   const precedentStore = new PrecedentStore();
 
   // Push the session's subagent views to clients (epic #499 phase 3). Declared
@@ -587,40 +587,44 @@ export function setupHookBridge(
 
   // ---- Bridge + hook handler registration ---------------------------------
 
-  const hookBridge = new HookEventBridge(sessionId, {
-    onStatusChange: (status: AgentStatus, context?: string) => {
-      messageApi.handleStatusChange(status, context);
-      tracker.onStatusChange(status);
+  const hookBridge = new HookEventBridge(
+    sessionId,
+    {
+      onStatusChange: (status: AgentStatus, context?: string) => {
+        messageApi.handleStatusChange(status, context);
+        tracker.onStatusChange(status);
+      },
+      onQuestion: (question) => {
+        // #625 single gate: a PERMISSION question is coordinated by the auto-approve
+        // gate — it is stashed here and the gate drives its push on escalate (binary
+        // via onHeldEscalate, passthrough via escalatePassthrough). recordPendingHook
+        // only stashes; it never emits on its own.
+        //   - 'permission_request' (rich: tool + command + options) is the one the gate
+        //     escalates and pushes by id. This is the ONLY source stashed here now:
+        //     `HookEventBridge` used to also synthesize a redundant generic
+        //     'notification' question from Claude's Notification(permission_prompt)
+        //     (Claude still fires it — it just pairs with the PermissionRequest above
+        //     rather than producing a second Question); #890/Q5 deleted that
+        //     synthesis after a capture corpus found 0 unpaired occurrences across
+        //     4244 events / 5 sessions / one day (see `handleNotification`'s own
+        //     comment for the full argument + residual failure mode).
+        // A STANDALONE hook question that no gate pushes (e.g. a Stop-failure "Retry?",
+        // source-less, or an 'elicitation' card, #889) is emitted directly to the
+        // client + lock screen, since the PTY-render push that used to deliver it
+        // is suppressed for hooked sessions.
+        if (question.source === 'permission_request') {
+          // recordPendingHook only stashes -- no `handleQuestion` call happens
+          // here, so there is no registration outcome to report (#888 criterion
+          // iii). This question is not registered until a later PTY render
+          // pairs with it (`QuestionPresenceTracker.pairAndPush`).
+          tracker.recordPendingHook(question);
+          return undefined;
+        }
+        return messageApi.handleQuestion(question);
+      },
     },
-    onQuestion: (question) => {
-      // #625 single gate: a PERMISSION question is coordinated by the auto-approve
-      // gate — it is stashed here and the gate drives its push on escalate (binary
-      // via onHeldEscalate, passthrough via escalatePassthrough). recordPendingHook
-      // only stashes; it never emits on its own.
-      //   - 'permission_request' (rich: tool + command + options) is the one the gate
-      //     escalates and pushes by id. This is the ONLY source stashed here now:
-      //     `HookEventBridge` used to also synthesize a redundant generic
-      //     'notification' question from Claude's Notification(permission_prompt)
-      //     (Claude still fires it — it just pairs with the PermissionRequest above
-      //     rather than producing a second Question); #890/Q5 deleted that
-      //     synthesis after a capture corpus found 0 unpaired occurrences across
-      //     4244 events / 5 sessions / one day (see `handleNotification`'s own
-      //     comment for the full argument + residual failure mode).
-      // A STANDALONE hook question that no gate pushes (e.g. a Stop-failure "Retry?",
-      // source-less, or an 'elicitation' card, #889) is emitted directly to the
-      // client + lock screen, since the PTY-render push that used to deliver it
-      // is suppressed for hooked sessions.
-      if (question.source === 'permission_request') {
-        // recordPendingHook only stashes -- no `handleQuestion` call happens
-        // here, so there is no registration outcome to report (#888 criterion
-        // iii). This question is not registered until a later PTY render
-        // pairs with it (`QuestionPresenceTracker.pairAndPush`).
-        tracker.recordPendingHook(question);
-        return undefined;
-      }
-      return messageApi.handleQuestion(question);
-    },
-  });
+    workingDirectory,
+  );
 
   const handlers = hookBridge.hookHandlers();
 
@@ -724,6 +728,9 @@ export function setupHookBridge(
       // store's `record` — and forwards the `whole` provenance bit (#1067). See
       // its doc for why both properties are load-bearing.
       getPrecedent: () => readerFrom(precedentStore),
+      // Keep evaluation on the same canonical private scope that the answer
+      // path records, even if Claude reports a changed hook cwd mid-session.
+      workingDirectory,
       // #710: lets the gate recover from a tracker leak (a MAIN-tagged
       // PermissionRequest observing isInSubagentContext() stuck true) instead
       // of denying the main agent forever.

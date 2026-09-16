@@ -1,6 +1,6 @@
 # ADR 0016: Strictness is level-gated group membership, never prose to the model
 
-**Status:** accepted
+**Status:** accepted (amended by ADR 0028 for the narrow `gh-read` group)
 **Date:** 2026-08-01
 **Owner:** Yahya
 
@@ -25,12 +25,14 @@ forcefully was not available as a fix; the prompt already did that.
 **The permissive half of a policy is expressed as named levels
 (`strict`/`balanced`/`trusted`) over the same deterministic permission groups
 the deny/allow path already uses, not as adjectives asked of the model.**
-`strict` is exactly today's shipped `approve_groups` default
-(`read-only`, `vcs-read`, `build-test`) so upgrading changes nothing until a
-user opts up; `balanced` adds `fs-write`; `trusted` adds `vcs-write` (local git
-mutation only, never `git push`). Each level is a strict superset of the one
-before it, asserted by test, so "raise the level" means unambiguously "approve
-more."
+At the time of this decision, `strict` was exactly the shipped
+`approve_groups` default (`read-only`, `vcs-read`, `build-test`) so upgrading
+changed nothing until a user opted up; `balanced` added `fs-write`; `trusted`
+added `vcs-write` (local git mutation only, never `git push`). ADR 0028 later
+adds the separately parsed, output-only `gh-read` group to every level without
+changing the write or arbitrary-network boundary. Each level remains a strict
+superset of the one before it, asserted by test, so "raise the level" means
+unambiguously "approve more."
 
 `instructions` keeps its prompt placement but is demoted from policy to the
 exception layer: project-specific carve-outs the groups cannot encode
@@ -95,7 +97,7 @@ list.
 - `packages/daemon/src/auto-approve/levels.ts` — `AUTO_APPROVE_LEVELS`,
   `DEFAULT_AUTO_APPROVE_LEVEL`, `LEVEL_GROUPS`, `resolveApproveGroups`
 - `packages/daemon/src/config/config.ts:318,323,478-551` —
-  `approve_groups: ['read-only', 'vcs-read', 'build-test']` default,
+  historical `approve_groups: ['read-only', 'vcs-read', 'build-test']` default,
   `applyLevel` (explicit-vs-preset resolution, decided from the raw parsed
   table so a defaulted value can never look explicit)
 - `packages/daemon/tests/auto-approve/levels.test.ts` — `strict`'s groups

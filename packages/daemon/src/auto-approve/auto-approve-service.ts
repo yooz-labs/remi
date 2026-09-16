@@ -32,7 +32,12 @@ import {
 } from './multichoice.ts';
 import { matchAllowPattern, matchSubstringPattern } from './pattern-matcher.ts';
 import { matchComposedCommand, matchGroups, matchGroupsBroad } from './permission-groups.ts';
-import { type PrecedentReader, precedentMayAuthorize, signatureForOperation } from './precedent.ts';
+import {
+  type PrecedentReader,
+  normalizePrecedentWorkingDirectory,
+  precedentMayAuthorize,
+  signatureForOperation,
+} from './precedent.ts';
 import { buildPrompt } from './prompt-builder.ts';
 import type { DecidingLayer } from './risk-bands.ts';
 import { classifyRisk, formatMatrixContext } from './risk-bands.ts';
@@ -813,6 +818,12 @@ export class AutoApproveService {
      * resolve to the base policy, so every pre-0025 caller is unchanged.
      */
     agentType?: string,
+    /**
+     * Private session working-directory context for precedent. It is never
+     * sent to the model or placed on a wire-level `Question`; missing/blank context
+     * disables both precedent directions for this evaluation.
+     */
+    workingDirectory?: string,
   ): Promise<AutoApproveResult> {
     const start = Date.now();
     // #820: push the idle-unload deadline out. Called at the START so a long
@@ -843,6 +854,7 @@ export class AutoApproveService {
     // Entire body wrapped in try/catch so the "never throws" contract holds
     // even if the matchers or other sync code fail (e.g. malformed config).
     try {
+      const precedentContext = normalizePrecedentWorkingDirectory(workingDirectory);
       // Deny/allow/group: checked first, always win, no LLM call. Shared with
       // the gate's subagent hook-time path (#1024) via `evaluateDeterministic`
       // so the two can never drift apart -- see that method's doc.
@@ -891,11 +903,16 @@ export class AutoApproveService {
       // payload. See its doc for the measured escalation that produced the
       // rule (an approved `Write` to a path authorized every later write to
       // that path, with any content, at `high`, at 0ms).
-      if (this.sessionPrecedent && precedent && precedentMayAuthorize(toolName, toolInput)) {
+      if (
+        this.sessionPrecedent &&
+        precedent &&
+        precedentContext !== undefined &&
+        precedentMayAuthorize(toolName, toolInput, precedentContext)
+      ) {
         const signature = signatureForOperation(toolName, toolInput);
         // `whole: true` (#1067): this signature is untruncated by construction,
         // so the precedent matcher must not apply the truncation refusal to it.
-        const approvedMatch = precedent.matchApproved(toolName, signature, true);
+        const approvedMatch = precedent.matchApproved(toolName, signature, true, precedentContext);
         if (approvedMatch !== null) {
           const band = classifyRisk(toolName, toolInput);
           const assessment = AuthorizationAssessment.fromPrecedent(approvedMatch);
@@ -1221,13 +1238,19 @@ export class AutoApproveService {
         // Post-model and approve-only, like every other guard here: it never
         // invents a deny, never touches an escalate, and moves in exactly one
         // direction.
-        if (!useMultiChoice && precedent && result.decision === 'approve') {
+        if (
+          !useMultiChoice &&
+          precedent &&
+          precedentContext !== undefined &&
+          result.decision === 'approve'
+        ) {
           const deniedMatch = precedent.matchDenied(
             toolName,
             signatureForOperation(toolName, toolInput),
             // `whole: true` (#1067): untruncated by construction. Also what lets
             // a genuine >=120-char DENY that ends in `...` re-match here.
             true,
+            precedentContext,
           );
           if (deniedMatch !== null) {
             decidedBy = 'precedent';
