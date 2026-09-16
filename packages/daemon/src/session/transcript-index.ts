@@ -26,6 +26,7 @@ import * as path from 'node:path';
 import { errorToString } from '@remi/shared';
 import type { UUID } from '@remi/shared';
 import { logError } from '../cli/logger.ts';
+import { withInterprocessFileLock } from './session-store.ts';
 
 export interface TranscriptIndexEntry {
   remiSessionId: UUID;
@@ -153,20 +154,22 @@ export class TranscriptIndex {
    */
   record(remiSessionId: UUID, claudeSessionId: string, projectPath: string): void {
     try {
-      const entries = this.read();
-      const idx = entries.findIndex((e) => e.remiSessionId === remiSessionId);
-      const entry: TranscriptIndexEntry = {
-        remiSessionId,
-        claudeSessionId,
-        projectPath,
-        updatedAt: new Date().toISOString(),
-      };
-      if (idx >= 0) {
-        entries[idx] = entry;
-      } else {
-        entries.push(entry);
-      }
-      this.write(this.prune(entries));
+      withInterprocessFileLock(this.filePath, () => {
+        const entries = this.read();
+        const idx = entries.findIndex((e) => e.remiSessionId === remiSessionId);
+        const entry: TranscriptIndexEntry = {
+          remiSessionId,
+          claudeSessionId,
+          projectPath,
+          updatedAt: new Date().toISOString(),
+        };
+        if (idx >= 0) {
+          entries[idx] = entry;
+        } else {
+          entries.push(entry);
+        }
+        this.write(this.prune(entries));
+      });
     } catch (err) {
       logError(
         `[transcript-index] Failed to record binding for ${remiSessionId}: ${errorToString(err)}`,

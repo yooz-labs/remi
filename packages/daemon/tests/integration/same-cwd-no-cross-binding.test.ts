@@ -234,7 +234,7 @@ describe('two daemons in the same cwd never cross-bind (#427)', () => {
     fs.writeFileSync(sharedStorePath, JSON.stringify(raw, null, 2), 'utf-8');
 
     const reverse = new SessionBindingStore(new SessionStore(sharedStorePath));
-    expect(reverse.getByClaudeSessionId(claudeSessionIdA)).toBeNull();
+    expect(() => reverse.getByClaudeSessionId(claudeSessionIdA)).toThrow();
     expect(reverse.get(a.remiSessionId)?.claudeSessionId).toBe(claudeSessionIdA);
     expect(reverse.get(b.remiSessionId)?.claudeSessionId).toBe(b.claudeSessionId);
 
