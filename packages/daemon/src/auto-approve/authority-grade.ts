@@ -5,8 +5,9 @@
  * The phase 2 shadow reviewer imports the ladder, prompt, and parse/cap logic
  * from this module, as does the sweep. Before that wiring, the sweep measured
  * a COPY of the prompt, so the shipped prompt could drift from the measured
- * one with no test noticing. The reviewer remains advisory until the later
- * verified-rollout phase.
+ * one with no test noticing. The reviewer remains advisory in shadow mode;
+ * phase 4 verified mode may consume its grade only after deterministic proof
+ * and provenance gates have passed.
  *
  * ## Why the prompt text here must stay byte-identical to what was measured
  *

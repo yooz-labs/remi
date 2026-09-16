@@ -1,18 +1,22 @@
 /**
- * Advisory risk/authorization review for phase 2 of epic #1081.
+ * Advisory and verified risk/authorization review for phases 2 and 4 of epic
+ * #1081.
  *
- * This module deliberately does NOT decide whether an operation runs. The
- * operation risk band comes from the deterministic classifier, and the model
- * is asked only to grade the user's conversation text against the measured
- * authorization ladder. The caller records the result as shadow telemetry;
- * the existing deny floor, risk ceiling, counterfactual, precedent and
- * deterministic policy paths remain authoritative.
+ * This module deliberately does not decide whether an operation runs by
+ * itself. The operation risk band comes from the deterministic classifier, and
+ * the model is asked only to grade the user's conversation text against the
+ * measured authorization ladder. In shadow mode the caller records the result
+ * as telemetry. In verified mode the caller may consume the matrix result only
+ * after its deterministic effect proof, risk, provenance, and session guards
+ * pass; this module still owns no shell or policy authority.
  *
  * Keeping the two axes separate is important. The #954 measurement showed
  * that asking the model to decide and interpret authority in one response lets
  * topical mention move a verdict. The #976 grading sweep measured the
  * authorization question as a separate task. This module wires that measured
- * question into an opt-in, behavior-preserving review path.
+ * question into an opt-in shadow path. Phase 4 may use the same call in a
+ * decision-changing path, but only after the deterministic read-only proof,
+ * moderate-risk ceiling, and session-context gates pass.
  */
 
 import {
@@ -27,7 +31,8 @@ import type { RiskBand } from './risk-bands.ts';
 
 export type { RiskReviewMode } from './types.ts';
 
-const MAX_REVIEW_OPERATION_CHARS = 2000;
+/** Maximum operation text the measured authorization prompt can review exactly. */
+export const MAX_REVIEW_OPERATION_CHARS = 2000;
 
 /**
  * The parsed shadow result. `observedAuthorization` is what the model said;

@@ -1103,7 +1103,7 @@ describe('auto_approve.residual_action (#1045 phase 6)', () => {
   });
 });
 
-describe('auto_approve.risk_review (#1081 phase 2)', () => {
+describe('auto_approve.risk_review (#1081 phases 2-4)', () => {
   function load(toml: string) {
     fs.writeFileSync(TEST_CONFIG, toml);
     return loadConfig(TEST_CONFIG);
@@ -1119,10 +1119,26 @@ describe('auto_approve.risk_review (#1081 phase 2)', () => {
     );
   });
 
+  test('accepts the opt-in verified mode', () => {
+    expect(load('[auto_approve]\nrisk_review = "verified"\n').auto_approve.risk_review).toBe(
+      'verified',
+    );
+  });
+
   test('supports the explicit environment opt-in', () => {
     process.env['REMI_AUTO_APPROVE_RISK_REVIEW'] = 'shadow';
     try {
       expect(applyEnvOverrides(DEFAULT_CONFIG).auto_approve.risk_review).toBe('shadow');
+    } finally {
+      // biome-ignore lint/performance/noDelete: test isolation
+      delete process.env['REMI_AUTO_APPROVE_RISK_REVIEW'];
+    }
+  });
+
+  test('supports the explicit verified environment opt-in', () => {
+    process.env['REMI_AUTO_APPROVE_RISK_REVIEW'] = 'verified';
+    try {
+      expect(applyEnvOverrides(DEFAULT_CONFIG).auto_approve.risk_review).toBe('verified');
     } finally {
       // biome-ignore lint/performance/noDelete: test isolation
       delete process.env['REMI_AUTO_APPROVE_RISK_REVIEW'];
