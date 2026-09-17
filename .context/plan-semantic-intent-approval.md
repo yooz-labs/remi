@@ -147,6 +147,17 @@ Proceed only if the lead confirms:
   cannot bound;
 - the first phase has a measurable corpus and a manually reviewed label set.
 
+## Agent budget and routing
+
+The lead owns architecture, policy decisions, load-bearing verification, and
+cross-phase synthesis. Phase 1 uses one isolated implementation worker in the
+phase worktree. Reserve one fresh focused reviewer for the phase PR and one
+additional security reviewer only if the first review identifies an input or
+authorization invariant that needs independent rechecking. The same worker
+handles accepted review fixes; no parallel worker edits the same files. Maximum
+active roles for this phase are lead + worker + two reviewers, four agents
+total, with no more than two concurrent reviewers.
+
 ## Open judgment calls
 
 1. Task-context size: start with the existing capped human-turn store plus a
