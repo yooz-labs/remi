@@ -298,6 +298,8 @@ describe('verified read-only risk review (#1081 phase 4)', () => {
     const request = requestText(server.requests()[0]);
     expect(request).toContain('for b in fix/adr-0064-on004212-basis');
     expect(request).toContain('git log');
+    expect(request).toContain('"verified_intent": "local_read"');
+    expect(request).toContain('"verified_scope": "repository"');
     expect(request).toContain('Please check which local branches have unpushed commits.');
     expect(requestText(server.requests()[1])).not.toContain(
       'The operation reads repository state only.',
