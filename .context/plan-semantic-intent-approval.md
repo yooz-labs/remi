@@ -83,6 +83,18 @@ metadata and same-session human context; it does not add global lineage state.
 Repository, branch, and lineage telemetry remain unavailable until a scoped
 source is introduced.
 
+#### Phase 1 hardening receipt
+
+The semantic call is restricted to a resolved loopback provider; a custom or
+remote provider records `non-local-provider` and receives no operation or
+human context. The strict parser rejects duplicate JSON object keys before
+accepting `JSON.parse`'s last-value behavior. The LLM client bounds the
+provider response stream before JSON parsing, while the semantic call uses a
+tighter body budget than ordinary evaluations. Shadow telemetry carries the
+caller's full evaluation ID and a process-scoped HMAC operation fingerprint;
+it does not log the command or human context. These changes preserve the
+shadow-only decision contract while closing the Phase 1 review findings.
+
 ### Phase 2: capability and effect proofs
 
 Use characterization tests from the live log corpus, then extend the finite
@@ -98,6 +110,25 @@ Arbitrary Python remains outside automatic approval unless an exact safe
 inspection grammar or a real capability sandbox constrains filesystem writes,
 network, subprocesses, and credentials. A model explanation alone is not a
 proof.
+
+#### Phase 2 implementation receipt
+
+The finite proof now admits the live `uv.lock` `tomllib` heredoc, the quoted
+import-search loop with the exact `awk -F: '{print $1}'` projection, bounded
+`find` read expressions, and output-only GitHub issue/API reads. `gh-read`
+also covers `gh sub-issue list`; `add`, `remove`, `reprioritize`, and unknown
+actions remain outside the proof and the risk classifier treats the latter as
+high. A proof is usable only when every emitted effect profile maps to an
+explicitly requested group, and existing mutation/shell vetoes are rerun over
+the original command before the fallback can match. Neutral loop bookkeeping
+(`echo`, `printf`, and similar shell-only leaves) does not establish a group by
+itself. This is still deterministic group approval, not semantic model
+approval; arbitrary Python remains an escalation. The proof and ordinary
+read-prefix paths also fail closed for dynamic argv expansions in
+effect-sensitive read tools, reject persistent/static shell assignments, and
+accept explicit GitHub host routing only for `github.com`; these boundaries
+prevent a finite proof from being widened by runtime flags or untrusted
+remote hosts.
 
 ### Phase 3: scoped session workflow authorization
 

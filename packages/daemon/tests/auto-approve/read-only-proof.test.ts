@@ -18,7 +18,25 @@ done`;
 const WORKTREE_PATHS_PIPELINE =
   "git worktree list --porcelain | grep '^worktree' | tail -n +2 | awk '{print $2}'";
 
-describe('Phase 3 compound read-only proof (#1082)', () => {
+const UV_LOCK_INSPECTION = String.raw`python3 - <<'PY'
+import tomllib
+d = tomllib.load(open('uv.lock','rb'))
+pkgs = {p['name']: p for p in d['package']}
+for n in ['sqlalchemy','pybids','frozendict','wrapt','greenlet','psutil']:
+    p = pkgs.get(n)
+    if not p: continue
+    print('==', n, p.get('version'))
+    for x in p.get('dependencies',[]):
+        print('   ', x)
+PY`;
+
+const IMPORT_SEARCH_LOOP = String.raw`for p in "import bids" "from bids" "import neo" "import mne" "import sklearn" "import matplotlib" "import h5py" "import sympy"; do
+echo "=== $p ==="
+grep -rn "^\s*$p" --include="*.py" src/eegprep | grep -v "/eeglab/" | awk -F: '{print $1}' | sort -u | head -8
+grep -rc "^\s*$p" --include="*.py" -r src/eegprep 2>/dev/null | grep -v ":0" | grep -v "/eeglab/" | wc -l
+done`;
+
+describe('Phase 2 capability proof (#1094)', () => {
   test('proves the safe Git/worktree inventory loop', () => {
     const result = proveCompoundReadOnly(WORKTREE_INVENTORY);
     expect(result.status).toBe('proved');
@@ -125,6 +143,91 @@ done`;
     }
   });
 
+  test('proves the exact bounded uv.lock Python inspection from the live corpus', () => {
+    expect(proveCompoundReadOnly(UV_LOCK_INSPECTION)).toEqual({
+      status: 'proved',
+      leaves: [{ name: 'python:lock-inspection' }],
+    });
+  });
+
+  test('proves the live import-search loop, including its bounded awk projection', () => {
+    expect(proveCompoundReadOnly(IMPORT_SEARCH_LOOP)).toEqual({
+      status: 'proved',
+      leaves: [
+        { name: 'echo' },
+        { name: 'grep' },
+        { name: 'grep' },
+        { name: 'awk:print-field' },
+        { name: 'sort' },
+        { name: 'head' },
+        { name: 'grep' },
+        { name: 'grep' },
+        { name: 'grep' },
+        { name: 'wc' },
+      ],
+    });
+  });
+
+  test('rejects arbitrary or shell-expanding Python even when it looks read-only', () => {
+    for (const command of [
+      UV_LOCK_INSPECTION.replace("<<'PY'", '<<PY'),
+      UV_LOCK_INSPECTION.replace('import tomllib', 'import os\nimport tomllib'),
+      UV_LOCK_INSPECTION.replace("open('uv.lock','rb')", "open('uv.lock','w')"),
+      UV_LOCK_INSPECTION.replace("print('   ', x)", "os.system('whoami')\n        print('   ', x)"),
+      'python3 -c "print(open(\'uv.lock\').read())"',
+    ]) {
+      expect(proveCompoundReadOnly(command).status).toBe('rejected');
+    }
+  });
+
+  test('proves bounded find reads and rejects its write/exec predicates', () => {
+    for (const command of [
+      'find . -type f -name "*.py" -print',
+      'find src -maxdepth 3 -type f -readable',
+      'find . -not -path "./.git/*" -type f -print0',
+    ]) {
+      expect(proveCompoundReadOnly(command)).toEqual({
+        status: 'proved',
+        leaves: [{ name: 'find' }],
+      });
+    }
+    for (const command of [
+      'find . -name "*.py" -delete',
+      'find . -exec cat {} \\;',
+      'find . -execdir sh -c "cat {}" \\;',
+      'find . -fprint /tmp/list',
+      'find . -printf "%p\\n"',
+    ]) {
+      expect(proveCompoundReadOnly(command).status).toBe('rejected');
+    }
+  });
+
+  test('proves output-only GitHub reads and rejects sub-issue mutations', () => {
+    for (const command of [
+      'gh issue list --state open --limit 50',
+      'gh issue view 1092 --comments',
+      "gh api 'repos/{owner}/{repo}/issues' --jq '.[].number'",
+      'gh sub-issue list 1092',
+      'gh --repo yooz-labs/remi sub-issue list 1092',
+      'gh --hostname github.com api /repos/o/r/issues',
+      'gh --hostname=GITHUB.COM api /repos/o/r/issues',
+    ]) {
+      expect(proveCompoundReadOnly(command).status).toBe('proved');
+    }
+    for (const command of [
+      'gh sub-issue add 1092 --sub-issue-number 1093',
+      'gh sub-issue remove 1092 --sub-issue-number 1093',
+      'gh sub-issue reprioritize 1092 --sub-issue-number 1093 --after 1094',
+      'gh sub-issue unknown 1092',
+      'gh api /repos/o/r/issues?state=*',
+      'gh api -X POST /repos/o/r/issues',
+      'gh --hostname evil.example api /repos/o/r/issues',
+      'gh --hostname=evil.example issue list',
+    ]) {
+      expect(proveCompoundReadOnly(command).status).toBe('rejected');
+    }
+  });
+
   test('rejects mutating or unknown leaves inside a read-looking loop', () => {
     for (const command of [
       'for f in a b; do git push origin main; done',
@@ -155,12 +258,30 @@ done`;
       status: 'rejected',
       reason: 'sensitive-assignment',
     });
+    for (const variable of ['GH_HOST', 'GH_TOKEN', 'GITHUB_TOKEN', 'PAGER']) {
+      expect(proveCompoundReadOnly(`${variable}=untrusted; gh api /repos/o/r/issues`).status).toBe(
+        'rejected',
+      );
+    }
     expect(proveCompoundReadOnly('env PATH=/tmp/evil git status').status).toBe('rejected');
     expect(proveCompoundReadOnly('echo "$(rm -rf /)"').status).toBe('rejected');
     expect(proveCompoundReadOnly('do for f in $(rm -rf /); do echo "$f"; done').status).toBe(
       'rejected',
     );
     expect(proveCompoundReadOnly('do export FOO=bar; git status').status).toBe('rejected');
+    expect(proveCompoundReadOnly('FOO=bar; git status --short').status).toBe('rejected');
+    for (const command of [
+      'sort "$FLAGS" input',
+      'sort *',
+      'tree "$FLAGS" .',
+      'tail "$FLAGS" file',
+      'rg "$FLAGS" .',
+      'find . -name "$PRED"',
+      'find . -name *.py',
+      'flags=$(echo "-o /tmp/out"); sort "$flags" input',
+    ]) {
+      expect(proveCompoundReadOnly(command).status).toBe('rejected');
+    }
   });
 
   test('rejects unsupported shell controls and malformed nesting', () => {

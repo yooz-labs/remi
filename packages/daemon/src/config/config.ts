@@ -414,8 +414,9 @@ export const DEFAULT_CONFIG: RemiConfig = {
     timeout: 30,
     log_decisions: true,
     // Risk/authorization and semantic-intent review are opt-in. Shadow is
-    // telemetry-only and runs both advisory assessments; verified
-    // is the phase 4 decision-changing path and is itself bounded by the
+    // telemetry-only and runs both advisory assessments when the resolved
+    // provider is loopback (the semantic record never goes to a remote
+    // provider); verified is the phase 4 decision-changing path and is itself bounded by the
     // deterministic read-only proof, moderate-risk ceiling, and session
     // authorization matrix (#1081). Keep the default off until an operator
     // explicitly enables the measured rollout.
@@ -434,7 +435,7 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // per compound segment with a shell-control veto, so an approved segment
     // cannot carry an unapproved one. Bash git commands and arbitrary gh
     // commands are still not defaulted; the narrow gh-read group below covers
-    // only output-only REST GETs.
+    // output-only REST GETs and the read-only `gh sub-issue list` extension.
     allow: ['Read', 'Glob', 'Grep'],
     deny: [],
     // Background-agent commands worth a heads-up even though they ran (#807).
@@ -1371,7 +1372,7 @@ turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_sec
 #
 #   read-only   Read/Glob/Grep/NotebookRead + cat, grep, ls, jq, ...
 #   vcs-read    git status/log/diff/show, gh pr view/list, ...
-#   gh-read     output-only gh api REST GETs (single endpoint; no body)
+#   gh-read     output-only gh api REST GETs + gh sub-issue list
 #   build-test  bun test, tsc --noEmit, biome check, pytest, ...
 #   fs-write    Write/Edit/NotebookEdit + mkdir, touch, tee, cp, mv
 #   vcs-write   git add/commit/checkout/switch/merge, stash push, worktree add
@@ -1476,7 +1477,7 @@ turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_sec
 #                                  # every binary permission. Ignored unless
 #                                  # multichoice = "evaluate".
 # risk_review = "off"              # "shadow" = telemetry-only authorization
-#                                  # grader + semantic-intent assessor;
+#                                  # grader + loopback-only semantic-intent assessor;
 #                                  # "verified" = the
 #                                  # opt-in phase 4 path for deterministic,
 #                                  # moderate-risk compound reads with current

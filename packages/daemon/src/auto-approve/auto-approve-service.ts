@@ -20,14 +20,16 @@ import type { EngineHost } from './engine-host.ts';
 import { clearModelCache, pullModel, unloadModel } from './engine-models.ts';
 import type { PullProgress } from './engine-models.ts';
 import {
+  MAX_INTENT_RESPONSE_CHARS,
   buildIntentAssessmentPromptFromFormatted,
+  fingerprintIntentOperation,
   formatIntentAssessmentContext,
   parseIntentAssessment,
 } from './intent-assessment.ts';
 import type { IntentAssessment } from './intent-assessment.ts';
 import { extractJsonObject } from './json-extract.ts';
 import type { AutoApproveLevel } from './levels.ts';
-import { chatCompletion, resolveProviderUrl, warmModel } from './llm-client.ts';
+import { chatCompletion, isLocalProviderUrl, resolveProviderUrl, warmModel } from './llm-client.ts';
 import type { LLMClientConfig } from './llm-client.ts';
 import { ModelResidency } from './model-residency.ts';
 import {
@@ -76,7 +78,8 @@ type IntentShadowStatus =
   | 'timeout'
   | 'unavailable'
   | 'error'
-  | 'cancelled';
+  | 'cancelled'
+  | 'non-local-provider';
 
 interface IntentShadowOutcome {
   readonly status: IntentShadowStatus;
@@ -86,6 +89,7 @@ interface IntentShadowOutcome {
   readonly deterministicProofStatus: string;
   readonly inputTruncated: boolean;
   readonly contextTruncated: boolean;
+  readonly operationFingerprint: string;
 }
 
 function shadowErrorKind(error: unknown): ShadowReviewFailureKind {
@@ -253,6 +257,8 @@ export class AutoApproveService {
   private readonly riskReviewMode: RiskReviewMode;
   /** True when the provider is the Yooz engine (enables the /v1/llm/preload warm-up). */
   private readonly providerIsYooz: boolean;
+  /** Semantic shadow context is sent only to a loopback provider. */
+  private readonly semanticIntentUsesLocalProvider: boolean;
   /** True when remi owns this engine and may therefore mutate its disk/memory
    *  state (fetch, unload, delete). False for a shared super-yooz host, where
    *  all of that is the host's policy (#818). */
@@ -370,6 +376,7 @@ export class AutoApproveService {
     this.riskReviewMode = config.risk_review ?? 'off';
     this.queueTimeoutMs = config.queue_timeout > 0 ? config.queue_timeout * 1000 : 0;
     this.providerIsYooz = config.provider === 'yooz';
+    this.semanticIntentUsesLocalProvider = isLocalProviderUrl(this.llmConfig.baseUrl);
     this.ownsEngine = this.providerIsYooz && config.engine === 'owned';
     // Only the engine transport has an unload endpoint at all, and (today)
     // remi always owns its own engine -- #818 introduces the shared-engine
@@ -908,6 +915,8 @@ export class AutoApproveService {
    * never re-enters evaluate, never creates a nested queue wait, and receives
    * only the time left in the primary evaluation deadline. A bounded or
    * unserializable record is recorded as unusable without calling the model.
+   * The record is also withheld entirely when the resolved provider is not
+   * loopback, because this phase is a local-model assessor by contract.
    */
   private async runShadowIntentAssessment(
     toolName: string,
@@ -921,6 +930,31 @@ export class AutoApproveService {
   ): Promise<IntentShadowOutcome> {
     const started = Date.now();
     const proofStatus = deterministicProofStatus(toolName, toolInput);
+    const makeOutcome = (
+      status: IntentShadowStatus,
+      assessment: IntentAssessment | null,
+      responseModel: string = model,
+      formatted?: ReturnType<typeof formatIntentAssessmentContext>,
+    ): IntentShadowOutcome => ({
+      status,
+      assessment,
+      model: responseModel,
+      latencyMs: Date.now() - started,
+      deterministicProofStatus: proofStatus,
+      inputTruncated: formatted?.inputTruncated ?? false,
+      contextTruncated: formatted?.contextTruncated ?? false,
+      operationFingerprint: formatted ? fingerprintIntentOperation(formatted) : 'not-computed',
+    });
+
+    // The semantic record includes command text, paths, and recent human
+    // context. A configured remote/custom provider must never receive it by
+    // accident merely because risk_review="shadow" was enabled. The primary
+    // evaluator and the existing authorization reviewer retain their explicit
+    // configured behavior; only this Phase 1 local-model assessor is gated.
+    if (!this.semanticIntentUsesLocalProvider) {
+      return makeOutcome('non-local-provider', null);
+    }
+
     const formatted = formatIntentAssessmentContext({
       toolName,
       toolInput,
@@ -938,15 +972,7 @@ export class AutoApproveService {
       status: IntentShadowStatus,
       assessment: IntentAssessment | null,
       responseModel: string = model,
-    ): IntentShadowOutcome => ({
-      status,
-      assessment,
-      model: responseModel,
-      latencyMs: Date.now() - started,
-      deterministicProofStatus: proofStatus,
-      inputTruncated: formatted.inputTruncated,
-      contextTruncated: formatted.contextTruncated,
-    });
+    ): IntentShadowOutcome => makeOutcome(status, assessment, responseModel, formatted);
 
     if (formatted.serializationFailed) return finish('serialization-failed', null);
     if (formatted.inputTruncated || formatted.contextTruncated) {
@@ -972,6 +998,10 @@ export class AutoApproveService {
             model,
             timeoutMs: Math.max(1, remainingMs),
             maxTokens: 128,
+            // The strict parser accepts at most 4096 characters of model
+            // content. Allow room for the Yooz JSON envelope while bounding
+            // the native response stream before JSON.parse (#1093 hardening).
+            maxResponseBytes: MAX_INTENT_RESPONSE_CHARS * 8,
           },
           buildIntentAssessmentPromptFromFormatted(formatted),
           reviewerController.signal,
@@ -1013,6 +1043,7 @@ export class AutoApproveService {
     prefix: string,
     toolName: string,
     scope: string,
+    evalId: number | undefined,
     riskBand: ReturnType<typeof classifyRisk>,
     primaryDecision: BinaryDecision,
     finalDecision: AutoApproveResult['decision'],
@@ -1024,6 +1055,8 @@ export class AutoApproveService {
       `status=${outcome.status}`,
       `proof=${outcome.deterministicProofStatus}`,
       `model=${telemetryToken(outcome.model)}`,
+      `eval_id=${evalId ?? 'none'}`,
+      `op_fp=${outcome.operationFingerprint}`,
       `latency_ms=${outcome.latencyMs}`,
       `risk=${riskBand}`,
       `primary=${primaryDecision}`,
@@ -1859,6 +1892,7 @@ export class AutoApproveService {
             prefix,
             toolName,
             resolvedScope,
+            evalId,
             riskBand,
             primaryDecision,
             result.decision,

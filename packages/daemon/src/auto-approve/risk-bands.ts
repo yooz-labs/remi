@@ -111,6 +111,7 @@
 
 import { extractToolCommand } from './command-tools.ts';
 import { matchesCatastrophicPattern } from './deny-floor.ts';
+import { githubSubIssueActionEffect } from './operation-effects.ts';
 import {
   isAbsoluteScratchTarget,
   isSensitiveWritePath,
@@ -671,7 +672,7 @@ function isMutatingGhApi(words: readonly string[]): boolean {
     );
 }
 
-/** `gh pr merge/close/create`, `gh issue create/close` (#976). */
+/** `gh pr/issue` mutations and the mutating `gh sub-issue` extension actions (#976/#1094). */
 function isMutatingGhPrOrIssue(words: readonly string[]): boolean {
   const topIndex = ghTopIndex(words);
   if (topIndex === -1) return false;
@@ -680,10 +681,11 @@ function isMutatingGhPrOrIssue(words: readonly string[]): boolean {
   if (top === 'pr' && (action === 'merge' || action === 'close' || action === 'create'))
     return true;
   if (top === 'issue' && (action === 'create' || action === 'close')) return true;
+  if (top === 'sub-issue') return githubSubIssueActionEffect(action) !== 'read';
   return false;
 }
 
-/** Remote mutation: `git push`, `ssh`, remote `scp`/`rsync`, mutating curl/wget/gh api/gh pr/gh issue. */
+/** Remote mutation: `git push`, `ssh`, remote `scp`/`rsync`, mutating curl/wget/gh api/gh pr/gh issue/sub-issue. */
 function isRemoteMutation(words: readonly string[]): boolean {
   const bin = words[0];
   if (bin === undefined) return false;

@@ -231,7 +231,9 @@ export interface AutoApproveConfig {
   /**
    * Risk/authorization reviewer. `shadow` runs the measured authorization
    * grader and the Phase 1 semantic-intent assessor for telemetry only; neither
-   * changes the final decision. `verified`
+   * changes the final decision. The semantic assessor sends its bounded record
+   * only to a resolved loopback provider and records `non-local-provider` when
+   * a remote/custom provider is configured. `verified`
    * is the opt-in phase 4 path: only a deterministic read-only effect proof,
    * a moderate risk band, and current session authorization may reach the
    * reviewer. Its approve is still bounded by those code-level gates; every

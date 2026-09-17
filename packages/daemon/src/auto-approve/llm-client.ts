@@ -17,8 +17,9 @@ import { errorToString } from '@remi/shared';
  * reasoning is pure latency (a 4B model spends most of its tokens "thinking").
  * `LLMGenerateRequest` (the engine's wire type) has no request-level knob for
  * this; `/no_think` is a chat-template convention the model itself recognizes,
- * the same mechanism the engine's own built-in prompts rely on. No effect on
- * 'openai' providers (no equivalent there either).
+ * the same mechanism the engine's own built-in prompts rely on. For
+ * OpenAI-compatible providers the client also sends the template-level
+ * `enable_thinking: false` field when supported.
  */
 
 export interface ChatMessage {
@@ -33,10 +34,16 @@ export interface LLMClientConfig {
   readonly timeoutMs: number;
   /**
    * Optional completion cap for OpenAI-compatible reviewers. The native Yooz
-   * `/v1/llm/generate` contract has no request-level token cap; its existing
-   * deadline and exact-output parser remain the fail-closed bounds there.
+   * `/v1/llm/generate` contract has no request-level token cap; its response
+   * body is still bounded by `maxResponseBytes` before parsing.
    */
   readonly maxTokens?: number;
+  /**
+   * Maximum provider response body size read by the client. This is a byte
+   * limit applied while streaming, before JSON parsing; omission uses the
+   * client-wide bounded default. Semantic-intent calls set a tighter limit.
+   */
+  readonly maxResponseBytes?: number;
   /**
    * Transport. 'yooz' speaks the engine's native /v1/llm/generate. Defaults to
    * 'openai' (the OpenAI-compatible /v1 endpoint -- OpenRouter, llama.cpp, custom).
@@ -76,6 +83,14 @@ const PROVIDER_URLS: Record<string, string> = {
   openrouter: 'https://openrouter.ai/api/v1',
 };
 
+const DEFAULT_MAX_RESPONSE_BYTES = 1_048_576;
+const MAX_ERROR_RESPONSE_BYTES = 8_192;
+
+function isAbortError(error: unknown): boolean {
+  const candidate = error as { name?: unknown; cause?: { name?: unknown } } | null;
+  return candidate?.name === 'AbortError' || candidate?.cause?.name === 'AbortError';
+}
+
 /**
  * Resolve a provider string to a base URL.
  * Accepts 'yooz', 'llamacpp', 'openrouter', or a full URL.
@@ -90,6 +105,20 @@ export function resolveProviderUrl(provider: string, fallbackUrl: string): strin
     return provider;
   }
   return fallbackUrl;
+}
+
+/**
+ * Return whether a resolved provider URL addresses the local machine. A
+ * hostname that merely looks private is not enough: semantic operation
+ * context must not be sent to an arbitrary LAN or tailnet service by default.
+ */
+export function isLocalProviderUrl(baseUrl: string): boolean {
+  try {
+    const hostname = new URL(baseUrl).hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -125,6 +154,47 @@ function withNoThink(messages: readonly ChatMessage[]): ChatMessage[] {
   return messages.map((m, i) =>
     i === target ? { ...m, content: `${NO_THINK_PREFIX}${m.content}` } : { ...m },
   );
+}
+
+/**
+ * Read a provider response without allowing an oversized body to reach
+ * JSON.parse. The stream is cancelled as soon as the byte budget is crossed;
+ * checking the decoded string afterwards would already have paid the memory
+ * cost this guard is meant to prevent.
+ */
+async function readBoundedResponseText(response: Response, maxBytes: number): Promise<string> {
+  const contentLength = response.headers.get('content-length');
+  if (contentLength !== null) {
+    const declaredLength = Number(contentLength);
+    if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+      throw new Error(`LLM response exceeded ${maxBytes} bytes`);
+    }
+  }
+
+  if (response.body === null) {
+    throw new Error('LLM response body unavailable');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const chunks: string[] = [];
+  let bytesRead = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytesRead += value.byteLength;
+      if (bytesRead > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new Error(`LLM response exceeded ${maxBytes} bytes`);
+      }
+      chunks.push(decoder.decode(value, { stream: true }));
+    }
+    chunks.push(decoder.decode());
+    return chunks.join('');
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 /**
@@ -250,16 +320,34 @@ export async function chatCompletion(
     });
 
     if (!response.ok) {
-      const errBody = await response.text().catch((e) => `[body unreadable: ${errorToString(e)}]`);
+      const errBody = await readBoundedResponseText(response, MAX_ERROR_RESPONSE_BYTES).catch(
+        (e) => `[body unreadable: ${errorToString(e)}]`,
+      );
       throw new Error(`LLM API error ${response.status}: ${errBody.slice(0, 200)}`);
     }
 
     // biome-ignore lint/suspicious/noExplicitAny: provider response shapes differ
-    const data: any = await response.json();
+    let data: any;
+    try {
+      data = JSON.parse(
+        await readBoundedResponseText(
+          response,
+          config.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES,
+        ),
+      );
+    } catch (error) {
+      // Preserve abort identity for AutoApproveService's cancellation and
+      // timeout routing. A stream can be aborted after headers arrive, so it
+      // must not be converted into a generic "invalid JSON" error here.
+      if (isAbortError(error)) throw error;
+      throw new Error(`LLM response invalid JSON: ${errorToString(error)}`);
+    }
 
     if (yooz) {
       const content = data.text;
-      if (!content) throw new Error('LLM response missing content (yooz /v1/llm/generate)');
+      if (typeof content !== 'string' || content.length === 0) {
+        throw new Error('LLM response missing content (yooz /v1/llm/generate)');
+      }
       return {
         content,
         model: data.model ?? config.model,
@@ -273,7 +361,7 @@ export async function chatCompletion(
     }
 
     const choice = data.choices?.[0];
-    if (!choice?.message?.content) {
+    if (typeof choice?.message?.content !== 'string' || choice.message.content.length === 0) {
       throw new Error('LLM response missing content');
     }
     return {
