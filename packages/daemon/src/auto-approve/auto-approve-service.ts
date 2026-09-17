@@ -59,6 +59,14 @@ import {
   formatShadowReviewOperation,
   parseShadowRiskReview,
 } from './risk-review.ts';
+import {
+  classifySessionWorkflowOperation,
+  semanticAssessmentMatchesWorkflow,
+} from './session-workflow-grant.ts';
+import type {
+  WorkflowGrantEvaluationContext,
+  WorkflowOperationFacts,
+} from './session-workflow-grant.ts';
 import type { AutoApproveConfig, AutoApproveResult, DenySource, MultiChoiceMode } from './types.ts';
 
 type BinaryDecision = 'approve' | 'deny' | 'escalate';
@@ -927,6 +935,8 @@ export class AutoApproveService {
     signal: AbortSignal,
     deadlineAt: number,
     workingDirectory: string | undefined,
+    additionalFacts?: Readonly<Record<string, string | number | boolean>>,
+    repository?: string,
   ): Promise<IntentShadowOutcome> {
     const started = Date.now();
     const proofStatus = deterministicProofStatus(toolName, toolInput);
@@ -959,11 +969,13 @@ export class AutoApproveService {
       toolName,
       toolInput,
       deterministicFacts: {
+        ...additionalFacts,
         risk_band: riskBand,
         deterministic_match: 'none',
         deterministic_proof_status: proofStatus,
       },
       ...(workingDirectory === undefined ? {} : { workingDirectory }),
+      ...(repository === undefined ? {} : { repository }),
       // This is deliberately a separate evidence label in the semantic
       // prompt. It is not the primary prompt's USER GUIDANCE block.
       ...(authority === undefined ? {} : { recentHumanContext: authority }),
@@ -1320,6 +1332,7 @@ export class AutoApproveService {
      * leaves the semantic metadata absent.
      */
     workingDirectory?: string,
+    workflow?: WorkflowGrantEvaluationContext,
   ): Promise<AutoApproveResult> {
     const start = Date.now();
     // #820: push the idle-unload deadline out. Called at the START so a long
@@ -1433,6 +1446,35 @@ export class AutoApproveService {
         }
       }
 
+      // Phase 3 (#1095): an explicit session grant is only evidence that this
+      // operation belongs to a previously approved workflow. The grant reader
+      // is read-only, the operation shape/effects are deterministic, and a
+      // fresh local semantic call must still confirm the intent before this
+      // path can approve. A second-opinion call never creates this bypass.
+      let workflowFacts: WorkflowOperationFacts | undefined;
+      if (
+        workflow !== undefined &&
+        modelOverride === undefined &&
+        isSubagent !== true &&
+        workingDirectory !== undefined
+      ) {
+        try {
+          const classified = classifySessionWorkflowOperation(toolName, toolInput, {
+            sessionId: resolvedScope,
+            workingDirectory,
+            ...(workflow.repository === undefined ? {} : { repository: workflow.repository }),
+          });
+          if (classified !== undefined && workflow.reader.matches(classified)) {
+            workflowFacts = classified;
+          }
+        } catch (err) {
+          // A reader is supplied by the session gate, but it is still a
+          // boundary: a bad adapter must not turn a grant into an evaluation
+          // exception or a fail-open path.
+          this.logFn(`${prefix} WORKFLOW GRANT unavailable: ${errorToString(err)}`);
+        }
+      }
+
       // Design / plan-mode / long-form questions are never auto-decided by the
       // LLM (#572): AskUserQuestion, ExitPlanMode, or any tool that structurally
       // poses a non-binary question. Runs AFTER the deny/allow/group checks
@@ -1539,6 +1581,68 @@ export class AutoApproveService {
         const authorityPresent = (authority?.trim().length ?? 0) > 0;
         const callModel =
           useMultiChoice && this.multichoiceModel ? this.multichoiceModel : baseModel;
+
+        // A session grant covers the command's permission, not a separate
+        // numbered choice that Claude may be asking the user to make. Keep
+        // multi-choice routing authoritative even when the command itself
+        // belongs to the granted family.
+        if (workflowFacts !== undefined && !isMultiChoice) {
+          const workflowIntent = await this.runShadowIntentAssessment(
+            toolName,
+            toolInput,
+            authority,
+            classifyRisk(toolName, toolInput),
+            callModel,
+            externalSignal,
+            start + timeoutMs,
+            workflowFacts.workingDirectory,
+            {
+              workflow_family: workflowFacts.family,
+              workflow_kind: workflowFacts.kind,
+              workflow_effects: workflowFacts.effects.join(','),
+              workflow_target: workflowFacts.target.repository,
+            },
+            workflowFacts.repository,
+          );
+          if (workflowIntent.status === 'cancelled') {
+            throw new DOMException('Session workflow assessment cancelled', 'AbortError');
+          }
+          const durationMs = Date.now() - start;
+          if (
+            workflowIntent.status === 'ok' &&
+            workflowIntent.assessment !== null &&
+            semanticAssessmentMatchesWorkflow(workflowFacts, workflowIntent.assessment)
+          ) {
+            const reasoning = `session workflow grant (#1095): local semantic assessment confirmed ${workflowFacts.kind} for the scoped planning repository`;
+            this.logFn(
+              `${prefix} WORKFLOW GRANT ${toolName}: approve (${durationMs}ms) - ${reasoning}`,
+            );
+            this.cancelReason = null;
+            return {
+              decision: 'approve',
+              reasoning,
+              durationMs,
+              model: workflowIntent.model,
+            };
+          }
+          const confirmation =
+            workflowIntent.status === 'ok'
+              ? 'semantic assessment did not match the required remote-mutation contract'
+              : `semantic assessment status=${workflowIntent.status}`;
+          const reasoning = `session workflow grant (#1095): scoped operation matched, but ${confirmation}; escalating without a second opinion`;
+          this.logFn(
+            `${prefix} WORKFLOW GRANT ${toolName}: escalate (${durationMs}ms) - ${reasoning}`,
+          );
+          this.cancelReason = null;
+          return {
+            decision: 'escalate',
+            reasoning,
+            durationMs,
+            model: workflowIntent.model,
+            suppressSecondOpinion: true,
+            summary: 'Approve this planning action for the session?',
+          };
+        }
 
         // #1081 phase 4: the verified reviewer replaces the ordinary primary
         // call only for the finite, deterministic read-only language. It is

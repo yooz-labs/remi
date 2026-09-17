@@ -137,6 +137,7 @@ import {
 } from './auto-approve/index.ts';
 import type { PrecedentStore } from './auto-approve/precedent.ts';
 import { recordHumanAnswer } from './auto-approve/precedent.ts';
+import type { SessionWorkflowGrantStore } from './auto-approve/session-workflow-grant.ts';
 import type { DenySource } from './auto-approve/types.ts';
 import { detectAutostartState } from './cli/autostart-state.ts';
 import { resolveClaudeBinding } from './cli/claude-binding.ts';
@@ -1107,6 +1108,10 @@ const sessionTrackers: Map<UUID, QuestionPresenceTracker> = new Map();
 // hookServer is configured (a `permission_request`-sourced Question, the only
 // kind precedent ever records, cannot exist without one).
 const sessionPrecedentStores: Map<UUID, PrecedentStore> = new Map();
+// Per-session workflow grants (#1095). The store is also owned by the gate;
+// this map mirrors the precedent lifecycle so teardown cannot retain a grant
+// lineage after its session is gone.
+const sessionWorkflowGrantStores: Map<UUID, SessionWorkflowGrantStore> = new Map();
 /**
  * Per-session "does this binder claim the event?" filters (#914).
  *
@@ -1210,6 +1215,7 @@ const sessionRegistry = new SessionRegistry(
       // (the ManagedSession itself is gone), so the Map entry must go too or
       // it lingers for the rest of the daemon's process life.
       sessionPrecedentStores.delete(sessionId);
+      sessionWorkflowGrantStores.delete(sessionId);
       // #914: drop the admits filter with the session, so a closed session's
       // binder can never keep admitting turns on its behalf.
       sessionAdmitsHandles.delete(sessionId);
@@ -1929,6 +1935,7 @@ async function createNewSession(
     sessionGateHandles.set(sessionId, hookBridgeHandle.gate);
     // #976 prerequisite: same registration for this session's precedent store.
     sessionPrecedentStores.set(sessionId, hookBridgeHandle.precedentStore);
+    sessionWorkflowGrantStores.set(sessionId, hookBridgeHandle.workflowGrantStore);
     // #914: lets the out-of-bridge turn-complete listener apply the same
     // session filter every in-bridge listener already uses.
     sessionAdmitsHandles.set(sessionId, hookBridgeHandle.admits);
@@ -2130,8 +2137,10 @@ const inputHandlers: InputHandlers = createInputHandlers({
   // #573: route a held-permission answer / release-to-passthrough / eval-cancel
   // to the RIGHT session's gate (the map is populated per session in
   // createNewSession).
-  resolveHeldPermission: (sessionId, questionId, decision, suggestionIndex) =>
-    sessionGateHandles.get(sessionId)?.resolveHeld(questionId, decision, suggestionIndex) ?? false,
+  resolveHeldPermission: (sessionId, questionId, decision, suggestionIndex, sessionGrant) =>
+    sessionGateHandles
+      .get(sessionId)
+      ?.resolveHeld(questionId, decision, suggestionIndex, sessionGrant) ?? false,
   releaseHeldAsPassthrough: (sessionId, questionId) =>
     sessionGateHandles.get(sessionId)?.releaseHeldAsPassthrough(questionId) ?? false,
   // #617: a manual answer frees the GPU by cancelling ONLY that question's eval,

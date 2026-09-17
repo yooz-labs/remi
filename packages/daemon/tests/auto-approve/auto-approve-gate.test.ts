@@ -7,6 +7,10 @@ import {
   AutoApproveGate,
   autoAnswerValue,
 } from '../../src/auto-approve/auto-approve-gate.ts';
+import {
+  SessionWorkflowGrantStore,
+  classifySessionWorkflowOperation,
+} from '../../src/auto-approve/session-workflow-grant.ts';
 import type { AutoApproveResult, DenySource } from '../../src/auto-approve/types.ts';
 import { __resetLoggerForTests, configureLogger } from '../../src/cli/logger.ts';
 import type { PermissionRequestHookInput } from '../../src/hooks/index.ts';
@@ -1652,6 +1656,80 @@ describe('AutoApproveGate hold + resolve (#573 Parts A/C)', () => {
     expect(await pendingA).toBe('allow');
     expect(await pendingB).toBe('deny');
     await registryB.shutdown();
+  });
+});
+
+describe('AutoApproveGate session workflow authorization (#1095)', () => {
+  const SID = generateId() as UUID;
+  const REPOSITORY = 'yooz-labs/remi';
+
+  test('offers only the public family marker and installs a scoped grant on held answer', async () => {
+    const registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    const tracker = new QuestionPresenceTracker(() => undefined);
+    const submits: string[] = [];
+    const store = new SessionWorkflowGrantStore(SID, '/d', REPOSITORY);
+    let questionId: UUID | undefined;
+    let offer: { readonly family: 'github-issue-planning' } | undefined;
+    registry.registerSession(SID, '/d', fakePTY(submits), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+
+    const gate = new AutoApproveGate(
+      {
+        service: { evaluate: async () => escalate, cancel: () => true },
+        sessionRegistry: registry,
+        tracker,
+        isInSubagentContext: () => false,
+        workingDirectory: '/d',
+        repository: REPOSITORY,
+        workflowGrantStore: store,
+        holdMs: 60_000,
+        alwaysEscalateTools: new Set(),
+        escalate: (_input, _summary, workflowOffer) => {
+          offer = workflowOffer;
+          questionId = generateId();
+          return questionId;
+        },
+      },
+      SID,
+    );
+
+    const input: PermissionRequestHookInput = {
+      session_id: 'claude-test',
+      transcript_path: '/tmp/t.jsonl',
+      cwd: '/d',
+      permission_mode: 'default',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: "gh issue create --title 'x' --body 'y'" },
+    };
+    const pending = gate.resolvePermission(input);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(offer).toEqual({ family: 'github-issue-planning' });
+    expect(JSON.stringify(offer)).not.toContain('/d');
+    expect(JSON.stringify(offer)).not.toContain(REPOSITORY);
+
+    const operation = classifySessionWorkflowOperation('Bash', input.tool_input, {
+      sessionId: SID,
+      workingDirectory: '/d',
+      repository: REPOSITORY,
+    });
+    expect(operation).toBeDefined();
+    expect(store.matches(operation as NonNullable<typeof operation>)).toBe(false);
+    expect(gate.resolveHeld(questionId as UUID, 'allow', undefined, offer?.family)).toBe(true);
+    expect(await pending).toBe('allow');
+    expect(store.matches(operation as NonNullable<typeof operation>)).toBe(true);
+
+    const siblingOperation = classifySessionWorkflowOperation('Bash', input.tool_input, {
+      sessionId: generateId(),
+      workingDirectory: '/d',
+      repository: REPOSITORY,
+    });
+    expect(store.matches(siblingOperation as NonNullable<typeof siblingOperation>)).toBe(false);
+    await registry.shutdown();
   });
 });
 
