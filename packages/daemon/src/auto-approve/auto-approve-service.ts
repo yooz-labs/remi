@@ -1367,6 +1367,18 @@ export class AutoApproveService {
         .join(',')
         .slice(0, 512),
       verified_effects: contract.effects.join(','),
+      // Give the model one canonical enum for scalar fields. The matcher
+      // keeps the broader contract internally (for example scratch OR
+      // repository), but exposing a comma-separated scalar list invites the
+      // model to emit an invalid `scope` value such as `scratch|repository`.
+      verified_intent: contract.intents.includes('remote_read')
+        ? 'remote_read'
+        : contract.intents.includes('interpreter')
+          ? 'interpreter'
+          : 'local_read',
+      verified_scope: contract.scopes.includes('remote_repository')
+        ? 'remote_repository'
+        : 'repository',
     } satisfies Readonly<Record<string, string>>;
     const proofFacts = Object.entries(verifiedFacts).map(([key, value]) => `${key}=${value}`);
     const intent = await this.runShadowIntentAssessment(
