@@ -19,6 +19,12 @@ import { fileActivityRecord } from './engine-activity.ts';
 import type { EngineHost } from './engine-host.ts';
 import { clearModelCache, pullModel, unloadModel } from './engine-models.ts';
 import type { PullProgress } from './engine-models.ts';
+import {
+  buildIntentAssessmentPromptFromFormatted,
+  formatIntentAssessmentContext,
+  parseIntentAssessment,
+} from './intent-assessment.ts';
+import type { IntentAssessment } from './intent-assessment.ts';
 import { extractJsonObject } from './json-extract.ts';
 import type { AutoApproveLevel } from './levels.ts';
 import { chatCompletion, resolveProviderUrl, warmModel } from './llm-client.ts';
@@ -62,6 +68,26 @@ type ShadowReviewOutcome =
   | { readonly kind: 'ok'; readonly review: ShadowRiskReview }
   | { readonly kind: ShadowReviewFailureKind };
 
+type IntentShadowStatus =
+  | 'ok'
+  | 'malformed'
+  | 'truncated'
+  | 'serialization-failed'
+  | 'timeout'
+  | 'unavailable'
+  | 'error'
+  | 'cancelled';
+
+interface IntentShadowOutcome {
+  readonly status: IntentShadowStatus;
+  readonly assessment: IntentAssessment | null;
+  readonly model: string;
+  readonly latencyMs: number;
+  readonly deterministicProofStatus: string;
+  readonly inputTruncated: boolean;
+  readonly contextTruncated: boolean;
+}
+
 function shadowErrorKind(error: unknown): ShadowReviewFailureKind {
   const name = (error as { name?: unknown } | null)?.name;
   const message = errorToString(error).toLowerCase();
@@ -78,6 +104,24 @@ function shadowErrorKind(error: unknown): ShadowReviewFailureKind {
     return 'unavailable';
   }
   return 'error';
+}
+
+function deterministicProofStatus(toolName: string, toolInput: Record<string, unknown>): string {
+  if (toolName !== 'Bash' || typeof toolInput['command'] !== 'string') {
+    return 'not-applicable';
+  }
+  const proof = proveCompoundReadOnly(toolInput['command']);
+  return proof.status === 'proved' ? 'proved' : `rejected:${proof.reason}`;
+}
+
+/** Keep provider-controlled model labels single-line and bounded in telemetry. */
+function telemetryToken(value: unknown): string {
+  if (typeof value !== 'string') return 'unknown';
+  const token = value
+    .replace(/[^\x20-\x7e]/g, '?')
+    .replace(/\s+/g, '_')
+    .slice(0, 128);
+  return token.length > 0 ? token : 'unknown';
 }
 
 /**
@@ -858,6 +902,150 @@ export class AutoApproveService {
   }
 
   /**
+   * Run the Phase 1 semantic assessor after the guarded primary result exists.
+   *
+   * This is a second advisory call inside the already-held evaluation slot. It
+   * never re-enters evaluate, never creates a nested queue wait, and receives
+   * only the time left in the primary evaluation deadline. A bounded or
+   * unserializable record is recorded as unusable without calling the model.
+   */
+  private async runShadowIntentAssessment(
+    toolName: string,
+    toolInput: Record<string, unknown>,
+    authority: string | undefined,
+    riskBand: ReturnType<typeof classifyRisk>,
+    model: string,
+    signal: AbortSignal,
+    deadlineAt: number,
+    workingDirectory: string | undefined,
+  ): Promise<IntentShadowOutcome> {
+    const started = Date.now();
+    const proofStatus = deterministicProofStatus(toolName, toolInput);
+    const formatted = formatIntentAssessmentContext({
+      toolName,
+      toolInput,
+      deterministicFacts: {
+        risk_band: riskBand,
+        deterministic_match: 'none',
+        deterministic_proof_status: proofStatus,
+      },
+      ...(workingDirectory === undefined ? {} : { workingDirectory }),
+      // This is deliberately a separate evidence label in the semantic
+      // prompt. It is not the primary prompt's USER GUIDANCE block.
+      ...(authority === undefined ? {} : { recentHumanContext: authority }),
+    });
+    const finish = (
+      status: IntentShadowStatus,
+      assessment: IntentAssessment | null,
+      responseModel: string = model,
+    ): IntentShadowOutcome => ({
+      status,
+      assessment,
+      model: responseModel,
+      latencyMs: Date.now() - started,
+      deterministicProofStatus: proofStatus,
+      inputTruncated: formatted.inputTruncated,
+      contextTruncated: formatted.contextTruncated,
+    });
+
+    if (formatted.serializationFailed) return finish('serialization-failed', null);
+    if (formatted.inputTruncated || formatted.contextTruncated) {
+      return finish('truncated', null);
+    }
+    if (signal.aborted && this.cancelReason !== null) {
+      return finish('cancelled', null);
+    }
+
+    const remainingMs = deadlineAt - Date.now();
+    if (remainingMs <= 0) return finish('timeout', null);
+
+    const reviewerController = new AbortController();
+    const forwardAbort = (): void => reviewerController.abort();
+    if (signal.aborted) reviewerController.abort();
+    else signal.addEventListener('abort', forwardAbort, { once: true });
+    let hardKillTimer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      const response = await Promise.race([
+        chatCompletion(
+          {
+            ...this.llmConfig,
+            model,
+            timeoutMs: Math.max(1, remainingMs),
+            maxTokens: 128,
+          },
+          buildIntentAssessmentPromptFromFormatted(formatted),
+          reviewerController.signal,
+        ),
+        new Promise<never>((_, reject) => {
+          hardKillTimer = setTimeout(() => {
+            reviewerController.abort();
+            reject(
+              new DOMException(
+                `Semantic shadow assessment hard kill after ${remainingMs}ms`,
+                'AbortError',
+              ),
+            );
+          }, remainingMs);
+        }),
+      ]);
+      if (signal.aborted && this.cancelReason !== null) {
+        return finish('cancelled', null, response.model);
+      }
+      const assessment = parseIntentAssessment(response.content);
+      return finish(assessment === null ? 'malformed' : 'ok', assessment, response.model);
+    } catch (error) {
+      if (signal.aborted && this.cancelReason !== null) {
+        return finish('cancelled', null);
+      }
+      return finish(shadowErrorKind(error), null);
+    } finally {
+      if (hardKillTimer !== null) clearTimeout(hardKillTimer);
+      signal.removeEventListener('abort', forwardAbort);
+    }
+  }
+
+  /**
+   * Emit one compact semantic shadow record. The operation and human context
+   * are intentionally absent; only the assessment's bounded enum fields are
+   * logged, never its model reasoning.
+   */
+  private logShadowIntent(
+    prefix: string,
+    toolName: string,
+    scope: string,
+    riskBand: ReturnType<typeof classifyRisk>,
+    primaryDecision: BinaryDecision,
+    finalDecision: AutoApproveResult['decision'],
+    decidedBy: DecidingLayer,
+    outcome: IntentShadowOutcome,
+  ): void {
+    const fields = [
+      `${prefix} SHADOW INTENT ${toolName}:`,
+      `status=${outcome.status}`,
+      `proof=${outcome.deterministicProofStatus}`,
+      `model=${telemetryToken(outcome.model)}`,
+      `latency_ms=${outcome.latencyMs}`,
+      `risk=${riskBand}`,
+      `primary=${primaryDecision}`,
+      `final=${finalDecision}`,
+      `decided_by=${decidedBy}`,
+      `session_scope=${scope.slice(0, 8)}`,
+      `input_truncated=${outcome.inputTruncated ? 'yes' : 'no'}`,
+      `context_truncated=${outcome.contextTruncated ? 'yes' : 'no'}`,
+    ];
+    if (outcome.assessment !== null) {
+      fields.push(
+        `intent=${outcome.assessment.intent}`,
+        `effects=${outcome.assessment.effects.join(',')}`,
+        `target_scope=${outcome.assessment.scope}`,
+        `reversible=${outcome.assessment.reversible ? 'yes' : 'no'}`,
+        `confidence=${outcome.assessment.confidence}`,
+      );
+    }
+    this.logFn(fields.join(' '));
+  }
+
+  /**
    * Run the phase 4 decision-changing path for one narrowly proven command.
    *
    * The proof is checked before the model call and is the authority for effect
@@ -1092,9 +1280,11 @@ export class AutoApproveService {
      */
     agentType?: string,
     /**
-     * Private session working-directory context for precedent. It is never
-     * sent to the model or placed on a wire-level `Question`; missing/blank context
-     * disables both precedent directions for this evaluation.
+     * Private session working-directory context for precedent. When the
+     * opt-in semantic shadow path is active, its bounded form is also sent to
+     * the local-model assessor as descriptive metadata; it is never placed on
+     * a wire-level `Question`. Missing/blank context disables precedent and
+     * leaves the semantic metadata absent.
      */
     workingDirectory?: string,
   ): Promise<AutoApproveResult> {
@@ -1643,15 +1833,53 @@ export class AutoApproveService {
           }
         }
 
-        // #1081 phase 2: collect an independent risk/authorization review only
-        // after the normal model and all existing guards have run. It is
-        // deliberately advisory: no field from the review is used to mutate
-        // `result`, and a malformed/unavailable review preserves the exact
-        // guarded decision above. Keeping the call inside this slot also means
-        // two sessions cannot run competing reviewer calls on the one local
-        // model at once.
         if (this.riskReviewMode === 'shadow' && primaryDecision !== null && !useMultiChoice) {
           const riskBand = classifyRisk(toolName, toolInput);
+
+          // #1093 phase 1: collect an independent semantic-intent assessment
+          // after the existing guarded decision and before the authorization
+          // shadow review. Running it first ensures the new context signal is
+          // measured before the shared evaluation deadline can be consumed by
+          // the pre-existing reviewer. It is deliberately advisory: no field
+          // from the assessment is used to mutate result, and malformed or
+          // unavailable input/output preserves the exact guarded decision
+          // above. Keeping the call inside this slot also means two sessions
+          // cannot run competing assessor calls on the one local model at once.
+          const intentShadow = await this.runShadowIntentAssessment(
+            toolName,
+            toolInput,
+            authority,
+            riskBand,
+            model,
+            externalSignal,
+            start + timeoutMs,
+            precedentContext,
+          );
+          this.logShadowIntent(
+            prefix,
+            toolName,
+            resolvedScope,
+            riskBand,
+            primaryDecision,
+            result.decision,
+            decidedBy,
+            intentShadow,
+          );
+          if (intentShadow.status === 'cancelled') {
+            // Cancellation is sourced from the existing evaluation control
+            // plane, never from semantic content. Preserve the service's
+            // pre-existing cancellation contract rather than returning a
+            // stale guarded result after the user answered.
+            throw new DOMException('Semantic shadow assessment cancelled', 'AbortError');
+          }
+
+          // #1081 phase 2: collect an independent risk/authorization review
+          // only after the normal model and all existing guards have run. It is
+          // deliberately advisory: no field from the review is used to mutate
+          // `result`, and a malformed/unavailable review preserves the exact
+          // guarded decision above. Keeping the call inside this slot also means
+          // two sessions cannot run competing reviewer calls on the one local
+          // model at once.
           const shadow = await this.runShadowReview(
             toolName,
             toolInput,

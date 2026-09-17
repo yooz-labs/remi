@@ -43,6 +43,32 @@ export {
   parseShadowRiskReview,
 } from './risk-review.ts';
 export type { RiskReviewMode, ShadowRiskReview } from './risk-review.ts';
+export {
+  buildIntentAssessmentPrompt,
+  buildIntentAssessmentPromptFromFormatted,
+  formatIntentAssessmentContext,
+  parseIntentAssessment,
+} from './intent-assessment.ts';
+export {
+  INTENT_ASSESSMENT_EFFECTS,
+  INTENT_ASSESSMENT_INTENTS,
+  INTENT_ASSESSMENT_SCOPES,
+  MAX_INTENT_CONTEXT_CHARS,
+  MAX_INTENT_LINEAGE_ENTRIES,
+  MAX_INTENT_OPERATION_CHARS,
+  MAX_INTENT_REASONING_CHARS,
+  MAX_INTENT_RESPONSE_CHARS,
+} from './intent-assessment.ts';
+export type {
+  FormattedIntentAssessmentContext,
+  Intent,
+  IntentAssessment,
+  IntentAssessmentContext,
+  IntentAssessmentParseOptions,
+  IntentEffect,
+  IntentOperationContext,
+  IntentScope,
+} from './intent-assessment.ts';
 export { proveCompoundReadOnly } from './read-only-proof.ts';
 export type { ReadOnlyProof, ReadOnlyProofLeaf, ReadOnlyProofReason } from './read-only-proof.ts';
 export { alertBody, alertTitle, SubagentAlerter } from './subagent-alert.ts';

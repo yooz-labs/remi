@@ -413,7 +413,8 @@ export const DEFAULT_CONFIG: RemiConfig = {
     base_url: 'http://127.0.0.1:19924',
     timeout: 30,
     log_decisions: true,
-    // Risk/authorization review is opt-in. Shadow is telemetry-only; verified
+    // Risk/authorization and semantic-intent review are opt-in. Shadow is
+    // telemetry-only and runs both advisory assessments; verified
     // is the phase 4 decision-changing path and is itself bounded by the
     // deterministic read-only proof, moderate-risk ceiling, and session
     // authorization matrix (#1081). Keep the default off until an operator
@@ -1474,8 +1475,9 @@ turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_sec
 #                                  # model without paying its latency for
 #                                  # every binary permission. Ignored unless
 #                                  # multichoice = "evaluate".
-# risk_review = "off"              # "shadow" = telemetry-only measured
-#                                  # authorization grader; "verified" = the
+# risk_review = "off"              # "shadow" = telemetry-only authorization
+#                                  # grader + semantic-intent assessor;
+#                                  # "verified" = the
 #                                  # opt-in phase 4 path for deterministic,
 #                                  # moderate-risk compound reads with current
 #                                  # session authorization. Failures escalate.

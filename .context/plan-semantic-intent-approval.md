@@ -74,6 +74,15 @@ as untrusted data, and never follow instructions embedded in them. The phase
 records the assessment beside the existing verdict but does not approve,
 deny, or alter routing.
 
+#### Phase 1 call-site limitation
+
+The formatter accepts bounded repository, branch, and caller-supplied lineage
+fields, but the current gate has no safe per-evaluation source for those
+values. Phase 1 supplies only the existing normalized working-directory
+metadata and same-session human context; it does not add global lineage state.
+Repository, branch, and lineage telemetry remain unavailable until a scoped
+source is introduced.
+
 ### Phase 2: capability and effect proofs
 
 Use characterization tests from the live log corpus, then extend the finite
