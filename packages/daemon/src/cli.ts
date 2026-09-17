@@ -2964,7 +2964,7 @@ if (cliDaemonMode) {
     const liveUsed = new Set(liveSessionsRegistry.listLive().map((e) => e.wsPort));
     const probed = await findAvailableTcpPort(PORT, DEFAULT_PORT_RANGE, liveUsed, bindHost);
     if (probed !== null && probed !== PORT) {
-      log(`Port ${PORT} in use, using ${probed}`);
+      const occupiedPort = PORT;
       try {
         await registry.unregister('websocket');
       } catch (teardownErr) {
@@ -2984,6 +2984,10 @@ if (cliDaemonMode) {
         sharedEvents,
       );
       registry.register(newWsAdapter);
+      // Attribute the reassignment log to the port this wrapper will actually
+      // serve, not the occupied tentative port another session owns.
+      setLogFileContext({ port: PORT, sessionId });
+      log(`Port ${occupiedPort} in use, using ${PORT}`);
     } else if (probed === null) {
       logError('All ports in range are in use. Remote monitoring disabled.');
       wsProbeSucceeded = false;
