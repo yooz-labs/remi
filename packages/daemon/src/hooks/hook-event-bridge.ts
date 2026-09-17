@@ -32,6 +32,7 @@ import { DEFAULT_PERMISSION_LABELS, generateId } from '@remi/shared';
 import type { AgentStatus, Question, QuestionOption, UUID } from '@remi/shared';
 import type { QuestionRegistrationOutcome } from '../api/message-api.ts';
 import { precedentMayAuthorize, signatureForOperation } from '../auto-approve/precedent.ts';
+import type { WorkflowGrantOffer } from '../auto-approve/session-workflow-grant.ts';
 import type { HookServerEvents } from './hook-server.ts';
 import type {
   ElicitationHookInput,
@@ -267,6 +268,31 @@ export function optionsFromSuggestions(suggestions: unknown): PermissionOptionsR
   return { options, isFallback: false };
 }
 
+const SESSION_GRANT_OPTION: QuestionOption = {
+  label: 'Allow planning actions for this session',
+  value: '__remi_grant_github_issue_planning',
+  isRecommended: false,
+  isYes: false,
+  isNo: false,
+  sessionGrant: 'github-issue-planning',
+};
+
+/** Add the public action marker while preserving the card's Yes/No choices. */
+function appendWorkflowGrantOption(
+  options: readonly QuestionOption[],
+  offer: WorkflowGrantOffer | undefined,
+): QuestionOption[] {
+  if (offer?.family !== 'github-issue-planning') return [...options];
+  if (options.some((option) => option.sessionGrant === offer.family)) return [...options];
+  const no = options.find((option) => option.isNo);
+  if (no === undefined) return [...options];
+  // The iOS action-category budget is four. Keep the leading Yes and the
+  // earliest suggestion-derived actions, then insert the explicit grant before
+  // No. The private scope remains in the gate's pending-offer map.
+  const ordinary = options.filter((option) => option !== no).slice(0, MAX_PERMISSION_OPTIONS - 2);
+  return [...ordinary, SESSION_GRANT_OPTION, no];
+}
+
 export class HookEventBridge {
   private readonly sessionId: UUID;
   private readonly events: HookBridgeEvents;
@@ -428,14 +454,18 @@ export class HookEventBridge {
    * this question, so the user's answer resolves the hook via the response
    * (Model B) instead of a PTY inject. Always returns an id today.
    */
-  handlePermissionRequest(input: PermissionRequestHookInput, summary?: string): UUID {
+  handlePermissionRequest(
+    input: PermissionRequestHookInput,
+    summary?: string,
+    workflowOffer?: WorkflowGrantOffer,
+  ): UUID {
     // Phase 4 (#419): the subagentContext drop previously sat here.
     // After phase 3 wired in the QuestionPresenceTracker, push semantics
     // are presence-gated regardless of subagent context — a subagent
     // prompt that does not render on the user's PTY does not push, and
     // one that does is genuinely answerable. The tracker handles both
     // cases; this method now only builds the question payload.
-    const question = this.buildPermissionQuestion(input, summary);
+    const question = this.buildPermissionQuestion(input, summary, workflowOffer);
     this.events.onQuestion(question);
     this.events.onStatusChange('waiting');
     return question.id;
@@ -448,7 +478,11 @@ export class HookEventBridge {
    * (`QuestionPresenceTracker.parkAwaitingPTY`), where the question must only
    * surface if Claude's native prompt actually renders on the PTY.
    */
-  buildPermissionQuestion(input: PermissionRequestHookInput, summary?: string): Question {
+  buildPermissionQuestion(
+    input: PermissionRequestHookInput,
+    summary?: string,
+    workflowOffer?: WorkflowGrantOffer,
+  ): Question {
     const toolName = input.tool_name || 'unknown tool';
 
     // Question-bearing tools (AskUserQuestion, ExitPlanMode) carry the real
@@ -477,7 +511,7 @@ export class HookEventBridge {
       // "code-reviewer · Bash: git push origin main" vs "Allow Bash: ...".
       promptText = input.agent_type ? `${input.agent_type} · ${action}` : `Allow ${action}`;
       const built = optionsFromSuggestions(input.permission_suggestions);
-      options = built.options;
+      options = appendWorkflowGrantOption(built.options, workflowOffer);
       optionsAreFallback = built.isFallback;
     }
 

@@ -1188,6 +1188,104 @@ describe('createInputHandlers', () => {
       });
     }
 
+    function addSessionGrantQuestion(sessionId: UUID, held = true): void {
+      sessionRegistry.addQuestion(sessionId, {
+        id: QID,
+        text: 'Allow Bash: gh issue create',
+        options: [
+          { value: '1', label: 'Yes', isRecommended: true, isYes: true, isNo: false },
+          {
+            value: '__remi_grant_github_issue_planning',
+            label: 'Allow planning actions for this session',
+            isRecommended: false,
+            isYes: false,
+            isNo: false,
+            sessionGrant: 'github-issue-planning',
+          },
+          { value: '3', label: 'No', isRecommended: false, isYes: false, isNo: true },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+        held,
+        source: 'permission_request',
+      });
+    }
+
+    test('session workflow action resolves the held hook and never submits its marker to the PTY', async () => {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      addSessionGrantQuestion(sessionId);
+
+      const held: Array<{ decision: 'allow' | 'deny'; sessionGrant: string | undefined }> = [];
+      const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
+        sessionRegistry,
+        bindingStore,
+        send,
+        resolveHeldPermission: (_s, _q, decision, _suggestionIndex, sessionGrant) => {
+          held.push({ decision, sessionGrant });
+          return true;
+        },
+      });
+
+      await handlers.onAnswer(CID, sessionId, QID, '__remi_grant_github_issue_planning');
+
+      expect(held).toEqual([{ decision: 'allow', sessionGrant: 'github-issue-planning' }]);
+      expect(ptyCapture.submits).toEqual([]);
+      expect(sendCalls.filter((call) => call.message.type === 'error')).toHaveLength(0);
+      expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+    });
+
+    test('a session workflow action on an unheld or stale card is refused, never released to PTY', async () => {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      addSessionGrantQuestion(sessionId, false);
+
+      let resolveCalled = false;
+      let releaseCalled = false;
+      const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
+        sessionRegistry,
+        bindingStore,
+        send,
+        resolveHeldPermission: () => {
+          resolveCalled = true;
+          return true;
+        },
+        releaseHeldAsPassthrough: () => {
+          releaseCalled = true;
+          return true;
+        },
+      });
+
+      await handlers.onAnswer(CID, sessionId, QID, '__remi_grant_github_issue_planning');
+
+      expect(resolveCalled).toBe(false);
+      expect(releaseCalled).toBe(false);
+      expect(ptyCapture.submits).toEqual([]);
+      expect(sendCalls.filter((call) => call.message.type === 'error')).toHaveLength(1);
+      expect(
+        (
+          sendCalls.find((call) => call.message.type === 'error')?.message as unknown as {
+            code: string;
+          }
+        ).code,
+      ).toBe('INVALID_SESSION_GRANT');
+      expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+    });
+
     test('Yes answer maps to allow, resolves the held hook, and SKIPS the PTY submit', async () => {
       const ptyCapture = { writes: [] as string[], submits: [] as string[] };
       const sessionId = sessionRegistry.createSessionId();

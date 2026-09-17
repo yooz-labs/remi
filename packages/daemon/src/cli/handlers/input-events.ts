@@ -13,6 +13,7 @@ import { createBulletExpandResponse, createError, errorToString } from '@remi/sh
 import type { AnswerExtras, AnswerSelection, Question, QuestionOption, UUID } from '@remi/shared';
 
 import { toolNameFromSignature } from '../../auto-approve/precedent.ts';
+import type { SessionWorkflowFamily } from '../../auto-approve/session-workflow-grant.ts';
 import { clearAuqRunActive, markAuqRunActive } from '../../hooks/auq-active-runs.ts';
 import { AUQ_KEYS } from '../../hooks/auq-answer.ts';
 import { type AuqRunOutcome, runAuqAnswer } from '../../hooks/auq-runner.ts';
@@ -44,6 +45,7 @@ export interface InputHandlerDeps {
     questionId: UUID,
     decision: 'allow' | 'deny',
     suggestionIndex?: number,
+    sessionGrant?: SessionWorkflowFamily,
   ) => boolean;
   /**
    * Release a HELD binary PermissionRequest hook to 'passthrough' for `sessionId`
@@ -250,6 +252,7 @@ const noopSend: SendToConnection = () => false;
 interface AnswerDecision {
   readonly decision: 'allow' | 'deny';
   readonly suggestionIndex?: number;
+  readonly sessionGrant?: SessionWorkflowFamily;
 }
 
 /**
@@ -275,6 +278,9 @@ function mapAnswerToDecision(
 ): AnswerDecision | null {
   const option = resolveOption(options, answer);
   if (!option) return null;
+  if (option.sessionGrant !== undefined) {
+    return { decision: 'allow', sessionGrant: option.sessionGrant };
+  }
   if (option.isNo) return { decision: 'deny' };
   if (option.suggestionIndex !== undefined) {
     return { decision: 'allow', suggestionIndex: option.suggestionIndex };
@@ -629,7 +635,62 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     // default 'user_answer' (this card was never actually answered).
     let removalReason = 'user_answer';
     try {
-      if (decision !== null) {
+      if (decision?.sessionGrant !== undefined) {
+        // A session-grant action is a control-plane operation, never a PTY
+        // value. It is valid only for the held question that carried the
+        // private offer; otherwise an old/forged marker must not become a
+        // stray "1" in Claude's next prompt.
+        if (active.held !== true) {
+          log(
+            `[Answer] refusing session grant action for ${questionId.slice(0, 8)}: question is not held`,
+          );
+          removalReason = 'user_answer:invalid_session_grant';
+          if (!viaRelay) {
+            send(
+              connectionId,
+              createError(
+                'INVALID_SESSION_GRANT',
+                'This session-grant action is no longer valid for the active prompt',
+                { sessionId, questionId },
+              ),
+            );
+          }
+          return 'stale';
+        }
+        hadHold =
+          resolveHeldPermission?.(
+            session.sessionId,
+            questionId,
+            decision.decision,
+            undefined,
+            decision.sessionGrant,
+          ) ?? false;
+        if (!hadHold) {
+          // The hold may have been resolved by a timeout or another channel
+          // between the card lookup and this action. Release if possible, but
+          // never submit the marker/value to the PTY.
+          try {
+            releaseHeldAsPassthrough?.(session.sessionId, questionId);
+          } catch (err) {
+            logError(`[Answer] stale session grant release failed: ${errorToString(err)}`);
+          }
+          log(
+            `[Answer] refusing session grant action for ${questionId.slice(0, 8)}: held hook was already gone`,
+          );
+          removalReason = 'user_answer:invalid_session_grant';
+          if (!viaRelay) {
+            send(
+              connectionId,
+              createError(
+                'INVALID_SESSION_GRANT',
+                'The session-grant action expired before it could be applied',
+                { sessionId, questionId },
+              ),
+            );
+          }
+          return 'stale';
+        }
+      } else if (decision !== null) {
         hadHold =
           resolveHeldPermission?.(
             session.sessionId,
@@ -797,7 +858,11 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       //     sharing their first 117 characters truncate to the identical
       //     `text`, so recording from it would let approving one silently
       //     authorize the other.
-      if (decision !== null && active.source === 'permission_request') {
+      if (
+        decision !== null &&
+        decision.sessionGrant === undefined &&
+        active.source === 'permission_request'
+      ) {
         const signature = active.precedentSignature;
         if (signature !== undefined) {
           recordPrecedent?.(

@@ -169,6 +169,94 @@ describe('HookEventBridge', () => {
     expect(questions[0]?.options[2]?.isNo).toBe(true);
   });
 
+  it('adds a session workflow action as a public marker, without private scope', () => {
+    const { bridge, questions } = createBridge();
+
+    bridge.handlePermissionRequest(
+      {
+        ...makeCommon(),
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: "gh issue create --title 'x' --body 'y'" },
+      } as PermissionRequestHookInput,
+      undefined,
+      { family: 'github-issue-planning' },
+    );
+
+    const options = questions[0]?.options ?? [];
+    expect(options).toHaveLength(3);
+    expect(options[1]).toEqual({
+      label: 'Allow planning actions for this session',
+      value: '__remi_grant_github_issue_planning',
+      isRecommended: false,
+      isYes: false,
+      isNo: false,
+      sessionGrant: 'github-issue-planning',
+    });
+    expect(JSON.stringify(questions[0])).not.toContain('repository');
+    expect(JSON.stringify(questions[0])).not.toContain('workingDirectory');
+  });
+
+  it('keeps the session action inside the four-option budget and excludes authored AUQ options', () => {
+    const { bridge, questions } = createBridge();
+
+    bridge.handlePermissionRequest(
+      {
+        ...makeCommon(),
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: {},
+        permission_suggestions: [
+          {
+            type: 'addRules',
+            rules: [{ toolName: 'Bash', ruleContent: 'one' }],
+            behavior: 'allow',
+          },
+          {
+            type: 'addRules',
+            rules: [{ toolName: 'Bash', ruleContent: 'two' }],
+            behavior: 'allow',
+          },
+          {
+            type: 'addRules',
+            rules: [{ toolName: 'Bash', ruleContent: 'three' }],
+            behavior: 'allow',
+          },
+        ],
+      } as PermissionRequestHookInput,
+      undefined,
+      { family: 'github-issue-planning' },
+    );
+
+    const options = questions[0]?.options ?? [];
+    expect(options).toHaveLength(4);
+    expect(options[0]?.label).toBe('Yes');
+    expect(options[1]?.label).toContain('one');
+    expect(options[2]?.sessionGrant).toBe('github-issue-planning');
+    expect(options[3]?.isNo).toBe(true);
+
+    bridge.handlePermissionRequest(
+      {
+        ...makeCommon(),
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'AskUserQuestion',
+        tool_input: {
+          questions: [
+            {
+              question: 'Which issue?',
+              header: 'Issue',
+              multiSelect: false,
+              options: [{ label: 'Issue 1' }, { label: 'Issue 2' }],
+            },
+          ],
+        },
+      } as PermissionRequestHookInput,
+      undefined,
+      { family: 'github-issue-planning' },
+    );
+    expect(questions[1]?.options.some((option) => option.sessionGrant !== undefined)).toBe(false);
+  });
+
   // #626: the bridge must THREAD the structured AskUserQuestion fields onto the
   // emitted Question (extractToolQuestion proves the shape; this proves wiring).
   it('threads the structured AskUserQuestion fields onto the emitted Question', () => {

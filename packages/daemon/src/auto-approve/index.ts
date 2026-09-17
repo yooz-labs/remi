@@ -86,6 +86,26 @@ export type {
   OperationEffectProfile,
   OperationFamily,
 } from './operation-effects.ts';
+export {
+  detectGitHubRepository,
+  normalizeGitHubRepository,
+  parseGitHubRemoteUrl,
+} from './repository-context.ts';
+export {
+  classifySessionWorkflowOperation,
+  semanticAssessmentMatchesWorkflow,
+  SessionWorkflowGrantStore,
+  SESSION_WORKFLOW_FAMILIES,
+} from './session-workflow-grant.ts';
+export type {
+  SessionWorkflowClassificationContext,
+  SessionWorkflowFamily,
+  SessionWorkflowOperationKind,
+  WorkflowGrantEvaluationContext,
+  WorkflowGrantOffer,
+  WorkflowGrantReader,
+  WorkflowOperationFacts,
+} from './session-workflow-grant.ts';
 export { alertBody, alertTitle, SubagentAlerter } from './subagent-alert.ts';
 export type { SubagentAlert } from './subagent-alert.ts';
 export type {

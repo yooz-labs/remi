@@ -98,6 +98,8 @@ import type { SubagentViewRegistry } from '../../api/subagent-view-registry.ts';
 import {
   AuthorityStore,
   AutoApproveGate,
+  SessionWorkflowGrantStore,
+  detectGitHubRepository,
   isNonHumanForAuthority,
   resolveAuthority,
 } from '../../auto-approve/index.ts';
@@ -106,6 +108,7 @@ import type { AutoApproveService } from '../../auto-approve/index.ts';
 // scope: that barrel is being edited concurrently by other work on the same
 // epic). Imported directly from its own module instead.
 import { PrecedentStore, readerFrom } from '../../auto-approve/precedent.ts';
+import type { SessionWorkflowFamily } from '../../auto-approve/session-workflow-grant.ts';
 import type { DenySource } from '../../auto-approve/types.ts';
 import { HookEventBridge } from '../../hooks/index.ts';
 import type {
@@ -314,7 +317,12 @@ export interface SessionGateHandle {
    * ..."); forwarded to `AutoApproveGate.resolveHeld` so the hook resolves
    * with the real `updatedPermissions` echo instead of a bare `allow`.
    */
-  resolveHeld: (questionId: UUID, decision: 'allow' | 'deny', suggestionIndex?: number) => boolean;
+  resolveHeld: (
+    questionId: UUID,
+    decision: 'allow' | 'deny',
+    suggestionIndex?: number,
+    sessionGrant?: SessionWorkflowFamily,
+  ) => boolean;
   /**
    * Release a held hook to 'passthrough' so Claude renders its native numbered
    * prompt (#573), for answers the binary hook response cannot express ("Yes,
@@ -374,6 +382,8 @@ export interface HookBridgeHandle {
    * above), not by the caller.
    */
   precedentStore: PrecedentStore;
+  /** Per-session, in-memory workflow grant store; scope never reaches clients. */
+  workflowGrantStore: SessionWorkflowGrantStore;
 }
 
 export function setupHookBridge(
@@ -413,6 +423,12 @@ export function setupHookBridge(
   // doc for the full provenance-safety argument. The gate receives only a
   // context-bound read-only adapter; `handleAnswer` remains the sole writer.
   const precedentStore = new PrecedentStore();
+
+  // Phase 3 (#1095): derive the repository once from the local origin. This
+  // is metadata for a private session scope, never a network lookup or a wire
+  // field. A non-GitHub/malformed origin simply disables the grant offer.
+  const repository = detectGitHubRepository(workingDirectory);
+  const workflowGrantStore = new SessionWorkflowGrantStore(sessionId, workingDirectory, repository);
 
   // Push the session's subagent views to clients (epic #499 phase 3). Declared
   // here (before the binder/handlers reference it) so there is no fragile
@@ -731,6 +747,8 @@ export function setupHookBridge(
       // Keep evaluation on the same canonical private scope that the answer
       // path records, even if Claude reports a changed hook cwd mid-session.
       workingDirectory,
+      ...(repository === undefined ? {} : { repository }),
+      workflowGrantStore,
       // #710: lets the gate recover from a tracker leak (a MAIN-tagged
       // PermissionRequest observing isInSubagentContext() stuck true) instead
       // of denying the main agent forever.
@@ -739,7 +757,8 @@ export function setupHookBridge(
       // created Question.id flows back to the gate; a binary escalation holds
       // the hook keyed by it (#573). The bridge still does the onQuestion +
       // status side effects exactly as before.
-      escalate: (i, summary) => hookBridge.handlePermissionRequest(i, summary),
+      escalate: (i, summary, workflowOffer) =>
+        hookBridge.handlePermissionRequest(i, summary, workflowOffer),
       // #751 PTY-arbiter: a subagent-tagged escalation the gate cannot decide
       // parks its rich question (same builder as a real escalation, minus the
       // push/registration side effects) and answers 'passthrough'; the tracker
@@ -946,6 +965,7 @@ export function setupHookBridge(
         // conversation's human answers must not authorize or block anything
         // in a fresh one (ADR 0015 amendment, "Obligations this creates").
         precedentStore.clear();
+        workflowGrantStore.clear();
         // The new session starts with no subagents (#499 phase 3).
         if (subagentViews) {
           subagentViews.clear();
@@ -1384,8 +1404,8 @@ export function setupHookBridge(
       hookServer.setPermissionResolver(null);
     },
     gate: {
-      resolveHeld: (questionId, decision, suggestionIndex) =>
-        autoApproveGate.resolveHeld(questionId, decision, suggestionIndex),
+      resolveHeld: (questionId, decision, suggestionIndex, sessionGrant) =>
+        autoApproveGate.resolveHeld(questionId, decision, suggestionIndex, sessionGrant),
       releaseHeldAsPassthrough: (questionId) =>
         autoApproveGate.releaseHeldAsPassthrough(questionId),
       cancelStale: (reason) => autoApproveGate.cancelStale(reason),
@@ -1394,5 +1414,6 @@ export function setupHookBridge(
       forceRelease: (reason) => autoApproveGate.forceRelease(reason),
     },
     precedentStore,
+    workflowGrantStore,
   };
 }
