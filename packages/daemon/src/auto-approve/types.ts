@@ -230,12 +230,16 @@ export interface AutoApproveConfig {
   readonly residual_action: ResidualAction;
   /**
    * Risk/authorization reviewer. `shadow` runs the measured authorization
-   * grader for telemetry only; it never changes the final decision. `verified`
+   * grader and the Phase 1 semantic-intent assessor for telemetry only; neither
+   * changes the final decision. The semantic assessor sends its bounded record
+   * only to a resolved loopback provider and records `non-local-provider` when
+   * a remote/custom provider is configured. `verified`
    * is the opt-in phase 4 path: only a deterministic read-only effect proof,
    * a moderate risk band, and current session authorization may reach the
-   * reviewer. Its approve is still bounded by those code-level gates; every
-   * proof, provenance, model, or risk failure escalates. Default/off preserves
-   * the existing one-call behavior.
+   * reviewer. Verified mode runs independent semantic and effect/risk reviews;
+   * its approve is still bounded by those code-level gates, and every proof,
+   * provenance, model, disagreement, or risk failure escalates. Default/off
+   * preserves the existing one-call behavior.
    */
   readonly risk_review?: RiskReviewMode;
   /**

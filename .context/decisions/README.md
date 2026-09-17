@@ -44,6 +44,7 @@ add a row below.
 | [0026](0026-destination-checked-write-grants.md) | Write grants for decidable shell shapes (redirects, heredocs, sed -i), proven by destination |
 | [0027](0027-residual-action-deny-vs-escalate.md) | `residual_action` setting: deny-with-reason vs. escalate-to-human for a residual main-agent binary permission |
 | [0028](0028-narrow-remote-read-and-session-precedent-scope.md) | Narrow `gh api` reads and private working-directory scope for session precedent |
+| [0029](0029-capability-proofs-are-finite-and-group-gated.md) | Capability proofs are finite, effect-registered, and gated by requested groups |
 
 ## By area
 
@@ -51,7 +52,7 @@ Most work touches one of these clusters, and the ADRs in a cluster constrain
 each other — reading one without its siblings is how a "fix" reopens the case
 another one closed.
 
-- **Permission decisions / auto-approve:** 0003, 0010, 0015, 0016, 0017, 0018, 0023, 0025, 0026, 0027
+- **Permission decisions / auto-approve:** 0003, 0010, 0015, 0016, 0017, 0018, 0023, 0025, 0026, 0027, 0029
 - **Questions + notifications:** 0002, 0004, 0019, 0020, 0021, 0022
 - **Protocol + contracts:** 0012, 0013, 0014, 0006
 - **Sessions + transport:** 0001, 0005, 0009, 0024

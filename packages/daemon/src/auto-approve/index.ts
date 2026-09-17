@@ -36,15 +36,92 @@ export {
   FileEnginePidStore,
   spawnDetachedEngine,
 } from './engine-process.ts';
-export { resolveProviderUrl } from './llm-client.ts';
+export { isLocalProviderUrl, resolveProviderUrl } from './llm-client.ts';
 export {
+  MAX_REVIEW_OPERATION_CHARS,
+  MAX_VERIFIED_EFFECT_RESPONSE_CHARS,
   buildShadowReviewPrompt,
+  buildVerifiedEffectReviewPrompt,
   formatShadowReviewOperation,
   parseShadowRiskReview,
+  parseVerifiedEffectReview,
 } from './risk-review.ts';
-export type { RiskReviewMode, ShadowRiskReview } from './risk-review.ts';
+export type {
+  RiskReviewMode,
+  ShadowRiskReview,
+  VerifiedEffectReview,
+} from './risk-review.ts';
+export {
+  buildIntentAssessmentPrompt,
+  buildIntentAssessmentPromptFromFormatted,
+  fingerprintIntentOperation,
+  formatIntentAssessmentContext,
+  parseIntentAssessment,
+} from './intent-assessment.ts';
+export {
+  INTENT_ASSESSMENT_EFFECTS,
+  INTENT_ASSESSMENT_INTENTS,
+  INTENT_ASSESSMENT_SCOPES,
+  MAX_INTENT_CONTEXT_CHARS,
+  MAX_INTENT_LINEAGE_ENTRIES,
+  MAX_INTENT_OPERATION_CHARS,
+  MAX_INTENT_REASONING_CHARS,
+  MAX_INTENT_RESPONSE_CHARS,
+} from './intent-assessment.ts';
+export type {
+  FormattedIntentAssessmentContext,
+  Intent,
+  IntentAssessment,
+  IntentAssessmentContext,
+  IntentAssessmentParseOptions,
+  IntentEffect,
+  IntentOperationContext,
+  IntentScope,
+} from './intent-assessment.ts';
 export { proveCompoundReadOnly } from './read-only-proof.ts';
 export type { ReadOnlyProof, ReadOnlyProofLeaf, ReadOnlyProofReason } from './read-only-proof.ts';
+export {
+  OPERATION_EFFECTS,
+  OPERATION_EFFECT_REGISTRY,
+  capabilityForProofLeaf,
+  githubSubIssueActionEffect,
+  isNeutralProofLeaf,
+} from './operation-effects.ts';
+export type {
+  CapabilityApprovalGroup,
+  GitHubSubIssueActionEffect,
+  OperationEffect,
+  OperationEffectProfile,
+  OperationFamily,
+} from './operation-effects.ts';
+export {
+  detectGitHubRepository,
+  normalizeGitHubRepository,
+  parseGitHubRemoteUrl,
+} from './repository-context.ts';
+export {
+  classifySessionWorkflowOperation,
+  semanticAssessmentMatchesWorkflow,
+  SessionWorkflowGrantStore,
+  SESSION_WORKFLOW_FAMILIES,
+} from './session-workflow-grant.ts';
+export type {
+  SessionWorkflowClassificationContext,
+  SessionWorkflowFamily,
+  SessionWorkflowOperationKind,
+  WorkflowGrantEvaluationContext,
+  WorkflowGrantOffer,
+  WorkflowGrantReader,
+  WorkflowOperationFacts,
+} from './session-workflow-grant.ts';
+export {
+  VERIFIED_ASSESSMENT_CONFIDENCE_FLOOR,
+  assessmentMatchesVerifiedEffectContract,
+  makeVerifiedEffectContract,
+  verifiedAssessmentsAgree,
+  verifiedReadEffectContract,
+} from './verified-dual-review.ts';
+export type { EffectAssessmentLike, VerifiedEffectContract } from './verified-dual-review.ts';
 export { alertBody, alertTitle, SubagentAlerter } from './subagent-alert.ts';
 export type { SubagentAlert } from './subagent-alert.ts';
 export type {

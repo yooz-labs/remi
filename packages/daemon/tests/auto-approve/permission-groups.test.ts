@@ -158,7 +158,7 @@ describe('#1057 phase 3 commit 3: find is curated, its ambiguous forms are still
   });
 });
 
-describe('#1062 C1 (CRITICAL RCE): awk is UNCOVERED, not merely vetoed', () => {
+describe('#1062 C1 / #1094: arbitrary awk is uncovered, bounded projection is proven', () => {
   // awk was previously curated into `read-only` on the theory that
   // `EXEC_SCOPED_VETOES`'s system()/pipe-to-shell regex caught every
   // dangerous shape. Adversarial review of this branch proved that false by
@@ -166,9 +166,8 @@ describe('#1062 C1 (CRITICAL RCE): awk is UNCOVERED, not merely vetoed', () => {
   // body cannot enumerate every way to run a command, write a file, or read
   // one from inside the program's own quoting. `awk` was removed from
   // `read-only` entirely (`permission-groups.ts`), so every case below is
-  // null because NO prefix matches `awk` at all, not because a veto fired --
-  // pinned here so a future re-add of the bare name would be caught by CI
-  // the moment these all stop escalating.
+  // null because no prefix or bounded proof matches `awk` at all, not because
+  // a broad interpreter veto happened to catch one spelling.
   const bypasses: Array<[string, string]> = [
     // `cmd | getline` executes an arbitrary command with no literal
     // `system(` token anywhere, so the old veto's regex never saw it.
@@ -192,17 +191,14 @@ describe('#1062 C1 (CRITICAL RCE): awk is UNCOVERED, not merely vetoed', () => {
     test(`${label}: null (uncovered)`, () => expect(bash(cmd)).toBeNull());
   }
 
-  // Confirms the removal itself (not some other veto) is what changed the
-  // outcome: even the exact HARMLESS program shape that used to approve at
-  // `read-only:awk` -- no `system()`, no pipe, no file redirect at all -- is
-  // now equally uncovered, because no prefix named `awk` exists any more.
-  test('a harmless awk program is uncovered too (removal, not a veto)', () => {
+  test('the exact bounded field projection is covered by its proof', () => {
+    expect(bash("awk '{print $1}'")).toBe('read-only:effect-proof');
     expect(bash("awk '{print $1}' file.txt")).toBeNull();
   });
 
-  test('the neighboring `ls` in a pipe stays covered on its own, but the compound is not', () => {
+  test('the neighboring `ls` stays covered, and a proven awk stage can join it', () => {
     expect(bash('ls')).toBe('read-only:ls');
-    expect(bash("ls | awk '{print $1}'")).toBeNull();
+    expect(bash("ls | awk '{print $1}'")).toBe('read-only:effect-proof');
   });
 });
 
@@ -440,6 +436,13 @@ describe('permission-groups: adversarial (MUST fall through to LLM, never group-
     'eslint --rulesdir /tmp/evil src', // eslint excluded entirely
     'tree -o out.txt', // tree -o writes; tree excluded
     'diff -u a b -o /tmp/patch', // diff -o writes; diff excluded
+    'sort "$FLAGS" input',
+    'sort *',
+    'tree "$FLAGS" .',
+    'tail "$FLAGS" file',
+    'rg "$FLAGS" .',
+    'find . -name "$PRED"',
+    'find . -name *.py',
     // shell control that escapes the read prefix
     'cat $(rm -rf ~)',
     'git show `whoami`',
@@ -545,6 +548,74 @@ describe('gh-read: output-only GitHub API GETs', () => {
 
   test('does not leak into vcs-read as a side effect', () => {
     expect(bash('gh api /repos/yooz-labs/remi/pulls', ['vcs-read'])).toBeNull();
+  });
+});
+
+describe('Phase 2 capability-proof fallback (#1094)', () => {
+  const uvLockInspection = [
+    "python3 - <<'PY'",
+    'import tomllib',
+    "d = tomllib.load(open('uv.lock','rb'))",
+    "pkgs = {p['name']: p for p in d['package']}",
+    "for n in ['sqlalchemy','greenlet']:",
+    '    p = pkgs.get(n)',
+    '    if not p: continue',
+    "    print('==', n, p.get('version'))",
+    "    for x in p.get('dependencies',[]):",
+    "        print('   ', x)",
+    'PY',
+  ].join('\n');
+  const importSearch = [
+    'for p in "import bids" "from bids"; do',
+    'echo "=== $p ==="',
+    'grep -rn "^\\s*$p" --include="*.py" src/eegprep | grep -v "/eeglab/" | awk -F: \'{print $1}\' | sort -u | head -8',
+    'grep -rc "^\\s*$p" --include="*.py" -r src/eegprep 2>/dev/null | grep -v ":0" | grep -v "/eeglab/" | wc -l',
+    'done',
+  ].join('\n');
+
+  test('approves the bounded Python lock inspection through read-only', () => {
+    expect(bash(uvLockInspection, ['read-only'])).toBe('read-only:effect-proof');
+  });
+
+  test('approves the live import-search loop through read-only', () => {
+    expect(bash(importSearch, ['read-only'])).toBe('read-only:effect-proof');
+  });
+
+  test('does not let an unrelated group borrow the proof', () => {
+    expect(bash(uvLockInspection, ['vcs-read'])).toBeNull();
+    expect(bash('gh sub-issue list 1092', ['vcs-read'])).toBeNull();
+  });
+
+  test('covers output-only sub-issue listing and preserves the mutation boundary', () => {
+    expect(bash('gh sub-issue list 1092', ['gh-read'])).toBe('gh-read:gh sub-issue list');
+    expect(bash('gh --repo yooz-labs/remi sub-issue list 1092', ['gh-read'])).toBe(
+      'gh-read:effect-proof',
+    );
+    expect(bash('gh --hostname github.com api /repos/o/r/issues', ['gh-read'])).toBe(
+      'gh-read:effect-proof',
+    );
+    for (const command of [
+      'gh --hostname evil.example api /repos/o/r/issues',
+      'gh --hostname=evil.example issue list',
+    ]) {
+      expect(bash(command, ['gh-read', 'vcs-read'])).toBeNull();
+    }
+    for (const command of [
+      'gh sub-issue add 1092 --sub-issue-number 1093',
+      'gh sub-issue remove 1092 --sub-issue-number 1093',
+      'gh sub-issue reprioritize 1092 --sub-issue-number 1093 --after 1094',
+      'gh sub-issue unknown 1092',
+    ]) {
+      expect(bash(command, ['gh-read'])).toBeNull();
+    }
+  });
+
+  test('the proof fallback cannot bypass a read-side mutation veto', () => {
+    expect(bash('echo --write && cat file')).toBeNull();
+    expect(bash('diff -u a b -o /tmp/patch')).toBeNull();
+    expect(bash("python3 - <<'PY'\nimport os\nos.system('id')\nPY")).toBeNull();
+    expect(bash('GH_HOST=evil.example; gh api /repos/o/r/issues', ['gh-read'])).toBeNull();
+    expect(bash('GH_TOKEN=untrusted; gh api /repos/o/r/issues', ['gh-read'])).toBeNull();
   });
 });
 

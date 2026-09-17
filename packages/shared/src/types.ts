@@ -371,6 +371,13 @@ export interface QuestionOption {
    * bare `allow` that persists nothing.
    */
   readonly suggestionIndex?: number | undefined;
+
+  /**
+   * Public marker for an explicit, scoped session action. The grant's
+   * repository, working directory, expiry, and lineage remain daemon-private;
+   * this marker only tells the client which deliberate action it is selecting.
+   */
+  readonly sessionGrant?: 'github-issue-planning' | undefined;
 }
 
 /**

@@ -9,21 +9,36 @@ interface ReviewServer {
   readonly stop: () => void;
 }
 
+let nextRiskReviewFixturePort = 20_050;
+
 function startReviewServer(
   responses: readonly string[],
   status: number | readonly number[] = 200,
 ): ReviewServer {
   let calls = 0;
+  let reviewCalls = 0;
   const requests: Record<string, unknown>[] = [];
   const server = Bun.serve({
-    port: 0,
+    // Bun's test runner can start fixture listeners concurrently, while this
+    // environment rejects port-0 listeners. Keep each fixture on a stable
+    // loopback port without changing the production transport.
+    port: nextRiskReviewFixturePort++,
     fetch: async (request) => {
-      const content = responses[Math.min(calls, responses.length - 1)] ?? '';
-      const responseStatus = Array.isArray(status)
-        ? (status[Math.min(calls, status.length - 1)] ?? 200)
-        : status;
-      requests.push((await request.json()) as Record<string, unknown>);
+      const body = (await request.json()) as Record<string, unknown>;
+      requests.push(body);
       calls++;
+      const prompt = JSON.stringify(body);
+      const isIntentAssessment = prompt.includes('advisory semantic-intent assessor');
+      const responseIndex = Math.min(reviewCalls, responses.length - 1);
+      const content = isIntentAssessment
+        ? '{"intent":"local_read","effects":["filesystem_read"],"scope":"repository","reversible":true,"confidence":0.98,"reasoning":"The operation reads repository state only."}'
+        : (responses[responseIndex] ?? '');
+      const responseStatus = isIntentAssessment
+        ? 200
+        : Array.isArray(status)
+          ? (status[Math.min(reviewCalls, status.length - 1)] ?? 200)
+          : status;
+      if (!isIntentAssessment) reviewCalls++;
       if (content === '__delay__') await new Promise((resolve) => setTimeout(resolve, 100));
       return new Response(
         JSON.stringify({
@@ -104,7 +119,7 @@ describe('AutoApproveService phase 2 shadow reviewer', () => {
     expect(logs.some((line) => line.includes('SHADOW REVIEW'))).toBe(false);
   });
 
-  test('shadow mode makes a second graded call but preserves the primary decision', async () => {
+  test('shadow mode makes both advisory calls but preserves the primary decision', async () => {
     const server = startReviewServer([
       '{"decision":"approve","reasoning":"read-only"}',
       'implicit',
@@ -129,10 +144,10 @@ describe('AutoApproveService phase 2 shadow reviewer', () => {
     );
 
     expect(result.decision).toBe('approve');
-    expect(server.calls()).toBe(2);
-    expect(server.requests()[1]?.['max_tokens']).toBe(8);
-    expect(JSON.stringify(server.requests()[1])).toContain('git status');
-    expect(JSON.stringify(server.requests()[1])).toContain('Please inspect the repository.');
+    expect(server.calls()).toBe(3);
+    expect(server.requests()[2]?.['max_tokens']).toBe(8);
+    expect(JSON.stringify(server.requests()[2])).toContain('git status');
+    expect(JSON.stringify(server.requests()[2])).toContain('Please inspect the repository.');
     expect(logs).toContain(
       '[AutoApprove session-a] SHADOW REVIEW Bash: status=ok risk=moderate authority=yes observed_auth=implicit auth=implicit matrix=approve primary=approve final=approve decided_by=model disagreement=none',
     );
@@ -162,11 +177,11 @@ describe('AutoApproveService phase 2 shadow reviewer', () => {
     );
 
     expect(result.decision).toBe('approve');
-    expect(server.calls()).toBe(2);
-    const shadowRequest = JSON.stringify(server.requests()[1]);
+    expect(server.calls()).toBe(3);
+    const shadowRequest = JSON.stringify(server.requests()[2]);
     expect(shadowRequest).toContain('the complete payload matters');
     expect(shadowRequest).toContain('Update the report file.');
-    expect(server.requests()[1]?.['max_tokens']).toBe(8);
+    expect(server.requests()[2]?.['max_tokens']).toBe(8);
   });
 
   test('shadow disagreement cannot override the deterministic risk ceiling', async () => {
@@ -185,7 +200,7 @@ describe('AutoApproveService phase 2 shadow reviewer', () => {
 
     expect(result.decision).toBe('escalate');
     expect(result.reasoning).toContain('Risk ceiling');
-    expect(server.calls()).toBe(2);
+    expect(server.calls()).toBe(3);
     expect(logs.some((line) => line.includes('risk=high') && line.includes('final=escalate'))).toBe(
       true,
     );
@@ -206,7 +221,7 @@ describe('AutoApproveService phase 2 shadow reviewer', () => {
     const result = await service.evaluate('Bash', { command: 'git status' });
 
     expect(result.decision).toBe('approve');
-    expect(server.calls()).toBe(2);
+    expect(server.calls()).toBe(3);
     expect(logs.some((line) => line.includes('SHADOW REVIEW Bash: status=malformed'))).toBe(true);
   });
 
@@ -225,7 +240,7 @@ describe('AutoApproveService phase 2 shadow reviewer', () => {
     const result = await service.evaluate('Bash', { command: 'git status' });
 
     expect(result.decision).toBe('approve');
-    expect(server.calls()).toBe(2);
+    expect(server.calls()).toBe(3);
     expect(logs.some((line) => line.includes('SHADOW REVIEW Bash: status=unavailable'))).toBe(true);
   });
 
@@ -244,7 +259,7 @@ describe('AutoApproveService phase 2 shadow reviewer', () => {
     const result = await service.evaluate('Bash', { command: 'git status' });
 
     expect(result.decision).toBe('approve');
-    expect(server.calls()).toBe(2);
+    expect(server.calls()).toBe(3);
     expect(logs.some((line) => line.includes('SHADOW REVIEW Bash: status=timeout'))).toBe(true);
   });
 
@@ -268,10 +283,10 @@ describe('AutoApproveService phase 2 shadow reviewer', () => {
       42,
       'session-a',
     );
-    for (let i = 0; i < 100 && server.calls() < 2; i++) {
+    for (let i = 0; i < 100 && server.calls() < 3; i++) {
       await new Promise((resolve) => setTimeout(resolve, 1));
     }
-    expect(server.calls()).toBe(2);
+    expect(server.calls()).toBe(3);
     expect(service.cancel('answered locally', 42, 'session-a')).toBe(true);
     expect((await evaluation).decision).toBe('cancelled');
   });
