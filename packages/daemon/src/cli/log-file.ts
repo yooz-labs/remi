@@ -23,6 +23,23 @@ import { errorToString } from '@remi/shared';
 import { rotateIfNeeded } from './log-rotation.ts';
 
 let logFd: number | null = null;
+let logContext: LogFileContext | null = null;
+
+const SESSION_PREFIX_LENGTH = 8;
+
+interface LogFileContext {
+  readonly pid: number;
+  readonly port: number;
+  readonly session: string;
+}
+
+/** Input used to attribute subsequent wrapper log lines. */
+export interface LogFileContextUpdate {
+  /** The current WebSocket port, including later probe updates. */
+  readonly port: number;
+  /** Full session ID, truncated before it is stored or written. */
+  readonly sessionId: string;
+}
 
 /** Result of `startLogFileSession`. */
 export interface LogSessionResult {
@@ -59,6 +76,7 @@ export function startLogFileSession(
   primary: string,
   fallback?: FallbackLogOptions,
 ): LogSessionResult {
+  logContext = null;
   try {
     fs.mkdirSync(path.dirname(primary), { recursive: true });
     rotateIfNeeded(primary);
@@ -96,6 +114,21 @@ export function startLogFileSession(
 }
 
 /**
+ * Set or update the attribution applied to subsequent wrapper log lines.
+ *
+ * The PID is always taken from this process and the session ID is truncated
+ * here so callers cannot accidentally place a full session ID in the shared
+ * log's attribution prefix.
+ */
+export function setLogFileContext({ port, sessionId }: LogFileContextUpdate): void {
+  logContext = {
+    pid: process.pid,
+    port,
+    session: sessionId.slice(0, SESSION_PREFIX_LENGTH),
+  };
+}
+
+/**
  * Append a line to the currently-open log file.
  * Silent no-op if no session has been started, or if the underlying write
  * fails. In wrapper mode, terminal cleanliness is non-negotiable — never
@@ -104,7 +137,17 @@ export function startLogFileSession(
 export function writeToLog(msg: string): void {
   if (logFd === null) return;
   try {
-    fs.writeSync(logFd, `${msg}\n`);
+    if (logContext === null) {
+      fs.writeSync(logFd, `${msg}\n`);
+      return;
+    }
+
+    const prefix = `[pid=${logContext.pid} port=${logContext.port} session=${logContext.session}]`;
+    const attributed = msg
+      .split('\n')
+      .map((line) => `${prefix} ${line}`)
+      .join('\n');
+    fs.writeSync(logFd, `${attributed}\n`);
   } catch {
     // Silently drop.
   }
@@ -115,6 +158,7 @@ export function writeToLog(msg: string): void {
  * Typical call site: `process.on('exit', endLogFileSession)`.
  */
 export function endLogFileSession(): void {
+  logContext = null;
   if (logFd === null) return;
   try {
     fs.closeSync(logFd);

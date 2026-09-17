@@ -169,7 +169,12 @@ import { HubClientTracker } from './cli/hub-client-tracker.ts';
 import { buildHubQuestionCensus } from './cli/hub-question-census.ts';
 import type { LiveSessionsCollectResult } from './cli/live-sessions-watcher.ts';
 import { startLiveSessionsWatcher } from './cli/live-sessions-watcher.ts';
-import { endLogFileSession, startLogFileSession, writeToLog } from './cli/log-file.ts';
+import {
+  endLogFileSession,
+  setLogFileContext,
+  startLogFileSession,
+  writeToLog,
+} from './cli/log-file.ts';
 import { handleAutoDenied } from './cli/on-auto-denied.ts';
 import { installProcessGuards } from './cli/process-guards.ts';
 import { PtyQuiescenceGate } from './cli/pty-quiescence-gate.ts';
@@ -2941,6 +2946,7 @@ if (cliDaemonMode) {
   const workingDirectory = process.cwd();
   const sessionId = sessionRegistry.createSessionId();
   setPrimarySessionId(sessionId);
+  setLogFileContext({ port: PORT, sessionId });
 
   updateRemiStatus({ wsPort: PORT, sessionId, sessionStatus: 'starting' });
 
@@ -2983,6 +2989,11 @@ if (cliDaemonMode) {
       wsProbeSucceeded = false;
     }
   }
+
+  // The second probe can move the session away from the initial port. Update
+  // the shared-log attribution before hook or PTY traffic starts so later
+  // lines name the actual WebSocket port rather than the tentative one.
+  setLogFileContext({ port: PORT, sessionId });
 
   if (wsProbeSucceeded) {
     try {
