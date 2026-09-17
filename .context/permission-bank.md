@@ -5,6 +5,13 @@ read-only auto-approve path. It lets changes to proof, prompts, context
 handling, and dual review be tested without asking the user to reproduce a
 live Claude session for every iteration.
 
+The corpus is sanitized for reuse: its records contain no user names, local
+home paths, repository names, issue numbers, or project-specific branch and
+package identifiers. The privacy assertion in the bank test guards this
+boundary. The examples retain the command shapes and security-relevant
+semantics needed for regression coverage, using placeholders where the
+observed command contained an identifier.
+
 ## What is in the bank
 
 `packages/daemon/tests/auto-approve/permission-bank.ts` is the source of truth.
@@ -19,8 +26,8 @@ Each record has:
   rationale.
 
 Observed records come from the real command shapes that exposed the original
-escalation problem, including branch/worktree inventories, the `uv.lock`
-inspection, the import-search loop, GitHub reads, and `git ls-remote`.
+escalation problem, including branch/worktree inventories, a dependency
+lockfile inspection, an import-search loop, GitHub reads, and `git ls-remote`.
 Hypothetical records extend the same bounded read families. Adversarial
 records cover mutation, credentials, egress, interpreters, privilege, and
 persistence. Unsupported-but-plausibly-safe commands are retained as
@@ -76,12 +83,13 @@ corpus or weakening a guard.
 ## How to extend it
 
 Add a record only with a provenance label and a rationale. For an observed
-failure, preserve the original command text and add the relevant context
-variant rather than normalizing away the shape that failed. For a new safe
-approval, first add a deterministic proof and a focused proof test; then add
-the bank record and its expected reviewer behavior. Add an adversarial twin
-for every newly widened grammar where a shell operator, interpreter, remote
-target, credential, or persistence mechanism could change the effect surface.
+failure, preserve the behaviorally relevant command shape and add the relevant
+context variant, but replace personal or project-specific identifiers with
+stable placeholders. For a new safe approval, first add a deterministic proof
+and a focused proof test; then add the bank record and its expected reviewer
+behavior. Add an adversarial twin for every newly widened grammar where a
+shell operator, interpreter, remote target, credential, or persistence
+mechanism could change the effect surface.
 
 The corpus is a regression and rollout gate, not permission to bypass the
 existing deterministic deny floor, risk ceiling, session scope, or

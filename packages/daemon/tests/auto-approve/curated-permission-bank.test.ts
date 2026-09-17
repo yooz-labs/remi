@@ -187,7 +187,7 @@ afterEach(() => {
   for (const server of servers.splice(0)) server.stop();
 });
 
-describe('curated permission bank (#1092)', () => {
+describe('curated permission bank', () => {
   test('is large, categorized, provenance-labelled, and context-expanded', () => {
     const summary = summarizePermissionBank();
     expect(summary.total).toBeGreaterThanOrEqual(240);
@@ -207,7 +207,7 @@ describe('curated permission bank (#1092)', () => {
       expect(sample.command.length).toBeLessThanOrEqual(MAX_REVIEW_OPERATION_CHARS);
       expect(sample.title.length).toBeGreaterThan(0);
       expect(sample.rationale.length).toBeGreaterThan(0);
-      expect(sample.context.repository).toBe('yooz-labs/remi');
+      expect(sample.context.repository).toBe('example-org/example-repository');
       expect(sample.context.recentOperations.length).toBeGreaterThan(0);
       expect(proveCompoundReadOnly(sample.command).status).toBe(sample.expected.proof);
       if (sample.source === 'adversarial') {
@@ -218,6 +218,28 @@ describe('curated permission bank (#1092)', () => {
         expect(sample.expected.modelCalls).toBe(2);
       }
     }
+  });
+
+  test('contains no personal or project-specific fixture data', () => {
+    const serialized = JSON.stringify(PERMISSION_BANK).toLowerCase();
+    for (const forbidden of [
+      'yahya',
+      'shirazi',
+      'neuromechanist',
+      'yooz',
+      'remi',
+      'issue-1092',
+      'eegprep',
+      'uv.lock',
+      '/users/',
+      '/home/',
+      'origin/dev',
+      'feature/issue-',
+    ]) {
+      expect(serialized).not.toContain(forbidden);
+    }
+    expect(serialized).toContain('example-org/example-repository');
+    expect(serialized).toContain('/tmp/permission-bank/repository');
   });
 
   test('models same-path sessions as distinct scopes without mixing context', () => {
@@ -235,7 +257,7 @@ describe('curated permission bank (#1092)', () => {
     expect(buildPermissionBankToolInput(sessionA)['_replay_context']).toEqual(
       expect.objectContaining({
         session_id: sessionA?.context.sessionId,
-        repository: 'yooz-labs/remi',
+        repository: 'example-org/example-repository',
       }),
     );
   });
@@ -306,7 +328,7 @@ describe('curated permission bank (#1092)', () => {
     servers.push(server);
     const service = new AutoApproveService(makeConfig(server.url), () => undefined);
     const sample = PERMISSION_BANK.find(
-      (candidate) => candidate.id === 'observed.uv-lock-inspection.implicit-a',
+      (candidate) => candidate.id === 'observed.lockfile-inspection.implicit-a',
     );
     expect(sample).toBeDefined();
     if (sample === undefined) throw new Error('bank case missing');
@@ -317,6 +339,6 @@ describe('curated permission bank (#1092)', () => {
     expect(prompts.some((prompt) => prompt.includes('CODE-OWNED RECONCILIATION RULES'))).toBe(true);
     expect(prompts.some((prompt) => prompt.includes('CODE-OWNED FINAL CHECK'))).toBe(true);
     expect(prompts.some((prompt) => prompt.includes('_replay_context'))).toBe(true);
-    expect(prompts.some((prompt) => prompt.includes('uv.lock'))).toBe(true);
+    expect(prompts.some((prompt) => prompt.includes('dependencies.lock'))).toBe(true);
   });
 });
