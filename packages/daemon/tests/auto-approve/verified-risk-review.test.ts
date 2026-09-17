@@ -14,20 +14,33 @@ interface ReviewServer {
   readonly stop: () => void;
 }
 
+type FixtureResponse = string | ((prompt: string) => string);
+
+let nextVerifiedFixturePort = 19_900;
+
 function startReviewServer(
-  responses: readonly string[],
+  responses: readonly FixtureResponse[],
   status: number | readonly number[] = 200,
 ): ReviewServer {
   let calls = 0;
   const requests: Record<string, unknown>[] = [];
   const server = Bun.serve({
-    port: 0,
+    // Bun's test runner can start fixture listeners concurrently, while this
+    // environment rejects port-0 listeners. Deterministic per-fixture ports
+    // preserve isolation without changing the production path.
+    port: nextVerifiedFixturePort++,
     fetch: async (request) => {
-      const content = responses[Math.min(calls, responses.length - 1)] ?? '';
+      const body = (await request.json()) as Record<string, unknown>;
+      requests.push(body);
+      const prompt = requestText(body);
+      const isIntentRequest = prompt.includes('advisory semantic-intent assessor');
+      const isEffectReviewRequest = prompt.includes('independent risk, effect, and authorization');
+      const responseIndex = isIntentRequest ? 0 : isEffectReviewRequest ? 1 : 2;
+      const fixture = responses[responseIndex] ?? responses[responses.length - 1];
+      const content = typeof fixture === 'function' ? fixture(prompt) : (fixture ?? '');
       const responseStatus = Array.isArray(status)
         ? (status[Math.min(calls, status.length - 1)] ?? 200)
         : status;
-      requests.push((await request.json()) as Record<string, unknown>);
       calls++;
       if (content === '__delay__') await new Promise((resolve) => setTimeout(resolve, 100));
       return new Response(
@@ -101,6 +114,124 @@ function requestText(request: Record<string, unknown> | undefined): string {
     .join('\n');
 }
 
+const LOCAL_INTENT = JSON.stringify({
+  intent: 'local_read',
+  effects: ['filesystem_read'],
+  scope: 'repository',
+  reversible: true,
+  confidence: 0.98,
+  reasoning: 'The operation reads repository state only.',
+});
+
+const REMOTE_INTENT = JSON.stringify({
+  intent: 'remote_read',
+  effects: ['filesystem_read', 'network_read', 'remote_read'],
+  scope: 'remote_repository',
+  reversible: true,
+  confidence: 0.98,
+  reasoning: 'The operation reads repository and remote metadata only.',
+});
+
+const LOCAL_EFFECT_REVIEW = JSON.stringify({
+  risk: 'moderate',
+  intent: 'local_read',
+  effects: ['filesystem_read'],
+  scope: 'repository',
+  reversible: true,
+  confidence: 0.97,
+  authorization: 'explicit',
+  reasoning: 'The operation is a reversible repository read.',
+});
+
+const LOCAL_EFFECT_REVIEW_TOPICAL = JSON.stringify({
+  risk: 'moderate',
+  intent: 'local_read',
+  effects: ['filesystem_read'],
+  scope: 'repository',
+  reversible: true,
+  confidence: 0.97,
+  authorization: 'topical',
+  reasoning: 'The operation is mentioned but not requested.',
+});
+
+const LOCAL_EFFECT_REVIEW_LOW_CONFIDENCE = JSON.stringify({
+  risk: 'moderate',
+  intent: 'local_read',
+  effects: ['filesystem_read'],
+  scope: 'repository',
+  reversible: true,
+  confidence: 0.5,
+  authorization: 'implicit',
+  reasoning: 'The operation probably reads repository state.',
+});
+
+const INTERPRETER_INTENT = JSON.stringify({
+  intent: 'interpreter',
+  effects: ['filesystem_read', 'process_execution'],
+  scope: 'repository',
+  reversible: true,
+  confidence: 0.98,
+  reasoning: 'The bounded interpreter formats repository data without mutation.',
+});
+
+const INTERPRETER_EFFECT_REVIEW = JSON.stringify({
+  risk: 'moderate',
+  intent: 'interpreter',
+  effects: ['filesystem_read', 'process_execution'],
+  scope: 'repository',
+  reversible: true,
+  confidence: 0.97,
+  authorization: 'implicit',
+  reasoning: 'The bounded interpreter performs a reversible repository read.',
+});
+
+const REMOTE_INTERPRETER_INTENT = JSON.stringify({
+  intent: 'remote_read',
+  effects: ['filesystem_read', 'network_read', 'remote_read', 'process_execution'],
+  scope: 'remote_repository',
+  reversible: true,
+  confidence: 0.98,
+  reasoning: 'The bounded interpreter formats local and remote repository metadata.',
+});
+
+const REMOTE_INTERPRETER_EFFECT_REVIEW = JSON.stringify({
+  risk: 'moderate',
+  intent: 'remote_read',
+  effects: ['filesystem_read', 'network_read', 'remote_read', 'process_execution'],
+  scope: 'remote_repository',
+  reversible: true,
+  confidence: 0.97,
+  authorization: 'implicit',
+  reasoning: 'The bounded interpreter performs a reversible remote repository read.',
+});
+
+const REMOTE_EFFECT_REVIEW = JSON.stringify({
+  risk: 'moderate',
+  intent: 'remote_read',
+  effects: ['filesystem_read', 'network_read', 'remote_read'],
+  scope: 'remote_repository',
+  reversible: true,
+  confidence: 0.97,
+  authorization: 'explicit',
+  reasoning: 'The operation reads remote repository metadata.',
+});
+
+function localRemoteOrInterpreterFixture(
+  local: string,
+  remote: string,
+  interpreter: string,
+  remoteInterpreter: string,
+): FixtureResponse {
+  return (prompt: string) =>
+    prompt.includes('awk') && prompt.includes('ls-remote')
+      ? remoteInterpreter
+      : prompt.includes('awk')
+        ? interpreter
+        : prompt.includes('ls-remote')
+          ? remote
+          : local;
+}
+
 const WORKTREE_INVENTORY = `for wt in $(git worktree list --porcelain)
 do b=$(git -C "$wt" rev-parse --abbrev-ref HEAD)
 merged=$(git branch -r --contains "$b")
@@ -149,8 +280,8 @@ function evaluate(
 }
 
 describe('verified read-only risk review (#1081 phase 4)', () => {
-  test('approves the observed branch inventory with one authorization call', async () => {
-    const server = startReviewServer(['explicit']);
+  test('approves the observed branch inventory with two independent calls', async () => {
+    const server = startReviewServer([LOCAL_INTENT, LOCAL_EFFECT_REVIEW]);
     servers.push(server);
     const logs: string[] = [];
     const service = new AutoApproveService(makeConfig(server.url), (line) => logs.push(line));
@@ -160,23 +291,37 @@ describe('verified read-only risk review (#1081 phase 4)', () => {
       BRANCH_INVENTORY,
       'Please check which local branches have unpushed commits.',
     );
-
     expect(result.decision).toBe('approve');
-    expect(server.calls()).toBe(1);
-    expect(server.requests()[0]?.['max_tokens']).toBe(8);
+    expect(server.calls()).toBe(2);
+    expect(server.requests()[0]?.['max_tokens']).toBe(128);
+    expect(server.requests()[1]?.['max_tokens']).toBe(128);
     const request = requestText(server.requests()[0]);
-    expect(request).toContain(BRANCH_INVENTORY);
+    expect(request).toContain('for b in fix/adr-0064-on004212-basis');
+    expect(request).toContain('git log');
     expect(request).toContain('Please check which local branches have unpushed commits.');
+    expect(requestText(server.requests()[1])).not.toContain(
+      'The operation reads repository state only.',
+    );
     // Text cannot mint explicit authorization; the measured provenance cap
     // collapses the deliberately over-strong response to implicit.
-    expect(result.reasoning).toContain('authorization matrix=approve (grade=implicit)');
-    expect(logs).toContain(
-      '[AutoApprove session-a] VERIFIED REVIEW Bash: status=ok proof=proved risk=moderate leaves=4 observed_auth=explicit auth=implicit matrix=approve final=approve',
+    expect(result.reasoning).toContain(
+      'semantic and independent effect reports agree, risk=moderate, authorization matrix=approve',
     );
+    expect(
+      logs.some(
+        (line) =>
+          line.startsWith(
+            '[AutoApprove session-a] VERIFIED REVIEW Bash: status=ok proof=proved risk=moderate reported_risk=moderate leaves=4 review_model=review-test-model review_latency_ms=',
+          ) &&
+          line.includes(
+            'semantic_match=yes independent_match=yes agreement=yes observed_auth=explicit auth=implicit matrix=approve final=approve',
+          ),
+      ),
+    ).toBe(true);
   });
 
-  test('approves the safe rewrite of the worktree inventory and no other model call', async () => {
-    const server = startReviewServer(['implicit']);
+  test('approves the safe rewrite of the worktree inventory after both reviews', async () => {
+    const server = startReviewServer([LOCAL_INTENT, LOCAL_EFFECT_REVIEW]);
     servers.push(server);
     const service = new AutoApproveService(makeConfig(server.url), () => undefined);
 
@@ -187,12 +332,27 @@ describe('verified read-only risk review (#1081 phase 4)', () => {
     );
 
     expect(result.decision).toBe('approve');
-    expect(server.calls()).toBe(1);
-    expect(requestText(server.requests()[0])).toContain(SAFE_REWRITE);
+    expect(server.calls()).toBe(2);
+    expect(requestText(server.requests()[0])).toContain(
+      'for wt in $(git worktree list --porcelain',
+    );
   });
 
   test('replay corpus approves only proven moderate reads and fail-closes adversarial variants', async () => {
-    const server = startReviewServer(['implicit']);
+    const server = startReviewServer([
+      localRemoteOrInterpreterFixture(
+        LOCAL_INTENT,
+        REMOTE_INTENT,
+        INTERPRETER_INTENT,
+        REMOTE_INTERPRETER_INTENT,
+      ),
+      localRemoteOrInterpreterFixture(
+        LOCAL_EFFECT_REVIEW,
+        REMOTE_EFFECT_REVIEW,
+        INTERPRETER_EFFECT_REVIEW,
+        REMOTE_INTERPRETER_EFFECT_REVIEW,
+      ),
+    ]);
     servers.push(server);
     const service = new AutoApproveService(makeConfig(server.url), () => undefined);
 
@@ -208,7 +368,7 @@ describe('verified read-only risk review (#1081 phase 4)', () => {
     ]) {
       expect((await evaluate(service, command)).decision).toBe('approve');
     }
-    expect(server.calls()).toBe(4);
+    expect(server.calls()).toBe(8);
 
     for (const command of [
       WORKTREE_INVENTORY.replace(
@@ -223,11 +383,11 @@ describe('verified read-only risk review (#1081 phase 4)', () => {
     }
     // Every adversarial command was rejected by the deterministic proof before
     // it could reach either the reviewer or a primary action model.
-    expect(server.calls()).toBe(4);
+    expect(server.calls()).toBe(8);
   });
 
   test('reviewer disagreement escalates and never falls back to the primary model', async () => {
-    const server = startReviewServer(['topical']);
+    const server = startReviewServer([LOCAL_INTENT, LOCAL_EFFECT_REVIEW_TOPICAL]);
     servers.push(server);
     const service = new AutoApproveService(makeConfig(server.url), () => undefined);
 
@@ -235,11 +395,23 @@ describe('verified read-only risk review (#1081 phase 4)', () => {
 
     expect(result.decision).toBe('escalate');
     expect(result.reasoning).toContain('authorization matrix=escalate');
-    expect(server.calls()).toBe(1);
+    expect(server.calls()).toBe(2);
+  });
+
+  test('a low-confidence independent report escalates even when its fields look benign', async () => {
+    const server = startReviewServer([LOCAL_INTENT, LOCAL_EFFECT_REVIEW_LOW_CONFIDENCE]);
+    servers.push(server);
+    const service = new AutoApproveService(makeConfig(server.url), () => undefined);
+
+    const result = await evaluate(service, 'git status --porcelain');
+
+    expect(result.decision).toBe('escalate');
+    expect(result.reasoning).toContain('independent effect reviewer conflicted');
+    expect(server.calls()).toBe(2);
   });
 
   test('missing context, unknown shell, and high-risk proof matches all escalate without a model call', async () => {
-    const server = startReviewServer(['unexpected']);
+    const server = startReviewServer([LOCAL_INTENT, LOCAL_EFFECT_REVIEW]);
     servers.push(server);
     const service = new AutoApproveService(makeConfig(server.url), () => undefined);
 
@@ -258,7 +430,7 @@ describe('verified read-only risk review (#1081 phase 4)', () => {
   });
 
   test('the proof removes assignment false positives but preserves dangerous read words', async () => {
-    const server = startReviewServer(['implicit']);
+    const server = startReviewServer([LOCAL_INTENT, LOCAL_EFFECT_REVIEW]);
     servers.push(server);
     const service = new AutoApproveService(makeConfig(server.url), () => undefined);
 
@@ -270,7 +442,7 @@ describe('verified read-only risk review (#1081 phase 4)', () => {
 
     expect(result.decision).toBe('approve');
     expect(result.reasoning).toContain('risk=moderate');
-    expect(server.calls()).toBe(1);
+    expect(server.calls()).toBe(2);
 
     // A proof-qualified read is not automatically low risk: the raw dangerous
     // whole-word backstop still keeps a credential path at high and terminal.
@@ -280,11 +452,11 @@ describe('verified read-only risk review (#1081 phase 4)', () => {
     if (dangerousRead.decision === 'escalate') {
       expect(dangerousRead.suppressSecondOpinion).toBe(true);
     }
-    expect(server.calls()).toBe(1);
+    expect(server.calls()).toBe(2);
   });
 
   test('does not review a command longer than the exact reviewer bound', async () => {
-    const server = startReviewServer(['implicit']);
+    const server = startReviewServer([LOCAL_INTENT, LOCAL_EFFECT_REVIEW]);
     servers.push(server);
     const service = new AutoApproveService(makeConfig(server.url), () => undefined);
     const command = `echo "${'a'.repeat(2001)}"`;
@@ -298,7 +470,7 @@ describe('verified read-only risk review (#1081 phase 4)', () => {
   });
 
   test('a denied session precedent overrides a verified reviewer approval', async () => {
-    const server = startReviewServer(['explicit']);
+    const server = startReviewServer([LOCAL_INTENT, LOCAL_EFFECT_REVIEW]);
     servers.push(server);
     const service = new AutoApproveService(
       makeConfig(server.url, { session_precedent: true }),
@@ -332,35 +504,35 @@ describe('verified read-only risk review (#1081 phase 4)', () => {
     expect(result.decision).toBe('escalate');
     expect(result.reasoning).toContain('Session precedent');
     if (result.decision === 'escalate') expect(result.suppressSecondOpinion).toBe(true);
-    expect(server.calls()).toBe(1);
+    expect(server.calls()).toBe(2);
   });
 
   test('malformed reviewer output escalates', async () => {
-    const server = startReviewServer(['not a grade']);
+    const server = startReviewServer([LOCAL_INTENT, 'not a review']);
     servers.push(server);
     const service = new AutoApproveService(makeConfig(server.url), () => undefined);
 
     const result = await evaluate(service, 'git status --porcelain');
 
     expect(result.decision).toBe('escalate');
-    expect(result.reasoning).toContain('reviewer was malformed');
-    expect(server.calls()).toBe(1);
+    expect(result.reasoning).toContain('independent effect reviewer was malformed');
+    expect(server.calls()).toBe(2);
   });
 
   test('reviewer unavailability escalates', async () => {
-    const server = startReviewServer(['unavailable'], 503);
+    const server = startReviewServer([LOCAL_INTENT, 'unavailable'], [200, 503]);
     servers.push(server);
     const service = new AutoApproveService(makeConfig(server.url), () => undefined);
 
     const result = await evaluate(service, 'git status --porcelain');
 
     expect(result.decision).toBe('escalate');
-    expect(result.reasoning).toContain('reviewer was unavailable');
-    expect(server.calls()).toBe(1);
+    expect(result.reasoning).toContain('independent effect reviewer was unavailable');
+    expect(server.calls()).toBe(2);
   });
 
   test('reviewer timeout escalates within the original deadline', async () => {
-    const server = startReviewServer(['__delay__']);
+    const server = startReviewServer([LOCAL_INTENT, '__delay__']);
     servers.push(server);
     const service = new AutoApproveService(
       makeConfig(server.url, { timeout: 0.05 }),
@@ -371,13 +543,13 @@ describe('verified read-only risk review (#1081 phase 4)', () => {
     const result = await evaluate(service, 'git status --porcelain');
 
     expect(result.decision).toBe('escalate');
-    expect(result.reasoning).toContain('reviewer was timeout');
-    expect(server.calls()).toBe(1);
+    expect(result.reasoning).toContain('independent effect reviewer was timeout');
+    expect(server.calls()).toBe(2);
     expect(Date.now() - started).toBeLessThan(250);
   });
 
   test('user cancellation still wins over a delayed verified review', async () => {
-    const server = startReviewServer(['__delay__']);
+    const server = startReviewServer([LOCAL_INTENT, '__delay__']);
     servers.push(server);
     const service = new AutoApproveService(makeConfig(server.url), () => undefined);
 
@@ -395,16 +567,20 @@ describe('verified read-only risk review (#1081 phase 4)', () => {
       undefined,
       '/same/project/path',
     );
-    for (let i = 0; i < 100 && server.calls() < 1; i++) {
+    for (let i = 0; i < 100 && server.calls() < 2; i++) {
       await new Promise((resolve) => setTimeout(resolve, 1));
     }
-    expect(server.calls()).toBe(1);
+    expect(server.calls()).toBe(2);
     expect(service.cancel('answered locally', 42, 'session-a')).toBe(true);
     expect((await evaluation).decision).toBe('cancelled');
   });
 
   test('deterministic, structural, and subagent routes do not use verified review', async () => {
-    const server = startReviewServer(['{"decision":"approve","reasoning":"primary"}']);
+    const server = startReviewServer([
+      LOCAL_INTENT,
+      LOCAL_EFFECT_REVIEW,
+      '{"decision":"approve","reasoning":"primary"}',
+    ]);
     servers.push(server);
     const service = new AutoApproveService(
       makeConfig(server.url, {
@@ -453,7 +629,7 @@ describe('verified read-only risk review (#1081 phase 4)', () => {
   });
 
   test('two same-path sessions retain their own authorization context under soak', async () => {
-    const server = startReviewServer(['implicit']);
+    const server = startReviewServer([LOCAL_INTENT, LOCAL_EFFECT_REVIEW]);
     servers.push(server);
     const service = new AutoApproveService(makeConfig(server.url), () => undefined);
 
@@ -479,10 +655,14 @@ describe('verified read-only risk review (#1081 phase 4)', () => {
     const results = rounds.flat();
     expect(results).toHaveLength(16);
     expect(results.every((result) => result.decision === 'approve')).toBe(true);
-    expect(server.calls()).toBe(16);
+    expect(server.calls()).toBe(32);
     const requests = server.requests().map(requestText);
-    expect(requests.filter((request) => request.includes('Session A asks')).length).toBe(8);
-    expect(requests.filter((request) => request.includes('Session B asks')).length).toBe(8);
+    const sessionARequests = requests.filter((request) => request.includes('Session A asks'));
+    const sessionBRequests = requests.filter((request) => request.includes('Session B asks'));
+    expect(sessionARequests.length).toBe(16);
+    expect(sessionBRequests.length).toBe(16);
+    expect(sessionARequests.every((request) => !request.includes('Session B asks'))).toBe(true);
+    expect(sessionBRequests.every((request) => !request.includes('Session A asks'))).toBe(true);
     expect(requests.every((request) => request.includes('git status --porcelain'))).toBe(true);
   });
 });

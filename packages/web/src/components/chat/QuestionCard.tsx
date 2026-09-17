@@ -81,6 +81,9 @@ interface RenderOption {
 
 /** Hint text shown to the right of permission-style options. */
 function optionHint(option: UIQuestionOption): string | undefined {
+  if (option.sessionGrant === 'github-issue-planning') {
+    return 'Allow planning actions for this session';
+  }
   if (/always/i.test(option.label)) return 'Remember for session';
   if (option.isYes) return 'Allow once';
   if (option.isNo) return 'Cancel';

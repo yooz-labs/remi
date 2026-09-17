@@ -195,6 +195,8 @@ export interface UIQuestionOption {
   readonly isRecommended?: boolean;
   /** Authored per-option explanation (AskUserQuestion `description`, #626). */
   readonly description?: string;
+  /** Public marker for an explicit, daemon-scoped session action. */
+  readonly sessionGrant?: 'github-issue-planning';
 }
 
 /** One sub-question of a multi-question (AskUserQuestion) prompt (#626). */

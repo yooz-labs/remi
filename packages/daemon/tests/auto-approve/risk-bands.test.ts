@@ -85,6 +85,9 @@ describe('classifyRisk — high band: remote mutation', () => {
     'gh pr create --title x --body y',
     'gh issue create --title x',
     'gh issue close 5',
+    'gh sub-issue add 1092 --sub-issue-number 1093',
+    'gh sub-issue remove 1092 --sub-issue-number 1093',
+    'gh sub-issue reprioritize 1092 --sub-issue-number 1093 --after 1094',
     // scp/rsync WITH a remote destination -- mirrors authority-counterfactual.ts's
     // RISKY_SHAPES entries for 'scp '/'rsync' (lines 116-118).
     'scp local.txt dev@host:/tmp/',
@@ -107,6 +110,12 @@ describe('classifyRisk — high band: remote mutation', () => {
   test('read-only gh subcommands are not high', () => {
     expect(classifyRisk('Bash', bash('gh pr view 12'))).toBe('moderate');
     expect(classifyRisk('Bash', bash('gh issue list'))).toBe('moderate');
+    expect(classifyRisk('Bash', bash('gh sub-issue list 1092'))).toBe('moderate');
+  });
+
+  test('unknown gh sub-issue actions fail closed to high', () => {
+    expect(classifyRisk('Bash', bash('gh sub-issue archive 1092'))).toBe('high');
+    expect(classifyRisk('Bash', bash('gh sub-issue'))).toBe('high');
   });
 
   test('a purely local scp/rsync (no remote destination) is not a mutation', () => {

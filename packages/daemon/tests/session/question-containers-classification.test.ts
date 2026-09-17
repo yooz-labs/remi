@@ -170,6 +170,12 @@ const REGISTRY: readonly Entry[] = [
   },
   {
     file: 'auto-approve/auto-approve-gate.ts',
+    field: 'pendingWorkflowOffers',
+    cls: 'post-card-metadata',
+    note: 'Private workflow facts keyed by the held Question.id (#1095); the public card carries only the family marker, while this entry is consumed exactly once by the held-answer path.',
+  },
+  {
+    file: 'auto-approve/auto-approve-gate.ts',
     field: 'confirmedDeliveries',
     cls: 'post-card-metadata',
     note: 'Held question ids whose notification was confirmed delivered (#603 Phase 1).',

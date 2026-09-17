@@ -413,11 +413,15 @@ export const DEFAULT_CONFIG: RemiConfig = {
     base_url: 'http://127.0.0.1:19924',
     timeout: 30,
     log_decisions: true,
-    // Risk/authorization review is opt-in. Shadow is telemetry-only; verified
-    // is the phase 4 decision-changing path and is itself bounded by the
+    // Risk/authorization and semantic-intent review are opt-in. Shadow is
+    // telemetry-only and runs both advisory assessments when the resolved
+    // provider is loopback (the semantic record never goes to a remote
+    // provider); verified is the phase 4 decision-changing path and runs two
+    // independent structured local reviews. It is itself bounded by the
     // deterministic read-only proof, moderate-risk ceiling, and session
-    // authorization matrix (#1081). Keep the default off until an operator
-    // explicitly enables the measured rollout.
+    // authorization matrix (#1081/#1096); any disagreement or failure
+    // escalates. Keep the default off until an operator explicitly enables the
+    // measured rollout.
     risk_review: 'off',
     // What escalateMain does with a main-agent BINARY operation it cannot
     // approve (#1045 phase 6): "escalate" (default, ask the human, no reason
@@ -433,7 +437,7 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // per compound segment with a shell-control veto, so an approved segment
     // cannot carry an unapproved one. Bash git commands and arbitrary gh
     // commands are still not defaulted; the narrow gh-read group below covers
-    // only output-only REST GETs.
+    // output-only REST GETs and the read-only `gh sub-issue list` extension.
     allow: ['Read', 'Glob', 'Grep'],
     deny: [],
     // Background-agent commands worth a heads-up even though they ran (#807).
@@ -1370,7 +1374,7 @@ turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_sec
 #
 #   read-only   Read/Glob/Grep/NotebookRead + cat, grep, ls, jq, ...
 #   vcs-read    git status/log/diff/show, gh pr view/list, ...
-#   gh-read     output-only gh api REST GETs (single endpoint; no body)
+#   gh-read     output-only gh api REST GETs + gh sub-issue list
 #   build-test  bun test, tsc --noEmit, biome check, pytest, ...
 #   fs-write    Write/Edit/NotebookEdit + mkdir, touch, tee, cp, mv
 #   vcs-write   git add/commit/checkout/switch/merge, stash push, worktree add
@@ -1474,11 +1478,15 @@ turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_sec
 #                                  # model without paying its latency for
 #                                  # every binary permission. Ignored unless
 #                                  # multichoice = "evaluate".
-# risk_review = "off"              # "shadow" = telemetry-only measured
-#                                  # authorization grader; "verified" = the
-#                                  # opt-in phase 4 path for deterministic,
-#                                  # moderate-risk compound reads with current
-#                                  # session authorization. Failures escalate.
+# risk_review = "off"              # "shadow" = telemetry-only authorization
+#                                  # grader + loopback-only semantic-intent assessor;
+#                                  # "verified" = opt-in phase 4 path with two
+#                                  # independent structured local reviews for
+#                                  # deterministic, moderate-risk compound reads
+#                                  # and already-granted planning mutations.
+#                                  # The deterministic effect contract and grant
+#                                  # remain authoritative; disagreement/failure
+#                                  # escalates. Default is off.
 # escalate_model = ""              # Second opinion on a primary 'escalate'
 #                                  # (main context only). Put a heavy model here
 #                                  # to honor a broad approve policy without

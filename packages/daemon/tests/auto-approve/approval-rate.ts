@@ -9,7 +9,7 @@
  * runner, and this keeps the two consumers importing the exact same code
  * path rather than the CLI re-deriving anything.
  *
- * Five independent units, each documented at its own definition below:
+ * Six independent units, each documented at its own definition below:
  *
  *   - `loadCorpusRecords` -- JSONL -> `PermissionRequest` records. Same
  *     shape as `guard-chain-replay.test.ts`'s local loader, generalized to
@@ -23,6 +23,9 @@
  *   - `parseDecisionLog` -- parses `auto-approve-service.ts`'s own `logFn`
  *     output (the exact templates it writes, read from source, not
  *     reimplemented logic) into verdict/band/layer counts and latencies.
+ *   - `parseVerifiedTelemetry` -- parses the opt-in Phase 4 dual-review
+ *     records into model-specific intent/review, agreement, failure, and
+ *     decision counts without treating telemetry as an approval decision.
  *   - `percentile` -- nearest-rank (ceil) percentile over a latency sample,
  *     shared so both the CLI and this file's own tests exercise the exact
  *     same rank math.
@@ -36,7 +39,7 @@
 import * as fs from 'node:fs';
 import { AutoApproveService } from '../../src/auto-approve/auto-approve-service.ts';
 import type { DecidingLayer, RiskBand } from '../../src/auto-approve/risk-bands.ts';
-import { classifyRisk } from '../../src/auto-approve/risk-bands.ts';
+import { RISK_BANDS, classifyRisk } from '../../src/auto-approve/risk-bands.ts';
 import {
   findRedirectClauses,
   maskQuotedSpans,
@@ -563,6 +566,218 @@ function parseLine(raw: string): ParsedLogLine {
   return unmatchedLine(raw);
 }
 
+// ---------------------------------------------------------------------------
+// (d1) verified dual-review telemetry
+// ---------------------------------------------------------------------------
+
+export type VerifiedTelemetryStage = 'intent' | 'review' | 'workflow-review' | 'gate';
+
+/** One structured telemetry line emitted by the opt-in Phase 4 path. */
+export interface VerifiedTelemetryRecord {
+  readonly raw: string;
+  readonly tag: string | undefined;
+  readonly toolName: string;
+  readonly stage: VerifiedTelemetryStage;
+  readonly status: string;
+  /** Undefined for a deterministic/semantic gate that made no model call. */
+  readonly model: string | undefined;
+  readonly risk: RiskBand | undefined;
+  readonly finalDecision: LogVerdict | undefined;
+  readonly independentMatch: boolean | undefined;
+  readonly agreement: boolean | undefined;
+  readonly latencyMs: number | undefined;
+}
+
+/** Per-model counts used to distinguish adherence from operational failure. */
+export interface VerifiedModelTelemetry {
+  intentCalls: number;
+  intentOk: number;
+  intentFailures: number;
+  effectReviewCalls: number;
+  effectReviewOk: number;
+  effectReviewFailures: number;
+  workflowReviewCalls: number;
+  workflowReviewOk: number;
+  workflowReviewFailures: number;
+  contractMatches: number;
+  contractMismatches: number;
+  agreements: number;
+  disagreements: number;
+  approvals: number;
+  escalations: number;
+}
+
+export interface VerifiedTelemetryReport {
+  readonly totalRecords: number;
+  /** Valid Phase 4-shaped lines that could not be parsed. */
+  readonly unparsed: number;
+  readonly byStage: Readonly<Record<VerifiedTelemetryStage, number>>;
+  readonly byStatus: Readonly<Record<string, number>>;
+  readonly byModel: Readonly<Record<string, Readonly<VerifiedModelTelemetry>>>;
+  readonly records: readonly VerifiedTelemetryRecord[];
+}
+
+const VERIFIED_TELEMETRY_RE =
+  /^\[AutoApprove(?: (?<tag>[^\]]+))?\] (?<stage>VERIFIED INTENT|VERIFIED WORKFLOW REVIEW|VERIFIED REVIEW|VERIFIED GATE) (?<tool>\S+): (?<fields>.*)$/;
+
+function parseTelemetryFields(raw: string): Readonly<Record<string, string>> {
+  const fields: Record<string, string> = {};
+  for (const match of raw.matchAll(/(?:^|\s)(?<key>[a-z_]+)=(?<value>[^\s]+)/g)) {
+    const key = match.groups?.['key'];
+    const value = match.groups?.['value'];
+    if (key !== undefined && value !== undefined) fields[key] = value;
+  }
+  return fields;
+}
+
+function parseTelemetryBoolean(value: string | undefined): boolean | undefined {
+  return value === 'yes' ? true : value === 'no' ? false : undefined;
+}
+
+function parseTelemetryLatency(value: string | undefined): number | undefined {
+  if (value === undefined || !/^\d+$/.test(value)) return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
+
+function parseVerifiedTelemetryLine(raw: string): VerifiedTelemetryRecord | null {
+  const match = VERIFIED_TELEMETRY_RE.exec(raw);
+  if (match?.groups === undefined) return null;
+  const stageValue = match.groups['stage'];
+  const stage: VerifiedTelemetryStage | undefined =
+    stageValue === 'VERIFIED INTENT'
+      ? 'intent'
+      : stageValue === 'VERIFIED REVIEW'
+        ? 'review'
+        : stageValue === 'VERIFIED WORKFLOW REVIEW'
+          ? 'workflow-review'
+          : stageValue === 'VERIFIED GATE'
+            ? 'gate'
+            : undefined;
+  const toolName = match.groups['tool'];
+  const fields = parseTelemetryFields(match.groups['fields'] ?? '');
+  const model =
+    stage === 'intent'
+      ? fields['model']
+      : stage === 'gate'
+        ? fields['model']
+        : fields['review_model'];
+  const status = fields['status'];
+  if (
+    stage === undefined ||
+    toolName === undefined ||
+    (stage !== 'gate' && model === undefined) ||
+    status === undefined
+  ) {
+    return null;
+  }
+  const risk = fields['risk'];
+  const finalDecision = fields['final'] as LogVerdict | undefined;
+  return {
+    raw,
+    tag: match.groups['tag'],
+    toolName,
+    stage,
+    status,
+    model,
+    risk:
+      risk !== undefined && RISK_BANDS.includes(risk as RiskBand) ? (risk as RiskBand) : undefined,
+    finalDecision:
+      finalDecision !== undefined &&
+      ['approve', 'deny', 'escalate', 'cancelled', 'error'].includes(finalDecision)
+        ? finalDecision
+        : undefined,
+    independentMatch: parseTelemetryBoolean(fields['independent_match']),
+    agreement: parseTelemetryBoolean(fields['agreement']),
+    latencyMs: parseTelemetryLatency(
+      stage === 'intent' ? fields['latency_ms'] : fields['review_latency_ms'],
+    ),
+  };
+}
+
+function emptyVerifiedModelTelemetry(): VerifiedModelTelemetry {
+  return {
+    intentCalls: 0,
+    intentOk: 0,
+    intentFailures: 0,
+    effectReviewCalls: 0,
+    effectReviewOk: 0,
+    effectReviewFailures: 0,
+    workflowReviewCalls: 0,
+    workflowReviewOk: 0,
+    workflowReviewFailures: 0,
+    contractMatches: 0,
+    contractMismatches: 0,
+    agreements: 0,
+    disagreements: 0,
+    approvals: 0,
+    escalations: 0,
+  };
+}
+
+/** Parse Phase 4 model telemetry without treating it as another decision. */
+export function parseVerifiedTelemetry(text: string): VerifiedTelemetryReport {
+  const records: VerifiedTelemetryRecord[] = [];
+  let unparsed = 0;
+  for (const raw of text.split('\n').filter((line) => line.trim().length > 0)) {
+    if (!raw.startsWith('[AutoApprove') || !raw.includes(' VERIFIED ')) continue;
+    const record = parseVerifiedTelemetryLine(raw);
+    if (record === null) unparsed++;
+    else records.push(record);
+  }
+
+  const byStage: Record<VerifiedTelemetryStage, number> = {
+    intent: 0,
+    review: 0,
+    'workflow-review': 0,
+    gate: 0,
+  };
+  const byStatus: Record<string, number> = {};
+  const byModel: Record<string, VerifiedModelTelemetry> = {};
+  for (const record of records) {
+    byStage[record.stage] += 1;
+    byStatus[record.status] = (byStatus[record.status] ?? 0) + 1;
+    if (record.model === undefined) continue;
+    let model = byModel[record.model];
+    if (model === undefined) {
+      model = emptyVerifiedModelTelemetry();
+      byModel[record.model] = model;
+    }
+    if (record.stage === 'intent') {
+      model.intentCalls += 1;
+      if (record.status === 'ok') model.intentOk += 1;
+      else model.intentFailures += 1;
+    } else if (record.stage === 'review') {
+      model.effectReviewCalls += 1;
+      if (record.status === 'ok') model.effectReviewOk += 1;
+      else model.effectReviewFailures += 1;
+    } else {
+      model.workflowReviewCalls += 1;
+      if (record.status === 'ok') model.workflowReviewOk += 1;
+      else model.workflowReviewFailures += 1;
+    }
+    if (record.independentMatch === true) model.contractMatches += 1;
+    if (record.independentMatch === false || record.status === 'contract-mismatch') {
+      model.contractMismatches += 1;
+    }
+    if (record.agreement === true) model.agreements += 1;
+    if (record.agreement === false || record.status === 'model-disagreement') {
+      model.disagreements += 1;
+    }
+    if (record.finalDecision === 'approve') model.approvals += 1;
+    if (record.finalDecision === 'escalate') model.escalations += 1;
+  }
+
+  return {
+    totalRecords: records.length,
+    unparsed,
+    byStage,
+    byStatus,
+    byModel,
+    records,
+  };
+}
+
 export interface DecisionLogTally {
   readonly totalLines: number;
   /**
@@ -654,7 +869,11 @@ export function parseDecisionLog(text: string): ParsedDecisionLog {
 
   for (const line of parsedLines) {
     if (!line.matched || line.verdict === undefined) {
-      if (line.raw.includes('[AutoApprove')) autoApproveNonDecision += 1;
+      // Verified Phase 4 telemetry is parsed separately below; it is not a
+      // decision and should not inflate the generic "unexplained" bucket.
+      if (line.raw.includes('[AutoApprove') && parseVerifiedTelemetryLine(line.raw) === null) {
+        autoApproveNonDecision += 1;
+      }
       continue;
     }
     byVerdict[line.verdict] += 1;

@@ -97,6 +97,16 @@ import type { SessionRegistry } from '../session/index.ts';
 import { buildDenyMessage } from './deny-floor.ts';
 import { isDesignQuestion, isMultiChoicePermission } from './multichoice.ts';
 import type { PrecedentReader } from './precedent.ts';
+import {
+  type SessionWorkflowGrantStore,
+  classifySessionWorkflowOperation,
+} from './session-workflow-grant.ts';
+import type {
+  SessionWorkflowFamily,
+  WorkflowGrantEvaluationContext,
+  WorkflowGrantOffer,
+  WorkflowOperationFacts,
+} from './session-workflow-grant.ts';
 import type { AutoApproveResult, DenySource } from './types.ts';
 
 /** Hard cap on `parkedInputs` (#814). One entry per parked subagent
@@ -281,6 +291,8 @@ export interface AutoApproveEvaluator {
     /** Private session working directory used to bind precedent; never sent
      *  to the model or client. Missing context fails closed in the evaluator. */
     workingDirectory?: string,
+    /** Private, read-only view of this session's workflow grants. */
+    workflow?: WorkflowGrantEvaluationContext,
   ): Promise<AutoApproveResult>;
   /**
    * Abort an in-flight `evaluate`. With `evalId`, aborts ONLY when that id is the
@@ -374,6 +386,10 @@ export interface AutoApproveGateDeps {
    * Test-only callers may omit it and fall back to the hook input's `cwd`.
    */
   workingDirectory?: string;
+  /** GitHub repository detected from this session's local origin, if any. */
+  repository?: string;
+  /** In-memory writer owned by this session's gate; never passed to the service. */
+  workflowGrantStore?: SessionWorkflowGrantStore;
   /**
    * Reset the subagent-context tracker (#710). Called ONLY when a MAIN-tagged
    * PermissionRequest (`agent_id` absent) observes `isInSubagentContext()`
@@ -444,7 +460,11 @@ export interface AutoApproveGateDeps {
    *  fall open to passthrough rather than hold a hook nobody can answer. The
    *  gate wraps every call in a try/catch, so an implementation that throws is
    *  logged and absorbed (treated as `undefined`) rather than propagated. */
-  escalate: (input: PermissionRequestHookInput, summary?: string) => UUID | undefined;
+  escalate: (
+    input: PermissionRequestHookInput,
+    summary?: string,
+    workflowOffer?: WorkflowGrantOffer,
+  ) => UUID | undefined;
   /** Called right before the LLM eval starts, so the tracker can BUFFER the PTY
    *  prompt until the verdict (don't push an auto-approved permission). #484.
    *  `ctx.isSubagent` (#711) tells the setup layer whether this eval belongs to
@@ -688,6 +708,9 @@ export class AutoApproveGate {
    * much-later, unrelated duplicate of the same command.
    */
   private readonly openQuestionSignatures = new Map<UUID, ToolSignature>();
+
+  /** Private grant facts keyed by question id; never included in Question. */
+  private readonly pendingWorkflowOffers = new Map<UUID, WorkflowOperationFacts>();
 
   /**
    * Ids of escalations this gate has RETIRED — resolved, released, or answered
@@ -1025,7 +1048,12 @@ export class AutoApproveGate {
    * that entry) degrades to a plain `allow` with a loud warning rather than
    * silently dropping the escalation.
    */
-  resolveHeld(questionId: UUID, decision: 'allow' | 'deny', suggestionIndex?: number): boolean {
+  resolveHeld(
+    questionId: UUID,
+    decision: 'allow' | 'deny',
+    suggestionIndex?: number,
+    sessionGrant?: SessionWorkflowFamily,
+  ): boolean {
     // #673: this is the NORMAL answer path (input-events.ts), so an open
     // escalation this question tracked is resolved now regardless of which
     // branch below runs -- clear it unconditionally, not just on the hit path.
@@ -1036,7 +1064,39 @@ export class AutoApproveGate {
     this.parkedInputs.delete(questionId); // #814, see releaseHeld
     this.confirmedDeliveries.delete(questionId); // #733: same unconditional cleanup
     const hold = this.pendingHolds.get(questionId);
+    const workflowFacts = this.pendingWorkflowOffers.get(questionId);
+    this.pendingWorkflowOffers.delete(questionId);
     if (!hold) return false;
+    if (sessionGrant !== undefined) {
+      if (
+        sessionGrant !== 'github-issue-planning' ||
+        workflowFacts === undefined ||
+        workflowFacts.family !== sessionGrant
+      ) {
+        logError(
+          `[AutoApprove ${this.sessionTag}] session grant action for ${questionId.slice(0, 8)} had no matching private offer; applying only the selected one-time allow`,
+        );
+      } else {
+        let granted = false;
+        try {
+          granted = this.deps.workflowGrantStore?.grant(workflowFacts) === true;
+        } catch (err) {
+          logError(
+            `[AutoApprove ${this.sessionTag}] session grant action for ${questionId.slice(0, 8)} threw during scope validation:`,
+            err,
+          );
+        }
+        if (!granted) {
+          logError(
+            `[AutoApprove ${this.sessionTag}] session grant action for ${questionId.slice(0, 8)} failed scope validation; applying only the selected one-time allow`,
+          );
+        } else {
+          log(
+            `[AutoApprove ${this.sessionTag}] session workflow grant created: family=${workflowFacts.family} repository=${workflowFacts.repository} ttl=in-memory`,
+          );
+        }
+      }
+    }
     clearTimeout(hold.timer);
     this.pendingHolds.delete(questionId);
     // Remove the registry entry too (#585, P7 FIX 2): the held question was
@@ -1627,6 +1687,7 @@ export class AutoApproveGate {
         this.precedentForEval(),
         undefined,
         this.precedentWorkingDirectory(input),
+        this.workflowForEval(),
       )
       .finally(() => {
         this.evalIsSubagentById.delete(evalId);
@@ -1959,6 +2020,7 @@ export class AutoApproveGate {
     // #733: unconditional for the same leak reason as the signature delete
     // above — every hold exit path funnels through here.
     this.confirmedDeliveries.delete(questionId);
+    this.pendingWorkflowOffers.delete(questionId);
     const hold = this.pendingHolds.get(questionId);
     if (!hold) return false;
     clearTimeout(hold.timer);
@@ -2180,6 +2242,7 @@ export class AutoApproveGate {
         // a different policy than the one that declined to approve it.
         input.agent_type,
         this.precedentWorkingDirectory(input),
+        undefined,
       );
     } catch (err) {
       logError(`[AutoApprove ${this.sessionTag}] Parked-render eval threw; escalating:`, err);
@@ -2489,6 +2552,15 @@ export class AutoApproveGate {
     return this.deps.workingDirectory ?? input.cwd;
   }
 
+  /** Pass only the reader half of workflow authorization into the service. */
+  private workflowForEval(): WorkflowGrantEvaluationContext | undefined {
+    const reader = this.deps.workflowGrantStore;
+    if (!reader) return undefined;
+    return this.deps.repository === undefined
+      ? { reader }
+      : { reader, repository: this.deps.repository };
+  }
+
   /**
    * Read this session's precedent reader (#976) via `deps.getPrecedent`, fresh
    * per call so an answer given moments ago counts for THIS permission rather
@@ -2589,14 +2661,44 @@ export class AutoApproveGate {
    * `undefined` when no question was created (the escalate threw / push failed),
    * in which case `escalateAndHold` falls open to passthrough.
    */
+  private workflowOfferForInput(
+    input: PermissionRequestHookInput,
+  ): { readonly facts: WorkflowOperationFacts; readonly offer: WorkflowGrantOffer } | undefined {
+    const store = this.deps.workflowGrantStore;
+    // The action is meaningful only for a main-context binary hold. If holding
+    // is disabled Claude will render its native prompt, so offering a marker
+    // that cannot atomically create a hook-scoped grant would be misleading.
+    if (
+      store === undefined ||
+      this.deps.repository === undefined ||
+      (this.deps.holdMs ?? 0) <= 0 ||
+      input.agent_id !== undefined
+    ) {
+      return undefined;
+    }
+    try {
+      const facts = classifySessionWorkflowOperation(input.tool_name, input.tool_input, {
+        sessionId: this.sessionId,
+        workingDirectory: this.deps.workingDirectory ?? input.cwd,
+        repository: this.deps.repository,
+      });
+      if (facts === undefined || !store.canGrant(facts)) return undefined;
+      return { facts, offer: { family: facts.family } };
+    } catch (err) {
+      logError(`[AutoApprove ${this.sessionTag}] workflow offer classification failed:`, err);
+      return undefined;
+    }
+  }
+
   private escalateToUser(input: PermissionRequestHookInput, summary?: string): UUID | undefined {
     let questionId: UUID | undefined;
+    const workflow = this.workflowOfferForInput(input);
     try {
       // escalate() stashes the hook record (onPermissionRequest -> recordPendingHook)
       // FIRST, then onEscalate releases the buffered PTY prompt so the pair+push
       // finds that record. Order matters; do not reorder. #484. `summary` (#628) is
       // the model's lock-screen one-liner, carried onto the Question for the push.
-      questionId = this.deps.escalate(input, summary);
+      questionId = this.deps.escalate(input, summary, workflow?.offer);
     } catch (err) {
       logError(`[AutoApprove ${this.sessionTag}] escalateToUser threw:`, err);
     } finally {
@@ -2610,6 +2712,7 @@ export class AutoApproveGate {
       });
     }
     if (questionId) {
+      if (workflow !== undefined) this.pendingWorkflowOffers.set(questionId, workflow.facts);
       const observed: ObservedToolCall = {
         toolName: input.tool_name,
         toolInput: input.tool_input,

@@ -1,6 +1,6 @@
 /**
  * A deterministic, fail-closed proof for a small shell read-only language
- * (#1082, phase 3 of epic #1081).
+ * (#1082, extended by Phase 2 of epic #1092).
  *
  * This is deliberately a proof, not a risk heuristic. It returns `proved`
  * only when every command and every command substitution belongs to the
@@ -9,14 +9,18 @@
  * forms are rejected. A false negative costs a model call; a false positive
  * would turn an unreviewed shell command into an approval.
  *
- * The proof is not itself an authorization. Phase 4 may use it together with
+ * The proof is not itself an authorization. The capability registry and
+ * requested-group gate use it together with
  * a fresh authorization assessment, but Phase 3 does not change approval
  * behavior. In particular, this module does not inspect the filesystem,
  * execute Git, expand variables, or trust model text.
  */
 
+import { githubSubIssueActionEffect } from './operation-effects.ts';
 import {
   findRedirectClauses,
+  ghTopIndex,
+  hasUnsafeShellExpansion,
   maskQuotedSpans,
   shellWords,
   stripShellGrammar,
@@ -98,7 +102,7 @@ interface SplitFailure {
 }
 
 /**
- * Prove that `command` is an effect-free read/query script in the Phase 3
+ * Prove that `command` is an effect-free read/query script in the Phase 2
  * language. The result is intentionally typed so callers cannot confuse an
  * unknown command with a successful proof.
  */
@@ -107,6 +111,14 @@ export function proveCompoundReadOnly(command: string): ReadOnlyProof {
   if (command.length > MAX_COMMAND_CHARS) {
     return { status: 'rejected', reason: 'command-too-long' };
   }
+
+  // Python is an interpreter and therefore never enters the generic shell
+  // grammar. The only exception is an exact, quoted-heredoc lock inspection
+  // template whose source, imports, file mode, and output code are all fixed
+  // below. An arbitrary Python script remains rejected even when a model calls
+  // it read-only.
+  const python = provePythonLockInspection(command);
+  if (python !== null) return python;
 
   const result = proveScript(command, new Map(), 0);
   if (result.status === 'rejected') return result;
@@ -446,7 +458,7 @@ function proveForHeader(
     return { status: 'rejected', reason: 'unsupported-grammar' };
   }
   const variable = words[1];
-  if (variable === undefined || !isVariableName(variable) || isSensitiveEnvironmentName(variable)) {
+  if (variable === undefined || !isSafeProofLocalVariableName(variable)) {
     return { status: 'rejected', reason: 'sensitive-assignment' };
   }
   if (words.slice(3).some((word) => word === '' || word.startsWith('-'))) {
@@ -462,7 +474,7 @@ function proveForHeader(
       // masked above. Parameter expansion would make the iteration source
       // unknown, so it is not part of the proof language.
       if (!word.includes('_')) return { status: 'rejected', reason: 'unsupported-grammar' };
-    } else if (!isStaticWord(word)) {
+    } else if (!isSafeStaticHeaderWord(word)) {
       return { status: 'rejected', reason: 'unsupported-grammar' };
     }
   }
@@ -480,6 +492,11 @@ function proveForHeader(
     substitutions: nested.substitutions,
     outputKind: 'text',
   };
+}
+
+/** shellWords preserves a quoted item's internal whitespace but not its quotes. */
+function isSafeStaticHeaderWord(word: string): boolean {
+  return isStaticWord(word) || /^[A-Za-z0-9_./:@%+=,-]+(?:\s+[A-Za-z0-9_./:@%+=,-]+)+$/.test(word);
 }
 
 /**
@@ -503,10 +520,23 @@ function proveAssignments(
   for (const word of words) {
     const separator = word.indexOf('=');
     const name = word.slice(0, separator);
-    const value = word.slice(separator + 1);
-    if (isSensitiveEnvironmentName(name)) {
+    if (!isSafeProofLocalVariableName(name)) {
       return { status: 'rejected', reason: 'sensitive-assignment' };
     }
+  }
+
+  // A static assignment persists into later shell segments and can alter an
+  // external command through an environment/configuration knob that is not
+  // knowable from this segment alone. The finite proof only admits the
+  // observed local-variable capture form (`name=$(safe-read ...)`).
+  if (substitutions.length === 0) {
+    return { status: 'rejected', reason: 'unsafe-assignment' };
+  }
+
+  for (const word of words) {
+    const separator = word.indexOf('=');
+    const name = word.slice(0, separator);
+    const value = word.slice(separator + 1);
     if (value.includes('$') && !value.includes('_')) {
       return { status: 'rejected', reason: 'unsafe-assignment' };
     }
@@ -577,6 +607,13 @@ function proveReadLeaf(
 
   if (command === 'git') return proveGitLeaf(words, state);
 
+  if (command === 'find') {
+    if (hasUnsafeShellExpansion(body)) return { status: 'rejected', reason: 'unsafe-command' };
+    return proveFindLeaf(words);
+  }
+
+  if (command === 'gh') return proveGhLeaf(words, state, body);
+
   if (command === 'echo' || command === 'pwd' || command === 'true' || command === ':') {
     return { status: 'proved', leaf: { name: command }, outputKind: 'text' };
   }
@@ -592,7 +629,7 @@ function proveReadLeaf(
     for (const word of words.slice(1)) {
       if (word === '--') continue;
       if (word.startsWith('-')) continue;
-      if (!isVariableName(word) || isSensitiveEnvironmentName(word)) {
+      if (!isSafeProofLocalVariableName(word)) {
         return { status: 'rejected', reason: 'unsafe-assignment' };
       }
       state.variables.set(word, 'text');
@@ -605,6 +642,9 @@ function proveReadLeaf(
   }
 
   if (STREAM_READ_COMMANDS.has(command)) {
+    if (READ_EXPANSION_RISK_COMMANDS.has(command) && hasUnsafeShellExpansion(body)) {
+      return { status: 'rejected', reason: 'unsafe-command' };
+    }
     if (hasStreamExecutionOrWriteFlag(command, words)) {
       return { status: 'rejected', reason: 'unsafe-command' };
     }
@@ -619,6 +659,495 @@ function proveReadLeaf(
 }
 
 /**
+ * Prove the one Python family we are willing to run without a human/model
+ * decision. The heredoc delimiter must be quoted, the lockfile name is a
+ * simple repository-local filename, and every source line is part of a fixed
+ * inspection template. This is intentionally a template matcher, not a
+ * Python parser: anything outside these exact shapes remains an interpreter
+ * and fails closed.
+ */
+function provePythonLockInspection(command: string): ReadOnlyProof | null {
+  const heredoc = /^(?:python3|python) - <<'PY'\r?\n([\s\S]*)\r?\nPY$/.exec(command);
+  if (heredoc === null) return null;
+  const body = heredoc[1];
+  if (body === undefined) return null;
+  const lines = body.split(/\r?\n/);
+
+  if (proveTomlLockInspection(lines)) {
+    return { status: 'proved', leaves: [{ name: 'python:lock-inspection' }] };
+  }
+  return null;
+}
+
+function proveTomlLockInspection(lines: readonly string[]): boolean {
+  if (lines.length !== 9 || lines[0] !== 'import tomllib') return false;
+  const load =
+    /^d = tomllib\.load\(open\((['"])([A-Za-z0-9][A-Za-z0-9_.-]*\.lock)\1,(['"])rb\3\)\)$/.exec(
+      lines[1] ?? '',
+    );
+  if (load === null || lines[2] !== "pkgs = {p['name']: p for p in d['package']}") return false;
+  if (!parsePythonStringList(lines[3] ?? '')) return false;
+  return (
+    lines[4] === '    p = pkgs.get(n)' &&
+    lines[5] === '    if not p: continue' &&
+    lines[6] === "    print('==', n, p.get('version'))" &&
+    lines[7] === "    for x in p.get('dependencies',[]):" &&
+    lines[8] === "        print('   ', x)"
+  );
+}
+
+/** Parse only a list of simple Python string literals used as package names. */
+function parsePythonStringList(line: string): boolean {
+  const match = /^for n in \[(.*)\]:$/.exec(line);
+  if (match === null) return false;
+  const content = match[1]?.trim() ?? '';
+  if (content === '') return false;
+  const entries = content.split(',');
+  if (entries.length > 32) return false;
+  return entries.every((entry) => {
+    const item = entry.trim();
+    const literal = /^(['"])([A-Za-z0-9][A-Za-z0-9_.-]*)\1$/.exec(item);
+    return literal !== null;
+  });
+}
+
+/**
+ * `find` is a read-only command only for a small expression language. In
+ * particular, output-to-file predicates and all exec/delete predicates are
+ * rejected instead of being hidden behind the ordinary `find` group prefix.
+ */
+function proveFindLeaf(words: readonly string[]):
+  | {
+      readonly status: 'proved';
+      readonly leaf: ReadOnlyProofLeaf;
+      readonly outputKind: ValueKind;
+    }
+  | ProofFailure {
+  if (words.length < 2) return { status: 'rejected', reason: 'unsupported-grammar' };
+
+  let index = 1;
+  let sawPath = false;
+  let sawExpression = false;
+  while (index < words.length) {
+    const word = words[index];
+    if (word === undefined || word === '')
+      return { status: 'rejected', reason: 'unsupported-grammar' };
+
+    if (!word.startsWith('-') && word !== '!' && word !== '(' && word !== ')') {
+      // Find start paths precede the expression. A second positional after a
+      // predicate is ambiguous (it may be an accidental action argument), so
+      // the bounded grammar refuses it.
+      if (sawExpression || !isSafeFindPath(word)) {
+        return { status: 'rejected', reason: 'unsupported-grammar' };
+      }
+      sawPath = true;
+      index++;
+      continue;
+    }
+
+    if (!sawPath) return { status: 'rejected', reason: 'unsupported-grammar' };
+    if (word === '!' || word === '(' || word === ')' || FIND_LOGICAL_PREDICATES.has(word)) {
+      sawExpression = true;
+      index++;
+      continue;
+    }
+    if (FIND_BOOLEAN_PREDICATES.has(word)) {
+      sawExpression = true;
+      index++;
+      continue;
+    }
+    if (FIND_VALUE_PREDICATES.has(word)) {
+      const value = words[index + 1];
+      if (value === undefined || value.startsWith('-') || !isSafeFindValue(value, word)) {
+        return { status: 'rejected', reason: 'unsupported-grammar' };
+      }
+      sawExpression = true;
+      index += 2;
+      continue;
+    }
+    // Explicitly name the dangerous family in the proof so a future predicate
+    // cannot accidentally become a harmless-looking unknown flag.
+    if (
+      FIND_UNSAFE_PREDICATES.has(word) ||
+      word.startsWith('-exec') ||
+      word.startsWith('-fprint')
+    ) {
+      return { status: 'rejected', reason: 'unsafe-command' };
+    }
+    return { status: 'rejected', reason: 'unsupported-grammar' };
+  }
+
+  if (!sawPath || !sawExpression) return { status: 'rejected', reason: 'unsupported-grammar' };
+  return { status: 'proved', leaf: { name: 'find' }, outputKind: 'text' };
+}
+
+const FIND_LOGICAL_PREDICATES: ReadonlySet<string> = new Set(['-a', '-and', '-o', '-or', '-not']);
+
+const FIND_BOOLEAN_PREDICATES: ReadonlySet<string> = new Set([
+  '-print',
+  '-print0',
+  '-ls',
+  '-prune',
+  '-quit',
+  '-xdev',
+  '-mount',
+  '-depth',
+  '-d',
+  '-H',
+  '-L',
+  '-P',
+  '-readable',
+  '-writable',
+]);
+
+const FIND_VALUE_PREDICATES: ReadonlySet<string> = new Set([
+  '-name',
+  '-iname',
+  '-path',
+  '-ipath',
+  '-regex',
+  '-iregex',
+  '-type',
+  '-maxdepth',
+  '-mindepth',
+  '-size',
+  '-user',
+  '-group',
+  '-perm',
+  '-newer',
+]);
+
+const FIND_UNSAFE_PREDICATES: ReadonlySet<string> = new Set([
+  '-delete',
+  '-exec',
+  '-execdir',
+  '-ok',
+  '-okdir',
+  '-fprint',
+  '-fprint0',
+  '-fprintf',
+  '-fls',
+]);
+
+function isSafeFindPath(path: string): boolean {
+  return (
+    /^[A-Za-z0-9_./:@%+=,-]+$/.test(path) &&
+    !path.startsWith('-') &&
+    !path.split('/').includes('..')
+  );
+}
+
+function isSafeFindValue(value: string, predicate: string): boolean {
+  if (!/^[A-Za-z0-9_./*?[\\\]:+,@%+=-]+$/.test(value)) return false;
+  if (predicate === '-type') return /^[bcdflps]$/.test(value);
+  if (predicate === '-maxdepth' || predicate === '-mindepth') return /^\d{1,4}$/.test(value);
+  if (predicate === '-size') return /^[+-]?\d{1,9}[cwbkMG]?$/.test(value);
+  return true;
+}
+
+function proveGhLeaf(
+  words: readonly string[],
+  state: ProofState,
+  rawBody: string,
+):
+  | {
+      readonly status: 'proved';
+      readonly leaf: ReadOnlyProofLeaf;
+      readonly outputKind: ValueKind;
+    }
+  | ProofFailure {
+  const topIndex = ghTopIndex(words);
+  if (topIndex === -1) return { status: 'rejected', reason: 'unknown-command' };
+  if (!proveGhGlobalOptions(words, topIndex)) {
+    return { status: 'rejected', reason: 'unsupported-grammar' };
+  }
+
+  const top = words[topIndex];
+  const action = words[topIndex + 1];
+  if (top === 'sub-issue') {
+    if (githubSubIssueActionEffect(action) !== 'read') {
+      return { status: 'rejected', reason: 'unsafe-command' };
+    }
+    const parent = parseGhSubIssueListArgs(words.slice(topIndex + 2), state);
+    if (parent === null) return { status: 'rejected', reason: 'unsupported-grammar' };
+    return { status: 'proved', leaf: { name: 'gh:sub-issue-list' }, outputKind: 'text' };
+  }
+
+  if (top === 'issue' && action === 'list') {
+    const parsed = parseGhIssueListArgs(words.slice(topIndex + 2));
+    if (parsed === null) return { status: 'rejected', reason: 'unsupported-grammar' };
+    return {
+      status: 'proved',
+      leaf: { name: 'gh:issue-list' },
+      outputKind: parsed.numericSelector ? 'ref' : 'text',
+    };
+  }
+
+  if (top === 'issue' && action === 'view') {
+    const parsed = parseGhIssueViewArgs(words.slice(topIndex + 2), state);
+    if (parsed === null) return { status: 'rejected', reason: 'unsupported-grammar' };
+    return { status: 'proved', leaf: { name: 'gh:issue-view' }, outputKind: 'text' };
+  }
+
+  if (top === 'api') {
+    if (hasUnsafeShellExpansion(rawBody) || !proveGhApiReadArgs(words.slice(topIndex + 1))) {
+      return { status: 'rejected', reason: 'unsupported-grammar' };
+    }
+    return { status: 'proved', leaf: { name: 'gh:api-get' }, outputKind: 'text' };
+  }
+
+  return { status: 'rejected', reason: 'unknown-command' };
+}
+
+function proveGhGlobalOptions(words: readonly string[], topIndex: number): boolean {
+  for (let index = 1; index < topIndex; index++) {
+    const token = words[index];
+    if (token === undefined) return false;
+    if (token === '--repo' || token === '-R' || token === '--hostname') {
+      const value = words[index + 1];
+      if (value === undefined || !isSafeGhGlobalValue(value, token)) return false;
+      index++;
+      continue;
+    }
+    if (token.startsWith('--repo=') || token.startsWith('--hostname=')) {
+      if (
+        !isSafeGhGlobalValue(
+          token.slice(token.indexOf('=') + 1),
+          token.slice(0, token.indexOf('=')),
+        )
+      ) {
+        return false;
+      }
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+function parseGhSubIssueListArgs(args: readonly string[], state: ProofState): string | null {
+  let parent: string | null = null;
+  for (let index = 0; index < args.length; index++) {
+    const token = args[index];
+    if (token === undefined) return null;
+    if (token === '--repo' || token === '-R' || token === '--hostname') {
+      const value = args[index + 1];
+      if (value === undefined || !isSafeGhGlobalValue(value, token)) return null;
+      index++;
+      continue;
+    }
+    if (token.startsWith('--repo=') || token.startsWith('--hostname=')) {
+      if (
+        !isSafeGhGlobalValue(
+          token.slice(token.indexOf('=') + 1),
+          token.slice(0, token.indexOf('=')),
+        )
+      ) {
+        return null;
+      }
+      continue;
+    }
+    if (token.startsWith('-') || parent !== null || !isGhIssueReference(token, state)) return null;
+    parent = token;
+  }
+  return parent;
+}
+
+interface ParsedGhIssueList {
+  readonly numericSelector: boolean;
+}
+
+function parseGhIssueListArgs(args: readonly string[]): ParsedGhIssueList | null {
+  let numericSelector = false;
+  for (let index = 0; index < args.length; index++) {
+    const token = args[index];
+    if (token === undefined) return null;
+    const consumed = consumeGhOutputOption(args, index);
+    if (consumed === undefined) return null;
+    if (consumed !== null) {
+      if (consumed.kind === 'jq' && consumed.value === '.[].number') numericSelector = true;
+      index = consumed.nextIndex;
+      continue;
+    }
+    if (token === '--state' || token === '--label' || token === '--limit') {
+      const value = args[index + 1];
+      if (value === undefined) return null;
+      if (token === '--state' && !new Set(['open', 'closed', 'all']).has(value)) return null;
+      if (token === '--label' && !isSafeGhMetadata(value, false)) return null;
+      if (token === '--limit' && !/^[1-9]\d{0,3}$/.test(value)) return null;
+      index++;
+      continue;
+    }
+    if (token.startsWith('-')) return null;
+    return null;
+  }
+  return { numericSelector };
+}
+
+function parseGhIssueViewArgs(args: readonly string[], state: ProofState): string | null {
+  let issue: string | null = null;
+  for (let index = 0; index < args.length; index++) {
+    const token = args[index];
+    if (token === undefined) return null;
+    const consumed = consumeGhOutputOption(args, index);
+    if (consumed === undefined) return null;
+    if (consumed !== null) {
+      index = consumed.nextIndex;
+      continue;
+    }
+    if (token === '--comments') continue;
+    if (token === '--repo' || token === '-R' || token === '--hostname') {
+      const value = args[index + 1];
+      if (value === undefined || !isSafeGhGlobalValue(value, token)) return null;
+      index++;
+      continue;
+    }
+    if (token.startsWith('--repo=') || token.startsWith('--hostname=')) {
+      if (
+        !isSafeGhGlobalValue(
+          token.slice(token.indexOf('=') + 1),
+          token.slice(0, token.indexOf('=')),
+        )
+      ) {
+        return null;
+      }
+      continue;
+    }
+    if (token.startsWith('-') || issue !== null || !isGhIssueReference(token, state)) return null;
+    issue = token;
+  }
+  return issue;
+}
+
+interface ConsumedGhOutputOption {
+  readonly kind: 'json' | 'jq' | 'template';
+  readonly value: string;
+  readonly nextIndex: number;
+}
+
+function consumeGhOutputOption(
+  args: readonly string[],
+  index: number,
+): ConsumedGhOutputOption | null | undefined {
+  const token = args[index];
+  if (token === undefined) return null;
+  let kind: ConsumedGhOutputOption['kind'] | null = null;
+  let flagLength = 0;
+  if (token === '--json') {
+    kind = 'json';
+    flagLength = token.length;
+  } else if (token === '--jq' || token === '-q') {
+    kind = 'jq';
+    flagLength = token.length;
+  } else if (token === '--template' || token === '-t') {
+    kind = 'template';
+    flagLength = token.length;
+  } else if (token.startsWith('--json=')) {
+    kind = 'json';
+    flagLength = '--json='.length;
+  } else if (token.startsWith('--jq=')) {
+    kind = 'jq';
+    flagLength = '--jq='.length;
+  } else if (token.startsWith('--template=')) {
+    kind = 'template';
+    flagLength = '--template='.length;
+  }
+  if (kind === null) return null;
+
+  const inline = token.includes('=') ? token.slice(flagLength) : undefined;
+  const value = inline ?? args[index + 1];
+  if (value === undefined || value === '' || value.startsWith('-')) return undefined;
+  if (kind === 'json' && !/^[A-Za-z][A-Za-z0-9_,.-]*$/.test(value)) return undefined;
+  if (kind !== 'json' && !isSafeGhSelector(value)) return undefined;
+  return { kind, value, nextIndex: inline === undefined ? index + 1 : index };
+}
+
+function proveGhApiReadArgs(args: readonly string[]): boolean {
+  let endpoint: string | null = null;
+  for (let index = 0; index < args.length; index++) {
+    const token = args[index];
+    if (token === undefined) return false;
+    if (token === '--' || !token.startsWith('-')) {
+      if (token === '--' || endpoint !== null || !isSafeGhEndpoint(token)) return false;
+      endpoint = token;
+      continue;
+    }
+    if (token === '-X' || token === '--method') {
+      if (args[index + 1] !== 'GET') return false;
+      index++;
+      continue;
+    }
+    if (token.startsWith('-X') && token.length > 2) {
+      if (token.slice(2) !== 'GET') return false;
+      continue;
+    }
+    if (token.startsWith('--method=')) {
+      if (token.slice('--method='.length) !== 'GET') return false;
+      continue;
+    }
+    if (new Set(['--include', '-i', '--paginate', '--slurp', '--silent']).has(token)) continue;
+    const consumed = consumeGhOutputOption(args, index);
+    if (consumed === undefined) return false;
+    if (consumed !== null) {
+      index = consumed.nextIndex;
+      continue;
+    }
+    return false;
+  }
+  return endpoint !== null;
+}
+
+function isGhIssueReference(value: string, state: ProofState): boolean {
+  if (/^[1-9]\d{0,8}$/.test(value)) return true;
+  const match = /^\$([A-Za-z_][A-Za-z0-9_]*)$/.exec(value);
+  return match !== null && state.variables.get(match[1] ?? '') === 'ref';
+}
+
+function isSafeGhMetadata(value: string, hostname: boolean): boolean {
+  if (hostname) return /^[A-Za-z0-9.-]+$/.test(value) && value.includes('.');
+  return /^[A-Za-z0-9_.:/,@%+=-]+$/.test(value);
+}
+
+function isSafeGhRepository(value: string): boolean {
+  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value);
+}
+
+function isSafeGhGlobalValue(value: string, option: string): boolean {
+  // `--hostname` changes where gh sends authenticated requests. The proof has
+  // no access to the user's trusted-host configuration, so only the canonical
+  // public GitHub host is safe to approve here. GitHub Enterprise hosts remain
+  // valid CLI input, but they must use the normal authorization path until an
+  // explicit trusted-host policy is available.
+  if (option === '--hostname') return value.toLowerCase() === 'github.com';
+  if (option === '--repo' || option === '-R') return isSafeGhRepository(value);
+  return false;
+}
+
+function isSafeGhSelector(value: string): boolean {
+  return /^[A-Za-z0-9_.\[\]:'",|() +*/!=<>?{}-]+$/.test(value);
+}
+
+function isSafeGhEndpoint(endpoint: string): boolean {
+  if (
+    endpoint === '' ||
+    endpoint.startsWith('//') ||
+    endpoint.startsWith('~') ||
+    endpoint.includes('$') ||
+    /^[a-z][a-z0-9+.-]*:/i.test(endpoint)
+  ) {
+    return false;
+  }
+  const firstPart = endpoint.replace(/^\/+/, '').split(/[/?#]/, 1)[0]?.toLowerCase();
+  if (firstPart === 'graphql') return false;
+  if (!/^[A-Za-z0-9_./{}?=#&:+,@%~*-]+$/.test(endpoint)) return false;
+  for (const match of endpoint.matchAll(/\{([^{}]*)\}/g)) {
+    const body = match[1] ?? '';
+    if (body.includes(',') || body.includes('..')) return false;
+  }
+  return !/[{}]/.test(endpoint.replace(/\{[^{}]*\}/g, ''));
+}
+
+/**
  * Prove only the raw spelling of a single-action awk field projection.
  *
  * `shellWords` intentionally removes quote boundaries, so it cannot establish
@@ -627,7 +1156,8 @@ function proveReadLeaf(
  * options, extra programs or files, patterns, statements, interpolation,
  * printf/system/getline, pipes, or redirects can reach the approved leaf.
  */
-const AWK_FIELD_PROJECTION_RE = /^awk[ \t]+'\{[ \t]*print[ \t]+\$[0-9]+[ \t]*\}'$/;
+const AWK_FIELD_PROJECTION_RE =
+  /^awk(?:[ \t]+-F(?::|[A-Za-z0-9_.+-]+)|[ \t]+-F[ \t]+['"][A-Za-z0-9_.+-]+['"])?[ \t]+'\{[ \t]*print[ \t]+\$[0-9]+[ \t]*\}'$/;
 
 function proveAwkFieldProjection(body: string): {
   readonly status: 'proved';
@@ -670,22 +1200,48 @@ const STREAM_READ_COMMANDS: ReadonlySet<string> = new Set([
   'paste',
   'nl',
   'rev',
+  'tree',
+]);
+
+/**
+ * These commands have an option or predicate that can change effect when a
+ * variable/glob is expanded after the proof inspects the raw argv. Quoted
+ * literal patterns are still accepted; dynamic values fail closed.
+ */
+const READ_EXPANSION_RISK_COMMANDS: ReadonlySet<string> = new Set([
+  'find',
+  'rg',
+  'sort',
+  'tree',
+  'diff',
+  'tail',
 ]);
 
 /** Narrow execution/write escapes for otherwise read-oriented stream tools. */
 function hasStreamExecutionOrWriteFlag(command: string, words: readonly string[]): boolean {
   if (command === 'tail' && words.some((word) => word === '-f' || word === '--follow')) return true;
   if (
-    command === 'sort' &&
-    words.some(
-      (word) =>
+    (command === 'sort' || command === 'tree' || command === 'diff') &&
+    words.some((word) => {
+      if (
         word === '-o' ||
-        word.startsWith('-o') ||
-        word === '--output' ||
-        word.startsWith('--output=') ||
-        word === '--compress-program' ||
-        word.startsWith('--compress-program='),
-    )
+        (word.startsWith('-') && !word.startsWith('--') && /^[A-Za-z]*o/.test(word.slice(1)))
+      ) {
+        return true;
+      }
+      if (word === '--output' || word.startsWith('--output=')) return true;
+      if (
+        command === 'sort' &&
+        (word === '--compress-program' || word.startsWith('--compress-program='))
+      ) {
+        return true;
+      }
+      if (word.startsWith('--')) {
+        const name = word.slice(2).split('=', 1)[0] ?? '';
+        if (name !== '' && 'output'.startsWith(name)) return true;
+      }
+      return false;
+    })
   )
     return true;
   if (
@@ -836,8 +1392,15 @@ function isAssignmentToken(word: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*=/.test(word);
 }
 
-function isVariableName(word: string): boolean {
-  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(word);
+/**
+ * The proof's assignment language is intentionally limited to short,
+ * lowercase local names seen in the measured read loops. Uppercase and
+ * underscore-bearing names are conventionally environment/configuration
+ * variables; without a shell environment snapshot they cannot be granted a
+ * persistent value safely.
+ */
+function isSafeProofLocalVariableName(name: string): boolean {
+  return /^[a-z][a-z0-9]*$/.test(name) && !isSensitiveEnvironmentName(name);
 }
 
 /**
@@ -864,11 +1427,17 @@ function isSensitiveEnvironmentName(name: string): boolean {
     upper.startsWith('KSH_') ||
     upper.startsWith('GIT_') ||
     upper.startsWith('SSH_') ||
+    upper.startsWith('GH_') ||
+    upper.startsWith('GITHUB_') ||
     upper.endsWith('_PROXY') ||
     upper === 'HTTP_PROXY' ||
     upper === 'HTTPS_PROXY' ||
     upper === 'ALL_PROXY' ||
     upper === 'NO_PROXY' ||
+    upper === 'PAGER' ||
+    upper === 'LESS' ||
+    upper === 'LESSOPEN' ||
+    upper === 'MANPAGER' ||
     upper.startsWith('LD_') ||
     upper.startsWith('DYLD_') ||
     upper.startsWith('PYTHON') ||

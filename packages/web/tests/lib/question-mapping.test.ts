@@ -55,6 +55,24 @@ describe('mapQuestionToUIQuestion', () => {
     expect(mapQuestionToUIQuestion(question({ agentId: 'agent-1' }), SID).agentId).toBe('agent-1');
   });
 
+  test('carries the public session workflow marker without inventing scope fields', () => {
+    const q = question({
+      options: [
+        opt('Yes', { isYes: true }),
+        opt('Allow planning actions for this session', {
+          sessionGrant: 'github-issue-planning',
+        }),
+        opt('No', { isNo: true }),
+      ],
+    });
+    const ui = mapQuestionToUIQuestion(q, SID);
+
+    expect(ui.structuredOptions?.[1]?.sessionGrant).toBe('github-issue-planning');
+    expect(ui.structuredOptions?.[1]?.label).toBe('Allow planning actions for this session');
+    expect(JSON.stringify(ui.structuredOptions?.[1])).not.toContain('repository');
+    expect(JSON.stringify(ui.structuredOptions?.[1])).not.toContain('workingDirectory');
+  });
+
   describe('question type classification', () => {
     test('no options -> free_text', () => {
       expect(mapQuestionToUIQuestion(question({ options: [] }), SID).type).toBe('free_text');
