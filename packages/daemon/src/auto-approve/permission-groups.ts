@@ -25,7 +25,9 @@
  *    consulted by `matchCoveredCommand` for every matched segment regardless
  *    of which group owns the prefix. `gh api` has its own narrow `gh-read`
  *    group: its parser admits only a single endpoint with GET/output-only
- *    options, while mutation/body/unknown forms remain excluded. `awk` was
+ *    options, while mutation/body/unknown forms remain excluded. The same
+ *    group admits only the output-only `gh sub-issue list` action; its
+ *    relationship-mutating siblings remain excluded. `awk` was
  *    tried and REMOVED (#1057 phase 3
  *    adversarial review): it is a Turing-complete interpreter whose
  *    `cmd | getline`, in-program `print > "file"`/`getline < "file"`, and
@@ -42,7 +44,9 @@
  * user allow list uses the same primitives (#536).
  */
 
+import { capabilityForProofLeaf, isNeutralProofLeaf } from './operation-effects.ts';
 import { looksLikeToolName } from './pattern-matcher.ts';
+import { proveCompoundReadOnly } from './read-only-proof.ts';
 import { COMMAND_WRAPPERS, SHELL_C_BINARIES } from './risk-bands.ts';
 import {
   classifyScratchAbsolute,
@@ -53,6 +57,8 @@ import {
 } from './sensitive-paths.ts';
 import {
   type CompoundJoiner,
+  ghTopIndex,
+  hasUnsafeGhApiExpansion,
   maskQuotedSpans,
   matchCoveredCommand,
   matchPrefix,
@@ -1478,91 +1484,6 @@ const GH_API_READ_BOOLEAN_FLAGS = new Set(['--include', '-i', '--paginate', '--s
 const GH_API_READ_VALUE_FLAGS = new Set(['--jq', '-q', '--template', '-t', '--preview', '-p']);
 
 /**
- * Refuse shell expansions that can change the `gh api` argv after this parser
- * has inspected it. `shellWords` intentionally removes quotes/escapes but does
- * not expand variables, globs, or braces; an unquoted `$ARGS` could therefore
- * look like one endpoint here while expanding into `-X POST ...` at runtime.
- * Quoted literals remain usable, including the braces in a quoted template.
- */
-function hasUnsafeGhApiExpansion(segment: string): boolean {
-  let quote: '"' | "'" | "$'" | null = null;
-  let braceDepth = 0;
-  let braceExpansion = false;
-
-  for (let index = 0; index < segment.length; index++) {
-    const character = segment[index];
-    const next = segment[index + 1];
-    if (character === undefined) break;
-
-    if (quote === "'") {
-      if (character === "'") quote = null;
-      continue;
-    }
-    if (quote === "$'") {
-      if (character === '\\' && next !== undefined) {
-        index++;
-        continue;
-      }
-      if (character === "'") quote = null;
-      continue;
-    }
-    if (quote === '"') {
-      if (character === '\\' && next !== undefined && ['"', '\\', '$', '`', '\n'].includes(next)) {
-        index++;
-        continue;
-      }
-      if (character === '$' || character === '`') return true;
-      if (character === '"') quote = null;
-      continue;
-    }
-
-    if (character === '\\') {
-      if (next !== undefined) index++;
-      continue;
-    }
-    if (character === '$' && next === "'") {
-      quote = "$'";
-      index++;
-      continue;
-    }
-    if (character === "'") {
-      quote = "'";
-      continue;
-    }
-    if (character === '"') {
-      quote = '"';
-      continue;
-    }
-
-    // Unquoted variable expansion can add flags, endpoints, or body options.
-    if (character === '$' || character === '`') return true;
-    // Unquoted pathname expansion can turn one token into several argv words,
-    // including option-looking filenames.
-    if (['*', '?', '[', ']'].includes(character)) return true;
-    // Only brace forms that Bash actually expands are vetoed; simple GitHub
-    // placeholders such as `{owner}` remain valid endpoint text.
-    if (character === '{') {
-      braceDepth++;
-      continue;
-    }
-    if (braceDepth > 0) {
-      if (character === ',' || (character === '.' && next === '.')) {
-        braceExpansion = true;
-      }
-      if (character === '}') {
-        braceDepth--;
-        if (braceDepth === 0) {
-          if (braceExpansion) return true;
-          braceExpansion = false;
-        }
-      }
-    }
-  }
-
-  return false;
-}
-
-/**
  * Refuse every `gh api` shape except an output-only GET.
  *
  * The group prefix proves only that the executable/subcommand is `gh api`; it
@@ -1637,6 +1558,21 @@ function ghApiReadVeto(segment: string): boolean {
   }
 
   return endpoint === null || isUnsafeGhApiEndpoint(endpoint);
+}
+
+/**
+ * The GitHub-read group covers both the existing narrow REST adapter and the
+ * output-only `gh sub-issue list` extension command. Keep the extension on
+ * the proof parser rather than a prefix-only allow: its sibling actions
+ * (`add`, `remove`, `reprioritize`) mutate remote issue relationships.
+ */
+function ghReadVeto(segment: string): boolean {
+  const words = shellWords(segment);
+  const topIndex = ghTopIndex(words);
+  if (topIndex !== -1 && words[topIndex] === 'sub-issue') {
+    return proveCompoundReadOnly(segment).status !== 'proved';
+  }
+  return ghApiReadVeto(segment);
 }
 
 /** Endpoint forms accepted by `gh-read`; relative REST paths only. */
@@ -1809,12 +1745,13 @@ export const BUILTIN_GROUPS: Readonly<Record<string, PermissionGroup>> = {
    * GitHub REST reads. Kept separate from `vcs-read` because its prefix is
    * remote and its method/body grammar is not safely covered by the blanket
    * read veto. `net-read` remains reserved for arbitrary URL tools and is not
-   * a level default; this group proves the narrower `gh api` surface only.
+   * a level default; this group proves the narrower `gh api` and
+   * `gh sub-issue list` surfaces only.
    */
   'gh-read': {
     tools: [],
-    commands: ['gh api'],
-    segmentVeto: ghApiReadVeto,
+    commands: ['gh api', 'gh sub-issue list'],
+    segmentVeto: ghReadVeto,
   },
   'build-test': {
     tools: [],
@@ -2222,6 +2159,37 @@ function vetoedByOwnerFor(
 }
 
 /**
+ * Match a command whose complete shell shape has a registered capability
+ * proof, but whose spelling is outside the ordinary prefix table (for
+ * example a bounded Python inspection or a command with a safe global GitHub
+ * option). Every proof leaf must map to a registered effect profile, every
+ * required approval group must be explicitly requested, and a profile with
+ * no approval group is never covered. The proof remains deterministic and
+ * fail-closed; the model's description of an operation is not consulted.
+ */
+function matchCapabilityProof(command: string, requestedGroups: readonly string[]): string | null {
+  // The fallback must not bypass an existing read-side veto merely because a
+  // new proof happens to understand the command's positive shape. This keeps
+  // mutation tokens and family-scoped write escapes load-bearing for both the
+  // prefix and proof paths.
+  if (splitCompoundParts(command).some((part) => readSegmentVeto(part.text))) return null;
+  const proof = proveCompoundReadOnly(command);
+  if (proof.status !== 'proved') return null;
+
+  const requiredGroups = new Set<string>();
+  for (const leaf of proof.leaves) {
+    if (isNeutralProofLeaf(leaf.name)) continue;
+    const profile = capabilityForProofLeaf(leaf.name);
+    if (profile === null || profile.approvalGroup === null) return null;
+    requiredGroups.add(profile.approvalGroup);
+  }
+  if (requiredGroups.size === 0) return null;
+  if (![...requiredGroups].every((group) => requestedGroups.includes(group))) return null;
+
+  return `${[...requiredGroups].join('+')}:effect-proof`;
+}
+
+/**
  * Match a permission request against the named groups. Returns a descriptive
  * `"group:pattern"` string when matched, or null. Unknown group names are
  * ignored (validated separately at config load).
@@ -2317,7 +2285,14 @@ export function matchGroups(
         return true;
       },
     );
-    if (hit === null) return null;
+    if (hit === null) {
+      // Run the proof against the original command. In particular, the
+      // bounded Python templates are heredocs and must not be passed through
+      // the earlier heredoc excision before this fallback gets a chance to
+      // inspect their fixed body. A proof can only add a match when every
+      // emitted leaf has a requested, registered capability group.
+      return matchCapabilityProof(rawCommand, known);
+    }
     return `${hitOwner ?? prefixOwners.get(hit)?.[0] ?? 'group'}:${hit}`;
   }
 

@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import {
   chatCompletion,
+  isLocalProviderUrl,
   resolveProviderUrl,
   warmModel,
 } from '../../src/auto-approve/llm-client.ts';
@@ -34,6 +35,14 @@ describe('resolveProviderUrl', () => {
 
   test('falls back to empty string for unknown provider with no fallback', () => {
     expect(resolveProviderUrl('unknown', '')).toBe('');
+  });
+
+  test('recognizes only loopback provider URLs as local', () => {
+    expect(isLocalProviderUrl('http://127.0.0.1:19924')).toBe(true);
+    expect(isLocalProviderUrl('http://localhost:19924/v1')).toBe(true);
+    expect(isLocalProviderUrl('http://[::1]:19924')).toBe(true);
+    expect(isLocalProviderUrl('http://192.168.1.20:19924')).toBe(false);
+    expect(isLocalProviderUrl('https://llm.example.test/v1')).toBe(false);
   });
 });
 
@@ -137,6 +146,83 @@ describe('chatCompletion transports', () => {
     expect(last?.body['messages']).toEqual(msgs);
     expect(r.content).toContain('approve');
     expect(r.usage?.completion_tokens).toBe(5);
+  });
+
+  test('bounds a streamed native response before JSON parsing', async () => {
+    const maxBytes = 1_024;
+    const payload = new TextEncoder().encode(
+      JSON.stringify({ text: 'x'.repeat(maxBytes * 4), model: 'm' }),
+    );
+    let offset = 0;
+    const server = Bun.serve({
+      port: 0,
+      fetch: () =>
+        new Response(
+          new ReadableStream({
+            pull(controller) {
+              if (offset === 0) {
+                controller.enqueue(payload.slice(0, maxBytes / 2));
+                offset = maxBytes / 2;
+              } else {
+                controller.enqueue(payload.slice(offset));
+                controller.close();
+              }
+            },
+          }),
+          { headers: { 'Content-Type': 'application/json' } },
+        ),
+    });
+    try {
+      await expect(
+        chatCompletion(
+          {
+            baseUrl: `http://localhost:${server.port}`,
+            apiKey: '',
+            model: 'm',
+            timeoutMs: 5_000,
+            kind: 'yooz',
+            maxResponseBytes: maxBytes,
+          },
+          msgs,
+        ),
+      ).rejects.toThrow(`LLM response exceeded ${maxBytes} bytes`);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test('preserves abort identity when a response stream is cancelled', async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch: () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode('{"text":"partial'));
+            },
+          }),
+          { headers: { 'Content-Type': 'application/json' } },
+        ),
+    });
+    const abortController = new AbortController();
+    const pending = chatCompletion(
+      {
+        baseUrl: `http://localhost:${server.port}`,
+        apiKey: '',
+        model: 'm',
+        timeoutMs: 5_000,
+        kind: 'yooz',
+      },
+      msgs,
+      abortController.signal,
+    );
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      abortController.abort();
+      await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    } finally {
+      server.stop(true);
+    }
   });
 });
 

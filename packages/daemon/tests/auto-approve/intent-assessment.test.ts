@@ -6,6 +6,7 @@ import {
   MAX_INTENT_REASONING_CHARS,
   MAX_INTENT_RESPONSE_CHARS,
   buildIntentAssessmentPrompt,
+  fingerprintIntentOperation,
   formatIntentAssessmentContext,
   parseIntentAssessment,
 } from '../../src/auto-approve/intent-assessment.ts';
@@ -61,6 +62,18 @@ describe('parseIntentAssessment', () => {
       }),
     );
     expect(parsed?.effects).toEqual(['network_write', 'remote_mutation']);
+  });
+
+  test('rejects duplicate JSON keys instead of accepting the last value', () => {
+    const duplicateIntent = JSON.stringify(validAssessment).replace(
+      '"intent":"local_read"',
+      '"intent":"local_read","intent":"unknown"',
+    );
+    expect(parseIntentAssessment(duplicateIntent)).toBeNull();
+
+    const duplicateEscapedKey =
+      '{"intent":"local_read","effects":["filesystem_read"],"scope":"repository","reversible":true,"confidence":0.9,"reasoning":"ok","sc\\u006fpe":"unknown"}';
+    expect(parseIntentAssessment(duplicateEscapedKey)).toBeNull();
   });
 
   test('rejects markdown, prose, and decision-shaped output', () => {
@@ -234,6 +247,18 @@ describe('formatIntentAssessmentContext', () => {
     expect(userContent).toContain('RECENT SAME-SESSION OPERATIONS');
     expect(userContent).toContain('DETERMINISTIC FACTS');
     expect(userContent).not.toContain('USER GUIDANCE');
+  });
+
+  test('creates a bounded process-scoped fingerprint without logging operation text', () => {
+    const formatted = formatIntentAssessmentContext({
+      toolName: 'Bash',
+      toolInput: { command: 'git status --short' },
+      recentHumanContext: 'do not put this in telemetry',
+    });
+    const fingerprint = fingerprintIntentOperation(formatted);
+    expect(fingerprint).toMatch(/^[0-9a-f]{16}$/);
+    expect(fingerprint).not.toContain('git');
+    expect(fingerprint).not.toContain('telemetry');
   });
 
   for (const example of liveExamples) {

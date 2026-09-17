@@ -141,7 +141,7 @@ describe('AutoApproveService - semantic intent shadow (#1093)', () => {
         'session-a',
         undefined,
         undefined,
-        undefined,
+        17,
         'session-a',
         false,
         'Inspect the repository state before continuing.',
@@ -183,6 +183,8 @@ describe('AutoApproveService - semantic intent shadow (#1093)', () => {
       expect(intentLog).toStartWith('[AutoApprove session-a] SHADOW INTENT Bash:');
       expect(intentLog).toContain('proof=proved');
       expect(intentLog).toContain('status=ok');
+      expect(intentLog).toContain('eval_id=17');
+      expect(intentLog).toMatch(/op_fp=[0-9a-f]{16}/);
       expect(intentLog).toContain('intent=local_read');
       expect(intentLog).toContain('effects=filesystem_read');
       expect(intentLog).toContain('target_scope=repository');

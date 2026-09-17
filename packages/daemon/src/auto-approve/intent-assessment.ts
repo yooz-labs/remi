@@ -8,7 +8,9 @@
  * visible to the caller as a shadow failure.
  */
 
+import { createHmac, randomBytes } from 'node:crypto';
 import type { ChatMessage } from './llm-client.ts';
+import { OPERATION_EFFECTS } from './operation-effects.ts';
 
 /** Stable semantic-intent categories requested by the Phase 1 plan. */
 export const INTENT_ASSESSMENT_INTENTS = [
@@ -27,20 +29,7 @@ export type Intent = (typeof INTENT_ASSESSMENT_INTENTS)[number];
  * Effects the assessor may report. There is intentionally no unknown effect:
  * an unknown effect is not a usable assessment in this phase.
  */
-export const INTENT_ASSESSMENT_EFFECTS = [
-  'filesystem_read',
-  'filesystem_write',
-  'filesystem_delete',
-  'network_read',
-  'network_write',
-  'remote_read',
-  'remote_mutation',
-  'process_execution',
-  'credential_access',
-  'persistence',
-  'privilege_change',
-  'package_install',
-] as const;
+export const INTENT_ASSESSMENT_EFFECTS = OPERATION_EFFECTS;
 
 export type IntentEffect = (typeof INTENT_ASSESSMENT_EFFECTS)[number];
 
@@ -110,6 +99,9 @@ const MAX_INTENT_TOOL_NAME_CHARS = 128;
 const MAX_INTENT_METADATA_VALUE_CHARS = 512;
 const MAX_INTENT_LINEAGE_ENTRY_CHARS = 768;
 const TRUNCATION_MARKER = ' ...[TRUNCATED]';
+/** Per-process key keeps operation fingerprints useful for correlation without
+ * making a command dictionary attack against the local log straightforward. */
+const INTENT_FINGERPRINT_KEY = randomBytes(32);
 
 const INTENT_ASSESSMENT_SYSTEM_PROMPT = `You are an advisory semantic-intent assessor inside Remi.
 
@@ -142,6 +134,23 @@ function serialise(value: unknown): { text: string; failed: boolean } {
   } catch {
     return { text: '[unserializable]', failed: true };
   }
+}
+
+/**
+ * Produce a process-scoped, privacy-preserving correlation key for the
+ * bounded operation record. It deliberately hashes only the operation section
+ * of the formatted record, excluding human context and deterministic facts.
+ * The key is regenerated when the daemon restarts, so this is not an identity
+ * or a cross-process operation identifier.
+ */
+export function fingerprintIntentOperation(formatted: FormattedIntentAssessmentContext): string {
+  const evidenceBoundary = formatted.text.indexOf('\n\nDETERMINISTIC FACTS');
+  const operation =
+    evidenceBoundary === -1 ? formatted.text : formatted.text.slice(0, evidenceBoundary);
+  return createHmac('sha256', INTENT_FINGERPRINT_KEY)
+    .update(operation, 'utf8')
+    .digest('hex')
+    .slice(0, 16);
 }
 
 function optionalMetadata(value: string | undefined): {
@@ -292,6 +301,102 @@ function isIntentScope(value: unknown): value is IntentScope {
 }
 
 /**
+ * JSON.parse accepts duplicate object keys and silently keeps the last value.
+ * That is unsuitable for a strict model-output contract: a proxy or model
+ * could put a safe field first and a different field later, with telemetry
+ * depending on which parser happened to consume it. Scan valid JSON for
+ * duplicate decoded object keys before accepting the parsed value.
+ */
+function hasDuplicateJsonKeys(raw: string): boolean {
+  let index = 0;
+
+  const skipWhitespace = (): void => {
+    while (/\s/.test(raw[index] ?? '')) index++;
+  };
+
+  const readString = (): string | null => {
+    if (raw[index] !== '"') return null;
+    const start = index;
+    index++;
+    let escaped = false;
+    while (index < raw.length) {
+      const ch = raw[index++];
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === '"') {
+        try {
+          const value: unknown = JSON.parse(raw.slice(start, index));
+          return typeof value === 'string' ? value : null;
+        } catch {
+          return null;
+        }
+      }
+    }
+    return null;
+  };
+
+  const skipValue = (): boolean => {
+    skipWhitespace();
+    const ch = raw[index];
+    if (ch === '"') return readString() !== null;
+    if (ch === '{') {
+      index++;
+      const keys = new Set<string>();
+      skipWhitespace();
+      if (raw[index] === '}') {
+        index++;
+        return true;
+      }
+      while (index < raw.length) {
+        skipWhitespace();
+        const key = readString();
+        if (key === null) return false;
+        if (keys.has(key)) return true;
+        keys.add(key);
+        skipWhitespace();
+        if (raw[index++] !== ':') return false;
+        if (!skipValue()) return false;
+        skipWhitespace();
+        if (raw[index] === '}') {
+          index++;
+          return true;
+        }
+        if (raw[index++] !== ',') return false;
+      }
+      return false;
+    }
+    if (ch === '[') {
+      index++;
+      skipWhitespace();
+      if (raw[index] === ']') {
+        index++;
+        return true;
+      }
+      while (index < raw.length) {
+        if (!skipValue()) return false;
+        skipWhitespace();
+        if (raw[index] === ']') {
+          index++;
+          return true;
+        }
+        if (raw[index++] !== ',') return false;
+      }
+      return false;
+    }
+
+    const start = index;
+    while (index < raw.length && !/[\s,\]}]/.test(raw[index] ?? '')) index++;
+    return index > start;
+  };
+
+  if (!skipValue()) return false;
+  skipWhitespace();
+  return index !== raw.length;
+}
+
+/**
  * Parse exactly the Phase 1 JSON schema. Unlike the primary decision parser,
  * this function intentionally does not extract objects from fences or prose.
  * Unknown keys, duplicate effects, unknown effects, invalid confidence, and
@@ -309,6 +414,8 @@ export function parseIntentAssessment(
   ) {
     return null;
   }
+
+  if (hasDuplicateJsonKeys(raw)) return null;
 
   let parsed: unknown;
   try {

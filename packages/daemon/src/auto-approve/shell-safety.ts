@@ -915,6 +915,85 @@ export function ghTopIndex(words: readonly string[]): number {
 }
 
 /**
+ * Refuse shell expansions that can change a `gh api` argv after a parser has
+ * inspected it. Unquoted variables, command substitutions, globs, and Bash
+ * brace expansions can add flags, endpoints, or body options. Quoted literals
+ * remain usable, including GitHub's `{owner}` endpoint placeholders.
+ */
+export function hasUnsafeGhApiExpansion(segment: string): boolean {
+  let quote: 'single' | 'double' | "$'" | null = null;
+  let braceDepth = 0;
+  let braceExpansion = false;
+
+  for (let index = 0; index < segment.length; index++) {
+    const character = segment[index];
+    const next = segment[index + 1];
+    if (character === undefined) break;
+
+    if (quote === 'single') {
+      if (character === "'") quote = null;
+      continue;
+    }
+    if (quote === "$'") {
+      if (character === '\\' && next !== undefined) {
+        index++;
+        continue;
+      }
+      if (character === "'") quote = null;
+      continue;
+    }
+    if (quote === 'double') {
+      if (character === '\\' && next !== undefined && ['"', '\\', '$', '`', '\n'].includes(next)) {
+        index++;
+        continue;
+      }
+      if (character === '$' || character === '`') return true;
+      if (character === '"') quote = null;
+      continue;
+    }
+
+    if (character === '\\') {
+      if (next !== undefined) index++;
+      continue;
+    }
+    if (character === '$' && next === "'") {
+      quote = "$'";
+      index++;
+      continue;
+    }
+    if (character === "'") {
+      quote = 'single';
+      continue;
+    }
+    if (character === '"') {
+      quote = 'double';
+      continue;
+    }
+
+    if (character === '$' || character === '`') return true;
+    if (['*', '?', '[', ']'].includes(character)) return true;
+    if (character === '{') {
+      braceDepth++;
+      continue;
+    }
+    if (braceDepth > 0) {
+      if (character === ',' || (character === '.' && next === '.')) {
+        braceExpansion = true;
+      }
+      if (character === '}') {
+        braceDepth--;
+        if (braceDepth === 0) {
+          if (braceExpansion) return true;
+          braceExpansion = false;
+        }
+      }
+    }
+  }
+
+  return quote !== null || braceDepth !== 0 || braceExpansion;
+}
+
+/**
  * `git -c <key>=<value> <subcommand>` runs arbitrary code (`core.hooksPath`,
  * `core.fsmonitor`, ...) before the subcommand ever starts. `git switch -c
  * <name>` and `git commit -c <commit>` reuse the SAME letter for an entirely

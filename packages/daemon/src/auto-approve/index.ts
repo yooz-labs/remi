@@ -36,7 +36,7 @@ export {
   FileEnginePidStore,
   spawnDetachedEngine,
 } from './engine-process.ts';
-export { resolveProviderUrl } from './llm-client.ts';
+export { isLocalProviderUrl, resolveProviderUrl } from './llm-client.ts';
 export {
   buildShadowReviewPrompt,
   formatShadowReviewOperation,
@@ -46,6 +46,7 @@ export type { RiskReviewMode, ShadowRiskReview } from './risk-review.ts';
 export {
   buildIntentAssessmentPrompt,
   buildIntentAssessmentPromptFromFormatted,
+  fingerprintIntentOperation,
   formatIntentAssessmentContext,
   parseIntentAssessment,
 } from './intent-assessment.ts';
@@ -71,6 +72,20 @@ export type {
 } from './intent-assessment.ts';
 export { proveCompoundReadOnly } from './read-only-proof.ts';
 export type { ReadOnlyProof, ReadOnlyProofLeaf, ReadOnlyProofReason } from './read-only-proof.ts';
+export {
+  OPERATION_EFFECTS,
+  OPERATION_EFFECT_REGISTRY,
+  capabilityForProofLeaf,
+  githubSubIssueActionEffect,
+  isNeutralProofLeaf,
+} from './operation-effects.ts';
+export type {
+  CapabilityApprovalGroup,
+  GitHubSubIssueActionEffect,
+  OperationEffect,
+  OperationEffectProfile,
+  OperationFamily,
+} from './operation-effects.ts';
 export { alertBody, alertTitle, SubagentAlerter } from './subagent-alert.ts';
 export type { SubagentAlert } from './subagent-alert.ts';
 export type {
