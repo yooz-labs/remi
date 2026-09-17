@@ -209,6 +209,8 @@ done`;
       "gh api 'repos/{owner}/{repo}/issues' --jq '.[].number'",
       'gh sub-issue list 1092',
       'gh --repo yooz-labs/remi sub-issue list 1092',
+      'gh --hostname github.com api /repos/o/r/issues',
+      'gh --hostname=GITHUB.COM api /repos/o/r/issues',
     ]) {
       expect(proveCompoundReadOnly(command).status).toBe('proved');
     }
@@ -219,6 +221,8 @@ done`;
       'gh sub-issue unknown 1092',
       'gh api /repos/o/r/issues?state=*',
       'gh api -X POST /repos/o/r/issues',
+      'gh --hostname evil.example api /repos/o/r/issues',
+      'gh --hostname=evil.example issue list',
     ]) {
       expect(proveCompoundReadOnly(command).status).toBe('rejected');
     }
@@ -265,6 +269,19 @@ done`;
       'rejected',
     );
     expect(proveCompoundReadOnly('do export FOO=bar; git status').status).toBe('rejected');
+    expect(proveCompoundReadOnly('FOO=bar; git status --short').status).toBe('rejected');
+    for (const command of [
+      'sort "$FLAGS" input',
+      'sort *',
+      'tree "$FLAGS" .',
+      'tail "$FLAGS" file',
+      'rg "$FLAGS" .',
+      'find . -name "$PRED"',
+      'find . -name *.py',
+      'flags=$(echo "-o /tmp/out"); sort "$flags" input',
+    ]) {
+      expect(proveCompoundReadOnly(command).status).toBe('rejected');
+    }
   });
 
   test('rejects unsupported shell controls and malformed nesting', () => {

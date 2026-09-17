@@ -20,7 +20,7 @@ import { githubSubIssueActionEffect } from './operation-effects.ts';
 import {
   findRedirectClauses,
   ghTopIndex,
-  hasUnsafeGhApiExpansion,
+  hasUnsafeShellExpansion,
   maskQuotedSpans,
   shellWords,
   stripShellGrammar,
@@ -458,7 +458,7 @@ function proveForHeader(
     return { status: 'rejected', reason: 'unsupported-grammar' };
   }
   const variable = words[1];
-  if (variable === undefined || !isVariableName(variable) || isSensitiveEnvironmentName(variable)) {
+  if (variable === undefined || !isSafeProofLocalVariableName(variable)) {
     return { status: 'rejected', reason: 'sensitive-assignment' };
   }
   if (words.slice(3).some((word) => word === '' || word.startsWith('-'))) {
@@ -520,10 +520,23 @@ function proveAssignments(
   for (const word of words) {
     const separator = word.indexOf('=');
     const name = word.slice(0, separator);
-    const value = word.slice(separator + 1);
-    if (isSensitiveEnvironmentName(name)) {
+    if (!isSafeProofLocalVariableName(name)) {
       return { status: 'rejected', reason: 'sensitive-assignment' };
     }
+  }
+
+  // A static assignment persists into later shell segments and can alter an
+  // external command through an environment/configuration knob that is not
+  // knowable from this segment alone. The finite proof only admits the
+  // observed local-variable capture form (`name=$(safe-read ...)`).
+  if (substitutions.length === 0) {
+    return { status: 'rejected', reason: 'unsafe-assignment' };
+  }
+
+  for (const word of words) {
+    const separator = word.indexOf('=');
+    const name = word.slice(0, separator);
+    const value = word.slice(separator + 1);
     if (value.includes('$') && !value.includes('_')) {
       return { status: 'rejected', reason: 'unsafe-assignment' };
     }
@@ -594,7 +607,10 @@ function proveReadLeaf(
 
   if (command === 'git') return proveGitLeaf(words, state);
 
-  if (command === 'find') return proveFindLeaf(words);
+  if (command === 'find') {
+    if (hasUnsafeShellExpansion(body)) return { status: 'rejected', reason: 'unsafe-command' };
+    return proveFindLeaf(words);
+  }
 
   if (command === 'gh') return proveGhLeaf(words, state, body);
 
@@ -613,7 +629,7 @@ function proveReadLeaf(
     for (const word of words.slice(1)) {
       if (word === '--') continue;
       if (word.startsWith('-')) continue;
-      if (!isVariableName(word) || isSensitiveEnvironmentName(word)) {
+      if (!isSafeProofLocalVariableName(word)) {
         return { status: 'rejected', reason: 'unsafe-assignment' };
       }
       state.variables.set(word, 'text');
@@ -626,6 +642,9 @@ function proveReadLeaf(
   }
 
   if (STREAM_READ_COMMANDS.has(command)) {
+    if (READ_EXPANSION_RISK_COMMANDS.has(command) && hasUnsafeShellExpansion(body)) {
+      return { status: 'rejected', reason: 'unsafe-command' };
+    }
     if (hasStreamExecutionOrWriteFlag(command, words)) {
       return { status: 'rejected', reason: 'unsafe-command' };
     }
@@ -871,7 +890,7 @@ function proveGhLeaf(
   }
 
   if (top === 'api') {
-    if (hasUnsafeGhApiExpansion(rawBody) || !proveGhApiReadArgs(words.slice(topIndex + 1))) {
+    if (hasUnsafeShellExpansion(rawBody) || !proveGhApiReadArgs(words.slice(topIndex + 1))) {
       return { status: 'rejected', reason: 'unsupported-grammar' };
     }
     return { status: 'proved', leaf: { name: 'gh:api-get' }, outputKind: 'text' };
@@ -1094,7 +1113,12 @@ function isSafeGhRepository(value: string): boolean {
 }
 
 function isSafeGhGlobalValue(value: string, option: string): boolean {
-  if (option === '--hostname') return isSafeGhMetadata(value, true);
+  // `--hostname` changes where gh sends authenticated requests. The proof has
+  // no access to the user's trusted-host configuration, so only the canonical
+  // public GitHub host is safe to approve here. GitHub Enterprise hosts remain
+  // valid CLI input, but they must use the normal authorization path until an
+  // explicit trusted-host policy is available.
+  if (option === '--hostname') return value.toLowerCase() === 'github.com';
   if (option === '--repo' || option === '-R') return isSafeGhRepository(value);
   return false;
 }
@@ -1177,6 +1201,20 @@ const STREAM_READ_COMMANDS: ReadonlySet<string> = new Set([
   'nl',
   'rev',
   'tree',
+]);
+
+/**
+ * These commands have an option or predicate that can change effect when a
+ * variable/glob is expanded after the proof inspects the raw argv. Quoted
+ * literal patterns are still accepted; dynamic values fail closed.
+ */
+const READ_EXPANSION_RISK_COMMANDS: ReadonlySet<string> = new Set([
+  'find',
+  'rg',
+  'sort',
+  'tree',
+  'diff',
+  'tail',
 ]);
 
 /** Narrow execution/write escapes for otherwise read-oriented stream tools. */
@@ -1354,8 +1392,15 @@ function isAssignmentToken(word: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*=/.test(word);
 }
 
-function isVariableName(word: string): boolean {
-  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(word);
+/**
+ * The proof's assignment language is intentionally limited to short,
+ * lowercase local names seen in the measured read loops. Uppercase and
+ * underscore-bearing names are conventionally environment/configuration
+ * variables; without a shell environment snapshot they cannot be granted a
+ * persistent value safely.
+ */
+function isSafeProofLocalVariableName(name: string): boolean {
+  return /^[a-z][a-z0-9]*$/.test(name) && !isSensitiveEnvironmentName(name);
 }
 
 /**

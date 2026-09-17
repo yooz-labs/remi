@@ -436,6 +436,13 @@ describe('permission-groups: adversarial (MUST fall through to LLM, never group-
     'eslint --rulesdir /tmp/evil src', // eslint excluded entirely
     'tree -o out.txt', // tree -o writes; tree excluded
     'diff -u a b -o /tmp/patch', // diff -o writes; diff excluded
+    'sort "$FLAGS" input',
+    'sort *',
+    'tree "$FLAGS" .',
+    'tail "$FLAGS" file',
+    'rg "$FLAGS" .',
+    'find . -name "$PRED"',
+    'find . -name *.py',
     // shell control that escapes the read prefix
     'cat $(rm -rf ~)',
     'git show `whoami`',
@@ -584,6 +591,15 @@ describe('Phase 2 capability-proof fallback (#1094)', () => {
     expect(bash('gh --repo yooz-labs/remi sub-issue list 1092', ['gh-read'])).toBe(
       'gh-read:effect-proof',
     );
+    expect(bash('gh --hostname github.com api /repos/o/r/issues', ['gh-read'])).toBe(
+      'gh-read:effect-proof',
+    );
+    for (const command of [
+      'gh --hostname evil.example api /repos/o/r/issues',
+      'gh --hostname=evil.example issue list',
+    ]) {
+      expect(bash(command, ['gh-read', 'vcs-read'])).toBeNull();
+    }
     for (const command of [
       'gh sub-issue add 1092 --sub-issue-number 1093',
       'gh sub-issue remove 1092 --sub-issue-number 1093',

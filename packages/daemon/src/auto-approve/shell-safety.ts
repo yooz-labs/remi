@@ -915,12 +915,12 @@ export function ghTopIndex(words: readonly string[]): number {
 }
 
 /**
- * Refuse shell expansions that can change a `gh api` argv after a parser has
- * inspected it. Unquoted variables, command substitutions, globs, and Bash
- * brace expansions can add flags, endpoints, or body options. Quoted literals
+ * Refuse shell expansions that can change an argv after a parser has inspected
+ * it. Unquoted variables, command substitutions, globs, and Bash brace
+ * expansions can add flags, endpoints, or body options. Quoted literals
  * remain usable, including GitHub's `{owner}` endpoint placeholders.
  */
-export function hasUnsafeGhApiExpansion(segment: string): boolean {
+export function hasUnsafeShellExpansion(segment: string): boolean {
   let quote: 'single' | 'double' | "$'" | null = null;
   let braceDepth = 0;
   let braceExpansion = false;

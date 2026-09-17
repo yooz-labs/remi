@@ -58,7 +58,7 @@ import {
 import {
   type CompoundJoiner,
   ghTopIndex,
-  hasUnsafeGhApiExpansion,
+  hasUnsafeShellExpansion,
   maskQuotedSpans,
   matchCoveredCommand,
   matchPrefix,
@@ -1499,7 +1499,7 @@ const GH_API_READ_VALUE_FLAGS = new Set(['--jq', '-q', '--template', '-t', '--pr
  * arbitrary egress into a 0 ms approval.
  */
 function ghApiReadVeto(segment: string): boolean {
-  if (hasUnsafeGhApiExpansion(segment)) return true;
+  if (hasUnsafeShellExpansion(segment)) return true;
   const words = shellWords(segment);
   if (words[0] !== 'gh' || words[1] !== 'api') return true;
 
@@ -2085,7 +2085,12 @@ export function matchReadOnlyCommand(command: string, prefixes: readonly string[
  * as the default for a group that declares no `segmentVeto` of its own.
  */
 function readSegmentVeto(segment: string): boolean {
-  if (MUTATION_TOKEN.test(segment) || hasScopedVeto(segment)) return true;
+  if (
+    MUTATION_TOKEN.test(segment) ||
+    hasScopedVeto(segment) ||
+    hasUnsafeReadArgumentExpansion(segment)
+  )
+    return true;
   // Re-check with quotes and escapes removed (#960 round 3). The regexes above
   // match RAW TEXT, which is the same flaw the write-side vetoes were rebuilt
   // to fix — and it was live here too, on groups that ship ENABLED BY DEFAULT:
@@ -2100,6 +2105,24 @@ function readSegmentVeto(segment: string): boolean {
   const unquoted = shellWords(segment).join(' ');
   if (unquoted === segment) return false;
   return MUTATION_TOKEN.test(unquoted) || hasScopedVeto(unquoted);
+}
+
+/**
+ * A variable or glob in these read families can materialize an option the
+ * raw-text veto never saw. For example, `sort "$FLAGS" input` can become
+ * `sort -o /path input`, `find . -name $ARGS` can become `find . -exec ...`,
+ * and ripgrep's `--pre` executes a preprocessor. Reject the expansion in both
+ * the ordinary prefix path and the Phase 2 proof fallback; quoted literal
+ * globs remain valid because `hasUnsafeShellExpansion` understands shell
+ * quoting.
+ */
+const READ_EXPANSION_RISK_COMMANDS = new Set(['find', 'rg', 'sort', 'tree', 'diff', 'tail']);
+
+function hasUnsafeReadArgumentExpansion(segment: string): boolean {
+  const command = shellWords(segment)[0];
+  return command !== undefined && READ_EXPANSION_RISK_COMMANDS.has(command)
+    ? hasUnsafeShellExpansion(segment)
+    : false;
 }
 
 /**

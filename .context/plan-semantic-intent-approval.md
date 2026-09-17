@@ -123,7 +123,12 @@ explicitly requested group, and existing mutation/shell vetoes are rerun over
 the original command before the fallback can match. Neutral loop bookkeeping
 (`echo`, `printf`, and similar shell-only leaves) does not establish a group by
 itself. This is still deterministic group approval, not semantic model
-approval; arbitrary Python remains an escalation.
+approval; arbitrary Python remains an escalation. The proof and ordinary
+read-prefix paths also fail closed for dynamic argv expansions in
+effect-sensitive read tools, reject persistent/static shell assignments, and
+accept explicit GitHub host routing only for `github.com`; these boundaries
+prevent a finite proof from being widened by runtime flags or untrusted
+remote hosts.
 
 ### Phase 3: scoped session workflow authorization
 

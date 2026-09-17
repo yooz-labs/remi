@@ -34,6 +34,15 @@ and the group that may cover the proof. A profile with no approval group, an
 unknown leaf, an unknown GitHub action, malformed shell, or incomplete proof
 fails closed.
 
+Effect-sensitive read families also reject dynamic shell argument expansion
+before either the ordinary matcher or the proof fallback can classify them;
+otherwise a variable or glob could materialize an option that changes a read
+into execution or output. The finite assignment language admits only the
+lowercase local-variable captures observed in the corpus, and an explicit
+GitHub `--hostname` is proof-safe only for canonical `github.com`; custom
+GitHub Enterprise hosts remain on the normal authorization path until a
+trusted-host policy exists.
+
 Phase 2 admits only these new bounded shapes:
 
 - the exact quoted-heredoc Python `tomllib` lock-inspection template;
