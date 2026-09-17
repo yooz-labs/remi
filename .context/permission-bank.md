@@ -61,8 +61,11 @@ The runner defaults to the local llama.cpp endpoint and GGUF model used by the
 Linux deployment. It accepts `BANK_BASE_URL`, `BANK_MODEL`,
 `BANK_TIMEOUT_SECONDS`, and `BANK_ENABLE_THINKING=1`. Narrow replays can use
 `BANK_SOURCE`, `BANK_CATEGORY`, `BANK_AUTHORITY`, `BANK_IDS` (comma-separated),
-or `BANK_LIMIT=0` for all selected records. Custom endpoints must resolve to
-`localhost`, `127.0.0.1`, or `::1`.
+or `BANK_LIMIT=0` for all selected records. An explicit `BANK_IDS` list always
+runs in full and is not truncated by the default smoke limit. With no filters,
+the default 24-case smoke run is category-stratified so it includes both safe
+and fail-closed families. Custom endpoints must resolve to `localhost`,
+`127.0.0.1`, or `::1`.
 
 The production client currently consumes one bounded JSON completion per
 review, so “stream” here means the replay cases, results, and selected

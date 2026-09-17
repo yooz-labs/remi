@@ -240,6 +240,48 @@ describe('curated permission bank (#1092)', () => {
     );
   });
 
+  test('routes concurrent same-path evaluations with their own session context', async () => {
+    const server = startBankServer();
+    servers.push(server);
+    const service = new AutoApproveService(makeConfig(server.url), () => undefined);
+    const sessionA = PERMISSION_BANK.find(
+      (sample) => sample.id === 'observed.git-status.implicit-a',
+    );
+    const sessionB = PERMISSION_BANK.find(
+      (sample) => sample.id === 'observed.git-status.implicit-b',
+    );
+    expect(sessionA).toBeDefined();
+    expect(sessionB).toBeDefined();
+    if (sessionA === undefined || sessionB === undefined) throw new Error('bank cases missing');
+
+    const [resultA, resultB] = await Promise.all([
+      evaluateSample(service, sessionA),
+      evaluateSample(service, sessionB),
+    ]);
+    expect(resultA.decision).toBe('approve');
+    expect(resultB.decision).toBe('approve');
+    expect(server.calls()).toBe(4);
+
+    const intentPrompts = server
+      .requests()
+      .map(requestText)
+      .filter((prompt) => prompt.includes('advisory semantic-intent assessor'));
+    expect(intentPrompts).toHaveLength(2);
+    const promptsBySession = new Map<string, number>();
+    for (const prompt of intentPrompts) {
+      const matches = [sessionA.context.sessionId, sessionB.context.sessionId].filter((sessionId) =>
+        prompt.includes(sessionId),
+      );
+      expect(matches).toHaveLength(1);
+      const sessionId = matches[0];
+      if (sessionId !== undefined) {
+        promptsBySession.set(sessionId, (promptsBySession.get(sessionId) ?? 0) + 1);
+      }
+    }
+    expect(promptsBySession.get(sessionA.context.sessionId)).toBe(1);
+    expect(promptsBySession.get(sessionB.context.sessionId)).toBe(1);
+  });
+
   test('replays every case through the real verified guard chain', async () => {
     const server = startBankServer();
     servers.push(server);

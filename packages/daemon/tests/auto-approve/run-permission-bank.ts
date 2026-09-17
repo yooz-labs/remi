@@ -52,7 +52,38 @@ function selectCases(): readonly PermissionBankCase[] {
     return true;
   });
   const limit = parsePositiveInt('BANK_LIMIT', 24);
-  return limit === 0 ? filtered : filtered.slice(0, limit);
+  // An explicit ID list is a reproducibility request: never silently drop a
+  // valid case because the ordinary smoke limit is 24. Use BANK_LIMIT=0 for
+  // an unfiltered full-bank replay, or the category/source filters for a
+  // bounded slice.
+  if (ids.size > 0 || limit === 0) return filtered;
+
+  const hasFilter = source !== undefined || category !== undefined || authority !== undefined;
+  if (hasFilter) return filtered.slice(0, limit);
+
+  // Keep the default smoke run representative. The bank is ordered for
+  // readable provenance, so a plain prefix would exercise only the first
+  // safe family and miss the fail-closed categories.
+  const byCategory = new Map<string, PermissionBankCase[]>();
+  for (const sample of filtered) {
+    const cases = byCategory.get(sample.category) ?? [];
+    cases.push(sample);
+    byCategory.set(sample.category, cases);
+  }
+  const selected: PermissionBankCase[] = [];
+  const categories = [...byCategory.keys()];
+  for (let offset = 0; selected.length < limit; offset++) {
+    let added = false;
+    for (const categoryName of categories) {
+      const sample = byCategory.get(categoryName)?.[offset];
+      if (sample === undefined) continue;
+      selected.push(sample);
+      added = true;
+      if (selected.length === limit) break;
+    }
+    if (!added) break;
+  }
+  return selected;
 }
 
 function missingRequestedIds(): readonly string[] {
