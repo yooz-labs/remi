@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import { AutoApproveService } from '../../src/auto-approve/auto-approve-service.ts';
-import { MAX_INTENT_OPERATION_CHARS } from '../../src/auto-approve/intent-assessment.ts';
+import {
+  MAX_INTENT_OPERATION_CHARS,
+  buildIntentAssessmentPrompt,
+} from '../../src/auto-approve/intent-assessment.ts';
 import type { AutoApproveConfig } from '../../src/auto-approve/types.ts';
 
 interface ShadowServer {
@@ -10,6 +13,8 @@ interface ShadowServer {
   readonly releaseHeldIntent: () => void;
   readonly stop: () => void;
 }
+
+let nextShadowFixturePort = 19_950;
 
 function startShadowServer(
   intentResponse: string,
@@ -22,7 +27,10 @@ function startShadowServer(
   const requestBodies: string[] = [];
   const heldIntentResolvers: Array<() => void> = [];
   const server = Bun.serve({
-    port: 0,
+    // Bun's test runner can start fixture listeners concurrently, while this
+    // environment rejects port-0 listeners. Deterministic per-fixture ports
+    // keep the test transport local and isolated.
+    port: nextShadowFixturePort++,
     fetch: async (request) => {
       callCount++;
       const body = await request.text();
@@ -128,6 +136,17 @@ async function waitForCalls(server: ShadowServer, expected: number): Promise<voi
 }
 
 describe('AutoApproveService - semantic intent shadow (#1093)', () => {
+  test('prompt distinguishes local Git metadata from remote network reads', () => {
+    const prompt = buildIntentAssessmentPrompt({
+      toolName: 'Bash',
+      toolInput: { command: 'git log --not --remotes --oneline' },
+    });
+    const system = prompt[0]?.content ?? '';
+    expect(system).toContain('Never join alternatives with a vertical bar');
+    expect(system).toContain('local repository metadata');
+    expect(system).toContain('remote_read means the operation actually communicates');
+  });
+
   test('assesses the complete bounded context without changing the primary result', async () => {
     const server = startShadowServer(validIntent);
     const logs: string[] = [];

@@ -9,6 +9,8 @@ interface ReviewServer {
   readonly stop: () => void;
 }
 
+let nextRiskReviewFixturePort = 20_050;
+
 function startReviewServer(
   responses: readonly string[],
   status: number | readonly number[] = 200,
@@ -17,7 +19,10 @@ function startReviewServer(
   let reviewCalls = 0;
   const requests: Record<string, unknown>[] = [];
   const server = Bun.serve({
-    port: 0,
+    // Bun's test runner can start fixture listeners concurrently, while this
+    // environment rejects port-0 listeners. Keep each fixture on a stable
+    // loopback port without changing the production transport.
+    port: nextRiskReviewFixturePort++,
     fetch: async (request) => {
       const body = (await request.json()) as Record<string, unknown>;
       requests.push(body);
