@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.7.10'; // REMI_COMPILED_VERSION
+      return '0.7.11-dev.2'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.7.10'; // REMI_COMPILED_VERSION
+    return '0.7.11-dev.2'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -169,7 +169,12 @@ import { HubClientTracker } from './cli/hub-client-tracker.ts';
 import { buildHubQuestionCensus } from './cli/hub-question-census.ts';
 import type { LiveSessionsCollectResult } from './cli/live-sessions-watcher.ts';
 import { startLiveSessionsWatcher } from './cli/live-sessions-watcher.ts';
-import { endLogFileSession, startLogFileSession, writeToLog } from './cli/log-file.ts';
+import {
+  endLogFileSession,
+  setLogFileContext,
+  startLogFileSession,
+  writeToLog,
+} from './cli/log-file.ts';
 import { handleAutoDenied } from './cli/on-auto-denied.ts';
 import { installProcessGuards } from './cli/process-guards.ts';
 import { PtyQuiescenceGate } from './cli/pty-quiescence-gate.ts';
@@ -2941,6 +2946,7 @@ if (cliDaemonMode) {
   const workingDirectory = process.cwd();
   const sessionId = sessionRegistry.createSessionId();
   setPrimarySessionId(sessionId);
+  setLogFileContext({ port: PORT, sessionId });
 
   updateRemiStatus({ wsPort: PORT, sessionId, sessionStatus: 'starting' });
 
@@ -2958,7 +2964,7 @@ if (cliDaemonMode) {
     const liveUsed = new Set(liveSessionsRegistry.listLive().map((e) => e.wsPort));
     const probed = await findAvailableTcpPort(PORT, DEFAULT_PORT_RANGE, liveUsed, bindHost);
     if (probed !== null && probed !== PORT) {
-      log(`Port ${PORT} in use, using ${probed}`);
+      const occupiedPort = PORT;
       try {
         await registry.unregister('websocket');
       } catch (teardownErr) {
@@ -2978,11 +2984,20 @@ if (cliDaemonMode) {
         sharedEvents,
       );
       registry.register(newWsAdapter);
+      // Attribute the reassignment log to the port this wrapper will actually
+      // serve, not the occupied tentative port another session owns.
+      setLogFileContext({ port: PORT, sessionId });
+      log(`Port ${occupiedPort} in use, using ${PORT}`);
     } else if (probed === null) {
       logError('All ports in range are in use. Remote monitoring disabled.');
       wsProbeSucceeded = false;
     }
   }
+
+  // The second probe can move the session away from the initial port. Update
+  // the shared-log attribution before hook or PTY traffic starts so later
+  // lines name the actual WebSocket port rather than the tentative one.
+  setLogFileContext({ port: PORT, sessionId });
 
   if (wsProbeSucceeded) {
     try {

@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import {
   endLogFileSession,
   getLogFd,
+  setLogFileContext,
   startLogFileSession,
   writeToLog,
 } from '../../src/cli/log-file.ts';
@@ -76,6 +77,64 @@ describe('log-file session', () => {
     const content = fs.readFileSync(primary, 'utf-8');
     expect(content).toContain('\nhello\n');
     expect(content).toContain('\nworld\n');
+    expect(content).not.toContain('[pid=');
+  });
+
+  test('prefixes lines after a complete context is set', () => {
+    const primary = path.join(sandbox, 'remi.log');
+    startLogFileSession(primary);
+    const sessionId = '12345678-1234-4234-8234-123456789abc';
+    setLogFileContext({ port: 18766, sessionId });
+    writeToLog('hello');
+    endLogFileSession();
+
+    const content = fs.readFileSync(primary, 'utf-8');
+    expect(content).toContain(`[pid=${process.pid} port=18766 session=12345678] hello\n`);
+    expect(content).not.toContain(sessionId);
+  });
+
+  test('updates the port attribution after probing moves the port', () => {
+    const primary = path.join(sandbox, 'remi.log');
+    startLogFileSession(primary);
+    const sessionId = 'abcdefgh-1234-4234-8234-123456789abc';
+    setLogFileContext({ port: 18765, sessionId });
+    writeToLog('before probe');
+    setLogFileContext({ port: 18769, sessionId });
+    writeToLog('after probe');
+    endLogFileSession();
+
+    const content = fs.readFileSync(primary, 'utf-8');
+    expect(content).toContain(`[pid=${process.pid} port=18765 session=abcdefgh] before probe\n`);
+    expect(content).toContain(`[pid=${process.pid} port=18769 session=abcdefgh] after probe\n`);
+  });
+
+  test('prefixes every line in a multi-line message', () => {
+    const primary = path.join(sandbox, 'remi.log');
+    startLogFileSession(primary);
+    setLogFileContext({ port: 18766, sessionId: 'multiline-session-id' });
+    writeToLog('first\nsecond\nthird');
+    endLogFileSession();
+
+    const prefix = `[pid=${process.pid} port=18766 session=multilin]`;
+    const content = fs.readFileSync(primary, 'utf-8');
+    expect(content).toContain(`${prefix} first\n${prefix} second\n${prefix} third\n`);
+  });
+
+  test('clears context when ending the log session', () => {
+    const primary = path.join(sandbox, 'remi.log');
+    startLogFileSession(primary);
+    setLogFileContext({ port: 18766, sessionId: 'old-session-id' });
+    writeToLog('old session');
+    endLogFileSession();
+
+    startLogFileSession(primary);
+    writeToLog('new session');
+    endLogFileSession();
+
+    const content = fs.readFileSync(primary, 'utf-8');
+    expect(content).toContain(`[pid=${process.pid} port=18766 session=old-sess] old session\n`);
+    expect(content).toContain('\nnew session\n');
+    expect(content).not.toContain(`[pid=${process.pid} port=18766 session=old-sess] new session`);
   });
 
   test('writeToLog is a silent no-op with no open session', () => {

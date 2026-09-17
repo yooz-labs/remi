@@ -15,6 +15,9 @@ do n=$(git log "$b" --not --remotes --oneline 2>/dev/null | wc -l | tr -d ' ')
 echo "$b -> unpushed commits: $n"
 done`;
 
+const WORKTREE_PATHS_PIPELINE =
+  "git worktree list --porcelain | grep '^worktree' | tail -n +2 | awk '{print $2}'";
+
 describe('Phase 3 compound read-only proof (#1082)', () => {
   test('proves the safe Git/worktree inventory loop', () => {
     const result = proveCompoundReadOnly(WORKTREE_INVENTORY);
@@ -46,15 +49,80 @@ done`;
     expect(proveCompoundReadOnly(safeRewrite).status).toBe('proved');
   });
 
-  test('rejects the original worktree inventory interpreter', () => {
-    const original = `${WORKTREE_INVENTORY.replace(
+  test('proves the real worktree path pipeline with awk field projection', () => {
+    expect(proveCompoundReadOnly(WORKTREE_PATHS_PIPELINE)).toEqual({
+      status: 'proved',
+      leaves: [
+        { name: 'git:worktree-list' },
+        { name: 'grep' },
+        { name: 'tail' },
+        { name: 'awk:print-field' },
+      ],
+    });
+  });
+
+  test('proves the original worktree inventory with awk field projection', () => {
+    const original = WORKTREE_INVENTORY.replace(
       'for wt in $(git worktree list --porcelain)',
       "for wt in $(git worktree list --porcelain | grep '^worktree' | tail -n +2 | awk '{print $2}')",
-    )}`;
+    );
     expect(proveCompoundReadOnly(original)).toEqual({
-      status: 'rejected',
-      reason: 'interpreter',
+      status: 'proved',
+      leaves: [
+        { name: 'git:worktree-list' },
+        { name: 'grep' },
+        { name: 'tail' },
+        { name: 'awk:print-field' },
+        { name: 'git:rev-parse-abbrev-ref' },
+        { name: 'git:branch-contains' },
+        { name: 'git:ls-remote-heads' },
+        { name: 'git:status' },
+        { name: 'git:rev-list-count' },
+        { name: 'echo' },
+      ],
     });
+  });
+
+  test('accepts only single-quoted awk field projections', () => {
+    for (const command of ["awk '{print $0}'", "awk '{ print $2 }'", "awk '{\tprint\t$12\t}'"]) {
+      expect(proveCompoundReadOnly(command)).toEqual({
+        status: 'proved',
+        leaves: [{ name: 'awk:print-field' }],
+      });
+    }
+  });
+
+  test('keeps awk projection output typed as text', () => {
+    expect(
+      proveCompoundReadOnly(
+        'for ref in $(awk \'{print $2}\'); do git branch -r --contains "$ref"; done',
+      ),
+    ).toEqual({
+      status: 'rejected',
+      reason: 'unsafe-git-form',
+    });
+  });
+
+  test('rejects broader awk forms as interpreters', () => {
+    for (const command of [
+      "awk -f program '{print $2}'",
+      "awk -v n=2 '{print $n}'",
+      'awk "{print $2}"',
+      "awk '{print $2; print $3}'",
+      "awk '$1 {print $2}'",
+      'awk \'{system("id") }\'',
+      "awk '{getline line; print line}'",
+      'awk \'{printf "%s", $2}\'',
+      'awk \'{print $2 | "cat"}\'',
+      'awk \'{print $2 > "/tmp/out"}\'',
+      "awk '{print $2}' input.txt",
+      "awk '{print $2}' '{print $3}'",
+    ]) {
+      expect(proveCompoundReadOnly(command)).toEqual({
+        status: 'rejected',
+        reason: 'interpreter',
+      });
+    }
   });
 
   test('rejects mutating or unknown leaves inside a read-looking loop', () => {

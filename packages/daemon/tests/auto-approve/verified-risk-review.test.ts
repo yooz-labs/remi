@@ -196,15 +196,24 @@ describe('verified read-only risk review (#1081 phase 4)', () => {
     servers.push(server);
     const service = new AutoApproveService(makeConfig(server.url), () => undefined);
 
-    for (const command of [BRANCH_INVENTORY, SAFE_REWRITE, 'git status --porcelain']) {
+    const awkWorktreeInventory = WORKTREE_INVENTORY.replace(
+      'for wt in $(git worktree list --porcelain)',
+      "for wt in $(git worktree list --porcelain | grep '^worktree' | tail -n +2 | awk '{print $2}')",
+    );
+    for (const command of [
+      BRANCH_INVENTORY,
+      SAFE_REWRITE,
+      awkWorktreeInventory,
+      'git status --porcelain',
+    ]) {
       expect((await evaluate(service, command)).decision).toBe('approve');
     }
-    expect(server.calls()).toBe(3);
+    expect(server.calls()).toBe(4);
 
     for (const command of [
       WORKTREE_INVENTORY.replace(
         'for wt in $(git worktree list --porcelain)',
-        "for wt in $(git worktree list --porcelain | grep '^worktree' | tail -n +2 | awk '{print $2}')",
+        "for wt in $(git worktree list --porcelain | grep '^worktree' | tail -n +2 | awk '{print $2}' /tmp/paths)",
       ),
       'for f in a b; do git push origin main; done',
       'git status > /tmp/out',
@@ -214,7 +223,7 @@ describe('verified read-only risk review (#1081 phase 4)', () => {
     }
     // Every adversarial command was rejected by the deterministic proof before
     // it could reach either the reviewer or a primary action model.
-    expect(server.calls()).toBe(3);
+    expect(server.calls()).toBe(4);
   });
 
   test('reviewer disagreement escalates and never falls back to the primary model', async () => {
