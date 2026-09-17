@@ -565,7 +565,13 @@ function proveReadLeaf(
   const command = words[0];
   if (command === undefined) return { status: 'rejected', reason: 'unknown-command' };
 
-  if (command === 'awk' || command === 'perl' || command === 'python' || command === 'python3') {
+  if (command === 'awk') {
+    const projection = proveAwkFieldProjection(body);
+    if (projection !== null) return projection;
+    return { status: 'rejected', reason: 'interpreter' };
+  }
+
+  if (command === 'perl' || command === 'python' || command === 'python3') {
     return { status: 'rejected', reason: 'interpreter' };
   }
 
@@ -610,6 +616,30 @@ function proveReadLeaf(
   }
 
   return { status: 'rejected', reason: 'unknown-command' };
+}
+
+/**
+ * Prove only the raw spelling of a single-action awk field projection.
+ *
+ * `shellWords` intentionally removes quote boundaries, so it cannot establish
+ * that the program was one literal, single-quoted argument. Keep this check on
+ * the raw segment and anchor every character outside the field number: no awk
+ * options, extra programs or files, patterns, statements, interpolation,
+ * printf/system/getline, pipes, or redirects can reach the approved leaf.
+ */
+const AWK_FIELD_PROJECTION_RE = /^awk[ \t]+'\{[ \t]*print[ \t]+\$[0-9]+[ \t]*\}'$/;
+
+function proveAwkFieldProjection(body: string): {
+  readonly status: 'proved';
+  readonly leaf: ReadOnlyProofLeaf;
+  readonly outputKind: ValueKind;
+} | null {
+  if (!AWK_FIELD_PROJECTION_RE.test(body)) return null;
+  return {
+    status: 'proved',
+    leaf: { name: 'awk:print-field' },
+    outputKind: 'text',
+  };
 }
 
 const STREAM_READ_COMMANDS: ReadonlySet<string> = new Set([
