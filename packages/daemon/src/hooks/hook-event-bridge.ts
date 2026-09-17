@@ -284,6 +284,7 @@ function appendWorkflowGrantOption(
 ): QuestionOption[] {
   if (offer?.family !== 'github-issue-planning') return [...options];
   if (options.some((option) => option.sessionGrant === offer.family)) return [...options];
+  if (options.filter((option) => option.isNo).length !== 1) return [...options];
   const no = options.find((option) => option.isNo);
   if (no === undefined) return [...options];
   // The iOS action-category budget is four. Keep the leading Yes and the

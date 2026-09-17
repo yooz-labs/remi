@@ -1582,11 +1582,15 @@ export class AutoApproveService {
         const callModel =
           useMultiChoice && this.multichoiceModel ? this.multichoiceModel : baseModel;
 
-        if (workflowFacts !== undefined) {
+        // A session grant covers the command's permission, not a separate
+        // numbered choice that Claude may be asking the user to make. Keep
+        // multi-choice routing authoritative even when the command itself
+        // belongs to the granted family.
+        if (workflowFacts !== undefined && !isMultiChoice) {
           const workflowIntent = await this.runShadowIntentAssessment(
             toolName,
             toolInput,
-            undefined,
+            authority,
             classifyRisk(toolName, toolInput),
             callModel,
             externalSignal,

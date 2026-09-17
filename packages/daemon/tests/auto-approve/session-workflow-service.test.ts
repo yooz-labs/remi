@@ -115,7 +115,7 @@ describe('AutoApproveService session workflow authorization (#1095)', () => {
         1,
         'session-a',
         false,
-        undefined,
+        'Create the planned GitHub issue for the current task.',
         undefined,
         undefined,
         '/repo/a',
@@ -131,6 +131,7 @@ describe('AutoApproveService session workflow authorization (#1095)', () => {
       expect(content).toContain('advisory semantic-intent assessor');
       expect(content).toContain('workflow_kind');
       expect(content).toContain('github-issue-create');
+      expect(content).toContain('Create the planned GitHub issue for the current task.');
       expect(logs.some((line) => line.includes('WORKFLOW GRANT Bash: approve'))).toBe(true);
     } finally {
       server.stop();
@@ -223,5 +224,44 @@ describe('AutoApproveService session workflow authorization (#1095)', () => {
     );
     expect(result.decision).toBe('escalate');
     if (result.decision === 'escalate') expect(result.suppressSecondOpinion).toBe(true);
+  });
+
+  test('does not let a session grant bypass multi-choice routing', async () => {
+    const server = startWorkflowServer(validAssessment);
+    try {
+      const { store } = grantFor();
+      const service = new AutoApproveService(
+        makeConfig(server.url, { multichoice: 'evaluate' }),
+        () => {},
+      );
+      const result = await service.evaluate(
+        'Bash',
+        { command: "gh issue create --title 'x' --body 'y'" },
+        'session-a',
+        ['Continue', 'No'],
+        undefined,
+        5,
+        'session-a',
+        false,
+        undefined,
+        undefined,
+        undefined,
+        '/repo/a',
+        { reader: store, repository: 'yooz-labs/remi' },
+      );
+      expect(result.decision).toBe('escalate');
+      expect(server.requests()).toHaveLength(1);
+      const prompt = JSON.parse(server.requests()[0] ?? '{}') as {
+        messages?: Array<{ content?: string }>;
+      };
+      expect(prompt.messages?.some((message) => message.content?.includes('Options:'))).toBe(true);
+      expect(
+        prompt.messages?.some((message) =>
+          message.content?.includes('advisory semantic-intent assessor'),
+        ),
+      ).toBe(false);
+    } finally {
+      server.stop();
+    }
   });
 });
