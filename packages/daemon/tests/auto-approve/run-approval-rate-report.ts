@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Phase 1 approval-rate report (epic #1057, closes #992): how much of a real
+ * Approval-rate report (Phase 1, epic #1057, closes #992): how much of a real
  * `PermissionRequest` corpus the DETERMINISTIC layers (`allow`/`deny`/
  * `approve_groups`/`deny_groups`, #1024's `evaluateDeterministic`) already
  * decide with no LLM call -- for MAIN-context traffic. A `deny-covered`
@@ -83,9 +83,11 @@ import {
   type MissBucket,
   type ReplayResult,
   type ReplayTally,
+  type VerifiedTelemetryReport,
   classifyMiss,
   loadCorpusRecords,
   parseDecisionLog,
+  parseVerifiedTelemetry,
   percentile,
   replayDeterministic,
 } from './approval-rate.ts';
@@ -261,6 +263,7 @@ interface LogReport {
   readonly latencyByVerdict: Readonly<Record<LogVerdict, LatencyStats>>;
   readonly queueTimeoutCount: number;
   readonly riskCeilingCount: number;
+  readonly verifiedTelemetry: VerifiedTelemetryReport;
 }
 
 interface Report {
@@ -397,6 +400,7 @@ function buildLogReport(text: string): LogReport {
     latencyByVerdict,
     queueTimeoutCount: tally.queueTimeoutCount,
     riskCeilingCount: tally.riskCeilingCount,
+    verifiedTelemetry: parseVerifiedTelemetry(text),
   };
 }
 
@@ -415,7 +419,7 @@ function rule(): void {
 function printReport(report: Report): void {
   console.log('');
   rule();
-  console.log('  Phase 1 approval-rate report (#992 / #1057)');
+  console.log('  Approval-rate report (Phase 1 + Phase 4)');
   rule();
   console.log(`  date:              ${report.provenance.date}`);
   console.log(`  input:             ${report.provenance.inputPath}`);
@@ -496,6 +500,17 @@ function printReport(report: Report): void {
     console.log('\n  verdict x band x decided_by:\n');
     for (const [key, n] of Object.entries(log.byVerdictBandDecidedBy).sort()) {
       console.log(`  ${key.padEnd(40)} ${String(n).padStart(5)}`);
+    }
+
+    const verified = log.verifiedTelemetry;
+    console.log('\n  verified dual-review telemetry:\n');
+    console.log(
+      `  records: ${verified.totalRecords}   unparsed: ${verified.unparsed}   intent: ${verified.byStage.intent}   effect-review: ${verified.byStage.review}   workflow-review: ${verified.byStage['workflow-review']}   gate: ${verified.byStage.gate}`,
+    );
+    for (const [model, counts] of Object.entries(verified.byModel).sort()) {
+      console.log(
+        `  ${model.padEnd(28)} intent=${String(counts.intentCalls).padStart(4)} ok=${String(counts.intentOk).padStart(4)} review=${String(counts.effectReviewCalls).padStart(4)} workflow=${String(counts.workflowReviewCalls).padStart(4)} matches=${String(counts.contractMatches).padStart(4)} mismatches=${String(counts.contractMismatches).padStart(4)} agrees=${String(counts.agreements).padStart(4)} disagrees=${String(counts.disagreements).padStart(4)} approve=${String(counts.approvals).padStart(4)} escalate=${String(counts.escalations).padStart(4)}`,
+      );
     }
   }
   console.log('');

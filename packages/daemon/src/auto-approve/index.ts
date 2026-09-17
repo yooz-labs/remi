@@ -38,11 +38,19 @@ export {
 } from './engine-process.ts';
 export { isLocalProviderUrl, resolveProviderUrl } from './llm-client.ts';
 export {
+  MAX_REVIEW_OPERATION_CHARS,
+  MAX_VERIFIED_EFFECT_RESPONSE_CHARS,
   buildShadowReviewPrompt,
+  buildVerifiedEffectReviewPrompt,
   formatShadowReviewOperation,
   parseShadowRiskReview,
+  parseVerifiedEffectReview,
 } from './risk-review.ts';
-export type { RiskReviewMode, ShadowRiskReview } from './risk-review.ts';
+export type {
+  RiskReviewMode,
+  ShadowRiskReview,
+  VerifiedEffectReview,
+} from './risk-review.ts';
 export {
   buildIntentAssessmentPrompt,
   buildIntentAssessmentPromptFromFormatted,
@@ -106,6 +114,14 @@ export type {
   WorkflowGrantReader,
   WorkflowOperationFacts,
 } from './session-workflow-grant.ts';
+export {
+  VERIFIED_ASSESSMENT_CONFIDENCE_FLOOR,
+  assessmentMatchesVerifiedEffectContract,
+  makeVerifiedEffectContract,
+  verifiedAssessmentsAgree,
+  verifiedReadEffectContract,
+} from './verified-dual-review.ts';
+export type { EffectAssessmentLike, VerifiedEffectContract } from './verified-dual-review.ts';
 export { alertBody, alertTitle, SubagentAlerter } from './subagent-alert.ts';
 export type { SubagentAlert } from './subagent-alert.ts';
 export type {

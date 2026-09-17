@@ -23,6 +23,7 @@ import {
   classifyMiss,
   loadCorpusRecords,
   parseDecisionLog,
+  parseVerifiedTelemetry,
   percentile,
   replayDeterministic,
 } from './approval-rate.ts';
@@ -254,6 +255,60 @@ describe('parseDecisionLog', () => {
 
     expect(tally.byVerdict.escalate).toBe(1);
     expect(tally.autoApproveNonDecision).toBe(1);
+  });
+
+  test('parses verified model adherence and disagreement telemetry by model', () => {
+    const intent =
+      '[AutoApprove sess-v] VERIFIED INTENT Bash: status=ok proof=proved model=mlx-qwen eval_id=17 op_fp=abc latency_ms=12 risk=moderate primary=not-run final=approve decided_by=model session_scope=sess-v input_truncated=no context_truncated=no intent=local_read effects=filesystem_read target_scope=repository reversible=yes confidence=0.98';
+    const review =
+      '[AutoApprove sess-v] VERIFIED REVIEW Bash: status=ok proof=proved risk=moderate reported_risk=moderate leaves=1 review_model=mlx-qwen review_latency_ms=9 review_confidence=0.96 semantic_match=yes independent_match=yes agreement=yes observed_auth=explicit auth=implicit matrix=approve final=approve';
+    const disagreement =
+      '[AutoApprove sess-v] VERIFIED REVIEW Bash: status=model-disagreement proof=proved risk=moderate leaves=1 review_model=mlx-qwen review_latency_ms=11 review_confidence=0.91 semantic_match=yes independent_match=yes agreement=no observed_auth=topical auth=topical matrix=escalate final=escalate';
+    const workflow =
+      '[AutoApprove sess-w] VERIFIED WORKFLOW REVIEW Bash: status=ok risk=high grant=present review_model=gguf-qwen review_latency_ms=20 review_confidence=0.95 independent_match=yes agreement=yes final=approve';
+
+    const parsed = parseVerifiedTelemetry([intent, review, disagreement, workflow].join('\n'));
+
+    expect(parsed.totalRecords).toBe(4);
+    expect(parsed.unparsed).toBe(0);
+    expect(parsed.byStage).toEqual({ intent: 1, review: 2, 'workflow-review': 1, gate: 0 });
+    expect(parsed.byStatus).toEqual({ ok: 3, 'model-disagreement': 1 });
+    expect(parsed.byModel['mlx-qwen']).toEqual({
+      intentCalls: 1,
+      intentOk: 1,
+      intentFailures: 0,
+      effectReviewCalls: 2,
+      effectReviewOk: 1,
+      effectReviewFailures: 1,
+      workflowReviewCalls: 0,
+      workflowReviewOk: 0,
+      workflowReviewFailures: 0,
+      contractMatches: 2,
+      contractMismatches: 0,
+      agreements: 1,
+      disagreements: 1,
+      approvals: 2,
+      escalations: 1,
+    });
+    expect(parsed.byModel['gguf-qwen']?.workflowReviewOk).toBe(1);
+    expect(
+      parseDecisionLog([intent, review, disagreement, workflow].join('\n')).tally
+        .autoApproveNonDecision,
+    ).toBe(0);
+  });
+
+  test('parses verified no-call gates without inventing a model review', () => {
+    const gate =
+      '[AutoApprove sess-v] VERIFIED GATE Bash: status=semantic-malformed proof=proved risk=moderate leaves=4';
+
+    const parsed = parseVerifiedTelemetry(gate);
+
+    expect(parsed.totalRecords).toBe(1);
+    expect(parsed.unparsed).toBe(0);
+    expect(parsed.byStage).toEqual({ intent: 0, review: 0, 'workflow-review': 0, gate: 1 });
+    expect(parsed.byStatus).toEqual({ 'semantic-malformed': 1 });
+    expect(parsed.byModel).toEqual({});
+    expect(parseDecisionLog(gate).tally.autoApproveNonDecision).toBe(0);
   });
 
   // Round-trips the two most common real shapes in a live log (baseline

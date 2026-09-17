@@ -236,9 +236,10 @@ export interface AutoApproveConfig {
    * a remote/custom provider is configured. `verified`
    * is the opt-in phase 4 path: only a deterministic read-only effect proof,
    * a moderate risk band, and current session authorization may reach the
-   * reviewer. Its approve is still bounded by those code-level gates; every
-   * proof, provenance, model, or risk failure escalates. Default/off preserves
-   * the existing one-call behavior.
+   * reviewer. Verified mode runs independent semantic and effect/risk reviews;
+   * its approve is still bounded by those code-level gates, and every proof,
+   * provenance, model, disagreement, or risk failure escalates. Default/off
+   * preserves the existing one-call behavior.
    */
   readonly risk_review?: RiskReviewMode;
   /**

@@ -416,10 +416,12 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // Risk/authorization and semantic-intent review are opt-in. Shadow is
     // telemetry-only and runs both advisory assessments when the resolved
     // provider is loopback (the semantic record never goes to a remote
-    // provider); verified is the phase 4 decision-changing path and is itself bounded by the
+    // provider); verified is the phase 4 decision-changing path and runs two
+    // independent structured local reviews. It is itself bounded by the
     // deterministic read-only proof, moderate-risk ceiling, and session
-    // authorization matrix (#1081). Keep the default off until an operator
-    // explicitly enables the measured rollout.
+    // authorization matrix (#1081/#1096); any disagreement or failure
+    // escalates. Keep the default off until an operator explicitly enables the
+    // measured rollout.
     risk_review: 'off',
     // What escalateMain does with a main-agent BINARY operation it cannot
     // approve (#1045 phase 6): "escalate" (default, ask the human, no reason
@@ -1478,10 +1480,13 @@ turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_sec
 #                                  # multichoice = "evaluate".
 # risk_review = "off"              # "shadow" = telemetry-only authorization
 #                                  # grader + loopback-only semantic-intent assessor;
-#                                  # "verified" = the
-#                                  # opt-in phase 4 path for deterministic,
-#                                  # moderate-risk compound reads with current
-#                                  # session authorization. Failures escalate.
+#                                  # "verified" = opt-in phase 4 path with two
+#                                  # independent structured local reviews for
+#                                  # deterministic, moderate-risk compound reads
+#                                  # and already-granted planning mutations.
+#                                  # The deterministic effect contract and grant
+#                                  # remain authoritative; disagreement/failure
+#                                  # escalates. Default is off.
 # escalate_model = ""              # Second opinion on a primary 'escalate'
 #                                  # (main context only). Put a heavy model here
 #                                  # to honor a broad approve policy without

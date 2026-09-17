@@ -53,11 +53,15 @@ import { classifyRisk, formatMatrixContext, normalizeVerifiedReadRisk } from './
 import { enforceRiskCeiling } from './risk-ceiling.ts';
 import {
   MAX_REVIEW_OPERATION_CHARS,
+  MAX_VERIFIED_EFFECT_RESPONSE_CHARS,
   type RiskReviewMode,
   type ShadowRiskReview,
+  type VerifiedEffectReview,
   buildShadowReviewPrompt,
+  buildVerifiedEffectReviewPrompt,
   formatShadowReviewOperation,
   parseShadowRiskReview,
+  parseVerifiedEffectReview,
 } from './risk-review.ts';
 import {
   classifySessionWorkflowOperation,
@@ -68,6 +72,12 @@ import type {
   WorkflowOperationFacts,
 } from './session-workflow-grant.ts';
 import type { AutoApproveConfig, AutoApproveResult, DenySource, MultiChoiceMode } from './types.ts';
+import {
+  assessmentMatchesVerifiedEffectContract,
+  makeVerifiedEffectContract,
+  verifiedAssessmentsAgree,
+  verifiedReadEffectContract,
+} from './verified-dual-review.ts';
 
 type BinaryDecision = 'approve' | 'deny' | 'escalate';
 const VALID_DECISIONS = new Set<BinaryDecision>(['approve', 'deny', 'escalate']);
@@ -77,6 +87,19 @@ type ShadowReviewFailureKind = 'malformed' | 'timeout' | 'unavailable' | 'error'
 type ShadowReviewOutcome =
   | { readonly kind: 'ok'; readonly review: ShadowRiskReview }
   | { readonly kind: ShadowReviewFailureKind };
+
+type VerifiedEffectReviewOutcome =
+  | {
+      readonly kind: 'ok';
+      readonly review: VerifiedEffectReview;
+      readonly model: string;
+      readonly latencyMs: number;
+    }
+  | {
+      readonly kind: ShadowReviewFailureKind;
+      readonly model: string;
+      readonly latencyMs: number;
+    };
 
 type IntentShadowStatus =
   | 'ok'
@@ -917,6 +940,93 @@ export class AutoApproveService {
   }
 
   /**
+   * Run the independent effect/risk reviewer used for a verified workflow
+   * grant. Unlike the authorization-only shadow reviewer, this call reports
+   * the operation's effect shape so the grant path has two independent model
+   * descriptions to reconcile. The grant itself remains the only source of
+   * authorization; no field returned here can create or widen one.
+   */
+  private async runVerifiedEffectReview(
+    toolName: string,
+    toolInput: Record<string, unknown>,
+    authority: string | undefined,
+    riskBand: ReturnType<typeof classifyRisk>,
+    proofFacts: readonly string[],
+    model: string,
+    signal: AbortSignal,
+    deadlineAt: number,
+  ): Promise<VerifiedEffectReviewOutcome> {
+    const started = Date.now();
+    const finishFailure = (kind: ShadowReviewFailureKind): VerifiedEffectReviewOutcome => ({
+      kind,
+      model,
+      latencyMs: Date.now() - started,
+    });
+
+    if (signal.aborted && this.cancelReason !== null) {
+      throw new DOMException('Verified effect review cancelled', 'AbortError');
+    }
+    const remainingMs = deadlineAt - Date.now();
+    if (remainingMs <= 0) return finishFailure('timeout');
+
+    const reviewerController = new AbortController();
+    const forwardAbort = (): void => reviewerController.abort();
+    if (signal.aborted) reviewerController.abort();
+    else signal.addEventListener('abort', forwardAbort, { once: true });
+    let hardKillTimer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      const operation = formatShadowReviewOperation(toolName, toolInput);
+      const response = await Promise.race([
+        chatCompletion(
+          {
+            ...this.llmConfig,
+            model,
+            timeoutMs: remainingMs,
+            maxTokens: 128,
+            maxResponseBytes: MAX_VERIFIED_EFFECT_RESPONSE_CHARS * 8,
+          },
+          [
+            {
+              role: 'user' as const,
+              content: buildVerifiedEffectReviewPrompt(authority, operation, riskBand, proofFacts),
+            },
+          ],
+          reviewerController.signal,
+        ),
+        new Promise<never>((_, reject) => {
+          hardKillTimer = setTimeout(() => {
+            reviewerController.abort();
+            reject(
+              new DOMException(
+                `Verified effect review hard kill after ${remainingMs}ms`,
+                'AbortError',
+              ),
+            );
+          }, remainingMs);
+        }),
+      ]);
+      if (signal.aborted && this.cancelReason !== null) {
+        throw new DOMException('Verified effect review cancelled', 'AbortError');
+      }
+      const review = parseVerifiedEffectReview(response.content);
+      return review === null
+        ? finishFailure('malformed')
+        : {
+            kind: 'ok',
+            review,
+            model: response.model,
+            latencyMs: Date.now() - started,
+          };
+    } catch (error) {
+      if (signal.aborted && this.cancelReason !== null) throw error;
+      return finishFailure(shadowErrorKind(error));
+    } finally {
+      if (hardKillTimer !== null) clearTimeout(hardKillTimer);
+      signal.removeEventListener('abort', forwardAbort);
+    }
+  }
+
+  /**
    * Run the Phase 1 semantic assessor after the guarded primary result exists.
    *
    * This is a second advisory call inside the already-held evaluation slot. It
@@ -1051,19 +1161,20 @@ export class AutoApproveService {
    * are intentionally absent; only the assessment's bounded enum fields are
    * logged, never its model reasoning.
    */
-  private logShadowIntent(
+  private logIntentAssessment(
+    label: 'SHADOW INTENT' | 'VERIFIED INTENT',
     prefix: string,
     toolName: string,
     scope: string,
     evalId: number | undefined,
     riskBand: ReturnType<typeof classifyRisk>,
-    primaryDecision: BinaryDecision,
+    primaryDecision: BinaryDecision | 'not-run',
     finalDecision: AutoApproveResult['decision'],
     decidedBy: DecidingLayer,
     outcome: IntentShadowOutcome,
   ): void {
     const fields = [
-      `${prefix} SHADOW INTENT ${toolName}:`,
+      `${prefix} ${label} ${toolName}:`,
       `status=${outcome.status}`,
       `proof=${outcome.deterministicProofStatus}`,
       `model=${telemetryToken(outcome.model)}`,
@@ -1090,13 +1201,62 @@ export class AutoApproveService {
     this.logFn(fields.join(' '));
   }
 
+  private logShadowIntent(
+    prefix: string,
+    toolName: string,
+    scope: string,
+    evalId: number | undefined,
+    riskBand: ReturnType<typeof classifyRisk>,
+    primaryDecision: BinaryDecision,
+    finalDecision: AutoApproveResult['decision'],
+    decidedBy: DecidingLayer,
+    outcome: IntentShadowOutcome,
+  ): void {
+    this.logIntentAssessment(
+      'SHADOW INTENT',
+      prefix,
+      toolName,
+      scope,
+      evalId,
+      riskBand,
+      primaryDecision,
+      finalDecision,
+      decidedBy,
+      outcome,
+    );
+  }
+
+  private logVerifiedIntent(
+    prefix: string,
+    toolName: string,
+    scope: string,
+    evalId: number | undefined,
+    riskBand: ReturnType<typeof classifyRisk>,
+    finalDecision: AutoApproveResult['decision'],
+    outcome: IntentShadowOutcome,
+  ): void {
+    this.logIntentAssessment(
+      'VERIFIED INTENT',
+      prefix,
+      toolName,
+      scope,
+      evalId,
+      riskBand,
+      'not-run',
+      finalDecision,
+      'model',
+      outcome,
+    );
+  }
+
   /**
    * Run the phase 4 decision-changing path for one narrowly proven command.
    *
-   * The proof is checked before the model call and is the authority for effect
-   * shape. The reviewer receives the same measured authorization prompt as
-   * shadow mode, but its matrix result can influence this result only after
-   * all of these code-level gates pass:
+   * The proof is checked before either model call and is the authority for
+   * effect shape. Two independent local reports must fit that proof: a
+   * semantic intent assessment and a risk/effect/authorization review. The
+   * review matrix can influence this result only after all of these code-level
+   * gates pass:
    *
    * - Bash, main context, and the ordinary primary evaluation (not an
    *   escalate_model or multi-choice dispatch);
@@ -1107,8 +1267,8 @@ export class AutoApproveService {
    *   containing `rm`); the proof removes that uncertainty and normalizes it
    *   to the effective `moderate` band. Critical matches remain a hard stop;
    * - the session has non-empty current authority text; and
-   * - the reviewer returns a valid grade whose provenance-capped matrix says
-   *   `approve`.
+   * - both reports are valid, agree on intent/effects/scope/reversibility, and
+   *   the review's provenance-capped matrix says `approve`.
    *
    * Once verified mode is selected for a Bash request, every proof,
    * provenance, risk, or reviewer failure returns an escalation. Falling back
@@ -1125,6 +1285,9 @@ export class AutoApproveService {
     deadlineAt: number,
     prefix: string,
     start: number,
+    scope: string,
+    evalId: number | undefined,
+    workingDirectory: string | undefined,
   ): Promise<AutoApproveResult> {
     const command = typeof toolInput['command'] === 'string' ? toolInput['command'] : '';
     const durationMs = (): number => Date.now() - start;
@@ -1136,10 +1299,17 @@ export class AutoApproveService {
       suppressSecondOpinion: true,
     });
 
+    if (!this.semanticIntentUsesLocalProvider) {
+      const reasoning =
+        'Verified dual review (#1096): the semantic and independent effect reviewers require a loopback local provider; remote/custom providers are not eligible for this behavior-changing path, so escalating.';
+      this.logFn(`${prefix} VERIFIED GATE Bash: status=non-local-provider`);
+      return escalate(reasoning);
+    }
+
     if (command.length > MAX_REVIEW_OPERATION_CHARS) {
       const reasoning = `Verified read-only review (#1081): the full command is ${command.length} characters, beyond the exact reviewer input bound of ${MAX_REVIEW_OPERATION_CHARS}; escalating instead of reviewing a truncated prefix.`;
       this.logFn(
-        `${prefix} VERIFIED REVIEW Bash: status=operation-too-long chars=${command.length} max=${MAX_REVIEW_OPERATION_CHARS}`,
+        `${prefix} VERIFIED GATE Bash: status=operation-too-long chars=${command.length} max=${MAX_REVIEW_OPERATION_CHARS}`,
       );
       return escalate(reasoning);
     }
@@ -1150,7 +1320,7 @@ export class AutoApproveService {
       // to the primary model here would let a model reason its way around the
       // effect proof that is supposed to bound this rollout.
       const reasoning = `Verified read-only review (#1081): deterministic effect proof rejected (${proof.reason}); unknown shell analysis cannot be approved in verified mode, so escalating.`;
-      this.logFn(`${prefix} VERIFIED REVIEW Bash: status=proof-rejected proof=${proof.reason}`);
+      this.logFn(`${prefix} VERIFIED GATE Bash: status=proof-rejected proof=${proof.reason}`);
       return escalate(reasoning);
     }
 
@@ -1165,7 +1335,7 @@ export class AutoApproveService {
     if (riskBand !== 'moderate') {
       const reasoning = `Verified read-only review (#1081): deterministic proof passed, but risk band=${riskBand} is outside the moderate-risk rollout; escalating.`;
       this.logFn(
-        `${prefix} VERIFIED REVIEW Bash: status=risk-mismatch proof=proved classified_risk=${classifiedRisk} risk=${riskBand} leaves=${proof.leaves.length}`,
+        `${prefix} VERIFIED GATE Bash: status=risk-mismatch proof=proved classified_risk=${classifiedRisk} risk=${riskBand} leaves=${proof.leaves.length}`,
       );
       return escalate(reasoning);
     }
@@ -1173,12 +1343,33 @@ export class AutoApproveService {
       const reasoning =
         'Verified read-only review (#1081): deterministic proof passed, but this session has no current human authorization context; escalating.';
       this.logFn(
-        `${prefix} VERIFIED REVIEW Bash: status=missing-authority proof=proved risk=moderate leaves=${proof.leaves.length}`,
+        `${prefix} VERIFIED GATE Bash: status=missing-authority proof=proved risk=moderate leaves=${proof.leaves.length}`,
       );
       return escalate(reasoning);
     }
 
-    const review = await this.runShadowReview(
+    // Check the deterministic risk floor before deriving the effect contract.
+    // A critical lexical match must remain visible as a critical escalation
+    // even when a future proof leaf is missing from the capability registry.
+    // The registry can only narrow entry into this path; it must never hide a
+    // deny-floor result.
+    const contract = verifiedReadEffectContract(proof.leaves);
+    if (contract === null) {
+      const reasoning =
+        'Verified dual review (#1096): the proof returned an unregistered effect leaf, so the operation cannot enter the model reconciliation path; escalating.';
+      this.logFn(`${prefix} VERIFIED GATE Bash: status=unregistered-effect-leaf`);
+      return escalate(reasoning);
+    }
+
+    const verifiedFacts = {
+      proof_leaves: proof.leaves
+        .map((leaf) => leaf.name)
+        .join(',')
+        .slice(0, 512),
+      verified_effects: contract.effects.join(','),
+    } satisfies Readonly<Record<string, string>>;
+    const proofFacts = Object.entries(verifiedFacts).map(([key, value]) => `${key}=${value}`);
+    const intent = await this.runShadowIntentAssessment(
       'Bash',
       toolInput,
       authority,
@@ -1186,23 +1377,76 @@ export class AutoApproveService {
       model,
       signal,
       deadlineAt,
+      workingDirectory,
+      verifiedFacts,
     );
-    if (review.kind !== 'ok') {
-      const reasoning = `Verified read-only review (#1081): deterministic proof passed, but the authorization reviewer was ${review.kind}; escalating.`;
+    if (intent.status === 'cancelled') {
+      throw new DOMException('Verified semantic assessment cancelled', 'AbortError');
+    }
+    const semanticMatches =
+      intent.status === 'ok' &&
+      intent.assessment !== null &&
+      assessmentMatchesVerifiedEffectContract(intent.assessment, contract);
+    if (!semanticMatches) {
+      const status =
+        intent.status === 'ok' && intent.assessment !== null
+          ? 'contract-mismatch'
+          : `semantic-${intent.status}`;
+      const reasoning = `Verified dual review (#1096): deterministic proof passed, but the semantic intent assessment was ${status}; escalating.`;
+      this.logVerifiedIntent(prefix, 'Bash', scope, evalId, riskBand, 'escalate', intent);
       this.logFn(
-        `${prefix} VERIFIED REVIEW Bash: status=${review.kind} proof=proved risk=moderate leaves=${proof.leaves.length}`,
+        `${prefix} VERIFIED GATE Bash: status=${status} proof=proved risk=moderate leaves=${proof.leaves.length}`,
       );
       return escalate(reasoning);
     }
 
+    const semanticAssessment = intent.assessment;
+    if (semanticAssessment === null) {
+      // The `semanticMatches` guard above makes this unreachable, but keeping
+      // the null check explicit prevents a future refactor from turning a
+      // narrowed type into a fail-open assertion.
+      this.logVerifiedIntent(prefix, 'Bash', scope, evalId, riskBand, 'escalate', intent);
+      return escalate(
+        'Verified dual review (#1096): semantic assessment was unexpectedly absent after validation; escalating.',
+      );
+    }
+
+    const review = await this.runVerifiedEffectReview(
+      'Bash',
+      toolInput,
+      authority,
+      riskBand,
+      proofFacts,
+      model,
+      signal,
+      deadlineAt,
+    );
+    if (review.kind !== 'ok') {
+      const reasoning = `Verified dual review (#1096): deterministic proof and semantic assessment passed, but the independent effect reviewer was ${review.kind}; escalating.`;
+      this.logVerifiedIntent(prefix, 'Bash', scope, evalId, riskBand, 'escalate', intent);
+      this.logFn(
+        `${prefix} VERIFIED REVIEW Bash: status=${review.kind} proof=proved risk=moderate leaves=${proof.leaves.length} review_model=${telemetryToken(review.model)} review_latency_ms=${review.latencyMs}`,
+      );
+      return escalate(reasoning);
+    }
+
+    const independentMatches =
+      review.review.reportedRiskBand === riskBand &&
+      assessmentMatchesVerifiedEffectContract(review.review, contract);
+    const agrees = verifiedAssessmentsAgree(semanticAssessment, review.review);
     const matrix = review.review.matrixDecision;
-    const decision = matrix === 'approve' ? 'approve' : 'escalate';
+    const decision = independentMatches && agrees && matrix === 'approve' ? 'approve' : 'escalate';
     const reasoning =
       decision === 'approve'
-        ? `Verified read-only review (#1081): deterministic proof passed (${proof.leaves.length} read leaves), risk=moderate, authorization matrix=approve (grade=${review.review.authorization}).`
-        : `Verified read-only review (#1081): deterministic proof passed (${proof.leaves.length} read leaves), risk=moderate, authorization matrix=escalate (grade=${review.review.authorization}).`;
+        ? `Verified dual review (#1096): deterministic proof passed (${proof.leaves.length} read leaves), semantic and independent effect reports agree, risk=moderate, authorization matrix=approve (grade=${review.review.authorization}).`
+        : !independentMatches
+          ? 'Verified dual review (#1096): the independent effect reviewer conflicted with the deterministic risk/effect contract, so escalating.'
+          : !agrees
+            ? 'Verified dual review (#1096): the semantic and independent effect reports disagreed, so escalating.'
+            : `Verified dual review (#1096): deterministic proof passed, but authorization matrix=${matrix} (grade=${review.review.authorization}); escalating.`;
+    this.logVerifiedIntent(prefix, 'Bash', scope, evalId, riskBand, decision, intent);
     this.logFn(
-      `${prefix} VERIFIED REVIEW Bash: status=ok proof=proved risk=moderate leaves=${proof.leaves.length} observed_auth=${review.review.observedAuthorization} auth=${review.review.authorization} matrix=${matrix} final=${decision}`,
+      `${prefix} VERIFIED REVIEW Bash: status=ok proof=proved risk=moderate reported_risk=${review.review.reportedRiskBand} leaves=${proof.leaves.length} review_model=${telemetryToken(review.model)} review_latency_ms=${review.latencyMs} review_confidence=${review.review.confidence} semantic_match=yes independent_match=${independentMatches ? 'yes' : 'no'} agreement=${agrees ? 'yes' : 'no'} observed_auth=${review.review.observedAuthorization} auth=${review.review.authorization} matrix=${matrix} final=${decision}`,
     );
     return {
       decision,
@@ -1587,11 +1831,52 @@ export class AutoApproveService {
         // multi-choice routing authoritative even when the command itself
         // belongs to the granted family.
         if (workflowFacts !== undefined && !isMultiChoice) {
+          const workflowRisk = classifyRisk(toolName, toolInput);
+          if (workflowRisk === 'critical') {
+            const durationMs = Date.now() - start;
+            const reasoning =
+              'session workflow grant (#1095): deterministic risk floor classified this operation as critical; a grant cannot authorize a critical operation, so escalating without model calls';
+            this.logFn(
+              `${prefix} WORKFLOW GRANT ${toolName}: status=critical-risk risk=${workflowRisk} grant=present final=escalate`,
+            );
+            this.cancelReason = null;
+            return {
+              decision: 'escalate',
+              reasoning,
+              durationMs,
+              model: callModel,
+              suppressSecondOpinion: true,
+              summary: 'Approve this planning action for the session?',
+            };
+          }
+
+          const workflowCommand = toolInput['command'];
+          if (
+            this.riskReviewMode === 'verified' &&
+            typeof workflowCommand === 'string' &&
+            workflowCommand.length > MAX_REVIEW_OPERATION_CHARS
+          ) {
+            const durationMs = Date.now() - start;
+            const reasoning = `session workflow grant (#1095): the complete command is ${workflowCommand.length} characters, beyond the exact independent-review bound of ${MAX_REVIEW_OPERATION_CHARS}; escalating without model calls`;
+            this.logFn(
+              `${prefix} VERIFIED GATE ${toolName}: status=operation-too-long chars=${workflowCommand.length} max=${MAX_REVIEW_OPERATION_CHARS} grant=present final=escalate`,
+            );
+            this.cancelReason = null;
+            return {
+              decision: 'escalate',
+              reasoning,
+              durationMs,
+              model: callModel,
+              suppressSecondOpinion: true,
+              summary: 'Approve this planning action for the session?',
+            };
+          }
+
           const workflowIntent = await this.runShadowIntentAssessment(
             toolName,
             toolInput,
             authority,
-            classifyRisk(toolName, toolInput),
+            workflowRisk,
             callModel,
             externalSignal,
             start + timeoutMs,
@@ -1607,40 +1892,163 @@ export class AutoApproveService {
           if (workflowIntent.status === 'cancelled') {
             throw new DOMException('Session workflow assessment cancelled', 'AbortError');
           }
-          const durationMs = Date.now() - start;
-          if (
+          const semanticDurationMs = Date.now() - start;
+          const workflowContract = makeVerifiedEffectContract(
+            workflowFacts.effects,
+            ['remote_mutation'],
+            ['remote_repository'],
+          );
+          const semanticMatches =
             workflowIntent.status === 'ok' &&
             workflowIntent.assessment !== null &&
-            semanticAssessmentMatchesWorkflow(workflowFacts, workflowIntent.assessment)
-          ) {
-            const reasoning = `session workflow grant (#1095): local semantic assessment confirmed ${workflowFacts.kind} for the scoped planning repository`;
+            semanticAssessmentMatchesWorkflow(workflowFacts, workflowIntent.assessment);
+
+          if (!semanticMatches) {
+            const confirmation =
+              workflowIntent.status === 'ok'
+                ? 'semantic assessment did not match the required remote-mutation contract'
+                : `semantic assessment status=${workflowIntent.status}`;
+            const reasoning = `session workflow grant (#1095): scoped operation matched, but ${confirmation}; escalating without a second opinion`;
+            if (this.riskReviewMode === 'verified') {
+              this.logVerifiedIntent(
+                prefix,
+                toolName,
+                resolvedScope,
+                evalId,
+                workflowRisk,
+                'escalate',
+                workflowIntent,
+              );
+            }
             this.logFn(
-              `${prefix} WORKFLOW GRANT ${toolName}: approve (${durationMs}ms) - ${reasoning}`,
+              `${prefix} WORKFLOW GRANT ${toolName}: escalate (${semanticDurationMs}ms) - ${reasoning}`,
             );
             this.cancelReason = null;
             return {
-              decision: 'approve',
+              decision: 'escalate',
               reasoning,
-              durationMs,
+              durationMs: semanticDurationMs,
               model: workflowIntent.model,
+              suppressSecondOpinion: true,
+              summary: 'Approve this planning action for the session?',
             };
           }
-          const confirmation =
-            workflowIntent.status === 'ok'
-              ? 'semantic assessment did not match the required remote-mutation contract'
-              : `semantic assessment status=${workflowIntent.status}`;
-          const reasoning = `session workflow grant (#1095): scoped operation matched, but ${confirmation}; escalating without a second opinion`;
+
+          const semanticAssessment = workflowIntent.assessment;
+          if (semanticAssessment === null) {
+            // The `semanticMatches` guard above makes this unreachable, but a
+            // defensive null branch keeps the grant path fail-closed.
+            return {
+              decision: 'escalate',
+              reasoning:
+                'session workflow grant (#1095): semantic assessment was unexpectedly absent after validation; escalating',
+              durationMs: semanticDurationMs,
+              model: workflowIntent.model,
+              suppressSecondOpinion: true,
+              summary: 'Approve this planning action for the session?',
+            };
+          }
+
+          if (this.riskReviewMode === 'verified') {
+            const independent = await this.runVerifiedEffectReview(
+              toolName,
+              toolInput,
+              authority,
+              workflowRisk,
+              [
+                'session_grant=present',
+                `workflow_family=${workflowFacts.family}`,
+                `workflow_kind=${workflowFacts.kind}`,
+                `workflow_effects=${workflowFacts.effects.join(',')}`,
+                `workflow_target=${workflowFacts.target.repository}`,
+              ],
+              callModel,
+              externalSignal,
+              start + timeoutMs,
+            );
+            if (independent.kind !== 'ok') {
+              const reasoning = `session workflow grant (#1095): semantic assessment passed, but the independent effect reviewer was ${independent.kind}; escalating without a second opinion`;
+              this.logVerifiedIntent(
+                prefix,
+                toolName,
+                resolvedScope,
+                evalId,
+                workflowRisk,
+                'escalate',
+                workflowIntent,
+              );
+              this.logFn(
+                `${prefix} VERIFIED WORKFLOW REVIEW ${toolName}: status=${independent.kind} risk=${workflowRisk} grant=present review_model=${telemetryToken(independent.model)} review_latency_ms=${independent.latencyMs} final=escalate`,
+              );
+              this.cancelReason = null;
+              return {
+                decision: 'escalate',
+                reasoning,
+                durationMs: Date.now() - start,
+                model: workflowIntent.model,
+                suppressSecondOpinion: true,
+                summary: 'Approve this planning action for the session?',
+              };
+            }
+
+            const independentMatches =
+              independent.review.reportedRiskBand === workflowRisk &&
+              assessmentMatchesVerifiedEffectContract(independent.review, workflowContract);
+            const agrees = verifiedAssessmentsAgree(semanticAssessment, independent.review);
+            if (!independentMatches || !agrees) {
+              const disagreement = !independentMatches ? 'contract-mismatch' : 'model-disagreement';
+              const reasoning = `session workflow grant (#1095): semantic assessment passed, but the independent effect review had ${disagreement}; escalating without a second opinion`;
+              this.logVerifiedIntent(
+                prefix,
+                toolName,
+                resolvedScope,
+                evalId,
+                workflowRisk,
+                'escalate',
+                workflowIntent,
+              );
+              this.logFn(
+                `${prefix} VERIFIED WORKFLOW REVIEW ${toolName}: status=${disagreement} risk=${workflowRisk} grant=present review_model=${telemetryToken(independent.model)} review_latency_ms=${independent.latencyMs} review_confidence=${independent.review.confidence} independent_match=${independentMatches ? 'yes' : 'no'} agreement=${agrees ? 'yes' : 'no'} final=escalate`,
+              );
+              this.cancelReason = null;
+              return {
+                decision: 'escalate',
+                reasoning,
+                durationMs: Date.now() - start,
+                model: workflowIntent.model,
+                suppressSecondOpinion: true,
+                summary: 'Approve this planning action for the session?',
+              };
+            }
+
+            this.logVerifiedIntent(
+              prefix,
+              toolName,
+              resolvedScope,
+              evalId,
+              workflowRisk,
+              'approve',
+              workflowIntent,
+            );
+            this.logFn(
+              `${prefix} VERIFIED WORKFLOW REVIEW ${toolName}: status=ok risk=${workflowRisk} grant=present review_model=${telemetryToken(independent.model)} review_latency_ms=${independent.latencyMs} review_confidence=${independent.review.confidence} independent_match=yes agreement=yes final=approve`,
+            );
+          }
+
+          const finalDurationMs = Date.now() - start;
+          const reasoning =
+            this.riskReviewMode === 'verified'
+              ? `session workflow grant (#1095): semantic and independent effect assessments confirmed ${workflowFacts.kind} for the scoped planning repository; the code-verified grant supplied authorization`
+              : `session workflow grant (#1095): local semantic assessment confirmed ${workflowFacts.kind} for the scoped planning repository`;
           this.logFn(
-            `${prefix} WORKFLOW GRANT ${toolName}: escalate (${durationMs}ms) - ${reasoning}`,
+            `${prefix} WORKFLOW GRANT ${toolName}: approve (${finalDurationMs}ms) - ${reasoning}`,
           );
           this.cancelReason = null;
           return {
-            decision: 'escalate',
+            decision: 'approve',
             reasoning,
-            durationMs,
+            durationMs: finalDurationMs,
             model: workflowIntent.model,
-            suppressSecondOpinion: true,
-            summary: 'Approve this planning action for the session?',
           };
         }
 
@@ -1666,6 +2074,9 @@ export class AutoApproveService {
             start + timeoutMs,
             prefix,
             start,
+            resolvedScope,
+            evalId,
+            precedentContext,
           );
           const precedentApplied = this.applyDeniedPrecedent(
             verified,
