@@ -73,6 +73,24 @@ caught a pre-existing ceiling bypass (#1076), fixed here.
 - **Model-adherence, measured** (#972). On the shipping default model
   (qat-lean 4B) the "`git stash` is a remote mutation" failure does not
   reproduce — that was the 0.8B light tier, never a default.
+- **A multi-line `git commit -m` message defeated its own deterministic
+  coverage** (#1104). The standard, Claude-Code-recommended
+  `$(cat <<'MARKER' ... MARKER)` idiom for a multi-line commit message tripped
+  the blanket command-substitution veto, so `vcs-write`'s existing `git commit`
+  coverage never got a chance to apply and every such commit fell through to
+  the model. The heredoc-into-substitution wrapper is now recognized as inert
+  (mirroring the existing quoted-heredoc-body proof) and erased alongside it.
+- **An authority-induced false escalate was never corrected** (#1105). The
+  existing #954 authority-counterfactual guard only re-checked a model
+  `approve` that conversation context might have wrongly produced; an
+  ordinary, read-only check could still be escalated with reasoning that
+  traced to unrelated conversation text rather than the command itself, with
+  nothing catching it. Adds the symmetric escalate-direction counterfactual,
+  scoped to the model's own untouched, direct escalate on a Bash command only
+  — every other guard's escalate (deny floor, session precedent, trust
+  boundary, risk ceiling) is structurally excluded from being re-litigated by
+  it, and a would-be correction still passes through the same risk-ceiling and
+  trust-boundary checks an ordinary approve does before it can stand.
 
 ### Security
 
