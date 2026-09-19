@@ -1154,7 +1154,13 @@ export type DecidingLayer =
   | 'risk_ceiling'
   | 'precedent'
   | 'counterfactual'
-  | 'counterfactual_failed';
+  | 'counterfactual_failed'
+  // #1105: the escalate-direction mirror of 'counterfactual' above -- an
+  // authority-induced escalate corrected back to approve. Unlike the approve
+  // direction, a FAILED escalate-side check has no member here: it leaves the
+  // original guard's label standing rather than fabricating one, since the
+  // escalate itself is unchanged (see that call site's own comment).
+  | 'counterfactual_escalate';
 
 /**
  * The matrix context a decision was taken in, for the decision log (#976).

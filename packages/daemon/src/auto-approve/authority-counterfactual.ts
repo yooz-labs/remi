@@ -199,3 +199,68 @@ export function reconcileCounterfactual(authorityFree: 'approve' | 'deny' | 'esc
   }
   return { decision: 'escalate', overridden: true };
 }
+
+/**
+ * #1105: the mirror-image guard `shouldCounterfactual` deliberately does not
+ * provide.
+ *
+ * `shouldCounterfactual` only re-checks an `approve`, on the documented
+ * assumption that "authority may only LOWER escalation... [so if the
+ * decision is escalate] the authority block did not lower anything, so
+ * nothing needs checking" (see this module's own test suite before #1105).
+ * That assumption does not hold: conversation context (authority-fed or
+ * otherwise ambient in the prompt) can also wrongly RAISE a verdict from
+ * approve to escalate for an operation that is not actually risky -- observed
+ * live, an ordinary `bash -n && shellcheck` read-only check escalated with
+ * reasoning ("remote mutation, writing to main branch") that matches nothing
+ * in the command, only in unrelated recent conversation text.
+ *
+ * Same counterfactual principle as the approve side, run in the opposite
+ * direction: ask the same question with the authority block removed, and
+ * trust THAT answer over the authority-influenced one. Gated the mirror image
+ * of `shouldCounterfactual`'s three conditions:
+ *
+ * - not `escalate`      -> nothing to correct in this direction
+ * - no authority        -> there is no counterfactual to run
+ * - already risky-shaped -> the operation would escalate regardless of
+ *   authority, so a second opinion buys nothing (and this is the ONE
+ *   direction where over-matching `matchesRiskyShape` costs a needless LLM
+ *   call rather than a missed correction, so it stays a plain gate, not
+ *   inverted precision).
+ */
+export function shouldCounterfactualForEscalate(
+  toolName: string,
+  toolInput: Record<string, unknown>,
+  decision: 'approve' | 'deny' | 'escalate',
+  authorityPresent: boolean,
+): boolean {
+  if (decision !== 'escalate') return false;
+  if (!authorityPresent) return false;
+  return matchesRiskyShape(toolName, toolInput) === null;
+}
+
+/**
+ * Reconcile the two verdicts for an authority-induced escalate (#1105).
+ *
+ * The authority-free verdict wins only when it is MORE permissive
+ * (`approve`) -- proof that authority (or context noise) was the deciding
+ * factor pushing an otherwise-fine operation to escalate, exactly the
+ * violation `reconcileCounterfactual` polices in the other direction. An
+ * authority-free `escalate` or `deny` leaves the original escalate standing:
+ * the operation was not obviously safe on its own merits either, so the
+ * right outcome is still "ask a human", not a manufactured approve out of
+ * two non-approve verdicts.
+ *
+ * Can only ever LOOSEN toward approve, mirroring `reconcileCounterfactual`'s
+ * own "can only ever tighten" invariant in the opposite direction -- neither
+ * function can produce `deny`.
+ */
+export function reconcileEscalateCounterfactual(authorityFree: 'approve' | 'deny' | 'escalate'): {
+  readonly decision: 'approve' | 'escalate';
+  readonly overridden: boolean;
+} {
+  if (authorityFree === 'approve') {
+    return { decision: 'approve', overridden: true };
+  }
+  return { decision: 'escalate', overridden: false };
+}

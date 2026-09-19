@@ -2208,6 +2208,214 @@ describe('AutoApproveService - authority counterfactual (#954)', () => {
 });
 
 /**
+ * Fixture LLM whose verdict is the MIRROR of `startAuthoritySwayedServer`
+ * above: `escalate` when the authority sentinel is present, `approve` when it
+ * is not. Reproduces the live #1105 observation (an ordinary, read-only
+ * command escalated with reasoning that traces to conversation context, not
+ * the command) deterministically, the same way #954's fixture reproduces its
+ * own measured bias.
+ */
+const ESCALATE_SENTINEL = 'zq-authority-sentinel-1105';
+
+function startAuthorityInducedEscalateServer(): {
+  url: string;
+  calls: () => number;
+  stop: () => void;
+} {
+  let calls = 0;
+  const server = Bun.serve({
+    port: 0,
+    fetch: async (req) => {
+      calls++;
+      const body = (await req.json()) as { messages?: Array<{ content: string }> };
+      const system = body.messages?.[0]?.content ?? '';
+      const swayed = system.includes(ESCALATE_SENTINEL);
+      const decision = swayed ? 'escalate' : 'approve';
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: `{"decision":"${decision}","reasoning":"${swayed ? 'remote mutation, writing to main branch' : 'read-only, does not modify anything'}"}`,
+              },
+            },
+          ],
+          model: 'test-model',
+        }),
+        { headers: { 'Content-Type': 'application/json' } },
+      );
+    },
+  });
+  return {
+    url: `http://localhost:${server.port}/v1`,
+    calls: () => calls,
+    stop: () => server.stop(true),
+  };
+}
+
+describe('AutoApproveService - authority counterfactual, escalate direction (#1105)', () => {
+  test('an authority-induced escalate on an ordinary command is corrected back to approve', async () => {
+    const server = startAuthorityInducedEscalateServer();
+    try {
+      const svc = new AutoApproveService(makeAuthorityTestConfig(server.url), logFn);
+      const result = await svc.evaluate(
+        'Bash',
+        { command: 'bash -n script.sh && shellcheck script.sh' },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        `we discussed the release process earlier (${ESCALATE_SENTINEL})`,
+      );
+      // Without the escalate-side counterfactual this stands as 'escalate'
+      // -- the fixture escalates whenever the sentinel is present, exactly
+      // as the live model did.
+      expect(result.decision).toBe('approve');
+      expect(result.reasoning).toContain('Authority counterfactual (#1105)');
+      // Two calls: the real evaluation, then the authority-free re-ask.
+      expect(server.calls()).toBe(2);
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('no second call when the operation already looks risky', async () => {
+    // `rm -rf ./build` matches `authority-counterfactual.ts`'s RISKY_SHAPES,
+    // so `shouldCounterfactualForEscalate` refuses before any second call: an
+    // operation that already looks dangerous needs no authority-free second
+    // opinion, it would escalate regardless.
+    const server = startAuthorityInducedEscalateServer();
+    try {
+      const svc = new AutoApproveService(makeAuthorityTestConfig(server.url), logFn);
+      const result = await svc.evaluate(
+        'Bash',
+        { command: 'rm -rf ./build' },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        `please clean this up (${ESCALATE_SENTINEL})`,
+      );
+      expect(result.decision).toBe('escalate');
+      expect(server.calls()).toBe(1);
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('no second call without an authority block', async () => {
+    const server = startAuthorityInducedEscalateServer();
+    try {
+      const svc = new AutoApproveService(makeAuthorityTestConfig(server.url), logFn);
+      // No authority text at all: the fixture approves (no sentinel), so
+      // there is no escalate to reconsider in the first place.
+      const result = await svc.evaluate('Bash', {
+        command: 'bash -n script.sh && shellcheck script.sh',
+      });
+      expect(result.decision).toBe('approve');
+      expect(server.calls()).toBe(1);
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('an escalate that survives WITHOUT authority stands', async () => {
+    // The false-positive boundary, mirroring #954's own "an approve that
+    // survives WITHOUT authority stands": authority present, operation
+    // ordinary enough to trigger the check, but the model escalates either
+    // way. Authority did not decide, so the verdict is left alone.
+    const alwaysEscalate = Bun.serve({
+      port: 0,
+      fetch: () =>
+        new Response(
+          JSON.stringify({
+            choices: [
+              { message: { content: '{"decision":"escalate","reasoning":"genuinely unclear"}' } },
+            ],
+            model: 'test-model',
+          }),
+          { headers: { 'Content-Type': 'application/json' } },
+        ),
+    });
+    try {
+      const svc = new AutoApproveService(
+        makeAuthorityTestConfig(`http://localhost:${alwaysEscalate.port}/v1`),
+        logFn,
+      );
+      const result = await svc.evaluate(
+        'Bash',
+        { command: 'bash -n script.sh && shellcheck script.sh' },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        'not sure about this one',
+      );
+      expect(result.decision).toBe('escalate');
+      expect(result.reasoning).not.toContain('Authority counterfactual');
+    } finally {
+      alwaysEscalate.stop(true);
+    }
+  });
+
+  test('a failing escalate-side counterfactual keeps the original escalate', async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch: (() => {
+        let n = 0;
+        return () => {
+          n++;
+          if (n === 1) {
+            return new Response(
+              JSON.stringify({
+                choices: [
+                  {
+                    message: {
+                      content: '{"decision":"escalate","reasoning":"remote mutation"}',
+                    },
+                  },
+                ],
+                model: 'test-model',
+              }),
+              { headers: { 'Content-Type': 'application/json' } },
+            );
+          }
+          return new Response('upstream exploded', { status: 500 });
+        };
+      })(),
+    });
+    try {
+      const svc = new AutoApproveService(
+        makeAuthorityTestConfig(`http://localhost:${server.port}/v1`),
+        logFn,
+      );
+      const result = await svc.evaluate(
+        'Bash',
+        { command: 'bash -n script.sh && shellcheck script.sh' },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        'checking this script',
+      );
+      // Fail closed: the original escalate stands, no manufactured approve.
+      expect(result.decision).toBe('escalate');
+      expect(result.reasoning).toBe('remote mutation');
+    } finally {
+      server.stop(true);
+    }
+  });
+});
+
+/**
  * Fixture LLM that ALWAYS returns `approve`, and counts how many times it was
  * called. The mirror of `startDenyServer` (deny-floor block, above): it makes
  * the risk ceiling (#976) the only thing that can produce any verdict other

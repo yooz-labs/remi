@@ -11,7 +11,12 @@
 
 import { errorToString } from '@remi/shared';
 import { resolvePolicy } from './agent-policy.ts';
-import { reconcileCounterfactual, shouldCounterfactual } from './authority-counterfactual.ts';
+import {
+  reconcileCounterfactual,
+  reconcileEscalateCounterfactual,
+  shouldCounterfactual,
+  shouldCounterfactualForEscalate,
+} from './authority-counterfactual.ts';
 import { enforceAuthorityBoundary } from './authority.ts';
 import { AuthorizationAssessment, matrixDecision } from './authorization-assessment.ts';
 import { denySourceForFloor, enforceDenyFloor } from './deny-floor.ts';
@@ -2389,6 +2394,74 @@ export class AutoApproveService {
             };
             this.logFn(
               `${prefix} COUNTERFACTUAL ${toolName}: check failed, escalating - ${errorToString(err)}`,
+            );
+          }
+        }
+
+        // #1105 COUNTERFACTUAL, escalate direction: the mirror image of #954
+        // above. #954 catches authority talking the model INTO an approve it
+        // should not have reached; this catches authority (or ambient context)
+        // talking the model OUT OF an approve it should have reached -- an
+        // ordinary, benign operation escalated with reasoning that traces to
+        // unrelated conversation text rather than the command itself (observed
+        // live: a read-only `bash -n && shellcheck` check escalated as "remote
+        // mutation, writing to main branch", which matches nothing in that
+        // command). Gated by `shouldCounterfactualForEscalate` to the inverse
+        // shape filter -- an operation that already LOOKS risky needs no second
+        // opinion, it would escalate regardless of authority.
+        if (
+          !useMultiChoice &&
+          result.decision === 'escalate' &&
+          shouldCounterfactualForEscalate(toolName, toolInput, result.decision, authorityPresent)
+        ) {
+          const cfStart = Date.now();
+          try {
+            const cfResponse = await chatCompletion(
+              { ...this.llmConfig, model },
+              // Same prompt, same instructions, authority block OMITTED --
+              // identical construction to #954's call above.
+              buildPrompt(toolName, toolInput, this.instructions, undefined, this.level),
+              this.currentAbortController?.signal,
+            );
+            const cfParsed = parseDecision(cfResponse.content);
+            const reconciled = reconcileEscalateCounterfactual(cfParsed.decision);
+            if (reconciled.overridden) {
+              // The authority-free run says approve. Before trusting it,
+              // re-run the SAME guards the ordinary approve path already
+              // passes through (risk ceiling, trust boundary) -- this
+              // counterfactual proves authority was not the ONLY reason the
+              // operation looked escalate-worthy, not that it is safe to
+              // auto-approve outright. Either guard firing means the operation
+              // itself still warrants a human regardless of what decided the
+              // original escalate, so the original stands unchanged.
+              const ceilingCheck = enforceRiskCeiling(toolName, toolInput, 'approve');
+              const boundaryCheck = enforceAuthorityBoundary(toolName, toolInput, 'approve', true);
+              if (!ceilingCheck.overridden && !boundaryCheck.overridden) {
+                decidedBy = 'counterfactual_escalate';
+                const original = result;
+                result = {
+                  decision: 'approve',
+                  reasoning: `Authority counterfactual (#1105): the same operation evaluated to "approve" WITHOUT the conversation-context block, so that text (or ambient context) decided the escalate rather than the command itself. Approving instead. Authority-free reasoning: ${cfParsed.reasoning} | Original: ${original.reasoning}`,
+                  durationMs,
+                  model: original.model,
+                  summary: original.summary,
+                };
+                this.logFn(
+                  `${prefix} COUNTERFACTUAL ${toolName}: escalate -> approve (authority-free verdict was approve) (+${Date.now() - cfStart}ms)`,
+                );
+              } else {
+                this.logFn(
+                  `${prefix} COUNTERFACTUAL ${toolName}: authority-free verdict was approve, but risk ceiling/trust boundary still applies -- keeping escalate (+${Date.now() - cfStart}ms)`,
+                );
+              }
+            }
+          } catch (err) {
+            // Fail closed: an unconfirmed check must not manufacture a
+            // loosening. The original escalate stands, unlike #954's failure
+            // path above -- there is no authority-influenced approve here to
+            // protect against, only an escalate that already needs a human.
+            this.logFn(
+              `${prefix} COUNTERFACTUAL ${toolName}: escalate-side check failed, keeping escalate - ${errorToString(err)}`,
             );
           }
         }
