@@ -141,6 +141,39 @@ describe('shouldCounterfactualForEscalate gates on all three conditions', () => 
       shouldCounterfactualForEscalate('Bash', { command: 'rm -rf ./build' }, 'escalate', true),
     ).toBe(false);
   });
+
+  test('does not fire for a non-Bash tool, even an ordinary-looking escalate', () => {
+    // RISKY_SHAPES has zero tool-name entries, so a non-Bash tool would
+    // otherwise ALWAYS read as "not risky" by this function's own signal.
+    // Bash-only is a structural exclusion, not shape-dependent.
+    expect(
+      shouldCounterfactualForEscalate(
+        'Edit',
+        { file_path: './notes.md', old_string: 'a', new_string: 'b' },
+        'escalate',
+        true,
+      ),
+    ).toBe(false);
+    expect(
+      shouldCounterfactualForEscalate(
+        'Write',
+        { file_path: './notes.md', content: 'x' },
+        'escalate',
+        true,
+      ),
+    ).toBe(false);
+  });
+
+  test('does not fire for a Bash call with no usable command field', () => {
+    expect(shouldCounterfactualForEscalate('Bash', {}, 'escalate', true)).toBe(false);
+    expect(shouldCounterfactualForEscalate('Bash', { command: '' }, 'escalate', true)).toBe(false);
+    expect(shouldCounterfactualForEscalate('Bash', { command: '   ' }, 'escalate', true)).toBe(
+      false,
+    );
+    expect(shouldCounterfactualForEscalate('Bash', { cmd: 'git status' }, 'escalate', true)).toBe(
+      false,
+    );
+  });
 });
 
 describe('reconcileEscalateCounterfactual', () => {

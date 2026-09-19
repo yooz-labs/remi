@@ -244,23 +244,29 @@ export function reconcileCounterfactual(authorityFree: 'approve' | 'deny' | 'esc
  * only ever TIGHTENS. On this side the same null result LOOSENS: it is what
  * lets a downstream authority-free `approve` replace the escalate. Under-
  * matching here is therefore the dangerous direction, not the safe one
- * (review finding, #1105) -- `RISKY_SHAPES` is a Bash-command substring list
- * with zero tool names in it, so every non-Bash tool call (`Write`, `Edit`,
- * `NotebookEdit`, an MCP tool) would otherwise ALWAYS read as "not risky" and
- * become eligible for loosening, gated by nothing this module can vouch for.
+ * (review finding, #1105) -- `RISKY_SHAPES` has zero tool-name entries, so a
+ * non-Bash tool call would otherwise ALWAYS read as "not risky" by THIS
+ * function's own signal and become eligible for loosening.
  *
  * ## Bash-only, mirroring `precedent.ts`'s `precedentMayAuthorize`
  *
  * That module restricts precedent REUSE to `Bash` calls carrying a `command`
- * field, for the identical reason: the risk-classification layer this
- * codebase actually trusts (`classifyRisk`, `matchesCatastrophicPattern`,
- * `matchGroups`) reads `toolInput.command` and nothing else, so a tool/shape
- * outside that is unclassifiable by anything this function can lean on, not
- * merely under-classified. Widening either mechanism to "every tool" would be
- * an authority decision nobody has measured, not a consequence of the risk
- * layer learning to classify (`precedent.ts`'s own framing of this exact
- * tradeoff). Staying narrow costs an unrecovered escalate on a non-Bash tool;
- * widening risks a silent, unwitnessed loosening on one.
+ * field. NOT because the rest of the risk layer cannot classify a non-Bash
+ * tool at all -- `classifyRisk` degrades to `classifyNonBashTool` (a real,
+ * coarser banding via sensitive-path checks) and `matchGroups` has its own
+ * `toolName !== 'Bash'` branch with working `Write`/`Edit`-shaped coverage
+ * (both #1020, already on `develop`). `precedent.ts`'s own doc says as much
+ * about itself: "the reason it used to be excluded is now GONE (#1020,
+ * fixed) ... it stays Bash-only anyway... who may be [authorized] is an
+ * authority decision (ADR 0015), not a consequence of the risk layer
+ * learning to classify." The identical reasoning applies here: `RISKY_SHAPES`
+ * is this function's OWN, narrower signal (a hand-curated substring list with
+ * no tool-name entries), and deciding whether an escalate may be loosened is
+ * an authority decision this function is scoped to make conservatively, not
+ * a claim that no other mechanism in this codebase could classify the
+ * operation. Staying narrow costs an unrecovered escalate on a non-Bash tool;
+ * widening risks a silent, unwitnessed loosening on one this function has no
+ * real signal for.
  */
 export function shouldCounterfactualForEscalate(
   toolName: string,

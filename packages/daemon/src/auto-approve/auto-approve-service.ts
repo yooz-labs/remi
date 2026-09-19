@@ -85,6 +85,23 @@ import {
 } from './verified-dual-review.ts';
 
 type BinaryDecision = 'approve' | 'deny' | 'escalate';
+
+/**
+ * A parsed model verdict, shared by `parseDecision` and
+ * `AutoApproveService.runCounterfactualEval` (#1105 review) so the two
+ * cannot drift: a hand-duplicated copy of this shape at the second site
+ * would only be checked for assignability at its one `return` statement, not
+ * for completeness, so a future field added to `parseDecision`'s result
+ * would silently narrow away at that copy instead of failing the build.
+ */
+type ParsedDecision = {
+  decision: BinaryDecision;
+  reasoning: string;
+  /** #628: a one-sentence, lock-screen-friendly question the model produces on
+   *  escalate (e.g. "Force-push to main?"). Absent for approve/deny or when the
+   *  model omits it. */
+  summary?: string;
+};
 const VALID_DECISIONS = new Set<BinaryDecision>(['approve', 'deny', 'escalate']);
 
 type ShadowReviewFailureKind = 'malformed' | 'timeout' | 'unavailable' | 'error';
@@ -225,14 +242,7 @@ export function normalisePermissionSuggestion(entry: unknown): string | null {
  * Tries JSON first. If JSON fails, escalates (no guessing from substring matches).
  * Exported for unit testing.
  */
-export function parseDecision(raw: string): {
-  decision: BinaryDecision;
-  reasoning: string;
-  /** #628: a one-sentence, lock-screen-friendly question the model produces on
-   *  escalate (e.g. "Force-push to main?"). Absent for approve/deny or when the
-   *  model omits it. */
-  summary?: string;
-} {
+export function parseDecision(raw: string): ParsedDecision {
   // extractJsonObject tolerates a markdown code fence or a short preamble around
   // the JSON (deterministic, string-aware — never a free-text keyword guess).
   // Many reasoning-tuned local models, notably qwen3.6:35b-mlx, fence every
@@ -1501,7 +1511,7 @@ export class AutoApproveService {
     toolName: string,
     toolInput: Record<string, unknown>,
     model: string,
-  ): Promise<{ decision: BinaryDecision; reasoning: string; summary?: string }> {
+  ): Promise<ParsedDecision> {
     const cfResponse = await chatCompletion(
       { ...this.llmConfig, model },
       buildPrompt(toolName, toolInput, this.instructions, undefined, this.level),
@@ -2478,6 +2488,20 @@ export class AutoApproveService {
               const ceilingCheck = enforceRiskCeiling(toolName, toolInput, 'approve');
               const boundaryCheck = enforceAuthorityBoundary(toolName, toolInput, 'approve', true);
               if (!ceilingCheck.overridden && !boundaryCheck.overridden) {
+                // Log BEFORE mutating state (review finding): this branch is
+                // the one place in this file where the try's two outcomes
+                // diverge in DIRECTION (approve vs. the catch's escalate), so
+                // unlike the sibling #954 block, a throw from a fallible
+                // statement placed after the mutation (logFn's declared type
+                // is `(msg: string) => void`, not provably non-throwing)
+                // would leave the loosened `result` standing while the catch
+                // below logs "keeping escalate" -- true of neither the log
+                // nor the decision. Ordering this first makes the fail-closed
+                // claim structurally true: nothing capable of throwing runs
+                // between here and the `if` that decided to loosen.
+                this.logFn(
+                  `${prefix} COUNTERFACTUAL ${toolName}: escalate -> approve (authority-free verdict was approve) (+${Date.now() - cfStart}ms)`,
+                );
                 decidedBy = 'counterfactual_escalate';
                 const original = result;
                 result = {
@@ -2485,11 +2509,12 @@ export class AutoApproveService {
                   reasoning: `Authority counterfactual (#1105): the same operation evaluated to "approve" WITHOUT the conversation-context block, so that text (or ambient context) decided the escalate rather than the command itself. Approving instead. Authority-free reasoning: ${cfParsed.reasoning} | Original: ${original.reasoning}`,
                   durationMs,
                   model: original.model,
-                  summary: original.summary,
+                  // No `summary` (#628): that field is escalate-only ("the
+                  // model's lock-screen one-liner"), never approve/deny.
+                  // `original.summary` here is the ESCALATE's summary; every
+                  // other approve/deny built in this file omits the field
+                  // entirely rather than carry a stale one forward.
                 };
-                this.logFn(
-                  `${prefix} COUNTERFACTUAL ${toolName}: escalate -> approve (authority-free verdict was approve) (+${Date.now() - cfStart}ms)`,
-                );
               } else {
                 this.logFn(
                   `${prefix} COUNTERFACTUAL ${toolName}: authority-free verdict was approve, but risk ceiling/trust boundary still applies -- keeping escalate (+${Date.now() - cfStart}ms)`,
