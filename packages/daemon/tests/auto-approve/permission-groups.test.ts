@@ -1733,6 +1733,90 @@ describe('#1057 phase 2 commit 3: heredoc excision (group path only)', () => {
 });
 
 /**
+ * #1104: `$(cat <<'MARKER' ... MARKER)` is the standard, Claude-Code-
+ * recommended way to build a multi-line `git commit -m` / `gh pr create
+ * --body` argument. The heredoc BODY is already proven inert by
+ * `exciseHeredocsForGroups` (quoted delimiter, #1057 phase 2 commit 3 above),
+ * but the enclosing `$(cat ...)` wrapper survives excision, so
+ * `hasShellControl`'s unconditional `$(` veto refuses the command anyway --
+ * `vcs-write`'s existing `git commit` coverage never gets a chance to apply.
+ */
+describe('#1104: heredoc-into-$(cat) substitution composes with existing coverage', () => {
+  const WRITE_GROUPS_NO_SCRATCH = [...ALL, 'fs-write'];
+
+  test('git commit -m with a heredoc-built multi-line message resolves via vcs-write', () => {
+    const cmd =
+      "git add src/foo.py src/bar.py && git commit -m \"$(cat <<'MSG'\n" +
+      'fix: advance date_last_updated on accession-mention merge\n' +
+      '\n' +
+      'merge_accession_mentions appended new citations and recomputed counts\n' +
+      'but never stamped date_last_updated.\n' +
+      'MSG\n' +
+      ')" 2>&1';
+    // `matchCoveredCommand` labels a multi-segment command by its FIRST
+    // matched prefix (`git add`), not its last -- both segments are
+    // individually covered, which is the property this test exists to pin.
+    expect(bash(cmd, WRITE_GROUPS)).toBe('vcs-write:git add');
+  });
+
+  test('a single positional command still resolves once the wrapper is erased', () => {
+    // Isolates the mechanism from the `git add && git commit` compound: bare
+    // `git commit -m "$(cat <<'MSG' ... MSG)"` alone must also resolve, and
+    // must equal what the same message written as a plain string resolves to.
+    const heredocForm = 'git commit -m "$(cat <<\'MSG\'\nhello\nMSG\n)"';
+    const plainForm = 'git commit -m "hello"';
+    expect(bash(heredocForm, WRITE_GROUPS)).toBe(bash(plainForm, WRITE_GROUPS));
+    expect(bash(heredocForm, WRITE_GROUPS)).toBe('vcs-write:git commit');
+  });
+
+  test('a double-quoted delimiter is exempted the same as a single-quoted one', () => {
+    const cmd = 'git commit -m "$(cat <<"MSG"\nhello\nMSG\n)"';
+    expect(bash(cmd, WRITE_GROUPS)).toBe('vcs-write:git commit');
+  });
+
+  describe('MUST NOT be exempted (the shape must stay narrow)', () => {
+    const mustStayNull: Array<[string, string]> = [
+      [
+        'git commit -m "$(cat <<MSG\nhello\nMSG\n)"',
+        'unquoted delimiter: the body could carry live substitution, so the wrapper is not provably inert -- must still refuse',
+      ],
+      [
+        'git commit -m "$(cat -n <<\'MSG\'\nhello\nMSG\n)"',
+        'cat takes an extra flag: no longer "reads only the heredoc", must still refuse',
+      ],
+      [
+        'git commit -m "$(cat file.txt <<\'MSG\'\nhello\nMSG\n)"',
+        'cat takes a file argument: reads attacker-influenced content, not just the heredoc, must still refuse',
+      ],
+      [
+        'git commit -m "$(cat <<\'MSG\'\nhello\nMSG\necho pwned)"',
+        'extra content inside the substitution after the terminator: the closing line is not a bare `)`, must still refuse',
+      ],
+      [
+        'git commit -m "$(rm -rf / <<\'MSG\'\nhello\nMSG\n)"',
+        'the command feeding the heredoc is not cat at all, must still refuse',
+      ],
+      [
+        'git commit -m "$(cat /etc/passwd)"',
+        'no heredoc operator here at all (pre-existing #1057 case) -- unaffected, still refuses',
+      ],
+    ];
+    for (const [cmd, why] of mustStayNull) {
+      test(`${JSON.stringify(cmd)} — ${why}`, () => {
+        expect(bash(cmd, WRITE_GROUPS_NO_SCRATCH)).toBeNull();
+      });
+    }
+  });
+
+  test('the rest of a compound command is still judged on its own merits', () => {
+    // Exempting the substitution must not make it a smuggling channel for an
+    // uncovered sibling segment.
+    const cmd = 'git commit -m "$(cat <<\'MSG\'\nhello\nMSG\n)" && rm -rf /';
+    expect(bash(cmd, WRITE_GROUPS)).toBeNull();
+  });
+});
+
+/**
  * #1057 phase 2, commit 4: `sed -i` under a strict script-shape allowlist.
  * Every script the command would actually run must be a single, unconditional
  * `s///` or `y///` -- no address prefix, no brace block, no `w`/`e`/`r`/`R`
