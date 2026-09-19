@@ -1086,6 +1086,96 @@ function heredocBodyHasLiveSubstitution(bodyLines: readonly string[]): boolean {
   return bodyLines.some((l) => l.includes('$(') || l.includes('`') || l.includes('<('));
 }
 
+/** The exact wrapper token this module recognizes as an inert literal-text
+ *  builder: `cat` reading nothing but the heredoc that follows it. */
+const CAT_SUBSTITUTION_HEAD = '$(cat';
+
+/**
+ * If `line`, up to `opStart` (a heredoc operator's start index), ends --
+ * once quote-masked and trimmed of trailing whitespace -- with a bare
+ * `$(cat`, return the RAW index where that `$(` begins; otherwise null.
+ *
+ * Checked on the MASKED view first so a LITERAL "$(cat" sitting inside an
+ * already-quoted string (not live syntax) is refused, mirroring
+ * `hasShellControl`'s own masked-view command-substitution check; the raw
+ * line is then required to agree at the same position as a second, cheap
+ * confirmation (same defense-in-depth shape `shell-safety.ts`'s
+ * `hasNetworkDeviceInputRedirect` uses: neither view alone is trusted).
+ *
+ * Recomputes `maskQuotedSpans(line)` rather than reusing the one
+ * `scanHeredocOperator` already produced internally for the same line
+ * (review note, #1104): that function does not return its masked view, and
+ * threading it out would widen `HeredocOperatorScan`'s shape for every
+ * existing caller/test of a type this module already has extensive coverage
+ * on, to save one O(line length) re-scan that only runs on a line a heredoc
+ * operator was just found on -- not a hot loop. Accepted as-is.
+ */
+function findBareCatSubstitutionStart(line: string, opStart: number): number | null {
+  const maskedPrefix = maskQuotedSpans(line).slice(0, opStart).replace(/\s+$/, '');
+  if (!maskedPrefix.endsWith(CAT_SUBSTITUTION_HEAD)) return null;
+  const start = maskedPrefix.length - CAT_SUBSTITUTION_HEAD.length;
+  if (line.slice(start, start + CAT_SUBSTITUTION_HEAD.length) !== CAT_SUBSTITUTION_HEAD) {
+    return null;
+  }
+  return start;
+}
+
+/**
+ * If `line`'s first non-whitespace character -- checked on the quote-masked
+ * view, so a quoted literal `)` does not count -- is a bare `)`, return the
+ * line with that one character (and the whitespace before it) removed;
+ * otherwise null.
+ *
+ * Proves only that a real `)` closes the substitution at the expected
+ * position -- NOT that nothing else lives on the rest of that line (review
+ * finding: an earlier version of this doc overclaimed the latter). Whatever
+ * follows the `)` (a closing outer quote, a redirect, `&& another-command`,
+ * ...) is passed through into the reconstructed line completely unexamined
+ * by this function. That is deliberately fine, not a gap: it is exactly the
+ * shape the standard `git commit -m "$(cat <<'MSG' ... MSG)" 2>&1` idiom
+ * needs (the closing line is `)" 2>&1`, whose remainder is NOT empty), and
+ * whatever trailing text turns out to be is judged by the SAME machinery
+ * that already judges anything else in a compound command --
+ * `matchCoveredCommand`'s per-segment splitting, run on the reconstructed
+ * line after excision, requires every `;`/`&&`/`|`/`&`-joined segment to be
+ * independently covered. Verified: `...)" && rm -rf /` still resolves to
+ * `null` after excision, because the trailing `rm -rf /` segment is on its
+ * own merits, uncovered -- the SAFETY property here is "the compound
+ * splitter still sees and vetoes the sibling segment," not "this function
+ * proved the substitution is the whole story."
+ */
+function stripLeadingSubstitutionClose(line: string): string | null {
+  const masked = maskQuotedSpans(line);
+  const leading = /^\s*/.exec(masked)?.[0].length ?? 0;
+  if (masked[leading] !== ')') return null;
+  return line.slice(0, leading) + line.slice(leading + 1);
+}
+
+/**
+ * Prove both ends of the `$(cat <<'MARKER' ... MARKER)` wrapper at once, so a
+ * caller can never observe "one end found, the other not" as two
+ * separately-nulled variables that must be kept in lockstep by hand (review
+ * finding, #1104). Returns null the instant either half is unprovable --
+ * there is no partial result. "Both ends" means the OPENING `$(cat` and a
+ * real closing `)` immediately after the terminator -- see
+ * `stripLeadingSubstitutionClose`'s doc for what is and is not proved about
+ * content trailing that `)`.
+ *
+ * `closingLine` is `undefined` when the heredoc's terminator was the LAST
+ * line of the command (no line follows for a closing `)` to appear on).
+ */
+function findCatSubstitutionWrapper(
+  line: string,
+  opStart: number,
+  closingLine: string | undefined,
+): { readonly wrapperStart: number; readonly closingRemainder: string } | null {
+  const wrapperStart = findBareCatSubstitutionStart(line, opStart);
+  if (wrapperStart === null || closingLine === undefined) return null;
+  const closingRemainder = stripLeadingSubstitutionClose(closingLine);
+  if (closingRemainder === null) return null;
+  return { wrapperStart, closingRemainder };
+}
+
 /**
  * Excise every heredoc this command contains, or return `command` completely
  * UNCHANGED the instant any single one cannot be proven safe to remove -- see
@@ -1098,6 +1188,29 @@ function heredocBodyHasLiveSubstitution(bodyLines: readonly string[]): boolean {
  * was), so it can only ever hand the EXISTING machinery a command that means
  * the same thing with less noise in it -- coverage is still decided entirely
  * by that machinery, same as if a human had deleted the heredoc by hand.
+ *
+ * #1104: when the heredoc's delimiter is quoted AND it sits inside a bare
+ * `$(cat <<'MARKER' ... MARKER)` substitution -- `cat` taking no other flags
+ * or arguments, and a real `)` closing the substitution as the first
+ * non-whitespace character right after the terminator line -- the WHOLE
+ * substitution is erased, wrapper included, not just the body. Whatever
+ * follows that `)` on the same line (a closing outer quote, `2>&1`, a
+ * further `&& ...`) is left for the ordinary per-segment/compound-splitting
+ * machinery below to judge, exactly as it always has -- this pre-pass proves
+ * only that the substitution ITSELF is inert, never that the rest of the
+ * line is (see `stripLeadingSubstitutionClose`'s doc). This is the standard
+ * shape Claude Code itself is told to use for a multi-line `git commit -m` /
+ * `gh pr create --body` argument: a quoted
+ * delimiter already makes the excised BODY provably inert (no expansion of
+ * any kind happens inside it), and a bare `cat` with nothing but that heredoc
+ * feeding it runs nothing else and produces exactly that literal text. Erasing
+ * the wrapper too means the residual command carries no `$(` for
+ * `hasShellControl`'s blanket command-substitution veto to trip on, so
+ * existing coverage (`vcs-write`'s `git commit`, etc.) can actually apply.
+ * Any shape this cannot fully prove -- an unquoted delimiter, `cat` with an
+ * extra flag or file argument, anything besides a bare `)` closing the
+ * substitution -- falls back to the ORIGINAL behavior (operator + body only),
+ * unchanged from before this addition.
  */
 function exciseHeredocsForGroups(command: string): string {
   if (!command.includes('<<')) return command;
@@ -1125,8 +1238,28 @@ function exciseHeredocsForGroups(command: string): string {
     if (terminatorAt === -1) return command; // unterminated: fail closed
     const body = lines.slice(i + 1, terminatorAt);
     if (!op.quoted && heredocBodyHasLiveSubstitution(body)) return command; // live body: fail closed
-    out.push(line.slice(0, op.opStart) + line.slice(op.opEnd));
-    i = terminatorAt + 1; // skip every body line and the terminator line
+
+    // `op.quoted` only: an unquoted delimiter means the body isn't provably
+    // inert either (same reasoning as the `heredocBodyHasLiveSubstitution`
+    // check just above -- an unquoted heredoc lets the shell expand
+    // `$()`/backticks/`${}` in the body before the reading command ever sees
+    // it), so the ENCLOSING wrapper can't be proven inert from a live body.
+    // `null` covers both "not this shape at all" and "half-proven, one end
+    // found but not the other" -- callers never see the difference, so a
+    // half match can never be "half exempted" (review finding, #1104: this
+    // used to be two separately-nulled locals kept in lockstep by hand).
+    const wrapper = op.quoted
+      ? findCatSubstitutionWrapper(line, op.opStart, lines[terminatorAt + 1])
+      : null;
+
+    if (wrapper !== null) {
+      out.push(line.slice(0, wrapper.wrapperStart) + line.slice(op.opEnd));
+      out.push(wrapper.closingRemainder);
+      i = terminatorAt + 2; // skip the body, the terminator, AND the closing line
+    } else {
+      out.push(line.slice(0, op.opStart) + line.slice(op.opEnd));
+      i = terminatorAt + 1; // skip every body line and the terminator line
+    }
   }
   return out.join('\n');
 }
