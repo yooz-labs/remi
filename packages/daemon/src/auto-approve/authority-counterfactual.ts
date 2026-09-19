@@ -62,6 +62,15 @@
  * verdict was `approve`. In the 796-evaluation sample that set is close to
  * empty, so steady-state latency is unchanged. The filter exists precisely so
  * the common path never pays.
+ *
+ * This measurement is for THIS (approve) direction only. `shouldCounterfactual
+ * ForEscalate` (#1105) below pays for a second call under close to the LOGICAL
+ * INVERSE condition -- an escalate whose operation does NOT look risky by the
+ * same filter -- which is not the rare case the way an authority-swayed
+ * approve of a risky-looking operation is. It is narrowed on other axes
+ * instead (restricted to the model's own untouched escalate, Bash-only, a
+ * non-empty `command`; see that function's doc), but its steady-state cost
+ * has not been measured and should not be assumed equal to this direction's.
  */
 
 import { matchSubstringPattern } from './pattern-matcher.ts';
@@ -198,4 +207,103 @@ export function reconcileCounterfactual(authorityFree: 'approve' | 'deny' | 'esc
     return { decision: 'approve', overridden: false };
   }
   return { decision: 'escalate', overridden: true };
+}
+
+/**
+ * #1105: the mirror-image guard `shouldCounterfactual` deliberately does not
+ * provide.
+ *
+ * `shouldCounterfactual` only re-checks an `approve`, on the documented
+ * assumption that "authority may only LOWER escalation... [so if the
+ * decision is escalate] the authority block did not lower anything, so
+ * nothing needs checking" (see this module's own test suite before #1105).
+ * That assumption does not hold: conversation context (authority-fed or
+ * otherwise ambient in the prompt) can also wrongly RAISE a verdict from
+ * approve to escalate for an operation that is not actually risky -- observed
+ * live, an ordinary `bash -n && shellcheck` read-only check escalated with
+ * reasoning ("remote mutation, writing to main branch") that matches nothing
+ * in the command, only in unrelated recent conversation text.
+ *
+ * Same counterfactual principle as the approve side, run in the opposite
+ * direction: ask the same question with the authority block removed, and
+ * trust THAT answer over the authority-influenced one. Gated the mirror image
+ * of `shouldCounterfactual`'s three conditions, plus a fourth this direction
+ * needs that the approve side does not:
+ *
+ * - not `escalate`      -> nothing to correct in this direction
+ * - no authority        -> there is no counterfactual to run
+ * - already risky-shaped -> the operation would escalate regardless of
+ *   authority, so a second opinion buys nothing
+ * - not a Bash command   -> see "Bash-only" below
+ *
+ * ## Over-matching vs. under-matching: this direction inverts the asymmetry
+ *
+ * On the approve side, `matchesRiskyShape` returning null for an unmatched
+ * shape only means "skip the extra check" -- the worst case is a missed
+ * correction, never a wrongly-granted approval, because `shouldCounterfactual`
+ * only ever TIGHTENS. On this side the same null result LOOSENS: it is what
+ * lets a downstream authority-free `approve` replace the escalate. Under-
+ * matching here is therefore the dangerous direction, not the safe one
+ * (review finding, #1105) -- `RISKY_SHAPES` has zero tool-name entries, so a
+ * non-Bash tool call would otherwise ALWAYS read as "not risky" by THIS
+ * function's own signal and become eligible for loosening.
+ *
+ * ## Bash-only, mirroring `precedent.ts`'s `precedentMayAuthorize`
+ *
+ * That module restricts precedent REUSE to `Bash` calls carrying a `command`
+ * field. NOT because the rest of the risk layer cannot classify a non-Bash
+ * tool at all -- `classifyRisk` degrades to `classifyNonBashTool` (a real,
+ * coarser banding via sensitive-path checks) and `matchGroups` has its own
+ * `toolName !== 'Bash'` branch with working `Write`/`Edit`-shaped coverage
+ * (both #1020, already on `develop`). `precedent.ts`'s own doc says as much
+ * about itself: "the reason it used to be excluded is now GONE (#1020,
+ * fixed) ... it stays Bash-only anyway... who may be [authorized] is an
+ * authority decision (ADR 0015), not a consequence of the risk layer
+ * learning to classify." The identical reasoning applies here: `RISKY_SHAPES`
+ * is this function's OWN, narrower signal (a hand-curated substring list with
+ * no tool-name entries), and deciding whether an escalate may be loosened is
+ * an authority decision this function is scoped to make conservatively, not
+ * a claim that no other mechanism in this codebase could classify the
+ * operation. Staying narrow costs an unrecovered escalate on a non-Bash tool;
+ * widening risks a silent, unwitnessed loosening on one this function has no
+ * real signal for.
+ */
+export function shouldCounterfactualForEscalate(
+  toolName: string,
+  toolInput: Record<string, unknown>,
+  decision: 'approve' | 'deny' | 'escalate',
+  authorityPresent: boolean,
+): boolean {
+  if (decision !== 'escalate') return false;
+  if (!authorityPresent) return false;
+  if (toolName !== 'Bash') return false;
+  const command = toolInput['command'];
+  if (typeof command !== 'string' || command.trim().length === 0) return false;
+  return matchesRiskyShape(toolName, toolInput) === null;
+}
+
+/**
+ * Reconcile the two verdicts for an authority-induced escalate (#1105).
+ *
+ * The authority-free verdict wins only when it is MORE permissive
+ * (`approve`) -- proof that authority (or context noise) was the deciding
+ * factor pushing an otherwise-fine operation to escalate, exactly the
+ * violation `reconcileCounterfactual` polices in the other direction. An
+ * authority-free `escalate` or `deny` leaves the original escalate standing:
+ * the operation was not obviously safe on its own merits either, so the
+ * right outcome is still "ask a human", not a manufactured approve out of
+ * two non-approve verdicts.
+ *
+ * Can only ever LOOSEN toward approve, mirroring `reconcileCounterfactual`'s
+ * own "can only ever tighten" invariant in the opposite direction -- neither
+ * function can produce `deny`.
+ */
+export function reconcileEscalateCounterfactual(authorityFree: 'approve' | 'deny' | 'escalate'): {
+  readonly decision: 'approve' | 'escalate';
+  readonly overridden: boolean;
+} {
+  if (authorityFree === 'approve') {
+    return { decision: 'approve', overridden: true };
+  }
+  return { decision: 'escalate', overridden: false };
 }

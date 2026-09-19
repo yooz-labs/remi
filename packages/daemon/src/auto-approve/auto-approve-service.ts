@@ -11,7 +11,12 @@
 
 import { errorToString } from '@remi/shared';
 import { resolvePolicy } from './agent-policy.ts';
-import { reconcileCounterfactual, shouldCounterfactual } from './authority-counterfactual.ts';
+import {
+  reconcileCounterfactual,
+  reconcileEscalateCounterfactual,
+  shouldCounterfactual,
+  shouldCounterfactualForEscalate,
+} from './authority-counterfactual.ts';
 import { enforceAuthorityBoundary } from './authority.ts';
 import { AuthorizationAssessment, matrixDecision } from './authorization-assessment.ts';
 import { denySourceForFloor, enforceDenyFloor } from './deny-floor.ts';
@@ -80,6 +85,23 @@ import {
 } from './verified-dual-review.ts';
 
 type BinaryDecision = 'approve' | 'deny' | 'escalate';
+
+/**
+ * A parsed model verdict, shared by `parseDecision` and
+ * `AutoApproveService.runCounterfactualEval` (#1105 review) so the two
+ * cannot drift: a hand-duplicated copy of this shape at the second site
+ * would only be checked for assignability at its one `return` statement, not
+ * for completeness, so a future field added to `parseDecision`'s result
+ * would silently narrow away at that copy instead of failing the build.
+ */
+type ParsedDecision = {
+  decision: BinaryDecision;
+  reasoning: string;
+  /** #628: a one-sentence, lock-screen-friendly question the model produces on
+   *  escalate (e.g. "Force-push to main?"). Absent for approve/deny or when the
+   *  model omits it. */
+  summary?: string;
+};
 const VALID_DECISIONS = new Set<BinaryDecision>(['approve', 'deny', 'escalate']);
 
 type ShadowReviewFailureKind = 'malformed' | 'timeout' | 'unavailable' | 'error';
@@ -220,14 +242,7 @@ export function normalisePermissionSuggestion(entry: unknown): string | null {
  * Tries JSON first. If JSON fails, escalates (no guessing from substring matches).
  * Exported for unit testing.
  */
-export function parseDecision(raw: string): {
-  decision: BinaryDecision;
-  reasoning: string;
-  /** #628: a one-sentence, lock-screen-friendly question the model produces on
-   *  escalate (e.g. "Force-push to main?"). Absent for approve/deny or when the
-   *  model omits it. */
-  summary?: string;
-} {
+export function parseDecision(raw: string): ParsedDecision {
   // extractJsonObject tolerates a markdown code fence or a short preamble around
   // the JSON (deterministic, string-aware — never a free-text keyword guess).
   // Many reasoning-tuned local models, notably qwen3.6:35b-mlx, fence every
@@ -1476,6 +1491,35 @@ export class AutoApproveService {
    * override an explicit human refusal. Keeping the matcher and escalation
    * construction in one helper prevents the two paths from drifting.
    */
+  /**
+   * Run ONE authority-free counterfactual evaluation: the identical prompt
+   * (same tool, input, instructions, level) with the CONVERSATION CONTEXT
+   * block omitted, and return the parsed verdict. Shared by both the #954
+   * (approve-direction) and #1105 (escalate-direction) counterfactual blocks
+   * in `evaluate()` -- they differ only in which decision they gate on and
+   * how they reconcile the two verdicts, never in how the second call itself
+   * is made, so a single call site is what keeps that construction from
+   * drifting between them (review finding, #1105: the duplicated version of
+   * this is what let a missing deny-floor recheck go unnoticed in the first
+   * draft of the escalate direction).
+   *
+   * Runs INLINE rather than via a nested `evaluate()` call: that would
+   * re-enter `acquireSlot` while still holding this eval's slot, and deadlock
+   * on a single-slot pool.
+   */
+  private async runCounterfactualEval(
+    toolName: string,
+    toolInput: Record<string, unknown>,
+    model: string,
+  ): Promise<ParsedDecision> {
+    const cfResponse = await chatCompletion(
+      { ...this.llmConfig, model },
+      buildPrompt(toolName, toolInput, this.instructions, undefined, this.level),
+      this.currentAbortController?.signal,
+    );
+    return parseDecision(cfResponse.content);
+  }
+
   private applyDeniedPrecedent(
     result: AutoApproveResult,
     toolName: string,
@@ -2346,16 +2390,11 @@ export class AutoApproveService {
         ) {
           const cfStart = Date.now();
           try {
-            const cfResponse = await chatCompletion(
-              { ...this.llmConfig, model },
-              // Same prompt, same instructions, authority block OMITTED.
-              // Same level, same instructions -- ONLY the authority block differs,
-              // which is what makes the comparison a counterfactual rather than
-              // a different question (#954).
-              buildPrompt(toolName, toolInput, this.instructions, undefined, this.level),
-              this.currentAbortController?.signal,
-            );
-            const cfParsed = parseDecision(cfResponse.content);
+            // Same prompt, same instructions, authority block OMITTED. Same
+            // level, same instructions -- ONLY the authority block differs,
+            // which is what makes the comparison a counterfactual rather than
+            // a different question (#954).
+            const cfParsed = await this.runCounterfactualEval(toolName, toolInput, model);
             const reconciled = reconcileCounterfactual(cfParsed.decision);
             if (reconciled.overridden) {
               decidedBy = 'counterfactual';
@@ -2389,6 +2428,106 @@ export class AutoApproveService {
             };
             this.logFn(
               `${prefix} COUNTERFACTUAL ${toolName}: check failed, escalating - ${errorToString(err)}`,
+            );
+          }
+        }
+
+        // #1105 COUNTERFACTUAL, escalate direction: the mirror image of #954
+        // above. #954 catches authority talking the model INTO an approve it
+        // should not have reached; this catches authority (or ambient context)
+        // talking the model OUT OF an approve it should have reached -- an
+        // ordinary, benign operation escalated with reasoning that traces to
+        // unrelated conversation text rather than the command itself (observed
+        // live: a read-only `bash -n && shellcheck` check escalated as "remote
+        // mutation, writing to main branch", which matches nothing in that
+        // command). Gated by `shouldCounterfactualForEscalate` to the inverse
+        // shape filter -- an operation that already LOOKS risky needs no second
+        // opinion, it would escalate regardless of authority.
+        //
+        // `decidedBy === 'model'` is REQUIRED, not redundant with the shape
+        // filter (review finding, #1105): every OTHER guard above can also
+        // land on 'escalate', and each means something structurally different
+        // that this mechanism must never re-litigate --
+        //   - `deny_floor`: the model's own DENY, only escalated because it
+        //     was not clearly catastrophic. Looping an authority-free
+        //     "approve" back through here would silently turn a model refusal
+        //     into a silent auto-approve with no card ever shown -- confirmed
+        //     reachable in review, the most severe finding against the first
+        //     draft of this block.
+        //   - `precedent`: a HUMAN already said no to this in this session.
+        //     Overriding that via a second model opinion breaks precedent's
+        //     entire sticky-no guarantee (`precedent.ts`).
+        //   - `trust_boundary` / `risk_ceiling`: already the #893/#976
+        //     mechanisms' own escalate; re-litigating an approve they just
+        //     rejected from the opposite direction is redundant at best.
+        //   - `counterfactual` / `counterfactual_failed`: #954's own verdict;
+        //     a third call arguing the other way is not a safety net, it is a
+        //     ping-pong.
+        // Restricting to the model's OWN, untouched, direct escalate is the
+        // only scope where "was authority the deciding factor" is even the
+        // right question to ask.
+        if (
+          !useMultiChoice &&
+          decidedBy === 'model' &&
+          result.decision === 'escalate' &&
+          shouldCounterfactualForEscalate(toolName, toolInput, result.decision, authorityPresent)
+        ) {
+          const cfStart = Date.now();
+          try {
+            const cfParsed = await this.runCounterfactualEval(toolName, toolInput, model);
+            const reconciled = reconcileEscalateCounterfactual(cfParsed.decision);
+            if (reconciled.overridden) {
+              // The authority-free run says approve. Before trusting it,
+              // re-run the SAME guards the ordinary approve path already
+              // passes through (risk ceiling, trust boundary) -- this
+              // counterfactual proves authority was not the ONLY reason the
+              // operation looked escalate-worthy, not that it is safe to
+              // auto-approve outright. Either guard firing means the operation
+              // itself still warrants a human regardless of what decided the
+              // original escalate, so the original stands unchanged.
+              const ceilingCheck = enforceRiskCeiling(toolName, toolInput, 'approve');
+              const boundaryCheck = enforceAuthorityBoundary(toolName, toolInput, 'approve', true);
+              if (!ceilingCheck.overridden && !boundaryCheck.overridden) {
+                // Log BEFORE mutating state (review finding): this branch is
+                // the one place in this file where the try's two outcomes
+                // diverge in DIRECTION (approve vs. the catch's escalate), so
+                // unlike the sibling #954 block, a throw from a fallible
+                // statement placed after the mutation (logFn's declared type
+                // is `(msg: string) => void`, not provably non-throwing)
+                // would leave the loosened `result` standing while the catch
+                // below logs "keeping escalate" -- true of neither the log
+                // nor the decision. Ordering this first makes the fail-closed
+                // claim structurally true: nothing capable of throwing runs
+                // between here and the `if` that decided to loosen.
+                this.logFn(
+                  `${prefix} COUNTERFACTUAL ${toolName}: escalate -> approve (authority-free verdict was approve) (+${Date.now() - cfStart}ms)`,
+                );
+                decidedBy = 'counterfactual_escalate';
+                const original = result;
+                result = {
+                  decision: 'approve',
+                  reasoning: `Authority counterfactual (#1105): the same operation evaluated to "approve" WITHOUT the conversation-context block, so that text (or ambient context) decided the escalate rather than the command itself. Approving instead. Authority-free reasoning: ${cfParsed.reasoning} | Original: ${original.reasoning}`,
+                  durationMs,
+                  model: original.model,
+                  // No `summary` (#628): that field is escalate-only ("the
+                  // model's lock-screen one-liner"), never approve/deny.
+                  // `original.summary` here is the ESCALATE's summary; every
+                  // other approve/deny built in this file omits the field
+                  // entirely rather than carry a stale one forward.
+                };
+              } else {
+                this.logFn(
+                  `${prefix} COUNTERFACTUAL ${toolName}: authority-free verdict was approve, but risk ceiling/trust boundary still applies -- keeping escalate (+${Date.now() - cfStart}ms)`,
+                );
+              }
+            }
+          } catch (err) {
+            // Fail closed: an unconfirmed check must not manufacture a
+            // loosening. The original escalate stands, unlike #954's failure
+            // path above -- there is no authority-influenced approve here to
+            // protect against, only an escalate that already needs a human.
+            this.logFn(
+              `${prefix} COUNTERFACTUAL ${toolName}: escalate-side check failed, keeping escalate - ${errorToString(err)}`,
             );
           }
         }

@@ -11,7 +11,9 @@ import { describe, expect, test } from 'bun:test';
 import {
   matchesRiskyShape,
   reconcileCounterfactual,
+  reconcileEscalateCounterfactual,
   shouldCounterfactual,
+  shouldCounterfactualForEscalate,
 } from '../../src/auto-approve/authority-counterfactual.ts';
 
 const bash = (command: string) => ({ command });
@@ -102,6 +104,109 @@ describe('reconcileCounterfactual', () => {
   test('it can only ever tighten', () => {
     for (const v of ['approve', 'deny', 'escalate'] as const) {
       expect(reconcileCounterfactual(v).decision).not.toBe('deny');
+    }
+  });
+});
+
+/**
+ * #1105: the mirror-image gap `shouldCounterfactual`'s own "does not fire on
+ * deny or escalate" test documents as intentional -- under the assumption
+ * that authority can only ever LOWER a verdict, so an escalate has nothing to
+ * correct. A live session disproved that assumption: an ordinary, read-only
+ * `bash -n && shellcheck` check was escalated with reasoning ("remote
+ * mutation, writing to main branch") that matches nothing in the command --
+ * conversation context, not the command, decided the outcome. Nothing existed
+ * to catch that direction.
+ */
+describe('shouldCounterfactualForEscalate gates on all three conditions', () => {
+  const ordinary = { command: 'bash -n script.sh && shellcheck script.sh' };
+
+  test('fires on escalate + authority + an ORDINARY-shaped operation', () => {
+    expect(shouldCounterfactualForEscalate('Bash', ordinary, 'escalate', true)).toBe(true);
+  });
+
+  test('does not fire without authority', () => {
+    expect(shouldCounterfactualForEscalate('Bash', ordinary, 'escalate', false)).toBe(false);
+  });
+
+  test('does not fire on approve or deny', () => {
+    expect(shouldCounterfactualForEscalate('Bash', ordinary, 'approve', true)).toBe(false);
+    expect(shouldCounterfactualForEscalate('Bash', ordinary, 'deny', true)).toBe(false);
+  });
+
+  test('does not fire when the operation already looks genuinely risky', () => {
+    // An escalate for something that matches the risky-shape filter needs no
+    // second opinion -- it would have escalated regardless of authority.
+    expect(
+      shouldCounterfactualForEscalate('Bash', { command: 'rm -rf ./build' }, 'escalate', true),
+    ).toBe(false);
+  });
+
+  test('does not fire for a non-Bash tool, even an ordinary-looking escalate', () => {
+    // RISKY_SHAPES has zero tool-name entries, so a non-Bash tool would
+    // otherwise ALWAYS read as "not risky" by this function's own signal.
+    // Bash-only is a structural exclusion, not shape-dependent.
+    expect(
+      shouldCounterfactualForEscalate(
+        'Edit',
+        { file_path: './notes.md', old_string: 'a', new_string: 'b' },
+        'escalate',
+        true,
+      ),
+    ).toBe(false);
+    expect(
+      shouldCounterfactualForEscalate(
+        'Write',
+        { file_path: './notes.md', content: 'x' },
+        'escalate',
+        true,
+      ),
+    ).toBe(false);
+  });
+
+  test('does not fire for a Bash call with no usable command field', () => {
+    expect(shouldCounterfactualForEscalate('Bash', {}, 'escalate', true)).toBe(false);
+    expect(shouldCounterfactualForEscalate('Bash', { command: '' }, 'escalate', true)).toBe(false);
+    expect(shouldCounterfactualForEscalate('Bash', { command: '   ' }, 'escalate', true)).toBe(
+      false,
+    );
+    expect(shouldCounterfactualForEscalate('Bash', { cmd: 'git status' }, 'escalate', true)).toBe(
+      false,
+    );
+  });
+});
+
+describe('reconcileEscalateCounterfactual', () => {
+  test('an authority-free approve overrides the escalate to approve', () => {
+    // Disagreement in THIS direction means the same thing #954 already
+    // established for the approve side: authority (or context noise) decided
+    // the outcome, which the prompt-level rule forbids either way.
+    expect(reconcileEscalateCounterfactual('approve')).toEqual({
+      decision: 'approve',
+      overridden: true,
+    });
+  });
+
+  test('an authority-free escalate leaves the verdict alone', () => {
+    expect(reconcileEscalateCounterfactual('escalate')).toEqual({
+      decision: 'escalate',
+      overridden: false,
+    });
+  });
+
+  test('an authority-free deny leaves the escalate standing, never approves', () => {
+    // The operation is not obviously safe without authority either -- keep
+    // asking a human, do not manufacture an approve out of two non-approve
+    // verdicts.
+    expect(reconcileEscalateCounterfactual('deny')).toEqual({
+      decision: 'escalate',
+      overridden: false,
+    });
+  });
+
+  test('it can only ever loosen toward approve, never toward deny', () => {
+    for (const v of ['approve', 'deny', 'escalate'] as const) {
+      expect(reconcileEscalateCounterfactual(v).decision).not.toBe('deny');
     }
   });
 });
