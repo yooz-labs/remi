@@ -1101,6 +1101,14 @@ const CAT_SUBSTITUTION_HEAD = '$(cat';
  * line is then required to agree at the same position as a second, cheap
  * confirmation (same defense-in-depth shape `hasNetworkDeviceInputRedirect`
  * already uses elsewhere in this module: neither view alone is trusted).
+ *
+ * Recomputes `maskQuotedSpans(line)` rather than reusing the one
+ * `scanHeredocOperator` already produced internally for the same line
+ * (review note, #1104): that function does not return its masked view, and
+ * threading it out would widen `HeredocOperatorScan`'s shape for every
+ * existing caller/test of a type this module already has extensive coverage
+ * on, to save one O(line length) re-scan that only runs on a line a heredoc
+ * operator was just found on -- not a hot loop. Accepted as-is.
  */
 function findBareCatSubstitutionStart(line: string, opStart: number): number | null {
   const maskedPrefix = maskQuotedSpans(line).slice(0, opStart).replace(/\s+$/, '');
@@ -1125,6 +1133,28 @@ function stripLeadingSubstitutionClose(line: string): string | null {
   const leading = /^\s*/.exec(masked)?.[0].length ?? 0;
   if (masked[leading] !== ')') return null;
   return line.slice(0, leading) + line.slice(leading + 1);
+}
+
+/**
+ * Prove the WHOLE `$(cat <<'MARKER' ... MARKER)` span, both ends at once, so
+ * a caller can never observe "one end found, the other not" as two
+ * separately-nulled variables that must be kept in lockstep by hand (review
+ * finding, #1104). Returns null the instant either half is unprovable --
+ * there is no partial result.
+ *
+ * `closingLine` is `undefined` when the heredoc's terminator was the LAST
+ * line of the command (no line follows for a closing `)` to appear on).
+ */
+function findCatSubstitutionWrapper(
+  line: string,
+  opStart: number,
+  closingLine: string | undefined,
+): { readonly wrapperStart: number; readonly closingRemainder: string } | null {
+  const wrapperStart = findBareCatSubstitutionStart(line, opStart);
+  if (wrapperStart === null || closingLine === undefined) return null;
+  const closingRemainder = stripLeadingSubstitutionClose(closingLine);
+  if (closingRemainder === null) return null;
+  return { wrapperStart, closingRemainder };
 }
 
 /**
@@ -1184,25 +1214,19 @@ function exciseHeredocsForGroups(command: string): string {
     const body = lines.slice(i + 1, terminatorAt);
     if (!op.quoted && heredocBodyHasLiveSubstitution(body)) return command; // live body: fail closed
 
-    let wrapperStart: number | null = null;
-    let closingRemainder: string | null = null;
-    if (op.quoted) {
-      wrapperStart = findBareCatSubstitutionStart(line, op.opStart);
-      if (wrapperStart !== null) {
-        const afterTerminator = lines[terminatorAt + 1];
-        closingRemainder =
-          afterTerminator === undefined ? null : stripLeadingSubstitutionClose(afterTerminator);
-        // Only a FULLY proven wrapper (both ends found) is erased. A start
-        // with no matching bare close is not "half exempted" -- fall back to
-        // the plain operator-only excision below, exactly as if this were not
-        // a `$(cat ...)` wrapper at all.
-        if (closingRemainder === null) wrapperStart = null;
-      }
-    }
+    // `op.quoted` only: an unquoted delimiter cannot make the ENCLOSING
+    // wrapper provably inert either (see `findBareCatSubstitutionStart`'s
+    // doc). `null` covers both "not this shape at all" and "half-proven, one
+    // end found but not the other" -- callers never see the difference, so a
+    // half match can never be "half exempted" (review finding, #1104: this
+    // used to be two separately-nulled locals kept in lockstep by hand).
+    const wrapper = op.quoted
+      ? findCatSubstitutionWrapper(line, op.opStart, lines[terminatorAt + 1])
+      : null;
 
-    if (wrapperStart !== null && closingRemainder !== null) {
-      out.push(line.slice(0, wrapperStart) + line.slice(op.opEnd));
-      out.push(closingRemainder);
+    if (wrapper !== null) {
+      out.push(line.slice(0, wrapper.wrapperStart) + line.slice(op.opEnd));
+      out.push(wrapper.closingRemainder);
       i = terminatorAt + 2; // skip the body, the terminator, AND the closing line
     } else {
       out.push(line.slice(0, op.opStart) + line.slice(op.opEnd));

@@ -62,6 +62,15 @@
  * verdict was `approve`. In the 796-evaluation sample that set is close to
  * empty, so steady-state latency is unchanged. The filter exists precisely so
  * the common path never pays.
+ *
+ * This measurement is for THIS (approve) direction only. `shouldCounterfactual
+ * ForEscalate` (#1105) below pays for a second call under close to the LOGICAL
+ * INVERSE condition -- an escalate whose operation does NOT look risky by the
+ * same filter -- which is not the rare case the way an authority-swayed
+ * approve of a risky-looking operation is. It is narrowed on other axes
+ * instead (restricted to the model's own untouched escalate, Bash-only, a
+ * non-empty `command`; see that function's doc), but its steady-state cost
+ * has not been measured and should not be assumed equal to this direction's.
  */
 
 import { matchSubstringPattern } from './pattern-matcher.ts';
@@ -218,15 +227,40 @@ export function reconcileCounterfactual(authorityFree: 'approve' | 'deny' | 'esc
  * Same counterfactual principle as the approve side, run in the opposite
  * direction: ask the same question with the authority block removed, and
  * trust THAT answer over the authority-influenced one. Gated the mirror image
- * of `shouldCounterfactual`'s three conditions:
+ * of `shouldCounterfactual`'s three conditions, plus a fourth this direction
+ * needs that the approve side does not:
  *
  * - not `escalate`      -> nothing to correct in this direction
  * - no authority        -> there is no counterfactual to run
  * - already risky-shaped -> the operation would escalate regardless of
- *   authority, so a second opinion buys nothing (and this is the ONE
- *   direction where over-matching `matchesRiskyShape` costs a needless LLM
- *   call rather than a missed correction, so it stays a plain gate, not
- *   inverted precision).
+ *   authority, so a second opinion buys nothing
+ * - not a Bash command   -> see "Bash-only" below
+ *
+ * ## Over-matching vs. under-matching: this direction inverts the asymmetry
+ *
+ * On the approve side, `matchesRiskyShape` returning null for an unmatched
+ * shape only means "skip the extra check" -- the worst case is a missed
+ * correction, never a wrongly-granted approval, because `shouldCounterfactual`
+ * only ever TIGHTENS. On this side the same null result LOOSENS: it is what
+ * lets a downstream authority-free `approve` replace the escalate. Under-
+ * matching here is therefore the dangerous direction, not the safe one
+ * (review finding, #1105) -- `RISKY_SHAPES` is a Bash-command substring list
+ * with zero tool names in it, so every non-Bash tool call (`Write`, `Edit`,
+ * `NotebookEdit`, an MCP tool) would otherwise ALWAYS read as "not risky" and
+ * become eligible for loosening, gated by nothing this module can vouch for.
+ *
+ * ## Bash-only, mirroring `precedent.ts`'s `precedentMayAuthorize`
+ *
+ * That module restricts precedent REUSE to `Bash` calls carrying a `command`
+ * field, for the identical reason: the risk-classification layer this
+ * codebase actually trusts (`classifyRisk`, `matchesCatastrophicPattern`,
+ * `matchGroups`) reads `toolInput.command` and nothing else, so a tool/shape
+ * outside that is unclassifiable by anything this function can lean on, not
+ * merely under-classified. Widening either mechanism to "every tool" would be
+ * an authority decision nobody has measured, not a consequence of the risk
+ * layer learning to classify (`precedent.ts`'s own framing of this exact
+ * tradeoff). Staying narrow costs an unrecovered escalate on a non-Bash tool;
+ * widening risks a silent, unwitnessed loosening on one.
  */
 export function shouldCounterfactualForEscalate(
   toolName: string,
@@ -236,6 +270,9 @@ export function shouldCounterfactualForEscalate(
 ): boolean {
   if (decision !== 'escalate') return false;
   if (!authorityPresent) return false;
+  if (toolName !== 'Bash') return false;
+  const command = toolInput['command'];
+  if (typeof command !== 'string' || command.trim().length === 0) return false;
   return matchesRiskyShape(toolName, toolInput) === null;
 }
 

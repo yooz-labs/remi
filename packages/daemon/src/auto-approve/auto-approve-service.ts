@@ -1481,6 +1481,35 @@ export class AutoApproveService {
    * override an explicit human refusal. Keeping the matcher and escalation
    * construction in one helper prevents the two paths from drifting.
    */
+  /**
+   * Run ONE authority-free counterfactual evaluation: the identical prompt
+   * (same tool, input, instructions, level) with the CONVERSATION CONTEXT
+   * block omitted, and return the parsed verdict. Shared by both the #954
+   * (approve-direction) and #1105 (escalate-direction) counterfactual blocks
+   * in `evaluate()` -- they differ only in which decision they gate on and
+   * how they reconcile the two verdicts, never in how the second call itself
+   * is made, so a single call site is what keeps that construction from
+   * drifting between them (review finding, #1105: the duplicated version of
+   * this is what let a missing deny-floor recheck go unnoticed in the first
+   * draft of the escalate direction).
+   *
+   * Runs INLINE rather than via a nested `evaluate()` call: that would
+   * re-enter `acquireSlot` while still holding this eval's slot, and deadlock
+   * on a single-slot pool.
+   */
+  private async runCounterfactualEval(
+    toolName: string,
+    toolInput: Record<string, unknown>,
+    model: string,
+  ): Promise<{ decision: BinaryDecision; reasoning: string; summary?: string }> {
+    const cfResponse = await chatCompletion(
+      { ...this.llmConfig, model },
+      buildPrompt(toolName, toolInput, this.instructions, undefined, this.level),
+      this.currentAbortController?.signal,
+    );
+    return parseDecision(cfResponse.content);
+  }
+
   private applyDeniedPrecedent(
     result: AutoApproveResult,
     toolName: string,
@@ -2351,16 +2380,11 @@ export class AutoApproveService {
         ) {
           const cfStart = Date.now();
           try {
-            const cfResponse = await chatCompletion(
-              { ...this.llmConfig, model },
-              // Same prompt, same instructions, authority block OMITTED.
-              // Same level, same instructions -- ONLY the authority block differs,
-              // which is what makes the comparison a counterfactual rather than
-              // a different question (#954).
-              buildPrompt(toolName, toolInput, this.instructions, undefined, this.level),
-              this.currentAbortController?.signal,
-            );
-            const cfParsed = parseDecision(cfResponse.content);
+            // Same prompt, same instructions, authority block OMITTED. Same
+            // level, same instructions -- ONLY the authority block differs,
+            // which is what makes the comparison a counterfactual rather than
+            // a different question (#954).
+            const cfParsed = await this.runCounterfactualEval(toolName, toolInput, model);
             const reconciled = reconcileCounterfactual(cfParsed.decision);
             if (reconciled.overridden) {
               decidedBy = 'counterfactual';
@@ -2409,21 +2433,38 @@ export class AutoApproveService {
         // command). Gated by `shouldCounterfactualForEscalate` to the inverse
         // shape filter -- an operation that already LOOKS risky needs no second
         // opinion, it would escalate regardless of authority.
+        //
+        // `decidedBy === 'model'` is REQUIRED, not redundant with the shape
+        // filter (review finding, #1105): every OTHER guard above can also
+        // land on 'escalate', and each means something structurally different
+        // that this mechanism must never re-litigate --
+        //   - `deny_floor`: the model's own DENY, only escalated because it
+        //     was not clearly catastrophic. Looping an authority-free
+        //     "approve" back through here would silently turn a model refusal
+        //     into a silent auto-approve with no card ever shown -- confirmed
+        //     reachable in review, the most severe finding against the first
+        //     draft of this block.
+        //   - `precedent`: a HUMAN already said no to this in this session.
+        //     Overriding that via a second model opinion breaks precedent's
+        //     entire sticky-no guarantee (`precedent.ts`).
+        //   - `trust_boundary` / `risk_ceiling`: already the #893/#976
+        //     mechanisms' own escalate; re-litigating an approve they just
+        //     rejected from the opposite direction is redundant at best.
+        //   - `counterfactual` / `counterfactual_failed`: #954's own verdict;
+        //     a third call arguing the other way is not a safety net, it is a
+        //     ping-pong.
+        // Restricting to the model's OWN, untouched, direct escalate is the
+        // only scope where "was authority the deciding factor" is even the
+        // right question to ask.
         if (
           !useMultiChoice &&
+          decidedBy === 'model' &&
           result.decision === 'escalate' &&
           shouldCounterfactualForEscalate(toolName, toolInput, result.decision, authorityPresent)
         ) {
           const cfStart = Date.now();
           try {
-            const cfResponse = await chatCompletion(
-              { ...this.llmConfig, model },
-              // Same prompt, same instructions, authority block OMITTED --
-              // identical construction to #954's call above.
-              buildPrompt(toolName, toolInput, this.instructions, undefined, this.level),
-              this.currentAbortController?.signal,
-            );
-            const cfParsed = parseDecision(cfResponse.content);
+            const cfParsed = await this.runCounterfactualEval(toolName, toolInput, model);
             const reconciled = reconcileEscalateCounterfactual(cfParsed.decision);
             if (reconciled.overridden) {
               // The authority-free run says approve. Before trusting it,

@@ -2413,6 +2413,106 @@ describe('AutoApproveService - authority counterfactual, escalate direction (#11
       server.stop(true);
     }
   });
+
+  test('a deny-floor escalate is never re-litigated toward approve (regression, review finding)', async () => {
+    // The most severe finding against the first draft of this mechanism: the
+    // model DENIES an ordinary operation; deny-floor (#953) correctly turns
+    // that into an escalate ("not clearly catastrophic, ask a human, don't
+    // block silently"). Without the `decidedBy === 'model'` gate, this
+    // mechanism could not tell that apart from the model's OWN direct
+    // escalate, and an authority-free re-ask answering "approve" would
+    // silently convert a model REFUSAL into an auto-approve with no card
+    // ever shown -- confirmed reachable by direct function composition in
+    // review. The call counter is the proof: if the gate is doing its job,
+    // the second (would-be-approving) response is never even requested.
+    let calls = 0;
+    const server = Bun.serve({
+      port: 0,
+      fetch: () => {
+        calls++;
+        const decision = calls === 1 ? 'deny' : 'approve';
+        return new Response(
+          JSON.stringify({
+            choices: [{ message: { content: `{"decision":"${decision}","reasoning":"n/a"}` } }],
+            model: 'test-model',
+          }),
+          { headers: { 'Content-Type': 'application/json' } },
+        );
+      },
+    });
+    try {
+      const svc = new AutoApproveService(
+        makeAuthorityTestConfig(`http://localhost:${server.port}/v1`),
+        logFn,
+      );
+      const result = await svc.evaluate(
+        'Bash',
+        { command: 'bash -n script.sh && shellcheck script.sh' },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        'we discussed the release earlier',
+      );
+      expect(result.decision).toBe('escalate');
+      expect(result.reasoning).toContain('Deny floor');
+      // ONE call: the deny-floor escalate must never reach the #1105 gate's
+      // second (authority-free) request at all.
+      expect(calls).toBe(1);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test('a non-Bash tool escalate is never re-litigated toward approve (regression, review finding)', async () => {
+    // `RISKY_SHAPES` is a Bash-command substring list with zero tool names,
+    // so it reads EVERY non-Bash tool as "not risky" -- widening this
+    // mechanism's Bash-only restriction to any tool would make an `Edit`/
+    // `Write`/MCP-tool escalate eligible for the same loosening with no
+    // shape-based signal backing it up. Bash-only + non-empty `command`
+    // closes that: the call counter proves the second call is never placed.
+    let calls = 0;
+    const server = Bun.serve({
+      port: 0,
+      fetch: () => {
+        calls++;
+        return new Response(
+          JSON.stringify({
+            choices: [
+              { message: { content: '{"decision":"escalate","reasoning":"sensitive edit"}' } },
+            ],
+            model: 'test-model',
+          }),
+          { headers: { 'Content-Type': 'application/json' } },
+        );
+      },
+    });
+    try {
+      const svc = new AutoApproveService(
+        makeAuthorityTestConfig(`http://localhost:${server.port}/v1`),
+        logFn,
+      );
+      const result = await svc.evaluate(
+        'Edit',
+        { file_path: './notes.md', old_string: 'a', new_string: 'b' },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        'we discussed the release earlier',
+      );
+      expect(result.decision).toBe('escalate');
+      // ONE call: a non-Bash tool must never reach the #1105 gate's second
+      // (authority-free) request.
+      expect(calls).toBe(1);
+    } finally {
+      server.stop(true);
+    }
+  });
 });
 
 /**

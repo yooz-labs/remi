@@ -1742,8 +1742,6 @@ describe('#1057 phase 2 commit 3: heredoc excision (group path only)', () => {
  * `vcs-write`'s existing `git commit` coverage never gets a chance to apply.
  */
 describe('#1104: heredoc-into-$(cat) substitution composes with existing coverage', () => {
-  const WRITE_GROUPS_NO_SCRATCH = [...ALL, 'fs-write'];
-
   test('git commit -m with a heredoc-built multi-line message resolves via vcs-write', () => {
     const cmd =
       "git add src/foo.py src/bar.py && git commit -m \"$(cat <<'MSG'\n" +
@@ -1803,7 +1801,11 @@ describe('#1104: heredoc-into-$(cat) substitution composes with existing coverag
     ];
     for (const [cmd, why] of mustStayNull) {
       test(`${JSON.stringify(cmd)} — ${why}`, () => {
-        expect(bash(cmd, WRITE_GROUPS_NO_SCRATCH)).toBeNull();
+        // WRITE_GROUPS (not a fs-write-only subset): `vcs-write` is the ONLY
+        // group that could resolve `git commit`, so it must be requested here
+        // or every case below would pass vacuously regardless of whether the
+        // wrapper-detection logic is correct (review finding, #1104).
+        expect(bash(cmd, WRITE_GROUPS)).toBeNull();
       });
     }
   });
