@@ -127,25 +127,48 @@ CODE-OWNED FINAL CHECK (instructions from Remi, not operation data):
 Return the JSON object now:`;
 }
 
-/**
- * Render the deterministic effect fact as an actual JSON array in the prompt.
- * The legacy key/value fact line remains below for compatibility with existing
- * telemetry fixtures, but a comma-separated value is too easy for a model to
- * treat as prose and silently omit an effect such as process_execution.
- */
-function formatExactEffectSet(proofFacts: readonly string[]): string {
-  const fact = proofFacts.find(
+/** Parse the code-owned effect fact before it reaches the reviewer prompt. */
+export function parseDeterministicEffectSet(
+  proofFacts: readonly string[],
+): readonly IntentEffect[] | null {
+  const effectFacts = proofFacts.filter(
     (entry) => entry.startsWith('verified_effects=') || entry.startsWith('workflow_effects='),
   );
-  if (fact === undefined) return '(not supplied)';
+  if (effectFacts.length !== 1) return null;
 
+  const fact = effectFacts[0];
+  if (fact === undefined) return null;
   const separator = fact.indexOf('=');
-  const raw = separator === -1 ? '' : fact.slice(separator + 1);
-  const effects = raw
+  if (separator === -1) return null;
+  const effects = fact
+    .slice(separator + 1)
     .split(',')
     .map((effect) => effect.trim())
     .filter((effect) => effect.length > 0);
-  return effects.length > 0 ? JSON.stringify(effects) : '(empty)';
+  if (effects.length === 0) return null;
+
+  const parsed: IntentEffect[] = [];
+  for (const effect of effects) {
+    if (
+      !(INTENT_ASSESSMENT_EFFECTS as readonly string[]).includes(effect) ||
+      parsed.includes(effect as IntentEffect)
+    ) {
+      return null;
+    }
+    parsed.push(effect as IntentEffect);
+  }
+  return parsed;
+}
+
+/**
+ * Render the deterministic effect fact as an actual JSON array in the prompt.
+ * The legacy key/value fact line remains below for compatibility with existing
+ * prompt fixtures, but a comma-separated value is too easy for a model to
+ * treat as prose and silently omit an effect such as process_execution.
+ */
+function formatExactEffectSet(proofFacts: readonly string[]): string {
+  const effects = parseDeterministicEffectSet(proofFacts);
+  return effects === null ? '(not supplied)' : JSON.stringify(effects);
 }
 
 /**

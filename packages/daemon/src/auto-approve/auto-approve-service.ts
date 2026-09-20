@@ -65,6 +65,7 @@ import {
   buildShadowReviewPrompt,
   buildVerifiedEffectReviewPrompt,
   formatShadowReviewOperation,
+  parseDeterministicEffectSet,
   parseShadowRiskReview,
   parseVerifiedEffectReview,
 } from './risk-review.ts';
@@ -983,6 +984,9 @@ export class AutoApproveService {
     }
     const remainingMs = deadlineAt - Date.now();
     if (remainingMs <= 0) return finishFailure('timeout');
+    if (parseDeterministicEffectSet(proofFacts) === null) {
+      return finishFailure('malformed');
+    }
 
     const reviewerController = new AbortController();
     const forwardAbort = (): void => reviewerController.abort();

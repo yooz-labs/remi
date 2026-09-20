@@ -185,6 +185,17 @@ const INTERPRETER_EFFECT_REVIEW = JSON.stringify({
   reasoning: 'The bounded interpreter performs a reversible repository read.',
 });
 
+const INTERPRETER_EFFECT_REVIEW_MISSING_PROCESS = JSON.stringify({
+  risk: 'moderate',
+  intent: 'interpreter',
+  effects: ['filesystem_read'],
+  scope: 'repository',
+  reversible: true,
+  confidence: 0.97,
+  authorization: 'implicit',
+  reasoning: 'The operation reads repository state.',
+});
+
 const REMOTE_INTERPRETER_INTENT = JSON.stringify({
   intent: 'remote_read',
   effects: ['filesystem_read', 'network_read', 'remote_read', 'process_execution'],
@@ -338,6 +349,40 @@ describe('verified read-only risk review (#1081 phase 4)', () => {
     expect(requestText(server.requests()[0])).toContain(
       'for wt in $(git worktree list --porcelain',
     );
+  });
+
+  test('passes the exact bounded-interpreter effect set to the production reviewer', async () => {
+    const server = startReviewServer([INTERPRETER_INTENT, INTERPRETER_EFFECT_REVIEW]);
+    servers.push(server);
+    const service = new AutoApproveService(makeConfig(server.url), () => undefined);
+    const command =
+      "git worktree list --porcelain | grep '^worktree' | tail -n +2 | awk '{print $2}'";
+
+    const result = await evaluate(service, command);
+
+    expect(result.decision).toBe('approve');
+    expect(server.calls()).toBe(2);
+    expect(requestText(server.requests()[1])).toContain(
+      'CODE-OWNED EFFECT SET (exact observation to copy): ["filesystem_read","process_execution"]',
+    );
+  });
+
+  test('a production reviewer that omits process_execution still escalates', async () => {
+    const server = startReviewServer([
+      INTERPRETER_INTENT,
+      INTERPRETER_EFFECT_REVIEW_MISSING_PROCESS,
+    ]);
+    servers.push(server);
+    const service = new AutoApproveService(makeConfig(server.url), () => undefined);
+
+    const result = await evaluate(
+      service,
+      "git worktree list --porcelain | grep '^worktree' | tail -n +2 | awk '{print $2}'",
+    );
+
+    expect(result.decision).toBe('escalate');
+    expect(result.reasoning).toContain('independent effect reviewer conflicted');
+    expect(server.calls()).toBe(2);
   });
 
   test('replay corpus approves only proven moderate reads and fail-closes adversarial variants', async () => {

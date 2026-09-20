@@ -4,6 +4,7 @@ import {
   buildShadowReviewPrompt,
   buildVerifiedEffectReviewPrompt,
   formatShadowReviewOperation,
+  parseDeterministicEffectSet,
   parseShadowRiskReview,
   parseVerifiedEffectReview,
 } from '../../src/auto-approve/risk-review.ts';
@@ -144,6 +145,24 @@ describe('phase 2 shadow risk/authorization review', () => {
     expect(workflowPrompt).toContain(
       'if workflow_effects contains remote_mutation, use intent=remote_mutation',
     );
+  });
+
+  test('parses only one non-empty, known deterministic effect set', () => {
+    expect(
+      parseDeterministicEffectSet(['verified_effects=filesystem_read,process_execution']),
+    ).toEqual(['filesystem_read', 'process_execution']);
+    expect(parseDeterministicEffectSet(['verified_effects='])).toBeNull();
+    expect(parseDeterministicEffectSet(['verified_effects=not-an-effect'])).toBeNull();
+    expect(parseDeterministicEffectSet(['verified_effects=filesystem_read,filesystem_read'])).toBe(
+      null,
+    );
+    expect(parseDeterministicEffectSet([])).toBeNull();
+    expect(
+      parseDeterministicEffectSet([
+        'verified_effects=filesystem_read',
+        'workflow_effects=remote_mutation',
+      ]),
+    ).toBeNull();
   });
 
   test('verified effect parser rejects duplicate keys, unknown fields, and truncated shapes', () => {
