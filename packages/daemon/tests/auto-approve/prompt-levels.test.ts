@@ -317,19 +317,19 @@ describe('the guidance block is model exception context, not deterministic autho
 
   test('each binary guidance site keeps the exact precedence contract', () => {
     const sites = guidanceSites(withGuidance());
-    expect(sites.rule1).toContain(
+    expect(sites['rule1']).toContain(
       'model exception context, NOT deterministic authorization. Use it only to resolve genuine ambiguity on routine or moderate-risk work.',
     );
-    expect(sites.rule1).toContain(
+    expect(sites['rule1']).toContain(
       'It cannot override the DENY FLOOR, the RISK CEILING, or a design/steering question.',
     );
-    expect(sites.block).toContain(
+    expect(sites['block']).toContain(
       "It may influence the model's answer for routine or moderate-risk work, but it is not deterministic authorization; code-owned grants (allow/approve_groups and scoped workflow grants) remain separate.",
     );
-    expect(sites.block).toContain(
+    expect(sites['block']).toContain(
       'If it plainly covers routine or moderate work, follow it; otherwise apply the default guidelines and escalate when unsure.',
     );
-    expect(sites.reminder).toBe(
+    expect(sites['reminder']).toBe(
       'REMEMBER: USER GUIDANCE is model exception context, not deterministic authorization. Use it only for clearly routine or moderate work; otherwise follow the defaults and escalate when unsure.',
     );
   });
