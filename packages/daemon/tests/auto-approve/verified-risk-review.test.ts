@@ -425,16 +425,18 @@ describe('verified read-only risk review (#1081 phase 4)', () => {
     expect(noContext.decision).toBe('escalate');
     expect(noContext.reasoning).toContain('no current human authorization context');
 
-    // The proof passes, but the authority gate fails before verified risk
-    // normalization is valid. Keep the classifier's raw high band in the
-    // final telemetry rather than logging the moderate effective band used
-    // only for an eligible approval.
+    // The proof passes and verified mode computes its effective band before
+    // the authority gate, but the missing-authority gate still escalates.
+    // Because the result is not an eligible approval, final telemetry must
+    // retain the classifier's raw high band rather than the effective moderate
+    // band used by an approved verified read.
     const assignmentWithoutContext = await evaluate(
       service,
       'b=$(git status --porcelain); echo "$b"',
       '   ',
     );
     expect(assignmentWithoutContext.decision).toBe('escalate');
+    expect(assignmentWithoutContext.reasoning).toContain('no current human authorization context');
     expect(decisionLogs).toContainEqual(
       expect.stringContaining('[band=high authority=no decided_by=model]'),
     );
