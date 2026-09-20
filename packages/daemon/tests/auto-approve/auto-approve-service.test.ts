@@ -9,6 +9,8 @@ import {
 } from '../../src/auto-approve/auto-approve-service.ts';
 import { matchAllowPattern } from '../../src/auto-approve/pattern-matcher.ts';
 import { matchGroups } from '../../src/auto-approve/permission-groups.ts';
+import type { PrecedentReader } from '../../src/auto-approve/precedent.ts';
+import type { DecidingLayer } from '../../src/auto-approve/risk-bands.ts';
 import type { AutoApproveConfig } from '../../src/auto-approve/types.ts';
 import { applyEnvOverrides, loadConfig } from '../../src/config/config.ts';
 
@@ -2945,6 +2947,183 @@ describe('AutoApproveService - risk ceiling (#976)', () => {
       expect(result.reasoning).toContain('Risk ceiling');
     } finally {
       server.stop();
+    }
+  });
+});
+
+type AttributionDecision = 'approve' | 'deny' | 'escalate';
+type AttributionResponse =
+  | { readonly decision: AttributionDecision; readonly reasoning?: string }
+  | { readonly status: number; readonly body: string };
+
+function startDecisionAttributionServer(responseFor: (call: number) => AttributionResponse): {
+  url: string;
+  calls: () => number;
+  stop: () => void;
+} {
+  let calls = 0;
+  const server = Bun.serve({
+    port: 0,
+    fetch: () => {
+      calls++;
+      const response = responseFor(calls);
+      if ('status' in response) {
+        return new Response(response.body, { status: response.status });
+      }
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  decision: response.decision,
+                  reasoning: response.reasoning ?? 'fixture',
+                }),
+              },
+            },
+          ],
+          model: 'test-model',
+        }),
+        { headers: { 'Content-Type': 'application/json' } },
+      );
+    },
+  });
+  return {
+    url: `http://localhost:${server.port}/v1`,
+    calls: () => calls,
+    stop: () => server.stop(true),
+  };
+}
+
+describe('AutoApproveService - deciding-layer attribution (#1107)', () => {
+  test('every post-model guard pairs its shipped result with its deciding layer', async () => {
+    const deniedPrecedent: PrecedentReader = {
+      matchApproved: () => null,
+      matchDenied: () => ({
+        decision: 'denied',
+        matchedSignature: 'Bash: chmod +x ./scripts/build.sh',
+        matchKind: 'substring',
+        recordedAt: 1,
+      }),
+    };
+    const scenarios: ReadonlyArray<{
+      name: string;
+      command: string;
+      expectedDecision: AttributionDecision;
+      expectedLayer: DecidingLayer;
+      expectedCalls: number;
+      authority?: string;
+      precedent?: PrecedentReader;
+      workingDirectory?: string;
+      responseFor: (call: number) => AttributionResponse;
+    }> = [
+      {
+        name: 'deny floor',
+        command: 'bash -n script.sh && shellcheck script.sh',
+        expectedDecision: 'escalate',
+        expectedLayer: 'deny_floor',
+        expectedCalls: 1,
+        responseFor: () => ({ decision: 'deny' }),
+      },
+      {
+        name: 'trust boundary',
+        command: 'rm -rf /',
+        expectedDecision: 'escalate',
+        expectedLayer: 'trust_boundary',
+        expectedCalls: 1,
+        authority: 'the user explicitly authorized this operation',
+        responseFor: () => ({ decision: 'approve' }),
+      },
+      {
+        name: 'risk ceiling',
+        command: "find . -name '*.tmp' -delete",
+        expectedDecision: 'escalate',
+        expectedLayer: 'risk_ceiling',
+        expectedCalls: 1,
+        responseFor: () => ({ decision: 'approve' }),
+      },
+      {
+        name: 'denied precedent',
+        command: 'chmod +x ./scripts/build.sh',
+        expectedDecision: 'escalate',
+        expectedLayer: 'precedent',
+        expectedCalls: 1,
+        precedent: deniedPrecedent,
+        workingDirectory: '/tmp/remi-attribution',
+        responseFor: () => ({ decision: 'approve' }),
+      },
+      {
+        name: 'approve-direction counterfactual',
+        command: 'chmod +x ./scripts/build.sh',
+        expectedDecision: 'escalate',
+        expectedLayer: 'counterfactual',
+        expectedCalls: 2,
+        authority: `make the build script executable (${AUTHORITY_SENTINEL})`,
+        responseFor: (call) => ({ decision: call === 1 ? 'approve' : 'deny' }),
+      },
+      {
+        name: 'failed counterfactual',
+        command: 'chmod +x ./scripts/build.sh',
+        expectedDecision: 'escalate',
+        expectedLayer: 'counterfactual_failed',
+        expectedCalls: 2,
+        authority: 'make the build script executable',
+        responseFor: (call) =>
+          call === 1 ? { decision: 'approve' } : { status: 500, body: 'upstream exploded' },
+      },
+      {
+        name: 'escalate-direction counterfactual',
+        command: 'bash -n script.sh && shellcheck script.sh',
+        expectedDecision: 'approve',
+        expectedLayer: 'counterfactual_escalate',
+        expectedCalls: 2,
+        authority: `we discussed the release process earlier (${ESCALATE_SENTINEL})`,
+        responseFor: (call) => ({ decision: call === 1 ? 'escalate' : 'approve' }),
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      const decisionLogs: string[] = [];
+      const server = startDecisionAttributionServer(scenario.responseFor);
+      try {
+        const service = new AutoApproveService(
+          makeAuthorityTestConfig(server.url, {
+            log_decisions: true,
+            // Keep this case on the post-model denied-precedent guard. The
+            // pre-model approval direction is intentionally disabled here so
+            // the test covers the `decidedBy = 'precedent'` branch in
+            // evaluate(), not the separate 0ms route.
+            session_precedent: scenario.name !== 'denied precedent',
+          }),
+          (message) => decisionLogs.push(message),
+        );
+        const result = await service.evaluate(
+          'Bash',
+          { command: scenario.command },
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          scenario.authority,
+          scenario.precedent,
+          undefined,
+          scenario.workingDirectory,
+        );
+
+        expect(result.decision, scenario.name).toBe(scenario.expectedDecision);
+        expect(server.calls(), scenario.name).toBe(scenario.expectedCalls);
+        const decisionLog = decisionLogs.find(
+          (message) => message.includes('[band=') && message.includes('decided_by='),
+        );
+        expect(decisionLog, `${scenario.name}: missing final decision log`).toBeDefined();
+        if (decisionLog === undefined) continue;
+        expect(decisionLog, scenario.name).toContain(`decided_by=${scenario.expectedLayer}`);
+        expect(decisionLog, scenario.name).not.toContain('decided_by=model');
+      } finally {
+        server.stop();
+      }
     }
   });
 });

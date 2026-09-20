@@ -2229,6 +2229,15 @@ export class AutoApproveService {
             ? result.decision
             : null;
 
+        // Keep the diagnostic layer and the result it produced together. A
+        // guard that updates only one of these fields makes the final
+        // `decided_by` attribution lie about the verdict that ships (#1107).
+        // The helper is diagnostic-only: it does not participate in routing.
+        const setDecided = (layer: DecidingLayer, next: AutoApproveResult): void => {
+          decidedBy = layer;
+          result = next;
+        };
+
         // Q9 (#893) trust boundary: a binary (non-multichoice) 'approve' verdict
         // reached with an authority block in the prompt is re-checked here,
         // deliberately AFTER parsing and with no access to `parsed.reasoning` --
@@ -2254,15 +2263,14 @@ export class AutoApproveService {
         if (!useMultiChoice && result.decision === 'deny') {
           const floored = enforceDenyFloor(toolName, toolInput, result.decision);
           if (floored.overridden) {
-            decidedBy = 'deny_floor';
             const original = result;
-            result = {
+            setDecided('deny_floor', {
               decision: 'escalate',
               reasoning: `Deny floor (#953): model denied an operation matching no DENY FLOOR pattern, so it is escalated for you to answer rather than blocked silently. Original model reasoning: ${original.reasoning}`,
               durationMs,
               model: original.model,
               summary: 'Allow this command to run?',
-            };
+            });
             this.logFn(
               `${prefix} DENY FLOOR ${toolName}: deny -> escalate (no catastrophic pattern) (${durationMs}ms)`,
             );
@@ -2280,15 +2288,14 @@ export class AutoApproveService {
         if (!useMultiChoice && authorityPresent && result.decision === 'approve') {
           const guarded = enforceAuthorityBoundary(toolName, toolInput, result.decision, true);
           if (guarded.overridden) {
-            decidedBy = 'trust_boundary';
             const original = result;
-            result = {
+            setDecided('trust_boundary', {
               decision: 'escalate',
               reasoning: `Trust boundary (#893): authority-influenced approve blocked, matched DENY FLOOR pattern "${guarded.matchedPattern}". Original model reasoning: ${original.reasoning}`,
               durationMs,
               model: original.model,
               summary: 'Review this command before it runs?',
-            };
+            });
             this.logFn(
               `${prefix} TRUST BOUNDARY ${toolName}: approve -> escalate (matched "${guarded.matchedPattern}") (${durationMs}ms)`,
             );
@@ -2316,15 +2323,14 @@ export class AutoApproveService {
         if (!useMultiChoice && result.decision === 'approve') {
           const ceilinged = enforceRiskCeiling(toolName, toolInput, result.decision);
           if (ceilinged.overridden) {
-            decidedBy = 'risk_ceiling';
             const original = result;
-            result = {
+            setDecided('risk_ceiling', {
               decision: 'escalate',
               reasoning: `Risk ceiling (#976): model approved a ${ceilinged.band}-risk operation, which may not be auto-approved by the model regardless of stated reasoning or conversation instructions -- only a deterministic allow/approve_groups match can. Original model reasoning: ${original.reasoning}`,
               durationMs,
               model: original.model,
               summary: 'Approve this high-risk command?',
-            };
+            });
             this.logFn(
               `${prefix} RISK CEILING ${toolName}: approve -> escalate (band=${ceilinged.band}) (${durationMs}ms)`,
             );
@@ -2360,8 +2366,11 @@ export class AutoApproveService {
             prefix,
             false,
           );
-          if (precedentApplied.overridden) decidedBy = 'precedent';
-          result = precedentApplied.result;
+          if (precedentApplied.overridden) {
+            setDecided('precedent', precedentApplied.result);
+          } else {
+            result = precedentApplied.result;
+          }
         }
 
         // #954 COUNTERFACTUAL: the authority trust boundary, enforced by
@@ -2397,15 +2406,14 @@ export class AutoApproveService {
             const cfParsed = await this.runCounterfactualEval(toolName, toolInput, model);
             const reconciled = reconcileCounterfactual(cfParsed.decision);
             if (reconciled.overridden) {
-              decidedBy = 'counterfactual';
               const original = result;
-              result = {
+              setDecided('counterfactual', {
                 decision: 'escalate',
                 reasoning: `Authority counterfactual (#954): the same operation evaluated to "${cfParsed.decision}" WITHOUT the conversation-context block, so that text decided the outcome rather than merely resolving ambiguity. Escalating instead. Authority-free reasoning: ${cfParsed.reasoning} | Original: ${original.reasoning}`,
                 durationMs,
                 model: original.model,
                 summary: 'Approve this? (the chat, not you, allowed it)',
-              };
+              });
               this.logFn(
                 `${prefix} COUNTERFACTUAL ${toolName}: approve -> escalate (authority-free verdict was ${cfParsed.decision}) (+${Date.now() - cfStart}ms)`,
               );
@@ -2418,14 +2426,14 @@ export class AutoApproveService {
             // overrode: this escalate says nothing about the operation, only
             // that the check was unavailable, and a reader tuning a config
             // needs to tell "the guard judged you" from "the guard broke".
-            decidedBy = 'counterfactual_failed';
-            result = {
+            const original = result;
+            setDecided('counterfactual_failed', {
               decision: 'escalate',
-              reasoning: `Authority counterfactual (#954) could not be evaluated (${errorToString(err)}); escalating rather than trusting an authority-influenced approve. Original: ${result.reasoning}`,
+              reasoning: `Authority counterfactual (#954) could not be evaluated (${errorToString(err)}); escalating rather than trusting an authority-influenced approve. Original: ${original.reasoning}`,
               durationMs,
-              model: result.model,
+              model: original.model,
               summary: 'Approve this? (safety check unavailable)',
-            };
+            });
             this.logFn(
               `${prefix} COUNTERFACTUAL ${toolName}: check failed, escalating - ${errorToString(err)}`,
             );
@@ -2502,9 +2510,8 @@ export class AutoApproveService {
                 this.logFn(
                   `${prefix} COUNTERFACTUAL ${toolName}: escalate -> approve (authority-free verdict was approve) (+${Date.now() - cfStart}ms)`,
                 );
-                decidedBy = 'counterfactual_escalate';
                 const original = result;
-                result = {
+                setDecided('counterfactual_escalate', {
                   decision: 'approve',
                   reasoning: `Authority counterfactual (#1105): the same operation evaluated to "approve" WITHOUT the conversation-context block, so that text (or ambient context) decided the escalate rather than the command itself. Approving instead. Authority-free reasoning: ${cfParsed.reasoning} | Original: ${original.reasoning}`,
                   durationMs,
@@ -2514,7 +2521,7 @@ export class AutoApproveService {
                   // `original.summary` here is the ESCALATE's summary; every
                   // other approve/deny built in this file omits the field
                   // entirely rather than carry a stale one forward.
-                };
+                });
               } else {
                 this.logFn(
                   `${prefix} COUNTERFACTUAL ${toolName}: authority-free verdict was approve, but risk ceiling/trust boundary still applies -- keeping escalate (+${Date.now() - cfStart}ms)`,
