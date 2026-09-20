@@ -5,6 +5,7 @@ import {
   readerFrom,
   signatureForOperation,
 } from '../../src/auto-approve/precedent.ts';
+import type { RiskBand } from '../../src/auto-approve/risk-bands.ts';
 import type { AutoApproveConfig } from '../../src/auto-approve/types.ts';
 
 interface ReviewServer {
@@ -15,6 +16,19 @@ interface ReviewServer {
 }
 
 type FixtureResponse = string | ((prompt: string) => string);
+
+type VerifiedEffectReviewProbe = {
+  runVerifiedEffectReview: (
+    toolName: string,
+    toolInput: Record<string, unknown>,
+    authority: string | undefined,
+    riskBand: RiskBand,
+    proofFacts: readonly string[],
+    model: string,
+    signal: AbortSignal,
+    deadlineAt: number,
+  ) => Promise<{ readonly kind: string }>;
+};
 
 let nextVerifiedFixturePort = 19_900;
 
@@ -383,6 +397,27 @@ describe('verified read-only risk review (#1081 phase 4)', () => {
     expect(result.decision).toBe('escalate');
     expect(result.reasoning).toContain('independent effect reviewer conflicted');
     expect(server.calls()).toBe(2);
+  });
+
+  test('invalid deterministic effect facts skip the reviewer and return a distinct failure', async () => {
+    const server = startReviewServer(['unused']);
+    servers.push(server);
+    const service = new AutoApproveService(makeConfig(server.url), () => undefined);
+    const probe = service as unknown as VerifiedEffectReviewProbe;
+
+    const outcome = await probe.runVerifiedEffectReview(
+      'Bash',
+      { command: 'git status --porcelain' },
+      undefined,
+      'moderate',
+      ['verified_effects=filesystem_read,'],
+      'review-test-model',
+      new AbortController().signal,
+      Date.now() + 1_000,
+    );
+
+    expect(outcome.kind).toBe('invalid-effect-facts');
+    expect(server.calls()).toBe(0);
   });
 
   test('replay corpus approves only proven moderate reads and fail-closes adversarial variants', async () => {
