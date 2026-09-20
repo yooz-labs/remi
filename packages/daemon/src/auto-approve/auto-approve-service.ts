@@ -2143,6 +2143,18 @@ export class AutoApproveService {
             prefix,
             true,
           );
+          const verifiedDecidedBy: DecidingLayer = precedentApplied.overridden
+            ? 'precedent'
+            : 'model';
+          if (this.logDecisions) {
+            this.logFn(
+              `${prefix} ${toolName}: ${precedentApplied.result.decision} (${precedentApplied.result.durationMs}ms) ${formatMatrixContext(
+                classifyRisk(toolName, toolInput),
+                authorityPresent,
+                verifiedDecidedBy,
+              )} - ${precedentApplied.result.reasoning}`,
+            );
+          }
           // Match the normal success path: a cancellation that races after
           // the reviewer settled must not poison the next evaluation.
           this.cancelReason = null;
@@ -2232,7 +2244,8 @@ export class AutoApproveService {
         // Keep the diagnostic layer and the result it produced together. A
         // guard that updates only one of these fields makes the final
         // `decided_by` attribution lie about the verdict that ships (#1107).
-        // The helper is diagnostic-only: it does not participate in routing.
+        // The layer is read only to keep #1105 scoped to an untouched model
+        // escalate; it never replaces a verdict by itself.
         const setDecided = (layer: DecidingLayer, next: AutoApproveResult): void => {
           decidedBy = layer;
           result = next;
@@ -2398,6 +2411,7 @@ export class AutoApproveService {
           shouldCounterfactual(toolName, toolInput, result.decision, authorityPresent)
         ) {
           const cfStart = Date.now();
+          let counterfactualLog: string | undefined;
           try {
             // Same prompt, same instructions, authority block OMITTED. Same
             // level, same instructions -- ONLY the authority block differs,
@@ -2414,9 +2428,7 @@ export class AutoApproveService {
                 model: original.model,
                 summary: 'Approve this? (the chat, not you, allowed it)',
               });
-              this.logFn(
-                `${prefix} COUNTERFACTUAL ${toolName}: approve -> escalate (authority-free verdict was ${cfParsed.decision}) (+${Date.now() - cfStart}ms)`,
-              );
+              counterfactualLog = `${prefix} COUNTERFACTUAL ${toolName}: approve -> escalate (authority-free verdict was ${cfParsed.decision}) (+${Date.now() - cfStart}ms)`;
             }
           } catch (err) {
             // The counterfactual is a SAFETY check, so failing to run it must
@@ -2434,10 +2446,9 @@ export class AutoApproveService {
               model: original.model,
               summary: 'Approve this? (safety check unavailable)',
             });
-            this.logFn(
-              `${prefix} COUNTERFACTUAL ${toolName}: check failed, escalating - ${errorToString(err)}`,
-            );
+            counterfactualLog = `${prefix} COUNTERFACTUAL ${toolName}: check failed, escalating - ${errorToString(err)}`;
           }
+          if (counterfactualLog !== undefined) this.logFn(counterfactualLog);
         }
 
         // #1105 COUNTERFACTUAL, escalate direction: the mirror image of #954

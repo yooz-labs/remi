@@ -9,6 +9,11 @@ import {
 } from '../../src/auto-approve/auto-approve-service.ts';
 import { matchAllowPattern } from '../../src/auto-approve/pattern-matcher.ts';
 import { matchGroups } from '../../src/auto-approve/permission-groups.ts';
+import {
+  PrecedentStore,
+  readerFrom,
+  signatureForOperation,
+} from '../../src/auto-approve/precedent.ts';
 import type { PrecedentReader } from '../../src/auto-approve/precedent.ts';
 import type { DecidingLayer } from '../../src/auto-approve/risk-bands.ts';
 import type { AutoApproveConfig } from '../../src/auto-approve/types.ts';
@@ -2956,6 +2961,8 @@ type AttributionResponse =
   | { readonly decision: AttributionDecision; readonly reasoning?: string }
   | { readonly status: number; readonly body: string };
 
+let nextAttributionFixturePort = 20_150;
+
 function startDecisionAttributionServer(responseFor: (call: number) => AttributionResponse): {
   url: string;
   calls: () => number;
@@ -2963,7 +2970,10 @@ function startDecisionAttributionServer(responseFor: (call: number) => Attributi
 } {
   let calls = 0;
   const server = Bun.serve({
-    port: 0,
+    // Bun 1.4.2 rejects port-0 listeners in this repository's concurrent test
+    // runner. Fixed per-fixture ports preserve isolation while matching the
+    // pinned CI runtime's behavior closely enough for these HTTP tests.
+    port: nextAttributionFixturePort++,
     fetch: () => {
       calls++;
       const response = responseFor(calls);
@@ -2997,15 +3007,17 @@ function startDecisionAttributionServer(responseFor: (call: number) => Attributi
 
 describe('AutoApproveService - deciding-layer attribution (#1107)', () => {
   test('every post-model guard pairs its shipped result with its deciding layer', async () => {
-    const deniedPrecedent: PrecedentReader = {
-      matchApproved: () => null,
-      matchDenied: () => ({
-        decision: 'denied',
-        matchedSignature: 'Bash: chmod +x ./scripts/build.sh',
-        matchKind: 'substring',
-        recordedAt: 1,
-      }),
-    };
+    const deniedPrecedentStore = new PrecedentStore();
+    const deniedCommand = 'chmod +x ./scripts/build.sh';
+    const deniedWorkingDirectory = '/tmp/remi-attribution';
+    deniedPrecedentStore.record(
+      'Bash',
+      signatureForOperation('Bash', { command: deniedCommand }),
+      'denied',
+      true,
+      deniedWorkingDirectory,
+    );
+    const deniedPrecedent = readerFrom(deniedPrecedentStore);
     const scenarios: ReadonlyArray<{
       name: string;
       command: string;
@@ -3044,12 +3056,12 @@ describe('AutoApproveService - deciding-layer attribution (#1107)', () => {
       },
       {
         name: 'denied precedent',
-        command: 'chmod +x ./scripts/build.sh',
+        command: deniedCommand,
         expectedDecision: 'escalate',
         expectedLayer: 'precedent',
         expectedCalls: 1,
         precedent: deniedPrecedent,
-        workingDirectory: '/tmp/remi-attribution',
+        workingDirectory: deniedWorkingDirectory,
         responseFor: () => ({ decision: 'approve' }),
       },
       {
@@ -3119,11 +3131,47 @@ describe('AutoApproveService - deciding-layer attribution (#1107)', () => {
         );
         expect(decisionLog, `${scenario.name}: missing final decision log`).toBeDefined();
         if (decisionLog === undefined) continue;
-        expect(decisionLog, scenario.name).toContain(`decided_by=${scenario.expectedLayer}`);
+        expect(decisionLog, scenario.name).toContain(`decided_by=${scenario.expectedLayer}]`);
         expect(decisionLog, scenario.name).not.toContain('decided_by=model');
       } finally {
         server.stop();
       }
+    }
+  });
+
+  test('a counterfactual logger failure cannot relabel a completed check as failed', async () => {
+    let throwOnCounterfactualLog = true;
+    const decisionLogs: string[] = [];
+    const server = startDecisionAttributionServer((call) => ({
+      decision: call === 1 ? 'approve' : 'deny',
+    }));
+    try {
+      const service = new AutoApproveService(makeAuthorityTestConfig(server.url), (message) => {
+        if (throwOnCounterfactualLog && message.includes('COUNTERFACTUAL')) {
+          throwOnCounterfactualLog = false;
+          throw new Error('logger exploded');
+        }
+        decisionLogs.push(message);
+      });
+      const result = await service.evaluate(
+        'Bash',
+        { command: 'chmod +x ./scripts/build.sh' },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        `make the build script executable (${AUTHORITY_SENTINEL})`,
+      );
+
+      expect(result.decision).toBe('escalate');
+      expect(result.reasoning).toContain('Error: logger exploded');
+      expect(result.reasoning).not.toContain('could not be evaluated');
+      expect(server.calls()).toBe(2);
+      expect(decisionLogs.some((message) => message.includes('ERROR'))).toBe(true);
+    } finally {
+      server.stop();
     }
   });
 });

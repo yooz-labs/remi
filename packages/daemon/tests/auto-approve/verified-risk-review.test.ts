@@ -474,9 +474,10 @@ describe('verified read-only risk review (#1081 phase 4)', () => {
   test('a denied session precedent overrides a verified reviewer approval', async () => {
     const server = startReviewServer([LOCAL_INTENT, LOCAL_EFFECT_REVIEW]);
     servers.push(server);
+    const decisionLogs: string[] = [];
     const service = new AutoApproveService(
-      makeConfig(server.url, { session_precedent: true }),
-      () => undefined,
+      makeConfig(server.url, { log_decisions: true, session_precedent: true }),
+      (message) => decisionLogs.push(message),
     );
     const command = 'git status --porcelain';
     const store = new PrecedentStore();
@@ -507,6 +508,9 @@ describe('verified read-only risk review (#1081 phase 4)', () => {
     expect(result.reasoning).toContain('Session precedent');
     if (result.decision === 'escalate') expect(result.suppressSecondOpinion).toBe(true);
     expect(server.calls()).toBe(2);
+    expect(decisionLogs).toContainEqual(
+      expect.stringContaining('[band=moderate authority=yes decided_by=precedent]'),
+    );
   });
 
   test('malformed reviewer output escalates', async () => {
