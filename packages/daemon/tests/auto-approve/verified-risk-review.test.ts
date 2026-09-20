@@ -434,7 +434,11 @@ describe('verified read-only risk review (#1081 phase 4)', () => {
   test('the proof removes assignment false positives but preserves dangerous read words', async () => {
     const server = startReviewServer([LOCAL_INTENT, LOCAL_EFFECT_REVIEW]);
     servers.push(server);
-    const service = new AutoApproveService(makeConfig(server.url), () => undefined);
+    const decisionLogs: string[] = [];
+    const service = new AutoApproveService(
+      makeConfig(server.url, { log_decisions: true }),
+      (message) => decisionLogs.push(message),
+    );
 
     // The general classifier calls this high because the leading assignment
     // can alter the command environment. The proof establishes that the
@@ -444,6 +448,9 @@ describe('verified read-only risk review (#1081 phase 4)', () => {
 
     expect(result.decision).toBe('approve');
     expect(result.reasoning).toContain('risk=moderate');
+    expect(decisionLogs).toContainEqual(
+      expect.stringContaining('[band=moderate authority=yes decided_by=model]'),
+    );
     expect(server.calls()).toBe(2);
 
     // A proof-qualified read is not automatically low risk: the raw dangerous

@@ -2143,13 +2143,26 @@ export class AutoApproveService {
             prefix,
             true,
           );
+          const classifiedVerifiedRisk = classifyRisk(toolName, toolInput);
+          // `runVerifiedReadReview` applies proof-aware normalization only
+          // after the deterministic proof succeeds. Reuse that effective band
+          // for an approval (including one later escalated by precedent), but
+          // keep raw classification for gate failures where normalization was
+          // never valid to apply.
+          const verifiedRiskBand =
+            verified.decision === 'approve'
+              ? normalizeVerifiedReadRisk(
+                  typeof toolInput['command'] === 'string' ? toolInput['command'] : '',
+                  classifiedVerifiedRisk,
+                )
+              : classifiedVerifiedRisk;
           const verifiedDecidedBy: DecidingLayer = precedentApplied.overridden
             ? 'precedent'
             : 'model';
           if (this.logDecisions) {
             this.logFn(
               `${prefix} ${toolName}: ${precedentApplied.result.decision} (${precedentApplied.result.durationMs}ms) ${formatMatrixContext(
-                classifyRisk(toolName, toolInput),
+                verifiedRiskBand,
                 authorityPresent,
                 verifiedDecidedBy,
               )} - ${precedentApplied.result.reasoning}`,
