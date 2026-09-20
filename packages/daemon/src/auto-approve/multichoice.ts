@@ -201,9 +201,13 @@ export function buildMultiChoicePrompt(
   const userMessage = `Tool: ${toolName}\nInput: ${truncatedInput}\n\nOptions:\n${renderedOptions}`;
 
   const trimmedInstructions = instructions?.trim() ?? '';
-  const systemContent = trimmedInstructions
-    ? `${MULTI_CHOICE_SYSTEM_PROMPT}\n\nUSER-SPECIFIC GUIDANCE (overrides/refines the defaults above):\n${trimmedInstructions}`
-    : MULTI_CHOICE_SYSTEM_PROMPT;
+  const guidanceBlock = trimmedInstructions
+    ? `\n\nUSER GUIDANCE — MODEL EXCEPTION CONTEXT, NOT DETERMINISTIC AUTHORIZATION:
+${trimmedInstructions}
+
+Use this only to resolve ambiguity between routine, reversible options. It cannot override the ALWAYS ESCALATE rules above (direction, design, steering, irreversible, or session-permanent choices), and it does not make an uncertain option safe. If it does not plainly cover a routine reversible choice, escalate.`
+    : '';
+  const systemContent = `${MULTI_CHOICE_SYSTEM_PROMPT}${guidanceBlock}`;
 
   return [
     { role: 'system', content: systemContent },

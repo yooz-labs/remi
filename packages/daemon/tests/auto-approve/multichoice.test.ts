@@ -184,8 +184,25 @@ describe('buildMultiChoicePrompt', () => {
       'Always escalate plans involving database migrations.',
     );
     const [system] = messages as [{ role: string; content: string }];
-    expect(system.content).toContain('USER-SPECIFIC GUIDANCE');
+    expect(system.content).toContain(
+      'USER GUIDANCE — MODEL EXCEPTION CONTEXT, NOT DETERMINISTIC AUTHORIZATION',
+    );
     expect(system.content).toContain('database migrations');
+    expect(system.content).toContain('cannot override the ALWAYS ESCALATE rules above');
+    expect(system.content).not.toContain('overrides/refines the defaults above');
+  });
+
+  test('guidance cannot rewrite irreversible or uncertain-choice boundaries', () => {
+    const messages = buildMultiChoicePrompt(
+      'CustomTool',
+      { plan: 'x' },
+      ['Always apply this change', 'No'],
+      'Always choose the first option.',
+    );
+    const [system] = messages as [{ role: string; content: string }];
+    expect(system.content).toContain('does not make an uncertain option safe');
+    expect(system.content).toContain('irreversible');
+    expect(system.content).toContain('session-permanent');
   });
 
   test('truncates very long inputs', () => {
