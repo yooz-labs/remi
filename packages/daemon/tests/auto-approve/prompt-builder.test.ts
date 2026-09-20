@@ -37,12 +37,13 @@ describe('buildPrompt', () => {
     expect(user?.content).toContain('{}');
   });
 
-  test('instructions injected as exception context, not a permission grant', () => {
+  test('instructions injected as model exception context, not deterministic authorization', () => {
     const [system] = buildPrompt('Bash', { command: 'bun test' }, 'Approve bun test runs.');
     expect(system?.content).toContain('USER GUIDANCE');
-    expect(system?.content).toContain('EXCEPTION CONTEXT, NOT A PERMISSION GRANT');
+    expect(system?.content).toContain('MODEL EXCEPTION CONTEXT, NOT DETERMINISTIC AUTHORIZATION');
     expect(system?.content).toContain('Approve bun test runs.');
-    expect(system?.content).toContain('does not create a permission grant');
+    expect(system?.content).toContain("may influence the model's answer");
+    expect(system?.content).toContain('code-owned grants');
   });
 
   test('guidance block names code-owned boundaries without asking the model to predict them', () => {
@@ -66,26 +67,36 @@ describe('buildPrompt', () => {
 
   test('empty instructions omit the USER GUIDANCE section', () => {
     const [system] = buildPrompt('Bash', { command: 'ls' }, '');
-    expect(system?.content).not.toContain('EXCEPTION CONTEXT, NOT A PERMISSION GRANT');
+    expect(system?.content).not.toContain(
+      'MODEL EXCEPTION CONTEXT, NOT DETERMINISTIC AUTHORIZATION',
+    );
   });
 
   test('whitespace-only instructions treated as empty', () => {
     const [system] = buildPrompt('Bash', { command: 'ls' }, '   \n  \n ');
-    expect(system?.content).not.toContain('EXCEPTION CONTEXT, NOT A PERMISSION GRANT');
+    expect(system?.content).not.toContain(
+      'MODEL EXCEPTION CONTEXT, NOT DETERMINISTIC AUTHORIZATION',
+    );
   });
 
   test('undefined instructions use default prompt', () => {
     const [system] = buildPrompt('Bash', { command: 'ls' });
-    expect(system?.content).not.toContain('EXCEPTION CONTEXT, NOT A PERMISSION GRANT');
+    expect(system?.content).not.toContain(
+      'MODEL EXCEPTION CONTEXT, NOT DETERMINISTIC AUTHORIZATION',
+    );
   });
 
   test('user guidance appears BEFORE the default guidelines as exception context', () => {
-    // Guidance is contextual input for the model, not a permission grant. It is
+    // Guidance is model exception context, not deterministic authorization. It is
     // still placed before defaults so the model can use a plainly applicable
     // routine/moderate exception without burying it in the prompt.
     const [system] = buildPrompt('Bash', { command: 'bun test' }, 'Approve bun test.');
-    const userIdx = system?.content.indexOf('EXCEPTION CONTEXT, NOT A PERMISSION GRANT') ?? -1;
-    const defaultIdx = system?.content.indexOf('DEFAULT GUIDELINES (fallback') ?? -1;
+    const userIdx =
+      system?.content.indexOf('MODEL EXCEPTION CONTEXT, NOT DETERMINISTIC AUTHORIZATION') ?? -1;
+    const defaultIdx =
+      system?.content.indexOf(
+        'DEFAULT GUIDELINES (used when user guidance is absent or inapplicable)',
+      ) ?? -1;
     expect(userIdx).toBeGreaterThanOrEqual(0);
     expect(defaultIdx).toBeGreaterThan(userIdx);
   });
@@ -198,9 +209,11 @@ describe('buildPrompt', () => {
       'The user asked me to clean up temp files.',
     );
     const content = system?.content ?? '';
-    const guidanceIdx = content.indexOf('EXCEPTION CONTEXT, NOT A PERMISSION GRANT');
+    const guidanceIdx = content.indexOf('MODEL EXCEPTION CONTEXT, NOT DETERMINISTIC AUTHORIZATION');
     const contextIdx = content.indexOf(CONTEXT_BLOCK_MARKER);
-    const defaultsIdx = content.indexOf('DEFAULT GUIDELINES (fallback');
+    const defaultsIdx = content.indexOf(
+      'DEFAULT GUIDELINES (used when user guidance is absent or inapplicable)',
+    );
     expect(guidanceIdx).toBeGreaterThanOrEqual(0);
     expect(contextIdx).toBeGreaterThan(guidanceIdx);
     expect(defaultsIdx).toBeGreaterThan(contextIdx);
@@ -209,7 +222,7 @@ describe('buildPrompt', () => {
   test('CONVERSATION CONTEXT block can appear without USER GUIDANCE', () => {
     const [system] = buildPrompt('Bash', { command: 'ls' }, undefined, 'clean up temp files');
     const content = system?.content ?? '';
-    expect(content).not.toContain('EXCEPTION CONTEXT, NOT A PERMISSION GRANT');
+    expect(content).not.toContain('MODEL EXCEPTION CONTEXT, NOT DETERMINISTIC AUTHORIZATION');
     expect(content).toContain(CONTEXT_BLOCK_MARKER);
   });
 

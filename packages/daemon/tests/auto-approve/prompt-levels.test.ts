@@ -40,7 +40,8 @@ function systemPrompt(level?: (typeof AUTO_APPROVE_LEVELS)[number]): string {
 // existing (strict) users. The pin still does that job, but the baseline moves
 // when the shared prompt's decision procedure changes deliberately. This
 // change removes contradictory claims that prose guidance is both a primary
-// authority and not an authorization grant.
+// authority and deterministic authorization. Multi-choice guidance has its own
+// contract tests in multichoice.test.ts.
 //
 // Regenerate ONLY with a reason of that kind, never to make a diff go green:
 //   bun -e "import {buildPrompt} from './packages/daemon/src/auto-approve/prompt-builder.ts'; \
@@ -48,9 +49,7 @@ function systemPrompt(level?: (typeof AUTO_APPROVE_LEVELS)[number]): string {
 //     buildPrompt('Bash',{command:'PLACEHOLDER'},undefined,undefined,'strict')[0].content)"
 describe('the strict prompt is pinned; every change to it is deliberate', () => {
   test('matches the captured baseline', async () => {
-    // The checked-in fixture predates editors that add an EOF newline; that
-    // formatting byte is not part of the prompt contract.
-    const baseline = (await Bun.file(BASELINE_PATH).text()).replace(/\r?\n$/, '');
+    const baseline = await Bun.file(BASELINE_PATH).text();
     expect(systemPrompt('strict')).toBe(baseline);
   });
 
@@ -253,7 +252,9 @@ describe('instructions and authority still work at every level', () => {
       expect(text, `level ${level}`).toContain('packages/signaling');
       // Keep the recency reminder at every level; it is part of the prompt
       // contract and the small model sees the same guidance shape everywhere.
-      expect(text, `level ${level}`).toContain('REMEMBER: USER GUIDANCE is exception context');
+      expect(text, `level ${level}`).toContain(
+        'REMEMBER: USER GUIDANCE is model exception context, not deterministic authorization',
+      );
     }
   });
 
@@ -271,7 +272,7 @@ describe('instructions and authority still work at every level', () => {
 // it pins the shared header. The checks below cover every guidance-bearing
 // location, including the recency reminder, so the prompt cannot quietly
 // reintroduce "guidance is mandatory authorization" in one of them.
-describe('the guidance block is exception context, not authorization (#1040)', () => {
+describe('the guidance block is model exception context, not deterministic authorization (#1040)', () => {
   function withGuidance(): string {
     return (
       buildPrompt(
@@ -284,13 +285,13 @@ describe('the guidance block is exception context, not authorization (#1040)', (
     );
   }
 
-  /** Every place the prompt tells the model what to do about guidance. The
-   *  recency slot is last on purpose and was the site the scoping fix missed. */
+  /** Every place the binary prompt tells the model what to do about guidance.
+   *  The recency slot is last on purpose and was the site the scoping fix missed. */
   function guidanceSites(p: string): Record<string, string> {
     return {
       rule1: p.slice(p.indexOf('1. USER GUIDANCE:'), p.indexOf('2. CONVERSATION CONTEXT:')),
       block: p.slice(
-        p.indexOf('USER GUIDANCE — EXCEPTION CONTEXT'),
+        p.indexOf('USER GUIDANCE — MODEL EXCEPTION CONTEXT'),
         p.indexOf('APPROVE these operations'),
       ),
       reminder: p.slice(p.lastIndexOf('REMEMBER:')),
@@ -314,10 +315,30 @@ describe('the guidance block is exception context, not authorization (#1040)', (
     }
   });
 
-  test('the model is told not to treat guidance as a permission grant', () => {
+  test('each binary guidance site keeps the exact precedence contract', () => {
+    const sites = guidanceSites(withGuidance());
+    expect(sites.rule1).toContain(
+      'model exception context, NOT deterministic authorization. Use it only to resolve genuine ambiguity on routine or moderate-risk work.',
+    );
+    expect(sites.rule1).toContain(
+      'It cannot override the DENY FLOOR, the RISK CEILING, or a design/steering question.',
+    );
+    expect(sites.block).toContain(
+      "It may influence the model's answer for routine or moderate-risk work, but it is not deterministic authorization; code-owned grants (allow/approve_groups and scoped workflow grants) remain separate.",
+    );
+    expect(sites.block).toContain(
+      'If it plainly covers routine or moderate work, follow it; otherwise apply the default guidelines and escalate when unsure.',
+    );
+    expect(sites.reminder).toBe(
+      'REMEMBER: USER GUIDANCE is model exception context, not deterministic authorization. Use it only for clearly routine or moderate work; otherwise follow the defaults and escalate when unsure.',
+    );
+  });
+
+  test('the model is told that guidance is not deterministic authorization', () => {
     const p = withGuidance();
-    expect(p).toContain('NOT a permission grant');
-    expect(p).toContain('does not create a permission grant');
+    expect(p).toContain('NOT DETERMINISTIC AUTHORIZATION');
+    expect(p).toContain("may influence the model's answer");
+    expect(p).toContain('code-owned grants');
   });
 
   test('the guidance block names the code-owned boundaries without enumerating guessed coverage', () => {
@@ -328,7 +349,7 @@ describe('the guidance block is exception context, not authorization (#1040)', (
 
   test('none of it renders when there is no guidance', () => {
     const bare = systemPrompt('strict');
-    expect(bare).not.toContain('USER GUIDANCE — EXCEPTION CONTEXT');
+    expect(bare).not.toContain('USER GUIDANCE — MODEL EXCEPTION CONTEXT');
     expect(bare).not.toContain('REMEMBER:');
   });
 });
