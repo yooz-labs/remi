@@ -37,44 +37,54 @@ describe('buildPrompt', () => {
     expect(user?.content).toContain('{}');
   });
 
-  test('instructions injected into system prompt as primary authority', () => {
+  test('instructions injected as exception context, not a permission grant', () => {
     const [system] = buildPrompt('Bash', { command: 'bun test' }, 'Approve bun test runs.');
     expect(system?.content).toContain('USER GUIDANCE');
-    expect(system?.content).toContain('HIGHEST PRIORITY, MANDATORY');
+    expect(system?.content).toContain('EXCEPTION CONTEXT, NOT A PERMISSION GRANT');
     expect(system?.content).toContain('Approve bun test runs.');
+    expect(system?.content).toContain('does not create a permission grant');
   });
 
-  test('guidance block tells the model high-band ops escalate, not approve (#1040)', () => {
-    // #1040: the block used to say "return approve even for remote mutations /
-    // POST / writes", which the RISK CEILING then re-escalates -- a wasted call
-    // and a source of the model hedging against "mandatory" guidance. The block
-    // must instead name the high-band classes as escalate-directly.
+  test('guidance block names code-owned boundaries without asking the model to predict them', () => {
     const [system] = buildPrompt('Bash', { command: 'git push' }, 'Approve everything.');
-    expect(system?.content).not.toContain('return "approve" even for remote mutations');
-    expect(system?.content).toContain('RISK CEILING re-escalates these');
-    expect(system?.content).toContain('escalate them directly');
+    expect(system?.content).toContain('cannot override the DENY FLOOR, the RISK CEILING');
+    expect(system?.content).not.toContain('escalate them directly');
+    expect(system?.content).not.toContain('HIGHEST PRIORITY, MANDATORY');
+  });
+
+  test('action definition defers to the ordered rules instead of duplicating a conflict', () => {
+    const [system] = buildPrompt(
+      'Bash',
+      { command: 'touch src/file.ts' },
+      'Approve routine edits.',
+    );
+    expect(system?.content).toContain('ordered rules below');
+    expect(system?.content).not.toContain(
+      'mutation/remote/write that has no deterministic authorization',
+    );
   });
 
   test('empty instructions omit the USER GUIDANCE section', () => {
     const [system] = buildPrompt('Bash', { command: 'ls' }, '');
-    expect(system?.content).not.toContain('HIGHEST PRIORITY, MANDATORY');
+    expect(system?.content).not.toContain('EXCEPTION CONTEXT, NOT A PERMISSION GRANT');
   });
 
   test('whitespace-only instructions treated as empty', () => {
     const [system] = buildPrompt('Bash', { command: 'ls' }, '   \n  \n ');
-    expect(system?.content).not.toContain('HIGHEST PRIORITY, MANDATORY');
+    expect(system?.content).not.toContain('EXCEPTION CONTEXT, NOT A PERMISSION GRANT');
   });
 
   test('undefined instructions use default prompt', () => {
     const [system] = buildPrompt('Bash', { command: 'ls' });
-    expect(system?.content).not.toContain('HIGHEST PRIORITY, MANDATORY');
+    expect(system?.content).not.toContain('EXCEPTION CONTEXT, NOT A PERMISSION GRANT');
   });
 
-  test('user guidance appears BEFORE the default guidelines (authoritative position)', () => {
-    // The fix: user guidance must outrank the defaults for a small model, so it
-    // is injected ahead of DEFAULT GUIDELINES, not appended after them.
+  test('user guidance appears BEFORE the default guidelines as exception context', () => {
+    // Guidance is contextual input for the model, not a permission grant. It is
+    // still placed before defaults so the model can use a plainly applicable
+    // routine/moderate exception without burying it in the prompt.
     const [system] = buildPrompt('Bash', { command: 'bun test' }, 'Approve bun test.');
-    const userIdx = system?.content.indexOf('HIGHEST PRIORITY, MANDATORY') ?? -1;
+    const userIdx = system?.content.indexOf('EXCEPTION CONTEXT, NOT A PERMISSION GRANT') ?? -1;
     const defaultIdx = system?.content.indexOf('DEFAULT GUIDELINES (fallback') ?? -1;
     expect(userIdx).toBeGreaterThanOrEqual(0);
     expect(defaultIdx).toBeGreaterThan(userIdx);
@@ -188,7 +198,7 @@ describe('buildPrompt', () => {
       'The user asked me to clean up temp files.',
     );
     const content = system?.content ?? '';
-    const guidanceIdx = content.indexOf('HIGHEST PRIORITY, MANDATORY');
+    const guidanceIdx = content.indexOf('EXCEPTION CONTEXT, NOT A PERMISSION GRANT');
     const contextIdx = content.indexOf(CONTEXT_BLOCK_MARKER);
     const defaultsIdx = content.indexOf('DEFAULT GUIDELINES (fallback');
     expect(guidanceIdx).toBeGreaterThanOrEqual(0);
@@ -199,7 +209,7 @@ describe('buildPrompt', () => {
   test('CONVERSATION CONTEXT block can appear without USER GUIDANCE', () => {
     const [system] = buildPrompt('Bash', { command: 'ls' }, undefined, 'clean up temp files');
     const content = system?.content ?? '';
-    expect(content).not.toContain('HIGHEST PRIORITY, MANDATORY');
+    expect(content).not.toContain('EXCEPTION CONTEXT, NOT A PERMISSION GRANT');
     expect(content).toContain(CONTEXT_BLOCK_MARKER);
   });
 
