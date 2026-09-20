@@ -2618,6 +2618,39 @@ describe('createInputHandlers', () => {
       ]);
     });
 
+    test('passes the originating subagent scope to precedent recording', async () => {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      let recordedScope: string | undefined;
+      const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
+        sessionRegistry,
+        bindingStore,
+        send,
+        recordPrecedent: (
+          _sessionId,
+          _toolName,
+          _signature,
+          _decision,
+          _workingDirectory,
+          agentScope,
+        ) => {
+          recordedScope = agentScope;
+        },
+      });
+      registerPermissionQuestion(sessionId, { agentId: 'agent-1' });
+
+      await handlers.onAnswer(CID, sessionId, QID, 'Yes');
+
+      expect(recordedScope).toBe('subagent');
+    });
+
     test('records a denial for an unambiguous No to a permission_request question', async () => {
       const { sessionId, calls, handlers } = setUp();
       registerPermissionQuestion(sessionId);

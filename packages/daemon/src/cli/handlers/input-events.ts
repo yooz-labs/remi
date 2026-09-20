@@ -12,7 +12,8 @@
 import { createBulletExpandResponse, createError, errorToString } from '@remi/shared';
 import type { AnswerExtras, AnswerSelection, Question, QuestionOption, UUID } from '@remi/shared';
 
-import { toolNameFromSignature } from '../../auto-approve/precedent.ts';
+import { precedentAgentScope, toolNameFromSignature } from '../../auto-approve/precedent.ts';
+import type { PrecedentAgentScope } from '../../auto-approve/precedent.ts';
 import type { SessionWorkflowFamily } from '../../auto-approve/session-workflow-grant.ts';
 import { clearAuqRunActive, markAuqRunActive } from '../../hooks/auq-active-runs.ts';
 import { AUQ_KEYS } from '../../hooks/auq-answer.ts';
@@ -136,7 +137,9 @@ export interface InputHandlerDeps {
    * must not add another call site instead of routing through here. Absent
    * (tests, or a session with no wired store) => the answer still applies
    * normally, it is just not recorded as precedent — recording is additive
-   * and must never gate the answer itself.
+   * and must never gate the answer itself. `agentScope` is private audit
+   * metadata derived from the question's `agentId`; it never changes the
+   * operation identity.
    */
   recordPrecedent?: (
     sessionId: UUID,
@@ -144,6 +147,7 @@ export interface InputHandlerDeps {
     signature: string,
     decision: 'approved' | 'denied',
     workingDirectory: string,
+    agentScope: PrecedentAgentScope,
   ) => void;
 }
 
@@ -871,6 +875,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
             signature,
             decision.decision === 'allow' ? 'approved' : 'denied',
             session.workingDirectory,
+            precedentAgentScope(active.agentId),
           );
         }
       }

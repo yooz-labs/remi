@@ -46,6 +46,8 @@ import {
 import { matchAllowPattern, matchSubstringPattern } from './pattern-matcher.ts';
 import { matchComposedCommand, matchGroups, matchGroupsBroad } from './permission-groups.ts';
 import {
+  type PrecedentAgentScope,
+  type PrecedentMatch,
   type PrecedentReader,
   normalizePrecedentWorkingDirectory,
   precedentMayAuthorize,
@@ -77,12 +79,30 @@ import type {
   WorkflowOperationFacts,
 } from './session-workflow-grant.ts';
 import type { AutoApproveConfig, AutoApproveResult, DenySource, MultiChoiceMode } from './types.ts';
+
 import {
   assessmentMatchesVerifiedEffectContract,
   makeVerifiedEffectContract,
   verifiedAssessmentsAgree,
   verifiedReadEffectContract,
 } from './verified-dual-review.ts';
+
+/**
+ * Private, grep-friendly audit fields for #1019. Agent scope is deliberately
+ * not part of the operation key: this reports the existing session-wide
+ * sharing so a later narrowing can be evidence-driven.
+ */
+function formatPrecedentScopeAudit(
+  match: Pick<PrecedentMatch, 'recordedAgentScope'>,
+  requestedScope: PrecedentAgentScope,
+): string {
+  const recordedScope = match.recordedAgentScope ?? 'unknown';
+  const crossScope =
+    match.recordedAgentScope !== undefined && match.recordedAgentScope !== requestedScope
+      ? 'yes'
+      : 'no';
+  return `recorded_scope=${recordedScope} requested_scope=${requestedScope} cross_scope=${crossScope}`;
+}
 
 type BinaryDecision = 'approve' | 'deny' | 'escalate';
 
@@ -1528,6 +1548,7 @@ export class AutoApproveService {
     precedentContext: string | undefined,
     prefix: string,
     suppressSecondOpinion: boolean,
+    requestedAgentScope: PrecedentAgentScope,
   ): { readonly result: AutoApproveResult; readonly overridden: boolean } {
     if (
       result.decision !== 'approve' ||
@@ -1556,7 +1577,7 @@ export class AutoApproveService {
       ...(suppressSecondOpinion ? { suppressSecondOpinion: true as const } : {}),
     };
     this.logFn(
-      `${prefix} PRECEDENT ${toolName}: approve -> escalate (denied "${deniedMatch.matchedSignature}") (${result.durationMs}ms)`,
+      `${prefix} PRECEDENT ${toolName}: approve -> escalate (denied "${deniedMatch.matchedSignature}") (${result.durationMs}ms) ${formatPrecedentScopeAudit(deniedMatch, requestedAgentScope)}`,
     );
     return { result: overridden, overridden: true };
   }
@@ -1652,6 +1673,7 @@ export class AutoApproveService {
     const baseModel = modelOverride || this.llmConfig.model;
     const model = baseModel;
     const prefix = tag ? `[AutoApprove ${tag}]` : '[AutoApprove]';
+    const requestedAgentScope: PrecedentAgentScope = isSubagent === true ? 'subagent' : 'main';
     const resolvedScope = scope ?? DEFAULT_SCOPE;
 
     const normalisedSuggestions = Array.isArray(permissionSuggestions)
@@ -1732,7 +1754,9 @@ export class AutoApproveService {
             // the USER did rather than on something they WROTE, so the record
             // of which answer authorized it is the audit trail for a decision
             // nobody can otherwise reconstruct from config.
-            this.logFn(`${prefix} PRECEDENT ${toolName}: approve (0ms) - ${reasoning}`);
+            this.logFn(
+              `${prefix} PRECEDENT ${toolName}: approve (0ms) - ${reasoning} ${formatPrecedentScopeAudit(approvedMatch, requestedAgentScope)}`,
+            );
             return { decision: 'approve', reasoning, durationMs: 0, model };
           }
           // Matrix refused. Fall through to the normal path rather than
@@ -2142,6 +2166,7 @@ export class AutoApproveService {
             precedentContext,
             prefix,
             true,
+            requestedAgentScope,
           );
           const classifiedVerifiedRisk = classifyRisk(toolName, toolInput);
           // `runVerifiedReadReview` applies proof-aware normalization only
@@ -2391,6 +2416,7 @@ export class AutoApproveService {
             precedentContext,
             prefix,
             false,
+            requestedAgentScope,
           );
           if (precedentApplied.overridden) {
             setDecided('precedent', precedentApplied.result);

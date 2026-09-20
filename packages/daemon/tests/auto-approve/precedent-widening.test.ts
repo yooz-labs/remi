@@ -16,6 +16,7 @@ import { afterAll, describe, expect, test } from 'bun:test';
 import { AutoApproveService } from '../../src/auto-approve/auto-approve-service.ts';
 import { matchesCatastrophicPattern } from '../../src/auto-approve/deny-floor.ts';
 import {
+  type PrecedentAgentScope,
   type PrecedentReader,
   PrecedentStore,
   precedentMayAuthorize,
@@ -85,8 +86,16 @@ function humanAnswered(
   toolName: string,
   toolInput: Record<string, unknown>,
   decision: 'approved' | 'denied',
+  agentScope?: PrecedentAgentScope,
 ): void {
-  store.record(toolName, signatureForOperation(toolName, toolInput), decision, true, TEST_CWD);
+  store.record(
+    toolName,
+    signatureForOperation(toolName, toolInput),
+    decision,
+    true,
+    TEST_CWD,
+    agentScope,
+  );
 }
 
 const service = (overrides?: Partial<AutoApproveConfig>) =>
@@ -117,6 +126,64 @@ describe('#976 an earlier approval authorizes the identical repeat, at 0ms', () 
     // 0ms is the claim, and with an unreachable base_url it is also the only
     // way this could have returned an approve at all.
     expect(result.durationMs).toBe(0);
+  });
+
+  test('logs when a main-agent precedent is reused by a subagent', async () => {
+    const logs: string[] = [];
+    const store = new PrecedentStore();
+    const input = { command: 'git status' };
+    humanAnswered(store, 'Bash', input, 'approved', 'main');
+
+    const result = await new AutoApproveService(config(), (line) => logs.push(line)).evaluate(
+      'Bash',
+      input,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      true,
+      undefined,
+      readerFor(store),
+      undefined,
+      TEST_CWD,
+    );
+
+    expect(result.decision).toBe('approve');
+    expect(
+      logs.some((line) =>
+        line.includes('recorded_scope=main requested_scope=subagent cross_scope=yes'),
+      ),
+    ).toBe(true);
+  });
+
+  test('logs when a subagent precedent is reused by the main agent', async () => {
+    const logs: string[] = [];
+    const store = new PrecedentStore();
+    const input = { command: 'git status' };
+    humanAnswered(store, 'Bash', input, 'approved', 'subagent');
+
+    const result = await new AutoApproveService(config(), (line) => logs.push(line)).evaluate(
+      'Bash',
+      input,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      readerFor(store),
+      undefined,
+      TEST_CWD,
+    );
+
+    expect(result.decision).toBe('approve');
+    expect(
+      logs.some((line) =>
+        line.includes('recorded_scope=subagent requested_scope=main cross_scope=yes'),
+      ),
+    ).toBe(true);
   });
 
   test('a DIFFERENT command is not covered, however similar', async () => {
@@ -675,6 +742,37 @@ describe('#976 an earlier denial downgrades a model approve to escalate', () => 
     // failure that produced an escalate for an unrelated reason.
     const result = await approvingService().evaluate('Bash', { command: 'gh pr list --limit 5' });
     expect(result.decision).toBe('approve');
+  });
+
+  test('logs when a subagent denial is honored for the main agent', async () => {
+    const logs: string[] = [];
+    const store = new PrecedentStore();
+    humanAnswered(store, 'Bash', { command: 'gh pr list' }, 'denied', 'subagent');
+
+    const result = await new AutoApproveService(
+      config({ provider: approveServer.url, base_url: approveServer.url }),
+      (line) => logs.push(line),
+    ).evaluate(
+      'Bash',
+      { command: 'gh pr list --limit 5' },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      readerFor(store),
+      undefined,
+      TEST_CWD,
+    );
+
+    expect(result.decision).toBe('escalate');
+    expect(
+      logs.some((line) =>
+        line.includes('recorded_scope=subagent requested_scope=main cross_scope=yes'),
+      ),
+    ).toBe(true);
   });
 
   test('a BROADLY matching denial escalates it back to the user', async () => {

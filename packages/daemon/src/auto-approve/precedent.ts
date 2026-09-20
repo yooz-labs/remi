@@ -35,6 +35,18 @@
  * approvals from them — a self-licensing loop (ADR 0015, "Obligations this
  * creates").
  *
+ * ## Agent scope is audit metadata (#1019)
+ *
+ * The store is deliberately session-wide, not agent-wide: a human answer
+ * from a main-agent question can currently authorize the identical operation
+ * for a subagent, and vice versa. That sharing is part of the existing
+ * contract (the public operation signature is intentionally agent-neutral),
+ * but the old match result did not say which side supplied the answer. The
+ * private `agentScope` fields below make cross-scope reuse observable in the
+ * daemon log without putting agent identity or working-directory context on
+ * the wire, and without changing the matcher. A future narrowing must be
+ * based on measured matches, not on the existence of the shared pool alone.
+ *
  * `record()` below is therefore called from exactly ONE place:
  * `handleAnswer` in `cli/handlers/input-events.ts`. That function is where
  * EVERY client-claimed answer converges, regardless of transport — verified
@@ -235,6 +247,14 @@
 import { normalizeProjectPath } from '../cli/path-resolver.ts';
 import { summarizeToolInput } from '../hooks/tool-summary.ts';
 
+/** Agent context that originated a human precedent record or consumes it. */
+export type PrecedentAgentScope = 'main' | 'subagent';
+
+/** Normalize Claude's optional `agent_id` to the two audit scopes. */
+export function precedentAgentScope(agentId: string | undefined): PrecedentAgentScope {
+  return typeof agentId === 'string' && agentId.length > 0 ? 'subagent' : 'main';
+}
+
 /** One human-classified answer to a permission-shaped question. */
 export interface PrecedentRecord {
   /**
@@ -287,6 +307,11 @@ export interface PrecedentRecord {
    * command in another session.
    */
   readonly workingDirectory?: string;
+  /**
+   * Private origin scope for #1019 measurement. It is intentionally absent
+   * on directly-built/legacy records and never participates in matching.
+   */
+  readonly agentScope?: PrecedentAgentScope;
 }
 
 /**
@@ -304,6 +329,8 @@ export interface PrecedentMatch {
    *  asymmetry made visible at the call site, not just in this module's doc. */
   readonly matchKind: 'exact' | 'substring';
   readonly recordedAt: number;
+  /** Private scope that supplied the matched human answer, when known. */
+  readonly recordedAgentScope?: PrecedentAgentScope;
 }
 
 /** Cap on stored records per session. Sized independently of
@@ -901,6 +928,7 @@ export function findApprovedPrecedent(
       matchedSignature: storedSignature,
       matchKind: 'exact',
       recordedAt: record.recordedAt,
+      ...(record.agentScope !== undefined ? { recordedAgentScope: record.agentScope } : {}),
     };
   }
   return null;
@@ -974,6 +1002,7 @@ export function findDeniedPrecedent(
       matchedSignature: storedSignature,
       matchKind: 'substring',
       recordedAt: record.recordedAt,
+      ...(record.agentScope !== undefined ? { recordedAgentScope: record.agentScope } : {}),
     };
   }
   return null;
@@ -1040,6 +1069,10 @@ export class PrecedentStore {
    * formatting (a double space, aligned arguments, an indented multi-line
    * command), not just an adversarial construction — and a check running
    * on the already-shrunk value would silently miss it.
+   *
+   * `agentScope`, when supplied, is private audit metadata describing whether
+   * the human answered a main-agent or subagent question. It never changes
+   * storage order or matching.
    */
   record(
     toolName: string,
@@ -1047,6 +1080,7 @@ export class PrecedentStore {
     decision: 'approved' | 'denied',
     whole = false,
     workingDirectory?: string,
+    agentScope?: PrecedentAgentScope,
   ): void {
     // Provenance decides whether the truncation heuristic applies (#1067). A
     // `whole` signature is untruncated BY CONSTRUCTION (`signatureForOperation`),
@@ -1075,6 +1109,7 @@ export class PrecedentStore {
       ...(normalizedWorkingDirectory !== undefined
         ? { workingDirectory: normalizedWorkingDirectory }
         : {}),
+      ...(agentScope !== undefined ? { agentScope } : {}),
     });
     if (this.records.length > this.maxEntries) this.records.shift();
   }
@@ -1164,6 +1199,8 @@ export function readerFrom(store: PrecedentStore): PrecedentReader {
  * `workingDirectory` is required for the same reason the reader requires it:
  * an answer without a valid private session context must not become reusable
  * precedent.
+ * `agentScope` is private audit metadata for #1019 and is not part of the
+ * operation identity.
  */
 export function recordHumanAnswer(
   store: PrecedentStore,
@@ -1171,8 +1208,9 @@ export function recordHumanAnswer(
   signature: string,
   decision: 'approved' | 'denied',
   workingDirectory: string,
+  agentScope?: PrecedentAgentScope,
 ): void {
   const context = normalizePrecedentWorkingDirectory(workingDirectory);
   if (context === undefined) return;
-  store.record(toolName, signature, decision, true, context);
+  store.record(toolName, signature, decision, true, context, agentScope);
 }
