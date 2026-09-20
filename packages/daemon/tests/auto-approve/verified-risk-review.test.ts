@@ -415,11 +415,29 @@ describe('verified read-only risk review (#1081 phase 4)', () => {
   test('missing context, unknown shell, and high-risk proof matches all escalate without a model call', async () => {
     const server = startReviewServer([LOCAL_INTENT, LOCAL_EFFECT_REVIEW]);
     servers.push(server);
-    const service = new AutoApproveService(makeConfig(server.url), () => undefined);
+    const decisionLogs: string[] = [];
+    const service = new AutoApproveService(
+      makeConfig(server.url, { log_decisions: true }),
+      (message) => decisionLogs.push(message),
+    );
 
     const noContext = await evaluate(service, 'git status --porcelain', '   ');
     expect(noContext.decision).toBe('escalate');
     expect(noContext.reasoning).toContain('no current human authorization context');
+
+    // The proof passes, but the authority gate fails before verified risk
+    // normalization is valid. Keep the classifier's raw high band in the
+    // final telemetry rather than logging the moderate effective band used
+    // only for an eligible approval.
+    const assignmentWithoutContext = await evaluate(
+      service,
+      'b=$(git status --porcelain); echo "$b"',
+      '   ',
+    );
+    expect(assignmentWithoutContext.decision).toBe('escalate');
+    expect(decisionLogs).toContainEqual(
+      expect.stringContaining('[band=high authority=no decided_by=model]'),
+    );
 
     const unknownShell = await evaluate(service, "awk '{print $1}' file");
     expect(unknownShell.decision).toBe('escalate');
