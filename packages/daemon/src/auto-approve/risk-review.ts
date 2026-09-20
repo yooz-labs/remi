@@ -131,6 +131,9 @@ Return the JSON object now:`;
 export function parseDeterministicEffectSet(
   proofFacts: readonly string[],
 ): readonly IntentEffect[] | null {
+  if (!Array.isArray(proofFacts) || !proofFacts.every((entry) => typeof entry === 'string')) {
+    return null;
+  }
   const effectFacts = proofFacts.filter(
     (entry) => entry.startsWith('verified_effects=') || entry.startsWith('workflow_effects='),
   );
@@ -140,12 +143,11 @@ export function parseDeterministicEffectSet(
   if (fact === undefined) return null;
   const separator = fact.indexOf('=');
   if (separator === -1) return null;
-  const effects = fact
-    .slice(separator + 1)
-    .split(',')
-    .map((effect) => effect.trim())
-    .filter((effect) => effect.length > 0);
-  if (effects.length === 0) return null;
+  const rawEffects = fact.slice(separator + 1).split(',');
+  if (rawEffects.length === 0 || rawEffects.some((effect) => effect.trim().length === 0)) {
+    return null;
+  }
+  const effects = rawEffects.map((effect) => effect.trim());
 
   const parsed: IntentEffect[] = [];
   for (const effect of effects) {
@@ -162,13 +164,16 @@ export function parseDeterministicEffectSet(
 
 /**
  * Render the deterministic effect fact as an actual JSON array in the prompt.
- * The legacy key/value fact line remains below for compatibility with existing
- * prompt fixtures, but a comma-separated value is too easy for a model to
- * treat as prose and silently omit an effect such as process_execution.
+ * The legacy key/value fact remains alongside the explicit array for
+ * compatibility with existing prompt fixtures, but a comma-separated value is
+ * too easy for a model to treat as prose and silently omit process_execution.
  */
 function formatExactEffectSet(proofFacts: readonly string[]): string {
   const effects = parseDeterministicEffectSet(proofFacts);
-  return effects === null ? '(not supplied)' : JSON.stringify(effects);
+  if (effects === null) {
+    throw new Error('Verified effect review requires one valid deterministic effect fact');
+  }
+  return JSON.stringify(effects);
 }
 
 /**

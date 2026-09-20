@@ -152,17 +152,28 @@ describe('phase 2 shadow risk/authorization review', () => {
       parseDeterministicEffectSet(['verified_effects=filesystem_read,process_execution']),
     ).toEqual(['filesystem_read', 'process_execution']);
     expect(parseDeterministicEffectSet(['verified_effects='])).toBeNull();
+    expect(parseDeterministicEffectSet(['verified_effects=filesystem_read,'])).toBeNull();
+    expect(parseDeterministicEffectSet(['verified_effects=,filesystem_read'])).toBeNull();
+    expect(
+      parseDeterministicEffectSet(['verified_effects=filesystem_read,,process_execution']),
+    ).toBeNull();
     expect(parseDeterministicEffectSet(['verified_effects=not-an-effect'])).toBeNull();
     expect(parseDeterministicEffectSet(['verified_effects=filesystem_read,filesystem_read'])).toBe(
       null,
     );
     expect(parseDeterministicEffectSet([])).toBeNull();
+    expect(parseDeterministicEffectSet([null as unknown as string])).toBeNull();
     expect(
       parseDeterministicEffectSet([
         'verified_effects=filesystem_read',
         'workflow_effects=remote_mutation',
       ]),
     ).toBeNull();
+    expect(() =>
+      buildVerifiedEffectReviewPrompt('authority', 'Bash: cat file', 'moderate', [
+        'verified_effects=filesystem_read,',
+      ]),
+    ).toThrow('one valid deterministic effect fact');
   });
 
   test('verified effect parser rejects duplicate keys, unknown fields, and truncated shapes', () => {
