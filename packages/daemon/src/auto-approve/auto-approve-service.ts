@@ -65,6 +65,7 @@ import {
   buildShadowReviewPrompt,
   buildVerifiedEffectReviewPrompt,
   formatShadowReviewOperation,
+  parseDeterministicEffectSet,
   parseShadowRiskReview,
   parseVerifiedEffectReview,
 } from './risk-review.ts';
@@ -105,6 +106,7 @@ type ParsedDecision = {
 const VALID_DECISIONS = new Set<BinaryDecision>(['approve', 'deny', 'escalate']);
 
 type ShadowReviewFailureKind = 'malformed' | 'timeout' | 'unavailable' | 'error';
+type VerifiedEffectReviewFailureKind = ShadowReviewFailureKind | 'invalid-effect-facts';
 
 type ShadowReviewOutcome =
   | { readonly kind: 'ok'; readonly review: ShadowRiskReview }
@@ -118,7 +120,7 @@ type VerifiedEffectReviewOutcome =
       readonly latencyMs: number;
     }
   | {
-      readonly kind: ShadowReviewFailureKind;
+      readonly kind: VerifiedEffectReviewFailureKind;
       readonly model: string;
       readonly latencyMs: number;
     };
@@ -972,7 +974,7 @@ export class AutoApproveService {
     deadlineAt: number,
   ): Promise<VerifiedEffectReviewOutcome> {
     const started = Date.now();
-    const finishFailure = (kind: ShadowReviewFailureKind): VerifiedEffectReviewOutcome => ({
+    const finishFailure = (kind: VerifiedEffectReviewFailureKind): VerifiedEffectReviewOutcome => ({
       kind,
       model,
       latencyMs: Date.now() - started,
@@ -983,6 +985,9 @@ export class AutoApproveService {
     }
     const remainingMs = deadlineAt - Date.now();
     if (remainingMs <= 0) return finishFailure('timeout');
+    if (parseDeterministicEffectSet(proofFacts) === null) {
+      return finishFailure('invalid-effect-facts');
+    }
 
     const reviewerController = new AbortController();
     const forwardAbort = (): void => reviewerController.abort();

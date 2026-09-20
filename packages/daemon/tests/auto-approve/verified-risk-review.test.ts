@@ -5,6 +5,7 @@ import {
   readerFrom,
   signatureForOperation,
 } from '../../src/auto-approve/precedent.ts';
+import type { RiskBand } from '../../src/auto-approve/risk-bands.ts';
 import type { AutoApproveConfig } from '../../src/auto-approve/types.ts';
 
 interface ReviewServer {
@@ -15,6 +16,19 @@ interface ReviewServer {
 }
 
 type FixtureResponse = string | ((prompt: string) => string);
+
+type VerifiedEffectReviewProbe = {
+  runVerifiedEffectReview: (
+    toolName: string,
+    toolInput: Record<string, unknown>,
+    authority: string | undefined,
+    riskBand: RiskBand,
+    proofFacts: readonly string[],
+    model: string,
+    signal: AbortSignal,
+    deadlineAt: number,
+  ) => Promise<{ readonly kind: string }>;
+};
 
 let nextVerifiedFixturePort = 19_900;
 
@@ -185,6 +199,17 @@ const INTERPRETER_EFFECT_REVIEW = JSON.stringify({
   reasoning: 'The bounded interpreter performs a reversible repository read.',
 });
 
+const INTERPRETER_EFFECT_REVIEW_MISSING_PROCESS = JSON.stringify({
+  risk: 'moderate',
+  intent: 'interpreter',
+  effects: ['filesystem_read'],
+  scope: 'repository',
+  reversible: true,
+  confidence: 0.97,
+  authorization: 'implicit',
+  reasoning: 'The operation reads repository state.',
+});
+
 const REMOTE_INTERPRETER_INTENT = JSON.stringify({
   intent: 'remote_read',
   effects: ['filesystem_read', 'network_read', 'remote_read', 'process_execution'],
@@ -338,6 +363,61 @@ describe('verified read-only risk review (#1081 phase 4)', () => {
     expect(requestText(server.requests()[0])).toContain(
       'for wt in $(git worktree list --porcelain',
     );
+  });
+
+  test('passes the exact bounded-interpreter effect set to the production reviewer', async () => {
+    const server = startReviewServer([INTERPRETER_INTENT, INTERPRETER_EFFECT_REVIEW]);
+    servers.push(server);
+    const service = new AutoApproveService(makeConfig(server.url), () => undefined);
+    const command =
+      "git worktree list --porcelain | grep '^worktree' | tail -n +2 | awk '{print $2}'";
+
+    const result = await evaluate(service, command);
+
+    expect(result.decision).toBe('approve');
+    expect(server.calls()).toBe(2);
+    expect(requestText(server.requests()[1])).toContain(
+      'CODE-OWNED EFFECT SET (exact observation to copy): ["filesystem_read","process_execution"]',
+    );
+  });
+
+  test('a production reviewer that omits process_execution still escalates', async () => {
+    const server = startReviewServer([
+      INTERPRETER_INTENT,
+      INTERPRETER_EFFECT_REVIEW_MISSING_PROCESS,
+    ]);
+    servers.push(server);
+    const service = new AutoApproveService(makeConfig(server.url), () => undefined);
+
+    const result = await evaluate(
+      service,
+      "git worktree list --porcelain | grep '^worktree' | tail -n +2 | awk '{print $2}'",
+    );
+
+    expect(result.decision).toBe('escalate');
+    expect(result.reasoning).toContain('independent effect reviewer conflicted');
+    expect(server.calls()).toBe(2);
+  });
+
+  test('invalid deterministic effect facts skip the reviewer and return a distinct failure', async () => {
+    const server = startReviewServer(['unused']);
+    servers.push(server);
+    const service = new AutoApproveService(makeConfig(server.url), () => undefined);
+    const probe = service as unknown as VerifiedEffectReviewProbe;
+
+    const outcome = await probe.runVerifiedEffectReview(
+      'Bash',
+      { command: 'git status --porcelain' },
+      undefined,
+      'moderate',
+      ['verified_effects=filesystem_read,'],
+      'review-test-model',
+      new AbortController().signal,
+      Date.now() + 1_000,
+    );
+
+    expect(outcome.kind).toBe('invalid-effect-facts');
+    expect(server.calls()).toBe(0);
   });
 
   test('replay corpus approves only proven moderate reads and fail-closes adversarial variants', async () => {

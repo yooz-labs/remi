@@ -121,6 +121,17 @@ const validIndependentReview = JSON.stringify({
   reasoning: 'Creates a reversible planning issue in the scoped repository.',
 });
 
+const missingRemoteMutationReview = JSON.stringify({
+  risk: 'high',
+  intent: 'remote_mutation',
+  effects: ['network_write'],
+  scope: 'remote_repository',
+  reversible: true,
+  confidence: 0.96,
+  authorization: 'none',
+  reasoning: 'Creates a planning issue in the scoped repository.',
+});
+
 const conflictingIndependentReview = JSON.stringify({
   risk: 'high',
   intent: 'remote_read',
@@ -208,10 +219,45 @@ describe('AutoApproveService session workflow authorization (#1095)', () => {
       expect(content).toContain('independent risk, effect, and authorization');
       expect(content).toContain('session_grant=present');
       expect(content).toContain('github-issue-create');
+      expect(content).toContain(
+        'CODE-OWNED EFFECT SET (exact observation to copy): ["network_write","remote_mutation"]',
+      );
       expect(result.reasoning).toContain('code-verified grant supplied authorization');
       expect(logs.some((line) => line.includes('VERIFIED WORKFLOW REVIEW Bash: status=ok'))).toBe(
         true,
       );
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('verified workflow effect omission escalates through the production path', async () => {
+    const server = startWorkflowServer([validAssessment, missingRemoteMutationReview]);
+    try {
+      const { store } = grantFor();
+      const service = new AutoApproveService(
+        makeConfig(server.url, { risk_review: 'verified' }),
+        () => {},
+      );
+      const result = await service.evaluate(
+        'Bash',
+        { command: "gh issue create --title 'x' --body 'y'" },
+        'session-a',
+        undefined,
+        undefined,
+        16,
+        'session-a',
+        false,
+        'Create the planned GitHub issue for the current task.',
+        undefined,
+        undefined,
+        '/repo/a',
+        { reader: store, repository: 'yooz-labs/remi' },
+      );
+
+      expect(result.decision).toBe('escalate');
+      expect(result.reasoning).toContain('contract-mismatch');
+      expect(server.calls()).toBe(2);
     } finally {
       server.stop();
     }
