@@ -47,23 +47,26 @@
  * the wire, and without changing the matcher. A future narrowing must be
  * based on measured matches, not on the existence of the shared pool alone.
  *
- * `record()` below is therefore called from exactly ONE place:
- * `handleAnswer` in `cli/handlers/input-events.ts`. That function is where
+ * `recordHumanAnswer` below is therefore reached through exactly ONE
+ * production write path:
+ * `handleAnswer` -> `recordPrecedent` (the `cli.ts` callback) ->
+ * `createSessionPrecedentRecorder` -> `recordSessionPrecedent` ->
+ * `recordHumanAnswer` -> `PrecedentStore.record`. `handleAnswer` is where
  * EVERY client-claimed answer converges, regardless of transport — verified
  * by tracing every caller of `events.onAnswer` / `events.onAnswerRelay`
  * (2026-08-02, this module's own PR):
  *
- *   - WebSocket `answer` message: `server/connection.ts:497` `handleAnswer`
- *     -> `:512` `this.events.onAnswer?.(...)` -> wired in `cli.ts` to
- *     `inputHandlers.onAnswer` -> `input-events.ts:789` -> `handleAnswer`.
- *   - HTTP `POST /answer` (lock-screen relay, lands on a cold WebSocket):
- *     `server/websocket-server.ts:451` `handleAnswerRelay` -> `:545`
- *     `this.events.onAnswerRelay(...)` -> wired in `cli.ts:2042` to
- *     `inputHandlers.relayAnswer` -> `input-events.ts:816` -> `handleAnswer`.
- *   - Signaling relay adapter: `remote/relay-adapter.ts:571`
- *     `this.events.onAnswer?.(...)`.
- *   - Telegram bot: `adapters/telegram-adapter.ts:889`
- *     `this.events.onAnswer?.(...)`.
+ *   - WebSocket `answer` message: `server/connection.ts` calls
+ *     `events.onAnswer`, which `cli.ts` wires to `inputHandlers.onAnswer` and
+ *     `input-events.ts` routes through `handleAnswer`.
+ *   - HTTP `POST /answer` (lock-screen relay):
+ *     `server/websocket-server.ts` calls `events.onAnswerRelay`, which
+ *     `cli.ts` wires to `inputHandlers.relayAnswer`; that handler converges on
+ *     the same `handleAnswer`.
+ *   - Signaling relay adapter: its peer-message path calls `events.onAnswer`,
+ *     while its connection-independent `handleRelayedAnswer` path calls
+ *     `events.onAnswerRelay`; both therefore converge on the same handlers.
+ *   - Telegram bot: `adapters/telegram-adapter.ts` calls `events.onAnswer`.
  *
  * A HUMAN answer that never goes through `handleAnswer` at all is also never
  * recorded: `onUserInput` (`input-events.ts`) writes raw attach-client
@@ -1185,18 +1188,19 @@ export function readerFrom(store: PrecedentStore): PrecedentReader {
 /**
  * Record a human's answer into `store` as a `whole` (untruncated-by-
  * construction) precedent (#1067). The write-side companion to `readerFrom`,
- * called through `cli/precedent-recording.ts` from `cli.ts`'s
- * `recordPrecedent` callback, keeps the `whole=true` decision in a NAMED,
- * tested unit rather than an inline literal on the entrypoint.
+ * reached through `cli.ts`'s `recordPrecedent` callback and the
+ * `cli/precedent-recording.ts` helper, keeps the `whole=true` decision in a
+ * NAMED, tested unit rather than an inline literal on the entrypoint.
  *
- * `whole=true` is sound because the ONE production path (`cli.ts`'s
- * `recordPrecedent` -> `cli/precedent-recording.ts` -> `handleAnswer`'s
- * `active.precedentSignature`) only ever passes a `signatureForOperation`
- * value — untruncated by construction, and `undefined`/skipped otherwise
- * (`handleAnswer` fails closed, never falling back to the truncated
- * `active.text`). A future caller handing this a signature built some other
- * way would wrongly mark it `whole`; keep this reserved for the record path
- * whose signature provenance is guaranteed, exactly as the inline literal was.
+ * `whole=true` is sound because the ONE production source
+ * (`handleAnswer`'s `active.precedentSignature`, passed through `cli.ts`'s
+ * `recordPrecedent` callback and `cli/precedent-recording.ts`) only ever
+ * supplies a `signatureForOperation` value — untruncated by construction,
+ * and `undefined`/skipped otherwise (`handleAnswer` fails closed, never
+ * falling back to the truncated `active.text`). A future caller handing this
+ * a signature built some other way would wrongly mark it `whole`; keep this
+ * reserved for the record path whose signature provenance is guaranteed,
+ * exactly as the inline literal was.
  *
  * `workingDirectory` is required for the same reason the reader requires it:
  * an answer without a valid private session context must not become reusable
