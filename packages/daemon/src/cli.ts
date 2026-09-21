@@ -2170,11 +2170,11 @@ const inputHandlers: InputHandlers = createInputHandlers({
   // store for this sessionId (no hookServer, or the session already closed)
   // is a silent no-op -- recording is additive and must never affect the
   // answer itself.
-  // `recordHumanAnswer` records as `whole` (#1067): the only caller
-  // (`handleAnswer`, input-events.ts) sources `signature` from
-  // `active.precedentSignature` (set via `signatureForOperation`, untruncated by
-  // construction), so a genuine >=120-char DENY ending in `...` persists as a
-  // stop rule instead of being dropped by the truncation heuristic. See that
+  // `handleAnswer` sources `signature` from `active.precedentSignature` (set
+  // via `signatureForOperation`, untruncated by construction), then this
+  // callback's recorder helper calls `recordHumanAnswer` with `whole=true`.
+  // A genuine >=120-char DENY ending in `...` therefore persists as a stop
+  // rule instead of being dropped by the truncation heuristic. See that
   // function's doc for why `whole=true` is sound here.
   recordPrecedent: createSessionPrecedentRecorder(sessionPrecedentStores),
 });
