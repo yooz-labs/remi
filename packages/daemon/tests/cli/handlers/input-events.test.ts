@@ -8,7 +8,7 @@ import type { MessageAPI } from '../../../src/api/message-api.ts';
 import { PrecedentStore, readerFrom } from '../../../src/auto-approve/precedent.ts';
 import { createInputHandlers } from '../../../src/cli/handlers/input-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
-import { recordSessionPrecedent } from '../../../src/cli/precedent-recording.ts';
+import { createSessionPrecedentRecorder } from '../../../src/cli/precedent-recording.ts';
 import { AUQ_KEYS } from '../../../src/hooks/auq-answer.ts';
 import { appendPtyOutput, clearPtyOutput } from '../../../src/pty/output-buffer.ts';
 import type { PTYSession } from '../../../src/pty/pty-session.ts';
@@ -2669,26 +2669,10 @@ describe('createInputHandlers', () => {
         sessionRegistry,
         bindingStore,
         send,
-        // This is the same callback shape wired by cli.ts; use the production
-        // recorder so the assertion crosses handleAnswer -> recordHumanAnswer
-        // -> PrecedentStore rather than stopping at an injected spy.
-        recordPrecedent: (
-          answerSessionId,
-          toolName,
-          signature,
-          decision,
-          workingDirectory,
-          agentScope,
-        ) =>
-          recordSessionPrecedent(
-            stores,
-            answerSessionId,
-            toolName,
-            signature,
-            decision,
-            workingDirectory,
-            agentScope,
-          ),
+        // This is the exact callback factory wired by cli.ts; the assertion
+        // crosses handleAnswer -> recordHumanAnswer -> PrecedentStore rather
+        // than stopping at an injected spy.
+        recordPrecedent: createSessionPrecedentRecorder(stores),
       });
       registerPermissionQuestion(sessionId, { agentId: 'agent-1' });
 
@@ -2701,6 +2685,45 @@ describe('createInputHandlers', () => {
       expect(
         readerFrom(store).matchApproved('Bash', 'Bash: git status', true, '/test/dir'),
       ).toMatchObject({ recordedAgentScope: 'subagent' });
+    });
+
+    test('persists main/subagent approvals and denials through the production recorder', async () => {
+      const cases = [
+        { agentId: undefined, answer: 'Yes', decision: 'approved', scope: 'main' },
+        { agentId: 'agent-1', answer: 'Yes', decision: 'approved', scope: 'subagent' },
+        { agentId: undefined, answer: 'No', decision: 'denied', scope: 'main' },
+        { agentId: 'agent-1', answer: 'No', decision: 'denied', scope: 'subagent' },
+      ] as const;
+
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      const store = new PrecedentStore();
+
+      for (const { agentId, answer, decision, scope } of cases) {
+        store.clear();
+        const handlers = createInputHandlers({
+          ...PROMPT_ON_SCREEN,
+          sessionRegistry,
+          bindingStore,
+          send,
+          recordPrecedent: createSessionPrecedentRecorder(new Map([[sessionId, store]])),
+        });
+        registerPermissionQuestion(sessionId, { agentId });
+
+        await handlers.onAnswer(CID, sessionId, QID, answer);
+
+        const match =
+          decision === 'approved'
+            ? store.matchApproved('Bash', 'Bash: git status', true, '/test/dir')
+            : store.matchDenied('Bash', 'Bash: git status', true, '/test/dir');
+        expect(match).toMatchObject({ decision, recordedAgentScope: scope });
+      }
     });
 
     test('records a denial for an unambiguous No to a permission_request question', async () => {

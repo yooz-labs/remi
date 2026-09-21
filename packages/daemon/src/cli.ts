@@ -136,7 +136,6 @@ import {
   resolveProviderUrl,
 } from './auto-approve/index.ts';
 import type { PrecedentStore } from './auto-approve/precedent.ts';
-import type { PrecedentAgentScope } from './auto-approve/precedent.ts';
 import type { SessionWorkflowGrantStore } from './auto-approve/session-workflow-grant.ts';
 import type { DenySource } from './auto-approve/types.ts';
 import { detectAutostartState } from './cli/autostart-state.ts';
@@ -177,7 +176,7 @@ import {
   writeToLog,
 } from './cli/log-file.ts';
 import { handleAutoDenied } from './cli/on-auto-denied.ts';
-import { recordSessionPrecedent } from './cli/precedent-recording.ts';
+import { createSessionPrecedentRecorder } from './cli/precedent-recording.ts';
 import { installProcessGuards } from './cli/process-guards.ts';
 import { PtyQuiescenceGate } from './cli/pty-quiescence-gate.ts';
 import { setupHookBridge } from './cli/session-phases/hook-bridge-setup.ts';
@@ -2177,24 +2176,7 @@ const inputHandlers: InputHandlers = createInputHandlers({
   // construction), so a genuine >=120-char DENY ending in `...` persists as a
   // stop rule instead of being dropped by the truncation heuristic. See that
   // function's doc for why `whole=true` is sound here.
-  recordPrecedent: (
-    sessionId,
-    toolName,
-    signature,
-    decision,
-    workingDirectory,
-    agentScope: PrecedentAgentScope,
-  ) => {
-    recordSessionPrecedent(
-      sessionPrecedentStores,
-      sessionId,
-      toolName,
-      signature,
-      decision,
-      workingDirectory,
-      agentScope,
-    );
-  },
+  recordPrecedent: createSessionPrecedentRecorder(sessionPrecedentStores),
 });
 
 const sessionHandlers: SessionHandlers = createSessionHandlers({

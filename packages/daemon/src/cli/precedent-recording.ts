@@ -2,6 +2,15 @@ import type { UUID } from '@remi/shared';
 import type { PrecedentAgentScope, PrecedentStore } from '../auto-approve/precedent.ts';
 import { recordHumanAnswer } from '../auto-approve/precedent.ts';
 
+export type SessionPrecedentRecorder = (
+  sessionId: UUID,
+  toolName: string,
+  signature: string,
+  decision: 'approved' | 'denied',
+  workingDirectory: string,
+  agentScope: PrecedentAgentScope,
+) => void;
+
 /**
  * Record a client-confirmed precedent in the owning session's store.
  *
@@ -21,4 +30,20 @@ export function recordSessionPrecedent(
 ): void {
   const store = stores.get(sessionId);
   if (store) recordHumanAnswer(store, toolName, signature, decision, workingDirectory, agentScope);
+}
+
+/** Build the callback passed to `createInputHandlers` by the production CLI. */
+export function createSessionPrecedentRecorder(
+  stores: ReadonlyMap<UUID, PrecedentStore>,
+): SessionPrecedentRecorder {
+  return (sessionId, toolName, signature, decision, workingDirectory, agentScope) =>
+    recordSessionPrecedent(
+      stores,
+      sessionId,
+      toolName,
+      signature,
+      decision,
+      workingDirectory,
+      agentScope,
+    );
 }
