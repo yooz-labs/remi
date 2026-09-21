@@ -2172,10 +2172,11 @@ const inputHandlers: InputHandlers = createInputHandlers({
   // answer itself.
   // `handleAnswer` sources `signature` from `active.precedentSignature` (set
   // via `signatureForOperation`, untruncated by construction), then this
-  // callback's recorder helper calls `recordHumanAnswer` with `whole=true`.
-  // A genuine >=120-char DENY ending in `...` therefore persists as a stop
-  // rule instead of being dropped by the truncation heuristic. See that
-  // function's doc for why `whole=true` is sound here.
+  // callback's recorder helper delegates to `recordHumanAnswer`, whose
+  // implementation records with `whole=true`. A genuine >=120-char DENY
+  // ending in `...` therefore persists as a stop rule instead of being
+  // dropped by the truncation heuristic. See that function's doc for why
+  // `whole=true` is sound here.
   recordPrecedent: createSessionPrecedentRecorder(sessionPrecedentStores),
 });
 

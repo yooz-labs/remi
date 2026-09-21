@@ -56,17 +56,17 @@
  * by tracing every caller of `events.onAnswer` / `events.onAnswerRelay`
  * (2026-08-02, this module's own PR):
  *
- *   - WebSocket `answer` message: `server/connection.ts:497` `handleAnswer`
- *     -> `:512` `this.events.onAnswer?.(...)` -> wired in `cli.ts` to
- *     `inputHandlers.onAnswer` -> `input-events.ts:789` -> `handleAnswer`.
- *   - HTTP `POST /answer` (lock-screen relay, lands on a cold WebSocket):
- *     `server/websocket-server.ts:451` `handleAnswerRelay` -> `:545`
- *     `this.events.onAnswerRelay(...)` -> wired in `cli.ts:2042` to
- *     `inputHandlers.relayAnswer` -> `input-events.ts:816` -> `handleAnswer`.
- *   - Signaling relay adapter: `remote/relay-adapter.ts:571`
- *     `this.events.onAnswer?.(...)`.
- *   - Telegram bot: `adapters/telegram-adapter.ts:889`
- *     `this.events.onAnswer?.(...)`.
+ *   - WebSocket `answer` message: `server/connection.ts` calls
+ *     `events.onAnswer`, which `cli.ts` wires to `inputHandlers.onAnswer` and
+ *     `input-events.ts` routes through `handleAnswer`.
+ *   - HTTP `POST /answer` (lock-screen relay):
+ *     `server/websocket-server.ts` calls `events.onAnswerRelay`, which
+ *     `cli.ts` wires to `inputHandlers.relayAnswer`; that handler converges on
+ *     the same `handleAnswer`.
+ *   - Signaling relay adapter: its peer-message path calls `events.onAnswer`,
+ *     while its connection-independent `handleRelayedAnswer` path calls
+ *     `events.onAnswerRelay`; both therefore converge on the same handlers.
+ *   - Telegram bot: `adapters/telegram-adapter.ts` calls `events.onAnswer`.
  *
  * A HUMAN answer that never goes through `handleAnswer` at all is also never
  * recorded: `onUserInput` (`input-events.ts`) writes raw attach-client
