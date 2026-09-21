@@ -91,6 +91,24 @@ caught a pre-existing ceiling bypass (#1076), fixed here.
   boundary, risk ceiling) is structurally excluded from being re-litigated by
   it, and a would-be correction still passes through the same risk-ceiling and
   trust-boundary checks an ordinary approve does before it can stand.
+- **Prompt guidance now matches the deciding pipeline** (#1110). User guidance
+  is treated as context for routine or moderate ambiguity, while deterministic
+  grants and code-owned safety guards remain authoritative; contradictory
+  action guidance was removed and every guidance-bearing prompt is covered.
+- **Post-model decisions now retain their actual deciding layer** (#1111).
+  Deny-floor, trust-boundary, risk-ceiling, precedent, counterfactual, and
+  model outcomes are attributed consistently, with HTTP-fixture regression
+  coverage for the guard chain so telemetry cannot claim that a later layer
+  decided an outcome it did not produce.
+- **Cross-agent session-precedent reuse is now measurable** (#1112).
+  Human approval and denial records carry private `main`/`subagent` scope and
+  grep-friendly cross-scope fields through the production recorder, without
+  changing the matcher or exposing command text, agent IDs, or directories.
+- **Verified-review effect contracts are explicit and fail closed** (#1113).
+  The independent reviewer receives an exact effect set, and missing,
+  duplicate, unknown, empty, or non-string facts are rejected before a
+  verified review call; bounded interpreter effects and scoped workflow
+  `remote_mutation` mappings remain covered by the production two-call path.
 
 ### Security
 
