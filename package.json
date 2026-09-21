@@ -8,6 +8,7 @@
     "test": "bun test --coverage",
     "test:permission-bank": "bun test packages/daemon/tests/auto-approve/curated-permission-bank.test.ts",
     "replay:permission-bank": "bun run packages/daemon/tests/auto-approve/run-permission-bank.ts",
+    "sweep:model": "bun run packages/daemon/tests/auto-approve/run-model-sweep.ts",
     "test:watch": "bun test --watch",
     "test:coverage": "bun test --coverage --coverage-reporter=text --coverage-reporter=lcov",
     "test:e2e": "bunx playwright test --config tests/e2e/playwright.config.ts",
