@@ -105,15 +105,17 @@
  * is the only safe response" (the latter's own doc comment).
  *
  * This is a STRUCTURAL property, not a convention: `record()` is not exported
- * from `auto-approve/index.ts` (deliberately, per this PR's scope) and the
- * ONLY module that imports `PrecedentStore` to call `.record()` is
- * `input-events.ts`. It would break if a future change routed an
- * auto-answered verdict through `handleAnswer` itself (e.g. "for consistency,
- * let's have the gate call the same answer path a human uses") — that is
- * exactly the self-licensing loop ADR 0015 warns about, and it would not be
- * visible from this file alone. Anyone doing that must re-derive provenance
- * some other way (an explicit actor tag threaded through `handleAnswer`,
- * checked before `record()` runs) rather than relying on today's structural
+ * from `auto-approve/index.ts` (deliberately, per this PR's scope), and the
+ * only production write path is `recordHumanAnswer` through
+ * `cli/precedent-recording.ts`. `input-events.ts` is the only client-answer
+ * path that classifies a question and invokes that recorder callback; all
+ * transport surfaces converge on its `handleAnswer`. It would break if a
+ * future change routed an auto-answered verdict through `handleAnswer` itself
+ * (e.g. "for consistency, let's have the gate call the same answer path a
+ * human uses") — that is exactly the self-licensing loop ADR 0015 warns
+ * about. Anyone doing that must re-derive provenance some other way (an
+ * explicit actor tag threaded through `handleAnswer`, checked before
+ * `recordHumanAnswer` runs) rather than relying on today's structural
  * separation.
  *
  * ## The allow/deny asymmetry (ADR 0010)
@@ -1183,18 +1185,18 @@ export function readerFrom(store: PrecedentStore): PrecedentReader {
 /**
  * Record a human's answer into `store` as a `whole` (untruncated-by-
  * construction) precedent (#1067). The write-side companion to `readerFrom`,
- * extracted from `cli.ts`'s `recordPrecedent` closure so the `whole=true`
- * decision is a NAMED, tested unit rather than an inline literal on the
- * entrypoint.
+ * called through `cli/precedent-recording.ts` from `cli.ts`'s
+ * `recordPrecedent` callback, keeps the `whole=true` decision in a NAMED,
+ * tested unit rather than an inline literal on the entrypoint.
  *
- * `whole=true` is sound because the ONE production caller (`cli.ts`'s
- * `recordPrecedent`, fed by `handleAnswer` -> `active.precedentSignature`) only
- * ever passes a `signatureForOperation` value — untruncated by construction,
- * and `undefined`/skipped otherwise (`handleAnswer` fails closed, never falling
- * back to the truncated `active.text`). A future caller handing this a signature
- * built some other way would wrongly mark it `whole`; keep this reserved for the
- * record path whose signature provenance is guaranteed, exactly as the inline
- * literal was.
+ * `whole=true` is sound because the ONE production path (`cli.ts`'s
+ * `recordPrecedent` -> `cli/precedent-recording.ts` -> `handleAnswer`'s
+ * `active.precedentSignature`) only ever passes a `signatureForOperation`
+ * value — untruncated by construction, and `undefined`/skipped otherwise
+ * (`handleAnswer` fails closed, never falling back to the truncated
+ * `active.text`). A future caller handing this a signature built some other
+ * way would wrongly mark it `whole`; keep this reserved for the record path
+ * whose signature provenance is guaranteed, exactly as the inline literal was.
  *
  * `workingDirectory` is required for the same reason the reader requires it:
  * an answer without a valid private session context must not become reusable
