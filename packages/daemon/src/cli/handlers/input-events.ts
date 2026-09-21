@@ -12,7 +12,8 @@
 import { createBulletExpandResponse, createError, errorToString } from '@remi/shared';
 import type { AnswerExtras, AnswerSelection, Question, QuestionOption, UUID } from '@remi/shared';
 
-import { toolNameFromSignature } from '../../auto-approve/precedent.ts';
+import { precedentAgentScope, toolNameFromSignature } from '../../auto-approve/precedent.ts';
+import type { PrecedentAgentScope } from '../../auto-approve/precedent.ts';
 import type { SessionWorkflowFamily } from '../../auto-approve/session-workflow-grant.ts';
 import { clearAuqRunActive, markAuqRunActive } from '../../hooks/auq-active-runs.ts';
 import { AUQ_KEYS } from '../../hooks/auq-answer.ts';
@@ -129,14 +130,17 @@ export interface InputHandlerDeps {
    * precedent store (#976 prerequisite, `auto-approve/precedent.ts`). Called
    * ONLY for answers `handleAnswer` can classify with confidence as an
    * unambiguous approve/deny of a genuine tool permission — see the call
-   * site's comment for the exact conditions. This is the ONLY place in the
-   * codebase that calls into a `PrecedentStore` at all: provenance-safety
-   * (ADR 0015's "Amendment, 2026-08-02", precedent.ts's module doc) depends
-   * on every path into it converging on `handleAnswer`, so a future consumer
-   * must not add another call site instead of routing through here. Absent
-   * (tests, or a session with no wired store) => the answer still applies
-   * normally, it is just not recorded as precedent — recording is additive
-   * and must never gate the answer itself.
+   * site's comment for the exact conditions. This callback is the ONLY
+   * client-answer write entrypoint: the production recorder it invokes owns
+   * the session-store write, while provenance-safety (ADR 0015's
+   * "Amendment, 2026-08-02", precedent.ts's module doc) depends on every
+   * transport path converging on `handleAnswer`. A future consumer must not
+   * add another recording path instead of routing through here. Absent (tests,
+   * or a session with no wired store) => the answer still applies normally,
+   * it is just not recorded as precedent — recording is additive and must
+   * never gate the answer itself. `agentScope` is private audit metadata
+   * derived from the question's `agentId`; it never changes the operation
+   * identity.
    */
   recordPrecedent?: (
     sessionId: UUID,
@@ -144,6 +148,7 @@ export interface InputHandlerDeps {
     signature: string,
     decision: 'approved' | 'denied',
     workingDirectory: string,
+    agentScope: PrecedentAgentScope,
   ) => void;
 }
 
@@ -871,6 +876,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
             signature,
             decision.decision === 'allow' ? 'approved' : 'denied',
             session.workingDirectory,
+            precedentAgentScope(active.agentId),
           );
         }
       }
