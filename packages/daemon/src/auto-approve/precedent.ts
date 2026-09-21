@@ -35,23 +35,38 @@
  * approvals from them — a self-licensing loop (ADR 0015, "Obligations this
  * creates").
  *
- * `record()` below is therefore called from exactly ONE place:
- * `handleAnswer` in `cli/handlers/input-events.ts`. That function is where
+ * ## Agent scope is audit metadata (#1019)
+ *
+ * The store is deliberately session-wide, not agent-wide: a human answer
+ * from a main-agent question can currently authorize the identical operation
+ * for a subagent, and vice versa. That sharing is part of the existing
+ * contract (the public operation signature is intentionally agent-neutral),
+ * but the old match result did not say which side supplied the answer. The
+ * private `agentScope` fields below make cross-scope reuse observable in the
+ * daemon log without putting agent identity or working-directory context on
+ * the wire, and without changing the matcher. A future narrowing must be
+ * based on measured matches, not on the existence of the shared pool alone.
+ *
+ * `recordHumanAnswer` below is therefore reached through exactly ONE
+ * production write path:
+ * `handleAnswer` -> `recordPrecedent` (the `cli.ts` callback) ->
+ * `createSessionPrecedentRecorder` -> `recordSessionPrecedent` ->
+ * `recordHumanAnswer` -> `PrecedentStore.record`. `handleAnswer` is where
  * EVERY client-claimed answer converges, regardless of transport — verified
  * by tracing every caller of `events.onAnswer` / `events.onAnswerRelay`
  * (2026-08-02, this module's own PR):
  *
- *   - WebSocket `answer` message: `server/connection.ts:497` `handleAnswer`
- *     -> `:512` `this.events.onAnswer?.(...)` -> wired in `cli.ts` to
- *     `inputHandlers.onAnswer` -> `input-events.ts:789` -> `handleAnswer`.
- *   - HTTP `POST /answer` (lock-screen relay, lands on a cold WebSocket):
- *     `server/websocket-server.ts:451` `handleAnswerRelay` -> `:545`
- *     `this.events.onAnswerRelay(...)` -> wired in `cli.ts:2042` to
- *     `inputHandlers.relayAnswer` -> `input-events.ts:816` -> `handleAnswer`.
- *   - Signaling relay adapter: `remote/relay-adapter.ts:571`
- *     `this.events.onAnswer?.(...)`.
- *   - Telegram bot: `adapters/telegram-adapter.ts:889`
- *     `this.events.onAnswer?.(...)`.
+ *   - WebSocket `answer` message: `server/connection.ts` calls
+ *     `events.onAnswer`, which `cli.ts` wires to `inputHandlers.onAnswer` and
+ *     `input-events.ts` routes through `handleAnswer`.
+ *   - HTTP `POST /answer` (lock-screen relay):
+ *     `server/websocket-server.ts` calls `events.onAnswerRelay`, which
+ *     `cli.ts` wires to `inputHandlers.relayAnswer`; that handler converges on
+ *     the same `handleAnswer`.
+ *   - Signaling relay adapter: its peer-message path calls `events.onAnswer`,
+ *     while its connection-independent `handleRelayedAnswer` path calls
+ *     `events.onAnswerRelay`; both therefore converge on the same handlers.
+ *   - Telegram bot: `adapters/telegram-adapter.ts` calls `events.onAnswer`.
  *
  * A HUMAN answer that never goes through `handleAnswer` at all is also never
  * recorded: `onUserInput` (`input-events.ts`) writes raw attach-client
@@ -93,15 +108,17 @@
  * is the only safe response" (the latter's own doc comment).
  *
  * This is a STRUCTURAL property, not a convention: `record()` is not exported
- * from `auto-approve/index.ts` (deliberately, per this PR's scope) and the
- * ONLY module that imports `PrecedentStore` to call `.record()` is
- * `input-events.ts`. It would break if a future change routed an
- * auto-answered verdict through `handleAnswer` itself (e.g. "for consistency,
- * let's have the gate call the same answer path a human uses") — that is
- * exactly the self-licensing loop ADR 0015 warns about, and it would not be
- * visible from this file alone. Anyone doing that must re-derive provenance
- * some other way (an explicit actor tag threaded through `handleAnswer`,
- * checked before `record()` runs) rather than relying on today's structural
+ * from `auto-approve/index.ts` (deliberately, per this PR's scope), and the
+ * only production write path is `recordHumanAnswer` through
+ * `cli/precedent-recording.ts`. `input-events.ts` is the only client-answer
+ * path that classifies a question and invokes that recorder callback; all
+ * transport surfaces converge on its `handleAnswer`. It would break if a
+ * future change routed an auto-answered verdict through `handleAnswer` itself
+ * (e.g. "for consistency, let's have the gate call the same answer path a
+ * human uses") — that is exactly the self-licensing loop ADR 0015 warns
+ * about. Anyone doing that must re-derive provenance some other way (an
+ * explicit actor tag threaded through `handleAnswer`, checked before
+ * `recordHumanAnswer` runs) rather than relying on today's structural
  * separation.
  *
  * ## The allow/deny asymmetry (ADR 0010)
@@ -235,6 +252,14 @@
 import { normalizeProjectPath } from '../cli/path-resolver.ts';
 import { summarizeToolInput } from '../hooks/tool-summary.ts';
 
+/** Agent context that originated a human precedent record or consumes it. */
+export type PrecedentAgentScope = 'main' | 'subagent';
+
+/** Normalize Claude's optional `agent_id` to the two audit scopes. */
+export function precedentAgentScope(agentId: string | undefined): PrecedentAgentScope {
+  return typeof agentId === 'string' && agentId.length > 0 ? 'subagent' : 'main';
+}
+
 /** One human-classified answer to a permission-shaped question. */
 export interface PrecedentRecord {
   /**
@@ -287,6 +312,11 @@ export interface PrecedentRecord {
    * command in another session.
    */
   readonly workingDirectory?: string;
+  /**
+   * Private origin scope for #1019 measurement. It is intentionally absent
+   * on directly-built/legacy records and never participates in matching.
+   */
+  readonly agentScope?: PrecedentAgentScope;
 }
 
 /**
@@ -304,6 +334,8 @@ export interface PrecedentMatch {
    *  asymmetry made visible at the call site, not just in this module's doc. */
   readonly matchKind: 'exact' | 'substring';
   readonly recordedAt: number;
+  /** Private scope that supplied the matched human answer, when known. */
+  readonly recordedAgentScope?: PrecedentAgentScope;
 }
 
 /** Cap on stored records per session. Sized independently of
@@ -901,6 +933,7 @@ export function findApprovedPrecedent(
       matchedSignature: storedSignature,
       matchKind: 'exact',
       recordedAt: record.recordedAt,
+      ...(record.agentScope !== undefined ? { recordedAgentScope: record.agentScope } : {}),
     };
   }
   return null;
@@ -974,6 +1007,7 @@ export function findDeniedPrecedent(
       matchedSignature: storedSignature,
       matchKind: 'substring',
       recordedAt: record.recordedAt,
+      ...(record.agentScope !== undefined ? { recordedAgentScope: record.agentScope } : {}),
     };
   }
   return null;
@@ -1040,6 +1074,10 @@ export class PrecedentStore {
    * formatting (a double space, aligned arguments, an indented multi-line
    * command), not just an adversarial construction — and a check running
    * on the already-shrunk value would silently miss it.
+   *
+   * `agentScope`, when supplied, is private audit metadata describing whether
+   * the human answered a main-agent or subagent question. It never changes
+   * storage order or matching.
    */
   record(
     toolName: string,
@@ -1047,6 +1085,7 @@ export class PrecedentStore {
     decision: 'approved' | 'denied',
     whole = false,
     workingDirectory?: string,
+    agentScope?: PrecedentAgentScope,
   ): void {
     // Provenance decides whether the truncation heuristic applies (#1067). A
     // `whole` signature is untruncated BY CONSTRUCTION (`signatureForOperation`),
@@ -1075,6 +1114,7 @@ export class PrecedentStore {
       ...(normalizedWorkingDirectory !== undefined
         ? { workingDirectory: normalizedWorkingDirectory }
         : {}),
+      ...(agentScope !== undefined ? { agentScope } : {}),
     });
     if (this.records.length > this.maxEntries) this.records.shift();
   }
@@ -1148,22 +1188,25 @@ export function readerFrom(store: PrecedentStore): PrecedentReader {
 /**
  * Record a human's answer into `store` as a `whole` (untruncated-by-
  * construction) precedent (#1067). The write-side companion to `readerFrom`,
- * extracted from `cli.ts`'s `recordPrecedent` closure so the `whole=true`
- * decision is a NAMED, tested unit rather than an inline literal on the
- * entrypoint.
+ * reached through `cli.ts`'s `recordPrecedent` callback and the
+ * `cli/precedent-recording.ts` helper, keeps the `whole=true` decision in a
+ * NAMED, tested unit rather than an inline literal on the entrypoint.
  *
- * `whole=true` is sound because the ONE production caller (`cli.ts`'s
- * `recordPrecedent`, fed by `handleAnswer` -> `active.precedentSignature`) only
- * ever passes a `signatureForOperation` value — untruncated by construction,
- * and `undefined`/skipped otherwise (`handleAnswer` fails closed, never falling
- * back to the truncated `active.text`). A future caller handing this a signature
- * built some other way would wrongly mark it `whole`; keep this reserved for the
- * record path whose signature provenance is guaranteed, exactly as the inline
- * literal was.
+ * `whole=true` is sound because the ONE production source
+ * (`handleAnswer`'s `active.precedentSignature`, passed through `cli.ts`'s
+ * `recordPrecedent` callback and `cli/precedent-recording.ts`) only ever
+ * supplies a `signatureForOperation` value — untruncated by construction,
+ * and `undefined`/skipped otherwise (`handleAnswer` fails closed, never
+ * falling back to the truncated `active.text`). A future caller handing this
+ * a signature built some other way would wrongly mark it `whole`; keep this
+ * reserved for the record path whose signature provenance is guaranteed,
+ * exactly as the inline literal was.
  *
  * `workingDirectory` is required for the same reason the reader requires it:
  * an answer without a valid private session context must not become reusable
  * precedent.
+ * `agentScope` is private audit metadata for #1019 and is not part of the
+ * operation identity.
  */
 export function recordHumanAnswer(
   store: PrecedentStore,
@@ -1171,8 +1214,9 @@ export function recordHumanAnswer(
   signature: string,
   decision: 'approved' | 'denied',
   workingDirectory: string,
+  agentScope?: PrecedentAgentScope,
 ): void {
   const context = normalizePrecedentWorkingDirectory(workingDirectory);
   if (context === undefined) return;
-  store.record(toolName, signature, decision, true, context);
+  store.record(toolName, signature, decision, true, context, agentScope);
 }

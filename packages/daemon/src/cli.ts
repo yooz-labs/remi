@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.7.13'; // REMI_COMPILED_VERSION
+      return '0.7.14-dev.7'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.7.13'; // REMI_COMPILED_VERSION
+    return '0.7.14-dev.7'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -136,7 +136,6 @@ import {
   resolveProviderUrl,
 } from './auto-approve/index.ts';
 import type { PrecedentStore } from './auto-approve/precedent.ts';
-import { recordHumanAnswer } from './auto-approve/precedent.ts';
 import type { SessionWorkflowGrantStore } from './auto-approve/session-workflow-grant.ts';
 import type { DenySource } from './auto-approve/types.ts';
 import { detectAutostartState } from './cli/autostart-state.ts';
@@ -177,6 +176,7 @@ import {
   writeToLog,
 } from './cli/log-file.ts';
 import { handleAutoDenied } from './cli/on-auto-denied.ts';
+import { createSessionPrecedentRecorder } from './cli/precedent-recording.ts';
 import { installProcessGuards } from './cli/process-guards.ts';
 import { PtyQuiescenceGate } from './cli/pty-quiescence-gate.ts';
 import { setupHookBridge } from './cli/session-phases/hook-bridge-setup.ts';
@@ -2170,16 +2170,14 @@ const inputHandlers: InputHandlers = createInputHandlers({
   // store for this sessionId (no hookServer, or the session already closed)
   // is a silent no-op -- recording is additive and must never affect the
   // answer itself.
-  // `recordHumanAnswer` records as `whole` (#1067): the only caller
-  // (`handleAnswer`, input-events.ts) sources `signature` from
-  // `active.precedentSignature` (set via `signatureForOperation`, untruncated by
-  // construction), so a genuine >=120-char DENY ending in `...` persists as a
-  // stop rule instead of being dropped by the truncation heuristic. See that
-  // function's doc for why `whole=true` is sound here.
-  recordPrecedent: (sessionId, toolName, signature, decision, workingDirectory) => {
-    const store = sessionPrecedentStores.get(sessionId);
-    if (store) recordHumanAnswer(store, toolName, signature, decision, workingDirectory);
-  },
+  // `handleAnswer` sources `signature` from `active.precedentSignature` (set
+  // via `signatureForOperation`, untruncated by construction), then this
+  // callback's recorder helper delegates to `recordHumanAnswer`, whose
+  // implementation records with `whole=true`. A genuine >=120-char DENY
+  // ending in `...` therefore persists as a stop rule instead of being
+  // dropped by the truncation heuristic. See that function's doc for why
+  // `whole=true` is sound here.
+  recordPrecedent: createSessionPrecedentRecorder(sessionPrecedentStores),
 });
 
 const sessionHandlers: SessionHandlers = createSessionHandlers({

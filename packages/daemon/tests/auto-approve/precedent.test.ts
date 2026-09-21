@@ -15,6 +15,7 @@ import {
   findApprovedPrecedent,
   findDeniedPrecedent,
   parsePermissionQuestionText,
+  precedentAgentScope,
   precedentMayAuthorize,
   readerFrom,
   recordHumanAnswer,
@@ -40,6 +41,34 @@ describe('PrecedentStore', () => {
     expect(match?.decision).toBe('approved');
     expect(match?.matchKind).toBe('exact');
     expect(match?.matchedSignature).toBe('Bash: git status');
+  });
+
+  test('carries private origin scope through a production human-answer record', () => {
+    const mainStore = new PrecedentStore();
+    recordHumanAnswer(
+      mainStore,
+      'Bash',
+      'Bash: git status',
+      'approved',
+      TEST_CWD,
+      precedentAgentScope(undefined),
+    );
+    expect(mainStore.matchApproved('Bash', 'Bash: git status', true, TEST_CWD)).toMatchObject({
+      recordedAgentScope: 'main',
+    });
+
+    const subagentStore = new PrecedentStore();
+    recordHumanAnswer(
+      subagentStore,
+      'Bash',
+      'Bash: git status',
+      'approved',
+      TEST_CWD,
+      precedentAgentScope('agent-1'),
+    );
+    expect(subagentStore.matchApproved('Bash', 'Bash: git status', true, TEST_CWD)).toMatchObject({
+      recordedAgentScope: 'subagent',
+    });
   });
 
   test('binds a record to its normalized private working directory', () => {

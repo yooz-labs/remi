@@ -10,11 +10,10 @@
  * **35 explicitly cite the user's own `instructions` and escalate anyway**
  * ("While the user guidance mentions approving writes... requires user
  * judgment") and **57 are plain writes**, against a config whose prose
- * approves writes outright. `prompt-builder.ts` already hoists that guidance
- * above the defaults, labels it MANDATORY, and repeats it at the end for
- * recency — each with a comment naming the failure that motivated it. It
- * still does not hold. That is the ceiling of the approach, not a bug in this
- * instance of it.
+ * approves writes outright. Earlier versions of `prompt-builder.ts` hoisted
+ * that guidance above the defaults, labeled it MANDATORY, and repeated it at
+ * the end for recency. It still did not hold. That is the ceiling of the
+ * approach, not a bug in this instance of it.
  *
  * So the levels are group membership, which is enforced, rather than
  * adjectives in a prompt, which is asked.

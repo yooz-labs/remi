@@ -46,6 +46,8 @@ import {
 import { matchAllowPattern, matchSubstringPattern } from './pattern-matcher.ts';
 import { matchComposedCommand, matchGroups, matchGroupsBroad } from './permission-groups.ts';
 import {
+  type PrecedentAgentScope,
+  type PrecedentMatch,
   type PrecedentReader,
   normalizePrecedentWorkingDirectory,
   precedentMayAuthorize,
@@ -65,6 +67,7 @@ import {
   buildShadowReviewPrompt,
   buildVerifiedEffectReviewPrompt,
   formatShadowReviewOperation,
+  parseDeterministicEffectSet,
   parseShadowRiskReview,
   parseVerifiedEffectReview,
 } from './risk-review.ts';
@@ -77,12 +80,32 @@ import type {
   WorkflowOperationFacts,
 } from './session-workflow-grant.ts';
 import type { AutoApproveConfig, AutoApproveResult, DenySource, MultiChoiceMode } from './types.ts';
+
 import {
   assessmentMatchesVerifiedEffectContract,
   makeVerifiedEffectContract,
   verifiedAssessmentsAgree,
   verifiedReadEffectContract,
 } from './verified-dual-review.ts';
+
+/**
+ * Private, grep-friendly audit fields for #1019. Agent scope is deliberately
+ * not part of the operation key: this reports the existing session-wide
+ * sharing so a later narrowing can be evidence-driven.
+ */
+function formatPrecedentScopeAudit(
+  match: Pick<PrecedentMatch, 'recordedAgentScope'>,
+  requestedScope: PrecedentAgentScope,
+): string {
+  const recordedScope = match.recordedAgentScope ?? 'unknown';
+  const crossScope =
+    match.recordedAgentScope === undefined
+      ? 'unknown'
+      : match.recordedAgentScope !== requestedScope
+        ? 'yes'
+        : 'no';
+  return `recorded_scope=${recordedScope} requested_scope=${requestedScope} cross_scope=${crossScope}`;
+}
 
 type BinaryDecision = 'approve' | 'deny' | 'escalate';
 
@@ -105,6 +128,7 @@ type ParsedDecision = {
 const VALID_DECISIONS = new Set<BinaryDecision>(['approve', 'deny', 'escalate']);
 
 type ShadowReviewFailureKind = 'malformed' | 'timeout' | 'unavailable' | 'error';
+type VerifiedEffectReviewFailureKind = ShadowReviewFailureKind | 'invalid-effect-facts';
 
 type ShadowReviewOutcome =
   | { readonly kind: 'ok'; readonly review: ShadowRiskReview }
@@ -118,7 +142,7 @@ type VerifiedEffectReviewOutcome =
       readonly latencyMs: number;
     }
   | {
-      readonly kind: ShadowReviewFailureKind;
+      readonly kind: VerifiedEffectReviewFailureKind;
       readonly model: string;
       readonly latencyMs: number;
     };
@@ -972,7 +996,7 @@ export class AutoApproveService {
     deadlineAt: number,
   ): Promise<VerifiedEffectReviewOutcome> {
     const started = Date.now();
-    const finishFailure = (kind: ShadowReviewFailureKind): VerifiedEffectReviewOutcome => ({
+    const finishFailure = (kind: VerifiedEffectReviewFailureKind): VerifiedEffectReviewOutcome => ({
       kind,
       model,
       latencyMs: Date.now() - started,
@@ -983,6 +1007,9 @@ export class AutoApproveService {
     }
     const remainingMs = deadlineAt - Date.now();
     if (remainingMs <= 0) return finishFailure('timeout');
+    if (parseDeterministicEffectSet(proofFacts) === null) {
+      return finishFailure('invalid-effect-facts');
+    }
 
     const reviewerController = new AbortController();
     const forwardAbort = (): void => reviewerController.abort();
@@ -1528,6 +1555,7 @@ export class AutoApproveService {
     precedentContext: string | undefined,
     prefix: string,
     suppressSecondOpinion: boolean,
+    requestedAgentScope: PrecedentAgentScope,
   ): { readonly result: AutoApproveResult; readonly overridden: boolean } {
     if (
       result.decision !== 'approve' ||
@@ -1556,7 +1584,7 @@ export class AutoApproveService {
       ...(suppressSecondOpinion ? { suppressSecondOpinion: true as const } : {}),
     };
     this.logFn(
-      `${prefix} PRECEDENT ${toolName}: approve -> escalate (denied "${deniedMatch.matchedSignature}") (${result.durationMs}ms)`,
+      `${prefix} PRECEDENT ${toolName}: approve -> escalate (denied "${deniedMatch.matchedSignature}") (${result.durationMs}ms) ${formatPrecedentScopeAudit(deniedMatch, requestedAgentScope)}`,
     );
     return { result: overridden, overridden: true };
   }
@@ -1652,6 +1680,7 @@ export class AutoApproveService {
     const baseModel = modelOverride || this.llmConfig.model;
     const model = baseModel;
     const prefix = tag ? `[AutoApprove ${tag}]` : '[AutoApprove]';
+    const requestedAgentScope: PrecedentAgentScope = isSubagent === true ? 'subagent' : 'main';
     const resolvedScope = scope ?? DEFAULT_SCOPE;
 
     const normalisedSuggestions = Array.isArray(permissionSuggestions)
@@ -1732,7 +1761,9 @@ export class AutoApproveService {
             // the USER did rather than on something they WROTE, so the record
             // of which answer authorized it is the audit trail for a decision
             // nobody can otherwise reconstruct from config.
-            this.logFn(`${prefix} PRECEDENT ${toolName}: approve (0ms) - ${reasoning}`);
+            this.logFn(
+              `${prefix} PRECEDENT ${toolName}: approve (0ms) - ${reasoning} ${formatPrecedentScopeAudit(approvedMatch, requestedAgentScope)}`,
+            );
             return { decision: 'approve', reasoning, durationMs: 0, model };
           }
           // Matrix refused. Fall through to the normal path rather than
@@ -2142,7 +2173,33 @@ export class AutoApproveService {
             precedentContext,
             prefix,
             true,
+            requestedAgentScope,
           );
+          const classifiedVerifiedRisk = classifyRisk(toolName, toolInput);
+          // `runVerifiedReadReview` applies proof-aware normalization only
+          // after the deterministic proof succeeds. Reuse that effective band
+          // for an approval (including one later escalated by precedent), but
+          // keep raw classification for gate failures where normalization was
+          // never valid to apply.
+          const verifiedRiskBand =
+            verified.decision === 'approve'
+              ? normalizeVerifiedReadRisk(
+                  typeof toolInput['command'] === 'string' ? toolInput['command'] : '',
+                  classifiedVerifiedRisk,
+                )
+              : classifiedVerifiedRisk;
+          const verifiedDecidedBy: DecidingLayer = precedentApplied.overridden
+            ? 'precedent'
+            : 'model';
+          if (this.logDecisions) {
+            this.logFn(
+              `${prefix} ${toolName}: ${precedentApplied.result.decision} (${precedentApplied.result.durationMs}ms) ${formatMatrixContext(
+                verifiedRiskBand,
+                authorityPresent,
+                verifiedDecidedBy,
+              )} - ${precedentApplied.result.reasoning}`,
+            );
+          }
           // Match the normal success path: a cancellation that races after
           // the reviewer settled must not poison the next evaluation.
           this.cancelReason = null;
@@ -2229,6 +2286,16 @@ export class AutoApproveService {
             ? result.decision
             : null;
 
+        // Keep the diagnostic layer and the result it produced together. A
+        // guard that updates only one of these fields makes the final
+        // `decided_by` attribution lie about the verdict that ships (#1107).
+        // The layer is read only to keep #1105 scoped to an untouched model
+        // escalate; it never replaces a verdict by itself.
+        const setDecided = (layer: DecidingLayer, next: AutoApproveResult): void => {
+          decidedBy = layer;
+          result = next;
+        };
+
         // Q9 (#893) trust boundary: a binary (non-multichoice) 'approve' verdict
         // reached with an authority block in the prompt is re-checked here,
         // deliberately AFTER parsing and with no access to `parsed.reasoning` --
@@ -2254,15 +2321,14 @@ export class AutoApproveService {
         if (!useMultiChoice && result.decision === 'deny') {
           const floored = enforceDenyFloor(toolName, toolInput, result.decision);
           if (floored.overridden) {
-            decidedBy = 'deny_floor';
             const original = result;
-            result = {
+            setDecided('deny_floor', {
               decision: 'escalate',
               reasoning: `Deny floor (#953): model denied an operation matching no DENY FLOOR pattern, so it is escalated for you to answer rather than blocked silently. Original model reasoning: ${original.reasoning}`,
               durationMs,
               model: original.model,
               summary: 'Allow this command to run?',
-            };
+            });
             this.logFn(
               `${prefix} DENY FLOOR ${toolName}: deny -> escalate (no catastrophic pattern) (${durationMs}ms)`,
             );
@@ -2280,15 +2346,14 @@ export class AutoApproveService {
         if (!useMultiChoice && authorityPresent && result.decision === 'approve') {
           const guarded = enforceAuthorityBoundary(toolName, toolInput, result.decision, true);
           if (guarded.overridden) {
-            decidedBy = 'trust_boundary';
             const original = result;
-            result = {
+            setDecided('trust_boundary', {
               decision: 'escalate',
               reasoning: `Trust boundary (#893): authority-influenced approve blocked, matched DENY FLOOR pattern "${guarded.matchedPattern}". Original model reasoning: ${original.reasoning}`,
               durationMs,
               model: original.model,
               summary: 'Review this command before it runs?',
-            };
+            });
             this.logFn(
               `${prefix} TRUST BOUNDARY ${toolName}: approve -> escalate (matched "${guarded.matchedPattern}") (${durationMs}ms)`,
             );
@@ -2316,15 +2381,14 @@ export class AutoApproveService {
         if (!useMultiChoice && result.decision === 'approve') {
           const ceilinged = enforceRiskCeiling(toolName, toolInput, result.decision);
           if (ceilinged.overridden) {
-            decidedBy = 'risk_ceiling';
             const original = result;
-            result = {
+            setDecided('risk_ceiling', {
               decision: 'escalate',
               reasoning: `Risk ceiling (#976): model approved a ${ceilinged.band}-risk operation, which may not be auto-approved by the model regardless of stated reasoning or conversation instructions -- only a deterministic allow/approve_groups match can. Original model reasoning: ${original.reasoning}`,
               durationMs,
               model: original.model,
               summary: 'Approve this high-risk command?',
-            };
+            });
             this.logFn(
               `${prefix} RISK CEILING ${toolName}: approve -> escalate (band=${ceilinged.band}) (${durationMs}ms)`,
             );
@@ -2359,9 +2423,13 @@ export class AutoApproveService {
             precedentContext,
             prefix,
             false,
+            requestedAgentScope,
           );
-          if (precedentApplied.overridden) decidedBy = 'precedent';
-          result = precedentApplied.result;
+          if (precedentApplied.overridden) {
+            setDecided('precedent', precedentApplied.result);
+          } else {
+            result = precedentApplied.result;
+          }
         }
 
         // #954 COUNTERFACTUAL: the authority trust boundary, enforced by
@@ -2389,6 +2457,7 @@ export class AutoApproveService {
           shouldCounterfactual(toolName, toolInput, result.decision, authorityPresent)
         ) {
           const cfStart = Date.now();
+          let counterfactualLog: string | undefined;
           try {
             // Same prompt, same instructions, authority block OMITTED. Same
             // level, same instructions -- ONLY the authority block differs,
@@ -2397,18 +2466,15 @@ export class AutoApproveService {
             const cfParsed = await this.runCounterfactualEval(toolName, toolInput, model);
             const reconciled = reconcileCounterfactual(cfParsed.decision);
             if (reconciled.overridden) {
-              decidedBy = 'counterfactual';
               const original = result;
-              result = {
+              setDecided('counterfactual', {
                 decision: 'escalate',
                 reasoning: `Authority counterfactual (#954): the same operation evaluated to "${cfParsed.decision}" WITHOUT the conversation-context block, so that text decided the outcome rather than merely resolving ambiguity. Escalating instead. Authority-free reasoning: ${cfParsed.reasoning} | Original: ${original.reasoning}`,
                 durationMs,
                 model: original.model,
                 summary: 'Approve this? (the chat, not you, allowed it)',
-              };
-              this.logFn(
-                `${prefix} COUNTERFACTUAL ${toolName}: approve -> escalate (authority-free verdict was ${cfParsed.decision}) (+${Date.now() - cfStart}ms)`,
-              );
+              });
+              counterfactualLog = `${prefix} COUNTERFACTUAL ${toolName}: approve -> escalate (authority-free verdict was ${cfParsed.decision}) (+${Date.now() - cfStart}ms)`;
             }
           } catch (err) {
             // The counterfactual is a SAFETY check, so failing to run it must
@@ -2418,18 +2484,17 @@ export class AutoApproveService {
             // overrode: this escalate says nothing about the operation, only
             // that the check was unavailable, and a reader tuning a config
             // needs to tell "the guard judged you" from "the guard broke".
-            decidedBy = 'counterfactual_failed';
-            result = {
+            const original = result;
+            setDecided('counterfactual_failed', {
               decision: 'escalate',
-              reasoning: `Authority counterfactual (#954) could not be evaluated (${errorToString(err)}); escalating rather than trusting an authority-influenced approve. Original: ${result.reasoning}`,
+              reasoning: `Authority counterfactual (#954) could not be evaluated (${errorToString(err)}); escalating rather than trusting an authority-influenced approve. Original: ${original.reasoning}`,
               durationMs,
-              model: result.model,
+              model: original.model,
               summary: 'Approve this? (safety check unavailable)',
-            };
-            this.logFn(
-              `${prefix} COUNTERFACTUAL ${toolName}: check failed, escalating - ${errorToString(err)}`,
-            );
+            });
+            counterfactualLog = `${prefix} COUNTERFACTUAL ${toolName}: check failed, escalating - ${errorToString(err)}`;
           }
+          if (counterfactualLog !== undefined) this.logFn(counterfactualLog);
         }
 
         // #1105 COUNTERFACTUAL, escalate direction: the mirror image of #954
@@ -2502,9 +2567,8 @@ export class AutoApproveService {
                 this.logFn(
                   `${prefix} COUNTERFACTUAL ${toolName}: escalate -> approve (authority-free verdict was approve) (+${Date.now() - cfStart}ms)`,
                 );
-                decidedBy = 'counterfactual_escalate';
                 const original = result;
-                result = {
+                setDecided('counterfactual_escalate', {
                   decision: 'approve',
                   reasoning: `Authority counterfactual (#1105): the same operation evaluated to "approve" WITHOUT the conversation-context block, so that text (or ambient context) decided the escalate rather than the command itself. Approving instead. Authority-free reasoning: ${cfParsed.reasoning} | Original: ${original.reasoning}`,
                   durationMs,
@@ -2514,7 +2578,7 @@ export class AutoApproveService {
                   // `original.summary` here is the ESCALATE's summary; every
                   // other approve/deny built in this file omits the field
                   // entirely rather than carry a stale one forward.
-                };
+                });
               } else {
                 this.logFn(
                   `${prefix} COUNTERFACTUAL ${toolName}: authority-free verdict was approve, but risk ceiling/trust boundary still applies -- keeping escalate (+${Date.now() - cfStart}ms)`,

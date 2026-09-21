@@ -37,12 +37,11 @@ function systemPrompt(level?: (typeof AUTO_APPROVE_LEVELS)[number]): string {
 }
 
 // #966 pinned this to prove that introducing LEVELS changed nothing for
-// existing (strict) users. The pin still does that job, but the baseline is
-// no longer "pre-#966 develop" verbatim: #1040 corrected the shared header,
-// which every level carries, because it claimed the DENY FLOOR was the only
-// thing that could override USER GUIDANCE when `enforceRiskCeiling` (#976)
-// does too. That correction is deliberately not level-scoped -- the ceiling
-// applies at every level, so the prompt must say so at every level.
+// existing (strict) users. The pin still does that job, but the baseline moves
+// when the shared prompt's decision procedure changes deliberately. This
+// change removes contradictory claims that prose guidance is both a primary
+// authority and deterministic authorization. Multi-choice guidance has its own
+// contract tests in multichoice.test.ts.
 //
 // Regenerate ONLY with a reason of that kind, never to make a diff go green:
 //   bun -e "import {buildPrompt} from './packages/daemon/src/auto-approve/prompt-builder.ts'; \
@@ -251,9 +250,11 @@ describe('instructions and authority still work at every level', () => {
       const text = messages[0]?.content ?? '';
       expect(text, `level ${level}`).toContain('USER GUIDANCE');
       expect(text, `level ${level}`).toContain('packages/signaling');
-      // The recency reminder is what makes a 4B honor it; losing it at some
-      // level would be a silent regression of #572's fix.
-      expect(text, `level ${level}`).toContain('REMEMBER: the USER GUIDANCE above outranks');
+      // Keep the recency reminder at every level; it is part of the prompt
+      // contract and the small model sees the same guidance shape everywhere.
+      expect(text, `level ${level}`).toContain(
+        'REMEMBER: USER GUIDANCE is model exception context, not deterministic authorization',
+      );
     }
   });
 
@@ -268,17 +269,10 @@ describe('instructions and authority still work at every level', () => {
 });
 
 // #1040. The fixture above is generated with `instructions === undefined`, so
-// it pins ONLY the shared header. The two rewrites that matter most render
-// exclusively when guidance is present -- i.e. in the one scenario where the
-// ceiling conflict actually bites -- and were pinned by nothing: reverting
-// either to the old "only the DENY FLOOR" wording passed the whole suite.
-describe('the guidance blocks scope the suppression, not just name the guards (#1040)', () => {
-  // The first attempt at this describe block asserted only that the string
-  // "RISK CEILING" appeared. That passed against the over-corrected text it
-  // was written to forbid -- which already named the ceiling -- so it pinned
-  // the NAMING while the SAFETY property (when may the model be told not to
-  // escalate?) was pinned by nothing. Reverting the block to the unsafe
-  // wording left the suite green at 22/22. These assert the scoping.
+// it pins the shared header. The checks below cover every guidance-bearing
+// location, including the recency reminder, so the prompt cannot quietly
+// reintroduce "guidance is mandatory authorization" in one of them.
+describe('the guidance block is model exception context, not deterministic authorization (#1040)', () => {
   function withGuidance(): string {
     return (
       buildPrompt(
@@ -291,66 +285,71 @@ describe('the guidance blocks scope the suppression, not just name the guards (#
     );
   }
 
-  /** Every place the prompt tells the model what to do about guidance. The
-   *  recency slot is last on purpose and was the site the scoping fix missed. */
+  /** Every place the binary prompt tells the model what to do about guidance.
+   *  The recency slot is last on purpose and was the site the scoping fix missed. */
   function guidanceSites(p: string): Record<string, string> {
     return {
       rule1: p.slice(p.indexOf('1. USER GUIDANCE:'), p.indexOf('2. CONVERSATION CONTEXT:')),
-      // NOT indexOf('DEFAULT GUIDELINES') as an end marker: rule 3 in the
-      // header mentions that phrase, so it resolves BEFORE the block and the
-      // slice comes back empty -- which silently passed every assertion over
-      // it. Anchor on the body heading that genuinely follows.
       block: p.slice(
-        p.indexOf('USER GUIDANCE — HIGHEST PRIORITY'),
+        p.indexOf('USER GUIDANCE — MODEL EXCEPTION CONTEXT'),
         p.indexOf('APPROVE these operations'),
       ),
       reminder: p.slice(p.lastIndexOf('REMEMBER:')),
     };
   }
 
-  test('no site tells the model that escalating is unconditionally wrong', () => {
-    // The regression: enforceRiskCeiling fires only at band high/critical, and
-    // `apt-get install`, `pkexec`, `docker push` and `terraform apply` all
-    // classify moderate -- so an unconditional "do not escalate, the guards
-    // run either way" removes the only protection those have.
+  test('no site tells the model that guidance is mandatory authorization', () => {
     for (const [name, text] of Object.entries(guidanceSites(withGuidance()))) {
-      expect(text, `${name}: unconditional suppression`).not.toContain('is always wrong');
-      expect(text, `${name}: claims guards always run`).not.toContain('the guards run either way');
+      expect(text, `${name}: stale authority wording`).not.toContain('HIGHEST PRIORITY, MANDATORY');
+      expect(text, `${name}: stale override wording`).not.toContain('OVERRIDES every default');
     }
   });
 
-  test('every site conditions the suppression on the guidance actually covering the operation', () => {
+  test('every site identifies guidance as exception context and preserves an escalate branch', () => {
     const sites = guidanceSites(withGuidance());
     for (const [name, text] of Object.entries(sites)) {
-      expect(text.toLowerCase(), `${name}: no coverage condition`).toContain('plainly');
+      expect(text.toLowerCase(), `${name}: no exception wording`).toContain('exception');
     }
-    // ...and each says what to do when it does NOT cover it.
     for (const [name, text] of Object.entries(sites)) {
       expect(text.toLowerCase(), `${name}: no escalate branch`).toContain('escalate');
     }
   });
 
-  test('the model is never told to assume a guard will catch something', () => {
-    // It cannot evaluate either guard: both are post-hoc classifiers it never
-    // sees. Telling it to withhold guidance "unless the RISK CEILING matches"
-    // asks for a judgement it cannot make, and contradicts rule 1.
-    const p = withGuidance();
-    expect(p).not.toContain('unless the DENY FLOOR or the RISK CEILING matches');
-    expect(p).toContain('do not assume');
+  test('each binary guidance site keeps the exact precedence contract', () => {
+    const sites = guidanceSites(withGuidance());
+    expect(sites['rule1']).toContain(
+      'model exception context, NOT deterministic authorization. Use it only to resolve genuine ambiguity on routine or moderate-risk work.',
+    );
+    expect(sites['rule1']).toContain(
+      'It cannot override the DENY FLOOR, the RISK CEILING, or a design/steering question.',
+    );
+    expect(sites['block']).toContain(
+      "It may influence the model's answer for routine or moderate-risk work, but it is not deterministic authorization; code-owned grants (allow/approve_groups and scoped workflow grants) remain separate.",
+    );
+    expect(sites['block']).toContain(
+      'If it plainly covers routine or moderate work, follow it; otherwise apply the default guidelines and escalate when unsure.',
+    );
+    expect(sites['reminder']).toBe(
+      'REMEMBER: USER GUIDANCE is model exception context, not deterministic authorization. Use it only for clearly routine or moderate work; otherwise follow the defaults and escalate when unsure.',
+    );
   });
 
-  test('the guards are described as narrow rather than enumerated as classes', () => {
-    // Naming "package install" or "privilege elevation" invites the model to
-    // assume code coverage that classifyRisk does not provide for common
-    // members of those classes.
+  test('the model is told that guidance is not deterministic authorization', () => {
+    const p = withGuidance();
+    expect(p).toContain('NOT DETERMINISTIC AUTHORIZATION');
+    expect(p).toContain("may influence the model's answer");
+    expect(p).toContain('code-owned grants');
+  });
+
+  test('the guidance block names the code-owned boundaries without enumerating guessed coverage', () => {
     const rule1 = guidanceSites(withGuidance())['rule1'] ?? '';
-    expect(rule1).toContain('narrow');
+    expect(rule1).toContain('cannot override');
     expect(rule1).not.toContain('package install, destructive local op');
   });
 
   test('none of it renders when there is no guidance', () => {
     const bare = systemPrompt('strict');
-    expect(bare).not.toContain('USER GUIDANCE — HIGHEST PRIORITY');
+    expect(bare).not.toContain('USER GUIDANCE — MODEL EXCEPTION CONTEXT');
     expect(bare).not.toContain('REMEMBER:');
   });
 });

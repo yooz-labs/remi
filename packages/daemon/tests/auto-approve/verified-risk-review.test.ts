@@ -5,6 +5,7 @@ import {
   readerFrom,
   signatureForOperation,
 } from '../../src/auto-approve/precedent.ts';
+import type { RiskBand } from '../../src/auto-approve/risk-bands.ts';
 import type { AutoApproveConfig } from '../../src/auto-approve/types.ts';
 
 interface ReviewServer {
@@ -15,6 +16,19 @@ interface ReviewServer {
 }
 
 type FixtureResponse = string | ((prompt: string) => string);
+
+type VerifiedEffectReviewProbe = {
+  runVerifiedEffectReview: (
+    toolName: string,
+    toolInput: Record<string, unknown>,
+    authority: string | undefined,
+    riskBand: RiskBand,
+    proofFacts: readonly string[],
+    model: string,
+    signal: AbortSignal,
+    deadlineAt: number,
+  ) => Promise<{ readonly kind: string }>;
+};
 
 let nextVerifiedFixturePort = 19_900;
 
@@ -185,6 +199,17 @@ const INTERPRETER_EFFECT_REVIEW = JSON.stringify({
   reasoning: 'The bounded interpreter performs a reversible repository read.',
 });
 
+const INTERPRETER_EFFECT_REVIEW_MISSING_PROCESS = JSON.stringify({
+  risk: 'moderate',
+  intent: 'interpreter',
+  effects: ['filesystem_read'],
+  scope: 'repository',
+  reversible: true,
+  confidence: 0.97,
+  authorization: 'implicit',
+  reasoning: 'The operation reads repository state.',
+});
+
 const REMOTE_INTERPRETER_INTENT = JSON.stringify({
   intent: 'remote_read',
   effects: ['filesystem_read', 'network_read', 'remote_read', 'process_execution'],
@@ -340,6 +365,61 @@ describe('verified read-only risk review (#1081 phase 4)', () => {
     );
   });
 
+  test('passes the exact bounded-interpreter effect set to the production reviewer', async () => {
+    const server = startReviewServer([INTERPRETER_INTENT, INTERPRETER_EFFECT_REVIEW]);
+    servers.push(server);
+    const service = new AutoApproveService(makeConfig(server.url), () => undefined);
+    const command =
+      "git worktree list --porcelain | grep '^worktree' | tail -n +2 | awk '{print $2}'";
+
+    const result = await evaluate(service, command);
+
+    expect(result.decision).toBe('approve');
+    expect(server.calls()).toBe(2);
+    expect(requestText(server.requests()[1])).toContain(
+      'CODE-OWNED EFFECT SET (exact observation to copy): ["filesystem_read","process_execution"]',
+    );
+  });
+
+  test('a production reviewer that omits process_execution still escalates', async () => {
+    const server = startReviewServer([
+      INTERPRETER_INTENT,
+      INTERPRETER_EFFECT_REVIEW_MISSING_PROCESS,
+    ]);
+    servers.push(server);
+    const service = new AutoApproveService(makeConfig(server.url), () => undefined);
+
+    const result = await evaluate(
+      service,
+      "git worktree list --porcelain | grep '^worktree' | tail -n +2 | awk '{print $2}'",
+    );
+
+    expect(result.decision).toBe('escalate');
+    expect(result.reasoning).toContain('independent effect reviewer conflicted');
+    expect(server.calls()).toBe(2);
+  });
+
+  test('invalid deterministic effect facts skip the reviewer and return a distinct failure', async () => {
+    const server = startReviewServer(['unused']);
+    servers.push(server);
+    const service = new AutoApproveService(makeConfig(server.url), () => undefined);
+    const probe = service as unknown as VerifiedEffectReviewProbe;
+
+    const outcome = await probe.runVerifiedEffectReview(
+      'Bash',
+      { command: 'git status --porcelain' },
+      undefined,
+      'moderate',
+      ['verified_effects=filesystem_read,'],
+      'review-test-model',
+      new AbortController().signal,
+      Date.now() + 1_000,
+    );
+
+    expect(outcome.kind).toBe('invalid-effect-facts');
+    expect(server.calls()).toBe(0);
+  });
+
   test('replay corpus approves only proven moderate reads and fail-closes adversarial variants', async () => {
     const server = startReviewServer([
       localRemoteOrInterpreterFixture(
@@ -415,11 +495,31 @@ describe('verified read-only risk review (#1081 phase 4)', () => {
   test('missing context, unknown shell, and high-risk proof matches all escalate without a model call', async () => {
     const server = startReviewServer([LOCAL_INTENT, LOCAL_EFFECT_REVIEW]);
     servers.push(server);
-    const service = new AutoApproveService(makeConfig(server.url), () => undefined);
+    const decisionLogs: string[] = [];
+    const service = new AutoApproveService(
+      makeConfig(server.url, { log_decisions: true }),
+      (message) => decisionLogs.push(message),
+    );
 
     const noContext = await evaluate(service, 'git status --porcelain', '   ');
     expect(noContext.decision).toBe('escalate');
     expect(noContext.reasoning).toContain('no current human authorization context');
+
+    // The proof passes and verified mode computes its effective band before
+    // the authority gate, but the missing-authority gate still escalates.
+    // Because the result is not an eligible approval, final telemetry must
+    // retain the classifier's raw high band rather than the effective moderate
+    // band used by an approved verified read.
+    const assignmentWithoutContext = await evaluate(
+      service,
+      'b=$(git status --porcelain); echo "$b"',
+      '   ',
+    );
+    expect(assignmentWithoutContext.decision).toBe('escalate');
+    expect(assignmentWithoutContext.reasoning).toContain('no current human authorization context');
+    expect(decisionLogs).toContainEqual(
+      expect.stringContaining('[band=high authority=no decided_by=model]'),
+    );
 
     const unknownShell = await evaluate(service, "awk '{print $1}' file");
     expect(unknownShell.decision).toBe('escalate');
@@ -434,7 +534,11 @@ describe('verified read-only risk review (#1081 phase 4)', () => {
   test('the proof removes assignment false positives but preserves dangerous read words', async () => {
     const server = startReviewServer([LOCAL_INTENT, LOCAL_EFFECT_REVIEW]);
     servers.push(server);
-    const service = new AutoApproveService(makeConfig(server.url), () => undefined);
+    const decisionLogs: string[] = [];
+    const service = new AutoApproveService(
+      makeConfig(server.url, { log_decisions: true }),
+      (message) => decisionLogs.push(message),
+    );
 
     // The general classifier calls this high because the leading assignment
     // can alter the command environment. The proof establishes that the
@@ -444,6 +548,9 @@ describe('verified read-only risk review (#1081 phase 4)', () => {
 
     expect(result.decision).toBe('approve');
     expect(result.reasoning).toContain('risk=moderate');
+    expect(decisionLogs).toContainEqual(
+      expect.stringContaining('[band=moderate authority=yes decided_by=model]'),
+    );
     expect(server.calls()).toBe(2);
 
     // A proof-qualified read is not automatically low risk: the raw dangerous
@@ -474,9 +581,10 @@ describe('verified read-only risk review (#1081 phase 4)', () => {
   test('a denied session precedent overrides a verified reviewer approval', async () => {
     const server = startReviewServer([LOCAL_INTENT, LOCAL_EFFECT_REVIEW]);
     servers.push(server);
+    const decisionLogs: string[] = [];
     const service = new AutoApproveService(
-      makeConfig(server.url, { session_precedent: true }),
-      () => undefined,
+      makeConfig(server.url, { log_decisions: true, session_precedent: true }),
+      (message) => decisionLogs.push(message),
     );
     const command = 'git status --porcelain';
     const store = new PrecedentStore();
@@ -507,6 +615,9 @@ describe('verified read-only risk review (#1081 phase 4)', () => {
     expect(result.reasoning).toContain('Session precedent');
     if (result.decision === 'escalate') expect(result.suppressSecondOpinion).toBe(true);
     expect(server.calls()).toBe(2);
+    expect(decisionLogs).toContainEqual(
+      expect.stringContaining('[band=moderate authority=yes decided_by=precedent]'),
+    );
   });
 
   test('malformed reviewer output escalates', async () => {
