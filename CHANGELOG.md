@@ -91,6 +91,28 @@ caught a pre-existing ceiling bypass (#1076), fixed here.
   boundary, risk ceiling) is structurally excluded from being re-litigated by
   it, and a would-be correction still passes through the same risk-ceiling and
   trust-boundary checks an ordinary approve does before it can stand.
+- **Prompt guidance now matches the deciding pipeline** (#1110). User guidance
+  is treated as context for routine or moderate ambiguity, while deterministic
+  grants and code-owned safety guards remain authoritative; contradictory
+  action guidance was removed and the prompt-builder contract is pinned by
+  tests. The real-engine regression remains a separate live-environment check.
+- **Post-model decisions now retain their actual deciding layer** (#1111).
+  Deny-floor, trust-boundary, risk-ceiling, precedent, counterfactual, and
+  model outcomes are attributed consistently, with HTTP-fixture regression
+  coverage for the guard chain so telemetry cannot claim that a later layer
+  decided an outcome it did not produce.
+- **Future cross-agent session-precedent matches are now measurable** (#1112).
+  Newly recorded human approvals and denials carry private `main`/`subagent`
+  scope and grep-friendly cross-scope fields through the production recorder;
+  legacy records remain `unknown`. The new audit fields add no command text,
+  agent IDs, or directories, and the matcher is unchanged.
+- **Verified-review effect contracts are explicit and fail closed** (#1113).
+  The independent reviewer receives an exact effect set, and missing,
+  duplicate, unknown, empty, or non-string facts are rejected before a
+  verified review call; bounded interpreter effects and scoped workflow
+  `remote_mutation` mappings remain covered by the production two-call path.
+  This path remains opt-in (`risk_review = "verified"`); llama.cpp/GGUF
+  coverage remains a separate evidence gate.
 
 ### Security
 
