@@ -98,9 +98,11 @@ function formatPrecedentScopeAudit(
 ): string {
   const recordedScope = match.recordedAgentScope ?? 'unknown';
   const crossScope =
-    match.recordedAgentScope !== undefined && match.recordedAgentScope !== requestedScope
-      ? 'yes'
-      : 'no';
+    match.recordedAgentScope === undefined
+      ? 'unknown'
+      : match.recordedAgentScope !== requestedScope
+        ? 'yes'
+        : 'no';
   return `recorded_scope=${recordedScope} requested_scope=${requestedScope} cross_scope=${crossScope}`;
 }
 

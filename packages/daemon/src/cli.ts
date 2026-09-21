@@ -136,7 +136,7 @@ import {
   resolveProviderUrl,
 } from './auto-approve/index.ts';
 import type { PrecedentStore } from './auto-approve/precedent.ts';
-import { type PrecedentAgentScope, recordHumanAnswer } from './auto-approve/precedent.ts';
+import type { PrecedentAgentScope } from './auto-approve/precedent.ts';
 import type { SessionWorkflowGrantStore } from './auto-approve/session-workflow-grant.ts';
 import type { DenySource } from './auto-approve/types.ts';
 import { detectAutostartState } from './cli/autostart-state.ts';
@@ -177,6 +177,7 @@ import {
   writeToLog,
 } from './cli/log-file.ts';
 import { handleAutoDenied } from './cli/on-auto-denied.ts';
+import { recordSessionPrecedent } from './cli/precedent-recording.ts';
 import { installProcessGuards } from './cli/process-guards.ts';
 import { PtyQuiescenceGate } from './cli/pty-quiescence-gate.ts';
 import { setupHookBridge } from './cli/session-phases/hook-bridge-setup.ts';
@@ -2184,9 +2185,15 @@ const inputHandlers: InputHandlers = createInputHandlers({
     workingDirectory,
     agentScope: PrecedentAgentScope,
   ) => {
-    const store = sessionPrecedentStores.get(sessionId);
-    if (store)
-      recordHumanAnswer(store, toolName, signature, decision, workingDirectory, agentScope);
+    recordSessionPrecedent(
+      sessionPrecedentStores,
+      sessionId,
+      toolName,
+      signature,
+      decision,
+      workingDirectory,
+      agentScope,
+    );
   },
 });
 

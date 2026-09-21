@@ -5,8 +5,10 @@ import * as path from 'node:path';
 import type { ProtocolMessage, UUID } from '@remi/shared';
 import { generateId } from '@remi/shared';
 import type { MessageAPI } from '../../../src/api/message-api.ts';
+import { PrecedentStore, readerFrom } from '../../../src/auto-approve/precedent.ts';
 import { createInputHandlers } from '../../../src/cli/handlers/input-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
+import { recordSessionPrecedent } from '../../../src/cli/precedent-recording.ts';
 import { AUQ_KEYS } from '../../../src/hooks/auq-answer.ts';
 import { appendPtyOutput, clearPtyOutput } from '../../../src/pty/output-buffer.ts';
 import type { PTYSession } from '../../../src/pty/pty-session.ts';
@@ -2649,6 +2651,56 @@ describe('createInputHandlers', () => {
       await handlers.onAnswer(CID, sessionId, QID, 'Yes');
 
       expect(recordedScope).toBe('subagent');
+    });
+
+    test('persists the originating scope through the production recorder', async () => {
+      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        fakePTY(ptyCapture),
+        fakeMessageAPI(new Map()),
+      );
+      const store = new PrecedentStore();
+      const stores = new Map([[sessionId, store]]);
+      const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
+        sessionRegistry,
+        bindingStore,
+        send,
+        // This is the same callback shape wired by cli.ts; use the production
+        // recorder so the assertion crosses handleAnswer -> recordHumanAnswer
+        // -> PrecedentStore rather than stopping at an injected spy.
+        recordPrecedent: (
+          answerSessionId,
+          toolName,
+          signature,
+          decision,
+          workingDirectory,
+          agentScope,
+        ) =>
+          recordSessionPrecedent(
+            stores,
+            answerSessionId,
+            toolName,
+            signature,
+            decision,
+            workingDirectory,
+            agentScope,
+          ),
+      });
+      registerPermissionQuestion(sessionId, { agentId: 'agent-1' });
+
+      await handlers.onAnswer(CID, sessionId, QID, 'Yes');
+
+      expect(store.matchApproved('Bash', 'Bash: git status', true, '/test/dir')).toMatchObject({
+        decision: 'approved',
+        recordedAgentScope: 'subagent',
+      });
+      expect(
+        readerFrom(store).matchApproved('Bash', 'Bash: git status', true, '/test/dir'),
+      ).toMatchObject({ recordedAgentScope: 'subagent' });
     });
 
     test('records a denial for an unambiguous No to a permission_request question', async () => {

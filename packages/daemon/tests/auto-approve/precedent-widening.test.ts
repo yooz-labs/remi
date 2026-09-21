@@ -186,6 +186,35 @@ describe('#976 an earlier approval authorizes the identical repeat, at 0ms', () 
     ).toBe(true);
   });
 
+  test('logs when a legacy approval has unknown origin scope', async () => {
+    const logs: string[] = [];
+    const store = new PrecedentStore();
+    const input = { command: 'git status' };
+    humanAnswered(store, 'Bash', input, 'approved');
+
+    const result = await new AutoApproveService(config(), (line) => logs.push(line)).evaluate(
+      'Bash',
+      input,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      readerFor(store),
+      undefined,
+      TEST_CWD,
+    );
+
+    expect(result.decision).toBe('approve');
+    expect(
+      logs.some((line) =>
+        line.includes('recorded_scope=unknown requested_scope=main cross_scope=unknown'),
+      ),
+    ).toBe(true);
+  });
+
   test('a DIFFERENT command is not covered, however similar', async () => {
     // Exact match, per ADR 0010: precedent AUTHORIZES, so it must be precise.
     // `--force` and `main` are both new; either alone must break coverage.
@@ -771,6 +800,68 @@ describe('#976 an earlier denial downgrades a model approve to escalate', () => 
     expect(
       logs.some((line) =>
         line.includes('recorded_scope=subagent requested_scope=main cross_scope=yes'),
+      ),
+    ).toBe(true);
+  });
+
+  test('logs when a main-agent denial is honored for a subagent', async () => {
+    const logs: string[] = [];
+    const store = new PrecedentStore();
+    humanAnswered(store, 'Bash', { command: 'gh pr list' }, 'denied', 'main');
+
+    const result = await new AutoApproveService(
+      config({ provider: approveServer.url, base_url: approveServer.url }),
+      (line) => logs.push(line),
+    ).evaluate(
+      'Bash',
+      { command: 'gh pr list --limit 5' },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      true,
+      undefined,
+      readerFor(store),
+      undefined,
+      TEST_CWD,
+    );
+
+    expect(result.decision).toBe('escalate');
+    expect(
+      logs.some((line) =>
+        line.includes('recorded_scope=main requested_scope=subagent cross_scope=yes'),
+      ),
+    ).toBe(true);
+  });
+
+  test('logs when a legacy denial has unknown origin scope', async () => {
+    const logs: string[] = [];
+    const store = new PrecedentStore();
+    humanAnswered(store, 'Bash', { command: 'gh pr list' }, 'denied');
+
+    const result = await new AutoApproveService(
+      config({ provider: approveServer.url, base_url: approveServer.url }),
+      (line) => logs.push(line),
+    ).evaluate(
+      'Bash',
+      { command: 'gh pr list --limit 5' },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      true,
+      undefined,
+      readerFor(store),
+      undefined,
+      TEST_CWD,
+    );
+
+    expect(result.decision).toBe('escalate');
+    expect(
+      logs.some((line) =>
+        line.includes('recorded_scope=unknown requested_scope=subagent cross_scope=unknown'),
       ),
     ).toBe(true);
   });
