@@ -113,6 +113,12 @@ caught a pre-existing ceiling bypass (#1076), fixed here.
   `remote_mutation` mappings remain covered by the production two-call path.
   This path remains opt-in (`risk_review = "verified"`); llama.cpp/GGUF
   coverage remains a separate evidence gate.
+- **Permission routing distinguishes waiting from mutation** (follow-up to
+  #1092). The primary-model guidance now identifies `sleep 30` and
+  `gh pr checks --watch` as read-only wait/status operations. The production
+  routing bank checks that direct status checks remain deterministic, safe
+  compound checks take one model call, and contextual package installs and
+  pull-request creation still escalate at the risk ceiling.
 
 ### Security
 
