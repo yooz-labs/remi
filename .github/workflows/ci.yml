@@ -107,10 +107,10 @@ jobs:
       - run: bunx playwright install chromium --with-deps
       - run: bun run test:e2e
 
-  # NOTE: Auto-bump-dev removed. Dev builds and npm @dev publishes are no longer
-  # done in CI. Use local Docker builds for testing on develop. Binary builds and
-  # npm publishing only happen on main via release.yml (triggered by version tags).
-  # To bump dev version locally: ./scripts/bump-version.sh dev
+  # Dev-version counters are incremented by auto-bump-dev.yml on pushes to
+  # develop (version-only; no build or publish). Production binaries and npm
+  # packages are built only from stable tags on main.
+  # To start a new dev line, use bump-version.sh patch|minor|major via a PR.
 
   # Auto-release stable version when develop merges into main.
   # Strips -dev suffix, commits, tags, and pushes to trigger release.yml.

@@ -37,10 +37,13 @@ const SYSTEM_PROMPT_SHARED_APPROVE = `APPROVE these operations:
 - Read/Glob/Grep: all file reads and searches
 - Bash: git status, git log, git diff, git branch, git show, git stash list
 - Bash: read-only repo/CLI queries that only FETCH data (no mutation), e.g.
-  gh pr view/diff/list/status/checks, gh issue view/list, gh run view/list,
+  gh pr view/diff/list/status/checks (including --watch, which only polls status),
+  gh issue view/list, gh run view/list,
   gh api <path> with a BARE path and NO -X/--method and NO -f/-F/--field/
   --raw-field flags (a bare gh api path is a GET).
-- Bash: ls, cat, head, tail, find, wc, file, stat, which, echo, printf, date, pwd, env
+- Bash: ls, cat, head, tail, find, wc, file, stat, which, echo, printf, date, pwd, env,
+  and bounded \`sleep <duration>\` delays; these commands only read, format, wait,
+  or report output and do not mutate.
 - Bash: build/test commands (bun test, npm test, cargo test, pytest, make, etc.)
 - Bash: linting/formatting (biome, eslint, ruff, prettier, etc.)
 - Bash: package info (bun --version, node --version, etc.)

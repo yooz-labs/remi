@@ -131,6 +131,14 @@ describe('buildPrompt', () => {
     expect(system?.content).toContain('Compound commands');
   });
 
+  test('system prompt names bounded waits and GitHub polling as read-only', () => {
+    const [system] = buildPrompt('Bash', {
+      command: 'sleep 30 && gh pr checks 39 --watch',
+    });
+    expect(system?.content).toContain('--watch, which only polls status');
+    expect(system?.content).toContain('bounded `sleep <duration>` delays');
+  });
+
   test('system prompt approves read-only gh queries and escalates gh mutations (#482)', () => {
     // PR review (/review-pr) leans on read-only gh; without this clause the
     // catch-all "talks to a remote -> escalate" rule made the LLM escalate
