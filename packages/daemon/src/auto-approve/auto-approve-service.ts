@@ -35,7 +35,7 @@ import type { IntentAssessment } from './intent-assessment.ts';
 import { extractJsonObject } from './json-extract.ts';
 import type { AutoApproveLevel } from './levels.ts';
 import { chatCompletion, isLocalProviderUrl, resolveProviderUrl, warmModel } from './llm-client.ts';
-import type { LLMClientConfig } from './llm-client.ts';
+import type { ChatMessage, LLMClientConfig, LLMResponse } from './llm-client.ts';
 import { ModelResidency } from './model-residency.ts';
 import {
   buildMultiChoicePrompt,
@@ -108,6 +108,39 @@ function formatPrecedentScopeAudit(
 }
 
 type BinaryDecision = 'approve' | 'deny' | 'escalate';
+
+/**
+ * Optional, test/diagnostic-only capture for the primary permission judgment.
+ *
+ * The callbacks are deliberately outside `AutoApproveResult`: production
+ * callers keep the same decision contract, while a model sweep can prove
+ * whether a case reached the model and preserve the exact request/response
+ * pair that produced the parsed result. A trace callback must never be able to
+ * change authorization, so callback failures are swallowed by the notifier.
+ */
+export interface AutoApprovePrimaryLLMTrace {
+  readonly onRequest?: (event: {
+    readonly toolName: string;
+    readonly model: string;
+    readonly messages: readonly ChatMessage[];
+  }) => void;
+  readonly onResponse?: (event: {
+    readonly toolName: string;
+    readonly model: string;
+    readonly content: string;
+    readonly usage: LLMResponse['usage'];
+    readonly durationMs: number;
+  }) => void;
+}
+
+function notifyPrimaryTrace<T>(callback: ((event: T) => void) | undefined, event: T): void {
+  try {
+    callback?.(event);
+  } catch {
+    // Diagnostics are strictly out of band. A broken capture sink must not
+    // turn a valid model verdict into an escalation or an evaluation error.
+  }
+}
 
 /**
  * A parsed model verdict, shared by `parseDecision` and
@@ -333,6 +366,8 @@ export class AutoApproveService {
    *  state (fetch, unload, delete). False for a shared super-yooz host, where
    *  all of that is the host's policy (#818). */
   private readonly ownsEngine: boolean;
+  /** Optional out-of-band capture used by the real-model sweep. */
+  private readonly primaryLLMTrace: AutoApprovePrimaryLLMTrace | undefined;
 
   /**
    * Two-stage idle policy (#820). The engine never evicts or drops cache on
@@ -405,8 +440,14 @@ export class AutoApproveService {
    *  (Claude advanced past the prompt) from a timeout abort. */
   private cancelReason: string | null = null;
 
-  constructor(config: AutoApproveConfig, logFn: (msg: string) => void, engineHost?: EngineHost) {
+  constructor(
+    config: AutoApproveConfig,
+    logFn: (msg: string) => void,
+    engineHost?: EngineHost,
+    primaryLLMTrace?: AutoApprovePrimaryLLMTrace,
+  ) {
     this.engineHost = engineHost;
+    this.primaryLLMTrace = primaryLLMTrace;
     this.llmConfig = {
       baseUrl: resolveProviderUrl(config.provider, config.base_url),
       apiKey: config.api_key,
@@ -2220,6 +2261,11 @@ export class AutoApproveService {
               this.instructions,
             )
           : buildPrompt(toolName, toolInput, this.instructions, authority, this.level);
+        notifyPrimaryTrace(this.primaryLLMTrace?.onRequest, {
+          toolName,
+          model: callConfig.model,
+          messages,
+        });
         // Hard kill via Promise.race: even if fetch ignores the abort signal
         // (provider hang, Bun runtime quirk), evaluate() returns within
         // timeoutMs. The race timer also calls abort() so a fetch that does
@@ -2234,6 +2280,13 @@ export class AutoApproveService {
           }),
         ]);
         const durationMs = Date.now() - start;
+        notifyPrimaryTrace(this.primaryLLMTrace?.onResponse, {
+          toolName,
+          model: response.model,
+          content: response.content,
+          usage: response.usage,
+          durationMs,
+        });
 
         // #1040: which LAYER produced the verdict that ships. The reasoning
         // string says so in prose today, which is why "why did this escalate"
