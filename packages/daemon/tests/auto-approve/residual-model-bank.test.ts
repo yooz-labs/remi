@@ -7,8 +7,6 @@ import { groupsForLevel } from '../../src/auto-approve/levels.ts';
 import type { AutoApproveConfig } from '../../src/auto-approve/types.ts';
 import { RESIDUAL_MODEL_BANK } from './residual-model-bank.ts';
 
-let nextResidualModelPort = 19_980;
-
 function makeConfig(overrides: Partial<AutoApproveConfig> = {}): AutoApproveConfig {
   return {
     enabled: true,
@@ -48,6 +46,12 @@ function makeConfig(overrides: Partial<AutoApproveConfig> = {}): AutoApproveConf
   };
 }
 
+function contextualHighRiskCases() {
+  return RESIDUAL_MODEL_BANK.filter(
+    (sample) => sample.authority !== undefined && sample.expectedDecision === 'escalate',
+  );
+}
+
 describe('residual model bank', () => {
   test('pins the deterministic control against the exact residual compounds', () => {
     const service = new AutoApproveService(makeConfig(), () => undefined);
@@ -62,10 +66,29 @@ describe('residual model bank', () => {
     }
   });
 
+  test('contextual high-risk cases remain residual model evaluations', () => {
+    const service = new AutoApproveService(makeConfig(), () => undefined);
+    const contextualCases = contextualHighRiskCases();
+
+    expect(contextualCases.map((sample) => sample.id)).toEqual(
+      expect.arrayContaining([
+        'production.contextual-package-install',
+        'production.contextual-remote-write',
+      ]),
+    );
+    for (const sample of contextualCases) {
+      expect(sample.expectedDecision, sample.id).toBe('escalate');
+      expect(service.evaluateDeterministic('Bash', { command: sample.command }), sample.id).toBe(
+        null,
+      );
+    }
+  });
+
   test('captures the primary request and raw response without changing the verdict', async () => {
     const requests: Record<string, unknown>[] = [];
     const server = Bun.serve({
-      port: nextResidualModelPort++,
+      port: 0,
+      hostname: '127.0.0.1',
       fetch: async (request) => {
         requests.push((await request.json()) as Record<string, unknown>);
         return Response.json({
@@ -116,6 +139,71 @@ describe('residual model bank', () => {
         trace.requests[0]?.messages.some((message) => message.content.includes(sample.command)),
       ).toBe(true);
       expect(trace.responses[0]?.content).toContain('read-only control');
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test('risk ceiling holds contextual install and remote-write approvals', async () => {
+    const requests: Record<string, unknown>[] = [];
+    const server = Bun.serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      fetch: async (request) => {
+        requests.push((await request.json()) as Record<string, unknown>);
+        return Response.json({
+          model: 'residual-bank-model-returned',
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({ decision: 'approve', reasoning: 'user authorized it' }),
+              },
+            },
+          ],
+        });
+      },
+    });
+
+    try {
+      const trace: Parameters<NonNullable<AutoApprovePrimaryLLMTrace['onRequest']>>[0][] = [];
+      const service = new AutoApproveService(
+        makeConfig({
+          provider: `http://127.0.0.1:${server.port}`,
+          base_url: `http://127.0.0.1:${server.port}`,
+          approve_groups: [],
+        }),
+        () => undefined,
+        undefined,
+        { onRequest: (event) => trace.push(event) },
+      );
+      const contextualCases = contextualHighRiskCases();
+
+      for (const sample of contextualCases) {
+        const result = await service.evaluate(
+          'Bash',
+          { command: sample.command },
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          sample.authority,
+        );
+
+        expect(result.decision, sample.id).toBe('escalate');
+        expect(result.reasoning, sample.id).toContain('Risk ceiling');
+      }
+
+      expect(requests).toHaveLength(contextualCases.length);
+      expect(trace).toHaveLength(contextualCases.length);
+      for (const [index, sample] of contextualCases.entries()) {
+        const request = trace[index];
+        expect(
+          request?.messages.some((message) => message.content.includes(sample.authority ?? '')),
+          sample.id,
+        ).toBe(true);
+      }
     } finally {
       server.stop(true);
     }
