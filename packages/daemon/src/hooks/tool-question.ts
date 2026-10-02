@@ -8,10 +8,11 @@
  * in-app card and the lock-screen notification.
  *
  * The options are PICKS: `value` is the 1-based index and `isYes`/`isNo` are
- * always false. That routes a user's answer through the daemon's release-hook +
- * submit-digit path (a binary allow/deny response cannot express "pick option 2"),
- * so the ORDER here MUST match the order the tool passes — which is the order
- * Claude renders in its native numbered prompt once the held hook is released.
+ * always false. That routes a user's answer through the daemon's typed-digit
+ * path (a binary allow/deny response cannot express "pick option 2"), so the
+ * ORDER here MUST match the order the tool passes, which is the order Claude
+ * renders in its native numbered prompt. Since #1134 the answer path also
+ * checks the chosen option against the screen and refuses a mismatch.
  */
 
 import type { QuestionOption, QuestionStep } from '@remi/shared';
@@ -40,8 +41,8 @@ function cleanText(s: string): string {
 }
 
 /**
- * A pick option: 1-based value, never yes/no-shaped so the answer path releases
- * the held hook and submits the digit rather than resolving a binary allow/deny.
+ * A pick option: 1-based value, never yes/no-shaped so the answer path submits
+ * the digit rather than resolving a binary allow/deny.
  * Index 0 is marked recommended only to match the existing option convention
  * (display-only; it does not change which digit is submitted).
  */
@@ -59,12 +60,14 @@ function pickOption(label: string, index: number, description?: string): Questio
 
 /**
  * ExitPlanMode's choices are NOT in tool_input (only the `plan` markdown is) —
- * they are Claude Code's built-in plan-approval options. Kept in the SAME order
- * Claude renders, because a pick's submitted digit lands on whatever Claude has
- * at that position once the held hook releases — a wrong order is a silent
- * wrong-pick. This order matches the maintainer's live observation 2026-06-19
- * ("1 = auto mode, 2 = manual mode"). Reverify on each Claude Code release and
- * update if it drifts — tracked in #598.
+ * they are Claude Code's built-in plan-approval options, and a pick's
+ * submitted digit lands on whatever Claude has at that position. These labels
+ * came from a live observation on 2026-06-19 and are STALE: the #1126 spike
+ * (2026-09) saw "Yes, and use auto mode" (only when auto mode is available),
+ * "Yes, auto-accept edits", "Yes, manually approve edits" and "Tell Claude
+ * what to change". Do not trust this list to match the screen; the #1134
+ * screen check refuses a pick whose option does not match what is rendered.
+ * Replacing it is #1126 Phase 4 (structured `updatedInput`), tracked with #598.
  */
 const EXIT_PLAN_MODE_OPTIONS: readonly string[] = [
   'Yes, and auto-accept edits',

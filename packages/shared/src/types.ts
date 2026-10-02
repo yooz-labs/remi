@@ -344,11 +344,12 @@ export interface QuestionOption {
    * derived from (#718). Present only for a structured-suggestion-derived
    * "yes" option (e.g. "Yes, always allow: rm -rf ..."); absent for the
    * plain Yes/No options and for the legacy plain-string suggestion path.
-   * The daemon threads this back through the answer path so picking the
-   * option can resolve a held PermissionRequest hook with
-   * `{behavior:"allow", updatedPermissions:[suggestions[suggestionIndex]]}` —
-   * the real "Yes, always" the Claude Code hooks docs describe, instead of a
-   * bare `allow` that persists nothing.
+   * Since #1125 nothing holds, so an "always" option is answered by typing
+   * into Claude's dialog like any other (#1134) and this index is not read.
+   * It is kept for #1126, which plans to resolve a held hook with
+   * `{behavior:"allow", updatedPermissions:[suggestions[suggestionIndex]]}`:
+   * per the Claude Code hooks docs, the real "Yes, always" (not yet verified
+   * live).
    */
   readonly suggestionIndex?: number | undefined;
 

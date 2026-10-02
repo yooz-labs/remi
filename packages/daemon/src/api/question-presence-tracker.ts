@@ -105,7 +105,6 @@ export type PushQuestion = (
 /** Why a pending record pushes on its PTY render; see `awaitingPTY`. */
 type RenderMarkKind = 'parked-subagent' | 'push-on-render';
 
-/** Pending-hook map key: the prompt's agent, or MAIN_AGENT_ID for the primary. */
 /** The one card the current on-screen prompt owns, and what identifies it. */
 interface RenderOwnedCard {
   readonly id: string;
@@ -115,6 +114,7 @@ interface RenderOwnedCard {
   readonly text: string;
 }
 
+/** Pending-hook map key: the prompt's agent, or MAIN_AGENT_ID for the primary. */
 function agentKey(question: Question): string {
   return question.agentId ?? MAIN_AGENT_ID;
 }
@@ -124,8 +124,8 @@ function agentKey(question: Question): string {
  *  a prompt painted mid-redraw that is gone a moment later (status leaves
  *  'waiting', or `clearPending` fires, before the timer) — without holding a
  *  genuine orphan (agent-team permission, MCP elicitation dialog, a
- *  passthrough re-render after a held hook's card was already dismissed)
- *  long enough to matter to the user. */
+ *  re-render of a prompt whose card was already dismissed) long enough to
+ *  matter to the user. */
 const DEFAULT_ORPHAN_DEBOUNCE_MS = 1500;
 
 /** How long a parked awaiting-PTY record (#751) survives other agents'
@@ -209,15 +209,13 @@ export class QuestionPresenceTracker {
    *  parked record loses the merged push (or the whole prompt, when an
    *  unrelated live question makes `hasLiveQuestions` suppress the orphan).
    *  A parked entry expires when its OWN agent advances
-   *  (`noteAgentAdvanced` — the permission was allowlist-absorbed or
+   *  (`noteAgentAdvanced` — Claude's own rules allowed the call, or it was
    *  answered), on consume (render pairing), on `clearPending`
    *  (restart/rotation), or after `PARKED_RECORD_TTL_MS`. Always a subset of
    *  `pending`'s keys; every `pending` delete/clear site mirrors onto this
    *  map. Only `parked-subagent` takes the #763 exemption: a `push-on-render`
    *  mark belongs to the main agent, which has no `noteAgentAdvanced` path,
-   *  so its own status leaving 'waiting' is how its prompt cycle ends. It
-   *  also never reaches the parked-render arbiter: the gate already decided
-   *  the user must answer it. */
+   *  so its own status leaving 'waiting' is how its prompt cycle ends. */
   private awaitingPTY = new Map<string, { at: number; kind: RenderMarkKind }>();
 
   /** Agent keys whose `push-on-render` record was REPLACED by a newer hook
@@ -265,7 +263,7 @@ export class QuestionPresenceTracker {
    * (see `pairAndPush`), status leaves 'waiting', or `clearPending` runs.
    *
    * Distinct from `observedPTYQuestionId` (the RAW pre-merge PTY parse id,
-   * used for arbiter identity per ADR 0004) because the id that matters here
+   * half of `isPromptCurrent`) because the id that matters here
    * is the one actually registered in `SessionRegistry.currentQuestions` --
    * for a hook-less question that IS the same value (no merge changes it),
    * but tracking it separately keeps this mechanism decoupled from the
@@ -365,9 +363,9 @@ export class QuestionPresenceTracker {
    * Park a subagent-tagged permission question awaiting its PTY render
    * (#751). The gate answered the hook 'passthrough' (no push yet): Claude
    * runs its normal permission flow, so either its own permission rules
-   * absorb the request silently (the record then expires on the
-   * next status transition, like any pending record) or the native prompt
-   * renders on the main PTY — `onOrphanPTYPrompt` recognizes the parked
+   * allow the request silently (the record then expires when that agent
+   * advances, or after `PARKED_RECORD_TTL_MS`; see `awaitingPTY`) or the
+   * native prompt renders on the main PTY — `onOrphanPTYPrompt` recognizes the parked
    * record, merges its rich labels onto the parsed prompt, and pushes
    * immediately (no orphan debounce: hook + render is positive
    * double-confirmation). The PTY is the arbiter of whether the user is
@@ -391,8 +389,9 @@ export class QuestionPresenceTracker {
    * Mark an already-stashed hook record (located by `Question.id`) to push
    * when its prompt renders, through the same parked branch of
    * `onOrphanPTYPrompt` a subagent park uses: merge onto the parsed prompt
-   * (#718 option policy), then push. The gate calls this for a binary
-   * main-context escalation it does NOT hold (`AutoApproveGate.escalateForRender`):
+   * (#718 option policy), then push. The gate calls this for every binary
+   * main-context escalation (`AutoApproveGate.escalateForRender`; nothing
+   * holds since #1125):
    * without the mark, `isGateOwnedCycle` reads the stashed record as "the gate
    * already pushed this" and suppresses the only render that could surface it.
    * Returns false when no pending record carries that id (nothing to mark), or
@@ -622,14 +621,6 @@ export class QuestionPresenceTracker {
   }
 
   /**
-   * Clear and report the currently-tracked hook-less question as gone
-   * (#888/#920), if one is tracked. No-op when `observedRenderOwnedQuestion` is
-   * null (nothing to resolve) or no `onHooklessQuestionGone` dep is wired
-   * (pre-#888 behavior: hook-less questions are never actively resolved).
-   * The dep is invoked outside any try/catch at some call sites, so a throw
-   * is caught and logged here rather than trusted to the caller.
-   */
-  /**
    * Record `id` as THE card this screen's prompt owns, resolving whatever card
    * held that slot before it (#1005 Change B).
    *
@@ -649,9 +640,11 @@ export class QuestionPresenceTracker {
    * `SubagentStop`. So those cards had no working exit and accumulated until
    * LRU eviction.
    *
-   * Held cards never reach here: a held hook means Claude is BLOCKED on the
-   * hook response and is not rendering, so it has no render to be superseded
-   * by, and `pushHeldHook` is a different trigger entirely.
+   * Cards pushed at hook time (`pushHeldHook`) never reach here: that
+   * trigger consumes the hook record, so the native render that follows is
+   * an echo the live-question check suppresses, not a render-born card.
+   * (The trigger was built for held hooks, which never rendered at all;
+   * nothing holds since #1125.)
    */
   private adoptRenderOwnedQuestion(card: RenderOwnedCard): void {
     const previous = this.observedRenderOwnedQuestion;
@@ -689,6 +682,14 @@ export class QuestionPresenceTracker {
     return previous.agent === next.agent;
   }
 
+  /**
+   * Clear and report the currently-tracked hook-less question as gone
+   * (#888/#920), if one is tracked. No-op when `observedRenderOwnedQuestion` is
+   * null (nothing to resolve) or no `onHooklessQuestionGone` dep is wired
+   * (pre-#888 behavior: hook-less questions are never actively resolved).
+   * The dep is invoked outside any try/catch at some call sites, so a throw
+   * is caught and logged here rather than trusted to the caller.
+   */
   private noteHooklessGone(reason: string): void {
     const card = this.observedRenderOwnedQuestion;
     if (card === null) return;
@@ -854,9 +855,9 @@ export class QuestionPresenceTracker {
    * returns — and re-pushing those is the #625 phantom flood. But some
    * prompts reach ONLY the PTY (#712): Claude's native agent-team permission
    * prompts (no PermissionRequest hook fires for these at all, see
-   * anthropics/claude-code #23983), and a prompt re-rendered as passthrough
-   * after a held hook was released (its card already dismissed, registry entry
-   * removed). Those must still reach the phone. (MCP elicitation dialogs USED
+   * anthropics/claude-code #23983), and a prompt re-rendered after its card
+   * was already dismissed (registry entry removed). Those must still reach
+   * the phone. (MCP elicitation dialogs USED
    * to belong on this list; since #889 the `Elicitation` hook is registered
    * and pushes the card itself, so its PTY render is a gate-owned echo like
    * any other -- suppressed below via the live-question check, not orphaned.)

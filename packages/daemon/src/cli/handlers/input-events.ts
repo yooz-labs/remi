@@ -62,8 +62,8 @@ export interface InputHandlerDeps {
    * interactive prompt right now?", backed by
    * `QuestionPresenceTracker.isPromptObservedOnPTY` (#1002).
    *
-   * NOT backed by that class's `isPromptVisibleOnPTY`, despite the closer
-   * name. That flag means "this tracker pushed a card off a PTY render", which
+   * NOT backed by a "this tracker pushed a card off a PTY render" flag (the
+   * tracker's former `isPromptVisibleOnPTY`, removed in #1125). Such a flag
    * is false for the most common cohort of all: a gate-owned hook card whose
    * native prompt renders is recognised as an echo and suppressed without ever
    * setting it. Probing the real tracker showed `recordPendingHook` +
@@ -732,7 +732,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     /**
      * Connection-independent answer relay (#575, P4a). Routes an answer through
      * the SAME core as the WebSocket `onAnswer` so a cold-start push tap can
-     * deliver a held-hook decision / PTY pick over plain HTTP, then returns the
+     * deliver an answer over plain HTTP, then returns the
      * structured outcome for the caller to JSON-encode. There is no WebSocket
      * connection to reply on, so `send` error frames are suppressed here; the
      * outcome carries the same information.
