@@ -127,6 +127,7 @@ import { loadOrCreateCapabilityToken } from './auth/capability-token.ts';
 import { IdentityStore } from './auth/identity-store.ts';
 import {
   ALWAYS_ESCALATE_TOOLS,
+  type SubagentAlert,
   SubagentAlerter,
   alertBody,
   alertTitle,
@@ -205,12 +206,7 @@ import {
   serviceCommandRefusal,
 } from './config/remi-home.ts';
 import { ForeignSessionEscalator, HookConfigManager, HookServer } from './hooks/index.ts';
-import type {
-  HookInput,
-  PermissionDeniedHookInput,
-  PermissionRequestHookInput,
-  StopHookInput,
-} from './hooks/index.ts';
+import type { HookInput, PermissionDeniedHookInput, StopHookInput } from './hooks/index.ts';
 // Static, unlike the publisher below it: this is a pure decision with no
 // side effects and nothing to load, so there is nothing for a dynamic import
 // to defer -- and it is needed on the path where mDNS never starts at all.
@@ -1200,19 +1196,11 @@ const foreignSessionEscalator = new ForeignSessionEscalator({
 // throttling. See `subagent-alert.ts` for why this alerts rather than gates.
 const subagentAlerter = new SubagentAlerter(remiConfig.notifications.subagent_alert);
 
-/** Report a subagent permission that passed through unevaluated: always an
- *  audit log line (#756 direction d), plus a dismiss-only push when the command
- *  matches an alert pattern. Fire-and-forget — the gate has already answered
- *  the hook and this must never delay or throw into it. */
-function onSubagentPassthrough(input: PermissionRequestHookInput): void {
-  const alert = subagentAlerter.check(
-    input.tool_name,
-    input.tool_input,
-    input.agent_id,
-    input.agent_type,
-  );
-  if (alert === null) return;
-
+/** Deliver a subagent alert (#807): a log line plus a dismiss-only push. The
+ *  hook bridge calls it when a background agent's call that matched an alert
+ *  pattern finished without ever prompting (#1155, see `subagent-alert.ts`).
+ *  Fire-and-forget: it must never delay or throw into hook handling. */
+function deliverSubagentAlert(alert: SubagentAlert): void {
   const title = alertTitle(alert);
   const body = alertBody(alert);
   // Log unconditionally: the push can fail or be throttled downstream, and the
@@ -1281,7 +1269,7 @@ const turnTimer = new TurnTimer();
  * Push a "turn complete" notification when `Stop` reports a genuinely long,
  * non-reentrant turn (#914). Config-gated (default on, 60s) and fails toward
  * silence on any unknown signal -- see `shouldNotifyTurnComplete`. Fire-and-
- * forget, mirroring `onSubagentPassthrough` immediately above: a notification
+ * forget, mirroring `deliverSubagentAlert` immediately above: a notification
  * bug must never delay or break the hook response Claude is blocking on.
  *
  * Deliberately does NOT check `hook-bridge-setup.ts`'s `binder.admits()` (the
@@ -1353,7 +1341,7 @@ function onTurnStop(input: StopHookInput): void {
 
   const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
   for (const dt of wanting) {
-    // Dismiss-only, same convention as onSubagentPassthrough above: no
+    // Dismiss-only, same convention as deliverSubagentAlert above: no
     // `category` / `questionId`, it answers nothing. `kind` is what makes it
     // distinguishable from a subagent alert, which is otherwise identical on
     // the wire (#968).
@@ -1696,7 +1684,7 @@ async function createNewSession(
         transcriptDiscovery,
         subagentViews,
         foreignSessionEscalator,
-        onSubagentPassthrough,
+        subagentAlerts: { alerter: subagentAlerter, deliver: deliverSubagentAlert },
         // Classify an escalation as binary vs design/plan-mode (#572/#573).
         alwaysEscalateTools: ALWAYS_ESCALATE_TOOLS,
         // #585: a held question the gate resolves without a user answer dismisses

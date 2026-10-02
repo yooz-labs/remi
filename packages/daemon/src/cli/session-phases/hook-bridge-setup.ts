@@ -90,10 +90,12 @@ import type { AgentStatus, ProtocolMessage, Question, UUID } from '@remi/shared'
 import type { MessageAPI, QuestionRegistrationOutcome } from '../../api/message-api.ts';
 import type { QuestionPresenceTracker } from '../../api/question-presence-tracker.ts';
 import type { SubagentViewRegistry } from '../../api/subagent-view-registry.ts';
-import { AutoApproveGate } from '../../auto-approve/index.ts';
+import { AutoApproveGate, subagentCall } from '../../auto-approve/index.ts';
 import type {
   HeldAnswer,
   HeldAnswerOutcome,
+  SubagentAlert,
+  SubagentAlertSink,
   TerminalReleaseCause,
 } from '../../auto-approve/index.ts';
 import { HookEventBridge } from '../../hooks/index.ts';
@@ -102,7 +104,6 @@ import type {
   HookInput,
   HookServer,
   PermissionDeniedHookInput,
-  PermissionRequestHookInput,
   StopFailureHookInput,
 } from '../../hooks/index.ts';
 import type { TerminalNoticeReason } from '../../notifications/notification-dispatcher.ts';
@@ -204,14 +205,18 @@ export interface HookBridgeDeps {
    */
   foreignSessionEscalator?: ForeignSessionEscalator;
   /**
-   * Observer for every subagent-tagged permission that passed through (#807). Forwarded verbatim to the gate's
-   * `onSubagentPassthrough`; see that dep's doc for why it cannot influence
-   * the decision. Supplied by `cli.ts`, which owns the `SubagentAlerter` and
-   * the push transport (daemon-wide, so alert rate-limiting is shared across
-   * sessions rather than reset per session — same reasoning as
-   * `foreignSessionEscalator` above). Absent => no alert, no audit line.
+   * The subagent alert feed (#807, #1155): every admitted subagent tool
+   * call's hooks drive `alerter` (see `subagent-alert.ts` for the rules), and
+   * an alert it returns is handed to `deliver`. Fed from the tool hooks, not
+   * from `PermissionRequest`: a call Claude's own allow rules permit fires
+   * no `PermissionRequest`, and that silent branch is what the alert is for.
+   * Observation only: nothing here changes a hook response. Supplied by
+   * `cli.ts`, which owns the `SubagentAlerter` and the push transport
+   * (daemon-wide, so alert rate-limiting is shared across sessions rather
+   * than reset per session — same reasoning as `foreignSessionEscalator`
+   * above). Absent => no alert.
    */
-  onSubagentPassthrough?: (input: PermissionRequestHookInput) => void;
+  subagentAlerts?: SubagentAlertSink;
   /**
    * How long a binary prompt's hook is held for a phone answer, in ms
    * (`[prompts] hold_seconds`, #1126). Required: see `AutoApproveGateDeps.holdMs`.
@@ -634,7 +639,6 @@ export function setupHookBridge(
         return question.id;
       },
       hasLocalTerminal,
-      ...(deps.onSubagentPassthrough ? { onSubagentPassthrough: deps.onSubagentPassthrough } : {}),
       // A held prompt (binary #1126; AskUserQuestion, ExitPlanMode #1127) and
       // a passthrough multi-choice escalation (#625) push immediately under
       // their own id (-> addQuestion + maybePush); PTY question-emission is
@@ -790,6 +794,25 @@ export function setupHookBridge(
     );
   }
 
+  /**
+   * Drive the subagent alert feed for one admitted subagent hook (#1155) and
+   * deliver the alert it returns, if any. Throw-safe: an alerter or delivery
+   * failure is logged and never reaches the hook dispatch loop.
+   */
+  const feedSubagentAlerts = (
+    event: string,
+    step: (alerter: SubagentAlertSink['alerter']) => SubagentAlert | null,
+  ): void => {
+    const sink = deps.subagentAlerts;
+    if (sink === undefined) return;
+    try {
+      const alert = step(sink.alerter);
+      if (alert !== null) sink.deliver(alert);
+    } catch (err) {
+      logError(`[Hooks] subagent alert (${event}) failed for ${sessionId}: ${errorToString(err)}`);
+    }
+  };
+
   hookServer.on('PreToolUse', (input) => {
     binder.onHookEvent(input);
     if (!binder.admits(input)) return;
@@ -825,6 +848,12 @@ export function setupHookBridge(
         toolInput: input.tool_input,
         toolUseId: input.tool_use_id,
         agentId: input.agent_id,
+      });
+      // #1155: a call that matches an alert pattern is remembered; it alerts
+      // when it finishes, unless it prompted first.
+      feedSubagentAlerts('PreToolUse', (alerter) => {
+        alerter.noteToolStarted(subagentCall(input));
+        return null;
       });
       return;
     }
@@ -896,6 +925,8 @@ export function setupHookBridge(
         { toolFinished: true },
       );
       autoApproveGate.noteToolUseEnded(input.tool_use_id);
+      // #1155: it ran; it alerts if it matched and never prompted.
+      feedSubagentAlerts('PostToolUse', (alerter) => alerter.noteToolFinished(subagentCall(input)));
       return;
     }
     // #673: same signature-scoped external-resolution cancel as PreToolUse
@@ -959,6 +990,14 @@ export function setupHookBridge(
       // determined. Never affects the synchronous 'passthrough' below.
       deps.foreignSessionEscalator?.handleUnadmitted(input, sessionId);
       return 'passthrough';
+    }
+    // #1155: a call that prompts never alerts; its notice (a terminal
+    // session) or its held card (daemon or hub) is what the phone gets.
+    if (isSubagentEvent(input)) {
+      feedSubagentAlerts('PermissionRequest', (alerter) => {
+        alerter.notePrompted(subagentCall(input));
+        return null;
+      });
     }
     return autoApproveGate.resolvePermission(input, signal);
   });
@@ -1052,6 +1091,11 @@ export function setupHookBridge(
         { toolFinished: true },
       );
       autoApproveGate.noteToolUseEnded(input.tool_use_id);
+      // #1155: it ran (and failed); it alerts if it matched and never
+      // prompted.
+      feedSubagentAlerts('PostToolUseFailure', (alerter) =>
+        alerter.noteToolFinished(subagentCall(input)),
+      );
       return;
     }
     // #1126: a Yes answered in the terminal whose tool then failed still
@@ -1121,6 +1165,12 @@ export function setupHookBridge(
     if (input.agent_id) {
       tracker.noteAgentAdvanced(input.agent_id);
       autoApproveGate.cancelStaleForAgent(input.agent_id, 'SubagentStop');
+      const stoppedAgent = input.agent_id;
+      // #1155: its unfinished calls will not finish; forget them.
+      feedSubagentAlerts('SubagentStop', (alerter) => {
+        alerter.noteAgentStopped(stoppedAgent);
+        return null;
+      });
     }
   });
 
@@ -1156,6 +1206,13 @@ export function setupHookBridge(
       'PermissionDenied',
     );
     autoApproveGate.noteToolUseEnded(input.tool_use_id);
+    // #1155: the call did not run, so it never alerts.
+    if (isSubagentEvent(input)) {
+      feedSubagentAlerts('PermissionDenied', (alerter) => {
+        alerter.notePrompted(subagentCall(input));
+        return null;
+      });
+    }
     // #1126: tell the phone why the agent changed course. Never a card:
     // a classifier block fires no PermissionRequest, so nothing waits (a
     // fallback prompt's auto-deny also lands here, after its card closed).

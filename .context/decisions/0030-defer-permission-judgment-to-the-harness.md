@@ -42,7 +42,7 @@ What remains, and is what ships after #1125:
   A multi-choice or design prompt (AskUserQuestion, ExitPlanMode) is answered `passthrough` and pushed immediately (held and answered through the hook since #1127, ADR 0031 amendment).
   A phone answer is typed into the rendered prompt using the screen's numbering, only when the chosen option's label exactly matches the screen's option at that number (#1134, PR #1136); otherwise it is refused, which means answer at the terminal, where Claude's dialog is still showing.
 - **Subagent prompts.** An `agent_id`-tagged request is parked and answered `passthrough`; its card pushes only if its prompt renders on the main PTY (ADR 0004, minus the render-time evaluation).
-- **Subagent alerts.** The informational `subagent_alert` push still fires for parked subagent requests matching the user's patterns, now configured under `[notifications] subagent_alert`.
+- **Subagent alerts.** The informational `subagent_alert` push still fires for parked subagent requests matching the user's patterns, now configured under `[notifications] subagent_alert`. (Corrected by #1155: a call the allow rules permit fires no `PermissionRequest`, so the alert is now fed from the tool hooks and fires only for calls that never prompted; see ADR 0031.)
 - **External resolution.** A matching `PreToolUse`/`PostToolUse`/`PermissionDenied`, a matching `PostToolUseFailure` (subagent cards only), a lead `Stop`, `SubagentStop`, `SessionEnd` and `remi unstick` still resolve open cards; a card that was pushed is dismissed everywhere.
 
 Nothing holds the hook in this phase: holding was only enabled when an auto-approve service existed.

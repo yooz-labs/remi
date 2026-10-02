@@ -483,15 +483,29 @@ its hook is held (verified live), so the gate takes a required
   `onRender`). When the dialog renders, the phone gets an informational
   "answer at the terminal" notice, never an answerable card; the notice is
   dismissed when the prompt resolves. With no park path the notice is pushed
-  at once. The `subagent_alert` informational push
-  (`auto-approve/subagent-alert.ts`, patterns in `[notifications]
-  subagent_alert`) still fires from the gate's `onSubagentPassthrough` cue.
+  at once.
 - **Daemon or hub mode (no local terminal):** nobody could answer a rendered
   dialog, so the request is escalated exactly like a main-agent prompt: held,
   with an answerable card. A lead `Stop` spares it; that agent's
   `SubagentStop` releases it. Claude does not fire `PermissionRequest` for a
   call its own allow rules permit (measured on 2.1.287 for background,
   foreground and main calls), so these holds are only for real prompts.
+
+**`subagent_alert` covers what never prompts** (#807, #1155;
+`auto-approve/subagent-alert.ts`, patterns in `[notifications]
+subagent_alert`). Because a call the allow rules permit fires no
+`PermissionRequest`, the alert is fed from the tool hooks, in both modes: an
+agent-tagged `PreToolUse` whose call matches a pattern is remembered, a
+`PermissionRequest` or `PermissionDenied` for that call forgets it, and its
+`PostToolUse` or `PostToolUseFailure` delivers the alert (rate-limited,
+daemon-wide); `SubagentStop` forgets the agent's unfinished calls. One call
+therefore produces at most one phone artifact: a call that prompts gets its
+"answer at the terminal" notice (wrapper mode) or its held card (daemon or
+hub mode), the actionable one, and never an alert as well; a call that ran
+without asking gets the alert. The alert arrives when the call finishes (the
+first moment remi knows it ran unasked), so a long command's alert comes at
+its end. Before #1155 it was fed from the subagent `PermissionRequest`
+passthrough, the one event the allowlisted case never fires.
 
 **Old auto-approve settings.** An old `config.toml` with an `[auto_approve]`
 table still loads; the daemon warns once at boot (daemon, `remi serve`,
@@ -527,7 +541,7 @@ those two are both exactly `{token, title, body}`.
 |---|---|---|
 | `question` | permission prompt, AskUserQuestion, plan approval; an "answer at the terminal" notice (hold deadline, wrapper-mode subagent dialog; no actions, own collapse key) | yes, `pushPrefs.questions` |
 | `turn_complete` | `Stop` after a turn ≥ `turn_complete_min_seconds` (#914) | yes, `pushPrefs.turnComplete` |
-| `subagent_alert` | a background agent matched `[notifications] subagent_alert` | no — the pattern list IS the control |
+| `subagent_alert` | a background agent's call matching `[notifications] subagent_alert` finished without ever prompting (#1155) | no — the pattern list IS the control |
 | `harness_denied` | `PermissionDenied`: Claude Code's auto-mode classifier blocked a call, or auto-denied an unanswered fallback prompt at 2:00 (#1126); informational, never a card; one collapse key per session (`harness-denied-<sessionId>`), so a blocked loop replaces its notice | yes, `pushPrefs.harnessDenied` |
 | `turn_failed` | `StopFailure`: a turn ended on an API error (usage or rate limit, authentication, and similar; #1153); informational, never a card (nothing in Claude waits, so there is nothing to answer); readable reason from `error`, an excerpt of `last_assistant_message`; one collapse key per session (`turn-failed-<sessionId>`), so a repeat replaces the previous notice | yes, `pushPrefs.turnFailed`, default on; **not** muted by `notifications.on_turn_complete = false` |
 | `dismiss` | quiet `content-available` clearing a resolved card | **no, deliberately** |

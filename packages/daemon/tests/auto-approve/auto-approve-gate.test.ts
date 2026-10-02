@@ -62,7 +62,6 @@ describe('AutoApproveGate routing (#1125: nothing is decided, everything is rela
   let escalatedIds: UUID[];
   let parks: PermissionRequestHookInput[];
   let pushNowIds: UUID[];
-  let subagentAlerts: PermissionRequestHookInput[];
   let resets: number;
   let subagentContext: boolean;
 
@@ -94,9 +93,6 @@ describe('AutoApproveGate routing (#1125: nothing is decided, everything is rela
         onHeldEscalate: (id) => {
           pushNowIds.push(id);
         },
-        onSubagentPassthrough: (i) => {
-          subagentAlerts.push(i);
-        },
         alwaysEscalateTools: new Set(['AskUserQuestion', 'ExitPlanMode']),
         ...over,
       },
@@ -111,7 +107,6 @@ describe('AutoApproveGate routing (#1125: nothing is decided, everything is rela
     escalatedIds = [];
     parks = [];
     pushNowIds = [];
-    subagentAlerts = [];
     resets = 0;
     subagentContext = false;
     configureLogger({ writeLog: () => {} });
@@ -271,26 +266,6 @@ describe('AutoApproveGate routing (#1125: nothing is decided, everything is rela
     expect(pushNowIds).toEqual(escalatedIds);
     g.forceRelease('test');
     expect(await hook).toBe('passthrough');
-  });
-
-  test('#807: onSubagentPassthrough reports a parked subagent call, never a main one', async () => {
-    const g = gate();
-    const sub = pr({ agent_id: 'agent-1', agent_type: 'general-purpose' });
-    await g.resolvePermission(sub);
-    const main = g.resolvePermission(pr());
-    expect(subagentAlerts).toEqual([sub]);
-    g.forceRelease('test');
-    await main;
-  });
-
-  test('#807: a throwing onSubagentPassthrough cannot break the hook answer', async () => {
-    const g = gate({
-      onSubagentPassthrough: () => {
-        throw new Error('test: alert sink failed');
-      },
-    });
-    expect(await g.resolvePermission(pr({ agent_id: 'agent-1' }))).toBe('passthrough');
-    expect(parks).toHaveLength(1);
   });
 
   test('#751: a parkForPTY throw is absorbed; the passthrough still stands', async () => {
@@ -1357,7 +1332,6 @@ describe('AutoApproveGate subagent routing by local terminal (#1126)', () => {
   let parks: PermissionRequestHookInput[];
   let noticesNow: PermissionRequestHookInput[];
   let pushedNow: UUID[];
-  let alerts: PermissionRequestHookInput[];
   let noticesCleared: UUID[];
 
   function gate(hasLocalTerminal: boolean, over: Partial<AutoApproveGateDeps> = {}) {
@@ -1392,9 +1366,6 @@ describe('AutoApproveGate subagent routing by local terminal (#1126)', () => {
         onHeldEscalate: (id) => {
           pushedNow.push(id);
         },
-        onSubagentPassthrough: (i) => {
-          alerts.push(i);
-        },
         onTerminalNoticeResolved: (id) => {
           noticesCleared.push(id);
         },
@@ -1420,7 +1391,6 @@ describe('AutoApproveGate subagent routing by local terminal (#1126)', () => {
     parks = [];
     noticesNow = [];
     pushedNow = [];
-    alerts = [];
     noticesCleared = [];
     configureLogger({ writeLog: () => {} });
   });
@@ -1430,13 +1400,12 @@ describe('AutoApproveGate subagent routing by local terminal (#1126)', () => {
     await registry.shutdown();
   });
 
-  test('with a local terminal: passthrough at once, parked for its render, alert cue fired, nothing held', async () => {
+  test('with a local terminal: passthrough at once, parked for its render, nothing held', async () => {
     const g = gate(true);
     const input = sub();
     expect(await g.resolvePermission(input)).toBe('passthrough');
     expect(parks).toEqual([input]);
     expect(pushedNow).toEqual([]);
-    expect(alerts).toEqual([input]);
     expect(g.answerHeld(ids[0] as UUID, { kind: 'option', option: YES })).toBe('unknown');
     // Not rendered yet: it must not suppress a hook-less prompt's card (its
     // own render is matched through its parked record first).
@@ -1502,8 +1471,6 @@ describe('AutoApproveGate subagent routing by local terminal (#1126)', () => {
     const qid = ids[0] as UUID;
     expect(parks).toEqual([]);
     expect(pushedNow).toEqual([qid]);
-    // Held, not passed through: no alert for a call the phone decides.
-    expect(alerts).toEqual([]);
     // The lead idling does not release a subagent's hold (#711).
     g.cancelStale('Stop', { mainOnly: true });
     expect(g.answerHeld(qid, { kind: 'option', option: YES })).toBe('resolved');

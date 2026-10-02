@@ -13,6 +13,11 @@ import { MessageAPI } from '../../../src/api/message-api.ts';
 import { QuestionPresenceTracker } from '../../../src/api/question-presence-tracker.ts';
 import { SubagentViewRegistry } from '../../../src/api/subagent-view-registry.ts';
 import {
+  type SubagentAlert,
+  type SubagentAlertSink,
+  SubagentAlerter,
+} from '../../../src/auto-approve/subagent-alert.ts';
+import {
   createInputHandlers,
   gateAnswerDeps,
   trackerScreenDeps,
@@ -310,6 +315,8 @@ describe('setupHookBridge', () => {
       /** A real `HookServer` to register the listeners on, instead of the
        *  recording one (#1153: a recorded payload POSTed over HTTP). */
       realServer?: HookServer;
+      /** The subagent alert feed (#1155). */
+      subagentAlerts?: SubagentAlertSink;
     } = {},
   ): { tracker: QuestionPresenceTracker; messageApi: MessageAPI; handle: HookBridgeHandle } {
     const sessionWorkingDirectory = opts.workingDirectory ?? tmpDir;
@@ -406,6 +413,7 @@ describe('setupHookBridge', () => {
             }
           : {}),
         ...(opts.subagentViews ? { subagentViews: opts.subagentViews } : {}),
+        ...(opts.subagentAlerts ? { subagentAlerts: opts.subagentAlerts } : {}),
         ...(opts.broadcastResolvedLog
           ? {
               broadcastQuestionResolved: (_sid: UUID, questionId: UUID, reason: 'cancelled') =>
@@ -4810,6 +4818,153 @@ describe('setupHookBridge', () => {
       expect(sent.filter((m) => m.type === 'error')).toEqual([]);
       expect(ptySubmits).toEqual(['thanks', '/exit']);
       expect(sessionRegistry.getSession(SID)).toBeDefined();
+    });
+  });
+
+  /**
+   * #1155: the subagent alert is fed from the tool hooks, not from
+   * `PermissionRequest`. A call the session's allow rules permit fires no
+   * `PermissionRequest` (measured, ADR 0031), which is exactly the silent
+   * case the alert exists for; a call that prompts gets its notice (terminal
+   * session) or held card (daemon or hub) and never an alert as well. Real
+   * bridge, gate, tracker and `SubagentAlerter`; the sink records what would
+   * be pushed.
+   */
+  describe('subagent alerts come from the tool hooks (#1155)', () => {
+    const PATTERNS = ['rm -rf', 'push --force'];
+
+    function lockSession(id: string): void {
+      hookServer.fire('Notification', {
+        session_id: id,
+        hook_event_name: 'Notification',
+        transcript_path: path.join(tmpDir, `${id}.jsonl`),
+        notification_type: 'auth_success',
+        message: '',
+      });
+    }
+
+    function alerting(opts: Parameters<typeof build>[0] = {}) {
+      const alerts: SubagentAlert[] = [];
+      const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
+      const built = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+        orphanDebounceMs: 5,
+        noticeLog,
+        subagentAlerts: {
+          alerter: new SubagentAlerter(PATTERNS),
+          deliver: (alert) => alerts.push(alert),
+        },
+        ...opts,
+      });
+      return { ...built, alerts, noticeLog };
+    }
+
+    const call = (session: string, command: string, toolUseId: string, agent = true) => ({
+      session_id: session,
+      tool_name: 'Bash',
+      tool_input: { command },
+      tool_use_id: toolUseId,
+      ...(agent ? { agent_id: 'agent-bg', agent_type: 'code-reviewer' } : {}),
+    });
+
+    /** An allowlisted call: Claude fires PreToolUse, runs it, PostToolUse. */
+    function runsSilently(c: ReturnType<typeof call>, event = 'PostToolUse'): void {
+      hookServer.fire('PreToolUse', { ...c, hook_event_name: 'PreToolUse' });
+      hookServer.fire(event, { ...c, hook_event_name: event, tool_response: {} });
+    }
+
+    test('wrapper mode: an allowlisted call matching a pattern pushes one alert, when it finishes', () => {
+      const { alerts } = alerting();
+      lockSession('claude-alert-allowed');
+      const c = call('claude-alert-allowed', 'rm -rf build', 'tu-allowed');
+      hookServer.fire('PreToolUse', { ...c, hook_event_name: 'PreToolUse' });
+      // A prompt could still follow: nothing yet.
+      expect(alerts).toEqual([]);
+      hookServer.fire('PostToolUse', { ...c, hook_event_name: 'PostToolUse', tool_response: {} });
+      expect(alerts).toEqual([
+        {
+          pattern: 'rm -rf',
+          toolName: 'Bash',
+          detail: 'rm -rf build',
+          agentId: 'agent-bg',
+          agentType: 'code-reviewer',
+        },
+      ]);
+    });
+
+    test('a call that fails still ran: PostToolUseFailure alerts too', () => {
+      const { alerts } = alerting();
+      lockSession('claude-alert-failed');
+      runsSilently(
+        call('claude-alert-failed', 'git push --force', 'tu-failed'),
+        'PostToolUseFailure',
+      );
+      expect(alerts.map((a) => a.pattern)).toEqual(['push --force']);
+    });
+
+    test('an allowlisted call matching no pattern pushes nothing; neither does a main-agent call', () => {
+      const { alerts } = alerting();
+      lockSession('claude-alert-none');
+      runsSilently(call('claude-alert-none', 'ls -la', 'tu-ls'));
+      runsSilently(call('claude-alert-none', 'rm -rf build', 'tu-main', false));
+      expect(alerts).toEqual([]);
+    });
+
+    test('wrapper mode: a call that prompts gets only its render notice, never an alert as well', async () => {
+      const { alerts, noticeLog, tracker } = alerting();
+      lockSession('claude-alert-prompted');
+      const c = call('claude-alert-prompted', 'rm -rf build', 'tu-prompted');
+      hookServer.fire('PreToolUse', { ...c, hook_event_name: 'PreToolUse' });
+      const { tool_use_id: _none, ...request } = c;
+      expect(
+        await hookServer.firePermission({ ...request, hook_event_name: 'PermissionRequest' }),
+      ).toBe('passthrough');
+      tracker.onOrphanPTYPrompt(parseQuestion(WRAPPED_DIRECTORY_DIALOG).question as Question);
+      expect(noticeLog.map((n) => n.reason)).toEqual(['subagent']);
+      // Answered Yes in the terminal: the tool runs and finishes.
+      hookServer.fire('PostToolUse', { ...c, hook_event_name: 'PostToolUse', tool_response: {} });
+      expect(noticeLog.map((n) => n.reason)).toEqual(['subagent', 'dismissed']);
+      expect(alerts).toEqual([]);
+    });
+
+    test('daemon mode: an allowlisted call alerts; a prompting one is a held card and no alert', async () => {
+      const { alerts, handle } = alerting({ hasLocalTerminal: false });
+      lockSession('claude-alert-daemon');
+      runsSilently(call('claude-alert-daemon', 'rm -rf dist', 'tu-daemon-allowed'));
+      expect(alerts.map((a) => a.detail)).toEqual(['rm -rf dist']);
+
+      const c = call('claude-alert-daemon', 'rm -rf build', 'tu-daemon-prompted');
+      hookServer.fire('PreToolUse', { ...c, hook_event_name: 'PreToolUse' });
+      const { tool_use_id: _none, ...request } = c;
+      const hook = hookServer.firePermission({ ...request, hook_event_name: 'PermissionRequest' });
+      const card = [...(sessionRegistry.getSession(SID)?.currentQuestions.values() ?? [])][0];
+      if (!card) throw new Error('the held subagent prompt pushed no card');
+      expect(
+        handle.gate.answerHeld(card.id, {
+          kind: 'option',
+          option: card.options[0] as QuestionOption,
+        }),
+      ).toBe('resolved');
+      expect(await hook).toBe('allow');
+      hookServer.fire('PostToolUse', { ...c, hook_event_name: 'PostToolUse', tool_response: {} });
+      expect(alerts.map((a) => a.detail)).toEqual(['rm -rf dist']);
+    });
+
+    test('a call Claude refused (PermissionDenied) never alerts', () => {
+      const { alerts } = alerting();
+      lockSession('claude-alert-denied');
+      const c = call('claude-alert-denied', 'rm -rf build', 'tu-denied');
+      hookServer.fire('PreToolUse', { ...c, hook_event_name: 'PreToolUse' });
+      hookServer.fire('PermissionDenied', {
+        ...c,
+        hook_event_name: 'PermissionDenied',
+        reason: 'blocked by the auto mode classifier',
+      });
+      // Even a stray finish for the same id would not alert now.
+      hookServer.fire('PostToolUse', { ...c, hook_event_name: 'PostToolUse', tool_response: {} });
+      expect(alerts).toEqual([]);
     });
   });
 });
