@@ -6,12 +6,12 @@
  */
 
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { DAEMON_BASE_PORT, DAEMON_PORT_RANGE, errorToString } from '@remi/shared';
 import { parse as parseToml } from 'smol-toml';
+import { remiHome } from './remi-home.ts';
 
-const REMI_DIR = path.join(os.homedir(), '.remi');
+const REMI_DIR = remiHome();
 export const CONFIG_PATH = path.join(REMI_DIR, 'config.toml');
 
 /** Daemon settings (restart required to apply changes) */

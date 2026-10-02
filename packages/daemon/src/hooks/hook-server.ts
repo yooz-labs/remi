@@ -25,9 +25,9 @@
  */
 
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { errorToString } from '@remi/shared';
+import { remiHome } from '../config/remi-home.ts';
 import { debugProvenance } from '../debug/provenance.ts';
 import type {
   HookInput,
@@ -272,7 +272,7 @@ export class HookServer {
           _provenance: debugProvenance(),
           ...body,
         });
-        const remiDir = path.join(os.homedir(), '.remi');
+        const remiDir = remiHome();
         const logPath = path.join(remiDir, 'hook-diag.jsonl');
         fs.mkdirSync(remiDir, { recursive: true });
         fs.appendFileSync(logPath, `${logLine}\n`);

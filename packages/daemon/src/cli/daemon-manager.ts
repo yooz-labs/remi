@@ -9,9 +9,9 @@
 
 import { execSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { errorToString } from '@remi/shared';
+import { remiHome } from '../config/remi-home.ts';
 import { SessionRegistryFile } from '../session/session-registry-file.ts';
 import { rotateIfNeeded } from './log-rotation.ts';
 import { resolveExistingDirectory } from './path-resolver.ts';
@@ -21,7 +21,7 @@ import { formatVersionDrift } from './version-drift.ts';
 // version-drift.ts so `remi ls` shares the exact wording (#766 review).
 export { formatVersionDrift };
 
-const REMI_DIR = path.join(os.homedir(), '.remi');
+const REMI_DIR = remiHome();
 export const PID_FILE = path.join(REMI_DIR, 'daemon.pid');
 const STATUS_FILE = path.join(REMI_DIR, 'daemon-status.json');
 const LOG_FILE = path.join(REMI_DIR, 'daemon.log');

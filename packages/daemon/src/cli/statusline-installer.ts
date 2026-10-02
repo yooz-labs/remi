@@ -69,15 +69,23 @@ echo "\${REMI:+\$REMI | }[\${C_MODEL:-?}] \${C_PCT:-0}% context"
  *
  * `claudeSettingsPath` is exposed for tests that need to run against an
  * isolated settings file. Production callers omit it.
+ *
+ * `registerInClaudeSettings` false writes the script but leaves Claude's
+ * settings alone. The daemon passes false under a `REMI_HOME` override
+ * (`config/remi-home.ts`): that directory is usually scratch, and pointing
+ * the user's global Claude statusLine at a script inside it would outlive
+ * the run that created it.
  */
 export function installStatusLine(
   remiDir: string,
   claudeSettingsPath: string = path.join(os.homedir(), '.claude', 'settings.json'),
+  registerInClaudeSettings = true,
 ): void {
   try {
     fs.mkdirSync(remiDir, { recursive: true });
     const scriptPath = path.join(remiDir, 'statusline.sh');
     fs.writeFileSync(scriptPath, buildStatuslineScript(remiDir), { mode: 0o755 });
+    if (!registerInClaudeSettings) return;
 
     // Auto-configure Claude Code settings if no statusLine key exists.
     // Preserves all other settings but rewrites the file.

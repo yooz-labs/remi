@@ -111,6 +111,12 @@ bun run lint          # Biome check
 bun run typecheck     # TypeScript check
 ```
 
+### Environment variables
+
+| Variable | Effect |
+|---|---|
+| `REMI_HOME` | Absolute path of remi's state directory (config, sessions, live sessions, logs, status files, device tokens, keys, statusline script). Defaults to `~/.remi`. Use a scratch directory to run remi from source without touching your real state. A relative path is refused. Under an override remi writes its statusline script there but does not register it in `~/.claude/settings.json`, and `remi --install` still writes a service that uses `~/.remi`. |
+
 ## Roadmap
 
 See `.context/plan.md` for the detailed development roadmap.

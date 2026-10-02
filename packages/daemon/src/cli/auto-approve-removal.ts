@@ -9,8 +9,8 @@
  */
 
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
+import { remiHome } from '../config/remi-home.ts';
 
 /** Printed (to stderr) by `remi model`, which then exits 2. One line. */
 export const MODEL_COMMAND_REMOVED_MESSAGE =
@@ -51,13 +51,14 @@ export interface RemovedAutoApproveFacts {
   readonly enginePidFile: string | null;
 }
 
-/** Where an older remi installed and tracked the local model engine. */
-export function legacyEnginePaths(home: string = os.homedir()): {
+/** Where an older remi installed and tracked the local model engine, inside
+ *  the state directory (`remiHome()`, `~/.remi` by default). */
+export function legacyEnginePaths(stateDir: string = remiHome()): {
   engineDir: string | null;
   enginePidFile: string | null;
 } {
-  const dir = path.join(home, '.remi', 'engine');
-  const pid = path.join(home, '.remi', 'engine.pid');
+  const dir = path.join(stateDir, 'engine');
+  const pid = path.join(stateDir, 'engine.pid');
   return {
     engineDir: fs.existsSync(dir) ? dir : null,
     enginePidFile: fs.existsSync(pid) ? pid : null,

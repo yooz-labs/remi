@@ -70,6 +70,10 @@ export function isolatedEnv(
   delete env['REMI_PORT'];
   // biome-ignore lint/performance/noDelete: must truly remove env var from child process
   delete env['REMI_SPAWNED_CHILD'];
+  // An inherited REMI_HOME would move the child's state out of the sandbox
+  // HOME this helper exists to provide (config/remi-home.ts).
+  // biome-ignore lint/performance/noDelete: must truly remove env var from child process
+  delete env['REMI_HOME'];
   return { ...env, ...overrides };
 }
 

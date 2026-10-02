@@ -6,10 +6,10 @@
  */
 
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
+import { remiHome } from '../config/remi-home.ts';
 
-const REMI_DIR = path.join(os.homedir(), '.remi');
+const REMI_DIR = remiHome();
 const CODE_FILE = path.join(REMI_DIR, 'connection-code');
 
 /** Unambiguous characters for code generation (no 0/O, 1/I/L) */

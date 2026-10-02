@@ -35,7 +35,7 @@ const REMI_VERSION = (() => {
 // ---------------------------------------------------------------------------
 // Paths and utilities for log file and status file (used in wrapper mode)
 // ---------------------------------------------------------------------------
-const REMI_DIR = path.join(os.homedir(), '.remi');
+const REMI_DIR = remiHome();
 const LOG_FILE = path.join(REMI_DIR, 'remi.log');
 const DAEMON_STATUS_FILE = path.join(REMI_DIR, 'daemon-status.json');
 // Status file is per-port so multiple wrapper sessions don't overwrite each other.
@@ -194,6 +194,7 @@ import {
   loadConfigWithNotices,
 } from './config/index.ts';
 import type { LoadedConfig, RemiConfig } from './config/index.ts';
+import { isRemiHomeOverridden, remiHome } from './config/remi-home.ts';
 import { ForeignSessionEscalator, HookConfigManager, HookServer } from './hooks/index.ts';
 import type { HookInput, PermissionRequestHookInput, StopHookInput } from './hooks/index.ts';
 // Static, unlike the publisher below it: this is a pure decision with no
@@ -450,6 +451,9 @@ if (cliInstall || cliUninstall) {
     if (cliInstall) {
       const content = buildLaunchAgentPlist(binaryPath, home);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
+      // The plist's log paths are `~/.remi` (service-templates.ts) and the
+      // service does not inherit this shell's REMI_HOME, so this stays the
+      // default directory rather than `remiHome()`.
       fs.mkdirSync(path.join(home, '.remi'), { recursive: true });
       const uid = process.getuid?.() ?? 501;
       // Idempotent reinstall: bootstrap fails if the label is already
@@ -2396,7 +2400,7 @@ if (cliDaemonMode) {
   // (the first session child installs it anyway). Session daemons keep the
   // existing behavior.
   if (!serveMode) {
-    installStatusLine(REMI_DIR);
+    installStatusLine(REMI_DIR, undefined, !isRemiHomeOverridden());
   }
 
   if (serveMode) {
@@ -2630,8 +2634,9 @@ if (cliDaemonMode) {
   // Close log fd as the very last thing on process exit
   process.on('exit', endLogFileSession);
 
-  // Install status line script (~/.remi/statusline.sh) and auto-configure Claude Code settings
-  installStatusLine(REMI_DIR);
+  // Install status line script (<state dir>/statusline.sh) and auto-configure
+  // Claude Code settings, except under a REMI_HOME override (see installStatusLine).
+  installStatusLine(REMI_DIR, undefined, !isRemiHomeOverridden());
   const workingDirectory = process.cwd();
   const sessionId = sessionRegistry.createSessionId();
   setPrimarySessionId(sessionId);

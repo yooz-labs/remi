@@ -108,6 +108,12 @@ describe('installStatusLine', () => {
     expect(settings.statusLine).toBeDefined();
   });
 
+  test('with registration off it writes the script but leaves Claude settings untouched (REMI_HOME)', () => {
+    installStatusLine(tmpRemi, settingsPath, false);
+    expect(fs.existsSync(path.join(tmpRemi, 'statusline.sh'))).toBe(true);
+    expect(fs.existsSync(settingsPath)).toBe(false);
+  });
+
   test('does not throw when the settings file is corrupted JSON', () => {
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
     fs.writeFileSync(settingsPath, '{not valid json');
