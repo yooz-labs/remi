@@ -17,6 +17,8 @@
  * (the agent is stopped, and until something is done it stays stopped).
  */
 
+import type { UUID } from '@remi/shared';
+
 import type { StopFailureHookInput } from '../hooks/hook-types.ts';
 
 /** Same caps as the question push (`notification-dispatcher.ts`). */
@@ -128,4 +130,36 @@ export function buildTurnFailedText(
  */
 export function turnFailedCollapseId(sessionId: string): string {
   return `turn-failed-${sessionId}`;
+}
+
+/** The slice of a per-session `NotificationDispatcher` the hook wiring needs. */
+export interface TurnFailedNotifier {
+  pushTurnFailed(input: TurnFailedInput): Promise<unknown>;
+  dismissTurnFailed(): void;
+}
+
+/**
+ * How `cli.ts` hands a session's `StopFailure` to that session's dispatcher,
+ * and clears its notice on a later turn. Extracted from the wiring lambdas so
+ * it is tested as itself.
+ *
+ * It takes the registry of dispatchers and nothing else, on purpose: no
+ * config, so nothing here can gate a failure on `notifications.on_turn_complete`
+ * (a failed turn is the one turn end a user must not miss by default; only the
+ * per-device `turnFailed` preference mutes it, inside the dispatcher). A
+ * session with no dispatcher (already torn down) is a no-op.
+ */
+export function createTurnFailedRoutes(notifiers: ReadonlyMap<UUID, TurnFailedNotifier>): {
+  push: (sessionId: UUID, input: StopFailureHookInput) => void;
+  dismiss: (sessionId: UUID) => void;
+} {
+  return {
+    // The dispatcher's promise never rejects; fire-and-forget.
+    push: (sessionId, input) => {
+      void notifiers.get(sessionId)?.pushTurnFailed(input);
+    },
+    dismiss: (sessionId) => {
+      notifiers.get(sessionId)?.dismissTurnFailed();
+    },
+  };
 }

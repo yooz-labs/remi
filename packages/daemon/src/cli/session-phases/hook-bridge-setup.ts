@@ -243,10 +243,21 @@ export interface HookBridgeDeps {
    * A turn in this session ended on an API error (`StopFailure`, #1153):
    * wired by cli.ts to the session's `NotificationDispatcher.pushTurnFailed`
    * (the `turn_failed` push). Informational, never a card; called for an
-   * admitted event, after the status went to `idle`. Absent => no push.
+   * admitted event, after the status went to `idle` (a main-agent failure;
+   * an `agent_id`-tagged one leaves the status alone). Absent => no push.
    * Throw-safe here.
    */
   pushTurnFailed?: (sessionId: UUID, input: StopFailureHookInput) => void;
+  /**
+   * Clear the `turn_failed` notice this session may have pushed (#1153): the
+   * quiet dismissal sharing its collapse key, fired on the next main-agent
+   * `Stop` or `UserPromptSubmit`, so a stale "Claude stopped" does not sit on
+   * the lock screen after a later turn succeeded. Wired by cli.ts to the
+   * session's `NotificationDispatcher.dismissTurnFailed`, which sends nothing
+   * unless a `turn_failed` push is outstanding. Absent => nothing cleared.
+   * Throw-safe here.
+   */
+  dismissTurnFailed?: (sessionId: UUID) => void;
 }
 
 export interface HookBridgeArgs {
@@ -686,6 +697,16 @@ export function setupHookBridge(
   const isSubagentEvent = (input: { agent_id?: string }): boolean =>
     typeof input.agent_id === 'string' && input.agent_id.length > 0;
 
+  /** Clear this session's outstanding `turn_failed` notice (#1153), if any.
+   *  Contained: a throwing sink never reaches the hook dispatch loop. */
+  const dismissTurnFailedNotice = (): void => {
+    try {
+      deps.dismissTurnFailed?.(sessionId);
+    } catch (err) {
+      logError(`[Hooks] turn_failed dismissal failed for ${sessionId}: ${errorToString(err)}`);
+    }
+  };
+
   // ---- TranscriptBinder (#453 phase 3, commit 5; unconditional since #503) --
   //
   // ONE binder per session. It OWNS the binding/watcher/rotation control plane:
@@ -945,6 +966,9 @@ export function setupHookBridge(
     // already-pushed card (phantom: answering it resolved nothing). SessionEnd
     // below is real teardown and keeps the wholesale sweep.
     autoApproveGate.cancelStale('Stop', { mainOnly: true });
+    // #1153: a turn that finished well supersedes an earlier "Claude stopped"
+    // notice. Not for a stop-hook re-entry (the turn is still going).
+    if (!input.stop_hook_active && !isSubagentEvent(input)) dismissTurnFailedNotice();
     // #891: Stop now carries the turn's real content (last_assistant_message),
     // previously dropped entirely. There is no client-facing surface to carry
     // it to a phone/lock-screen yet -- `Session`/`SessionUpdateMessage` have no
@@ -1173,6 +1197,8 @@ export function setupHookBridge(
     // answered No in the terminal after its hold was released (that fires
     // no hook at all), so its open entry cannot outlive the turn.
     autoApproveGate.cancelStale('UserPromptSubmit', { mainOnly: true });
+    // #1153: a new prompt supersedes a "Claude stopped" notice from before it.
+    dismissTurnFailedNotice();
   });
 
   log(`[Hooks] Event bridge active for session ${sessionId}`);

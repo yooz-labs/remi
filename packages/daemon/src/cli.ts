@@ -219,6 +219,7 @@ import { pushHarnessDenied } from './notifications/harness-denied.ts';
 import type { NotificationDispatcher } from './notifications/notification-dispatcher.ts';
 import { sendPushTrigger } from './notifications/push-client.ts';
 import { tokensWanting } from './notifications/push-preferences.ts';
+import { createTurnFailedRoutes } from './notifications/turn-failed.ts';
 import {
   TurnTimer,
   buildTurnCompleteText,
@@ -1016,6 +1017,9 @@ function forceReleaseAllSessions(): void {
 // device-token fan-out that pushed the card. Populated in createNewSession;
 // removed on session close.
 const sessionNotifiers: Map<UUID, NotificationDispatcher> = new Map();
+// `StopFailure` -> the session's `turn_failed` push, and its later dismissal
+// (#1153); no config involved, see `createTurnFailedRoutes`.
+const turnFailedRoutes = createTurnFailedRoutes(sessionNotifiers);
 const sessionStore = new SessionStore();
 // Tracks the subagent chats the primary session spawns, so the client can
 // switch the displayed view to a subagent (epic #499 phase 3). Shared by the
@@ -1709,11 +1713,10 @@ async function createNewSession(
           sessionNotifiers.get(sid)?.dismissTerminalNotice(sid, questionId),
         onHarnessDenied,
         // #1153: a turn that ended on an API error is one `turn_failed` push
-        // per session through the session's dispatcher, never a card. The
-        // dispatcher's promise never rejects; fire-and-forget.
-        pushTurnFailed: (sid, input) => {
-          void sessionNotifiers.get(sid)?.pushTurnFailed(input);
-        },
+        // per session through the session's dispatcher, never a card; a later
+        // main Stop or UserPromptSubmit clears it (`turn-failed.ts`).
+        pushTurnFailed: turnFailedRoutes.push,
+        dismissTurnFailed: turnFailedRoutes.dismiss,
       },
       {
         hookServer,

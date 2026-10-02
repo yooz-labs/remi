@@ -28,7 +28,11 @@ import {
   type PushFn,
   selectPushCategory,
 } from '../../../src/notifications/notification-dispatcher.ts';
-import { turnFailedCollapseId } from '../../../src/notifications/turn-failed.ts';
+import {
+  type TurnFailedNotifier,
+  createTurnFailedRoutes,
+  turnFailedCollapseId,
+} from '../../../src/notifications/turn-failed.ts';
 import { parseQuestion } from '../../../src/parser/question-parser.ts';
 import type { PTYSession } from '../../../src/pty/pty-session.ts';
 import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
@@ -294,6 +298,8 @@ describe('setupHookBridge', () => {
       onHarnessDenied?: (input: unknown) => void;
       /** The turn_failed sink (#1153). */
       pushTurnFailed?: (sessionId: UUID, input: StopFailureHookInput) => void;
+      /** The turn_failed dismissal sink (#1153). */
+      dismissTurnFailed?: (sessionId: UUID) => void;
       /** A real `HookServer` to register the listeners on, instead of the
        *  recording one (#1153: a recorded payload POSTed over HTTP). */
       realServer?: HookServer;
@@ -383,6 +389,7 @@ describe('setupHookBridge', () => {
         hookTimeoutMs: (opts.hasLocalTerminal ?? true) ? 600_000 : 3_600_000,
         ...(opts.onHarnessDenied ? { onHarnessDenied: opts.onHarnessDenied } : {}),
         ...(opts.pushTurnFailed ? { pushTurnFailed: opts.pushTurnFailed } : {}),
+        ...(opts.dismissTurnFailed ? { dismissTurnFailed: opts.dismissTurnFailed } : {}),
         ...(opts.noticeLog
           ? {
               pushTerminalNotice: (_sid: UUID, question: Question, reason: string) =>
@@ -600,9 +607,10 @@ describe('setupHookBridge', () => {
         ...(pushPrefs !== undefined && { pushPrefs }),
       });
 
-      /** The wiring cli.ts does: the session's dispatcher behind `pushTurnFailed`.
-       *  The sink is a recording `PushFn` (transport only); everything between
-       *  the hook and the sink is real. */
+      /** The wiring cli.ts does: the session's dispatcher behind the real
+       *  `createTurnFailedRoutes`. The sink is a recording `PushFn` (transport
+       *  only), and the notifier wrapper only records the dispatcher's
+       *  outcomes; everything between the hook and the sink is real. */
       function wire(deviceTokens: Map<string, DeviceTokenEntry>, realServer?: HookServer) {
         const sent: Array<{ token: string; opts: Record<string, unknown> }> = [];
         const pushFn: PushFn = async (_url, token, opts) => {
@@ -619,12 +627,20 @@ describe('setupHookBridge', () => {
           SID,
         );
         const outcomes: Array<Promise<string>> = [];
+        const notifier: TurnFailedNotifier = {
+          pushTurnFailed: (input) => {
+            const outcome = dispatcher.pushTurnFailed(input);
+            outcomes.push(outcome);
+            return outcome;
+          },
+          dismissTurnFailed: () => dispatcher.dismissTurnFailed(),
+        };
+        const routes = createTurnFailedRoutes(new Map([[SID, notifier]]));
         build({
           realTracker: true,
           realMessageApi: true,
-          pushTurnFailed: (_sid, input) => {
-            outcomes.push(dispatcher.pushTurnFailed(input));
-          },
+          pushTurnFailed: routes.push,
+          dismissTurnFailed: routes.dismiss,
           ...(realServer ? { realServer } : {}),
         });
         return { sent, outcomes };
@@ -713,6 +729,145 @@ describe('setupHookBridge', () => {
         } finally {
           server.stop();
         }
+      });
+
+      describe('a later turn clears the notice (#1153)', () => {
+        const flush = () => new Promise((resolve) => setTimeout(resolve, 10));
+        const stop = (over: Record<string, unknown> = {}) => ({
+          session_id: 'claude-A',
+          hook_event_name: 'Stop',
+          stop_hook_active: false,
+          last_assistant_message: 'done',
+          ...over,
+        });
+        const prompt = (over: Record<string, unknown> = {}) => ({
+          session_id: 'claude-A',
+          hook_event_name: 'UserPromptSubmit',
+          prompt: 'try again',
+          ...over,
+        });
+        const MUTED = {
+          questions: true,
+          turnComplete: true,
+          harnessDenied: true,
+          turnFailed: false,
+        };
+        const dismissals = (sent: Array<{ token: string; opts: Record<string, unknown> }>) =>
+          sent.filter((p) => p.opts['kind'] === 'dismiss');
+
+        test('the next main Stop sends a quiet dismiss with the same collapse key to every device, a muted one included', async () => {
+          const { sent, outcomes } = wire(
+            new Map([
+              ['wants', TOKEN_ENTRY('wants')],
+              ['muted', TOKEN_ENTRY('muted', MUTED)],
+            ]),
+          );
+          lock('claude-A');
+          hookServer.fire('StopFailure', stopFailure());
+          await Promise.all(outcomes);
+          // The alert reached only the device that wants it.
+          expect(sent.map((p) => p.token)).toEqual(['wants']);
+
+          hookServer.fire('Stop', stop());
+          await flush();
+
+          const cleared = dismissals(sent);
+          // A device that muted failed turns may still hold a delivered notice.
+          expect(cleared.map((p) => p.token).sort()).toEqual(['muted', 'wants']);
+          for (const { opts } of cleared) {
+            expect(opts['questionId']).toBe(turnFailedCollapseId(SID));
+            expect(opts['dismiss']).toBe(true);
+            expect(opts['title']).toBeUndefined();
+            expect(opts['body']).toBeUndefined();
+          }
+        });
+
+        test('the next main UserPromptSubmit clears it the same way', async () => {
+          const { sent, outcomes } = wire(new Map([['wants', TOKEN_ENTRY('wants')]]));
+          lock('claude-A');
+          hookServer.fire('StopFailure', stopFailure());
+          await Promise.all(outcomes);
+
+          hookServer.fire('UserPromptSubmit', prompt());
+          await flush();
+
+          expect(dismissals(sent).map((p) => p.opts['questionId'])).toEqual([
+            turnFailedCollapseId(SID),
+          ]);
+        });
+
+        test('nothing is sent when no failure is outstanding, and only once per failure', async () => {
+          const { sent, outcomes } = wire(new Map([['wants', TOKEN_ENTRY('wants')]]));
+          lock('claude-A');
+
+          // No failure yet: a Stop and a prompt send nothing at all.
+          hookServer.fire('Stop', stop());
+          hookServer.fire('UserPromptSubmit', prompt());
+          await flush();
+          expect(sent).toEqual([]);
+
+          hookServer.fire('StopFailure', stopFailure());
+          await Promise.all(outcomes);
+          hookServer.fire('Stop', stop());
+          hookServer.fire('Stop', stop());
+          hookServer.fire('UserPromptSubmit', prompt());
+          await flush();
+          expect(dismissals(sent)).toHaveLength(1);
+
+          // A second failure re-arms it.
+          hookServer.fire('StopFailure', stopFailure());
+          await Promise.all(outcomes);
+          hookServer.fire('Stop', stop());
+          await flush();
+          expect(dismissals(sent)).toHaveLength(2);
+        });
+
+        test('a stop-hook re-entry, a subagent prompt and a foreign session clear nothing', async () => {
+          const { sent, outcomes } = wire(new Map([['wants', TOKEN_ENTRY('wants')]]));
+          lock('claude-A');
+          hookServer.fire('StopFailure', stopFailure());
+          await Promise.all(outcomes);
+
+          hookServer.fire('Stop', stop({ stop_hook_active: true }));
+          hookServer.fire('UserPromptSubmit', prompt({ agent_id: 'agent-1' }));
+          hookServer.fire('Stop', stop({ session_id: 'claude-OTHER' }));
+          await flush();
+
+          expect(dismissals(sent)).toEqual([]);
+        });
+
+        test('a failing repeat replaces the notice: dismiss, then a fresh alert under the same key', async () => {
+          const { sent, outcomes } = wire(new Map([['wants', TOKEN_ENTRY('wants')]]));
+          lock('claude-A');
+          hookServer.fire('StopFailure', stopFailure());
+          await Promise.all(outcomes);
+
+          // The user retries and it fails again at once.
+          hookServer.fire('UserPromptSubmit', prompt());
+          hookServer.fire('StopFailure', stopFailure({ prompt_id: 'retry' }));
+          await Promise.all(outcomes);
+          await flush();
+
+          expect(sent.map((p) => p.opts['kind'])).toEqual([
+            'turn_failed',
+            'dismiss',
+            'turn_failed',
+          ]);
+          expect(new Set(sent.map((p) => p.opts['questionId']))).toEqual(
+            new Set([turnFailedCollapseId(SID)]),
+          );
+        });
+
+        test('a throwing dismissal sink never escapes into the hook dispatch loop', () => {
+          build({
+            dismissTurnFailed: () => {
+              throw new Error('test: dismiss sink exploded');
+            },
+          });
+          lock('claude-A');
+          expect(() => hookServer.fire('Stop', stop())).not.toThrow();
+          expect(() => hookServer.fire('UserPromptSubmit', prompt())).not.toThrow();
+        });
       });
 
       test('a device that muted turnFailed gets nothing, and the fan-out reports no_channel', async () => {

@@ -12,12 +12,14 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import type { UUID } from '@remi/shared';
 import type { DeviceTokenEntry } from '../../src/cli/handlers/trivial-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../src/cli/logger.ts';
+import type { StopFailureHookInput } from '../../src/hooks/hook-types.ts';
 import {
   NotificationDispatcher,
   type PushFn,
 } from '../../src/notifications/notification-dispatcher.ts';
 import {
   buildTurnFailedText,
+  createTurnFailedRoutes,
   describeTurnFailure,
   turnFailedCollapseId,
 } from '../../src/notifications/turn-failed.ts';
@@ -390,10 +392,12 @@ describe('NotificationDispatcher.pushTurnFailed', () => {
     expect(sent.map((p) => p.token)).toEqual(['quiet']);
   });
 
-  test('notifications.on_turn_complete = false silences turn_complete but not turn_failed', async () => {
+  test('the machine-wide turn_complete gate refuses while pushTurnFailed still pushes: the two paths share no gate', async () => {
     // The machine-wide switch is read by `shouldNotifyTurnComplete`
-    // (cli.ts `onTurnStop`); `pushTurnFailed` never consults it. Same devices,
-    // same moment: the "done" gate refuses and the failure still goes out.
+    // (cli.ts `onTurnStop`); `pushTurnFailed` takes no config at all. Same
+    // devices, same moment: the "done" gate refuses and the failure still
+    // goes out. (That the cli.ts wiring adds no config check of its own is
+    // `createTurnFailedRoutes`'s contract, tested below: it takes no config.)
     register(false);
     deviceTokens.set('a', device('a'));
 
@@ -454,5 +458,161 @@ describe('NotificationDispatcher.pushTurnFailed', () => {
     await make().pushTurnFailed({ error: 'rate_limit' });
 
     expect(sent[0]?.opts['title']).toBe('Agent: Claude stopped');
+  });
+
+  describe('dismissTurnFailed (#1153)', () => {
+    const flush = () => new Promise((resolve) => setTimeout(resolve, 5));
+    const dismissals = () => sent.filter((p) => p.opts['kind'] === 'dismiss');
+
+    test('sends nothing when no turn_failed push is outstanding', async () => {
+      register(false);
+      deviceTokens.set('a', device('a'));
+
+      make().dismissTurnFailed();
+      await flush();
+
+      expect(sent).toEqual([]);
+    });
+
+    test('clears an outstanding notice with a quiet dismiss on the same collapse key, to every device', async () => {
+      register(false);
+      deviceTokens.set('wants', device('wants'));
+      deviceTokens.set('muted', device('muted', false));
+      const dispatcher = make();
+      await dispatcher.pushTurnFailed({ error: 'rate_limit' });
+
+      dispatcher.dismissTurnFailed();
+      await flush();
+
+      // Never filtered by preferences: the muted device may hold an older notice.
+      expect(
+        dismissals()
+          .map((p) => p.token)
+          .sort(),
+      ).toEqual(['muted', 'wants']);
+      for (const { opts } of dismissals()) {
+        expect(opts['questionId']).toBe(turnFailedCollapseId(SID));
+        expect(opts['dismiss']).toBe(true);
+        expect(opts['title']).toBeUndefined();
+        expect(opts['body']).toBeUndefined();
+      }
+    });
+
+    test('clears once per failure, and a later failure re-arms it', async () => {
+      register(false);
+      deviceTokens.set('a', device('a'));
+      const dispatcher = make();
+
+      await dispatcher.pushTurnFailed({ error: 'rate_limit' });
+      dispatcher.dismissTurnFailed();
+      dispatcher.dismissTurnFailed();
+      await flush();
+      expect(dismissals()).toHaveLength(1);
+
+      await dispatcher.pushTurnFailed({ error: 'rate_limit' });
+      dispatcher.dismissTurnFailed();
+      await flush();
+      expect(dismissals()).toHaveLength(2);
+    });
+
+    test('a failure no device wanted leaves nothing outstanding', async () => {
+      register(false);
+      deviceTokens.set('muted', device('muted', false));
+      const dispatcher = make();
+
+      expect(await dispatcher.pushTurnFailed({ error: 'rate_limit' })).toBe('no_channel');
+      dispatcher.dismissTurnFailed();
+      await flush();
+
+      expect(sent).toEqual([]);
+    });
+  });
+
+  describe('createTurnFailedRoutes (the cli.ts wiring, #1153)', () => {
+    const flush = () => new Promise((resolve) => setTimeout(resolve, 5));
+    const failure = (): StopFailureHookInput => ({
+      session_id: 'claude-A',
+      transcript_path: '/tmp/claude-A.jsonl',
+      cwd: '/tmp/project',
+      permission_mode: 'default',
+      hook_event_name: 'StopFailure',
+      error: 'rate_limit',
+    });
+
+    function dispatcherFor(sessionId: UUID): NotificationDispatcher {
+      return new NotificationDispatcher(
+        {
+          sessionRegistry: registry,
+          deviceTokens,
+          pushConfig: () => ({ signalingUrl: 'ws://x' }),
+          getPrimarySessionId: () => null,
+          pushFn,
+        },
+        sessionId,
+      );
+    }
+
+    test("routes a failure to that session's dispatcher only, under that session's collapse key", async () => {
+      deviceTokens.set('a', device('a'));
+      const routes = createTurnFailedRoutes(
+        new Map([
+          [SID, dispatcherFor(SID)],
+          [OTHER_SID, dispatcherFor(OTHER_SID)],
+        ]),
+      );
+
+      routes.push(OTHER_SID, failure());
+      await flush();
+
+      expect(sent).toHaveLength(1);
+      expect(sent[0]?.opts['kind']).toBe('turn_failed');
+      expect(sent[0]?.opts['questionId']).toBe(turnFailedCollapseId(OTHER_SID));
+    });
+
+    test("routes a dismissal to that session's dispatcher, and only when its failure is outstanding", async () => {
+      deviceTokens.set('a', device('a'));
+      const routes = createTurnFailedRoutes(
+        new Map([
+          [SID, dispatcherFor(SID)],
+          [OTHER_SID, dispatcherFor(OTHER_SID)],
+        ]),
+      );
+
+      routes.push(SID, failure());
+      await flush();
+      routes.dismiss(OTHER_SID); // its own failure is not outstanding
+      await flush();
+      expect(sent.filter((p) => p.opts['kind'] === 'dismiss')).toEqual([]);
+
+      routes.dismiss(SID);
+      await flush();
+      const cleared = sent.filter((p) => p.opts['kind'] === 'dismiss');
+      expect(cleared.map((p) => p.opts['questionId'])).toEqual([turnFailedCollapseId(SID)]);
+    });
+
+    test('a session with no dispatcher is a no-op, not a throw', async () => {
+      deviceTokens.set('a', device('a'));
+      const routes = createTurnFailedRoutes(new Map());
+
+      expect(() => routes.push(SID, failure())).not.toThrow();
+      expect(() => routes.dismiss(SID)).not.toThrow();
+      await flush();
+      expect(sent).toEqual([]);
+    });
+
+    test('looks the dispatcher up when called, so a session added later is reached', async () => {
+      deviceTokens.set('a', device('a'));
+      const notifiers = new Map<UUID, NotificationDispatcher>();
+      const routes = createTurnFailedRoutes(notifiers);
+
+      routes.push(SID, failure());
+      await flush();
+      expect(sent).toEqual([]);
+
+      notifiers.set(SID, dispatcherFor(SID));
+      routes.push(SID, failure());
+      await flush();
+      expect(sent).toHaveLength(1);
+    });
   });
 });

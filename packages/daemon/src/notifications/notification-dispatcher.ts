@@ -379,6 +379,10 @@ export interface NotificationDispatcherDeps {
 
 export class NotificationDispatcher {
   private readonly pushDedup = new PushDedup();
+  /** A `turn_failed` push went out and no later turn has cleared it (#1153).
+   *  In memory only: after a daemon restart a stale notice stays until the
+   *  user clears it, which is the safe direction. */
+  private turnFailedOutstanding = false;
   /** Resolved once at construction: the real sendPushTrigger unless a test
    *  injected an override. Fixed for the instance lifetime. */
   private readonly pushFn: PushFn;
@@ -686,6 +690,7 @@ export class NotificationDispatcher {
       );
       return Promise.resolve('no_channel');
     }
+    this.turnFailedOutstanding = true;
     const sessionName = sessionRegistry.getSession(this.sessionId)?.name || 'Agent';
     const { title, body } = buildTurnFailedText(sessionName, input);
     const cfg = pushConfig();
@@ -709,6 +714,21 @@ export class NotificationDispatcher {
       ),
     );
     return Promise.all(perToken).then((rs) => (rs.some(Boolean) ? 'pushed' : 'failed'));
+  }
+
+  /**
+   * Clear the `turn_failed` notice this session pushed (#1153), once a later
+   * turn proves the failure is stale: the quiet `dismiss` sharing its
+   * collapse key (`turnFailedCollapseId`), never filtered by preferences, so
+   * even a device that muted failed turns after receiving one is cleared.
+   * Sends nothing when no `turn_failed` push is outstanding, so the hook
+   * wiring can call it on every main `Stop` and `UserPromptSubmit` without a
+   * silent push per turn.
+   */
+  dismissTurnFailed(): void {
+    if (!this.turnFailedOutstanding) return;
+    this.turnFailedOutstanding = false;
+    this.dismiss(this.sessionId, turnFailedCollapseId(this.sessionId) as UUID);
   }
 
   /** Clear a notice `pushTerminalNotice` sent, once its prompt is answered
