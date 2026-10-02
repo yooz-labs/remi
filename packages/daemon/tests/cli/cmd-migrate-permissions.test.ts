@@ -133,6 +133,18 @@ describe('classifyEntry: the mapping table', () => {
     expect(outcome.kind === 'rule' ? outcome.note : '').toContain('STARTS with it');
   });
 
+  test('a mid-command ALLOW entry is kept as a prefix rule and flagged', () => {
+    for (const entry of ['DROP TABLE', 'push --force', 'reset --hard', '--force']) {
+      const outcome = classifyEntry(entry, 'allow');
+      expect(outcome.kind === 'rule' ? outcome.note : '').toBe(
+        'kept as a prefix rule; matches only commands that start with it',
+      );
+    }
+    // A command-start allow entry is carried over without a note.
+    const plain = classifyEntry('git status', 'allow');
+    expect(plain.kind === 'rule' ? plain.note : 'skip').toBeUndefined();
+  });
+
   test('a passed-through Tool(...) rule says remi never applied it', () => {
     const outcome = classifyEntry('Bash(npm test:*)', 'allow');
     expect(outcome.kind === 'rule' ? outcome.note : '').toContain('never applied this form');
@@ -228,6 +240,21 @@ describe('runMigratePermissionsCommand', () => {
     expect(notes).toContain('NOT carried over:');
     expect(notes).toContain('Nothing was written');
     expect(notes).toContain('~/.claude/settings.json');
+  });
+
+  test('a mid-command allow entry is listed on stderr as a prefix rule', () => {
+    const configPath = path.join(home, 'config.toml');
+    fs.writeFileSync(configPath, '[auto_approve]\nallow = ["DROP TABLE", "git status"]\n');
+    const { io, out, err } = capture();
+    expect(runMigratePermissionsCommand(configPath, io)).toBe(0);
+    expect(JSON.parse(out.join('\n')).permissions.allow).toEqual([
+      'Bash(DROP TABLE:*)',
+      'Bash(git status:*)',
+    ]);
+    expect(err.join('\n')).toContain(
+      'allow "DROP TABLE" -> Bash(DROP TABLE:*): kept as a prefix rule; matches only commands that start with it',
+    );
+    expect(err.join('\n')).not.toContain('allow "git status" ->');
   });
 
   test('every entry that is not carried over is named on stderr with its reason', () => {

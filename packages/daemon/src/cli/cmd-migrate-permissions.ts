@@ -41,7 +41,9 @@
  *
  * The mapping that follows:
  *   - allow `x` (a command) becomes `Bash(x:*)`: the same word-boundary
- *     prefix per subcommand the old matcher used;
+ *     prefix per subcommand the old matcher used. An allow entry shaped like
+ *     a mid-command pattern (`push --force`) is flagged: it matches only
+ *     commands that start with it, which in practice is none;
  *   - deny `x` (a command) becomes `Bash(x*)`: Claude Code matches it only at
  *     the START of a subcommand, where remi matched it anywhere, so every such
  *     rule is reported as narrower;
@@ -273,7 +275,19 @@ export function classifyEntry(entry: unknown, list: 'allow' | 'deny'): EntryOutc
     };
   }
 
-  if (list === 'allow') return { kind: 'rule', rule: `Bash(${trimmed}:*)` };
+  if (list === 'allow') {
+    // An allow entry that only ever made sense mid-command (`push --force`,
+    // `DROP TABLE`) never matched a command START in remi either (allow was a
+    // per-segment prefix match), so the prefix rule is faithful but matches
+    // nothing in practice. Said so, so nobody reads it as a grant.
+    return isMidCommand(trimmed)
+      ? {
+          kind: 'rule',
+          rule: `Bash(${trimmed}:*)`,
+          note: 'kept as a prefix rule; matches only commands that start with it',
+        }
+      : { kind: 'rule', rule: `Bash(${trimmed}:*)` };
+  }
 
   if (isMidCommand(trimmed)) {
     return {

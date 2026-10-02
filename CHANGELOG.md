@@ -49,11 +49,12 @@ source of several security bugs (#536, #1060, #1063).
   matched them as substrings anywhere in a command, Claude Code matches a Bash
   rule from the start of each subcommand, so `rm -rf /` becomes the narrower
   `Bash(rm -rf /*)` (flagged on stderr) and mid-command patterns such as
-  `push --force` are not carried over. A bare `Bash` (which never approved
-  anything in remi but allows every shell command in Claude Code), unknown
-  tool names, shell operators, groups, `level` and agent sections are listed
-  under "NOT carried over" with the reason. A config path you name that does
-  not exist exits 1.
+  `push --force` are not carried over (the same shape in `allow` is kept as a
+  prefix rule and flagged: it matches only commands that start with it). A
+  bare `Bash` (which never approved anything in remi but allows every shell
+  command in Claude Code), unknown tool names, shell operators, groups,
+  `level` and agent sections are listed under "NOT carried over" with the
+  reason. A config path you name that does not exist exits 1.
 
 #### Changed
 
