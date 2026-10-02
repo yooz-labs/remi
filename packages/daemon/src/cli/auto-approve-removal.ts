@@ -14,7 +14,7 @@ import * as path from 'node:path';
 
 /** Printed (to stderr) by `remi model`, which then exits 2. One line. */
 export const MODEL_COMMAND_REMOVED_MESSAGE =
-  'remi model was removed: remi no longer runs a local model to judge permissions; Claude Code decides them now.';
+  'remi model was removed: remi no longer runs a local model to judge permissions; Claude Code decides them now (run `remi migrate-permissions` to carry your allow/deny rules over).';
 
 /** Prefix of every removed `REMI_AUTO_APPROVE*` environment variable. */
 const REMOVED_ENV_PREFIX = 'REMI_AUTO_APPROVE';
@@ -66,7 +66,7 @@ export function removedAutoApproveNotice(f: RemovedAutoApproveFacts): string[] {
   const lines: string[] = [];
   if (f.removedConfigKeys.length > 0) {
     lines.push(
-      `[remi] ${f.configPath} still has an [auto_approve] table (${f.removedConfigKeys.join(', ')}). remi no longer judges permissions (ADR 0030); Claude Code decides them, so these settings are ignored. Move your allow/deny rules into Claude Code's own permissions, then delete the table.`,
+      `[remi] ${f.configPath} still has an [auto_approve] table (${f.removedConfigKeys.join(', ')}). remi no longer judges permissions (ADR 0030); Claude Code decides them, so these settings are ignored. Run \`remi migrate-permissions\` to print your allow/deny rules as Claude Code permissions JSON, then delete the table.`,
     );
   }
   if (f.subagentAlertFromLegacy) {

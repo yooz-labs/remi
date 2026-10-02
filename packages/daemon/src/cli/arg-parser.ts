@@ -29,6 +29,7 @@ const SUBCOMMAND_LIST = [
   'logs',
   'serve',
   'model',
+  'migrate-permissions',
 ] as const;
 
 export type Subcommand = (typeof SUBCOMMAND_LIST)[number];
@@ -44,6 +45,7 @@ const SUBCOMMANDS_WITH_POSITIONAL_ARG: ReadonlySet<Subcommand> = new Set<Subcomm
   'detach',
   'unstick',
   'model',
+  'migrate-permissions',
 ]);
 
 /** Subcommands that take a VERB plus its own operands (`remi model pull <id>`),

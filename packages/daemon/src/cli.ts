@@ -140,6 +140,7 @@ import {
 import { detectAutostartState } from './cli/autostart-state.ts';
 import { resolveClaudeBinding } from './cli/claude-binding.ts';
 import { runConfigCommand } from './cli/cmd-config.ts';
+import { runMigratePermissionsCommand } from './cli/cmd-migrate-permissions.ts';
 import { runReloadCommand } from './cli/cmd-reload.ts';
 import { runUnstickCommand } from './cli/cmd-unstick.ts';
 import { PID_FILE, readPidFileLive } from './cli/daemon-manager.ts';
@@ -276,6 +277,13 @@ if (parsedArgs.showHelp) {
     console.log(formatHelp(REMI_VERSION));
   }
   process.exit(0);
+}
+
+// 'migrate-permissions' (#1125) reads the RAW config.toml itself, so it runs
+// before the config loader (which no longer knows [auto_approve]) and works
+// even when another section of the file would fail validation.
+if (parsedArgs.subcommand === 'migrate-permissions') {
+  process.exit(runMigratePermissionsCommand(parsedArgs.subcommandArg));
 }
 
 // ---------------------------------------------------------------------------
