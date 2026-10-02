@@ -554,10 +554,17 @@ describe('HookServer', () => {
     it("hands the resolver the request's abort signal, which aborts when the client closes (#1126)", async () => {
       server = new HookServer({ port });
       let seen: AbortSignal | undefined;
+      // Resolved by the resolver itself, so the test waits for the request to
+      // arrive rather than for a fixed delay.
+      let markReached: () => void = () => {};
+      const reached = new Promise<void>((resolve) => {
+        markReached = resolve;
+      });
       const aborted = new Promise<void>((resolve) => {
         server.setPermissionResolver((_input, signal) => {
           seen = signal;
           signal.addEventListener('abort', () => resolve(), { once: true });
+          markReached();
           return new Promise(() => {}); // held until the client goes away
         });
       });
@@ -570,7 +577,7 @@ describe('HookServer', () => {
         ),
         signal: client.signal,
       }).catch((err: unknown) => err);
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await reached;
       expect(seen?.aborted).toBe(false);
       client.abort();
       await aborted;
