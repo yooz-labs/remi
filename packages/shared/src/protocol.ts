@@ -454,23 +454,26 @@ export interface AnswerMessage {
   readonly claudeSessionId?: UUID | undefined;
   /**
    * Structured AskUserQuestion answer (#627): per-sub-question selected option
-   * indices. Present INSTEAD of a meaningful `answer` for a multi-question prompt
-   * (`answer` is then ''). The daemon drives the interactive TUI from these and
-   * verifies the review screen before submitting.
+   * indices, or free text for a single-select question. Present INSTEAD of a
+   * meaningful `answer` for a multi-question prompt (`answer` is then ''). Since
+   * #1127 the daemon validates them against the tool input (every question
+   * answered) and answers the held hook with them; an incomplete answer is
+   * refused and the prompt keeps waiting. Nothing is typed.
    */
   readonly selections?: readonly AnswerSelection[] | undefined;
   /**
-   * Cancel/escape the active prompt (#627): the daemon sends `Esc` to the TUI,
-   * cancelling the AskUserQuestion so Claude unblocks. The universal unstick —
-   * honored regardless of whether the prompt could be auto-answered. `answer` is
-   * '' when this is set.
+   * Cancel the active prompt (#627), the universal unstick. A held prompt is
+   * cancelled through its hook (#1126, #1127): a "No" for a permission, a
+   * dismissal for an AskUserQuestion, "keep planning" for a plan. Any other
+   * prompt gets `Esc`. `answer` is '' when this is set.
    */
   readonly cancel?: boolean | undefined;
   /**
-   * Optional text sent with a "No" to a held permission prompt (#1126). The
-   * daemon passes it to Claude as the denial reason, which Claude receives as
-   * the denied tool's result, so the user can say why or what to do instead.
-   * Ignored for every other answer.
+   * Optional text sent with a "No" to a held permission prompt (#1126), or
+   * with "Keep planning" on a plan (#1127). The daemon passes it to Claude as
+   * the denial reason, which Claude receives as the denied tool's result, so
+   * the user can say why or what to do instead. Ignored for every other
+   * answer.
    */
   readonly message?: string | undefined;
 }
@@ -1576,8 +1579,9 @@ export function createAnswer(
   };
 }
 
-/** Structured AskUserQuestion answer (#627): the daemon drives the TUI from the
- *  per-sub-question selections and verifies the review before submitting. */
+/** Structured AskUserQuestion answer (#627): the daemon answers the held hook
+ *  with the per-sub-question selections once every question is answered
+ *  (#1127). */
 export function createAuqAnswer(
   sessionId: UUID,
   questionId: UUID,
@@ -1596,8 +1600,9 @@ export function createAuqAnswer(
   };
 }
 
-/** Cancel/escape the active prompt (#627): the daemon sends `Esc` to the TUI. The
- *  universal unstick when a prompt can't be auto-answered or the user changes mind. */
+/** Cancel the active prompt (#627): through its held hook (#1127), or `Esc`
+ *  where no hook stands behind it. The universal unstick when the user changes
+ *  their mind. */
 export function createCancelQuestion(
   sessionId: UUID,
   questionId: UUID,

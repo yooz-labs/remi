@@ -20,13 +20,10 @@
 
 import * as fs from 'node:fs';
 import { createRawPtyOutput, errorToString } from '@remi/shared';
-import type { ProtocolMessage, Question, UUID } from '@remi/shared';
+import type { ProtocolMessage, UUID } from '@remi/shared';
 
-import { isAuqRunActive } from '../../hooks/auq-active-runs.ts';
-import { normalizeLabel, parseAnsweredSummary } from '../../hooks/auq-answer.ts';
 import type { OutputProcessor } from '../../parser/output-processor.ts';
 import { PTYSession } from '../../pty/index.ts';
-import { appendPtyOutput, clearPtyOutput, readPtyOutput } from '../../pty/output-buffer.ts';
 import type { SessionRegistry, SessionRegistryFile, SessionStore } from '../../session/index.ts';
 import { log, logError } from '../logger.ts';
 import { childRows } from '../status-bar.ts';
@@ -65,20 +62,6 @@ export interface PtySessionSetupDeps {
    */
   exitProcess?: (code: number) => void;
   /**
-   * Cross-client question dismissal (#585, #661). Fired when `onData` detects
-   * that a pending structured AskUserQuestion closed IN THE TERMINAL (see
-   * `detectAuqTerminalAnswers` below) — the same broadcast the phone-answered
-   * path fires via `input-events.ts`'s `onQuestionResolved`. Absent => no
-   * dismissal broadcast (tests/old callers).
-   */
-  onQuestionResolved?: (sessionId: UUID, questionId: UUID) => void;
-  /**
-   * Stop the permission gate tracking a question this module just resolved
-   * (#1125), so the matching AskUserQuestion PostToolUse does not resolve and
-   * dismiss it a second time. Absent => nothing to retire (tests/old callers).
-   */
-  retireQuestion?: (sessionId: UUID, questionId: UUID) => void;
-  /**
    * #932 durable fix: observe every PTY chunk actually forwarded to the
    * wrapper's own local terminal fd -- the exact same fd the reserved-row
    * status bar draws into -- so a `PtyQuiescenceGate` can track whether a
@@ -98,79 +81,6 @@ export interface PtySessionSetupDeps {
    * pre-durable-fix behavior (always paintable).
    */
   observeLocalPtyOutput?: (data: Uint8Array) => void;
-}
-
-/** Normalized sub-question texts to match a summary answer line against. */
-function questionTexts(q: Question): string[] {
-  const steps = q.questions;
-  if (steps && steps.length > 0) return steps.map((s) => normalizeLabel(s.text));
-  return [normalizeLabel(q.text)];
-}
-
-/**
- * #538/#661: an AskUserQuestion the auq-runner ESCALATED (gave up auto-driving,
- * e.g. every multi-select before this fix) can still be answered by the user
- * typing directly in the terminal — Claude accepts it and prints the same
- * closure marker `parseAnsweredSummary` looks for. Nothing then watches for
- * that closure: the runner already returned, and the phone-side question card
- * is left registered forever (the card asks the user to "answer in the
- * terminal", they do, and the card never clears — compounding #538).
- *
- * Every PTY output chunk already flows through `onData` unconditionally (not
- * gated on a hook server being active), so it is the cheapest existing tap to
- * also watch for this closure against any still-pending `kind:
- * 'multi_question'` question for the session, and fire the same
- * removeQuestion + onQuestionResolved cleanup the phone-answered path uses
- * (`input-events.ts`'s `handleAuqAnswer`) so the card clears everywhere.
- *
- * Two safeguards against firing on the wrong question (#661 review):
- *   1. Skips any question `isAuqRunActive` — the auq-runner is CURRENTLY
- *      driving it. Without this, the detector races the runner's own success
- *      path on every remotely-answered multi-select (both read the same
- *      rolling buffer; this handler runs synchronously in the same `onData`
- *      tick the marker lands, strictly before the runner's own poll tick),
- *      producing a duplicate `question_resolved` broadcast and a misleading
- *      `'user-answered-auq-terminal'` cancel reason for a question the phone
- *      actually answered (the #652/#653 duplicate-resolution bug class).
- *   2. Uses `parseAnsweredSummary` (not a bare `isAuqClosed` substring check)
- *      and only resolves a question whose OWN sub-question text appears in a
- *      parsed answer line — see that function's docstring for why a bare
- *      marker match is a false-positive hazard here (this repo's own source
- *      contains the literal marker string).
- *
- * Cheap to call on every chunk: it only scans `currentQuestions` (bounded,
- * `MAX_PENDING_QUESTIONS`) and short-circuits before touching the buffer text
- * unless at least one non-actively-driven AUQ question is pending.
- */
-export function detectAuqTerminalAnswers(
-  sessionId: UUID,
-  sessionRegistry: SessionRegistry,
-  onQuestionResolved?: (sessionId: UUID, questionId: UUID) => void,
-  retireQuestion?: (sessionId: UUID, questionId: UUID) => void,
-): void {
-  const session = sessionRegistry.getSession(sessionId);
-  if (!session || session.currentQuestions.size === 0) return;
-  const auqQuestions = [...session.currentQuestions.values()].filter(
-    (q) => q.kind === 'multi_question' && !isAuqRunActive(sessionId, q.id),
-  );
-  if (auqQuestions.length === 0) return;
-  const summary = parseAnsweredSummary(readPtyOutput(sessionId));
-  if (summary.length === 0) return;
-  const summaryTexts = new Set(summary.map((a) => normalizeLabel(a.question)));
-  for (const q of auqQuestions) {
-    if (!questionTexts(q).some((t) => summaryTexts.has(t))) continue;
-    try {
-      retireQuestion?.(sessionId, q.id);
-    } catch (err) {
-      logError(`[AUQ] terminal-answer gate retirement failed: ${errorToString(err)}`);
-    }
-    sessionRegistry.removeQuestion(sessionId, q.id, 'terminal_auq_closed');
-    try {
-      onQuestionResolved?.(sessionId, q.id);
-    } catch (err) {
-      logError(`[AUQ] terminal-answer question_resolved broadcast failed: ${errorToString(err)}`);
-    }
-  }
 }
 
 export interface PtySessionSetupArgs {
@@ -276,8 +186,6 @@ export function createPtySessionForSession(
     sendMessage,
     cleanup,
     exitProcess = (code: number) => process.exit(code),
-    onQuestionResolved,
-    retireQuestion,
     observeLocalPtyOutput,
   } = deps;
   const { sessionId, workingDirectory, extraArgs, passThrough, reservedRows = 0 } = args;
@@ -359,18 +267,11 @@ export function createPtySessionForSession(
         }
       },
       onData: (output: string) => {
-        // #627: feed the rolling buffer the AskUserQuestion runner reads to detect
-        // the review screen + closure marker while driving the interactive TUI.
-        appendPtyOutput(sessionId, output);
         try {
           outputProcessor.process(output);
         } catch (err) {
           logError(`[OutputProcessor] process() failed for session ${sessionId}:`, err);
         }
-        // #538/#661: also catch an AUQ closing IN THE TERMINAL after the runner
-        // gave up (escalated) — see `detectAuqTerminalAnswers` for why this is
-        // the right tap.
-        detectAuqTerminalAnswers(sessionId, sessionRegistry, onQuestionResolved, retireQuestion);
       },
       onExit: (code: number | null) => {
         try {
@@ -379,7 +280,6 @@ export function createPtySessionForSession(
           logError(`[OutputProcessor] flush() failed for session ${sessionId}:`, err);
         }
         log(`PTY ${ptySession.id} exited with code ${code}`);
-        clearPtyOutput(sessionId); // #627: drop the rolling output buffer
         sessionRegistry.handlePTYExit(sessionId);
         try {
           sessionStore.markExited(sessionId, code);

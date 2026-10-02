@@ -1338,10 +1338,12 @@ function App() {
         // packages/daemon/src/cli/handlers/input-events.ts:guardBinding;
         // update both ends together if the field names change.
         const errorCode = (message as { code?: string }).code;
-        // #627: the daemon could not auto-answer a structured AskUserQuestion
-        // (review mismatch / timeout / unexpected variant). Flip the card to the
-        // "needs you" state so the user can Cancel or answer in the terminal —
-        // the prompt is intentionally left up (never a wrong auto-submit).
+        // #627: a daemon older than #1127 could not auto-answer a structured
+        // AskUserQuestion (review mismatch / timeout / unexpected variant).
+        // Flip the card to the "needs you" state so the user can Cancel or
+        // answer in the terminal — the prompt is intentionally left up (never
+        // a wrong auto-submit). A current daemon answers through the held
+        // hook and never sends this.
         if (errorCode === 'AUQ_AUTOANSWER_FAILED') {
           const details = (message as { details?: Record<string, unknown> }).details;
           const failedQid = asNonEmptyString(details?.['questionId']);
@@ -2356,10 +2358,11 @@ function App() {
     [getActiveConnectionId, sendAnswer],
   );
 
-  // #627: submit a structured AskUserQuestion answer. The daemon drives the TUI
-  // and verifies before submitting, so the card flips to "Answering…" and clears
-  // on question_resolved (or flips to failed on AUQ_AUTOANSWER_FAILED) — it is NOT
-  // removed optimistically here.
+  // #627: submit a structured AskUserQuestion answer. The daemon answers it
+  // through the held hook (#1127; an older daemon drove the TUI), so the card
+  // flips to "Answering…" and clears on question_resolved (or flips to failed
+  // on an older daemon's AUQ_AUTOANSWER_FAILED) — it is NOT removed
+  // optimistically here.
   const handleAuqAnswer = useCallback(
     (question: UIQuestion, selections: { questionIndex: number; optionIndices: number[] }[]) => {
       const sid = question.sessionId;
@@ -2381,8 +2384,9 @@ function App() {
     [getActiveConnectionId, sendAuqAnswer],
   );
 
-  // #627: cancel/escape a pending question — the universal unstick. The daemon
-  // sends Esc to the prompt; the card clears on the resulting question_resolved.
+  // #627: cancel a pending question — the universal unstick. The daemon
+  // cancels a held card through its hook (#1127) or sends Esc to the prompt;
+  // the card clears on the resulting question_resolved.
   const handleCancelQuestion = useCallback(
     (question: UIQuestion) => {
       const sid = question.sessionId;

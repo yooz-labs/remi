@@ -400,6 +400,14 @@ describe('AskUserQuestion and ExitPlanMode through held hooks, end to end (#1127
         (refusal as { details?: { questionId?: string } })?.details?.questionId,
       ).toBeUndefined();
 
+      // The claim on the card is released when the refused answer settles:
+      // the identical answer again is refused again, not reported delivered
+      // as a duplicate of something that applied.
+      await handlers.onAnswer(CONN, SID, card.id, '', undefined, {
+        selections: [{ questionIndex: 0, optionIndices: [0] }],
+      });
+      expect(errors().map((e) => e.code)).toEqual(['STALE_ANSWER', 'STALE_ANSWER']);
+
       // A multi-select with nothing picked is refused the same way.
       await handlers.onAnswer(CONN, SID, card.id, '', undefined, {
         selections: [
@@ -424,6 +432,30 @@ describe('AskUserQuestion and ExitPlanMode through held hooks, end to end (#1127
           },
         },
       });
+      expect(ptyWrites).toEqual([]);
+    });
+
+    test('a duplicate delivery of an applied answer reports delivered, not stale (#752)', async () => {
+      const { handlers } = build();
+      await lock();
+      const { card, response } = await ask('AskUserQuestion', TWO_QUESTIONS);
+      const selections = [
+        { questionIndex: 0, optionIndices: [2] },
+        { questionIndex: 1, optionIndices: [1] },
+      ];
+      await handlers.onAnswer(CONN, SID, card.id, '', undefined, { selections });
+      expect(await decisionOf(response)).toMatchObject({ behavior: 'allow' });
+      // The losing channel re-delivers the same selections: no error frame.
+      await handlers.onAnswer(CONN, SID, card.id, '', undefined, { selections });
+      expect(errors()).toEqual([]);
+      // A different answer for the answered card is still refused.
+      await handlers.onAnswer(CONN, SID, card.id, '', undefined, {
+        selections: [
+          { questionIndex: 0, optionIndices: [0] },
+          { questionIndex: 1, optionIndices: [1] },
+        ],
+      });
+      expect(errors().map((e) => e.code)).toEqual(['STALE_ANSWER']);
       expect(ptyWrites).toEqual([]);
     });
 

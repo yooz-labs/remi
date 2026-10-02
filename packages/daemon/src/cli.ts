@@ -1742,13 +1742,6 @@ async function createNewSession(
       wsPort: remiStatus.wsPort,
       sendMessage,
       cleanup,
-      // #538/#661: an AUQ answered directly in the terminal (after the runner
-      // escalated) is detected in onData; wire the same cross-client dismissal
-      // the phone-answered path uses (createInputHandlers below).
-      onQuestionResolved: (sid, questionId) => onQuestionResolved(sid, questionId, 'answered'),
-      // ...and retire the gate's signature for it, so the AskUserQuestion
-      // PostToolUse that follows does not dismiss the card a second time.
-      retireQuestion: (sid, questionId) => sessionGateHandles.get(sid)?.retireQuestion(questionId),
       // #932 durable fix: feed the wrapper's quiescence + clean-boundary
       // gate with every chunk actually forwarded to the local terminal, and
       // -- when the chunk completes a bare ESC[r (DECSTBM full-screen

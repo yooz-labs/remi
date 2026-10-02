@@ -6,8 +6,10 @@
  * structured AskUserQuestion (#627) it renders an interactive multi-question form
  * — radio per single-select, checkbox per multi-select, with the authored option
  * descriptions — and a single Submit. Every card also exposes a Cancel/Esc
- * control: the universal unstick that tells the daemon to Esc the prompt so the
- * user is never stuck on something the app can't drive.
+ * control: the universal unstick, so the user is never stuck. Since #1127 a
+ * daemon answers an AskUserQuestion through its held hook and cancels a held
+ * card through it too (a dismissal, or "keep planning" for a plan); for a
+ * card no hook stands behind it sends Esc to the prompt.
  */
 
 import { formatRelativeTime } from '@/lib/format-time';
@@ -31,9 +33,11 @@ export interface AuqSelection {
 interface QuestionCardProps {
   readonly question: UIQuestion;
   readonly onAnswer: (answer: string) => void;
-  /** #627: submit a structured AskUserQuestion answer (the daemon drives the TUI). */
+  /** #627: submit a structured AskUserQuestion answer (since #1127 the daemon
+   *  answers it through the held hook). */
   readonly onAuqAnswer?: (selections: AuqSelection[]) => void;
-  /** #627: cancel/escape the prompt (the daemon sends Esc). The never-stuck floor. */
+  /** #627: cancel the prompt (through its held hook, or Esc where no hook
+   *  stands behind it). The never-stuck floor. */
   readonly onCancel?: () => void;
   readonly className?: string;
 }

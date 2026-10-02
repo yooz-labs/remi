@@ -236,10 +236,11 @@ export interface UIQuestion {
   readonly questions?: readonly UIQuestionStep[];
   /** #626: submit-button label for the multi-question form. */
   readonly submitLabel?: string;
-  /** #627: the answer was submitted and the daemon is driving the TUI ("auto-
-   *  answering…"). Set on submit, cleared when the question resolves or fails. */
+  /** #627: the answer was submitted and is being applied ("Answering…"). Set on
+   *  submit, cleared when the question resolves or fails. */
   readonly submitting?: boolean;
-  /** #627: the daemon could not auto-answer; the card invites Cancel / terminal. */
+  /** #627: a daemon older than #1127 could not auto-answer; the card invites
+   *  Cancel / terminal. */
   readonly autoAnswerFailed?: boolean;
   /** #718: mirrors `Question.optionsAreFallback` — true when `structuredOptions`
    *  is the daemon's honest Yes/No fallback rather than a real PTY/suggestion-

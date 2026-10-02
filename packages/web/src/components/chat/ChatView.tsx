@@ -37,10 +37,10 @@ interface ChatViewProps {
    *  decoupling can't be accidentally dropped back onto onSend. */
   readonly onAnswer: (question: UIQuestion, answer: string) => void;
   /** #627: submit a structured AskUserQuestion answer (per-sub-question selections);
-   *  the daemon drives the interactive TUI. */
+   *  the daemon answers it through the held hook (#1127). */
   readonly onAuqAnswer?: (question: UIQuestion, selections: AuqSelection[]) => void;
-  /** #627: cancel/escape a pending question (the daemon sends Esc). The never-stuck
-   *  floor, surfaced on every card. */
+  /** #627: cancel a pending question (through its held hook, or Esc). The
+   *  never-stuck floor, surfaced on every card. */
   readonly onCancelQuestion?: (question: UIQuestion) => void;
   /** Long-press on a message bubble fires this with the message; consumer
    *  records it as the active reply context for the session (#401). */
