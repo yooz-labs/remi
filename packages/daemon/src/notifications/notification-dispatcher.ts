@@ -131,11 +131,9 @@ export function buildPushText(
       .slice(0, BODY_MAX);
     return { title, body };
   }
-  // #628: prefer a lock-screen one-liner ("Force-push to main?") over the raw
-  // "Allow Bash: <command>" when the question carries one. Since #1125 nothing
-  // in the daemon produces `summary` (it came from the deleted auto-approve
-  // LLM), so this falls through to `text`.
-  const ask = normalizeNotificationText(question.summary || question.text) || 'Allow this action?';
+  // #628's lock-screen one-liner (`Question.summary`) came from the
+  // auto-approve LLM, removed in #1125; the push reads the question text.
+  const ask = normalizeNotificationText(question.text) || 'Allow this action?';
   const title = `${sessionName}: ${ask}`.slice(0, TITLE_MAX);
   const optionList = formatOptionList(question.options);
   const body = (optionList ? `${ask}\n${optionList}` : ask).slice(0, BODY_MAX);

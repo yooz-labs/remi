@@ -55,36 +55,23 @@ export class HookConfigManager {
   private readonly settingsPath: string;
   private readonly hookUrl: string;
   private hasWritten = false;
-  /**
-   * Seconds the daemon may HOLD a PermissionRequest hook open before answering
-   * (Model B, #573). The registered PermissionRequest hook timeout must be >=
-   * this, or Claude Code gives up on the hook and renders its native prompt
-   * BEFORE the hold's own fail-open fires — so the registered timeout is
-   * `max(PERMISSION_REQUEST_HOOK_TIMEOUT, holdTimeoutSec)`. 0 / omitted keeps the
-   * baseline ceiling (the pre-#573 behavior).
-   */
-  private readonly permissionHoldTimeoutSec: number;
 
-  constructor(projectDir: string, hookServerUrl: string, permissionHoldTimeoutSec = 0) {
+  constructor(projectDir: string, hookServerUrl: string) {
     this.settingsPath = path.join(projectDir, '.claude', 'settings.local.json');
     this.hookUrl = hookServerUrl;
-    this.permissionHoldTimeoutSec =
-      Number.isFinite(permissionHoldTimeoutSec) && permissionHoldTimeoutSec > 0
-        ? permissionHoldTimeoutSec
-        : 0;
   }
 
   /**
    * Seconds Claude Code waits for this hook's HTTP response. PermissionRequest
-   * gets the long budget (baseline 600s ceiling, raised to the configured hold
-   * timeout when larger so a long human-paced hold is not cut short, #573);
-   * events in `SHORT_HOOK_TIMEOUTS` get an even shorter budget than the
-   * default fail-fast timeout (#893); everything else keeps the plain
-   * fail-fast timeout (#203).
+   * gets the 600s baseline ceiling (the configurable hold timeout that could
+   * raise it, #573, went with the hold in #1125); events in
+   * `SHORT_HOOK_TIMEOUTS` get an even shorter budget than the default
+   * fail-fast timeout (#893); everything else keeps the plain fail-fast
+   * timeout (#203).
    */
   private hookTimeoutFor(event: string): number {
     if (event === 'PermissionRequest') {
-      return Math.max(PERMISSION_REQUEST_HOOK_TIMEOUT, this.permissionHoldTimeoutSec);
+      return PERMISSION_REQUEST_HOOK_TIMEOUT;
     }
     return SHORT_HOOK_TIMEOUTS[event] ?? DEFAULT_HOOK_TIMEOUT;
   }

@@ -789,15 +789,14 @@ export class QuestionPresenceTracker {
             // undefined for a real derived set); when the PTY's options won,
             // they are concrete by construction, so this is always false.
             optionsAreFallback: useHookOptions ? hookRecord.optionsAreFallback : false,
-            // #626/#628: the PTY base carries none of the structured fields, so a
-            // merge must preserve the hook record's AskUserQuestion structure +
-            // lock-screen summary — else a merged card loses questions[]/summary.
+            // #626: the PTY base carries none of the structured fields, so a
+            // merge must preserve the hook record's AskUserQuestion structure —
+            // else a merged card loses questions[].
             // (Dormant while PTY emission is gated off for hooked sessions (#625),
             // but correct for the no-hook fallback + any future re-enable.)
             ...(hookRecord.kind ? { kind: hookRecord.kind } : {}),
             ...(hookRecord.questions ? { questions: hookRecord.questions } : {}),
             ...(hookRecord.submitLabel ? { submitLabel: hookRecord.submitLabel } : {}),
-            ...(hookRecord.summary ? { summary: hookRecord.summary } : {}),
           }
         : // NOTE (#887 review): identity adoption above is gated on
           // `options.length > 0`, so an optionless hook record falls here and

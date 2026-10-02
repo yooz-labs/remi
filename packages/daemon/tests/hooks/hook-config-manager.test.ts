@@ -55,7 +55,8 @@ describe('HookConfigManager', () => {
     expect(events).not.toContain('WorktreeRemove');
     expect(events).not.toContain('PreCompact');
     // UserPromptSubmit WAS in this skip list before #893; it is now registered
-    // (the auto-approve authority summary's primary source) — see the
+    // (the turn timer's anchor and a binder input; it was also the removed
+    // auto-approve authority summary's source, #1125) — see the
     // REMI_REGISTERED_HOOK_EVENTS containment loop above and the dedicated
     // timeout test below.
     expect(events).toContain('UserPromptSubmit');
@@ -81,8 +82,8 @@ describe('HookConfigManager', () => {
       expect(hooks?.length).toBe(1);
       expect(hooks?.[0]?.type).toBe('http');
       expect(hooks?.[0]?.url).toBe(hookUrl);
-      // PermissionRequest must outlast the synchronous auto-approve eval (#537);
-      // UserPromptSubmit gets an even SHORTER budget than the default (#893) —
+      // PermissionRequest keeps the 600s baseline set for the removed
+      // synchronous auto-approve eval (#537, kept by #1125); UserPromptSubmit gets an even SHORTER budget than the default (#893) —
       // its listener is a single array push, so it never needs 5s to fail fast;
       // every other hook keeps the plain fail-fast timeout (#203).
       const expectedTimeout =

@@ -235,8 +235,8 @@ export interface Question {
   /**
    * A one-sentence, lock-screen-friendly restatement of what the user is approving
    * (#628), e.g. "Force-push to main?" instead of "Allow Bash: git push --force …".
-   * Produced by the auto-approve LLM on an escalate verdict. The notification still
-   * prefers it over the raw tool text when present.
+   * Produced by the auto-approve LLM on an escalate verdict; the daemon no longer
+   * reads or writes it.
    *
    * @deprecated #1125: no longer emitted (the LLM that wrote it was removed).
    */

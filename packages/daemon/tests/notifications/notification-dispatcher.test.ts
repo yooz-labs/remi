@@ -187,8 +187,9 @@ describe('buildPushText (#574 issues 3+4)', () => {
     expect(body).toBe('Retry?\ny. Yes  n. No');
   });
 
-  // #628: prefer the auto-approve LLM's lock-screen summary over raw tool text.
-  test('prefers the summary over the raw tool text when present', () => {
+  // #628's summary came from the auto-approve LLM (removed, #1125). A question
+  // that still carries one (an older payload) is pushed with its own text.
+  test('ignores the deprecated summary and pushes the question text', () => {
     const q: Question = {
       id: 'q' as UUID,
       text: 'Allow Bash: git push --force origin main',
@@ -198,8 +199,8 @@ describe('buildPushText (#574 issues 3+4)', () => {
       summary: 'Force-push to main?',
     };
     const { title, body } = buildPushText('proj', q);
-    expect(title).toBe('proj: Force-push to main?');
-    expect(body.startsWith('Force-push to main?')).toBe(true);
+    expect(title).toBe('proj: Allow Bash: git push --force origin main');
+    expect(body).not.toContain('Force-push to main?');
     expect(body).toContain('1. Yes  2. Yes, always  3. No');
   });
 
@@ -789,7 +790,8 @@ describe('NotificationDispatcher held escalation (#603 Phase 3)', () => {
       SID,
     );
     // The attached client may be backgrounded, so a dead token must NOT mask as
-    // in_app — it reports failed so the held hook fails open fast (#603 Phase 3).
+    // in_app — it reports failed (#603 Phase 3; the caller that held a hook on
+    // this outcome was removed in #1125, the outcome stays honest).
     expect(await d.maybePush(SID, question('q1', [yesOpt, noOpt]), { held: true })).toBe('failed');
   });
 
