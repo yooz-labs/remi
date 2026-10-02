@@ -21,6 +21,7 @@ import type { SessionRegistry } from '../session/index.ts';
 import { sendPushTrigger } from './push-client.ts';
 import { PushDedup } from './push-dedup.ts';
 import { tokensWanting } from './push-preferences.ts';
+import { type TurnFailedInput, buildTurnFailedText, turnFailedCollapseId } from './turn-failed.ts';
 
 export interface PushConfig {
   /**
@@ -645,6 +646,69 @@ export class NotificationDispatcher {
         },
       );
     }
+  }
+
+  /**
+   * Notify every device that wants it that a turn ended on an API error
+   * (`StopFailure`, #1153): a usage or rate limit, authentication, and
+   * similar. Informational, never a card: no `category`, no `options`, and
+   * nothing is registered in-app (the card this replaced had Yes/No that no
+   * answer could reach). Its `questionId` is the session's collapse key
+   * (`turnFailedCollapseId`), so a repeat replaces the previous notification
+   * instead of stacking, and `sessionId` lets a tap open the session.
+   *
+   * Deliberate differences from `maybePush`:
+   *  - always pushes (no attached-client skip, no dedup): the app shows no
+   *    card for a failure, so an attached client would otherwise be told
+   *    nothing, and a backgrounded one is exactly who the push is for;
+   *  - filtered by `pushPrefs.turnFailed` ONLY. `notifications.on_turn_complete`
+   *    is not consulted: a failed turn is the one turn end a user must not
+   *    miss by default, and the machine-wide switch is about the "done"
+   *    notification, not about the agent being stuck.
+   *
+   * Resolves `no_channel` when no device wants it (none registered, or every
+   * one muted `turnFailed`): claiming `pushed` for a fan-out of zero would
+   * report a notification that reached nobody. Otherwise `pushed` when any
+   * device accepted it, `failed` when every push failed. Fire-and-forget for
+   * callers: the promise never rejects.
+   */
+  pushTurnFailed(input: TurnFailedInput): Promise<DeliveryOutcome> {
+    const { sessionRegistry, deviceTokens, pushConfig } = this.deps;
+    // #690: pick up a device a sibling daemon removed or muted since our last
+    // read, as every other push does.
+    this.deps.refreshDeviceTokens?.();
+    const wanting = tokensWanting(deviceTokens.values(), 'turn_failed');
+    if (wanting.length === 0) {
+      log(
+        deviceTokens.size === 0
+          ? `Turn-failed push skipped: no device tokens for session ${this.sessionId}`
+          : `Turn-failed push skipped: all ${deviceTokens.size} device token(s) muted turn_failed for session ${this.sessionId}`,
+      );
+      return Promise.resolve('no_channel');
+    }
+    const sessionName = sessionRegistry.getSession(this.sessionId)?.name || 'Agent';
+    const { title, body } = buildTurnFailedText(sessionName, input);
+    const cfg = pushConfig();
+    const pushSessionId = this.deps.getPrimarySessionId() ?? this.sessionId;
+    const perToken = wanting.map((dt) =>
+      this.pushOnceWithRetry(
+        cfg.signalingUrl,
+        dt.token,
+        {
+          title,
+          body,
+          ...(cfg.pushSecret !== undefined ? { pushSecret: cfg.pushSecret } : {}),
+          sessionId: pushSessionId,
+          questionId: turnFailedCollapseId(this.sessionId),
+          kind: 'turn_failed' as const,
+        },
+        {
+          sent: `Turn-failed push sent for session ${pushSessionId}`,
+          failed: `Turn-failed push failed for session ${pushSessionId}`,
+        },
+      ),
+    );
+    return Promise.all(perToken).then((rs) => (rs.some(Boolean) ? 'pushed' : 'failed'));
   }
 
   /** Clear a notice `pushTerminalNotice` sent, once its prompt is answered
