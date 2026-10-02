@@ -128,14 +128,19 @@ const CLOSED_HOLD_MEMORY = 256;
 const DENY_MESSAGE_MAX = 2000;
 
 /** A held PermissionRequest hook (#1126): the pending hook response, its
- *  deadline timer, the suggestions a standing grant echoes from, and how to
- *  stop listening for the request's abort. */
+ *  deadline timer, the suggestions a standing grant echoes from, how to
+ *  stop listening for the request's abort, and when the hold began. */
 interface Hold {
   readonly resolve: (decision: PermissionDecision) => void;
   readonly timer: ReturnType<typeof setTimeout>;
   readonly suggestions: readonly unknown[] | undefined;
   readonly detachAbort: () => void;
+  readonly startedAt: number;
 }
+
+/** An abort this close to the registered hook timeout is Claude's timeout,
+ *  not an answer in the terminal (#1126 lead decision). */
+const HOOK_TIMEOUT_MARGIN_MS = 5_000;
 
 /**
  * A tool call Claude announced with `PreToolUse` and has not finished
@@ -300,6 +305,15 @@ export interface AutoApproveGateDeps {
    * stays and the terminal answers it.
    */
   holdMs: number;
+  /**
+   * The PermissionRequest hook timeout registered with Claude, in ms (600 s
+   * in wrapper mode, 3600 s in daemon or hub mode, #1126). Claude closes a
+   * held request at that timeout and decides nothing; the dialog stays. An
+   * abort within `HOOK_TIMEOUT_MARGIN_MS` of it is therefore handled like
+   * the deadline (released to the terminal, notice pushed), never as a No
+   * answered in the terminal. Absent: every abort is a terminal answer.
+   */
+  hookTimeoutMs?: number;
   /**
    * The hold deadline passed with no answer (#1126, the #733 handoff): tell
    * the phone the prompt is waiting in the terminal. Called while the card is
@@ -663,6 +677,7 @@ export class AutoApproveGate {
         timer,
         suggestions: input.permission_suggestions as readonly unknown[] | undefined,
         detachAbort: () => signal?.removeEventListener('abort', onAbort),
+        startedAt: Date.now(),
       });
     });
     this.safeCueWithArg('onHeldEscalate', this.deps.onHeldEscalate, qid);
@@ -680,14 +695,14 @@ export class AutoApproveGate {
    * signature stays open: the prompt is still on screen, and a later tool
    * run, Stop or new user prompt resolves it.
    */
-  private releaseAtDeadline(questionId: UUID): void {
+  private releaseAtDeadline(questionId: UUID, reason = 'hold_deadline'): void {
     if (!this.holds.has(questionId)) return;
     log(
-      `[AutoApprove ${this.sessionTag}] Held ${questionId.slice(0, 8)} reached its deadline; released to the terminal`,
+      `[AutoApprove ${this.sessionTag}] Held ${questionId.slice(0, 8)} reached its deadline (${reason}); released to the terminal`,
     );
     this.safeCueWithArg('onHoldDeadline', this.deps.onHoldDeadline, questionId);
     if (this.deps.onHoldDeadline) this.terminalNotices.add(questionId);
-    this.releaseToTerminal(questionId, 'hold_deadline');
+    this.releaseToTerminal(questionId, reason);
   }
 
   /**
@@ -722,13 +737,28 @@ export class AutoApproveGate {
 
   /**
    * Claude closed a held request before any answer reached it (#1126): the
-   * user answered No or pressed Esc in the terminal, the session ended, or
-   * Claude's own hook timeout fired. Nothing is left to answer, so the
-   * prompt is closed and its card dismissed. The settle is a formality (the
-   * client is gone); `endHold` keeps it exactly-once.
+   * user answered No or pressed Esc in the terminal, or the session ended.
+   * Nothing is left to answer, so the prompt is closed and its card
+   * dismissed. The settle is a formality (the client is gone); `endHold`
+   * keeps it exactly-once.
+   *
+   * Except at Claude's own hook timeout (`hookTimeoutMs`): Claude then
+   * closes the request without deciding and its dialog stays, so the prompt
+   * is released to the terminal like at the deadline, with its notice. The
+   * deadline normally comes first; this covers a delayed timer (a sleeping
+   * machine).
    */
   private onHoldAborted(questionId: UUID): void {
-    if (!this.holds.has(questionId)) return;
+    const hold = this.holds.get(questionId);
+    if (!hold) return;
+    const timeoutMs = this.deps.hookTimeoutMs;
+    if (
+      timeoutMs !== undefined &&
+      Date.now() - hold.startedAt >= timeoutMs - HOOK_TIMEOUT_MARGIN_MS
+    ) {
+      this.releaseAtDeadline(questionId, 'hook_timeout');
+      return;
+    }
     log(
       `[AutoApprove ${this.sessionTag}] Held ${questionId.slice(0, 8)} was closed by Claude (answered in the terminal, or the session ended); dismissing its card`,
     );

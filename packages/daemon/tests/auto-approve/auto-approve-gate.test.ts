@@ -755,6 +755,40 @@ describe('AutoApproveGate held prompts (#1126)', () => {
     expect(g.answerHeld(qid, { kind: 'option', option: YES })).toBe('closed');
   });
 
+  test("an abort at Claude's registered hook timeout is a timeout, not a terminal No: released to the terminal with the notice", async () => {
+    // Registered timeout 5.03 s, so any abort after 30 ms is within the
+    // 5 s margin of it; the deadline itself is far away.
+    const g = gate({ holdMs: 60_000, hookTimeoutMs: 5_030 });
+    const client = new AbortController();
+    const hook = g.resolvePermission(pr(), client.signal);
+    const qid = ids[0] as UUID;
+    await Bun.sleep(45);
+    client.abort();
+    expect(await hook).toBe('passthrough');
+    // Like the deadline: the notice is pushed while the card is registered,
+    // the card is dismissed, and the prompt stays open in the terminal.
+    expect(deadlines).toEqual([{ qid, registered: true }]);
+    expect(registry.getQuestion(SID, qid)).toBeNull();
+    expect(g.hasOpenHookPrompt()).toBe(true);
+    expect(g.answerHeld(qid, { kind: 'option', option: YES })).toBe('closed');
+    // Its tool run later closes it and clears the notice.
+    g.cancelExternallyResolved(
+      { toolName: 'Bash', toolInput: { command: 'git push' } },
+      'PostToolUse',
+    );
+    expect(noticesCleared).toEqual([qid]);
+  });
+
+  test('an abort well before the registered hook timeout is an answer in the terminal: closed, no notice', async () => {
+    const g = gate({ holdMs: 60_000, hookTimeoutMs: 600_000 });
+    const client = new AbortController();
+    const hook = g.resolvePermission(pr(), client.signal);
+    client.abort();
+    expect(await hook).toBe('passthrough');
+    expect(deadlines).toEqual([]);
+    expect(g.hasOpenHookPrompt()).toBe(false);
+  });
+
   test('an abort after a phone answer is a no-op (the answer already settled the hold)', async () => {
     const g = gate();
     const client = new AbortController();

@@ -201,6 +201,7 @@ import {
   ForeignSessionEscalator,
   HookConfigManager,
   HookServer,
+  PERMISSION_REQUEST_HOOK_TIMEOUT,
 } from './hooks/index.ts';
 import type {
   HookInput,
@@ -1686,6 +1687,11 @@ async function createNewSession(
         // keeps it for the phone much longer (daemon_hold_seconds, #1126).
         holdMs:
           (passThrough ? remiConfig.prompts.hold_seconds : remiConfig.prompts.daemon_hold_seconds) *
+          1000,
+        // The PermissionRequest timeout this session registered with Claude:
+        // an abort at that timeout is not a terminal answer (#1126).
+        hookTimeoutMs:
+          (passThrough ? PERMISSION_REQUEST_HOOK_TIMEOUT : DAEMON_PERMISSION_REQUEST_HOOK_TIMEOUT) *
           1000,
         pushTerminalNotice: (sid, question, reason) =>
           sessionNotifiers.get(sid)?.pushTerminalNotice(sid, question, reason),

@@ -241,8 +241,12 @@ the card at once by id (`holdForAnswer` -> `onHeldEscalate` ->
   dismissed and an "answer at the terminal" notice is pushed (#733). A daemon
   or hub session has no terminal of its own, so it holds for
   `[prompts] daemon_hold_seconds` (default 3540, 5 to 3540) and registers
-  the hook with a 3600 s timeout (`DAEMON_PERMISSION_REQUEST_HOOK_TIMEOUT`);
-  its notice says `remi attach`, the only way left to answer. An auto-mode
+  the hook with a 3600 s timeout (`DAEMON_PERMISSION_REQUEST_HOOK_TIMEOUT`;
+  Claude honors it, measured: a 650 s hold answered at 653.6 s ran the
+  tool); its notice says `remi attach`, the only way left to answer. An
+  abort within 5 s of the registered timeout (`hookTimeoutMs`) is Claude's
+  timeout, not a terminal No: released to the terminal with the notice,
+  like the deadline (which normally comes first). An auto-mode
   fallback prompt still auto-denies at 2:00 there; Claude fires
   `PermissionDenied` for it (measured), which dismisses the card and pushes
   a `harness_denied` notice. The notice never claims the

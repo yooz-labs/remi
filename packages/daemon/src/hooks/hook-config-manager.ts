@@ -28,21 +28,26 @@ interface HookMatcher {
 
 /**
  * Seconds Claude Code waits for a hook's HTTP response before proceeding
- * WITHOUT it. PermissionRequest gets Claude Code's 600s hook-budget ceiling
- * (#496/#537), set when the synchronous auto-approve eval could take minutes.
- * Since #1126 (ADR 0031) it bounds a real hold: a binary prompt's hook waits
- * for a phone answer up to `[prompts] hold_seconds` (at most 110 s), which
- * remi enforces itself, so Claude's own timeout stays well above it and never
- * fires first. A dead daemon still fails fast (connection refused). Every other hook keeps
- * the short timeout so a slow/dead daemon never gates worktree creation /
- * prompt submission / compaction (#203).
+ * WITHOUT it; at that timeout it closes the request and decides nothing (the
+ * dialog stays, #1126 spike F5). A wrapper session registers
+ * PermissionRequest at 600 s (#496/#537 chose it when the synchronous
+ * auto-approve eval could take minutes). Since #1126 (ADR 0031) it bounds a
+ * real hold: a binary prompt's hook waits for a phone answer up to
+ * `[prompts] hold_seconds` (at most 110 s), which remi enforces itself, so
+ * Claude's own timeout stays well above it. 600 s is not a ceiling Claude
+ * imposes: measured on Claude Code 2.1.287 (#1126 review), a PermissionRequest
+ * HTTP hook registered with `timeout: 3600` and held 650 s was answered at
+ * 653.6 s and the tool ran. A dead daemon still fails fast (connection
+ * refused). Every other hook keeps the short timeout so a slow/dead daemon
+ * never gates worktree creation / prompt submission / compaction (#203).
  */
-const PERMISSION_REQUEST_HOOK_TIMEOUT = 600;
+export const PERMISSION_REQUEST_HOOK_TIMEOUT = 600;
 /**
  * PermissionRequest timeout for a daemon or hub session (#1126 lead
  * decision): with no terminal of its own, a held prompt can only be answered
  * from the phone, so remi holds it for up to `[prompts] daemon_hold_seconds`
- * (at most 3540 s) and the registration must outlast that.
+ * (at most 3540 s) and the registration must outlast that. Claude honors it
+ * (see `PERMISSION_REQUEST_HOOK_TIMEOUT` for the measurement).
  */
 export const DAEMON_PERMISSION_REQUEST_HOOK_TIMEOUT = 3600;
 const DEFAULT_HOOK_TIMEOUT = 5;

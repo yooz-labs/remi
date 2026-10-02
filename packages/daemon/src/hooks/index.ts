@@ -8,6 +8,7 @@ export type {
 export {
   DAEMON_PERMISSION_REQUEST_HOOK_TIMEOUT,
   HookConfigManager,
+  PERMISSION_REQUEST_HOOK_TIMEOUT,
 } from './hook-config-manager.ts';
 export { HookEventBridge } from './hook-event-bridge.ts';
 export { ForeignSessionEscalator } from './foreign-session-escalator.ts';

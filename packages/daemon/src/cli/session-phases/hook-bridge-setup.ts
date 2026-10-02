@@ -196,6 +196,9 @@ export interface HookBridgeDeps {
    * (`[prompts] hold_seconds`, #1126). Required: see `AutoApproveGateDeps.holdMs`.
    */
   holdMs: number;
+  /** The registered PermissionRequest hook timeout, in ms (#1126). See
+   *  `AutoApproveGateDeps.hookTimeoutMs`. */
+  hookTimeoutMs?: number;
   /**
    * Push an informational "answer at the terminal" notice for `question`
    * (#1126), wired to the session's `NotificationDispatcher.pushTerminalNotice`.
@@ -575,6 +578,7 @@ export function setupHookBridge(
       // maybePush); PTY question-emission is suppressed for hooked sessions.
       onHeldEscalate: (questionId) => tracker.pushHeldHook(questionId),
       holdMs: deps.holdMs,
+      ...(deps.hookTimeoutMs !== undefined ? { hookTimeoutMs: deps.hookTimeoutMs } : {}),
       // #1126: a held prompt reached its deadline. Read the card while it is
       // still registered (the gate dismisses it right after) so the notice
       // names the actual ask.
