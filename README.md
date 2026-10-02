@@ -140,7 +140,7 @@ For commercial-use or dual-license inquiries about the PolyForm Shield parts: **
 
 ## Contributing
 
-PRs welcome. Sign your commits with `Signed-off-by: Your Name <you@example.com>` (DCO style); see [`CONTRIBUTING.md`](CONTRIBUTING.md). Security issues: see [`SECURITY.md`](SECURITY.md).
+PRs welcome for the Apache-2.0 parts (`packages/daemon`, `packages/shared`, scripts and docs). Sign your commits with `Signed-off-by: Your Name <you@example.com>` (DCO style); see [`CONTRIBUTING.md`](CONTRIBUTING.md). The PolyForm Shield packages (`packages/web`, `packages/signaling`, `packages/macos`) are published to be inspected; we take no outside changes to them without a prior written agreement, so talk to us first. Security issues: see [`SECURITY.md`](SECURITY.md).
 
 ---
 
