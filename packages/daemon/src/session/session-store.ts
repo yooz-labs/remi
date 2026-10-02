@@ -27,6 +27,22 @@ export interface StoredSession {
   startedAt: string;
   exitedAt: string | null;
   exitCode: number | null;
+  /**
+   * The harness this record belongs to (#1162, ADR 0032). ABSENT on every
+   * Claude record: nothing writes it today, and absence means Claude, so an
+   * older daemon that rewrites this file loses nothing. Kept as a plain string,
+   * not `HarnessId`, so a record written by a newer daemon naming a harness
+   * this build does not know still round-trips through a rewrite instead of
+   * being dropped or rejected. Read it through
+   * `SessionBindingStore.getIdentity`, which interprets it.
+   */
+  harness?: string | undefined;
+  /**
+   * The harness's own session id (#1162, ADR 0032). Absent on every Claude
+   * record, whose id is `claudeSessionId`. Round-tripped untouched; it is
+   * meaningful only together with `harness`.
+   */
+  harnessSessionId?: string | null | undefined;
 }
 
 interface SessionsFile {
@@ -145,6 +161,21 @@ function parseStoredSession(value: unknown, index: number, filePath: string): St
 
   if (!valid) {
     throw new MalformedSessionStoreError(filePath, `session ${index} has invalid fields`);
+  }
+
+  // Harness identity (#1162). parseStoredSession rebuilds each record from the
+  // keys it knows, so any key it does not copy here is dropped on the next
+  // rewrite by whichever daemon writes. Copy these two when they are
+  // well-typed; ignore them otherwise rather than throw, because one bad
+  // optional field must not make the whole file unreadable. A key is only set
+  // when present, so a legacy record stays an eight-key object.
+  const harness = value['harness'];
+  if (typeof harness === 'string') {
+    parsed.harness = harness;
+  }
+  const harnessSessionId = value['harnessSessionId'];
+  if (typeof harnessSessionId === 'string' || harnessSessionId === null) {
+    parsed.harnessSessionId = harnessSessionId;
   }
   return parsed;
 }
