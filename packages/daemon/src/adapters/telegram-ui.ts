@@ -89,22 +89,74 @@ export function formatMessageForTelegram(message: Message): string {
 }
 
 /** Telegram's message limit is 4096 characters; a question body stays
- *  below it with room for the ellipsis. */
+ *  below it. */
 const TELEGRAM_QUESTION_MAX = 4000;
 
-/**
- * The message text a question card is sent with: its ask, and when the card
- * is about a long text (a plan to approve, #1127) that text below it, so a
- * Telegram user sees what they are approving. Bounded to Telegram's limit.
- */
-export function formatQuestionMessage(question: Question): string {
-  const text =
-    question.detail !== undefined && question.detail.trim().length > 0
-      ? `${question.text}\n\n${question.detail.trim()}`
-      : question.text;
+/** A question card as Telegram sends it: the message text, and its answer
+ *  buttons, or none when the card is answered in the app or the terminal. */
+export interface TelegramQuestionCard {
+  readonly text: string;
+  readonly keyboard: InlineKeyboard | undefined;
+}
+
+/** Bound a text to Telegram's limit, marking the cut. */
+function boundText(text: string): string {
   return text.length > TELEGRAM_QUESTION_MAX
     ? `${text.slice(0, TELEGRAM_QUESTION_MAX - 3)}...`
     : text;
+}
+
+/**
+ * Why a card gets no answer buttons on Telegram (#1127 review S2), or null
+ * when its options can be tapped: an AskUserQuestion with several questions
+ * or a multi-select (one button cannot answer it), and one no phone answer
+ * can be applied to (`terminalOnly`).
+ */
+function noButtonsReason(question: Question): string | null {
+  if (question.terminalOnly === true) {
+    return 'Answer this question in the terminal (or cancel it in the app).';
+  }
+  const steps = question.questions;
+  if (
+    question.kind === 'multi_question' &&
+    steps !== undefined &&
+    (steps.length > 1 || steps.some((s) => s.multiSelect))
+  ) {
+    return 'Answer in the app.';
+  }
+  return null;
+}
+
+/**
+ * The message and buttons a question card is sent with (#1127 review S2).
+ * A card about a long text (a plan to approve) carries that text below its
+ * ask, so the approval is made reading it; when the text does not fit
+ * Telegram's limit it is cut, the message says how much is missing, and NO
+ * buttons are offered: a plan is not approved unread. A card one button
+ * cannot answer (`noButtonsReason`) gets a line saying where to answer it
+ * and no buttons either.
+ */
+export function formatQuestionCard(question: Question): TelegramQuestionCard {
+  const detail = question.detail?.trim() ?? '';
+  if (detail.length > 0) {
+    const whole = `${question.text}\n\n${detail}`;
+    if (whole.length <= TELEGRAM_QUESTION_MAX) {
+      return { text: whole, keyboard: formatQuestionKeyboard(question) };
+    }
+    // Leave room for the notice line, whose count is at most 7 digits.
+    const notice = (missing: number) =>
+      `\n\n[Plan truncated: ${missing} more characters. Read it and answer in the app.]`;
+    const room = TELEGRAM_QUESTION_MAX - question.text.length - 2 - notice(9_999_999).length;
+    const shown = detail.slice(0, Math.max(0, room));
+    return {
+      text: `${question.text}\n\n${shown}${notice(detail.length - shown.length)}`,
+      keyboard: undefined,
+    };
+  }
+  const reason = noButtonsReason(question);
+  if (reason !== null)
+    return { text: boundText(`${question.text}\n\n${reason}`), keyboard: undefined };
+  return { text: boundText(question.text), keyboard: formatQuestionKeyboard(question) };
 }
 
 /**

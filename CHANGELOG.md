@@ -21,8 +21,8 @@ is typed into the terminal for either.
   protocol). An answer that leaves a question out, or gives a single-choice
   question two answers, is refused and the question keeps waiting.
 - **Plan approval by meaning.** A plan card shows the plan (in full in the
-  app, its start in the push, up to Telegram's message limit there) with
-  three choices: approve with edits auto-accepted, approve with edits
+  app, its start in the push; on Telegram in full when it fits, otherwise
+  cut with a note and without buttons) with three choices: approve with edits auto-accepted, approve with edits
   approved manually, or keep planning (an optional note goes to Claude;
   the app has no field for it yet). Auto mode is not offered from the
   phone; the terminal's dialog still offers it. A background agent's plan
@@ -36,6 +36,8 @@ is typed into the terminal for either.
   dismissed the question."); on a plan it keeps planning. Nothing is typed.
 - The lock screen answers an AskUserQuestion only when it is one
   single-choice question; any other, and every plan, is answered in the app.
+  Telegram offers no buttons for several questions or a multi-select, and
+  its reply to a button says "Sent!" only when the answer was applied.
 - A question or plan answered in the terminal clears its card as soon as
   Claude reports the answer (the tool's `PostToolUse`), and Esc there
   clears it at once.

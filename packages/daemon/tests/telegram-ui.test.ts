@@ -7,8 +7,8 @@ import type { AgentStatus, DiscoverableSession, Message, Question, UUID } from '
 import {
   formatHelpMessage,
   formatMessageForTelegram,
+  formatQuestionCard,
   formatQuestionKeyboard,
-  formatQuestionMessage,
   formatQuestionText,
   formatSessionList,
   formatStatusText,
@@ -175,29 +175,80 @@ describe('formatQuestionKeyboard', () => {
   });
 });
 
-describe('formatQuestionMessage (#1127)', () => {
-  const base: Question = {
+describe('formatQuestionCard (#1127)', () => {
+  const opt = (label: string, value: string, isYes = false, isNo = false) => ({
+    label,
+    value,
+    isRecommended: false,
+    isYes,
+    isNo,
+  });
+  const plan: Question = {
     id: 'q-plan' as UUID,
     text: 'Plan ready for review',
-    options: [],
+    options: [opt('Approve, auto-accept edits', '1', true), opt('Keep planning', '3', false, true)],
     allowsFreeText: false,
     isAnswered: false,
+    kind: 'plan_approval',
   };
+  const buttons = (card: ReturnType<typeof formatQuestionCard>) =>
+    (
+      card.keyboard as unknown as { inline_keyboard: unknown[][] } | undefined
+    )?.inline_keyboard.flat().length ?? 0;
 
-  test('a card without detail is its text', () => {
-    expect(formatQuestionMessage({ ...base, text: 'Allow Bash: ls' })).toBe('Allow Bash: ls');
+  test('a card without detail is its text, with its buttons', () => {
+    const card = formatQuestionCard({ ...plan, kind: undefined, text: 'Allow Bash: ls' });
+    expect(card.text).toBe('Allow Bash: ls');
+    expect(buttons(card)).toBe(2);
   });
 
-  test('a plan card carries the plan below its ask, so the approval is not blind', () => {
-    expect(formatQuestionMessage({ ...base, detail: '# Plan\n\n- step 1\n' })).toBe(
-      'Plan ready for review\n\n# Plan\n\n- step 1',
+  test('a plan that fits is shown in full below its ask, with its buttons', () => {
+    const card = formatQuestionCard({ ...plan, detail: '# Plan\n\n- step 1\n' });
+    expect(card.text).toBe('Plan ready for review\n\n# Plan\n\n- step 1');
+    expect(buttons(card)).toBe(2);
+  });
+
+  test('a plan cut at the limit says how much is missing and offers no buttons (review S2)', () => {
+    const detail = `${'x'.repeat(5000)}END`;
+    const card = formatQuestionCard({ ...plan, detail });
+    expect(card.text.length).toBeLessThanOrEqual(4000);
+    expect(card.text).not.toContain('END');
+    const shown = card.text.split('\n\n')[1] ?? '';
+    const missing = detail.length - shown.length;
+    expect(card.text).toEndWith(
+      `[Plan truncated: ${missing} more characters. Read it and answer in the app.]`,
     );
+    expect(card.keyboard).toBeUndefined();
   });
 
-  test("a long plan is cut below Telegram's 4096-character limit", () => {
-    const message = formatQuestionMessage({ ...base, detail: 'x'.repeat(10_000) });
-    expect(message.length).toBe(4000);
-    expect(message.endsWith('...')).toBe(true);
+  test('several questions or a multi-select get no buttons, only "answer in the app" (review S2)', () => {
+    const step = (multiSelect: boolean) => ({
+      text: 'Q',
+      multiSelect,
+      options: [opt('A', '1'), opt('B', '2')],
+    });
+    const base: Question = { ...plan, kind: 'multi_question', text: 'Q', detail: undefined };
+    for (const questions of [[step(false), step(false)], [step(true)]]) {
+      const card = formatQuestionCard({ ...base, questions });
+      expect(card.text).toBe('Q\n\nAnswer in the app.');
+      expect(card.keyboard).toBeUndefined();
+    }
+    // One single-select question keeps its buttons.
+    expect(buttons(formatQuestionCard({ ...base, questions: [step(false)] }))).toBe(2);
+  });
+
+  test('a terminal-only card gets no buttons and says where to answer (review S2, S7)', () => {
+    const card = formatQuestionCard({
+      ...plan,
+      kind: 'multi_question',
+      text: 'Pick',
+      detail: undefined,
+      terminalOnly: true,
+    });
+    expect(card.text).toBe(
+      'Pick\n\nAnswer this question in the terminal (or cancel it in the app).',
+    );
+    expect(card.keyboard).toBeUndefined();
   });
 });
 

@@ -158,13 +158,15 @@ void _allKeysCovered;
 
 /** `ClientMessageEventArgs` as callback signatures -- what a single
  *  `Connection` (already scoped to one peer) exposes. Every event is
- *  fire-and-forget (`void`) except `onUserInput`, whose handler is async and
- *  which a caller may await: the Telegram `/interrupt` waits for the daemon's
- *  verdict on its Escape (#1140), so its result is `void | Promise<void>`. */
+ *  fire-and-forget (`void`) except `onUserInput` and `onAnswer`, whose
+ *  handlers are async and which a caller may await: the Telegram
+ *  `/interrupt` waits for the daemon's verdict on its Escape (#1140), and a
+ *  Telegram answer button for the verdict on its answer (#1127 review S2),
+ *  so their result is `void | Promise<void>`. */
 export type ClientMessageEvents = {
   [K in keyof ClientMessageEventArgs]: (
     ...args: ClientMessageEventArgs[K]
-  ) => K extends 'onUserInput' ? void | Promise<void> : void;
+  ) => K extends 'onUserInput' | 'onAnswer' ? void | Promise<void> : void;
 };
 
 /** `ClientMessageEvents` with `connectionId` prepended -- what a fan-out
@@ -174,7 +176,7 @@ export type ClientMessageEventsWithConnectionId = {
   [K in keyof ClientMessageEventArgs]: (
     connectionId: UUID,
     ...args: ClientMessageEventArgs[K]
-  ) => K extends 'onUserInput' ? void | Promise<void> : void;
+  ) => K extends 'onUserInput' | 'onAnswer' ? void | Promise<void> : void;
 };
 
 /**
