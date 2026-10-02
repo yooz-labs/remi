@@ -248,10 +248,14 @@ Deliberately not refused: raw input (`raw: true`, an attach client's keystrokes
 and the web client's persistent Escape, which is how a menu gets answered), and
 any input when no option list is observed, including a session with no tracker,
 so the chat keeps working without a hook server. An empty list (a free-text
-prompt) does not refuse. Telegram `/interrupt` sends its Escape as structured
-input, so it is refused too while a menu is up. The observation clears when
-status leaves `waiting`; if that signal is missed the chat stays refused until
-it arrives, and the card and the terminal still answer. The parser now returns
+prompt) does not refuse. Telegram `/interrupt` sends its Escape raw, like the
+web client's, so it works with or without a menu and writes exactly `\x1b` (no
+Enter); its reply is "Interrupt sent" only when the daemon did not answer with
+an `error`, otherwise the error text is what the chat shows. A raw PTY write
+that fails is only logged by the daemon, so that one failure is not reported.
+The observation clears when status leaves `waiting`; if that signal is missed
+the chat stays refused until it arrives, and the card and the terminal still
+answer. The parser now returns
 `allowsFreeText: false` (and `optionsAreFallback: false`) for a Claude selection
 box, so a hook-less card is covered by the `free-text-into-menu` guard above and
 its Telegram card no longer says "reply with custom text"; a hook record's own
