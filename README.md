@@ -114,15 +114,19 @@ See `.context/plan.md` for the detailed development roadmap.
 
 ## License
 
-Source code is licensed under [**PolyForm Shield 1.0.0**](LICENSE.md). You can:
+Remi is open core, and the license is set per directory.
+[`LICENSE.md`](LICENSE.md) maps each directory to its license; every directory carries its own license file.
 
-- Read, fork, modify, and use it for any purpose **except** building a competing product.
-- Embed it in apps that aren't direct Remi substitutes.
-- Contribute back via PRs.
+- **Daemon, CLI and shared protocol** (`packages/daemon`, `packages/shared`): [**Apache License 2.0**](packages/daemon/LICENSE).
+  Use, modify and redistribute them, commercially or not, under the terms of that license.
+- **Mobile and web client, hosted relay and native Mac app** (`packages/web`, `packages/signaling`, `packages/macos`): [**PolyForm Shield 1.0.0**](packages/web/LICENSE.md).
+  You can read, fork, modify and use them for any purpose **except** building a competing product, so you cannot offer a re-skinned commercial fork of the app or the relay.
+  For the strategic rationale, see [`yooz-engine/LICENSING.md`](https://github.com/yooz-labs/yooz-engine/blob/main/LICENSING.md).
+- **Everything else** (scripts, docs, CI configuration): Apache-2.0 unless a file says otherwise.
 
-You cannot offer a re-skinned commercial fork of Remi. For the strategic rationale, see [`yooz-engine/LICENSING.md`](https://github.com/yooz-labs/yooz-engine/blob/main/LICENSING.md).
+The `@yooz-labs/remi` npm packages contain only the compiled daemon and CLI, so they are Apache-2.0.
 
-For commercial-use or dual-license inquiries: **dev@yooz.info**.
+For commercial-use or dual-license inquiries about the PolyForm Shield parts: **dev@yooz.info**.
 
 ## Contributing
 
