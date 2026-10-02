@@ -1223,6 +1223,13 @@ function onHarnessDenied(input: PermissionDeniedHookInput): void {
   const primarySessionId = getPrimarySessionId();
   const session = primarySessionId ? sessionRegistry.getSession(primarySessionId) : undefined;
   log(`[HarnessDenied] auto mode blocked ${input.tool_name}: ${input.reason ?? '(no reason)'}`);
+  // Pick up a device removed or muted by a sibling daemon since our last
+  // read (#690), as the question push does.
+  try {
+    deviceTokenStore.refreshFromDisk();
+  } catch (err) {
+    logError('[HarnessDenied] device token refresh failed:', err);
+  }
   pushHarnessDenied(
     {
       deviceTokens: deviceTokens.values(),
