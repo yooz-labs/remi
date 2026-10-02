@@ -1,6 +1,6 @@
 # ADR 0032: Harness seam and the session identity shim
 
-**Status:** accepted; amended by #1163 (Phase 2, below)
+**Status:** accepted; amended by #1163 (Phase 2) and #1164 (Phase 3), below
 **Date:** 2026-10-02
 **Owner:** Yahya
 
@@ -129,3 +129,53 @@ It changes no behavior: the same bytes are typed, the same arguments are spawned
 - `session-events-harness.test.ts` and `resume-session-events-harness.test.ts` give the handlers a harness whose exit input or resume arguments differ (and one with no exit input), because the pins above cannot tell a handler that asks the harness from one that still hardcodes Claude's value.
 - `grep -rn 'getProjectTranscriptDir(.*)}/\${' packages/daemon/src` hits only `ClaudeHarness.transcriptPath`.
 - Both handler sites that take a `TranscriptDiscovery` for other reasons are held to the harness by tests, because reverting either to the inline expression compiled and passed every Claude-valued test: `session-events-harness.test.ts` (the listed session's `transcriptPath` from a stand-in harness), `transcript-events-harness.test.ts` (a durable-index transcript that exists only at the stand-in path), and `tests/harness/transcript-path-source.test.ts` (`getProjectTranscriptDir(` may appear only in `transcript-discovery.ts`, `transcript-binder.ts` and `harness/claude.ts`).
+
+## Phase 3 amendment: `HarnessSession` and the launch extraction (#1164)
+
+Phase 3 moves the Claude-specific middle of `createNewSession` behind the seam.
+Nothing a client, a file or a process can see changes.
+Deliverable 5 of #1164 (one `harnessSessions` map in place of the per-session maps, with a `DecisionChannel` and `dispose()`) is split into a follow-up PR for size; items 2 and 5 say what that leaves out here.
+
+1. **What moved.**
+   The 207 lines of `createNewSession` from `sessionNotifiers.set` through the `createPtySessionForSession(...)` call (the `QuestionPresenceTracker`, the `OutputProcessor`, `resolveClaudeBinding` and `bindingStore.preAssign`, the hook bridge, the PTY) are now `createClaudeSession` in `packages/daemon/src/harness/claude-session.ts`, reached through `Harness.createSession(ctx: HarnessLaunchContext): HarnessSession`.
+   192 of those 207 lines are byte-identical; the other 15 only swap a daemon global for a dependency (`hookServer` for `deps.hookServer()`, `PORT` for `deps.currentPort()`, and so on).
+   `createNewSession` keeps the neutral shell: the message API, `createSession`, `registerSession`, the `starting` status, `start()` with `markExited` on failure, and the child pid.
+   Statement order inside the moved block is unchanged: `sessionNotifiers.set` before the tracker, `sessionTrackers.set` before the hook bridge, `preAssign` before `setupHookBridge`.
+2. **Members, each with a production caller.**
+   `HarnessLaunchContext` carries what the shell hands over (session id, working directory, extra arguments, pass-through, reserved rows, the message API, `sendAndRecord`, `sendMessage`, the notifier), and `createClaudeSession` reads every field.
+   `HarnessSession` is `{pty, start()}`: `cli.ts` registers `pty` with the session registry, reads its child pid and calls `start()`.
+   `decisions`, `dispose()`, `DecisionChannel` and `DecisionScreen` are not declared yet.
+   Nothing would call them before the maps are consolidated, so they arrive with that follow-up, as the epic rule requires.
+   `HeldAnswer` and `HeldAnswerOutcome` moved verbatim from `auto-approve/auto-approve-gate.ts` to `harness/decision.ts` (re-exported from `auto-approve/index.ts`), so `input-events.ts` no longer imports `auto-approve/`.
+3. **Three values arrive as getters.**
+   `hookServer` is read at PTY-event time and nulled by `cleanup`; `PORT` is reassigned by port probing after the harness is built; the websocket port feeds the `remi:<port>` name and `REMI_PORT` at spawn time.
+   `ClaudeLaunchDeps` takes `hookServer: () => HookServer | null`, `currentPort: () => number` and `wsPort: () => number`, and `tests/harness/claude-session.test.ts` pins both ends: that `cli.ts` passes getters, and that the PTY callbacks call `deps.hookServer()` when they fire.
+4. **`command` is still not on `Harness`.**
+   Phase 2 item 2 expected it here.
+   It was not added because nothing neutral asks for it: `command: 'claude'` stays at `pty-session-setup.ts` 203, inside `createPtySessionForSession`, which only `createClaudeSession` calls.
+   It arrives with the first caller that spawns a command other than `claude`, which is the Codex epic.
+5. **The per-session maps stay in `cli.ts`.**
+   `sessionGateHandles`, `sessionTrackers`, `binderClosers`, `sessionAdmitsHandles` and `sessionNotifiers` are passed to the launch whole (`ClaudeLaunchDeps`), so the moved statements fill them exactly as before and the handlers that read them are untouched.
+   Folding them into one `harnessSessions` map, moving `sessionAdmitsHandles` into `ClaudeHarness` as `admitsAnySession`, and `dispose()` replacing `binderClosers` are the follow-up.
+   Registering a notifier is neutral work a second harness will repeat, so `sessionNotifiers.set` is a candidate to move into the shell then.
+6. **The harness is constructed later in `cli.ts`.**
+   Launching reads services declared after the Phase 2 construction site, so `new ClaudeHarness(transcriptDiscovery, launchDeps)` now sits just before its first consumer, `createSessionHandlers`.
+   `launchDeps` is optional and `createSession` refuses without it, because `expectedTranscriptPath` and the Phase 2 tests build a harness only to resolve paths.
+7. **Boundary ratchet.**
+   `tests/harness/harness-boundary.test.ts` fails when a neutral module (`harness/types.ts`, `harness/decision.ts`, `cli/handlers/`, `api/`, `session/`) imports `hooks/`, `auto-approve/`, `transcript/` or `parser/{output-processor,question-parser,status-parser}`.
+   Its debt list holds today's three offenders, chat-seam debt: `cli/handlers/session-events.ts`, `resume-session-events.ts` and `transcript-events.ts`, each importing `transcript/index.ts` for Claude's transcript types.
+   A new offender fails, and so does a debt entry whose import is gone, so the list can only shrink.
+8. **Still outside the seam.**
+   The two hook-server start blocks in `cli.ts` (they have different failure semantics), the turn-complete, denial and failure events, `command: 'claude'` and `buildClaudeChildEnv`, the `--resume` rewrite at the top of `cli.ts`, the per-session maps above, and the three handlers in item 7.
+
+### Receipts
+
+- Pin test, passing on the unmodified source (`7b3d1843` plus the test only) before any refactor: `packages/daemon/tests/integration/launch-characterization.test.ts`, 5 of 5 runs, and unchanged on the final tree.
+  It runs the real `cli.ts --daemon` with a real executable fake `claude` on PATH and reads the argv (`--session-id <uuid> -n remi:<port>`), the child environment and working directory, `sessions.json`, the live-sessions `claudeChildPid`, the hook URL in `settings.local.json`, `hello_ack.claudeSessionId`, the daemon exiting when Claude exits (#641) and the hooks being removed on SIGTERM.
+- Mutation checks of that test, each reverted: the `-n` display name, `setClaudeChildPid`, `preAssign`, the `REMI_PORT` value, the inline-renderer variable, `markExited`, the hook install, the hook uninstall, the whole cleanup-and-exit on PTY exit, and `hello_ack`'s `claudeSessionId` each fail it.
+  One survivor: replacing only the `exitProcess(...)` call in the PTY exit handler passes, because `cleanup()` lets the event loop drain and the daemon exits anyway.
+- `git diff -M --stat` cannot show this as a move: `cli.ts` is modified, not renamed, so rename detection has nothing to pair `claude-session.ts` with.
+  The evidence is the line comparison in item 1.
+- Source-text tests that pinned the moved lines in `cli.ts` were retargeted, not weakened: `hold-policy.test.ts` and `live-questions.test.ts` read `claude-session.ts`.
+  Four `Harness` stand-ins in tests gained a `createSession` line.
+

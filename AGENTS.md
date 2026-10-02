@@ -88,6 +88,14 @@ bun run build && npx cap sync android && npx cap open android
 └──────────────────────────────────────────────────────────────────┘
 ```
 
+**The harness seam (epic #1161, [ADR 0032](.context/decisions/0032-harness-seam-and-identity-shim.md)).**
+Claude Code is the only harness, behind `packages/daemon/src/harness/`.
+`Harness` (`types.ts`) is what the daemon asks of the CLI it wraps; `ClaudeHarness` (`claude.ts`) implements it, and `createSession` builds a session through `createClaudeSession` (`claude-session.ts`), which holds what `createNewSession` used to do inline: the question tracker, the PTY output parser, the pre-spawn session binding, the hook bridge and the unstarted PTY.
+`createNewSession` in `cli.ts` is the neutral shell around it (message API, `registerSession`, the `starting` status, `start()`, the child pid); the per-session gate, tracker and binder maps still live in `cli.ts` and the launch fills them.
+The harness reads `hookServer`, `PORT` and the websocket port through getters, never captured values, because they change while the daemon runs.
+`tests/harness/harness-boundary.test.ts` keeps `harness/types.ts`, `harness/decision.ts`, `cli/handlers/`, `api/` and `session/` from importing `hooks/`, `auto-approve/`, `transcript/` or the Claude screen parsers, apart from three documented handler imports (chat-seam debt); fix the import rather than adding to that list.
+No Codex adapter, wire identity field or `command` on `Harness` exists yet: they arrive with the Codex epic (#1165).
+
 ## Repository Structure
 
 ```
