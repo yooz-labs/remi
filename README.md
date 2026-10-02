@@ -53,6 +53,7 @@ remi attach --host 192.168.1.5 macbook/remi/main
 
 - **Session persistence** - Survives terminal close (SIGHUP), detach/reattach like tmux
 - **Human-readable session names** - `hostname/project/branch` instead of UUIDs
+- **Inline Claude rendering** - remi sets `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` for the Claude it runs, because its status bar and prompt detection need the inline renderer. This overrides Claude's `tui` setting and `CLAUDE_CODE_NO_FLICKER`. To opt out, start remi with `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=0` set (the status bar is then unverified against fullscreen). An in-session `/tui` switch can still move Claude to the alternate screen (#1135)
 - **LAN discovery** - mDNS/Bonjour finds Remi daemons on your network, once you widen `daemon.bind`. Not on by default (#880): a stock daemon is loopback-only and does not advertise
 - **Multiple connection methods** - Direct WebSocket, relay via Cloudflare, SSH tunnel, Tailscale
 - **Chat view** - Clean conversation interface without terminal noise
