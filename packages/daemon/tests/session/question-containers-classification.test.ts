@@ -100,7 +100,13 @@ const REGISTRY: readonly Entry[] = [
     file: 'api/question-presence-tracker.ts',
     field: 'awaitingPTY',
     cls: 'pre-card',
-    note: 'Subset of pending parked awaiting PTY arbitration (#751); ADR 0004 surface.',
+    note: 'Subset of pending that pushes on its PTY render: a subagent parked for PTY arbitration (#751, ADR 0004 surface) or a main-agent push-on-render mark (#1121).',
+  },
+  {
+    file: 'api/question-presence-tracker.ts',
+    field: 'ambiguousRenderKeys',
+    cls: 'pre-card',
+    note: "NEW (#1121 review). Agent keys whose unrendered push-on-render record was replaced by a newer hook; the next pushOnRender for that key declines to pair, so each render pushes the screen's own prompt. Cleared on consume, on leaving waiting, and on clearPending.",
   },
   {
     file: 'api/question-presence-tracker.ts',

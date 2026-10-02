@@ -1653,3 +1653,100 @@ describe('parked-render arbitration (#814)', () => {
     expect(pushes[0]?.text).toBe('reviewer · Bash: git push');
   });
 });
+
+// #1121: a binary main-agent escalation the gate answered 'passthrough'
+// without holding is marked with `pushOnRender` and pushes on its render.
+describe('QuestionPresenceTracker pushOnRender (#1121)', () => {
+  const DEBOUNCE = 5;
+
+  function tracker(gone: Array<{ id: string; reason: string }> = []) {
+    const pushes: Question[] = [];
+    const t = new QuestionPresenceTracker(
+      (q) => {
+        pushes.push(q);
+        return { status: 'registered' as const };
+      },
+      {
+        hasLiveQuestions: () => false,
+        orphanDebounceMs: DEBOUNCE,
+        onHooklessQuestionGone: (id, reason) => {
+          gone.push({ id, reason });
+        },
+      },
+    );
+    return { t, pushes };
+  }
+
+  it('returns false for an id no pending record carries', () => {
+    const { t } = tracker();
+    expect(t.pushOnRender(generateId())).toBe(false);
+    expect(t.awaitingPTYCountForTest()).toBe(0);
+  });
+
+  it('pushes the merged card on render, keyed by the hook id, and takes the render-owned slot', () => {
+    const { t, pushes } = tracker();
+    const hook = makePermissionRequestHook('Allow Bash: curl example.com');
+    t.recordPendingHook(hook);
+    expect(t.pushOnRender(hook.id)).toBe(true);
+
+    t.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
+
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0]?.id).toBe(hook.id);
+    expect(t.hasPendingForTest()).toBe(false);
+    expect(t.observedRenderOwnedQuestionForTest()).toBe(hook.id);
+  });
+
+  it('a later main render resolves the earlier card (terminal "No" leaves no tool run)', () => {
+    const gone: Array<{ id: string; reason: string }> = [];
+    const { t, pushes } = tracker(gone);
+    const a = makePermissionRequestHook('Allow Bash: echo A');
+    t.recordPendingHook(a);
+    t.pushOnRender(a.id);
+    t.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
+
+    const b = makePermissionRequestHook('Allow Bash: echo B');
+    t.recordPendingHook(b);
+    t.pushOnRender(b.id);
+    t.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
+
+    expect(pushes.map((q) => q.id)).toEqual([a.id, b.id]);
+    expect(gone).toEqual([{ id: a.id, reason: 'pty_render_superseded' }]);
+  });
+
+  it('is NOT spared by a status change, unlike a parked subagent record', () => {
+    const { t, pushes } = tracker();
+    const hook = makePermissionRequestHook('Allow Bash: ls');
+    t.recordPendingHook(hook);
+    t.pushOnRender(hook.id);
+    t.parkAwaitingPTY({ ...makePermissionRequestHook('agent · Bash: ls'), agentId: 'agent-A' });
+
+    t.onStatusChange('executing');
+
+    // Only the subagent park survives; the main mark cannot merge onto a
+    // later, unrelated prompt.
+    expect(t.pendingCountForTest()).toBe(1);
+    expect(t.awaitingPTYCountForTest()).toBe(1);
+    expect(pushes).toHaveLength(0);
+  });
+
+  it('two outstanding main hooks before a render are not paired: the render pushes bare', async () => {
+    const { t, pushes } = tracker();
+    const a = makePermissionRequestHook('Allow Bash: echo A');
+    t.recordPendingHook(a);
+    t.pushOnRender(a.id);
+    const b = makePermissionRequestHook('Allow Bash: rm -rf B');
+    t.recordPendingHook(b);
+    expect(t.pushOnRender(b.id)).toBe(false);
+    expect(t.hasPendingForTest()).toBe(false);
+
+    const screen = makePTYQuestion('Do you want to proceed?');
+    t.onOrphanPTYPrompt(screen);
+    await new Promise((resolve) => setTimeout(resolve, DEBOUNCE * 4));
+
+    // The screen's own prompt, never B's text on A's dialog.
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0]?.text).toBe('Do you want to proceed?');
+    expect(pushes[0]?.text).not.toContain('rm -rf B');
+  });
+});

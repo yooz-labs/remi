@@ -487,10 +487,22 @@ export interface AutoApproveGateDeps {
    *  Since #625, PTY question-emission is suppressed for hooked sessions, so this
    *  callback is the SOLE push trigger in both cases — do NOT remove it from the
    *  passthrough path believing `onPTYPromptVisible` covers it (it does not; that
-   *  would silently drop every passthrough notification). Idempotent per id
+   *  would silently drop every passthrough notification). The third shape, a
+   *  binary escalation with holding disabled, pushes on its render through
+   *  `pushOnRender` instead (#1121). Idempotent per id
    *  (`pushedHeldIds`), so it can never double-push. Absent => no immediate push
    *  (tests / no-AA callers). #573 / #625 */
   onHeldEscalate?: (questionId: UUID) => void;
+  /** The push trigger for a BINARY main-context escalation when holding is
+   *  disabled (no auto-approve service, or `hold_timeout <= 0`): the hook is
+   *  answered 'passthrough', Claude renders its native prompt at once, and the
+   *  stashed question must push when that render pairs with it, carrying the
+   *  on-screen option numbering a PTY-digit answer needs (#718 merge). Before
+   *  this dep existed that combination pushed nothing at all: no hold meant no
+   *  `onHeldEscalate`, and the stashed record made the tracker treat the render
+   *  as gate-owned and suppress it. Absent => the render is never pushed
+   *  (tests). Throw-safe (safeCue). */
+  pushOnRender?: (questionId: UUID) => void;
   /** Called when a HELD question's hold-timeout expires unanswered, JUST BEFORE
    *  it fails open to passthrough (#733). Fired only on the TIMEOUT path — never
    *  on the undeliverable fail-open (#603 delivery gate), where the push channel
@@ -1195,7 +1207,9 @@ export class AutoApproveGate {
    * hook record + pushes (returning the created `Question.id`); `onEscalate`
    * releases the #484 buffer. Then:
    *   - no question id (push failed) or holding disabled (holdMs <= 0) ->
-   *     'passthrough' (today's behavior: Claude renders its native prompt).
+   *     'passthrough' with no push. `escalateMain` never reaches here with
+   *     holding disabled (it routes to `escalateForRender`, #1121), and Part B
+   *     does not arm without a hold.
    *   - else return a promise that stays PENDING until `resolveHeld` fulfills it
    *     with allow/deny, or the hold-timeout fires and fails it open to
    *     'passthrough' (so the terminal is never permanently stuck).
@@ -1231,9 +1245,9 @@ export class AutoApproveGate {
     // fires. Push the held question NOW so it is registered in sessionRegistry
     // (answerable) and pushed to the phone, keyed by the SAME id the hold uses
     // (#573). safeCue: cosmetic-shielded like the other lifecycle callbacks — a
-    // push failure here must not break the decision path. ONLY here (a real
-    // hold), never on the passthrough/multi-choice branches above (which push
-    // via onPTYPromptVisible and would double-push).
+    // push failure here must not break the decision path. Only for a real hold:
+    // an unheld escalation pushes on its render instead (`escalateForRender`),
+    // and a passthrough one through `escalatePassthrough`.
     this.safeCueWithArg('onHeldEscalate', this.deps.onHeldEscalate, qid);
     const decision = new Promise<PermissionDecision>((resolve) => {
       const timer = setTimeout(() => {
@@ -1393,7 +1407,10 @@ export class AutoApproveGate {
   /**
    * Escalate a main-context permission to the user (#573). A BINARY escalation
    * holds the hook open (`escalateAndHold`) so the user's answer resolves it via
-   * the hook response with no PTY render; a multi-choice / design escalation
+   * the hook response with no PTY render, unless holding is disabled
+   * (`holdMs <= 0`, the default install), in which case it answers
+   * 'passthrough' and pushes on the render (`escalateForRender`, #1121); a
+   * multi-choice / design escalation
    * cannot be expressed by the binary response, so it escalates + returns
    * 'passthrough' immediately (Claude renders the native prompt and the pick is
    * delivered by the legacy PTY path / a later phase). Always main context — the
@@ -1446,13 +1463,42 @@ export class AutoApproveGate {
       });
       return Promise.resolve({ behavior: 'deny', message: buildDenyMessage(reasoning) });
     }
+    if ((this.deps.holdMs ?? 0) <= 0)
+      return Promise.resolve(this.escalateForRender(input, summary));
     return this.escalateAndHold(input, summary);
   }
 
   /**
+   * Escalate a BINARY main-context permission when holding is disabled (no
+   * auto-approve service, which is the default install, or `hold_timeout <= 0`).
+   * The hook is answered 'passthrough', so Claude renders its native prompt in
+   * the terminal immediately, and the stashed question is marked to push when
+   * that render pairs with it (`pushOnRender`). Pushing on the render rather
+   * than now keeps two properties `createHold`'s held push does not need: the
+   * card only reaches the phone for a prompt that actually rendered, and its
+   * options come from the #718 merge, so a phone answer typed as a PTY digit
+   * selects the option the screen numbers that way.
+   */
+  private escalateForRender(
+    input: PermissionRequestHookInput,
+    summary?: string,
+  ): PermissionDecision {
+    const qid = this.escalateToUser(input, summary);
+    if (qid) {
+      this.safeCueWithArg('pushOnRender', this.deps.pushOnRender, qid);
+    } else {
+      logError(
+        `[AutoApprove ${this.sessionTag}] unheld binary escalation produced no question id; no push will follow (terminal prompt still answerable locally)`,
+      );
+    }
+    return 'passthrough';
+  }
+
+  /**
    * Escalate a NON-holdable (passthrough) permission to the user AND push it from
-   * the gate (#625). A binary escalation pushes via `createHold` -> `onHeldEscalate`;
-   * a passthrough one (multi-choice / design / AskUserQuestion) historically relied
+   * the gate (#625). A held binary escalation pushes via `createHold` ->
+   * `onHeldEscalate` and an unheld one on its render (`escalateForRender`); a
+   * passthrough one (multi-choice / design / AskUserQuestion) historically relied
    * on the PTY render to trigger its push (`onPTYPromptVisible`). That coupling is the
    * phantom-notification source: the PTY echoes EVERY on-screen prompt, including ones
    * the gate already auto-approved. The gate is now the single push trigger, so a
@@ -1864,9 +1910,14 @@ export class AutoApproveGate {
     // agent_id (the tracker misses async/team spawns); the tracker is ALSO
     // consulted live (it may close before the verdict) to cover legacy events
     // without agent_id, since arming an early USER push for a subagent prompt
-    // would be wrong either way.
+    // would be wrong either way. #1121: holding disabled (`hold_timeout <= 0`)
+    // disarms it too. The early push IS a hold, so with no hold `createHold`
+    // would answer passthrough with no push and drop the late verdict;
+    // unarmed, the verdict takes the normal path and an escalate reaches
+    // `escalateForRender`.
     if (
       pushHoldMs <= 0 ||
+      (this.deps.holdMs ?? 0) <= 0 ||
       !this.isBinaryEscalation(input) ||
       this.isSubagentEvent(input) ||
       this.deps.isInSubagentContext()

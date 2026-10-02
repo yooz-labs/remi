@@ -8,11 +8,13 @@ import { MessageAPI } from '../../../src/api/message-api.ts';
 import { QuestionPresenceTracker } from '../../../src/api/question-presence-tracker.ts';
 import { SubagentViewRegistry } from '../../../src/api/subagent-view-registry.ts';
 import { classifySessionWorkflowOperation } from '../../../src/auto-approve/session-workflow-grant.ts';
+import { createInputHandlers } from '../../../src/cli/handlers/input-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import type { HookBridgeHandle } from '../../../src/cli/session-phases/hook-bridge-setup.ts';
 import { setupHookBridge } from '../../../src/cli/session-phases/hook-bridge-setup.ts';
 import { REMI_REGISTERED_HOOK_EVENTS } from '../../../src/hooks/hook-types.ts';
 import type { HookServer } from '../../../src/hooks/index.ts';
+import { parseQuestion } from '../../../src/parser/question-parser.ts';
 import type { PTYSession } from '../../../src/pty/pty-session.ts';
 import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
 import { SessionRegistryFile } from '../../../src/session/session-registry-file.ts';
@@ -274,6 +276,13 @@ describe('setupHookBridge', () => {
       realMessageApi?: boolean;
       /** Override the session cwd when testing repository-bound behavior. */
       workingDirectory?: string;
+      /** Give the real tracker the two registry-backed deps cli.ts wires
+       *  (`hasLiveQuestions` and the `sessionRegistry.removeQuestion` half of
+       *  `onHooklessQuestionGone`), so redraw-echo suppression and render-owned
+       *  resolution run as they do in production. Only those two deps; it does
+       *  not claim the rest of cli.ts's wiring. Only meaningful with
+       *  `realTracker`. */
+      liveQuestionDeps?: boolean;
     } = {},
   ): { tracker: QuestionPresenceTracker; messageApi: MessageAPI } {
     const sessionWorkingDirectory = opts.workingDirectory ?? tmpDir;
@@ -299,11 +308,30 @@ describe('setupHookBridge', () => {
     const tracker: QuestionPresenceTracker = opts.realTracker
       ? new QuestionPresenceTracker(
           (q) => localMessageApi.handleQuestion(q),
-          // Only pass deps when a test asked for a shortened orphan debounce,
-          // so the pre-existing realTracker tests keep their exact wiring
-          // (default 1.5s window, no hasLiveQuestions dep).
-          opts.orphanDebounceMs !== undefined
-            ? { orphanDebounceMs: opts.orphanDebounceMs }
+          // Only pass deps when a test asked for them, so the pre-existing
+          // realTracker tests keep their exact wiring (default 1.5s window, no
+          // hasLiveQuestions dep).
+          opts.orphanDebounceMs !== undefined || opts.liveQuestionDeps
+            ? {
+                ...(opts.orphanDebounceMs !== undefined
+                  ? { orphanDebounceMs: opts.orphanDebounceMs }
+                  : {}),
+                ...(opts.liveQuestionDeps
+                  ? {
+                      hasLiveQuestions: () =>
+                        (sessionRegistry.getSession(SID)?.currentQuestions.size ?? 0) > 0,
+                      onHooklessQuestionGone: (questionId: string, reason: string) => {
+                        sessionRegistry.removeQuestion(
+                          SID,
+                          questionId as UUID,
+                          reason,
+                          undefined,
+                          'test.onHooklessQuestionGone',
+                        );
+                      },
+                    }
+                  : {}),
+              }
             : undefined,
         )
       : makePassthroughTracker(localMessageApi);
@@ -1945,6 +1973,212 @@ describe('setupHookBridge', () => {
     // because there is no hook record to merge.
     expect(questions[0]?.text).toBe('Allow Bash: curl example.com?');
     expect(questions[0]?.source).toBe('pty');
+  });
+
+  describe('unheld binary main-agent prompts push on render (#1121)', () => {
+    // A Claude permission dialog as the terminal shows it, fed through the
+    // real parser (`parseQuestion` is what OutputProcessor emits from).
+    function claudeDialog(command: string): Question {
+      const screen = [
+        ' Bash command',
+        '',
+        `   ${command}`,
+        '   Run the command',
+        '',
+        ' Do you want to proceed?',
+        ' ❯ 1. Yes',
+        "   2. Yes, and don't ask again for this command",
+        '   3. No, and tell Claude what to do differently (esc)',
+      ].join('\n');
+      const parsed = parseQuestion(screen);
+      if (!parsed.question) throw new Error('fixture did not parse as a prompt');
+      return parsed.question;
+    }
+
+    function lockSession(id: string): void {
+      hookServer.fire('Notification', {
+        session_id: id,
+        hook_event_name: 'Notification',
+        transcript_path: path.join(tmpDir, `${id}.jsonl`),
+        notification_type: 'auth_success',
+        message: '',
+      });
+    }
+
+    function bash(id: string, command: string) {
+      return hookServer.firePermission({
+        session_id: id,
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command },
+      });
+    }
+
+    function cards(): Question[] {
+      return [...(sessionRegistry.getSession(SID)?.currentQuestions.values() ?? [])];
+    }
+
+    async function waitFor(pred: () => boolean): Promise<void> {
+      const deadline = Date.now() + 2000;
+      while (!pred() && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+    }
+
+    test('no auto-approve: the prompt reaches the phone when it renders, numbered like the screen', async () => {
+      // The default install (auto_approve.enabled = false) cannot hold, so the
+      // gate answers 'passthrough' and Claude renders its native prompt at once.
+      // Before `pushOnRender`, the stashed hook record made `isGateOwnedCycle`
+      // read that render as already pushed and suppress it: the card never
+      // reached the phone. Driven through `onOrphanPTYPrompt`, the routing
+      // cli.ts uses when a hook server is active.
+      const { tracker } = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+      });
+      lockSession('claude-unheld-1');
+
+      expect(await bash('claude-unheld-1', 'curl example.com')).toBe('passthrough');
+      // Nothing is registered until the prompt actually renders.
+      expect(cards()).toHaveLength(0);
+
+      tracker.onOrphanPTYPrompt(claudeDialog('curl example.com'));
+
+      const registered = cards();
+      expect(registered).toHaveLength(1);
+      // No usable permission_suggestions, so the hook built the Yes/No fallback;
+      // the #718 merge must keep the screen's three options, or a phone "No"
+      // would type 2 and select the persistent allow.
+      expect(registered[0]?.options.map((o) => o.value)).toEqual(['1', '2', '3']);
+      expect(registered[0]?.options[2]?.label.startsWith('No')).toBe(true);
+    });
+
+    test('a redraw of the same dialog does not push a second card', async () => {
+      const { tracker } = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+      });
+      lockSession('claude-unheld-2');
+      await bash('claude-unheld-2', 'curl example.com');
+
+      tracker.onOrphanPTYPrompt(claudeDialog('curl example.com'));
+      tracker.onOrphanPTYPrompt(claudeDialog('curl example.com'));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect(cards()).toHaveLength(1);
+      expect(messageApiLog.questionCalls).toBe(1);
+    });
+
+    test('a terminal "No" leaves no stale card once the next prompt renders', async () => {
+      // A denial fires no tool call, so `cancelExternallyResolved` never runs;
+      // the next render taking the render-owned slot is what retires card A.
+      const { tracker } = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+      });
+      lockSession('claude-unheld-3');
+      await bash('claude-unheld-3', 'echo A');
+      tracker.onOrphanPTYPrompt(claudeDialog('echo A'));
+      const cardA = cards()[0]?.id;
+
+      await bash('claude-unheld-3', 'echo B');
+      tracker.onOrphanPTYPrompt(claudeDialog('echo B'));
+
+      const remaining = cards();
+      expect(remaining).toHaveLength(1);
+      expect(remaining[0]?.id).not.toBe(cardA);
+      expect(remaining[0]?.text).toContain('echo B');
+    });
+
+    test('two outstanding hooks before a render push the screen, never the other hook', async () => {
+      const { tracker } = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+        orphanDebounceMs: 5,
+      });
+      lockSession('claude-unheld-4');
+      await bash('claude-unheld-4', 'echo A');
+      await bash('claude-unheld-4', 'rm -rf B');
+
+      // Dialog A renders first: pairing by agent key would dress it as B.
+      const screenA = claudeDialog('echo A');
+      tracker.onOrphanPTYPrompt(screenA);
+      await waitFor(() => cards().length > 0);
+
+      const registered = cards();
+      expect(registered).toHaveLength(1);
+      expect(registered[0]?.text).toBe(screenA.text);
+      expect(registered[0]?.text).not.toContain('rm -rf B');
+    });
+
+    test('a phone "No" types the screen\'s No (3), not the hook fallback\'s 2', async () => {
+      // The answer side of the #718 merge: an unheld card has no hold, so
+      // `handleAnswer` resolves the label to the option VALUE and types it.
+      // The tracker's own presence signal is wired the way cli.ts wires it.
+      const { tracker } = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+      });
+      lockSession('claude-unheld-7');
+      await bash('claude-unheld-7', 'curl example.com');
+      tracker.onOrphanPTYPrompt(claudeDialog('curl example.com'));
+      const card = cards()[0];
+      if (!card) throw new Error('no card registered');
+      const no = card.options.find((o) => o.label.startsWith('No'));
+      if (!no) throw new Error('no "No" option on the card');
+
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send: () => true,
+        isPromptObservedOnPTY: () => tracker.isPromptObservedOnPTY(),
+      });
+      await handlers.onAnswer('conn-1' as UUID, SID, card.id, no.label);
+
+      expect(ptySubmits).toEqual(['3']);
+    });
+
+    test('auto-approve on, hold_timeout = 0: an escalate verdict pushes on render, no PTY inject', async () => {
+      const { tracker } = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+        autoApprove: true,
+        autoApproveDecision: 'escalate',
+      });
+      lockSession('claude-unheld-5');
+
+      expect(await bash('claude-unheld-5', 'curl example.com')).toBe('passthrough');
+      tracker.onOrphanPTYPrompt(claudeDialog('curl example.com'));
+
+      expect(cards()).toHaveLength(1);
+      expect(ptySubmits).toEqual([]);
+    });
+
+    test('auto-approve on, hold_timeout = 0, slow eval: Part B does not swallow the prompt', async () => {
+      // Review finding: with push_hold_timeout > 0 and no hold, Part B used to
+      // answer passthrough with no push and drop the late verdict.
+      const { tracker } = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+        autoApprove: true,
+        autoApproveDecision: 'escalate',
+        autoApproveDelayMs: 80,
+        pushHoldTimeoutSec: 0.01,
+      });
+      lockSession('claude-unheld-6');
+
+      expect(await bash('claude-unheld-6', 'curl example.com')).toBe('passthrough');
+      tracker.onOrphanPTYPrompt(claudeDialog('curl example.com'));
+
+      expect(cards()).toHaveLength(1);
+    });
   });
 
   test('#807: a subagent never reaches an approve verdict — passthrough, no inject, no escalate', async () => {

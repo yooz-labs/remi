@@ -143,6 +143,9 @@ export type ParkedRenderArbiter = (ctx: {
   ptyPrompt: Question;
 }) => Promise<ParkedRenderVerdict>;
 
+/** Why a pending record pushes on its PTY render; see `awaitingPTY`. */
+type RenderMarkKind = 'parked-subagent' | 'push-on-render';
+
 /** Pending-hook map key: the prompt's agent, or MAIN_AGENT_ID for the primary. */
 /** The one card the current on-screen prompt owns, and what identifies it. */
 interface RenderOwnedCard {
@@ -234,8 +237,12 @@ export class QuestionPresenceTracker {
    *  candidate; with 2+ different-agent entries it pushes bare (no guessing). */
   private pending = new Map<string, Question>();
 
-  /** Keys of `pending` records PARKED by the gate awaiting PTY arbitration
-   *  (#751), mapped to the epoch-ms they were parked. Unlike a normal pending
+  /** Keys of `pending` records that push on their PTY render instead of
+   *  through the gate, mapped to when they were marked and why. Two kinds:
+   *  `parked-subagent`, a subagent escalation PARKED for PTY arbitration
+   *  (#751), and `push-on-render`, a binary main-agent escalation the gate
+   *  answered 'passthrough' without holding (`pushOnRender`, #1121). Unlike a
+   *  normal pending
    *  record (an in-flight gate escalation whose own push is imminent), a
    *  parked record must NOT count as gate-owned in the #712 orphan check —
    *  the PTY render IS its push trigger — and it must SURVIVE the unscoped
@@ -248,8 +255,21 @@ export class QuestionPresenceTracker {
    *  answered), on consume (render pairing), on `clearPending`
    *  (restart/rotation), or after `PARKED_RECORD_TTL_MS`. Always a subset of
    *  `pending`'s keys; every `pending` delete/clear site mirrors onto this
-   *  map. */
-  private awaitingPTY = new Map<string, number>();
+   *  map. Only `parked-subagent` takes the #763 exemption: a `push-on-render`
+   *  mark belongs to the main agent, which has no `noteAgentAdvanced` path,
+   *  so its own status leaving 'waiting' is how its prompt cycle ends. It
+   *  also never reaches the parked-render arbiter: the gate already decided
+   *  the user must answer it. */
+  private awaitingPTY = new Map<string, { at: number; kind: RenderMarkKind }>();
+
+  /** Agent keys whose `push-on-render` record was REPLACED by a newer hook
+   *  before its prompt rendered (#1121 review). Two outstanding prompts for
+   *  one agent cannot be paired by agent key and render order: whichever
+   *  dialog renders first would wear the other's text and options. The next
+   *  `pushOnRender` for such a key therefore declines to mark, so both
+   *  renders take the orphan path and push the screen's own prompt. Cleared
+   *  when consumed, when status leaves 'waiting', and on `clearPending`. */
+  private ambiguousRenderKeys = new Set<string>();
 
   /** True while a permission prompt is on the main PTY. Set by
    *  `onPTYPromptVisible`; reset by `onStatusChange` out of `'waiting'`
@@ -435,6 +455,12 @@ export class QuestionPresenceTracker {
         `[QuestionPresenceTracker] Replacing pending hook for agent "${key}" (old="${existing.text.slice(0, 50)}", new="${question.text.slice(0, 50)}")`,
       );
     }
+    if (existing && this.awaitingPTY.get(key)?.kind === 'push-on-render') {
+      this.ambiguousRenderKeys.add(key);
+      console.error(
+        `[QuestionPresenceTracker] A new hook replaced agent "${key}"'s unrendered push-on-render record ("${existing.text.slice(0, 50)}"); its render will push bare`,
+      );
+    }
     // Re-insert so this agent's entry is the most recent (matters for the
     // PTY-pairing fallback below).
     this.pending.delete(key);
@@ -461,10 +487,53 @@ export class QuestionPresenceTracker {
     // recordPendingHook may have kept a richer existing record instead of
     // this one; the parked flag applies to whatever record now owns the key
     // (both are hook-derived for the same agent's prompt cycle).
-    this.awaitingPTY.set(agentKey(question), this.deps.nowMs?.() ?? Date.now());
+    this.awaitingPTY.set(agentKey(question), {
+      at: this.deps.nowMs?.() ?? Date.now(),
+      kind: 'parked-subagent',
+    });
     console.debug(
       `[QuestionPresenceTracker] Parked question awaiting PTY render (agent "${agentKey(question)}"): "${question.text.slice(0, 60)}"`,
     );
+  }
+
+  /**
+   * Mark an already-stashed hook record (located by `Question.id`) to push
+   * when its prompt renders, through the same parked branch of
+   * `onOrphanPTYPrompt` a subagent park uses: merge onto the parsed prompt
+   * (#718 option policy), then push. The gate calls this for a binary
+   * main-context escalation it does NOT hold (`AutoApproveGate.escalateForRender`):
+   * without the mark, `isGateOwnedCycle` reads the stashed record as "the gate
+   * already pushed this" and suppresses the only render that could surface it.
+   * Returns false when no pending record carries that id (nothing to mark), or
+   * when the record replaced an unrendered one for the same agent (see
+   * `ambiguousRenderKeys`); the record is then dropped and the render pushes
+   * bare through the orphan path.
+   */
+  pushOnRender(questionId: string): boolean {
+    for (const [key, q] of this.pending) {
+      if (q.id !== questionId) continue;
+      if (this.ambiguousRenderKeys.delete(key)) {
+        // Unpairable (see `ambiguousRenderKeys`): drop the record so neither
+        // render counts as gate-owned and each pushes the screen's own prompt.
+        this.pending.delete(key);
+        console.error(
+          `[QuestionPresenceTracker] pushOnRender: two outstanding prompts for agent "${key}"; not pairing "${q.text.slice(0, 50)}", its render pushes bare`,
+        );
+        return false;
+      }
+      this.awaitingPTY.set(key, {
+        at: this.deps.nowMs?.() ?? Date.now(),
+        kind: 'push-on-render',
+      });
+      console.debug(
+        `[QuestionPresenceTracker] Unheld escalation awaiting its render (agent "${key}"): "${q.text.slice(0, 60)}"`,
+      );
+      return true;
+    }
+    console.debug(
+      `[QuestionPresenceTracker] pushOnRender: no pending record for question ${questionId.slice(0, 8)}`,
+    );
+    return false;
   }
 
   /**
@@ -646,9 +715,23 @@ export class QuestionPresenceTracker {
     // not, so whether a hook was consumed no longer changes what is tracked.
     const { merged } = this.consumeAndMerge(ptyQuestion);
     this.ptyShowingQuestion = true;
-    const outcome = this.pushMerged(merged);
-    const delivered = outcome?.status === 'registered';
-    if (!delivered) {
+    this.pushRenderBorn(merged, ptyQuestion.text);
+  }
+
+  /**
+   * Push a render-born card and, on a CONFIRMED registration, give it the
+   * render-owned slot (#1005 Change B), so the next render on this screen
+   * resolves it. Used by every render-born push site: `pairAndPush`, and the
+   * parked branch of `onOrphanPTYPrompt` when no arbiter runs (a parked subagent
+   * with auto-approve off, or a main `push-on-render` mark, #1121). Without
+   * the slot, a card whose prompt was denied in the terminal (no tool run, so
+   * no `cancelExternallyResolved`) stayed live until the `Stop` sweep, and a
+   * phone tap on it while a later prompt was on screen passed the
+   * any-prompt-observed guard and typed into that later prompt.
+   */
+  private pushRenderBorn(merged: Question, ptyText: string, context?: string): void {
+    const outcome = this.pushMerged(merged, context);
+    if (outcome?.status !== 'registered') {
       // Not confirmed (deduped, or the push sink returned no outcome):
       // nothing is known to have changed. Leave `observedRenderOwnedQuestion`
       // exactly as it was -- if it was tracking an older id, that question
@@ -666,7 +749,7 @@ export class QuestionPresenceTracker {
       // which is the very cross-agent bleed the scoping exists to stop. The
       // merge takes the hook record's agent, which is the one that knows.
       agent: agentKey(merged),
-      text: ptyQuestion.text,
+      text: ptyText,
     });
   }
 
@@ -940,8 +1023,9 @@ export class QuestionPresenceTracker {
     // earlier prompt must be able to see that it has been superseded.
     this.observedPTYQuestionId = ptyQuestion.id;
     this.observedPTYText = ptyQuestion.text;
-    // #751 PTY-arbiter: a parked subagent escalation whose prompt has now
-    // rendered. Merge + push IMMEDIATELY through the pair core — no orphan
+    // #751 PTY-arbiter: a parked subagent escalation, or a main-agent
+    // `push-on-render` mark (#1121), whose prompt has now rendered. Merge +
+    // push IMMEDIATELY through the pair core — no orphan
     // debounce (hook + render is positive double-confirmation), no gate-owned
     // / live-question suppression (an unrelated live card must not eat the one
     // prompt class this parking exists to surface), and CHECKED BEFORE the
@@ -953,6 +1037,8 @@ export class QuestionPresenceTracker {
       console.debug(
         `[QuestionPresenceTracker] Parked question's prompt rendered (agent "${parkedKey}"): "${ptyQuestion.text.slice(0, 60)}"`,
       );
+      // Read before `consumeAndMerge` deletes the mark.
+      const markKind = this.awaitingPTY.get(parkedKey)?.kind;
       const { merged, hookRecord } = this.consumeAndMerge(ptyQuestion);
       // The prompt IS on screen now: set this before arbitrating, since the
       // arbiter's own PTY inject is gated on `isPromptVisibleOnPTY()`.
@@ -960,12 +1046,17 @@ export class QuestionPresenceTracker {
       // #814: the render is the moment the permission becomes a real question,
       // so this is where it gets evaluated — the hook that carried it was
       // answered 'passthrough' long ago. No arbiter (auto-approve off) => push
-      // straight to the user, the pre-#814 behavior.
-      if (this.parkedRenderArbiter !== null && hookRecord !== undefined) {
+      // straight to the user, the pre-#814 behavior. A `push-on-render` mark
+      // never goes to the arbiter: the gate already decided the user answers it.
+      if (
+        markKind === 'parked-subagent' &&
+        this.parkedRenderArbiter !== null &&
+        hookRecord !== undefined
+      ) {
         this.arbitrateParkedRender(hookRecord.id, merged, ptyQuestion);
         return;
       }
-      this.pushMerged(merged);
+      this.pushRenderBorn(merged, ptyQuestion.text);
       return;
     }
     if (this.arbitratingPTYTexts.includes(ptyQuestion.text)) {
@@ -1069,12 +1160,6 @@ export class QuestionPresenceTracker {
           );
           return;
         }
-        const outcome = this.pushMerged(
-          verdict.summary !== undefined && merged.summary === undefined
-            ? { ...merged, summary: verdict.summary }
-            : merged,
-          'parked-render arbitration verdict; NO retry path exists for this push',
-        );
         // #1005 Change B: this push is render-born too, so it takes the
         // render-owned slot like any other. Without this the escalate-verdict
         // cohort -- the one whose exits are a tool-run match, a phone answer or
@@ -1083,19 +1168,13 @@ export class QuestionPresenceTracker {
         // CONFIRMED registration for the same reason `pairAndPush` is (ADR
         // 0021): a deduped push changed nothing, so it must not retire the card
         // that is still the best evidence of what is on screen.
-        if (outcome?.status === 'registered') {
-          this.adoptRenderOwnedQuestion({
-            id: merged.id,
-            // Scope by the MERGED question, not the raw PTY parse. The parse often
-            // carries no `agentId` at all (`Do you want to proceed?` says nothing
-            // about whose permission it is), so keying on it filed a parked SUBAGENT
-            // card under `main` — and the next main-agent prompt then superseded it,
-            // which is the very cross-agent bleed the scoping exists to stop. The
-            // merge takes the hook record's agent, which is the one that knows.
-            agent: agentKey(merged),
-            text: ptyQuestion.text,
-          });
-        }
+        this.pushRenderBorn(
+          verdict.summary !== undefined && merged.summary === undefined
+            ? { ...merged, summary: verdict.summary }
+            : merged,
+          ptyQuestion.text,
+          'parked-render arbitration verdict; NO retry path exists for this push',
+        );
       });
   }
 
@@ -1183,19 +1262,29 @@ export class QuestionPresenceTracker {
       // PreToolUse must not wipe another agent's parked question before its
       // prompt had a chance to render. Parked entries have their own
       // lifecycle (own-agent advance / render consume / TTL / clearPending);
-      // everything else clears exactly as before.
+      // everything else clears exactly as before. A `pushOnRender` mark is
+      // not spared: the main agent has no `noteAgentAdvanced` path, so
+      // leaving 'waiting' is how its prompt cycle ends, and a stale main
+      // record would merge onto the next one.
       const now = this.deps.nowMs?.() ?? Date.now();
       for (const key of [...this.pending.keys()]) {
-        const parkedAt = this.awaitingPTY.get(key);
-        if (parkedAt !== undefined && now - parkedAt <= PARKED_RECORD_TTL_MS) continue;
-        if (parkedAt !== undefined) {
+        const mark = this.awaitingPTY.get(key);
+        if (mark?.kind === 'parked-subagent') {
+          if (now - mark.at <= PARKED_RECORD_TTL_MS) continue;
           console.debug(
             `[QuestionPresenceTracker] Parked question expired (agent "${key}", TTL ${PARKED_RECORD_TTL_MS}ms elapsed without a render)`,
+          );
+        } else if (mark?.kind === 'push-on-render') {
+          // Error level: this card never reached the phone. Either Claude
+          // never showed the dialog, or the PTY parser did not recognize it.
+          console.error(
+            `[QuestionPresenceTracker] push-on-render record cleared without a render; no card was pushed (agent "${key}"): "${(this.pending.get(key)?.text ?? '').slice(0, 60)}"`,
           );
         }
         this.pending.delete(key);
         this.awaitingPTY.delete(key);
       }
+      this.ambiguousRenderKeys.clear();
       this.ptyShowingQuestion = false;
       // #814: nothing is on screen now.
       this.observedPTYQuestionId = null;
@@ -1295,6 +1384,7 @@ export class QuestionPresenceTracker {
   clearPending(): void {
     this.pending.clear();
     this.awaitingPTY.clear();
+    this.ambiguousRenderKeys.clear();
     this.ptyShowingQuestion = false;
     this.observedPTYQuestionId = null;
     this.observedPTYText = null;
