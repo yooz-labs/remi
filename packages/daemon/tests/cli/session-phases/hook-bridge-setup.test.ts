@@ -7,7 +7,6 @@ import { generateId } from '@remi/shared';
 import { MessageAPI } from '../../../src/api/message-api.ts';
 import { QuestionPresenceTracker } from '../../../src/api/question-presence-tracker.ts';
 import { SubagentViewRegistry } from '../../../src/api/subagent-view-registry.ts';
-import { classifySessionWorkflowOperation } from '../../../src/auto-approve/session-workflow-grant.ts';
 import { createInputHandlers } from '../../../src/cli/handlers/input-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import type { HookBridgeHandle } from '../../../src/cli/session-phases/hook-bridge-setup.ts';
@@ -1070,50 +1069,6 @@ describe('setupHookBridge', () => {
     // the registry, so nothing lingers across the rotation.
     expect(broadcastResolvedLog).toEqual([{ questionId: QID, reason: 'cancelled' }]);
     expect(sessionRegistry.getSession(SID)?.currentQuestions.size).toBe(0);
-  });
-
-  test('workflow grants clear when the same path rotates to a new Claude session', () => {
-    const workingDirectory = process.cwd();
-    build({ workingDirectory });
-    const handle = bridgeHandles[bridgeHandles.length - 1];
-    expect(handle).toBeDefined();
-    if (!handle) return;
-
-    hookServer.fire('Notification', {
-      session_id: 'claude-workflow-A',
-      hook_event_name: 'Notification',
-      transcript_path: path.join(tmpDir, 'workflow-a.jsonl'),
-      notification_type: 'auth_success',
-      message: '',
-    });
-
-    const operation = classifySessionWorkflowOperation(
-      'Bash',
-      { command: "gh issue create --title 'x' --body 'y'" },
-      { sessionId: SID, workingDirectory, repository: 'yooz-labs/remi' },
-    );
-    expect(operation).toBeDefined();
-    expect(handle.workflowGrantStore.grant(operation as NonNullable<typeof operation>)).toBe(true);
-    expect(handle.workflowGrantStore.matches(operation as NonNullable<typeof operation>)).toBe(
-      true,
-    );
-
-    hookServer.fire('SessionEnd', {
-      session_id: 'claude-workflow-A',
-      hook_event_name: 'SessionEnd',
-      reason: 'clear',
-    });
-    hookServer.fire('Notification', {
-      session_id: 'claude-workflow-B',
-      hook_event_name: 'Notification',
-      transcript_path: path.join(tmpDir, 'workflow-b.jsonl'),
-      notification_type: 'auth_success',
-      message: '',
-    });
-
-    expect(handle.workflowGrantStore.matches(operation as NonNullable<typeof operation>)).toBe(
-      false,
-    );
   });
 
   // -------------------------------------------------------------------------

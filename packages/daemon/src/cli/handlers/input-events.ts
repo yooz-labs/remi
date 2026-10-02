@@ -12,9 +12,6 @@
 import { createBulletExpandResponse, createError, errorToString } from '@remi/shared';
 import type { AnswerExtras, AnswerSelection, Question, QuestionOption, UUID } from '@remi/shared';
 
-import { precedentAgentScope, toolNameFromSignature } from '../../auto-approve/precedent.ts';
-import type { PrecedentAgentScope } from '../../auto-approve/precedent.ts';
-import type { SessionWorkflowFamily } from '../../auto-approve/session-workflow-grant.ts';
 import { clearAuqRunActive, markAuqRunActive } from '../../hooks/auq-active-runs.ts';
 import { AUQ_KEYS } from '../../hooks/auq-answer.ts';
 import { type AuqRunOutcome, runAuqAnswer } from '../../hooks/auq-runner.ts';
@@ -30,40 +27,13 @@ export interface InputHandlerDeps {
   bindingStore: SessionBindingStore;
   send: SendToConnection;
   /**
-   * Resolve a HELD binary PermissionRequest hook with the user's answer (Model
-   * B, #573), routed to the gate for `sessionId`. Returns true when a hold
-   * existed and was resolved — `onAnswer` then SKIPS the PTY inject (Claude is
-   * blocked on the hook, not rendering a prompt). Absent / false => the answer
-   * takes the existing PTY-submit path (multi-choice pick, non-AA session, or
-   * Part-B-disabled escalation that passed through). Session-keyed by cli.ts.
-   *
-   * `suggestionIndex` (#718): present when the answered option was derived
-   * from a structured `permission_suggestions` entry, so the hold resolves
-   * with a real `updatedPermissions` echo instead of a bare `allow`.
+   * Tell this session's permission gate that `questionId` was answered here,
+   * so it stops tracking the escalation's tool signature (#673): the answer
+   * path removes and dismisses the card itself, and a later matching
+   * PreToolUse must not resolve (and dismiss) it a second time. Session-keyed
+   * by cli.ts. Absent => no-op (tests, or no hook server).
    */
-  resolveHeldPermission?: (
-    sessionId: UUID,
-    questionId: UUID,
-    decision: 'allow' | 'deny',
-    suggestionIndex?: number,
-    sessionGrant?: SessionWorkflowFamily,
-  ) => boolean;
-  /**
-   * Release a HELD binary PermissionRequest hook to 'passthrough' for `sessionId`
-   * (#573) when the user's answer cannot be expressed by the binary hook
-   * response — a "Yes, always" or a multi-choice pick. Claude then renders its
-   * native numbered prompt and `onAnswer` submits the digit (the only way to
-   * express "always" / a specific pick). Returns true iff a hold existed.
-   * Session-keyed by cli.ts.
-   */
-  releaseHeldAsPassthrough?: (sessionId: UUID, questionId: UUID) => boolean;
-  /**
-   * Cancel ONLY the eval for the question the user just answered (#617), freeing
-   * the GPU without touching the session's other holds. Per-eval scoping makes it
-   * safe to fire on every answer (a no-op when no eval is in flight for the
-   * question, and it never aborts a different permission's eval). Session-keyed.
-   */
-  cancelAutoApproveForQuestion?: (sessionId: UUID, questionId: UUID, reason: string) => void;
+  retireQuestion?: (sessionId: UUID, questionId: UUID) => void;
   /**
    * Cross-client question dismissal (#585, P7). Called after a question is
    * answered here so the daemon broadcasts `question_resolved` to every client and
@@ -76,11 +46,9 @@ export interface InputHandlerDeps {
   onQuestionResolved?: (sessionId: UUID, questionId: UUID) => void;
   /**
    * Prompt-currency check for a resolved card-answer PTY submit (#920).
-   * Backed by the session's `QuestionPresenceTracker.isPromptCurrent` — the
-   * same gate `AutoApproveGate.answerRenderedParked` uses immediately before
-   * its own PTY write (auto-approve-gate.ts:1830) — so answering a card whose
-   * on-screen prompt is gone is refused instead of typing into whatever
-   * Claude is doing now. Consulted ONLY for `Question.source === 'pty'`
+   * Backed by the session's `QuestionPresenceTracker.isPromptCurrent`, so
+   * answering a card whose on-screen prompt is gone is refused instead of
+   * typing into whatever Claude is doing now. Consulted ONLY for `Question.source === 'pty'`
    * cards (the genuinely hook-less cohort #920 traced the leak to); every
    * other source is left alone, see the call site's comment for why a
    * blanket check would misfire on hook-paired questions. Absent (no
@@ -110,9 +78,9 @@ export interface InputHandlerDeps {
    * why widening it on id/text would refuse legitimate answers rather than fix
    * anything.
    *
-   * But the scoping left a real hole: a hook-sourced card whose hold is ALREADY
-   * gone still reached `pty.submitInput` with nothing checked, and typed its
-   * option digit into whatever Claude was doing. Observed live — a bare `1`
+   * But the scoping left a real hole: a hook-sourced card whose prompt is
+   * ALREADY gone still reached `pty.submitInput` with nothing checked, and
+   * typed its option digit into whatever Claude was doing. Observed live — a bare `1`
    * landed in an unrelated session as a chat message, recorded in the
    * transcript as a user entry (#1002).
    *
@@ -125,31 +93,6 @@ export interface InputHandlerDeps {
    * `isPromptCurrent` documents.
    */
   isPromptObservedOnPTY?: (sessionId: UUID) => boolean;
-  /**
-   * Record a human-classified permission answer into this session's
-   * precedent store (#976 prerequisite, `auto-approve/precedent.ts`). Called
-   * ONLY for answers `handleAnswer` can classify with confidence as an
-   * unambiguous approve/deny of a genuine tool permission — see the call
-   * site's comment for the exact conditions. This callback is the ONLY
-   * client-answer write entrypoint: the production recorder it invokes owns
-   * the session-store write, while provenance-safety (ADR 0015's
-   * "Amendment, 2026-08-02", precedent.ts's module doc) depends on every
-   * transport path converging on `handleAnswer`. A future consumer must not
-   * add another recording path instead of routing through here. Absent (tests,
-   * or a session with no wired store) => the answer still applies normally,
-   * it is just not recorded as precedent — recording is additive and must
-   * never gate the answer itself. `agentScope` is private audit metadata
-   * derived from the question's `agentId`; it never changes the operation
-   * identity.
-   */
-  recordPrecedent?: (
-    sessionId: UUID,
-    toolName: string,
-    signature: string,
-    decision: 'approved' | 'denied',
-    workingDirectory: string,
-    agentScope: PrecedentAgentScope,
-  ) => void;
 }
 
 /**
@@ -212,10 +155,10 @@ function guardBinding(
  * Outcome of routing an answer to a pending Question. Returned by the shared
  * answer core so the connection-independent HTTP `/answer` relay (#575, P4a)
  * can map it to a clear JSON status without re-implementing the routing logic.
- *   - `delivered`     — the answer was resolved via the held hook OR submitted to the PTY.
+ *   - `delivered`     — the answer was submitted to the PTY (or drove the AskUserQuestion runner).
  *   - `session-not-found` — no session matched the sessionId/connectionId.
  *   - `stale-binding` — the Claude session this answer targeted has rotated.
- *   - `stale`         — the question is no longer active (already answered/auto-approved).
+ *   - `stale`         — the question is no longer active (already answered or resolved).
  */
 export type AnswerOutcome =
   | 'delivered'
@@ -250,67 +193,15 @@ function resolveOption(
  */
 const noopSend: SendToConnection = () => false;
 
-/** Result of {@link mapAnswerToDecision}: the binary decision for the held
- *  hook response, plus the suggestion index to echo back (#718) when the
- *  answered option was derived from a structured `permission_suggestions`
- *  entry. */
-interface AnswerDecision {
-  readonly decision: 'allow' | 'deny';
-  readonly suggestionIndex?: number;
-  readonly sessionGrant?: SessionWorkflowFamily;
-}
-
-/**
- * Map a resolved option to a binary allow/deny decision (#573, #718). Reads
- * the option's `isYes` / `isNo` / `suggestionIndex` flags. Returns:
- *   - `{decision:'deny'}` for a no-shaped option;
- *   - `{decision:'allow', suggestionIndex}` for a suggestion-derived "Yes,
- *     always allow: ..." option (#718) — the hold resolves with the real
- *     `updatedPermissions` echo instead of a bare allow;
- *   - `{decision:'allow'}` for a yes-shaped option ONLY when it is a one-time
- *     "Yes" — an "always"-shaped label with no `suggestionIndex` is NOT
- *     mapped, because the binary PermissionRequest hook response can only
- *     express allow/deny/updatedPermissions, never a session-wide "always"
- *     with no suggestion to echo. Downgrading it to a one-time allow would
- *     silently lose that choice, so it returns null and the caller takes the
- *     native PTY path (which can express "always" via the digit);
- *   - null otherwise (always-shaped with no suggestion, unknown value/label,
- *     or free text) -> PTY path.
- */
-function mapAnswerToDecision(
-  options: readonly QuestionOption[],
-  answer: string,
-): AnswerDecision | null {
-  const option = resolveOption(options, answer);
-  if (!option) return null;
-  if (option.sessionGrant !== undefined) {
-    return { decision: 'allow', sessionGrant: option.sessionGrant };
-  }
-  if (option.isNo) return { decision: 'deny' };
-  if (option.suggestionIndex !== undefined) {
-    return { decision: 'allow', suggestionIndex: option.suggestionIndex };
-  }
-  // "always" cannot be expressed in the binary hook response without an
-  // accompanying suggestion to echo, so a yes-shaped "always" option must NOT
-  // collapse to a one-time allow.
-  if (option.isYes && !option.label.toLowerCase().includes('always')) {
-    return { decision: 'allow' };
-  }
-  return null;
-}
-
 export function createInputHandlers(deps: InputHandlerDeps) {
   const {
     sessionRegistry,
     bindingStore,
     send,
-    resolveHeldPermission,
-    releaseHeldAsPassthrough,
-    cancelAutoApproveForQuestion,
+    retireQuestion,
     onQuestionResolved,
     isPromptCurrent,
     isPromptObservedOnPTY,
-    recordPrecedent,
   } = deps;
 
   // #627: in-flight AskUserQuestion runs, keyed `${sessionId}:${questionId}`, so a
@@ -403,19 +294,11 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       // #752: the selections were applied; a duplicate delivery of this same
       // tap must report 'delivered', not 'stale'.
       resolvedAnswers.record(questionId, [answerCacheKey('', selections)]);
-      // Wrapped like the plain-answer path (below): if cancelAutoApproveForQuestion
-      // throws, the question must still be consumed exactly once — removeQuestion +
-      // the resolved broadcast run in `finally` so a throw here can never leave a
-      // zombie question the phone thinks is still pending.
+      sessionRegistry.removeQuestion(session.sessionId, questionId, 'user_answer:auq');
       try {
-        cancelAutoApproveForQuestion?.(session.sessionId, questionId, 'user-answered-auq');
-      } finally {
-        sessionRegistry.removeQuestion(session.sessionId, questionId, 'user_answer:auq');
-        try {
-          onQuestionResolved?.(session.sessionId, questionId);
-        } catch (err) {
-          logError(`[AUQ] question_resolved broadcast failed: ${errorToString(err)}`);
-        }
+        onQuestionResolved?.(session.sessionId, questionId);
+      } catch (err) {
+        logError(`[AUQ] question_resolved broadcast failed: ${errorToString(err)}`);
       }
       log(`[AUQ] answered question ${questionId.slice(0, 8)} (${outcome})`);
       return 'delivered';
@@ -446,11 +329,11 @@ export function createInputHandlers(deps: InputHandlerDeps) {
 
   /**
    * Shared answer-routing core for both the WebSocket `onAnswer` event and the
-   * HTTP `/answer` relay (#575, P4a). Resolves a held permission hook (Model B),
-   * releases to passthrough + submits a PTY digit for picks / "always", or
-   * submits free text — then cancels the in-flight eval and removes the
-   * question. Returns the outcome; the WebSocket path additionally surfaces
-   * errors over the connection via `send` (suppressed when `viaRelay`).
+   * HTTP `/answer` relay (#575, P4a). Submits the answered option's digit (or
+   * free text) to the PTY, where Claude's native prompt is waiting, then
+   * removes the question. Returns the outcome; the WebSocket path additionally
+   * surfaces errors over the connection via `send` (suppressed when
+   * `viaRelay`).
    */
   async function handleAnswer(
     connectionId: UUID,
@@ -498,8 +381,8 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     // after our Esc). Then send Esc to the PTY so the active interactive prompt
     // cancels and Claude unblocks. The Esc is gated on the question still being
     // active: a delayed cancel for an already-resolved question must NOT inject Esc
-    // into whatever Claude renders next (#631 review). Cleanup (hold release, eval
-    // cancel, removeQuestion, broadcast) is unconditional so the card always clears.
+    // into whatever Claude renders next (#631 review). Cleanup (gate retirement,
+    // removeQuestion, broadcast) is unconditional so the card always clears.
     if (extra?.cancel) {
       auqRuns.get(auqRunKey(session.sessionId, questionId))?.abort();
       const stillActive = sessionRegistry.getQuestion(session.sessionId, questionId) !== null;
@@ -515,18 +398,12 @@ export function createInputHandlers(deps: InputHandlerDeps) {
           `[Answer] cancel: question ${questionId.slice(0, 8)} already gone; skipping Esc, clearing card`,
         );
       }
-      // Guarded like the AUQ success branch (#661 review): a throw from hold
-      // release or eval cancel must never skip removeQuestion/onQuestionResolved
-      // below, or the card zombifies exactly like the bug this file just fixed.
+      // Guarded (#661 review): a throw from the gate retirement must never skip
+      // removeQuestion/onQuestionResolved below, or the card zombifies.
       try {
-        releaseHeldAsPassthrough?.(session.sessionId, questionId);
+        retireQuestion?.(session.sessionId, questionId);
       } catch (err) {
-        logError(`[Answer] cancel: hold release failed: ${errorToString(err)}`);
-      }
-      try {
-        cancelAutoApproveForQuestion?.(session.sessionId, questionId, 'user-cancelled');
-      } catch (err) {
-        logError(`[Answer] cancel: eval cancel failed: ${errorToString(err)}`);
+        logError(`[Answer] cancel: gate retirement failed: ${errorToString(err)}`);
       }
       sessionRegistry.removeQuestion(session.sessionId, questionId, 'user_answer:cancel');
       try {
@@ -539,7 +416,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
 
     // Drop stale answers. APNS tokens persist across disconnect (#286), so a
     // delayed lock-screen tap can deliver an answer for a question that has
-    // since been auto-approved or resolved. Membership in the pending set
+    // since been resolved. Membership in the pending set
     // (not equality with a single slot) is the check, so answering one of
     // several concurrent prompts (main + subagent, #419) never invalidates
     // the others. Surface the drop so the iOS user gets a "not delivered"
@@ -561,20 +438,17 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         return 'delivered';
       }
       const pendingIds = [...session.currentQuestions.keys()];
-      // #603 Phase 3: the question is gone from the registry (evicted under the
-      // pending-question cap, or already removed), but its PermissionRequest hook
-      // may STILL be held (Model B). Pop that hold to passthrough so Claude
-      // renders its native prompt and unblocks NOW, rather than stalling to
-      // hold_timeout. The answer itself is stale (we no longer hold the options
-      // to map it), so it is still refused — but the terminal can take over.
-      const freedHeld = releaseHeldAsPassthrough?.(session.sessionId, questionId) ?? false;
-      // Free the GPU for this specific orphaned question (#617), scoped so a stale
-      // tap never fails the session's OTHER holds open (cancelStale's releaseAllHolds
-      // belongs to teardown/force-release only).
-      if (freedHeld)
-        cancelAutoApproveForQuestion?.(session.sessionId, questionId, 'user-answered-stale');
+      // The question is gone from the registry (evicted under the
+      // pending-question cap, or already removed). The answer is stale (we no
+      // longer hold the options to map it), so it is refused; the gate stops
+      // tracking the escalation, matching what the pre-#1125 hold release did.
+      try {
+        retireQuestion?.(session.sessionId, questionId);
+      } catch (err) {
+        logError(`[Answer] stale: gate retirement failed: ${errorToString(err)}`);
+      }
       log(
-        `Ignoring stale answer: questionId ${questionId} not in pending [${pendingIds.join(', ') || 'none'}]${freedHeld ? ' (freed an orphaned held hook -> passthrough)' : ''}`,
+        `Ignoring stale answer: questionId ${questionId} not in pending [${pendingIds.join(', ') || 'none'}]`,
       );
       // #808: informational -- nothing was removed (it is already gone), but
       // recording what WAS still pending at this moment is exactly the
@@ -589,7 +463,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         // Question object left to read it from.
         signal: 'STALE_ANSWER',
         callSite: 'input-events.handleAnswer',
-        detail: { pendingQuestionIds: pendingIds, freedHeld },
+        detail: { pendingQuestionIds: pendingIds },
       });
       if (!viaRelay) {
         send(
@@ -619,276 +493,120 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       );
     }
 
-    // Model B (#573): if the auto-approve gate is HOLDING this permission's
-    // hook, a binary (one-time Yes / No) or suggestion-derived "Yes, always
-    // allow: ..." answer (#718) resolves it via the hook response — Claude is
-    // blocked on the hook and is NOT rendering a prompt, so a PTY submit would
-    // land in the wrong place. An answer the hook response cannot express (a
-    // bare "always" with no suggestion to echo, a multi-choice pick, free
-    // text) first RELEASES the held hook to passthrough so Claude renders its
-    // native numbered prompt, then submits the digit (the only way to express
-    // those).
+    // Submit the answer to the PTY, where Claude's native prompt is waiting
+    // (#1125: remi no longer holds the hook, so this is the only answer path).
     //
-    // The submit/hold-resolution + question removal are wrapped so the question
-    // is ALWAYS consumed exactly once: if `submitInput` throws, the `finally`
-    // still removes it (no zombie question that a retry could double-submit),
-    // and the throw still propagates (relay -> HTTP 500, WS -> caller-logged).
-    const decision = mapAnswerToDecision(active.options, answer);
-    let hadHold = false;
+    // The submit + question removal are wrapped so the question is ALWAYS
+    // consumed exactly once: if `submitInput` throws, the `finally` still
+    // removes it (no zombie question that a retry could double-submit), and
+    // the throw still propagates (relay -> HTTP 500, WS -> caller-logged).
+    //
     // Overridden below only on the #920 prompt-currency refusal, so the
     // `finally` block's removal carries an honest signal instead of the
     // default 'user_answer' (this card was never actually answered).
     let removalReason = 'user_answer';
     try {
-      if (decision?.sessionGrant !== undefined) {
-        // A session-grant action is a control-plane operation, never a PTY
-        // value. It is valid only for the held question that carried the
-        // private offer; otherwise an old/forged marker must not become a
-        // stray "1" in Claude's next prompt.
-        if (active.held !== true) {
-          log(
-            `[Answer] refusing session grant action for ${questionId.slice(0, 8)}: question is not held`,
-          );
-          removalReason = 'user_answer:invalid_session_grant';
-          if (!viaRelay) {
-            send(
-              connectionId,
-              createError(
-                'INVALID_SESSION_GRANT',
-                'This session-grant action is no longer valid for the active prompt',
-                { sessionId, questionId },
-              ),
-            );
-          }
-          return 'stale';
-        }
-        hadHold =
-          resolveHeldPermission?.(
-            session.sessionId,
-            questionId,
-            decision.decision,
-            undefined,
-            decision.sessionGrant,
-          ) ?? false;
-        if (!hadHold) {
-          // The hold may have been resolved by a timeout or another channel
-          // between the card lookup and this action. Release if possible, but
-          // never submit the marker/value to the PTY.
-          try {
-            releaseHeldAsPassthrough?.(session.sessionId, questionId);
-          } catch (err) {
-            logError(`[Answer] stale session grant release failed: ${errorToString(err)}`);
-          }
-          log(
-            `[Answer] refusing session grant action for ${questionId.slice(0, 8)}: held hook was already gone`,
-          );
-          removalReason = 'user_answer:invalid_session_grant';
-          if (!viaRelay) {
-            send(
-              connectionId,
-              createError(
-                'INVALID_SESSION_GRANT',
-                'The session-grant action expired before it could be applied',
-                { sessionId, questionId },
-              ),
-            );
-          }
-          return 'stale';
-        }
-      } else if (decision !== null) {
-        hadHold =
-          resolveHeldPermission?.(
-            session.sessionId,
-            questionId,
-            decision.decision,
-            decision.suggestionIndex,
-          ) ?? false;
+      // The gate stops tracking this escalation: this path removes and
+      // dismisses the card itself (the `finally` below).
+      try {
+        retireQuestion?.(session.sessionId, questionId);
+      } catch (err) {
+        logError(`[Answer] gate retirement failed: ${errorToString(err)}`);
       }
-      if (!hadHold) {
-        // decision === null (always/pick/free-text) OR no hold for this question:
-        // if a hold exists, pop it to passthrough so the native prompt renders,
-        // then submit the digit. If no hold, this is the normal PTY path.
-        const released = releaseHeldAsPassthrough?.(session.sessionId, questionId) ?? false;
-        hadHold = hadHold || released;
-        // The phone may send a label for display (#574), but Claude's native
-        // numbered prompt expects the option's VALUE (the 1-based index). Resolve
-        // the answer back to its option and submit the index; a free-text answer
-        // (no option match) is submitted verbatim.
-        const ptyInput = resolveOption(active.options, answer)?.value ?? answer;
-        if (ptyInput !== answer) {
-          log(`[Answer] resolved "${answer}" -> "${ptyInput}" for q ${questionId.slice(0, 8)}`);
-        } else if (
-          active.options.length > 0 &&
-          resolveOption(active.options, answer) === undefined
-        ) {
-          log(
-            `[Answer] "${answer}" matched no option (${active.options.length}); submitting verbatim`,
-          );
-        }
-
-        // #920 prompt-currency guard, checked as late as possible (the same
-        // idiom `AutoApproveGate.answerRenderedParked` uses immediately before
-        // its own PTY write, auto-approve-gate.ts) — nothing else runs between
-        // this check and the injection below. The active-question lookup
-        // above only proves the CARD is still registered; a `source: 'pty'`
-        // question has no hook and so no other staleness signal (#920's own
-        // diagnosis), meaning a card can sit in the store, still "active",
-        // long after its prompt scrolled off screen. Answering it would type
-        // the resolved option value (or free text verbatim, per the review
-        // comment on #920) into whatever Claude is doing right now.
-        //
-        // Scoped to `source === 'pty'` ONLY, not every card: a hook-paired
-        // question's merged `id`/`text` are the HOOK's (tool + command text),
-        // never the raw PTY parse (`consumeAndMerge` in
-        // question-presence-tracker.ts), so `isPromptCurrent`'s id/text match
-        // would almost never succeed for that cohort — a blanket check here
-        // would refuse legitimate hook-sourced answers, not just stale PTY
-        // ones. Free-form `user_input` (#795) is a completely different
-        // handler and never reaches this branch at all.
-        //
-        // Absent `isPromptCurrent` (no tracker wired for this session) is
-        // treated as NOT current — fail toward refusing the injection, not
-        // toward it, mirroring `isQuestionLive`'s own default in
-        // question-presence-tracker.ts: a refused legitimate answer costs the
-        // user a re-answer with the question still visible; an accepted stale
-        // one injects into a live session with nothing to undo it. Those
-        // costs are not symmetric, so ambiguity resolves toward not
-        // injecting.
-        //
-        // #1002 extends the same principle to the cohort the `source: 'pty'`
-        // scoping left uncovered. A hook-sourced card only reaches this line
-        // when NO hold was resolved and NONE was released just now, i.e. this
-        // answer will cause nothing to render — so if no prompt is on screen
-        // already, the digit lands in whatever Claude is doing. That is not
-        // hypothetical: it was observed typing a bare `1` into an unrelated
-        // session, recorded in the transcript as a user message.
-        //
-        // The `!released` condition is what keeps this from refusing the
-        // legitimate case: when the answer itself pops a held hook to
-        // passthrough, Claude is deliberately about to render its native
-        // prompt and the submit is intended, so presence cannot be required
-        // yet.
-        const promptGone =
-          active.source === 'pty'
-            ? !(isPromptCurrent?.(session.sessionId, questionId, active.text) ?? false)
-            : !released && !(isPromptObservedOnPTY?.(session.sessionId) ?? false);
-        if (promptGone) {
-          log(
-            `[Answer] refusing PTY submit for ${questionId.slice(0, 8)}: no prompt on screen (source=${active.source})`,
-          );
-          traceQuestionEvent({
-            action: 'stale_answer',
-            sessionId: session.sessionId,
-            questionId,
-            promptId: active.promptId,
-            signal: 'STALE_ANSWER',
-            callSite: 'input-events.handleAnswer:promptCurrencyGuard',
-            detail: {
-              reason: active.source === 'pty' ? 'prompt-not-current' : 'no-prompt-on-screen',
-              source: active.source,
-            },
-          });
-          removalReason = 'user_answer:stale_prompt';
-          if (!viaRelay) {
-            send(
-              connectionId,
-              createError(
-                'STALE_ANSWER',
-                'The prompt for this question is no longer on screen; refusing to submit',
-                {
-                  sessionId,
-                  questionId,
-                  pendingQuestionIds: [...session.currentQuestions.keys()],
-                },
-              ),
-            );
-          }
-          return 'stale';
-        }
-
-        await session.pty.submitInput(ptyInput);
-      } else {
+      // The phone may send a label for display (#574), but Claude's native
+      // numbered prompt expects the option's VALUE (the 1-based index). Resolve
+      // the answer back to its option and submit the index; a free-text answer
+      // (no option match) is submitted verbatim.
+      const answeredOption = resolveOption(active.options, answer);
+      const ptyInput = answeredOption?.value ?? answer;
+      if (ptyInput !== answer) {
+        log(`[Answer] resolved "${answer}" -> "${ptyInput}" for q ${questionId.slice(0, 8)}`);
+      } else if (active.options.length > 0 && answeredOption === undefined) {
         log(
-          `Resolved held permission ${questionId.slice(0, 8)} via hook response: ${decision} (no PTY submit)`,
+          `[Answer] "${answer}" matched no option (${active.options.length}); submitting verbatim`,
         );
       }
 
-      // #752: the answer applied (hold resolved or PTY submit succeeded) —
-      // recorded inside the try, directly after application, so a throwing
-      // submit is never recorded (its duplicate must keep reporting 'stale')
-      // and a later throw from the eval-cancel below cannot skip it. Recorded
-      // under every spelling of the same decision: the in-app tap sends the
-      // option VALUE while a push action sends the LABEL, and the duplicate
-      // may arrive on the other surface (review #759 finding 1). The options
-      // are unavailable by the time the duplicate hits the stale check, so the
-      // equivalence is captured here.
-      const answeredOption = resolveOption(active.options, answer);
+      // #920 prompt-currency guard, checked as late as possible (nothing else
+      // runs between this check and the injection below). The active-question
+      // lookup above only proves the CARD is still registered; a
+      // `source: 'pty'` question has no hook and so no other staleness signal
+      // (#920's own diagnosis), meaning a card can sit in the store, still
+      // "active", long after its prompt scrolled off screen. Answering it
+      // would type the resolved option value (or free text verbatim, per the
+      // review comment on #920) into whatever Claude is doing right now.
+      //
+      // Scoped to `source === 'pty'` ONLY for the id/text check: a
+      // hook-paired question's merged `id`/`text` are the HOOK's (tool +
+      // command text), never the raw PTY parse (`consumeAndMerge` in
+      // question-presence-tracker.ts), so `isPromptCurrent`'s id/text match
+      // would almost never succeed for that cohort. Free-form `user_input`
+      // (#795) is a completely different handler and never reaches this
+      // branch at all.
+      //
+      // #1002 extends the same principle to every other card with the weaker
+      // "is ANY prompt on screen" check: if no prompt is on screen, the digit
+      // would land in whatever Claude is doing. That is not hypothetical: it
+      // was observed typing a bare `1` into an unrelated session, recorded in
+      // the transcript as a user message.
+      //
+      // Absent deps (no tracker wired for this session) are treated as NOT
+      // current: fail toward refusing the injection. A refused legitimate
+      // answer costs the user a re-answer with the question still visible;
+      // an accepted stale one injects into a live session with nothing to
+      // undo it.
+      const promptGone =
+        active.source === 'pty'
+          ? !(isPromptCurrent?.(session.sessionId, questionId, active.text) ?? false)
+          : !(isPromptObservedOnPTY?.(session.sessionId) ?? false);
+      if (promptGone) {
+        log(
+          `[Answer] refusing PTY submit for ${questionId.slice(0, 8)}: no prompt on screen (source=${active.source})`,
+        );
+        traceQuestionEvent({
+          action: 'stale_answer',
+          sessionId: session.sessionId,
+          questionId,
+          promptId: active.promptId,
+          signal: 'STALE_ANSWER',
+          callSite: 'input-events.handleAnswer:promptCurrencyGuard',
+          detail: {
+            reason: active.source === 'pty' ? 'prompt-not-current' : 'no-prompt-on-screen',
+            source: active.source,
+          },
+        });
+        removalReason = 'user_answer:stale_prompt';
+        if (!viaRelay) {
+          send(
+            connectionId,
+            createError(
+              'STALE_ANSWER',
+              'The prompt for this question is no longer on screen; refusing to submit',
+              {
+                sessionId,
+                questionId,
+                pendingQuestionIds: [...session.currentQuestions.keys()],
+              },
+            ),
+          );
+        }
+        return 'stale';
+      }
+
+      await session.pty.submitInput(ptyInput);
+
+      // #752: the answer applied (PTY submit succeeded) — recorded directly
+      // after application, so a throwing submit is never recorded (its
+      // duplicate must keep reporting 'stale'). Recorded under every spelling
+      // of the same decision: the in-app tap sends the option VALUE while a
+      // push action sends the LABEL, and the duplicate may arrive on the other
+      // surface (review #759 finding 1). The options are unavailable by the
+      // time the duplicate hits the stale check, so the equivalence is
+      // captured here.
       resolvedAnswers.record(questionId, [
         answerCacheKey(answer),
         ...(answeredOption ? [answeredOption.value, answeredOption.label] : []),
       ]);
-
-      // #976 prerequisite (precedent.ts, ADR 0015 amendment): record a
-      // provenance-safe human answer for later authorization-grade matching.
-      // Deliberately narrow, "record only what can be classified with
-      // confidence" (skip everything else):
-      //   - `decision` is the SAME classification `mapAnswerToDecision`
-      //     already computed above for the held-hook path. It is non-null
-      //     ONLY for an unambiguous isNo (deny) or isYes-without-"always"/
-      //     suggestion-derived-"always" (approve) option — never for a
-      //     multi-choice pick, free text, or a bare "always" with no
-      //     suggestion to echo. This branch is unreachable for the AUQ
-      //     (`extra.selections`) and cancel (`extra.cancel`) paths above,
-      //     which both `return` earlier, so those are skipped by
-      //     construction, not by an extra check here.
-      //   - `active.source === 'permission_request'` restricts to the ONE
-      //     Question shape that carries genuine tool+command identity,
-      //     deterministically built by `HookEventBridge.buildPermissionQuestion`
-      //     (hook-event-bridge.ts). A `source: 'pty'` / `'notification'` /
-      //     `'elicitation'` question, or the source-less StopFailure "Retry?"
-      //     prompt, carries no reliable tool/command identity and is skipped
-      //     — recording "Retry?" -> yes as an approval of some tool would be
-      //     exactly the unrecoverable mistake this module's doc warns about.
-      //   - `active.precedentSignature` (#990) is the UNTRUNCATED signature
-      //     `buildPermissionQuestion` computed once, via the same
-      //     `signatureForOperation` the consult side calls -- NOT the
-      //     truncated, human-facing `active.text`. It is present only for a
-      //     precedent-eligible operation (`precedentMayAuthorize`'s
-      //     allowlist); absent for everything else, INCLUDING a legacy/
-      //     synthetic `Question` built before this field existed. Absent =>
-      //     FAIL CLOSED, skip recording entirely. Do NOT fall back to
-      //     parsing `active.text` (the pre-#990 approach,
-      //     `parsePermissionQuestionText`) -- that reintroduces the exact
-      //     collision #990 closes: two different >120-character commands
-      //     sharing their first 117 characters truncate to the identical
-      //     `text`, so recording from it would let approving one silently
-      //     authorize the other.
-      if (
-        decision !== null &&
-        decision.sessionGrant === undefined &&
-        active.source === 'permission_request'
-      ) {
-        const signature = active.precedentSignature;
-        if (signature !== undefined) {
-          recordPrecedent?.(
-            session.sessionId,
-            toolNameFromSignature(signature),
-            signature,
-            decision.decision === 'allow' ? 'approved' : 'denied',
-            session.workingDirectory,
-            precedentAgentScope(active.agentId),
-          );
-        }
-      }
-
-      // Free the GPU on EVERY answer (#617): cancel the eval for THIS question
-      // unconditionally. Per-eval scoping (the eval id captured when the question
-      // was held) makes this safe where the old `hadHold`-gated cancelStale was
-      // not — it aborts only this question's eval, never another permission's,
-      // and is a no-op when no eval is in flight for it. It deliberately does NOT
-      // release the session's other holds (cancelStale's releaseAllHolds), which
-      // belongs to teardown/force-release, not a single answer.
-      cancelAutoApproveForQuestion?.(session.sessionId, questionId, 'user-answered');
     } finally {
       // Remove only the answered question; sibling prompts remain answerable.
       // In `finally` so a throwing submit cannot leave a zombie question, AND

@@ -17,7 +17,6 @@ import {
   riskBandAtLeast,
   riskBandRank,
 } from '../../src/auto-approve/risk-bands.ts';
-import { enforceRiskCeiling } from '../../src/auto-approve/risk-ceiling.ts';
 
 const bash = (command: string) => ({ command });
 
@@ -442,11 +441,6 @@ describe('classifyRisk — #1071 a scratch-confined deletion is not high (ceilin
     });
   }
 
-  test('the ceiling no longer overrides a model approve of a scratch delete', () => {
-    const r = enforceRiskCeiling('Bash', bash('rm /tmp/pp.bak'), 'approve');
-    expect(r).toEqual({ decision: 'approve', overridden: false });
-  });
-
   // Everything the carve-out must NOT swallow — each stays `high`.
   const stillHigh = [
     'rm -rf /tmp', // the scratch ROOT itself, not something under it
@@ -521,14 +515,6 @@ describe('classifyRisk — #1013 wrappers hide a high-band command from the ceil
     });
   }
 
-  test('the ceiling now actually fires on a wrapped high-band approve', () => {
-    // The whole point: an LLM `approve` of a wrapper-hidden force-push is now
-    // overridden, where before the wrapper kept it at `moderate` and the ceiling
-    // never ran.
-    const r = enforceRiskCeiling('Bash', bash('setsid git push origin main --force'), 'approve');
-    expect(r).toEqual({ decision: 'escalate', overridden: true, band: 'high' });
-  });
-
   // Discrimination, not blanket escalation: a SAFE command behind the same
   // wrappers must stay moderate, or the fix would just re-escalate everything.
   const safeBehindWrapper = [
@@ -589,11 +575,6 @@ describe('classifyRisk — #1076 shell grammar and grouping cannot hide a high-b
       expect(classifyRisk('Bash', bash(command))).toBe('high');
     });
   }
-
-  test('the ceiling now fires on a grammar-wrapped high-band approve', () => {
-    const r = enforceRiskCeiling('Bash', bash('while ! git push; do sleep 1; done'), 'approve');
-    expect(r).toEqual({ decision: 'escalate', overridden: true, band: 'high' });
-  });
 
   // Adversarial review of #1076, finding B: `hasExecPrimitive`'s sub-checks are
   // `^`-anchored (`^git … -c core.hooksPath=`, `^awk system()`, `^rsync -e`),

@@ -63,17 +63,12 @@ interface TranscriptEntryBase {
    * string, `role: "user"`) — `isMeta` is the only discriminator.
    *
    * This is GENERAL shared infrastructure, not specific to any one consumer.
-   * `auto-approve/authority.ts` depends on it being present and accurate for
-   * the auto-approve trust boundary (#893). It is ALSO the fix for a second,
-   * separate bug (#936, filed after this field landed): `Transcript
-   * MessageBridge.handleUserEntry` does no provenance filtering today, so
-   * the same `isMeta: true` cohort — notably a subagent's own
+   * It was added for the auto-approve authority trust boundary (#893, deleted
+   * in #1125) and is the fix for a second bug (#936): without it, the same
+   * `isMeta: true` cohort — notably a subagent's own
    * `<agent-message from="...">` text — renders as the USER's own chat
-   * bubble in agent-team sessions. That fix touches the bridge and the web
-   * client and is deliberately out of scope for #893 (mixing a security
-   * change with a display change makes both harder to review and revert);
-   * do not assume this field is auto-approve-only when reasoning about
-   * whether it is safe to change or revert.
+   * bubble in agent-team sessions (`TranscriptMessageBridge.handleUserEntry`,
+   * `user-entry-provenance.ts`).
    */
   readonly isMeta?: boolean;
 }

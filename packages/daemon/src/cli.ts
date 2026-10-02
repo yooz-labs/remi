@@ -126,13 +126,10 @@ import { Authenticator } from './auth/authenticator.ts';
 import { loadOrCreateCapabilityToken } from './auth/capability-token.ts';
 import { IdentityStore } from './auth/identity-store.ts';
 import { SubagentAlerter, alertBody, alertTitle } from './auto-approve/index.ts';
-import type { PrecedentStore } from './auto-approve/precedent.ts';
-import type { SessionWorkflowGrantStore } from './auto-approve/session-workflow-grant.ts';
-import type { DenySource } from './auto-approve/types.ts';
+import { MODEL_COMMAND_REMOVED_MESSAGE } from './cli/auto-approve-removal.ts';
 import { detectAutostartState } from './cli/autostart-state.ts';
 import { resolveClaudeBinding } from './cli/claude-binding.ts';
 import { runConfigCommand } from './cli/cmd-config.ts';
-import { runModelCommand } from './cli/cmd-model.ts';
 import { runReloadCommand } from './cli/cmd-reload.ts';
 import { runUnstickCommand } from './cli/cmd-unstick.ts';
 import { PID_FILE, readPidFileLive } from './cli/daemon-manager.ts';
@@ -166,8 +163,6 @@ import {
   startLogFileSession,
   writeToLog,
 } from './cli/log-file.ts';
-import { handleAutoDenied } from './cli/on-auto-denied.ts';
-import { createSessionPrecedentRecorder } from './cli/precedent-recording.ts';
 import { installProcessGuards } from './cli/process-guards.ts';
 import { PtyQuiescenceGate } from './cli/pty-quiescence-gate.ts';
 import { setupHookBridge } from './cli/session-phases/hook-bridge-setup.ts';
@@ -289,11 +284,14 @@ if (parsedArgs.subcommand === 'reload') {
   process.exit(runReloadCommand());
 }
 
-// Handle 'model' subcommand (#819): the ollama-style CLI for the local LLM
-// the auto-approve evaluator runs on (catalogue / pull / residency / default).
-// Async, unlike its siblings: every verb talks to the engine over HTTP.
+// 'model' subcommand (#819) was removed with the local LLM evaluator (#1125,
+// ADR 0030). Still recognized, so `remi model pull x` never reaches Claude as
+// arguments; it explains the removal and exits 2.
 if (parsedArgs.subcommand === 'model') {
-  process.exit(await runModelCommand(parsedArgs.subcommandArgs, remiConfig));
+  // process.stderr, not console.error: Bun colors console.error even when
+  // piped, and a script checking this line should see plain text.
+  process.stderr.write(`${MODEL_COMMAND_REMOVED_MESSAGE}\n`);
+  process.exit(2);
 }
 
 // Handle 'unstick' subcommand (#617): SIGUSR2 -> force-release stuck daemon(s).
@@ -893,9 +891,9 @@ const transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>> = new 
 // binder's watcher + fallback timer, but NOT its #452 rotation dir-poll
 // interval (it lives inside the binder); close() reaches all three.
 const binderClosers: Map<UUID, () => void> = new Map();
-// Per-session auto-approve gate handles (#573): resolveHeld + cancelStale, keyed
-// by sessionId, so the WebSocket answer handler reaches the RIGHT session's gate
-// (multi-session daemons). Populated in createNewSession after setupHookBridge;
+// Per-session permission gate handles (#573): retireQuestion + cancelStale +
+// forceRelease, keyed by sessionId, so the answer handler and `remi unstick`
+// reach the RIGHT session's gate (multi-session daemons). Populated in createNewSession after setupHookBridge;
 // removed on session close. Empty when no hookServer is configured.
 const sessionGateHandles: Map<UUID, SessionGateHandle> = new Map();
 // Per-session QuestionPresenceTracker (#920): the answer handler needs
@@ -906,18 +904,6 @@ const sessionGateHandles: Map<UUID, SessionGateHandle> = new Map();
 // active, so this map is populated unconditionally there; removed on
 // session close, same lifecycle as the other per-session maps below.
 const sessionTrackers: Map<UUID, QuestionPresenceTracker> = new Map();
-// Per-session precedent stores (#976 prerequisite, `auto-approve/precedent.ts`):
-// keyed by sessionId, same shape as `sessionGateHandles`, so `handleAnswer`
-// (input-events.ts) can record a human-classified answer into the RIGHT
-// session's store via the `recordPrecedent` dependency below. Populated from
-// `hookBridgeHandle.precedentStore` after `setupHookBridge`; empty when no
-// hookServer is configured (a `permission_request`-sourced Question, the only
-// kind precedent ever records, cannot exist without one).
-const sessionPrecedentStores: Map<UUID, PrecedentStore> = new Map();
-// Per-session workflow grants (#1095). The store is also owned by the gate;
-// this map mirrors the precedent lifecycle so teardown cannot retain a grant
-// lineage after its session is gone.
-const sessionWorkflowGrantStores: Map<UUID, SessionWorkflowGrantStore> = new Map();
 /**
  * Per-session "does this binder claim the event?" filters (#914).
  *
@@ -932,29 +918,22 @@ const sessionWorkflowGrantStores: Map<UUID, SessionWorkflowGrantStore> = new Map
 const sessionAdmitsHandles: Map<UUID, (input: HookInput) => boolean> = new Map();
 /**
  * Force-release every session's gate (#617, `remi unstick` -> SIGUSR2): the "just
- * get me out" lever when an LLM eval + a question are stuck and the phone has no
- * device visibility. Each gate releases its held hooks to passthrough (native prompt),
- * aborts the in-flight eval, and drains its eval queue. Idempotent and safe with
- * zero sessions.
+ * get me out" lever when cards are stuck. Each gate resolves and dismisses every
+ * open escalation it tracks. Idempotent and safe with zero sessions.
  */
 function forceReleaseAllSessions(): void {
-  let holds = 0;
-  let cancelled = 0;
-  let drained = 0;
+  let resolved = 0;
   // Per-session try/catch: a throw in one gate's release must not abort the loop
   // and leave the remaining sessions stuck (the whole point is "get me out").
   for (const [sessionId, handle] of sessionGateHandles.entries()) {
     try {
-      const r = handle.forceRelease('force-release (remi unstick)');
-      holds += r.holds;
-      cancelled += r.cancelled ? 1 : 0;
-      drained += r.drained;
+      resolved += handle.forceRelease('force-release (remi unstick)').resolved;
     } catch (err) {
       logError(`[unstick] Failed to force-release session ${sessionId.slice(0, 8)}:`, err);
     }
   }
   log(
-    `[unstick] Force-released ${sessionGateHandles.size} session(s): ${holds} hold(s) -> passthrough, ${cancelled} eval(s) cancelled, ${drained} queued drained`,
+    `[unstick] Force-released ${sessionGateHandles.size} session(s): ${resolved} card(s) resolved`,
   );
 }
 // Per-session APNS dispatchers (#585, P7), keyed by sessionId, so the
@@ -1008,20 +987,13 @@ const sessionRegistry = new SessionRegistry(
       // for the rest of the daemon's life across resumes (#463 phase 3 review).
       binderClosers.get(sessionId)?.();
       binderClosers.delete(sessionId);
-      // Drop the per-session gate handle (#573); any held hook was already
-      // released by the gate's closeBinder/cancelStale on teardown.
+      // Drop the per-session gate handle (#573); its open escalations were
+      // already resolved by the gate's cancelStale on teardown.
       sessionGateHandles.delete(sessionId);
       // Drop the per-session QuestionPresenceTracker (#920): a stale entry
       // here would make `isPromptCurrent` resolve against a dead session's
       // last-observed PTY state instead of falling back to "no tracker".
       sessionTrackers.delete(sessionId);
-      // Drop the per-session precedent store (#976 prerequisite): the store
-      // itself is already cleared on /clear-style rotation inside
-      // setupHookBridge; this is the separate full-session-teardown case
-      // (the ManagedSession itself is gone), so the Map entry must go too or
-      // it lingers for the rest of the daemon's process life.
-      sessionPrecedentStores.delete(sessionId);
-      sessionWorkflowGrantStores.delete(sessionId);
       // #914: drop the admits filter with the session, so a closed session's
       // binder can never keep admitting turns on its behalf.
       sessionAdmitsHandles.delete(sessionId);
@@ -1183,77 +1155,14 @@ function onSubagentPassthrough(input: PermissionRequestHookInput): void {
   }
 }
 
-/**
- * Report an auto-approve `deny` (#1015).
- *
- * A deny is the only verdict with no user-facing surface of its own: it builds
- * no `Question`, so nothing is pushed, nothing is broadcast, and nothing lands
- * in history to scroll back to. Claude gets `buildDenyMessage` and the human
- * gets nothing at all.
- *
- * Two channels, deliberately asymmetric:
- *
- * - **Log, always, all three sources.** Unconditional and NOT gated on
- *   `log_decisions` — that flag governs the routine per-decision trace, and a
- *   refusal is not routine. Same reasoning as `onSubagentPassthrough` above:
- *   the push can fail or be throttled downstream, so the local record is what
- *   makes the decision auditable at all.
- * - **Push, `model-floor` only** (the `!== 'model-floor'` early return below
- *   covers both other kinds). A `config` deny is the user's own standing rule
- *   in `config.toml` firing exactly as written; notifying them about it is
- *   telling them what they already decided. A `model-floor` deny is the
- *   opposite — the model refused and `matchesCatastrophicPattern` happened to
- *   agree, which #997 measured going wrong 7 times in 8 on real traffic. That
- *   is the one nobody chose. A `residual` deny (#1045 phase 6) is what
- *   `escalateMain` converts an escalation into under `residual_action =
- *   "deny"` — the user opted INTO fewer pings via that setting, so, unlike
- *   `model-floor`, telling them about each one would defeat the point; the
- *   log line is still the audit trail.
- *
- * Fire-and-forget: the gate has already answered the hook, so this must never
- * delay or throw into it.
- */
-function onAutoDenied(
-  input: PermissionRequestHookInput,
-  source: DenySource,
-  reasoning: string,
-): void {
-  // Logic (log-always, push-only-for-model-floor) lives in the tested
-  // `handleAutoDenied`; this wrapper only supplies the daemon's real sink.
-  handleAutoDenied(
-    {
-      log,
-      pushToDevices: (title, body) => {
-        if (deviceTokens.size === 0) return;
-        const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
-        for (const dt of deviceTokens.values()) {
-          // Deliberately no `category` / `options` / `questionId`: the operation
-          // is already refused and there is nothing for the user to answer. Same
-          // dismiss-only convention as the subagent alert above.
-          void sendPushTrigger(signalingUrl, dt.token, {
-            title,
-            body,
-            ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
-            kind: 'auto_denied',
-          }).catch((err) => {
-            logError('[AutoDenied] push failed:', err);
-          });
-        }
-      },
-    },
-    input,
-    source,
-    reasoning,
-  );
-}
-
 // Daemon-wide turn-duration tracker (#914). Fed from HookServer's onAnyEvent
 // for every hook event (see the two HookServer constructions below), keyed
 // on `prompt_id` -- present on every hook payload's common fields. Originally
 // cost no DEDICATED hook registration (it rode whatever events were already
 // registered for other reasons); since #893 registered `UserPromptSubmit`
-// (for the auto-approve authority summary, unrelated to this tracker), that
-// event is now ALSO the earliest one `onAnyEvent` sees per turn, so
+// (originally for the auto-approve authority summary, deleted in #1125; the
+// registration now stays for this tracker), that event is the earliest one
+// `onAnyEvent` sees per turn, so
 // `elapsedMs` measures from actual prompt submission instead of
 // approximating from the first tool-use/permission event -- see turn-timer.ts
 // for the accuracy/notification-threshold consequence. See turn-timer.ts for
@@ -1549,8 +1458,8 @@ async function createNewSession(
 
   // QuestionPresenceTracker pairs hook-derived metadata with PTY-derived
   // screen presence: hooks record (no push), PTY confirms (push). Status
-  // transitions out of 'waiting' drop pending records so auto-approve
-  // silent paths never push. `hasLiveQuestions` backs the #712 orphan-prompt
+  // transitions out of 'waiting' drop pending records so a prompt Claude
+  // resolved on its own never pushes. `hasLiveQuestions` backs the #712 orphan-prompt
   // fallback: it is how the tracker tells a PTY echo of a gate-pushed
   // escalation (already registered here) apart from a genuine orphan.
   //
@@ -1581,40 +1490,15 @@ async function createNewSession(
       );
       onQuestionResolved(sessionId, questionId as UUID, 'cancelled');
       // #1005 Change B: since this trigger now also fires for HOOK-BORN cards,
-      // removing the card is no longer the whole job -- the gate still holds
-      // bookkeeping for it (`openQuestionSignatures`, and possibly a held
-      // hook keeping Claude blocked). Route it through the gate's own funnel so
-      // the entry is retired rather than left stale, and so a hold, if any, is
-      // released instead of stalling to `hold_timeout`. A no-op when the gate
-      // has nothing for this id.
+      // removing the card is no longer the whole job -- the gate still tracks
+      // its signature (`openQuestionSignatures`). Retire it so a later matching
+      // tool event does not resolve and dismiss the card a second time. A
+      // no-op when the gate has nothing for this id.
       try {
-        sessionGateHandles.get(sessionId)?.releaseHeldAsPassthrough?.(questionId as UUID);
+        sessionGateHandles.get(sessionId)?.retireQuestion(questionId as UUID);
       } catch (err) {
         logError(
           `[QuestionPresenceTracker] gate cleanup for superseded ${questionId.slice(0, 8)} threw: ${errorToString(err)}`,
-        );
-      }
-      // The prompt left the screen, which for a permission answered directly in
-      // the terminal is the ONLY evidence remi gets. Until this call the card
-      // cleared but the EVAL did not: a queued waiter kept its place in the
-      // serial lane and ran (or burned the full `queue_timeout`) to decide a
-      // question a human had already answered — then pushed a card for it.
-      //
-      // Measured on a live 0.7.6 session: evals cost 7-10s each and run one at
-      // a time, so every already-answered survivor delayed every real one
-      // behind it, and WebFetch/WebSearch escalated at exactly 240001ms having
-      // never reached the model.
-      //
-      // Separately guarded from the release above, deliberately: these are two
-      // independent cleanups and a throw in either must not skip the other —
-      // the zombie-card pattern #661 fixed in input-events.ts's answer paths.
-      // `cancelEvalForQuestion` is a no-op when no eval is tracked, so this is
-      // safe to call on every disappearance.
-      try {
-        sessionGateHandles.get(sessionId)?.cancelEvalForQuestion?.(questionId as UUID, reason);
-      } catch (err) {
-        logError(
-          `[QuestionPresenceTracker] eval cancel for gone ${questionId.slice(0, 8)} threw: ${errorToString(err)}`,
         );
       }
     },
@@ -1631,15 +1515,15 @@ async function createNewSession(
         messageApi.handleMessage(message);
       },
       onQuestion: (question) => {
-        // #625 single gate: when a hook server is active the auto-approve gate is
-        // the primary authority for permission questions and pushes escalations
-        // itself (binary via onHeldEscalate, passthrough via escalatePassthrough).
-        // The PTY parser echoes EVERY on-screen prompt — including ones the gate
-        // already auto-approved — so routing those through unconditionally was the
-        // phantom-notification source (>1,100 confirmed pushes fired right after a
-        // 0 ms approve). But #624/#712 review found real prompts that reach ONLY
-        // the PTY (Claude's native Agent-Teams permissions, a passthrough
-        // re-render after a held hook's card was already dismissed; MCP
+        // #625 single gate: when a hook server is active the permission gate is
+        // the primary authority for permission questions and drives their
+        // pushes itself (binary on render via pushOnRender, multi-choice at once
+        // via onHeldEscalate). The PTY parser echoes EVERY on-screen prompt, so
+        // routing those through unconditionally was the phantom-notification
+        // source (>1,100 confirmed pushes, measured while auto-approve still
+        // existed). But #624/#712 review found real prompts that reach ONLY
+        // the PTY (Claude's native Agent-Teams permissions, a re-render after a
+        // card was already dismissed; MCP
         // elicitation dialogs were a third until #889 registered the
         // `Elicitation` hook) — those were silently swallowed by the old
         // unconditional suppression. `onOrphanPTYPrompt` tells the two apart
@@ -1695,10 +1579,8 @@ async function createNewSession(
         currentPort: () => PORT,
         transcriptDiscovery,
         subagentViews,
-        statusWriter,
         foreignSessionEscalator,
         onSubagentPassthrough,
-        onAutoDenied,
         // Classify an escalation as binary vs design/plan-mode (#572/#573).
         alwaysEscalateTools: new Set(remiConfig.auto_approve.always_escalate_tools),
         // #585: a held question the gate resolves without a user answer dismisses
@@ -1711,12 +1593,9 @@ async function createNewSession(
     // inside setupHookBridge); record its teardown so cleanup() reaches the
     // rotation dir-poll interval the shared maps below cannot.
     binderClosers.set(sessionId, hookBridgeHandle.closeBinder);
-    // Register the per-session gate handle (#573) so the WebSocket answer path
-    // can resolve a held permission / cancel the eval for this exact session.
+    // Register the per-session gate handle (#573) so the answer path and
+    // `remi unstick` reach this exact session's gate.
     sessionGateHandles.set(sessionId, hookBridgeHandle.gate);
-    // #976 prerequisite: same registration for this session's precedent store.
-    sessionPrecedentStores.set(sessionId, hookBridgeHandle.precedentStore);
-    sessionWorkflowGrantStores.set(sessionId, hookBridgeHandle.workflowGrantStore);
     // #914: lets the out-of-bridge turn-complete listener apply the same
     // session filter every in-bridge listener already uses.
     sessionAdmitsHandles.set(sessionId, hookBridgeHandle.admits);
@@ -1732,11 +1611,9 @@ async function createNewSession(
       sendMessage,
       cleanup,
       // #538/#661: an AUQ answered directly in the terminal (after the runner
-      // escalated) is detected in onData; wire the same cross-client dismissal +
-      // eval-cancel the phone-answered path uses (createInputHandlers below).
+      // escalated) is detected in onData; wire the same cross-client dismissal
+      // the phone-answered path uses (createInputHandlers below).
       onQuestionResolved: (sid, questionId) => onQuestionResolved(sid, questionId, 'answered'),
-      cancelAutoApproveForQuestion: (sid, questionId, reason) =>
-        sessionGateHandles.get(sid)?.cancelEvalForQuestion(questionId, reason),
       // #932 durable fix: feed the wrapper's quiescence + clean-boundary
       // gate with every chunk actually forwarded to the local terminal, and
       // -- when the chunk completes a bare ESC[r (DECSTBM full-screen
@@ -1854,9 +1731,10 @@ remiAttachState = () => {
 /**
  * Cross-client question dismissal (#585, P7). Fired when a pending question stops
  * being pending on ANY channel: (a) answered locally (input-events.handleAnswer,
- * reason 'answered'), or (b) resolved by the auto-approve gate without a user
- * answer (Part-B late verdict / hold timeout / cancelStale, reason
- * 'auto_approved'/'auto_denied'/'cancelled'). It does TWO throw-safe things:
+ * reason 'answered'), or (b) resolved without a user answer (an external
+ * resolution, a Stop / SubagentStop / SessionEnd sweep, a superseded render,
+ * `remi unstick`; reason 'cancelled'). Since #1125 the daemon never sends the
+ * protocol's 'auto_approved' / 'auto_denied' reasons. It does TWO throw-safe things:
  *   1. Broadcast `question_resolved` to every connected client so each dismisses
  *      its card (in-app, over the WebSocket / Telegram via the AdapterRegistry).
  *   2. Fire a quiet APNS dismissal through this session's NotificationDispatcher
@@ -1868,7 +1746,7 @@ remiAttachState = () => {
 const onQuestionResolved = (
   sessionId: UUID,
   questionId: UUID,
-  reason: 'answered' | 'auto_approved' | 'auto_denied' | 'cancelled',
+  reason: 'answered' | 'cancelled',
 ): void => {
   try {
     registry.broadcast(createQuestionResolved(sessionId, questionId, reason));
@@ -1915,20 +1793,10 @@ const inputHandlers: InputHandlers = createInputHandlers({
   sessionRegistry,
   bindingStore,
   send: sendToConnection,
-  // #573: route a held-permission answer / release-to-passthrough / eval-cancel
-  // to the RIGHT session's gate (the map is populated per session in
-  // createNewSession).
-  resolveHeldPermission: (sessionId, questionId, decision, suggestionIndex, sessionGrant) =>
-    sessionGateHandles
-      .get(sessionId)
-      ?.resolveHeld(questionId, decision, suggestionIndex, sessionGrant) ?? false,
-  releaseHeldAsPassthrough: (sessionId, questionId) =>
-    sessionGateHandles.get(sessionId)?.releaseHeldAsPassthrough(questionId) ?? false,
-  // #617: a manual answer frees the GPU by cancelling ONLY that question's eval,
-  // without failing the session's other holds open (which cancelStale would do).
-  // (cancelStale itself is wired for Stop/SessionEnd teardown in hook-bridge-setup.)
-  cancelAutoApproveForQuestion: (sessionId, questionId, reason) =>
-    sessionGateHandles.get(sessionId)?.cancelEvalForQuestion(questionId, reason),
+  // #573: tell the RIGHT session's gate (the map is populated per session in
+  // createNewSession) that an answered question no longer needs tracking.
+  retireQuestion: (sessionId, questionId) =>
+    sessionGateHandles.get(sessionId)?.retireQuestion(questionId),
   // #585: a locally answered question dismisses its card + lock-screen push on
   // every other client.
   onQuestionResolved: (sessionId, questionId) =>
@@ -1945,20 +1813,6 @@ const inputHandlers: InputHandlers = createInputHandlers({
   // no-tracker-means-refuse default.
   isPromptObservedOnPTY: (sessionId) =>
     sessionTrackers.get(sessionId)?.isPromptObservedOnPTY() ?? false,
-  // #976 prerequisite: route a classified answer to the RIGHT session's
-  // precedent store (populated per session in createNewSession, same
-  // map-per-sessionId shape as sessionGateHandles/sessionTrackers above). No
-  // store for this sessionId (no hookServer, or the session already closed)
-  // is a silent no-op -- recording is additive and must never affect the
-  // answer itself.
-  // `handleAnswer` sources `signature` from `active.precedentSignature` (set
-  // via `signatureForOperation`, untruncated by construction), then this
-  // callback's recorder helper delegates to `recordHumanAnswer`, whose
-  // implementation records with `whole=true`. A genuine >=120-char DENY
-  // ending in `...` therefore persists as a stop rule instead of being
-  // dropped by the truncation heuristic. See that function's doc for why
-  // `whole=true` is sound here.
-  recordPrecedent: createSessionPrecedentRecorder(sessionPrecedentStores),
 });
 
 const sessionHandlers: SessionHandlers = createSessionHandlers({

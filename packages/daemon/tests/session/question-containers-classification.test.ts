@@ -110,27 +110,15 @@ const REGISTRY: readonly Entry[] = [
   },
   {
     file: 'api/question-presence-tracker.ts',
-    field: 'bufferedDuringEval',
-    cls: 'pre-card',
-    note: 'PTY prompt buffered while a MAIN auto-approve eval is in flight (#484/#767).',
-  },
-  {
-    file: 'api/question-presence-tracker.ts',
     field: 'armedOrphanQuestion',
     cls: 'pre-card',
     note: 'Candidate for the #712 orphan-prompt debounce timer, before any push decision.',
   },
   {
     file: 'api/question-presence-tracker.ts',
-    field: 'arbitratingPTYTexts',
-    cls: 'pre-card',
-    note: 'NEW, not in the #888 rescope table. Text of parked-render arbitrations in flight (#814); suppresses a same-text echo while the arbiter decides push vs. answered. ADR 0004 surface (arbitrateParkedRender).',
-  },
-  {
-    file: 'api/question-presence-tracker.ts',
     field: 'observedPTYQuestionId',
     cls: 'pre-card',
-    note: 'Raw pre-merge PTY-parsed identity (#814), set before any push/buffer/arbitrate decision. Paired with observedPTYText for isPromptCurrent. ADR 0004 surface.',
+    note: 'Raw pre-merge PTY-parsed identity (#814), set before any push/suppress decision. Paired with observedPTYText for isPromptCurrent. ADR 0004 surface.',
   },
   {
     file: 'api/question-presence-tracker.ts',
@@ -148,7 +136,7 @@ const REGISTRY: readonly Entry[] = [
     file: 'api/question-presence-tracker.ts',
     field: 'pushedHeldIds',
     cls: 'post-card-metadata',
-    note: 'Idempotency guard on an already-pushed held card (#573); set at/after push time.',
+    note: 'Idempotency guard on a card already pushed by pushHeldHook (#573; since #1125 the multi-choice / design escalation push); set at/after push time.',
   },
   {
     file: 'api/question-dedup.ts',
@@ -163,52 +151,10 @@ const REGISTRY: readonly Entry[] = [
     note: 'NEW, not in the #888 rescope table. PushDedup baseline (#409), instantiated as NotificationDispatcher.pushDedup. Gates the APNS push for a question that is ALREADY registered: message-api-setup.ts calls addQuestion (line ~158) before notifications.maybePush (line ~168), so this runs after the card exists.',
   },
   {
-    file: 'notifications/notification-dispatcher.ts',
-    field: 'deliveryOutcomes',
-    cls: 'post-card-metadata',
-    note: 'NEW, not in the #888 rescope table. Delivery outcome per question id (#603 Phase 1), recorded by maybePush for an already-registered card so a held hook can awaitDelivery. Same role as AutoApproveGate.confirmedDeliveries, different class.',
-  },
-  {
-    file: 'auto-approve/auto-approve-gate.ts',
-    field: 'pendingHolds',
-    cls: 'post-card-metadata',
-    note: 'Binary main-context holds keyed by the escalated Question.id (#573).',
-  },
-  {
-    file: 'auto-approve/auto-approve-gate.ts',
-    field: 'pendingWorkflowOffers',
-    cls: 'post-card-metadata',
-    note: 'Private workflow facts keyed by the held Question.id (#1095); the public card carries only the family marker, while this entry is consumed exactly once by the held-answer path.',
-  },
-  {
-    file: 'auto-approve/auto-approve-gate.ts',
-    field: 'confirmedDeliveries',
-    cls: 'post-card-metadata',
-    note: 'Held question ids whose notification was confirmed delivered (#603 Phase 1).',
-  },
-  {
-    file: 'auto-approve/auto-approve-gate.ts',
-    field: 'evalIdByQuestion',
-    cls: 'post-card-metadata',
-    note: 'Held question id mapped to its in-flight eval id (#617), so an answer can cancel it.',
-  },
-  {
     file: 'auto-approve/auto-approve-gate.ts',
     field: 'openQuestionSignatures',
     cls: 'mixed',
-    note: 'Every OPEN escalation this gate created, keyed by Question.id (#673/#799). Held entries are post-card metadata (the card is registered); parked entries (#814) are pre-card (parkAwaitingPTY, no card yet). Per the #888 rescope comment.',
-  },
-  {
-    file: 'auto-approve/auto-approve-gate.ts',
-    field: 'retiredEscalations',
-    cls: 'mixed',
-    note: "NEW (#1005). Ids of escalations this gate RETIRED -- resolved, released, or answered on the user's behalf -- so a later parked render can tell 'already settled' from 'never seen' and refuse to push a card no sweep could ever remove. Mixed for the same reason openQuestionSignatures is: retiring a HELD escalation is post-card metadata (its card was registered), retiring a PARKED one (#814) is pre-card (parkAwaitingPTY, no card ever existed). Never a pendingness opinion -- consulted only to SUPPRESS creating a card, never to claim one is live, and forgetting an entry past the cap fails toward pushing.",
-  },
-  {
-    file: 'auto-approve/auto-approve-gate.ts',
-    field: 'parkedInputs',
-    cls: 'pre-card',
-    note: 'Original hook input of every PARKED subagent permission (#814) -- the sole surviving record of what a parked permission asked, before any card exists.',
+    note: 'Every OPEN escalation this gate created, keyed by Question.id (#673/#799). A passthrough escalation pushed at once is post-card metadata (the card is registered); a push-on-render (#1121) or parked (#751) entry is pre-card until its render pushes it. Per the #888 rescope comment. (#1125 deleted the hold, eval, delivery and parked-input maps that used to sit beside it.)',
   },
   {
     file: 'cli/session-phases/hook-bridge-setup.ts',
@@ -256,19 +202,9 @@ const EXCLUSIONS: readonly ExcludedEntry[] = [
     note: 'A timer HANDLE for armedOrphanQuestion, not Question data itself.',
   },
   {
-    file: 'api/question-presence-tracker.ts',
-    field: 'parkedRenderArbiter',
-    note: 'A wired callback reference (the #814 arbiter dependency), not per-question state.',
-  },
-  {
     file: 'notifications/notification-dispatcher.ts',
     field: 'pushDedup',
     note: 'Holds a PushDedup INSTANCE. That instance owns its own container (notifications/push-dedup.ts, field "last"), classified separately above; this field is a wiring reference, not itself Question data.',
-  },
-  {
-    file: 'auto-approve/auto-approve-gate.ts',
-    field: 'evalIsSubagentById',
-    note: 'Keyed by evalId, a number, not by Question id -- per-eval bookkeeping, not per-question.',
   },
   {
     file: 'parser/output-processor.ts',

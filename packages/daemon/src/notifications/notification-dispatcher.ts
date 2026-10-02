@@ -131,8 +131,10 @@ export function buildPushText(
       .slice(0, BODY_MAX);
     return { title, body };
   }
-  // #628: prefer the auto-approve LLM's lock-screen one-liner ("Force-push to
-  // main?") over the raw "Allow Bash: <command>" when present.
+  // #628: prefer a lock-screen one-liner ("Force-push to main?") over the raw
+  // "Allow Bash: <command>" when the question carries one. Since #1125 nothing
+  // in the daemon produces `summary` (it came from the deleted auto-approve
+  // LLM), so this falls through to `text`.
   const ask = normalizeNotificationText(question.summary || question.text) || 'Allow this action?';
   const title = `${sessionName}: ${ask}`.slice(0, TITLE_MAX);
   const optionList = formatOptionList(question.options);
@@ -146,8 +148,9 @@ export type PushFn = typeof sendPushTrigger;
 
 /**
  * The outcome of attempting to deliver a question's notification (epic #603
- * Phase 1). The gate consumes this via `awaitDelivery` to decide whether a held
- * hook should keep blocking Claude or fail open fast:
+ * Phase 1), returned by `maybePush`. Before #1125 the permission gate raced it
+ * to decide whether a held hook kept blocking Claude; nothing holds now, so
+ * it is diagnostic only:
  *   - `in_app`     a client is attached, so the question shows in-app (the only
  *                  case where `maybePush` deliberately does NOT push — but the
  *                  user IS reachable).
@@ -159,26 +162,11 @@ export type PushFn = typeof sendPushTrigger;
  */
 export type DeliveryOutcome = 'in_app' | 'pushed' | 'deduped' | 'no_channel' | 'failed';
 
-/** Whether a delivery outcome means the user can actually be notified (epic
- *  #603 Phase 1). `in_app` / `pushed` reach the user. `deduped` is deliberately
- *  NOT treated as confirmed: PushDedup suppresses a second identical push
- *  WITHOUT tracking whether the push it deduped against actually succeeded, so a
- *  held hook must not keep blocking on it — fail open (always safe) instead.
- *  (Phase 3 makes held escalations bypass dedup, so a held push is never deduped
- *  in the first place.) `no_channel` / `failed` obviously do not reach anyone. */
-export function isDelivered(outcome: DeliveryOutcome): boolean {
-  return outcome === 'in_app' || outcome === 'pushed';
-}
-
 /** Transient push failures retried with backoff (epic #603 Phase 1). */
 const MAX_PUSH_RETRIES = 2;
-/** Backoff base; attempt N waits BASE * 2^N (400ms, 800ms). Kept short so the
- *  per-token result settles well within the gate's delivery_confirm_timeout. */
+/** Backoff base; attempt N waits BASE * 2^N (400ms, 800ms). Kept short so a
+ *  lock-screen card is not delayed by a transient failure. */
 const PUSH_RETRY_BASE_MS = 400;
-/** How long a recorded delivery outcome stays probeable before cleanup. The
- *  gate probes within ~ms of the push; this is a generous upper bound so the
- *  map never grows unbounded across a long-lived session. */
-const DELIVERY_OUTCOME_TTL_MS = 60_000;
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => {
@@ -270,13 +258,6 @@ export class NotificationDispatcher {
    *  injected an override. Fixed for the instance lifetime. */
   private readonly pushFn: PushFn;
 
-  /**
-   * Delivery outcome per question id (epic #603 Phase 1), recorded by every
-   * `maybePush` so the gate can `awaitDelivery` to decide a held hook's fate.
-   * Entries self-evict after `DELIVERY_OUTCOME_TTL_MS` so the map stays bounded.
-   */
-  private readonly deliveryOutcomes = new Map<UUID, Promise<DeliveryOutcome>>();
-
   constructor(
     private readonly deps: NotificationDispatcherDeps,
     private readonly sessionId: UUID,
@@ -297,20 +278,15 @@ export class NotificationDispatcher {
    * attached (they see it in-app) or the dedup gate suppresses it.
    * `questionSessionId` is the primary id the client knows (from hello_ack).
    *
-   * Returns the resolved DELIVERY OUTCOME (epic #603 Phase 1) and records it
-   * keyed by `question.id` so a held hook can `awaitDelivery` to decide whether
-   * to keep blocking Claude or fail open fast. Callers that do not care about
-   * delivery (the regular PTY-prompt path) can ignore the returned promise; the
-   * recording still happens.
+   * Returns the resolved DELIVERY OUTCOME (epic #603 Phase 1). The question
+   * path does not await it.
    */
   maybePush(
     questionSessionId: UUID,
     question: Question,
     opts: { held?: boolean } = {},
   ): Promise<DeliveryOutcome> {
-    const outcome = this.computeDelivery(questionSessionId, question, opts.held ?? false);
-    this.recordDelivery(question.id, outcome);
-    return outcome;
+    return this.computeDelivery(questionSessionId, question, opts.held ?? false);
   }
 
   /** Resolve the delivery outcome for one question (fanning out the per-token
@@ -343,10 +319,8 @@ export class NotificationDispatcher {
     // as unreachable for this question as one that never registered, so it is
     // filtered HERE — above the no-channel check — and not at the fan-out.
     //
-    // That placement is load-bearing for a HELD escalation: `awaitDelivery`
-    // decides whether to keep Claude blocked, and reporting `pushed` for a fan-
-    // out of zero would block the hook on a card that will never appear on any
-    // lock screen. Reporting `no_channel` instead fails the hold open fast.
+    // Reporting `pushed` for a fan-out of zero would claim a card reached a
+    // lock screen it never appears on; `no_channel` is the honest outcome.
     const wanting = tokensWanting(deviceTokens.values(), 'question');
     // No reachable device: nobody can be pushed. If a client is attached the
     // user is still reachable in-app (held case); otherwise there is no channel.
@@ -452,8 +426,9 @@ export class NotificationDispatcher {
           continue;
         }
         // Loud: a real push attempt failed (permanent token rejection, network
-        // error, or exhausted retries). This is the root cause behind a held
-        // hook's fail-open, so it must be visible at error level, not buried.
+        // error, or exhausted retries). This is the root cause behind a card
+        // that never reached the phone, so it must be visible at error level,
+        // not buried.
         logError(`${logCtx.failed}: ${err}`);
         // Self-heal (epic #603 Phase 6): a PERMANENTLY invalid token (dead /
         // unregistered / wrong-app) is pruned so it is never retried again. A
@@ -464,88 +439,6 @@ export class NotificationDispatcher {
         }
         return false;
       }
-    }
-  }
-
-  /** Record (and schedule cleanup of) a question's delivery outcome so the gate
-   *  can `awaitDelivery` it (epic #603 Phase 1). */
-  private recordDelivery(questionId: UUID, outcome: Promise<DeliveryOutcome>): void {
-    this.deliveryOutcomes.set(questionId, outcome);
-    // Evict after a fixed TTL regardless of whether `outcome` ever settles: a
-    // push whose fetch hangs (unreachable Worker, no AbortSignal yet) must not
-    // leak a map entry until the OS TCP timeout. The gate probes within ms of
-    // recording, so a 60s TTL is a generous upper bound.
-    const t = setTimeout(() => this.deliveryOutcomes.delete(questionId), DELIVERY_OUTCOME_TTL_MS);
-    t.unref?.();
-  }
-
-  /**
-   * The delivery outcome recorded for `questionId` by `maybePush` (epic #603
-   * Phase 1). The gate races this against `delivery_confirm_timeout` to decide a
-   * held hook's fate. `undefined` when no push was attempted for the id (e.g. the
-   * held push found no pending hook record) — the gate then keeps its legacy
-   * behavior (hold to hold_timeout) rather than failing open on a missing signal.
-   */
-  awaitDelivery(questionId: UUID): Promise<DeliveryOutcome> | undefined {
-    return this.deliveryOutcomes.get(questionId);
-  }
-
-  /**
-   * Alert push telling the user a held escalation TIMED OUT and its prompt has
-   * moved to the terminal (#733). Fired by the gate's `onHoldTimeout` cue just
-   * before the hold fails open, while the question is still registered — so the
-   * body can carry the actual ask. Without this, a timeout is silent on the
-   * phone: the card's dismissal collapses it away and nothing says the agent is
-   * now blocked on a native terminal prompt.
-   *
-   * Deliberate differences from `maybePush`:
-   *  - always pushes (no attached-client skip, no dedup): this is a one-shot
-   *    state-change notice, and an attached client only sees the card VANISH;
-   *  - no category/options/dynOptions: there is nothing to answer from the
-   *    lock screen anymore — tapping opens the app;
-   *  - collapse key is `handoff-<questionId>`, NOT the question id, so the
-   *    original card's quiet dismissal (collapse-id = question id) cannot
-   *    collapse this notice away.
-   *
-   * IS filtered by per-device push preferences (#968), unlike `dismiss`: this
-   * is a visible, buzzing card about a question, so a device that muted
-   * question pushes must not receive it. It clears nothing, so skipping it
-   * strands nothing.
-   */
-  pushHoldTimeoutHandoff(questionSessionId: UUID, questionId: UUID): void {
-    const { deviceTokens, pushConfig, sessionRegistry } = this.deps;
-    const wanting = tokensWanting(deviceTokens.values(), 'question');
-    if (wanting.length === 0) return;
-    const session = sessionRegistry.getSession(this.sessionId);
-    const question = session?.currentQuestions.get(questionId);
-    const sessionName = session?.name || 'Agent';
-    const ask =
-      normalizeNotificationText(question?.summary || question?.text || '') ||
-      'a permission request';
-    const title = `${sessionName}: answer in the terminal`.slice(0, TITLE_MAX);
-    const body = `Timed out waiting for you — the prompt moved to the terminal: ${ask}`.slice(
-      0,
-      BODY_MAX,
-    );
-    const cfg = pushConfig();
-    const pushSessionId = this.deps.getPrimarySessionId() ?? questionSessionId;
-    for (const dt of wanting) {
-      void this.pushOnceWithRetry(
-        cfg.signalingUrl,
-        dt.token,
-        {
-          title,
-          body,
-          ...(cfg.pushSecret !== undefined ? { pushSecret: cfg.pushSecret } : {}),
-          sessionId: pushSessionId,
-          questionId: `handoff-${questionId}`,
-          kind: 'question' as const,
-        },
-        {
-          sent: `Push timeout-handoff sent for question ${questionId}`,
-          failed: `Push timeout-handoff failed for question ${questionId}`,
-        },
-      );
     }
   }
 

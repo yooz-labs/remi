@@ -90,14 +90,14 @@ type Listener<T> = (input: T) => void;
  *   - 'allow' / 'deny' => Claude proceeds WITHOUT rendering the prompt, via
  *                         `{behavior: decision}`.
  *   - 'passthrough'    => `{}` body; Claude renders the prompt as usual (the
- *                         resolver has already escalated to the user / injected
- *                         a multi-choice pick).
+ *                         resolver has already escalated to the user).
  *   - `{behavior:'allow', updatedPermissions}` (#718) => Claude proceeds AND
  *     persists the echoed `permission_suggestions` entry, exactly as if the
  *     user had picked that "always allow" option in its own dialog (ground
- *     truth: code.claude.com/docs/en/hooks). Produced when the user's answer
- *     picked a suggestion-derived option on a HELD escalation
- *     (`AutoApproveGate.resolveHeld` with a `suggestionIndex`).
+ *     truth: code.claude.com/docs/en/hooks).
+ *
+ * Since #1125 (ADR 0030) the gate only ever returns 'passthrough'; the other
+ * shapes are kept for the hold-the-hook answer path #1126 re-adds.
  */
 export type PermissionDecision =
   | 'allow'

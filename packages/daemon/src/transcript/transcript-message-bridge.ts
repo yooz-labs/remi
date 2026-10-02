@@ -139,8 +139,7 @@ export class TranscriptMessageBridge {
    * otherwise renders in the chat view as a message the human sent (measured
    * across real transcripts: 47 of 88 `isMeta: true` entries were exactly
    * this shape — see `user-entry-provenance.ts`'s module doc for the full
-   * breakdown). This mirrors that module's design (also used by
-   * `auto-approve/authority.ts`'s `extractUserEntryText`): `isMeta` is
+   * breakdown). This mirrors that module's design: `isMeta` is
    * checked FIRST and unconditionally, before any content-shape logic, then
    * the residual `isWrappedNonHumanText` denylist catches the cohort
    * (`<command-name>`, `<local-command-stdout>`) that is NOT stamped

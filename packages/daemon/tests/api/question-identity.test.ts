@@ -25,8 +25,6 @@ import { generateId } from '@remi/shared';
 import type { Question, UUID } from '@remi/shared';
 import { QuestionPresenceTracker } from '../../src/api/question-presence-tracker.ts';
 import { AutoApproveGate } from '../../src/auto-approve/auto-approve-gate.ts';
-import type { AutoApproveEvaluator } from '../../src/auto-approve/auto-approve-gate.ts';
-import type { AutoApproveResult } from '../../src/auto-approve/types.ts';
 import { __resetLoggerForTests, configureLogger } from '../../src/cli/logger.ts';
 import { HookEventBridge } from '../../src/hooks/hook-event-bridge.ts';
 import type { PermissionRequestHookInput } from '../../src/hooks/index.ts';
@@ -46,7 +44,7 @@ function fakePTY(submits: string[] = []): PTYSession {
 }
 
 /** A PermissionRequest hook input for a SUBAGENT-tagged Bash command (parks
- *  for PTY arbitration, #751/#814 — the path where identity used to fork). */
+ *  for its PTY render, #751 — the path where identity used to fork). */
 function pr(command = 'git push origin main'): PermissionRequestHookInput {
   return {
     session_id: 'claude-session',
@@ -92,39 +90,10 @@ function ptyRender(text = 'Do you want to proceed?'): Question {
   };
 }
 
-/** Poll until `predicate` is true or `timeoutMs` elapses (never a guessed
- *  sleep, per repo convention). Needed for the #814 arbiter path: its verdict
- *  is awaited OUT of band by `QuestionPresenceTracker` (a fire-and-forget
- *  `void pending.then(...)`), so a test cannot await a promise handle for it
- *  directly and must instead wait for its observable effect (a push). */
-async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
-  const start = Date.now();
-  while (!predicate()) {
-    if (Date.now() - start > timeoutMs) {
-      throw new Error(`waitFor: predicate did not become true within ${timeoutMs}ms`);
-    }
-    await new Promise((resolve) => setTimeout(resolve, 1));
-  }
-}
-
-const escalate: AutoApproveResult = {
-  decision: 'escalate',
-  reasoning: 't',
-  durationMs: 0,
-  model: 'm',
-};
-
 /** Builds the real pipeline (SessionRegistry + QuestionPresenceTracker +
  *  HookEventBridge + AutoApproveGate) the way `hook-bridge-setup.ts` wires
- *  it, minus the transcript/binder machinery this test does not exercise.
- *  `service` mirrors the gate's own dep: `null` for the no-auto-approve path
- *  (a parked render pushes straight through `pushMerged`, pre-#814
- *  behavior), or a real evaluator for the arbiter path
- *  (`arbitrateParkedRender` / `escalateRenderedParked`). */
-function buildPipeline(
-  service: AutoApproveEvaluator | null,
-  submits: string[] = [],
-): {
+ *  it, minus the transcript/binder machinery this test does not exercise. */
+function buildPipeline(submits: string[] = []): {
   SID: UUID;
   registry: SessionRegistry;
   tracker: QuestionPresenceTracker;
@@ -161,11 +130,10 @@ function buildPipeline(
 
   const gate = new AutoApproveGate(
     {
-      service,
       sessionRegistry: registry,
       tracker,
       isInSubagentContext: () => false,
-      escalate: (i, summary) => hookBridge.handlePermissionRequest(i, summary),
+      escalate: (i) => hookBridge.handlePermissionRequest(i),
       parkForPTY: (i) => {
         const q = hookBridge.buildPermissionQuestion(i);
         tracker.parkAwaitingPTY(q);
@@ -174,12 +142,6 @@ function buildPipeline(
     },
     SID,
   );
-
-  if (service) {
-    tracker.setParkedRenderArbiter((ctx) =>
-      gate.arbitrateParkedRender(ctx.parkedQuestionId as UUID, ctx.rendered, ctx.ptyPrompt),
-    );
-  }
 
   return { SID, registry, tracker, gate, pushed };
 }
@@ -193,7 +155,7 @@ describe('single question identity across hook -> PTY-render (#887)', () => {
   });
 
   test('parking never registers or pushes a question (park is silent, #751)', async () => {
-    const { registry, gate, SID, pushed } = buildPipeline(null);
+    const { registry, gate, SID, pushed } = buildPipeline();
     const decision = await gate.resolvePermission(pr());
     expect(decision).toBe('passthrough'); // #807: subagent permissions never hold
     expect(pushed).toHaveLength(0);
@@ -201,8 +163,8 @@ describe('single question identity across hook -> PTY-render (#887)', () => {
     await registry.shutdown();
   });
 
-  test('a parked prompt that renders pushes under the HOOK id, not a fresh PTY id (no auto-approve configured)', async () => {
-    const { registry, tracker, gate, SID, pushed } = buildPipeline(null);
+  test('a parked prompt that renders pushes under the HOOK id, not a fresh PTY id', async () => {
+    const { registry, tracker, gate, SID, pushed } = buildPipeline();
     await gate.resolvePermission(pr());
 
     // The PTY parser independently mints its OWN id for the same logical
@@ -220,7 +182,7 @@ describe('single question identity across hook -> PTY-render (#887)', () => {
   });
 
   test('exactly ONE id is ever registered for a parked-then-rendered prompt cycle, add through remove (acceptance criterion)', async () => {
-    const { registry, tracker, gate, SID, pushed } = buildPipeline(null);
+    const { registry, tracker, gate, SID, pushed } = buildPipeline();
     await gate.resolvePermission(pr());
     const render = ptyRender();
     tracker.onOrphanPTYPrompt(render);
@@ -241,38 +203,12 @@ describe('single question identity across hook -> PTY-render (#887)', () => {
     await registry.shutdown();
   });
 
-  test('the same id-adoption holds through the #814 arbiter path (auto-approve escalates)', async () => {
-    const evalCalls: string[] = [];
-    const service: AutoApproveEvaluator = {
-      evaluate: async (toolName) => {
-        evalCalls.push(toolName);
-        return escalate;
-      },
-      cancel: () => true,
-    };
-    const { registry, tracker, gate, SID, pushed } = buildPipeline(service);
-    await gate.resolvePermission(pr());
-
-    const render = ptyRender();
-    tracker.onOrphanPTYPrompt(render); // the real routing path for hooked sessions
-
-    // arbitrateParkedRender runs asynchronously off the PTY-parse callback
-    // (fire-and-forget from the tracker's side); wait for its push to land.
-    await waitFor(() => pushed.length > 0);
-
-    expect(evalCalls).toEqual(['Bash']);
-    expect(pushed).toHaveLength(1);
-    expect(pushed[0]?.id).not.toBe(render.id);
-    expect(registry.getSession(SID)?.currentQuestions.size).toBe(1);
-    await registry.shutdown();
-  });
-
   test('no `rekey` mechanism remains: openQuestionSignatures resolves the pushed id directly', async () => {
     // Regression guard for the deleted `rekeySignatureToRendered`: prove the
     // gate's own external-resolution bookkeeping (`openQuestionSignatures`,
     // keyed at park time) already matches the id of whatever card gets
     // pushed -- no intermediate step required.
-    const { registry, tracker, gate, SID, pushed } = buildPipeline(null);
+    const { registry, tracker, gate, SID, pushed } = buildPipeline();
     await gate.resolvePermission(pr('rm -rf build'));
     const render = ptyRender('reviewer · Bash: rm -rf build');
     tracker.onOrphanPTYPrompt(render);

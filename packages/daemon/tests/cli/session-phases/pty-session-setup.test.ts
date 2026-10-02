@@ -541,18 +541,11 @@ describe('detectAuqTerminalAnswers', () => {
     registerWithQuestion(auqQuestion(QID));
     appendPtyOutput(SID, CLOSED_MARKER);
     const resolved: Array<[UUID, UUID]> = [];
-    const cancelled: Array<[UUID, UUID, string]> = [];
 
-    detectAuqTerminalAnswers(
-      SID,
-      sessionRegistry,
-      (sid, qid) => resolved.push([sid, qid]),
-      (sid, qid, reason) => cancelled.push([sid, qid, reason]),
-    );
+    detectAuqTerminalAnswers(SID, sessionRegistry, (sid, qid) => resolved.push([sid, qid]));
 
     expect(sessionRegistry.getSession(SID)?.currentQuestions.size).toBe(0);
     expect(resolved).toEqual([[SID, QID]]);
-    expect(cancelled).toEqual([[SID, QID, 'user-answered-auq-terminal']]);
   });
 
   test('does nothing when no AUQ question is pending (no session, no throw)', () => {

@@ -158,10 +158,10 @@ export function createMessageApiForSession(
       sessionRegistry.addQuestion(questionSessionId, stamped, stamped.source ?? 'unknown');
 
       // Push: a non-held question only pushes when no client is attached (the
-      // client sees it in-app). A HELD escalation (#603 Phase 3) always also
-      // pushes to the lock screen — the attached client may be backgrounded.
-      // maybePush records the delivery outcome (#603 Phase 1) for the gate to
-      // probe; the regular question path does not await it. Fire-and-forget
+      // client sees it in-app). A `held` push (`pushHeldHook`, #603 Phase 3)
+      // always also pushes to the lock screen — the attached client may be
+      // backgrounded. The question path does not await the delivery outcome
+      // maybePush returns. Fire-and-forget
       // from this synchronous hook callback, so guard against a future
       // pushConfig/refreshDeviceTokens contract change surfacing as an
       // unhandled rejection (matches the escalator's #672 push guard).

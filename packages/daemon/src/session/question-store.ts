@@ -19,13 +19,12 @@
  * Scope note (#888 PR body): this consolidates ONLY the pendingness map
  * itself -- "is this question still awaiting an answer, and what is it."
  * The gate's own bookkeeping about a pending question it already knows about
- * (`AutoApproveGate`'s `pendingHolds` / `openQuestionSignatures` /
- * `parkedInputs` / `evalIdByQuestion` / `confirmedDeliveries`,
- * `QuestionPresenceTracker`'s `pending` / `awaitingPTY` / `bufferedDuringEval`
- * / `armedOrphanQuestion`) is left as-is: each is metadata about HOW to
- * resolve a question this store already owns (an open auto-approve eval, a
- * held hook, a parked PTY-arbitration record), not a second, competing
- * opinion on WHETHER it is pending. Folding those in too was judged too
+ * (`AutoApproveGate`'s `openQuestionSignatures`, `QuestionPresenceTracker`'s
+ * `pending` / `awaitingPTY` / `armedOrphanQuestion`) is left as-is: each is
+ * metadata about HOW to resolve a question this store already owns (a tool
+ * signature to match, a parked record awaiting its render), not a second,
+ * competing opinion on WHETHER it is pending. (#1125 deleted the gate's hold,
+ * eval and parked-input maps this note used to list.) Folding those in too was judged too
  * large and too risky for one PR given how much of #751/#763/#767/#814's
  * hard-won correctness lives in their exact current shape (see the PR
  * description for the full reasoning) -- scoped out as follow-up work.
