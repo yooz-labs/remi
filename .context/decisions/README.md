@@ -17,7 +17,7 @@ add a row below.
 | ADR | Decision |
 |---|---|
 | [0001](0001-transcript-path-source-of-truth.md) | Transcript path is the session source of truth |
-| [0002](0002-model-b-hold-the-hook-notifications.md) | Hold-the-hook notification model |
+| [0002](0002-model-b-hold-the-hook-notifications.md) | Hold-the-hook notification model; amended by 0030: not in effect until #1126, answers are typed and screen-checked (#1134) |
 | [0003](0003-synchronous-permission-decisions.md) | Synchronous permission decisions; amended by 0030: the hook answer is always `passthrough` now |
 | [0004](0004-pty-as-arbiter-subagent-questions.md) | PTY is the arbiter for subagent questions; amended by 0030: parked prompts push on render, nothing is evaluated |
 | [0005](0005-hub-and-attach-only-clients.md) | Hub mode and attach-only clients |
