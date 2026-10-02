@@ -821,6 +821,13 @@ export interface ResumeSessionResponseMessage {
   readonly success: boolean;
   /** Error message if resume failed */
   readonly error?: string;
+  /**
+   * Machine-readable failure code, from the same vocabulary as the `error`
+   * frame's `code` (e.g. `'UNSUPPORTED'`). Present only on failures that have
+   * a stable code; absent on success and on older daemons, so clients must
+   * keep treating `error` as the human-readable fallback (#1124).
+   */
+  readonly errorCode?: string;
   /** ID of the original request */
   readonly requestId: UUID;
 }
@@ -1912,6 +1919,7 @@ export function createResumeSessionResponse(
   requestId: UUID,
   sessionId?: UUID,
   error?: string,
+  errorCode?: string,
 ): ResumeSessionResponseMessage {
   return {
     type: 'resume_session_response',
@@ -1921,6 +1929,7 @@ export function createResumeSessionResponse(
     requestId,
     ...(sessionId !== undefined && { sessionId }),
     ...(error !== undefined && { error }),
+    ...(errorCode !== undefined && { errorCode }),
   };
 }
 
