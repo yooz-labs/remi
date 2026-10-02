@@ -816,6 +816,9 @@ export function setupHookBridge(
       // held Question.id, so the tracker pushes that exact question immediately
       // (-> addQuestion + maybePush) under the id the hold is keyed by.
       onHeldEscalate: (questionId) => tracker.pushHeldHook(questionId),
+      pushOnRender: (questionId) => {
+        tracker.pushOnRender(questionId);
+      },
       onHandled: (ctx) => {
         deps.statusWriter?.autoApproveEnd('approved', Date.now());
         // #576: the permission was silently allowed; tell clients so the pill

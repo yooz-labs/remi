@@ -1947,6 +1947,62 @@ describe('setupHookBridge', () => {
     expect(questions[0]?.source).toBe('pty');
   });
 
+  test('no auto-approve: an unheld binary main-agent prompt reaches the phone when it renders', async () => {
+    // The default install (auto_approve.enabled = false) cannot hold, so the
+    // gate answers 'passthrough' and Claude renders its native prompt at once.
+    // Before `pushOnRender`, the stashed hook record made `isGateOwnedCycle`
+    // read that render as already pushed and suppress it: the card never
+    // reached the phone. Driven through `onOrphanPTYPrompt`, the routing
+    // cli.ts uses when a hook server is active.
+    const { tracker } = build({ realTracker: true, realMessageApi: true, orphanDebounceMs: 5 });
+
+    hookServer.fire('Notification', {
+      session_id: 'claude-unheld-binary',
+      hook_event_name: 'Notification',
+      transcript_path: path.join(tmpDir, 'unheld.jsonl'),
+      notification_type: 'auth_success',
+      message: '',
+    });
+
+    const decision = await hookServer.firePermission({
+      session_id: 'claude-unheld-binary',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'curl example.com' },
+    });
+    expect(decision).toBe('passthrough');
+    // Nothing is registered until the prompt actually renders.
+    expect(sessionRegistry.getSession(SID)?.currentQuestions.size ?? 0).toBe(0);
+
+    const option = (value: string, label: string) => ({
+      label,
+      value,
+      isRecommended: false,
+      isYes: false,
+      isNo: false,
+    });
+    tracker.onOrphanPTYPrompt({
+      id: 'pty-q-unheld' as UUID,
+      text: 'Bash command: curl example.com',
+      options: [
+        option('1', 'Yes'),
+        option('2', "Yes, and don't ask again for curl commands"),
+        option('3', 'No'),
+      ],
+      allowsFreeText: false,
+      isAnswered: false,
+      source: 'pty',
+    });
+
+    const questions = [...(sessionRegistry.getSession(SID)?.currentQuestions.values() ?? [])];
+    expect(questions).toHaveLength(1);
+    // No usable permission_suggestions, so the hook built the Yes/No fallback;
+    // the #718 merge must keep the screen's three options, or a phone "No"
+    // would type 2 and select the persistent allow.
+    expect(questions[0]?.options.map((o) => o.value)).toEqual(['1', '2', '3']);
+    expect(questions[0]?.options[2]?.label).toBe('No');
+  });
+
   test('#807: a subagent never reaches an approve verdict — passthrough, no inject, no escalate', async () => {
     // Regression guard for the dev.3 misfiring: a background subagent's
     // PermissionRequest cannot answer by injecting into the MAIN PTY because

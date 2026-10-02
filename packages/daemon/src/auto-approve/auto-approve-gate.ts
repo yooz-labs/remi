@@ -491,6 +491,16 @@ export interface AutoApproveGateDeps {
    *  (`pushedHeldIds`), so it can never double-push. Absent => no immediate push
    *  (tests / no-AA callers). #573 / #625 */
   onHeldEscalate?: (questionId: UUID) => void;
+  /** The push trigger for a BINARY main-context escalation when holding is
+   *  disabled (no auto-approve service, or `hold_timeout <= 0`): the hook is
+   *  answered 'passthrough', Claude renders its native prompt at once, and the
+   *  stashed question must push when that render pairs with it, carrying the
+   *  on-screen option numbering a PTY-digit answer needs (#718 merge). Before
+   *  this dep existed that combination pushed nothing at all: no hold meant no
+   *  `onHeldEscalate`, and the stashed record made the tracker treat the render
+   *  as gate-owned and suppress it. Absent => the render is never pushed
+   *  (tests). Throw-safe (safeCue). */
+  pushOnRender?: (questionId: UUID) => void;
   /** Called when a HELD question's hold-timeout expires unanswered, JUST BEFORE
    *  it fails open to passthrough (#733). Fired only on the TIMEOUT path — never
    *  on the undeliverable fail-open (#603 delivery gate), where the push channel
@@ -1231,9 +1241,9 @@ export class AutoApproveGate {
     // fires. Push the held question NOW so it is registered in sessionRegistry
     // (answerable) and pushed to the phone, keyed by the SAME id the hold uses
     // (#573). safeCue: cosmetic-shielded like the other lifecycle callbacks — a
-    // push failure here must not break the decision path. ONLY here (a real
-    // hold), never on the passthrough/multi-choice branches above (which push
-    // via onPTYPromptVisible and would double-push).
+    // push failure here must not break the decision path. Only for a real hold:
+    // an unheld escalation pushes on its render instead (`escalateForRender`),
+    // and a passthrough one through `escalatePassthrough`.
     this.safeCueWithArg('onHeldEscalate', this.deps.onHeldEscalate, qid);
     const decision = new Promise<PermissionDecision>((resolve) => {
       const timer = setTimeout(() => {
@@ -1446,7 +1456,35 @@ export class AutoApproveGate {
       });
       return Promise.resolve({ behavior: 'deny', message: buildDenyMessage(reasoning) });
     }
+    if ((this.deps.holdMs ?? 0) <= 0)
+      return Promise.resolve(this.escalateForRender(input, summary));
     return this.escalateAndHold(input, summary);
+  }
+
+  /**
+   * Escalate a BINARY main-context permission when holding is disabled (no
+   * auto-approve service, which is the default install, or `hold_timeout <= 0`).
+   * The hook is answered 'passthrough', so Claude renders its native prompt in
+   * the terminal immediately, and the stashed question is marked to push when
+   * that render pairs with it (`pushOnRender`). Pushing on the render rather
+   * than now keeps two properties `createHold`'s held push does not need: the
+   * card only reaches the phone for a prompt that actually rendered, and its
+   * options come from the #718 merge, so a phone answer typed as a PTY digit
+   * selects the option the screen numbers that way.
+   */
+  private escalateForRender(
+    input: PermissionRequestHookInput,
+    summary?: string,
+  ): PermissionDecision {
+    const qid = this.escalateToUser(input, summary);
+    if (qid) {
+      this.safeCueWithArg('pushOnRender', this.deps.pushOnRender, qid);
+    } else {
+      logError(
+        `[AutoApprove ${this.sessionTag}] unheld binary escalation produced no question id; no push will follow (terminal prompt still answerable locally)`,
+      );
+    }
+    return 'passthrough';
   }
 
   /**

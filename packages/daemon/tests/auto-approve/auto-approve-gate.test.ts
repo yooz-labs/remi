@@ -906,6 +906,90 @@ describe('AutoApproveGate residual_action (#1045 phase 6)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// An unheld binary main-context escalation (no auto-approve service, which is
+// the default install, or hold_timeout = 0) answers 'passthrough' and asks the
+// tracker to push on the render via `pushOnRender`. Before that dep existed it
+// pushed nothing: `createHold` returned passthrough without `onHeldEscalate`.
+// ---------------------------------------------------------------------------
+describe('AutoApproveGate unheld binary escalation pushes on render', () => {
+  const SID = generateId() as UUID;
+  let registry: SessionRegistry;
+  let escalatedIds: UUID[];
+  let pushOnRenderIds: UUID[];
+  let heldPushIds: UUID[];
+
+  function gate(holdMs?: number): AutoApproveGate {
+    registry.registerSession(SID, '/d', fakePTY([]), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    return new AutoApproveGate(
+      {
+        service: null,
+        sessionRegistry: registry,
+        tracker: new QuestionPresenceTracker(() => undefined),
+        isInSubagentContext: () => false,
+        escalate: () => {
+          const id = generateId() as UUID;
+          escalatedIds.push(id);
+          return id;
+        },
+        pushOnRender: (id) => {
+          pushOnRenderIds.push(id);
+        },
+        onHeldEscalate: (id) => {
+          heldPushIds.push(id);
+        },
+        ...(holdMs !== undefined ? { holdMs } : {}),
+      },
+      SID,
+    );
+  }
+
+  const bash: PermissionRequestHookInput = {
+    session_id: 'claude-test',
+    transcript_path: '/tmp/t.jsonl',
+    cwd: '/d',
+    permission_mode: 'default',
+    hook_event_name: 'PermissionRequest',
+    tool_name: 'Bash',
+    tool_input: { command: 'curl example.com' },
+  };
+
+  beforeEach(() => {
+    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    escalatedIds = [];
+    pushOnRenderIds = [];
+    heldPushIds = [];
+    configureLogger({ writeLog: () => {} });
+  });
+
+  afterEach(async () => {
+    __resetLoggerForTests();
+    await registry.shutdown();
+  });
+
+  test('no service, no hold: passthrough, and the escalated question is marked to push on render', async () => {
+    const d = await gate().resolvePermission(bash);
+    expect(d).toBe('passthrough');
+    expect(escalatedIds).toHaveLength(1);
+    expect(pushOnRenderIds).toEqual(escalatedIds);
+    // Not the held push: nothing blocks Claude, and the card must wait for the
+    // render that carries the on-screen option numbering.
+    expect(heldPushIds).toEqual([]);
+  });
+
+  test('a real hold still pushes immediately and never marks for render', async () => {
+    const d = await gate(20).resolvePermission(bash);
+    // Unanswered, the hold times out to passthrough.
+    expect(d).toBe('passthrough');
+    expect(heldPushIds).toEqual(escalatedIds);
+    expect(pushOnRenderIds).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // #1024: a subagent-tagged PermissionRequest that the config's own
 // deterministic layers (deny, then allow, then approve_groups --
 // `evaluateDeterministic`) already approve is answered 'allow' at hook time

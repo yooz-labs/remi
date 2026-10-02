@@ -248,8 +248,11 @@ export class QuestionPresenceTracker {
    *  answered), on consume (render pairing), on `clearPending`
    *  (restart/rotation), or after `PARKED_RECORD_TTL_MS`. Always a subset of
    *  `pending`'s keys; every `pending` delete/clear site mirrors onto this
-   *  map. */
-  private awaitingPTY = new Map<string, number>();
+   *  map. `survivesStatusChange` is false for a main-agent `pushOnRender`
+   *  mark: that record shares the render-pairing path but not the #763
+   *  exemption, because its own agent leaving 'waiting' is how its prompt
+   *  cycle ends. */
+  private awaitingPTY = new Map<string, { at: number; survivesStatusChange: boolean }>();
 
   /** True while a permission prompt is on the main PTY. Set by
    *  `onPTYPromptVisible`; reset by `onStatusChange` out of `'waiting'`
@@ -461,10 +464,41 @@ export class QuestionPresenceTracker {
     // recordPendingHook may have kept a richer existing record instead of
     // this one; the parked flag applies to whatever record now owns the key
     // (both are hook-derived for the same agent's prompt cycle).
-    this.awaitingPTY.set(agentKey(question), this.deps.nowMs?.() ?? Date.now());
+    this.awaitingPTY.set(agentKey(question), {
+      at: this.deps.nowMs?.() ?? Date.now(),
+      survivesStatusChange: true,
+    });
     console.debug(
       `[QuestionPresenceTracker] Parked question awaiting PTY render (agent "${agentKey(question)}"): "${question.text.slice(0, 60)}"`,
     );
+  }
+
+  /**
+   * Mark an already-stashed hook record (located by `Question.id`) to push
+   * when its prompt renders, through the same parked branch of
+   * `onOrphanPTYPrompt` a subagent park uses: merge onto the parsed prompt
+   * (#718 option policy), then push. The gate calls this for a binary
+   * main-context escalation it does NOT hold (`AutoApproveGate.escalateForRender`):
+   * without the mark, `isGateOwnedCycle` reads the stashed record as "the gate
+   * already pushed this" and suppresses the only render that could surface it.
+   * Returns false when no pending record carries that id (nothing to mark).
+   */
+  pushOnRender(questionId: string): boolean {
+    for (const [key, q] of this.pending) {
+      if (q.id !== questionId) continue;
+      this.awaitingPTY.set(key, {
+        at: this.deps.nowMs?.() ?? Date.now(),
+        survivesStatusChange: false,
+      });
+      console.debug(
+        `[QuestionPresenceTracker] Unheld escalation awaiting its render (agent "${key}"): "${q.text.slice(0, 60)}"`,
+      );
+      return true;
+    }
+    console.debug(
+      `[QuestionPresenceTracker] pushOnRender: no pending record for question ${questionId.slice(0, 8)}`,
+    );
+    return false;
   }
 
   /**
@@ -1183,11 +1217,21 @@ export class QuestionPresenceTracker {
       // PreToolUse must not wipe another agent's parked question before its
       // prompt had a chance to render. Parked entries have their own
       // lifecycle (own-agent advance / render consume / TTL / clearPending);
-      // everything else clears exactly as before.
+      // everything else clears exactly as before. A `pushOnRender` mark is
+      // not spared: the main agent has no `noteAgentAdvanced` path, so
+      // leaving 'waiting' is how its prompt cycle ends, and a stale main
+      // record would merge onto the next one.
       const now = this.deps.nowMs?.() ?? Date.now();
       for (const key of [...this.pending.keys()]) {
-        const parkedAt = this.awaitingPTY.get(key);
-        if (parkedAt !== undefined && now - parkedAt <= PARKED_RECORD_TTL_MS) continue;
+        const parked = this.awaitingPTY.get(key);
+        const parkedAt = parked?.at;
+        if (
+          parked?.survivesStatusChange === true &&
+          parkedAt !== undefined &&
+          now - parkedAt <= PARKED_RECORD_TTL_MS
+        ) {
+          continue;
+        }
         if (parkedAt !== undefined) {
           console.debug(
             `[QuestionPresenceTracker] Parked question expired (agent "${key}", TTL ${PARKED_RECORD_TTL_MS}ms elapsed without a render)`,
