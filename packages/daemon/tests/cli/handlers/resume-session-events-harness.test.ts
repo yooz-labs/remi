@@ -106,6 +106,7 @@ describe('createResumeSessionHandlers launch arguments, driven by the harness (#
       gracefulExitInput: claude.gracefulExitInput,
       resumeArgs: (id) => ['--continue-from', id],
       transcriptPath: (projectPath, id) => claude.transcriptPath(projectPath, id),
+      createSession: (ctx) => claude.createSession(ctx),
     });
 
     expect(spawned).toEqual([['--continue-from', HARNESS_SESSION_ID]]);

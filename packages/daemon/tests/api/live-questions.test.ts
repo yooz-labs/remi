@@ -2,8 +2,8 @@
  * #1126 review: the tracker's live-question check ignores a held SUBAGENT
  * card (its dialog does not render while held); every other registered card
  * still counts. The end-to-end case (real gate, tracker and MessageAPI) is in
- * hook-bridge-setup.test.ts; the source check pins that cli.ts wires the
- * tracker through this function.
+ * hook-bridge-setup.test.ts; the source check pins that the Claude session
+ * (harness/claude-session.ts) wires the tracker through this function.
  */
 
 import { describe, expect, test } from 'bun:test';
@@ -38,11 +38,15 @@ describe('hasLiveQuestionOnScreen (#1126)', () => {
     expect(hasLiveQuestionOnScreen([], isHeld)).toBe(false);
   });
 
-  test("cli.ts wires the tracker's live-question check through it", () => {
-    const cli = fs.readFileSync(path.resolve(import.meta.dir, '../../src/cli.ts'), 'utf8');
-    const start = cli.indexOf('const tracker = new QuestionPresenceTracker(');
+  test("the Claude session wires the tracker's live-question check through it", () => {
+    // The tracker's construction moved from cli.ts to the harness (#1164).
+    const source = fs.readFileSync(
+      path.resolve(import.meta.dir, '../../src/harness/claude-session.ts'),
+      'utf8',
+    );
+    const start = source.indexOf('const tracker = new QuestionPresenceTracker(');
     expect(start).toBeGreaterThan(0);
-    const trackerBlock = cli.slice(start, start + 1200);
+    const trackerBlock = source.slice(start, start + 1200);
     expect(trackerBlock).toContain('hasLiveQuestions: () =>');
     expect(trackerBlock).toContain('hasLiveQuestionOnScreen(');
     expect(trackerBlock).toContain('sessionGateHandles.get(sessionId)?.isHeld(');

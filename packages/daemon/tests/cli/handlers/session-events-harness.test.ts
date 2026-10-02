@@ -65,6 +65,7 @@ describe('createSessionHandlers, driven by the harness (#1163)', () => {
       gracefulExitInput,
       resumeArgs: (id) => claude.resumeArgs(id),
       transcriptPath: (projectPath, id) => claude.transcriptPath(projectPath, id),
+      createSession: (ctx) => claude.createSession(ctx),
     };
   }
 
@@ -76,6 +77,7 @@ describe('createSessionHandlers, driven by the harness (#1163)', () => {
       gracefulExitInput: claude.gracefulExitInput,
       resumeArgs: (id) => claude.resumeArgs(id),
       transcriptPath,
+      createSession: (ctx) => claude.createSession(ctx),
     };
   }
 

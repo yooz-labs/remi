@@ -41,14 +41,19 @@ describe('permissionHoldPolicy (#1126)', () => {
 
 describe('cli.ts takes every per-mode value from the policy', () => {
   const cli = fs.readFileSync(path.resolve(import.meta.dir, '../../src/cli.ts'), 'utf8');
+  // The session gate's wiring moved behind the harness seam in #1164.
+  const claudeSession = fs.readFileSync(
+    path.resolve(import.meta.dir, '../../src/harness/claude-session.ts'),
+    'utf8',
+  );
 
   test('the session gate: hold, hook timeout and subagent routing', () => {
-    expect(cli).toContain(
-      'const holdPolicy = permissionHoldPolicy(passThrough, remiConfig.prompts);',
+    expect(claudeSession).toContain(
+      'const holdPolicy = permissionHoldPolicy(passThrough, prompts);',
     );
-    expect(cli).toContain('holdMs: holdPolicy.holdMs,');
-    expect(cli).toContain('hookTimeoutMs: holdPolicy.hookTimeoutMs,');
-    expect(cli).toContain('hasLocalTerminal: holdPolicy.hasLocalTerminal,');
+    expect(claudeSession).toContain('holdMs: holdPolicy.holdMs,');
+    expect(claudeSession).toContain('hookTimeoutMs: holdPolicy.hookTimeoutMs,');
+    expect(claudeSession).toContain('hasLocalTerminal: holdPolicy.hasLocalTerminal,');
   });
 
   test('the hook registration: 3600 s for the daemon branch, 600 s for the wrapper branch', () => {

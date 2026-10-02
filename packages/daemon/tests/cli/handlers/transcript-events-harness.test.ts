@@ -71,6 +71,7 @@ describe('createTranscriptHandlers durable-index load, driven by the harness (#1
         gracefulExitInput: claude.gracefulExitInput,
         resumeArgs: (id) => claude.resumeArgs(id),
         transcriptPath: (_projectPath, id) => path.join(standInDir, `${id}.jsonl`),
+        createSession: (ctx) => claude.createSession(ctx),
       },
     };
   }
