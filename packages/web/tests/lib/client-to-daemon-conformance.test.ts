@@ -33,7 +33,13 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ProtocolMessage, ProtocolMessageMap } from '@remi/shared/protocol.ts';
-import { MESSAGE_DIRECTION, createHello, deserialize, generateId } from '@remi/shared/protocol.ts';
+import {
+  MESSAGE_DIRECTION,
+  createAuqAnswer,
+  createHello,
+  deserialize,
+  generateId,
+} from '@remi/shared/protocol.ts';
 import type { AdapterEvents } from '../../../daemon/src/adapters/connection-adapter.ts';
 // Real daemon adapter -- not a test double. Relative import: packages/web has
 // no `@remi/daemon` path alias, so this stays a relative path even though
@@ -183,6 +189,20 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
       // First positional arg on every AdapterEvents callback is connectionId.
       expect(call?.args[0]).toBe(connectionId);
     });
+  });
+
+  test('a free-text AskUserQuestion answer from the real client reaches onAnswer with its text (#1127)', async () => {
+    const selections = [
+      { questionIndex: 0, optionIndices: [], text: 'Teal with a hint of gold' },
+      { questionIndex: 1, optionIndices: [0, 2] },
+    ];
+    const before = eventCalls.length;
+    client.send(createAuqAnswer(generateId(), generateId(), selections));
+    await waitFor(() => eventCalls.length > before);
+    const call = eventCalls[eventCalls.length - 1];
+    expect(call?.event).toBe('onAnswer');
+    // onAnswer(connectionId, sessionId, questionId, answer, claudeSessionId, extra)
+    expect((call?.args[5] as { selections?: unknown } | undefined)?.selections).toEqual(selections);
   });
 
   test('sanity: every EXPECTED_EVENT key is a real c2d type covered by the loop above', () => {
