@@ -21,6 +21,10 @@ import { SessionRegistryFile } from '../../../src/session/session-registry-file.
 import { SessionRegistry } from '../../../src/session/session-registry.ts';
 import { SessionStore } from '../../../src/session/session-store.ts';
 import { TranscriptDiscovery } from '../../../src/transcript/index.ts';
+import {
+  WRAPPED_DIRECTORY,
+  WRAPPED_DIRECTORY_DIALOG,
+} from '../../parser/fixtures/claude-dialogs.ts';
 
 /**
  * Recording HookServer that captures `.on()` registrations AND lets tests
@@ -1631,11 +1635,13 @@ describe('setupHookBridge', () => {
     expect(ptySubmits).toEqual(['2']);
   });
 
-  test('Phase 2 + Phase 3: mixed-shape suggestions survive the hook->tracker->push merge', async () => {
+  test("Phase 2 + Phase 3: mixed-shape suggestions pair through the hook->tracker->push merge, the screen's options win", async () => {
     // pr-test-analyzer Gap 3: phase 2 filters object entries out of
-    // permission_suggestions; phase 3 merges the filtered options onto
-    // the PTY question. Both layers are tested in isolation; this
-    // covers the chain end-to-end through the real bridge wiring.
+    // permission_suggestions; phase 3 merges the hook record onto the PTY
+    // question. Both layers are tested in isolation; this covers the chain
+    // end-to-end through the real bridge wiring. Since #1134 the merge takes
+    // the hook's text and identity but keeps the screen's options: the card
+    // is answered by typing an option value into that screen.
     const pushed: Question[] = [];
     const localApi = fakeMessageAPI(messageApiLog);
     sessionRegistry.registerSession(SID, tmpDir, fakePTY(ptySubmits), localApi);
@@ -1691,10 +1697,8 @@ describe('setupHookBridge', () => {
 
     expect(tracker.hasPendingForTest()).toBe(true);
 
-    // PTY confirms the prompt is on screen with the bland numbered
-    // fallback options. The hook's filtered string options must win
-    // the merge.
-    tracker.onPTYPromptVisible({
+    // PTY confirms the prompt is on screen with its own numbered options.
+    const screen: Question = {
       id: generateId(),
       text: 'Allow Edit: /tmp/x.ts?',
       options: [
@@ -1703,10 +1707,14 @@ describe('setupHookBridge', () => {
       ],
       allowsFreeText: false,
       isAnswered: false,
-    });
+    };
+    tracker.onPTYPromptVisible(screen);
 
     expect(pushed.length).toBe(1);
-    expect(pushed[0]?.options.map((o) => o.label)).toEqual(['Yes', 'No']);
+    // The hook record paired: its text and source, the screen's options.
+    expect(pushed[0]?.source).toBe('permission_request');
+    expect(pushed[0]?.text).toBe('Allow Edit: /tmp/x.ts');
+    expect(pushed[0]?.options).toEqual(screen.options);
   });
 
   // -------------------------------------------------------------------------
@@ -1777,7 +1785,7 @@ describe('setupHookBridge', () => {
     expect(pushed.length).toBe(0);
 
     // PTY parser confirms the prompt is on the user's terminal.
-    tracker.onPTYPromptVisible({
+    const screen: Question = {
       id: generateId(),
       text: 'Allow Edit: /tmp/foo.ts?',
       options: [
@@ -1787,10 +1795,15 @@ describe('setupHookBridge', () => {
       ],
       allowsFreeText: false,
       isAnswered: false,
-    });
+    };
+    tracker.onPTYPromptVisible(screen);
 
     expect(pushed.length).toBe(1);
-    expect(pushed[0]?.options.map((o) => o.label)).toEqual(['Yes', 'Always', 'No']);
+    // Merged metadata: the subagent's agent and named text, the screen's
+    // options (#1134).
+    expect(pushed[0]?.agentId).toBe('subagent-A');
+    expect(pushed[0]?.text).toBe('general-purpose · Edit: /tmp/foo.ts');
+    expect(pushed[0]?.options).toEqual(screen.options);
   });
 
   test('Phase 4 wiring: subagent PermissionRequest with no PTY confirmation drops cleanly', async () => {
@@ -2179,6 +2192,161 @@ describe('setupHookBridge', () => {
       tracker.onOrphanPTYPrompt(claudeDialog('curl example.com'));
 
       expect(cards()).toHaveLength(1);
+    });
+  });
+
+  /**
+   * #1134, the live E5 reproduction: a Bash `PermissionRequest` whose
+   * `permission_suggestions` were `addDirectories` + `setMode` built a
+   * 4-option card (Yes / allow directory / switch to acceptEdits / No) over a
+   * dialog Claude rendered with 3 (Yes / always allow access to <dir> / No).
+   * The phone's "No" was value 4; Claude ignored the digit and the Enter that
+   * followed confirmed "1. Yes", so the command ran. Driven through the real
+   * bridge, gate, tracker, MessageAPI and answer handler, with the dialog
+   * parsed from the live PTY bytes by the real parser.
+   */
+  describe("phone answers use the screen's numbering (#1134)", () => {
+    const E5_SUGGESTIONS = [
+      { type: 'addDirectories', directories: [WRAPPED_DIRECTORY], destination: 'session' },
+      { type: 'setMode', mode: 'acceptEdits', destination: 'session' },
+    ];
+
+    function lockSession(id: string): void {
+      hookServer.fire('Notification', {
+        session_id: id,
+        hook_event_name: 'Notification',
+        transcript_path: path.join(tmpDir, `${id}.jsonl`),
+        notification_type: 'auth_success',
+        message: '',
+      });
+    }
+
+    function liveDialog(): Question {
+      const parsed = parseQuestion(WRAPPED_DIRECTORY_DIALOG);
+      if (!parsed.question) throw new Error('the live dialog did not parse as a prompt');
+      return parsed.question;
+    }
+
+    function cards(): Question[] {
+      return [...(sessionRegistry.getSession(SID)?.currentQuestions.values() ?? [])];
+    }
+
+    /** The answer handler with every dep cli.ts wires for it, pointed at this
+     *  session's gate handle and tracker. */
+    function answerHandlers(tracker: QuestionPresenceTracker, sent: ProtocolMessage[]) {
+      const gate = bridgeHandles[bridgeHandles.length - 1]?.gate;
+      if (!gate) throw new Error('no bridge handle');
+      return createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send: (_c, m) => {
+          sent.push(m);
+          return true;
+        },
+        resolveHeldPermission: (_s, q, d, idx, grant) => gate.resolveHeld(q, d, idx, grant),
+        releaseHeldAsPassthrough: (_s, q) => gate.releaseHeldAsPassthrough(q),
+        cancelAutoApproveForQuestion: (_s, q, reason) => gate.cancelEvalForQuestion(q, reason),
+        isPromptCurrent: (_s, q, text) => tracker.isPromptCurrent(q, text),
+        isPromptObservedOnPTY: () => tracker.isPromptObservedOnPTY(),
+        observedPromptOptions: () => tracker.observedPromptOptions(),
+      });
+    }
+
+    async function e5Card(sessionTag: string): Promise<{
+      tracker: QuestionPresenceTracker;
+      card: Question;
+      screen: Question;
+    }> {
+      const { tracker } = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+      });
+      lockSession(sessionTag);
+      const decision = await hookServer.firePermission({
+        session_id: sessionTag,
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'touch e5-marker.txt' },
+        permission_suggestions: E5_SUGGESTIONS,
+      });
+      // Auto-approve off: the gate answers passthrough and marks the card to
+      // push when the dialog renders (#1121).
+      expect(decision).toBe('passthrough');
+      const screen = liveDialog();
+      tracker.onOrphanPTYPrompt(screen);
+      const registered = cards();
+      expect(registered).toHaveLength(1);
+      return { tracker, card: registered[0] as Question, screen };
+    }
+
+    test("the card carries the screen's options, not the hook's four", async () => {
+      const { card, screen } = await e5Card('claude-e5-card');
+
+      expect(card.options).toEqual(screen.options);
+      expect(card.options.map((o) => o.value)).toEqual(['1', '2', '3']);
+      expect(card.options[2]?.label).toBe('No');
+      // The hook still names the command.
+      expect(card.text).toBe('Allow Bash: touch e5-marker.txt');
+    });
+
+    test('a phone "No" types the screen\'s 3, never 4', async () => {
+      const { tracker, card } = await e5Card('claude-e5-no');
+      const no = card.options.find((o) => o.label === 'No');
+      if (!no) throw new Error('no "No" option on the card');
+
+      const sent: ProtocolMessage[] = [];
+      // The value, as the phone sent it in the live run.
+      await answerHandlers(tracker, sent).onAnswer('conn-e5' as UUID, SID, card.id, no.value);
+
+      expect(ptySubmits).toEqual(['3']);
+      expect(sent.filter((m) => m.type === 'error')).toHaveLength(0);
+    });
+
+    test('a value the screen does not show is refused and nothing is typed', async () => {
+      // A card pushed by id before its render carries the hook's numbering:
+      // here a passthrough multi-choice escalation (four plain-string
+      // suggestions) whose "No" is 4, over the live 3-option dialog. Its
+      // "No" is the exact digit that approved the command in the live run.
+      const { tracker } = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+      });
+      lockSession('claude-e5-stale');
+      const decision = await hookServer.firePermission({
+        session_id: 'claude-e5-stale',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'touch e5-marker.txt' },
+        permission_suggestions: [
+          'Yes',
+          'Yes, allow directory',
+          'Yes, switch to acceptEdits mode',
+          'No',
+        ],
+      });
+      expect(decision).toBe('passthrough');
+      const card = cards()[0];
+      if (!card) throw new Error('the passthrough escalation registered no card');
+      expect(card.options.map((o) => o.value)).toEqual(['1', '2', '3', '4']);
+
+      tracker.onOrphanPTYPrompt(liveDialog());
+      expect(tracker.observedPromptOptions()?.map((o) => o.value)).toEqual(['1', '2', '3']);
+
+      const logs: string[] = [];
+      configureLogger({ writeLog: (msg) => logs.push(msg) });
+      const sent: ProtocolMessage[] = [];
+      await answerHandlers(tracker, sent).onAnswer('conn-e5' as UUID, SID, card.id, '4');
+
+      expect(ptySubmits).toEqual([]);
+      // Refused by the screen check, not by the presence guard before it.
+      expect(logs.some((m) => m.includes('"4" is not an option on screen [1, 2, 3]'))).toBe(true);
+      const errors = sent.filter((m) => m.type === 'error');
+      expect(errors).toHaveLength(1);
+      expect((errors[0] as { code?: string }).code).toBe('STALE_ANSWER');
+      // Consumed like the other refusals: the card no longer matches the screen.
+      expect(cards()).toHaveLength(0);
     });
   });
 

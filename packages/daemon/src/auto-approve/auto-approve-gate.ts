@@ -497,11 +497,12 @@ export interface AutoApproveGateDeps {
    *  disabled (no auto-approve service, or `hold_timeout <= 0`): the hook is
    *  answered 'passthrough', Claude renders its native prompt at once, and the
    *  stashed question must push when that render pairs with it, carrying the
-   *  on-screen option numbering a PTY-digit answer needs (#718 merge). Before
-   *  this dep existed that combination pushed nothing at all: no hold meant no
-   *  `onHeldEscalate`, and the stashed record made the tracker treat the render
-   *  as gate-owned and suppress it. Absent => the render is never pushed
-   *  (tests). Throw-safe (safeCue). */
+   *  on-screen option numbering a PTY-digit answer needs (the merge keeps the
+   *  parsed screen's options, #1134). Before this dep existed that
+   *  combination pushed nothing at all: no hold meant no `onHeldEscalate`, and
+   *  the stashed record made the tracker treat the render as gate-owned and
+   *  suppress it. Absent => the render is never pushed (tests). Throw-safe
+   *  (safeCue). */
   pushOnRender?: (questionId: UUID) => void;
   /** Called when a HELD question's hold-timeout expires unanswered, JUST BEFORE
    *  it fails open to passthrough (#733). Fired only on the TIMEOUT path — never
@@ -1476,8 +1477,8 @@ export class AutoApproveGate {
    * that render pairs with it (`pushOnRender`). Pushing on the render rather
    * than now keeps two properties `createHold`'s held push does not need: the
    * card only reaches the phone for a prompt that actually rendered, and its
-   * options come from the #718 merge, so a phone answer typed as a PTY digit
-   * selects the option the screen numbers that way.
+   * options are the parsed screen's (#1134), so a phone answer typed as a PTY
+   * digit selects the option the screen numbers that way.
    */
   private escalateForRender(
     input: PermissionRequestHookInput,

@@ -18,7 +18,8 @@
  *     this tracker only governs the iOS notification path.
  *   - PTY (`onPTYPromptVisible`) is the truth signal: a prompt is on the
  *     user's terminal RIGHT NOW. Push immediately, merging hook metadata
- *     if a pending hook record matches (real option labels, agent_id, etc.).
+ *     if a pending hook record matches (tool + command text, agent_id,
+ *     etc.; the options stay the screen's own, #1134).
  *   - Status transitions OUT of `'waiting'` (`onStatusChange`) clear any
  *     pending hook records. The user advanced past the prompt — auto-
  *     approve handled it silently, or the subagent stayed in the
@@ -26,7 +27,7 @@
  *
  * Pending hook records are keyed by agent (`agentId` or `'main'`), so two
  * concurrent agents (main + a subagent, #419) keep separate records and a
- * later subagent hook cannot clobber the main agent's option labels (#425).
+ * later subagent hook cannot clobber the main agent's record (#425).
  *
  * Stale-as-written correction (#886): this comment used to claim subagent /
  * Agent-Teams permission requests never fire PermissionRequest hooks at all,
@@ -131,7 +132,8 @@ export type ParkedRenderVerdict =
  *     merged card ends up looking like.
  *   - `rendered` — the merged question as it would be pushed.
  *   - `ptyPrompt` — what the PTY parser actually read off the screen, before
- *     the merge policy may have replaced its options with the hook's (#718).
+ *     any merge. Since #1134 the merge keeps the parse's options whenever it has
+ *     any, so `rendered.options` are this parse's own options.
  *     Supplied separately so an arbiter that answers by typing an option index
  *     can prefer what is literally on screen, and so it can re-check (via
  *     `isPromptCurrent`) that the same prompt is still there when its verdict
@@ -484,7 +486,7 @@ export class QuestionPresenceTracker {
    * allowlist absorbs the request silently (the record then expires on the
    * next status transition, like any pending record) or the native prompt
    * renders on the main PTY — `onOrphanPTYPrompt` recognizes the parked
-   * record, merges its rich labels onto the parsed prompt, and pushes
+   * record, merges its rich text onto the parsed prompt, and pushes
    * immediately (no orphan debounce: hook + render is positive
    * double-confirmation). The PTY is the arbiter of whether the user is
    * asked.
@@ -507,7 +509,8 @@ export class QuestionPresenceTracker {
    * Mark an already-stashed hook record (located by `Question.id`) to push
    * when its prompt renders, through the same parked branch of
    * `onOrphanPTYPrompt` a subagent park uses: merge onto the parsed prompt
-   * (#718 option policy), then push. The gate calls this for a binary
+   * (the card takes the screen's options, #1134), then push. The gate calls
+   * this for a binary
    * main-context escalation it does NOT hold (`AutoApproveGate.escalateForRender`):
    * without the mark, `isGateOwnedCycle` reads the stashed record as "the gate
    * already pushed this" and suppresses the only render that could surface it.
@@ -617,28 +620,30 @@ export class QuestionPresenceTracker {
 
   /**
    * PTY parser saw a prompt on screen. Push immediately. Pair with a hook
-   * record for option labels / agent_id: prefer the same-agent entry, else the
+   * record for text / agent_id: prefer the same-agent entry, else the
    * sole pending hook when exactly one exists (unambiguous). With 2+ pending
    * hooks from different agents and no agent match, push bare to avoid
-   * misattributing another agent's labels (#425 / #483). When paired, the hook
+   * misattributing another agent's command (#425 / #483). When paired, the hook
    * contributes `id` (#887: identity is minted ONCE, at hook arrival — see
-   * `consumeAndMerge`), `options`, `agentId` (so the client keys the prompt to
-   * the right agent), AND `text` — the hook's text carries the tool + command +
-   * agent context (e.g. "code-reviewer · Bash: git push origin main"), whereas
-   * the PTY's literal screen text is the bare terminal prompt ("Do you want to
-   * proceed?"). The PTY contributes `allowsFreeText` / `isAnswered` and its
-   * presence is the push trigger (#497). The consumed hook entry is removed.
-   * With NO hook record (a genuinely hook-less prompt: an agent-team native
-   * prompt, or a subprocess `(y/n)`), the PTY's own freshly-parsed `id` IS the
-   * identity — there is no other source for one.
+   * `consumeAndMerge`), `agentId` (so the client keys the prompt to the right
+   * agent), AND `text` — the hook's text carries the tool + command + agent
+   * context (e.g. "code-reviewer · Bash: git push origin main"), whereas the
+   * PTY's literal screen text is the bare terminal prompt ("Do you want to
+   * proceed?"). The PTY contributes `options`, `allowsFreeText` / `isAnswered`
+   * and its presence is the push trigger (#497). The consumed hook entry is
+   * removed. With NO hook record (a genuinely hook-less prompt: an agent-team
+   * native prompt, or a subprocess `(y/n)`), the PTY's own freshly-parsed `id`
+   * IS the identity — there is no other source for one.
    *
-   * Options exception (#718): when the hook record's options are the daemon's
-   * honest Yes/No FALLBACK (`hookRecord.optionsAreFallback`, set when
-   * `permission_suggestions` had no usable entry) AND the PTY question has its
-   * own non-empty options, the PTY's options win instead — the PTY parsed the
-   * ACTUAL rendered prompt, so its options are strictly more trustworthy than
-   * a bare substitute. Text/agentId/kind/questions/submitLabel/summary still
-   * prefer the hook record as before; only the options selection changes.
+   * Options rule (#1134, replacing #718's "the hook's options win unless they
+   * are the fallback"): when the PTY parse has options, they are the merged
+   * card's options, labels and values unchanged. A merged card is answered by
+   * typing its option value into the PTY, so it must carry the screen's
+   * numbering; the hook's suggestion-derived set does not match Claude's
+   * dialog one-for-one, and a mismatch typed a phone "No" as an approval. The
+   * hook's options are kept only when the parse has none.
+   * Text/agentId/kind/questions/submitLabel/summary still prefer the hook
+   * record.
    *
    * Pending is mutated BEFORE the push so a re-entrant call cannot re-merge
    * the same record. Push errors are caught and logged but not rethrown — the
@@ -863,7 +868,7 @@ export class QuestionPresenceTracker {
     } else if (recordKey === undefined && this.pending.size > 1) {
       // 2+ pending hooks from DIFFERENT agents and the PTY question matches
       // none: do NOT guess. Pairing the most-recent would attach the wrong
-      // agent's option labels (#425). Push the bare PTY question instead — its
+      // agent's command text (#425). Push the bare PTY question instead — its
       // numbered options suffice for the user to answer — and log loudly so the
       // ambiguity is observable rather than a silent misattribution.
       console.warn(
@@ -881,9 +886,17 @@ export class QuestionPresenceTracker {
       this.awaitingPTY.delete(recordKey);
     }
 
-    // #718: a fallback hook record must not overwrite the PTY's own options
-    // when it has some — the PTY parsed the actual rendered prompt.
-    const useHookOptions = !hookRecord?.optionsAreFallback || ptyQuestion.options.length === 0;
+    // #1134: a merged card is answered by typing its option value into the
+    // PTY, so its options must be the ones the screen numbers, never the
+    // hook's. The hook's options are a reconstruction from
+    // `permission_suggestions` that Claude Code does not render one-for-one:
+    // live, two structured suggestions built a 4-option card over a 3-option
+    // dialog, the phone's "No" typed 4, Claude ignored it and Enter confirmed
+    // "1. Yes". The pre-#1134 rule (#718: the hook's options win unless they
+    // are the Yes/No fallback) is what kept that 4-option card. The hook's
+    // options survive only when the parse has none to offer; `handleAnswer`
+    // then refuses to type any of them, because none is on screen.
+    const useHookOptions = ptyQuestion.options.length === 0;
 
     const merged: Question =
       hookRecord && hookRecord.options.length > 0
@@ -926,9 +939,10 @@ export class QuestionPresenceTracker {
             // `options` ended up on the merged question, not silently inherit
             // whatever `ptyQuestion` happened to carry from the `...ptyQuestion`
             // spread above (a different, unrelated signal). When the hook's
-            // options won, mirror the hook record's own flag (true, or
-            // undefined for a real derived set); when the PTY's options won,
-            // they are concrete by construction, so this is always false.
+            // options were kept (the parse had none, #1134), mirror the hook
+            // record's own flag (true, or undefined for a real derived set);
+            // when the PTY's options won, they are concrete by construction,
+            // so this is always false.
             optionsAreFallback: useHookOptions ? hookRecord.optionsAreFallback : false,
             // #626/#628: the PTY base carries none of the structured fields, so a
             // merge must preserve the hook record's AskUserQuestion structure +

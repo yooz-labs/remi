@@ -108,14 +108,18 @@ describe('QuestionPresenceTracker', () => {
       pushes.push(q);
       return undefined;
     });
-    tracker.recordPendingHook({ ...makeHookQuestion('Allow Bash?'), agentId: 'subagent-A' });
+    const hook = { ...makeHookQuestion('Allow Bash?'), agentId: 'subagent-A' };
+    tracker.recordPendingHook(hook);
     const ptyQ = makePTYQuestion('Allow Bash?'); // no agentId, but only one candidate
     tracker.onPTYPromptVisible(ptyQ);
     expect(pushes.length).toBe(1);
-    expect(pushes[0]?.options.map((o) => o.label)).toEqual(['Yes', 'Yes, always', 'No']);
+    // Paired: the hook's identity and agent, the screen's options (#1134).
+    expect(pushes[0]?.id).toBe(hook.id);
+    expect(pushes[0]?.agentId).toBe('subagent-A');
+    expect(pushes[0]?.options.map((o) => o.label)).toEqual(['1', '2', '3']);
   });
 
-  it('hook then PTY — pushes once with the hook rich text + options (#497)', () => {
+  it("hook then PTY — pushes once with the hook rich text and the screen's options (#497, #1134)", () => {
     const pushes: Question[] = [];
     const tracker = new QuestionPresenceTracker((q) => {
       pushes.push(q);
@@ -137,9 +141,9 @@ describe('QuestionPresenceTracker', () => {
     // once a hook record exists to pair with).
     expect(pushes[0]?.id).toBe(hookMeta.id);
     expect(pushes[0]?.id).not.toBe(ptyQ.id);
-    expect(pushes[0]?.options.map((o) => o.label)).toEqual(['Yes', 'Yes, always', 'No']);
-    expect(pushes[0]?.options[0]?.isYes).toBe(true);
-    expect(pushes[0]?.options[2]?.isNo).toBe(true);
+    // #1134: the card is answered by typing its option value into the PTY, so
+    // it carries the screen's numbering, never the hook's.
+    expect(pushes[0]?.options).toEqual(ptyQ.options);
     expect(tracker.hasPendingForTest()).toBe(false);
   });
 
@@ -247,7 +251,8 @@ describe('QuestionPresenceTracker', () => {
     tracker.onPTYPromptVisible(ptyQ);
 
     expect(pushes.length).toBe(1);
-    expect(pushes[0]?.options.map((o) => o.label)).toEqual(['A', 'B']);
+    expect(pushes[0]?.id).toBe(secondHook.id);
+    expect(pushes[0]?.text).toBe('Allow Edit?');
     expect(tracker.hasPendingForTest()).toBe(false);
   });
 
@@ -417,7 +422,8 @@ describe('QuestionPresenceTracker', () => {
       // The user sees the command, not "Claude needs your permission to use Bash"
       // and never the bare PTY "Do you want to proceed?".
       expect(pushes[0]?.text).toBe('Allow Bash: git push origin main');
-      expect(pushes[0]?.options.map((o) => o.label)).toEqual(['Yes', 'Yes, always', 'No']);
+      // Options are the screen's whichever hook record pairs (#1134).
+      expect(pushes[0]?.options).toEqual(ptyQ.options);
     });
 
     it('a source-less (StopFailure-shaped) question does NOT evict a pending permission_request, but a newer permission_request DOES replace it (FIX 2A)', () => {
@@ -507,7 +513,7 @@ describe('QuestionPresenceTracker', () => {
 
       tracker.onPTYPromptVisible(makePTYQuestion('Do you want to proceed?'));
       expect(pushes.length).toBe(1);
-      expect(pushes[0]?.options.map((o) => o.label)).toEqual(['Yes', 'Yes, always', 'No']);
+      expect(pushes[0]?.text).toBe('Claude needs your permission to use Bash');
     });
 
     it("different agents: a notification for agent B does not touch agent A's request", () => {
@@ -525,7 +531,7 @@ describe('QuestionPresenceTracker', () => {
     });
   });
 
-  describe('fallback options do not overwrite PTY truth (#718)', () => {
+  describe("merged options are the screen's (#1134, replacing #718's fallback-only rule)", () => {
     it('a fallback hook record loses its options to a concrete PTY option set (hook text still wins)', () => {
       const pushes: Question[] = [];
       const tracker = new QuestionPresenceTracker((q) => {
@@ -567,81 +573,70 @@ describe('QuestionPresenceTracker', () => {
       expect(pushes[0]?.optionsAreFallback).toBe(false);
     });
 
-    it('overrides a stale optionsAreFallback the PTY question itself happened to carry', () => {
+    it('does not leak a stale optionsAreFallback the PTY question itself happened to carry', () => {
       // The PTY base is spread first (`...ptyQuestion`), so its OWN
-      // optionsAreFallback must not leak through when the hook's options win
-      // (#718 review) — the merged flag must reflect the hook record, not
-      // whatever the PTY parser separately decided about ITS OWN options.
+      // optionsAreFallback must not leak through (#718 review): the merged
+      // flag describes the options that won, and the screen's are concrete.
       const pushes: Question[] = [];
       const tracker = new QuestionPresenceTracker((q) => {
         pushes.push(q);
         return undefined;
       });
-      const structuredHook: Question = {
-        ...makePermissionRequestHook('Allow Bash: rm -rf /tmp/foo'),
-        options: [
-          makeOption('Yes', '1', { isYes: true, isRecommended: true }),
-          makeOption('Yes, always allow: rm -rf /tmp/foo', '2', {
-            isYes: true,
-            suggestionIndex: 0,
-          }),
-          makeOption('No', '3', { isNo: true }),
-        ],
-        // Real derived set: no optionsAreFallback flag.
-      };
-      tracker.recordPendingHook(structuredHook);
+      tracker.recordPendingHook(makePermissionRequestHook('Allow Bash: rm -rf /tmp/foo'));
 
       const ptyQ: Question = {
         ...makePTYQuestion('Do you want to proceed?'),
-        optionsAreFallback: false,
+        optionsAreFallback: true,
       };
       tracker.onPTYPromptVisible(ptyQ);
 
-      expect(pushes[0]?.options.map((o) => o.label)).toEqual([
-        'Yes',
-        'Yes, always allow: rm -rf /tmp/foo',
-        'No',
-      ]);
-      // The hook's options won and the hook record has no fallback flag, so
-      // the merged question must not carry `false` (or any stale value)
-      // leaked from the PTY base.
-      expect(pushes[0]?.optionsAreFallback).toBeUndefined();
+      expect(pushes[0]?.options).toEqual(ptyQ.options);
+      expect(pushes[0]?.optionsAreFallback).toBe(false);
     });
 
-    it('a suggestion-derived (non-fallback) hook record still wins over the PTY options', () => {
+    it('a suggestion-derived hook record gives way to the screen: the live 4-over-3 mismatch', () => {
+      // The live failure (#1134): `addDirectories` + `setMode` suggestions
+      // built a 4-option card, Claude's dialog showed 3, and the pre-#1134
+      // merge kept the hook's set because it was not the fallback. The
+      // phone's "No" was value 4, which the dialog does not have.
       const pushes: Question[] = [];
       const tracker = new QuestionPresenceTracker((q) => {
         pushes.push(q);
         return undefined;
       });
       const structuredHook: Question = {
-        ...makePermissionRequestHook('Allow Bash: rm -rf /tmp/foo'),
+        ...makePermissionRequestHook('Allow Bash: touch e5-marker.txt'),
         options: [
           makeOption('Yes', '1', { isYes: true, isRecommended: true }),
-          makeOption('Yes, always allow: rm -rf /tmp/foo', '2', {
-            isYes: true,
-            suggestionIndex: 0,
-          }),
-          makeOption('No', '3', { isNo: true }),
+          makeOption('Yes, allow directory /work', '2', { isYes: true, suggestionIndex: 0 }),
+          makeOption('Yes, switch to acceptEdits mode', '3', { isYes: true, suggestionIndex: 1 }),
+          makeOption('No', '4', { isNo: true }),
         ],
         // optionsAreFallback intentionally absent: this is a real derived set.
       };
       tracker.recordPendingHook(structuredHook);
 
-      const ptyQ = makePTYQuestion('Do you want to proceed?');
+      const ptyQ: Question = {
+        ...makePTYQuestion('Do you want to proceed?'),
+        options: [
+          makeOption('Yes', '1', { isRecommended: true }),
+          makeOption('Yes, and always allow access to /work from this project', '2'),
+          makeOption('No', '3'),
+        ],
+      };
       tracker.onPTYPromptVisible(ptyQ);
 
       expect(pushes.length).toBe(1);
-      expect(pushes[0]?.options.map((o) => o.label)).toEqual([
-        'Yes',
-        'Yes, always allow: rm -rf /tmp/foo',
-        'No',
-      ]);
-      expect(pushes[0]?.options[1]?.suggestionIndex).toBe(0);
-      expect(pushes[0]?.optionsAreFallback).toBeUndefined();
+      expect(pushes[0]?.id).toBe(structuredHook.id);
+      expect(pushes[0]?.text).toBe('Allow Bash: touch e5-marker.txt');
+      expect(pushes[0]?.options).toEqual(ptyQ.options);
+      // No hook-only artifacts survive: nothing to echo, no value 4.
+      expect(pushes[0]?.options.some((o) => o.suggestionIndex !== undefined)).toBe(false);
+      expect(pushes[0]?.options.map((o) => o.value)).toEqual(['1', '2', '3']);
+      expect(pushes[0]?.optionsAreFallback).toBe(false);
     });
 
-    it('a fallback hook record keeps its own options when the PTY question has none', () => {
+    it('a hook record keeps its own options only when the PTY question has none', () => {
       const pushes: Question[] = [];
       const tracker = new QuestionPresenceTracker((q) => {
         pushes.push(q);
@@ -660,10 +655,11 @@ describe('QuestionPresenceTracker', () => {
       const ptyQ: Question = { ...makePTYQuestion('Do you want to proceed?'), options: [] };
       tracker.onPTYPromptVisible(ptyQ);
 
-      // No PTY options to prefer: the hook's fallback is still better than nothing.
+      // No PTY options to take: the hook's are kept. The answer path still
+      // refuses to type any of them, because the screen shows no such value.
       expect(pushes[0]?.options.map((o) => o.label)).toEqual(['Yes', 'No']);
-      // The hook's own options won (no PTY options to prefer), so the merged
-      // flag mirrors the hook record's fallback flag.
+      // The hook's own options were kept, so the merged flag mirrors the hook
+      // record's fallback flag.
       expect(pushes[0]?.optionsAreFallback).toBe(true);
     });
   });
@@ -690,10 +686,13 @@ describe('QuestionPresenceTracker', () => {
       tracker.onPTYPromptVisible(makePTYQuestion('Allow Bash?'));
       expect(pushes.length).toBe(0);
       // escalate() stashes the hook record first, THEN onEscalate releases.
-      tracker.recordPendingHook(makeHookQuestion('Allow Bash?'));
+      const hook = makeHookQuestion('Allow Bash?');
+      tracker.recordPendingHook(hook);
       tracker.onAutoApproveEscalate();
       expect(pushes.length).toBe(1);
-      expect(pushes[0]?.options.map((o) => o.label)).toEqual(['Yes', 'Yes, always', 'No']);
+      // Merged with the hook: its identity, the screen's options (#1134).
+      expect(pushes[0]?.id).toBe(hook.id);
+      expect(pushes[0]?.options.map((o) => o.label)).toEqual(['1', '2', '3']);
     });
 
     it('auto-approved (no escalate): status-leaves-waiting discards the buffer, never pushes', () => {
@@ -789,10 +788,11 @@ describe('QuestionPresenceTracker', () => {
       tracker.onPTYPromptVisible(makePTYQuestion('Allow Bash?'));
       expect(pushes.length).toBe(0);
       tracker.onAutoApproveHandled(true); // unrelated subagent approve — no-op
-      tracker.recordPendingHook(makeHookQuestion('Allow Bash?'));
+      const hook = makeHookQuestion('Allow Bash?');
+      tracker.recordPendingHook(hook);
       tracker.onAutoApproveEscalate(); // the main verdict still owns the release
       expect(pushes.length).toBe(1);
-      expect(pushes[0]?.options.map((o) => o.label)).toEqual(['Yes', 'Yes, always', 'No']);
+      expect(pushes[0]?.id).toBe(hook.id);
     });
 
     it('a subagent escalate (park path) does not release a MAIN-buffered prompt early', () => {
@@ -1077,11 +1077,12 @@ describe('QuestionPresenceTracker', () => {
       // Buffered like onPTYPromptVisible, not routed through the debounce.
       expect(tracker.hasArmedOrphanTimerForTest()).toBe(false);
 
-      tracker.recordPendingHook(makeHookQuestion('Allow Bash?'));
+      const hook = makeHookQuestion('Allow Bash?');
+      tracker.recordPendingHook(hook);
       tracker.onAutoApproveEscalate();
 
       expect(pushes.length).toBe(1);
-      expect(pushes[0]?.options.map((o) => o.label)).toEqual(['Yes', 'Yes, always', 'No']);
+      expect(pushes[0]?.id).toBe(hook.id);
     });
 
     it('a second orphan before the timer fires replaces the first — only the latest pushes, once', async () => {

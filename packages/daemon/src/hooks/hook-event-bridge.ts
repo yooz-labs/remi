@@ -186,13 +186,24 @@ export interface PermissionOptionsResult {
   readonly options: QuestionOption[];
   /** True when `options` is the {@link DEFAULT_PERMISSION_OPTIONS} fallback
    *  (#718): no usable suggestion contributed a middle option. Threaded onto
-   *  the emitted `Question` so the tracker's merge policy never lets this
-   *  bare fallback overwrite a concrete PTY-parsed set of options. */
+   *  the emitted `Question` as `optionsAreFallback` for the dedup and client
+   *  guards that treat it as the bland default. */
   readonly isFallback: boolean;
 }
 
 /**
  * Build options from a PermissionRequest's `permission_suggestions` (#718).
+ *
+ * This is the HOOK's view of the choice, not the screen's: Claude Code's
+ * dialog does not render one option per structured suggestion (live, an
+ * `addDirectories` + `setMode` pair built a 4-option set over a 3-option
+ * dialog). A card pushed when its prompt renders therefore takes the parsed
+ * screen's options instead (`QuestionPresenceTracker.consumeAndMerge`,
+ * #1134). These options still reach the phone on a card pushed by id before
+ * any render (`pushHeldHook`): a held card, answered through the hook
+ * response, or a passthrough multi-choice card, whose digit `handleAnswer`
+ * types only if the screen's menu shows that value.
+ *
  * Two shapes:
  *   - Legacy: >= 2 plain string labels (e.g. Edit's `["Yes","Always","No"]`)
  *     map directly to options, unchanged since #574.
@@ -528,8 +539,10 @@ export class HookEventBridge {
       // Rich source: carries tool + command + agent context. The tracker
       // keeps this over a trailing generic notification for the same agent (#574).
       source: 'permission_request',
-      // #718: lets the tracker's merge policy keep a PTY-parsed question's own
-      // options instead of overwriting them with this bare fallback set.
+      // #718: marks the bare fallback set for the dedup and client guards
+      // (`question-dedup.ts`, the web `question-merge.ts`). The tracker's
+      // merge no longer needs it: since #1134 a PTY parse's options always
+      // replace this question's, fallback or not.
       ...(optionsAreFallback ? { optionsAreFallback: true } : {}),
       // #626: surface the full AskUserQuestion structure (all sub-questions with
       // headers, descriptions, multiSelect) so the client can render it properly.
