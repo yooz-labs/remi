@@ -51,18 +51,20 @@ describe('QuestionPresenceTracker per-agent pending', () => {
     expect(tracker.pendingCountForTest()).toBe(1);
   });
 
-  test('PTY visible pairs the same agent, merges its options, leaves others pending', () => {
+  test('PTY visible pairs the same agent, keeps the screen options, leaves others pending', () => {
     const { tracker, pushed } = makeTracker();
-    tracker.recordPendingHook(
-      question({ agentId: undefined, options: [opt('Yes', '1'), opt('No', '2')] }),
-    );
+    const mainHook = question({ agentId: undefined, options: [opt('Yes', '1'), opt('No', '2')] });
+    tracker.recordPendingHook(mainHook);
     tracker.recordPendingHook(question({ agentId: 'sub-7', options: [opt('A', '1')] }));
 
-    // PTY prompt for the main agent (numbered fallback options).
+    // PTY prompt for the main agent, with its own numbered options.
     tracker.onPTYPromptVisible(question({ agentId: undefined, options: [opt('1', '1')] }));
 
     expect(pushed).toHaveLength(1);
-    expect(pushed[0]?.options.map((o) => o.label)).toEqual(['Yes', 'No']); // hook labels win
+    // Paired with the main agent's hook (its identity), but the card keeps the
+    // screen's options: it is answered by typing into that screen (#1134).
+    expect(pushed[0]?.id).toBe(mainHook.id);
+    expect(pushed[0]?.options.map((o) => o.label)).toEqual(['1']);
     // main consumed; sub-7 still pending.
     expect(tracker.pendingCountForTest()).toBe(1);
     expect(tracker.isPromptVisibleOnPTY()).toBe(true);

@@ -154,7 +154,11 @@ import {
   type CreateSessionHandlers,
   createCreateSessionHandlers,
 } from './cli/handlers/create-session-events.ts';
-import { type InputHandlers, createInputHandlers } from './cli/handlers/input-events.ts';
+import {
+  type InputHandlers,
+  createInputHandlers,
+  trackerScreenDeps,
+} from './cli/handlers/input-events.ts';
 import {
   type ResumeSessionHandlers,
   createResumeSessionHandlers,
@@ -2152,18 +2156,14 @@ const inputHandlers: InputHandlers = createInputHandlers({
   // every other client.
   onQuestionResolved: (sessionId, questionId) =>
     onQuestionResolved(sessionId, questionId, 'answered'),
-  // #920: prompt-currency guard for a `source: 'pty'` card-answer, backed by
-  // the RIGHT session's tracker (populated per session in createNewSession,
-  // same map-per-sessionId shape as sessionGateHandles above). No tracker for
-  // this sessionId (session already closed, or never wired one) => "not
-  // current" — fail toward refusing the injection.
-  isPromptCurrent: (sessionId, questionId, ptyText) =>
-    sessionTrackers.get(sessionId)?.isPromptCurrent(questionId, ptyText) ?? false,
-  // #1002: the weaker "is ANY prompt on screen" backstop, for the hook-paired
-  // cards `isPromptCurrent` structurally cannot serve. Same map, same
-  // no-tracker-means-refuse default.
-  isPromptObservedOnPTY: (sessionId) =>
-    sessionTrackers.get(sessionId)?.isPromptObservedOnPTY() ?? false,
+  // The screen reads the answer guards need (#920 prompt currency, #1002 any
+  // prompt on screen, #1134 the on-screen menu), backed by the RIGHT session's
+  // tracker (populated per session in createNewSession, same map-per-sessionId
+  // shape as sessionGateHandles above). One helper, shared with the tests, so
+  // the wiring they exercise is this wiring. No tracker for this sessionId
+  // (session already closed, or never wired one) => nothing observed, which
+  // fails toward refusing the injection.
+  ...trackerScreenDeps((sessionId) => sessionTrackers.get(sessionId)),
   // #976 prerequisite: route a classified answer to the RIGHT session's
   // precedent store (populated per session in createNewSession, same
   // map-per-sessionId shape as sessionGateHandles/sessionTrackers above). No

@@ -48,14 +48,22 @@ const noOpt: QuestionOption = {
 };
 
 describe('selectPushCategory', () => {
-  test('returns REMI_YN for 2 options', () => {
+  // Chosen by meaning since #1134; the full decision table is in
+  // tests/notifications/notification-dispatcher.test.ts.
+  test('returns REMI_YN for [Yes, No]', () => {
     expect(selectPushCategory([yesOpt, noOpt])).toBe('REMI_YN');
   });
-  test('returns REMI_YNA for 3 options', () => {
-    expect(selectPushCategory([yesOpt, noOpt, yesOpt])).toBe('REMI_YNA');
+  test('returns REMI_YNA for [Yes, Yes always, No]', () => {
+    const yesAlways: QuestionOption = { ...yesOpt, value: 'a', label: 'Yes, always' };
+    expect(selectPushCategory([yesOpt, yesAlways, noOpt])).toBe('REMI_YNA');
   });
-  test('returns REMI_MULTI for 4 options', () => {
-    expect(selectPushCategory([yesOpt, noOpt, yesOpt, noOpt])).toBe('REMI_MULTI');
+  test('returns no category for a standing option outside [Yes, Yes, No]', () => {
+    expect(selectPushCategory([yesOpt, noOpt, yesOpt])).toBeUndefined();
+    expect(selectPushCategory([yesOpt, noOpt, yesOpt, noOpt])).toBeUndefined();
+  });
+  test('returns REMI_MULTI for picks', () => {
+    const pick = (v: string): QuestionOption => ({ ...noOpt, value: v, label: v, isNo: false });
+    expect(selectPushCategory([pick('a'), pick('b'), pick('c'), pick('d')])).toBe('REMI_MULTI');
   });
   test('returns undefined for other counts', () => {
     expect(selectPushCategory([yesOpt])).toBeUndefined();

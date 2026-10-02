@@ -126,6 +126,24 @@ export interface InputHandlerDeps {
    */
   isPromptObservedOnPTY?: (sessionId: UUID) => boolean;
   /**
+   * The options of the prompt currently observed on this session's screen,
+   * backed by `QuestionPresenceTracker.observedPromptOptions` (#1134). Null
+   * when no prompt is observed; an empty array when the prompt on screen is
+   * not an option menu.
+   *
+   * The screen-numbering guard in `handleAnswer` checks every option value
+   * it is about to type against these, and refuses free text when these
+   * show a menu and the card does not take text. A card's numbering is
+   * not proof of the screen's: live, a 4-option card over a 3-option dialog
+   * typed a phone "No" as `4`, Claude ignored the digit, and the Enter after
+   * it confirmed the highlighted "1. Yes".
+   *
+   * Absent => no observed options, so an option answer is refused: the same
+   * fail-toward-refusing default as `isPromptCurrent` and
+   * `isPromptObservedOnPTY`.
+   */
+  observedPromptOptions?: (sessionId: UUID) => readonly QuestionOption[] | null;
+  /**
    * Record a human-classified permission answer into this session's
    * precedent store (#976 prerequisite, `auto-approve/precedent.ts`). Called
    * ONLY for answers `handleAnswer` can classify with confidence as an
@@ -228,6 +246,33 @@ export type AnswerOutcome =
 
 export type InputHandlers = ReturnType<typeof createInputHandlers>;
 
+/** The tracker reads the answer guards use (`QuestionPresenceTracker`). */
+export interface ScreenObserver {
+  isPromptCurrent(questionId: string, ptyText?: string): boolean;
+  isPromptObservedOnPTY(): boolean;
+  observedPromptOptions(): readonly QuestionOption[] | null;
+}
+
+/**
+ * The three screen deps (`isPromptCurrent`, `isPromptObservedOnPTY`,
+ * `observedPromptOptions`) backed by each session's tracker. The ONE wiring
+ * for them: `cli.ts` passes its per-session tracker map and the tests pass
+ * their tracker, so a test exercising the guards exercises the production
+ * wiring (#1134 review: a hand-copied line could be deleted from `cli.ts`
+ * with every test still green). No tracker for the session reads as nothing
+ * observed, which refuses a PTY submit.
+ */
+export function trackerScreenDeps(
+  trackerFor: (sessionId: UUID) => ScreenObserver | undefined,
+): Pick<InputHandlerDeps, 'isPromptCurrent' | 'isPromptObservedOnPTY' | 'observedPromptOptions'> {
+  return {
+    isPromptCurrent: (sessionId, questionId, ptyText) =>
+      trackerFor(sessionId)?.isPromptCurrent(questionId, ptyText) ?? false,
+    isPromptObservedOnPTY: (sessionId) => trackerFor(sessionId)?.isPromptObservedOnPTY() ?? false,
+    observedPromptOptions: (sessionId) => trackerFor(sessionId)?.observedPromptOptions() ?? null,
+  };
+}
+
 /**
  * Resolve an incoming answer string to the active Question's matching option
  * (#574). The phone now sends the option LABEL for display (e.g. "Yes", "Yes,
@@ -241,6 +286,119 @@ function resolveOption(
   answer: string,
 ): QuestionOption | undefined {
   return options.find((o) => o.value === answer || o.label === answer);
+}
+
+/** A PTY submit the #1134 screen-numbering guard refuses, and how. */
+interface ScreenRefusal {
+  /** Trace `detail.reason`. */
+  readonly reason:
+    | 'option-not-on-screen'
+    | 'option-mismatch'
+    | 'free-text-into-menu'
+    | 'free-text-on-held-card';
+  /** `SessionRegistry.removeQuestion` signal for the refused card. */
+  readonly removalReason: string;
+  /** STALE_ANSWER message to the client. */
+  readonly message: string;
+  /** Daemon log fragment, given what would have been typed. */
+  readonly logLine: (input: string) => string;
+}
+
+const SCREEN_REFUSALS = {
+  optionNotOnScreen: {
+    reason: 'option-not-on-screen',
+    removalReason: 'user_answer:option_not_on_screen',
+    message: 'This answer is not an option on the prompt on screen; refusing to submit',
+    logLine: (input) => `"${input}" is not an option on screen`,
+  },
+  optionMismatch: {
+    reason: 'option-mismatch',
+    removalReason: 'user_answer:option_mismatch',
+    message: 'The prompt on screen numbers a different option this way; refusing to submit',
+    logLine: (input) => `"${input}" means a different option on screen`,
+  },
+  freeTextOnHeldCard: {
+    reason: 'free-text-on-held-card',
+    removalReason: 'user_answer:free_text_on_held_card',
+    message: 'This prompt takes one of its options, not text; refusing to submit',
+    logLine: (input) => `free text (${input.length} chars) on a held card that takes options`,
+  },
+  freeTextIntoMenu: {
+    reason: 'free-text-into-menu',
+    removalReason: 'user_answer:free_text_into_menu',
+    message: 'The prompt on screen takes a choice, not text; refusing to submit',
+    logLine: (input) => `free text (${input.length} chars) into the option menu on screen`,
+  },
+} as const satisfies Record<string, ScreenRefusal>;
+
+/** A label reduced to what survives the PTY parse: lowercase, with ALL
+ *  whitespace and box-drawing characters removed, so the parser's spacing
+ *  loss (#1137) cannot make two spellings of one label disagree. */
+function normalizeLabel(label: string): string {
+  return label.toLowerCase().replace(/[\s\u2500-\u257F|]/g, '');
+}
+
+/**
+ * Whether the card option the user picked and the screen option with the
+ * same value are the same choice (#1134 review). The value check alone only
+ * proves the digit EXISTS on screen: a card numbered by the hook ([Yes, No])
+ * over Claude's [Yes, Yes always, No] sends "No" as 2, which the screen
+ * numbers as the standing allow.
+ *
+ * Exact on purpose: the normalized labels (`normalizeLabel`) must be EQUAL,
+ * or, for an AskUserQuestion pick, equal once its description is appended
+ * (the parser folds the description row into the screen label). Nothing
+ * looser is safe. A Yes/No class lets "Yes" pass for "Yes, and don't ask
+ * again" and "Yes, use pnpm" for "Yes, use npm"; a shared prefix lets
+ * "Yes, allow reading from /tmp/x" pass for "/etc/...". This PR is a stopgap
+ * until hook-backed prompts stop being answered by typing (epic #1123 Phase
+ * 3), so it fails closed: a refusal means "answer at the terminal", a wrong
+ * answer is not acceptable. The cost is false refusals when a label is short,
+ * truncated by a partial frame, or reworded by Claude.
+ */
+function sameChoice(card: QuestionOption, screen: QuestionOption): boolean {
+  const onScreen = normalizeLabel(screen.label);
+  if (normalizeLabel(card.label) === onScreen) return true;
+  return (
+    card.description !== undefined &&
+    card.description.length > 0 &&
+    normalizeLabel(`${card.label}${card.description}`) === onScreen
+  );
+}
+
+/**
+ * The #1134 screen-numbering guard's verdict for a PTY submit that did not
+ * just release a hold, or null to let it through. `screenOptions` is the
+ * prompt the tracker last observed (null when none).
+ */
+function screenRefusal(
+  active: Question,
+  answer: string,
+  ptyInput: string,
+  screenOptions: readonly QuestionOption[] | null,
+): ScreenRefusal | null {
+  const chosen = resolveOption(active.options, answer);
+  if (chosen !== undefined) {
+    const onScreen = screenOptions?.find((o) => o.value === ptyInput);
+    if (onScreen === undefined) return SCREEN_REFUSALS.optionNotOnScreen;
+    return sameChoice(chosen, onScreen) ? null : SCREEN_REFUSALS.optionMismatch;
+  }
+  const screenIsMenu = (screenOptions?.length ?? 0) > 0;
+  return active.options.length > 0 && !active.allowsFreeText && screenIsMenu
+    ? SCREEN_REFUSALS.freeTextIntoMenu
+    : null;
+}
+
+/** Every spelling of one answer to `active`: the raw answer (or its
+ *  selections), plus the resolved option's value and label, because the
+ *  in-app tap sends the value and a push action sends the label. */
+function answerKeys(
+  active: Question,
+  answer: string,
+  selections: readonly AnswerSelection[] | undefined,
+): string[] {
+  const option = selections?.length ? undefined : resolveOption(active.options, answer);
+  return [answerCacheKey(answer, selections), ...(option ? [option.value, option.label] : [])];
 }
 
 /**
@@ -310,6 +468,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     onQuestionResolved,
     isPromptCurrent,
     isPromptObservedOnPTY,
+    observedPromptOptions,
     recordPrecedent,
   } = deps;
 
@@ -325,6 +484,15 @@ export function createInputHandlers(deps: InputHandlerDeps) {
   // instead of 'stale', so the losing channel stops showing a false "Answer
   // not delivered" notification.
   const resolvedAnswers = new ResolvedAnswerCache();
+
+  // #1134 review: questions whose answer is being applied right now, with
+  // every spelling of that answer (see `answerKeys`) and the outcome it will
+  // settle to. Claimed synchronously in `handleAnswer`, released when
+  // `applyAnswer` settles.
+  const answersInFlight = new Map<
+    UUID,
+    { readonly keys: ReadonlySet<string>; readonly outcome: Promise<AnswerOutcome> }
+  >();
 
   /**
    * Answer a structured AskUserQuestion (#627) by driving its interactive TUI.
@@ -604,6 +772,78 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       return 'stale';
     }
 
+    // #1134 review: claim the question synchronously, before anything awaits.
+    // A lock-screen tap arrives on two channels by design (`RemiAnswerRelay`
+    // POSTs to /answer AND hands the tap to the Capacitor handler), and the
+    // card stays registered until `applyAnswer`'s submit finishes, so without
+    // a claim both deliveries passed the lookup above and typed the digit
+    // twice; the second Enter then answered whatever Claude showed next. A
+    // same-choice duplicate types nothing and reports what the FIRST
+    // delivery's answer came to (a refused or failed first answer must not
+    // read as delivered on the other channel); a different answer while one
+    // is in flight is refused.
+    const claimKeys = answerKeys(active, answer, extra?.selections);
+    const inFlight = answersInFlight.get(questionId);
+    if (inFlight !== undefined) {
+      if (claimKeys.some((k) => inFlight.keys.has(k))) {
+        log(
+          `[Answer] duplicate delivery for ${questionId.slice(0, 8)} while its answer is being applied; typing nothing, reporting the first delivery's outcome`,
+        );
+        // A first delivery that threw was not delivered; the thrower reports
+        // that itself, the duplicate reports it as not delivered.
+        return inFlight.outcome.catch((): AnswerOutcome => 'stale');
+      }
+      log(
+        `[Answer] refusing a different answer for ${questionId.slice(0, 8)}: another answer is being applied`,
+      );
+      if (!viaRelay) {
+        send(
+          connectionId,
+          createError('STALE_ANSWER', 'Another answer for this question is already being applied', {
+            sessionId,
+            questionId,
+            pendingQuestionIds: [...session.currentQuestions.keys()],
+          }),
+        );
+      }
+      return 'stale';
+    }
+    // `applyAnswer` runs synchronously up to its first await, and nothing
+    // else can run before this call returns, so the claim is in place before
+    // any other delivery can look.
+    const outcome = applyAnswer(
+      connectionId,
+      sessionId,
+      questionId,
+      answer,
+      viaRelay,
+      extra,
+      session,
+      active,
+    );
+    answersInFlight.set(questionId, { keys: new Set(claimKeys), outcome });
+    try {
+      return await outcome;
+    } finally {
+      answersInFlight.delete(questionId);
+    }
+  }
+
+  /**
+   * The part of `handleAnswer` that acts on a live, CLAIMED question (see the
+   * in-flight claim there): drive an AskUserQuestion, resolve or release a
+   * held hook, or type into the PTY, then consume the card.
+   */
+  async function applyAnswer(
+    connectionId: UUID,
+    sessionId: UUID,
+    questionId: UUID,
+    answer: string,
+    viaRelay: boolean,
+    extra: AnswerExtras | undefined,
+    session: ManagedSession,
+    active: Question,
+  ): Promise<AnswerOutcome> {
     // #627 structured AskUserQuestion answer: drive the interactive TUI from the
     // per-sub-question selections (the existing single-digit path can't express a
     // tabbed multi-question form). The runner verifies the review before submitting
@@ -639,6 +879,50 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     // `finally` block's removal carries an honest signal instead of the
     // default 'user_answer' (this card was never actually answered).
     let removalReason = 'user_answer';
+    /** Refuse a PTY submit for the #1134 guard: log, trace, consume the card
+     *  (in `finally`, under the refusal's own signal), tell the client, type
+     *  nothing. */
+    const refuseSubmit = (
+      refusal: ScreenRefusal,
+      input: string,
+      screenOptions: readonly QuestionOption[] | null,
+    ): 'stale' => {
+      const screenValues = (screenOptions ?? []).map((o) => o.value);
+      const typedText =
+        refusal === SCREEN_REFUSALS.freeTextIntoMenu ||
+        refusal === SCREEN_REFUSALS.freeTextOnHeldCard;
+      log(
+        `[Answer] refusing PTY submit for ${questionId.slice(0, 8)}: ${refusal.logLine(input)} [${screenValues.join(', ') || 'none'}]`,
+      );
+      traceQuestionEvent({
+        action: 'stale_answer',
+        sessionId: session.sessionId,
+        questionId,
+        promptId: active.promptId,
+        signal: 'STALE_ANSWER',
+        callSite: 'input-events.handleAnswer:screenNumberingGuard',
+        detail: {
+          reason: refusal.reason,
+          source: active.source,
+          // An option value is a digit; free text may be anything the user
+          // typed, so only its length is recorded.
+          ...(typedText ? { textLength: input.length } : { value: input }),
+          screenValues,
+        },
+      });
+      removalReason = refusal.removalReason;
+      if (!viaRelay) {
+        send(
+          connectionId,
+          createError('STALE_ANSWER', refusal.message, {
+            sessionId,
+            questionId,
+            pendingQuestionIds: [...session.currentQuestions.keys()],
+          }),
+        );
+      }
+      return 'stale';
+    };
     try {
       if (decision?.sessionGrant !== undefined) {
         // A session-grant action is a control-plane operation, never a PTY
@@ -705,6 +989,29 @@ export function createInputHandlers(deps: InputHandlerDeps) {
           ) ?? false;
       }
       if (!hadHold) {
+        // #1134 review: free text on a HELD card must be refused BEFORE the
+        // release below. Releasing makes `released` true, which skips the
+        // screen check (nothing has rendered yet), so the text would be typed
+        // into the dialog Claude is about to draw, where it is ignored and
+        // the Enter confirms the highlighted option. Only an option of this
+        // card can be expressed; text cannot. The hold is then released
+        // anyway, with nothing typed, so Claude shows its own prompt in the
+        // terminal at once instead of blocking until hold_timeout behind a
+        // card the refusal just consumed (the same reasoning as the
+        // stale-answer path above).
+        if (
+          active.held === true &&
+          active.options.length > 0 &&
+          !active.allowsFreeText &&
+          resolveOption(active.options, answer) === undefined
+        ) {
+          try {
+            releaseHeldAsPassthrough?.(session.sessionId, questionId);
+          } catch (err) {
+            logError(`[Answer] free-text refusal: hold release failed: ${errorToString(err)}`);
+          }
+          return refuseSubmit(SCREEN_REFUSALS.freeTextOnHeldCard, answer, null);
+        }
         // decision === null (always/pick/free-text) OR no hold for this question:
         // if a hold exists, pop it to passthrough so the native prompt renders,
         // then submit the digit. If no hold, this is the normal PTY path.
@@ -722,7 +1029,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
           resolveOption(active.options, answer) === undefined
         ) {
           log(
-            `[Answer] "${answer}" matched no option (${active.options.length}); submitting verbatim`,
+            `[Answer] "${answer}" matched no option (${active.options.length}); treating it as free text`,
           );
         }
 
@@ -804,6 +1111,42 @@ export function createInputHandlers(deps: InputHandlerDeps) {
             );
           }
           return 'stale';
+        }
+
+        // #1134 screen-numbering guard: an option value typed into the PTY
+        // must be one of the values the menu on screen shows. Claude's menu
+        // ignores any other digit, and the "\r" `submitInput` sends after it
+        // then confirms whichever option is highlighted, usually "1. Yes".
+        // That is how a phone "No" approved a command: the card numbered "No"
+        // 4 over a 3-option dialog. The merge now gives render-born cards the
+        // screen's options, but a card's numbering is not proof of the
+        // screen's (a card pushed by id before its render carries the hook's;
+        // a registered card keeps its options when the prompt later redraws
+        // with different ones), so the check runs against the observed
+        // screen itself. Existing is not enough either: the screen option
+        // with that value must be the same choice as the card option
+        // (`sameChoice`), or a hook-numbered "No" lands on the screen's
+        // "Yes, and always ..." with the same digit.
+        //
+        // Free text gets the same treatment when it would land in a menu
+        // (#1134 review): the card has options and does not take free text,
+        // and the screen shows a numbered menu. The menu ignores the text the
+        // same way, and the Enter confirms the highlighted option. Free text
+        // is still typed when the card takes it (an elicitation) or when no
+        // menu is on screen (a free-text prompt).
+        //
+        // Applies whenever this answer did not just release a hold. A release
+        // means Claude has not rendered the prompt yet, so there is nothing
+        // to compare against (an option value is typed as before; free text
+        // was already refused above). Note this keys on the release, not on
+        // `active.held`: a passthrough card pushed by id (`pushHeldHook`:
+        // AskUserQuestion, ExitPlanMode, a multi-choice permission) is
+        // stamped `held` but has no hold, so it is answered right here, by a
+        // digit, with the hook's numbering.
+        if (!released) {
+          const screenOptions = observedPromptOptions?.(session.sessionId) ?? null;
+          const refusal = screenRefusal(active, answer, ptyInput, screenOptions);
+          if (refusal !== null) return refuseSubmit(refusal, ptyInput, screenOptions);
         }
 
         await session.pty.submitInput(ptyInput);
