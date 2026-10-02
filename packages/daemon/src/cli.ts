@@ -1189,15 +1189,15 @@ const foreignSessionEscalator = new ForeignSessionEscalator({
   currentPort: () => PORT,
 });
 
-// Daemon-wide destructive-command alerter for background agents (#807). Shared
-// across every session's hook bridge for the same reason as the escalator
-// above: the rate-limit window must be daemon-wide, or a fleet of agents spread
-// over several sessions each gets its own quota and the throttle stops
-// throttling. See `subagent-alert.ts` for why this alerts rather than gates.
+// Daemon-wide destructive-command alerter for subagents, foreground or
+// background (#807). Shared across every session's hook bridge for the same
+// reason as the escalator above: the rate-limit window must be daemon-wide,
+// or a fleet of agents spread over several sessions each gets its own quota
+// and the throttle stops throttling. See `subagent-alert.ts` for why this alerts rather than gates.
 const subagentAlerter = new SubagentAlerter(remiConfig.notifications.subagent_alert);
 
 /** Deliver a subagent alert (#807): a log line plus a dismiss-only push. The
- *  hook bridge calls it when a background agent's call that matched an alert
+ *  hook bridge calls it when a subagent's call that matched an alert
  *  pattern finished without ever prompting (#1155, see `subagent-alert.ts`).
  *  Fire-and-forget: it must never delay or throw into hook handling. */
 function deliverSubagentAlert(alert: SubagentAlert): void {

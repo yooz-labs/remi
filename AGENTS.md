@@ -216,10 +216,12 @@ the card at once by id (`holdForAnswer` -> `onHeldEscalate` ->
   BOTH echoed with `destination: "session"` so a phone tap never writes a
   settings file; `standingGrantFor` in `hook-event-bridge.ts` is the one
   place that decides, and it stamps the option's `standingGrant` kind.
-  Clients read that kind, never the label's wording (#1155): the web card's
-  hint says "This session" for a standing option and "Allow once" only for
-  the plain Yes; Telegram cuts a button at 32 characters, so when any label
-  is cut the message lists every label whole and numbers the buttons.
+  The web card reads that kind, never the label's wording (#1155): its hint
+  says "This session" for a standing option and "Allow once" only for the
+  plain Yes. Telegram does not read it; it keeps every label whole instead:
+  a button is cut at 32 characters, so when any label is cut the message
+  lists every label in full and numbers the buttons (no buttons when the list
+  does not fit in one message).
   `addDirectories` is never offered (its echo did not stop the repeat
   prompt). An answer the card does not offer is refused and the hold stays.
   The lock screen's static "Yes, always" (`REMI_YNA`) is chosen only for an
@@ -510,7 +512,9 @@ its hook is held (verified live), so the gate takes a required
 
 **`subagent_alert` covers what never prompts** (#807, #1155;
 `auto-approve/subagent-alert.ts`, patterns in `[notifications]
-subagent_alert`). Because a call the allow rules permit fires no
+subagent_alert`). It is for any subagent, foreground or background (any
+`agent_id`-tagged call), never the main agent. Because a call the allow rules
+permit fires no
 `PermissionRequest`, the alert is fed from the tool hooks, in both modes: an
 agent-tagged `PreToolUse` whose call matches a pattern is remembered, a
 `PermissionRequest` or `PermissionDenied` for that call forgets it, and its
@@ -558,7 +562,7 @@ those two are both exactly `{token, title, body}`.
 |---|---|---|
 | `question` | permission prompt, AskUserQuestion, plan approval; an "answer at the terminal" notice (hold deadline, wrapper-mode subagent dialog; no actions, own collapse key) | yes, `pushPrefs.questions` |
 | `turn_complete` | `Stop` after a turn ≥ `turn_complete_min_seconds` (#914) | yes, `pushPrefs.turnComplete` |
-| `subagent_alert` | a background agent's call matching `[notifications] subagent_alert` finished without ever prompting (#1155) | no — the pattern list IS the control |
+| `subagent_alert` | a subagent's (foreground or background) call matching `[notifications] subagent_alert` finished without ever prompting (#1155) | no — the pattern list IS the control |
 | `harness_denied` | `PermissionDenied`: Claude Code's auto-mode classifier blocked a call, or auto-denied an unanswered fallback prompt at 2:00 (#1126); informational, never a card; one collapse key per session (`harness-denied-<sessionId>`), so a blocked loop replaces its notice | yes, `pushPrefs.harnessDenied` |
 | `turn_failed` | `StopFailure`: a turn ended on an API error (usage or rate limit, authentication, and similar; #1153); informational, never a card (nothing in Claude waits, so there is nothing to answer); readable reason from `error`, an excerpt of `last_assistant_message`; one collapse key per session (`turn-failed-<sessionId>`), so a repeat replaces the previous notice | yes, `pushPrefs.turnFailed`, default on; **not** muted by `notifications.on_turn_complete = false` |
 | `dismiss` | quiet `content-available` clearing a resolved card | **no, deliberately** |

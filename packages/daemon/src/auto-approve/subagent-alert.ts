@@ -1,6 +1,7 @@
 /**
  * SubagentAlerter — after-the-fact notification for destructive tool calls made
- * by a background agent (#807).
+ * by a subagent, foreground or background (any `agent_id`-tagged call; never
+ * the main agent) (#807).
  *
  * ## Why this exists
  *
@@ -186,7 +187,7 @@ export interface SubagentAlert {
   /** For Bash, the command string; otherwise the tool name. Already truncated
    *  for display — never assume it is the complete command. */
   readonly detail: string;
-  /** The background agent's id, when the hook carried one. */
+  /** The subagent's id, when the hook carried one. */
   readonly agentId: string | undefined;
   /** The agent's type (e.g. 'general-purpose'), when the hook carried one. */
   readonly agentType: string | undefined;
@@ -341,7 +342,7 @@ export class SubagentAlerter {
 
 /** Notification title for a matched alert. Kept short: iOS truncates hard. */
 export function alertTitle(alert: SubagentAlert): string {
-  const who = alert.agentType ?? 'Background agent';
+  const who = alert.agentType ?? 'Subagent';
   return `${who} ran a flagged command`;
 }
 

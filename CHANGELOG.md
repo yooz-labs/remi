@@ -12,7 +12,7 @@ Seams between the changes below, found by a review of all of them together.
 
 - **Stop and chat never type into a prompt the screen parse missed.** Both
   now read one signal: a held prompt, a prompt handed back to the terminal (at
-  its deadline, or a background agent's dialog in a terminal session), or a
+  its deadline, or a subagent's dialog in a terminal session), or a
   numbered menu on screen. Stop used to read only the screen, so it could type
   `/exit` + Enter into a held dialog, where the Enter confirms "Yes"; it now
   force-closes the session while a prompt is up. Chat text is refused then
@@ -20,8 +20,7 @@ Seams between the changes below, found by a review of all of them together.
   says "Answer it there, press Esc from the app, or run remi unstick." An Esc
   from the app (the Esc button, Telegram's `/interrupt`, an attach client's
   Esc key) now clears a main-agent prompt waiting in the terminal at once.
-- **Background-agent alerts (`subagent_alert`) fire for the commands they are
-  for.** Claude does not ask about a call its own allow rules permit, so the
+- **Subagent alerts (`subagent_alert`) fire for the commands they are for.** Claude does not ask about a call its own allow rules permit, so the
   alert, which listened for permission requests, never fired for the
   allowlisted commands it exists to report, and repeated the "answer at the
   terminal" notice for the ones that did ask. It now fires for a matching
@@ -52,8 +51,10 @@ Seams between the changes below, found by a review of all of them together.
   runs; an Esc typed at a terminal session's own terminal is not seen. After
   that window, a dialog still on screen whose screen reading was cleared is no
   longer guarded.
-- A background agent's alert arrives when its command finishes, so a long
-  command's alert comes at its end.
+- A subagent's alert (foreground or background) arrives when its command
+  finishes, so a long command's alert comes at its end. A subagent alert with
+  no agent type is now titled "Subagent ran a flagged command" (it said
+  "Background agent").
 - Whether a foreground (synchronous) subagent's dialog renders while its
   prompt is held in a daemon or hub session is unmeasured
   ([ADR 0031](.context/decisions/0031-held-hook-answers-with-native-dialog-visible.md),

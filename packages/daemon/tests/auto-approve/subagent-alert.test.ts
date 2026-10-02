@@ -189,7 +189,7 @@ describe('alert copy', () => {
     const a = new SubagentAlerter(PATTERNS);
     const alert = a.check('Bash', bash('rm -rf build'), 'agent-1', undefined);
     if (alert === null) throw new Error('expected an alert');
-    expect(alertTitle(alert)).toContain('Background agent');
+    expect(alertTitle(alert)).toBe('Subagent ran a flagged command');
   });
 });
 
