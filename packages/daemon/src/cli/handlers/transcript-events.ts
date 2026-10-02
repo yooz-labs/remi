@@ -17,7 +17,7 @@ import type { StaleSessionErrorDetails, UUID } from '@remi/shared';
 
 import { MessageAPI } from '../../api/message-api.ts';
 import type { SubagentViewRegistry } from '../../api/subagent-view-registry.ts';
-import type { Harness } from '../../harness/index.ts';
+import type { Harness } from '../../harness/types.ts';
 import type { SessionBindingStore, TranscriptIndex } from '../../session/index.ts';
 import type {
   TranscriptDiscovery,

@@ -24,7 +24,7 @@ import {
 } from '@remi/shared';
 import type { UUID } from '@remi/shared';
 
-import type { Harness } from '../../harness/index.ts';
+import type { Harness } from '../../harness/types.ts';
 import type {
   SessionBindingStore,
   SessionRegistry,
