@@ -179,7 +179,7 @@ describe('askUserQuestionDecision', () => {
     });
   });
 
-  test('free text answers a single-select question, trimmed and bounded', () => {
+  test('free text answers a single-select question, trimmed; longer than the bound it is refused, never cut', () => {
     const one = { questions: [TWO_QUESTIONS.questions[0]] };
     const typed = askUserQuestionDecision(one, [
       { questionIndex: 0, optionIndices: [], text: '  Teal, please  ' },
@@ -191,14 +191,13 @@ describe('askUserQuestionDecision', () => {
         updatedInput: { ...one, answers: { 'Which color do you prefer?': 'Teal, please' } },
       },
     });
-    const long = askUserQuestionDecision(one, [{ questionIndex: 0, text: 'x'.repeat(5000) }]);
-    const answer =
-      long.ok && typeof long.decision === 'object' && 'updatedInput' in long.decision
-        ? (long.decision.updatedInput['answers'] as Record<string, string>)[
-            'Which color do you prefer?'
-          ]
-        : undefined;
-    expect(answer?.length).toBe(FREE_TEXT_MAX);
+    const atBound = askUserQuestionDecision(one, [
+      { questionIndex: 0, text: `  ${'x'.repeat(FREE_TEXT_MAX)}  ` },
+    ]);
+    expect(atBound.ok).toBe(true);
+    expect(
+      askUserQuestionDecision(one, [{ questionIndex: 0, text: 'x'.repeat(FREE_TEXT_MAX + 1) }]),
+    ).toEqual({ ok: false, reason: 'free-text-too-long' });
   });
 
   test.each([

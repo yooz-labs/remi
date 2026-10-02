@@ -11,6 +11,10 @@
 
 import type { UIQuestionStep } from '@/types';
 
+/** The longest free-text answer the daemon accepts (`FREE_TEXT_MAX` in the
+ *  daemon's `structured-answers.ts`); a longer one is refused, not cut. */
+export const AUQ_FREE_TEXT_MAX = 2000;
+
 /** One sub-question's answer as sent to the daemon (`AnswerSelection`). */
 export interface AuqSelection {
   readonly questionIndex: number;
@@ -30,8 +34,8 @@ function typedFor(
 
 /**
  * Whether every question has an answer the daemon accepts: a single-select
- * question exactly one option or typed text, a multi-select one at least one
- * option.
+ * question exactly one option or typed text (at most `AUQ_FREE_TEXT_MAX`
+ * characters once trimmed), a multi-select one at least one option.
  */
 export function auqFormComplete(
   steps: readonly UIQuestionStep[],
@@ -42,6 +46,7 @@ export function auqFormComplete(
     const picks = selected.get(qi)?.size ?? 0;
     if (step.multiSelect) return picks > 0;
     const text = typedFor(step, qi, typed);
+    if (text.length > AUQ_FREE_TEXT_MAX) return false;
     return (picks === 1 && text.length === 0) || (picks === 0 && text.length > 0);
   });
 }

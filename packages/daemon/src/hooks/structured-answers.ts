@@ -41,7 +41,8 @@ export function cleanText(s: string): string {
 }
 
 /** Longest free-text answer passed to Claude. A phone keyboard can paste a
- *  novel; Claude reads this as the user's answer, so it is bounded. */
+ *  novel; Claude reads this as the user's answer, so it is bounded: a longer
+ *  answer is refused, never cut (a cut answer is not what the user said). */
 export const FREE_TEXT_MAX = 2000;
 
 /** One AskUserQuestion option exactly as Claude sent it. */
@@ -166,7 +167,8 @@ export type AskRefusal =
   | 'unanswered-question'
   | 'bad-option-index'
   | 'single-select-needs-one-answer'
-  | 'multi-select-needs-a-label';
+  | 'multi-select-needs-a-label'
+  | 'free-text-too-long';
 
 /** An AskUserQuestion answer mapped to its hook response, or refused. */
 export type AskAnswerResult =
@@ -199,7 +201,8 @@ function optionIndices(raw: unknown, optionCount: number): number[] | null {
  *
  * Every question must be answered exactly once, and an answer must be one
  * the user gave in full:
- *   - single-select: exactly one option, or free text instead (never both);
+ *   - single-select: exactly one option, or free text instead (never both),
+ *     at most `FREE_TEXT_MAX` characters once trimmed;
  *   - multi-select: one or more options, their raw labels joined with ", " in
  *     the dialog's order. Free text is not offered for a multi-select here:
  *     only labels were verified for it (#1126 spike E3).
@@ -240,7 +243,8 @@ export function askUserQuestionDecision(
     const indices = optionIndices(entry['optionIndices'], question.options.length);
     if (indices === null) return refuse('bad-option-index');
     if (text !== undefined && typeof text !== 'string') return refuse('malformed-selections');
-    const freeText = typeof text === 'string' ? text.trim().slice(0, FREE_TEXT_MAX) : '';
+    const freeText = typeof text === 'string' ? text.trim() : '';
+    if (freeText.length > FREE_TEXT_MAX) return refuse('free-text-too-long');
     const labels = indices.map((i) => (question.options[i] as AskOptionSpec).label);
     if (question.multiSelect) {
       if (labels.length === 0 || freeText.length > 0) return refuse('multi-select-needs-a-label');

@@ -12,7 +12,12 @@
  * card no hook stands behind it sends Esc to the prompt.
  */
 
-import { type AuqSelection, auqFormComplete, auqFormSelections } from '@/lib/auq-form';
+import {
+  AUQ_FREE_TEXT_MAX,
+  type AuqSelection,
+  auqFormComplete,
+  auqFormSelections,
+} from '@/lib/auq-form';
 import { formatRelativeTime } from '@/lib/format-time';
 import type {
   UIQuestion,
@@ -375,6 +380,7 @@ function MultiQuestionForm({
               value={typed.get(qi) ?? ''}
               onChange={(e) => type(qi, e.target.value)}
               disabled={submitting || failed}
+              maxLength={AUQ_FREE_TEXT_MAX}
               placeholder="Or type your own answer"
               aria-label={`Your own answer to: ${step.text}`}
               className="min-h-[44px] rounded-[10px] border border-[var(--color-border)] bg-[var(--color-surface)] px-3.5 py-2.5 text-sm text-[var(--color-text)] outline-none placeholder:text-[var(--color-text-muted)] focus:ring-2 focus:ring-[var(--color-primary)]/40 disabled:opacity-60"

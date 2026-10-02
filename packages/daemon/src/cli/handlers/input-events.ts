@@ -784,7 +784,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
           closed
             ? 'This prompt is no longer waiting for the phone; answer it in the terminal'
             : selections !== undefined
-              ? 'Answer every question: one choice, or your own text, for each single-choice question, and at least one choice for each multiple-choice question'
+              ? 'Answer every question: one choice, or your own text of up to 2000 characters, for each single-choice question, and at least one choice for each multiple-choice question'
               : 'This prompt takes one of its own options',
           {
             sessionId,

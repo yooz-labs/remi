@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { auqFormComplete, auqFormSelections } from '../../src/lib/auq-form';
+import { AUQ_FREE_TEXT_MAX, auqFormComplete, auqFormSelections } from '../../src/lib/auq-form';
 import type { UIQuestionStep } from '../../src/types';
 
 const opt = (label: string, i: number) => ({
@@ -45,6 +45,14 @@ describe('auqFormComplete', () => {
 
   test('a pick and text together on a single-select is not one answer', () => {
     expect(auqFormComplete(STEPS, picks([[0, [1]], [1, [0]]]), texts([[0, 'Teal']]))).toBe(false);
+  });
+
+  test('text longer than the daemon accepts is incomplete (#1127 review S3)', () => {
+    expect(AUQ_FREE_TEXT_MAX).toBe(2000);
+    const ok = texts([[0, 'x'.repeat(AUQ_FREE_TEXT_MAX)]]);
+    const tooLong = texts([[0, 'x'.repeat(AUQ_FREE_TEXT_MAX + 1)]]);
+    expect(auqFormComplete(STEPS, picks([[1, [0]]]), ok)).toBe(true);
+    expect(auqFormComplete(STEPS, picks([[1, [0]]]), tooLong)).toBe(false);
   });
 
   test('text on a multi-select does not count; its picks do', () => {
