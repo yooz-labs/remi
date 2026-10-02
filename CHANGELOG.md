@@ -4,6 +4,13 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### Contributions: PolyForm Shield packages closed to outside changes (#1132)
+
+- Outside contributions to `packages/web`, `packages/signaling` and `packages/macos` are not accepted without a prior written agreement with Yooz Labs; a pull request that touches them without one is closed.
+  `CONTRIBUTING.md`, `LICENSE.md` and the README say so.
+  Bug reports, security reports and design feedback stay welcome.
+  `packages/daemon`, `packages/shared` and everything outside the package directories stay open.
+
 ### Integration fixes for this line (#1155)
 
 Seams between the changes below, found by a review of all of them together.
@@ -370,9 +377,10 @@ source of several security bugs (#536, #1060, #1063).
   **Apache-2.0** from the first release containing this change.
   `packages/web`, `packages/signaling` and `packages/macos` stay PolyForm
   Shield 1.0.0. `LICENSE.md` maps every directory to its license, the Homebrew
-  formula declares Apache-2.0, and a contribution is licensed under the
-  license of the package it touches. A test fails if daemon or shared code
-  imports from a PolyForm Shield package.
+  formula declares Apache-2.0, and a contribution to an Apache-2.0 part is
+  licensed under Apache-2.0 (outside contributions to the PolyForm Shield
+  packages are not accepted without a prior written agreement, #1132). A test
+  fails if daemon or shared code imports from a PolyForm Shield package.
 
 ### Binary prompts reach the phone with auto-approve off (#1121, #1122)
 
