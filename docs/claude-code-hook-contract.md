@@ -221,7 +221,7 @@ above for what it does).
 | `TeammateIdle` | — | `teammate_name, team_name` | — | [B] was an empty event body |
 | `TaskCreated` | — | `task_id, task_subject, task_description, teammate_name, team_name` | — | [B] new type this PR |
 | `TaskCompleted` | — | `task_id, task_subject, task_description, teammate_name, team_name` | — | [B] was an empty event body |
-| `UserPromptSubmit` | Y (#893) | `prompt, session_title` | Y | [B][D] this is Q9's authority source — the human's typed input, direct from Claude Code, no transcript parsing. Registered; see `auto-approve/authority.ts` and `hook-bridge-setup.ts` |
+| `UserPromptSubmit` | Y (#893) | `prompt, session_title` | Y | [B][D] the human's typed input, direct from Claude Code. Registered by #893 as the auto-approve authority source (deleted in #1125); still registered because the turn-complete timer anchors each turn on it (`notifications/turn-timer.ts`). Listener: `hook-bridge-setup.ts` |
 | `WorktreeCreate` | — | `name` | Y (`worktreePath` **required**) | [B] new field this PR |
 | `WorktreeRemove` | — | `worktree_path` | — | [B] new field this PR |
 

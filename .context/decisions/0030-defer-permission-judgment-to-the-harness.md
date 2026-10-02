@@ -40,7 +40,7 @@ What remains, and is what ships after #1125:
 - **External resolution.** A matching `PreToolUse`/`PostToolUse`/`PostToolUseFailure`/`PermissionDenied`, a lead `Stop`, `SubagentStop`, `SessionEnd` and `remi unstick` still resolve and dismiss open cards.
 
 Nothing holds the hook in this phase: holding was only enabled when an auto-approve service existed.
-ADR 0002's hold-the-hook model stays the documented transport; Phase 3 (#1126) re-adds a hold for the remi-drawn prompt.
+ADR 0002's hold-the-hook model stays the documented transport; the next phase (#1126) answers prompts structurally through held hooks while Claude's own dialog stays visible.
 
 ## Consequences
 
