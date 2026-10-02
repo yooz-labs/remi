@@ -232,34 +232,59 @@ answer: STALE_ANSWER, card consumed, trace reason in parentheses):
   the same choice (the lock screen sends every tap on two channels) reports
   delivered and types nothing; a different concurrent answer is refused.
 
-**Chat text is refused while a prompt menu is on screen** (#1140). `onUserInput`
-types structured input (web chat, a Telegram text reply or custom text) followed
-by Enter, and Claude's numbered menu ignores the letters while the Enter
-confirms the highlighted option, usually "1. Yes", so a message sent from the
-phone while a prompt waits would approve it. When the session's tracker observes
-a non-empty option list (`observedPromptOptions`, wired by `trackerScreenDeps`,
-the same signal the guards above read) nothing is typed and the sender gets an
-`error` with code `PROMPT_WAITING` ("Claude is waiting on a prompt. Answer it
-first, from its card or in the terminal."; `PROMPT_WAITING_ERROR_CODE` and
+**Chat text is refused while a numbered prompt menu is on screen** (#1140).
+`onUserInput` types structured input (web chat, a Telegram text reply or custom
+text) followed by Enter, and Claude's numbered menu ignores the letters while
+the Enter confirms the highlighted option, usually "1. Yes", so a message sent
+from the phone while a prompt waits would approve it. When the session's
+tracker observes a numbered selection box (`observedPromptOptions`, wired by
+`trackerScreenDeps`, the same signal the guards above read; `isNumberedMenu`:
+every option value is numeric) nothing is typed and the sender gets an `error`
+with code `PROMPT_WAITING` ("Claude is waiting on a prompt. Answer it from its
+card or in the terminal (Esc dismisses it)."; `PROMPT_WAITING_ERROR_CODE` and
 `createPromptWaitingError` in `@remi/shared`), plus a trace record
-(`input_refused`, reason `chat-into-menu`). Telegram renders it as "Error: ...";
-the web client marks the refused bubble failed from `details.messageId`.
-Deliberately not refused: raw input (`raw: true`, an attach client's keystrokes
-and the web client's persistent Escape, which is how a menu gets answered), and
-any input when no option list is observed, including a session with no tracker,
-so the chat keeps working without a hook server. An empty list (a free-text
-prompt) does not refuse. Telegram `/interrupt` sends its Escape raw, like the
-web client's, so it works with or without a menu and writes exactly `\x1b` (no
-Enter); its reply is "Interrupt sent" only when the daemon did not answer with
-an `error`, otherwise the error text is what the chat shows. A raw PTY write
-that fails is only logged by the daemon, so that one failure is not reported.
-The observation clears when status leaves `waiting`; if that signal is missed
-the chat stays refused until it arrives, and the card and the terminal still
-answer. The parser now returns
-`allowsFreeText: false` (and `optionsAreFallback: false`) for a Claude selection
-box, so a hook-less card is covered by the `free-text-into-menu` guard above and
-its Telegram card no longer says "reply with custom text"; a hook record's own
-flag still wins when one merges.
+(`input_refused`, reason `chat-into-menu`). Telegram renders it as "Error:
+..."; the web client marks the refused bubble failed from `details.messageId`.
+A Stop (`onKillSessionRequest`) reads the same view and, with a numbered menu
+up, types no `/exit` and force-closes the session instead.
+
+Deliberately typeable: raw input (`raw: true`, an attach client's keystrokes,
+the web client's Escape button and Telegram's `/interrupt`, which is how a menu
+gets answered or dismissed; its Escape is written exactly, no Enter); a
+subprocess `(y/n)` prompt, or Claude prose ending in "(y/n)", which observes
+options "y"/"n" and takes text; a free-text prompt (an empty option list); and
+anything when nothing is observed. A raw write that fails is answered with
+`INPUT_NOT_DELIVERED`, and `/interrupt` then shows that error instead of
+"Interrupt sent". The parser returns `allowsFreeText: false` (and
+`optionsAreFallback: false`) for a Claude selection box, so a hook-less card is
+covered by the `free-text-into-menu` guard above and its Telegram card no
+longer says "reply with custom text"; a hook record's own flag still wins when
+one merges.
+
+What clears the observation (so what unlocks the chat): a status change with no
+agent, that is a main-agent hook event (PreToolUse, PostToolUse, Stop,
+`idle_prompt`, ...) or a PTY-parsed non-waiting status, including Claude's
+empty input prompt (a bare `❯` as the last non-empty line) read as idle while a
+prompt is believed up; and `clearPending`. A status carrying an `agent_id`
+(SubagentStart/SubagentStop, a teammate's notification) does NOT clear it: a
+background agent's activity says nothing about the main dialog. A subagent's
+Pre/PostToolUse never reaches the status pipeline at all.
+
+Limits, stated so nobody has to rediscover them. (1) Esc in the terminal fires
+no hook, so the observation outlives the dialog until a clear event above: the
+idle-prompt recognition when the redraw matches it (no capture of the redraw
+right after an Esc exists, so that exact frame is not claimed), otherwise the
+next status or Claude's own `idle_prompt` notification, which it sends only
+after the session has sat idle for a while. Until then the chat is refused (the
+card and the terminal still answer). (2) `submitInput` writes the text, waits
+50 ms, then writes the Enter; the observation is checked once, before the
+text, so a menu that renders inside that window still gets the Enter. Chat has
+no atomic "no prompt now" check to wait on. (3) A PTY-parsed status is a text
+guess and can clear the observation while the menu is still up. (4) The
+no-tracker branch is effectively dead in production: `cli.ts` builds a tracker
+for every session, hook server or not. It exists for a caller that does not
+wire `observedPromptOptions` (tests, a future entry point) and it fails open
+(types the text), the opposite of the answer guards above.
 
 The parser joins a label's wrapped rows (and an AskUserQuestion description
 row) onto the option above, at most two rows, never across footer rows
