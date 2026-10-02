@@ -12,6 +12,7 @@
   "bin": {
     "remi": "bin/remi"
   },
+  "files": ["bin/remi", "LICENSE", "NOTICE"],
   "optionalDependencies": {
     "@yooz-labs/remi-darwin-arm64": "0.1.0",
     "@yooz-labs/remi-darwin-x64": "0.1.0",
