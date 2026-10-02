@@ -187,7 +187,9 @@ export function removeQuestionByKeyIfId(
  * a `STALE_ANSWER` that names no `questionId` (an answer a held card does not
  * offer) leaves the hook held, and its `pendingQuestionIds` still list the
  * card. Without this the optimistic "answered" card would be removed by its
- * post-answer timer and the live hold would have no card.
+ * post-answer timer and the live hold would have no card. An AskUserQuestion
+ * form submitted here is `submitting` rather than answered (#1127): it is
+ * restored too, so its Submit works again instead of staying "Answering…".
  *
  * Scoped to `lastAnsweredId`, the one card the refusal can be about (the
  * error carries no id, and only the answering connection receives it), so a
@@ -205,10 +207,12 @@ export function restoreRefusedAnswer(
     return questions;
   }
   for (const [key, q] of questions) {
-    if (q.sessionId !== sessionId || q.id !== lastAnsweredId || q.answeredWith == null) continue;
+    if (q.sessionId !== sessionId || q.id !== lastAnsweredId) continue;
+    if (q.answeredWith == null && q.submitting !== true) continue;
     const next = new Map(questions);
     const restored = { ...q };
     delete (restored as { answeredWith?: string }).answeredWith;
+    delete (restored as { submitting?: boolean }).submitting;
     next.set(key, restored);
     return next;
   }

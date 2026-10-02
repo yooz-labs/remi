@@ -195,6 +195,14 @@ describe('restoreRefusedAnswer (#1126: a held card keeps its card)', () => {
     expect(restoreRefusedAnswer(map, 's1', 'other', ['other'])).toBe(map);
     expect(restoreRefusedAnswer(map, 's1', 'plain', ['plain'])).toBe(map);
   });
+
+  test('a refused AskUserQuestion form submitted here stops "Answering…" and can be submitted again (#1127)', () => {
+    const map = build(qWith(q('s1', undefined, 'form'), { submitting: true }));
+    const restored = restoreRefusedAnswer(map, 's1', 'form', ['form']);
+    const card = getSessionQuestions(restored, 's1')[0];
+    expect(card?.submitting).toBeUndefined();
+    expect(card && isQuestionPending(card)).toBe(true);
+  });
 });
 
 describe('clearMainQuestionOnStatus (#652)', () => {

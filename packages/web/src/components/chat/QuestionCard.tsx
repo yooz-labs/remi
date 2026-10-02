@@ -12,6 +12,7 @@
  * card no hook stands behind it sends Esc to the prompt.
  */
 
+import { type AuqSelection, auqFormComplete, auqFormSelections } from '@/lib/auq-form';
 import { formatRelativeTime } from '@/lib/format-time';
 import type {
   UIQuestion,
@@ -23,12 +24,7 @@ import { clsx } from 'clsx';
 import { Check, Send, X } from 'lucide-react';
 import { type KeyboardEvent, useCallback, useMemo, useState } from 'react';
 
-/** One sub-question's chosen option indices (0-based), the shape sent to the
- *  daemon as a structured AskUserQuestion answer (#627). */
-export interface AuqSelection {
-  readonly questionIndex: number;
-  readonly optionIndices: number[];
-}
+export type { AuqSelection };
 
 interface QuestionCardProps {
   readonly question: UIQuestion;
@@ -280,7 +276,8 @@ function FormOption({
 }
 
 /** The interactive AskUserQuestion form (#627): one group per sub-question, a
- *  single Submit, and the never-stuck Cancel. */
+ *  single Submit, and the never-stuck Cancel. A single-select question also
+ *  takes the user's own text instead of an option (#1127). */
 function MultiQuestionForm({
   question,
   steps,
@@ -293,6 +290,7 @@ function MultiQuestionForm({
   readonly onCancel?: () => void;
 }) {
   const [selected, setSelected] = useState<Map<number, Set<number>>>(new Map());
+  const [typed, setTyped] = useState<Map<number, string>>(new Map());
   const submitting = question.submitting ?? false;
   const failed = question.autoAnswerFailed ?? false;
 
@@ -310,21 +308,39 @@ function MultiQuestionForm({
       next.set(qi, set);
       return next;
     });
+    // A pick replaces typed text: a single-select question takes one answer.
+    if (!multi) {
+      setTyped((prev) => {
+        if (!prev.has(qi)) return prev;
+        const next = new Map(prev);
+        next.delete(qi);
+        return next;
+      });
+    }
+  }, []);
+
+  /** Typed text replaces a pick on a single-select question. */
+  const type = useCallback((qi: number, text: string) => {
+    setTyped((prev) => new Map(prev).set(qi, text));
+    if (text.trim().length > 0) {
+      setSelected((prev) => {
+        if (!prev.has(qi)) return prev;
+        const next = new Map(prev);
+        next.delete(qi);
+        return next;
+      });
+    }
   }, []);
 
   const allAnswered = useMemo(
-    () => steps.every((_, qi) => (selected.get(qi)?.size ?? 0) > 0),
-    [steps, selected],
+    () => auqFormComplete(steps, selected, typed),
+    [steps, selected, typed],
   );
 
   const submit = useCallback(() => {
     if (!onAuqAnswer) return;
-    const selections: AuqSelection[] = steps.map((_, qi) => ({
-      questionIndex: qi,
-      optionIndices: [...(selected.get(qi) ?? [])].sort((a, b) => a - b),
-    }));
-    onAuqAnswer(selections);
-  }, [onAuqAnswer, steps, selected]);
+    onAuqAnswer(auqFormSelections(steps, selected, typed));
+  }, [onAuqAnswer, steps, selected, typed]);
 
   return (
     <div className="flex flex-col gap-3 px-3 pb-3 pt-1">
@@ -353,6 +369,17 @@ function MultiQuestionForm({
               onToggle={() => toggle(qi, oi, step.multiSelect)}
             />
           ))}
+          {!step.multiSelect && (
+            <input
+              type="text"
+              value={typed.get(qi) ?? ''}
+              onChange={(e) => type(qi, e.target.value)}
+              disabled={submitting || failed}
+              placeholder="Or type your own answer"
+              aria-label={`Your own answer to: ${step.text}`}
+              className="min-h-[44px] rounded-[10px] border border-[var(--color-border)] bg-[var(--color-surface)] px-3.5 py-2.5 text-sm text-[var(--color-text)] outline-none placeholder:text-[var(--color-text-muted)] focus:ring-2 focus:ring-[var(--color-primary)]/40 disabled:opacity-60"
+            />
+          )}
         </div>
       ))}
 
@@ -412,9 +439,11 @@ export function QuestionCard({ question, onAnswer, onAuqAnswer, onCancel, classN
   const isForm = !!steps && steps.length > 0;
   const headerLabel = isForm
     ? `Question${steps.length > 1 ? `s · ${steps.length}` : ''}`
-    : isPermission
-      ? 'Permission request'
-      : 'Question';
+    : question.kind === 'plan_approval'
+      ? 'Plan review'
+      : isPermission
+        ? 'Permission request'
+        : 'Question';
 
   const resolvedReason = question.resolvedReason;
   if (isAnswered || resolvedReason != null) {
@@ -522,6 +551,12 @@ export function QuestionCard({ question, onAnswer, onAuqAnswer, onCancel, classN
             <p className="break-anywhere text-[15px] font-medium leading-snug text-[var(--color-text)]">
               {question.prompt}
             </p>
+            {/* #1127: the text the prompt is about (a plan), in full. */}
+            {question.detail && (
+              <pre className="break-anywhere mt-2 max-h-[50vh] overflow-y-auto whitespace-pre-wrap rounded-[10px] bg-[var(--color-surface)] px-3 py-2.5 font-sans text-[13px] leading-snug text-[var(--color-text)]">
+                {question.detail}
+              </pre>
+            )}
           </div>
           {/* Options / free text */}
           <div className="flex flex-col gap-1.5 px-3 pb-3 pt-2.5">

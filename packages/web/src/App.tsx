@@ -2364,7 +2364,10 @@ function App() {
   // on an older daemon's AUQ_AUTOANSWER_FAILED) — it is NOT removed
   // optimistically here.
   const handleAuqAnswer = useCallback(
-    (question: UIQuestion, selections: { questionIndex: number; optionIndices: number[] }[]) => {
+    (
+      question: UIQuestion,
+      selections: { questionIndex: number; optionIndices: number[]; text?: string }[],
+    ) => {
       const sid = question.sessionId;
       const connId =
         sessionsRef.current.find((s) => s.id === sid)?.connectionId ?? getActiveConnectionId();
@@ -2372,6 +2375,9 @@ function App() {
       const binding = sessionsRef.current.find((s) => s.id === sid)?.claudeSessionId;
       const sent = sendAuqAnswer(connId, sid, question.id, selections, binding as UUID | undefined);
       if (!sent) return;
+      // The card a refusal naming no question can be about (#1126): a held
+      // AskUserQuestion keeps its hold on an answer it refuses (#1127).
+      lastAnsweredIdRef.current.set(sid, question.id);
       const key = questionKey(sid, question.agentId);
       setQuestions((prev) => {
         const existing = prev.get(key);
