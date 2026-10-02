@@ -698,16 +698,43 @@ describe('HookEventBridge', () => {
       expect(order).toEqual(['status:idle', 'turn-failed']);
     });
 
-    it('carries a subagent agent_id on the status change, as Stop does', () => {
-      const agentIds: Array<string | undefined> = [];
-      const bridge = new HookEventBridge('session-1' as import('@remi/shared').UUID, {
-        onStatusChange: (_status, _context, agentId) => agentIds.push(agentId),
-        onQuestion: () => undefined,
-      });
+    it('a subagent-tagged failure leaves the main status alone but still raises turn-failed', () => {
+      const { bridge, statuses, questions, turnFailures } = createBridge();
+      const tagged = { ...failure, agent_id: 'agent-7', agent_type: 'general-purpose' };
+
+      bridge.handleStopFailure(tagged);
+
+      // MAIN is still running: no idle (the tracker would drop main's pending
+      // records and menu), and no question.
+      expect(statuses).toEqual([]);
+      expect(questions).toEqual([]);
+      expect(turnFailures).toEqual([tagged]);
+    });
+
+    it('a subagent-tagged failure does not reset the subagent tracker; a main one does', () => {
+      const { bridge } = createBridge();
+      bridge.handlePreToolUse({
+        ...makeCommon(),
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Task',
+        tool_input: {},
+        tool_use_id: 'tu_live_subagent',
+      } as PreToolUseHookInput);
+      expect(bridge.isInSubagentContext()).toBe(true);
 
       bridge.handleStopFailure({ ...failure, agent_id: 'agent-7' });
+      expect(bridge.isInSubagentContext()).toBe(true);
 
-      expect(agentIds).toEqual(['agent-7']);
+      bridge.handleStopFailure(failure);
+      expect(bridge.isInSubagentContext()).toBe(false);
+    });
+
+    it('an empty agent_id counts as a main-agent failure', () => {
+      const { bridge, statuses } = createBridge();
+
+      bridge.handleStopFailure({ ...failure, agent_id: '' });
+
+      expect(statuses).toEqual([{ status: 'idle' }]);
     });
 
     it('a consumer with no turn-failed handler still gets the status change', () => {

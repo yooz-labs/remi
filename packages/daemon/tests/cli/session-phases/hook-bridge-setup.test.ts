@@ -571,6 +571,26 @@ describe('setupHookBridge', () => {
       expect(messageApiLog.statusCalls).toEqual(['idle']);
     });
 
+    test('an agent_id-tagged StopFailure leaves the main status alone, registers no card, and is still pushed (#1153)', () => {
+      const pushed: StopFailureHookInput[] = [];
+      build({
+        realTracker: true,
+        realMessageApi: true,
+        pushTurnFailed: (_sid, input) => pushed.push(input),
+      });
+      lock('claude-A');
+      messageApiLog.statusCalls.length = 0;
+      hookServer.fire(
+        'StopFailure',
+        stopFailure({ agent_id: 'agent-9', agent_type: 'general-purpose' }),
+      );
+      // Main is still running: no status change reached the pipeline.
+      expect(messageApiLog.statusCalls).toEqual([]);
+      expect(sessionRegistry.getSession(SID)?.currentQuestions.size ?? 0).toBe(0);
+      expect(pushed).toHaveLength(1);
+      expect(pushed[0]?.agent_type).toBe('general-purpose');
+    });
+
     describe('turn_failed push through a real NotificationDispatcher (#1153)', () => {
       const TOKEN_ENTRY = (token: string, pushPrefs?: DeviceTokenEntry['pushPrefs']) => ({
         token,
@@ -2092,6 +2112,48 @@ describe('setupHookBridge', () => {
       expect(broadcastResolvedLog).toEqual([{ questionId: card.id, reason: 'cancelled' }]);
       expect(handle.gate.answerHeld(card.id, { kind: 'cancel' })).toBe('closed');
       expect(ptySubmits).toEqual([]);
+    });
+
+    test('a main-agent StopFailure ends a live held prompt: hook released, card resolved, no later deadline notice (#1153)', async () => {
+      const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const { card, hook } = held(
+        'claude-held-sf',
+        {},
+        { holdMs: 40, noticeLog, broadcastResolvedLog },
+      );
+
+      hookServer.fire('StopFailure', {
+        session_id: 'claude-held-sf',
+        hook_event_name: 'StopFailure',
+        error: 'rate_limit',
+      });
+
+      expect(await hook).toBe('passthrough');
+      expect(cards()).toHaveLength(0);
+      expect(broadcastResolvedLog).toEqual([{ questionId: card.id, reason: 'cancelled' }]);
+      // Well past the 40 ms deadline: the released hold fires no notice.
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      expect(noticeLog).toEqual([]);
+      expect(ptySubmits).toEqual([]);
+    });
+
+    test('an agent_id-tagged StopFailure sweeps nothing: a live main hold survives it (#1153)', async () => {
+      const { handle, card, hook } = held('claude-held-sf-sub', {}, { holdMs: 60_000 });
+      messageApiLog.statusCalls.length = 0;
+
+      hookServer.fire('StopFailure', {
+        session_id: 'claude-held-sf-sub',
+        hook_event_name: 'StopFailure',
+        error: 'rate_limit',
+        agent_id: 'agent-9',
+        agent_type: 'general-purpose',
+      });
+
+      expect(cards().map((q) => q.id)).toEqual([card.id]);
+      expect(messageApiLog.statusCalls).toEqual([]);
+      handle.gate.forceRelease('test');
+      expect(await hook).toBe('passthrough');
     });
 
     test('a new user prompt closes a main prompt left open after its hold was released', async () => {

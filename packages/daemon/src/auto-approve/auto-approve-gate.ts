@@ -81,7 +81,9 @@
  *     "No" answered in the terminal, which fires no tool call at all);
  *     `UserPromptSubmit` sweeps the same way (#1126): a terminal "No"
  *     interrupts the turn without a `Stop`, and a new prompt proves the
- *     dialog is gone;
+ *     dialog is gone; so does a main-agent `StopFailure` (#1153), a turn that
+ *     ended on an API error, which Claude cannot report while blocked on its
+ *     own prompt either;
  *   - `cancelStaleForAgent`, called from `SubagentStop`: the single-agent
  *     mirror of the Stop reasoning;
  *   - `cancelStale('SessionEnd')`: real teardown, every open escalation is

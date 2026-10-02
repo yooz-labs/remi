@@ -29,9 +29,10 @@
  *
  * A turn that ends on an API error (`StopFailure`, #1153) is NOT a question:
  * Claude ignores the hook's answer, so a card with Yes/No could never be
- * answered. The bridge sets the status to `'idle'` (the turn is over) and
- * raises `onTurnFailed`, which the session wiring turns into a `turn_failed`
- * push (`notifications/turn-failed.ts`).
+ * answered. For a main-agent failure the bridge sets the status to `'idle'`
+ * (the turn is over; an `agent_id`-tagged one leaves it alone) and raises
+ * `onTurnFailed`, which the session wiring turns into a `turn_failed` push
+ * (`notifications/turn-failed.ts`).
  */
 
 import { DEFAULT_PERMISSION_LABELS, generateId } from '@remi/shared';
@@ -592,18 +593,29 @@ export class HookEventBridge {
    * `StopFailure` (#1153): the turn ended on an API error. Not a question and
    * not `'waiting'`: nothing in Claude waits for anything (the hook's answer
    * is ignored), so a Yes/No card could never be answered, and the agent is
-   * stopped, not waiting. The status goes to `'idle'` like any other turn end,
-   * and `onTurnFailed` carries the failure to the notification path.
+   * stopped, not waiting. A main-agent failure sets the status to `'idle'`
+   * like any other turn end, and `onTurnFailed` carries it to the
+   * notification path.
+   *
+   * An `agent_id`-tagged failure is a subagent's own turn ending: MAIN is
+   * still running, so it must neither flip the main status to idle (the
+   * tracker would drop main's pending records and the menu its dialog still
+   * shows, #1140) nor reset the subagent tracker (the other subagents are
+   * live). It still raises `onTurnFailed`: the user wants to hear that an
+   * agent hit a limit.
    *
    * Until #1153 this emitted "Session stop failed (<error_type>). Retry?",
    * and `error_type` is a field Claude never sends (#905), so every card read
    * "(undefined)".
    */
   handleStopFailure(input: StopFailureHookInput): void {
-    // The turn is over: reset subagent tracking so orphaned Task IDs don't
-    // permanently block user permissions (same as `handleStop`).
-    this.subagentContext.reset();
-    this.events.onStatusChange('idle', undefined, input.agent_id);
+    const fromSubagent = typeof input.agent_id === 'string' && input.agent_id.length > 0;
+    if (!fromSubagent) {
+      // The main turn is over: reset subagent tracking so orphaned Task IDs
+      // don't permanently block user permissions (same as `handleStop`).
+      this.subagentContext.reset();
+      this.events.onStatusChange('idle', undefined, input.agent_id);
+    }
     this.events.onTurnFailed?.(input);
   }
 

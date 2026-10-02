@@ -982,14 +982,23 @@ export function setupHookBridge(
     if (!binder.admits(input)) return;
     // A turn that ended on an API error (usage or rate limit, authentication,
     // and similar; #1153). Claude ignores the hook's answer, so this is NOT a
-    // question: the bridge sets the status to idle and raises `onTurnFailed`,
-    // which `pushTurnFailed` turns into one `turn_failed` push per session.
-    // Like PermissionRequest it is NOT agent_id-dropped.
+    // question: the bridge sets the status to idle (main agent only) and
+    // raises `onTurnFailed`, which `pushTurnFailed` turns into one
+    // `turn_failed` push per session. Not agent_id-dropped: a subagent's
+    // failure is pushed too, but leaves the main status alone.
     //
-    // #799 deliberately does NOT clear open escalations here: whether a held
-    // prompt survives an errored turn is as ambiguous a signal as #799 avoids
-    // clearing on (unlike a clean Stop/SubagentStop). Known residual leak,
-    // tracked as #802.
+    // A MAIN-agent StopFailure ends the turn exactly as Stop does (Claude
+    // cannot report an ended turn while blocked on its own native prompt), so
+    // it sweeps the stale main escalations the same way. That is the main
+    // half of #802, which kept StopFailure out of #799's sweep on the premise
+    // that it was an ambiguous "unknown state" signal; that premise was the
+    // "Retry?" card's. A subagent-tagged failure is that agent's own turn
+    // ending, not main's, so it sweeps nothing: the subagent half of #802
+    // stays open (its escalations are cleared by its SubagentStop, or
+    // SessionEnd).
+    if (!isSubagentEvent(input)) {
+      autoApproveGate.cancelStale('StopFailure', { mainOnly: true });
+    }
     handlers.onStopFailure?.(input);
   });
 
