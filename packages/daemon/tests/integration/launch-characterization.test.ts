@@ -22,11 +22,15 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { HelloAckMessage, ProtocolMessage } from '@remi/shared/protocol.ts';
+import type {
+  HelloAckMessage,
+  ProtocolMessage,
+  ReplayBatchMessage,
+  SessionUpdateMessage,
+} from '@remi/shared/protocol.ts';
 import {
   cleanupHub,
   connectAndHello,
-  findTestPort,
   makeIsolatedDirs,
   pollUntil,
   spawnDaemon,
@@ -41,6 +45,8 @@ interface RunningDaemon {
   port: number;
   /** Where the fake `claude` records what it saw; `release` ends it. */
   fakeDir: string;
+  /** Everything the daemon has written to stdout and stderr so far. */
+  output: { text: string };
 }
 
 const running: RunningDaemon[] = [];
@@ -53,9 +59,11 @@ afterEach(async () => {
 
 /**
  * A fake `claude` that records `$*`, `$REMI_PORT`,
- * `$CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN`, its cwd and its pid, then waits
- * until `release` exists (60 s at most, so a failed run cannot leave it
- * looping) and exits 0.
+ * `$CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN`, its cwd and its pid, writes the
+ * (empty) transcript Claude would write for its `--session-id` under
+ * `$HOME/.claude/projects/<cwd with / replaced by ->/`, then waits until
+ * `release` exists (60 s at most, so a failed run cannot leave it looping) and
+ * exits 0.
  */
 const FAKE_CLAUDE = `#!/bin/sh
 d="$FAKE_CLAUDE_DIR"
@@ -64,6 +72,9 @@ printf '%s' "$REMI_PORT" > "$d/remi_port"
 printf '%s' "$CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN" > "$d/alt_screen"
 pwd -P > "$d/cwd"
 echo $$ > "$d/pid"
+project="$HOME/.claude/projects/$(pwd -P | sed 's#/#-#g')"
+mkdir -p "$project"
+: > "$project/$2.jsonl"
 i=0
 while [ ! -e "$d/release" ] && [ $i -lt 600 ]; do
   sleep 0.1
@@ -73,6 +84,28 @@ done
 
 function read(file: string): string {
   return fs.readFileSync(file, 'utf-8').trim();
+}
+
+/** Collect a daemon stream into `sink` as it is written. */
+function collect(stream: ReadableStream<Uint8Array>, sink: { text: string }): void {
+  const decoder = new TextDecoder();
+  void (async () => {
+    for await (const chunk of stream) sink.text += decoder.decode(chunk, { stream: true });
+  })().catch(() => {});
+}
+
+function track(
+  home: string,
+  work: string,
+  fakeDir: string,
+  spawned: { proc: Bun.Subprocess<'ignore', 'pipe', 'pipe'>; port: number },
+): RunningDaemon {
+  const output = { text: '' };
+  collect(spawned.proc.stdout, output);
+  collect(spawned.proc.stderr, output);
+  const daemon: RunningDaemon = { ...spawned, home, work, fakeDir, output };
+  running.push(daemon);
+  return daemon;
 }
 
 async function startDaemon(): Promise<RunningDaemon> {
@@ -85,13 +118,16 @@ async function startDaemon(): Promise<RunningDaemon> {
   fs.writeFileSync(fakeClaude, FAKE_CLAUDE);
   fs.chmodSync(fakeClaude, 0o755);
 
-  const port = await findTestPort();
-  const proc = spawnDaemon(home, work, port, {
-    PATH: `${fakeBin}:${process.env['PATH'] ?? ''}`,
-    FAKE_CLAUDE_DIR: fakeDir,
-  });
-  const daemon: RunningDaemon = { proc, home, work, port, fakeDir };
-  running.push(daemon);
+  const daemon = track(
+    home,
+    work,
+    fakeDir,
+    await spawnDaemon(home, work, {
+      PATH: `${fakeBin}:${process.env['PATH'] ?? ''}`,
+      FAKE_CLAUDE_DIR: fakeDir,
+    }),
+  );
+  const { proc } = daemon;
 
   // `claudeChildPid` is written once the PTY is up: the last step of
   // createNewSession, so everything else below is already in place.
@@ -202,9 +238,34 @@ describe('daemon launch of Claude (black-box characterization, #1164)', () => {
       expect(ack.sessionId).toBe(entry.sessionId);
       expect(ack.claudeSessionId).toBe(argvSessionId);
       expect(ack.transcriptPath).toEndWith(`/${argvSessionId}.jsonl`);
+
+      // #576: a client gets a defined pill state from its first hello_ack. The
+      // `starting` status the shell records before spawning is replayed.
+      await pollUntil(
+        () => received.some((m) => m.type === 'replay_batch'),
+        5000,
+        'the replay_batch after hello_ack',
+      );
+      const replayed = received
+        .filter((m): m is ReplayBatchMessage => m.type === 'replay_batch')
+        .flatMap((batch) => [...batch.messages]);
+      const statuses = replayed
+        .filter((m): m is SessionUpdateMessage => m.type === 'session_update')
+        .map((m) => m.session.status);
+      expect(statuses).toContain('starting');
     } finally {
       ws.close();
     }
+
+    // The binding was persisted before the hook bridge read it: the binder
+    // armed its fallback poll (every 2 s), which finds the transcript the fake
+    // wrote, and never logged that it had nothing to arm with.
+    await pollUntil(
+      () => d.output.text.includes('[Fallback] Bound transcript appeared'),
+      10000,
+      'the binder to bind the transcript the fake claude wrote',
+    );
+    expect(d.output.text).not.toContain('fallback poll + dir-watch not armed');
 
     // SIGTERM: the daemon shuts down and takes its hook registration with it.
     d.proc.kill('SIGTERM');
@@ -232,5 +293,42 @@ describe('daemon launch of Claude (black-box characterization, #1164)', () => {
     expect(record.claudeSessionId).toBe((before[0] as StoredRecord).claudeSessionId);
     expect(record.exitedAt).not.toBeNull();
     expect(record.exitCode).toBe(0);
+  }, 40000);
+
+  test('a failed spawn marks the session exited, unregisters it, removes the hooks and exits 1', async () => {
+    const { home, work } = makeIsolatedDirs();
+    // PATH holds no `claude` at all, and a stand-in login shell reports that
+    // same PATH, so the daemon's own PATH resolution cannot find a real one.
+    const fakeBin = path.join(home, 'fake-bin');
+    fs.mkdirSync(fakeBin, { recursive: true });
+    const fakeShell = path.join(fakeBin, 'sh-path');
+    fs.writeFileSync(fakeShell, '#!/bin/sh\necho "$PATH"\n');
+    fs.chmodSync(fakeShell, 0o755);
+    const d = track(
+      home,
+      work,
+      path.join(home, 'unused'),
+      await spawnDaemon(home, work, { PATH: fakeBin, SHELL: fakeShell }),
+    );
+
+    const code = await Promise.race([
+      d.proc.exited,
+      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 15000)),
+    ]);
+    expect(code).toBe(1);
+    expect(d.output.text).toContain('Failed to create session');
+
+    // The pre-saved record is closed, not left as a phantom live session.
+    const stored = storedSessions(d);
+    expect(stored).toHaveLength(1);
+    expect((stored[0] as StoredRecord).exitedAt).not.toBeNull();
+    expect((stored[0] as StoredRecord).exitCode).toBeNull();
+
+    // Unregistered from live-sessions, hooks gone from the project settings.
+    const liveDir = path.join(d.home, '.remi', 'live-sessions');
+    expect(fs.existsSync(liveDir) ? fs.readdirSync(liveDir) : []).toEqual([]);
+    const settingsPath = path.join(d.work, '.claude', 'settings.local.json');
+    const settings = fs.existsSync(settingsPath) ? fs.readFileSync(settingsPath, 'utf-8') : '';
+    expect(settings).not.toContain('http://127.0.0.1:');
   }, 40000);
 });
