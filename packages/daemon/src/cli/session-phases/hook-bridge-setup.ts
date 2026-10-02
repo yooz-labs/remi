@@ -613,8 +613,8 @@ export function setupHookBridge(
       onQuestion: (question) => {
         // #625 single gate: a PERMISSION question is coordinated by the auto-approve
         // gate — it is stashed here and the gate drives its push on escalate (binary
-        // via onHeldEscalate, passthrough via escalatePassthrough). recordPendingHook
-        // only stashes; it never emits on its own.
+        // via onHeldEscalate or on its render, passthrough via escalatePassthrough).
+        // recordPendingHook only stashes; it never emits on its own.
         //   - 'permission_request' (rich: tool + command + options) is the one the gate
         //     escalates and pushes by id. This is the ONLY source stashed here now:
         //     `HookEventBridge` used to also synthesize a redundant generic

@@ -92,6 +92,7 @@ import type {
 } from '../api/question-presence-tracker.ts';
 import { log, logError } from '../cli/logger.ts';
 import type { PermissionDecision, PermissionRequestHookInput } from '../hooks/index.ts';
+import { extractToolQuestion } from '../hooks/tool-question.ts';
 import { type DeliveryOutcome, isDelivered } from '../notifications/notification-dispatcher.ts';
 import type { SessionRegistry } from '../session/index.ts';
 import { buildDenyMessage } from './deny-floor.ts';
@@ -180,6 +181,17 @@ function canonicalize(value: unknown): unknown {
     return Object.fromEntries(sortedEntries);
   }
   return value;
+}
+
+/** AskUserQuestion, or a tool shaped like it (`questions: [{ question, options }]`,
+ *  surfaced as `kind: 'multi_question'`): answered by the AskUserQuestion runner
+ *  from its structured questions, so its card is pushed before the render rather
+ *  than numbered by it (#1134 review). */
+function isStructuredQuestion(input: PermissionRequestHookInput): boolean {
+  return (
+    input.tool_name === 'AskUserQuestion' ||
+    extractToolQuestion(input.tool_name, input.tool_input)?.kind === 'multi_question'
+  );
 }
 
 /** A label that PERSISTS a permission ("Yes, and don't ask again…", "Always",
@@ -479,22 +491,24 @@ export interface AutoApproveGateDeps {
   onEscalate?: (ctx: { isSubagent: boolean }) => void;
   /** The gate's push trigger: called with a `Question.id` so the tracker pushes
    *  that question IMMEDIATELY (-> sessionRegistry.addQuestion + APNS), making it
-   *  answerable. Called for BOTH escalation shapes (#625):
+   *  answerable. Called for two escalation shapes (#625):
    *    - a BINARY escalation that HOLDS its hook (Model B, #573) — Claude blocks on
    *      the response and never renders the native prompt (via `createHold`);
-   *    - a PASSTHROUGH escalation (multi-choice / design / AskUserQuestion) via
-   *      `escalatePassthrough`.
+   *    - a PASSTHROUGH AskUserQuestion-shaped escalation via `escalatePassthrough`
+   *      (its runner answers it from the structured questions).
    *  Since #625, PTY question-emission is suppressed for hooked sessions, so this
-   *  callback is the SOLE push trigger in both cases — do NOT remove it from the
-   *  passthrough path believing `onPTYPromptVisible` covers it (it does not; that
-   *  would silently drop every passthrough notification). The third shape, a
-   *  binary escalation with holding disabled, pushes on its render through
-   *  `pushOnRender` instead (#1121). Idempotent per id
+   *  callback is the SOLE push trigger for those two — do NOT remove it from the
+   *  AskUserQuestion path believing `onPTYPromptVisible` covers it (it does not;
+   *  that would silently drop those notifications). Every other shape, a binary
+   *  escalation with holding disabled (#1121) and a non-AskUserQuestion
+   *  passthrough such as ExitPlanMode or a multi-choice permission (#1134
+   *  review), pushes on its render through `pushOnRender`. Idempotent per id
    *  (`pushedHeldIds`), so it can never double-push. Absent => no immediate push
    *  (tests / no-AA callers). #573 / #625 */
   onHeldEscalate?: (questionId: UUID) => void;
   /** The push trigger for a BINARY main-context escalation when holding is
-   *  disabled (no auto-approve service, or `hold_timeout <= 0`): the hook is
+   *  disabled (no auto-approve service, or `hold_timeout <= 0`), and for a
+   *  non-AskUserQuestion passthrough escalation (#1134 review): the hook is
    *  answered 'passthrough', Claude renders its native prompt at once, and the
    *  stashed question must push when that render pairs with it, carrying the
    *  on-screen option numbering a PTY-digit answer needs (the merge keeps the
@@ -1506,11 +1520,22 @@ export class AutoApproveGate {
    * passthrough escalation must push here too — otherwise, with PTY question-emission
    * gated off for hooked sessions (#625), the escalation would never reach the phone.
    *
-   * Reuses the held-push primitive (`onHeldEscalate` -> `tracker.pushHeldHook`): it
-   * registers the stashed question in `sessionRegistry` (answerable) and delivers it to
-   * the lock screen idempotently. No hold is registered — Claude renders its native
-   * prompt and waits there — so there is no delivery gate / hold timeout; the user
-   * answers the pushed card (digit injected via the PTY) or the terminal directly.
+   * Two push triggers (#1134 review). A structured AskUserQuestion-shaped question
+   * (`kind: 'multi_question'`) pushes NOW through the held-push primitive
+   * (`onHeldEscalate` -> `tracker.pushHeldHook`, which registers the card and delivers
+   * it idempotently): its answer is driven by the AskUserQuestion runner from the
+   * structured `questions`, not by typing a card digit. Everything else here
+   * (ExitPlanMode, a multi-choice permission) pushes when its native prompt renders
+   * (`pushOnRender`, like an unheld binary prompt), so the card carries the SCREEN's
+   * options: its answer is a typed digit, and the hook's list is a guess at the
+   * screen's. ExitPlanMode's is hardcoded while Claude 2.1.287 builds the list
+   * dynamically (an optional "Yes, clear context ..." first row, a first row that may
+   * be auto-accept, auto mode or bypass), so a pushed-at-once card typed "No, keep
+   * planning" as 3, which the screen numbered "Yes, manually approve edits".
+   *
+   * No hold is registered either way — Claude renders its native prompt and waits
+   * there — so there is no delivery gate / hold timeout; the user answers the card
+   * or the terminal directly.
    */
   private escalatePassthrough(
     input: PermissionRequestHookInput,
@@ -1518,7 +1543,11 @@ export class AutoApproveGate {
   ): PermissionDecision {
     const qid = this.escalateToUser(input, summary);
     if (qid) {
-      this.safeCueWithArg('onHeldEscalate', this.deps.onHeldEscalate, qid);
+      if (isStructuredQuestion(input)) {
+        this.safeCueWithArg('onHeldEscalate', this.deps.onHeldEscalate, qid);
+      } else {
+        this.safeCueWithArg('pushOnRender', this.deps.pushOnRender, qid);
+      }
     } else {
       // escalateToUser returned no id (escalate() threw — already logged there).
       // Unlike a binary hold there is no timer fallback here, so make the lost

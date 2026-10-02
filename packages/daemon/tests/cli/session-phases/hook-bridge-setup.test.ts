@@ -2338,19 +2338,19 @@ describe('setupHookBridge', () => {
       expect((errors[0] as { code?: string }).code).toBe('STALE_ANSWER');
     });
 
-    test('a value the screen does not show is refused and nothing is typed', async () => {
-      // A card pushed by id before its render carries the hook's numbering:
-      // here a passthrough multi-choice escalation (four plain-string
-      // suggestions) whose "No" is 4, over the live 3-option dialog. Its
-      // "No" is the exact digit that approved the command in the live run.
+    test('a multi-choice permission pushes on its render, numbered like the screen', async () => {
+      // #1134 review: a passthrough escalation used to push at once with the
+      // hook's list (here four plain-string suggestions, "No" = 4) over the
+      // live 3-option dialog. It now waits for the render and takes the
+      // screen's numbering, so its "No" is 3.
       const { tracker } = build({
         realTracker: true,
         realMessageApi: true,
         liveQuestionDeps: true,
       });
-      lockSession('claude-e5-stale');
+      lockSession('claude-e5-multi');
       const decision = await hookServer.firePermission({
-        session_id: 'claude-e5-stale',
+        session_id: 'claude-e5-multi',
         hook_event_name: 'PermissionRequest',
         tool_name: 'Bash',
         tool_input: { command: 'touch e5-marker.txt' },
@@ -2362,26 +2362,123 @@ describe('setupHookBridge', () => {
         ],
       });
       expect(decision).toBe('passthrough');
-      const card = cards()[0];
-      if (!card) throw new Error('the passthrough escalation registered no card');
-      expect(card.options.map((o) => o.value)).toEqual(['1', '2', '3', '4']);
+      expect(cards()).toHaveLength(0);
 
       tracker.onOrphanPTYPrompt(liveDialog());
-      expect(tracker.observedPromptOptions()?.map((o) => o.value)).toEqual(['1', '2', '3']);
+      const card = cards()[0];
+      if (!card) throw new Error('the render pushed no card');
+      expect(card.options.map((o) => [o.value, o.label])).toEqual(
+        liveDialog().options.map((o) => [o.value, o.label]),
+      );
 
-      const logs: string[] = [];
-      configureLogger({ writeLog: (msg) => logs.push(msg) });
       const sent: ProtocolMessage[] = [];
-      await answerHandlers(tracker, sent).onAnswer('conn-e5' as UUID, SID, card.id, '4');
+      await answerHandlers(tracker, sent).onAnswer('conn-e5' as UUID, SID, card.id, 'No');
+      expect(ptySubmits).toEqual(['3']);
+    });
 
-      expect(ptySubmits).toEqual([]);
-      // Refused by the screen check, not by the presence guard before it.
-      expect(logs.some((m) => m.includes('"4" is not an option on screen [1, 2, 3]'))).toBe(true);
-      const errors = sent.filter((m) => m.type === 'error');
-      expect(errors).toHaveLength(1);
-      expect((errors[0] as { code?: string }).code).toBe('STALE_ANSWER');
-      // Consumed like the other refusals: the card no longer matches the screen.
+    test('ExitPlanMode pushes on its render and types the screen\'s "No, keep planning"', async () => {
+      // Claude 2.1.287 builds this list itself (an optional "Yes, clear
+      // context ..." first row); the hook's hardcoded three made "No, keep
+      // planning" 3, which this screen numbers "Yes, manually approve edits".
+      // The screen is a reconstruction of that layout, fed through the real
+      // parser; not a capture.
+      const { tracker } = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+      });
+      lockSession('claude-exit-plan');
+      const decision = await hookServer.firePermission({
+        session_id: 'claude-exit-plan',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'ExitPlanMode',
+        tool_input: { plan: '# Plan\n1. Do the thing' },
+      });
+      expect(decision).toBe('passthrough');
       expect(cards()).toHaveLength(0);
+
+      const parsed = parseQuestion(
+        [
+          ' Would you like to proceed?',
+          ' ❯ 1. Yes, clear context and auto-accept edits (shift+tab)',
+          '   2. Yes, auto-accept edits',
+          '   3. Yes, manually approve edits',
+          '   4. No, keep planning',
+          ' ctrl+g to edit in your editor',
+        ].join('\n'),
+      );
+      if (!parsed.question) throw new Error('the plan dialog did not parse');
+      tracker.onOrphanPTYPrompt(parsed.question);
+
+      const card = cards()[0];
+      if (!card) throw new Error('the render pushed no card');
+      expect(card.options.map((o) => o.value)).toEqual(['1', '2', '3', '4']);
+      const keepPlanning = card.options.find((o) => o.label === 'No, keep planning');
+      if (!keepPlanning) throw new Error('no "No, keep planning" on the card');
+
+      const sent: ProtocolMessage[] = [];
+      await answerHandlers(tracker, sent).onAnswer(
+        'conn-plan' as UUID,
+        SID,
+        card.id,
+        keepPlanning.label,
+      );
+      expect(ptySubmits).toEqual(['4']);
+    });
+
+    test('AskUserQuestion still pushes at once, and a plain pick types its screen digit', async () => {
+      // The structured question keeps its immediate push (its runner answers
+      // it from `questions`). A plain pick, as the extension's buttons send,
+      // goes through the guard: "SQLite" matches the screen row whose label
+      // has the description folded in, and types 2.
+      const { tracker } = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+      });
+      lockSession('claude-auq');
+      const decision = await hookServer.firePermission({
+        session_id: 'claude-auq',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'AskUserQuestion',
+        tool_input: {
+          questions: [
+            {
+              question: 'Which database?',
+              header: 'DB',
+              multiSelect: false,
+              options: [
+                { label: 'Postgres', description: 'Relational' },
+                { label: 'SQLite', description: 'Embedded' },
+              ],
+            },
+          ],
+        },
+      });
+      expect(decision).toBe('passthrough');
+      const card = cards()[0];
+      if (!card) throw new Error('AskUserQuestion pushed no card before its render');
+      expect(card.kind).toBe('multi_question');
+
+      const parsed = parseQuestion(
+        [
+          ' Which database?',
+          ' ❯ 1. Postgres',
+          '      Relational',
+          '   2. SQLite',
+          '      Embedded',
+          '   3. Type something.',
+          ' Enter to select · ↑/↓ to navigate · Esc to cancel',
+        ].join('\n'),
+      );
+      if (!parsed.question) throw new Error('the AskUserQuestion menu did not parse');
+      tracker.onOrphanPTYPrompt(parsed.question);
+      // An echo of the card already pushed: no second card.
+      expect(cards()).toHaveLength(1);
+
+      const outcome = await answerHandlers(tracker, []).relayAnswer(SID, card.id, 'SQLite');
+      expect(outcome).toBe('delivered');
+      expect(ptySubmits).toEqual(['2']);
     });
   });
 
