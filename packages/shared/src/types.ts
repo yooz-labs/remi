@@ -258,12 +258,12 @@ export interface Question {
 
   /**
    * #753: true when the question was pushed by id through the load-bearing
-   * `held` path (`QuestionPresenceTracker.pushHeldHook`). Built for HELD
-   * PermissionRequest hooks (Model B), whose dialog never painted the PTY;
-   * since #1125 nothing holds, and the flag marks a card pushed before its
-   * render (AskUserQuestion, ExitPlanMode, a multi-choice permission). The
-   * daemon's answer path refuses free text on such a card (#1134), and the
-   * terminal attach client banners it. Stamped once at question emission
+   * `held` path (`QuestionPresenceTracker.pushHeldHook`): a binary permission
+   * prompt whose hook is held for the phone's answer (#1126; Claude's dialog
+   * renders during the hold), or a card pushed before its render
+   * (AskUserQuestion, ExitPlanMode, a multi-choice permission). The daemon's
+   * answer path refuses free text on such a card (#1134), and the terminal
+   * attach client banners it. Stamped once at question emission
    * (message-api-setup), so live messages, registry entries, and attach-time
    * re-sends all carry it.
    */
@@ -348,12 +348,10 @@ export interface QuestionOption {
    * derived from (#718). Present only for a structured-suggestion-derived
    * "yes" option (e.g. "Yes, always allow: rm -rf ..."); absent for the
    * plain Yes/No options and for the legacy plain-string suggestion path.
-   * Since #1125 nothing holds, so an "always" option is answered by typing
-   * into Claude's dialog like any other (#1134) and this index is not read.
-   * It is kept for #1126, which plans to resolve a held hook with
-   * `{behavior:"allow", updatedPermissions:[suggestions[suggestionIndex]]}`:
-   * per the Claude Code hooks docs, the real "Yes, always" (not yet verified
-   * live).
+   * Since #1126 a phone answer naming such an option resolves the held hook
+   * with `{behavior:"allow", updatedPermissions:[<that suggestion>]}`: a
+   * `setMode` echoed verbatim, an allow `addRules` echoed with
+   * `destination: "session"`, both verified live on Claude Code 2.1.287.
    */
   readonly suggestionIndex?: number | undefined;
 

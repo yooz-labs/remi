@@ -29,7 +29,7 @@ Two live spikes against Claude Code 2.1.287 (#1126 comments, the lead's scratchp
 
 A binary `PermissionRequest` the phone can answer is held, its card pushed at once by id, and the first answer wins:
 
-- **Phone.** The answer is the hook response, mapped from the card option's meaning, never from a position on the screen: `Yes` -> `allow`; `No` -> `deny`, optionally with the user's message; a standing option -> `allow` + `updatedPermissions`, only for `setMode` (verbatim) and an allow `addRules` (with `destination: "session"`, labeled "for this session"). `addDirectories` is never offered. Anything a card does not offer is refused and the hold stays.
+- **Phone.** The answer is the hook response, mapped from the card option's meaning, never from a position on the screen: `Yes` -> `allow`; `No` -> `deny`, optionally with the user's message (an `answer` protocol field; no client sends it yet); a standing option -> `allow` + `updatedPermissions`, only for `setMode` (verbatim) and an allow `addRules` (with `destination: "session"`, labeled "for this session"). `addDirectories` is never offered. Anything a card does not offer is refused and the hold stays.
 - **Terminal Yes.** The `PostToolUse` or `PostToolUseFailure` whose `tool_use_id` matches the `PreToolUse` paired with the request releases the hold with an empty response (Claude ignores it) and dismisses the card.
 - **Terminal No or Esc, or any other close.** The hook server observes the request's abort and dismisses the card.
 - **Deadline.** At `[prompts] hold_seconds` (default 90, 5 to 110: below the 2:00 auto-deny and the 600 s registered hook timeout) remi releases its own hold with an empty response, Claude's dialog stays, the card is dismissed and an "answer at the terminal" notice is pushed (#733).
@@ -38,7 +38,7 @@ An empty response decides nothing: it is what every non-answer path sends, so no
 
 Subagent prompts (with `agent_id`) follow the terminal: with a local terminal (wrapper mode) the hook is answered `passthrough` so the dialog renders, and the phone gets an informational "answer at the terminal" notice when it does; with no local terminal (daemon or hub mode) the prompt is held and answerable like a main one.
 
-Nothing is typed into the PTY for a hook-backed binary prompt. A render while a hook-backed prompt is open is that prompt, not an orphan, so no typed card is rebuilt from the screen. Guarded digit typing (#1134) remains only for prompts with no hook behind them (sandbox network, trust, agent-team dialogs), and, until #1127, for AskUserQuestion, ExitPlanMode and multi-choice string-label permissions.
+Nothing is typed into the PTY for a hook-backed binary prompt. A render while a hook-backed dialog may be on screen without a live card (a live hold, or a prompt whose answer belongs to the terminal) is that dialog, not an orphan, so no typed card is rebuilt from the screen. A hold released by an ambiguous signal (a name + input match with no paired id, an identical re-request) stays open in the terminal for the same reason. Guarded digit typing (#1134) remains only for prompts with no hook behind them (sandbox network, trust, agent-team dialogs), and, until #1127, for AskUserQuestion, ExitPlanMode and multi-choice string-label permissions.
 
 `PermissionDenied` becomes an informational push of a new kind, `harness_denied`, mutable per device and on by default; never a card.
 
@@ -46,9 +46,11 @@ Nothing is typed into the PTY for a hook-backed binary prompt. A render while a 
 
 - The #1134 failure class (a typed digit meaning something else on screen) cannot happen for binary prompts: no digit is typed for them. Standing grants are offered only where the echo was verified to work.
 - The phone and the terminal race, and either may win; the loser sees its answer refused (the phone) or nothing at all (the terminal answers the dialog directly).
+- A terminal Yes is seen only at the tool's `PostToolUse`, so while a long command runs the hold and the card stay up: a phone answer in that window is accepted and ignored by Claude (F3), and the deadline notice can fire for a prompt already answered. No earlier hook signal exists; the dialog disappearing is visible only on screen.
 - A `PermissionRequest` carries no `tool_use_id`, so the pairing with its `PreToolUse` is by agent, tool and input. With two identical calls in flight nothing is paired and the tool name + input fallback applies; its worst case is an early empty release (the card is dismissed and the terminal answers), never a decision.
-- An open hook-backed prompt suppresses orphan cards. An entry that outlives its dialog (a subagent prompt answered No in the terminal, which fires nothing until `SubagentStop`) can suppress a genuinely hook-less prompt's card until it is cleared. A new user prompt clears stale main entries.
+- A live hold or a prompt waiting in the terminal suppresses orphan cards; a wrapper-mode subagent prompt does so only once its dialog rendered, and a registered passthrough card does not need to. An entry that outlives its dialog (a prompt answered No in the terminal after its hold ended, which fires nothing; a subagent's until `SubagentStop`) can suppress a genuinely hook-less prompt's card until it is cleared. A new user prompt clears stale main entries.
 - In wrapper mode a subagent prompt reaches the phone only as a notice; if the user is away, it waits at the terminal. The mode is fixed at session setup, so a detached wrapper session still counts as having a local terminal.
+- In daemon or hub mode, after the deadline the prompt is reachable only with `remi attach` (the notice says so): the phone's card is gone and nothing is typed for it. Every subagent prompt there is held and carded; whether Claude fires `PermissionRequest` for subagent calls its own rules would allow has not been re-measured since ADR 0004's numbers.
 - `remi --install` and the hold deadline are independent; the deadline is a config key, not an `[auto_approve]` key.
 
 ## Alternatives considered

@@ -209,8 +209,9 @@ the card at once by id (`holdForAnswer` -> `onHeldEscalate` ->
 
 - **Phone:** `answerHeld` maps the card option's MEANING to the hook response,
   never a position on Claude's screen: `Yes` -> `allow`; `No` -> `deny` (an
-  optional `message` on the answer reaches Claude as the tool result; Cancel
-  on a held card is a No); a standing option -> `allow` + `updatedPermissions`,
+  optional `message` on the answer reaches Claude as the tool result; the
+  protocol carries it, no client sends it yet; Cancel on a held card is a
+  No); a standing option -> `allow` + `updatedPermissions`,
   only for `setMode` (echoed verbatim) and an allow `addRules` (echoed with
   `destination: "session"`, labeled "for this session"); `standingGrantFor` in
   `hook-event-bridge.ts` is the one place that decides. `addDirectories` is
@@ -220,9 +221,11 @@ the card at once by id (`holdForAnswer` -> `onHeldEscalate` ->
   `PermissionRequest` has no `tool_use_id`, so it is paired on arrival with
   the in-flight `PreToolUse` of the same agent, tool and input (about 10 ms
   earlier); the `PostToolUse`/`PostToolUseFailure` with that id releases the
-  hold with an empty response and dismisses the card. Two identical calls in
-  flight are not paired; the name + input fallback then applies, whose worst
-  case is an early empty release.
+  hold with an empty response and dismisses the card. It arrives only when
+  the tool finishes, so during a long command the card stays up and a phone
+  answer is accepted and ignored by Claude. Two identical calls in flight are
+  not paired; a name + input match then releases the hold to the terminal
+  (card dismissed, prompt kept open), never closes it.
 - **Terminal No / Esc:** Claude closes the held request. `HookServer` hands the
   resolver `req.signal`; its abort (also a session end or Claude's own hook
   timeout) dismisses the card. No hook fires for it, so a new
@@ -231,8 +234,9 @@ the card at once by id (`holdForAnswer` -> `onHeldEscalate` ->
   2:00 auto-deny of auto-mode fallback prompts, which counts during a hold,
   and the 600 s registered hook timeout) remi releases its own hold with an
   empty response, the dialog stays, the card is dismissed and an "answer at
-  the terminal" notice is pushed (#733). The notice is dismissed when the
-  prompt resolves.
+  the terminal" notice is pushed (#733; in daemon or hub mode it says
+  `remi attach`, the only way left to answer). The notice is dismissed when
+  the prompt resolves; a late phone answer does not resolve it.
 
 An empty response never decides anything; it is what every non-answer path
 sends. A **multi-choice or design prompt** (`AskUserQuestion`, `ExitPlanMode`,
@@ -243,10 +247,13 @@ hook). An open card is also resolved by a matching `PreToolUse`/`PostToolUse`/
 (that agent), `SessionEnd`, a transcript rotation, or `remi unstick`; a
 dismissal is broadcast only for a card that was actually pushed.
 
-**Nothing is typed into the PTY for a hook-backed binary prompt.** While any
-hook-backed prompt is open, the tracker treats a PTY render as that prompt
-(`setHookPromptProbe`), never as an orphan, so no typed card is rebuilt from a
-dialog whose answer belongs to the hook or the terminal. `handleAnswer` asks
+**Nothing is typed into the PTY for a hook-backed binary prompt.** While a
+hook is held, or a prompt waits in the terminal (`terminalPrompts`: released
+at its deadline or early, or a rendered wrapper-mode subagent dialog), the
+tracker treats a PTY render as that dialog (`setHookPromptProbe`), never as an
+orphan, so no typed card is rebuilt from it. An unrendered subagent prompt and
+a registered passthrough card do not suppress orphans, so a hook-less prompt
+(sandbox network, trust, an agent-team dialog) still gets its card. `handleAnswer` asks
 the gate first (`gateAnswerDeps`): a held card is answered through the hook,
 and a binary card whose hold has ended is refused (`closed`: answer at the
 terminal), never typed.

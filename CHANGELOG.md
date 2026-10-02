@@ -7,8 +7,8 @@ All notable changes to Remi are documented here.
 ### Permission prompts are answered through Claude's hook (#1126, [ADR 0031](.context/decisions/0031-held-hook-answers-with-native-dialog-visible.md))
 
 A binary permission prompt is now held while its card is on the phone, and
-the phone's answer is the hook's response: Yes, No (optionally with a note
-Claude receives as the reason), or a standing grant where Claude offers one
+the phone's answer is the hook's response: Yes, No, or a standing grant
+where Claude offers one
 (`setMode`, or an `addRules` rule scoped to this session; never
 `addDirectories`). Claude's own dialog stays in the terminal the whole time
 and whichever answer comes first wins: a Yes there is seen through the tool's
@@ -27,7 +27,9 @@ prompts any more.
 - **`REMI_HOME`**: an absolute path that relocates remi's whole state
   directory (default `~/.remi`), for running remi from source without touching
   real state.
-- An optional `message` on the `answer` protocol message, sent with a "No".
+- An optional `message` on the `answer` protocol message: sent with a "No",
+  Claude receives it as the reason. Protocol only; the app has no field for
+  it yet.
 
 #### Changed
 
@@ -42,6 +44,15 @@ prompts any more.
   here or on your phone".
 - AskUserQuestion and plan approval are unchanged: still typed into Claude's
   dialog behind the exact-label screen check (#1134), until #1127.
+
+#### Known limits
+
+- A Yes answered in the terminal is seen only when the tool finishes, so for
+  a long-running command the phone card stays up meanwhile; a phone answer in
+  that window is accepted and ignored by Claude, and the deadline notice can
+  fire for a prompt already answered.
+- In a daemon or hub session the deadline leaves the prompt reachable only
+  with `remi attach`.
 
 ### Breaking: remi no longer judges permissions (#1125, [ADR 0030](.context/decisions/0030-defer-permission-judgment-to-the-harness.md))
 

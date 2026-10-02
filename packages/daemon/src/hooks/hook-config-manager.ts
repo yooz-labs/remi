@@ -30,10 +30,10 @@ interface HookMatcher {
  * Seconds Claude Code waits for a hook's HTTP response before proceeding
  * WITHOUT it. PermissionRequest gets Claude Code's 600s hook-budget ceiling
  * (#496/#537), set when the synchronous auto-approve eval could take minutes.
- * Since #1125 (ADR 0030) the daemon answers PermissionRequest at once with
- * 'passthrough', so the ceiling costs nothing; it stays as the baseline the
- * hold-the-hook transport (ADR 0002, re-added in #1126) is sized against. A
- * dead daemon still fails fast (connection refused). Every other hook keeps
+ * Since #1126 (ADR 0031) it bounds a real hold: a binary prompt's hook waits
+ * for a phone answer up to `[prompts] hold_seconds` (at most 110 s), which
+ * remi enforces itself, so Claude's own timeout stays well above it and never
+ * fires first. A dead daemon still fails fast (connection refused). Every other hook keeps
  * the short timeout so a slow/dead daemon never gates worktree creation /
  * prompt submission / compaction (#203).
  */
@@ -63,8 +63,8 @@ export class HookConfigManager {
 
   /**
    * Seconds Claude Code waits for this hook's HTTP response. PermissionRequest
-   * gets the 600s baseline ceiling (the configurable hold timeout that could
-   * raise it, #573, went with the hold in #1125); events in
+   * gets the 600s baseline ceiling, above remi's own hold deadline
+   * (`[prompts] hold_seconds`, #1126); events in
    * `SHORT_HOOK_TIMEOUTS` get an even shorter budget than the default
    * fail-fast timeout (#893); everything else keeps the plain fail-fast
    * timeout (#203).
