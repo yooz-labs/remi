@@ -4,6 +4,45 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### Permission prompts are answered through Claude's hook (#1126, [ADR 0031](.context/decisions/0031-held-hook-answers-with-native-dialog-visible.md))
+
+A binary permission prompt is now held while its card is on the phone, and
+the phone's answer is the hook's response: Yes, No (optionally with a note
+Claude receives as the reason), or a standing grant where Claude offers one
+(`setMode`, or an `addRules` rule scoped to this session; never
+`addDirectories`). Claude's own dialog stays in the terminal the whole time
+and whichever answer comes first wins: a Yes there is seen through the tool's
+`PostToolUse`, a No or Esc through Claude closing the held request, and the
+card is dismissed either way. Nothing is typed into the terminal for these
+prompts any more.
+
+#### Added
+
+- **`[prompts] hold_seconds`** (default 90, 5 to 110): how long a prompt waits
+  for the phone. After it, the hook is released without a decision, the
+  terminal dialog stays, and the phone is told to answer at the terminal.
+- **`harness_denied` push**: when Claude Code's auto-mode classifier blocks a
+  tool call (`PermissionDenied`), the phone gets an informational notice with
+  the reason. Never a card; a per-device setting, on by default.
+- **`REMI_HOME`**: an absolute path that relocates remi's whole state
+  directory (default `~/.remi`), for running remi from source without touching
+  real state.
+- An optional `message` on the `answer` protocol message, sent with a "No".
+
+#### Changed
+
+- **Background agent prompts depend on the session.** In a terminal (wrapper)
+  session they are answered at the terminal and the phone gets an "answer at
+  the terminal" notice; in a daemon or hub session they are held and answered
+  from the phone like any other prompt.
+- Card options are built from what each suggestion means, so a card can
+  differ from the numbered list on screen; it is never typed, so it no longer
+  has to match.
+- The attach client's banner for a pending card now reads "answer the prompt
+  here or on your phone".
+- AskUserQuestion and plan approval are unchanged: still typed into Claude's
+  dialog behind the exact-label screen check (#1134), until #1127.
+
 ### Breaking: remi no longer judges permissions (#1125, [ADR 0030](.context/decisions/0030-defer-permission-judgment-to-the-harness.md))
 
 remi stops acting as a second permission judge on top of Claude Code. The

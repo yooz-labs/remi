@@ -1,8 +1,11 @@
 # ADR 0003: Synchronous hook-response auto-approve decisions + permission groups
 
-**Status:** accepted; amended by ADR 0030 (2026-10-01)
+**Status:** accepted; amended by ADR 0030 (2026-10-01) and ADR 0031 (2026-10-02)
 **Date:** 2026-06-09
 **Owner:** Yahya
+
+> **Amended 2026-10-02 by [ADR 0031](0031-held-hook-answers-with-native-dialog-visible.md).**
+> The hook response is no longer always `passthrough`: a binary prompt is held and answered with the phone's choice (`allow`, `deny` with an optional message, or `allow` + `updatedPermissions`), and every non-answer path sends the empty response, which decides nothing.
 
 > **Amended 2026-10-01 by [ADR 0030](0030-defer-permission-judgment-to-the-harness.md).**
 > remi no longer produces permission verdicts: the auto-approve LLM and the permission groups described below are deleted (#1125).

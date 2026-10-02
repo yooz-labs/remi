@@ -1,8 +1,13 @@
 # ADR 0004: PTY-as-arbiter for subagent question routing
 
-**Status:** accepted; amended by ADR 0030 (2026-10-01)
+**Status:** accepted; amended by ADR 0030 (2026-10-01) and ADR 0031 (2026-10-02)
 **Date:** 2026-07-09
 **Owner:** Yahya
+
+> **Amended 2026-10-02 by [ADR 0031](0031-held-hook-answers-with-native-dialog-visible.md).**
+> A background subagent's dialog does not render while its hook is held (verified live), so the route depends on the session.
+> With a local terminal (wrapper mode) the request is still answered `passthrough` and parked, but its render pushes an informational "answer at the terminal" notice, never an answerable card: nothing is typed into a hook-backed prompt.
+> With no local terminal (daemon or hub mode) nobody could answer a rendered dialog, so the request is held and pushed as an answerable card, exactly like a main-agent prompt.
 
 > **Amended 2026-10-01 by [ADR 0030](0030-defer-permission-judgment-to-the-harness.md).**
 > The PTY is still the arbiter of whether a parked subagent prompt reaches the phone: a subagent-tagged request is parked and answered `passthrough`, and its card pushes only when its prompt renders on the main PTY.
