@@ -6,6 +6,7 @@
 
 import type { TranscriptDiscovery } from '../transcript/index.ts';
 import { type ClaudeLaunchDeps, createClaudeSession } from './claude-session.ts';
+import { claudeTranscriptPath } from './claude-transcript-path.ts';
 import type { Harness, HarnessLaunchContext, HarnessSession } from './types.ts';
 
 export class ClaudeHarness implements Harness {
@@ -34,7 +35,7 @@ export class ClaudeHarness implements Harness {
   }
 
   transcriptPath(projectPath: string, harnessSessionId: string): string {
-    return `${this.transcriptDiscovery.getProjectTranscriptDir(projectPath)}/${harnessSessionId}.jsonl`;
+    return claudeTranscriptPath(this.transcriptDiscovery, projectPath, harnessSessionId);
   }
 
   createSession(ctx: HarnessLaunchContext): HarnessSession {

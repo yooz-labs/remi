@@ -10,7 +10,10 @@
  * `packages/daemon/src`:
  *
  * - `transcript/transcript-discovery.ts`: defines it.
- * - `harness/claude.ts`: composes the path from it.
+ * - `harness/claude-transcript-path.ts`: composes the path from it; both
+ *   `ClaudeHarness.transcriptPath` and `expectedTranscriptPath` call that
+ *   module (#1164 moved it out of `harness/claude.ts` to keep the transcript
+ *   fallback from importing the harness at runtime).
  * - `transcript/transcript-binder.ts`: asks for the directory itself (the
  *   rotation poll), not a session's transcript path.
  *
@@ -25,7 +28,7 @@ import * as path from 'node:path';
 const SRC = path.join(import.meta.dir, '..', '..', 'src');
 
 const ALLOWED = [
-  'harness/claude.ts',
+  'harness/claude-transcript-path.ts',
   'transcript/transcript-binder.ts',
   'transcript/transcript-discovery.ts',
 ];
@@ -59,13 +62,13 @@ function transcriptDirVerdict(sources: Record<string, string>): string {
     .sort();
   const unexpected = callers.filter((file) => !ALLOWED.includes(file));
   if (unexpected.length > 0) return `unexpected caller: ${unexpected.join(', ')}`;
-  if (!callers.includes('harness/claude.ts'))
-    return 'harness/claude.ts no longer composes the path';
+  if (!callers.includes('harness/claude-transcript-path.ts'))
+    return 'harness/claude-transcript-path.ts no longer composes the path';
   return 'ok';
 }
 
 describe('getProjectTranscriptDir callers in packages/daemon/src (#1163)', () => {
-  test('only the discovery, the binder and ClaudeHarness call it', () => {
+  test('only the discovery, the binder and the harness path module call it', () => {
     const sources = readSources(SRC);
     expect(Object.keys(sources).length).toBeGreaterThan(50);
     expect(transcriptDirVerdict(sources)).toBe('ok');
@@ -74,7 +77,7 @@ describe('getProjectTranscriptDir callers in packages/daemon/src (#1163)', () =>
   // The checks on the check run against a small synthetic tree, not the real
   // one, so a violation in the real source fails only the test above.
   const CLEAN: Record<string, string> = {
-    'harness/claude.ts': 'return `${d.getProjectTranscriptDir(p)}/${id}.jsonl`;',
+    'harness/claude-transcript-path.ts': 'return `${d.getProjectTranscriptDir(p)}/${id}.jsonl`;',
     'transcript/transcript-binder.ts': 'this.dir = d.getProjectTranscriptDir(p);',
     'transcript/transcript-discovery.ts':
       'getProjectTranscriptDir(p: string): string { return p; }',
@@ -102,8 +105,8 @@ describe('getProjectTranscriptDir callers in packages/daemon/src (#1163)', () =>
     ],
     [
       'the harness no longer calling it',
-      { ...CLEAN, 'harness/claude.ts': 'export class ClaudeHarness {}' },
-      'harness/claude.ts no longer composes the path',
+      { ...CLEAN, 'harness/claude-transcript-path.ts': 'export {};' },
+      'harness/claude-transcript-path.ts no longer composes the path',
     ],
   ])('the check fails with %s', (_name, mutated, verdict) => {
     expect(transcriptDirVerdict(mutated)).toBe(verdict);
