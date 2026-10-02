@@ -1,8 +1,13 @@
 # ADR 0019: Push kinds are named on the wire; muting them is deliberately asymmetric
 
-**Status:** accepted
+**Status:** accepted; amended by ADR 0030 (2026-10-01)
 **Date:** 2026-08-01
 **Owner:** Yahya
+
+> **Amended 2026-10-01 by [ADR 0030](0030-defer-permission-judgment-to-the-harness.md).**
+> The decision stands; two of its supporting facts changed with #1125.
+> The `subagent_alert` patterns now live in `[notifications] subagent_alert` (the old `auto_approve.subagent_alert` is read as a deprecated fallback).
+> `awaitDelivery` and the held hook it fed were removed, so a muted fan-out reporting `no_channel` no longer gates a hook; it stays the honest outcome, and the asymmetry below still holds.
 
 ## Context
 
