@@ -76,7 +76,8 @@ function isStanding(option: QuestionOption, index: number): boolean {
  *   - REMI_YNA ("Yes" / "Yes, always" / "No"): exactly [one-time Yes, Yes,
  *     No]. Its middle "Yes, always" button is the only static action that
  *     requires an unlocked device, so a standing grant is offered on the lock
- *     screen ONLY in this layout.
+ *     screen ONLY in this layout, and only through this static category: no
+ *     standing card gets the `dynOptions` hint (`selectDynOptions`).
  * A one-time Yes is an option labeled exactly "Yes" (`isOneTimeYes`).
  * A card with any other standing option (`isStanding`) gets NO category: a
  * plain notification, answered in the app, because REMI_MULTI's buttons do
@@ -132,10 +133,13 @@ export function selectDynOptions(question: Question): boolean {
   }
   const { options } = question;
   if (options.length < 2 || options.length > 4) return false;
-  // #1134 review: a standing grant outside the REMI_YNA layout is answered in
-  // the app. The extension's dynamic buttons do not require an unlocked
-  // device either, so no hint that would put them back on the lock screen.
-  if (options.some(isStanding) && selectPushCategory(options) !== 'REMI_YNA') return false;
+  // #1134 review: the extension builds its dynamic buttons without
+  // `.authenticationRequired`, so a standing grant offered through them
+  // could be tapped while the phone is locked, REMI_YNA's middle option
+  // included. No hint for any card with a standing option: it keeps its
+  // static category (REMI_YNA's "Yes, always" requires an unlocked device)
+  // or, outside that layout, none at all.
+  if (options.some(isStanding)) return false;
   return options.every((o) => o.label.trim().length > 0);
 }
 

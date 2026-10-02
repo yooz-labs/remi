@@ -272,13 +272,15 @@ describe('selectDynOptions (#719)', () => {
     expect(selectDynOptions(question('q', picks))).toBe(true);
   });
 
-  test('#1134 review: a standing grant outside REMI_YNA gets no dynamic buttons either', () => {
-    // The structured-suggestion permission card: two standing options. Its
-    // static category is withheld, and the extension's buttons would not
-    // require an unlocked device any more than REMI_MULTI's.
+  test('#1134 review: no card with a standing option gets dynamic buttons, REMI_YNA included', () => {
+    // The extension builds its category without `.authenticationRequired`,
+    // so a standing grant behind one of its buttons could be tapped while
+    // the phone is locked. The four-option suggestion card:
     expect(selectDynOptions(question('q', [yesOpt, yesAlwaysOpt, yesOpt, noOpt]))).toBe(false);
-    // The REMI_YNA layout keeps its hint.
-    expect(selectDynOptions(question('q', defaultThreeSet))).toBe(true);
+    // And REMI_YNA, which keeps its static category, whose "Yes, always"
+    // does require an unlocked device:
+    expect(selectDynOptions(question('q', defaultThreeSet))).toBe(false);
+    expect(selectPushCategory(defaultThreeSet)).toBe('REMI_YNA');
   });
 
   test('a multi-sub-question AskUserQuestion form does NOT qualify (stays app-routed)', () => {
@@ -538,10 +540,20 @@ describe('NotificationDispatcher.maybePush', () => {
     register(false);
     deviceTokens.set('a', { token: 'a', platform: 'ios', registeredAt: 1, connectionId: SID });
 
-    make().maybePush(SID, question('q1', defaultThreeSet, 'Allow Bash: git push'));
+    make().maybePush(SID, question('q1', [yesOpt, noOpt], 'Allow Bash: git push'));
 
     expect(pushed[0]?.opts['dynOptions']).toBe(true);
-    expect(pushed[0]?.opts['category']).toBe('REMI_YNA'); // static fallback unchanged
+    expect(pushed[0]?.opts['category']).toBe('REMI_YN'); // static fallback unchanged
+  });
+
+  test('#1134 review: a REMI_YNA card is sent with its static category and no dynOptions', () => {
+    register(false);
+    deviceTokens.set('a', { token: 'a', platform: 'ios', registeredAt: 1, connectionId: SID });
+
+    make().maybePush(SID, question('q1', defaultThreeSet, 'Allow Bash: git push'));
+
+    expect(pushed[0]?.opts['category']).toBe('REMI_YNA');
+    expect(pushed[0]?.opts['dynOptions']).toBeUndefined();
   });
 
   test('omits dynOptions for a multi-sub-question AskUserQuestion form', () => {
