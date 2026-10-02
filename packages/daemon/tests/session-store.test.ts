@@ -490,4 +490,98 @@ describe('SessionStore', () => {
       expect(raw.sessions[0]?.projectPath).toBe(normalizeProjectPath(legacy.projectPath));
     });
   });
+
+  // Harness seam, phase 1 (#1162). A Claude record carries exactly these eight
+  // keys on disk. No `harness` or `harnessSessionId` key may materialize, so an
+  // older daemon that rewrites the same sessions.json never meets (or drops)
+  // anything it does not know. The list is spelled out here, not derived from
+  // the StoredSession type, so the pin does not move when the type does.
+  describe('legacy record shape (#1162)', () => {
+    const LEGACY_KEYS = [
+      'claudeSessionId',
+      'exitCode',
+      'exitedAt',
+      'pid',
+      'port',
+      'projectPath',
+      'remiSessionId',
+      'startedAt',
+    ];
+
+    function diskRecords(): Record<string, unknown>[] {
+      const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as {
+        version: number;
+        sessions: Record<string, unknown>[];
+      };
+      expect(raw.version).toBe(1);
+      return raw.sessions;
+    }
+
+    test('a legacy record keeps exactly 8 keys through save, markExited and read', () => {
+      const session = makeSession({ claudeSessionId: 'claude-legacy' });
+      store.save(session);
+      expect(Object.keys(diskRecords()[0] ?? {}).sort()).toEqual(LEGACY_KEYS);
+
+      // Every read path returns the same eight keys, no more.
+      expect(Object.keys(store.findByRemiSessionId(session.remiSessionId) ?? {}).sort()).toEqual(
+        LEGACY_KEYS,
+      );
+      expect(Object.keys(store.findByClaudeSessionId('claude-legacy') ?? {}).sort()).toEqual(
+        LEGACY_KEYS,
+      );
+      expect(Object.keys(store.list()[0] ?? {}).sort()).toEqual(LEGACY_KEYS);
+
+      store.markExited(session.remiSessionId, 0);
+      const afterExit = diskRecords();
+      expect(afterExit).toHaveLength(1);
+      expect(Object.keys(afterExit[0] ?? {}).sort()).toEqual(LEGACY_KEYS);
+      expect(afterExit[0]?.['exitCode']).toBe(0);
+      expect(typeof afterExit[0]?.['exitedAt']).toBe('string');
+      expect(Object.keys(store.findByRemiSessionId(session.remiSessionId) ?? {}).sort()).toEqual(
+        LEGACY_KEYS,
+      );
+    });
+
+    test('a hand-written legacy file keeps exactly 8 keys through every rewriting operation', () => {
+      // Written as a literal, not through makeSession or save(), so this is the
+      // shape an older binary left on disk.
+      const legacy = {
+        remiSessionId: crypto.randomUUID(),
+        claudeSessionId: null,
+        projectPath: '/tmp/project',
+        port: 18765,
+        pid: process.pid,
+        startedAt: '2026-01-01T00:00:00.000Z',
+        exitedAt: null,
+        exitCode: null,
+      };
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, JSON.stringify({ version: 1, sessions: [legacy] }, null, 2));
+
+      // updateClaudeSessionId rewrites the file.
+      store.updateClaudeSessionId(legacy.remiSessionId as UUID, 'claude-adopted');
+      expect(Object.keys(diskRecords()[0] ?? {}).sort()).toEqual(LEGACY_KEYS);
+      expect(diskRecords()[0]?.['claudeSessionId']).toBe('claude-adopted');
+
+      // Saving a different session rewrites the file too.
+      const other = makeSession({ claudeSessionId: 'claude-other' });
+      store.save(other);
+      for (const record of diskRecords()) {
+        expect(Object.keys(record).sort()).toEqual(LEGACY_KEYS);
+      }
+
+      // purgeStale rewrites it when it changes something: an exited row older
+      // than seven days is removed, the legacy row stays.
+      store.save(makeSession({ exitedAt: '2020-01-01T00:00:00.000Z', exitCode: 0 }));
+      expect(store.purgeStale()).toBe(true);
+      for (const record of diskRecords()) {
+        expect(Object.keys(record).sort()).toEqual(LEGACY_KEYS);
+      }
+
+      store.markExited(legacy.remiSessionId as UUID, 1);
+      const final = diskRecords().find((r) => r['remiSessionId'] === legacy.remiSessionId);
+      expect(Object.keys(final ?? {}).sort()).toEqual(LEGACY_KEYS);
+      expect(final?.['exitCode']).toBe(1);
+    });
+  });
 });
