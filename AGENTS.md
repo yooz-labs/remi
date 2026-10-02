@@ -216,6 +216,10 @@ the card at once by id (`holdForAnswer` -> `onHeldEscalate` ->
   BOTH echoed with `destination: "session"` so a phone tap never writes a
   settings file; `standingGrantFor` in `hook-event-bridge.ts` is the one
   place that decides, and it stamps the option's `standingGrant` kind.
+  Clients read that kind, never the label's wording (#1155): the web card's
+  hint says "This session" for a standing option and "Allow once" only for
+  the plain Yes; Telegram cuts a button at 32 characters, so when any label
+  is cut the message lists every label whole and numbers the buttons.
   `addDirectories` is never offered (its echo did not stop the repeat
   prompt). An answer the card does not offer is refused and the hold stays.
   The lock screen's static "Yes, always" (`REMI_YNA`) is chosen only for an

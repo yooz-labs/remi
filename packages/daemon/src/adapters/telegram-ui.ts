@@ -106,6 +106,38 @@ function boundText(text: string): string {
     : text;
 }
 
+/** `text` followed by `tail`, the text cut (marked) so the tail survives
+ *  whole within Telegram's limit. */
+function boundTextKeepingTail(text: string, tail: string): string {
+  if (tail.length === 0) return boundText(text);
+  const room = TELEGRAM_QUESTION_MAX - tail.length;
+  if (room < 4) return boundText(`${text}${tail}`);
+  return `${text.length > room ? `${text.slice(0, room - 3)}...` : text}${tail}`;
+}
+
+/** The longest button text remi sends; a longer label is cut with "...". */
+const BUTTON_LABEL_MAX = 32;
+
+/**
+ * Whether any option's button would be cut (#1155). The cut used to remove
+ * exactly what a standing option grants ("Yes, allow touch x.txt for this
+ * session" lost "for this session"), so when it happens the message lists
+ * every option's full label (`fullLabelList`) and the buttons are numbered
+ * to match. Buttons stay short: a Telegram client shortens a long button on
+ * its own, so a longer button would not show the whole label either.
+ */
+function buttonsAreCut(question: Question): boolean {
+  return question.options.some((o) => decoratedLabel(o).length > BUTTON_LABEL_MAX);
+}
+
+/** The options' full labels, numbered as their buttons, for the message
+ *  body; empty when no button is cut. */
+function fullLabelList(question: Question): string {
+  if (!buttonsAreCut(question)) return '';
+  const lines = question.options.map((o, i) => `${i + 1}. ${o.label}`);
+  return `\n\nOptions:\n${lines.join('\n')}`;
+}
+
 /**
  * Why a card gets no answer buttons on Telegram (#1127 review S2), or null
  * when its options can be tapped: an AskUserQuestion with several questions
@@ -145,7 +177,7 @@ function noButtonsReason(question: Question): string | null {
 export function formatQuestionCard(question: Question): TelegramQuestionCard {
   const detail = question.detail?.trim() ?? '';
   if (detail.length > 0) {
-    const whole = `${question.text}\n\n${detail}`;
+    const whole = `${question.text}\n\n${detail}${fullLabelList(question)}`;
     if (whole.length <= TELEGRAM_QUESTION_MAX) {
       return { text: whole, keyboard: formatQuestionKeyboard(question) };
     }
@@ -162,7 +194,10 @@ export function formatQuestionCard(question: Question): TelegramQuestionCard {
   const reason = noButtonsReason(question);
   if (reason !== null)
     return { text: boundText(`${question.text}\n\n${reason}`), keyboard: undefined };
-  return { text: boundText(question.text), keyboard: formatQuestionKeyboard(question) };
+  return {
+    text: boundTextKeepingTail(question.text, fullLabelList(question)),
+    keyboard: formatQuestionKeyboard(question),
+  };
 }
 
 /**
@@ -172,11 +207,13 @@ export function formatQuestionKeyboard(question: Question): InlineKeyboard {
   const keyboard = new InlineKeyboard();
 
   if (question.options.length > 0) {
-    // Add buttons for each option
-    for (const option of question.options) {
-      const label = formatOptionLabel(option);
+    // Numbered to match the message's full label list when a label is cut
+    // (#1155, `fullLabelList`).
+    const numbered = buttonsAreCut(question);
+    question.options.forEach((option, i) => {
+      const label = formatOptionLabel(option, numbered ? i + 1 : null);
       keyboard.text(label, `answer:${question.id}:${option.value}`);
-    }
+    });
 
     // Arrange in rows (max 3 buttons per row for readability)
     // grammY automatically handles row arrangement
@@ -188,27 +225,23 @@ export function formatQuestionKeyboard(question: Question): InlineKeyboard {
   return keyboard;
 }
 
-/**
- * Format an option label for display.
- */
-function formatOptionLabel(option: QuestionOption): string {
-  let label = option.label;
-
-  // Add visual indicators
-  if (option.isRecommended) {
-    label = `✓ ${label}`;
-  } else if (option.isYes) {
-    label = `✅ ${label}`;
-  } else if (option.isNo) {
-    label = `❌ ${label}`;
-  }
-
-  // Truncate long labels (Telegram button text limit)
-  if (label.length > 32) {
-    label = `${label.slice(0, 29)}...`;
-  }
-
+/** An option's label with its visual indicator. */
+function decoratedLabel(option: QuestionOption, number: number | null = null): string {
+  const label = number === null ? option.label : `${number}. ${option.label}`;
+  if (option.isRecommended) return `✓ ${label}`;
+  if (option.isYes) return `✅ ${label}`;
+  if (option.isNo) return `❌ ${label}`;
   return label;
+}
+
+/**
+ * Format an option's button text: its decorated label, numbered when the
+ * message lists the full labels, cut to `BUTTON_LABEL_MAX` (the list then
+ * carries the whole label, #1155).
+ */
+function formatOptionLabel(option: QuestionOption, number: number | null): string {
+  const label = decoratedLabel(option, number);
+  return label.length > BUTTON_LABEL_MAX ? `${label.slice(0, BUTTON_LABEL_MAX - 3)}...` : label;
 }
 
 /**

@@ -37,6 +37,7 @@ function toUIQuestionOption(o: Question['options'][number]): UIQuestionOption {
     isRecommended: o.isRecommended || undefined,
     description: o.description || undefined,
     ...(o.sessionGrant ? { sessionGrant: o.sessionGrant } : {}),
+    ...(o.standingGrant ? { standingGrant: o.standingGrant } : {}),
   };
 }
 

@@ -15,6 +15,7 @@ import {
   isValidContent,
   stripTerminalCodes,
 } from '../src/adapters/telegram-ui.ts';
+import { optionsFromSuggestions } from '../src/hooks/hook-event-bridge.ts';
 import { extractToolQuestion } from '../src/hooks/tool-question.ts';
 import { parseQuestion } from '../src/parser/question-parser.ts';
 
@@ -436,5 +437,81 @@ describe('/interrupt help and the free-text hint (#1140)', () => {
     const text = formatQuestionText(flagged);
     expect(text).not.toContain('custom text');
     expect(text).not.toContain('Reply with your answer');
+  });
+});
+
+/**
+ * #1155: a button is cut to 32 characters, and the cut removed exactly what a
+ * standing option grants ("... for this session"). When any label is cut the
+ * message lists every option's full label and the buttons are numbered to
+ * match. Real formatter; the standing card's options are the daemon's own
+ * (`optionsFromSuggestions`, as a held PermissionRequest builds them).
+ */
+describe('formatQuestionCard keeps every option label whole (#1155)', () => {
+  const rule = {
+    type: 'addRules',
+    rules: [{ toolName: 'Bash', ruleContent: 'touch e5-marker.txt' }],
+    behavior: 'allow',
+    destination: 'localSettings',
+  };
+  const standing: Question = {
+    id: 'q-standing' as UUID,
+    text: 'Allow Bash: touch e5-marker.txt',
+    options: optionsFromSuggestions([rule]).options,
+    allowsFreeText: false,
+    isAnswered: false,
+  };
+  const buttonTexts = (card: ReturnType<typeof formatQuestionCard>): string[] =>
+    (
+      (card.keyboard as unknown as { inline_keyboard: Array<Array<{ text: string }>> } | undefined)
+        ?.inline_keyboard ?? []
+    )
+      .flat()
+      .map((b) => b.text);
+
+  test('a standing option whose button is cut is listed whole, and the buttons are numbered', () => {
+    const scoped = standing.options[1];
+    expect(scoped?.standingGrant).toBe('addRules');
+    expect(scoped?.label).toBe('Yes, allow touch e5-marker.txt for this session');
+    const card = formatQuestionCard(standing);
+    expect(card.text).toBe(
+      'Allow Bash: touch e5-marker.txt\n\nOptions:\n1. Yes\n2. Yes, allow touch e5-marker.txt for this session\n3. No',
+    );
+    const buttons = buttonTexts(card);
+    expect(buttons).toHaveLength(3);
+    expect(buttons.map((b) => b.length <= 32)).toEqual([true, true, true]);
+    expect(buttons[1]).toStartWith('✅ 2. Yes, allow touch');
+    expect(buttons[2]).toBe('❌ 3. No');
+  });
+
+  test('labels that fit add no list and keep their unnumbered buttons', () => {
+    const card = formatQuestionCard({ ...standing, options: optionsFromSuggestions([]).options });
+    expect(card.text).toBe('Allow Bash: touch e5-marker.txt');
+    expect(buttonTexts(card).some((b) => /\d\. /.test(b))).toBe(false);
+  });
+
+  test('a question text at the limit is cut so the list survives whole', () => {
+    const card = formatQuestionCard({ ...standing, text: `Allow Bash: ${'x'.repeat(5000)}` });
+    expect(card.text.length).toBeLessThanOrEqual(4000);
+    expect(card.text).toEndWith('2. Yes, allow touch e5-marker.txt for this session\n3. No');
+    expect(card.text).toContain('...\n\nOptions:\n');
+    expect(buttonTexts(card)).toHaveLength(3);
+  });
+
+  test("a plan's cut approval label is listed below the plan", () => {
+    const tool = extractToolQuestion('ExitPlanMode', { plan: '# Plan\n\n- step 1' });
+    if (tool === null) throw new Error('no plan card');
+    const card = formatQuestionCard({
+      id: 'q-plan-1155' as UUID,
+      text: tool.text,
+      options: tool.options,
+      allowsFreeText: false,
+      isAnswered: false,
+      kind: 'plan_approval',
+      ...(tool.detail !== undefined ? { detail: tool.detail } : {}),
+    });
+    expect(card.text).toContain('# Plan\n\n- step 1\n\nOptions:\n');
+    expect(card.text).toContain('2. Approve, approve edits manually');
+    expect(buttonTexts(card)).toHaveLength(3);
   });
 });

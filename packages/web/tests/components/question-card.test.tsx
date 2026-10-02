@@ -1,12 +1,15 @@
 /**
  * Render smoke tests for the question card (#1127 review T2, T3): the plan
  * card, the AskUserQuestion form's free-text field, and a terminal-only
- * card, rendered with the real component to static markup.
+ * card, rendered with the real component to static markup; and the option
+ * hints by the daemon's meaning (#1155).
  */
 
 import { describe, expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
+import type { Question } from '@remi/shared';
 import { QuestionCard } from '../../src/components/chat/QuestionCard';
+import { mapQuestionToUIQuestion } from '../../src/lib/question-mapping';
 import type { UIQuestion, UIQuestionOption } from '../../src/types';
 
 const TS = '2026-10-02T00:00:00.000Z';
@@ -93,5 +96,93 @@ describe('QuestionCard (#1127)', () => {
     expect(html).toContain('This question can only be answered in the terminal (or Cancel).');
     expect(html).not.toContain('>Submit<');
     expect(html).toMatch(/<input[^>]* disabled=""/);
+  });
+});
+
+/**
+ * #1155: the hint beside each option says what the daemon grants, read from
+ * `standingGrant`, never from the label's wording. Real component, real
+ * wire-to-UI mapping (`mapQuestionToUIQuestion`), static markup.
+ */
+describe('QuestionCard option hints (#1155)', () => {
+  /** Each option row's label and hint, in order. */
+  function rows(html: string): Array<[string, string | null]> {
+    return [
+      ...html.matchAll(
+        /<span class="text-sm font-semibold">([^<]*)<\/span>(?:<span class="ml-auto[^"]*">([^<]*)<\/span>)?/g,
+      ),
+    ].map((m) => [m[1] ?? '', m[2] ?? null]);
+  }
+
+  /** A wire `Question` as the daemon sends it, mapped as App.tsx maps it. */
+  function card(options: Question['options']): UIQuestion {
+    return mapQuestionToUIQuestion(
+      {
+        id: 'q-1155' as Question['id'],
+        text: 'Allow Bash: touch e5-marker.txt',
+        options,
+        allowsFreeText: false,
+        isAnswered: false,
+      },
+      's' as UIQuestion['sessionId'],
+      TS,
+    );
+  }
+
+  const wire = (
+    label: string,
+    value: string,
+    flags: Partial<Question['options'][number]> = {},
+  ): Question['options'][number] => ({
+    label,
+    value,
+    isRecommended: value === '1',
+    isYes: false,
+    isNo: false,
+    ...flags,
+  });
+
+  test('a standing option says "This session"; "Allow once" is only for the plain Yes', () => {
+    const html = render(
+      card([
+        wire('Yes', '1', { isYes: true }),
+        wire('Yes, allow touch e5-marker.txt for this session', '2', {
+          isYes: true,
+          suggestionIndex: 0,
+          standingGrant: 'addRules',
+        }),
+        wire('Yes, and switch to acceptEdits mode', '3', {
+          isYes: true,
+          suggestionIndex: 1,
+          standingGrant: 'setMode',
+        }),
+        wire('No', '4', { isNo: true }),
+      ]),
+    );
+    expect(rows(html)).toEqual([
+      ['Yes', 'Allow once'],
+      ['Yes, allow touch e5-marker.txt for this session', 'This session'],
+      ['Yes, and switch to acceptEdits mode', 'This session'],
+      ['No', 'Cancel'],
+    ]);
+  });
+
+  test('a Yes read off the screen with no standingGrant gets no hint, whatever its wording', () => {
+    // A hook-less prompt's options come from the screen: the daemon does not
+    // know what they grant (Claude may write a settings file), so neither
+    // "Allow once" nor "This session" would be true.
+    const html = render(
+      card([
+        wire('Yes', '1', { isYes: true }),
+        wire('Yes, and always allow access to tmp/ from this project', '2', { isYes: true }),
+        wire('No', '3', { isNo: true }),
+      ]),
+    );
+    expect(rows(html)).toEqual([
+      ['Yes', 'Allow once'],
+      ['Yes, and always allow access to tmp/ from this project', null],
+      ['No', 'Cancel'],
+    ]);
+    expect(html).not.toContain('Remember for session');
   });
 });
