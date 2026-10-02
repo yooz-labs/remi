@@ -127,6 +127,37 @@ describe('selectPushCategory', () => {
     ).toBe('REMI_YNA');
   });
 
+  test('#1134 review: the first option is a one-time Yes only when it reads exactly "Yes"', () => {
+    // Shapes from the review: ExitPlanMode's real list, a trust prompt, a
+    // bypass offer. Each first Yes grants something, so no YN or YNA, and
+    // with that standing option no category at all.
+    expect(
+      selectPushCategory([yes('1', 'Yes, auto-accept edits'), no('2', 'No, keep planning')]),
+    ).toBeUndefined();
+    expect(
+      selectPushCategory([yes('1', 'Yes,auto-acceptedits'), no('2', 'No,keepplanning')]),
+    ).toBeUndefined();
+    expect(
+      selectPushCategory([
+        yes('1', 'Yes,auto-acceptedits'),
+        yes('2', 'Yes,manuallyapproveedits'),
+        pick('3', 'TellClaudewhattochange'),
+      ]),
+    ).toBeUndefined();
+    expect(
+      selectPushCategory([yes('1', 'Yes, proceed and trust this folder'), no('2', 'No, exit')]),
+    ).toBeUndefined();
+    expect(
+      selectPushCategory([
+        yes('1', 'Yes, and bypass permissions'),
+        yes('2', 'Yes, manually approve edits'),
+        no('3', 'No, keep planning'),
+      ]),
+    ).toBeUndefined();
+    // Exactly "Yes", spaced or not, is one-time.
+    expect(selectPushCategory([yes('1', ' Yes '), no('2', 'No')])).toBe('REMI_YN');
+  });
+
   test('the legacy ["Yes","Always","No"] suggestion set is REMI_YNA', () => {
     const { options } = optionsFromSuggestions(['Yes', 'Always', 'No']);
     expect(selectPushCategory(options)).toBe('REMI_YNA');

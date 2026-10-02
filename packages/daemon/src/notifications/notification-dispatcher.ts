@@ -32,22 +32,21 @@ export interface PushConfig {
   pushSecret?: string | undefined;
 }
 
-/** A label that grants a standing permission ("always", "don't ask
- *  again"). Substring match on purpose: screen-parsed labels lose their
- *  spaces ("Yes,andalwaysallow..."), which defeats word boundaries. */
-const STANDING_LABEL = /always|don'?t\s*ask\s*again/i;
-/** "Yes, and ..." (Claude's "Yes, and always allow access to ..." / "Yes,
- *  and don't ask again ..."): never a one-time Yes. */
-const YES_AND_LABEL = /^\s*Yes,\s*and/;
+/** A label as the PTY parse leaves it comparable: lowercase, with all
+ *  whitespace and box-drawing characters removed (#1137 spacing loss). */
+function normalizedLabel(option: QuestionOption): string {
+  return option.label.toLowerCase().replace(/[\s\u2500-\u257F|]/g, '');
+}
 
+/**
+ * A one-time Yes, by allowlist (#1134 review): an option labeled exactly
+ * "Yes" (after `normalizedLabel`). Every other Yes ("Yes, auto-accept
+ * edits", "Yes, proceed and trust this folder", "Yes, and bypass
+ * permissions") grants something beyond this one action, and a denylist of
+ * grant wordings cannot keep up with Claude's.
+ */
 function isOneTimeYes(option: QuestionOption): boolean {
-  return (
-    option.isYes &&
-    !option.isNo &&
-    option.sessionGrant === undefined &&
-    !STANDING_LABEL.test(option.label) &&
-    !YES_AND_LABEL.test(option.label)
-  );
+  return option.sessionGrant === undefined && !option.isNo && normalizedLabel(option) === 'yes';
 }
 
 function isPlainNo(option: QuestionOption): boolean {
@@ -57,20 +56,13 @@ function isPlainNo(option: QuestionOption): boolean {
 /**
  * Whether option `index` grants something standing (#1134 review). Any Yes
  * after the first option counts, whatever its label says ("Yes, allow reading
- * from <dir> during this session", "Yes, switch to acceptEdits mode"): the
- * label of a grant is not a reliable signal, and the only safe one-time Yes on
- * a lock screen is the first. So does a first Yes worded as a grant, and a
+ * from <dir> during this session", "Yes, switch to acceptEdits mode"); so
+ * does a first Yes that is not exactly "Yes" (`isOneTimeYes`), and a
  * session-grant action.
  */
 function isStanding(option: QuestionOption, index: number): boolean {
   if (option.sessionGrant !== undefined) return true;
   return option.isYes && (index > 0 || !isOneTimeYes(option));
-}
-
-/** A card with a standing option whose layout is not exactly REMI_YNA (the
- *  only category whose standing button requires an unlocked device). */
-function hasUnguardedStandingOption(options: readonly QuestionOption[]): boolean {
-  return options.some(isStanding) && selectPushCategory(options) !== 'REMI_YNA';
 }
 
 /**
@@ -85,6 +77,7 @@ function hasUnguardedStandingOption(options: readonly QuestionOption[]): boolean
  *     No]. Its middle "Yes, always" button is the only static action that
  *     requires an unlocked device, so a standing grant is offered on the lock
  *     screen ONLY in this layout.
+ * A one-time Yes is an option labeled exactly "Yes" (`isOneTimeYes`).
  * A card with any other standing option (`isStanding`) gets NO category: a
  * plain notification, answered in the app, because REMI_MULTI's buttons do
  * not require an unlocked device. Every other 2-4 option card gets
@@ -142,7 +135,7 @@ export function selectDynOptions(question: Question): boolean {
   // #1134 review: a standing grant outside the REMI_YNA layout is answered in
   // the app. The extension's dynamic buttons do not require an unlocked
   // device either, so no hint that would put them back on the lock screen.
-  if (hasUnguardedStandingOption(options)) return false;
+  if (options.some(isStanding) && selectPushCategory(options) !== 'REMI_YNA') return false;
   return options.every((o) => o.label.trim().length > 0);
 }
 
