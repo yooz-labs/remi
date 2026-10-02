@@ -96,6 +96,7 @@ remi/
 │   ├── daemon/          # Bun + TypeScript backend, CLI, PTY, sessions
 │   ├── shared/          # Protocol, crypto, identity, types
 │   ├── signaling/       # Cloudflare Workers signaling / relay service
+│   ├── macos/           # Native Mac app (Swift)
 │   └── web/             # React + Vite + Capacitor client
 ├── tests/
 │   ├── e2e/             # Playwright end-to-end tests
@@ -104,6 +105,9 @@ remi/
 ├── .context/            # Plan, research, ideas, scratch notes
 └── .rules/              # Repo-specific standards
 ```
+
+`packages/daemon` and `packages/shared` are the Apache-2.0 packages (see `LICENSE.md`); they must never import code from the PolyForm Shield packages (`packages/web`, `packages/signaling`, `packages/macos`).
+`packages/daemon/tests/license-boundary.test.ts` enforces it.
 
 Key directories to know:
 
