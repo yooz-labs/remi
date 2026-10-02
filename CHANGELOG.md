@@ -65,6 +65,12 @@ source of several security bugs (#536, #1060, #1063).
   plan approval are pushed immediately; a subagent prompt is pushed only if it
   renders. `remi unstick` now resolves and dismisses stuck cards (there are no
   holds or evals left to release).
+- **Every phone answer is typed, and checked against the screen first**
+  (#1134). With nothing held, an answer is typed into Claude's dialog only
+  when a prompt is on screen and the chosen option's label exactly matches
+  the screen's option at that number (whitespace and case aside); free text
+  is refused on a card that takes a choice. A refusal consumes the card and
+  means "answer at the terminal", where Claude's dialog is still showing.
 
 ### Earlier changes on this line (much of it removed again by #1125 above)
 

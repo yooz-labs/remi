@@ -6,7 +6,7 @@
 
 > **Amended 2026-10-01 by [ADR 0030](0030-defer-permission-judgment-to-the-harness.md).**
 > Holding is not in effect after #1125: holds were only enabled when an auto-approve service existed, and that service is deleted, so every `PermissionRequest` is answered `passthrough` at once and Claude's own dialog renders in the terminal.
-> Phone answers are relayed by typing into that dialog, guarded by the screen check of #1134 (PR #1136), until #1126 reintroduces holds with Claude's native dialog still visible.
+> Phone answers are relayed by typing into that dialog, guarded by the exact-label screen check of #1134 (PR #1136; a refusal means answer at the terminal), until #1126 reintroduces holds with Claude's native dialog still visible.
 > The model below is kept as the design #1126 builds on, not a description of what ships today.
 
 ## Context
