@@ -212,11 +212,15 @@ the card at once by id (`holdForAnswer` -> `onHeldEscalate` ->
   optional `message` on the answer reaches Claude as the tool result; the
   protocol carries it, no client sends it yet; Cancel on a held card is a
   No); a standing option -> `allow` + `updatedPermissions`,
-  only for `setMode` (echoed verbatim) and an allow `addRules` (echoed with
-  `destination: "session"`, labeled "for this session"); `standingGrantFor` in
-  `hook-event-bridge.ts` is the one place that decides. `addDirectories` is
-  never offered (its echo did not stop the repeat prompt). An answer the card
-  does not offer is refused and the hold stays.
+  only for `setMode` and an allow `addRules` (labeled "for this session"),
+  BOTH echoed with `destination: "session"` so a phone tap never writes a
+  settings file; `standingGrantFor` in `hook-event-bridge.ts` is the one
+  place that decides, and it stamps the option's `standingGrant` kind.
+  `addDirectories` is never offered (its echo did not stop the repeat
+  prompt). An answer the card does not offer is refused and the hold stays.
+  The lock screen's static "Yes, always" (`REMI_YNA`) is chosen only for an
+  `addRules` grant (`selectPushCategory`); a `setMode` card gets no
+  actionable category.
 - **Terminal Yes:** Claude runs the tool and never closes the held request.
   `PermissionRequest` has no `tool_use_id`, so it is paired on arrival with
   the in-flight `PreToolUse` of the same agent, tool and input (about 10 ms
@@ -230,13 +234,20 @@ the card at once by id (`holdForAnswer` -> `onHeldEscalate` ->
   resolver `req.signal`; its abort (also a session end or Claude's own hook
   timeout) dismisses the card. No hook fires for it, so a new
   `UserPromptSubmit` also closes main prompts left open.
-- **Deadline:** at `[prompts] hold_seconds` (default 90, 5 to 110: under the
-  2:00 auto-deny of auto-mode fallback prompts, which counts during a hold,
-  and the 600 s registered hook timeout) remi releases its own hold with an
-  empty response, the dialog stays, the card is dismissed and an "answer at
-  the terminal" notice is pushed (#733; in daemon or hub mode it says
-  `remi attach`, the only way left to answer). The notice is dismissed when
-  the prompt resolves; a late phone answer does not resolve it.
+- **Deadline:** in wrapper mode at `[prompts] hold_seconds` (default 90, 5
+  to 110: under the 2:00 auto-deny of auto-mode fallback prompts, which
+  counts during a hold, and the 600 s registered hook timeout) remi releases
+  its own hold with an empty response, the dialog stays, the card is
+  dismissed and an "answer at the terminal" notice is pushed (#733). A daemon
+  or hub session has no terminal of its own, so it holds for
+  `[prompts] daemon_hold_seconds` (default 3540, 5 to 3540) and registers
+  the hook with a 3600 s timeout (`DAEMON_PERMISSION_REQUEST_HOOK_TIMEOUT`);
+  its notice says `remi attach`, the only way left to answer. An auto-mode
+  fallback prompt still auto-denies at 2:00 there; Claude closes the
+  request and the abort path dismisses the card. The notice never claims the
+  prompt is still waiting (a terminal Yes may already have answered it); it
+  is dismissed when the prompt resolves, and a late phone answer does not
+  resolve it.
 
 An empty response never decides anything; it is what every non-answer path
 sends. A **multi-choice or design prompt** (`AskUserQuestion`, `ExitPlanMode`,
@@ -256,7 +267,9 @@ a registered passthrough card do not suppress orphans, so a hook-less prompt
 (sandbox network, trust, an agent-team dialog) still gets its card. `handleAnswer` asks
 the gate first (`gateAnswerDeps`): a held card is answered through the hook,
 and a binary card whose hold has ended is refused (`closed`: answer at the
-terminal), never typed.
+terminal), never typed. While a main-agent hold is open its dialog is on
+screen, so `onUserInput` refuses chat text with `PROMPT_WAITING`
+(`isMainPromptHeld`) even before the screen parse sees the menu (#1140).
 
 **A typed answer carries the screen's numbering** (#1134). This applies only
 where no held hook stands behind the card: hook-less prompts (sandbox network,
@@ -376,7 +389,9 @@ its hook is held (verified live), so the gate takes a required
 - **Daemon or hub mode (no local terminal):** nobody could answer a rendered
   dialog, so the request is escalated exactly like a main-agent prompt: held,
   with an answerable card. A lead `Stop` spares it; that agent's
-  `SubagentStop` releases it.
+  `SubagentStop` releases it. Claude does not fire `PermissionRequest` for a
+  call its own allow rules permit (measured on 2.1.287 for background,
+  foreground and main calls), so these holds are only for real prompts.
 
 **Old auto-approve settings.** An old `config.toml` with an `[auto_approve]`
 table still loads; the daemon warns once at boot (daemon, `remi serve`,
@@ -440,7 +455,7 @@ those two are both exactly `{token, title, body}`.
 - Claude Code does NOT always offer a fixed option count. `optionsFromSuggestions` (hook-event-bridge.ts) builds a binary card by MEANING (#1126): [Yes] + one standing option per offerable suggestion (`setMode`, allow `addRules`; never `addDirectories`) + [No], capped at 4 total; with nothing offerable, the honest Yes/No 2-set (`optionsAreFallback: true`). A multi-choice string-label set maps label by label to picks. This is the hook's view, not the screen's (Claude's dialog does not render one option per suggestion, #1134), which is why a held card is answered through the hook and never typed.
 - Numbered option text appears only in the terminal UI, not in hook events.
 - `HookEventBridge` builds the option set at hook time; a binary card is held and pushed at once, and its answer is the hook response (#1126).
-- A standing option is answered by echoing its `permission_suggestions` entry (`QuestionOption.suggestionIndex`) as `{behavior:"allow", updatedPermissions:[...]}` on the held hook. Verified live on Claude Code 2.1.287 (#1126 spike F4) for `setMode` (verbatim) and `addRules` (with `destination: "session"`); an echoed `addDirectories` did not stop the repeat prompt, so it is never offered.
+- A standing option is answered by echoing its `permission_suggestions` entry (`QuestionOption.suggestionIndex`) as `{behavior:"allow", updatedPermissions:[...]}` on the held hook. Verified live on Claude Code 2.1.287 (#1126 spike F4) for `setMode` and `addRules`; every echo is sent with `destination: "session"` (lead decision), and an echoed `addDirectories` did not stop the repeat prompt, so it is never offered.
 - Redeploy the signaling server after any `packages/signaling/` change.
 
 ### No local model

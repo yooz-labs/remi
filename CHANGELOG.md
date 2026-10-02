@@ -9,8 +9,8 @@ All notable changes to Remi are documented here.
 A binary permission prompt is now held while its card is on the phone, and
 the phone's answer is the hook's response: Yes, No, or a standing grant
 where Claude offers one
-(`setMode`, or an `addRules` rule scoped to this session; never
-`addDirectories`). Claude's own dialog stays in the terminal the whole time
+(`setMode` or an `addRules` rule, both scoped to this session so a phone tap
+never writes a settings file; never `addDirectories`). Claude's own dialog stays in the terminal the whole time
 and whichever answer comes first wins: a Yes there is seen through the tool's
 `PostToolUse`, a No or Esc through Claude closing the held request, and the
 card is dismissed either way. Nothing is typed into the terminal for these
@@ -21,6 +21,10 @@ prompts any more.
 - **`[prompts] hold_seconds`** (default 90, 5 to 110): how long a prompt waits
   for the phone. After it, the hook is released without a decision, the
   terminal dialog stays, and the phone is told to answer at the terminal.
+- **`[prompts] daemon_hold_seconds`** (default 3540, 5 to 3540): the same for a
+  daemon or hub session, which has no terminal of its own; its
+  `PermissionRequest` hook is registered with a 3600 s timeout. After it the
+  phone is told to use `remi attach`.
 - **`harness_denied` push**: when Claude Code's auto-mode classifier blocks a
   tool call (`PermissionDenied`), the phone gets an informational notice with
   the reason. Never a card; a per-device setting, on by default.
@@ -42,6 +46,10 @@ prompts any more.
   has to match.
 - The attach client's banner for a pending card now reads "answer the prompt
   here or on your phone".
+- The lock screen's "Yes, always" action is offered only when the standing
+  option is an allow rule; a mode-change option is answered in the app.
+- Chat text is refused while a held prompt's dialog is up, as it already was
+  while a numbered menu was on screen (#1140).
 - AskUserQuestion and plan approval are unchanged: still typed into Claude's
   dialog behind the exact-label screen check (#1134), until #1127.
 

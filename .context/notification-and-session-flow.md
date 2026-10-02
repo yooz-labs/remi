@@ -1,5 +1,13 @@
 # Notification and Session Flow Architecture
 
+> **Historical (2026-04-12).** This describes the flow before the
+> auto-approve removal (#1125, ADR 0030) and the held-hook relay (#1126,
+> [ADR 0031](decisions/0031-held-hook-answers-with-native-dialog-visible.md)).
+> It is not what ships: permission prompts are now held and answered through
+> the hook while Claude's dialog stays visible. For the current flow read
+> AGENTS.md "Question Detection and Notifications" and ADR 0031; a rewrite of
+> this document is tracked separately.
+
 Last updated: 2026-04-12 (verified against real logs and deployments)
 
 ## 1. Question Detection (Daemon Side)
