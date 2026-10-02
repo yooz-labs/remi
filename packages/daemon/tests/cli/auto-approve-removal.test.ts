@@ -10,6 +10,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   MODEL_COMMAND_REMOVED_MESSAGE,
+  bootNoticeLines,
   legacyEnginePaths,
   removedAutoApproveEnvVars,
   removedAutoApproveNotice,
@@ -103,6 +104,39 @@ describe('removedAutoApproveNotice', () => {
     expect(last).toContain('delete it by hand');
     expect(last).toContain('/home/u/.remi/engine.pid');
     expect(last).toContain('stop it by hand');
+    // Two sentences, each capitalized.
+    expect(last).toContain('reclaim the space. An engine started by an older remi');
+  });
+
+  describe('bootNoticeLines: who prints what', () => {
+    const facts = {
+      ...base,
+      removedConfigKeys: ['allow'],
+      subagentAlertFromLegacy: true,
+      removedFlags: ['--auto-approve'],
+      removedEnvVars: ['REMI_AUTO_APPROVE'],
+    };
+
+    test('the daemon, remi serve and remi config print the full notice', () => {
+      for (const sub of [undefined, 'serve', 'config']) {
+        expect(bootNoticeLines(sub, facts, {})).toEqual(removedAutoApproveNotice(facts));
+      }
+    });
+
+    test('remi start prints only the removed-flag line (the hub logs the rest)', () => {
+      const lines = bootNoticeLines('start', facts, {});
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('Ignoring removed flag(s) --auto-approve');
+      expect(bootNoticeLines('start', { ...facts, removedFlags: [] }, {})).toEqual([]);
+    });
+
+    test('a session daemon the hub spawned prints nothing: the hub already did', () => {
+      expect(bootNoticeLines(undefined, facts, { REMI_SPAWNED_CHILD: '1' })).toEqual([]);
+    });
+
+    test('client subcommands print nothing', () => {
+      expect(bootNoticeLines('ls', facts, {})).toEqual([]);
+    });
   });
 
   test('removedAutoApproveEnvVars picks only the removed prefix, sorted', () => {

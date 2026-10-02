@@ -425,7 +425,6 @@ function legacyAutoApprove(parsed: Record<string, unknown>): {
     return { keys: ['auto_approve'], subagentAlert: undefined };
   }
   const t = table as Record<string, unknown>;
-  const keys = Object.keys(t).sort();
   const notifications = parsed['notifications'] as Record<string, unknown> | undefined;
   const legacyAlert = t['subagent_alert'];
   const subagentAlert =
@@ -434,6 +433,11 @@ function legacyAutoApprove(parsed: Record<string, unknown>): {
     legacyAlert.every((p) => typeof p === 'string')
       ? (legacyAlert as readonly string[])
       : undefined;
+  // A legacy subagent_alert that is still honored is not "ignored": it gets
+  // its own "move it" line in the boot notice instead.
+  const keys = Object.keys(t)
+    .filter((k) => !(k === 'subagent_alert' && subagentAlert !== undefined))
+    .sort();
   return { keys, subagentAlert };
 }
 

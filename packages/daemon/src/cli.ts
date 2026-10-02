@@ -132,9 +132,9 @@ import {
 } from './auto-approve/index.ts';
 import {
   MODEL_COMMAND_REMOVED_MESSAGE,
+  bootNoticeLines,
   legacyEnginePaths,
   removedAutoApproveEnvVars,
-  removedAutoApproveNotice,
 } from './cli/auto-approve-removal.ts';
 import { detectAutostartState } from './cli/autostart-state.ts';
 import { resolveClaudeBinding } from './cli/claude-binding.ts';
@@ -299,26 +299,24 @@ try {
 }
 
 // #1125 (ADR 0030): settings and flags for the removed auto-approve judgment
-// are accepted and ignored, never fatal. Say so ONCE per boot -- the daemon /
-// wrapper start, `remi serve`, and `remi config` (the command a user runs to
-// check their config) -- not on every client subcommand (`remi ls`, ...).
-// process.stderr, not console.warn: Bun colors console output even when
-// piped, and the LaunchAgent captures this stream into remi-stderr.log.
-if (
-  parsedArgs.subcommand === undefined ||
-  parsedArgs.subcommand === 'serve' ||
-  parsedArgs.subcommand === 'config'
-) {
-  for (const line of removedAutoApproveNotice({
+// are accepted and ignored, never fatal. Say so ONCE per boot (see
+// `bootNoticeLines` for which commands print what), not on every client
+// subcommand (`remi ls`, ...). process.stderr, not console.warn: Bun colors
+// console output even when piped, and the LaunchAgent captures this stream
+// into remi-stderr.log.
+for (const line of bootNoticeLines(
+  parsedArgs.subcommand,
+  {
     configPath: CONFIG_PATH,
     removedConfigKeys: loadedConfig.removedAutoApproveKeys,
     subagentAlertFromLegacy: loadedConfig.subagentAlertFromLegacy,
     removedFlags: parsedArgs.removedFlags,
     removedEnvVars: removedAutoApproveEnvVars(process.env),
     ...legacyEnginePaths(),
-  })) {
-    process.stderr.write(`${line}\n`);
-  }
+  },
+  process.env,
+)) {
+  process.stderr.write(`${line}\n`);
 }
 
 // Handle 'config' subcommand

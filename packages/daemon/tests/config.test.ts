@@ -521,7 +521,8 @@ describe('a removed [auto_approve] table still loads (#1125)', () => {
     const loaded = loadConfigWithNotices(TEST_CONFIG);
     expect(loaded.config.notifications.subagent_alert).toEqual(['curl']);
     expect(loaded.subagentAlertFromLegacy).toBe(true);
-    expect(loaded.removedAutoApproveKeys).toEqual(['subagent_alert']);
+    // Honored, so not "ignored": it gets the boot notice's "move it" line.
+    expect(loaded.removedAutoApproveKeys).toEqual([]);
   });
 
   test('[notifications] subagent_alert wins over the legacy key', () => {
@@ -532,6 +533,8 @@ describe('a removed [auto_approve] table still loads (#1125)', () => {
     const loaded = loadConfigWithNotices(TEST_CONFIG);
     expect(loaded.config.notifications.subagent_alert).toEqual(['ssh ']);
     expect(loaded.subagentAlertFromLegacy).toBe(false);
+    // Shadowed, so it IS ignored and listed as such.
+    expect(loaded.removedAutoApproveKeys).toEqual(['subagent_alert']);
   });
 
   test('a malformed legacy subagent_alert is ignored, keeping the default', () => {
@@ -541,6 +544,7 @@ describe('a removed [auto_approve] table still loads (#1125)', () => {
       DEFAULT_CONFIG.notifications.subagent_alert,
     );
     expect(loaded.subagentAlertFromLegacy).toBe(false);
+    expect(loaded.removedAutoApproveKeys).toEqual(['subagent_alert']);
   });
 
   test('REMI_AUTO_APPROVE* environment variables change nothing', () => {

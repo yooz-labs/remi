@@ -16,6 +16,11 @@ import * as path from 'node:path';
 export const MODEL_COMMAND_REMOVED_MESSAGE =
   'remi model was removed: remi no longer runs a local model to judge permissions; Claude Code decides them now (run `remi migrate-permissions` to carry your allow/deny rules over).';
 
+/** How to move a legacy `auto_approve.subagent_alert` that is still honored.
+ *  Shared by the boot notice and `remi migrate-permissions`. */
+export const SUBAGENT_ALERT_MOVE_HINT =
+  'auto_approve.subagent_alert is deprecated and still honored for now: move it to [notifications] subagent_alert in config.toml (it is a remi notification setting, not a Claude Code permission).';
+
 /** Prefix of every removed `REMI_AUTO_APPROVE*` environment variable. */
 const REMOVED_ENV_PREFIX = 'REMI_AUTO_APPROVE';
 
@@ -30,7 +35,8 @@ export function removedAutoApproveEnvVars(env: NodeJS.ProcessEnv): string[] {
  *  gathered; this module only words it. */
 export interface RemovedAutoApproveFacts {
   readonly configPath: string;
-  /** Keys found under the removed `[auto_approve]` table. */
+  /** Keys found under the removed `[auto_approve]` table that are ignored
+   *  (a still-honored `subagent_alert` is not among them). */
   readonly removedConfigKeys: readonly string[];
   /** The legacy `auto_approve.subagent_alert` list is in use. */
   readonly subagentAlertFromLegacy: boolean;
@@ -70,9 +76,7 @@ export function removedAutoApproveNotice(f: RemovedAutoApproveFacts): string[] {
     );
   }
   if (f.subagentAlertFromLegacy) {
-    lines.push(
-      '[remi] auto_approve.subagent_alert is deprecated: move it to [notifications] subagent_alert (still honored from its old place for now).',
-    );
+    lines.push(`[remi] ${SUBAGENT_ALERT_MOVE_HINT}`);
   }
   if (f.removedFlags.length > 0) {
     lines.push(
@@ -91,10 +95,38 @@ export function removedAutoApproveNotice(f: RemovedAutoApproveFacts): string[] {
     }
     if (f.enginePidFile !== null) {
       parts.push(
-        `an engine started by an older remi may still be running (pid in ${f.enginePidFile}); stop it by hand`,
+        `An engine started by an older remi may still be running (pid in ${f.enginePidFile}); stop it by hand`,
       );
     }
     lines.push(`[remi] ${parts.join('. ')}.`);
   }
   return lines;
+}
+
+/**
+ * The boot notice for one invocation. The full notice is for the commands
+ * that boot a daemon or show the config (the session daemon or wrapper,
+ * `remi serve`, `remi config`); `remi start` only launches the hub, which
+ * prints the full notice into its own log, so it reports just the removed
+ * flags the user typed. A session daemon the hub spawned
+ * (`REMI_SPAWNED_CHILD=1`) prints nothing: the hub already did.
+ */
+export function bootNoticeLines(
+  subcommand: string | undefined,
+  facts: RemovedAutoApproveFacts,
+  env: NodeJS.ProcessEnv,
+): string[] {
+  if (env['REMI_SPAWNED_CHILD'] === '1') return [];
+  if (subcommand === undefined || subcommand === 'serve' || subcommand === 'config') {
+    return removedAutoApproveNotice(facts);
+  }
+  if (subcommand === 'start') {
+    return removedAutoApproveNotice({
+      ...facts,
+      removedConfigKeys: [],
+      subagentAlertFromLegacy: false,
+      removedEnvVars: [],
+    });
+  }
+  return [];
 }
