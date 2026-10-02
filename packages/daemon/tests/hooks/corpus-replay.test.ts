@@ -324,6 +324,7 @@ function buildReplayRig(): ReplayRig {
       messageApi,
       sendAndRecord: () => {},
       tracker,
+      hasLocalTerminal: true,
     },
   );
 

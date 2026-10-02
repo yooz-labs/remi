@@ -33,10 +33,15 @@
  *     multi-choice string-label permission) is answered 'passthrough' and
  *     pushed at once (`escalatePassthrough`); its answer is still typed
  *     into the PTY (Phase 4, #1127, replaces that);
- *   - a SUBAGENT-tagged prompt (`agent_id` present) is parked
- *     (`parkSubagentForPTY`): its card is pushed only if the prompt actually
- *     renders on the main PTY (ADR 0004). `onSubagentPassthrough` reports it
- *     for the informational subagent alert.
+ *   - a SUBAGENT-tagged prompt (`agent_id` present) depends on
+ *     `hasLocalTerminal` (#1126): a background subagent's dialog does not
+ *     render while its hook is held. With a local terminal it is answered
+ *     'passthrough' and parked (`passSubagentToTerminal`, ADR 0004); when
+ *     its dialog renders the phone gets an informational "answer at the
+ *     terminal" notice, never an answerable card. `onSubagentPassthrough`
+ *     reports it for the informational subagent alert. Without a local
+ *     terminal (daemon or hub mode) it is escalated exactly like a main
+ *     prompt: held, with an answerable card.
  *
  * The outward couplings the hook bridge used directly are injected as
  * callbacks so the gate has no back-reference to the bridge or the router:
@@ -54,7 +59,7 @@
  *     when both sides carry one, else the tool name + input): the tool is
  *     now running (or was refused), so the user must have answered it
  *     directly in the terminal or Claude's own permission mode resolved it;
- *   - a duplicate re-request: `escalateToUser` / `parkSubagentForPTY` resolve
+ *   - a duplicate re-request: `escalateToUser` / `passSubagentToTerminal` resolve
  *     an already-open entry with the SAME signature before registering the
  *     new one, since Claude re-issuing the identical PermissionRequest proves
  *     the earlier card can never be answered through its own prompt again;
@@ -228,22 +233,44 @@ export interface AutoApproveGateDeps {
    */
   resetSubagentContext?: () => void;
   /**
+   * Required (#1126, ADR 0031): does this session have a local terminal
+   * (wrapper mode)? Decides a SUBAGENT prompt's route. A background
+   * subagent's dialog does not render while its hook is held, so:
+   *   - with a local terminal, the hook is answered 'passthrough' so the
+   *     dialog renders there, and the phone gets an informational "answer at
+   *     the terminal" notice when it does (`parkForPTY`);
+   *   - without one (daemon or hub mode), nobody could answer a rendered
+   *     dialog, so the prompt is held and pushed as an answerable card,
+   *     exactly like a main-agent prompt.
+   * Known at session setup; no default, so a caller cannot forget it.
+   */
+  hasLocalTerminal: boolean;
+  /**
    * Park a subagent-tagged prompt for its PTY render (#751): stash its rich
-   * question in the `QuestionPresenceTracker`
-   * (`parkAwaitingPTY(hookBridge.buildPermissionQuestion(input))`) WITHOUT
-   * pushing or registering it. The question only surfaces if Claude's native
-   * prompt actually renders on the PTY. Optional so tests that don't wire it
-   * degrade to a plain passthrough (the rendered prompt then pushes bare via
-   * the #712 orphan path).
+   * question in the `QuestionPresenceTracker` WITHOUT pushing or registering
+   * it. When Claude's native dialog renders, the tracker pushes an
+   * informational "answer at the terminal" notice for it (#1126; the wiring
+   * reports that through `noteTerminalNotice`), never an answerable card:
+   * the hook was answered 'passthrough', so only the terminal can answer.
    *
-   * Returns the parked `Question.id` (#799) so `parkSubagentForPTY` can
+   * Returns the parked `Question.id` (#799) so `passSubagentToTerminal` can
    * register it in `openQuestionSignatures`; without an id there is nothing
    * for a later matching subagent tool event or `SubagentStop` to resolve.
-   * `undefined` when the dep is unwired or throws.
+   * `undefined` when the dep is unwired or throws; the gate then pushes the
+   * notice at once instead (`pushTerminalNoticeNow`).
    */
   parkForPTY?: (input: PermissionRequestHookInput) => UUID | undefined;
   /**
-   * Every subagent-tagged permission that passed through (#807), reported to
+   * Push the "answer at the terminal" notice for a subagent prompt NOW, when
+   * there is no render path to push it from (`parkForPTY` unwired, threw or
+   * returned no id, #1126). Returns the notice's question id so its later
+   * resolution can dismiss it; `undefined` when nothing was pushed.
+   * Throw-safe.
+   */
+  pushTerminalNoticeNow?: (input: PermissionRequestHookInput) => UUID | undefined;
+  /**
+   * Every subagent-tagged permission passed to the terminal (#807; wrapper
+   * mode since #1126, a held one is answerable from the phone), reported to
    * the sink for observation ONLY: the decision is already made by the time
    * this fires, so a sink cannot influence it. Drives the informational
    * `subagent_alert` push (`subagent-alert.ts`), the only visibility path for
@@ -312,7 +339,7 @@ export class AutoApproveGate {
   /**
    * Every OPEN escalation this gate has created (MAIN or parked subagent),
    * keyed by `Question.id`, by its (tool_name, tool_input, agentId) signature
-   * (#673, #799). Created in `escalateToUser` or `parkSubagentForPTY`; removed
+   * (#673, #799). Created in `escalateToUser` or `passSubagentToTerminal`; removed
    * by `retireQuestion` (a user answer, a superseded render) or `resolveSupersededQuestion` (every
    * other resolution signal, see the module doc). A stale entry is harmless
    * (a later signature match only triggers a redundant, idempotent cleanup),
@@ -773,16 +800,17 @@ export class AutoApproveGate {
   }
 
   /**
-   * Resolve a PermissionRequest to its hook response (#496). A binary main
-   * prompt is held for a phone answer (#1126); everything else is answered
-   * 'passthrough':
-   *   - a SUBAGENT-tagged event (`agent_id` present) is parked for its PTY
-   *     render (ADR 0004), REGARDLESS of `isInSubagentContext()` (the tracker
-   *     only brackets synchronous Task/Agent spawns, so team members and
-   *     background subagents always observe it false; the tag on the event is
-   *     the truth). Claude then runs its normal permission flow: its own
-   *     rules may absorb the request silently, or the native prompt renders on
-   *     the main PTY and the parked card is pushed then.
+   * Resolve a PermissionRequest to its hook response (#496). A binary prompt
+   * the phone can answer is held for that answer (#1126); everything else is
+   * answered 'passthrough':
+   *   - a SUBAGENT-tagged event (`agent_id` present) is routed by
+   *     `hasLocalTerminal` (see that dep), REGARDLESS of
+   *     `isInSubagentContext()` (the tracker only brackets synchronous
+   *     Task/Agent spawns, so team members and background subagents always
+   *     observe it false; the tag on the event is the truth). With a local
+   *     terminal it passes through and parks for its render
+   *     (`passSubagentToTerminal`, ADR 0004); without one it is escalated
+   *     exactly like a main-agent prompt (held when binary).
    *   - a MAIN-tagged event (no `agent_id`) is escalated (`escalateMain`). If
    *     `isInSubagentContext()` is true at that moment, that is the #710
    *     tracker-leak signature (a dropped PostToolUse(Task/Agent) completion),
@@ -793,14 +821,18 @@ export class AutoApproveGate {
     signal?: AbortSignal,
   ): Promise<PermissionDecision> {
     if (this.isSubagentEvent(input)) {
+      if (!this.deps.hasLocalTerminal) {
+        log(
+          `[Hooks] Subagent PermissionRequest with no local terminal; escalated like a main prompt: agent=${input.agent_id?.slice(0, 8)} type=${input.agent_type} tool=${input.tool_name}`,
+        );
+        return this.escalateMain(input, signal);
+      }
       log(
-        `[Hooks] Subagent PermissionRequest parked for its PTY render: agent=${input.agent_id?.slice(0, 8)} type=${input.agent_type} tool=${input.tool_name}`,
+        `[Hooks] Subagent PermissionRequest passed to the terminal: agent=${input.agent_id?.slice(0, 8)} type=${input.agent_type} tool=${input.tool_name}`,
       );
-      this.parkSubagentForPTY(input);
-      // Observation only, AFTER the routing above is settled: one branch of
-      // Claude's own permission flow allows a call without ever rendering it,
-      // so the parked record never pairs and nothing else would ever mention
-      // it. The sink decides what is worth a notification.
+      this.passSubagentToTerminal(input);
+      // Observation only, AFTER the routing above is settled. The sink
+      // decides what is worth a notification.
       this.safeCueWithArg('onSubagentPassthrough', this.deps.onSubagentPassthrough, input);
       return Promise.resolve('passthrough');
     }
@@ -817,12 +849,14 @@ export class AutoApproveGate {
   }
 
   /**
-   * #751 routing for a subagent-tagged permission: park the rich question in
-   * the presence tracker. The caller answers the hook 'passthrough'.
+   * Wrapper-mode routing for a subagent-tagged permission (#751, #1126): park
+   * the rich question in the presence tracker so its render pushes an
+   * informational "answer at the terminal" notice. The caller answers the
+   * hook 'passthrough' so the dialog renders at all (a held background
+   * subagent's dialog does not).
    *
-   * A parkForPTY throw is absorbed: the passthrough still stands, and the
-   * rendered prompt degrades to a bare #712 orphan push instead of a merged
-   * one.
+   * A parkForPTY throw (or no park path at all) is absorbed: the passthrough
+   * still stands and the notice is pushed at once (`pushTerminalNoticeNow`).
    *
    * #799: also registers the parked question's signature in
    * `openQuestionSignatures`, tagged `isSubagent: true` + this event's own
@@ -831,15 +865,24 @@ export class AutoApproveGate {
    * A re-park for the identical signature (the SAME agent re-asking) proves
    * the earlier parked/pushed record is dead and resolves it first.
    */
-  private parkSubagentForPTY(input: PermissionRequestHookInput): void {
+  private passSubagentToTerminal(input: PermissionRequestHookInput): void {
     let questionId: UUID | undefined;
     try {
       questionId = this.deps.parkForPTY?.(input);
     } catch (err) {
       logError(
-        `[AutoApprove ${this.sessionTag}] parkForPTY threw (prompt will fall to the orphan push path):`,
+        `[AutoApprove ${this.sessionTag}] parkForPTY threw (pushing the terminal notice now):`,
         err,
       );
+    }
+    let noticedNow = false;
+    if (!questionId) {
+      try {
+        questionId = this.deps.pushTerminalNoticeNow?.(input);
+        noticedNow = questionId !== undefined;
+      } catch (err) {
+        logError(`[AutoApprove ${this.sessionTag}] pushTerminalNoticeNow threw:`, err);
+      }
     }
     if (!questionId) return;
     const observed: ObservedToolCall = {
@@ -856,6 +899,16 @@ export class AutoApproveGate {
       isSubagent: true,
       agentId: observed.agentId,
     });
+    if (noticedNow) this.terminalNotices.add(questionId);
+  }
+
+  /**
+   * The "answer at the terminal" notice for an open prompt was pushed (a
+   * parked subagent prompt rendered, #1126), so resolving the prompt also
+   * dismisses the notice. A no-op for a prompt no longer open.
+   */
+  noteTerminalNotice(questionId: UUID): void {
+    if (this.openQuestionSignatures.has(questionId)) this.terminalNotices.add(questionId);
   }
 
   /**
@@ -894,7 +947,8 @@ export class AutoApproveGate {
   }
 
   /**
-   * Stash + track a main-context escalation. Returns the created
+   * Stash + track an escalation the phone can answer: a main-context one,
+   * or a subagent's with no local terminal (#1126). Returns the created
    * `Question.id`, or `undefined` when none was created (escalate() threw;
    * logged here).
    */
@@ -936,8 +990,8 @@ export class AutoApproveGate {
         // #711: tags this OPEN escalation main vs subagent/team-member, so a
         // mainOnly Stop (cancelStale) resolves only main-tagged entries.
         isSubagent: this.isSubagentEvent(input),
-        // #799: always undefined here (escalateToUser is main-context only);
-        // kept for ToolSignature's shape symmetry with parkSubagentForPTY.
+        // #799: the subagent's own agent_id when a daemon-mode subagent
+        // prompt is escalated like a main one (#1126); undefined for main.
         agentId: observed.agentId,
       });
     }

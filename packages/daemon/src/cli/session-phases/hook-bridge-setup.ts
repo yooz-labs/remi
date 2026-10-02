@@ -96,6 +96,7 @@ import type {
   HookServer,
   PermissionRequestHookInput,
 } from '../../hooks/index.ts';
+import type { TerminalNoticeReason } from '../../notifications/notification-dispatcher.ts';
 import type {
   SessionBindingStore,
   SessionRegistry,
@@ -196,10 +197,11 @@ export interface HookBridgeDeps {
   /**
    * Push an informational "answer at the terminal" notice for `question`
    * (#1126), wired to the session's `NotificationDispatcher.pushTerminalNotice`.
-   * Fired when a held prompt reaches its deadline (the #733 handoff). Absent
-   * => no notice (tests). Must be throw-safe; the gate also guards it.
+   * Fired when a held prompt reaches its deadline (the #733 handoff) and
+   * when a subagent prompt passed to the local terminal renders. Absent =>
+   * no notice (tests). Must be throw-safe; the gate also guards it.
    */
-  pushTerminalNotice?: (sessionId: UUID, question: Question, reason: 'hold_deadline') => void;
+  pushTerminalNotice?: (sessionId: UUID, question: Question, reason: TerminalNoticeReason) => void;
   /** Dismiss a notice `pushTerminalNotice` sent, once its prompt is
    *  answered. Absent => the notice stays until the user clears it. */
   dismissTerminalNotice?: (sessionId: UUID, questionId: UUID) => void;
@@ -218,6 +220,10 @@ export interface HookBridgeArgs {
    *  stale pending records. Required when wired into the createNewSession
    *  flow; tests construct their own per-bridge tracker. */
   tracker: QuestionPresenceTracker;
+  /** Whether this session has a local terminal (wrapper mode, #1126): it
+   *  decides whether a subagent prompt is passed to that terminal or held
+   *  for the phone. See `AutoApproveGateDeps.hasLocalTerminal`. */
+  hasLocalTerminal: boolean;
 }
 
 /**
@@ -286,7 +292,15 @@ export function setupHookBridge(
     transcriptDiscovery,
     subagentViews,
   } = deps;
-  const { hookServer, sessionId, workingDirectory, messageApi, sendAndRecord, tracker } = args;
+  const {
+    hookServer,
+    sessionId,
+    workingDirectory,
+    messageApi,
+    sendAndRecord,
+    tracker,
+    hasLocalTerminal,
+  } = args;
 
   // Push the session's subagent views to clients (epic #499 phase 3). Declared
   // here (before the binder/handlers reference it) so there is no fragile
@@ -519,11 +533,27 @@ export function setupHookBridge(
       // register its signature in `openQuestionSignatures` -- without it, a
       // subagent permission answered in the terminal has no removal path at
       // all (see the PreToolUse/PostToolUse/SubagentStop wiring below).
+      // #1126: when the parked prompt renders (wrapper mode), the phone gets
+      // an "answer at the terminal" notice, never an answerable card: the
+      // hook was answered passthrough, so only the terminal can answer it.
       parkForPTY: (i) => {
         const question = hookBridge.buildPermissionQuestion(i);
-        tracker.parkAwaitingPTY(question);
+        tracker.parkAwaitingPTY(question, {
+          onRender: (merged) => {
+            // Keep the parked id: the gate dismisses the notice by it.
+            deps.pushTerminalNotice?.(sessionId, { ...merged, id: question.id }, 'subagent');
+            autoApproveGate.noteTerminalNotice(question.id);
+          },
+        });
         return question.id;
       },
+      pushTerminalNoticeNow: (i) => {
+        if (!deps.pushTerminalNotice) return undefined;
+        const question = hookBridge.buildPermissionQuestion(i);
+        deps.pushTerminalNotice(sessionId, question, 'subagent');
+        return question.id;
+      },
+      hasLocalTerminal,
       ...(deps.onSubagentPassthrough ? { onSubagentPassthrough: deps.onSubagentPassthrough } : {}),
       // A held binary prompt (#1126) and a multi-choice / design escalation
       // (#625) push immediately under their own id (-> addQuestion +

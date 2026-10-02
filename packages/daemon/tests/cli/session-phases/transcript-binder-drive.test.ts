@@ -234,6 +234,7 @@ describe('TranscriptBinder drive mode (#453 phase 3, commit 5)', () => {
         messageApi,
         sendAndRecord,
         tracker,
+        hasLocalTerminal: true,
       },
     );
 

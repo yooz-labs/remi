@@ -1649,7 +1649,17 @@ async function createNewSession(
         dismissTerminalNotice: (sid, questionId) =>
           sessionNotifiers.get(sid)?.dismissTerminalNotice(sid, questionId),
       },
-      { hookServer, sessionId, workingDirectory, messageApi, sendAndRecord, tracker },
+      {
+        hookServer,
+        sessionId,
+        workingDirectory,
+        messageApi,
+        sendAndRecord,
+        tracker,
+        // #1126: a wrapper session has a local terminal, so a subagent's
+        // prompt is passed to it; a daemon-mode session holds it instead.
+        hasLocalTerminal: passThrough,
+      },
     );
     // The binder owns the fallback poll + #452 dir-watch (armed by its start()
     // inside setupHookBridge); record its teardown so cleanup() reaches the

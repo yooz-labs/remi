@@ -75,6 +75,7 @@ describe('AutoApproveGate routing (#1125: nothing is decided, everything is rela
         sessionRegistry: registry,
         isInSubagentContext: () => subagentContext,
         holdMs: 60_000,
+        hasLocalTerminal: true,
         resetSubagentContext: () => {
           resets++;
         },
@@ -303,6 +304,7 @@ describe('AutoApproveGate external resolution (#673)', () => {
         sessionRegistry: registry,
         isInSubagentContext: () => false,
         holdMs: 60_000,
+        hasLocalTerminal: true,
         escalate: () => {
           const id = generateId() as UUID;
           escalatedIds.push(id);
@@ -494,6 +496,7 @@ describe('AutoApproveGate held prompts (#1126)', () => {
         sessionRegistry: registry,
         isInSubagentContext: () => false,
         holdMs: 60_000,
+        hasLocalTerminal: true,
         escalate: () => {
           const id = generateId() as UUID;
           ids.push(id);
@@ -808,6 +811,155 @@ describe('AutoApproveGate held prompts (#1126)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #1126: a background subagent's dialog does not render while its hook is
+// held, so the route depends on whether the session has a local terminal.
+// ---------------------------------------------------------------------------
+describe('AutoApproveGate subagent routing by local terminal (#1126)', () => {
+  const SID = generateId() as UUID;
+  let registry: SessionRegistry;
+  let ids: UUID[];
+  let parks: PermissionRequestHookInput[];
+  let noticesNow: PermissionRequestHookInput[];
+  let pushedNow: UUID[];
+  let alerts: PermissionRequestHookInput[];
+  let noticesCleared: UUID[];
+
+  function gate(hasLocalTerminal: boolean, over: Partial<AutoApproveGateDeps> = {}) {
+    registry.registerSession(SID, '/d', fakePTY([]), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    return new AutoApproveGate(
+      {
+        sessionRegistry: registry,
+        isInSubagentContext: () => false,
+        holdMs: 60_000,
+        hasLocalTerminal,
+        escalate: () => {
+          const id = generateId() as UUID;
+          ids.push(id);
+          return id;
+        },
+        parkForPTY: (i) => {
+          parks.push(i);
+          const id = generateId() as UUID;
+          ids.push(id);
+          return id;
+        },
+        pushTerminalNoticeNow: (i) => {
+          noticesNow.push(i);
+          const id = generateId() as UUID;
+          ids.push(id);
+          return id;
+        },
+        onHeldEscalate: (id) => {
+          pushedNow.push(id);
+        },
+        onSubagentPassthrough: (i) => {
+          alerts.push(i);
+        },
+        onTerminalNoticeResolved: (id) => {
+          noticesCleared.push(id);
+        },
+        ...over,
+      },
+      SID,
+    );
+  }
+
+  const sub = (over: Partial<PermissionRequestHookInput> = {}) =>
+    pr({ agent_id: 'agent-1', agent_type: 'general-purpose', ...over });
+  const YES: QuestionOption = {
+    label: 'Yes',
+    value: '1',
+    isRecommended: true,
+    isYes: true,
+    isNo: false,
+  };
+
+  beforeEach(() => {
+    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    ids = [];
+    parks = [];
+    noticesNow = [];
+    pushedNow = [];
+    alerts = [];
+    noticesCleared = [];
+    configureLogger({ writeLog: () => {} });
+  });
+
+  afterEach(async () => {
+    __resetLoggerForTests();
+    await registry.shutdown();
+  });
+
+  test('with a local terminal: passthrough at once, parked for its render, alert cue fired, nothing held', async () => {
+    const g = gate(true);
+    const input = sub();
+    expect(await g.resolvePermission(input)).toBe('passthrough');
+    expect(parks).toEqual([input]);
+    expect(pushedNow).toEqual([]);
+    expect(alerts).toEqual([input]);
+    expect(g.answerHeld(ids[0] as UUID, { kind: 'option', option: YES })).toBe('unknown');
+    // Open (its dialog will be on screen), so redraws are not orphans.
+    expect(g.hasOpenHookPrompt()).toBe(true);
+  });
+
+  test('a rendered notice is dismissed when the prompt resolves', async () => {
+    const g = gate(true);
+    await g.resolvePermission(sub());
+    const qid = ids[0] as UUID;
+    g.noteTerminalNotice(qid);
+    g.cancelExternallyResolved(
+      { toolName: 'Bash', toolInput: { command: 'git push' }, agentId: 'agent-1' },
+      'PostToolUse-subagent',
+    );
+    expect(noticesCleared).toEqual([qid]);
+    // A notice for a prompt no longer open is not tracked.
+    g.noteTerminalNotice(qid);
+    g.forceRelease('probe');
+    expect(noticesCleared).toEqual([qid]);
+  });
+
+  test('with no render path the notice is pushed at once, and still dismissed on resolution', async () => {
+    const g = gate(true, {
+      parkForPTY: () => {
+        throw new Error('test: park failed');
+      },
+    });
+    const input = sub();
+    expect(await g.resolvePermission(input)).toBe('passthrough');
+    expect(noticesNow).toEqual([input]);
+    g.cancelStaleForAgent('agent-1', 'SubagentStop');
+    expect(noticesCleared).toEqual([ids[0] as UUID]);
+  });
+
+  test('without a local terminal: held and pushed like a main prompt, answerable from the phone', async () => {
+    const g = gate(false);
+    const hook = g.resolvePermission(sub());
+    const qid = ids[0] as UUID;
+    expect(parks).toEqual([]);
+    expect(pushedNow).toEqual([qid]);
+    // Held, not passed through: no alert for a call the phone decides.
+    expect(alerts).toEqual([]);
+    // The lead idling does not release a subagent's hold (#711).
+    g.cancelStale('Stop', { mainOnly: true });
+    expect(g.answerHeld(qid, { kind: 'option', option: YES })).toBe('resolved');
+    expect(await hook).toBe('allow');
+  });
+
+  test("without a local terminal: that agent's SubagentStop releases its hold empty", async () => {
+    const g = gate(false);
+    const hook = g.resolvePermission(sub());
+    g.cancelStaleForAgent('agent-other', 'SubagentStop');
+    expect(g.hasOpenHookPrompt()).toBe(true);
+    g.cancelStaleForAgent('agent-1', 'SubagentStop');
+    expect(await hook).toBe('passthrough');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // #799: a subagent/teammate permission question answered IN THE TERMINAL had
 // NO removal path from sessionRegistry.currentQuestions -- parkSubagentForPTY
 // never registered an openQuestionSignatures entry (only main-context
@@ -835,6 +987,7 @@ describe('AutoApproveGate subagent external-resolution (#799)', () => {
         sessionRegistry: registry,
         isInSubagentContext: () => false,
         holdMs: 60_000,
+        hasLocalTerminal: true,
         // Unused by these subagent-only tests (no main escalation is ever
         // driven), but AutoApproveGateDeps requires it.
         escalate: () => generateId(),
@@ -1029,6 +1182,7 @@ describe('AutoApproveGate Stop resolves a still-open MAIN passthrough question (
         sessionRegistry: registry,
         isInSubagentContext: () => false,
         holdMs: 60_000,
+        hasLocalTerminal: true,
         escalate: () => {
           lastQuestionId = generateId();
           return lastQuestionId;
@@ -1172,6 +1326,7 @@ describe('AutoApproveGate full teardown resolves ALL survivors (#948)', () => {
         sessionRegistry: registry,
         isInSubagentContext: () => false,
         holdMs: 60_000,
+        hasLocalTerminal: true,
         escalate: () => {
           lastQuestionId = generateId();
           return lastQuestionId;
@@ -1402,6 +1557,7 @@ describe('AutoApproveGate cancelStaleForAgent (#799 part 2, subagent)', () => {
         sessionRegistry: registry,
         isInSubagentContext: () => false,
         holdMs: 60_000,
+        hasLocalTerminal: true,
         // Unused by these subagent-only tests (no main escalation is ever
         // driven), but AutoApproveGateDeps requires it.
         escalate: () => generateId(),

@@ -5,10 +5,7 @@ import * as path from 'node:path';
 import type { ProtocolMessage, Question, QuestionOption, UUID } from '@remi/shared';
 import { generateId } from '@remi/shared';
 import { MessageAPI } from '../../../src/api/message-api.ts';
-import {
-  type PushQuestion,
-  QuestionPresenceTracker,
-} from '../../../src/api/question-presence-tracker.ts';
+import { QuestionPresenceTracker } from '../../../src/api/question-presence-tracker.ts';
 import { SubagentViewRegistry } from '../../../src/api/subagent-view-registry.ts';
 import {
   createInputHandlers,
@@ -147,23 +144,6 @@ function makePassthroughTracker(api: MessageAPI): PassthroughTracker {
   return new PassthroughTracker((q) => api.handleQuestion(q));
 }
 
-/**
- * PassthroughTracker whose parked subagent prompts RENDER at once: the card is
- * pushed under the parked question's id, as the real render pairing does when
- * it adopts the hook record's identity. Lets an external-resolution test drive
- * a parked card that actually reached the registry (#1125: the gate only
- * broadcasts a dismissal for a card that was registered).
- */
-class RenderedParkTracker extends PassthroughTracker {
-  constructor(private readonly pushNow: PushQuestion) {
-    super(pushNow);
-  }
-
-  override parkAwaitingPTY(question: Question): void {
-    this.pushNow(question);
-  }
-}
-
 const SID = 'a1b2c3d4-e5f6-7890-abcd-ef0123456789' as UUID;
 
 describe('setupHookBridge', () => {
@@ -245,9 +225,6 @@ describe('setupHookBridge', () => {
        *  contract through the bridge wiring. Defaults to the passthrough
        *  tracker used by the legacy assertion-style tests. */
       realTracker?: boolean;
-      /** Parked subagent prompts render (and push) at once; see
-       *  `RenderedParkTracker`. Ignored with `realTracker`. */
-      parkedRenders?: boolean;
       /** Shorten `QuestionPresenceTracker`'s orphan-PTY debounce (default
        *  1.5s) so a test can drive the real hooked-session orphan path without
        *  a long wait. Only meaningful with `realTracker`. */
@@ -300,6 +277,8 @@ describe('setupHookBridge', () => {
       holdMs?: number;
       /** Record every terminal notice pushed or dismissed (#1126). */
       noticeLog?: Array<{ questionId: UUID; text: string; reason: string }>;
+      /** Wrapper mode (true, the default) or daemon/hub mode (#1126). */
+      hasLocalTerminal?: boolean;
     } = {},
   ): { tracker: QuestionPresenceTracker; messageApi: MessageAPI; handle: HookBridgeHandle } {
     const sessionWorkingDirectory = opts.workingDirectory ?? tmpDir;
@@ -354,9 +333,7 @@ describe('setupHookBridge', () => {
               }
             : undefined,
         )
-      : opts.parkedRenders
-        ? new RenderedParkTracker((q) => localMessageApi.handleQuestion(q))
-        : makePassthroughTracker(localMessageApi);
+      : makePassthroughTracker(localMessageApi);
     sessionRegistry.registerSession(
       SID,
       sessionWorkingDirectory,
@@ -415,6 +392,7 @@ describe('setupHookBridge', () => {
         // through the bridge). Pure PTY-presence semantics are validated
         // in tests/api/question-presence-tracker.test.ts.
         tracker,
+        hasLocalTerminal: opts.hasLocalTerminal ?? true,
       },
     );
     bridgeHandles.push(handle);
@@ -1303,6 +1281,7 @@ describe('setupHookBridge', () => {
         messageApi: localApi,
         sendAndRecord: () => {},
         tracker,
+        hasLocalTerminal: true,
       },
     );
     bridgeHandles.push(handle);
@@ -1395,6 +1374,7 @@ describe('setupHookBridge', () => {
           messageApi: localApi,
           sendAndRecord: () => {},
           tracker,
+          hasLocalTerminal: true,
         },
       ),
     );
@@ -1478,6 +1458,7 @@ describe('setupHookBridge', () => {
           messageApi: localApi,
           sendAndRecord: () => {},
           tracker,
+          hasLocalTerminal: true,
         },
       ),
     );
@@ -1956,6 +1937,97 @@ describe('setupHookBridge', () => {
     });
   });
 
+  /**
+   * #1126: a background subagent's dialog does not render while its hook is
+   * held. With a local terminal the hook passes through and the phone gets
+   * an informational notice when the dialog renders, never a card; without
+   * one the prompt is held and answerable like a main prompt.
+   */
+  describe('subagent prompts by local terminal (#1126)', () => {
+    function lockSession(id: string): void {
+      hookServer.fire('Notification', {
+        session_id: id,
+        hook_event_name: 'Notification',
+        transcript_path: path.join(tmpDir, `${id}.jsonl`),
+        notification_type: 'auth_success',
+        message: '',
+      });
+    }
+    function cards(): Question[] {
+      return [...(sessionRegistry.getSession(SID)?.currentQuestions.values() ?? [])];
+    }
+    const subCall = (session: string) => ({
+      session_id: session,
+      agent_id: 'agent-bg',
+      agent_type: 'code-reviewer',
+      tool_name: 'Bash',
+      tool_input: { command: 'rm -rf build' },
+    });
+
+    test('wrapper mode: passthrough, a notice when the dialog renders, no card, nothing typed, cleared on answer', async () => {
+      const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
+      const { tracker } = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+        orphanDebounceMs: 5,
+        noticeLog,
+      });
+      lockSession('claude-sub-wrap');
+      const call = subCall('claude-sub-wrap');
+      expect(
+        await hookServer.firePermission({ ...call, hook_event_name: 'PermissionRequest' }),
+      ).toBe('passthrough');
+      expect(noticeLog).toEqual([]); // nothing until the dialog renders
+
+      const dialog = parseQuestion(WRAPPED_DIRECTORY_DIALOG).question as Question;
+      tracker.onOrphanPTYPrompt(dialog);
+      expect(noticeLog).toHaveLength(1);
+      expect(noticeLog[0]?.reason).toBe('subagent');
+      expect(noticeLog[0]?.text).toBe('code-reviewer · Bash: rm -rf build');
+      // Informational only: no card exists to answer, so nothing can be typed.
+      expect(cards()).toHaveLength(0);
+
+      // A redraw is the same open prompt, never an orphan card.
+      tracker.onOrphanPTYPrompt({ ...dialog, id: generateId() });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(cards()).toHaveLength(0);
+      expect(ptySubmits).toEqual([]);
+
+      // Answered Yes in the terminal: the tool runs, the notice clears.
+      hookServer.fire('PostToolUse', { ...call, hook_event_name: 'PostToolUse' });
+      expect(noticeLog.map((n) => n.reason)).toEqual(['subagent', 'dismissed']);
+      expect(noticeLog[1]?.questionId).toBe(noticeLog[0]?.questionId as UUID);
+    });
+
+    test('daemon mode: held, an answerable card at once, the phone answer is the hook response', async () => {
+      const { handle, tracker } = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+        hasLocalTerminal: false,
+      });
+      lockSession('claude-sub-daemon');
+      const hook = hookServer.firePermission({
+        ...subCall('claude-sub-daemon'),
+        hook_event_name: 'PermissionRequest',
+      });
+      const card = cards()[0];
+      if (!card) throw new Error('no card for the held subagent prompt');
+      expect(card.agentId).toBe('agent-bg');
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send: () => true,
+        ...gateAnswerDeps(() => handle.gate),
+        ...trackerScreenDeps(() => tracker),
+      });
+      expect(await handlers.relayAnswer(SID, card.id, 'No')).toBe('delivered');
+      expect(await hook).toBe('deny');
+      expect(ptySubmits).toEqual([]);
+    });
+  });
+
   describe('multi-choice / design escalations push at once (#625)', () => {
     test('an AskUserQuestion pushes exactly one held card, once, and it reaches the registry', async () => {
       // The immediate-push path end to end: gate -> escalatePassthrough ->
@@ -2350,10 +2422,10 @@ describe('setupHookBridge', () => {
 
     test('a matching subagent PreToolUse resolves a parked permission (question_resolved fires)', async () => {
       const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
-      build({ broadcastResolvedLog, realMessageApi: true, parkedRenders: true });
+      build({ broadcastResolvedLog, realMessageApi: true, hasLocalTerminal: false });
       lock('claude-799-pre');
 
-      const decision = await hookServer.firePermission({
+      const decision = hookServer.firePermission({
         session_id: 'claude-799-pre',
         agent_id: 'agent-799-1',
         agent_type: 'general-purpose',
@@ -2361,8 +2433,7 @@ describe('setupHookBridge', () => {
         tool_name: 'Bash',
         tool_input: { command: 'git push' },
       });
-      expect(decision).toBe('passthrough');
-      expect(broadcastResolvedLog).toHaveLength(0); // parked, not resolved yet
+      expect(broadcastResolvedLog).toHaveLength(0); // held (no local terminal), not resolved yet
 
       // The user answered directly in the terminal: Claude now runs the tool.
       hookServer.fire('PreToolUse', {
@@ -2376,14 +2447,15 @@ describe('setupHookBridge', () => {
 
       expect(broadcastResolvedLog).toHaveLength(1);
       expect(broadcastResolvedLog[0]?.reason).toBe('cancelled');
+      expect(await decision).toBe('passthrough');
     });
 
     test('a matching subagent PostToolUse also resolves it', async () => {
       const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
-      build({ broadcastResolvedLog, realMessageApi: true, parkedRenders: true });
+      build({ broadcastResolvedLog, realMessageApi: true, hasLocalTerminal: false });
       lock('claude-799-post');
 
-      const decision = await hookServer.firePermission({
+      const decision = hookServer.firePermission({
         session_id: 'claude-799-post',
         agent_id: 'agent-799-2',
         agent_type: 'general-purpose',
@@ -2391,7 +2463,6 @@ describe('setupHookBridge', () => {
         tool_name: 'Bash',
         tool_input: { command: 'ls -la' },
       });
-      expect(decision).toBe('passthrough');
       expect(broadcastResolvedLog).toHaveLength(0);
 
       hookServer.fire('PostToolUse', {
@@ -2406,14 +2477,15 @@ describe('setupHookBridge', () => {
 
       expect(broadcastResolvedLog).toHaveLength(1);
       expect(broadcastResolvedLog[0]?.reason).toBe('cancelled');
+      expect(await decision).toBe('passthrough');
     });
 
     test('(b) a non-matching subagent PreToolUse leaves the parked permission open', async () => {
       const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
-      build({ broadcastResolvedLog, realMessageApi: true, parkedRenders: true });
+      build({ broadcastResolvedLog, realMessageApi: true, hasLocalTerminal: false });
       lock('claude-799-nomatch');
 
-      await hookServer.firePermission({
+      void hookServer.firePermission({
         session_id: 'claude-799-nomatch',
         agent_id: 'agent-799-3',
         agent_type: 'general-purpose',
@@ -2473,10 +2545,10 @@ describe('setupHookBridge', () => {
 
     test("never fires ambiguously: SubagentStop for one agent does not resolve a DIFFERENT agent's still-open permission", async () => {
       const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
-      build({ broadcastResolvedLog, realMessageApi: true, parkedRenders: true });
+      build({ broadcastResolvedLog, realMessageApi: true, hasLocalTerminal: false });
       lock('claude-799-ambig');
 
-      await hookServer.firePermission({
+      void hookServer.firePermission({
         session_id: 'claude-799-ambig',
         agent_id: 'agent-799-A',
         agent_type: 'general-purpose',
@@ -2484,7 +2556,7 @@ describe('setupHookBridge', () => {
         tool_name: 'Bash',
         tool_input: { command: 'echo A' },
       });
-      await hookServer.firePermission({
+      void hookServer.firePermission({
         session_id: 'claude-799-ambig',
         agent_id: 'agent-799-B',
         agent_type: 'general-purpose',
@@ -2508,10 +2580,10 @@ describe('setupHookBridge', () => {
 
     test('a matching subagent PostToolUseFailure resolves it (a failed tool still proves the permission was granted)', async () => {
       const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
-      build({ broadcastResolvedLog, realMessageApi: true, parkedRenders: true });
+      build({ broadcastResolvedLog, realMessageApi: true, hasLocalTerminal: false });
       lock('claude-799-failure');
 
-      await hookServer.firePermission({
+      void hookServer.firePermission({
         session_id: 'claude-799-failure',
         agent_id: 'agent-799-5',
         agent_type: 'general-purpose',
@@ -2537,10 +2609,10 @@ describe('setupHookBridge', () => {
 
     test('a non-matching subagent PostToolUseFailure leaves the parked permission open', async () => {
       const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
-      build({ broadcastResolvedLog, realMessageApi: true, parkedRenders: true });
+      build({ broadcastResolvedLog, realMessageApi: true, hasLocalTerminal: false });
       lock('claude-799-failure-nomatch');
 
-      await hookServer.firePermission({
+      void hookServer.firePermission({
         session_id: 'claude-799-failure-nomatch',
         agent_id: 'agent-799-6',
         agent_type: 'general-purpose',
@@ -2601,7 +2673,7 @@ describe('setupHookBridge', () => {
 
     test('a matching MAIN PermissionDenied resolves the open (parked/passthrough) escalation', async () => {
       const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
-      build({ broadcastResolvedLog, realMessageApi: true, parkedRenders: true });
+      build({ broadcastResolvedLog, realMessageApi: true, hasLocalTerminal: false });
       lock('claude-889-denied-main');
 
       const decision = hookServer.firePermission({
@@ -2669,10 +2741,10 @@ describe('setupHookBridge', () => {
       // swallow class #925 was. Same tool + same tool_input on purpose, so
       // agent identity is the ONLY thing that can disambiguate.
       const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
-      build({ broadcastResolvedLog, realMessageApi: true, parkedRenders: true });
+      build({ broadcastResolvedLog, realMessageApi: true, hasLocalTerminal: false });
       lock('claude-889-denied-2agents');
 
-      await hookServer.firePermission({
+      void hookServer.firePermission({
         session_id: 'claude-889-denied-2agents',
         agent_id: 'agent-A',
         agent_type: 'general-purpose',
@@ -2680,7 +2752,7 @@ describe('setupHookBridge', () => {
         tool_name: 'Bash',
         tool_input: { command: 'git push' },
       });
-      await hookServer.firePermission({
+      void hookServer.firePermission({
         session_id: 'claude-889-denied-2agents',
         agent_id: 'agent-B',
         agent_type: 'general-purpose',
@@ -2716,7 +2788,11 @@ describe('setupHookBridge', () => {
 
     test('a non-matching PermissionDenied (different tool_input) leaves the open escalation untouched', async () => {
       const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
-      const { handle } = build({ broadcastResolvedLog, realMessageApi: true, parkedRenders: true });
+      const { handle } = build({
+        broadcastResolvedLog,
+        realMessageApi: true,
+        hasLocalTerminal: false,
+      });
       lock('claude-889-denied-nomatch');
 
       const decision = hookServer.firePermission({
@@ -2740,7 +2816,11 @@ describe('setupHookBridge', () => {
 
     test('PermissionDenied for a FOREIGN session_id is dropped by the admit gate (no cross-session resolution)', async () => {
       const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
-      const { handle } = build({ broadcastResolvedLog, realMessageApi: true, parkedRenders: true });
+      const { handle } = build({
+        broadcastResolvedLog,
+        realMessageApi: true,
+        hasLocalTerminal: false,
+      });
       lock('claude-889-denied-foreign');
 
       const decision = hookServer.firePermission({

@@ -236,7 +236,10 @@ export class QuestionPresenceTracker {
    *  map. Only `parked-subagent` takes the #763 exemption: a `push-on-render`
    *  mark belongs to the main agent, which has no `noteAgentAdvanced` path,
    *  so its own status leaving 'waiting' is how its prompt cycle ends. */
-  private awaitingPTY = new Map<string, { at: number; kind: RenderMarkKind }>();
+  private awaitingPTY = new Map<
+    string,
+    { at: number; kind: RenderMarkKind; onRender?: (merged: Question) => void }
+  >();
 
   /** Agent keys whose `push-on-render` record was REPLACED by a newer hook
    *  before its prompt rendered (#1121 review). Two outstanding prompts for
@@ -414,12 +417,17 @@ export class QuestionPresenceTracker {
    * allow the request silently (the record then expires when that agent
    * advances, or after `PARKED_RECORD_TTL_MS`; see `awaitingPTY`) or the
    * native prompt renders on the main PTY — `onOrphanPTYPrompt` recognizes the parked
-   * record, merges its rich text onto the parsed prompt, and pushes
-   * immediately (no orphan debounce: hook + render is positive
-   * double-confirmation). The PTY is the arbiter of whether the user is
-   * asked.
+   * record and merges its rich text onto the parsed prompt (no orphan
+   * debounce: hook + render is positive double-confirmation). The PTY is the
+   * arbiter of whether the user is told.
+   *
+   * With `opts.onRender` (#1126, every production park) the render calls it
+   * with the merged question INSTEAD of pushing an answerable card: the
+   * hook was answered 'passthrough', so only the terminal can answer, and
+   * the phone gets an "answer at the terminal" notice. Without it the render
+   * pushes a card, as before #1126.
    */
-  parkAwaitingPTY(question: Question): void {
+  parkAwaitingPTY(question: Question, opts: { onRender?: (merged: Question) => void } = {}): void {
     this.recordPendingHook(question);
     // recordPendingHook may have kept a richer existing record instead of
     // this one; the parked flag applies to whatever record now owns the key
@@ -427,6 +435,7 @@ export class QuestionPresenceTracker {
     this.awaitingPTY.set(agentKey(question), {
       at: this.deps.nowMs?.() ?? Date.now(),
       kind: 'parked-subagent',
+      ...(opts.onRender ? { onRender: opts.onRender } : {}),
     });
     console.debug(
       `[QuestionPresenceTracker] Parked question awaiting PTY render (agent "${agentKey(question)}"): "${question.text.slice(0, 60)}"`,
@@ -964,7 +973,20 @@ export class QuestionPresenceTracker {
       console.debug(
         `[QuestionPresenceTracker] Marked question's prompt rendered (agent "${markedKey}"): "${ptyQuestion.text.slice(0, 60)}"`,
       );
+      const onRender = this.awaitingPTY.get(markedKey)?.onRender;
       const { merged } = this.consumeAndMerge(ptyQuestion);
+      if (onRender) {
+        // #1126: a prompt only the terminal can answer. Its notice, never a
+        // card; the gate keeps the prompt open, so its redraws are echoes.
+        try {
+          onRender(merged);
+        } catch (err) {
+          console.error(
+            `[QuestionPresenceTracker] parked render callback threw: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        return;
+      }
       this.ptyShowingQuestion = true;
       this.pushRenderBorn(merged, ptyQuestion.text);
       return;

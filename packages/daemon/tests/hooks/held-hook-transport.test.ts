@@ -69,6 +69,7 @@ describe('held PermissionRequest over the real HookServer (#1126)', () => {
         sessionRegistry: registry,
         isInSubagentContext: () => false,
         holdMs: 60_000,
+        hasLocalTerminal: true,
         escalate: () => {
           const id = generateId() as UUID;
           ids.push(id);
@@ -145,6 +146,7 @@ describe('held PermissionRequest over the real HookServer (#1126)', () => {
         sessionRegistry: registry,
         isInSubagentContext: () => false,
         holdMs: 30,
+        hasLocalTerminal: true,
         escalate: () => {
           const id = generateId() as UUID;
           ids.push(id);

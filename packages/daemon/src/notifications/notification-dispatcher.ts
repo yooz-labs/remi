@@ -210,6 +210,10 @@ export function buildPushText(
   return { title, body };
 }
 
+/** Why the phone is told to answer at the terminal (#1126); see
+ *  `NotificationDispatcher.pushTerminalNotice`. */
+export type TerminalNoticeReason = 'hold_deadline' | 'subagent';
+
 /** The collapse key (`questionId` on the wire) of a terminal notice for a
  *  question (#1126): distinct from the card's, so dismissing the card leaves
  *  the notice and dismissing the notice leaves any card. */
@@ -526,6 +530,9 @@ export class NotificationDispatcher {
    *   - `hold_deadline`: a held prompt waited `[prompts] hold_seconds` with no
    *     answer, so remi released its hold; Claude's dialog is still up (the
    *     #733 handoff, restored for held hooks).
+   *   - `subagent`: a background subagent's dialog rendered in a session with
+   *     a local terminal; its hook was answered 'passthrough' so it could
+   *     render at all, so only the terminal can answer it.
    * Called while the question is still registered, so the body names the
    * actual ask.
    *
@@ -540,7 +547,11 @@ export class NotificationDispatcher {
    * buzzes, about a question, so a device that muted questions does not get
    * it. It clears nothing, so skipping it strands nothing.
    */
-  pushTerminalNotice(questionSessionId: UUID, question: Question, reason: 'hold_deadline'): void {
+  pushTerminalNotice(
+    questionSessionId: UUID,
+    question: Question,
+    reason: TerminalNoticeReason,
+  ): void {
     const { deviceTokens, pushConfig } = this.deps;
     this.deps.refreshDeviceTokens?.();
     const wanting = tokensWanting(deviceTokens.values(), 'question');
