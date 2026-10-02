@@ -96,11 +96,18 @@ export function spawnServeRaw(
   );
 }
 
-/** Spawn a hub in a fresh isolated $HOME and wait for its status file. */
-export async function spawnHub(dirs?: { home: string; work: string }): Promise<HubHandle> {
+/**
+ * Spawn a hub in a fresh isolated $HOME and wait for its status file.
+ * `envOverrides` is forwarded to the subprocess (e.g. a PATH that puts a fake
+ * `claude` first, for tests that must observe whether the hub ever runs it).
+ */
+export async function spawnHub(
+  dirs?: { home: string; work: string },
+  envOverrides: Record<string, string> = {},
+): Promise<HubHandle> {
   const { home, work } = dirs ?? makeIsolatedDirs();
   const port = await findTestPort();
-  const proc = spawnServeRaw(home, work, port);
+  const proc = spawnServeRaw(home, work, port, envOverrides);
   const hub: HubHandle = { proc, home, work, port };
 
   const statusFile = path.join(home, '.remi', 'daemon-status.json');

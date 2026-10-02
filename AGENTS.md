@@ -143,6 +143,16 @@ registers itself in live-sessions.
 - `--install` generates a LaunchAgent running `<PATH-resolved remi> serve`
   with `KeepAlive.SuccessfulExit=false` (clean stop stays stopped; crash
   exit(1) restarts).
+- A `resume_session_request` that reaches the hub is **refused**
+  (`resume_session_response{success:false, errorCode:'UNSUPPORTED'}`,
+  `cli/handlers/resume-session-events.ts`, #1124), never run: before the guard
+  the shared handler called `createNewSession` inside the hub, and when that
+  Claude exited the hub exited 0 and the LaunchAgent did not restart it.
+  Resuming *through* the hub (spawn a child daemon) is not implemented: a
+  `remi --daemon` child silently drops Claude args (`cli.ts` passes no
+  `claudeArgs` to `createNewSession` in daemon mode) and the web resume flow
+  cannot follow a session on another port. Tracked as #1129. `remi --resume
+  <session>` from a terminal works.
 
 ## Transport Options
 

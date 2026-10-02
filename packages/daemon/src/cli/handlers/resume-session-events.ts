@@ -16,6 +16,16 @@
  * injected dep; keeping it opaque here means we don't have to drag the
  * entire createNewSession closure (PTY + MessageAPI + transcript watcher
  * + hook setup) out of cli.ts to test this handler.
+ *
+ * Hub mode (`remi serve`, #1124): the hub is a session-less supervisor and
+ * must never run Claude itself, but both transports (`server/connection.ts`,
+ * `remote/relay-adapter.ts`) dispatch resume requests to this handler
+ * unconditionally. With `hubMode` set, every request is refused up front
+ * with `errorCode: 'UNSUPPORTED'` and none of the three paths above runs.
+ * Resuming through the hub by spawning a child session daemon is tracked in
+ * #1129; it needs two things that do not exist yet (a session daemon that
+ * honors Claude args, and a web resume flow that can follow a session on
+ * another port).
  */
 
 import * as path from 'node:path';
@@ -47,7 +57,25 @@ export type CreateNewSessionFn = (
   extraArgs: string[],
 ) => Promise<unknown>;
 
+/**
+ * Why a hub refuses resume. Names the one way that works today so the phone
+ * user is not left at a dead end. The hub only answers; it never starts
+ * Claude (#1124, follow-up #1129).
+ */
+export const HUB_RESUME_UNSUPPORTED_MESSAGE =
+  "Resuming a session through the hub is not supported yet. Run 'remi --resume <session>' from a terminal on the host machine.";
+
+/** Same code vocabulary as the `error` frame (see `connection.ts` UNSUPPORTED). */
+export const HUB_RESUME_UNSUPPORTED_CODE = 'UNSUPPORTED';
+
 export interface ResumeSessionHandlerDeps {
+  /**
+   * True when this process is the session-less hub (`remi serve`). The hub
+   * must never run Claude, so resume is refused instead of calling
+   * `createNewSession` (#1124). Absent/false (session daemon, wrapper) keeps
+   * the resume behavior exactly as before.
+   */
+  hubMode?: boolean;
   sessionRegistry: SessionRegistry;
   /** Full-record reads that also need projectPath (resume seed by remi id). */
   sessionStore: SessionStore;
@@ -63,6 +91,7 @@ export type ResumeSessionHandlers = ReturnType<typeof createResumeSessionHandler
 
 export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
   const {
+    hubMode = false,
     sessionRegistry,
     sessionStore,
     bindingStore,
@@ -78,6 +107,24 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
       requestId: UUID,
     ): Promise<void> => {
       log(`Resume session request from ${connectionId} for session ${targetSessionId}`);
+
+      // The hub never runs Claude (#1124). Answered with a resume response (not
+      // a bare `error` frame) because that is the only reply the web client
+      // uses to clear its "resuming" spinner and show the reason in chat.
+      if (hubMode) {
+        log(`Refusing resume of ${targetSessionId}: hub mode never starts Claude`);
+        send(
+          connectionId,
+          createResumeSessionResponse(
+            false,
+            requestId,
+            undefined,
+            HUB_RESUME_UNSUPPORTED_MESSAGE,
+            HUB_RESUME_UNSUPPORTED_CODE,
+          ),
+        );
+        return;
+      }
 
       // Path 1: target matches the live session, try to attach.
       const existingSession = sessionRegistry.getSession(targetSessionId as UUID);
