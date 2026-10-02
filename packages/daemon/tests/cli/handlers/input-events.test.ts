@@ -747,7 +747,10 @@ describe('createInputHandlers', () => {
         { value: '3', label: 'No', isRecommended: false, isYes: false, isNo: false },
       ];
 
-      function setUpCard(options: typeof HOOK_NUMBERED, extra: { held?: boolean } = {}) {
+      function setUpCard(
+        options: typeof HOOK_NUMBERED,
+        extra: { held?: boolean; allowsFreeText?: boolean } = {},
+      ) {
         const ptyCapture = { writes: [] as string[], submits: [] as string[] };
         const sessionId = sessionRegistry.createSessionId();
         sessionRegistry.registerSession(
@@ -853,6 +856,92 @@ describe('createInputHandlers', () => {
         await handlers.onAnswer(CID, sessionId, QID, 'No');
 
         expect(ptyCapture.submits).toEqual([]);
+      });
+
+      // Lead decision on the #1134 review: free text into a numbered menu is
+      // refused too. Claude ignores the text and the Enter after it confirms
+      // the highlighted option, usually "1. Yes".
+      test('free text into a menu, on a card that takes no free text: refused, nothing typed', async () => {
+        const { sessionId, ptyCapture } = setUpCard(SCREEN);
+        const logs: string[] = [];
+        configureLogger({ writeLog: (msg) => logs.push(msg) });
+        const handlers = createInputHandlers({
+          sessionRegistry,
+          bindingStore,
+          send,
+          isPromptObservedOnPTY: () => true,
+          observedPromptOptions: () => SCREEN,
+        });
+
+        await handlers.onAnswer(CID, sessionId, QID, 'no, use rm -i instead');
+
+        expect(ptyCapture.submits).toEqual([]);
+        const errors = sendCalls.filter((c) => c.message.type === 'error');
+        expect(errors).toHaveLength(1);
+        expect((errors[0]?.message as { code?: string }).code).toBe('STALE_ANSWER');
+        expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+        expect(logs.some((m) => m.includes('free text (21 chars) into the option menu'))).toBe(
+          true,
+        );
+      });
+
+      test('the relay refuses free text into a menu the same way', async () => {
+        const { sessionId, ptyCapture } = setUpCard(SCREEN);
+        const handlers = createInputHandlers({
+          sessionRegistry,
+          bindingStore,
+          send,
+          isPromptObservedOnPTY: () => true,
+          observedPromptOptions: () => SCREEN,
+        });
+
+        expect(await handlers.relayAnswer(sessionId, QID, 'whatever')).toBe('stale');
+        expect(ptyCapture.submits).toEqual([]);
+      });
+
+      test('free text is typed when the card takes free text, even over a menu', async () => {
+        const { sessionId, ptyCapture } = setUpCard(SCREEN, { allowsFreeText: true });
+        const handlers = createInputHandlers({
+          sessionRegistry,
+          bindingStore,
+          send,
+          isPromptObservedOnPTY: () => true,
+          observedPromptOptions: () => SCREEN,
+        });
+
+        await handlers.onAnswer(CID, sessionId, QID, 'a custom answer');
+
+        expect(ptyCapture.submits).toEqual(['a custom answer']);
+      });
+
+      test('free text is typed when no menu is on screen (a free-text prompt)', async () => {
+        const { sessionId, ptyCapture } = setUpCard(SCREEN);
+        const handlers = createInputHandlers({
+          sessionRegistry,
+          bindingStore,
+          send,
+          isPromptObservedOnPTY: () => true,
+          observedPromptOptions: () => [],
+        });
+
+        await handlers.onAnswer(CID, sessionId, QID, 'my-widget');
+
+        expect(ptyCapture.submits).toEqual(['my-widget']);
+      });
+
+      test('free text on a card with no options is typed even over a menu', async () => {
+        const { sessionId, ptyCapture } = setUpCard([]);
+        const handlers = createInputHandlers({
+          sessionRegistry,
+          bindingStore,
+          send,
+          isPromptObservedOnPTY: () => true,
+          observedPromptOptions: () => SCREEN,
+        });
+
+        await handlers.onAnswer(CID, sessionId, QID, 'my-widget');
+
+        expect(ptyCapture.submits).toEqual(['my-widget']);
       });
 
       test('releasing a hold in this call is not checked: the prompt has not rendered yet', async () => {
@@ -1211,10 +1300,12 @@ describe('createInputHandlers', () => {
         send,
         ...PROMPT_ON_SCREEN,
       });
-      // Pass a bogus sessionId, handler should still find the session via connection
-      await handlers.onAnswer(CID, 'bogus000-0000-0000-0000-000000000000' as UUID, QID, 'hello');
+      // Pass a bogus sessionId, handler should still find the session via connection.
+      // An option value, not free text: free text into an option menu is refused
+      // since #1134, and this test is about the session lookup.
+      await handlers.onAnswer(CID, 'bogus000-0000-0000-0000-000000000000' as UUID, QID, 'y');
 
-      expect(ptyCapture.submits).toEqual(['hello']);
+      expect(ptyCapture.submits).toEqual(['y']);
       // Question must be cleared on the real session id, not the bogus one.
       expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
     });
@@ -1959,7 +2050,7 @@ describe('createInputHandlers', () => {
       expect(ptyCapture.submits).toEqual(['my-widget']);
     });
 
-    test('logs a label->value resolution and an unresolved-label verbatim submit (FIX 1A)', async () => {
+    test('logs a label->value resolution, and refuses an unresolved label over a menu (FIX 1A, #1134)', async () => {
       const logs: string[] = [];
       configureLogger({ writeLog: (msg) => logs.push(msg) });
       const ptyCapture = { writes: [] as string[], submits: [] as string[] };
@@ -1985,12 +2076,17 @@ describe('createInputHandlers', () => {
       await handlers.onAnswer(CID, sessionId, QID, 'No');
       expect(logs.some((m) => m.includes('[Answer] resolved "No" -> "3"'))).toBe(true);
 
-      // A label that matches no option (options present) -> logged as verbatim submit.
+      // A label that matches no option (options present) is free text: still
+      // logged as unmatched, but no longer submitted verbatim. Lead decision on
+      // #1134 review: a card with options that takes no free text, over a
+      // numbered menu on screen, refuses free text, because Claude ignores the
+      // text and the Enter confirms the highlighted option, usually "1. Yes".
       addYesNoAlwaysQuestion(sessionId);
       logs.length = 0;
       await handlers.onAnswer(CID, sessionId, QID, 'Maybe');
       expect(logs.some((m) => m.includes('[Answer] "Maybe" matched no option (3)'))).toBe(true);
-      expect(ptyCapture.submits).toContain('Maybe');
+      expect(logs.some((m) => m.includes('free text (5 chars) into the option menu'))).toBe(true);
+      expect(ptyCapture.submits).not.toContain('Maybe');
     });
   });
 

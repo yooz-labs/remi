@@ -945,6 +945,14 @@ export class QuestionPresenceTracker {
               : ptyQuestion.options.map(withScreenLabelFlags),
             agentId: ptyQuestion.agentId ?? hookRecord.agentId,
             promptId: hookRecord.promptId ?? ptyQuestion.promptId,
+            // #1134 review: whether the prompt takes free text is the TOOL's
+            // property, which the hook knows (a permission dialog takes a
+            // pick, so false). The parser marks every Claude selection box as
+            // free-text capable, and the `...ptyQuestion` spread carried that
+            // onto the card, which made `handleAnswer` type free text into
+            // the menu, where Claude ignores it and Enter confirms the
+            // highlighted option.
+            allowsFreeText: hookRecord.allowsFreeText,
             // #888 review finding: the `...ptyQuestion` spread above silently
             // carried `ptyQuestion.source` ('pty', once question-parser sets
             // it -- #920) onto a HOOK-PAIRED merged question, which has a

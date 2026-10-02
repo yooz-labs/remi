@@ -2316,6 +2316,28 @@ describe('setupHookBridge', () => {
       expect(sent.filter((m) => m.type === 'error')).toHaveLength(0);
     });
 
+    test('free text on the card is refused, not typed into the menu', async () => {
+      // Lead decision on the #1134 review. The merged card takes the hook's
+      // allowsFreeText (false for a permission), not the parser's (true for
+      // every selection box), so text sent against it never reaches the
+      // dialog, where Claude would ignore it and Enter would confirm "1. Yes".
+      const { tracker, card } = await e5Card('claude-e5-text');
+      expect(card.allowsFreeText).toBe(false);
+
+      const sent: ProtocolMessage[] = [];
+      await answerHandlers(tracker, sent).onAnswer(
+        'conn-e5' as UUID,
+        SID,
+        card.id,
+        'no, do not create the file',
+      );
+
+      expect(ptySubmits).toEqual([]);
+      const errors = sent.filter((m) => m.type === 'error');
+      expect(errors).toHaveLength(1);
+      expect((errors[0] as { code?: string }).code).toBe('STALE_ANSWER');
+    });
+
     test('a value the screen does not show is refused and nothing is typed', async () => {
       // A card pushed by id before its render carries the hook's numbering:
       // here a passthrough multi-choice escalation (four plain-string

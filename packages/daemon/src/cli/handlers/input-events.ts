@@ -132,7 +132,8 @@ export interface InputHandlerDeps {
    * not an option menu.
    *
    * The screen-numbering guard in `handleAnswer` checks every option value
-   * it is about to type against these. A card's numbering is
+   * it is about to type against these, and refuses free text when these
+   * show a menu and the card does not take text. A card's numbering is
    * not proof of the screen's: live, a 4-option card over a 3-option dialog
    * typed a phone "No" as `4`, Claude ignored the digit, and the Enter after
    * it confirmed the highlighted "1. Yes".
@@ -259,6 +260,33 @@ function resolveOption(
 ): QuestionOption | undefined {
   return options.find((o) => o.value === answer || o.label === answer);
 }
+
+/** A PTY submit the #1134 screen-numbering guard refuses, and how. */
+interface ScreenRefusal {
+  /** Trace `detail.reason`. */
+  readonly reason: 'option-not-on-screen' | 'free-text-into-menu';
+  /** `SessionRegistry.removeQuestion` signal for the refused card. */
+  readonly removalReason: string;
+  /** STALE_ANSWER message to the client. */
+  readonly message: string;
+  /** Daemon log fragment, given what would have been typed. */
+  readonly logLine: (input: string) => string;
+}
+
+const SCREEN_REFUSALS = {
+  optionNotOnScreen: {
+    reason: 'option-not-on-screen',
+    removalReason: 'user_answer:option_not_on_screen',
+    message: 'This answer is not an option on the prompt on screen; refusing to submit',
+    logLine: (input) => `"${input}" is not an option on screen`,
+  },
+  freeTextIntoMenu: {
+    reason: 'free-text-into-menu',
+    removalReason: 'user_answer:free_text_into_menu',
+    message: 'The prompt on screen takes a choice, not text; refusing to submit',
+    logLine: (input) => `free text (${input.length} chars) into the option menu on screen`,
+  },
+} as const satisfies Record<string, ScreenRefusal>;
 
 /**
  * No-op `send` for the connection-independent `/answer` relay (#575, P4a),
@@ -740,7 +768,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
           resolveOption(active.options, answer) === undefined
         ) {
           log(
-            `[Answer] "${answer}" matched no option (${active.options.length}); submitting verbatim`,
+            `[Answer] "${answer}" matched no option (${active.options.length}); treating it as free text`,
           );
         }
 
@@ -836,20 +864,33 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         // with different ones), so the check runs against the observed
         // screen itself.
         //
-        // Applies to an answer that resolved to a card option, whenever this
-        // answer did not just release a hold. A release means Claude has not
-        // rendered the prompt yet, so there is nothing to compare against;
-        // that path is unchanged. Note this keys on the release, not on
-        // `active.held`: a passthrough card pushed by id (`pushHeldHook`) is
-        // stamped `held` but has no hold, so it is answered right here, by a
-        // digit, with the hook's numbering. Free text (no option match) is
-        // typed as before.
-        if (!released && resolveOption(active.options, answer) !== undefined) {
+        // Free text gets the same treatment when it would land in a menu
+        // (#1134 review): the card has options and does not take free text,
+        // and the screen shows a numbered menu. The menu ignores the text the
+        // same way, and the Enter confirms the highlighted option. Free text
+        // is still typed when the card takes it (an elicitation) or when no
+        // menu is on screen (a free-text prompt).
+        //
+        // Applies whenever this answer did not just release a hold. A release
+        // means Claude has not rendered the prompt yet, so there is nothing
+        // to compare against; that path is unchanged. Note this keys on the
+        // release, not on `active.held`: a passthrough card pushed by id
+        // (`pushHeldHook`) is stamped `held` but has no hold, so it is
+        // answered right here, by a digit, with the hook's numbering.
+        if (!released) {
           const screenOptions = observedPromptOptions?.(session.sessionId) ?? null;
-          if (!(screenOptions ?? []).some((o) => o.value === ptyInput)) {
-            const screenValues = (screenOptions ?? []).map((o) => o.value);
+          const screenValues = (screenOptions ?? []).map((o) => o.value);
+          const refusal: ScreenRefusal | null =
+            resolveOption(active.options, answer) !== undefined
+              ? screenValues.includes(ptyInput)
+                ? null
+                : SCREEN_REFUSALS.optionNotOnScreen
+              : active.options.length > 0 && !active.allowsFreeText && screenValues.length > 0
+                ? SCREEN_REFUSALS.freeTextIntoMenu
+                : null;
+          if (refusal !== null) {
             log(
-              `[Answer] refusing PTY submit for ${questionId.slice(0, 8)}: "${ptyInput}" is not an option on screen [${screenValues.join(', ') || 'none'}]`,
+              `[Answer] refusing PTY submit for ${questionId.slice(0, 8)}: ${refusal.logLine(ptyInput)} [${screenValues.join(', ') || 'none'}]`,
             );
             traceQuestionEvent({
               action: 'stale_answer',
@@ -859,25 +900,25 @@ export function createInputHandlers(deps: InputHandlerDeps) {
               signal: 'STALE_ANSWER',
               callSite: 'input-events.handleAnswer:screenNumberingGuard',
               detail: {
-                reason: 'option-not-on-screen',
+                reason: refusal.reason,
                 source: active.source,
-                value: ptyInput,
+                // An option value is a digit; free text may be anything the
+                // user typed, so only its length is recorded.
+                ...(refusal === SCREEN_REFUSALS.optionNotOnScreen
+                  ? { value: ptyInput }
+                  : { textLength: ptyInput.length }),
                 screenValues,
               },
             });
-            removalReason = 'user_answer:option_not_on_screen';
+            removalReason = refusal.removalReason;
             if (!viaRelay) {
               send(
                 connectionId,
-                createError(
-                  'STALE_ANSWER',
-                  'This answer is not an option on the prompt on screen; refusing to submit',
-                  {
-                    sessionId,
-                    questionId,
-                    pendingQuestionIds: [...session.currentQuestions.keys()],
-                  },
-                ),
+                createError('STALE_ANSWER', refusal.message, {
+                  sessionId,
+                  questionId,
+                  pendingQuestionIds: [...session.currentQuestions.keys()],
+                }),
               );
             }
             return 'stale';
