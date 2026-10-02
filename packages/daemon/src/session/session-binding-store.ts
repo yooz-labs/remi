@@ -20,7 +20,8 @@
  * SessionRegistryFile; transcriptPath has no disk column today (a phase-3 concern).
  */
 
-import type { UUID } from '@remi/shared';
+import { identityFromClaudeId, isHarnessId } from '@remi/shared';
+import type { SessionIdentity, UUID } from '@remi/shared';
 
 import { log } from '../cli/logger.ts';
 import type { SessionStore, StoredSession } from './session-store.ts';
@@ -54,6 +55,30 @@ export class SessionBindingStore {
   get(remiSessionId: UUID): SessionBinding | null {
     const stored = this.store.findByRemiSessionId(remiSessionId);
     return stored ? { claudeSessionId: stored.claudeSessionId } : null;
+  }
+
+  /**
+   * The harness-neutral identity of this Remi session (#1162, ADR 0032), or
+   * null when no record exists OR the record names a harness this build does
+   * not know. `get()` is deliberately not widened: it keeps returning exactly
+   * `{ claudeSessionId }`, and every existing caller is untouched.
+   *
+   * Derived, never cached (same no-cache rule as `get()`): a record with no
+   * `harness` is a Claude record, and so is one that names `claude`, whose id
+   * is ALWAYS the `claudeSessionId` column. The two cannot disagree after a
+   * rotation (`update()` writes only that column), because for Claude the
+   * stored `harnessSessionId` is never read. A record naming another known
+   * harness reports its stored `harnessSessionId`, or null when it has none
+   * yet. An unrecognized `harness` string is null rather than a guess, so a
+   * caller never treats a newer daemon's record as Claude.
+   */
+  getIdentity(remiSessionId: UUID): SessionIdentity | null {
+    const stored = this.store.findByRemiSessionId(remiSessionId);
+    if (!stored) return null;
+    if (stored.harness === undefined) return identityFromClaudeId(stored.claudeSessionId);
+    if (!isHarnessId(stored.harness)) return null;
+    if (stored.harness === 'claude') return identityFromClaudeId(stored.claudeSessionId);
+    return { harness: stored.harness, harnessSessionId: stored.harnessSessionId ?? null };
   }
 
   /** Reverse lookup: the full record bound to a Claude session id (disk-backed). */
