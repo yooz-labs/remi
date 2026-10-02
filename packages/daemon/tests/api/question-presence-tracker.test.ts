@@ -3,6 +3,8 @@ import type { Question, QuestionOption } from '@remi/shared';
 import { generateId } from '@remi/shared';
 import type { ParkedRenderVerdict } from '../../src/api/question-presence-tracker.ts';
 import { QuestionPresenceTracker } from '../../src/api/question-presence-tracker.ts';
+import { extractToolQuestion } from '../../src/hooks/tool-question.ts';
+import { parseQuestion } from '../../src/parser/question-parser.ts';
 
 function makeOption(
   label: string,
@@ -679,6 +681,69 @@ describe('QuestionPresenceTracker', () => {
         ['yes', false, false],
         ['Nope', false, false],
       ]);
+    });
+
+    it('an AskUserQuestion record pairs with its parsed menu: structure from the hook, numbering from the screen', () => {
+      // A parked subagent AskUserQuestion merges on its render. The runner
+      // answers from the hook's `questions`; a plain pick is typed by the
+      // screen's numbering, which includes the "Type something." row.
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => {
+        pushes.push(q);
+        return undefined;
+      });
+      const tool = extractToolQuestion('AskUserQuestion', {
+        questions: [
+          {
+            question: 'Which database?',
+            header: 'DB',
+            multiSelect: false,
+            options: [
+              { label: 'Postgres', description: 'Relational' },
+              { label: 'SQLite', description: 'Embedded' },
+            ],
+          },
+        ],
+      });
+      if (!tool) throw new Error('not an AskUserQuestion shape');
+      const hook: Question = {
+        id: generateId(),
+        text: tool.text,
+        options: tool.options,
+        allowsFreeText: false,
+        isAnswered: false,
+        source: 'permission_request',
+        agentId: 'sub-auq',
+        ...(tool.kind ? { kind: tool.kind } : {}),
+        ...(tool.questions ? { questions: tool.questions } : {}),
+      };
+      tracker.recordPendingHook(hook);
+      const screen = parseQuestion(
+        [
+          ' Which database?',
+          ' ❯ 1. Postgres',
+          '      Relational',
+          '   2. SQLite',
+          '      Embedded',
+          '   3. Type something.',
+          ' Enter to select · ↑/↓ to navigate · Esc to cancel',
+        ].join('\n'),
+      ).question;
+      if (!screen) throw new Error('the menu did not parse');
+
+      tracker.onPTYPromptVisible(screen);
+
+      expect(pushes).toHaveLength(1);
+      expect(pushes[0]?.id).toBe(hook.id);
+      expect(pushes[0]?.agentId).toBe('sub-auq');
+      expect(pushes[0]?.kind).toBe('multi_question');
+      expect(pushes[0]?.questions).toEqual(tool.questions);
+      expect(pushes[0]?.options.map((o) => [o.value, o.label])).toEqual([
+        ['1', 'Postgres Relational'],
+        ['2', 'SQLite Embedded'],
+        ['3', 'Type something.'],
+      ]);
+      expect(pushes[0]?.allowsFreeText).toBe(false);
     });
 
     it('a hook record keeps its own options only when the PTY question has none', () => {
