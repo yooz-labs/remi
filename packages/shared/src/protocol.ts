@@ -413,17 +413,24 @@ export interface QuestionMessage {
   readonly claudeSessionId?: UUID | undefined;
 }
 
-/** One sub-question's chosen option indices in a structured AskUserQuestion
- *  answer (#627). `optionIndices` are 0-based into that sub-question's options
- *  (one entry for single-select, 1+ for multi-select). */
+/**
+ * One sub-question's answer in a structured AskUserQuestion answer (#627,
+ * #1127). `optionIndices` are 0-based into that sub-question's options.
+ * A single-select question takes exactly one: one option index, or `text`
+ * (free text the user typed instead) with no index. A multi-select question
+ * takes one or more option indices and no text. The daemon refuses any other
+ * shape and keeps the prompt waiting.
+ */
 export interface AnswerSelection {
   readonly questionIndex: number;
   readonly optionIndices: readonly number[];
+  /** Free text instead of an option, for a single-select question (#1127). */
+  readonly text?: string | undefined;
 }
 
 /** The non-string parts of an {@link AnswerMessage} (#627), threaded through the
- *  answer event chain so the daemon can drive a structured AskUserQuestion answer
- *  (`selections`) or cancel/escape the prompt (`cancel`). */
+ *  answer event chain so the daemon can answer a structured AskUserQuestion
+ *  (`selections`) or cancel the prompt (`cancel`). */
 export interface AnswerExtras {
   readonly selections?: readonly AnswerSelection[] | undefined;
   readonly cancel?: boolean | undefined;
