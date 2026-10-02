@@ -123,8 +123,7 @@ describe('AutoApproveGate routing (#1125: nothing is decided, everything is rela
     expect(await gate().resolvePermission(pr())).toBe('passthrough');
     expect(escalated).toHaveLength(1);
     expect(pushOnRenderIds).toEqual(escalatedIds);
-    // Not pushed now: the card waits for the render that carries the
-    // on-screen option numbering a phone answer is typed as.
+    // Not pushed now: the card waits for its prompt to render on screen.
     expect(pushNowIds).toEqual([]);
     expect(parks).toEqual([]);
     expect(submits).toEqual([]);

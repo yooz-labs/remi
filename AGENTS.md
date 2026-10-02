@@ -202,18 +202,19 @@ answers every `PermissionRequest` hook `passthrough`, so Claude renders its own
 dialog in the terminal at once, and routes the escalation:
 
 - A **binary main-agent prompt** is stashed and marked `pushOnRender` (#1121).
-  The card is pushed when the native prompt renders, merged with the parsed
-  options so a phone digit matches the screen's numbering, and it takes the
-  render-owned slot so the next render retires it. Two outstanding main
-  prompts before a render are never paired by agent key; each render pushes
-  the screen's own prompt.
+  The card is pushed when the native prompt renders, merged with the options
+  parsed from the screen, and it takes the render-owned slot so the next
+  render retires it. Two outstanding main prompts before a render are never
+  paired by agent key; each render pushes the screen's own prompt.
 - A **multi-choice or design prompt** (`AskUserQuestion`, `ExitPlanMode`,
   `ALWAYS_ESCALATE_TOOLS` in `auto-approve/multichoice.ts`) is pushed
   immediately (`escalatePassthrough`, #625).
-- A phone answer is typed into the rendered prompt as the option's digit, and
-  only when a prompt is on screen (#920, #1002). Nothing holds the hook in this
-  phase; the next phase (#1126) answers prompts structurally through held hooks
-  while Claude's own dialog stays visible.
+- A phone answer is typed into the rendered prompt using the screen's own
+  numbering, and refused when the chosen option does not match what the
+  screen shows (#1134, PR #1136); it is typed only when a prompt is on screen
+  (#920, #1002). Nothing holds the hook in this phase; the next phase (#1126)
+  answers prompts structurally through held hooks while Claude's own dialog
+  stays visible.
 - An open card is resolved without an answer by a matching
   `PreToolUse`/`PostToolUse`/`PermissionDenied`, a lead `Stop` (main cards),
   `SubagentStop` (that agent's cards), `SessionEnd`, or `remi unstick`.
@@ -286,8 +287,8 @@ those two are both exactly `{token, title, body}`.
 - Notification message is plain text ("Claude needs your permission to use Bash"), no numbered options, and never carries `permission_suggestions` at all.
 - Claude Code does NOT always offer a fixed option count. `optionsFromSuggestions` (hook-event-bridge.ts) builds a VARIABLE-count card: [Yes] + one option per USABLE structured suggestion + [No], capped at 4 total. With no usable suggestions of either shape, the daemon falls back to the honest Yes/No 2-set (`optionsAreFallback: true` on the `Question`) instead of fabricating a 3rd option.
 - Numbered option text appears only in the terminal UI, not in hook events.
-- `HookEventBridge` emits the option set immediately; no parsing or merge timer needed.
-- A "Yes, always allow: ..." option is answered today by typing its digit into Claude's dialog. `QuestionOption.suggestionIndex` still records which original `permission_suggestions` entry it came from: echoing that entry back as `{behavior:"allow", updatedPermissions:[...]}` on a held hook is, per the hooks docs, "equivalent to the user selecting that 'always allow' option in the dialog", which is how #1126 will answer it.
+- `HookEventBridge` builds the option set at hook time; a binary card is pushed when its prompt renders, and the answer is checked against the screen before it is typed (#1121, #1134).
+- A "Yes, always allow: ..." option is answered today like any other: typed using the screen's numbering, and refused when it does not match what the screen shows (#1134). `QuestionOption.suggestionIndex` still records which original `permission_suggestions` entry it came from. Echoing that entry back as `{behavior:"allow", updatedPermissions:[...]}` on a held hook is, per the hooks docs, "equivalent to the user selecting that 'always allow' option in the dialog"; that is the documented contract, NOT yet verified live, and it is how #1126 plans to answer it.
 - Redeploy the signaling server after any `packages/signaling/` change.
 
 ### No local model

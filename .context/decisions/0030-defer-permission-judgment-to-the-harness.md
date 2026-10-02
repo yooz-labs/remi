@@ -34,7 +34,7 @@ What remains, and is what ships after #1125:
 - **Relay.** `PermissionRequest` reaches `AutoApproveGate` (name kept until Phase 3, #1126), which escalates every main-agent prompt.
   A binary prompt is answered `passthrough` so Claude renders its native dialog in the terminal at once, and the card is pushed when that render pairs with the hook record (push on render, #1121).
   A multi-choice or design prompt (AskUserQuestion, ExitPlanMode) is answered `passthrough` and pushed immediately.
-  A phone answer is typed into the rendered prompt as the option's digit.
+  A phone answer is typed into the rendered prompt using the screen's numbering, and refused when the chosen option does not match the screen (#1134, PR #1136).
 - **Subagent prompts.** An `agent_id`-tagged request is parked and answered `passthrough`; its card pushes only if its prompt renders on the main PTY (ADR 0004, minus the render-time evaluation).
 - **Subagent alerts.** The informational `subagent_alert` push still fires for parked subagent requests matching the user's patterns, now configured under `[notifications] subagent_alert`.
 - **External resolution.** A matching `PreToolUse`/`PostToolUse`/`PostToolUseFailure`/`PermissionDenied`, a lead `Stop`, `SubagentStop`, `SessionEnd` and `remi unstick` still resolve and dismiss open cards.

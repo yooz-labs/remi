@@ -1611,7 +1611,7 @@ describe('setupHookBridge', () => {
       }
     }
 
-    test('a binary prompt reaches the phone when it renders, numbered like the screen', async () => {
+    test("a binary prompt with no usable hook suggestions reaches the phone when it renders, with the screen's three options", async () => {
       // Nothing holds the hook (#1125; before it, the default install with
       // auto_approve.enabled = false), so the gate answers 'passthrough' and
       // Claude renders its native prompt at once.
@@ -1702,7 +1702,7 @@ describe('setupHookBridge', () => {
       expect(registered[0]?.text).not.toContain('rm -rf B');
     });
 
-    test('a phone "No" types the screen\'s No (3), not the hook fallback\'s 2', async () => {
+    test('with no usable hook suggestions, a phone "No" types the screen\'s No (3), not the fallback\'s 2', async () => {
       // The answer side of the #718 merge: an unheld card has no hold, so
       // `handleAnswer` resolves the label to the option VALUE and types it.
       // The tracker's own presence signal is wired the way cli.ts wires it.

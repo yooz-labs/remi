@@ -11,7 +11,9 @@
  * renders its own native prompt in the terminal at once:
  *   - a BINARY main-context prompt is stashed and pushed when its native
  *     prompt renders (`escalateForRender` -> `pushOnRender`, #1121), so the
- *     card carries the on-screen option numbering a phone answer is typed as;
+ *     card describes the prompt actually on screen; a phone answer is typed
+ *     using the screen's numbering and refused when the chosen option does
+ *     not match the screen (#1134);
  *   - a multi-choice / design prompt (AskUserQuestion, ExitPlanMode) cannot be
  *     expressed as a binary answer and is pushed immediately
  *     (`escalatePassthrough`);
@@ -178,9 +180,9 @@ export interface AutoApproveGateDeps {
   onHeldEscalate?: (questionId: UUID) => void;
   /** Push trigger for a BINARY main-context escalation: the hook is answered
    *  'passthrough', Claude renders its native prompt at once, and the stashed
-   *  question pushes when that render pairs with it, carrying the on-screen
-   *  option numbering a PTY-digit answer needs (#718 merge, #1121). Absent =>
-   *  the render is never pushed (tests). Throw-safe. */
+   *  question pushes when that render pairs with it (#718 merge, #1121), so
+   *  the answer can be checked against the prompt on screen (#1134). Absent
+   *  => the render is never pushed (tests). Throw-safe. */
   pushOnRender?: (questionId: UUID) => void;
   /**
    * Called when an open escalation resolved WITHOUT the user answering it
@@ -315,9 +317,9 @@ export class AutoApproveGate {
    * immediately, and the stashed question is marked to push when that render
    * pairs with it (`pushOnRender`). Pushing on the render rather than now
    * keeps two properties: the card only reaches the phone for a prompt that
-   * actually rendered, and its options come from the #718 merge, so a phone
-   * answer typed as a PTY digit selects the option the screen numbers that
-   * way.
+   * actually rendered, and it is paired with that render (#718 merge), so the
+   * answer path can type the screen's numbering and refuse an option that
+   * does not match the screen (#1134).
    */
   private escalateForRender(input: PermissionRequestHookInput): PermissionDecision {
     const qid = this.escalateToUser(input);
