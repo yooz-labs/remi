@@ -221,6 +221,11 @@ const REGISTRY: readonly Entry[] = [
  */
 const EXCLUSIONS: readonly ExcludedEntry[] = [
   {
+    file: 'auto-approve/auto-approve-gate.ts',
+    field: 'inFlightToolUses',
+    note: "NEW (#1126). Claude's unfinished tool calls by tool_use_id (from PreToolUse), so a PermissionRequest can be paired with its call's id. Tool-call data, not Question data: an entry is consumed when a request pairs with it, before any card exists, and never says whether a question is pending.",
+  },
+  {
     file: 'api/question-presence-tracker.ts',
     field: 'orphanTimer',
     note: 'A timer HANDLE for armedOrphanQuestion, not Question data itself.',

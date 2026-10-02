@@ -686,6 +686,13 @@ export function setupHookBridge(
         },
         'PreToolUse-subagent',
       );
+      // #1126: remember the call so its PermissionRequest pairs with its id.
+      autoApproveGate.notePreToolUse({
+        toolName: input.tool_name,
+        toolInput: input.tool_input,
+        toolUseId: input.tool_use_id,
+        agentId: input.agent_id,
+      });
       return;
     }
     // #673: a PreToolUse whose (tool_name, tool_input) signature matches a
@@ -699,6 +706,15 @@ export function setupHookBridge(
       { toolName: input.tool_name, toolInput: input.tool_input, toolUseId: input.tool_use_id },
       'PreToolUse',
     );
+    // #1126: the PermissionRequest for this call (if any) fires about 10 ms
+    // later and carries no tool_use_id; remembering the call lets it pair,
+    // so the PostToolUse of a Yes answered in the terminal closes exactly
+    // that held prompt.
+    autoApproveGate.notePreToolUse({
+      toolName: input.tool_name,
+      toolInput: input.tool_input,
+      toolUseId: input.tool_use_id,
+    });
     handlers.onPreToolUse?.(input);
   });
   hookServer.on('PostToolUse', (input) => {
@@ -745,15 +761,21 @@ export function setupHookBridge(
         },
         'PostToolUse-subagent',
       );
+      autoApproveGate.noteToolUseEnded(input.tool_use_id);
       return;
     }
     // #673: same signature-scoped external-resolution cancel as PreToolUse
     // above (a tool that has already FINISHED is at least as strong a signal
     // that its permission was resolved elsewhere as one that just started).
+    // #1126: this is how a Yes answered in the terminal reaches a held
+    // prompt: Claude runs the tool and never closes the held request, and
+    // this PostToolUse carries the tool_use_id the prompt was paired with.
+    // The hold ends with the empty response Claude ignores.
     autoApproveGate.cancelExternallyResolved(
       { toolName: input.tool_name, toolInput: input.tool_input, toolUseId: input.tool_use_id },
       'PostToolUse',
     );
+    autoApproveGate.noteToolUseEnded(input.tool_use_id);
     handlers.onPostToolUse?.(input);
   });
   hookServer.on('Notification', (input) => {
@@ -782,7 +804,7 @@ export function setupHookBridge(
   // answers 'passthrough' (Claude renders its native prompt) after escalating
   // or parking the request. The binder binding runs first (as for any event);
   // a foreign event we do not own returns 'passthrough' ({}) so we ABSTAIN.
-  hookServer.setPermissionResolver(async (input) => {
+  hookServer.setPermissionResolver(async (input, signal) => {
     binder.onHookEvent(input);
     if (!binder.admits(input)) {
       // #593: a PermissionRequest we don't own returns passthrough so the owning
@@ -802,7 +824,7 @@ export function setupHookBridge(
       deps.foreignSessionEscalator?.handleUnadmitted(input, sessionId);
       return 'passthrough';
     }
-    return autoApproveGate.resolvePermission(input);
+    return autoApproveGate.resolvePermission(input, signal);
   });
   hookServer.on('Stop', (input) => {
     binder.onHookEvent(input);
@@ -873,12 +895,21 @@ export function setupHookBridge(
         {
           toolName: input.tool_name,
           toolInput: input.tool_input,
+          toolUseId: input.tool_use_id,
           agentId: input.agent_id,
         },
         'PostToolUseFailure-subagent',
       );
+      autoApproveGate.noteToolUseEnded(input.tool_use_id);
       return;
     }
+    // #1126: a Yes answered in the terminal whose tool then failed still
+    // proves the held prompt was answered; same cancel as PostToolUse.
+    autoApproveGate.cancelExternallyResolved(
+      { toolName: input.tool_name, toolInput: input.tool_input, toolUseId: input.tool_use_id },
+      'PostToolUseFailure',
+    );
+    autoApproveGate.noteToolUseEnded(input.tool_use_id);
     handlers.onPostToolUseFailure?.(input);
   });
 
@@ -968,6 +999,7 @@ export function setupHookBridge(
       },
       'PermissionDenied',
     );
+    autoApproveGate.noteToolUseEnded(input.tool_use_id);
   });
 
   hookServer.on('Elicitation', (input) => {
@@ -994,11 +1026,18 @@ export function setupHookBridge(
   // Registered so the turn-complete timer anchors each turn on the moment the
   // human submits it (`notifications/turn-timer.ts`, via HookServer's
   // `onAnyEvent`). Its other consumer, the auto-approve authority summary, was
-  // deleted in #1125. The listener only drives the binder like every other
-  // listener: `HookServer.dispatch` runs it SYNCHRONOUSLY before Claude Code's
-  // blocked hook response, so it must stay this cheap.
+  // deleted in #1125. The listener drives the binder like every other
+  // listener and, since #1126, closes stale main prompts (below):
+  // `HookServer.dispatch` runs it SYNCHRONOUSLY before Claude Code's blocked
+  // hook response, so it must stay this cheap.
   hookServer.on('UserPromptSubmit', (input) => {
     binder.onHookEvent(input);
+    if (!binder.admits(input) || isSubagentEvent(input)) return;
+    // #1126: the user typed a new prompt, so the main agent is not waiting
+    // on a permission dialog any more. Closes a main prompt that was
+    // answered No in the terminal after its hold was released (that fires
+    // no hook at all), so its open entry cannot outlive the turn.
+    autoApproveGate.cancelStale('UserPromptSubmit', { mainOnly: true });
   });
 
   log(`[Hooks] Event bridge active for session ${sessionId}`);

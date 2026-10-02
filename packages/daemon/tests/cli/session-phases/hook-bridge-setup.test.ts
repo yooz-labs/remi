@@ -41,14 +41,18 @@ import {
 class RecordingHookServer {
   readonly listeners = new Map<string, (input: unknown) => void>();
   /** The synchronous PermissionRequest resolver (#496); set via setPermissionResolver. */
-  permissionResolver: ((input: unknown) => Promise<PermissionDecision>) | null = null;
+  permissionResolver:
+    | ((input: unknown, signal: AbortSignal) => Promise<PermissionDecision>)
+    | null = null;
   on(event: string, listener: (input: unknown) => void): () => void {
     // Only the last listener per event survives; for setupHookBridge this is
     // fine because it installs exactly one per event name.
     this.listeners.set(event, listener);
     return () => this.listeners.delete(event);
   }
-  setPermissionResolver(resolver: ((input: unknown) => Promise<PermissionDecision>) | null): void {
+  setPermissionResolver(
+    resolver: ((input: unknown, signal: AbortSignal) => Promise<PermissionDecision>) | null,
+  ): void {
     this.permissionResolver = resolver;
   }
   fire(event: string, input: unknown): void {
@@ -58,7 +62,7 @@ class RecordingHookServer {
     // SYNCHRONOUSLY inside the resolver before the async decision, which we
     // fire-and-forget here. Decision-asserting tests use `await firePermission`.
     if (event === 'PermissionRequest' && !this.listeners.has(event) && this.permissionResolver) {
-      void this.permissionResolver(input);
+      void this.permissionResolver(input, new AbortController().signal);
       return;
     }
     const fn = this.listeners.get(event);
@@ -68,9 +72,12 @@ class RecordingHookServer {
   /** Fire a PermissionRequest through the synchronous resolver (#496) and return
    *  the decision. A held prompt's decision settles only when it is answered
    *  or released (#1126), so callers holding one must not await it first. */
-  async firePermission(input: unknown): Promise<PermissionDecision> {
+  async firePermission(
+    input: unknown,
+    signal: AbortSignal = new AbortController().signal,
+  ): Promise<PermissionDecision> {
     if (!this.permissionResolver) throw new Error('No permission resolver registered');
-    return this.permissionResolver(input);
+    return this.permissionResolver(input, signal);
   }
 }
 
@@ -1782,6 +1789,140 @@ describe('setupHookBridge', () => {
       expect(cards().map((q) => q.id)).toEqual([card.id]);
       expect(handle.gate.answerHeld(card.id, { kind: 'cancel' })).toBe('resolved');
       expect(await hook).toBe('deny');
+    });
+
+    test('a Yes answered in the terminal: the paired PostToolUse closes the hold empty and dismisses the card', async () => {
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+        broadcastResolvedLog,
+      });
+      lockSession('claude-local-yes');
+      const call = {
+        session_id: 'claude-local-yes',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+      };
+      // Claude announces the call, then asks about it about 10 ms later.
+      hookServer.fire('PreToolUse', {
+        ...call,
+        hook_event_name: 'PreToolUse',
+        tool_use_id: 'tu-1',
+      });
+      const hook = hookServer.firePermission({ ...call, hook_event_name: 'PermissionRequest' });
+      const card = cards()[0] as Question;
+
+      // A DIFFERENT call with the same command finishing must not close it:
+      // the prompt was paired with tu-1.
+      hookServer.fire('PostToolUse', {
+        ...call,
+        hook_event_name: 'PostToolUse',
+        tool_use_id: 'tu-0',
+      });
+      expect(cards().map((q) => q.id)).toEqual([card.id]);
+
+      // The terminal's Yes: Claude runs the tool and reports tu-1.
+      hookServer.fire('PostToolUse', {
+        ...call,
+        hook_event_name: 'PostToolUse',
+        tool_use_id: 'tu-1',
+      });
+      expect(await hook).toBe('passthrough');
+      expect(cards()).toHaveLength(0);
+      expect(broadcastResolvedLog).toEqual([{ questionId: card.id, reason: 'cancelled' }]);
+      expect(ptySubmits).toEqual([]);
+    });
+
+    test('a Yes in the terminal whose tool then fails (PostToolUseFailure) also closes the hold', async () => {
+      build({ realTracker: true, realMessageApi: true, liveQuestionDeps: true });
+      lockSession('claude-local-fail');
+      const call = {
+        session_id: 'claude-local-fail',
+        tool_name: 'Bash',
+        tool_input: { command: 'false' },
+      };
+      hookServer.fire('PreToolUse', {
+        ...call,
+        hook_event_name: 'PreToolUse',
+        tool_use_id: 'tu-f',
+      });
+      const hook = hookServer.firePermission({ ...call, hook_event_name: 'PermissionRequest' });
+      hookServer.fire('PostToolUseFailure', {
+        ...call,
+        hook_event_name: 'PostToolUseFailure',
+        tool_use_id: 'tu-f',
+        error: 'exit 1',
+      });
+      expect(await hook).toBe('passthrough');
+      expect(cards()).toHaveLength(0);
+    });
+
+    test('a No or Esc in the terminal: Claude closes the held request and the card is dismissed', async () => {
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const { handle } = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+        broadcastResolvedLog,
+      });
+      lockSession('claude-local-no');
+      const client = new AbortController();
+      void hookServer.firePermission(
+        {
+          session_id: 'claude-local-no',
+          hook_event_name: 'PermissionRequest',
+          tool_name: 'Bash',
+          tool_input: { command: 'rm x' },
+        },
+        client.signal,
+      );
+      const card = cards()[0] as Question;
+      client.abort();
+      expect(cards()).toHaveLength(0);
+      expect(broadcastResolvedLog).toEqual([{ questionId: card.id, reason: 'cancelled' }]);
+      expect(handle.gate.answerHeld(card.id, { kind: 'cancel' })).toBe('closed');
+      expect(ptySubmits).toEqual([]);
+    });
+
+    test('a new user prompt closes a main prompt left open after its hold was released', async () => {
+      const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
+      const { handle } = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+        holdMs: 20,
+        noticeLog,
+      });
+      lockSession('claude-local-next');
+      const hook = hookServer.firePermission({
+        session_id: 'claude-local-next',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'rm y' },
+      });
+      const card = cards()[0] as Question;
+      expect(await hook).toBe('passthrough'); // released at the deadline
+      expect(handle.gate.answerHeld(card.id, { kind: 'cancel' })).toBe('closed');
+
+      // A subagent's prompt submission is not the user's: nothing closes.
+      hookServer.fire('UserPromptSubmit', {
+        session_id: 'claude-local-next',
+        hook_event_name: 'UserPromptSubmit',
+        prompt: 'x',
+        agent_id: 'agent-1',
+      });
+      expect(noticeLog.filter((n) => n.reason === 'dismissed')).toHaveLength(0);
+
+      // The terminal's No fired nothing; the user's next prompt proves the
+      // dialog is gone, and the deadline notice is cleared.
+      hookServer.fire('UserPromptSubmit', {
+        session_id: 'claude-local-next',
+        hook_event_name: 'UserPromptSubmit',
+        prompt: 'next',
+      });
+      expect(noticeLog.map((n) => n.reason)).toEqual(['hold_deadline', 'dismissed']);
     });
 
     test("the dialog's render during the hold is an echo, and after the deadline a redraw still builds no typed card", async () => {

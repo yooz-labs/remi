@@ -15,9 +15,13 @@
  *     (optionally with the user's message, which Claude receives as the
  *     tool result), or `allow` + `updatedPermissions` for a standing grant
  *     (`standingGrantFor`);
- *   - an answer in the terminal ends the hold through the external
- *     resolution signals below, and the hook gets an empty response that
- *     Claude ignores;
+ *   - an answer in the terminal ends the hold: a Yes runs the tool, and its
+ *     `PostToolUse` (or `PostToolUseFailure`) carries the `tool_use_id` this
+ *     prompt was paired with from the `PreToolUse` that preceded it
+ *     (`notePreToolUse` / `pairToolUse`; the request itself carries no id),
+ *     so the hook gets an empty response Claude ignores; a No or Esc makes
+ *     Claude close the held request, which the hook server's abort signal
+ *     reports (`onHoldAborted`), and the card is dismissed;
  *   - the hold deadline (`[prompts] hold_seconds`) releases the hook with an
  *     empty response, Claude's dialog simply stays, the card is dismissed
  *     and `onHoldDeadline` tells the phone to answer at the terminal (#733).
@@ -45,11 +49,11 @@
  * signature. Signals that prove an open escalation was resolved WITHOUT going
  * through remi's own answer path:
  *   - `cancelExternallyResolved`, called from PreToolUse / PostToolUse /
- *     PostToolUseFailure (subagent) / PermissionDenied in
- *     `hook-bridge-setup.ts` when the observed tool signature matches an open
- *     escalation: the tool is now running (or was refused), so the user must
- *     have answered it directly in the terminal or Claude's own permission
- *     mode resolved it;
+ *     PostToolUseFailure / PermissionDenied in `hook-bridge-setup.ts` when
+ *     the observed call matches an open escalation (its paired tool_use_id
+ *     when both sides carry one, else the tool name + input): the tool is
+ *     now running (or was refused), so the user must have answered it
+ *     directly in the terminal or Claude's own permission mode resolved it;
  *   - a duplicate re-request: `escalateToUser` / `parkSubagentForPTY` resolve
  *     an already-open entry with the SAME signature before registering the
  *     new one, since Claude re-issuing the identical PermissionRequest proves
@@ -58,6 +62,9 @@
  *     still blocked on its own native prompt, so a MAIN-tagged signature still
  *     open at Stop was resolved without a matching tool call (most often a
  *     "No" answered in the terminal, which fires no tool call at all);
+ *     `UserPromptSubmit` sweeps the same way (#1126): a terminal "No"
+ *     interrupts the turn without a `Stop`, and a new prompt proves the
+ *     dialog is gone;
  *   - `cancelStaleForAgent`, called from `SubagentStop`: the single-agent
  *     mirror of the Stop reasoning;
  *   - `cancelStale('SessionEnd')` and `forceRelease` (`remi unstick`): real
@@ -115,12 +122,37 @@ const CLOSED_HOLD_MEMORY = 256;
 const DENY_MESSAGE_MAX = 2000;
 
 /** A held PermissionRequest hook (#1126): the pending hook response, its
- *  deadline timer, and the suggestions a standing grant echoes from. */
+ *  deadline timer, the suggestions a standing grant echoes from, and how to
+ *  stop listening for the request's abort. */
 interface Hold {
   readonly resolve: (decision: PermissionDecision) => void;
   readonly timer: ReturnType<typeof setTimeout>;
   readonly suggestions: readonly unknown[] | undefined;
+  readonly detachAbort: () => void;
 }
+
+/**
+ * A tool call Claude announced with `PreToolUse` and has not finished
+ * (#1126). `PermissionRequest` carries no `tool_use_id`, but it fires about
+ * 10 ms after the `PreToolUse` of the same call (same tool name and input),
+ * so pairing the two gives the held prompt the id its `PostToolUse` will
+ * carry when the terminal answers Yes.
+ */
+interface InFlightToolUse {
+  readonly toolName: string;
+  readonly toolInputKey: string;
+  readonly agentId: string | undefined;
+  readonly at: number;
+}
+
+/** How many unfinished tool calls are remembered for pairing, oldest dropped
+ *  first. A main agent and its subagents run a handful at once. */
+const IN_FLIGHT_TOOL_USE_MAX = 64;
+
+/** How long an unfinished tool call stays pairable. An auto-mode fallback
+ *  prompt fires after the classifier decided, seconds after `PreToolUse`;
+ *  a call that never finishes (interrupted) must not pair forever. */
+const IN_FLIGHT_TOOL_USE_TTL_MS = 10 * 60_000;
 
 /** The (tool_name, tool_input) signature of an OPEN escalation (#673),
  *  tracked so an external-resolution signal can find and cancel it. */
@@ -306,6 +338,10 @@ export class AutoApproveGate {
    *  `openQuestionSignatures`' keys, deleted with them. */
   private readonly terminalNotices = new Set<UUID>();
 
+  /** Unfinished tool calls by `tool_use_id`, oldest first (#1126), for
+   *  pairing a PermissionRequest with its call. See `InFlightToolUse`. */
+  private readonly inFlightToolUses = new Map<string, InFlightToolUse>();
+
   constructor(
     private readonly deps: AutoApproveGateDeps,
     private readonly sessionId: UUID,
@@ -470,11 +506,14 @@ export class AutoApproveGate {
    * prompt is answered 'passthrough' and pushed immediately
    * (`escalatePassthrough`).
    */
-  private escalateMain(input: PermissionRequestHookInput): Promise<PermissionDecision> {
+  private escalateMain(
+    input: PermissionRequestHookInput,
+    signal: AbortSignal | undefined,
+  ): Promise<PermissionDecision> {
     if (!this.isBinaryEscalation(input)) {
       return Promise.resolve(this.escalatePassthrough(input));
     }
-    return this.holdForAnswer(input);
+    return this.holdForAnswer(input, signal);
   }
 
   /**
@@ -484,8 +523,17 @@ export class AutoApproveGate {
    * returned promise is what the hook server is blocked on; it settles
    * through `endHold`, exactly once. No question id means no card: answer
    * 'passthrough' at once, and the terminal dialog is the only way to answer.
+   *
+   * `signal` is the hook request's own abort signal: Claude closes the held
+   * request when the user answers No or presses Esc in the terminal (no hook
+   * event fires for that), when the session ends, or at its own hook
+   * timeout. Any of those dismisses the card (`onHoldAborted`).
    */
-  private holdForAnswer(input: PermissionRequestHookInput): Promise<PermissionDecision> {
+  private holdForAnswer(
+    input: PermissionRequestHookInput,
+    signal: AbortSignal | undefined,
+  ): Promise<PermissionDecision> {
+    if (signal?.aborted) return Promise.resolve('passthrough');
     const qid = this.escalateToUser(input);
     if (!qid) {
       logError(
@@ -497,10 +545,13 @@ export class AutoApproveGate {
       const timer = setTimeout(() => this.releaseAtDeadline(qid), this.deps.holdMs);
       // A hold is human-paced; it must never keep the daemon alive.
       timer.unref?.();
+      const onAbort = (): void => this.onHoldAborted(qid);
+      signal?.addEventListener('abort', onAbort, { once: true });
       this.holds.set(qid, {
         resolve,
         timer,
         suggestions: input.permission_suggestions as readonly unknown[] | undefined,
+        detachAbort: () => signal?.removeEventListener('abort', onAbort),
       });
     });
     this.safeCueWithArg('onHeldEscalate', this.deps.onHeldEscalate, qid);
@@ -538,9 +589,95 @@ export class AutoApproveGate {
     const hold = this.holds.get(questionId);
     if (!hold) return;
     clearTimeout(hold.timer);
+    hold.detachAbort();
     this.holds.delete(questionId);
     this.rememberClosed(questionId);
     hold.resolve(decision);
+  }
+
+  /**
+   * Claude closed a held request before any answer reached it (#1126): the
+   * user answered No or pressed Esc in the terminal, the session ended, or
+   * Claude's own hook timeout fired. Nothing is left to answer, so the
+   * prompt is closed and its card dismissed. The settle is a formality (the
+   * client is gone); `endHold` keeps it exactly-once.
+   */
+  private onHoldAborted(questionId: UUID): void {
+    if (!this.holds.has(questionId)) return;
+    log(
+      `[AutoApprove ${this.sessionTag}] Held ${questionId.slice(0, 8)} was closed by Claude (answered in the terminal, or the session ended); dismissing its card`,
+    );
+    this.openQuestionSignatures.delete(questionId);
+    this.endHold(questionId, 'passthrough');
+    this.removeAndDismiss(questionId, 'hold_aborted');
+  }
+
+  /**
+   * Record a `PreToolUse` (#1126): the call is in flight until its
+   * `PostToolUse`, `PostToolUseFailure` or `PermissionDenied`
+   * (`noteToolUseEnded`). A `PermissionRequest` for the same call pairs with
+   * it (`pairToolUse`). Ignored without a `tool_use_id`.
+   */
+  notePreToolUse(observed: ObservedToolCall): void {
+    if (observed.toolUseId === undefined) return;
+    this.pruneInFlightToolUses();
+    this.inFlightToolUses.delete(observed.toolUseId);
+    this.inFlightToolUses.set(observed.toolUseId, {
+      toolName: observed.toolName,
+      toolInputKey: stableToolInputKey(observed.toolInput),
+      agentId: observed.agentId,
+      at: Date.now(),
+    });
+    if (this.inFlightToolUses.size > IN_FLIGHT_TOOL_USE_MAX) {
+      const oldest = this.inFlightToolUses.keys().next();
+      if (!oldest.done) this.inFlightToolUses.delete(oldest.value);
+    }
+  }
+
+  /** The call with this id finished or was refused; it can no longer pair. */
+  noteToolUseEnded(toolUseId: string | undefined): void {
+    if (toolUseId !== undefined) this.inFlightToolUses.delete(toolUseId);
+  }
+
+  /**
+   * The `tool_use_id` of the in-flight call this PermissionRequest asks
+   * about (#1126): the one unfinished `PreToolUse` of the same agent, tool
+   * and input. Consumed, so a second identical request pairs with the other
+   * call. With two or more candidates (identical calls in flight) nothing is
+   * paired: guessing could tie the prompt to the wrong call, and an unpaired
+   * prompt falls back to the tool-name + input match, whose worst case is an
+   * early empty release (the card is dismissed and the terminal answers),
+   * never a decision.
+   */
+  private pairToolUse(input: PermissionRequestHookInput): string | undefined {
+    if (this.inFlightToolUses.size === 0) return undefined;
+    this.pruneInFlightToolUses();
+    const key = stableToolInputKey(input.tool_input);
+    const candidates = [...this.inFlightToolUses].filter(
+      ([, call]) =>
+        call.toolName === input.tool_name &&
+        call.toolInputKey === key &&
+        call.agentId === input.agent_id,
+    );
+    if (candidates.length !== 1) {
+      if (candidates.length > 1) {
+        log(
+          `[AutoApprove ${this.sessionTag}] ${candidates.length} identical ${input.tool_name} calls in flight; not pairing this PermissionRequest with one`,
+        );
+      }
+      return undefined;
+    }
+    const [toolUseId] = candidates[0] as [string, InFlightToolUse];
+    this.inFlightToolUses.delete(toolUseId);
+    return toolUseId;
+  }
+
+  /** Drop in-flight calls older than `IN_FLIGHT_TOOL_USE_TTL_MS`. */
+  private pruneInFlightToolUses(): void {
+    const cutoff = Date.now() - IN_FLIGHT_TOOL_USE_TTL_MS;
+    for (const [id, call] of this.inFlightToolUses) {
+      if (call.at < cutoff) this.inFlightToolUses.delete(id);
+    }
   }
 
   /** Add to the bounded closed-hold memory, evicting the oldest. */
@@ -651,7 +788,10 @@ export class AutoApproveGate {
    *     tracker-leak signature (a dropped PostToolUse(Task/Agent) completion),
    *     not a real subagent prompt: reset the tracker and escalate as main.
    */
-  resolvePermission(input: PermissionRequestHookInput): Promise<PermissionDecision> {
+  resolvePermission(
+    input: PermissionRequestHookInput,
+    signal?: AbortSignal,
+  ): Promise<PermissionDecision> {
     if (this.isSubagentEvent(input)) {
       log(
         `[Hooks] Subagent PermissionRequest parked for its PTY render: agent=${input.agent_id?.slice(0, 8)} type=${input.agent_type} tool=${input.tool_name}`,
@@ -673,7 +813,7 @@ export class AutoApproveGate {
       );
       this.deps.resetSubagentContext?.();
     }
-    return this.escalateMain(input);
+    return this.escalateMain(input, signal);
   }
 
   /**
@@ -705,7 +845,7 @@ export class AutoApproveGate {
     const observed: ObservedToolCall = {
       toolName: input.tool_name,
       toolInput: input.tool_input,
-      toolUseId: input.tool_use_id,
+      toolUseId: input.tool_use_id ?? this.pairToolUse(input),
       agentId: input.agent_id,
     };
     this.cancelExternallyResolved(observed, 'duplicate-re-park-subagent');
@@ -769,7 +909,9 @@ export class AutoApproveGate {
       const observed: ObservedToolCall = {
         toolName: input.tool_name,
         toolInput: input.tool_input,
-        toolUseId: input.tool_use_id,
+        // #1126: the id of the PreToolUse this request asks about, so the
+        // terminal's Yes (its PostToolUse) closes exactly this prompt.
+        toolUseId: input.tool_use_id ?? this.pairToolUse(input),
         agentId: input.agent_id,
       };
       // #673 duplicate re-request: Claude re-issuing the IDENTICAL
@@ -781,9 +923,11 @@ export class AutoApproveGate {
       // UNVERIFIED (#886): this assumes Claude Code processes a turn's
       // main-context tool-permission hooks SEQUENTIALLY, so two
       // identical-signature MAIN escalations can never be live at once. That
-      // runtime ordering has not been observed against a live Claude Code
-      // (the #885 epic's named experiment); if it ever parallelizes, this
-      // check would need a stronger key (e.g. requiring tool_use_id).
+      // runtime ordering has not been observed against a live Claude Code.
+      // Since #1126 the stronger key exists when pairing succeeds: two
+      // requests each paired with its own PreToolUse carry different
+      // tool_use_ids and do not cancel each other; only unpaired ones do,
+      // and for a hold that only means an early empty release.
       this.cancelExternallyResolved(observed, 'duplicate-re-request');
       this.openQuestionSignatures.set(questionId, {
         toolName: observed.toolName,
@@ -815,8 +959,8 @@ export class AutoApproveGate {
   }
 
   /** Find an open escalation matching `observed`, preferring an exact
-   *  tool_use_id match (future-proofing: not sent by Claude Code today) over
-   *  the tool_name + tool_input signature fallback. */
+   *  tool_use_id match (the id paired from the request's PreToolUse, #1126)
+   *  over the tool_name + tool_input signature fallback. */
   private findOpenQuestionMatching(observed: ObservedToolCall): UUID | undefined {
     // Fast path: called on EVERY admitted PreToolUse/PostToolUse, so the
     // near-universal "no open escalation at all" case must not pay for a

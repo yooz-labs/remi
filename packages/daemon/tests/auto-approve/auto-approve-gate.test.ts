@@ -710,6 +710,91 @@ describe('AutoApproveGate held prompts (#1126)', () => {
     expect(deadlines).toEqual([]);
   });
 
+  test('an abort of the hook request (Claude closed it) dismisses the card and closes the prompt', async () => {
+    const g = gate();
+    const client = new AbortController();
+    const hook = g.resolvePermission(pr(), client.signal);
+    const qid = ids[0] as UUID;
+    client.abort();
+    expect(await hook).toBe('passthrough');
+    expect(registry.getQuestion(SID, qid)).toBeNull();
+    expect(resolved).toEqual([qid]);
+    expect(g.hasOpenHookPrompt()).toBe(false);
+    expect(g.answerHeld(qid, { kind: 'option', option: YES })).toBe('closed');
+  });
+
+  test('an abort after a phone answer is a no-op (the answer already settled the hold)', async () => {
+    const g = gate();
+    const client = new AbortController();
+    const hook = g.resolvePermission(pr(), client.signal);
+    g.answerHeld(ids[0] as UUID, { kind: 'option', option: YES });
+    client.abort();
+    expect(await hook).toBe('allow');
+    expect(resolved).toEqual([]);
+  });
+
+  test('a request already aborted on arrival is not held and creates no card', async () => {
+    const g = gate();
+    const client = new AbortController();
+    client.abort();
+    expect(await g.resolvePermission(pr(), client.signal)).toBe('passthrough');
+    expect(ids).toEqual([]);
+  });
+
+  describe('pairing a request with its PreToolUse (#1126)', () => {
+    const call = { toolName: 'Bash', toolInput: { command: 'git push' } };
+
+    test('the paired PostToolUse closes the prompt; an identical call with another id does not', async () => {
+      const g = gate();
+      g.notePreToolUse({ ...call, toolUseId: 'tu-1' });
+      const hook = g.resolvePermission(pr());
+      g.cancelExternallyResolved({ ...call, toolUseId: 'tu-other' }, 'PostToolUse');
+      expect(g.hasOpenHookPrompt()).toBe(true);
+      g.cancelExternallyResolved({ ...call, toolUseId: 'tu-1' }, 'PostToolUse');
+      expect(await hook).toBe('passthrough');
+      expect(g.hasOpenHookPrompt()).toBe(false);
+    });
+
+    test('two identical calls in flight: no pairing, the name + input fallback still closes it', async () => {
+      const g = gate();
+      g.notePreToolUse({ ...call, toolUseId: 'tu-a' });
+      g.notePreToolUse({ ...call, toolUseId: 'tu-b' });
+      const hook = g.resolvePermission(pr());
+      // Unpaired: either call's PostToolUse ends the hold. The worst case is
+      // an early empty release, never a decision.
+      g.cancelExternallyResolved({ ...call, toolUseId: 'tu-b' }, 'PostToolUse');
+      expect(await hook).toBe('passthrough');
+    });
+
+    test('two requests each paired with its own call stay separate holds', async () => {
+      const g = gate();
+      g.notePreToolUse({ ...call, toolUseId: 'tu-1' });
+      const first = g.resolvePermission(pr());
+      g.notePreToolUse({ ...call, toolUseId: 'tu-2' });
+      const second = g.resolvePermission(pr());
+      // The identical re-request did not cancel the first: different ids.
+      expect(resolved).toEqual([]);
+      g.answerHeld(ids[1] as UUID, { kind: 'option', option: NO });
+      expect(await second).toBe('deny');
+      g.cancelExternallyResolved({ ...call, toolUseId: 'tu-1' }, 'PostToolUse');
+      expect(await first).toBe('passthrough');
+    });
+
+    test("a finished call cannot pair, and another agent's call never pairs", async () => {
+      const g = gate();
+      g.notePreToolUse({ ...call, toolUseId: 'tu-done' });
+      g.noteToolUseEnded('tu-done');
+      g.notePreToolUse({ ...call, toolUseId: 'tu-sub', agentId: 'agent-1' });
+      const hook = g.resolvePermission(pr());
+      // Unpaired, so a PostToolUse with any id falls back to name + input,
+      // except the subagent's (agent scoping still holds).
+      g.cancelExternallyResolved({ ...call, toolUseId: 'tu-sub', agentId: 'agent-1' }, 'x');
+      expect(g.hasOpenHookPrompt()).toBe(true);
+      g.cancelExternallyResolved(call, 'PostToolUse');
+      expect(await hook).toBe('passthrough');
+    });
+  });
+
   test('Stop, SubagentStop-style sweeps and SessionEnd release a held hook empty', async () => {
     const g = gate();
     const atStop = g.resolvePermission(pr({ tool_input: { command: 'a' } }));

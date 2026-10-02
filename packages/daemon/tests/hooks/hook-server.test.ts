@@ -551,6 +551,33 @@ describe('HookServer', () => {
   // Synchronous PermissionRequest resolver (#496)
   // -------------------------------------------------------------------------
   describe('synchronous PermissionRequest decision', () => {
+    it("hands the resolver the request's abort signal, which aborts when the client closes (#1126)", async () => {
+      server = new HookServer({ port });
+      let seen: AbortSignal | undefined;
+      const aborted = new Promise<void>((resolve) => {
+        server.setPermissionResolver((_input, signal) => {
+          seen = signal;
+          signal.addEventListener('abort', () => resolve(), { once: true });
+          return new Promise(() => {}); // held until the client goes away
+        });
+      });
+      server.start();
+      const client = new AbortController();
+      const req = fetch(makeUrl(port), {
+        method: 'POST',
+        body: JSON.stringify(
+          makePayload({ hook_event_name: 'PermissionRequest', tool_name: 'Bash' }),
+        ),
+        signal: client.signal,
+      }).catch((err: unknown) => err);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(seen?.aborted).toBe(false);
+      client.abort();
+      await aborted;
+      expect(seen?.aborted).toBe(true);
+      expect(await req).toBeInstanceOf(Error);
+    });
+
     async function postPermission(p: number): Promise<Response> {
       return fetch(makeUrl(p), {
         method: 'POST',
