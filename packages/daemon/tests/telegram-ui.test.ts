@@ -514,4 +514,62 @@ describe('formatQuestionCard keeps every option label whole (#1155)', () => {
     expect(card.text).toContain('2. Approve, approve edits manually');
     expect(buttonTexts(card)).toHaveLength(3);
   });
+
+  /** The daemon's own plan card (`extractToolQuestion`) for `plan`. */
+  function planCard(plan: string): Question {
+    const tool = extractToolQuestion('ExitPlanMode', { plan });
+    if (tool === null) throw new Error('no plan card');
+    return {
+      id: 'q-plan-limit' as UUID,
+      text: tool.text,
+      options: tool.options,
+      allowsFreeText: false,
+      isAnswered: false,
+      kind: 'plan_approval',
+      ...(tool.detail !== undefined ? { detail: tool.detail } : {}),
+    };
+  }
+
+  /** A plan sized so the card's text and plan take exactly `length`. */
+  const planOfLength = (length: number) =>
+    `# P\n${'x'.repeat(length - 'Plan ready for review\n\n# P\n'.length)}`;
+
+  test('a plan that fits with its label list keeps its buttons, at the limit exactly', () => {
+    const list = formatQuestionCard(planCard('# short')).text.split('# short')[1] ?? '';
+    expect(list).toStartWith('\n\nOptions:\n');
+    const card = formatQuestionCard(planCard(planOfLength(4000 - list.length)));
+    expect(card.text.length).toBe(4000);
+    expect(card.text).toEndWith(list);
+    expect(buttonTexts(card)).toHaveLength(3);
+  });
+
+  test('a plan that fits only without its list is shown whole with no buttons, never "0 more characters"', () => {
+    const plan = planOfLength(3920);
+    const card = formatQuestionCard(planCard(plan));
+    expect(card.keyboard).toBeUndefined();
+    expect(card.text).toBe(
+      `Plan ready for review\n\n${plan}\n\nAnswer in the app: the options do not fit in a Telegram message.`,
+    );
+    expect(card.text).not.toContain('Plan truncated');
+  });
+
+  test('a card whose full label list cannot fit gets no numbered buttons, only "answer in the app"', () => {
+    const long = (n: number) =>
+      ({
+        label: `Option ${n} ${'z'.repeat(1100)}`,
+        value: String(n),
+        isRecommended: false,
+        isYes: false,
+        isNo: false,
+      }) as const;
+    const card = formatQuestionCard({
+      ...standing,
+      options: [long(1), long(2), long(3), long(4)],
+    });
+    expect(card.keyboard).toBeUndefined();
+    expect(card.text.length).toBeLessThanOrEqual(4000);
+    expect(card.text).toBe(
+      'Allow Bash: touch e5-marker.txt\n\nAnswer in the app: the options do not fit in a Telegram message.',
+    );
+  });
 });

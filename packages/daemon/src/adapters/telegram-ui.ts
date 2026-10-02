@@ -107,13 +107,26 @@ function boundText(text: string): string {
 }
 
 /** `text` followed by `tail`, the text cut (marked) so the tail survives
- *  whole within Telegram's limit. */
+ *  whole within Telegram's limit. The caller makes sure the tail leaves
+ *  room for the cut text (`listFits`). */
 function boundTextKeepingTail(text: string, tail: string): string {
   if (tail.length === 0) return boundText(text);
   const room = TELEGRAM_QUESTION_MAX - tail.length;
-  if (room < 4) return boundText(`${text}${tail}`);
   return `${text.length > room ? `${text.slice(0, room - 3)}...` : text}${tail}`;
 }
+
+/** Whether a label list leaves room for at least a cut, marked ask
+ *  ("x...") in one message. */
+function listFits(list: string): boolean {
+  return list.length + 4 <= TELEGRAM_QUESTION_MAX;
+}
+
+/**
+ * The line a card gets instead of buttons when its full label list does not
+ * fit in one message with it (#1155 review). Numbered buttons whose list was
+ * cut away would name options the message no longer shows.
+ */
+const OPTIONS_DO_NOT_FIT = '\n\nAnswer in the app: the options do not fit in a Telegram message.';
 
 /** The longest button text remi sends; a longer label is cut with "...". */
 const BUTTON_LABEL_MAX = 32;
@@ -173,13 +186,26 @@ function noButtonsReason(question: Question): string | null {
  * buttons are offered: a plan is not approved unread. A card one button
  * cannot answer (`noButtonsReason`) gets a line saying where to answer it
  * and no buttons either.
+ *
+ * When a button label is cut, the full label list (`fullLabelList`) counts
+ * toward the limit (#1155 review): a plan keeps its buttons only when it
+ * fits whole WITH its list, and a card whose list cannot fit gets no
+ * buttons (`OPTIONS_DO_NOT_FIT`) rather than numbered buttons whose labels
+ * the message no longer shows.
  */
 export function formatQuestionCard(question: Question): TelegramQuestionCard {
   const detail = question.detail?.trim() ?? '';
+  const list = fullLabelList(question);
   if (detail.length > 0) {
-    const whole = `${question.text}\n\n${detail}${fullLabelList(question)}`;
-    if (whole.length <= TELEGRAM_QUESTION_MAX) {
-      return { text: whole, keyboard: formatQuestionKeyboard(question) };
+    const plan = `${question.text}\n\n${detail}`;
+    if (plan.length + list.length <= TELEGRAM_QUESTION_MAX) {
+      return { text: `${plan}${list}`, keyboard: formatQuestionKeyboard(question) };
+    }
+    // The plan fits but not with its list: shown whole, answered in the app.
+    // (Before, this fell through to the cut path and reported "0 more
+    // characters" missing.)
+    if (list.length > 0 && plan.length + OPTIONS_DO_NOT_FIT.length <= TELEGRAM_QUESTION_MAX) {
+      return { text: `${plan}${OPTIONS_DO_NOT_FIT}`, keyboard: undefined };
     }
     // Leave room for the notice line, whose count is at most 7 digits.
     const notice = (missing: number) =>
@@ -194,8 +220,14 @@ export function formatQuestionCard(question: Question): TelegramQuestionCard {
   const reason = noButtonsReason(question);
   if (reason !== null)
     return { text: boundText(`${question.text}\n\n${reason}`), keyboard: undefined };
+  if (!listFits(list)) {
+    return {
+      text: boundTextKeepingTail(question.text, OPTIONS_DO_NOT_FIT),
+      keyboard: undefined,
+    };
+  }
   return {
-    text: boundTextKeepingTail(question.text, fullLabelList(question)),
+    text: boundTextKeepingTail(question.text, list),
     keyboard: formatQuestionKeyboard(question),
   };
 }

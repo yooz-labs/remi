@@ -33,7 +33,9 @@ Seams between the changes below, found by a review of all of them together.
   reads "This session", and "Allow once" appears only beside the plain Yes.
   Telegram cuts a button at 32 characters, which dropped "for this session";
   when a button is cut, the message now lists every option in full and the
-  buttons are numbered to match.
+  buttons are numbered to match. The list counts toward Telegram's message
+  limit: a plan keeps its buttons only when it fits with the list, and a card
+  whose list does not fit has no buttons and says to answer in the app.
 - **A terminal-only question's Cancel reads "Decline tool call"** in the app,
   which is what it does (it read "Dismiss question").
 - **`bun test` passes with `REMI_HOME` exported**, as the README suggests for
