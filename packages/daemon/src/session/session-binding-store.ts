@@ -73,6 +73,8 @@ export class SessionBindingStore {
    * caller never treats a newer daemon's record that names its harness as a
    * string as Claude. A non-string `harness` never reaches here: the parser
    * treats it as absent, so it reads as Claude (ADR 0032, decision 5).
+   *
+   * No production caller yet (Phase 2+); see ADR 0032.
    */
   getIdentity(remiSessionId: UUID): SessionIdentity | null {
     const stored = this.store.findByRemiSessionId(remiSessionId);

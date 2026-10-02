@@ -529,9 +529,9 @@ export interface DiscoverableSession {
 
   /**
    * The harness this session runs under (#1162, ADR 0032). Typed only: no
-   * daemon code sets it, so every entry omits it, and a reader treats absence
-   * as the default harness (`claude`). Declared now so the Codex epic adds a
-   * producer, not a protocol change.
+   * daemon code sets it, so every entry omits it, and a reader should
+   * treat absence as the default harness (`claude`); none reads it yet. Declared
+   * now so the Codex epic adds a producer, not a protocol change.
    */
   readonly harness?: HarnessId | undefined;
 

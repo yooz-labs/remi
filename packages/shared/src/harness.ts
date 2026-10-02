@@ -69,7 +69,9 @@ export type AnswerPath = 'structured' | 'keystroke' | 'none';
  * Who draws the decision's dialog on the machine where the harness runs.
  * Typed only: not attached to any message.
  *
- * - `harness`: the harness's own dialog (Claude renders its own during a hold).
+ * - `harness`: the harness's own dialog. Claude renders its own during a
+ *   MAIN-agent hold; a background subagent's dialog does not render while its
+ *   hook is held (AGENTS.md, ADR 0031).
  * - `remi`: a dialog remi draws itself.
  * - `none`: nothing is drawn locally.
  */

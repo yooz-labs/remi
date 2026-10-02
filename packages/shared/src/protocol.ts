@@ -302,8 +302,8 @@ export interface HelloAckMessage {
   readonly claudeSessionId?: UUID | null;
   /**
    * The harness this daemon's session runs under (#1162, ADR 0032). Typed
-   * only: no daemon code sets it, so every ack omits it, and a client treats
-   * absence as the default harness (`claude`).
+   * only: no daemon code sets it, so every ack omits it, and a client should
+   * treat absence as the default harness (`claude`); none reads it yet.
    */
   readonly harness?: HarnessId | undefined;
   /**
@@ -426,8 +426,8 @@ export interface QuestionMessage {
   readonly claudeSessionId?: UUID | undefined;
   /**
    * The harness the question came from (#1162, ADR 0032). Typed only: no
-   * daemon code sets it, so every question omits it, and a client treats
-   * absence as the default harness (`claude`).
+   * daemon code sets it, so every question omits it, and a client
+   * should treat absence as the default harness (`claude`); none reads it yet.
    */
   readonly harness?: HarnessId | undefined;
   /**
