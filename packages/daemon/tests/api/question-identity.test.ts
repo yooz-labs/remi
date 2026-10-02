@@ -132,6 +132,7 @@ function buildPipeline(submits: string[] = []): {
     {
       sessionRegistry: registry,
       isInSubagentContext: () => false,
+      holdMs: 60_000,
       escalate: (i) => hookBridge.handlePermissionRequest(i),
       parkForPTY: (i) => {
         const q = hookBridge.buildPermissionQuestion(i);

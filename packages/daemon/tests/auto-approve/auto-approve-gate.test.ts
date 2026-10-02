@@ -1,10 +1,13 @@
 /**
- * AutoApproveGate after #1125 (ADR 0030): the gate decides nothing. Every
- * main-agent prompt escalates (a binary one is pushed on its render, a
- * multi-choice / design one at once), every subagent prompt parks for its PTY
- * render, and every hook answer is 'passthrough'. What remains to pin is the
- * routing, the push triggers, and the external-resolution bookkeeping that
- * clears cards nobody will answer through remi.
+ * AutoApproveGate after #1125 (ADR 0030) and #1126 (ADR 0031): the gate
+ * decides nothing on its own. A binary main-agent prompt holds its hook and
+ * pushes its card at once; only a human answer (the phone's, through
+ * `answerHeld`, or the terminal's) settles it, and every non-answer path
+ * releases the hook with the empty response. A multi-choice / design prompt is
+ * pushed at once and answered 'passthrough'; a subagent prompt parks for its
+ * PTY render. What is pinned here: the routing, the push triggers, the
+ * answer-to-decision mapping, the deadline, and the external-resolution
+ * bookkeeping that clears cards nobody will answer through remi.
  *
  * Real gate, real `SessionRegistry`. The deps
  * are recording sinks for the gate's outward calls (escalate, park, push),
@@ -13,7 +16,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { generateId } from '@remi/shared';
-import type { UUID } from '@remi/shared';
+import type { QuestionOption, UUID } from '@remi/shared';
 import { AutoApproveGate } from '../../src/auto-approve/auto-approve-gate.ts';
 import type { AutoApproveGateDeps } from '../../src/auto-approve/auto-approve-gate.ts';
 import { __resetLoggerForTests, configureLogger } from '../../src/cli/logger.ts';
@@ -71,6 +74,7 @@ describe('AutoApproveGate routing (#1125: nothing is decided, everything is rela
       {
         sessionRegistry: registry,
         isInSubagentContext: () => subagentContext,
+        holdMs: 60_000,
         resetSubagentContext: () => {
           resets++;
         },
@@ -119,14 +123,27 @@ describe('AutoApproveGate routing (#1125: nothing is decided, everything is rela
     await registry.shutdown();
   });
 
-  test('a binary main prompt escalates, answers passthrough, and is marked to push on render (#1121)', async () => {
-    expect(await gate().resolvePermission(pr())).toBe('passthrough');
+  test('a binary main prompt holds its hook and pushes its card at once (#1126)', async () => {
+    const g = gate();
+    let settled = false;
+    const hook = g.resolvePermission(pr()).then((d) => {
+      settled = true;
+      return d;
+    });
+    await Bun.sleep(5);
     expect(escalated).toHaveLength(1);
-    expect(pushOnRenderIds).toEqual(escalatedIds);
-    // Not pushed now: the card waits for its prompt to render on screen.
-    expect(pushNowIds).toEqual([]);
+    // Pushed now, by id: the dialog renders during the hold, the card does
+    // not wait for it.
+    expect(pushNowIds).toEqual(escalatedIds);
+    expect(pushOnRenderIds).toEqual([]);
     expect(parks).toEqual([]);
     expect(submits).toEqual([]);
+    expect(settled).toBe(false);
+    expect(g.hasOpenHookPrompt()).toBe(true);
+    // Every non-answer release is the empty response.
+    g.forceRelease('test');
+    expect(await hook).toBe('passthrough');
+    expect(g.hasOpenHookPrompt()).toBe(false);
   });
 
   test('a design prompt (AskUserQuestion) escalates and is pushed immediately (#625)', async () => {
@@ -185,16 +202,18 @@ describe('AutoApproveGate routing (#1125: nothing is decided, everything is rela
     expect(pushNowIds).toEqual([]);
   });
 
-  test('a throwing push trigger is absorbed: the hook is still answered passthrough', async () => {
+  test('a throwing push trigger is absorbed: the hook is still answered, never left dangling', async () => {
     const g = gate({
-      pushOnRender: () => {
-        throw new Error('test: push failed');
-      },
       onHeldEscalate: () => {
         throw new Error('test: push failed');
       },
     });
-    expect(await g.resolvePermission(pr())).toBe('passthrough');
+    // The binary prompt still holds (its dialog is on screen and the
+    // terminal can answer it); the release is the empty response.
+    const hook = g.resolvePermission(pr());
+    expect(g.hasOpenHookPrompt()).toBe(true);
+    g.forceRelease('test');
+    expect(await hook).toBe('passthrough');
     expect(
       await g.resolvePermission(
         pr({ tool_name: 'AskUserQuestion', tool_input: { question: 'q' } }),
@@ -226,19 +245,24 @@ describe('AutoApproveGate routing (#1125: nothing is decided, everything is rela
 
   test('#710: a MAIN-tagged prompt with the tracker stuck true resets it and escalates as main', async () => {
     subagentContext = true;
-    expect(await gate().resolvePermission(pr())).toBe('passthrough');
+    const g = gate();
+    const hook = g.resolvePermission(pr());
     expect(resets).toBe(1);
     expect(escalated).toHaveLength(1);
     expect(parks).toEqual([]);
-    expect(pushOnRenderIds).toEqual(escalatedIds);
+    expect(pushNowIds).toEqual(escalatedIds);
+    g.forceRelease('test');
+    expect(await hook).toBe('passthrough');
   });
 
   test('#807: onSubagentPassthrough reports a parked subagent call, never a main one', async () => {
     const g = gate();
     const sub = pr({ agent_id: 'agent-1', agent_type: 'general-purpose' });
     await g.resolvePermission(sub);
-    await g.resolvePermission(pr());
+    const main = g.resolvePermission(pr());
     expect(subagentAlerts).toEqual([sub]);
+    g.forceRelease('test');
+    await main;
   });
 
   test('#807: a throwing onSubagentPassthrough cannot break the hook answer', async () => {
@@ -278,6 +302,7 @@ describe('AutoApproveGate external resolution (#673)', () => {
       {
         sessionRegistry: registry,
         isInSubagentContext: () => false,
+        holdMs: 60_000,
         escalate: () => {
           const id = generateId() as UUID;
           escalatedIds.push(id);
@@ -313,9 +338,9 @@ describe('AutoApproveGate external resolution (#673)', () => {
     await registry.shutdown();
   });
 
-  test('a matching (tool_name, tool_input) removes the card and fires onResolved(cancelled)', async () => {
+  test('a matching (tool_name, tool_input) removes the card, fires onResolved(cancelled) and releases the hold empty', async () => {
     const g = gate();
-    await g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
+    const hook = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
     const qid = escalatedIds[0] as UUID;
     expect(registry.getQuestion(SID, qid)).not.toBeNull();
 
@@ -326,11 +351,14 @@ describe('AutoApproveGate external resolution (#673)', () => {
 
     expect(registry.getQuestion(SID, qid)).toBeNull();
     expect(resolved).toEqual([{ qid, reason: 'cancelled' }]);
+    // The terminal answered: the hook gets the empty response Claude ignores.
+    expect(await hook).toBe('passthrough');
+    expect(g.answerHeld(qid, { kind: 'cancel' })).toBe('closed');
   });
 
   test('same tool_name but a DIFFERENT tool_input does not match', async () => {
     const g = gate();
-    await g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
+    void g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
     g.cancelExternallyResolved({ toolName: 'Bash', toolInput: { command: 'ls' } }, 'PreToolUse');
     expect(registry.getQuestion(SID, escalatedIds[0] as UUID)).not.toBeNull();
     expect(resolved).toEqual([]);
@@ -338,7 +366,7 @@ describe('AutoApproveGate external resolution (#673)', () => {
 
   test('a different tool_name with the SAME tool_input does not match', async () => {
     const g = gate();
-    await g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
+    void g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
     g.cancelExternallyResolved(
       { toolName: 'Terminal', toolInput: { command: 'git push' } },
       'PreToolUse',
@@ -348,7 +376,7 @@ describe('AutoApproveGate external resolution (#673)', () => {
 
   test('key order in tool_input does not defeat the signature match', async () => {
     const g = gate();
-    await g.resolvePermission(pr({ tool_input: { command: 'git push', description: 'push' } }));
+    void g.resolvePermission(pr({ tool_input: { command: 'git push', description: 'push' } }));
     g.cancelExternallyResolved(
       { toolName: 'Bash', toolInput: { description: 'push', command: 'git push' } },
       'PostToolUse',
@@ -358,7 +386,7 @@ describe('AutoApproveGate external resolution (#673)', () => {
 
   test('when both sides carry a tool_use_id it must agree as well', async () => {
     const g = gate();
-    await g.resolvePermission(pr({ tool_use_id: 'use-a' }));
+    void g.resolvePermission(pr({ tool_use_id: 'use-a' }));
     g.cancelExternallyResolved(
       { toolName: 'Bash', toolInput: { command: 'git push' }, toolUseId: 'use-b' },
       'PreToolUse',
@@ -373,8 +401,8 @@ describe('AutoApproveGate external resolution (#673)', () => {
 
   test('a duplicate re-request for the SAME signature resolves the earlier, now-stale card', async () => {
     const g = gate();
-    await g.resolvePermission(pr());
-    await g.resolvePermission(pr());
+    void g.resolvePermission(pr());
+    void g.resolvePermission(pr());
     const [first, second] = escalatedIds as [UUID, UUID];
     expect(resolved).toEqual([{ qid: first, reason: 'cancelled' }]);
     expect(registry.getQuestion(SID, first)).toBeNull();
@@ -383,7 +411,7 @@ describe('AutoApproveGate external resolution (#673)', () => {
 
   test('retireQuestion: a card answered through remi is not resolved again by its tool run', async () => {
     const g = gate();
-    await g.resolvePermission(pr());
+    const hook = g.resolvePermission(pr());
     const qid = escalatedIds[0] as UUID;
     // The answer path removes + dismisses the card itself, then retires it.
     registry.removeQuestion(SID, qid, 'user_answer');
@@ -395,6 +423,9 @@ describe('AutoApproveGate external resolution (#673)', () => {
     );
 
     expect(resolved).toEqual([]);
+    // A retired hold is released with the empty response, never left
+    // pending to its deadline.
+    expect(await hook).toBe('passthrough');
   });
 
   test('retireQuestion is a no-op for an id the gate never tracked', () => {
@@ -416,7 +447,7 @@ describe('AutoApproveGate external resolution (#673)', () => {
         throw new Error('test: broadcast failed');
       },
     });
-    await g.resolvePermission(pr());
+    void g.resolvePermission(pr());
     const qid = escalatedIds[0] as UUID;
     expect(() =>
       g.cancelExternallyResolved(
@@ -429,12 +460,265 @@ describe('AutoApproveGate external resolution (#673)', () => {
 
   test('forceRelease resolves every open card and reports how many', async () => {
     const g = gate();
-    await g.resolvePermission(pr({ tool_input: { command: 'a' } }));
-    await g.resolvePermission(pr({ tool_input: { command: 'b' } }));
+    void g.resolvePermission(pr({ tool_input: { command: 'a' } }));
+    void g.resolvePermission(pr({ tool_input: { command: 'b' } }));
     expect(g.forceRelease('remi unstick')).toEqual({ resolved: 2 });
     expect(resolved.map((r) => r.qid).sort()).toEqual([...escalatedIds].sort());
     // Nothing left to resolve a second time.
     expect(g.forceRelease('remi unstick')).toEqual({ resolved: 0 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1126: a held binary prompt is settled by exactly one human answer (the
+// phone's through `answerHeld`, or the terminal's through a resolution
+// signal), or released empty at its deadline. The phone's answer maps by the
+// card option's MEANING; nothing a card does not offer can be expressed.
+// ---------------------------------------------------------------------------
+describe('AutoApproveGate held prompts (#1126)', () => {
+  const SID = generateId() as UUID;
+  let registry: SessionRegistry;
+  let ids: UUID[];
+  let resolved: UUID[];
+  let deadlines: Array<{ qid: UUID; registered: boolean }>;
+  let noticesCleared: UUID[];
+
+  function gate(over: Partial<AutoApproveGateDeps> = {}): AutoApproveGate {
+    registry.registerSession(SID, '/d', fakePTY([]), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    return new AutoApproveGate(
+      {
+        sessionRegistry: registry,
+        isInSubagentContext: () => false,
+        holdMs: 60_000,
+        escalate: () => {
+          const id = generateId() as UUID;
+          ids.push(id);
+          registry.addQuestion(SID, {
+            id,
+            text: 'Allow Bash: git push',
+            options: [],
+            allowsFreeText: false,
+            isAnswered: false,
+          });
+          return id;
+        },
+        onResolved: (qid) => {
+          resolved.push(qid);
+        },
+        onHoldDeadline: (qid) => {
+          deadlines.push({ qid, registered: registry.getQuestion(SID, qid) !== null });
+        },
+        onTerminalNoticeResolved: (qid) => {
+          noticesCleared.push(qid);
+        },
+        ...over,
+      },
+      SID,
+    );
+  }
+
+  const YES: QuestionOption = {
+    label: 'Yes',
+    value: '1',
+    isRecommended: true,
+    isYes: true,
+    isNo: false,
+  };
+  const NO: QuestionOption = {
+    label: 'No',
+    value: '3',
+    isRecommended: false,
+    isYes: false,
+    isNo: true,
+  };
+  function standing(suggestionIndex: number, label = 'Yes, and switch to acceptEdits mode') {
+    return {
+      label,
+      value: '2',
+      isRecommended: false,
+      isYes: true,
+      isNo: false,
+      suggestionIndex,
+    } satisfies QuestionOption;
+  }
+  const SET_MODE = { type: 'setMode', mode: 'acceptEdits', destination: 'session' };
+  const ADD_RULES = {
+    type: 'addRules',
+    rules: [{ toolName: 'Bash', ruleContent: 'git push' }],
+    behavior: 'allow',
+    destination: 'localSettings',
+  };
+  const ADD_DIRS = { type: 'addDirectories', directories: ['/tmp/x'], destination: 'session' };
+
+  beforeEach(() => {
+    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    ids = [];
+    resolved = [];
+    deadlines = [];
+    noticesCleared = [];
+    configureLogger({ writeLog: () => {} });
+  });
+
+  afterEach(async () => {
+    __resetLoggerForTests();
+    await registry.shutdown();
+  });
+
+  test('phone Yes resolves the hook with allow, exactly once', async () => {
+    const g = gate();
+    const hook = g.resolvePermission(pr());
+    const qid = ids[0] as UUID;
+    expect(g.answerHeld(qid, { kind: 'option', option: YES })).toBe('resolved');
+    expect(await hook).toBe('allow');
+    // The hold is over: a second answer is refused as closed, and the
+    // prompt no longer counts as open.
+    expect(g.answerHeld(qid, { kind: 'option', option: NO })).toBe('closed');
+    expect(g.hasOpenHookPrompt()).toBe(false);
+  });
+
+  test('phone No resolves deny; a message rides along trimmed, an empty one is dropped', async () => {
+    const g = gate();
+    const plain = g.resolvePermission(pr({ tool_input: { command: 'a' } }));
+    expect(g.answerHeld(ids[0] as UUID, { kind: 'option', option: NO })).toBe('resolved');
+    expect(await plain).toBe('deny');
+
+    const withMsg = g.resolvePermission(pr({ tool_input: { command: 'b' } }));
+    expect(
+      g.answerHeld(ids[1] as UUID, {
+        kind: 'option',
+        option: NO,
+        message: '  use the staging branch instead  ',
+      }),
+    ).toBe('resolved');
+    expect(await withMsg).toEqual({ behavior: 'deny', message: 'use the staging branch instead' });
+
+    const blank = g.resolvePermission(pr({ tool_input: { command: 'c' } }));
+    expect(g.answerHeld(ids[2] as UUID, { kind: 'option', option: NO, message: '   ' })).toBe(
+      'resolved',
+    );
+    expect(await blank).toBe('deny');
+  });
+
+  test('a very long deny message is bounded before it reaches Claude', async () => {
+    const g = gate();
+    const hook = g.resolvePermission(pr());
+    g.answerHeld(ids[0] as UUID, { kind: 'option', option: NO, message: 'x'.repeat(5000) });
+    const decision = (await hook) as { behavior: string; message: string };
+    expect(decision.behavior).toBe('deny');
+    expect(decision.message.length).toBe(2000);
+  });
+
+  test('Cancel on a held card is a No through the hook, never an Esc', async () => {
+    const g = gate();
+    const hook = g.resolvePermission(pr());
+    expect(g.answerHeld(ids[0] as UUID, { kind: 'cancel' })).toBe('resolved');
+    expect(await hook).toBe('deny');
+  });
+
+  test('a setMode standing option echoes the suggestion verbatim', async () => {
+    const g = gate();
+    const hook = g.resolvePermission(pr({ permission_suggestions: [ADD_DIRS, SET_MODE] }));
+    expect(g.answerHeld(ids[0] as UUID, { kind: 'option', option: standing(1) })).toBe('resolved');
+    expect(await hook).toEqual({ behavior: 'allow', updatedPermissions: [SET_MODE] });
+  });
+
+  test('an addRules standing option echoes the rule scoped to this session', async () => {
+    const g = gate();
+    const hook = g.resolvePermission(pr({ permission_suggestions: [ADD_RULES] }));
+    expect(
+      g.answerHeld(ids[0] as UUID, {
+        kind: 'option',
+        option: standing(0, 'Yes, allow git push for this session'),
+      }),
+    ).toBe('resolved');
+    expect(await hook).toEqual({
+      behavior: 'allow',
+      updatedPermissions: [{ ...ADD_RULES, destination: 'session' }],
+    });
+  });
+
+  test('what a card does not offer is refused and the hold stays: addDirectories, a missing suggestion, a reworded Yes, free text', async () => {
+    const g = gate();
+    let settled = false;
+    const hook = g
+      .resolvePermission(pr({ permission_suggestions: [ADD_DIRS, SET_MODE] }))
+      .then((d) => {
+        settled = true;
+        return d;
+      });
+    const qid = ids[0] as UUID;
+    // An option naming the addDirectories entry (no card offers it).
+    expect(g.answerHeld(qid, { kind: 'option', option: standing(0) })).toBe('refused');
+    // An index with no suggestion behind it.
+    expect(g.answerHeld(qid, { kind: 'option', option: standing(7) })).toBe('refused');
+    // A Yes that is not the one-time Yes and names no suggestion.
+    expect(
+      g.answerHeld(qid, {
+        kind: 'option',
+        option: { ...YES, label: 'Yes, and always allow' },
+      }),
+    ).toBe('refused');
+    expect(g.answerHeld(qid, { kind: 'text' })).toBe('refused');
+    await Bun.sleep(5);
+    expect(settled).toBe(false);
+    expect(registry.getQuestion(SID, qid)).not.toBeNull();
+    // The hold is intact: a real option still resolves it.
+    expect(g.answerHeld(qid, { kind: 'option', option: YES })).toBe('resolved');
+    expect(await hook).toBe('allow');
+  });
+
+  test('an id this gate never held is unknown (hook-less and passthrough cards use their own path)', async () => {
+    const g = gate();
+    expect(g.answerHeld(generateId() as UUID, { kind: 'option', option: YES })).toBe('unknown');
+    await g.resolvePermission(pr({ tool_name: 'AskUserQuestion', tool_input: { question: 'q' } }));
+    expect(g.answerHeld(ids[0] as UUID, { kind: 'option', option: YES })).toBe('unknown');
+  });
+
+  test('the deadline releases the hook empty, tells the phone while the card is registered, then dismisses it', async () => {
+    const g = gate({ holdMs: 30 });
+    const hook = g.resolvePermission(pr());
+    const qid = ids[0] as UUID;
+    expect(await hook).toBe('passthrough');
+    expect(deadlines).toEqual([{ qid, registered: true }]);
+    expect(registry.getQuestion(SID, qid)).toBeNull();
+    expect(resolved).toEqual([qid]);
+    // Claude's dialog is still up, so the prompt stays open for the probe,
+    // and a late phone answer is refused as closed.
+    expect(g.hasOpenHookPrompt()).toBe(true);
+    expect(g.answerHeld(qid, { kind: 'option', option: YES })).toBe('closed');
+    // The terminal answers later: the prompt closes and the notice clears,
+    // with no second card dismissal.
+    g.cancelExternallyResolved(
+      { toolName: 'Bash', toolInput: { command: 'git push' } },
+      'PostToolUse',
+    );
+    expect(g.hasOpenHookPrompt()).toBe(false);
+    expect(noticesCleared).toEqual([qid]);
+    expect(resolved).toEqual([qid]);
+  });
+
+  test('an answer before the deadline cancels it: no notice, no late release', async () => {
+    const g = gate({ holdMs: 40 });
+    const hook = g.resolvePermission(pr());
+    g.answerHeld(ids[0] as UUID, { kind: 'option', option: YES });
+    expect(await hook).toBe('allow');
+    await Bun.sleep(80);
+    expect(deadlines).toEqual([]);
+  });
+
+  test('Stop, SubagentStop-style sweeps and SessionEnd release a held hook empty', async () => {
+    const g = gate();
+    const atStop = g.resolvePermission(pr({ tool_input: { command: 'a' } }));
+    g.cancelStale('Stop', { mainOnly: true });
+    expect(await atStop).toBe('passthrough');
+    const atEnd = g.resolvePermission(pr({ tool_input: { command: 'b' } }));
+    g.cancelStale('SessionEnd');
+    expect(await atEnd).toBe('passthrough');
+    expect(resolved).toEqual(ids);
   });
 });
 
@@ -465,6 +749,7 @@ describe('AutoApproveGate subagent external-resolution (#799)', () => {
       {
         sessionRegistry: registry,
         isInSubagentContext: () => false,
+        holdMs: 60_000,
         // Unused by these subagent-only tests (no main escalation is ever
         // driven), but AutoApproveGateDeps requires it.
         escalate: () => generateId(),
@@ -658,6 +943,7 @@ describe('AutoApproveGate Stop resolves a still-open MAIN passthrough question (
       {
         sessionRegistry: registry,
         isInSubagentContext: () => false,
+        holdMs: 60_000,
         escalate: () => {
           lastQuestionId = generateId();
           return lastQuestionId;
@@ -800,6 +1086,7 @@ describe('AutoApproveGate full teardown resolves ALL survivors (#948)', () => {
       {
         sessionRegistry: registry,
         isInSubagentContext: () => false,
+        holdMs: 60_000,
         escalate: () => {
           lastQuestionId = generateId();
           return lastQuestionId;
@@ -1029,6 +1316,7 @@ describe('AutoApproveGate cancelStaleForAgent (#799 part 2, subagent)', () => {
       {
         sessionRegistry: registry,
         isInSubagentContext: () => false,
+        holdMs: 60_000,
         // Unused by these subagent-only tests (no main escalation is ever
         // driven), but AutoApproveGateDeps requires it.
         escalate: () => generateId(),

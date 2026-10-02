@@ -210,6 +210,13 @@ export function buildPushText(
   return { title, body };
 }
 
+/** The collapse key (`questionId` on the wire) of a terminal notice for a
+ *  question (#1126): distinct from the card's, so dismissing the card leaves
+ *  the notice and dismissing the notice leaves any card. */
+export function terminalNoticeId(questionId: string): string {
+  return `notice-${questionId}`;
+}
+
 /** Signature of the APNS-relay push call; injectable so the push branch is
  *  observable in tests without mocking a network module. */
 export type PushFn = typeof sendPushTrigger;
@@ -217,8 +224,9 @@ export type PushFn = typeof sendPushTrigger;
 /**
  * The outcome of attempting to deliver a question's notification (epic #603
  * Phase 1), returned by `maybePush`. Before #1125 the permission gate raced it
- * to decide whether a held hook kept blocking Claude; nothing holds now, so
- * it is diagnostic only:
+ * to decide whether a held hook kept blocking Claude. A hold since #1126 has
+ * a fixed deadline instead (`[prompts] hold_seconds`) and never waits on
+ * delivery, so this is diagnostic only:
  *   - `in_app`     a client is attached, so the question shows in-app (the only
  *                  case where `maybePush` deliberately does NOT push — but the
  *                  user IS reachable).
@@ -509,6 +517,69 @@ export class NotificationDispatcher {
         return false;
       }
     }
+  }
+
+  /**
+   * Alert push telling the user a prompt must be answered in the terminal
+   * (#1126), never a card: no category, no options, nothing to answer from
+   * the lock screen, and nothing registered in-app. Two reasons:
+   *   - `hold_deadline`: a held prompt waited `[prompts] hold_seconds` with no
+   *     answer, so remi released its hold; Claude's dialog is still up (the
+   *     #733 handoff, restored for held hooks).
+   * Called while the question is still registered, so the body names the
+   * actual ask.
+   *
+   * Deliberate differences from `maybePush`:
+   *  - always pushes (no attached-client skip, no dedup): an attached client
+   *    only sees its card vanish, and this is a one-shot state change;
+   *  - collapse key `notice-<questionId>`, never the question id, so the
+   *    card's own quiet dismissal cannot collapse this notice away;
+   *    `dismissTerminalNotice` clears it once the prompt is answered.
+   *
+   * Filtered by per-device push preferences as a `question` push (#968): it
+   * buzzes, about a question, so a device that muted questions does not get
+   * it. It clears nothing, so skipping it strands nothing.
+   */
+  pushTerminalNotice(questionSessionId: UUID, question: Question, reason: 'hold_deadline'): void {
+    const { deviceTokens, pushConfig } = this.deps;
+    this.deps.refreshDeviceTokens?.();
+    const wanting = tokensWanting(deviceTokens.values(), 'question');
+    if (wanting.length === 0) return;
+    const session = this.deps.sessionRegistry.getSession(this.sessionId);
+    const sessionName = session?.name || 'Agent';
+    const ask = normalizeNotificationText(question.text) || 'a permission request';
+    const title = `${sessionName}: answer in the terminal`.slice(0, TITLE_MAX);
+    const body = (
+      reason === 'hold_deadline'
+        ? `No answer in time; the prompt is waiting in the terminal: ${ask}`
+        : ask
+    ).slice(0, BODY_MAX);
+    const cfg = pushConfig();
+    const pushSessionId = this.deps.getPrimarySessionId() ?? questionSessionId;
+    for (const dt of wanting) {
+      void this.pushOnceWithRetry(
+        cfg.signalingUrl,
+        dt.token,
+        {
+          title,
+          body,
+          ...(cfg.pushSecret !== undefined ? { pushSecret: cfg.pushSecret } : {}),
+          sessionId: pushSessionId,
+          questionId: terminalNoticeId(question.id),
+          kind: 'question' as const,
+        },
+        {
+          sent: `Push terminal notice (${reason}) sent for question ${question.id}`,
+          failed: `Push terminal notice (${reason}) failed for question ${question.id}`,
+        },
+      );
+    }
+  }
+
+  /** Clear a notice `pushTerminalNotice` sent, once its prompt is answered
+   *  (#1126). Same quiet, never-filtered dismissal as `dismiss`. */
+  dismissTerminalNotice(questionSessionId: UUID, questionId: UUID): void {
+    this.dismiss(questionSessionId, terminalNoticeId(questionId) as UUID);
   }
 
   /**

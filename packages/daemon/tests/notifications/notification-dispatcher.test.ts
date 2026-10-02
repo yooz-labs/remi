@@ -11,6 +11,7 @@ import {
   isTokenInvalidError,
   selectDynOptions,
   selectPushCategory,
+  terminalNoticeId,
 } from '../../src/notifications/notification-dispatcher.ts';
 import type { PTYSession } from '../../src/pty/pty-session.ts';
 import { SessionRegistry } from '../../src/session/session-registry.ts';
@@ -157,9 +158,18 @@ describe('selectPushCategory', () => {
     expect(selectPushCategory([yes('1', ' Yes '), no('2', 'No')])).toBe('REMI_YN');
   });
 
-  test('the legacy ["Yes","Always","No"] suggestion set is REMI_YNA', () => {
-    const { options } = optionsFromSuggestions(['Yes', 'Always', 'No']);
-    expect(selectPushCategory(options)).toBe('REMI_YNA');
+  test('held cards: Yes/No is REMI_YN, Yes + one standing grant is REMI_YNA, two get no category (#1126)', () => {
+    expect(selectPushCategory(optionsFromSuggestions(['Yes', 'Always', 'No']).options)).toBe(
+      'REMI_YN',
+    );
+    const setMode = { type: 'setMode', mode: 'acceptEdits', destination: 'session' };
+    const rule = {
+      type: 'addRules',
+      rules: [{ toolName: 'Bash', ruleContent: 'ls' }],
+      behavior: 'allow',
+    };
+    expect(selectPushCategory(optionsFromSuggestions([setMode]).options)).toBe('REMI_YNA');
+    expect(selectPushCategory(optionsFromSuggestions([rule, setMode]).options)).toBeUndefined();
   });
 
   test('a standing option outside the REMI_YNA layout gets no category', () => {
@@ -1350,5 +1360,33 @@ describe('NotificationDispatcher per-device push preferences (#968)', () => {
     expect(pushed.map((p) => p.token)).toEqual(['muted']);
     expect(pushed[0]?.opts['dismiss']).toBe(true);
     expect(pushed[0]?.opts['kind']).toBe('dismiss');
+  });
+
+  test('a terminal notice (#1126) is never a card: no category or options, its own collapse key, sent even when attached', async () => {
+    register(true);
+    deviceTokens.set('muted', token('muted', { questions: false, turnComplete: true }));
+    deviceTokens.set('wants', token('wants', { questions: true, turnComplete: true }));
+
+    make().pushTerminalNotice(SID, question(QID, [yesOpt, noOpt]), 'hold_deadline');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    // Filtered as a question push; delivered despite the attached client.
+    expect(pushed.map((p) => p.token)).toEqual(['wants']);
+    const opts = pushed[0]?.opts ?? {};
+    expect(opts['category']).toBeUndefined();
+    expect(opts['options']).toBeUndefined();
+    expect(opts['dynOptions']).toBeUndefined();
+    expect(opts['kind']).toBe('question');
+    expect(opts['questionId']).toBe(terminalNoticeId(QID));
+    expect(opts['questionId']).not.toBe(QID);
+    expect(String(opts['title'])).toContain('answer in the terminal');
+  });
+
+  test('dismissTerminalNotice clears the notice by its own key, never the card', () => {
+    register(false);
+    deviceTokens.set('a', token('a', { questions: false, turnComplete: false }));
+    make().dismissTerminalNotice(SID, QID);
+    expect(pushed[0]?.opts['questionId']).toBe(terminalNoticeId(QID));
+    expect(pushed[0]?.opts['dismiss']).toBe(true);
   });
 });

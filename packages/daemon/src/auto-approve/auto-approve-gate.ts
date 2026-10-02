@@ -2,28 +2,37 @@
  * AutoApproveGate — owns the PermissionRequest control plane for a session.
  *
  * Since #1125 (ADR 0030) remi no longer judges permissions: there is no LLM
- * evaluator and no rule layer behind this gate any more, and nothing is
- * auto-answered. The class keeps its historical name until Phase 3 (#1126)
- * restructures it into the permission relay it now is.
+ * evaluator and no rule layer behind this gate, and nothing is answered
+ * without a human choice. The class keeps its historical name; it is the
+ * permission relay.
  *
- * Given a PermissionRequest hook event, `resolvePermission` returns the
- * synchronous hook response (#496), which is always 'passthrough' so Claude
- * renders its own native prompt in the terminal at once:
- *   - a BINARY main-context prompt is stashed and pushed when its native
- *     prompt renders (`escalateForRender` -> `pushOnRender`, #1121), so the
- *     card describes the prompt actually on screen; a phone answer is typed
- *     using the screen's numbering and refused when the chosen option does
- *     not match the screen (#1134);
- *   - a multi-choice / design prompt (AskUserQuestion, ExitPlanMode) cannot be
- *     expressed as a binary answer and is pushed immediately
- *     (`escalatePassthrough`);
+ * Since #1126 (ADR 0031) a BINARY main-context prompt is answered through
+ * its held hook (ADR 0002): `resolvePermission` stashes the question,
+ * pushes the card at once by id (`onHeldEscalate`), and returns a promise
+ * that stays pending while Claude's own dialog is on screen (it renders
+ * about 0.1 s after the hook POST, during the hold). The first answer wins:
+ *   - a phone answer (`answerHeld`) resolves the hook with `allow`, `deny`
+ *     (optionally with the user's message, which Claude receives as the
+ *     tool result), or `allow` + `updatedPermissions` for a standing grant
+ *     (`standingGrantFor`);
+ *   - an answer in the terminal ends the hold through the external
+ *     resolution signals below, and the hook gets an empty response that
+ *     Claude ignores;
+ *   - the hold deadline (`[prompts] hold_seconds`) releases the hook with an
+ *     empty response, Claude's dialog simply stays, the card is dismissed
+ *     and `onHoldDeadline` tells the phone to answer at the terminal (#733).
+ * An empty response never decides anything: it is what every non-answer
+ * path sends.
+ *
+ * Other shapes:
+ *   - a multi-choice / design prompt (AskUserQuestion, ExitPlanMode, a
+ *     multi-choice string-label permission) is answered 'passthrough' and
+ *     pushed at once (`escalatePassthrough`); its answer is still typed
+ *     into the PTY (Phase 4, #1127, replaces that);
  *   - a SUBAGENT-tagged prompt (`agent_id` present) is parked
  *     (`parkSubagentForPTY`): its card is pushed only if the prompt actually
  *     renders on the main PTY (ADR 0004). `onSubagentPassthrough` reports it
  *     for the informational subagent alert.
- * Nothing holds the hook in this phase; the next phase (#1126) answers
- * prompts structurally through held hooks (ADR 0002) while Claude's own
- * dialog stays visible.
  *
  * The outward couplings the hook bridge used directly are injected as
  * callbacks so the gate has no back-reference to the bridge or the router:
@@ -53,19 +62,65 @@
  *     mirror of the Stop reasoning;
  *   - `cancelStale('SessionEnd')` and `forceRelease` (`remi unstick`): real
  *     teardown, every open escalation is resolved.
- * Each one routes through `resolveSupersededQuestion`, which removes the card
- * from the registry and fires `onResolved` (question_resolved + APNS
- * dismissal), never a silent bookkeeping-only delete. A phone answer (or a
- * superseded render) retires the signature through `retireQuestion` instead,
- * because that path already removes and dismisses the card itself.
+ * Each one routes through `resolveSupersededQuestion`, which ends the hold
+ * (an empty response), removes the card from the registry and fires
+ * `onResolved` (question_resolved + APNS dismissal), never a silent
+ * bookkeeping-only delete. A phone answer (or a superseded render) retires
+ * the signature through `retireQuestion` instead, because that path already
+ * removes and dismisses the card itself.
  */
 
-import type { UUID } from '@remi/shared';
+import type { QuestionOption, UUID } from '@remi/shared';
 
 import { log, logError } from '../cli/logger.ts';
+import { standingGrantFor } from '../hooks/hook-event-bridge.ts';
 import type { PermissionDecision, PermissionRequestHookInput } from '../hooks/index.ts';
 import type { SessionRegistry } from '../session/index.ts';
 import { ALWAYS_ESCALATE_TOOLS, isDesignQuestion, isMultiChoicePermission } from './multichoice.ts';
+
+/**
+ * A phone answer to a held prompt (#1126), already resolved by the answer
+ * path to one of the card's own options. `message` is the optional text a
+ * "No" carries; Claude receives it as the denied tool's result. `cancel` is
+ * the card's universal Cancel (Esc) action, which on a held card is a "No".
+ */
+export type HeldAnswer =
+  | { readonly kind: 'option'; readonly option: QuestionOption; readonly message?: string }
+  | { readonly kind: 'cancel' }
+  /** Free text, or an answer matching none of the card's options: never an
+   *  answer a held card offers, so a live hold refuses it. */
+  | { readonly kind: 'text' };
+
+/**
+ * What `answerHeld` did with a phone answer (#1126):
+ *   - `resolved`: the hook answered with the user's choice.
+ *   - `refused`: the hold is live but the answer is not one its card offers
+ *     (an unknown option, a standing grant whose suggestion is gone); nothing
+ *     changed, the card and the hold stay.
+ *   - `closed`: a binary prompt this gate held whose hold has ended (answered
+ *     in the terminal, released at the deadline, aborted). Its answer belongs
+ *     to the terminal now; nothing may be typed for it.
+ *   - `unknown`: not a binary prompt this gate held (a hook-less prompt,
+ *     AskUserQuestion, ExitPlanMode); the caller's own path applies.
+ */
+export type HeldAnswerOutcome = 'resolved' | 'refused' | 'closed' | 'unknown';
+
+/** How many ended binary-prompt ids `answerHeld` remembers as `closed`.
+ *  The registry keeps at most 8 pending cards, so a late answer for any card
+ *  a client can still show is far inside this window. */
+const CLOSED_HOLD_MEMORY = 256;
+
+/** Longest deny message passed to Claude. A phone keyboard can paste a
+ *  novel; Claude reads this as the tool result, so it is bounded. */
+const DENY_MESSAGE_MAX = 2000;
+
+/** A held PermissionRequest hook (#1126): the pending hook response, its
+ *  deadline timer, and the suggestions a standing grant echoes from. */
+interface Hold {
+  readonly resolve: (decision: PermissionDecision) => void;
+  readonly timer: ReturnType<typeof setTimeout>;
+  readonly suggestions: readonly unknown[] | undefined;
+}
 
 /** The (tool_name, tool_input) signature of an OPEN escalation (#673),
  *  tracked so an external-resolution signal can find and cancel it. */
@@ -171,13 +226,33 @@ export interface AutoApproveGateDeps {
    *  logged and absorbed (treated as `undefined`) rather than propagated. */
   escalate: (input: PermissionRequestHookInput) => UUID | undefined;
   /** Push a stashed question IMMEDIATELY (-> `tracker.pushHeldHook` ->
-   *  sessionRegistry.addQuestion + APNS). Called for a multi-choice / design
-   *  escalation (#625), whose card must not wait for a render. PTY
-   *  question-emission is suppressed for hooked sessions (#625), so this is
-   *  the SOLE push trigger for that shape. Idempotent per id. The `Held` in
-   *  the name predates #1125, when the same primitive also pushed the cards
-   *  of held hooks. */
+   *  sessionRegistry.addQuestion + APNS), stamped `held`. Called for a held
+   *  binary prompt (#1126) and for a multi-choice / design escalation (#625),
+   *  neither of which waits for a render. PTY question-emission is suppressed
+   *  for hooked sessions (#625), so this is the SOLE push trigger for both.
+   *  Idempotent per id. */
   onHeldEscalate?: (questionId: UUID) => void;
+  /**
+   * How long a binary prompt's hook is held for a phone answer, in ms
+   * (`[prompts] hold_seconds`, #1126). Required: a hold with no deadline
+   * would outlast the 2:00 auto-deny of auto-mode fallback prompts. At the
+   * deadline the hook is released with an empty response, so Claude's dialog
+   * stays and the terminal answers it.
+   */
+  holdMs: number;
+  /**
+   * The hold deadline passed with no answer (#1126, the #733 handoff): tell
+   * the phone the prompt is waiting in the terminal. Called while the card is
+   * still registered, so the notice can carry its text; the gate then
+   * dismisses the card. Throw-safe.
+   */
+  onHoldDeadline?: (questionId: UUID) => void;
+  /**
+   * A prompt whose "answer at the terminal" notice was pushed
+   * (`onHoldDeadline`) is resolved now: dismiss that notice from the lock
+   * screen (#1126). Throw-safe.
+   */
+  onTerminalNoticeResolved?: (questionId: UUID) => void;
   /** Push trigger for a BINARY main-context escalation: the hook is answered
    *  'passthrough', Claude renders its native prompt at once, and the stashed
    *  question pushes when that render pairs with it, carrying the parsed
@@ -212,6 +287,24 @@ export class AutoApproveGate {
    * but the sweeps above keep it from accumulating.
    */
   private readonly openQuestionSignatures = new Map<UUID, ToolSignature>();
+
+  /** Live holds (#1126): binary PermissionRequest hooks waiting for a phone
+   *  answer, keyed by the card's `Question.id`. Every entry also has an
+   *  `openQuestionSignatures` entry; a hold ends (`endHold`) on an answer,
+   *  the deadline, or any resolution signal, and the signature may outlive
+   *  it (a prompt released at the deadline is still on screen). */
+  private readonly holds = new Map<UUID, Hold>();
+
+  /** Ids of binary prompts this gate held and no longer holds, oldest first,
+   *  bounded by `CLOSED_HOLD_MEMORY` (#1126). Lets `answerHeld` tell a late
+   *  answer for a hook-backed card (refuse: nothing is typed for it) from a
+   *  card this gate never held (the caller's own path). */
+  private readonly closedHoldIds = new Set<UUID>();
+
+  /** Open prompts whose "answer at the terminal" notice was pushed (#1126),
+   *  so their resolution also dismisses the notice. A subset of
+   *  `openQuestionSignatures`' keys, deleted with them. */
+  private readonly terminalNotices = new Set<UUID>();
 
   constructor(
     private readonly deps: AutoApproveGateDeps,
@@ -296,19 +389,194 @@ export class AutoApproveGate {
    */
   retireQuestion(questionId: UUID): void {
     this.openQuestionSignatures.delete(questionId);
+    if (this.terminalNotices.delete(questionId)) {
+      this.safeCueWithArg(
+        'onTerminalNoticeResolved',
+        this.deps.onTerminalNoticeResolved,
+        questionId,
+      );
+    }
+    // A held prompt retired by another path must not leave its hook pending
+    // until the deadline: release it with the empty response, which decides
+    // nothing (Claude's dialog stays).
+    this.endHold(questionId, 'passthrough');
   }
 
   /**
-   * Escalate a main-context permission to the user. A BINARY prompt is pushed
-   * on its render (`escalateForRender`, #1121); a multi-choice / design prompt
-   * cannot be expressed as a binary answer and is pushed immediately
-   * (`escalatePassthrough`). Either way the hook is answered 'passthrough'.
+   * True while any hook-backed prompt this gate escalated is still open:
+   * held, released to the terminal at its deadline, or relayed and not yet
+   * resolved (#1126). The presence tracker asks this before treating a PTY
+   * render as an orphan: a hook-backed dialog on screen is never a hook-less
+   * prompt, and its card must not be rebuilt from the screen and answered by
+   * typing. Read live per call.
    */
-  private escalateMain(input: PermissionRequestHookInput): PermissionDecision {
-    if (!this.isBinaryEscalation(input)) {
-      return this.escalatePassthrough(input);
+  hasOpenHookPrompt(): boolean {
+    return this.openQuestionSignatures.size > 0;
+  }
+
+  /**
+   * Apply a phone answer to a held prompt (#1126). Synchronous end to end:
+   * the hook response is resolved before this returns, so no other answer
+   * or resolution signal can interleave. See `HeldAnswerOutcome`.
+   *
+   * The mapping is by meaning, from the card's own option flags, never from
+   * a position on Claude's screen:
+   *   - Cancel, or a No option -> `deny` (a No may carry `message`);
+   *   - a standing option (`suggestionIndex`) -> `allow` +
+   *     `updatedPermissions: [standingGrantFor(suggestion).echo]`, only when
+   *     the stashed suggestion is still one a card may offer;
+   *   - the one-time Yes (labeled exactly "Yes", no suggestion) -> `allow`;
+   *   - anything else is refused and the hold stays.
+   */
+  answerHeld(questionId: UUID, answer: HeldAnswer): HeldAnswerOutcome {
+    const hold = this.holds.get(questionId);
+    if (!hold) return this.closedHoldIds.has(questionId) ? 'closed' : 'unknown';
+    const decision = this.decisionFor(hold, answer);
+    if (decision === null) {
+      log(
+        `[AutoApprove ${this.sessionTag}] Held ${questionId.slice(0, 8)}: answer is not an option this card offers; hold kept`,
+      );
+      return 'refused';
     }
-    return this.escalateForRender(input);
+    this.openQuestionSignatures.delete(questionId);
+    this.endHold(questionId, decision);
+    log(
+      `[AutoApprove ${this.sessionTag}] Held ${questionId.slice(0, 8)} answered from the phone: ${describeDecision(decision)}`,
+    );
+    return 'resolved';
+  }
+
+  /** The hook decision a phone answer maps to, or null when the held card
+   *  does not offer it. See `answerHeld`. */
+  private decisionFor(hold: Hold, answer: HeldAnswer): PermissionDecision | null {
+    if (answer.kind === 'cancel') return 'deny';
+    if (answer.kind === 'text') return null;
+    const { option } = answer;
+    if (option.isNo && !option.isYes) {
+      const message = answer.message?.trim().slice(0, DENY_MESSAGE_MAX) ?? '';
+      return message.length > 0 ? { behavior: 'deny', message } : 'deny';
+    }
+    if (!option.isYes || option.isNo) return null;
+    if (option.suggestionIndex !== undefined) {
+      const grant = standingGrantFor(hold.suggestions?.[option.suggestionIndex]);
+      return grant === null ? null : { behavior: 'allow', updatedPermissions: [grant.echo] };
+    }
+    return option.label.trim() === 'Yes' ? 'allow' : null;
+  }
+
+  /**
+   * Escalate a main-context permission to the user. A BINARY prompt holds its
+   * hook for a phone answer (`holdForAnswer`, #1126); a multi-choice / design
+   * prompt is answered 'passthrough' and pushed immediately
+   * (`escalatePassthrough`).
+   */
+  private escalateMain(input: PermissionRequestHookInput): Promise<PermissionDecision> {
+    if (!this.isBinaryEscalation(input)) {
+      return Promise.resolve(this.escalatePassthrough(input));
+    }
+    return this.holdForAnswer(input);
+  }
+
+  /**
+   * Hold a binary prompt's hook for a phone answer (#1126, ADR 0031). The
+   * card is stashed, the hold registered, and only then the card pushed, so
+   * an answer can never arrive for a hold that does not exist yet. The
+   * returned promise is what the hook server is blocked on; it settles
+   * through `endHold`, exactly once. No question id means no card: answer
+   * 'passthrough' at once, and the terminal dialog is the only way to answer.
+   */
+  private holdForAnswer(input: PermissionRequestHookInput): Promise<PermissionDecision> {
+    const qid = this.escalateToUser(input);
+    if (!qid) {
+      logError(
+        `[AutoApprove ${this.sessionTag}] binary escalation produced no question id; not holding (terminal prompt still answerable locally)`,
+      );
+      return Promise.resolve('passthrough');
+    }
+    const decision = new Promise<PermissionDecision>((resolve) => {
+      const timer = setTimeout(() => this.releaseAtDeadline(qid), this.deps.holdMs);
+      // A hold is human-paced; it must never keep the daemon alive.
+      timer.unref?.();
+      this.holds.set(qid, {
+        resolve,
+        timer,
+        suggestions: input.permission_suggestions as readonly unknown[] | undefined,
+      });
+    });
+    this.safeCueWithArg('onHeldEscalate', this.deps.onHeldEscalate, qid);
+    log(
+      `[AutoApprove ${this.sessionTag}] Holding ${qid.slice(0, 8)} for a phone answer (${input.tool_name}, up to ${Math.round(this.deps.holdMs / 1000)}s)`,
+    );
+    return decision;
+  }
+
+  /**
+   * The hold deadline passed with no answer (#1126): release the hook with
+   * the empty response (Claude's dialog stays on screen and the terminal
+   * answers it), tell the phone (`onHoldDeadline`, while the card is still
+   * registered so the notice can name it), then dismiss the card. The
+   * signature stays open: the prompt is still on screen, and a later tool
+   * run, Stop or new user prompt resolves it.
+   */
+  private releaseAtDeadline(questionId: UUID): void {
+    if (!this.holds.has(questionId)) return;
+    log(
+      `[AutoApprove ${this.sessionTag}] Held ${questionId.slice(0, 8)} reached its deadline; released to the terminal`,
+    );
+    this.safeCueWithArg('onHoldDeadline', this.deps.onHoldDeadline, questionId);
+    this.terminalNotices.add(questionId);
+    this.endHold(questionId, 'passthrough');
+    this.removeAndDismiss(questionId, 'hold_deadline');
+  }
+
+  /**
+   * End a hold, exactly once: clear its timer, forget it, remember it as
+   * closed, and settle the hook response with `decision`. A no-op for an id
+   * that is not held. Every path that ends a hold goes through here.
+   */
+  private endHold(questionId: UUID, decision: PermissionDecision): void {
+    const hold = this.holds.get(questionId);
+    if (!hold) return;
+    clearTimeout(hold.timer);
+    this.holds.delete(questionId);
+    this.rememberClosed(questionId);
+    hold.resolve(decision);
+  }
+
+  /** Add to the bounded closed-hold memory, evicting the oldest. */
+  private rememberClosed(questionId: UUID): void {
+    this.closedHoldIds.delete(questionId);
+    this.closedHoldIds.add(questionId);
+    if (this.closedHoldIds.size > CLOSED_HOLD_MEMORY) {
+      const oldest = this.closedHoldIds.values().next();
+      if (!oldest.done) this.closedHoldIds.delete(oldest.value);
+    }
+  }
+
+  /** Remove a card from the registry and broadcast its dismissal, each step
+   *  guarded so one failure cannot skip the other. Broadcasts only for a card
+   *  that was registered: a dismissal for a card no client holds is noise. */
+  private removeAndDismiss(questionId: UUID, reason: string, toolName?: string): void {
+    // Fails toward broadcasting: a dismissal for an unknown id is a no-op on
+    // every client, a missed one strands a card.
+    let wasRegistered = true;
+    try {
+      wasRegistered = this.deps.sessionRegistry.getQuestion(this.sessionId, questionId) !== null;
+    } catch (err) {
+      logError(`[AutoApprove ${this.sessionTag}] getQuestion during card cleanup threw:`, err);
+    }
+    try {
+      this.deps.sessionRegistry.removeQuestion(
+        this.sessionId,
+        questionId,
+        reason,
+        toolName,
+        'AutoApproveGate.removeAndDismiss',
+      );
+    } catch (err) {
+      logError(`[AutoApprove ${this.sessionTag}] removeQuestion during card cleanup threw:`, err);
+    }
+    if (wasRegistered) this.notifyResolved(questionId);
   }
 
   /**
@@ -368,8 +636,9 @@ export class AutoApproveGate {
   }
 
   /**
-   * Resolve a PermissionRequest to its synchronous hook response (#496),
-   * which is always 'passthrough' since #1125 (ADR 0030):
+   * Resolve a PermissionRequest to its hook response (#496). A binary main
+   * prompt is held for a phone answer (#1126); everything else is answered
+   * 'passthrough':
    *   - a SUBAGENT-tagged event (`agent_id` present) is parked for its PTY
    *     render (ADR 0004), REGARDLESS of `isInSubagentContext()` (the tracker
    *     only brackets synchronous Task/Agent spawns, so team members and
@@ -382,7 +651,7 @@ export class AutoApproveGate {
    *     tracker-leak signature (a dropped PostToolUse(Task/Agent) completion),
    *     not a real subagent prompt: reset the tracker and escalate as main.
    */
-  async resolvePermission(input: PermissionRequestHookInput): Promise<PermissionDecision> {
+  resolvePermission(input: PermissionRequestHookInput): Promise<PermissionDecision> {
     if (this.isSubagentEvent(input)) {
       log(
         `[Hooks] Subagent PermissionRequest parked for its PTY render: agent=${input.agent_id?.slice(0, 8)} type=${input.agent_type} tool=${input.tool_name}`,
@@ -393,7 +662,7 @@ export class AutoApproveGate {
       // so the parked record never pairs and nothing else would ever mention
       // it. The sink decides what is worth a notification.
       this.safeCueWithArg('onSubagentPassthrough', this.deps.onSubagentPassthrough, input);
-      return 'passthrough';
+      return Promise.resolve('passthrough');
     }
     if (this.deps.isInSubagentContext()) {
       // #716 (blanket-reset tradeoff): resetSubagentContext() clears ALL
@@ -575,16 +844,15 @@ export class AutoApproveGate {
 
   /**
    * Cleanup for a question proven stale by an external signal (#673): stop
-   * tracking its signature, remove it from the registry, and broadcast its
-   * resolution so the pushed card clears everywhere. Each step is
-   * independently guarded so one failure can never skip the rest; in
-   * particular `removeQuestion` must run even if something before it throws,
-   * or the pushed card lingers.
+   * tracking its signature, end its hold with the empty response (#1126:
+   * Claude ignores it once the prompt is answered, and it decides nothing
+   * while the prompt is still up), remove it from the registry, and
+   * broadcast its resolution so the pushed card clears everywhere
+   * (`removeAndDismiss`).
    *
-   * The broadcast (question_resolved + APNS dismissal) fires only when the
-   * question was actually registered: a parked subagent prompt that never
-   * rendered, or a binary prompt resolved before its render, was never pushed,
-   * so there is no card anywhere to dismiss.
+   * The broadcast fires only when the question was actually registered: a
+   * parked subagent prompt that never rendered was never pushed, and a card
+   * released at its deadline was already dismissed then.
    *
    * `toolName` (#808), when the caller knows it, is carried onto the
    * question-lifecycle trace record for this removal.
@@ -594,31 +862,19 @@ export class AutoApproveGate {
       `[AutoApprove ${this.sessionTag}] Externally resolved ${qid.slice(0, 8)} (${reason}); clearing stale escalation`,
     );
     this.openQuestionSignatures.delete(qid);
-    // Fails toward broadcasting: a dismissal for an unknown id is a no-op on
-    // every client, a missed one strands a card.
-    let wasRegistered = true;
-    try {
-      wasRegistered = this.deps.sessionRegistry.getQuestion(this.sessionId, qid) !== null;
-    } catch (err) {
-      logError(
-        `[AutoApprove ${this.sessionTag}] getQuestion during external-resolve cleanup threw:`,
-        err,
-      );
+    this.endHold(qid, 'passthrough');
+    this.removeAndDismiss(qid, reason, toolName);
+    if (this.terminalNotices.delete(qid)) {
+      this.safeCueWithArg('onTerminalNoticeResolved', this.deps.onTerminalNoticeResolved, qid);
     }
-    try {
-      this.deps.sessionRegistry.removeQuestion(
-        this.sessionId,
-        qid,
-        reason,
-        toolName,
-        'AutoApproveGate.resolveSupersededQuestion',
-      );
-    } catch (err) {
-      logError(
-        `[AutoApprove ${this.sessionTag}] removeQuestion during external-resolve cleanup threw:`,
-        err,
-      );
-    }
-    if (wasRegistered) this.notifyResolved(qid);
   }
+}
+
+/** A hook decision as one log fragment, without the deny message text. */
+function describeDecision(decision: PermissionDecision): string {
+  if (typeof decision === 'string') return decision;
+  if (decision.behavior === 'deny') {
+    return decision.message === undefined ? 'deny' : 'deny (with message)';
+  }
+  return 'allow (standing grant echoed)';
 }

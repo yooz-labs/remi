@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import type { AgentStatus, Question } from '@remi/shared';
-import { HookEventBridge } from '../../src/hooks/hook-event-bridge.ts';
+import { HookEventBridge, standingGrantFor } from '../../src/hooks/hook-event-bridge.ts';
 import type {
   ElicitationHookInput,
   NotificationHookInput,
@@ -146,7 +146,7 @@ describe('HookEventBridge', () => {
     expect(statuses).toEqual([{ status: 'executing', context: 'Edit' }]);
   });
 
-  it('maps PermissionRequest with suggestions to numbered options immediately', () => {
+  it('maps a legacy all-binary string set to Yes/No: "Always" names no grant to echo (#1126)', () => {
     const { bridge, statuses, questions } = createBridge();
 
     bridge.handlePermissionRequest({
@@ -159,14 +159,22 @@ describe('HookEventBridge', () => {
 
     expect(statuses).toEqual([{ status: 'waiting' }]);
     expect(questions.length).toBe(1);
-    expect(questions[0]?.options.length).toBe(3);
-    expect(questions[0]?.options[0]?.label).toBe('Yes');
-    expect(questions[0]?.options[0]?.isYes).toBe(true);
-    expect(questions[0]?.options[0]?.isRecommended).toBe(true);
-    expect(questions[0]?.options[1]?.label).toBe('Always');
-    expect(questions[0]?.options[1]?.isYes).toBe(true);
-    expect(questions[0]?.options[2]?.label).toBe('No');
-    expect(questions[0]?.options[2]?.isNo).toBe(true);
+    expect(questions[0]?.options.map((o) => [o.label, o.isYes, o.isNo, o.isRecommended])).toEqual([
+      ['Yes', true, false, true],
+      ['No', false, true, false],
+    ]);
+  });
+
+  it('a multi-choice string set (not all yes/no) keeps its labels as picks', () => {
+    const { bridge, questions } = createBridge();
+    bridge.handlePermissionRequest({
+      ...makeCommon(),
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Custom',
+      tool_input: {},
+      permission_suggestions: ['Continue', 'Skip', 'Abort'],
+    } as PermissionRequestHookInput);
+    expect(questions[0]?.options.map((o) => o.label)).toEqual(['Continue', 'Skip', 'Abort']);
   });
 
   // #626: the bridge must THREAD the structured AskUserQuestion fields onto the
@@ -281,299 +289,197 @@ describe('HookEventBridge', () => {
     });
   }
 
-  describe('structured permission_suggestions (#718)', () => {
-    it('addRules with behavior "allow" and destination "session" becomes a middle option', () => {
+  /**
+   * #1126: a held card's options are built by MEANING. Only two standing
+   * grants are offered, the two verified live (spike F4): `setMode` (echoed
+   * verbatim) and an allow `addRules` (echoed for this session). The phone's
+   * answer maps to a hook response through `suggestionIndex`, never to a
+   * digit on Claude's screen.
+   */
+  describe('structured permission_suggestions by meaning (#718, #1126)', () => {
+    function ask(suggestions: unknown[], toolName = 'Bash') {
       const { bridge, questions } = createBridge();
-
       bridge.handlePermissionRequest({
         ...makeCommon(),
         hook_event_name: 'PermissionRequest',
-        tool_name: 'Bash',
-        tool_input: { command: 'rm -rf /tmp/foo' },
-        permission_suggestions: [
+        tool_name: toolName,
+        tool_input: {},
+        permission_suggestions: suggestions,
+      } as PermissionRequestHookInput);
+      return questions[0];
+    }
+
+    it('an allow addRules becomes a standing option scoped to this session, whatever its destination', () => {
+      for (const destination of ['session', 'localSettings', 'projectSettings']) {
+        const q = ask([
           {
             type: 'addRules',
             rules: [{ toolName: 'Bash', ruleContent: 'rm -rf /tmp/foo' }],
             behavior: 'allow',
-            destination: 'session',
+            destination,
           },
-        ],
-      } as PermissionRequestHookInput);
-
-      expect(questions.length).toBe(1);
-      expect(questions[0]?.optionsAreFallback).toBeUndefined();
-      const opts = questions[0]?.options ?? [];
-      expect(opts.map((o) => o.label)).toEqual([
-        'Yes',
-        'Yes, always allow: rm -rf /tmp/foo (this session)',
-        'No',
-      ]);
-      expect(opts[1]?.isYes).toBe(true);
-      expect(opts[1]?.isNo).toBe(false);
-      expect(opts[1]?.suggestionIndex).toBe(0);
-    });
-
-    it('addRules with destination "localSettings" carries no "(this session)" suffix', () => {
-      const { bridge, questions } = createBridge();
-
-      bridge.handlePermissionRequest({
-        ...makeCommon(),
-        hook_event_name: 'PermissionRequest',
-        tool_name: 'Bash',
-        tool_input: { command: 'git push' },
-        permission_suggestions: [
-          {
-            type: 'addRules',
-            rules: [{ toolName: 'Bash', ruleContent: 'git push' }],
-            behavior: 'allow',
-            destination: 'localSettings',
-          },
-        ],
-      } as PermissionRequestHookInput);
-
-      expect(questions[0]?.options[1]?.label).toBe('Yes, always allow: git push');
+        ]);
+        expect(q?.optionsAreFallback).toBeUndefined();
+        const opts = q?.options ?? [];
+        expect(opts.map((o) => o.label)).toEqual([
+          'Yes',
+          'Yes, allow rm -rf /tmp/foo for this session',
+          'No',
+        ]);
+        expect(opts[1]?.isYes).toBe(true);
+        expect(opts[1]?.isNo).toBe(false);
+        expect(opts[1]?.suggestionIndex).toBe(0);
+      }
     });
 
     it('addRules falls back to toolName when a rule has no ruleContent', () => {
-      const { bridge, questions } = createBridge();
-
-      bridge.handlePermissionRequest({
-        ...makeCommon(),
-        hook_event_name: 'PermissionRequest',
-        tool_name: 'Read',
-        tool_input: {},
-        permission_suggestions: [
-          { type: 'addRules', rules: [{ toolName: 'Read' }], behavior: 'allow' },
-        ],
-      } as PermissionRequestHookInput);
-
-      expect(questions[0]?.options[1]?.label).toBe('Yes, always allow: Read');
+      const q = ask(
+        [{ type: 'addRules', rules: [{ toolName: 'Read' }], behavior: 'allow' }],
+        'Read',
+      );
+      expect(q?.options[1]?.label).toBe('Yes, allow Read for this session');
     });
 
-    it('addRules with behavior "deny" is skipped (not a yes-variant)', () => {
-      const { bridge, questions } = createBridge();
-
-      bridge.handlePermissionRequest({
-        ...makeCommon(),
-        hook_event_name: 'PermissionRequest',
-        tool_name: 'Bash',
-        tool_input: {},
-        permission_suggestions: [
-          { type: 'addRules', rules: [{ toolName: 'Bash' }], behavior: 'deny' },
-        ],
-      } as PermissionRequestHookInput);
-
-      expect(questions[0]?.options.length).toBe(2); // honest fallback, deny entry skipped
-      expect(questions[0]?.optionsAreFallback).toBe(true);
+    it('addRules with behavior "deny" is not offered (not a yes-variant)', () => {
+      const q = ask([{ type: 'addRules', rules: [{ toolName: 'Bash' }], behavior: 'deny' }]);
+      expect(q?.options.length).toBe(2); // honest fallback
+      expect(q?.optionsAreFallback).toBe(true);
     });
 
-    it('removeRules / replaceRules / removeDirectories are skipped (never yes-variants)', () => {
-      const { bridge, questions } = createBridge();
-
-      bridge.handlePermissionRequest({
-        ...makeCommon(),
-        hook_event_name: 'PermissionRequest',
-        tool_name: 'Bash',
-        tool_input: {},
-        permission_suggestions: [
-          { type: 'removeRules', rules: [{ toolName: 'Bash' }], behavior: 'allow' },
-          { type: 'replaceRules', rules: [{ toolName: 'Bash' }], behavior: 'allow' },
-          { type: 'removeDirectories', directories: ['/tmp'] },
-        ],
-      } as PermissionRequestHookInput);
-
-      expect(questions[0]?.options.length).toBe(2);
-      expect(questions[0]?.optionsAreFallback).toBe(true);
-    });
-
-    it('addDirectories becomes a middle option naming the directories', () => {
-      const { bridge, questions } = createBridge();
-
-      bridge.handlePermissionRequest({
-        ...makeCommon(),
-        hook_event_name: 'PermissionRequest',
-        tool_name: 'Read',
-        tool_input: {},
-        permission_suggestions: [
-          { type: 'addDirectories', directories: ['/tmp'], destination: 'session' },
-        ],
-      } as PermissionRequestHookInput);
-
-      expect(questions[0]?.options.map((o) => o.label)).toEqual([
-        'Yes',
-        'Yes, allow directory /tmp',
-        'No',
+    it('removeRules / replaceRules / removeDirectories are not offered', () => {
+      const q = ask([
+        { type: 'removeRules', rules: [{ toolName: 'Bash' }], behavior: 'allow' },
+        { type: 'replaceRules', rules: [{ toolName: 'Bash' }], behavior: 'allow' },
+        { type: 'removeDirectories', directories: ['/tmp'] },
       ]);
-      expect(questions[0]?.options[1]?.suggestionIndex).toBe(0);
+      expect(q?.options.length).toBe(2);
+      expect(q?.optionsAreFallback).toBe(true);
     });
 
-    it('setMode becomes a middle option naming the mode', () => {
-      const { bridge, questions } = createBridge();
+    it('addDirectories is never offered: its echo did not stop the repeat prompt (#1126 F4)', () => {
+      const q = ask([{ type: 'addDirectories', directories: ['/tmp'], destination: 'session' }]);
+      expect(q?.options.map((o) => o.label)).toEqual(['Yes', 'No']);
+      expect(q?.optionsAreFallback).toBe(true);
+    });
 
-      bridge.handlePermissionRequest({
-        ...makeCommon(),
-        // NOT ExitPlanMode/AskUserQuestion: those tools carry their own
-        // authored toolQuestion options and never reach optionsFromSuggestions.
-        hook_event_name: 'PermissionRequest',
-        tool_name: 'Bash',
-        tool_input: {},
-        permission_suggestions: [{ type: 'setMode', mode: 'plan', destination: 'session' }],
-      } as PermissionRequestHookInput);
+    it('setMode becomes a standing option naming the mode', () => {
+      // NOT ExitPlanMode/AskUserQuestion: those tools carry their own
+      // authored toolQuestion options and never reach optionsFromSuggestions.
+      const q = ask([{ type: 'setMode', mode: 'plan', destination: 'session' }]);
+      expect(q?.options.map((o) => o.label)).toEqual(['Yes', 'Yes, and switch to plan mode', 'No']);
+      expect(q?.options[1]?.suggestionIndex).toBe(0);
+    });
 
-      expect(questions[0]?.options.map((o) => o.label)).toEqual([
-        'Yes',
-        'Yes, switch to plan mode',
-        'No',
+    it('offerable suggestions keep their original index; skipped ones leave no gap in the values', () => {
+      const q = ask([
+        { type: 'addDirectories', directories: ['/tmp'] },
+        { type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'ls' }], behavior: 'allow' },
+        { type: 'setMode', mode: 'acceptEdits', destination: 'session' },
+      ]);
+      const opts = q?.options ?? [];
+      expect(opts.map((o) => [o.value, o.label, o.suggestionIndex])).toEqual([
+        ['1', 'Yes', undefined],
+        ['2', 'Yes, allow ls for this session', 1],
+        ['3', 'Yes, and switch to acceptEdits mode', 2],
+        ['4', 'No', undefined],
       ]);
     });
 
-    it('multiple usable suggestions each become their own middle option, in order', () => {
-      const { bridge, questions } = createBridge();
-
-      bridge.handlePermissionRequest({
-        ...makeCommon(),
-        hook_event_name: 'PermissionRequest',
-        tool_name: 'Bash',
-        tool_input: {},
-        permission_suggestions: [
-          { type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'ls' }], behavior: 'allow' },
-          { type: 'addDirectories', directories: ['/tmp'] },
-        ],
-      } as PermissionRequestHookInput);
-
-      const opts = questions[0]?.options ?? [];
+    it('caps at 4 total options, keeping the first offerable suggestions', () => {
+      const q = ask([
+        {
+          type: 'addRules',
+          rules: [{ toolName: 'Bash', ruleContent: 'cmd-1' }],
+          behavior: 'allow',
+        },
+        {
+          type: 'addRules',
+          rules: [{ toolName: 'Bash', ruleContent: 'cmd-2' }],
+          behavior: 'allow',
+        },
+        { type: 'setMode', mode: 'acceptEdits', destination: 'session' },
+      ]);
+      const opts = q?.options ?? [];
       expect(opts).toHaveLength(4);
-      expect(opts[1]?.label).toBe('Yes, always allow: ls');
-      expect(opts[1]?.suggestionIndex).toBe(0);
-      expect(opts[2]?.label).toBe('Yes, allow directory /tmp');
-      expect(opts[2]?.suggestionIndex).toBe(1);
+      expect(opts[1]?.label).toBe('Yes, allow cmd-1 for this session');
+      expect(opts[2]?.label).toBe('Yes, allow cmd-2 for this session');
       expect(opts[3]?.label).toBe('No');
     });
 
-    it('caps at 4 total options, keeping the first suggestions and dropping the rest', () => {
-      const { bridge, questions } = createBridge();
-
-      bridge.handlePermissionRequest({
-        ...makeCommon(),
-        hook_event_name: 'PermissionRequest',
-        tool_name: 'Bash',
-        tool_input: {},
-        permission_suggestions: [
-          {
-            type: 'addRules',
-            rules: [{ toolName: 'Bash', ruleContent: 'cmd-1' }],
-            behavior: 'allow',
-          },
-          {
-            type: 'addRules',
-            rules: [{ toolName: 'Bash', ruleContent: 'cmd-2' }],
-            behavior: 'allow',
-          },
-          { type: 'addDirectories', directories: ['/tmp'] },
-        ],
-      } as PermissionRequestHookInput);
-
-      const opts = questions[0]?.options ?? [];
-      // Yes + 2 kept middles + No == 4 total; the 3rd suggestion is dropped.
-      expect(opts).toHaveLength(4);
-      expect(opts[1]?.label).toBe('Yes, always allow: cmd-1');
-      expect(opts[2]?.label).toBe('Yes, always allow: cmd-2');
-      expect(opts[3]?.label).toBe('No');
-      expect(opts.some((o) => o.label.includes('/tmp'))).toBe(false);
-    });
-
-    it('a long ruleContent is truncated to ~80 characters', () => {
-      const { bridge, questions } = createBridge();
-      const longCommand = 'x'.repeat(200);
-
-      bridge.handlePermissionRequest({
-        ...makeCommon(),
-        hook_event_name: 'PermissionRequest',
-        tool_name: 'Bash',
-        tool_input: {},
-        permission_suggestions: [
-          {
-            type: 'addRules',
-            rules: [{ toolName: 'Bash', ruleContent: longCommand }],
-            behavior: 'allow',
-          },
-        ],
-      } as PermissionRequestHookInput);
-
-      const label = questions[0]?.options[1]?.label ?? '';
+    it('a long rule is truncated but the label keeps saying "for this session"', () => {
+      const q = ask([
+        {
+          type: 'addRules',
+          rules: [{ toolName: 'Bash', ruleContent: 'x'.repeat(200) }],
+          behavior: 'allow',
+        },
+      ]);
+      const label = q?.options[1]?.label ?? '';
       expect(label.length).toBeLessThanOrEqual(80);
-      expect(label.endsWith('...')).toBe(true);
+      expect(label.endsWith('... for this session')).toBe(true);
     });
 
-    it('disambiguates two suggestions that truncate to an identical label (#718 review)', () => {
-      // Two long commands sharing the first ~90 characters would otherwise
-      // both truncate to the SAME 80-char label. That is not just cosmetic:
-      // the lock-screen relay answers by LABEL, and resolveOption matches an
-      // answer to its option by label first, so identical labels would let
-      // an answer resolve to the WRONG suggestionIndex and echo the wrong
-      // permission_suggestions entry back to Claude Code.
-      const sharedPrefix = 'echo '.repeat(20); // 100 chars, identical for both
-      const { bridge, questions } = createBridge();
-
-      bridge.handlePermissionRequest({
-        ...makeCommon(),
-        hook_event_name: 'PermissionRequest',
-        tool_name: 'Bash',
-        tool_input: {},
-        permission_suggestions: [
-          {
-            type: 'addRules',
-            rules: [{ toolName: 'Bash', ruleContent: `${sharedPrefix}one` }],
-            behavior: 'allow',
-          },
-          {
-            type: 'addRules',
-            rules: [{ toolName: 'Bash', ruleContent: `${sharedPrefix}two` }],
-            behavior: 'allow',
-          },
-        ],
-      } as PermissionRequestHookInput);
-
-      const opts = questions[0]?.options ?? [];
+    it('disambiguates two rules that truncate to an identical label, without cutting the scope (#718 review)', () => {
+      // The lock-screen relay answers by LABEL and resolveOption matches by
+      // label first, so identical labels would echo the wrong suggestion.
+      const sharedPrefix = 'echo '.repeat(20);
+      const q = ask([
+        {
+          type: 'addRules',
+          rules: [{ toolName: 'Bash', ruleContent: `${sharedPrefix}one` }],
+          behavior: 'allow',
+        },
+        {
+          type: 'addRules',
+          rules: [{ toolName: 'Bash', ruleContent: `${sharedPrefix}two` }],
+          behavior: 'allow',
+        },
+      ]);
+      const opts = q?.options ?? [];
       expect(opts).toHaveLength(4);
-      // Distinct labels: the 2nd occurrence gets an ordinal suffix.
       expect(opts[1]?.label).not.toBe(opts[2]?.label);
-      expect(opts[2]?.label.endsWith(' (2)')).toBe(true);
-      // Each label still maps back to the CORRECT original suggestion.
+      expect(opts[2]?.label.endsWith(' for this session (2)')).toBe(true);
       expect(opts[1]?.suggestionIndex).toBe(0);
       expect(opts[2]?.suggestionIndex).toBe(1);
-      // Total length still fits the cap even with the ordinal suffix appended.
       expect(opts[2]?.label.length).toBeLessThanOrEqual(80);
     });
 
-    it('unknown/undocumented suggestion types are skipped, falling back to Yes/No', () => {
-      const { bridge, questions } = createBridge();
+    it('unknown/undocumented suggestion types are not offered, falling back to Yes/No', () => {
+      const q = ask([{ type: 'someBrandNewType', foo: 'bar' }]);
+      expect(q?.options.length).toBe(2);
+      expect(q?.optionsAreFallback).toBe(true);
+    });
+  });
 
-      bridge.handlePermissionRequest({
-        ...makeCommon(),
-        hook_event_name: 'PermissionRequest',
-        tool_name: 'Bash',
-        tool_input: {},
-        permission_suggestions: [{ type: 'someBrandNewType', foo: 'bar' }],
-      } as PermissionRequestHookInput);
-
-      expect(questions[0]?.options.length).toBe(2);
-      expect(questions[0]?.optionsAreFallback).toBe(true);
+  describe('standingGrantFor (#1126)', () => {
+    it('echoes setMode verbatim and addRules with destination "session"', () => {
+      const mode = { type: 'setMode', mode: 'acceptEdits', destination: 'session' };
+      expect(standingGrantFor(mode)?.echo).toEqual(mode);
+      const rule = {
+        type: 'addRules',
+        rules: [{ toolName: 'Bash', ruleContent: 'ls' }],
+        behavior: 'allow',
+        destination: 'localSettings',
+      };
+      expect(standingGrantFor(rule)?.echo).toEqual({ ...rule, destination: 'session' });
+      // The caller's entry is not mutated.
+      expect(rule.destination).toBe('localSettings');
     });
 
-    it('legacy >= 2 plain-string suggestions still take the unchanged string path', () => {
-      const { bridge, questions } = createBridge();
-
-      bridge.handlePermissionRequest({
-        ...makeCommon(),
-        hook_event_name: 'PermissionRequest',
-        tool_name: 'Edit',
-        tool_input: {},
-        permission_suggestions: ['Yes', 'Always', 'No'],
-      } as PermissionRequestHookInput);
-
-      expect(questions[0]?.options.map((o) => o.label)).toEqual(['Yes', 'Always', 'No']);
-      expect(questions[0]?.optionsAreFallback).toBeUndefined();
+    it('refuses everything else', () => {
+      for (const entry of [
+        undefined,
+        null,
+        'Yes',
+        [],
+        { type: 'addDirectories', directories: ['/tmp'] },
+        { type: 'addRules', rules: [{ toolName: 'Bash' }], behavior: 'ask' },
+        { type: 'addRules', rules: [], behavior: 'allow' },
+        { type: 'setMode', mode: '' },
+        { type: 'removeRules', rules: [{ toolName: 'Bash' }], behavior: 'allow' },
+      ]) {
+        expect(standingGrantFor(entry)).toBeNull();
+      }
     });
   });
 

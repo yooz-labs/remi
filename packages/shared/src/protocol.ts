@@ -427,6 +427,8 @@ export interface AnswerSelection {
 export interface AnswerExtras {
   readonly selections?: readonly AnswerSelection[] | undefined;
   readonly cancel?: boolean | undefined;
+  /** See {@link AnswerMessage.message}. */
+  readonly message?: string | undefined;
 }
 
 /** Answer to a question */
@@ -457,6 +459,13 @@ export interface AnswerMessage {
    * '' when this is set.
    */
   readonly cancel?: boolean | undefined;
+  /**
+   * Optional text sent with a "No" to a held permission prompt (#1126). The
+   * daemon passes it to Claude as the denial reason, which Claude receives as
+   * the denied tool's result, so the user can say why or what to do instead.
+   * Ignored for every other answer.
+   */
+  readonly message?: string | undefined;
 }
 
 /**
@@ -1443,13 +1452,15 @@ export function createQuestion(
 }
 
 /**
- * Create an answer message for a question.
+ * Create an answer message for a question. `message` rides along with a "No"
+ * to a held permission prompt (#1126, see `AnswerMessage.message`).
  */
 export function createAnswer(
   sessionId: UUID,
   questionId: UUID,
   answer: string,
   claudeSessionId?: UUID,
+  message?: string,
 ): AnswerMessage {
   return {
     type: 'answer',
@@ -1459,6 +1470,7 @@ export function createAnswer(
     questionId,
     answer,
     ...(claudeSessionId !== undefined && { claudeSessionId }),
+    ...(message !== undefined && { message }),
   };
 }
 

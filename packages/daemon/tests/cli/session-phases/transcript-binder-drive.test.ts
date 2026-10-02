@@ -225,6 +225,7 @@ describe('TranscriptBinder drive mode (#453 phase 3, commit 5)', () => {
         transcriptFallbackTimers,
         currentPort: () => PORT,
         transcriptDiscovery,
+        holdMs: 60_000,
       },
       {
         hookServer: hookServer as unknown as HookServer,

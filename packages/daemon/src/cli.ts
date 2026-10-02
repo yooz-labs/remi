@@ -155,6 +155,7 @@ import {
 import {
   type InputHandlers,
   createInputHandlers,
+  gateAnswerDeps,
   trackerScreenDeps,
 } from './cli/handlers/input-events.ts';
 import {
@@ -1640,6 +1641,13 @@ async function createNewSession(
         // #585: a held question the gate resolves without a user answer dismisses
         // its pushed card on every client.
         broadcastQuestionResolved: onQuestionResolved,
+        // #1126: how long a binary prompt's hook waits for the phone, and
+        // the "answer at the terminal" notice when it does not come.
+        holdMs: remiConfig.prompts.hold_seconds * 1000,
+        pushTerminalNotice: (sid, question, reason) =>
+          sessionNotifiers.get(sid)?.pushTerminalNotice(sid, question, reason),
+        dismissTerminalNotice: (sid, questionId) =>
+          sessionNotifiers.get(sid)?.dismissTerminalNotice(sid, questionId),
       },
       { hookServer, sessionId, workingDirectory, messageApi, sendAndRecord, tracker },
     );
@@ -1850,10 +1858,11 @@ const inputHandlers: InputHandlers = createInputHandlers({
   sessionRegistry,
   bindingStore,
   send: sendToConnection,
-  // #573: tell the RIGHT session's gate (the map is populated per session in
-  // createNewSession) that an answered question no longer needs tracking.
-  retireQuestion: (sessionId, questionId) =>
-    sessionGateHandles.get(sessionId)?.retireQuestion(questionId),
+  // #573/#1126: the RIGHT session's gate (the map is populated per session in
+  // createNewSession) retires an answered question and answers a held
+  // prompt through its hook. One helper, shared with the tests, like
+  // trackerScreenDeps below.
+  ...gateAnswerDeps((sessionId) => sessionGateHandles.get(sessionId)),
   // #585: a locally answered question dismisses its card + lock-screen push on
   // every other client.
   onQuestionResolved: (sessionId, questionId) =>

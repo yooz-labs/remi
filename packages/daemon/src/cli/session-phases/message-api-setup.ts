@@ -139,13 +139,11 @@ export function createMessageApiForSession(
       const claudeSessionId = getClaudeSessionId?.() ?? undefined;
       // #753: stamp held-ness onto the question itself so every downstream
       // copy (live message, registry entry, attach-time re-send) carries it.
-      // Since #1125 nothing holds; a `held` push is a card pushed by id before
-      // its render (AskUserQuestion, ExitPlanMode, a multi-choice permission).
-      // The stamp is load-bearing for `handleAnswer`, which refuses free text
-      // on such a card before anything is typed (#1134,
-      // `free-text-on-held-card`). The terminal attach client also banners
-      // stamped cards, which prints a natively rendered dialog's question
-      // once more above it; accepted until #1126.
+      // A `held` push is a card pushed by id at hook time: a held binary
+      // permission prompt (#1126) or an AskUserQuestion / ExitPlanMode /
+      // multi-choice card. The stamp keys `handleAnswer`'s refusal of free
+      // text on a card that takes options (#1134, `free-text-on-held-card`)
+      // and the terminal attach client's banner.
       const stamped: Question = opts?.held === true ? { ...question, held: true } : question;
       const msg: ProtocolMessage = {
         type: 'question',

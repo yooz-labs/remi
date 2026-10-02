@@ -82,12 +82,13 @@
  */
 
 import { createSessionViews, errorToString } from '@remi/shared';
-import type { AgentStatus, ProtocolMessage, UUID } from '@remi/shared';
+import type { AgentStatus, ProtocolMessage, Question, UUID } from '@remi/shared';
 
 import type { MessageAPI, QuestionRegistrationOutcome } from '../../api/message-api.ts';
 import type { QuestionPresenceTracker } from '../../api/question-presence-tracker.ts';
 import type { SubagentViewRegistry } from '../../api/subagent-view-registry.ts';
 import { AutoApproveGate } from '../../auto-approve/index.ts';
+import type { HeldAnswer, HeldAnswerOutcome } from '../../auto-approve/index.ts';
 import { HookEventBridge } from '../../hooks/index.ts';
 import type {
   ForeignSessionEscalator,
@@ -187,6 +188,21 @@ export interface HookBridgeDeps {
    * `foreignSessionEscalator` above). Absent => no alert, no audit line.
    */
   onSubagentPassthrough?: (input: PermissionRequestHookInput) => void;
+  /**
+   * How long a binary prompt's hook is held for a phone answer, in ms
+   * (`[prompts] hold_seconds`, #1126). Required: see `AutoApproveGateDeps.holdMs`.
+   */
+  holdMs: number;
+  /**
+   * Push an informational "answer at the terminal" notice for `question`
+   * (#1126), wired to the session's `NotificationDispatcher.pushTerminalNotice`.
+   * Fired when a held prompt reaches its deadline (the #733 handoff). Absent
+   * => no notice (tests). Must be throw-safe; the gate also guards it.
+   */
+  pushTerminalNotice?: (sessionId: UUID, question: Question, reason: 'hold_deadline') => void;
+  /** Dismiss a notice `pushTerminalNotice` sent, once its prompt is
+   *  answered. Absent => the notice stays until the user clears it. */
+  dismissTerminalNotice?: (sessionId: UUID, questionId: UUID) => void;
 }
 
 export interface HookBridgeArgs {
@@ -215,6 +231,9 @@ export interface SessionGateHandle {
    *  tool event does not resolve (and dismiss) it again. Forwards to
    *  `retireQuestion`. */
   retireQuestion: (questionId: UUID) => void;
+  /** Apply a phone answer to a held prompt (#1126). Forwards to
+   *  `AutoApproveGate.answerHeld`; see `HeldAnswerOutcome`. */
+  answerHeld: (questionId: UUID, answer: HeldAnswer) => HeldAnswerOutcome;
   /** Force-release escape (#617 `remi unstick`): resolve and dismiss every
    *  open escalation. Forwards to `forceRelease`. */
   forceRelease: (reason: string) => { resolved: number };
@@ -506,10 +525,19 @@ export function setupHookBridge(
         return question.id;
       },
       ...(deps.onSubagentPassthrough ? { onSubagentPassthrough: deps.onSubagentPassthrough } : {}),
-      // #625: a multi-choice / design escalation (AskUserQuestion,
-      // ExitPlanMode) pushes immediately under its own id (-> addQuestion +
+      // A held binary prompt (#1126) and a multi-choice / design escalation
+      // (#625) push immediately under their own id (-> addQuestion +
       // maybePush); PTY question-emission is suppressed for hooked sessions.
       onHeldEscalate: (questionId) => tracker.pushHeldHook(questionId),
+      holdMs: deps.holdMs,
+      // #1126: a held prompt reached its deadline. Read the card while it is
+      // still registered (the gate dismisses it right after) so the notice
+      // names the actual ask.
+      onHoldDeadline: (questionId) => {
+        const question = sessionRegistry.getQuestion(sessionId, questionId);
+        if (question !== null) deps.pushTerminalNotice?.(sessionId, question, 'hold_deadline');
+      },
+      onTerminalNoticeResolved: (questionId) => deps.dismissTerminalNotice?.(sessionId, questionId),
       // #1121: a binary main escalation pushes when its native prompt
       // renders, carrying the parsed screen's options (#1134); the answer is
       // typed with the screen's numbering and refused on a label mismatch.
@@ -527,6 +555,12 @@ export function setupHookBridge(
     },
     sessionId,
   );
+
+  // #1126: a render while a hook-backed prompt is open is that prompt (or a
+  // redraw of it), never a hook-less orphan, so it is not rebuilt into a
+  // card the phone would answer by typing. The one wiring point, here where
+  // both the gate and the tracker exist.
+  tracker.setHookPromptProbe(() => autoApproveGate.hasOpenHookPrompt());
 
   // Subagent/team-member events carry `agent_id` (confirmed via
   // REMI_HOOK_DEBUG capture 2026-04-16). They share main's session_id and
@@ -580,7 +614,11 @@ export function setupHookBridge(
         // record stashed before the rotation so the new session's first PTY
         // prompt cannot merge stale option labels, and dismiss + drop the
         // pending-question collection (cards clear on every device, #585) so
-        // stale answers are refused.
+        // stale answers are refused. The gate goes first (#1126): a hold
+        // must never outlive the Claude session that asked, so every open
+        // escalation is resolved and its hook released with the empty
+        // response before the registry is cleared.
+        autoApproveGate.cancelStale('session_restart');
         tracker.clearPending();
         resolveAndClearQuestions();
         // #889: drop any elicitation_id correlations too -- their target
@@ -985,9 +1023,13 @@ export function setupHookBridge(
       // Drop the per-session PermissionRequest resolver (#496) so a stale
       // closure (over this session's gate/tracker) can't fire after teardown.
       hookServer.setPermissionResolver(null);
+      // #1126: release any hook still held for this session (the empty
+      // response decides nothing) and clear its cards.
+      autoApproveGate.cancelStale('session_closed');
     },
     gate: {
       retireQuestion: (questionId) => autoApproveGate.retireQuestion(questionId),
+      answerHeld: (questionId, answer) => autoApproveGate.answerHeld(questionId, answer),
       forceRelease: (reason) => autoApproveGate.forceRelease(reason),
     },
   };

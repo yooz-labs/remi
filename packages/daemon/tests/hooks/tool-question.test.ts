@@ -161,14 +161,18 @@ describe('extractToolQuestion', () => {
 });
 
 describe('optionsFromSuggestions', () => {
-  it('maps >= 2 string suggestions, flagging yes/no shape', () => {
-    const { options, isFallback } = optionsFromSuggestions(['Yes', 'Always', 'No']);
+  it('maps a multi-choice string set (not all yes/no-shaped) to picks, unchanged', () => {
+    const { options, isFallback } = optionsFromSuggestions(['Continue', 'Skip', 'Abort']);
     expect(isFallback).toBe(false);
-    expect(options.map((o) => o.label)).toEqual(['Yes', 'Always', 'No']);
+    expect(options.map((o) => o.label)).toEqual(['Continue', 'Skip', 'Abort']);
     expect(options.map((o) => o.value)).toEqual(['1', '2', '3']);
-    expect(options[0]?.isYes).toBe(true);
-    expect(options[1]?.isYes).toBe(true); // "Always"
-    expect(options[2]?.isNo).toBe(true);
+    expect(options.every((o) => !o.isYes && !o.isNo)).toBe(true);
+  });
+
+  it('a legacy all-binary string set is a binary card: Yes/No, no "Always" (#1126)', () => {
+    const { options, isFallback } = optionsFromSuggestions(['Yes', 'Always', 'No']);
+    expect(isFallback).toBe(true);
+    expect(options.map((o) => o.label)).toEqual(['Yes', 'No']);
   });
 
   it('falls back to the honest Yes/No 2-set when there are no usable suggestions (#718)', () => {
@@ -177,23 +181,17 @@ describe('optionsFromSuggestions', () => {
     expect(def.options).toHaveLength(2);
     expect(def.options[0]?.isYes).toBe(true);
     expect(def.options[1]?.isNo).toBe(true);
-    // A structured entry missing the fields needed to render (no `directories`
-    // for addDirectories) is unusable, so this also falls back.
     expect(optionsFromSuggestions([{ type: 'addDirectories' }]).isFallback).toBe(true);
-    // A single string can't take the >= 2-strings legacy path and isn't a
-    // structured object, so it contributes nothing either.
+    // A single string can't take the string path and isn't a structured
+    // object, so it contributes nothing either.
     expect(optionsFromSuggestions(['OnlyOne']).isFallback).toBe(true);
   });
 
-  it('builds a structured option for a usable addDirectories suggestion (#718)', () => {
+  it('never offers addDirectories, even a well-formed one (#1126)', () => {
     const { options, isFallback } = optionsFromSuggestions([
       { type: 'addDirectories', directories: ['/tmp'] },
     ]);
-    expect(isFallback).toBe(false);
-    expect(options).toHaveLength(3);
-    expect(options[0]?.label).toBe('Yes');
-    expect(options[1]?.label).toBe('Yes, allow directory /tmp');
-    expect(options[1]?.suggestionIndex).toBe(0);
-    expect(options[2]?.label).toBe('No');
+    expect(isFallback).toBe(true);
+    expect(options.map((o) => o.label)).toEqual(['Yes', 'No']);
   });
 });

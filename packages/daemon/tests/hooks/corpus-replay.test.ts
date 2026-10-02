@@ -315,6 +315,7 @@ function buildReplayRig(): ReplayRig {
       // #1125 removed the evaluator (ADR 0030).
       currentPort: () => 8765,
       transcriptDiscovery: new TranscriptDiscovery(),
+      holdMs: 60_000,
     },
     {
       hookServer: hookServer as unknown as HookServer,

@@ -12,8 +12,8 @@
  *     (e.g. ["Yes","Always","No"] for Edit) OR, since ~Claude Code 2.0.54, a
  *     STRUCTURED array of typed entries (`addRules`, `addDirectories`,
  *     `setMode`, ...) — see `optionsFromSuggestions` for how each shape maps
- *     to a variable-count option set (never a fixed 3). With NO usable
- *     suggestions of either shape, the honest Yes/No 2-set substitutes. This
+ *     to options (by meaning since #1126: Yes, the offerable standing grants,
+ *     No). With nothing offerable, the honest Yes/No 2-set substitutes. This
  *     is the ONLY event that forwards a Question to `onQuestion` for a
  *     permission prompt (see `handlePermissionRequest`).
  *   - Notification(permission_prompt) fires shortly after with a plain-text
@@ -31,6 +31,7 @@
 import { DEFAULT_PERMISSION_LABELS, generateId } from '@remi/shared';
 import type { AgentStatus, Question, QuestionOption, UUID } from '@remi/shared';
 import type { QuestionRegistrationOutcome } from '../api/message-api.ts';
+import { isMultiChoicePermission } from '../auto-approve/multichoice.ts';
 import type { HookServerEvents } from './hook-server.ts';
 import type {
   ElicitationHookInput,
@@ -138,18 +139,39 @@ function disambiguateLabels(labels: readonly string[]): string[] {
 }
 
 /**
- * Build the label for ONE usable structured `permission_suggestions` entry
- * (#718), or null when the entry is not a "yes"-shaped suggestion this card
- * can safely render as a one-tap option: a deny/ask-behavior `addRules`, a
- * `removeRules` / `replaceRules` / `removeDirectories` (these narrow or
- * reset permissions — never a "yes" variant), or a `type` Claude Code has
- * not documented yet (ground truth: code.claude.com/docs/en/hooks).
+ * The standing grant a structured `permission_suggestions` entry offers on a
+ * held card, and the `updatedPermissions` entry a phone answer sends back for
+ * it (#1126). Options are built by MEANING, never by position: Claude's
+ * dialog does not render one option per suggestion (#1134), so a
+ * suggestion's index says nothing about the screen.
+ *
+ * Only two kinds are offered, both verified live (Claude Code 2.1.287, #1126
+ * spike F4):
+ *   - `setMode`: echoed verbatim; the mode change takes effect.
+ *   - `addRules` with `behavior: "allow"`: echoed with `destination:
+ *     "session"`. Claude suggests `localSettings`, which would write the rule
+ *     into the project's settings file from a phone tap; a session grant is
+ *     the narrower thing a one-tap answer should be able to do, and the label
+ *     says so.
+ * Never `addDirectories` (its echo did not stop the repeat prompt in F4), a
+ * deny or ask `addRules`, the narrowing types (`removeRules`,
+ * `replaceRules`, `removeDirectories`), or a type Claude Code has not
+ * documented. Returns null for those.
  */
-function labelForStructuredSuggestion(entry: Record<string, unknown>): string | null {
-  const type = entry['type'];
-  if (type === 'addRules') {
-    if (entry['behavior'] !== 'allow') return null;
-    const rules = Array.isArray(entry['rules']) ? entry['rules'] : [];
+export function standingGrantFor(entry: unknown): {
+  readonly label: string;
+  readonly echo: Record<string, unknown>;
+} | null {
+  if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return null;
+  const e = entry as Record<string, unknown>;
+  if (e['type'] === 'setMode') {
+    const mode = e['mode'];
+    if (typeof mode !== 'string' || mode.length === 0) return null;
+    return { label: truncateLabel(`Yes, and switch to ${mode} mode`), echo: { ...e } };
+  }
+  if (e['type'] === 'addRules') {
+    if (e['behavior'] !== 'allow') return null;
+    const rules = Array.isArray(e['rules']) ? e['rules'] : [];
     const parts = rules
       .map((rule): string | undefined => {
         if (typeof rule !== 'object' || rule === null) return undefined;
@@ -158,22 +180,17 @@ function labelForStructuredSuggestion(entry: Record<string, unknown>): string | 
         if (typeof ruleContent === 'string' && ruleContent.length > 0) return ruleContent;
         return typeof toolName === 'string' && toolName.length > 0 ? toolName : undefined;
       })
-      .filter((s): s is string => s !== undefined);
+      .filter((p): p is string => p !== undefined);
     if (parts.length === 0) return null;
-    const suffix = entry['destination'] === 'session' ? ' (this session)' : '';
-    return truncateLabel(`Yes, always allow: ${parts.join(', ')}${suffix}`);
-  }
-  if (type === 'addDirectories') {
-    const directories = Array.isArray(entry['directories'])
-      ? entry['directories'].filter((d): d is string => typeof d === 'string' && d.length > 0)
-      : [];
-    if (directories.length === 0) return null;
-    return truncateLabel(`Yes, allow directory ${directories.join(', ')}`);
-  }
-  if (type === 'setMode') {
-    const mode = entry['mode'];
-    if (typeof mode !== 'string' || mode.length === 0) return null;
-    return truncateLabel(`Yes, switch to ${mode} mode`);
+    // Truncate the rule text, never the scope: the label must keep saying
+    // "for this session" however long the command is. Four characters stay
+    // free so `disambiguateLabels` can append " (2)" without cutting it.
+    const suffix = ' for this session';
+    const prefix = 'Yes, allow ';
+    const room = SUGGESTION_LABEL_MAX - prefix.length - suffix.length - 4;
+    const joined = parts.join(', ');
+    const shown = joined.length > room ? `${joined.slice(0, room - 3)}...` : joined;
+    return { label: `${prefix}${shown}${suffix}`, echo: { ...e, destination: 'session' } };
   }
   return null;
 }
@@ -190,38 +207,31 @@ export interface PermissionOptionsResult {
 }
 
 /**
- * Build options from a PermissionRequest's `permission_suggestions` (#718).
- *
- * This is the HOOK's view of the choice, not the screen's: Claude Code's
- * dialog does not render one option per structured suggestion (live, an
- * `addDirectories` + `setMode` pair built a 4-option set over a 3-option
- * dialog). A card pushed when its prompt renders therefore takes the parsed
- * screen's options instead (`QuestionPresenceTracker.consumeAndMerge`,
- * #1134). These options still reach the phone on a card pushed by id before
- * any render (`pushHeldHook`: AskUserQuestion, ExitPlanMode, a multi-choice
- * permission; nothing holds since #1125), answered by a typed digit that
- * `handleAnswer` types only when the screen's option at that value has the
- * same label.
+ * Build a permission card's options from a PermissionRequest's
+ * `permission_suggestions`.
  *
  * Two shapes:
- *   - Legacy: >= 2 plain string labels (e.g. Edit's `["Yes","Always","No"]`)
- *     map directly to options, unchanged since #574.
- *   - Structured (Claude Code >= ~2.0.54): each USABLE entry (`addRules`
- *     with `behavior:"allow"`, `addDirectories`, `setMode`) becomes ONE
- *     middle option between a plain [Yes] and [No]; entries this card
- *     cannot safely render as a one-tap "yes" are skipped (see
- *     {@link labelForStructuredSuggestion}). Capped at
- *     {@link MAX_PERMISSION_OPTIONS} total — the first usable suggestions
- *     are kept, the rest dropped with a warning.
- * With NO usable suggestions of either shape, the honest Yes/No fallback
- * substitutes (`isFallback: true`) instead of a fabricated 3-set.
+ *   - A multi-choice string-label set (`isMultiChoicePermission`: more than
+ *     three labels, or labels that are not all yes/no-shaped) maps label by
+ *     label to picks, unchanged since #574. Such a card is pushed by id and
+ *     answered through the PTY, like AskUserQuestion (Phase 4 work).
+ *   - Everything else is a binary prompt, answered through the held hook
+ *     (#1126): [Yes] + one standing option per offerable suggestion
+ *     ({@link standingGrantFor}) + [No], built by meaning so each option maps
+ *     to a hook response, not to a digit on Claude's screen. Capped at
+ *     {@link MAX_PERMISSION_OPTIONS}: the first offerable suggestions are
+ *     kept. A legacy all-binary string set (Edit's `["Yes","Always","No"]`)
+ *     lands here too: its "Always" names no suggestion to echo, so it is not
+ *     offered. With no offerable suggestion, the honest Yes/No fallback
+ *     (`isFallback: true`).
  * Exported so the mapping is unit-testable independent of the bridge.
  */
 export function optionsFromSuggestions(suggestions: unknown): PermissionOptionsResult {
-  const stringSuggestions = Array.isArray(suggestions)
-    ? suggestions.filter((s): s is string => typeof s === 'string' && s.length > 0)
-    : [];
-  if (stringSuggestions.length >= 2) {
+  const entries = Array.isArray(suggestions) ? suggestions : [];
+  const stringSuggestions = entries.filter(
+    (s): s is string => typeof s === 'string' && s.length > 0,
+  );
+  if (stringSuggestions.length >= 2 && isMultiChoicePermission('', entries)) {
     const options = stringSuggestions.map((suggestion, idx) => {
       const lower = suggestion.toLowerCase();
       const isYes = lower.startsWith('yes') || lower === 'allow' || lower === 'always';
@@ -231,47 +241,44 @@ export function optionsFromSuggestions(suggestions: unknown): PermissionOptionsR
     return { options, isFallback: false };
   }
 
-  const entries = Array.isArray(suggestions) ? suggestions : [];
-  const middleLabels: string[] = [];
-  const suggestionIndices: number[] = [];
+  const standing: { label: string; suggestionIndex: number }[] = [];
   entries.forEach((entry, idx) => {
-    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return;
-    const label = labelForStructuredSuggestion(entry as Record<string, unknown>);
-    if (label === null) {
+    if (typeof entry !== 'object' || entry === null) return;
+    const grant = standingGrantFor(entry);
+    if (grant === null) {
       console.debug(
-        `[HookEventBridge] Skipping unusable permission_suggestions[${idx}] (type=${String((entry as Record<string, unknown>)['type'])})`,
+        `[HookEventBridge] Not offering permission_suggestions[${idx}] (type=${String((entry as Record<string, unknown>)['type'])})`,
       );
       return;
     }
-    middleLabels.push(label);
-    suggestionIndices.push(idx);
+    standing.push({ label: grant.label, suggestionIndex: idx });
   });
 
-  if (middleLabels.length === 0) {
+  if (standing.length === 0) {
     return { options: [...DEFAULT_PERMISSION_OPTIONS], isFallback: true };
   }
 
   const maxMiddle = MAX_PERMISSION_OPTIONS - 2; // Yes + No are always present
-  if (middleLabels.length > maxMiddle) {
+  if (standing.length > maxMiddle) {
     console.warn(
-      `[HookEventBridge] ${middleLabels.length} usable permission_suggestions exceed the ${MAX_PERMISSION_OPTIONS}-option card budget; keeping the first ${maxMiddle}, dropping ${middleLabels.length - maxMiddle}`,
+      `[HookEventBridge] ${standing.length} offerable permission_suggestions exceed the ${MAX_PERMISSION_OPTIONS}-option card budget; keeping the first ${maxMiddle}`,
     );
   }
-  // Disambiguate AFTER slicing to the cap (only the displayed labels need to
-  // be distinct) and BEFORE the labels are assigned to options / suggestionIndex.
-  const keptLabels = disambiguateLabels(middleLabels.slice(0, maxMiddle));
-  const keptIndices = suggestionIndices.slice(0, maxMiddle);
+  const kept = standing.slice(0, maxMiddle);
+  // Two suggestions can truncate to the same label; the answer path matches
+  // an incoming answer by label, so labels must stay distinct (#718 review).
+  const keptLabels = disambiguateLabels(kept.map((k) => k.label));
 
   let value = 1;
   const options: QuestionOption[] = [
     { label: 'Yes', value: String(value++), isRecommended: true, isYes: true, isNo: false },
-    ...keptLabels.map((label, i) => ({
-      label,
+    ...kept.map((k, i) => ({
+      label: keptLabels[i] as string,
       value: String(value++),
       isRecommended: false,
       isYes: true,
       isNo: false,
-      suggestionIndex: keptIndices[i],
+      suggestionIndex: k.suggestionIndex,
     })),
     { label: 'No', value: String(value++), isRecommended: false, isYes: false, isNo: true },
   ];

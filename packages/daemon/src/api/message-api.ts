@@ -251,7 +251,7 @@ export class MessageAPI {
     // A `held` push (`pushHeldHook`) bypasses the content-dedup: its card is
     // load-bearing, not a PTY/hook echo. Built for held hooks (Model B, #573),
     // where a deduped card left the hook with no answerable question (#603
-    // Phase 3, R7); since #1125 nothing holds, and the callers are
+    // Phase 3, R7); the callers are held binary prompts (#1126) and
     // multi-choice / design escalations, whose push is the only one they get.
     // Its outcome is reported as its own distinct 'held' status, not folded
     // into 'registered': a held push never passes through the dedup gate

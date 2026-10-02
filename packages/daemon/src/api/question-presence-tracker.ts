@@ -76,9 +76,9 @@ export interface PushOptions {
    * The gate decided this card must reach the user NOW (`pushHeldHook`), so it
    * is LOAD-BEARING, not a cosmetic PTY/hook echo: it BYPASSES the
    * content-dedup and delivers to the lock screen even when a client is
-   * attached (it may be backgrounded). #603 Phase 3. Named for the held hooks
-   * (Model B, #573) it was built for; since #1125 nothing holds, and the
-   * remaining caller is a multi-choice / design escalation.
+   * attached (it may be backgrounded). #603 Phase 3. Callers: a held binary
+   * permission prompt (Model B, #573, restored by #1126) and a multi-choice /
+   * design escalation.
    */
   held?: boolean;
 }
@@ -320,10 +320,31 @@ export class QuestionPresenceTracker {
    *  (#486), which never re-emits for the tracker to catch on a later tick. */
   private armedOrphanQuestion: Question | null = null;
 
+  /** "Is a hook-backed prompt open?" (#1126), installed by `setupHookBridge`
+   *  from the permission gate. Null until installed (no hook server, or
+   *  tests), which reads as false. See `setHookPromptProbe`. */
+  private hookPromptProbe: (() => boolean) | null = null;
+
   constructor(
     private readonly push: PushQuestion,
     private readonly deps: QuestionPresenceTrackerDeps = {},
   ) {}
+
+  /**
+   * Install the gate's "is a hook-backed prompt open?" read (#1126). While it
+   * answers true, a PTY render is not an orphan: it is the open hook-backed
+   * prompt (or a redraw of it), whose card is the gate's to push and whose
+   * answer goes through the hook or the terminal, never through a card
+   * rebuilt from the screen and answered by typing. That matters after a
+   * hold ends with the dialog still up (the deadline): the card is gone, so
+   * the live-question check no longer suppresses the redraw. Genuinely
+   * hook-less prompts (sandbox network, trust, agent-team dialogs) render
+   * while no hook-backed prompt is open, and still take the orphan path.
+   * `setupHookBridge` calls this once, where the gate and tracker meet.
+   */
+  setHookPromptProbe(probe: () => boolean): void {
+    this.hookPromptProbe = probe;
+  }
 
   /**
    * Hook fired (PermissionRequest or Notification(permission_prompt)).
@@ -473,11 +494,11 @@ export class QuestionPresenceTracker {
 
   /**
    * Push an escalation's question IMMEDIATELY, without waiting for a PTY
-   * render. Built for escalations that held their PermissionRequest hook
-   * (Model B, #573); since #1125 nothing holds, and the caller is a
-   * multi-choice / design escalation (`AutoApproveGate.escalatePassthrough`,
-   * #625), whose card must not wait for a render. Pushes under the stashed
-   * question's own id.
+   * render. Callers: a binary prompt whose PermissionRequest hook is held for
+   * the phone's answer (Model B, #573; `AutoApproveGate.holdForAnswer`,
+   * #1126), and a multi-choice / design escalation
+   * (`AutoApproveGate.escalatePassthrough`, #625). Neither waits for a
+   * render. Pushes under the stashed question's own id.
    *
    * Locates the stashed hook record by id (the `pending` map is agent-keyed, so
    * we scan its values for the matching `Question.id`), routes it through the
@@ -673,9 +694,8 @@ export class QuestionPresenceTracker {
    *
    * Cards pushed at hook time (`pushHeldHook`) never reach here: that
    * trigger consumes the hook record, so the native render that follows is
-   * an echo the live-question check suppresses, not a render-born card.
-   * (The trigger was built for held hooks, which never rendered at all;
-   * nothing holds since #1125.)
+   * an echo the live-question check (and, once the card is gone, the
+   * hook-prompt probe, #1126) suppresses, not a render-born card.
    */
   private adoptRenderOwnedQuestion(card: RenderOwnedCard): void {
     const previous = this.observedRenderOwnedQuestion;
@@ -959,7 +979,8 @@ export class QuestionPresenceTracker {
   }
 
   /** True when the permission gate already owns `ptyQuestion`'s prompt
-   *  cycle: either it registered a live question SOMEWHERE in the session
+   *  cycle: it holds or relays an open hook-backed prompt (`hookPromptProbe`,
+   *  #1126), or it registered a live question SOMEWHERE in the session
    *  (`hasLiveQuestions` — global, a gate push registers regardless of
    *  agent), or THIS agent specifically still has a hook record stashed
    *  mid-flight (`pending`, scoped by `agentKey` — a different agent's
@@ -976,6 +997,8 @@ export class QuestionPresenceTracker {
     const key = agentKey(ptyQuestion);
     if (this.pending.has(key) && !this.awaitingPTY.has(key)) return true;
     try {
+      // #1126: a hook-backed prompt is open, so this render is it.
+      if (this.hookPromptProbe?.() === true) return true;
       return this.deps.hasLiveQuestions?.() ?? false;
     } catch (err) {
       console.error(
