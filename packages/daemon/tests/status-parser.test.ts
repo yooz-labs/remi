@@ -3,7 +3,12 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { getToolFromStatus, isActive, parseStatus } from '../src/parser/status-parser.ts';
+import {
+  getToolFromStatus,
+  isActive,
+  isEmptyInputPrompt,
+  parseStatus,
+} from '../src/parser/status-parser.ts';
 
 describe('parseStatus()', () => {
   describe('Executing state', () => {
@@ -301,5 +306,48 @@ describe('isActive()', () => {
 
   test('returns false for empty prompt', () => {
     expect(isActive('> ')).toBe(false);
+  });
+});
+
+/**
+ * #1140: Claude's empty input prompt as the last thing on screen, read as the
+ * sign a dialog is gone. `parseStatus` misses it (it reads only the last line,
+ * which is blank in these renders) and falls to its ignored 0.3 default.
+ */
+describe('isEmptyInputPrompt() (#1140)', () => {
+  test('the idle input box after a turn (captured shape: a note, then an empty prompt, then blank rows)', () => {
+    expect(isEmptyInputPrompt('\n\n\u273bWorked for 5s\n\u276f \n\n\n\n\n  \n')).toBe(true);
+    expect(parseStatus('\n\n\u273bWorked for 5s\n\u276f \n\n\n\n\n  \n').confidence).toBeLessThan(
+      0.5,
+    );
+  });
+
+  test('a bare prompt with escape sequences around it', () => {
+    expect(isEmptyInputPrompt('\u001b[2K\r\u001b[38;2;177;185;249m\u276f\u001b[39m \r\n')).toBe(
+      true,
+    );
+  });
+
+  test('not when the prompt carries typed text, or a selection box is on screen', () => {
+    expect(isEmptyInputPrompt('\u276f fix the build')).toBe(false);
+    expect(isEmptyInputPrompt('Do you want to proceed?\n\u276f 1. Yes\n  2. No\n\u276f ')).toBe(
+      false,
+    );
+    expect(isEmptyInputPrompt('\u276f 1. Yes\n  2. No')).toBe(false);
+  });
+
+  test('not when another waiting prompt is in the same output', () => {
+    expect(isEmptyInputPrompt('Overwrite existing file? (y/n)\n\u276f ')).toBe(false);
+    expect(isEmptyInputPrompt('Waiting for input\n\u276f ')).toBe(false);
+  });
+
+  test('not when the prompt is not the last non-empty line, or there is none', () => {
+    expect(isEmptyInputPrompt('\u276f \nsome later output')).toBe(false);
+    expect(isEmptyInputPrompt('plain output')).toBe(false);
+    expect(isEmptyInputPrompt('')).toBe(false);
+  });
+
+  test("a bare > is not Claude's prompt glyph", () => {
+    expect(isEmptyInputPrompt('quoted\n>')).toBe(false);
   });
 });

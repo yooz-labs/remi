@@ -31,6 +31,19 @@ import { SessionStore } from '../../../src/session/session-store.ts';
 import { WRAPPED_DIRECTORY_DIALOG } from '../../parser/fixtures/claude-dialogs.ts';
 import { CID, type PtyCapture, errorsOf, fakeMessageAPI, fakePTY } from './menu-test-helpers.ts';
 
+/** One recorded PTY event of a live AskUserQuestion capture
+ *  (`tests/fixtures/auq`, captured from a real Claude Code session): `OUT` is
+ *  what Claude wrote to the terminal, `IN` what the user typed. */
+function captureEvents(name: string): Array<{ dir: 'OUT' | 'IN'; data: string }> {
+  const file = path.join(import.meta.dir, '..', '..', 'fixtures', 'auq', name);
+  const events: Array<{ dir: 'OUT' | 'IN'; data: string }> = [];
+  for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+    const m = /^(OUT|IN) \d+ (?:[a-z]+ )?(".*")$/.exec(line);
+    if (m) events.push({ dir: m[1] as 'OUT' | 'IN', data: JSON.parse(m[2] as string) as string });
+  }
+  return events;
+}
+
 describe('chat guard driven by the real OutputProcessor (#1140)', () => {
   let sessionRegistry: SessionRegistry;
   let tmpDir: string;
@@ -222,6 +235,112 @@ describe('chat guard driven by the real OutputProcessor (#1140)', () => {
       } as SubagentStartHookInput);
 
       expect(observedValues()).toBeNull();
+    });
+  });
+  /**
+   * Esc in the terminal fires no hook, so without a PTY-side signal the
+   * observation would persist until the next status or Claude's idle
+   * notification (about a minute) and the chat would stay refused for a
+   * dialog that is gone. The processor now reads Claude's empty input prompt
+   * (a bare `❯` as the last non-empty line) as idle, but only while it believes
+   * a prompt is up (`waiting`) and only when nothing in the chunk is itself a
+   * prompt. The idle render below is the one captured from a live session; no
+   * capture of the redraw right after an Esc exists, so that exact frame is
+   * not claimed.
+   */
+  describe('the idle input prompt clears it (#1140)', () => {
+    /** Claude's idle input box, as captured at the end of a turn
+     *  (`one-question-single-select.txt`: "Worked for 5s", then an empty `❯`). */
+    const idleRender = () => {
+      const chunk = captureEvents('one-question-single-select.txt').find(
+        (e) => e.dir === 'OUT' && e.data.includes('Worked for') && e.data.includes('❯'),
+      );
+      if (!chunk) throw new Error('the idle render is missing from the capture');
+      return chunk.data;
+    };
+
+    test('after a dialog is dismissed, the empty input prompt unlocks the chat', async () => {
+      screen(WRAPPED_DIRECTORY_DIALOG);
+      expect(observedValues()).toEqual(['1', '2', '3']);
+      await handlers.onUserInput(CID, sessionId, 'while the dialog is up', false);
+      expect(pty.submits).toEqual([]);
+
+      screen(idleRender());
+
+      expect(observedValues()).toBeNull();
+      await handlers.onUserInput(CID, sessionId, 'after Esc', false);
+      expect(pty.submits).toEqual(['after Esc']);
+      expect(errorsOf(sent)).toHaveLength(1);
+    });
+
+    test('the idle prompt is not read as idle when no prompt was up (nothing changes)', () => {
+      const statuses: string[] = [];
+      const fresh = new OutputProcessor(
+        { sessionId, streamStatusOnly: true },
+        { onMessage: () => {}, onStatusChange: (status) => statuses.push(status) },
+      );
+
+      // Fresh: already idle, so no change either way.
+      fresh.process(idleRender());
+      fresh.flush();
+      expect(statuses).toEqual([]);
+
+      // Claude working: the input box renders below the spinner and tool
+      // lines all the time, and must not flip a working session to idle.
+      fresh.process('\u23fa Running the test suite\n');
+      expect(statuses).toEqual(['executing']);
+      fresh.process(idleRender());
+      fresh.flush();
+      expect(statuses).toEqual(['executing']);
+    });
+
+    test('the redraw when the cursor moves down a live menu is not an idle prompt: the observation stays', () => {
+      // Replay the capture up to and including the chunk Claude wrote when the
+      // cursor moved to option 2 (" Red\n❯Green" and blank rows): it contains a
+      // `❯` and no numbers, which is the closest live look-alike of an idle
+      // prompt.
+      let redrew = false;
+      for (const event of captureEvents('one-question-single-select.txt')) {
+        if (event.dir !== 'OUT') continue;
+        screen(event.data);
+        if (event.data.includes('Green') && event.data.includes('\u276f') && observedValues()) {
+          redrew = true;
+          break;
+        }
+      }
+      expect(redrew).toBe(true);
+      expect(observedValues()?.length).toBeGreaterThan(0);
+    });
+
+    // The safety property that matters, over every capture we have: the
+    // observation is never cleared by OUTPUT alone while a menu is up. It only
+    // clears after the user acted (an IN event) since the menu appeared.
+    test.each([
+      'one-question-single-select.txt',
+      'one-question-multi-select.txt',
+      'two-questions-single-and-multi.txt',
+      'three-questions-single-select.txt',
+      'three-questions-multi-middle.txt',
+    ])('replaying %s never clears the menu before the user acts', (name) => {
+      let inputsSinceMenu = 0;
+      let observedNow = false;
+      let sawMenu = false;
+      for (const event of captureEvents(name)) {
+        if (event.dir === 'IN') {
+          if (observedNow) inputsSinceMenu += 1;
+          continue;
+        }
+        screen(event.data);
+        const nowObserved = (observedValues()?.length ?? 0) > 0;
+        if (observedNow && !nowObserved) {
+          // Cleared: the user must have acted since it appeared.
+          expect(inputsSinceMenu).toBeGreaterThan(0);
+        }
+        if (nowObserved && !observedNow) inputsSinceMenu = 0;
+        if (nowObserved) sawMenu = true;
+        observedNow = nowObserved;
+      }
+      expect(sawMenu).toBe(true);
     });
   });
 });
