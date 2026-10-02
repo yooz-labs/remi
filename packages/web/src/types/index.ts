@@ -271,6 +271,9 @@ export interface AppSettings {
   readonly notifyTurnComplete: boolean;
   /** Push when Claude Code's auto mode blocks a tool call (#1126). */
   readonly notifyHarnessDenied: boolean;
+  /** Push when a turn ends on an API error such as a usage or rate limit
+   *  (#1153). On by default; independent of "Turn complete". */
+  readonly notifyTurnFailed: boolean;
   readonly sound: boolean;
   readonly autoReconnect: boolean;
   readonly showTimestamps: boolean;
@@ -295,6 +298,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   notifyQuestions: true,
   notifyTurnComplete: true,
   notifyHarnessDenied: true,
+  notifyTurnFailed: true,
   sound: true,
   autoReconnect: true,
   showTimestamps: true,
