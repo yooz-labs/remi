@@ -6,7 +6,7 @@ import type { ProtocolMessage, UUID } from '@remi/shared';
 import { generateId } from '@remi/shared';
 import type { MessageAPI } from '../../../src/api/message-api.ts';
 import { QuestionPresenceTracker } from '../../../src/api/question-presence-tracker.ts';
-import { trackerScreenDeps } from '../../../src/cli/handlers/input-events.ts';
+import { type PromptUpDeps, promptUpDeps } from '../../../src/cli/handlers/prompt-up.ts';
 import { createSessionHandlers } from '../../../src/cli/handlers/session-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import { parseQuestion } from '../../../src/parser/question-parser.ts';
@@ -85,9 +85,7 @@ describe('createSessionHandlers', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  function makeHandlers(
-    opts: { exitFallbackMs?: number; screen?: Partial<ReturnType<typeof trackerScreenDeps>> } = {},
-  ) {
+  function makeHandlers(opts: { exitFallbackMs?: number; screen?: PromptUpDeps } = {}) {
     const handlers = createSessionHandlers({
       sessionRegistry,
       bindingStore,
@@ -336,8 +334,10 @@ describe('createSessionHandlers', () => {
    * #1140: a Stop types "/exit" + Enter, and into a numbered selection menu
    * that Enter confirms the highlighted option (usually "1. Yes"). With a menu
    * on screen the Stop types nothing and force-closes. Real tracker (through
-   * `trackerScreenDeps`, the wiring cli.ts uses) observing the real captured
-   * dialog through the real parser; the terminal records what reaches it.
+   * `promptUpDeps`, the wiring cli.ts uses, here with no gate: a hook-less
+   * prompt) observing the real captured dialog through the real parser; the
+   * terminal records what reaches it. The gate's half of the signal (#1155)
+   * is tested end to end in hook-bridge-setup.test.ts.
    */
   describe('onKillSessionRequest with a prompt on screen (#1140)', () => {
     function stoppableSession() {
@@ -354,7 +354,10 @@ describe('createSessionHandlers', () => {
       sessionRegistry.registerSession(sessionId, '/test/dir', pty, fakeMessageAPI());
       sessionRegistry.attachConnection(sessionId, CID);
       const tracker = new QuestionPresenceTracker(() => undefined);
-      const screen = trackerScreenDeps((sid) => (sid === sessionId ? tracker : undefined));
+      const screen = promptUpDeps(
+        () => undefined,
+        (sid) => (sid === sessionId ? tracker : undefined),
+      );
       return { submitted, sessionId, tracker, screen };
     }
 

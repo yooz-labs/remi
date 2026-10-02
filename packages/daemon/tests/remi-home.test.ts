@@ -180,3 +180,42 @@ describe('REMI_HOME moves the state a real cli.ts writes', () => {
     expect(fs.existsSync(path.join(home, '.remi'))).toBe(false);
   }, 30000);
 });
+
+/**
+ * #1155: the README recommends exporting `REMI_HOME` to run remi from source,
+ * and tests that expect the default state layout failed when it was exported.
+ * Both `bunfig.toml` files preload `tests/unset-remi-home.ts`, which removes
+ * it. Each case runs a real `bun test` of a probe file with `REMI_HOME`
+ * exported, from the repo root and from this package (each reads its own
+ * `bunfig.toml`); the probe passes only if the variable was removed.
+ */
+describe('an exported REMI_HOME never reaches a test process (#1155)', () => {
+  const DAEMON_DIR = path.resolve(import.meta.dir, '..');
+  const REPO_ROOT = path.resolve(DAEMON_DIR, '..', '..');
+  const PROBE = path.join(DAEMON_DIR, 'tests', 'fixtures', 'remi-home-probe.ts');
+
+  test.each([
+    ['the repo root', REPO_ROOT],
+    ['packages/daemon', DAEMON_DIR],
+  ])(
+    'bun test from %s',
+    async (_where, cwd) => {
+      const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-home-preload-'));
+      try {
+        const proc = Bun.spawn(['bun', 'test', `./${path.relative(cwd, PROBE)}`], {
+          cwd,
+          env: { ...process.env, REMI_HOME: scratch },
+          stdout: 'pipe',
+          stderr: 'pipe',
+        });
+        const code = await proc.exited;
+        const output = `${await new Response(proc.stdout).text()}${await new Response(proc.stderr).text()}`;
+        expect({ code, output }).toMatchObject({ code: 0 });
+        expect(output).toContain('1 pass');
+      } finally {
+        fs.rmSync(scratch, { recursive: true, force: true });
+      }
+    },
+    30000,
+  );
+});

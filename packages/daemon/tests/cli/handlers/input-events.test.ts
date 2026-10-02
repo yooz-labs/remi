@@ -7,6 +7,7 @@ import { generateId } from '@remi/shared';
 import type { MessageAPI } from '../../../src/api/message-api.ts';
 import { QuestionPresenceTracker } from '../../../src/api/question-presence-tracker.ts';
 import { createInputHandlers, trackerScreenDeps } from '../../../src/cli/handlers/input-events.ts';
+import { promptUpDeps } from '../../../src/cli/handlers/prompt-up.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import { optionsFromSuggestions } from '../../../src/hooks/hook-event-bridge.ts';
 import type { PTYSession } from '../../../src/pty/pty-session.ts';
@@ -2136,8 +2137,8 @@ describe('createInputHandlers', () => {
       return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:\\])\/\/[^\n]*/g, '$1');
     }
 
-    /** 'ok', or why `src`'s `<callName>({...})` call (`createInputHandlers` or
-     *  `createSessionHandlers`) does not use the helper for its screen deps. */
+    /** 'ok', or why `src`'s `createInputHandlers({...})` call does not use
+     *  the helper for its screen deps. */
     function wiringVerdict(src: string, callName = 'createInputHandlers'): string {
       const start = src.indexOf(`${callName}({`);
       if (start < 0) return `no ${callName} call`;
@@ -2167,39 +2168,6 @@ describe('createInputHandlers', () => {
 
     test('cli.ts wires it into the answer handlers', () => {
       expect(wiringVerdict(cliSource)).toBe('ok');
-    });
-
-    // #1140: the Stop handler reads the same view so it never types "/exit"
-    // + Enter into a menu on screen.
-    test('cli.ts wires it into the session handlers too', () => {
-      expect(wiringVerdict(cliSource, 'createSessionHandlers')).toBe('ok');
-    });
-
-    /** `src` with the LAST `SPREAD` (the session handlers' call, which comes
-     *  after the answer handlers') replaced. */
-    function mutateSessionSpread(src: string, replacement: string): string {
-      const at = src.lastIndexOf(SPREAD);
-      return `${src.slice(0, at)}${replacement}${src.slice(at + SPREAD.length)}`;
-    }
-
-    test.each([
-      ['deleted', (s: string) => mutateSessionSpread(s, ''), 'spread missing'],
-      [
-        'line-commented',
-        (s: string) => mutateSessionSpread(s, `  // ${SPREAD.trim()}`),
-        'spread missing',
-      ],
-      [
-        'overridden by a property',
-        (s: string) => mutateSessionSpread(s, `${SPREAD}\n  observedPromptOptions: () => null,`),
-        'overridden after the spread',
-      ],
-    ])('the session-handler check fails when the spread is %s', (_name, mutate, verdict) => {
-      const mutated = mutate(cliSource);
-      expect(mutated).not.toBe(cliSource);
-      expect(wiringVerdict(mutated, 'createSessionHandlers')).toBe(verdict);
-      // The answer handlers' own call is untouched by these mutations.
-      expect(wiringVerdict(mutated)).toBe('ok');
     });
 
     // Round-4 review: the first version of this check passed a commented-out
@@ -2235,6 +2203,162 @@ describe('createInputHandlers', () => {
       const mutated = mutate(cliSource);
       expect(mutated).not.toBe(cliSource);
       expect(wiringVerdict(mutated)).toBe(verdict);
+    });
+  });
+
+  /**
+   * #1155: the chat guard and Stop read one "a prompt is up" signal
+   * (`promptUpDeps`), built once in cli.ts and spread into both handler
+   * factories. Pins the helper against a real gate-shaped read and a real
+   * tracker, and pins the cli.ts wiring the way the trackerScreenDeps check
+   * above does (a deleted, commented or overridden line fails it).
+   */
+  describe('promptUpDeps (#1155)', () => {
+    const MENU = [
+      { value: '1', label: 'Yes', isRecommended: true, isYes: false, isNo: false },
+      { value: '2', label: 'No', isRecommended: false, isYes: false, isNo: false },
+    ];
+
+    function observing(options: QuestionOption[]): QuestionPresenceTracker {
+      const tracker = new QuestionPresenceTracker(() => undefined);
+      tracker.onPTYPromptVisible({
+        id: generateId(),
+        text: 'Do you want to proceed?',
+        options,
+        allowsFreeText: false,
+        isAnswered: false,
+      });
+      return tracker;
+    }
+
+    test('a main hold, then a prompt waiting in the terminal, then a numbered menu', () => {
+      const gate = { hold: false, open: false };
+      const view = {
+        hasMainHold: () => gate.hold,
+        hasOpenHookPrompt: () => gate.hold || gate.open,
+      };
+      const menu = observing(MENU);
+      const deps = promptUpDeps(
+        () => view,
+        () => menu,
+      );
+      const sid = 'sid-a' as UUID;
+      expect(deps.promptUp(sid)).toBe('menu');
+      gate.open = true;
+      expect(deps.promptUp(sid)).toBe('terminal');
+      gate.hold = true;
+      expect(deps.promptUp(sid)).toBe('held');
+    });
+
+    test('nothing up: no hold, no terminal prompt, and a (y/n) prompt is not a menu', () => {
+      const view = { hasMainHold: () => false, hasOpenHookPrompt: () => false };
+      const yn = observing([
+        { value: 'y', label: 'y', isRecommended: false, isYes: true, isNo: false },
+        { value: 'n', label: 'n', isRecommended: false, isYes: false, isNo: true },
+      ]);
+      expect(
+        promptUpDeps(
+          () => view,
+          () => yn,
+        ).promptUp('sid-a' as UUID),
+      ).toBeNull();
+      // No gate and no tracker for the session: nothing is known to be up.
+      expect(
+        promptUpDeps(
+          () => undefined,
+          () => undefined,
+        ).promptUp('sid-x' as UUID),
+      ).toBeNull();
+    });
+
+    /** Strip comments, so a commented-out line cannot satisfy the check. */
+    function stripComments(src: string): string {
+      return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:\\])\/\/[^\n]*/g, '$1');
+    }
+
+    const DEFINITION =
+      'const promptUpWiring = promptUpDeps((sessionId) => sessionGateHandles.get(sessionId), (sessionId) => sessionTrackers.get(sessionId),);';
+
+    /** 'ok', or why `src` does not build the signal once from both maps and
+     *  spread it into both `createInputHandlers` and `createSessionHandlers`. */
+    function promptUpVerdict(src: string): string {
+      const code = stripComments(src);
+      const squash = (t: string) => t.replace(/\s+/g, '');
+      const at = code.indexOf('const promptUpWiring =');
+      if (at < 0) return 'definition missing';
+      const defEnd = code.indexOf(');', at);
+      if (squash(code.slice(at, defEnd + 2)) !== squash(DEFINITION)) return 'definition changed';
+      for (const callName of ['createInputHandlers', 'createSessionHandlers']) {
+        const start = code.indexOf(`${callName}({`);
+        if (start < 0) return `no ${callName} call`;
+        const end = code.indexOf('\n});', start);
+        const call = code.slice(start, end);
+        const spread = /^[ \t]*\.\.\.promptUpWiring,?[ \t]*$/m.exec(call);
+        if (!spread) return `${callName}: spread missing`;
+        if (/\bpromptUp\b/.test(call.slice(spread.index + spread[0].length))) {
+          return `${callName}: overridden after the spread`;
+        }
+      }
+      return 'ok';
+    }
+
+    const cliSource = fs.readFileSync(
+      path.join(import.meta.dir, '..', '..', '..', 'src', 'cli.ts'),
+      'utf8',
+    );
+    const SPREAD = '  ...promptUpWiring,';
+
+    test('cli.ts builds it once and spreads it into the chat and Stop handlers', () => {
+      expect(promptUpVerdict(cliSource)).toBe('ok');
+    });
+
+    /** `src` with the `n`th (0-based) `SPREAD` replaced: 0 is the input
+     *  handlers' call, 1 the session handlers'. */
+    function mutateSpread(src: string, n: number, replacement: string): string {
+      let at = -1;
+      for (let i = 0; i <= n; i++) at = src.indexOf(SPREAD, at + 1);
+      return `${src.slice(0, at)}${replacement}${src.slice(at + SPREAD.length)}`;
+    }
+
+    test.each([
+      [
+        'the chat spread deleted',
+        (s: string) => mutateSpread(s, 0, ''),
+        'createInputHandlers: spread missing',
+      ],
+      [
+        'the Stop spread deleted',
+        (s: string) => mutateSpread(s, 1, ''),
+        'createSessionHandlers: spread missing',
+      ],
+      [
+        'the Stop spread line-commented',
+        (s: string) => mutateSpread(s, 1, `  // ${SPREAD.trim()}`),
+        'createSessionHandlers: spread missing',
+      ],
+      [
+        'the Stop spread overridden by a property',
+        (s: string) => mutateSpread(s, 1, `${SPREAD}\n  promptUp: () => null,`),
+        'createSessionHandlers: overridden after the spread',
+      ],
+      [
+        'the chat spread overridden by a shorthand',
+        (s: string) => mutateSpread(s, 0, `${SPREAD}\n  promptUp,`),
+        'createInputHandlers: overridden after the spread',
+      ],
+      [
+        'the gate read dropped from the definition',
+        (s: string) =>
+          s.replace(
+            '(sessionId) => sessionGateHandles.get(sessionId),\n  (sessionId) => sessionTrackers',
+            '() => undefined,\n  (sessionId) => sessionTrackers',
+          ),
+        'definition changed',
+      ],
+    ])('the check fails with %s', (_name, mutate, verdict) => {
+      const mutated = mutate(cliSource);
+      expect(mutated).not.toBe(cliSource);
+      expect(promptUpVerdict(mutated)).toBe(verdict);
     });
   });
 

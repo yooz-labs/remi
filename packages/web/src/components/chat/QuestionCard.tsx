@@ -91,14 +91,25 @@ interface RenderOption {
 /** Hint text shown to the right of permission-style options. A plan
  *  approval's options say what they do in their labels; its approvals set a
  *  mode (not "Allow once") and keeping planning is not "Cancel" (#1127
- *  review T3), so they get no hint. */
+ *  review T3), so they get no hint.
+ *
+ *  By the daemon's meaning, never the label's wording (#1155): a standing
+ *  option (`standingGrant`, a rule or a mode the daemon grants for this
+ *  session only) says "This session", and "Allow once" is only for the plain
+ *  Yes (labeled exactly "Yes", as the lock-screen categories read it). Any
+ *  other Yes, such as a hook-less prompt's "Yes, and don't ask again" read
+ *  off the screen, gets no hint: its scope is whatever Claude's label says,
+ *  which may be a settings file, so neither hint would be true. Before
+ *  #1155 the hint keyed on the word "always": the daemon's standing labels
+ *  ("Yes, allow ... for this session", "Yes, and switch to acceptEdits
+ *  mode") do not contain it, so they read "Allow once". */
 function optionHint(option: UIQuestionOption, kind: UIQuestion['kind']): string | undefined {
   if (kind === 'plan_approval') return undefined;
+  if (option.standingGrant !== undefined) return 'This session';
   if (option.sessionGrant === 'github-issue-planning') {
     return 'Allow planning actions for this session';
   }
-  if (/always/i.test(option.label)) return 'Remember for session';
-  if (option.isYes) return 'Allow once';
+  if (option.isYes) return option.label.trim() === 'Yes' ? 'Allow once' : undefined;
   if (option.isNo) return 'Cancel';
   return undefined;
 }
@@ -114,8 +125,16 @@ function optionKind(option: UIQuestionOption): OptionKind {
  * it keeps planning, on a held AskUserQuestion it dismisses the question
  * (both through the hook); elsewhere it cancels the prompt (Esc where no
  * hook stands behind it).
+ *
+ * A terminal-only card (#1155) says what its Cancel does to the tool call:
+ * it declines it. For a question-shaped tool other than AskUserQuestion the
+ * daemon presses Esc in the terminal, where Claude's permission prompt for
+ * the tool is up; for an AskUserQuestion whose input did not parse it denies
+ * the held hook ("The user dismissed the question."). Either way the tool
+ * does not run, which "Dismiss question" did not say.
  */
 function cancelLabel(question: UIQuestion): string {
+  if (question.terminalOnly === true) return 'Decline tool call';
   if (question.kind === 'plan_approval') return 'Keep planning';
   if (question.kind === 'multi_question') return 'Dismiss question';
   return 'Cancel (Esc)';

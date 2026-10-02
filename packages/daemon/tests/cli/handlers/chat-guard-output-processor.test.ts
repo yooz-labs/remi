@@ -17,6 +17,7 @@ import type { ProtocolMessage, UUID } from '@remi/shared';
 import { PROMPT_WAITING_ERROR_CODE } from '@remi/shared';
 import { QuestionPresenceTracker } from '../../../src/api/question-presence-tracker.ts';
 import { createInputHandlers, trackerScreenDeps } from '../../../src/cli/handlers/input-events.ts';
+import { promptUpDeps } from '../../../src/cli/handlers/prompt-up.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import { HookEventBridge } from '../../../src/hooks/hook-event-bridge.ts';
 import type {
@@ -83,6 +84,10 @@ describe('chat guard driven by the real OutputProcessor (#1140)', () => {
         return true;
       },
       ...trackerScreenDeps((sid) => (sid === sessionId ? tracker : undefined)),
+      ...promptUpDeps(
+        () => undefined,
+        (sid) => (sid === sessionId ? tracker : undefined),
+      ),
     });
   });
 

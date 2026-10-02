@@ -21,7 +21,7 @@ import {
   createSessionListResponse,
   errorToString,
 } from '@remi/shared';
-import type { QuestionOption, UUID } from '@remi/shared';
+import type { UUID } from '@remi/shared';
 
 import type {
   SessionBindingStore,
@@ -30,7 +30,7 @@ import type {
 } from '../../session/index.ts';
 import type { TranscriptDiscovery } from '../../transcript/index.ts';
 import { log, logError } from '../logger.ts';
-import { isNumberedMenu } from './screen-menu.ts';
+import type { PromptUp } from './prompt-up.ts';
 import type { SendToConnection } from './trivial-events.ts';
 
 export interface SessionHandlerDeps {
@@ -46,14 +46,18 @@ export interface SessionHandlerDeps {
   onConnectionRemoved: () => void;
   send: SendToConnection;
   /**
-   * The options of the prompt observed on a session's screen (#1140), the
-   * same read the chat guard uses (`trackerScreenDeps`, spread in by
-   * `cli.ts`). A Stop types `/exit` + Enter, and into a numbered selection
-   * menu that Enter confirms the highlighted option, usually "1. Yes", so a
-   * Stop while a menu is up does not type and force-closes instead. Absent,
-   * or null (nothing observed): `/exit` is typed as before.
+   * Is a prompt up on a session's screen (#1140, #1155)? The same signal the
+   * chat guard reads (`promptUpDeps`, built once by `cli.ts`): a held main
+   * prompt, a hook-backed prompt waiting in the terminal, or a numbered menu
+   * the tracker observes. A Stop types `/exit` + Enter, and into a Claude
+   * dialog that Enter confirms the highlighted option, usually "1. Yes", so
+   * a Stop while a prompt is up does not type and force-closes instead.
+   * This stays so even while a `terminal` entry may be stale (its dialog
+   * answered No at the terminal, which fires no hook): a forced close types
+   * nothing, so it is always safe, only less graceful (#1155 lead decision).
+   * Absent, or null (nothing up): `/exit` is typed as before.
    */
-  observedPromptOptions?: (sessionId: UUID) => readonly QuestionOption[] | null;
+  promptUp?: (sessionId: UUID) => PromptUp | null;
   /** Force-close delay after a graceful /exit; injectable for tests. */
   exitFallbackMs?: number;
 }
@@ -76,7 +80,7 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
     untrackConnection,
     onConnectionRemoved,
     send,
-    observedPromptOptions,
+    promptUp,
     exitFallbackMs = EXIT_FALLBACK_MS,
   } = deps;
 
@@ -207,14 +211,17 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
       // the write-lock requirement a client-side input would have. A force-close
       // fallback covers a Claude that ignores /exit (e.g. stuck mid-task).
       //
-      // #1140: not while a numbered selection menu is on screen. The Enter
-      // after "/exit" would confirm the highlighted option (usually "1. Yes"),
-      // approving whatever the prompt asks. Nothing is typed then; the session
-      // is force-closed below, the same path a failed /exit write takes.
-      const menuUp = isNumberedMenu(observedPromptOptions?.(sessionId) ?? null);
-      if (menuUp) {
+      // #1140, #1155: not while a prompt is up (`promptUp`: a held main
+      // prompt, a hook-backed prompt waiting in the terminal, or a numbered
+      // menu on screen). The Enter after "/exit" would confirm the
+      // highlighted option (usually "1. Yes"), approving whatever the prompt
+      // asks. Nothing is typed then; the session is force-closed below, the
+      // same path a failed /exit write takes.
+      const up = promptUp?.(sessionId) ?? null;
+      const forceClose = up !== null;
+      if (forceClose) {
         log(
-          `[Stop] a prompt menu is on screen for ${sessionName}; not typing /exit into it, forcing close`,
+          `[Stop] a prompt is up for ${sessionName} (${up}); not typing /exit into it, forcing close`,
         );
       } else {
         session.pty.submitInput('/exit').catch((err) => {
@@ -251,7 +258,7 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
       // After the pending stop is registered, so the close resolves it: the
       // registry's onSessionClosed drives `resolveStopOnClose`, which acks the
       // requester and notifies the other attached clients.
-      if (menuUp) sessionRegistry.closeSession(sessionId, 'forced');
+      if (forceClose) sessionRegistry.closeSession(sessionId, 'forced');
     },
 
     onDetachSession: (connectionId: UUID, sessionId: UUID, _requestId: UUID): void => {

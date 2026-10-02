@@ -37,6 +37,7 @@ import {
   gateAnswerDeps,
   trackerScreenDeps,
 } from '../../../src/cli/handlers/input-events.ts';
+import { promptUpDeps } from '../../../src/cli/handlers/prompt-up.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import type { HookBridgeHandle } from '../../../src/cli/session-phases/hook-bridge-setup.ts';
 import { setupHookBridge } from '../../../src/cli/session-phases/hook-bridge-setup.ts';
@@ -216,6 +217,10 @@ describe('AskUserQuestion and ExitPlanMode through held hooks, end to end (#1127
       },
       ...gateAnswerDeps(() => gate),
       ...trackerScreenDeps(() => tracker),
+      ...promptUpDeps(
+        () => gate,
+        () => tracker,
+      ),
     });
     registry.attachConnection(SID, CONN);
     return { handlers, gate, tracker };
@@ -697,6 +702,10 @@ describe('AskUserQuestion and ExitPlanMode through held hooks, end to end (#1127
         send: (connectionId, message) => ref.adapter?.sendRaw(connectionId, message) ?? false,
         ...gateAnswerDeps(() => gate),
         ...trackerScreenDeps(() => tracker),
+        ...promptUpDeps(
+          () => gate,
+          () => tracker,
+        ),
       });
       const adapter = new TelegramAdapter(
         { token: 'unused', enabled: true, defaultDirectory: tmpDir },

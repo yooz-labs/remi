@@ -9,4 +9,10 @@
 # for `bun test` invoked from inside that package directly -- Bun does not
 # search parent directories for bunfig.toml, so this root config alone would
 # silently miss that case.
-preload = ["./packages/daemon/tests/debug/test-harness-marker.ts"]
+# The second preload removes an exported REMI_HOME from the test process
+# (#1155): the README recommends exporting it to run remi from source, and
+# tests that expect the default state layout fail under it.
+preload = [
+  "./packages/daemon/tests/debug/test-harness-marker.ts",
+  "./packages/daemon/tests/unset-remi-home.ts",
+]

@@ -115,11 +115,15 @@ export interface NotificationsConfig {
    */
   readonly turn_complete_min_seconds: number;
   /**
-   * Background-agent commands worth an informational push even though they
-   * ran (#807, `auto-approve/subagent-alert.ts`). Matched as substrings of the
-   * command (or the bare tool name for a non-command tool). Moved here from
-   * `[auto_approve]` in #1125; a config that still sets only
-   * `auto_approve.subagent_alert` keeps working, with a deprecation notice.
+   * Subagent (foreground or background) commands worth an informational
+   * push when Claude ran them without asking (its own allow rules permitted
+   * them), sent when the call finishes (#807, #1155,
+   * `auto-approve/subagent-alert.ts`). A call that prompts gets its prompt's
+   * notice or card instead, never this too.
+   * Matched as substrings of the command (or the bare tool name for a
+   * non-command tool). Moved here from `[auto_approve]` in #1125; a config
+   * that still sets only `auto_approve.subagent_alert` keeps working, with a
+   * deprecation notice.
    */
   readonly subagent_alert: readonly string[];
 }
@@ -311,7 +315,9 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // it, short enough to still be useful for "went to get coffee" absences.
     // Personal preference varies a lot here, hence configurable.
     turn_complete_min_seconds: 60,
-    // Background-agent commands worth a heads-up even though they ran (#807).
+    // Subagent commands (foreground or background) worth a heads-up when
+    // Claude ran them without asking (#807, #1155; a call that prompts is
+    // shown as its prompt).
     // Irreversible-only by default: these are things you cannot undo, so a
     // banner is warranted even at the cost of an occasional false positive.
     // Broad-but-common patterns (curl, wget, ssh, scp) are deliberately NOT
@@ -732,8 +738,10 @@ authorized_user_ids = []
 # actually done yet) or with no device registered.
 on_turn_complete = ${DEFAULT_CONFIG.notifications.on_turn_complete}
 turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_seconds}  # tune to taste; there is no "right" value
-# Background-agent commands worth an informational push even though they ran
-# (#807). Substring match on the command. Irreversible-only by default; add
+# Subagent commands (foreground or background) worth an informational push
+# when Claude ran them without asking (your allow rules permitted them); sent
+# when the command finishes (#807). A command that asks for permission shows
+# as its prompt instead. Substring match on the command. Irreversible-only by default; add
 # broad ones (curl, ssh) per machine if you want them.
 subagent_alert = [${DEFAULT_CONFIG.notifications.subagent_alert.map((p) => `"${p}"`).join(', ')}]
 

@@ -3,16 +3,27 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ProtocolMessage, Question, QuestionOption, UUID } from '@remi/shared';
-import { PROMPT_WAITING_HELD_MESSAGE, generateId } from '@remi/shared';
+import {
+  PROMPT_WAITING_HELD_MESSAGE,
+  PROMPT_WAITING_TERMINAL_MESSAGE,
+  generateId,
+} from '@remi/shared';
 import { hasLiveQuestionOnScreen } from '../../../src/api/live-questions.ts';
 import { MessageAPI } from '../../../src/api/message-api.ts';
 import { QuestionPresenceTracker } from '../../../src/api/question-presence-tracker.ts';
 import { SubagentViewRegistry } from '../../../src/api/subagent-view-registry.ts';
 import {
+  type SubagentAlert,
+  type SubagentAlertSink,
+  SubagentAlerter,
+} from '../../../src/auto-approve/subagent-alert.ts';
+import {
   createInputHandlers,
   gateAnswerDeps,
   trackerScreenDeps,
 } from '../../../src/cli/handlers/input-events.ts';
+import { promptUpDeps } from '../../../src/cli/handlers/prompt-up.ts';
+import { createSessionHandlers } from '../../../src/cli/handlers/session-events.ts';
 import type { DeviceTokenEntry } from '../../../src/cli/handlers/trivial-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import type { HookBridgeHandle } from '../../../src/cli/session-phases/hook-bridge-setup.ts';
@@ -304,6 +315,8 @@ describe('setupHookBridge', () => {
       /** A real `HookServer` to register the listeners on, instead of the
        *  recording one (#1153: a recorded payload POSTed over HTTP). */
       realServer?: HookServer;
+      /** The subagent alert feed (#1155). */
+      subagentAlerts?: SubagentAlertSink;
     } = {},
   ): { tracker: QuestionPresenceTracker; messageApi: MessageAPI; handle: HookBridgeHandle } {
     const sessionWorkingDirectory = opts.workingDirectory ?? tmpDir;
@@ -400,6 +413,7 @@ describe('setupHookBridge', () => {
             }
           : {}),
         ...(opts.subagentViews ? { subagentViews: opts.subagentViews } : {}),
+        ...(opts.subagentAlerts ? { subagentAlerts: opts.subagentAlerts } : {}),
         ...(opts.broadcastResolvedLog
           ? {
               broadcastQuestionResolved: (_sid: UUID, questionId: UUID, reason: 'cancelled') =>
@@ -2033,6 +2047,10 @@ describe('setupHookBridge', () => {
         },
         ...gateAnswerDeps(() => built.handle.gate),
         ...trackerScreenDeps(() => built.tracker),
+        ...promptUpDeps(
+          () => built.handle.gate,
+          () => built.tracker,
+        ),
       });
       return { ...built, hook, card, handlers, sent };
     }
@@ -2852,6 +2870,10 @@ describe('setupHookBridge', () => {
         },
         ...gateAnswerDeps(() => built.handle.gate),
         ...trackerScreenDeps(() => built.tracker),
+        ...promptUpDeps(
+          () => built.handle.gate,
+          () => built.tracker,
+        ),
       });
       sessionRegistry.attachConnection(SID, 'conn-sub-chat' as UUID);
       await handlers.onUserInput('conn-sub-chat' as UUID, SID, 'status?', false);
@@ -2916,6 +2938,10 @@ describe('setupHookBridge', () => {
         send: () => true,
         ...gateAnswerDeps(() => handle.gate),
         ...trackerScreenDeps(() => tracker),
+        ...promptUpDeps(
+          () => handle.gate,
+          () => tracker,
+        ),
       });
       expect(await handlers.relayAnswer(SID, card.id, 'No')).toBe('delivered');
       expect(await hook).toBe('deny');
@@ -3024,6 +3050,10 @@ describe('setupHookBridge', () => {
         },
         ...gateAnswerDeps(() => gate),
         ...trackerScreenDeps(() => tracker),
+        ...promptUpDeps(
+          () => gate,
+          () => tracker,
+        ),
       });
     }
 
@@ -4493,7 +4523,7 @@ describe('setupHookBridge', () => {
     }
 
     function menuObserved(tag: string) {
-      const { tracker } = build({ realTracker: true });
+      const { tracker, handle } = build({ realTracker: true });
       lockSession(tag);
       const parsed = parseQuestion(WRAPPED_DIRECTORY_DIALOG);
       if (!parsed.question) throw new Error('the live dialog did not parse as a prompt');
@@ -4509,6 +4539,10 @@ describe('setupHookBridge', () => {
           return true;
         },
         ...trackerScreenDeps(() => tracker),
+        ...promptUpDeps(
+          () => handle.gate,
+          () => tracker,
+        ),
       });
       /** Chat text sent now: true when it was typed, false when refused. */
       const chat = async (text: string): Promise<boolean> => {
@@ -4613,6 +4647,406 @@ describe('setupHookBridge', () => {
       });
 
       expect(await chat('typed after idle')).toBe(true);
+    });
+  });
+
+  /**
+   * #1155: the chat guard and Stop read one "a prompt is up" signal
+   * (`promptUpDeps`, built once in cli.ts and spread into both handler
+   * factories, as here): a held main prompt, a hook-backed prompt waiting in
+   * the terminal, or a numbered menu. Before it, Stop read only the screen
+   * parse and typed "/exit" + Enter into a dialog the parse had not seen (or
+   * that a text status had cleared), and the chat guard missed a prompt
+   * released to the terminal. Real bridge, gate, tracker, MessageAPI and
+   * both handler factories; the PTY records every keystroke.
+   */
+  describe('Stop and chat read one "a prompt is up" signal (#1155)', () => {
+    const CONN = 'conn-1155' as UUID;
+    const REQ = 'req-1155' as UUID;
+
+    function lockSession(id: string): void {
+      hookServer.fire('Notification', {
+        session_id: id,
+        hook_event_name: 'Notification',
+        transcript_path: path.join(tmpDir, `${id}.jsonl`),
+        notification_type: 'auth_success',
+        message: '',
+      });
+    }
+
+    /** The chat and Stop handlers, wired as cli.ts wires them. */
+    function handlersFor(built: { tracker: QuestionPresenceTracker; handle: HookBridgeHandle }) {
+      const sent: ProtocolMessage[] = [];
+      const send = (_c: UUID, m: ProtocolMessage) => {
+        sent.push(m);
+        return true;
+      };
+      const promptUpWiring = promptUpDeps(
+        () => built.handle.gate,
+        () => built.tracker,
+      );
+      const input = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...gateAnswerDeps(() => built.handle.gate),
+        ...trackerScreenDeps(() => built.tracker),
+        ...promptUpWiring,
+      });
+      const session = createSessionHandlers({
+        sessionRegistry,
+        bindingStore,
+        transcriptDiscovery: new TranscriptDiscovery({
+          projectsDir: path.join(tmpDir, 'claude-projects'),
+        }),
+        liveSessionsRegistry,
+        currentPort: () => 8765,
+        untrackConnection: () => {},
+        onConnectionRemoved: () => {},
+        send,
+        ...promptUpWiring,
+        exitFallbackMs: 60_000,
+      });
+      sessionRegistry.attachConnection(SID, CONN);
+      /** The refusal sent for the last chat text, if any. */
+      const refusal = () =>
+        sent.filter((m) => m.type === 'error').at(-1) as
+          | { code?: string; message?: string }
+          | undefined;
+      return { input, session, sent, refusal };
+    }
+
+    const bashCall = (session: string, command: string) => ({
+      session_id: session,
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command },
+    });
+
+    test('a held main prompt the screen parse has not seen: chat refused, Stop types nothing and force-closes', async () => {
+      const built = build({ realTracker: true, realMessageApi: true, liveQuestionDeps: true });
+      lockSession('claude-1155-held');
+      const hook = hookServer.firePermission(bashCall('claude-1155-held', 'touch held.txt'));
+      // Only the hold says a dialog is up: nothing was observed on screen.
+      expect(built.tracker.observedPromptOptions()).toBeNull();
+      const { input, session, refusal } = handlersFor(built);
+
+      await input.onUserInput(CONN, SID, 'please go ahead', false);
+      expect(refusal()?.code).toBe('PROMPT_WAITING');
+      expect(refusal()?.message).toBe(PROMPT_WAITING_HELD_MESSAGE);
+
+      session.onKillSessionRequest(CONN, SID, REQ);
+      expect(ptySubmits).toEqual([]);
+      expect(sessionRegistry.getSession(SID)).toBeUndefined();
+
+      built.handle.closeBinder();
+      expect(await hook).toBe('passthrough');
+    });
+
+    test('a prompt released to the terminal at its deadline: chat refused (answer in the terminal), Stop force-closes', async () => {
+      const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
+      const built = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+        holdMs: 200,
+        noticeLog,
+      });
+      lockSession('claude-1155-deadline');
+      const hook = hookServer.firePermission(bashCall('claude-1155-deadline', 'touch late.txt'));
+      // The deadline releases the hold; Claude's dialog stays up.
+      expect(await hook).toBe('passthrough');
+      expect(noticeLog.map((n) => n.reason)).toEqual(['hold_deadline']);
+      expect(built.handle.gate.hasMainHold()).toBe(false);
+      expect(built.tracker.observedPromptOptions()).toBeNull();
+      const { input, session, refusal } = handlersFor(built);
+
+      await input.onUserInput(CONN, SID, 'are you there?', false);
+      expect(refusal()?.code).toBe('PROMPT_WAITING');
+      expect(refusal()?.message).toBe(PROMPT_WAITING_TERMINAL_MESSAGE);
+
+      session.onKillSessionRequest(CONN, SID, REQ);
+      expect(ptySubmits).toEqual([]);
+      expect(sessionRegistry.getSession(SID)).toBeUndefined();
+    });
+
+    test("a background agent's dialog in a terminal session, its parse cleared by a text status: chat refused, Stop force-closes", async () => {
+      const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
+      const built = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+        orphanDebounceMs: 5,
+        noticeLog,
+      });
+      lockSession('claude-1155-sub');
+      expect(
+        await hookServer.firePermission({
+          ...bashCall('claude-1155-sub', 'rm -rf build'),
+          agent_id: 'agent-bg',
+          agent_type: 'code-reviewer',
+        }),
+      ).toBe('passthrough');
+      built.tracker.onOrphanPTYPrompt(parseQuestion(WRAPPED_DIRECTORY_DIALOG).question as Question);
+      expect(noticeLog.map((n) => n.reason)).toEqual(['subagent']);
+      // A PTY-parsed status is a text guess: it clears the observation while
+      // the dialog is still up (AGENTS.md, chat guard limit 3).
+      built.tracker.onStatusChange('thinking');
+      expect(built.tracker.observedPromptOptions()).toBeNull();
+      const { input, session, refusal } = handlersFor(built);
+
+      await input.onUserInput(CONN, SID, 'status?', false);
+      expect(refusal()?.message).toBe(PROMPT_WAITING_TERMINAL_MESSAGE);
+
+      session.onKillSessionRequest(CONN, SID, REQ);
+      expect(ptySubmits).toEqual([]);
+      expect(sessionRegistry.getSession(SID)).toBeUndefined();
+    });
+
+    test('nothing up (a held prompt answered from the phone): chat is typed and Stop types /exit', async () => {
+      const built = build({ realTracker: true, realMessageApi: true, liveQuestionDeps: true });
+      lockSession('claude-1155-none');
+      const hook = hookServer.firePermission(bashCall('claude-1155-none', 'touch ok.txt'));
+      const { input, session, sent } = handlersFor(built);
+      const card = [...(sessionRegistry.getSession(SID)?.currentQuestions.values() ?? [])][0];
+      if (!card) throw new Error('the held prompt pushed no card');
+      expect(await input.relayAnswer(SID, card.id, 'Yes')).toBe('delivered');
+      expect(await hook).toBe('allow');
+
+      await input.onUserInput(CONN, SID, 'thanks', false);
+      session.onKillSessionRequest(CONN, SID, REQ);
+      expect(sent.filter((m) => m.type === 'error')).toEqual([]);
+      expect(ptySubmits).toEqual(['thanks', '/exit']);
+      expect(sessionRegistry.getSession(SID)).toBeDefined();
+    });
+
+    /** A main prompt released to the terminal at its hold deadline, with
+     *  nothing observed on screen. */
+    async function releasedToTerminal(tag: string) {
+      const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
+      const built = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+        holdMs: 300,
+        noticeLog,
+      });
+      lockSession(tag);
+      expect(await hookServer.firePermission(bashCall(tag, 'touch esc.txt'))).toBe('passthrough');
+      expect(noticeLog.map((n) => n.reason)).toEqual(['hold_deadline']);
+      return { ...built, noticeLog, ...handlersFor(built) };
+    }
+
+    test('the refusal for a prompt in the terminal names every way out', async () => {
+      const { input, refusal } = await releasedToTerminal('claude-1155-message');
+      await input.onUserInput(CONN, SID, 'hello?', false);
+      expect(refusal()?.message).toBe(
+        'Claude is waiting on a prompt in the terminal. Answer it there, press Esc from the app, or run remi unstick.',
+      );
+    });
+
+    test('a bare Esc from the app clears a main prompt handed to the terminal: chat is typed, Stop types /exit', async () => {
+      const { input, session, refusal, noticeLog } = await releasedToTerminal('claude-1155-esc');
+      await input.onUserInput(CONN, SID, 'first', false);
+      expect(refusal()?.message).toBe(PROMPT_WAITING_TERMINAL_MESSAGE);
+
+      // The web Esc button, Telegram /interrupt and an attach Esc key all
+      // send exactly this raw input.
+      await input.onUserInput(CONN, SID, '\x1b', true);
+      expect(ptySubmits).toEqual(['write:\x1b']);
+      // The prompt is resolved: its "answer at the terminal" notice goes.
+      expect(noticeLog.map((n) => n.reason)).toEqual(['hold_deadline', 'dismissed']);
+
+      await input.onUserInput(CONN, SID, 'second', false);
+      session.onKillSessionRequest(CONN, SID, REQ);
+      expect(ptySubmits).toEqual(['write:\x1b', 'second', '/exit']);
+    });
+
+    test('an arrow key is not a dismissal: the prompt keeps refusing chat', async () => {
+      const { input, refusal } = await releasedToTerminal('claude-1155-arrow');
+      await input.onUserInput(CONN, SID, '\x1b[B', true);
+      await input.onUserInput(CONN, SID, 'still there?', false);
+      expect(ptySubmits).toEqual(['write:\x1b[B']);
+      expect(refusal()?.message).toBe(PROMPT_WAITING_TERMINAL_MESSAGE);
+    });
+
+    test('remi unstick clears a prompt handed to the terminal', async () => {
+      const { input, handle } = await releasedToTerminal('claude-1155-unstick');
+      handle.gate.forceRelease('test');
+      await input.onUserInput(CONN, SID, 'after unstick', false);
+      expect(ptySubmits).toEqual(['after unstick']);
+    });
+
+    test("an Esc leaves a subagent's dialog in the terminal alone (main prompts only)", async () => {
+      const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
+      const built = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+        orphanDebounceMs: 5,
+        noticeLog,
+      });
+      lockSession('claude-1155-sub-esc');
+      await hookServer.firePermission({
+        ...bashCall('claude-1155-sub-esc', 'rm -rf build'),
+        agent_id: 'agent-bg',
+        agent_type: 'code-reviewer',
+      });
+      built.tracker.onOrphanPTYPrompt(parseQuestion(WRAPPED_DIRECTORY_DIALOG).question as Question);
+      built.tracker.onStatusChange('thinking');
+      const { input, refusal } = handlersFor(built);
+      await input.onUserInput(CONN, SID, '\x1b', true);
+      await input.onUserInput(CONN, SID, 'status?', false);
+      expect(ptySubmits).toEqual(['write:\x1b']);
+      expect(refusal()?.message).toBe(PROMPT_WAITING_TERMINAL_MESSAGE);
+      expect(noticeLog.map((n) => n.reason)).toEqual(['subagent']);
+    });
+  });
+
+  /**
+   * #1155: the subagent alert is fed from the tool hooks, not from
+   * `PermissionRequest`. A call the session's allow rules permit fires no
+   * `PermissionRequest` (measured, ADR 0031), which is exactly the silent
+   * case the alert exists for; a call that prompts gets its notice (terminal
+   * session) or held card (daemon or hub) and never an alert as well. Real
+   * bridge, gate, tracker and `SubagentAlerter`; the sink records what would
+   * be pushed.
+   */
+  describe('subagent alerts come from the tool hooks (#1155)', () => {
+    const PATTERNS = ['rm -rf', 'push --force'];
+
+    function lockSession(id: string): void {
+      hookServer.fire('Notification', {
+        session_id: id,
+        hook_event_name: 'Notification',
+        transcript_path: path.join(tmpDir, `${id}.jsonl`),
+        notification_type: 'auth_success',
+        message: '',
+      });
+    }
+
+    function alerting(opts: Parameters<typeof build>[0] = {}) {
+      const alerts: SubagentAlert[] = [];
+      const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
+      const built = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+        orphanDebounceMs: 5,
+        noticeLog,
+        subagentAlerts: {
+          alerter: new SubagentAlerter(PATTERNS),
+          deliver: (alert) => alerts.push(alert),
+        },
+        ...opts,
+      });
+      return { ...built, alerts, noticeLog };
+    }
+
+    const call = (session: string, command: string, toolUseId: string, agent = true) => ({
+      session_id: session,
+      tool_name: 'Bash',
+      tool_input: { command },
+      tool_use_id: toolUseId,
+      ...(agent ? { agent_id: 'agent-bg', agent_type: 'code-reviewer' } : {}),
+    });
+
+    /** An allowlisted call: Claude fires PreToolUse, runs it, PostToolUse. */
+    function runsSilently(c: ReturnType<typeof call>, event = 'PostToolUse'): void {
+      hookServer.fire('PreToolUse', { ...c, hook_event_name: 'PreToolUse' });
+      hookServer.fire(event, { ...c, hook_event_name: event, tool_response: {} });
+    }
+
+    test('wrapper mode: an allowlisted call matching a pattern pushes one alert, when it finishes', () => {
+      const { alerts } = alerting();
+      lockSession('claude-alert-allowed');
+      const c = call('claude-alert-allowed', 'rm -rf build', 'tu-allowed');
+      hookServer.fire('PreToolUse', { ...c, hook_event_name: 'PreToolUse' });
+      // A prompt could still follow: nothing yet.
+      expect(alerts).toEqual([]);
+      hookServer.fire('PostToolUse', { ...c, hook_event_name: 'PostToolUse', tool_response: {} });
+      expect(alerts).toEqual([
+        {
+          pattern: 'rm -rf',
+          toolName: 'Bash',
+          detail: 'rm -rf build',
+          agentId: 'agent-bg',
+          agentType: 'code-reviewer',
+        },
+      ]);
+    });
+
+    test('a call that fails still ran: PostToolUseFailure alerts too', () => {
+      const { alerts } = alerting();
+      lockSession('claude-alert-failed');
+      runsSilently(
+        call('claude-alert-failed', 'git push --force', 'tu-failed'),
+        'PostToolUseFailure',
+      );
+      expect(alerts.map((a) => a.pattern)).toEqual(['push --force']);
+    });
+
+    test('an allowlisted call matching no pattern pushes nothing; neither does a main-agent call', () => {
+      const { alerts } = alerting();
+      lockSession('claude-alert-none');
+      runsSilently(call('claude-alert-none', 'ls -la', 'tu-ls'));
+      runsSilently(call('claude-alert-none', 'rm -rf build', 'tu-main', false));
+      expect(alerts).toEqual([]);
+    });
+
+    test('wrapper mode: a call that prompts gets only its render notice, never an alert as well', async () => {
+      const { alerts, noticeLog, tracker } = alerting();
+      lockSession('claude-alert-prompted');
+      const c = call('claude-alert-prompted', 'rm -rf build', 'tu-prompted');
+      hookServer.fire('PreToolUse', { ...c, hook_event_name: 'PreToolUse' });
+      const { tool_use_id: _none, ...request } = c;
+      expect(
+        await hookServer.firePermission({ ...request, hook_event_name: 'PermissionRequest' }),
+      ).toBe('passthrough');
+      tracker.onOrphanPTYPrompt(parseQuestion(WRAPPED_DIRECTORY_DIALOG).question as Question);
+      expect(noticeLog.map((n) => n.reason)).toEqual(['subagent']);
+      // Answered Yes in the terminal: the tool runs and finishes.
+      hookServer.fire('PostToolUse', { ...c, hook_event_name: 'PostToolUse', tool_response: {} });
+      expect(noticeLog.map((n) => n.reason)).toEqual(['subagent', 'dismissed']);
+      expect(alerts).toEqual([]);
+    });
+
+    test('daemon mode: an allowlisted call alerts; a prompting one is a held card and no alert', async () => {
+      const { alerts, handle } = alerting({ hasLocalTerminal: false });
+      lockSession('claude-alert-daemon');
+      runsSilently(call('claude-alert-daemon', 'rm -rf dist', 'tu-daemon-allowed'));
+      expect(alerts.map((a) => a.detail)).toEqual(['rm -rf dist']);
+
+      const c = call('claude-alert-daemon', 'rm -rf build', 'tu-daemon-prompted');
+      hookServer.fire('PreToolUse', { ...c, hook_event_name: 'PreToolUse' });
+      const { tool_use_id: _none, ...request } = c;
+      const hook = hookServer.firePermission({ ...request, hook_event_name: 'PermissionRequest' });
+      const card = [...(sessionRegistry.getSession(SID)?.currentQuestions.values() ?? [])][0];
+      if (!card) throw new Error('the held subagent prompt pushed no card');
+      expect(
+        handle.gate.answerHeld(card.id, {
+          kind: 'option',
+          option: card.options[0] as QuestionOption,
+        }),
+      ).toBe('resolved');
+      expect(await hook).toBe('allow');
+      hookServer.fire('PostToolUse', { ...c, hook_event_name: 'PostToolUse', tool_response: {} });
+      expect(alerts.map((a) => a.detail)).toEqual(['rm -rf dist']);
+    });
+
+    test('a call Claude refused (PermissionDenied) never alerts', () => {
+      const { alerts } = alerting();
+      lockSession('claude-alert-denied');
+      const c = call('claude-alert-denied', 'rm -rf build', 'tu-denied');
+      hookServer.fire('PreToolUse', { ...c, hook_event_name: 'PreToolUse' });
+      hookServer.fire('PermissionDenied', {
+        ...c,
+        hook_event_name: 'PermissionDenied',
+        reason: 'blocked by the auto mode classifier',
+      });
+      // Even a stray finish for the same id would not alert now.
+      hookServer.fire('PostToolUse', { ...c, hook_event_name: 'PostToolUse', tool_response: {} });
+      expect(alerts).toEqual([]);
     });
   });
 });

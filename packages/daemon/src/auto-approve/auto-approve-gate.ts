@@ -50,10 +50,12 @@
  *     render while its hook is held. With a local terminal it is answered
  *     'passthrough' and parked (`passSubagentToTerminal`, ADR 0004); when
  *     its dialog renders the phone gets an informational "answer at the
- *     terminal" notice, never an answerable card. `onSubagentPassthrough`
- *     reports it for the informational subagent alert. Without a local
- *     terminal (daemon or hub mode) it is escalated exactly like a main
- *     prompt: held, with an answerable card.
+ *     terminal" notice, never an answerable card. Without a local terminal
+ *     (daemon or hub mode) it is escalated exactly like a main prompt: held,
+ *     with an answerable card. Either way the subagent alert
+ *     (`subagent-alert.ts`) stays silent for it: the alert is fed from the
+ *     hook bridge, not from here, and only for calls that never prompted
+ *     (#1155).
  *
  * The outward couplings the hook bridge used directly are injected as
  * callbacks so the gate has no back-reference to the bridge or the router:
@@ -114,6 +116,7 @@ import {
 } from '../hooks/structured-answers.ts';
 import type { SessionRegistry } from '../session/index.ts';
 import { ALWAYS_ESCALATE_TOOLS, isDesignQuestion, isMultiChoicePermission } from './multichoice.ts';
+import { stableToolInputKey } from './tool-input-key.ts';
 
 /**
  * A phone answer to a held prompt (#1126), as the answer path received it.
@@ -248,33 +251,6 @@ export interface ObservedToolCall {
   readonly agentId?: string | undefined;
 }
 
-/**
- * A stable, key-order-independent JSON key for `tool_input` (#673). Two
- * logically identical tool_input objects with keys in a different order must
- * compare equal, so the signature match is not order-fragile.
- */
-function stableToolInputKey(toolInput: Record<string, unknown>): string {
-  try {
-    return JSON.stringify(canonicalize(toolInput));
-  } catch {
-    // Non-serializable input should not happen (tool_input comes from a
-    // parsed JSON hook payload); degrade to a key that can never match
-    // anything rather than throwing into the escalation path.
-    return `__unserializable__:${Math.random()}`;
-  }
-}
-
-function canonicalize(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalize);
-  if (value !== null && typeof value === 'object') {
-    const sortedEntries = Object.keys(value as Record<string, unknown>)
-      .sort()
-      .map((key) => [key, canonicalize((value as Record<string, unknown>)[key])] as const);
-    return Object.fromEntries(sortedEntries);
-  }
-  return value;
-}
-
 export interface AutoApproveGateDeps {
   sessionRegistry: SessionRegistry;
   /** Wraps `HookEventBridge.isInSubagentContext()`. Read live per call. */
@@ -325,16 +301,6 @@ export interface AutoApproveGateDeps {
    * Throw-safe.
    */
   pushTerminalNoticeNow?: (input: PermissionRequestHookInput) => UUID | undefined;
-  /**
-   * Every subagent-tagged permission passed to the terminal (#807; wrapper
-   * mode since #1126, a held one is answerable from the phone), reported to
-   * the sink for observation ONLY: the decision is already made by the time
-   * this fires, so a sink cannot influence it. Drives the informational
-   * `subagent_alert` push (`subagent-alert.ts`), the only visibility path for
-   * a subagent permission Claude's own permission flow handles without ever
-   * rendering it. Throw-safe: a sink that throws is logged and absorbed.
-   */
-  onSubagentPassthrough?: (input: PermissionRequestHookInput) => void;
   /** Escalate to the user (wraps `HookEventBridge.handlePermissionRequest`).
    *  Returns the id of the `Question` it stashed, so the gate can push it and
    *  track its signature; `undefined` means no question was created. The gate
@@ -608,6 +574,28 @@ export class AutoApproveGate {
       if (sig?.agentId !== agentId) continue;
       if (toolUseId !== undefined && sig.toolUseId === toolUseId) continue;
       this.resolveSupersededQuestion(qid, 'agent-next-tool-call', sig.toolName);
+    }
+  }
+
+  /**
+   * A bare Escape reached the terminal through remi (#1155 lead decision):
+   * the web client's Esc button, Telegram's `/interrupt`, or an attach
+   * client's Esc key. It dismisses the dialog on screen, and Claude fires no
+   * hook for that, so the MAIN agent's prompts waiting in the terminal are
+   * resolved now (their notice dismissed) instead of counting for the rest
+   * of the hold length; the chat guard and Stop then fall back to the
+   * screen parse. Two things are left alone: a live hold (Claude closes the
+   * held request itself, which the abort path handles) and a subagent's
+   * entry (cleared by that agent's next tool call, `SubagentStop` or
+   * `SessionEnd`). An Escape typed at the local terminal of a wrapper
+   * session never passes through remi, so it does not reach here.
+   */
+  noteTerminalEscape(): void {
+    for (const qid of [...this.terminalPrompts.keys()]) {
+      if (this.holds.has(qid)) continue;
+      const sig = this.openQuestionSignatures.get(qid);
+      if (sig?.isSubagent === true) continue;
+      this.resolveSupersededQuestion(qid, 'terminal-escape', sig?.toolName);
     }
   }
 
@@ -1033,9 +1021,6 @@ export class AutoApproveGate {
         `[Hooks] Subagent PermissionRequest passed to the terminal: agent=${input.agent_id?.slice(0, 8)} type=${input.agent_type} tool=${input.tool_name}`,
       );
       this.passSubagentToTerminal(input);
-      // Observation only, AFTER the routing above is settled. The sink
-      // decides what is worth a notification.
-      this.safeCueWithArg('onSubagentPassthrough', this.deps.onSubagentPassthrough, input);
       return Promise.resolve('passthrough');
     }
     if (this.deps.isInSubagentContext()) {

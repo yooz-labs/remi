@@ -1,6 +1,6 @@
 # ADR 0031: Held-hook answers with the native dialog visible
 
-**Status:** accepted; amended by #1127 (AskUserQuestion and ExitPlanMode, below)
+**Status:** accepted; amended by #1127 (AskUserQuestion and ExitPlanMode, below) and #1155 (integration review, below)
 **Date:** 2026-10-02
 **Owner:** Yahya
 
@@ -102,7 +102,7 @@ Until #1127 both tools were answered `passthrough` and pushed by id, and a phone
 ### Consequences
 
 - Nothing is typed for an AskUserQuestion or a plan from the phone; a terminal answer and a phone answer race, first answer wins, exactly as for a binary prompt.
-- The chat guard covers both dialogs (`hasMainHold`), so a chat sent while either is held is refused.
+- The chat guard covers both dialogs (a main hold, read through `promptUp` since #1155), so a chat sent while either is held is refused.
 - The web form takes free text for a single-select question and enables Submit only for an answer the daemon accepts; a refused form answer stops showing "Answering" so it can be sent again.
 
 ### Residuals
@@ -114,3 +114,20 @@ Until #1127 both tools were answered `passthrough` and pushed by id, and a phone
 - A card carries at most 20000 characters of the plan (`PLAN_DETAIL_MAX`); a longer plan is cut with a visible marker and read in full only in the terminal. The approval still echoes the whole input (review S6).
 - Privacy: the start of the plan (the push body, 200 characters) goes in plaintext to the signaling Worker's `/push` and on to APNS (verified with the live harness's recording Worker), and Telegram receives the plan in full or cut. Not changed here; tracked by the relay and push privacy work (`.context/strategy-2026-10.md` section 9). The relay data channel has its own state (#543, #881).
 
+
+## Amendment (#1155): integration review
+
+**Date:** 2026-10-02
+
+Findings from the review of the combined epic (PR #1152); the decisions are the lead's (#1155).
+
+### Decision
+
+1. **One "a prompt is up" signal.** The chat guard and Stop each type a line followed by Enter, which confirms the highlighted option of a dialog on screen. Stop used to read only the screen parse, and the chat guard the parse and a main hold, so a dialog the parse missed (a prompt released to the terminal at its deadline, a subagent's dialog in a terminal session, a parse a text status cleared) could get the Enter. Both now read `promptUp` (`cli/handlers/prompt-up.ts`, built once in `cli.ts`): a main hold, OR a hook-backed prompt waiting in the terminal (`hasOpenHookPrompt`), OR a numbered menu the tracker observes. Chat is refused with `PROMPT_WAITING` (a handed-back prompt gets its own message, "Claude is waiting on a prompt in the terminal. Answer it there, press Esc from the app, or run remi unstick.", since its card is gone); Stop force-closes instead of typing `/exit`, and stays on this signal even when an entry may be stale, because a forced close types nothing (lead decision). A bare Esc sent through remi (the web Esc button, Telegram's `/interrupt`, an attach client's Esc key) dismisses the dialog without a hook, so it resolves the main agent's prompts waiting in the terminal at once (`noteTerminalEscape`; lead decision).
+2. **The subagent alert is fed from the tool hooks.** The table above records that a call the session's allow rules permit fires no `PermissionRequest`; the alert, which exists for exactly those calls, was fed from the subagent `PermissionRequest` passthrough, so it never fired for them and duplicated the notice for the calls that prompted. It is now fed from agent-tagged `PreToolUse`, for any subagent, foreground or background (a matching call is remembered), forgotten on that call's `PermissionRequest` or `PermissionDenied`, and delivered at its `PostToolUse` or `PostToolUseFailure`. One call yields one phone artifact: when it prompts, the "answer at the terminal" notice (wrapper mode) or the held card (daemon or hub mode) is kept, as the actionable one, and no alert is sent. The alert arrives when the call finishes, the first moment remi knows it ran without asking.
+3. **Clients describe a standing grant by its meaning.** The web card's hint reads `standingGrant` ("This session"; "Allow once" only for the plain Yes), and Telegram, which cuts a button at 32 characters, lists every option's full label in the message when a button is cut.
+
+### Residual (recorded, not fixed)
+
+- "A background subagent's dialog does not render while its hook is held" (F2) was measured for **background** subagents only. A synchronous (foreground) Task subagent's prompt in daemon or hub mode is held the same way, and whether its dialog renders during the hold is unmeasured. If it does render, the phone's answer still resolves the hook, but the render is not covered by the bounds above: a subagent hold counts neither in `hasOpenHookPrompt` nor in the live-question check, so a redraw could be read as a hook-less orphan (a second, typed card behind the #1134 exact-label check), and it does not count in `promptUp` beyond what the screen parse sees. Measuring it (a foreground Task subagent asking for an unallowed call in a daemon session) decides whether a foreground subagent hold should count as on screen.
+- A `terminal` entry counts for the session's hold length from when it is marked (the deadline release, the early hand-back, or the subagent dialog's render), not from the prompt's start: in wrapper mode up to 90 s after a deadline release (about twice the hold from the start), in daemon or hub mode up to about 59 minutes. A No answered at the terminal fires no hook, so within that window the entry can outlive its dialog: Stop force-closes instead of typing `/exit` and chat is refused, until an answer a hook sees, a bare Esc sent through remi (main-agent entries), or `remi unstick`. An Esc typed at a wrapper session's own terminal is not seen. In the opposite direction, once an entry ages out a dialog still on screen whose parse a text status cleared is no longer guarded (chat would be typed into it, Stop would type `/exit`).

@@ -1,6 +1,6 @@
 /**
- * SubagentAlerter (#807): matching + rate limiting for the after-the-fact
- * destructive-command notification.
+ * SubagentAlerter (#807): matching, rate limiting and the call lifecycle
+ * (#1155) for the after-the-fact destructive-command notification.
  *
  * No mocks: the alerter is pure apart from an injectable clock, and delivery is
  * deliberately NOT its job (the caller pushes), so these are real unit tests
@@ -189,6 +189,123 @@ describe('alert copy', () => {
     const a = new SubagentAlerter(PATTERNS);
     const alert = a.check('Bash', bash('rm -rf build'), 'agent-1', undefined);
     if (alert === null) throw new Error('expected an alert');
-    expect(alertTitle(alert)).toContain('Background agent');
+    expect(alertTitle(alert)).toBe('Subagent ran a flagged command');
+  });
+});
+
+/**
+ * #1155: the call lifecycle the hook bridge drives. A matching call is
+ * remembered at its start and alerts at its finish, unless it prompted or was
+ * refused in between; the rate limit applies at delivery. The bridge-level
+ * behavior (which hook calls which method) is in hook-bridge-setup.test.ts.
+ */
+describe('SubagentAlerter call lifecycle (#1155)', () => {
+  const call = (command: string, toolUseId: string | undefined, agentId = 'agent-1') => ({
+    toolUseId,
+    toolName: 'Bash',
+    toolInput: bash(command),
+    agentId,
+    agentType: 'general-purpose',
+  });
+
+  test('a matching call alerts when it finishes, with its agent type; a non-matching one never', () => {
+    const a = new SubagentAlerter(PATTERNS);
+    a.noteToolStarted(call('rm -rf build', 'tu-1'));
+    a.noteToolStarted(call('ls', 'tu-2'));
+    expect(a.noteToolFinished(call('ls', 'tu-2'))).toBeNull();
+    const alert = a.noteToolFinished(call('rm -rf build', 'tu-1'));
+    expect(alert).toMatchObject({ pattern: 'rm -rf', agentType: 'general-purpose' });
+    // Delivered once: a repeated finish for the same id finds nothing.
+    expect(a.noteToolFinished(call('rm -rf build', 'tu-1'))).toBeNull();
+  });
+
+  test('a PermissionRequest (no id) forgets the call with the same agent, tool and input only', () => {
+    const a = new SubagentAlerter(PATTERNS);
+    a.noteToolStarted(call('rm -rf build', 'tu-1'));
+    a.noteToolStarted(call('rm -rf dist', 'tu-2'));
+    a.noteToolStarted(call('rm -rf build', 'tu-3', 'agent-2'));
+    a.notePrompted(call('rm -rf build', undefined));
+    expect(a.noteToolFinished(call('rm -rf build', 'tu-1'))).toBeNull();
+    expect(a.noteToolFinished(call('rm -rf dist', 'tu-2'))).not.toBeNull();
+    expect(a.noteToolFinished(call('rm -rf build', 'tu-3', 'agent-2'))).not.toBeNull();
+  });
+
+  test('a PermissionDenied (with an id) forgets that call only', () => {
+    const a = new SubagentAlerter(PATTERNS);
+    a.noteToolStarted(call('rm -rf build', 'tu-1'));
+    a.noteToolStarted(call('rm -rf build', 'tu-2'));
+    a.notePrompted(call('rm -rf build', 'tu-1'));
+    expect(a.noteToolFinished(call('rm -rf build', 'tu-1'))).toBeNull();
+    expect(a.noteToolFinished(call('rm -rf build', 'tu-2'))).not.toBeNull();
+  });
+
+  test('a call that prompted does not use up the rate-limit window', () => {
+    const a = new SubagentAlerter(PATTERNS);
+    a.noteToolStarted(call('rm -rf build', 'tu-1'));
+    a.notePrompted(call('rm -rf build', undefined));
+    a.noteToolFinished(call('rm -rf build', 'tu-1'));
+    // The same command later runs without a prompt: it still alerts.
+    a.noteToolStarted(call('rm -rf build', 'tu-2'));
+    expect(a.noteToolFinished(call('rm -rf build', 'tu-2'))).not.toBeNull();
+    // And a third identical silent run inside the window is throttled.
+    a.noteToolStarted(call('rm -rf build', 'tu-3'));
+    expect(a.noteToolFinished(call('rm -rf build', 'tu-3'))).toBeNull();
+  });
+
+  test("an agent's stop forgets its unfinished calls, not another agent's", () => {
+    const a = new SubagentAlerter(PATTERNS);
+    a.noteToolStarted(call('rm -rf build', 'tu-1'));
+    a.noteToolStarted(call('rm -rf dist', 'tu-2', 'agent-2'));
+    a.noteAgentStopped('agent-1');
+    expect(a.noteToolFinished(call('rm -rf build', 'tu-1'))).toBeNull();
+    expect(a.noteToolFinished(call('rm -rf dist', 'tu-2', 'agent-2'))).not.toBeNull();
+  });
+
+  test('a tool matched by its name alerts with its name; a command tool with its command', () => {
+    // Only the command string is kept for a remembered call (#1155 review),
+    // so both shapes of match must survive to the alert.
+    const a = new SubagentAlerter(['Write', 'rm -rf']);
+    a.noteToolStarted({
+      toolUseId: 'tu-w',
+      toolName: 'Write',
+      toolInput: { file_path: 'x.txt', content: 'y'.repeat(10_000) },
+      agentId: 'agent-1',
+    });
+    a.noteToolStarted({
+      toolUseId: 'tu-c',
+      toolName: 'mcp__shell__run',
+      toolInput: { command: 'rm -rf build', cwd: '/tmp' },
+      agentId: 'agent-1',
+    });
+    expect(
+      a.noteToolFinished({
+        toolUseId: 'tu-w',
+        toolName: 'Write',
+        toolInput: {},
+        agentId: 'agent-1',
+      }),
+    ).toMatchObject({ pattern: 'Write', detail: 'Write' });
+    expect(
+      a.noteToolFinished({
+        toolUseId: 'tu-c',
+        toolName: 'mcp__shell__run',
+        toolInput: {},
+        agentId: 'agent-1',
+      }),
+    ).toMatchObject({ pattern: 'rm -rf', detail: 'rm -rf build' });
+  });
+
+  test('a call whose hooks carry no id pairs by agent, tool and input', () => {
+    const a = new SubagentAlerter(PATTERNS);
+    a.noteToolStarted(call('rm -rf build', undefined));
+    expect(a.noteToolFinished(call('rm -rf build', undefined))).not.toBeNull();
+  });
+
+  test('at most 256 unfinished calls are remembered; the oldest go first', () => {
+    const a = new SubagentAlerter(PATTERNS);
+    for (let i = 0; i < 257; i++) a.noteToolStarted(call(`rm -rf build-${i}`, `tu-${i}`));
+    expect(a.noteToolFinished(call('rm -rf build-0', 'tu-0'))).toBeNull();
+    expect(a.noteToolFinished(call('rm -rf build-1', 'tu-1'))).not.toBeNull();
+    expect(a.noteToolFinished(call('rm -rf build-256', 'tu-256'))).not.toBeNull();
   });
 });

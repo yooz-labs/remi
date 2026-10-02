@@ -197,6 +197,11 @@ export interface UIQuestionOption {
   readonly description?: string;
   /** Public marker for an explicit, daemon-scoped session action. */
   readonly sessionGrant?: 'github-issue-planning';
+  /** What a standing option grants, by the daemon's meaning (#1126):
+   *  `'addRules'` allows a rule for this session, `'setMode'` switches the
+   *  session's permission mode. Absent for a one-time Yes, a No, and every
+   *  option read off the screen (a hook-less prompt). */
+  readonly standingGrant?: 'addRules' | 'setMode';
 }
 
 /** One sub-question of a multi-question (AskUserQuestion) prompt (#626). */
