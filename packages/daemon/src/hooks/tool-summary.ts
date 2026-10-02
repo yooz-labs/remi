@@ -9,14 +9,24 @@
  * only the DISPLAY form remains.
  */
 
-/** Longest summary emitted verbatim. Beyond this the value is truncated to
- *  `TRUNCATED_KEEP` characters plus `...`, so a lock-screen card or terminal
+/** Longest summary emitted verbatim, so a lock-screen card or terminal
  *  prompt stays one bounded line. */
 const SUMMARY_MAX = 120;
-const TRUNCATED_KEEP = 117;
+/** A longer value keeps its first `HEAD_KEEP` and last `TAIL_KEEP` characters
+ *  around an explicit marker saying how much is hidden. */
+const HEAD_KEEP = 80;
+const TAIL_KEEP = 30;
 
-function truncate(value: string): string {
-  return value.length > SUMMARY_MAX ? `${value.slice(0, TRUNCATED_KEEP)}...` : value;
+/**
+ * Bound a summary without hiding its end. With no judge behind the card
+ * (#1125), the human approving it is the only check, and a command's
+ * dangerous part is as likely at the end (a trailing `| sh` or a chained
+ * delete) as at the start; a plain head cut used to drop exactly that.
+ */
+export function truncateSummary(value: string): string {
+  if (value.length <= SUMMARY_MAX) return value;
+  const hidden = value.length - HEAD_KEEP - TAIL_KEEP;
+  return `${value.slice(0, HEAD_KEEP)} … [${hidden} chars hidden] … ${value.slice(-TAIL_KEEP)}`;
 }
 
 /**
@@ -38,7 +48,7 @@ export function summarizeToolInput(
   if (lower === 'bash' || lower === 'terminal') {
     const cmd = get('command') ?? get('cmd');
     if (typeof cmd === 'string') {
-      return truncate(cmd);
+      return truncateSummary(cmd);
     }
   }
 
@@ -64,7 +74,7 @@ export function summarizeToolInput(
   for (const key of ['command', 'file_path', 'path', 'url', 'description']) {
     const val = get(key);
     if (typeof val === 'string' && val.length > 0) {
-      return truncate(val);
+      return truncateSummary(val);
     }
   }
 
