@@ -257,12 +257,15 @@ export interface Question {
   readonly optionsAreFallback?: boolean | undefined;
 
   /**
-   * #753: true when the question belongs to a HELD PermissionRequest hook
-   * (Model B), whose dialog never paints the PTY; the terminal attach client
-   * banners these. Stamped once at question emission (message-api-setup), so
-   * live messages, registry entries, and attach-time re-sends all carry it.
-   * Since #1125 nothing holds and a current daemon never sets it; #1126 sets
-   * it again when it reintroduces holds.
+   * #753: true when the question was pushed by id through the load-bearing
+   * `held` path (`QuestionPresenceTracker.pushHeldHook`). Built for HELD
+   * PermissionRequest hooks (Model B), whose dialog never painted the PTY;
+   * since #1125 nothing holds, and the flag marks a card pushed before its
+   * render (AskUserQuestion, ExitPlanMode, a multi-choice permission). The
+   * daemon's answer path refuses free text on such a card (#1134), and the
+   * terminal attach client banners it. Stamped once at question emission
+   * (message-api-setup), so live messages, registry entries, and attach-time
+   * re-sends all carry it.
    */
   readonly held?: boolean | undefined;
 
