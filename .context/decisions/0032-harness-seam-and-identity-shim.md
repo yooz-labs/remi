@@ -1,6 +1,6 @@
 # ADR 0032: Harness seam and the session identity shim
 
-**Status:** accepted
+**Status:** accepted; amended by #1163 (Phase 2, below)
 **Date:** 2026-10-02
 **Owner:** Yahya
 
@@ -26,7 +26,7 @@ A daemon started before an upgrade keeps running the old code against the same `
 Add the vocabulary and make the store tolerate it, without changing what any daemon writes or emits.
 
 1. **Names.** `HARNESS_IDS = ['claude', 'codex', 'opencode']` and `DEFAULT_HARNESS = 'claude'` live in `packages/shared/src/harness.ts`, exported from the package index only (no `package.json` exports entry).
-   The registry (phase 2) holds only Claude until the Codex epic.
+   The registry (phase 2) holds only Claude until the Codex epic (superseded, see Phase 2 amendment item 3).
 2. **Persisted Claude records store neither `harness` nor `harnessSessionId`.**
    Absence means Claude.
    A Claude record on disk therefore stays the eight-key object an older daemon already writes and reads, and `version` stays 1.
@@ -108,12 +108,19 @@ It changes no behavior: the same bytes are typed, the same arguments are spawned
    An id-keyed registry arrives with the first caller that needs one, the `harness` field on `create_session_request` (#1165 section B).
    The phrase "The registry (phase 2) holds only Claude" in decision 1 above is superseded by this item.
 4. **One transcript path rule.**
-   `current-session.ts`, the session-list decoration, the durable-index load in `transcript-events.ts` and `expectedTranscriptPath` all go through `transcriptPath`, so the rule lives in `ClaudeHarness` alone.
+   `current-session.ts`, the session-list decoration, the durable-index load in `transcript-events.ts` and `expectedTranscriptPath` all go through `transcriptPath`, so the `<dir>/<id>.jsonl` composition lives in `ClaudeHarness` alone.
+   The directory encoding stays in `TranscriptDiscovery.getProjectTranscriptDir`, which `ClaudeHarness` calls and which `transcript-binder.ts` 995 also calls.
    `expectedTranscriptPath` keeps its `(discovery, projectPath, id)` signature because `same-cwd-no-cross-binding.test.ts` calls it, and builds a `ClaudeHarness` per call; the harness holds no state beyond the discovery it is given.
-5. **Claude knowledge still outside the harness, by scope.**
-   The `claudeArgs.unshift('--resume', ...)` in `cli.ts` (for `remi --resume <id>`) and `pty-session-setup.ts` 203 (`'claude'`) are untouched, as the issue says.
-   `transcript-binder.ts` 995 asks the discovery for the project directory (the rotation poll), and `transcript-binder.ts` 1074-1075 and `transcript-discovery.ts` 167-174 strip the `.jsonl` suffix to recover an id.
-   Those read a directory or a filename rather than building a session's transcript path, so `transcriptPath` does not cover them; a second harness will have to.
+5. **Claude layout knowledge still outside the harness, by scope.**
+   Two sites spell a Claude value and are untouched.
+   The `claudeArgs.unshift('--resume', ...)` in `cli.ts` (for `remi --resume <id>`) cannot use the harness: it runs at module top level, before `const harness` is constructed further down the file, so calling it there would be a temporal dead zone error.
+   Comments in `cli.ts` and on `ClaudeHarness.resumeArgs` name each other, so a change to Claude's resume flag touches both.
+   `command: 'claude'` at `pty-session-setup.ts` 203 is left alone, as the issue says; Phase 3 adds `command` with `createSession`.
+   The remaining sites read or derive from an existing path, directory or directory entry, rather than building a session's transcript path from `(projectPath, id)`, so `transcriptPath` does not cover them and a second harness will have to:
+   - `transcript-binder.ts` 995 asks the discovery for the project directory (the rotation poll), and 1085 builds a candidate path from a directory entry (`path.join(rotationPollDir, name)`).
+   - `transcript-binder.ts` 590 and 1074-1075, and `transcript-discovery.ts` 174, recover an id from a filename (`path.basename(resolved, '.jsonl')` or a stripped `.jsonl` suffix).
+   - `transcript-discovery.ts` 177-178 and `resume-session-events.ts` 223 decode `-` back to `/` in a directory name.
+   - `api/subagent-view-registry.ts` 40-41, 55 and 80 derive `<base>/subagents/agent-<id>.jsonl` from the main transcript path.
 
 ### Receipts
 
@@ -121,3 +128,4 @@ It changes no behavior: the same bytes are typed, the same arguments are spawned
   `session-events.test.ts` (`/exit`) and `resume-session-events.test.ts` (`['--resume', id]`) are the other pins; their assertions are unmodified.
 - `session-events-harness.test.ts` and `resume-session-events-harness.test.ts` give the handlers a harness whose exit input or resume arguments differ (and one with no exit input), because the pins above cannot tell a handler that asks the harness from one that still hardcodes Claude's value.
 - `grep -rn 'getProjectTranscriptDir(.*)}/\${' packages/daemon/src` hits only `ClaudeHarness.transcriptPath`.
+- Both handler sites that take a `TranscriptDiscovery` for other reasons are held to the harness by tests, because reverting either to the inline expression compiled and passed every Claude-valued test: `session-events-harness.test.ts` (the listed session's `transcriptPath` from a stand-in harness), `transcript-events-harness.test.ts` (a durable-index transcript that exists only at the stand-in path), and `tests/harness/transcript-path-source.test.ts` (`getProjectTranscriptDir(` may appear only in `transcript-discovery.ts`, `transcript-binder.ts` and `harness/claude.ts`).
