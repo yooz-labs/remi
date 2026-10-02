@@ -6,8 +6,8 @@
  * too. This test gives `createResumeSessionHandlers` a harness whose resume
  * arguments differ, so only a handler that asks the harness passes.
  *
- * The harness is a real `Harness` whose `gracefulExitInput` and
- * `transcriptPath` delegate to `ClaudeHarness`; only `resumeArgs` differs.
+ * The harness is the handler's own dependency type (`Pick<Harness,
+ * 'resumeArgs'>`), so a stand-in carries only what the handler can ask.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
@@ -17,9 +17,12 @@ import * as path from 'node:path';
 import type { ProtocolMessage, UUID } from '@remi/shared';
 import { generateId } from '@remi/shared';
 import type { MessageAPI } from '../../../src/api/message-api.ts';
-import { createResumeSessionHandlers } from '../../../src/cli/handlers/resume-session-events.ts';
+import {
+  type ResumeSessionHandlerDeps,
+  createResumeSessionHandlers,
+} from '../../../src/cli/handlers/resume-session-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
-import { ClaudeHarness, type Harness } from '../../../src/harness/index.ts';
+import { ClaudeHarness } from '../../../src/harness/index.ts';
 import type { PTYSession } from '../../../src/pty/pty-session.ts';
 import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
 import { SessionRegistry } from '../../../src/session/session-registry.ts';
@@ -51,7 +54,7 @@ describe('createResumeSessionHandlers launch arguments, driven by the harness (#
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  async function resumeWith(harness: Harness): Promise<string[][]> {
+  async function resumeWith(harness: ResumeSessionHandlerDeps['harness']): Promise<string[][]> {
     const projectDir = path.join(tmpDir, 'real-project');
     fs.mkdirSync(projectDir, { recursive: true });
     sessionStore.save({
@@ -101,13 +104,7 @@ describe('createResumeSessionHandlers launch arguments, driven by the harness (#
   }
 
   test("spawns with the harness's resume arguments, not a hardcoded --resume", async () => {
-    const claude = new ClaudeHarness(discovery);
-    const spawned = await resumeWith({
-      gracefulExitInput: claude.gracefulExitInput,
-      resumeArgs: (id) => ['--continue-from', id],
-      transcriptPath: (projectPath, id) => claude.transcriptPath(projectPath, id),
-      createSession: (ctx) => claude.createSession(ctx),
-    });
+    const spawned = await resumeWith({ resumeArgs: (id) => ['--continue-from', id] });
 
     expect(spawned).toEqual([['--continue-from', HARNESS_SESSION_ID]]);
   });

@@ -1,8 +1,9 @@
 /**
  * #1126 review (T2): the per-mode hold policy. Swapping the two modes' hold
  * length, routing or hook registration used to pass the whole suite; the
- * pure function pins each value, and the source checks pin that `cli.ts`
- * reads all of them from it (a precedent: advertise-decision.test.ts).
+ * pure function pins each value, and the source checks pin that `cli.ts` (the
+ * hook registration) and `harness/claude-session.ts` (the session gate, since
+ * #1164) read all of them from it (a precedent: advertise-decision.test.ts).
  */
 
 import { describe, expect, test } from 'bun:test';
@@ -39,7 +40,7 @@ describe('permissionHoldPolicy (#1126)', () => {
   });
 });
 
-describe('cli.ts takes every per-mode value from the policy', () => {
+describe('cli.ts and harness/claude-session.ts take every per-mode value from the policy', () => {
   const cli = fs.readFileSync(path.resolve(import.meta.dir, '../../src/cli.ts'), 'utf8');
   // The session gate's wiring moved behind the harness seam in #1164.
   const claudeSession = fs.readFileSync(
