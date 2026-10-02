@@ -7,9 +7,19 @@
  *      the resize handler) so Claude lays out within rows `1..N-1`.
  *   2. **scroll region** — set DECSTBM to `1..N-1` (in every bar paint) so the
  *      terminal can only scroll the rows above the bar. The winsize trick alone
- *      is insufficient because Claude renders inline (no alternate screen): on
- *      output the terminal would scroll the whole screen and the bar would
- *      bleed up into Claude's content. The region pins row `N` fixed.
+ *      is insufficient because Claude renders inline (no alternate screen;
+ *      remi forces that, see below): on output the terminal would scroll the
+ *      whole screen and the bar would bleed up into Claude's content. The
+ *      region pins row `N` fixed.
+ *
+ * Inline rendering is not Claude's default any more: Claude Code renders
+ * fullscreen (alternate screen) for users who started after 2026-05-06, and
+ * this bar (and remi's PTY prompt parsing) was built against the inline
+ * renderer. So remi FORCES the inline renderer by setting
+ * `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` in the child's environment
+ * (`buildClaudeChildEnv` in `session-phases/pty-session-setup.ts`), unless the
+ * user's environment already defines that variable; in that case their
+ * explicit choice wins and the bar is unverified against fullscreen. See #1124.
  *
  * remi then owns row `N` exclusively and draws a persistent status bar there —
  * visible even while Claude shows a permission/question prompt, which is exactly
