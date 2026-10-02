@@ -67,7 +67,7 @@
  */
 
 import { MAIN_AGENT_ID } from '@remi/shared';
-import type { AgentStatus, Question } from '@remi/shared';
+import type { AgentStatus, Question, QuestionOption } from '@remi/shared';
 import type { QuestionRegistrationOutcome } from './message-api.ts';
 
 export interface PushOptions {
@@ -304,6 +304,13 @@ export class QuestionPresenceTracker {
    *  and answering the second with the first's verdict is the same answer to
    *  the same question, which is why that collapse is acceptable. */
   private observedPTYText: string | null = null;
+
+  /** The OPTIONS of the last observed PTY question (#1134), set and cleared
+   *  with `observedPTYQuestionId`. What the screen numbers right now: the
+   *  answer path checks a value against these before typing it, because a
+   *  digit Claude's menu does not show is ignored and the Enter after it
+   *  confirms whatever option is highlighted. */
+  private observedPTYOptions: readonly QuestionOption[] | null = null;
 
   /**
    * The id of the currently-PUSHED hook-less question, if any (#888/#920).
@@ -640,8 +647,7 @@ export class QuestionPresenceTracker {
    */
   onPTYPromptVisible(ptyQuestion: Question): void {
     // #814, before any branch: record what is on screen now.
-    this.observedPTYQuestionId = ptyQuestion.id;
-    this.observedPTYText = ptyQuestion.text;
+    this.observePTYQuestion(ptyQuestion);
     if (this.mainEvalsInFlight > 0) {
       // A MAIN permission eval owns this prompt: buffer it, do not push yet.
       // The verdict decides — onAutoApproveEscalate releases it; a status-
@@ -1021,8 +1027,7 @@ export class QuestionPresenceTracker {
     // #814: record what is on screen NOW before any branch below decides to
     // push, buffer, suppress or arbitrate — an in-flight verdict for an
     // earlier prompt must be able to see that it has been superseded.
-    this.observedPTYQuestionId = ptyQuestion.id;
-    this.observedPTYText = ptyQuestion.text;
+    this.observePTYQuestion(ptyQuestion);
     // #751 PTY-arbiter: a parked subagent escalation, or a main-agent
     // `push-on-render` mark (#1121), whose prompt has now rendered. Merge +
     // push IMMEDIATELY through the pair core — no orphan
@@ -1287,8 +1292,7 @@ export class QuestionPresenceTracker {
       this.ambiguousRenderKeys.clear();
       this.ptyShowingQuestion = false;
       // #814: nothing is on screen now.
-      this.observedPTYQuestionId = null;
-      this.observedPTYText = null;
+      this.clearObservedPTYQuestion();
       // #888/#920 review fix: deliberately NOT a hook-less resolution trigger.
       // `status` here can come from a PTY-TEXT-parsed guess
       // (`output-processor.ts`, confidence >= 0.5, not certainty) as well as
@@ -1386,8 +1390,7 @@ export class QuestionPresenceTracker {
     this.awaitingPTY.clear();
     this.ambiguousRenderKeys.clear();
     this.ptyShowingQuestion = false;
-    this.observedPTYQuestionId = null;
-    this.observedPTYText = null;
+    this.clearObservedPTYQuestion();
     // #888/#920 review fix: deliberately NOT a hook-less resolution trigger,
     // for the SAME reason as `onStatusChange` -- see that reset's comment.
     // `clearPending` is not restart-exclusive: `AutoApproveGate` also calls
@@ -1436,6 +1439,23 @@ export class QuestionPresenceTracker {
     return undefined;
   }
 
+  /** Record `ptyQuestion` as what the screen shows now (#814, #1134). Called
+   *  on entry to every PTY-render callback, before any push, buffer, suppress
+   *  or arbitrate decision, so the observation never depends on who owns the
+   *  prompt. */
+  private observePTYQuestion(ptyQuestion: Question): void {
+    this.observedPTYQuestionId = ptyQuestion.id;
+    this.observedPTYText = ptyQuestion.text;
+    this.observedPTYOptions = ptyQuestion.options;
+  }
+
+  /** Forget the observed prompt: nothing is known to be on screen. */
+  private clearObservedPTYQuestion(): void {
+    this.observedPTYQuestionId = null;
+    this.observedPTYText = null;
+    this.observedPTYOptions = null;
+  }
+
   /** Cancel any armed orphan-prompt debounce timer and discard its candidate. */
   private cancelOrphanTimer(): void {
     if (this.orphanTimer) {
@@ -1481,6 +1501,23 @@ export class QuestionPresenceTracker {
    */
   isPromptObservedOnPTY(): boolean {
     return this.observedPTYQuestionId !== null;
+  }
+
+  /**
+   * The options of the prompt the PTY parser last observed on screen
+   * (#1134), or null when no prompt is observed (same lifetime as
+   * `isPromptObservedOnPTY`). An empty array means a prompt is on screen
+   * but it is not an option menu (a free-text prompt).
+   *
+   * This is the screen's numbering, which a card's numbering is not
+   * guaranteed to match: a held card carries the hook's options, and a
+   * card registered before the screen changed carries the old ones. The
+   * answer path checks every option value it is about to type against this,
+   * because Claude ignores a digit its menu does not show and the Enter
+   * that follows confirms the highlighted option, usually "1. Yes".
+   */
+  observedPromptOptions(): readonly QuestionOption[] | null {
+    return this.observedPTYQuestionId === null ? null : this.observedPTYOptions;
   }
 
   /**

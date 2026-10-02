@@ -2164,6 +2164,11 @@ const inputHandlers: InputHandlers = createInputHandlers({
   // no-tracker-means-refuse default.
   isPromptObservedOnPTY: (sessionId) =>
     sessionTrackers.get(sessionId)?.isPromptObservedOnPTY() ?? false,
+  // #1134: the on-screen prompt's own options, so a value is typed only if
+  // the screen's menu shows it. Same map; no tracker means no observed
+  // options, which refuses an option answer.
+  observedPromptOptions: (sessionId) =>
+    sessionTrackers.get(sessionId)?.observedPromptOptions() ?? null,
   // #976 prerequisite: route a classified answer to the RIGHT session's
   // precedent store (populated per session in createNewSession, same
   // map-per-sessionId shape as sessionGateHandles/sessionTrackers above). No

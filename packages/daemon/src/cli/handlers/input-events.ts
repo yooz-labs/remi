@@ -126,6 +126,23 @@ export interface InputHandlerDeps {
    */
   isPromptObservedOnPTY?: (sessionId: UUID) => boolean;
   /**
+   * The options of the prompt currently observed on this session's screen,
+   * backed by `QuestionPresenceTracker.observedPromptOptions` (#1134). Null
+   * when no prompt is observed; an empty array when the prompt on screen is
+   * not an option menu.
+   *
+   * The screen-numbering guard in `handleAnswer` checks every option value
+   * it is about to type against these. A card's numbering is
+   * not proof of the screen's: live, a 4-option card over a 3-option dialog
+   * typed a phone "No" as `4`, Claude ignored the digit, and the Enter after
+   * it confirmed the highlighted "1. Yes".
+   *
+   * Absent => no observed options, so an option answer is refused: the same
+   * fail-toward-refusing default as `isPromptCurrent` and
+   * `isPromptObservedOnPTY`.
+   */
+  observedPromptOptions?: (sessionId: UUID) => readonly QuestionOption[] | null;
+  /**
    * Record a human-classified permission answer into this session's
    * precedent store (#976 prerequisite, `auto-approve/precedent.ts`). Called
    * ONLY for answers `handleAnswer` can classify with confidence as an
@@ -310,6 +327,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     onQuestionResolved,
     isPromptCurrent,
     isPromptObservedOnPTY,
+    observedPromptOptions,
     recordPrecedent,
   } = deps;
 
@@ -804,6 +822,66 @@ export function createInputHandlers(deps: InputHandlerDeps) {
             );
           }
           return 'stale';
+        }
+
+        // #1134 screen-numbering guard: an option value typed into the PTY
+        // must be one of the values the menu on screen shows. Claude's menu
+        // ignores any other digit, and the "\r" `submitInput` sends after it
+        // then confirms whichever option is highlighted, usually "1. Yes".
+        // That is how a phone "No" approved a command: the card numbered "No"
+        // 4 over a 3-option dialog. The merge now gives render-born cards the
+        // screen's options, but a card's numbering is not proof of the
+        // screen's (a card pushed by id before its render carries the hook's;
+        // a registered card keeps its options when the prompt later redraws
+        // with different ones), so the check runs against the observed
+        // screen itself.
+        //
+        // Applies to an answer that resolved to a card option, whenever this
+        // answer did not just release a hold. A release means Claude has not
+        // rendered the prompt yet, so there is nothing to compare against;
+        // that path is unchanged. Note this keys on the release, not on
+        // `active.held`: a passthrough card pushed by id (`pushHeldHook`) is
+        // stamped `held` but has no hold, so it is answered right here, by a
+        // digit, with the hook's numbering. Free text (no option match) is
+        // typed as before.
+        if (!released && resolveOption(active.options, answer) !== undefined) {
+          const screenOptions = observedPromptOptions?.(session.sessionId) ?? null;
+          if (!(screenOptions ?? []).some((o) => o.value === ptyInput)) {
+            const screenValues = (screenOptions ?? []).map((o) => o.value);
+            log(
+              `[Answer] refusing PTY submit for ${questionId.slice(0, 8)}: "${ptyInput}" is not an option on screen [${screenValues.join(', ') || 'none'}]`,
+            );
+            traceQuestionEvent({
+              action: 'stale_answer',
+              sessionId: session.sessionId,
+              questionId,
+              promptId: active.promptId,
+              signal: 'STALE_ANSWER',
+              callSite: 'input-events.handleAnswer:screenNumberingGuard',
+              detail: {
+                reason: 'option-not-on-screen',
+                source: active.source,
+                value: ptyInput,
+                screenValues,
+              },
+            });
+            removalReason = 'user_answer:option_not_on_screen';
+            if (!viaRelay) {
+              send(
+                connectionId,
+                createError(
+                  'STALE_ANSWER',
+                  'This answer is not an option on the prompt on screen; refusing to submit',
+                  {
+                    sessionId,
+                    questionId,
+                    pendingQuestionIds: [...session.currentQuestions.keys()],
+                  },
+                ),
+              );
+            }
+            return 'stale';
+          }
         }
 
         await session.pty.submitInput(ptyInput);

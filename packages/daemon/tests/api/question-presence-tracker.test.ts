@@ -1750,3 +1750,85 @@ describe('QuestionPresenceTracker pushOnRender (#1121)', () => {
     expect(pushes[0]?.text).not.toContain('rm -rf B');
   });
 });
+
+/**
+ * #1134: the tracker retains the observed prompt's OPTIONS alongside its id
+ * and text, so the answer path can refuse to type a value the screen's menu
+ * does not show. Same lifetime as `isPromptObservedOnPTY`: set on every render
+ * callback before any routing decision, cleared by a status transition off
+ * 'waiting' and by `clearPending`.
+ */
+describe('observed prompt options (#1134)', () => {
+  function screenWith(values: string[], text = 'Do you want to proceed?'): Question {
+    return {
+      ...makePTYQuestion(text),
+      options: values.map((v) => makeOption(`Option ${v}`, v)),
+    };
+  }
+
+  it('is null before anything renders', () => {
+    const t = new QuestionPresenceTracker(() => undefined);
+    expect(t.observedPromptOptions()).toBeNull();
+  });
+
+  it('retains the options of a render seen by onPTYPromptVisible', () => {
+    const t = new QuestionPresenceTracker(() => undefined);
+    const screen = screenWith(['1', '2', '3']);
+    t.onPTYPromptVisible(screen);
+    expect(t.observedPromptOptions()).toEqual(screen.options);
+  });
+
+  it("retains the screen's options for a gate-owned echo, not the hook's", () => {
+    // The render is suppressed as an echo of the stashed hook record, but the
+    // observation is recorded before that decision, and it is the screen's.
+    const t = new QuestionPresenceTracker(() => undefined);
+    t.recordPendingHook(makePermissionRequestHook('Allow Bash: ls'));
+    const screen = screenWith(['1', '2']);
+    t.onOrphanPTYPrompt(screen);
+    expect(t.observedPromptOptions()?.map((o) => o.value)).toEqual(['1', '2']);
+  });
+
+  it('retains the options of a render buffered during a main eval', () => {
+    const t = new QuestionPresenceTracker(() => undefined);
+    t.onAutoApproveStart();
+    const screen = screenWith(['1', '2', '3']);
+    t.onPTYPromptVisible(screen);
+    expect(t.observedPromptOptions()).toEqual(screen.options);
+  });
+
+  it('a later render replaces the observed options', () => {
+    const t = new QuestionPresenceTracker(() => undefined);
+    t.onPTYPromptVisible(screenWith(['1', '2', '3', '4']));
+    t.onPTYPromptVisible(screenWith(['1', '2', '3']));
+    expect(t.observedPromptOptions()?.map((o) => o.value)).toEqual(['1', '2', '3']);
+  });
+
+  it('a free-text prompt is observed with no options (empty, not null)', () => {
+    const t = new QuestionPresenceTracker(() => undefined);
+    t.onPTYPromptVisible(screenWith([], 'Enter your response:'));
+    expect(t.observedPromptOptions()).toEqual([]);
+  });
+
+  it("survives a status update that stays 'waiting'", () => {
+    const t = new QuestionPresenceTracker(() => undefined);
+    t.onPTYPromptVisible(screenWith(['1', '2']));
+    t.onStatusChange('waiting');
+    expect(t.observedPromptOptions()?.map((o) => o.value)).toEqual(['1', '2']);
+  });
+
+  it("is cleared when status leaves 'waiting', with the rest of the observation", () => {
+    const t = new QuestionPresenceTracker(() => undefined);
+    t.onPTYPromptVisible(screenWith(['1', '2']));
+    t.onStatusChange('executing');
+    expect(t.observedPromptOptions()).toBeNull();
+    expect(t.isPromptObservedOnPTY()).toBe(false);
+  });
+
+  it('is cleared by clearPending, with the rest of the observation', () => {
+    const t = new QuestionPresenceTracker(() => undefined);
+    t.onOrphanPTYPrompt(screenWith(['1', '2']));
+    t.clearPending();
+    expect(t.observedPromptOptions()).toBeNull();
+    expect(t.isPromptObservedOnPTY()).toBe(false);
+  });
+});

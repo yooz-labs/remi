@@ -2137,6 +2137,7 @@ describe('setupHookBridge', () => {
         bindingStore,
         send: () => true,
         isPromptObservedOnPTY: () => tracker.isPromptObservedOnPTY(),
+        observedPromptOptions: () => tracker.observedPromptOptions(),
       });
       await handlers.onAnswer('conn-1' as UUID, SID, card.id, no.label);
 
