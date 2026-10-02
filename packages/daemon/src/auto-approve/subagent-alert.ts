@@ -224,7 +224,7 @@ export class SubagentAlerter {
     // Key on the FULL command, not the truncated detail: two different
     // commands sharing a 160-char prefix are different events and must both
     // alert.
-    const key = `${pattern} ${command}`;
+    const key = `${pattern}\u0000${command}`;
     const last = this.lastAlerted.get(key);
     if (last !== undefined && now - last < ALERT_WINDOW_MS) return null;
 
