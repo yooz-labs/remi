@@ -19,11 +19,11 @@ You start a Claude Code session on your workstation. It's working on a complex t
 ## Quick Start
 
 ```bash
-# Install
+# Install (the package name is scoped, but the command it provides is just `remi`)
 bun install -g @yooz-labs/remi
 
-# The installed binary is still named `remi`
-# If you previously installed the unrelated unscoped package, remove it first:
+# npm also has an unrelated package named plain `remi`.
+# If an older install step left that one on your machine, remove it:
 bun remove -g remi
 
 # Start Claude Code with Remi (session persists if terminal closes)
