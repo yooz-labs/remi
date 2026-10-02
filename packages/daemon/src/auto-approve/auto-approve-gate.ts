@@ -443,16 +443,24 @@ export class AutoApproveGate {
    * tracking its signature, so a later matching tool event does not resolve
    * (and dismiss) it a second time. Idempotent; a no-op for an id this gate
    * never tracked.
+   *
+   * Except a prompt whose answer now belongs to the terminal (#1126): one
+   * released at its hold deadline (its card already dismissed by this gate,
+   * its "answer at the terminal" notice out) is still on screen, and only a
+   * hook signal (its tool run, Stop, a new prompt, SubagentStop) proves it
+   * answered. A late phone answer for the dismissed card reaches here
+   * through the stale-answer path; retiring then would clear the notice and
+   * let the dialog's redraws be read as hook-less orphans. Live-observed on
+   * the #1126 verification run before this guard.
    */
   retireQuestion(questionId: UUID): void {
-    this.openQuestionSignatures.delete(questionId);
-    if (this.terminalNotices.delete(questionId)) {
-      this.safeCueWithArg(
-        'onTerminalNoticeResolved',
-        this.deps.onTerminalNoticeResolved,
-        questionId,
+    if (this.terminalNotices.has(questionId) && !this.holds.has(questionId)) {
+      log(
+        `[AutoApprove ${this.sessionTag}] Not retiring ${questionId.slice(0, 8)}: its prompt is waiting in the terminal`,
       );
+      return;
     }
+    this.openQuestionSignatures.delete(questionId);
     // A held prompt retired by another path must not leave its hook pending
     // until the deadline: release it with the empty response, which decides
     // nothing (Claude's dialog stays).

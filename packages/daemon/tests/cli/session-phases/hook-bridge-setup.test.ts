@@ -1949,6 +1949,12 @@ describe('setupHookBridge', () => {
       // A late answer to the dismissed card is stale, and nothing is typed.
       expect(await handlers.relayAnswer(SID, card.id, 'Yes')).toBe('stale');
       expect(ptySubmits).toEqual([]);
+      // ...and it does not close the prompt still waiting in the terminal:
+      // the notice stays and a later redraw is still no orphan card.
+      expect(noticeLog.map((n) => n.reason)).toEqual(['hold_deadline']);
+      tracker.onOrphanPTYPrompt({ ...dialog, id: generateId() });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(cards()).toHaveLength(0);
     });
   });
 

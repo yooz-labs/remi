@@ -692,6 +692,21 @@ describe('AutoApproveGate held prompts (#1126)', () => {
     expect(resolved).toEqual([qid]);
   });
 
+  test('a prompt released at its deadline is not retired by a late answer path (its dialog is still up)', async () => {
+    const g = gate({ holdMs: 20 });
+    const hook = g.resolvePermission(pr());
+    const qid = ids[0] as UUID;
+    expect(await hook).toBe('passthrough');
+    // The stale-answer path for the dismissed card retires its id.
+    g.retireQuestion(qid);
+    expect(g.hasOpenHookPrompt()).toBe(true);
+    expect(noticesCleared).toEqual([]);
+    // Only a hook signal closes it, and the notice clears then.
+    g.cancelStale('UserPromptSubmit', { mainOnly: true });
+    expect(g.hasOpenHookPrompt()).toBe(false);
+    expect(noticesCleared).toEqual([qid]);
+  });
+
   test('an answer before the deadline cancels it: no notice, no late release', async () => {
     const g = gate({ holdMs: 40 });
     const hook = g.resolvePermission(pr());
