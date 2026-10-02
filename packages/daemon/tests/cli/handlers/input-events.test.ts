@@ -1063,6 +1063,55 @@ describe('createInputHandlers', () => {
         });
       });
 
+      test('probe D: free text on a held card is refused before the hold is released', async () => {
+        // Releasing first made `released` true, which skipped the screen check
+        // and typed the text into the dialog Claude was about to draw.
+        const { sessionId, ptyCapture } = setUpCard(HOOK_NUMBERED, { held: true });
+        const calls: string[] = [];
+        const logs: string[] = [];
+        configureLogger({ writeLog: (msg) => logs.push(msg) });
+        const handlers = createInputHandlers({
+          sessionRegistry,
+          bindingStore,
+          send,
+          resolveHeldPermission: () => false,
+          releaseHeldAsPassthrough: () => {
+            calls.push(`release (typed so far: ${ptyCapture.submits.length})`);
+            return true;
+          },
+          isPromptObservedOnPTY: () => false,
+          observedPromptOptions: () => null,
+        });
+
+        await handlers.onAnswer(CID, sessionId, QID, 'approve it');
+
+        expect(ptyCapture.submits).toEqual([]);
+        const errors = sendCalls.filter((c) => c.message.type === 'error');
+        expect((errors[0]?.message as { code?: string }).code).toBe('STALE_ANSWER');
+        expect(logs.some((m) => m.includes('free text (10 chars) on a held card'))).toBe(true);
+        // The hold is still popped, with nothing typed, so Claude shows its own
+        // prompt in the terminal instead of blocking behind a consumed card.
+        expect(calls).toEqual(['release (typed so far: 0)']);
+        expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+      });
+
+      test('an option answer on a held card still releases and types its digit', async () => {
+        const { sessionId, ptyCapture } = setUpCard(HOOK_NUMBERED, { held: true });
+        const handlers = createInputHandlers({
+          sessionRegistry,
+          bindingStore,
+          send,
+          resolveHeldPermission: () => false,
+          releaseHeldAsPassthrough: () => true,
+          isPromptObservedOnPTY: () => false,
+          observedPromptOptions: () => null,
+        });
+
+        await handlers.onAnswer(CID, sessionId, QID, 'Yes, switch to acceptEdits mode');
+
+        expect(ptyCapture.submits).toEqual(['3']);
+      });
+
       test('releasing a hold in this call is not checked: the prompt has not rendered yet', async () => {
         const { sessionId, ptyCapture } = setUpCard(HOOK_NUMBERED, { held: true });
         const handlers = createInputHandlers({

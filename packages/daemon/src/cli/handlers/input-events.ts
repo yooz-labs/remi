@@ -264,7 +264,11 @@ function resolveOption(
 /** A PTY submit the #1134 screen-numbering guard refuses, and how. */
 interface ScreenRefusal {
   /** Trace `detail.reason`. */
-  readonly reason: 'option-not-on-screen' | 'option-mismatch' | 'free-text-into-menu';
+  readonly reason:
+    | 'option-not-on-screen'
+    | 'option-mismatch'
+    | 'free-text-into-menu'
+    | 'free-text-on-held-card';
   /** `SessionRegistry.removeQuestion` signal for the refused card. */
   readonly removalReason: string;
   /** STALE_ANSWER message to the client. */
@@ -285,6 +289,12 @@ const SCREEN_REFUSALS = {
     removalReason: 'user_answer:option_mismatch',
     message: 'The prompt on screen numbers a different option this way; refusing to submit',
     logLine: (input) => `"${input}" means a different option on screen`,
+  },
+  freeTextOnHeldCard: {
+    reason: 'free-text-on-held-card',
+    removalReason: 'user_answer:free_text_on_held_card',
+    message: 'This prompt takes one of its options, not text; refusing to submit',
+    logLine: (input) => `free text (${input.length} chars) on a held card that takes options`,
   },
   freeTextIntoMenu: {
     reason: 'free-text-into-menu',
@@ -767,6 +777,50 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     // `finally` block's removal carries an honest signal instead of the
     // default 'user_answer' (this card was never actually answered).
     let removalReason = 'user_answer';
+    /** Refuse a PTY submit for the #1134 guard: log, trace, consume the card
+     *  (in `finally`, under the refusal's own signal), tell the client, type
+     *  nothing. */
+    const refuseSubmit = (
+      refusal: ScreenRefusal,
+      input: string,
+      screenOptions: readonly QuestionOption[] | null,
+    ): 'stale' => {
+      const screenValues = (screenOptions ?? []).map((o) => o.value);
+      const typedText =
+        refusal === SCREEN_REFUSALS.freeTextIntoMenu ||
+        refusal === SCREEN_REFUSALS.freeTextOnHeldCard;
+      log(
+        `[Answer] refusing PTY submit for ${questionId.slice(0, 8)}: ${refusal.logLine(input)} [${screenValues.join(', ') || 'none'}]`,
+      );
+      traceQuestionEvent({
+        action: 'stale_answer',
+        sessionId: session.sessionId,
+        questionId,
+        promptId: active.promptId,
+        signal: 'STALE_ANSWER',
+        callSite: 'input-events.handleAnswer:screenNumberingGuard',
+        detail: {
+          reason: refusal.reason,
+          source: active.source,
+          // An option value is a digit; free text may be anything the user
+          // typed, so only its length is recorded.
+          ...(typedText ? { textLength: input.length } : { value: input }),
+          screenValues,
+        },
+      });
+      removalReason = refusal.removalReason;
+      if (!viaRelay) {
+        send(
+          connectionId,
+          createError('STALE_ANSWER', refusal.message, {
+            sessionId,
+            questionId,
+            pendingQuestionIds: [...session.currentQuestions.keys()],
+          }),
+        );
+      }
+      return 'stale';
+    };
     try {
       if (decision?.sessionGrant !== undefined) {
         // A session-grant action is a control-plane operation, never a PTY
@@ -833,6 +887,29 @@ export function createInputHandlers(deps: InputHandlerDeps) {
           ) ?? false;
       }
       if (!hadHold) {
+        // #1134 review: free text on a HELD card must be refused BEFORE the
+        // release below. Releasing makes `released` true, which skips the
+        // screen check (nothing has rendered yet), so the text would be typed
+        // into the dialog Claude is about to draw, where it is ignored and
+        // the Enter confirms the highlighted option. Only an option of this
+        // card can be expressed; text cannot. The hold is then released
+        // anyway, with nothing typed, so Claude shows its own prompt in the
+        // terminal at once instead of blocking until hold_timeout behind a
+        // card the refusal just consumed (the same reasoning as the
+        // stale-answer path above).
+        if (
+          active.held === true &&
+          active.options.length > 0 &&
+          !active.allowsFreeText &&
+          resolveOption(active.options, answer) === undefined
+        ) {
+          try {
+            releaseHeldAsPassthrough?.(session.sessionId, questionId);
+          } catch (err) {
+            logError(`[Answer] free-text refusal: hold release failed: ${errorToString(err)}`);
+          }
+          return refuseSubmit(SCREEN_REFUSALS.freeTextOnHeldCard, answer, null);
+        }
         // decision === null (always/pick/free-text) OR no hold for this question:
         // if a hold exists, pop it to passthrough so the native prompt renders,
         // then submit the digit. If no hold, this is the normal PTY path.
@@ -958,49 +1035,15 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         //
         // Applies whenever this answer did not just release a hold. A release
         // means Claude has not rendered the prompt yet, so there is nothing
-        // to compare against; that path is unchanged. Note this keys on the
-        // release, not on `active.held`: a passthrough card pushed by id
+        // to compare against (an option value is typed as before; free text
+        // was already refused above). Note this keys on the release, not on
+        // `active.held`: an AskUserQuestion card pushed by id
         // (`pushHeldHook`) is stamped `held` but has no hold, so it is
         // answered right here, by a digit, with the hook's numbering.
         if (!released) {
           const screenOptions = observedPromptOptions?.(session.sessionId) ?? null;
-          const screenValues = (screenOptions ?? []).map((o) => o.value);
           const refusal = screenRefusal(active, answer, ptyInput, screenOptions);
-          if (refusal !== null) {
-            log(
-              `[Answer] refusing PTY submit for ${questionId.slice(0, 8)}: ${refusal.logLine(ptyInput)} [${screenValues.join(', ') || 'none'}]`,
-            );
-            traceQuestionEvent({
-              action: 'stale_answer',
-              sessionId: session.sessionId,
-              questionId,
-              promptId: active.promptId,
-              signal: 'STALE_ANSWER',
-              callSite: 'input-events.handleAnswer:screenNumberingGuard',
-              detail: {
-                reason: refusal.reason,
-                source: active.source,
-                // An option value is a digit; free text may be anything the
-                // user typed, so only its length is recorded.
-                ...(refusal === SCREEN_REFUSALS.freeTextIntoMenu
-                  ? { textLength: ptyInput.length }
-                  : { value: ptyInput }),
-                screenValues,
-              },
-            });
-            removalReason = refusal.removalReason;
-            if (!viaRelay) {
-              send(
-                connectionId,
-                createError('STALE_ANSWER', refusal.message, {
-                  sessionId,
-                  questionId,
-                  pendingQuestionIds: [...session.currentQuestions.keys()],
-                }),
-              );
-            }
-            return 'stale';
-          }
+          if (refusal !== null) return refuseSubmit(refusal, ptyInput, screenOptions);
         }
 
         await session.pty.submitInput(ptyInput);
