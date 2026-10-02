@@ -938,10 +938,11 @@ const transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>> = new 
 // binder's watcher + fallback timer, but NOT its #452 rotation dir-poll
 // interval (it lives inside the binder); close() reaches all three.
 const binderClosers: Map<UUID, () => void> = new Map();
-// Per-session permission gate handles (#573): retireQuestion + cancelStale +
-// forceRelease, keyed by sessionId, so the answer handler and `remi unstick`
-// reach the RIGHT session's gate (multi-session daemons). Populated in createNewSession after setupHookBridge;
-// removed on session close. Empty when no hookServer is configured.
+// Per-session permission gate handles (#573): retireQuestion + forceRelease,
+// keyed by sessionId, so the answer handler and `remi unstick` reach the RIGHT
+// session's gate (multi-session daemons). Populated in createNewSession after
+// setupHookBridge; removed on session close. Empty when no hookServer is
+// configured.
 const sessionGateHandles: Map<UUID, SessionGateHandle> = new Map();
 // Per-session QuestionPresenceTracker (#920): the answer handler needs
 // `isPromptCurrent` to refuse a PTY submit for a `source: 'pty'` card whose

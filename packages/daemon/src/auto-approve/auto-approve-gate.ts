@@ -60,11 +60,10 @@
 
 import type { UUID } from '@remi/shared';
 
-import type { QuestionPresenceTracker } from '../api/question-presence-tracker.ts';
 import { log, logError } from '../cli/logger.ts';
 import type { PermissionDecision, PermissionRequestHookInput } from '../hooks/index.ts';
 import type { SessionRegistry } from '../session/index.ts';
-import { isDesignQuestion, isMultiChoicePermission } from './multichoice.ts';
+import { ALWAYS_ESCALATE_TOOLS, isDesignQuestion, isMultiChoicePermission } from './multichoice.ts';
 
 /** The (tool_name, tool_input) signature of an OPEN escalation (#673),
  *  tracked so an external-resolution signal can find and cancel it. */
@@ -127,7 +126,6 @@ function canonicalize(value: unknown): unknown {
 
 export interface AutoApproveGateDeps {
   sessionRegistry: SessionRegistry;
-  tracker: QuestionPresenceTracker;
   /** Wraps `HookEventBridge.isInSubagentContext()`. Read live per call. */
   isInSubagentContext: () => boolean;
   /**
@@ -195,7 +193,7 @@ export interface AutoApproveGateDeps {
   onResolved?: (questionId: UUID, reason: 'cancelled') => void;
   /** Tools whose prompt is always a design question, never binary (#572):
    *  used to classify an escalation as binary (pushed on render) vs design
-   *  (pushed immediately). Absent => empty set. */
+   *  (pushed immediately). Absent => `ALWAYS_ESCALATE_TOOLS`. */
   alwaysEscalateTools?: ReadonlySet<string>;
 }
 
@@ -360,7 +358,7 @@ export class AutoApproveGate {
    */
   private isBinaryEscalation(input: PermissionRequestHookInput): boolean {
     const suggestions = input.permission_suggestions as readonly unknown[] | undefined;
-    const alwaysEscalate = this.deps.alwaysEscalateTools ?? new Set<string>();
+    const alwaysEscalate = this.deps.alwaysEscalateTools ?? ALWAYS_ESCALATE_TOOLS;
     return (
       !isMultiChoicePermission(input.tool_name, suggestions) &&
       !isDesignQuestion(input.tool_name, input.tool_input, suggestions, alwaysEscalate)

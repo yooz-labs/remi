@@ -155,7 +155,7 @@ export interface HookBridgeDeps {
   /**
    * Tools whose prompt is always a design question (#572). Passed to the gate
    * so it classifies an escalation as binary (pushed on render, #1121) vs
-   * design/plan-mode (pushed immediately). Absent => empty set (tests).
+   * design/plan-mode (pushed immediately). Absent => `ALWAYS_ESCALATE_TOOLS`.
    */
   alwaysEscalateTools?: ReadonlySet<string>;
   /**
@@ -215,9 +215,6 @@ export interface SessionGateHandle {
    *  tool event does not resolve (and dismiss) it again. Forwards to
    *  `retireQuestion`. */
   retireQuestion: (questionId: UUID) => void;
-  /** Resolve every open escalation for this session. Forwards to the gate's
-   *  `cancelStale`. */
-  cancelStale: (reason: string) => void;
   /** Force-release escape (#617 `remi unstick`): resolve and dismiss every
    *  open escalation. Forwards to `forceRelease`. */
   forceRelease: (reason: string) => { resolved: number };
@@ -487,7 +484,6 @@ export function setupHookBridge(
   const autoApproveGate = new AutoApproveGate(
     {
       sessionRegistry,
-      tracker,
       isInSubagentContext: () => hookBridge.isInSubagentContext(),
       // #710: lets the gate recover from a tracker leak (a MAIN-tagged
       // PermissionRequest observing isInSubagentContext() stuck true) instead
@@ -525,8 +521,9 @@ export function setupHookBridge(
       onResolved: (questionId, reason) =>
         deps.broadcastQuestionResolved?.(sessionId, questionId, reason),
       // #573: classify an escalation as binary (pushed on render, #1121) vs
-      // design/multi-choice (pushed immediately).
-      alwaysEscalateTools: deps.alwaysEscalateTools ?? new Set<string>(),
+      // design/multi-choice (pushed immediately). Absent => the gate's
+      // `ALWAYS_ESCALATE_TOOLS` default.
+      ...(deps.alwaysEscalateTools ? { alwaysEscalateTools: deps.alwaysEscalateTools } : {}),
     },
     sessionId,
   );
@@ -991,7 +988,6 @@ export function setupHookBridge(
     },
     gate: {
       retireQuestion: (questionId) => autoApproveGate.retireQuestion(questionId),
-      cancelStale: (reason) => autoApproveGate.cancelStale(reason),
       forceRelease: (reason) => autoApproveGate.forceRelease(reason),
     },
   };

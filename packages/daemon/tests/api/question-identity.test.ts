@@ -131,7 +131,6 @@ function buildPipeline(submits: string[] = []): {
   const gate = new AutoApproveGate(
     {
       sessionRegistry: registry,
-      tracker,
       isInSubagentContext: () => false,
       escalate: (i) => hookBridge.handlePermissionRequest(i),
       parkForPTY: (i) => {

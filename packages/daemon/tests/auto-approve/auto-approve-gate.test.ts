@@ -6,7 +6,7 @@
  * routing, the push triggers, and the external-resolution bookkeeping that
  * clears cards nobody will answer through remi.
  *
- * Real gate, real `SessionRegistry`, real `QuestionPresenceTracker`. The deps
+ * Real gate, real `SessionRegistry`. The deps
  * are recording sinks for the gate's outward calls (escalate, park, push),
  * not replacements for any decision logic.
  */
@@ -14,7 +14,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { generateId } from '@remi/shared';
 import type { UUID } from '@remi/shared';
-import { QuestionPresenceTracker } from '../../src/api/question-presence-tracker.ts';
 import { AutoApproveGate } from '../../src/auto-approve/auto-approve-gate.ts';
 import type { AutoApproveGateDeps } from '../../src/auto-approve/auto-approve-gate.ts';
 import { __resetLoggerForTests, configureLogger } from '../../src/cli/logger.ts';
@@ -71,7 +70,6 @@ describe('AutoApproveGate routing (#1125: nothing is decided, everything is rela
     return new AutoApproveGate(
       {
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => subagentContext,
         resetSubagentContext: () => {
           resets++;
@@ -280,7 +278,6 @@ describe('AutoApproveGate external resolution (#673)', () => {
     return new AutoApproveGate(
       {
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
         escalate: () => {
           const id = generateId() as UUID;
@@ -468,7 +465,6 @@ describe('AutoApproveGate subagent external-resolution (#799)', () => {
     return new AutoApproveGate(
       {
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
         // Unused by these subagent-only tests (no main escalation is ever
         // driven), but AutoApproveGateDeps requires it.
@@ -662,7 +658,6 @@ describe('AutoApproveGate Stop resolves a still-open MAIN passthrough question (
     return new AutoApproveGate(
       {
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
         escalate: () => {
           lastQuestionId = generateId();
@@ -805,7 +800,6 @@ describe('AutoApproveGate full teardown resolves ALL survivors (#948)', () => {
     return new AutoApproveGate(
       {
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
         escalate: () => {
           lastQuestionId = generateId();
@@ -1035,7 +1029,6 @@ describe('AutoApproveGate cancelStaleForAgent (#799 part 2, subagent)', () => {
     return new AutoApproveGate(
       {
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
         // Unused by these subagent-only tests (no main escalation is ever
         // driven), but AutoApproveGateDeps requires it.
