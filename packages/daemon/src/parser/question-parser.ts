@@ -136,6 +136,7 @@ function parseChromePrompt(lines: readonly string[]): Question | null {
   const options: QuestionOption[] = [];
   let cursorSeen = false;
   let firstOptionIdx = -1;
+  let lastOptionIdx = -1;
   let expected = 1;
 
   for (let i = 0; i < lines.length; i++) {
@@ -143,18 +144,29 @@ function parseChromePrompt(lines: readonly string[]): Question | null {
     if (!match) {
       if (options.length === 0) continue;
       // A label too long for the terminal wraps onto the next row(s) (#1134:
-      // "2. Yes, and always allow access to <long path> from this project").
-      // Those rows belong to the option above when the block resumes with the
-      // NEXT number after them. Ending the block there instead dropped every
-      // later option, including "No", from the parse that a card's numbering
-      // now comes from. Anything else (the footer, prose, another list) still
-      // ends the block.
-      const resumeAt = indexOfNextOption(lines, i + 1, expected);
+      // "2. Yes, and always allow access to <long path> from this project"),
+      // and an AskUserQuestion option carries a description row under it.
+      // Ending the block at such a row dropped every later option, including
+      // "No", from the parse that a card's numbering now comes from. So the
+      // rows join the option above, but only when ALL of these hold:
+      //   - the block resumes with the NEXT number at most
+      //     `MAX_CONTINUATION_ROWS` rows below that option;
+      //   - no row in between is dialog chrome (`isFooterRow`: "Esc to
+      //     cancel · Tab to amend" and friends), so a footer followed by
+      //     something like "3.5k tokens used" or "3. run the tests" never
+      //     becomes an option;
+      // and a divider row (no letter or digit) is dropped, not glued in.
+      // Rows are joined with ONE space. That is right for a word wrap and
+      // wrong for a token wrapped mid-word: the live #1134 path
+      // ".../4e47-86" + "66-00..." reads ".../4e47-86 66-00...". Labels are
+      // display only (the value is what gets typed), and their spacing is
+      // already lossy (#1137).
+      const resumeAt = indexOfContinuationEnd(lines, i, lastOptionIdx, expected);
       if (resumeAt === -1) break;
       const continuation = lines
         .slice(i, resumeAt)
         .map((l) => l.replace(/^[\s│|]+|[\s│|]+$/g, ''))
-        .filter((l) => l.length > 0)
+        .filter((l) => /[\p{L}\p{N}]/u.test(l))
         .join(' ');
       const last = options[options.length - 1] as QuestionOption;
       options[options.length - 1] = { ...last, label: `${last.label} ${continuation}`.trim() };
@@ -171,6 +183,7 @@ function parseChromePrompt(lines: readonly string[]): Question | null {
     }
 
     if (firstOptionIdx === -1) firstOptionIdx = i;
+    lastOptionIdx = i;
     if (match[1] === '❯') cursorSeen = true;
     const label = (match[3] ?? '').replace(/[\s│|]+$/, '').trim();
     options.push(
@@ -195,14 +208,40 @@ function parseChromePrompt(lines: readonly string[]): Question | null {
   return createQuestion(questionText || 'Select an option:', options, true);
 }
 
-/** Index of the first option line at or after `from` when it is numbered
- *  `expected`, else -1 (no further option line, or one that does not
- *  continue the sequence). */
-function indexOfNextOption(lines: readonly string[], from: number, expected: number): number {
-  for (let j = from; j < lines.length; j++) {
-    const match = CHROME_OPTION.exec(lines[j] ?? '');
-    if (!match) continue;
-    return Number.parseInt(match[2] ?? '', 10) === expected ? j : -1;
+/** Most non-option rows that may sit between two options and still join the
+ *  one above (a wrapped label or an AskUserQuestion description). The next
+ *  option must start within `MAX_CONTINUATION_ROWS + 1` rows of the option it
+ *  continues. Blank rows are already gone (`parseQuestion` filters them). */
+const MAX_CONTINUATION_ROWS = 2;
+
+/** Dialog chrome under an option list ("Esc to cancel · Tab to amend",
+ *  "Enter to select · ↑/↓ to navigate", "ctrl+e to explain"). Spacing is
+ *  optional because ANSI stripping often collapses it ("Esctocancel·Tab..."),
+ *  and any "·" counts: it is the footer's separator, never a label's. */
+function isFooterRow(line: string): boolean {
+  const t = line.replace(/^[\s│|]+/, '');
+  return /^(esc\s*to|enter\s*to|tab\s*to|ctrl\s*\+|↑)/i.test(t) || t.includes('·');
+}
+
+/**
+ * Where the rows starting at `from` (the first non-option row after the
+ * option at `optionIdx`) stop being that option's continuation: the index of
+ * the next option line, numbered `expected`, when it is close enough and no
+ * footer row comes first. -1 when the rows are not a continuation, which ends
+ * the option block.
+ */
+function indexOfContinuationEnd(
+  lines: readonly string[],
+  from: number,
+  optionIdx: number,
+  expected: number,
+): number {
+  const limit = Math.min(lines.length, optionIdx + MAX_CONTINUATION_ROWS + 2);
+  for (let j = from; j < limit; j++) {
+    const line = lines[j] ?? '';
+    const match = CHROME_OPTION.exec(line);
+    if (match) return Number.parseInt(match[2] ?? '', 10) === expected ? j : -1;
+    if (isFooterRow(line)) return -1;
   }
   return -1;
 }
