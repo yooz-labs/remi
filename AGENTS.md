@@ -281,7 +281,10 @@ prompt the phone keeps exactly one artifact, its notice. The probe is bounded
 on purpose (#1126 lead decision), since everything it counts suppresses a
 hook-less prompt's card (sandbox network, trust, an agent-team dialog). Only
 what does not render is excluded: a subagent HOLD (daemon mode) never counts,
-since its dialog does not render while held. A `terminalPrompts` entry stops
+since its dialog does not render while held, neither in this probe nor in the
+tracker's other suppression input, the live-question check
+(`hasLiveQuestionOnScreen`, which skips a held subagent card; every other
+registered card still counts). A `terminalPrompts` entry stops
 counting after the hold length, and a subagent's entry is also cleared by
 that agent's next `PreToolUse` (`noteAgentToolCall`), `SubagentStop` or
 `SessionEnd`; past that a redraw takes the guarded hook-less path (#1134,

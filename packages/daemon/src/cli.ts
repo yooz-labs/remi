@@ -119,6 +119,7 @@ import type { ProtocolMessage, UUID, UnlockedIdentity } from '@remi/shared';
 import { isEncrypted, unlockIdentity } from '@remi/shared';
 import type { AnswerKeyPair } from '@remi/shared';
 import { AdapterRegistry, TelegramAdapter, WebSocketAdapter } from './adapters/index.ts';
+import { hasLiveQuestionOnScreen } from './api/live-questions.ts';
 import { QuestionPresenceTracker } from './api/question-presence-tracker.ts';
 import { loadOrCreateAnswerKey } from './auth/answer-key.ts';
 import { Authenticator } from './auth/authenticator.ts';
@@ -1572,7 +1573,14 @@ async function createNewSession(
   // dep that re-queried `sessionRegistry.getQuestion` after the fact -- the
   // deleted dep used to live here.
   const tracker = new QuestionPresenceTracker((q, opts) => messageApi.handleQuestion(q, opts), {
-    hasLiveQuestions: () => (sessionRegistry.getSession(sessionId)?.currentQuestions.size ?? 0) > 0,
+    // #1126: a held subagent card does not count, its dialog is not on
+    // screen (see live-questions.ts). The gate handle is registered after
+    // the hook bridge is set up; read lazily, absent means nothing is held.
+    hasLiveQuestions: () =>
+      hasLiveQuestionOnScreen(
+        sessionRegistry.getSession(sessionId)?.currentQuestions.values() ?? [],
+        (questionId) => sessionGateHandles.get(sessionId)?.isHeld(questionId as UUID) ?? false,
+      ),
     // #888/#920 hard requirement: a hook-less pending question (no
     // PermissionRequest/Notification ever fired for it) has no tool
     // signature for AutoApproveGate to resolve it by, so its PTY render

@@ -1174,7 +1174,7 @@ describe('AutoApproveGate subagent routing by local terminal (#1126)', () => {
     expect(await hook).toBe('passthrough');
   });
 
-  test('a held subagent prompt never suppresses orphans; a held main prompt does (#1126)', async () => {
+  test('the hook-prompt probe ignores a held subagent prompt and counts a held main prompt (#1126)', async () => {
     const g = gate(false);
     const subHook = g.resolvePermission(sub());
     // Its dialog does not render while held, so a render is something else.

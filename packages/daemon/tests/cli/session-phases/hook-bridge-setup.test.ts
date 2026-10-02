@@ -4,6 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ProtocolMessage, Question, QuestionOption, UUID } from '@remi/shared';
 import { PROMPT_WAITING_HELD_MESSAGE, generateId } from '@remi/shared';
+import { hasLiveQuestionOnScreen } from '../../../src/api/live-questions.ts';
 import { MessageAPI } from '../../../src/api/message-api.ts';
 import { QuestionPresenceTracker } from '../../../src/api/question-presence-tracker.ts';
 import { SubagentViewRegistry } from '../../../src/api/subagent-view-registry.ts';
@@ -306,6 +307,9 @@ describe('setupHookBridge', () => {
             ? { throwOnQuestionTimes: opts.throwOnQuestionTimes }
             : {},
         );
+    // The tracker is built before the bridge that owns the gate, so its
+    // live-question check reads the handle lazily, as cli.ts does.
+    const handleRef: { current?: HookBridgeHandle } = {};
     const tracker: QuestionPresenceTracker = opts.realTracker
       ? new QuestionPresenceTracker(
           (q, pushOpts) => {
@@ -322,8 +326,13 @@ describe('setupHookBridge', () => {
                   : {}),
                 ...(opts.liveQuestionDeps
                   ? {
+                      // Wired exactly as cli.ts wires it.
                       hasLiveQuestions: () =>
-                        (sessionRegistry.getSession(SID)?.currentQuestions.size ?? 0) > 0,
+                        hasLiveQuestionOnScreen(
+                          sessionRegistry.getSession(SID)?.currentQuestions.values() ?? [],
+                          (questionId) =>
+                            handleRef.current?.gate.isHeld(questionId as UUID) ?? false,
+                        ),
                       onHooklessQuestionGone: (questionId: string, reason: string) => {
                         sessionRegistry.removeQuestion(
                           SID,
@@ -401,6 +410,7 @@ describe('setupHookBridge', () => {
         hasLocalTerminal: opts.hasLocalTerminal ?? true,
       },
     );
+    handleRef.current = handle;
     bridgeHandles.push(handle);
     return { tracker, messageApi: localMessageApi, handle };
   }
@@ -2353,6 +2363,44 @@ describe('setupHookBridge', () => {
       expect(await hook).toBe('passthrough');
       expect(cards()).toHaveLength(0);
       expect(noticeLog).toEqual([]);
+    });
+
+    test("daemon mode: a held subagent card (its dialog not on screen) does not hide a main hook-less dialog's card", async () => {
+      // End to end, with the tracker's live-question check wired the way
+      // cli.ts wires it: the held subagent card is registered, but its
+      // dialog does not render while held, so a hook-less main dialog
+      // (sandbox network) rendering now must still reach the phone.
+      const { tracker, handle } = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+        hasLocalTerminal: false,
+        orphanDebounceMs: 5,
+      });
+      lockSession('claude-sub-held-hookless');
+      const hook = hookServer.firePermission({
+        ...subCall('claude-sub-held-hookless'),
+        hook_event_name: 'PermissionRequest',
+      });
+      const held = cards();
+      expect(held).toHaveLength(1);
+      expect(held[0]?.agentId).toBe('agent-bg');
+      tracker.onOrphanPTYPrompt({
+        id: generateId(),
+        text: 'Allow network access to example.com?',
+        options: [
+          { label: 'Yes', value: '1', isRecommended: true, isYes: false, isNo: false },
+          { label: 'No', value: '2', isRecommended: false, isYes: false, isNo: false },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+        source: 'pty',
+      });
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(cards().map((q) => q.text)).toContain('Allow network access to example.com?');
+      expect(ptySubmits).toEqual([]);
+      handle.gate.forceRelease('test');
+      await hook;
     });
 
     test('daemon mode: a held subagent prompt does not refuse chat (its dialog is not on screen)', async () => {
