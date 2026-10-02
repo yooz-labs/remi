@@ -72,10 +72,12 @@ export interface ResumeSessionHandlerDeps {
   /**
    * True when this process is the session-less hub (`remi serve`). The hub
    * must never run Claude, so resume is refused instead of calling
-   * `createNewSession` (#1124). Absent/false (session daemon, wrapper) keeps
-   * the resume behavior exactly as before.
+   * `createNewSession` (#1124). `false` (session daemon, wrapper) keeps the
+   * resume behavior exactly as before. Deliberately required with no default:
+   * a new composition root that forgets it fails to compile instead of
+   * failing open into running Claude in a hub.
    */
-  hubMode?: boolean;
+  hubMode: boolean;
   sessionRegistry: SessionRegistry;
   /** Full-record reads that also need projectPath (resume seed by remi id). */
   sessionStore: SessionStore;
@@ -91,7 +93,7 @@ export type ResumeSessionHandlers = ReturnType<typeof createResumeSessionHandler
 
 export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
   const {
-    hubMode = false,
+    hubMode,
     sessionRegistry,
     sessionStore,
     bindingStore,

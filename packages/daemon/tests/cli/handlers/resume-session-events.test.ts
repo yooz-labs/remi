@@ -76,10 +76,10 @@ describe('createResumeSessionHandlers', () => {
     ) => Promise<unknown> = async () => {
       throw new Error('createNewSession should not be called in this test');
     },
-    hubMode?: boolean,
+    hubMode = false,
   ) {
     return createResumeSessionHandlers({
-      ...(hubMode !== undefined && { hubMode }),
+      hubMode,
       sessionRegistry,
       sessionStore,
       bindingStore,
@@ -164,6 +164,7 @@ describe('createResumeSessionHandlers', () => {
       },
     } as unknown as SessionStore;
     const handlers = createResumeSessionHandlers({
+      hubMode: false,
       sessionRegistry,
       sessionStore: failingStore,
       bindingStore,
@@ -194,6 +195,7 @@ describe('createResumeSessionHandlers', () => {
       },
     } as unknown as TranscriptDiscovery;
     const handlers = createResumeSessionHandlers({
+      hubMode: false,
       sessionRegistry,
       sessionStore,
       bindingStore: ambiguousBindingStore,
