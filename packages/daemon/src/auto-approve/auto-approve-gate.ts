@@ -40,8 +40,11 @@
  * Other shapes:
  *   - a multi-choice string-label permission, or a question-shaped tool that
  *     is not AskUserQuestion, is answered 'passthrough' and pushed at once
- *     (`escalatePassthrough`); its answer is typed into the PTY behind the
- *     #1134 screen guard (no structured hook answer was verified for it);
+ *     (`escalatePassthrough`; no structured hook answer was verified for
+ *     either): a multi-choice card's answer is typed into the PTY behind the
+ *     #1134 screen guard, and a question-shaped tool's card is
+ *     `terminalOnly` (its dialog is Claude's permission prompt), so nothing
+ *     from the phone is applied to it but Cancel;
  *   - a SUBAGENT-tagged prompt (`agent_id` present) depends on
  *     `hasLocalTerminal` (#1126): a background subagent's dialog does not
  *     render while its hook is held. With a local terminal it is answered
@@ -959,8 +962,9 @@ export class AutoApproveGate {
    * Escalate a multi-choice string-label permission, or a question-shaped
    * tool that is not AskUserQuestion, and push it from the gate at once
    * (#625). Claude renders its native prompt and waits there; the user
-   * answers the pushed card (its digit typed via the PTY behind the #1134
-   * screen guard) or the terminal directly. With PTY question-emission gated
+   * answers the pushed card (a multi-choice digit typed via the PTY behind
+   * the #1134 screen guard; a question-shaped tool's card is terminal-only)
+   * or the terminal directly. With PTY question-emission gated
    * off for hooked sessions (#625), this push is the only one the escalation
    * gets.
    */

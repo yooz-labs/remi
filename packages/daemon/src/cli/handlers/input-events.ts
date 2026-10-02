@@ -328,6 +328,7 @@ interface ScreenRefusal {
     | 'option-mismatch'
     | 'free-text-into-menu'
     | 'free-text-on-held-card'
+    | 'terminal-only'
     | 'selections-not-held';
   /** `SessionRegistry.removeQuestion` signal for the refused card. */
   readonly removalReason: string;
@@ -362,10 +363,19 @@ const SCREEN_REFUSALS = {
     message: 'The prompt on screen takes a choice, not text; refusing to submit',
     logLine: (input) => `free text (${input.length} chars) into the option menu on screen`,
   },
+  // #1127: a card no phone answer can be applied to (`Question.terminalOnly`:
+  // a question-shaped tool other than AskUserQuestion, whose dialog is
+  // Claude's permission prompt). Nothing is typed for it.
+  terminalOnly: {
+    reason: 'terminal-only',
+    removalReason: 'user_answer:terminal_only',
+    message: TERMINAL_ONLY_MESSAGE,
+    logLine: () => 'an answer to a card only the terminal can answer',
+  },
   // #1127: a structured answer exists only as a hook response. With no hold
-  // behind the card (a question-shaped tool that is not AskUserQuestion,
-  // whose dialog is Claude's permission prompt) it cannot be expressed, and
-  // nothing is typed for it.
+  // behind the card (one built without the terminal-only mark; a
+  // question-shaped tool's card is refused as `terminalOnly` first) it
+  // cannot be expressed, and nothing is typed for it.
   selectionsNotHeld: {
     reason: 'selections-not-held',
     removalReason: 'user_answer:selections_not_held',
@@ -889,10 +899,11 @@ export function createInputHandlers(deps: InputHandlerDeps) {
 
     // Submit the answer to the PTY, where Claude's native prompt is waiting.
     // Only prompts no held hook stands behind reach this point: hook-less
-    // prompts (sandbox, trust, agent-team dialogs) and the multi-choice
-    // cards pushed by id (a string-label permission, a question-shaped tool
-    // that is not AskUserQuestion). AskUserQuestion and ExitPlanMode are
-    // held and answered above (#1127).
+    // prompts (sandbox, trust, agent-team dialogs) and the cards pushed by id
+    // without a hold (a multi-choice string-label permission, typed below;
+    // a question-shaped tool that is not AskUserQuestion, `terminalOnly` and
+    // refused below). AskUserQuestion and ExitPlanMode are held and answered
+    // above (#1127).
     //
     // The submit + question removal are wrapped so the question is ALWAYS
     // consumed exactly once: if `submitInput` throws, the `finally` still
@@ -915,6 +926,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       const typedText =
         refusal === SCREEN_REFUSALS.freeTextIntoMenu ||
         refusal === SCREEN_REFUSALS.freeTextOnHeldCard ||
+        refusal === SCREEN_REFUSALS.terminalOnly ||
         refusal === SCREEN_REFUSALS.selectionsNotHeld;
       log(
         `[Answer] refusing PTY submit for ${questionId.slice(0, 8)}: ${refusal.logLine(input)} [${screenValues.join(', ') || 'none'}]`,
@@ -955,6 +967,11 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         retireQuestion?.(session.sessionId, questionId);
       } catch (err) {
         logError(`[Answer] gate retirement failed: ${errorToString(err)}`);
+      }
+      // A card only the terminal can answer (#1127): refused before anything
+      // could be typed, whatever the answer.
+      if (active.terminalOnly === true) {
+        return refuseSubmit(SCREEN_REFUSALS.terminalOnly, answer, null);
       }
       // A structured AskUserQuestion answer (`selections`) for a card no hold
       // stands behind cannot be typed (#1127 deleted the keystroke runner):

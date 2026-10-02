@@ -95,15 +95,20 @@ describe('extractToolQuestion', () => {
       questions: [{ question: 'Pick', options: [{ label: '' }, 'B'] }],
     });
     expect(lenient?.questions?.[0]?.options.map((o) => [o.value, o.label])).toEqual([['1', 'B']]);
-    // ...and it is marked so no phone answer is offered (review S7); an exact
-    // parse and a question-shaped tool's lenient card are not.
+    // ...and it is marked so no phone answer is offered (review S7), as is
+    // any question-shaped tool other than AskUserQuestion (verification
+    // review item 2); an exact parse is not.
     expect(lenient?.terminalOnly).toBe(true);
     expect(exact?.terminalOnly).toBeUndefined();
-    expect(
-      extractToolQuestion('mcp__custom__ask', {
-        questions: [{ question: 'Pick', options: [{ label: '' }, 'B'] }],
-      })?.terminalOnly,
-    ).toBeUndefined();
+    for (const options of [
+      ['A', 'B'],
+      [{ label: '' }, 'B'],
+    ]) {
+      expect(
+        extractToolQuestion('mcp__custom__ask', { questions: [{ question: 'Pick', options }] })
+          ?.terminalOnly,
+      ).toBe(true);
+    }
   });
 
   it('returns null for tools that carry no question (so the caller falls back)', () => {

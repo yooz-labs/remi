@@ -12,9 +12,10 @@
  * numbered by the index an answer names them by (1-based `value`), and an
  * ExitPlanMode card's options are built by meaning. A shape-compatible tool
  * that is not AskUserQuestion (an MCP or custom tool carrying `questions`)
- * keeps the lenient card below and is not held: a pick on it takes the
- * guarded typed path (#1134), which refuses it unless Claude's screen shows
- * the same label at the same number.
+ * keeps the lenient card below, is not held, and is marked `terminalOnly`:
+ * its dialog is Claude's permission prompt, so the card's questions cannot
+ * be answered from the phone (only cancelled), and it is answered in the
+ * terminal.
  */
 
 import type { QuestionOption, QuestionStep } from '@remi/shared';
@@ -150,14 +151,19 @@ export function extractToolQuestion(
     const lenient = lenientQuestion(toolInput);
     return lenient === null ? null : { ...lenient, terminalOnly: true };
   }
-  return lenientQuestion(toolInput);
+  // A question-shaped tool that is not AskUserQuestion is not held (no
+  // structured hook answer was verified for it) and its dialog is Claude's
+  // permission prompt, not these questions: no phone answer can be applied
+  // to its card, so it is terminal-only too (verification review item 2).
+  const lenient = lenientQuestion(toolInput);
+  return lenient === null ? null : { ...lenient, terminalOnly: true };
 }
 
 /**
  * The lenient card for a `questions`-shaped input, or null: an
- * AskUserQuestion that did not parse exactly (marked `terminalOnly` by the
- * caller, since every phone answer to it is refused), and shape-compatible
- * tools (intentional, not name-gated): any tool whose
+ * AskUserQuestion that did not parse exactly, and shape-compatible
+ * tools (intentional, not name-gated; the caller marks both `terminalOnly`,
+ * since no phone answer can be applied to either): any tool whose
  * tool_input carries `questions: [{ question, options }]`. This mirrors the
  * `isDesignQuestion` detector (multichoice.ts), which routes the SAME shape
  * to a pushed card, so an MCP/custom tool that mimics AskUserQuestion gets

@@ -27,6 +27,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ProtocolMessage, Question, UUID } from '@remi/shared';
 import { PROMPT_WAITING_HELD_MESSAGE, generateId } from '@remi/shared';
+import { formatQuestionCard } from '../../../src/adapters/telegram-ui.ts';
 import { hasLiveQuestionOnScreen } from '../../../src/api/live-questions.ts';
 import { MessageAPI } from '../../../src/api/message-api.ts';
 import { QuestionPresenceTracker } from '../../../src/api/question-presence-tracker.ts';
@@ -39,6 +40,7 @@ import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.
 import type { HookBridgeHandle } from '../../../src/cli/session-phases/hook-bridge-setup.ts';
 import { setupHookBridge } from '../../../src/cli/session-phases/hook-bridge-setup.ts';
 import { HookServer } from '../../../src/hooks/hook-server.ts';
+import { pushCategoryFor } from '../../../src/notifications/notification-dispatcher.ts';
 import type { PTYSession } from '../../../src/pty/pty-session.ts';
 import { WebSocketServer } from '../../../src/server/websocket-server.ts';
 import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
@@ -667,6 +669,74 @@ describe('AskUserQuestion and ExitPlanMode through held hooks, end to end (#1127
       await ask('ExitPlanMode', PLAN, { permission_mode: 'plan' });
       await handlers.onUserInput(CONN, SID, 'looks good', false);
       expect(errors()[0]?.code).toBe('PROMPT_WAITING');
+      expect(ptyWrites).toEqual([]);
+    });
+  });
+
+  describe('a question-shaped tool other than AskUserQuestion (verification review item 2)', () => {
+    const MCP_INPUT = {
+      questions: [
+        { question: 'Which region?', options: ['us-east', 'eu-west'] },
+        { question: 'Which tier?', options: ['free', 'paid'] },
+      ],
+    };
+
+    async function mcpCard() {
+      const built = build();
+      await lock();
+      const before = new Set(cards().map((q) => q.id));
+      // Not held: answered passthrough at once, its card pushed by id.
+      const res = await post('PermissionRequest', {
+        tool_name: 'mcp__deploy__ask',
+        tool_input: MCP_INPUT,
+      });
+      expect(await res.text()).toBe('{}');
+      const card = await waitFor(() => cards().find((q) => !before.has(q.id)), 'mcp card');
+      return { ...built, card };
+    }
+
+    test('its card is terminal-only on the lock screen, Telegram and the app path', async () => {
+      const { handlers, card } = await mcpCard();
+      expect(card.kind).toBe('multi_question');
+      expect(card.terminalOnly).toBe(true);
+      // Lock screen: no actionable category.
+      expect(pushCategoryFor(card)).toBeUndefined();
+      // Telegram: no buttons, and it says where to answer.
+      const telegram = formatQuestionCard(card);
+      expect(telegram.keyboard).toBeUndefined();
+      expect(telegram.text).toContain('Answer this question in the terminal');
+      // The app's form sends selections: refused with the same wording,
+      // nothing typed.
+      await handlers.onAnswer(CONN, SID, card.id, '', undefined, {
+        selections: [
+          { questionIndex: 0, optionIndices: [0] },
+          { questionIndex: 1, optionIndices: [1] },
+        ],
+      });
+      expect(errors()[0]).toMatchObject({
+        code: 'STALE_ANSWER',
+        message: 'This question can only be answered in the terminal (or Cancel).',
+      });
+      expect(ptyWrites).toEqual([]);
+    });
+
+    test('a single pick is refused the same way and never typed, even with the label on screen', async () => {
+      const { handlers, tracker, card } = await mcpCard();
+      // Its dialog is Claude's permission prompt; a matching label there
+      // would have let a typed pick through before.
+      tracker.onOrphanPTYPrompt({
+        id: generateId() as UUID,
+        text: 'Do you want to proceed?',
+        options: [
+          { label: 'us-east', value: '1', isRecommended: true, isYes: false, isNo: false },
+          { label: 'No', value: '2', isRecommended: false, isYes: false, isNo: true },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+        source: 'pty',
+      });
+      await handlers.relayAnswer(SID, card.id, 'us-east');
+      await handlers.onAnswer(CONN, SID, card.id, '1');
       expect(ptyWrites).toEqual([]);
     });
   });
