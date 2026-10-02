@@ -293,7 +293,10 @@ resolves the hook with a structured `updatedInput` built in
   and "Keep planning".
 - A terminal answer fires `PostToolUse` with the paired `tool_use_id` but a
   different `tool_input` (`{questions, answers}`, or `{}` for a plan), so
-  the gate matches a paired id whatever the input. Deadlines, abort,
+  the gate matches a paired id whatever the input. If the request was not
+  paired, a finished call of that tool that matches nothing releases the
+  one open hold of that tool and agent to the terminal (notice pushed);
+  with two or more, nothing is released. Deadlines, abort,
   subagent routing and the chat guard are the binary prompt's.
 
 A **multi-choice string-label permission**, or a question-shaped tool that is

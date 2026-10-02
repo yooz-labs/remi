@@ -846,6 +846,7 @@ export function setupHookBridge(
           agentId: input.agent_id,
         },
         'PostToolUse-subagent',
+        { toolFinished: true },
       );
       autoApproveGate.noteToolUseEnded(input.tool_use_id);
       return;
@@ -860,6 +861,8 @@ export function setupHookBridge(
     autoApproveGate.cancelExternallyResolved(
       { toolName: input.tool_name, toolInput: input.tool_input, toolUseId: input.tool_use_id },
       'PostToolUse',
+      // #1127 review S4: an unpaired AskUserQuestion / ExitPlanMode hold.
+      { toolFinished: true },
     );
     autoApproveGate.noteToolUseEnded(input.tool_use_id);
     handlers.onPostToolUse?.(input);
@@ -985,6 +988,7 @@ export function setupHookBridge(
           agentId: input.agent_id,
         },
         'PostToolUseFailure-subagent',
+        { toolFinished: true },
       );
       autoApproveGate.noteToolUseEnded(input.tool_use_id);
       return;
@@ -994,6 +998,8 @@ export function setupHookBridge(
     autoApproveGate.cancelExternallyResolved(
       { toolName: input.tool_name, toolInput: input.tool_input, toolUseId: input.tool_use_id },
       'PostToolUseFailure',
+      // #1127 review S4: an unpaired AskUserQuestion / ExitPlanMode hold.
+      { toolFinished: true },
     );
     autoApproveGate.noteToolUseEnded(input.tool_use_id);
     handlers.onPostToolUseFailure?.(input);

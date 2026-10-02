@@ -923,6 +923,81 @@ describe('AutoApproveGate held prompts (#1126)', () => {
       expect(g.hasOpenHookPrompt()).toBe(false);
     });
 
+    describe('an unpaired AskUserQuestion / ExitPlanMode that finished (#1127 review S4)', () => {
+      const AUQ = { questions: [{ question: 'Which?', options: ['A', 'B'] }] };
+      const answered = { ...AUQ, answers: { 'Which?': 'A' } };
+      const auq = (over: Partial<PermissionRequestHookInput> = {}) =>
+        pr({ tool_name: 'AskUserQuestion', tool_input: AUQ, ...over });
+
+      test('the one open hold of that tool and agent is released to the terminal', async () => {
+        const g = gate();
+        // No PreToolUse noted: the request is unpaired.
+        const hook = g.resolvePermission(auq());
+        const qid = ids[0] as UUID;
+        g.cancelExternallyResolved(
+          { toolName: 'AskUserQuestion', toolInput: answered, toolUseId: 'tu-x' },
+          'PostToolUse',
+          { toolFinished: true },
+        );
+        expect(await hook).toBe('passthrough');
+        expect(registry.getQuestion(SID, qid)).toBeNull();
+        expect(deadlines).toEqual([{ qid, registered: true, cause: 'released' }]);
+        // Kept open for orphan suppression until a hook signal closes it.
+        expect(g.hasOpenHookPrompt()).toBe(true);
+      });
+
+      test('the same for a plan, whose finished input is {}', async () => {
+        const g = gate();
+        const hook = g.resolvePermission(
+          pr({ tool_name: 'ExitPlanMode', tool_input: { plan: '# P' }, permission_mode: 'plan' }),
+        );
+        g.cancelExternallyResolved({ toolName: 'ExitPlanMode', toolInput: {} }, 'PostToolUse', {
+          toolFinished: true,
+        });
+        expect(await hook).toBe('passthrough');
+        expect(deadlines.map((d) => d.cause)).toEqual(['released']);
+      });
+
+      test('nothing is released on a PreToolUse, for two open holds, for a hold paired to another call, or for another agent', async () => {
+        const g = gate();
+        const unpaired = g.resolvePermission(auq());
+        const finished = { toolName: 'AskUserQuestion', toolInput: answered, toolUseId: 'tu-x' };
+        // A PreToolUse is not a finished tool.
+        g.cancelExternallyResolved(finished, 'PreToolUse');
+        // Another agent's finished call.
+        g.cancelExternallyResolved({ ...finished, agentId: 'agent-9' }, 'PostToolUse-subagent', {
+          toolFinished: true,
+        });
+        expect(g.isHeld(ids[0] as UUID)).toBe(true);
+        // Two open holds: no guess between them.
+        const second = g.resolvePermission(
+          auq({ tool_input: { questions: [{ question: 'Other?', options: ['C', 'D'] }] } }),
+        );
+        g.cancelExternallyResolved(finished, 'PostToolUse', { toolFinished: true });
+        expect(g.isHeld(ids[0] as UUID)).toBe(true);
+        expect(g.isHeld(ids[1] as UUID)).toBe(true);
+        expect(deadlines).toEqual([]);
+        g.forceRelease('test');
+        await Promise.all([unpaired, second]);
+      });
+
+      test("a hold paired with its own PreToolUse is not released by another call's finish", async () => {
+        const g = gate();
+        g.notePreToolUse({ toolName: 'AskUserQuestion', toolInput: AUQ, toolUseId: 'tu-own' });
+        const paired = g.resolvePermission(auq());
+        const finished = { toolName: 'AskUserQuestion', toolInput: answered, toolUseId: 'tu-x' };
+        g.cancelExternallyResolved(finished, 'PostToolUse', { toolFinished: true });
+        expect(g.isHeld(ids[0] as UUID)).toBe(true);
+        expect(deadlines).toEqual([]);
+        // Its own finish closes it exactly (by id), no notice.
+        g.cancelExternallyResolved({ ...finished, toolUseId: 'tu-own' }, 'PostToolUse', {
+          toolFinished: true,
+        });
+        expect(await paired).toBe('passthrough');
+        expect(deadlines).toEqual([]);
+      });
+    });
+
     test("pairing respects the agent: a request never takes another agent's identical call", async () => {
       const g = gate();
       // A subagent and the main agent run the identical command.

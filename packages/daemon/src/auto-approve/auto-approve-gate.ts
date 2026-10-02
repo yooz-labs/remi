@@ -1208,9 +1208,16 @@ export class AutoApproveGate {
    * carry one) so it can only ever touch the ONE question it matches. A no-op
    * when no open escalation matches.
    */
-  cancelExternallyResolved(observed: ObservedToolCall, reason: string): void {
+  cancelExternallyResolved(
+    observed: ObservedToolCall,
+    reason: string,
+    opts: { readonly toolFinished?: boolean } = {},
+  ): void {
     const match = this.findOpenQuestionMatching(observed);
-    if (!match) return;
+    if (!match) {
+      if (opts.toolFinished === true) this.releaseUnpairedStructuredHold(observed, reason);
+      return;
+    }
     if (!match.byId && this.holds.has(match.qid)) {
       // #1126: a name + input match with no paired id may belong to another,
       // identical call, so this live hold's dialog may still be up. Release
@@ -1222,6 +1229,36 @@ export class AutoApproveGate {
       return;
     }
     this.resolveSupersededQuestion(match.qid, reason, observed.toolName);
+  }
+
+  /**
+   * An AskUserQuestion or ExitPlanMode finished (`PostToolUse` or
+   * `PostToolUseFailure`) and matched no open escalation (#1127 review S4).
+   * Its input never matches the request's (`{questions, answers}`, or `{}`
+   * for a plan), so when the request was not paired with its `PreToolUse`
+   * the name + input fallback cannot find it either, and the hold would last
+   * until its deadline although the terminal answered it. When exactly one
+   * hold of that tool and agent is open, and it and this event are not paired
+   * to different calls, it is released to the terminal like any other
+   * ambiguous match (`releaseWithNotice`): the empty response decides
+   * nothing, the card is dismissed, the phone is told, and the prompt stays
+   * open for orphan suppression until a hook signal closes it. With two or
+   * more such holds nothing is released (no guess between them).
+   */
+  private releaseUnpairedStructuredHold(observed: ObservedToolCall, reason: string): void {
+    if (observed.toolName !== 'AskUserQuestion' && observed.toolName !== 'ExitPlanMode') return;
+    const sameTool = [...this.holds.keys()].filter((qid) => {
+      const sig = this.openQuestionSignatures.get(qid);
+      return sig?.toolName === observed.toolName && sig.agentId === observed.agentId;
+    });
+    if (sameTool.length !== 1) return;
+    const qid = sameTool[0] as UUID;
+    const sig = this.openQuestionSignatures.get(qid);
+    if (sig?.toolUseId !== undefined && observed.toolUseId !== undefined) return;
+    log(
+      `[AutoApprove ${this.sessionTag}] Held ${qid.slice(0, 8)} (${observed.toolName}) finished unpaired (${reason}); released to the terminal`,
+    );
+    this.releaseWithNotice(qid, 'released', reason);
   }
 
   /** Find an open escalation matching `observed`, preferring an exact

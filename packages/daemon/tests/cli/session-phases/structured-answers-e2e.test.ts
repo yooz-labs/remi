@@ -491,6 +491,28 @@ describe('AskUserQuestion and ExitPlanMode through held hooks, end to end (#1127
       expect(ptyWrites).toEqual([]);
     });
 
+    test('answered in the terminal with no PreToolUse seen: the finished call releases the one open hold (review S4)', async () => {
+      build();
+      await lock();
+      // The request arrives without its PreToolUse, so it cannot pair.
+      const response = post('PermissionRequest', {
+        tool_name: 'AskUserQuestion',
+        tool_input: TWO_QUESTIONS,
+      });
+      const card = await waitFor(() => cards()[0], 'unpaired card');
+      await post('PostToolUse', {
+        tool_name: 'AskUserQuestion',
+        tool_input: { ...TWO_QUESTIONS, answers: { 'Which color do you prefer?': 'Red' } },
+        tool_use_id: 'toolu_unseen',
+        tool_response: {},
+      });
+      expect(await (await response).text()).toBe('{}');
+      expect(cards()).toHaveLength(0);
+      // Released to the terminal, not closed: the phone is told.
+      expect(notices).toEqual([{ questionId: card.id, reason: 'released' }]);
+      expect(ptyWrites).toEqual([]);
+    });
+
     test('Esc in the terminal: Claude closes the held request and the card is dismissed', async () => {
       const { handlers, gate } = build();
       await lock();
