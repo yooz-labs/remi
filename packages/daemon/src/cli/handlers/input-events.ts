@@ -264,7 +264,7 @@ function resolveOption(
 /** A PTY submit the #1134 screen-numbering guard refuses, and how. */
 interface ScreenRefusal {
   /** Trace `detail.reason`. */
-  readonly reason: 'option-not-on-screen' | 'free-text-into-menu';
+  readonly reason: 'option-not-on-screen' | 'option-mismatch' | 'free-text-into-menu';
   /** `SessionRegistry.removeQuestion` signal for the refused card. */
   readonly removalReason: string;
   /** STALE_ANSWER message to the client. */
@@ -280,6 +280,12 @@ const SCREEN_REFUSALS = {
     message: 'This answer is not an option on the prompt on screen; refusing to submit',
     logLine: (input) => `"${input}" is not an option on screen`,
   },
+  optionMismatch: {
+    reason: 'option-mismatch',
+    removalReason: 'user_answer:option_mismatch',
+    message: 'The prompt on screen numbers a different option this way; refusing to submit',
+    logLine: (input) => `"${input}" means a different option on screen`,
+  },
   freeTextIntoMenu: {
     reason: 'free-text-into-menu',
     removalReason: 'user_answer:free_text_into_menu',
@@ -287,6 +293,82 @@ const SCREEN_REFUSALS = {
     logLine: (input) => `free text (${input.length} chars) into the option menu on screen`,
   },
 } as const satisfies Record<string, ScreenRefusal>;
+
+/** "yes" / "no" when a label starts with that word, else null. */
+function yesNoClass(label: string): 'yes' | 'no' | null {
+  const t = label.trim();
+  if (/^yes\b/i.test(t)) return 'yes';
+  if (/^no\b/i.test(t)) return 'no';
+  return null;
+}
+
+/** A label reduced to what survives the PTY parse: lowercase, with ALL
+ *  whitespace and box-drawing characters removed, so the parser's spacing
+ *  loss (#1137) cannot make two spellings of one label disagree. */
+function normalizeLabel(label: string): string {
+  return label.toLowerCase().replace(/[\s\u2500-\u257F|]/g, '');
+}
+
+/** Shortest normalized prefix that may stand for a whole label. */
+const MIN_LABEL_PREFIX = 8;
+
+/** An option's yes/no class: from its label's first word, else from its
+ *  isYes/isNo flags (a legacy "Always" or "Deny" carries only the flag). */
+function optionClass(option: QuestionOption): 'yes' | 'no' | null {
+  return yesNoClass(option.label) ?? (option.isNo ? 'no' : option.isYes ? 'yes' : null);
+}
+
+/**
+ * Whether the card option the user picked and the screen option with the
+ * same value are the same choice (#1134 review). The value check alone only
+ * proves the digit EXISTS on screen: a card numbered by the hook ([Yes, No])
+ * over Claude's [Yes, Yes always, No] sends "No" as 2, which the screen
+ * numbers as the standing allow. Coarse on purpose:
+ *   - identical labels (after `normalizeLabel`) agree;
+ *   - otherwise, when either option is a Yes or a No (`optionClass`), both
+ *     must be in the same class;
+ *   - otherwise the shorter normalized label must be a prefix of the longer
+ *     and at least `MIN_LABEL_PREFIX` characters long. An AskUserQuestion
+ *     pick is also tried with its description appended, because the parser
+ *     folds the description row into the screen label.
+ */
+function sameChoice(card: QuestionOption, screen: QuestionOption): boolean {
+  const onScreen = normalizeLabel(screen.label);
+  const candidates = [normalizeLabel(card.label)];
+  if (card.description) candidates.push(normalizeLabel(`${card.label}${card.description}`));
+  if (candidates.includes(onScreen)) return true;
+  const cardClass = optionClass(card);
+  const screenClass = optionClass(screen);
+  if (cardClass !== null || screenClass !== null) return cardClass === screenClass;
+  return candidates.some((onCard) => {
+    const [shorter, longer] =
+      onCard.length <= onScreen.length ? [onCard, onScreen] : [onScreen, onCard];
+    return shorter.length >= MIN_LABEL_PREFIX && longer.startsWith(shorter);
+  });
+}
+
+/**
+ * The #1134 screen-numbering guard's verdict for a PTY submit that did not
+ * just release a hold, or null to let it through. `screenOptions` is the
+ * prompt the tracker last observed (null when none).
+ */
+function screenRefusal(
+  active: Question,
+  answer: string,
+  ptyInput: string,
+  screenOptions: readonly QuestionOption[] | null,
+): ScreenRefusal | null {
+  const chosen = resolveOption(active.options, answer);
+  if (chosen !== undefined) {
+    const onScreen = screenOptions?.find((o) => o.value === ptyInput);
+    if (onScreen === undefined) return SCREEN_REFUSALS.optionNotOnScreen;
+    return sameChoice(chosen, onScreen) ? null : SCREEN_REFUSALS.optionMismatch;
+  }
+  const screenIsMenu = (screenOptions?.length ?? 0) > 0;
+  return active.options.length > 0 && !active.allowsFreeText && screenIsMenu
+    ? SCREEN_REFUSALS.freeTextIntoMenu
+    : null;
+}
 
 /**
  * No-op `send` for the connection-independent `/answer` relay (#575, P4a),
@@ -862,7 +944,10 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         // screen's (a card pushed by id before its render carries the hook's;
         // a registered card keeps its options when the prompt later redraws
         // with different ones), so the check runs against the observed
-        // screen itself.
+        // screen itself. Existing is not enough either: the screen option
+        // with that value must be the same choice as the card option
+        // (`sameChoice`), or a hook-numbered "No" lands on the screen's
+        // "Yes, and always ..." with the same digit.
         //
         // Free text gets the same treatment when it would land in a menu
         // (#1134 review): the card has options and does not take free text,
@@ -880,14 +965,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         if (!released) {
           const screenOptions = observedPromptOptions?.(session.sessionId) ?? null;
           const screenValues = (screenOptions ?? []).map((o) => o.value);
-          const refusal: ScreenRefusal | null =
-            resolveOption(active.options, answer) !== undefined
-              ? screenValues.includes(ptyInput)
-                ? null
-                : SCREEN_REFUSALS.optionNotOnScreen
-              : active.options.length > 0 && !active.allowsFreeText && screenValues.length > 0
-                ? SCREEN_REFUSALS.freeTextIntoMenu
-                : null;
+          const refusal = screenRefusal(active, answer, ptyInput, screenOptions);
           if (refusal !== null) {
             log(
               `[Answer] refusing PTY submit for ${questionId.slice(0, 8)}: ${refusal.logLine(ptyInput)} [${screenValues.join(', ') || 'none'}]`,
@@ -904,9 +982,9 @@ export function createInputHandlers(deps: InputHandlerDeps) {
                 source: active.source,
                 // An option value is a digit; free text may be anything the
                 // user typed, so only its length is recorded.
-                ...(refusal === SCREEN_REFUSALS.optionNotOnScreen
-                  ? { value: ptyInput }
-                  : { textLength: ptyInput.length }),
+                ...(refusal === SCREEN_REFUSALS.freeTextIntoMenu
+                  ? { textLength: ptyInput.length }
+                  : { value: ptyInput }),
                 screenValues,
               },
             });

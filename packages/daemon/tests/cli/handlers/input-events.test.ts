@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import type { ProtocolMessage, UUID } from '@remi/shared';
+import type { ProtocolMessage, QuestionOption, UUID } from '@remi/shared';
 import { generateId } from '@remi/shared';
 import type { MessageAPI } from '../../../src/api/message-api.ts';
 import { PrecedentStore, readerFrom } from '../../../src/auto-approve/precedent.ts';
@@ -942,6 +942,125 @@ describe('createInputHandlers', () => {
         await handlers.onAnswer(CID, sessionId, QID, 'my-widget');
 
         expect(ptyCapture.submits).toEqual(['my-widget']);
+      });
+
+      /**
+       * #1134 review: the value existing on screen is not enough, it must MEAN
+       * the same choice there. These cards and screens agree on which values
+       * exist and disagree on what they are, which the old `PROMPT_ON_SCREEN`
+       * (a screen mirroring the card) could never exercise.
+       */
+      describe('option identity (option-mismatch)', () => {
+        const opt = (value: string, label: string, extra: Partial<QuestionOption> = {}) => ({
+          value,
+          label,
+          isRecommended: false,
+          isYes: false,
+          isNo: false,
+          ...extra,
+        });
+
+        async function answerOver(
+          card: QuestionOption[],
+          screen: QuestionOption[],
+          answer: string,
+        ): Promise<{ submits: string[]; logs: string[] }> {
+          const { sessionId, ptyCapture } = setUpCard(card);
+          const logs: string[] = [];
+          configureLogger({ writeLog: (msg) => logs.push(msg) });
+          const handlers = createInputHandlers({
+            sessionRegistry,
+            bindingStore,
+            send,
+            resolveHeldPermission: () => false,
+            releaseHeldAsPassthrough: () => false,
+            isPromptObservedOnPTY: () => true,
+            observedPromptOptions: () => screen,
+          });
+          await handlers.onAnswer(CID, sessionId, QID, answer);
+          return { submits: ptyCapture.submits, logs };
+        }
+
+        const fallbackCard = [opt('1', 'Yes', { isYes: true }), opt('2', 'No', { isNo: true })];
+        const claudeThree = [
+          opt('1', 'Yes'),
+          opt('2', 'Yes, and always allow access to /w from this project'),
+          opt('3', 'No'),
+        ];
+
+        test('probe B: a hook-numbered "No" (2) over the screen\'s standing allow is refused', async () => {
+          const { submits, logs } = await answerOver(fallbackCard, claudeThree, 'No');
+          expect(submits).toEqual([]);
+          expect(logs.some((m) => m.includes('"2" means a different option on screen'))).toBe(true);
+          const errors = sendCalls.filter((c) => c.message.type === 'error');
+          expect((errors[0]?.message as { code?: string }).code).toBe('STALE_ANSWER');
+        });
+
+        test('probe B, matching answer: "Yes" still types 1', async () => {
+          const { submits } = await answerOver(fallbackCard, claudeThree, 'Yes');
+          expect(submits).toEqual(['1']);
+        });
+
+        const exitPlanCard = [
+          opt('1', 'Yes, and auto-accept edits'),
+          opt('2', 'Yes, and manually approve edits'),
+          opt('3', 'No, keep planning'),
+        ];
+
+        test('probe A: ExitPlanMode "No, keep planning" (3) over a screen with a clear-context row is refused', async () => {
+          const screen = [
+            opt('1', 'Yes, clear context and auto-accept edits'),
+            opt('2', 'Yes, auto-accept edits'),
+            opt('3', 'Yes, manually approve edits'),
+            opt('4', 'No, keep planning'),
+          ];
+          const { submits, logs } = await answerOver(exitPlanCard, screen, 'No, keep planning');
+          expect(submits).toEqual([]);
+          expect(logs.some((m) => m.includes('"3" means a different option on screen'))).toBe(true);
+        });
+
+        test('probe A, matching numbering: "No, keep planning" types 3', async () => {
+          const screen = [
+            opt('1', 'Yes,andauto-acceptedits'),
+            opt('2', 'Yes,andmanuallyapproveedits'),
+            opt('3', 'No,keepplanning'),
+          ];
+          const { submits } = await answerOver(exitPlanCard, screen, 'No, keep planning');
+          expect(submits).toEqual(['3']);
+        });
+
+        test('picks with no Yes/No word must match by label', async () => {
+          const card = [opt('1', 'PostgreSQL'), opt('2', 'MySQL')];
+          const swapped = [opt('1', 'MySQL'), opt('2', 'PostgreSQL')];
+          expect((await answerOver(card, swapped, 'PostgreSQL')).submits).toEqual([]);
+        });
+
+        test('label spacing lost by the parse (#1137) does not cause a refusal', async () => {
+          const card = [opt('1', 'Submit answers'), opt('2', 'Chat about this')];
+          const screen = [opt('1', 'Submitanswers'), opt('2', 'Chataboutthis')];
+          expect((await answerOver(card, screen, 'Chat about this')).submits).toEqual(['2']);
+        });
+
+        test('an AskUserQuestion pick matches its screen row with the description folded in', async () => {
+          const card = [
+            opt('1', 'Red', { description: 'The color red' }),
+            opt('2', 'Green', { description: 'The color green' }),
+          ];
+          const screen = [opt('1', 'Red The color red'), opt('2', 'Green Thecolorgreen')];
+          expect((await answerOver(card, screen, 'Green')).submits).toEqual(['2']);
+        });
+
+        test('a prefix of 8 or more characters stands for the label', async () => {
+          const card = [opt('1', 'Option one for A'), opt('2', 'Other')];
+          const screen = [opt('1', 'Option one for A (recommended)'), opt('2', 'Other')];
+          expect((await answerOver(card, screen, '1')).submits).toEqual(['1']);
+        });
+
+        test('a prefix shorter than 8 characters does not', async () => {
+          const card = [opt('1', 'Red'), opt('2', 'Blue')];
+          const screen = [opt('1', 'Reddish brown'), opt('2', 'Blue')];
+          expect((await answerOver(card, screen, 'Red')).submits).toEqual([]);
+        });
       });
 
       test('releasing a hold in this call is not checked: the prompt has not rendered yet', async () => {
