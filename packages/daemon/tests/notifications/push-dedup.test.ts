@@ -3,8 +3,11 @@
  */
 
 import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { Question, QuestionOption } from '@remi/shared';
 import { PushDedup } from '../../src/notifications/push-dedup.ts';
+import { parseQuestion } from '../../src/parser/question-parser.ts';
 
 function opt(label: string): QuestionOption {
   return { label, value: label, isRecommended: false, isYes: false, isNo: false };
@@ -156,5 +159,55 @@ describe('PushDedup', () => {
     expect(dedup.shouldPush(q(defaultTwoSet, false, true))).toBe(true);
     t += 100;
     expect(dedup.shouldPush(q(['Yes', 'No'], false, false))).toBe(true);
+  });
+});
+
+/**
+ * #1140: a parsed Claude menu no longer carries allowsFreeText, which
+ * `looksLikeDefaultPermissionQuestion` used to treat as "not the fallback".
+ * The parse says `optionsAreFallback: false` instead, so PushDedup ranks it
+ * exactly as before. Real parse of the real captured trust dialog, whose two
+ * options both read yes/no ("Yes,Itrustthisfolder" / "No,exit"), the shape the
+ * label heuristic takes for the fallback when nothing says otherwise.
+ */
+describe('PushDedup with a parsed Claude menu (#1140)', () => {
+  const trustDialog = () => {
+    const parsed = parseQuestion(
+      readFileSync(
+        join(import.meta.dir, '..', 'parser', 'fixtures', 'prompt-selection-box.clean.txt'),
+        'utf8',
+      ),
+    ).question;
+    if (!parsed) throw new Error('the trust dialog did not parse as a prompt');
+    return parsed;
+  };
+
+  test('the parse is a non-fallback shape, so it upgrades a preceding fallback push', () => {
+    let t = 1000;
+    const dedup = new PushDedup(5000, () => t);
+    // The daemon's own Yes/No fallback card pushed first ...
+    expect(dedup.shouldPush(q(defaultTwoSet, false, true))).toBe(true);
+    t += 100;
+    // ... then the screen's real menu arrives: richer in meaning, so it fires.
+    const parsed = trustDialog();
+    expect(parsed.allowsFreeText).toBe(false);
+    expect(parsed.options).toHaveLength(2);
+    expect(dedup.shouldPush(parsed)).toBe(true);
+  });
+
+  test('a repeat parse within the window is suppressed as before', () => {
+    let t = 1000;
+    const dedup = new PushDedup(5000, () => t);
+    expect(dedup.shouldPush(trustDialog())).toBe(true);
+    t += 100;
+    expect(dedup.shouldPush(trustDialog())).toBe(false);
+  });
+
+  test('a fallback push after the parse is still suppressed (the parse is not default)', () => {
+    let t = 1000;
+    const dedup = new PushDedup(5000, () => t);
+    expect(dedup.shouldPush(trustDialog())).toBe(true);
+    t += 100;
+    expect(dedup.shouldPush(q(defaultTwoSet, false, true))).toBe(false);
   });
 });

@@ -947,11 +947,14 @@ export class QuestionPresenceTracker {
             promptId: hookRecord.promptId ?? ptyQuestion.promptId,
             // #1134 review: whether the prompt takes free text is the TOOL's
             // property, which the hook knows (a permission dialog takes a
-            // pick, so false). The parser marks every Claude selection box as
-            // free-text capable, and the `...ptyQuestion` spread carried that
-            // onto the card, which made `handleAnswer` type free text into
-            // the menu, where Claude ignores it and Enter confirms the
-            // highlighted option.
+            // pick, so false). The parser used to mark every Claude selection
+            // box as free-text capable, and the `...ptyQuestion` spread
+            // carried that onto the card, which made `handleAnswer` type free
+            // text into the menu, where Claude ignores it and Enter confirms
+            // the highlighted option. The parser now marks a selection box as
+            // taking no text (#1140), so a hook-less card agrees with this
+            // line; the hook's value still wins here because it is the tool's
+            // own statement.
             allowsFreeText: hookRecord.allowsFreeText,
             // #888 review finding: the `...ptyQuestion` spread above silently
             // carried `ptyQuestion.source` ('pty', once question-parser sets

@@ -8,11 +8,13 @@ import {
   formatHelpMessage,
   formatMessageForTelegram,
   formatQuestionKeyboard,
+  formatQuestionText,
   formatSessionList,
   formatStatusText,
   isValidContent,
   stripTerminalCodes,
 } from '../src/adapters/telegram-ui.ts';
+import { parseQuestion } from '../src/parser/question-parser.ts';
 
 describe('stripTerminalCodes', () => {
   test('removes ANSI color codes', () => {
@@ -287,5 +289,24 @@ describe('formatSessionList', () => {
     expect(result).toContain('sess-2');
     expect(result).toContain('proj1');
     expect(result).toContain('proj2');
+  });
+});
+
+describe('formatQuestionText for a parsed Claude menu (#1140)', () => {
+  test('a hook-less menu card does not invite custom text into the menu', () => {
+    const parsed = parseQuestion(
+      "Do you want to proceed?\n❯ 1. Yes\n  2. Yes, and don't ask again\n  3. No",
+    ).question;
+    if (!parsed) throw new Error('the menu did not parse');
+    const text = formatQuestionText(parsed);
+    expect(text).toContain('Do you want to proceed?');
+    expect(text).not.toContain('custom text');
+    expect(text).not.toContain('Reply with your answer');
+  });
+
+  test('a genuine free-text prompt still asks for a reply', () => {
+    const parsed = parseQuestion('Please enter your response:').question;
+    if (!parsed) throw new Error('the free-text prompt did not parse');
+    expect(formatQuestionText(parsed)).toContain('Reply with your answer');
   });
 });
