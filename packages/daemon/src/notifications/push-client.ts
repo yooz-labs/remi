@@ -17,7 +17,14 @@ const DEFAULT_SIGNALING_URL = 'https://remi-signaling.yooz.workers.dev';
  * (per-device filtering, `push-preferences.ts`) and the client (labelling,
  * routing) act on it.
  */
-export type PushKind = 'question' | 'turn_complete' | 'subagent_alert' | 'dismiss';
+export type PushKind =
+  | 'question'
+  | 'turn_complete'
+  | 'subagent_alert'
+  /** Claude Code's auto-mode classifier blocked a tool call (#1126), never a
+   *  card: nothing waits for an answer. */
+  | 'harness_denied'
+  | 'dismiss';
 
 /** Options for sendPushTrigger */
 export interface PushTriggerOptions {

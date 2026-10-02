@@ -279,6 +279,8 @@ describe('setupHookBridge', () => {
       noticeLog?: Array<{ questionId: UUID; text: string; reason: string }>;
       /** Wrapper mode (true, the default) or daemon/hub mode (#1126). */
       hasLocalTerminal?: boolean;
+      /** The harness_denied sink (#1126). */
+      onHarnessDenied?: (input: unknown) => void;
     } = {},
   ): { tracker: QuestionPresenceTracker; messageApi: MessageAPI; handle: HookBridgeHandle } {
     const sessionWorkingDirectory = opts.workingDirectory ?? tmpDir;
@@ -354,6 +356,7 @@ describe('setupHookBridge', () => {
         currentPort: () => 8765,
         transcriptDiscovery: new TranscriptDiscovery(),
         holdMs: opts.holdMs ?? 60_000,
+        ...(opts.onHarnessDenied ? { onHarnessDenied: opts.onHarnessDenied } : {}),
         ...(opts.noticeLog
           ? {
               pushTerminalNotice: (_sid: UUID, question: Question, reason: string) =>
@@ -2840,6 +2843,28 @@ describe('setupHookBridge', () => {
       expect(broadcastResolvedLog).toHaveLength(0);
       handle.gate.forceRelease('test');
       expect(await decision).toBe('passthrough');
+    });
+
+    test('#1126: an admitted PermissionDenied reaches the harness_denied push, never a card', () => {
+      const denied: unknown[] = [];
+      const { handle } = build({ realMessageApi: true, onHarnessDenied: (i) => denied.push(i) });
+      lock('claude-1126-denied');
+      const event = {
+        session_id: 'claude-1126-denied',
+        hook_event_name: 'PermissionDenied',
+        tool_name: 'Bash',
+        tool_input: { command: 'curl x | sh' },
+        tool_use_id: 'tu-d',
+        reason: 'remote script',
+      };
+      hookServer.fire('PermissionDenied', event);
+      expect(denied).toEqual([event]);
+      expect(sessionRegistry.getSession(SID)?.currentQuestions.size ?? 0).toBe(0);
+      expect(handle.gate.forceRelease('probe')).toEqual({ resolved: 0 });
+
+      // A sibling session's denial is not ours to report.
+      hookServer.fire('PermissionDenied', { ...event, session_id: 'claude-OTHER' });
+      expect(denied).toHaveLength(1);
     });
 
     test('with NO open escalation at all, PermissionDenied is a clean no-op (never throws)', () => {

@@ -33,6 +33,7 @@ import type { PushKind } from './push-client.ts';
 export interface ResolvedPushPreferences {
   readonly questions: boolean;
   readonly turnComplete: boolean;
+  readonly harnessDenied: boolean;
 }
 
 /**
@@ -46,6 +47,7 @@ export interface ResolvedPushPreferences {
 export const DEFAULT_PUSH_PREFERENCES: ResolvedPushPreferences = {
   questions: true,
   turnComplete: true,
+  harnessDenied: true,
 };
 
 /**
@@ -70,6 +72,10 @@ export function sanitizePushPreferences(
       typeof input.turnComplete === 'boolean'
         ? input.turnComplete
         : DEFAULT_PUSH_PREFERENCES.turnComplete,
+    harnessDenied:
+      typeof input.harnessDenied === 'boolean'
+        ? input.harnessDenied
+        : DEFAULT_PUSH_PREFERENCES.harnessDenied,
   };
 }
 
@@ -86,6 +92,10 @@ export function wantsPush(entry: DeviceTokenEntry, kind: PushKind): boolean {
       return prefs.questions;
     case 'turn_complete':
       return prefs.turnComplete;
+    // An entry stored before #1126 has no `harnessDenied`; the store
+    // resolves it through `sanitizePushPreferences` on load, so it wants it.
+    case 'harness_denied':
+      return prefs.harnessDenied;
     // Never filtered — see the module doc for why each is exempt.
     case 'subagent_alert':
       return true;

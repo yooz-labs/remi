@@ -94,6 +94,7 @@ import type {
   ForeignSessionEscalator,
   HookInput,
   HookServer,
+  PermissionDeniedHookInput,
   PermissionRequestHookInput,
 } from '../../hooks/index.ts';
 import type { TerminalNoticeReason } from '../../notifications/notification-dispatcher.ts';
@@ -205,6 +206,13 @@ export interface HookBridgeDeps {
   /** Dismiss a notice `pushTerminalNotice` sent, once its prompt is
    *  answered. Absent => the notice stays until the user clears it. */
   dismissTerminalNotice?: (sessionId: UUID, questionId: UUID) => void;
+  /**
+   * Claude Code's auto-mode classifier blocked a tool call in this session
+   * (`PermissionDenied`, #1126): wired by cli.ts to the `harness_denied`
+   * push (`notifications/harness-denied.ts`). Informational, never a card;
+   * called only for an admitted event. Absent => no push. Throw-safe here.
+   */
+  onHarnessDenied?: (input: PermissionDeniedHookInput) => void;
 }
 
 export interface HookBridgeArgs {
@@ -1030,6 +1038,13 @@ export function setupHookBridge(
       'PermissionDenied',
     );
     autoApproveGate.noteToolUseEnded(input.tool_use_id);
+    // #1126: tell the phone why the agent changed course. Never a card:
+    // a classifier block fires no PermissionRequest, so nothing waits.
+    try {
+      deps.onHarnessDenied?.(input);
+    } catch (err) {
+      logError(`[Hooks] harness_denied push failed for ${sessionId}: ${errorToString(err)}`);
+    }
   });
 
   hookServer.on('Elicitation', (input) => {

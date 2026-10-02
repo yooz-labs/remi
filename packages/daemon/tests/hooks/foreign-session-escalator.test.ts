@@ -253,8 +253,16 @@ describe('ForeignSessionEscalator (#672)', () => {
       // question alerts must not get it.
       registerToken('muted');
       registerToken('wants');
-      deviceTokens.get('muted')!.pushPrefs = { questions: false, turnComplete: true };
-      deviceTokens.get('wants')!.pushPrefs = { questions: true, turnComplete: false };
+      deviceTokens.get('muted')!.pushPrefs = {
+        questions: false,
+        turnComplete: true,
+        harnessDenied: true,
+      };
+      deviceTokens.get('wants')!.pushPrefs = {
+        questions: true,
+        turnComplete: false,
+        harnessDenied: true,
+      };
 
       const escalator = new ForeignSessionEscalator(deps());
       escalator.handleUnadmitted(permissionInput(), OUR_SESSION_ID);
@@ -266,7 +274,11 @@ describe('ForeignSessionEscalator (#672)', () => {
 
     test('#968: every device muted -> no push attempted, no throw', async () => {
       registerToken('a');
-      deviceTokens.get('a')!.pushPrefs = { questions: false, turnComplete: true };
+      deviceTokens.get('a')!.pushPrefs = {
+        questions: false,
+        turnComplete: true,
+        harnessDenied: true,
+      };
 
       const escalator = new ForeignSessionEscalator(deps());
       expect(() => escalator.handleUnadmitted(permissionInput(), OUR_SESSION_ID)).not.toThrow();

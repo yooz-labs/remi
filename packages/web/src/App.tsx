@@ -2102,6 +2102,7 @@ function App() {
   const pushPrefsRef = useRef<PushPreferences>({
     questions: settings.notifyQuestions,
     turnComplete: settings.notifyTurnComplete,
+    harnessDenied: settings.notifyHarnessDenied,
   });
   // #690: id -> resolver for a message awaiting its daemon `ack`. Currently
   // used only by handleDisconnect's unregister_device_token wait; see the
@@ -2154,9 +2155,16 @@ function App() {
       const next: PushPreferences = {
         questions: newSettings.notifyQuestions,
         turnComplete: newSettings.notifyTurnComplete,
+        harnessDenied: newSettings.notifyHarnessDenied,
       };
       const prev = pushPrefsRef.current;
-      if (prev.questions === next.questions && prev.turnComplete === next.turnComplete) return;
+      if (
+        prev.questions === next.questions &&
+        prev.turnComplete === next.turnComplete &&
+        prev.harnessDenied === next.harnessDenied
+      ) {
+        return;
+      }
       pushPrefsRef.current = next;
 
       const token = deviceTokenRef.current;

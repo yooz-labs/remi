@@ -197,12 +197,18 @@ import {
 import type { LoadedConfig, RemiConfig } from './config/index.ts';
 import { isRemiHomeOverridden, remiHome } from './config/remi-home.ts';
 import { ForeignSessionEscalator, HookConfigManager, HookServer } from './hooks/index.ts';
-import type { HookInput, PermissionRequestHookInput, StopHookInput } from './hooks/index.ts';
+import type {
+  HookInput,
+  PermissionDeniedHookInput,
+  PermissionRequestHookInput,
+  StopHookInput,
+} from './hooks/index.ts';
 // Static, unlike the publisher below it: this is a pure decision with no
 // side effects and nothing to load, so there is nothing for a dynamic import
 // to defer -- and it is needed on the path where mDNS never starts at all.
 import { mdnsSuppression, mdnsSuppressionMessage } from './mdns/advertise-decision.ts';
 import { DeviceTokenStore } from './notifications/device-token-store.ts';
+import { pushHarnessDenied } from './notifications/harness-denied.ts';
 import type { NotificationDispatcher } from './notifications/notification-dispatcher.ts';
 import { sendPushTrigger } from './notifications/push-client.ts';
 import { tokensWanting } from './notifications/push-preferences.ts';
@@ -1210,6 +1216,26 @@ function onSubagentPassthrough(input: PermissionRequestHookInput): void {
   }
 }
 
+/** Push a `harness_denied` notice (#1126): Claude Code's auto-mode
+ *  classifier blocked a tool call. Informational, per-device mutable
+ *  (`pushPrefs.harnessDenied`), fire-and-forget like the alert above. */
+function onHarnessDenied(input: PermissionDeniedHookInput): void {
+  const primarySessionId = getPrimarySessionId();
+  const session = primarySessionId ? sessionRegistry.getSession(primarySessionId) : undefined;
+  log(`[HarnessDenied] auto mode blocked ${input.tool_name}: ${input.reason ?? '(no reason)'}`);
+  pushHarnessDenied(
+    {
+      deviceTokens: deviceTokens.values(),
+      signalingUrl: cliSignalingUrl ?? remiConfig.network.signaling_url,
+      pushSecret: cliPushSecret,
+      sessionName: session?.name || 'Agent',
+      send: sendPushTrigger,
+      onError: (err) => logError('[HarnessDenied] push failed:', err),
+    },
+    input,
+  );
+}
+
 // Daemon-wide turn-duration tracker (#914). Fed from HookServer's onAnyEvent
 // for every hook event (see the two HookServer constructions below), keyed
 // on `prompt_id` -- present on every hook payload's common fields. Originally
@@ -1648,6 +1674,7 @@ async function createNewSession(
           sessionNotifiers.get(sid)?.pushTerminalNotice(sid, question, reason),
         dismissTerminalNotice: (sid, questionId) =>
           sessionNotifiers.get(sid)?.dismissTerminalNotice(sid, questionId),
+        onHarnessDenied,
       },
       {
         hookServer,

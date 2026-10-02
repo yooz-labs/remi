@@ -1004,6 +1004,9 @@ export interface PushPreferences {
   readonly questions?: boolean;
   /** Push the last assistant message when a long turn ends (#914). */
   readonly turnComplete?: boolean;
+  /** Push when Claude Code's auto-mode classifier blocks a tool call
+   *  (`PermissionDenied`, #1126). Informational: nothing to answer. */
+  readonly harnessDenied?: boolean;
 }
 
 /** Register a device token for push notifications */

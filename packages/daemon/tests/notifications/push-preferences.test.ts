@@ -34,17 +34,27 @@ function entry(token: string, pushPrefs?: ResolvedPushPreferences): DeviceTokenE
 describe('sanitizePushPreferences', () => {
   test('undefined resolves to every class enabled', () => {
     expect(sanitizePushPreferences(undefined)).toEqual(DEFAULT_PUSH_PREFERENCES);
-    expect(DEFAULT_PUSH_PREFERENCES).toEqual({ questions: true, turnComplete: true });
+    expect(DEFAULT_PUSH_PREFERENCES).toEqual({
+      questions: true,
+      turnComplete: true,
+      harnessDenied: true,
+    });
   });
 
   test('explicit booleans pass through, including false', () => {
-    expect(sanitizePushPreferences({ questions: false, turnComplete: true })).toEqual({
+    expect(
+      sanitizePushPreferences({ questions: false, turnComplete: true, harnessDenied: true }),
+    ).toEqual({
       questions: false,
       turnComplete: true,
+      harnessDenied: true,
     });
-    expect(sanitizePushPreferences({ questions: true, turnComplete: false })).toEqual({
+    expect(
+      sanitizePushPreferences({ questions: true, turnComplete: false, harnessDenied: true }),
+    ).toEqual({
       questions: true,
       turnComplete: false,
+      harnessDenied: true,
     });
   });
 
@@ -52,10 +62,12 @@ describe('sanitizePushPreferences', () => {
     expect(sanitizePushPreferences({ questions: false })).toEqual({
       questions: false,
       turnComplete: true,
+      harnessDenied: true,
     });
     expect(sanitizePushPreferences({ turnComplete: false })).toEqual({
       questions: true,
       turnComplete: false,
+      harnessDenied: true,
     });
   });
 
@@ -69,10 +81,10 @@ describe('sanitizePushPreferences', () => {
     for (const falsy of [0, '', null]) {
       expect(
         sanitizePushPreferences({ questions: falsy } as unknown as { questions?: boolean }),
-      ).toEqual({ questions: true, turnComplete: true });
+      ).toEqual({ questions: true, turnComplete: true, harnessDenied: true });
       expect(
         sanitizePushPreferences({ turnComplete: falsy } as unknown as { turnComplete?: boolean }),
-      ).toEqual({ questions: true, turnComplete: true });
+      ).toEqual({ questions: true, turnComplete: true, harnessDenied: true });
     }
   });
 
@@ -82,7 +94,18 @@ describe('sanitizePushPreferences', () => {
         questions?: boolean;
         turnComplete?: boolean;
       }),
-    ).toEqual({ questions: true, turnComplete: true });
+    ).toEqual({ questions: true, turnComplete: true, harnessDenied: true });
+  });
+
+  test('harnessDenied: absent, malformed or falsy junk resolves ON; false is honored (#1126)', () => {
+    expect(sanitizePushPreferences({ questions: false }).harnessDenied).toBe(true);
+    for (const junk of [0, '', null, 'false']) {
+      expect(
+        sanitizePushPreferences({ harnessDenied: junk } as unknown as { harnessDenied?: boolean })
+          .harnessDenied,
+      ).toBe(true);
+    }
+    expect(sanitizePushPreferences({ harnessDenied: false }).harnessDenied).toBe(false);
   });
 
   test('a non-object (null, string, number) resolves to the defaults', () => {
@@ -95,20 +118,34 @@ describe('sanitizePushPreferences', () => {
 describe('wantsPush', () => {
   test('an entry with no stored preferences wants every class', () => {
     const legacy = entry('t');
-    const kinds: PushKind[] = ['question', 'turn_complete', 'subagent_alert', 'dismiss'];
+    const kinds: PushKind[] = [
+      'question',
+      'turn_complete',
+      'subagent_alert',
+      'harness_denied',
+      'dismiss',
+    ];
     for (const kind of kinds) {
       expect(wantsPush(legacy, kind)).toBe(true);
     }
   });
 
   test('each preference gates exactly its own class', () => {
-    const noQuestions = entry('t', { questions: false, turnComplete: true });
+    const noQuestions = entry('t', { questions: false, turnComplete: true, harnessDenied: true });
     expect(wantsPush(noQuestions, 'question')).toBe(false);
     expect(wantsPush(noQuestions, 'turn_complete')).toBe(true);
 
-    const noTurn = entry('t', { questions: true, turnComplete: false });
+    const noTurn = entry('t', { questions: true, turnComplete: false, harnessDenied: true });
     expect(wantsPush(noTurn, 'question')).toBe(true);
     expect(wantsPush(noTurn, 'turn_complete')).toBe(false);
+  });
+
+  test('harness_denied is gated by its own preference only (#1126)', () => {
+    const off = entry('t', { questions: true, turnComplete: true, harnessDenied: false });
+    expect(wantsPush(off, 'harness_denied')).toBe(false);
+    expect(wantsPush(off, 'question')).toBe(true);
+    const questionsOff = entry('t', { questions: false, turnComplete: false, harnessDenied: true });
+    expect(wantsPush(questionsOff, 'harness_denied')).toBe(true);
   });
 
   test('dismiss is never filtered, even with everything muted', () => {
@@ -116,14 +153,14 @@ describe('wantsPush', () => {
     // BEFORE the mute. Dropping its dismissal strands that card on the lock
     // screen of the device that asked for less noise -- more notification
     // clutter, not less.
-    const muted = entry('t', { questions: false, turnComplete: false });
+    const muted = entry('t', { questions: false, turnComplete: false, harnessDenied: true });
     expect(wantsPush(muted, 'dismiss')).toBe(true);
   });
 
   test('subagent_alert is never filtered, even with everything muted', () => {
     // It already has a user-facing control: it fires only on the patterns the
     // user put in `[notifications] subagent_alert`.
-    const muted = entry('t', { questions: false, turnComplete: false });
+    const muted = entry('t', { questions: false, turnComplete: false, harnessDenied: true });
     expect(wantsPush(muted, 'subagent_alert')).toBe(true);
   });
 });
@@ -132,9 +169,9 @@ describe('tokensWanting', () => {
   test('keeps only the entries that want the kind, preserving the rest', () => {
     const tokens = [
       entry('all'),
-      entry('questions-only', { questions: true, turnComplete: false }),
-      entry('turn-only', { questions: false, turnComplete: true }),
-      entry('muted', { questions: false, turnComplete: false }),
+      entry('questions-only', { questions: true, turnComplete: false, harnessDenied: true }),
+      entry('turn-only', { questions: false, turnComplete: true, harnessDenied: true }),
+      entry('muted', { questions: false, turnComplete: false, harnessDenied: true }),
     ];
 
     expect(tokensWanting(tokens, 'question').map((e) => e.token)).toEqual([
@@ -155,16 +192,16 @@ describe('tokensWanting', () => {
 
   test('returns empty when every device muted the kind', () => {
     const tokens = [
-      entry('a', { questions: false, turnComplete: true }),
-      entry('b', { questions: false, turnComplete: true }),
+      entry('a', { questions: false, turnComplete: true, harnessDenied: true }),
+      entry('b', { questions: false, turnComplete: true, harnessDenied: true }),
     ];
     expect(tokensWanting(tokens, 'question')).toEqual([]);
   });
 
   test('accepts a Map#values() iterator, the shape every call site passes', () => {
     const map = new Map<string, DeviceTokenEntry>([
-      ['a', entry('a', { questions: true, turnComplete: false })],
-      ['b', entry('b', { questions: false, turnComplete: false })],
+      ['a', entry('a', { questions: true, turnComplete: false, harnessDenied: true })],
+      ['b', entry('b', { questions: false, turnComplete: false, harnessDenied: true })],
     ]);
     expect(tokensWanting(map.values(), 'question').map((e) => e.token)).toEqual(['a']);
   });
