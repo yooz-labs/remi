@@ -87,26 +87,20 @@
  *   PR's discovery. `source` is unset on a StopFailure question, which is
  *   what every filter below keys on to exclude it.
  *
- * ## A real phantom exists, but this corpus cannot trigger it (filed as #948)
+ * ## A real phantom this harness found (#948, fixed)
  *
- * Building this harness surfaced a genuine #808-class bug:
- * `AutoApproveGate.cancelStale(reason, {mainOnly:false})` (the SessionEnd /
- * full-teardown path) only releases BINARY holds (`pendingHolds`); a
- * PASSTHROUGH MAIN escalation (multi-choice/design, e.g. `AskUserQuestion`)
- * is tracked only in `openQuestionSignatures`, and the non-mainOnly branch
- * just does `this.openQuestionSignatures.clear()` -- unlike the `mainOnly`
- * (Stop) branch, which routes every survivor through
- * `resolveSupersededQuestion` (-> `sessionRegistry.removeQuestion`). So a
- * passthrough escalation still open when `SessionEnd` fires with NO
- * intervening `Stop` survives in the store forever. `forceRelease` has the
- * identical shape (`openQuestionSignatures.clear()` with no per-entry
- * resolution). Confirmed by an ISOLATED reproduction (not corpus data,
- * `service:null`, `AskUserQuestion` PermissionRequest immediately followed
- * by `SessionEnd`, no `Stop` between): store size 1 before, 1 after.
+ * Building this harness surfaced a genuine #808-class bug: the full-teardown
+ * path (`AutoApproveGate.cancelStale` without `mainOnly`, used by
+ * `SessionEnd`) and `forceRelease` cleared `openQuestionSignatures` without
+ * resolving each entry, so a passthrough escalation (e.g. `AskUserQuestion`)
+ * still open when `SessionEnd` fired with no intervening `Stop` survived in
+ * the store. Fixed in #948: both paths now route every survivor through
+ * `resolveSupersededQuestion` (`resolveAllOpenQuestions`), pinned by
+ * `auto-approve-gate.test.ts`'s "full teardown resolves ALL survivors (#948)".
  *
- * The REPLAY below does not hit this: every session in the current 962-event
+ * The REPLAY below never had that shape: every session in the current 962-event
  * corpus that reaches a captured `SessionEnd` also has a `Stop` earlier in
- * that same session, and Stop's `mainOnly` sweep (the correct branch) already
+ * that same session, and Stop's `mainOnly` sweep already
  * clears the signature before SessionEnd ever runs. The SessionEnd checkpoint
  * (`Checkpoint 3` below) is therefore currently VACUOUS against this specific
  * corpus -- it is real, correctly-scoped, and will catch a future capture

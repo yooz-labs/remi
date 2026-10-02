@@ -1,5 +1,7 @@
 # Native iOS handoff — Live Activities + content-available + NSE (epic #571, deferred on #575)
 
+> **Partly historical (2026-10-01).** Since #1125 ([ADR 0030](decisions/0030-defer-permission-judgment-to-the-harness.md)) the daemon no longer emits the `evaluating` / `approved` statuses or any auto-resolve: the states below reduce to `waiting` and the plain working states, and `question_resolved` reasons to answered or cancelled. Design a Live Activity against those, not the cue this guide describes.
+
 The daemon/web/signaling side of issue 6 is done (relay, pre-wake payload, dismissal, status). The remaining pieces need Xcode + an Apple Developer profile + a device, so they're a maintainer task. This is the implementation guide. Team `9DQ459HAZB`, bundle `com.yooz.remi`.
 
 ## Already shipped (verify / deploy, no Xcode-target work)
