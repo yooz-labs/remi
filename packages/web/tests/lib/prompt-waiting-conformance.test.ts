@@ -8,9 +8,9 @@
  * other, so this drives BOTH shipping implementations over one real socket:
  *
  *   - daemon: the real `WebSocketAdapter`, the real `createInputHandlers`
- *     (wired through `trackerScreenDeps`, as `cli.ts` does) and a real
- *     `QuestionPresenceTracker` that observed the real captured Claude dialog
- *     through the real parser;
+ *     (wired through `trackerScreenDeps` and `promptUpDeps`, as `cli.ts`
+ *     does) and a real `QuestionPresenceTracker` that observed the real
+ *     captured Claude dialog through the real parser;
  *   - client: the real `WebSocketClient` sending a real `createUserInput`, and
  *     the real `promptWaitingRefusedMessageId` that `App.tsx` calls.
  *
@@ -40,6 +40,7 @@ import {
   createInputHandlers,
   trackerScreenDeps,
 } from '../../../daemon/src/cli/handlers/input-events.ts';
+import { promptUpDeps } from '../../../daemon/src/cli/handlers/prompt-up.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../daemon/src/cli/logger.ts';
 import { parseQuestion } from '../../../daemon/src/parser/question-parser.ts';
 import type { PTYSession } from '../../../daemon/src/pty/pty-session.ts';
@@ -112,6 +113,10 @@ describe('PROMPT_WAITING: real web client <-> real daemon handlers (#1140)', () 
       bindingStore,
       send: (connectionId, message) => reply.adapter?.sendRaw(connectionId, message) ?? false,
       ...trackerScreenDeps((sid) => (sid === sessionId ? tracker : undefined)),
+      ...promptUpDeps(
+        () => undefined,
+        (sid) => (sid === sessionId ? tracker : undefined),
+      ),
     });
     adapter = new WebSocketAdapter(
       { port },
