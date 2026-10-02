@@ -8,7 +8,7 @@ import { MessageAPI } from '../../../src/api/message-api.ts';
 import { QuestionPresenceTracker } from '../../../src/api/question-presence-tracker.ts';
 import { SubagentViewRegistry } from '../../../src/api/subagent-view-registry.ts';
 import { classifySessionWorkflowOperation } from '../../../src/auto-approve/session-workflow-grant.ts';
-import { createInputHandlers } from '../../../src/cli/handlers/input-events.ts';
+import { createInputHandlers, trackerScreenDeps } from '../../../src/cli/handlers/input-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import type { HookBridgeHandle } from '../../../src/cli/session-phases/hook-bridge-setup.ts';
 import { setupHookBridge } from '../../../src/cli/session-phases/hook-bridge-setup.ts';
@@ -2150,8 +2150,7 @@ describe('setupHookBridge', () => {
         sessionRegistry,
         bindingStore,
         send: () => true,
-        isPromptObservedOnPTY: () => tracker.isPromptObservedOnPTY(),
-        observedPromptOptions: () => tracker.observedPromptOptions(),
+        ...trackerScreenDeps(() => tracker),
       });
       await handlers.onAnswer('conn-1' as UUID, SID, card.id, no.label);
 
@@ -2247,9 +2246,7 @@ describe('setupHookBridge', () => {
         resolveHeldPermission: (_s, q, d, idx, grant) => gate.resolveHeld(q, d, idx, grant),
         releaseHeldAsPassthrough: (_s, q) => gate.releaseHeldAsPassthrough(q),
         cancelAutoApproveForQuestion: (_s, q, reason) => gate.cancelEvalForQuestion(q, reason),
-        isPromptCurrent: (_s, q, text) => tracker.isPromptCurrent(q, text),
-        isPromptObservedOnPTY: () => tracker.isPromptObservedOnPTY(),
-        observedPromptOptions: () => tracker.observedPromptOptions(),
+        ...trackerScreenDeps(() => tracker),
       });
     }
 

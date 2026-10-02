@@ -246,6 +246,33 @@ export type AnswerOutcome =
 
 export type InputHandlers = ReturnType<typeof createInputHandlers>;
 
+/** The tracker reads the answer guards use (`QuestionPresenceTracker`). */
+export interface ScreenObserver {
+  isPromptCurrent(questionId: string, ptyText?: string): boolean;
+  isPromptObservedOnPTY(): boolean;
+  observedPromptOptions(): readonly QuestionOption[] | null;
+}
+
+/**
+ * The three screen deps (`isPromptCurrent`, `isPromptObservedOnPTY`,
+ * `observedPromptOptions`) backed by each session's tracker. The ONE wiring
+ * for them: `cli.ts` passes its per-session tracker map and the tests pass
+ * their tracker, so a test exercising the guards exercises the production
+ * wiring (#1134 review: a hand-copied line could be deleted from `cli.ts`
+ * with every test still green). No tracker for the session reads as nothing
+ * observed, which refuses a PTY submit.
+ */
+export function trackerScreenDeps(
+  trackerFor: (sessionId: UUID) => ScreenObserver | undefined,
+): Pick<InputHandlerDeps, 'isPromptCurrent' | 'isPromptObservedOnPTY' | 'observedPromptOptions'> {
+  return {
+    isPromptCurrent: (sessionId, questionId, ptyText) =>
+      trackerFor(sessionId)?.isPromptCurrent(questionId, ptyText) ?? false,
+    isPromptObservedOnPTY: (sessionId) => trackerFor(sessionId)?.isPromptObservedOnPTY() ?? false,
+    observedPromptOptions: (sessionId) => trackerFor(sessionId)?.observedPromptOptions() ?? null,
+  };
+}
+
 /**
  * Resolve an incoming answer string to the active Question's matching option
  * (#574). The phone now sends the option LABEL for display (e.g. "Yes", "Yes,

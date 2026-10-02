@@ -5,8 +5,9 @@ import * as path from 'node:path';
 import type { ProtocolMessage, QuestionOption, UUID } from '@remi/shared';
 import { generateId } from '@remi/shared';
 import type { MessageAPI } from '../../../src/api/message-api.ts';
+import { QuestionPresenceTracker } from '../../../src/api/question-presence-tracker.ts';
 import { PrecedentStore, readerFrom } from '../../../src/auto-approve/precedent.ts';
-import { createInputHandlers } from '../../../src/cli/handlers/input-events.ts';
+import { createInputHandlers, trackerScreenDeps } from '../../../src/cli/handlers/input-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import { createSessionPrecedentRecorder } from '../../../src/cli/precedent-recording.ts';
 import { AUQ_KEYS } from '../../../src/hooks/auq-answer.ts';
@@ -65,8 +66,10 @@ const QID = 'ques0000-0000-0000-0000-000000000000' as UUID;
  * The same goes for the #1134 screen-numbering guard, which refuses an option
  * value the screen's menu does not show: here the screen shows the menu the
  * registered card describes, numbered the same way, which is what the
- * tracker observes when the card was built from the screen. Mismatches are
- * covered by the `#1134` block, which wires its own screen.
+ * tracker observes when the card was built from the screen. Because it always
+ * mirrors the card, every test using it passes the guard trivially (#1134
+ * review): mismatches, in range and out of range, are covered by the
+ * `#1134 screen-numbering guard` block, which wires its own screen.
  */
 let registryForScreen: SessionRegistry | undefined;
 const PROMPT_ON_SCREEN = {
@@ -2689,6 +2692,58 @@ describe('createInputHandlers', () => {
    * to pass the lookup and type the digit twice. The PTY below takes 50 ms per
    * submit so the second delivery lands inside the first's window.
    */
+  /**
+   * #1134 review: the screen deps used to be hand-copied into tests from
+   * `cli.ts`, so deleting the production line left every test green. Both now
+   * use `trackerScreenDeps`; these pin the helper against a real tracker and
+   * pin that `cli.ts` hands it to `createInputHandlers`.
+   */
+  describe('trackerScreenDeps (#1134 review)', () => {
+    test("reads the session's own tracker", () => {
+      const tracker = new QuestionPresenceTracker(() => undefined);
+      const deps = trackerScreenDeps((sid) => (sid === 'sid-a' ? tracker : undefined));
+      const screen = {
+        id: generateId(),
+        text: 'Do you want to proceed?',
+        options: [
+          { value: '1', label: 'Yes', isRecommended: true, isYes: false, isNo: false },
+          { value: '2', label: 'No', isRecommended: false, isYes: false, isNo: false },
+        ],
+        allowsFreeText: true,
+        isAnswered: false,
+      };
+      tracker.onPTYPromptVisible(screen);
+
+      expect(deps.isPromptObservedOnPTY?.('sid-a' as UUID)).toBe(true);
+      expect(deps.observedPromptOptions?.('sid-a' as UUID)).toEqual(screen.options);
+      expect(deps.isPromptCurrent?.('sid-a' as UUID, screen.id, screen.text)).toBe(true);
+    });
+
+    test('no tracker for the session reads as nothing observed', () => {
+      const deps = trackerScreenDeps(() => undefined);
+      expect(deps.isPromptObservedOnPTY?.('sid-x' as UUID)).toBe(false);
+      expect(deps.observedPromptOptions?.('sid-x' as UUID)).toBeNull();
+      expect(deps.isPromptCurrent?.('sid-x' as UUID, 'q', 't')).toBe(false);
+    });
+
+    test('cli.ts wires it into the answer handlers', () => {
+      const cli = fs.readFileSync(
+        path.join(import.meta.dir, '..', '..', '..', 'src', 'cli.ts'),
+        'utf8',
+      );
+      const start = cli.indexOf('createInputHandlers({');
+      expect(start).toBeGreaterThan(-1);
+      const end = cli.indexOf('\n});', start);
+      const call = cli.slice(start, end);
+      expect(call).toContain('...trackerScreenDeps((sessionId) => sessionTrackers.get(sessionId))');
+      // And nothing overrides it afterwards with a hand-written dep.
+      const after = call.slice(call.indexOf('...trackerScreenDeps'));
+      expect(after).not.toMatch(
+        /\n\s*(isPromptCurrent|isPromptObservedOnPTY|observedPromptOptions)\s*:/,
+      );
+    });
+  });
+
   describe('concurrent deliveries of one answer (#1134 review)', () => {
     function slowSession(): { sessionId: UUID; submits: string[] } {
       const submits: string[] = [];
