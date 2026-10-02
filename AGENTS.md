@@ -202,22 +202,71 @@ answers every `PermissionRequest` hook `passthrough`, so Claude renders its own
 dialog in the terminal at once, and routes the escalation:
 
 - A **binary main-agent prompt** is stashed and marked `pushOnRender` (#1121).
-  The card is pushed when the native prompt renders, merged with the options
-  parsed from the screen, and it takes the render-owned slot so the next
-  render retires it. Two outstanding main prompts before a render are never
-  paired by agent key; each render pushes the screen's own prompt.
+  The card is pushed when the native prompt renders, and it takes the
+  render-owned slot so the next render retires it. Two outstanding main
+  prompts before a render are never paired by agent key; each render pushes
+  the screen's own prompt.
 - A **multi-choice or design prompt** (`AskUserQuestion`, `ExitPlanMode`,
-  `ALWAYS_ESCALATE_TOOLS` in `auto-approve/multichoice.ts`) is pushed
-  immediately (`escalatePassthrough`, #625).
-- A phone answer is typed into the rendered prompt using the screen's own
-  numbering, and refused when the chosen option does not match what the
-  screen shows (#1134, PR #1136); it is typed only when a prompt is on screen
-  (#920, #1002). Nothing holds the hook in this phase; the next phase (#1126)
-  answers prompts structurally through held hooks while Claude's own dialog
-  stays visible.
+  multi-choice permissions; `ALWAYS_ESCALATE_TOOLS` in
+  `auto-approve/multichoice.ts`) is pushed by id at once
+  (`escalatePassthrough` -> `pushHeldHook`, #625), so the notification arrives
+  even when its dialog never parses (some ExitPlanMode renders do not). It
+  keeps the hook's numbering, and is stamped `held` (the name predates #1125;
+  nothing holds).
 - An open card is resolved without an answer by a matching
   `PreToolUse`/`PostToolUse`/`PermissionDenied`, a lead `Stop` (main cards),
-  `SubagentStop` (that agent's cards), `SessionEnd`, or `remi unstick`.
+  `SubagentStop` (that agent's cards), `SessionEnd`, or `remi unstick`; a
+  dismissal is broadcast only for a card that was actually pushed.
+
+Nothing holds the hook in this phase; the next phase (#1126) answers prompts
+structurally through held hooks while Claude's own dialog stays visible.
+
+**A card answered by typing into the PTY carries the screen's numbering**
+(#1134). When a hook record merges onto a parsed prompt
+(`QuestionPresenceTracker.consumeAndMerge`), the card's options are the
+parse's options, labels and values unchanged; the hook contributes id, text,
+agent, source and tool metadata (including `allowsFreeText`: a permission
+dialog takes a pick, not text), never options. The parse carries no yes/no
+flags, so the merge sets `isYes`/`isNo` from labels that start with the exact
+word "Yes" or "No". Until #1134 the hook's options won unless they were the
+Yes/No fallback, and they are not the screen's: live, `addDirectories` +
+`setMode` suggestions built a 4-option card over a 3-option dialog, the
+phone's "No" typed `4`, Claude ignored it, and the Enter that follows every
+typed answer confirmed "1. Yes".
+
+**Every phone answer is typed, and checked against the screen first.** Guards
+in `handleAnswer` before anything is typed (all refuse like a stale answer:
+STALE_ANSWER, card consumed, trace reason in parentheses). A refusal means
+"answer at the terminal": Claude's own dialog is still there.
+- a prompt must be on screen: the card's own prompt for a `source: 'pty'`
+  card (`prompt-not-current`, #920), any prompt for a hook card
+  (`no-prompt-on-screen`, #1002).
+- an option value must be on the menu the tracker last observed
+  (`observedPromptOptions`, wired by `trackerScreenDeps`) (`option-not-on-screen`),
+  and that screen option's label must EQUAL the card option's after
+  normalization (lowercase, all whitespace and box characters removed), or,
+  for an AskUserQuestion pick, equal it with the description appended
+  (`option-mismatch`). Nothing looser: this is a stopgap until hook-backed
+  prompts stop being answered by typing (#1126), so it fails closed; the
+  accepted cost is false refusals on short, partial-frame or reworded labels.
+  A pushed-by-id card keeps the hook's numbering, so this refuses its digit
+  wherever the hook's list differs from Claude's (ExitPlanMode's list is
+  hardcoded, Claude builds its own).
+- free text is refused when the card has options and takes no text and a
+  numbered menu is on screen (`free-text-into-menu`), and always on a
+  pushed-by-id (`held`-stamped) card that has options and takes no text
+  (`free-text-on-held-card`; built for held hooks, kept for these cards).
+  Free-form `user_input` (including a Telegram text reply) is a separate
+  path and is not checked.
+- a question is claimed while its answer is applied: a duplicate delivery of
+  the same choice (the lock screen sends every tap on two channels) reports
+  delivered and types nothing; a different concurrent answer is refused.
+
+The parser joins a label's wrapped rows (and an AskUserQuestion description
+row) onto the option above, at most two rows, never across footer rows
+("Esc to cancel · ..."), dropping divider rows; it used to end the option list
+at the first such row and drop every later option, "No" included.
+
 
 **Subagent permissions: the PTY is the arbiter**
 ([ADR 0004](.context/decisions/0004-pty-as-arbiter-subagent-questions.md), amended
@@ -256,7 +305,7 @@ on stderr with its reason.
 
 - Daemon sends WebSocket `question` (in-app display) AND APNS push (lock screen).
 - Signaling server (Cloudflare Worker) relays push payloads to APNS.
-- iOS categories `REMI_YN`, `REMI_YNA`, `REMI_MULTI` registered in `AppDelegate.swift`.
+- iOS categories `REMI_YN`, `REMI_YNA`, `REMI_MULTI` registered in `AppDelegate.swift`. Their actions are positional (`OPT_i` sends option i) and the first two have hardcoded titles, so `selectPushCategory` picks by meaning, not count (#1134): `REMI_YN` only for exactly [one-time Yes, No]; `REMI_YNA` only for exactly [one-time Yes, any Yes, No] (its "Yes, always" button is the only static action that requires an unlocked device). A one-time Yes is an option labeled exactly "Yes"; any other Yes is a standing grant, as is any Yes after the first option and a session-grant action. A card with a standing option in any other layout gets NO category (a plain notification, answered in the app), because `REMI_MULTI`'s buttons do not require an unlocked device. No card with a standing option gets the `dynOptions` hint, `REMI_YNA` included: the extension builds its dynamic buttons without `.authenticationRequired`, so a standing grant behind one could be tapped while locked. Every other 2-4 option card gets `REMI_MULTI`. When the Notification Service Extension does not run, `REMI_MULTI` shows all four static "Option N" buttons whatever the option count; a button with no option behind it sends no answer (`RemiAnswerRelay` finds no `opt_n` and defers to the app), and any answer that does arrive still passes the `handleAnswer` guards (an iOS follow-up will add 2- and 3-button categories).
 
 **Push classes and who can mute them** (#968):
 
@@ -293,7 +342,7 @@ those two are both exactly `{token, title, body}`.
 
 - Bash `PermissionRequest` may have `permission_suggestions=undefined` (no suggestions), a legacy plain-string label array (e.g. Edit's `["Yes","Always","No"]`), or — since ~Claude Code 2.0.54 — a STRUCTURED array of typed "permission update entries" (`addRules`, `addDirectories`, `setMode`, `removeRules`, `replaceRules`, `removeDirectories`, each carrying `behavior`/`destination`; ground truth: code.claude.com/docs/en/hooks).
 - Notification message is plain text ("Claude needs your permission to use Bash"), no numbered options, and never carries `permission_suggestions` at all.
-- Claude Code does NOT always offer a fixed option count. `optionsFromSuggestions` (hook-event-bridge.ts) builds a VARIABLE-count card: [Yes] + one option per USABLE structured suggestion + [No], capped at 4 total. With no usable suggestions of either shape, the daemon falls back to the honest Yes/No 2-set (`optionsAreFallback: true` on the `Question`) instead of fabricating a 3rd option.
+- Claude Code does NOT always offer a fixed option count. `optionsFromSuggestions` (hook-event-bridge.ts) builds a VARIABLE-count option set: [Yes] + one option per USABLE structured suggestion + [No], capped at 4 total. With no usable suggestions of either shape, the daemon falls back to the honest Yes/No 2-set (`optionsAreFallback: true` on the `Question`) instead of fabricating a 3rd option. This is the hook's view, not the screen's: Claude's dialog does not render one option per suggestion (two structured suggestions built 4 options over a 3-option dialog, #1134). So a card pushed when its prompt renders takes the parsed screen's options instead (it keeps these only if the parse found none); these options reach the phone on cards pushed by id before a render (AskUserQuestion, ExitPlanMode, multi-choice permissions; nothing holds since #1125), and `handleAnswer` types a digit from one only if the screen's option at that value has the same label.
 - Numbered option text appears only in the terminal UI, not in hook events.
 - `HookEventBridge` builds the option set at hook time; a binary card is pushed when its prompt renders, and the answer is checked against the screen before it is typed (#1121, #1134).
 - A "Yes, always allow: ..." option is answered today like any other: typed using the screen's numbering, and refused when it does not match what the screen shows (#1134). `QuestionOption.suggestionIndex` still records which original `permission_suggestions` entry it came from. Echoing that entry back as `{behavior:"allow", updatedPermissions:[...]}` on a held hook is, per the hooks docs, "equivalent to the user selecting that 'always allow' option in the dialog"; that is the documented contract, NOT yet verified live, and it is how #1126 plans to answer it.

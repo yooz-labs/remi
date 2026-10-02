@@ -95,8 +95,8 @@ const DEFAULT_PERMISSION_OPTIONS: readonly QuestionOption[] = [
 ];
 
 /** Maximum options a permission card can show (iOS push-category/action
- *  budget: `selectPushCategory` maps 2/3/4 options to REMI_YN/REMI_YNA/
- *  REMI_MULTI; nothing beyond 4 has a category). Yes and No are always
+ *  budget: every category has at most 4 actions, and `selectPushCategory`
+ *  gives nothing beyond 4 a category). Yes and No are always
  *  present, so at most `MAX_PERMISSION_OPTIONS - 2` suggestion-derived
  *  middle options are kept. */
 const MAX_PERMISSION_OPTIONS = 4;
@@ -184,13 +184,25 @@ export interface PermissionOptionsResult {
   readonly options: QuestionOption[];
   /** True when `options` is the {@link DEFAULT_PERMISSION_OPTIONS} fallback
    *  (#718): no usable suggestion contributed a middle option. Threaded onto
-   *  the emitted `Question` so the tracker's merge policy never lets this
-   *  bare fallback overwrite a concrete PTY-parsed set of options. */
+   *  the emitted `Question` as `optionsAreFallback` for the dedup and client
+   *  guards that treat it as the bland default. */
   readonly isFallback: boolean;
 }
 
 /**
  * Build options from a PermissionRequest's `permission_suggestions` (#718).
+ *
+ * This is the HOOK's view of the choice, not the screen's: Claude Code's
+ * dialog does not render one option per structured suggestion (live, an
+ * `addDirectories` + `setMode` pair built a 4-option set over a 3-option
+ * dialog). A card pushed when its prompt renders therefore takes the parsed
+ * screen's options instead (`QuestionPresenceTracker.consumeAndMerge`,
+ * #1134). These options still reach the phone on a card pushed by id before
+ * any render (`pushHeldHook`: AskUserQuestion, ExitPlanMode, a multi-choice
+ * permission; nothing holds since #1125), answered by a typed digit that
+ * `handleAnswer` types only when the screen's option at that value has the
+ * same label.
+ *
  * Two shapes:
  *   - Legacy: >= 2 plain string labels (e.g. Edit's `["Yes","Always","No"]`)
  *     map directly to options, unchanged since #574.
@@ -488,8 +500,10 @@ export class HookEventBridge {
       // Rich source: carries tool + command + agent context. The tracker
       // keeps this over a trailing generic notification for the same agent (#574).
       source: 'permission_request',
-      // #718: lets the tracker's merge policy keep a PTY-parsed question's own
-      // options instead of overwriting them with this bare fallback set.
+      // #718: marks the bare fallback set for the dedup and client guards
+      // (`question-dedup.ts`, the web `question-merge.ts`). The tracker's
+      // merge no longer needs it: since #1134 a PTY parse's options always
+      // replace this question's, fallback or not.
       ...(optionsAreFallback ? { optionsAreFallback: true } : {}),
       // #626: surface the full AskUserQuestion structure (all sub-questions with
       // headers, descriptions, multiSelect) so the client can render it properly.

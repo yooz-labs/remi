@@ -511,8 +511,8 @@ export function setupHookBridge(
       // maybePush); PTY question-emission is suppressed for hooked sessions.
       onHeldEscalate: (questionId) => tracker.pushHeldHook(questionId),
       // #1121: a binary main escalation pushes when its native prompt
-      // renders, paired with the screen's own prompt; the answer is typed
-      // using the screen's numbering and refused on a mismatch (#1134).
+      // renders, carrying the parsed screen's options (#1134); the answer is
+      // typed with the screen's numbering and refused on a label mismatch.
       pushOnRender: (questionId) => {
         tracker.pushOnRender(questionId);
       },

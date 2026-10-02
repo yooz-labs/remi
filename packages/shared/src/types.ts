@@ -247,10 +247,11 @@ export interface Question {
    * Code sent no USABLE `permission_suggestions` (none at all, or every entry
    * was filtered out — deny/ask-behavior, an unsupported type), so the daemon
    * substituted the plain binary set instead of a real suggestion-derived
-   * card. Consumed by `QuestionPresenceTracker.onPTYPromptVisible`'s merge
-   * policy: a fallback set must NOT overwrite a PTY-parsed question's own
-   * (possibly richer) options, unlike a real hook-derived set which always
-   * wins. Absent/false for every other question, including the legacy
+   * card. Consumed by the daemon's question dedup and the web client's
+   * richer-wins guard, which treat a fallback set as the bland default. The
+   * daemon's PTY merge no longer reads it: since #1134 a PTY parse's options
+   * replace a hook record's whether or not they are the fallback.
+   * Absent/false for every other question, including the legacy
    * plain-string suggestion path.
    */
   readonly optionsAreFallback?: boolean | undefined;

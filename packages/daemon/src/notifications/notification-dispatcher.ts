@@ -32,15 +32,78 @@ export interface PushConfig {
   pushSecret?: string | undefined;
 }
 
+/** A label as the PTY parse leaves it comparable: lowercase, with all
+ *  whitespace and box-drawing characters removed (#1137 spacing loss). */
+function normalizedLabel(option: QuestionOption): string {
+  return option.label.toLowerCase().replace(/[\s\u2500-\u257F|]/g, '');
+}
+
 /**
- * Select the APNS notification category from the number of question options.
- * iOS renders action buttons matching the category; watchOS mirrors them.
+ * A one-time Yes, by allowlist (#1134 review): an option labeled exactly
+ * "Yes" (after `normalizedLabel`). Every other Yes ("Yes, auto-accept
+ * edits", "Yes, proceed and trust this folder", "Yes, and bypass
+ * permissions") grants something beyond this one action, and a denylist of
+ * grant wordings cannot keep up with Claude's.
+ */
+function isOneTimeYes(option: QuestionOption): boolean {
+  return option.sessionGrant === undefined && !option.isNo && normalizedLabel(option) === 'yes';
+}
+
+function isPlainNo(option: QuestionOption): boolean {
+  return option.isNo && !option.isYes;
+}
+
+/**
+ * Whether option `index` grants something standing (#1134 review). Any Yes
+ * after the first option counts, whatever its label says ("Yes, allow reading
+ * from <dir> during this session", "Yes, switch to acceptEdits mode"); so
+ * does a first Yes that is not exactly "Yes" (`isOneTimeYes`), and a
+ * session-grant action.
+ */
+function isStanding(option: QuestionOption, index: number): boolean {
+  if (option.sessionGrant !== undefined) return true;
+  return option.isYes && (index > 0 || !isOneTimeYes(option));
+}
+
+/**
+ * Select the APNS notification category from what the options MEAN, not how
+ * many there are (#1134 review). iOS renders the category's action buttons
+ * (watchOS mirrors them) and each is POSITIONAL: `OPT_i` sends option i
+ * (`AppDelegate.swift`, `RemiAnswerRelay.swift`). The two permission
+ * categories have hardcoded titles, so they are chosen only when those titles
+ * are true:
+ *   - REMI_YN ("Yes" / "No"): exactly [one-time Yes, No].
+ *   - REMI_YNA ("Yes" / "Yes, always" / "No"): exactly [one-time Yes, Yes,
+ *     No]. Its middle "Yes, always" button is the only static action that
+ *     requires an unlocked device, so a standing grant is offered on the lock
+ *     screen ONLY in this layout, and only through this static category: no
+ *     standing card gets the `dynOptions` hint (`selectDynOptions`).
+ * A one-time Yes is an option labeled exactly "Yes" (`isOneTimeYes`).
+ * A card with any other standing option (`isStanding`) gets NO category: a
+ * plain notification, answered in the app, because REMI_MULTI's buttons do
+ * not require an unlocked device. Every other 2-4 option card gets
+ * REMI_MULTI, whose generic "Option N" titles the Notification Service
+ * Extension replaces with the real labels when it runs (`dynOptions`); when
+ * it does not, the four static buttons show, and one with no option behind it
+ * sends nothing the answer path accepts. Counting alone gave a 2-option card
+ * whose second option is not a No (a parse that dropped "No") a "No" button
+ * that sent option 2. Outside 2-4 options there is no category, as before.
  */
 export function selectPushCategory(options: readonly QuestionOption[]): string | undefined {
-  if (options.length === 2) return 'REMI_YN';
-  if (options.length === 3) return 'REMI_YNA';
-  if (options.length === 4) return 'REMI_MULTI';
-  return undefined;
+  if (options.length < 2 || options.length > 4) return undefined;
+  const [first, second, third] = options as [QuestionOption, QuestionOption, QuestionOption?];
+  if (options.length === 2 && isOneTimeYes(first) && isPlainNo(second)) return 'REMI_YN';
+  if (
+    options.length === 3 &&
+    third !== undefined &&
+    isOneTimeYes(first) &&
+    second.isYes &&
+    !second.isNo &&
+    isPlainNo(third)
+  ) {
+    return 'REMI_YNA';
+  }
+  return options.some(isStanding) ? undefined : 'REMI_MULTI';
 }
 
 /**
@@ -70,6 +133,13 @@ export function selectDynOptions(question: Question): boolean {
   }
   const { options } = question;
   if (options.length < 2 || options.length > 4) return false;
+  // #1134 review: the extension builds its dynamic buttons without
+  // `.authenticationRequired`, so a standing grant offered through them
+  // could be tapped while the phone is locked, REMI_YNA's middle option
+  // included. No hint for any card with a standing option: it keeps its
+  // static category (REMI_YNA's "Yes, always" requires an unlocked device)
+  // or, outside that layout, none at all.
+  if (options.some(isStanding)) return false;
   return options.every((o) => o.label.trim().length > 0);
 }
 
@@ -343,10 +413,11 @@ export class NotificationDispatcher {
     const sessionName = session?.name || 'Agent';
     const cfg = pushConfig();
     const pushSessionId = this.deps.getPrimarySessionId() ?? this.sessionId;
-    // #626: an AskUserQuestion (kind === 'multi_question') never uses the
-    // count-based permission categories — REMI_YN/YNA carry hardcoded
-    // "Yes / Yes, always / No" button titles that would MISLABEL arbitrary picks
-    // (e.g. "PostgreSQL / MySQL / MongoDB"). With no category the lock screen
+    // #626: an AskUserQuestion (kind === 'multi_question') gets no category at
+    // all. `selectPushCategory` would already refuse it REMI_YN/YNA (their
+    // hardcoded "Yes / Yes, always / No" titles would MISLABEL picks such as
+    // "PostgreSQL / MySQL / MongoDB"), but a multi-question form cannot be
+    // answered by one positional tap either. With no category the lock screen
     // shows the summary and opens the app, where the structured card renders the
     // real options + descriptions. (One-tap AUQ answering arrives in #627.)
     const pushCategory =
