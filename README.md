@@ -115,7 +115,7 @@ See `.context/plan.md` for the detailed development roadmap.
 ## License
 
 Remi is open core, and the license is set per directory.
-[`LICENSE.md`](LICENSE.md) maps each directory to its license; every directory carries its own license file.
+[`LICENSE.md`](LICENSE.md) maps each package directory to its license and states the license for everything outside them; each package directory carries its own license file.
 
 - **Daemon, CLI and shared protocol** (`packages/daemon`, `packages/shared`): [**Apache License 2.0**](packages/daemon/LICENSE).
   Use, modify and redistribute them, commercially or not, under the terms of that license.
@@ -124,7 +124,8 @@ Remi is open core, and the license is set per directory.
   For the strategic rationale, see [`yooz-engine/LICENSING.md`](https://github.com/yooz-labs/yooz-engine/blob/main/LICENSING.md).
 - **Everything else** (scripts, docs, CI configuration): Apache-2.0 unless a file says otherwise.
 
-The `@yooz-labs/remi` npm packages contain only the compiled daemon and CLI, so they are Apache-2.0.
+The `@yooz-labs/remi` npm package is a small Node launcher; the platform packages it installs hold the compiled `remi` binary, which bundles daemon and shared code plus third-party dependencies.
+The npm packages are Apache-2.0, and the bundled dependencies keep their own licenses (their notices are not shipped yet, see [`LICENSE.md`](LICENSE.md)).
 
 For commercial-use or dual-license inquiries about the PolyForm Shield parts: **dev@yooz.info**.
 

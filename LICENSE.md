@@ -1,8 +1,9 @@
 # Licensing
 
 Remi is open core.
-This repository holds components under two licenses, chosen per directory.
-The license file inside each directory below is the one that applies to that directory; this page is only a map.
+This repository holds components under two licenses, chosen per package directory.
+This page is both the map of those directories and the license statement for everything outside them.
+Inside a package directory, the license file in that directory is the one that applies.
 
 | Directory | What it is | License | License file |
 |---|---|---|---|
@@ -12,15 +13,29 @@ The license file inside each directory below is the one that applies to that dir
 | `packages/signaling` | Hosted relay (Cloudflare Worker) | PolyForm Shield 1.0.0 | [packages/signaling/LICENSE.md](packages/signaling/LICENSE.md) |
 | `packages/macos` | Native Mac app | PolyForm Shield 1.0.0 | [packages/macos/LICENSE.md](packages/macos/LICENSE.md) |
 
-Anything outside those directories, such as `scripts/`, `docs/`, `tests/`, `npm/` and the CI configuration under `.github/`, is licensed under the Apache License 2.0 unless a file states otherwise.
+## Everything outside the package directories
+
+Everything outside the five package directories is licensed under the Apache License 2.0 by location, unless a file states otherwise.
+That covers the root files, `scripts/`, `docs/`, `tests/`, `npm/`, `config/`, the CI configuration under `.github/`, and `.context/` (internal notes and plans).
 The Apache License 2.0 text is in [packages/daemon/LICENSE](packages/daemon/LICENSE).
+
+This includes build tooling and documentation for the PolyForm Shield products when they live outside the product's package directory: `docs/MACOS_APP.md`, `docs/TESTFLIGHT.md`, `scripts/testflight-*.sh`, `scripts/generate-macos-*.sh`, `scripts/stage-macos-web.sh` and `tests/e2e`.
+The products themselves, meaning the contents of `packages/web`, `packages/signaling` and `packages/macos`, stay under PolyForm Shield 1.0.0.
 
 ## What the published packages contain
 
-The `@yooz-labs/remi` npm packages ship the compiled `remi` binary.
-It is built from `packages/daemon` and `packages/shared` only, plus third-party dependencies that keep their own licenses.
-Nothing from `packages/web`, `packages/signaling` or `packages/macos` is compiled into it.
+The `@yooz-labs/remi` npm package (`npm/remi`) is a small Node launcher.
+It selects one of four platform packages (`@yooz-labs/remi-darwin-arm64`, `-darwin-x64`, `-linux-arm64`, `-linux-x64`), and those hold the compiled `remi` binary.
+The binary is built from `packages/daemon` and `packages/shared` only, plus third-party dependencies that keep their own licenses.
+Nothing from `packages/web`, `packages/signaling` or `packages/macos` is compiled into it; `packages/daemon/tests/license-boundary.test.ts` fails if daemon or shared code imports them.
 The npm packages are therefore licensed Apache-2.0 and carry the Apache `LICENSE` and `NOTICE` files.
+
+The notices of the bundled third-party dependencies are not yet shipped with the binary; that is tracked in [#1131](https://github.com/yooz-labs/remi/issues/1131).
+
+## Which versions this covers
+
+The Apache-2.0 grant applies from the first release that contains this change.
+Earlier tags and npm versions (0.7.15 and before, whose npm manifests declare UNLICENSED) remain under the license they shipped with.
 
 ## Contributing
 
