@@ -910,15 +910,21 @@ describe('AutoApproveGate residual_action (#1045 phase 6)', () => {
 // the default install, or hold_timeout = 0) answers 'passthrough' and asks the
 // tracker to push on the render via `pushOnRender`. Before that dep existed it
 // pushed nothing: `createHold` returned passthrough without `onHeldEscalate`.
+// These tests stop at the gate's side of the contract (which dep fires); the
+// render and push through a real tracker are covered in
+// hook-bridge-setup.test.ts and question-presence-tracker.test.ts.
 // ---------------------------------------------------------------------------
-describe('AutoApproveGate unheld binary escalation pushes on render', () => {
+describe('AutoApproveGate unheld binary escalation marks the question for render (#1121)', () => {
   const SID = generateId() as UUID;
   let registry: SessionRegistry;
   let escalatedIds: UUID[];
   let pushOnRenderIds: UUID[];
   let heldPushIds: UUID[];
 
-  function gate(holdMs?: number): AutoApproveGate {
+  function gate(
+    holdMs?: number,
+    opts: { service?: AutoApproveEvaluator; pushHoldMs?: number } = {},
+  ): AutoApproveGate {
     registry.registerSession(SID, '/d', fakePTY([]), {
       handleMessage: () => {},
       handleQuestion: () => {},
@@ -926,7 +932,8 @@ describe('AutoApproveGate unheld binary escalation pushes on render', () => {
     } as never);
     return new AutoApproveGate(
       {
-        service: null,
+        service: opts.service ?? null,
+        ...(opts.pushHoldMs !== undefined ? { pushHoldMs: opts.pushHoldMs } : {}),
         sessionRegistry: registry,
         tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
@@ -978,6 +985,37 @@ describe('AutoApproveGate unheld binary escalation pushes on render', () => {
     // Not the held push: nothing blocks Claude, and the card must wait for the
     // render that carries the on-screen option numbering.
     expect(heldPushIds).toEqual([]);
+  });
+
+  // Review finding on #1121: with hold_timeout = 0 but push_hold_timeout > 0
+  // (default 60 s), Part B used to arm, call `createHold` with no hold, answer
+  // passthrough with no push, and drop the late verdict.
+  function slowEvaluator(result: AutoApproveResult, delayMs: number): AutoApproveEvaluator {
+    return {
+      evaluate: () => new Promise((resolve) => setTimeout(() => resolve(result), delayMs)),
+      cancel: () => true,
+    };
+  }
+
+  test('Part B does not arm without a hold: a slow escalate verdict still marks for render', async () => {
+    const d = await gate(0, {
+      service: slowEvaluator(escalate, 60),
+      pushHoldMs: 10,
+    }).resolvePermission(bash);
+    expect(d).toBe('passthrough');
+    expect(pushOnRenderIds).toEqual(escalatedIds);
+    expect(pushOnRenderIds).toHaveLength(1);
+    expect(heldPushIds).toEqual([]);
+  });
+
+  test('Part B does not arm without a hold: a slow approve verdict is applied, not dropped', async () => {
+    const d = await gate(0, {
+      service: slowEvaluator(approve, 60),
+      pushHoldMs: 10,
+    }).resolvePermission(bash);
+    expect(d).toBe('allow');
+    expect(escalatedIds).toEqual([]);
+    expect(pushOnRenderIds).toEqual([]);
   });
 
   test('a real hold still pushes immediately and never marks for render', async () => {

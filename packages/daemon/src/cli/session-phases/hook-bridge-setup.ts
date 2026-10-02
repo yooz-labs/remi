@@ -816,6 +816,9 @@ export function setupHookBridge(
       // held Question.id, so the tracker pushes that exact question immediately
       // (-> addQuestion + maybePush) under the id the hold is keyed by.
       onHeldEscalate: (questionId) => tracker.pushHeldHook(questionId),
+      // #1121: an unheld binary main escalation (auto-approve off, or
+      // hold_timeout = 0) pushes when its native prompt renders, merged with
+      // the parsed options so a phone digit matches the screen's numbering.
       pushOnRender: (questionId) => {
         tracker.pushOnRender(questionId);
       },

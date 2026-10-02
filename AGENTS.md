@@ -180,6 +180,16 @@ See `.context/notification-and-session-flow.md` for the full flow diagram.
 - `HookEventBridge` — emits questions from `PermissionRequest` hooks; suppresses redundant notifications.
 - `OutputProcessor` — PTY-output parsing (fallback when hooks are unavailable).
 
+**Unheld binary main-agent prompts push on render** (#1121). With auto-approve
+off (the default install) or `hold_timeout = 0`, the gate answers the hook
+`passthrough`, so the prompt shows in the terminal at once, and marks the
+question with `pushOnRender`. The card is pushed when the native prompt
+renders, merged with the parsed options so a phone digit matches the screen's
+numbering, and it takes the render-owned slot so the next render retires it.
+Before #1121 this combination pushed nothing at all. Two outstanding main
+prompts before a render are never paired by agent key; each render pushes the
+screen's own prompt.
+
 **Subagent permissions: the PTY is the arbiter** (#756 policy, #807 + #814;
 amended #1024 2026-08-08, see [ADR 0004](.context/decisions/0004-pty-as-arbiter-subagent-questions.md)):
 
