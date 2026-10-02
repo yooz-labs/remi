@@ -53,6 +53,13 @@ export interface InputHandlerDeps {
    */
   answerHeld?: (sessionId: UUID, questionId: UUID, answer: HeldAnswer) => HeldAnswerOutcome;
   /**
+   * Is a main-agent prompt's hook held for this session (#1126)? Its dialog
+   * is on screen, so the chat guard refuses chat text even when the PTY
+   * parser has not observed the menu. Wired by `gateAnswerDeps`. Absent
+   * reads as false (no hook server: nothing is held).
+   */
+  isMainPromptHeld?: (sessionId: UUID) => boolean;
+  /**
    * Cross-client question dismissal (#585, P7). Called after a question is
    * answered here so the daemon broadcasts `question_resolved` to every client and
    * fires the APNS dismissal — answering on one device clears the card (and the
@@ -247,10 +254,11 @@ export function trackerScreenDeps(
 export interface GateAnswerHandle {
   retireQuestion(questionId: UUID): void;
   answerHeld(questionId: UUID, answer: HeldAnswer): HeldAnswerOutcome;
+  hasMainHold(): boolean;
 }
 
 /**
- * The two gate deps (`retireQuestion`, `answerHeld`) backed by each session's
+ * The gate deps (`retireQuestion`, `answerHeld`, `isMainPromptHeld`) backed by each session's
  * permission gate (#1126). The ONE wiring for them, shared by `cli.ts` and
  * the tests in the same way as `trackerScreenDeps`, so a test of the held
  * answer path exercises the production wiring. No gate for the session
@@ -258,11 +266,12 @@ export interface GateAnswerHandle {
  */
 export function gateAnswerDeps(
   gateFor: (sessionId: UUID) => GateAnswerHandle | undefined,
-): Pick<InputHandlerDeps, 'retireQuestion' | 'answerHeld'> {
+): Pick<InputHandlerDeps, 'retireQuestion' | 'answerHeld' | 'isMainPromptHeld'> {
   return {
     retireQuestion: (sessionId, questionId) => gateFor(sessionId)?.retireQuestion(questionId),
     answerHeld: (sessionId, questionId, answer) =>
       gateFor(sessionId)?.answerHeld(questionId, answer) ?? 'unknown',
+    isMainPromptHeld: (sessionId) => gateFor(sessionId)?.hasMainHold() ?? false,
   };
 }
 
@@ -408,6 +417,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     send,
     retireQuestion,
     answerHeld,
+    isMainPromptHeld,
     onQuestionResolved,
     isPromptCurrent,
     isPromptObservedOnPTY,
@@ -1227,11 +1237,18 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       // too, with options "y"/"n", and it takes typed text. Absent, or null (no
       // prompt observed, or no tracker): nothing is known to be on screen, so
       // the text is typed as before.
+      //
+      // #1126: a held main-agent prompt's dialog is on screen too (it renders
+      // during the hold), so it refuses as well, whether or not the parser
+      // has recognized the menu: the hook says a dialog is up even when the
+      // screen parse does not.
       const menu = observedPromptOptions?.(session.sessionId) ?? null;
-      if (menu !== null && isNumberedMenu(menu)) {
-        const screenValues = menu.map((o) => o.value);
+      const menuOnScreen = menu !== null && isNumberedMenu(menu);
+      const held = isMainPromptHeld?.(session.sessionId) ?? false;
+      if (menuOnScreen || held) {
+        const screenValues = (menu ?? []).map((o) => o.value);
         log(
-          `[Input] refusing ${content.length} chars of chat text for session ${session.sessionId.slice(0, 8)}: a prompt menu is on screen [${screenValues.join(', ')}]`,
+          `[Input] refusing ${content.length} chars of chat text for session ${session.sessionId.slice(0, 8)}: ${menuOnScreen ? `a prompt menu is on screen [${screenValues.join(', ')}]` : 'a held prompt is on screen'}`,
         );
         traceQuestionEvent({
           action: 'input_refused',
@@ -1239,7 +1256,11 @@ export function createInputHandlers(deps: InputHandlerDeps) {
           signal: PROMPT_WAITING_ERROR_CODE,
           callSite: 'input-events.onUserInput:chatIntoMenuGuard',
           // Only the length of what the user typed is recorded, never the text.
-          detail: { reason: 'chat-into-menu', textLength: content.length, screenValues },
+          detail: {
+            reason: menuOnScreen ? 'chat-into-menu' : 'chat-into-held-prompt',
+            textLength: content.length,
+            screenValues,
+          },
         });
         send(connectionId, createPromptWaitingError(session.sessionId, messageId));
         return;

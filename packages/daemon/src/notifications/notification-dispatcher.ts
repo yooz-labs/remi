@@ -571,11 +571,14 @@ export class NotificationDispatcher {
         ? `${sessionName}: answer with remi attach`
         : `${sessionName}: answer in the terminal`
     ).slice(0, TITLE_MAX);
+    // A deadline notice must not say the prompt is still waiting: a Yes
+    // answered in the terminal shows up only when its tool finishes, so the
+    // prompt may already be answered (#1126 lead decision).
     const body = (
       reason === 'hold_deadline'
-        ? `No answer in time; the prompt is waiting in the terminal: ${ask}`
+        ? `No answer from the phone in time; if it is still open, answer it in the terminal: ${ask}`
         : reason === 'hold_deadline_no_terminal'
-          ? `No answer in time; the prompt is waiting in the session (remi attach): ${ask}`
+          ? `No answer from the phone in time; if it is still open, reach it with remi attach: ${ask}`
           : ask
     ).slice(0, BODY_MAX);
     const cfg = pushConfig();

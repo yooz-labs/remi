@@ -500,6 +500,21 @@ export class AutoApproveGate {
   }
 
   /**
+   * True while a MAIN-agent prompt's hook is held (#1126): its dialog is on
+   * screen (it renders during the hold), so text typed into the PTY would
+   * land in it and the Enter after it would confirm the highlighted option.
+   * The chat guard (#1140) refuses chat text then, even when the PTY parser
+   * has not recognized the menu. A held subagent prompt (daemon mode) does
+   * not count: its dialog does not render while held.
+   */
+  hasMainHold(): boolean {
+    for (const qid of this.holds.keys()) {
+      if (this.openQuestionSignatures.get(qid)?.isSubagent === false) return true;
+    }
+    return false;
+  }
+
+  /**
    * Apply a phone answer to a held prompt (#1126). Synchronous end to end:
    * the hook response is resolved before this returns, so no other answer
    * or resolution signal can interleave. See `HeldAnswerOutcome`.

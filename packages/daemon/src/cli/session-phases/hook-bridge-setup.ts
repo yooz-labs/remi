@@ -249,6 +249,9 @@ export interface SessionGateHandle {
   /** Apply a phone answer to a held prompt (#1126). Forwards to
    *  `AutoApproveGate.answerHeld`; see `HeldAnswerOutcome`. */
   answerHeld: (questionId: UUID, answer: HeldAnswer) => HeldAnswerOutcome;
+  /** Is a main-agent prompt's hook held, with its dialog on screen (#1126)?
+   *  Forwards to `AutoApproveGate.hasMainHold`. */
+  hasMainHold: () => boolean;
   /** Force-release escape (#617 `remi unstick`): resolve and dismiss every
    *  open escalation. Forwards to `forceRelease`. */
   forceRelease: (reason: string) => { resolved: number };
@@ -1117,6 +1120,7 @@ export function setupHookBridge(
     gate: {
       retireQuestion: (questionId) => autoApproveGate.retireQuestion(questionId),
       answerHeld: (questionId, answer) => autoApproveGate.answerHeld(questionId, answer),
+      hasMainHold: () => autoApproveGate.hasMainHold(),
       forceRelease: (reason) => autoApproveGate.forceRelease(reason),
     },
   };

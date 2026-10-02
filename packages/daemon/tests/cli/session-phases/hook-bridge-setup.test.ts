@@ -1710,6 +1710,21 @@ describe('setupHookBridge', () => {
       expect(ptySubmits).toEqual([]);
     });
 
+    test('chat text is refused while a held dialog is up, even before the screen parse sees it (#1142 + #1126)', async () => {
+      const { card, hook, handlers, sent } = held('claude-held-chat');
+      sessionRegistry.attachConnection(SID, 'conn-chat' as UUID);
+      // No render observed yet: only the hold says a dialog is up.
+      await handlers.onUserInput('conn-chat' as UUID, SID, 'please go ahead', false);
+      expect(ptySubmits).toEqual([]);
+      const refusal = sent.find((m) => m.type === 'error') as { code?: string } | undefined;
+      expect(refusal?.code).toBe('PROMPT_WAITING');
+      // Answered from the phone: the dialog is gone, chat flows again.
+      await handlers.relayAnswer(SID, card.id, 'Yes');
+      expect(await hook).toBe('allow');
+      await handlers.onUserInput('conn-chat' as UUID, SID, 'thanks', false);
+      expect(ptySubmits).toEqual(['thanks']);
+    });
+
     test('phone No with a message denies with that message as the reason', async () => {
       const { card, hook, handlers } = held('claude-held-no');
       await handlers.onAnswer('conn-1' as UUID, SID, card.id, 'No', undefined, {
