@@ -264,7 +264,10 @@ pushed by id at once, and its answer is typed (Phase 4, #1127, moves it to the
 hook). An open card is also resolved by a matching `PreToolUse`/`PostToolUse`/
 `PermissionDenied`, a lead `Stop` or new user prompt (main), `SubagentStop`
 (that agent), `SessionEnd`, a transcript rotation, or `remi unstick`; a
-dismissal is broadcast only for a card that was actually pushed.
+dismissal is broadcast only for a card that was actually pushed. `remi
+unstick` does not close a LIVE hold: its dialog is on screen, so it is
+released to the terminal with a "handed back" notice (suppression kept),
+and a second unstick clears it.
 
 **Nothing is typed into the PTY for a hook-backed binary prompt.** While a
 MAIN-agent hook is held, or a main prompt waits in the terminal

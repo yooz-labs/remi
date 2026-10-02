@@ -138,7 +138,8 @@ describe('AutoApproveGate routing (#1125: nothing is decided, everything is rela
     // Every non-answer release is the empty response.
     g.forceRelease('test');
     expect(await hook).toBe('passthrough');
-    expect(g.hasOpenHookPrompt()).toBe(false);
+    // `remi unstick` hands a live hold to the terminal: still open there.
+    expect(g.hasOpenHookPrompt()).toBe(true);
   });
 
   test('a design prompt (AskUserQuestion) escalates and is pushed immediately (#625)', async () => {
@@ -448,13 +449,49 @@ describe('AutoApproveGate external resolution (#673)', () => {
     expect(registry.getQuestion(SID, qid)).toBeNull();
   });
 
-  test('forceRelease resolves every open card and reports how many', async () => {
+  test('forceRelease (remi unstick) on a live main hold: released to the terminal with a notice, suppression kept, a late answer refused', async () => {
+    const notices: Array<{ qid: UUID; cause: string; registered: boolean }> = [];
+    const noticeCleared: UUID[] = [];
+    const g = gate({
+      onReleasedToTerminal: (qid, cause) => {
+        notices.push({ qid, cause, registered: registry.getQuestion(SID, qid) !== null });
+      },
+      onTerminalNoticeResolved: (qid) => {
+        noticeCleared.push(qid);
+      },
+    });
+    const hook = g.resolvePermission(pr());
+    const qid = escalatedIds[0] as UUID;
+    g.forceRelease('remi unstick');
+    expect(await hook).toBe('passthrough');
+    expect(notices).toEqual([{ qid, cause: 'released', registered: true }]);
+    expect(registry.getQuestion(SID, qid)).toBeNull();
+    expect(g.hasOpenHookPrompt()).toBe(true);
+    expect(g.hasMainHold()).toBe(false);
+    expect(g.answerHeld(qid, { kind: 'cancel' })).toBe('closed');
+    // The terminal answers it: the notice clears.
+    g.cancelExternallyResolved(
+      { toolName: 'Bash', toolInput: { command: 'git push' } },
+      'PostToolUse',
+    );
+    expect(noticeCleared).toEqual([qid]);
+  });
+
+  test('forceRelease clears every open card and reports how many; live holds go to the terminal', async () => {
     const g = gate();
-    void g.resolvePermission(pr({ tool_input: { command: 'a' } }));
-    void g.resolvePermission(pr({ tool_input: { command: 'b' } }));
+    const a = g.resolvePermission(pr({ tool_input: { command: 'a' } }));
+    const b = g.resolvePermission(pr({ tool_input: { command: 'b' } }));
     expect(g.forceRelease('remi unstick')).toEqual({ resolved: 2 });
+    expect(await a).toBe('passthrough');
+    expect(await b).toBe('passthrough');
     expect(resolved.map((r) => r.qid).sort()).toEqual([...escalatedIds].sort());
-    // Nothing left to resolve a second time.
+    // Released to the terminal, not closed: their dialogs are still up.
+    expect(g.hasOpenHookPrompt()).toBe(true);
+    // A second unstick clears what waits in the terminal (no card left to
+    // dismiss), and then nothing is left.
+    expect(g.forceRelease('remi unstick')).toEqual({ resolved: 2 });
+    expect(resolved).toHaveLength(2);
+    expect(g.hasOpenHookPrompt()).toBe(false);
     expect(g.forceRelease('remi unstick')).toEqual({ resolved: 0 });
   });
 });

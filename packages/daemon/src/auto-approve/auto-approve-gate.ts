@@ -429,21 +429,12 @@ export class AutoApproveGate {
       }
       return;
     }
-    this.resolveAllOpenQuestions(reason);
-  }
-
-  /**
-   * #948: resolve EVERY currently-open escalation (main or subagent) through
-   * `resolveSupersededQuestion` instead of a silent bookkeeping-only delete.
-   * Shared by the two real teardown paths (`cancelStale` without `mainOnly`,
-   * and `forceRelease`). Returns how many were resolved.
-   */
-  private resolveAllOpenQuestions(reason: string): number {
-    const open = [...this.openQuestionSignatures];
-    for (const [qid, sig] of open) {
+    // #948: real teardown resolves EVERY open escalation (main or subagent)
+    // through `resolveSupersededQuestion`, never a silent bookkeeping-only
+    // delete.
+    for (const [qid, sig] of [...this.openQuestionSignatures]) {
       this.resolveSupersededQuestion(qid, reason, sig.toolName);
     }
-    return open.length;
   }
 
   /**
@@ -464,14 +455,28 @@ export class AutoApproveGate {
   }
 
   /**
-   * Force-release escape (#617, `remi unstick`): resolve and dismiss EVERY
-   * open escalation this gate tracks, main or subagent, so stale cards clear
-   * everywhere. Returns how many were resolved, for the caller to log.
+   * Force-release escape (#617, `remi unstick`): clear every open escalation
+   * this gate tracks, main or subagent, so stale cards clear everywhere.
+   * A LIVE hold is not closed but released to the terminal (#1126 lead
+   * decision): its dialog is on screen, so the prompt stays open there
+   * (orphan suppression kept) and the phone is told it was handed back.
+   * Everything else is resolved and dismissed. Returns how many cards were
+   * cleared, for the caller to log.
    */
   forceRelease(reason: string): { resolved: number } {
-    const resolved = this.resolveAllOpenQuestions(reason);
-    log(`[AutoApprove ${this.sessionTag}] Force-release (${reason}): resolved ${resolved} card(s)`);
-    return { resolved };
+    const live = [...this.holds.keys()];
+    for (const qid of live) this.releaseWithNotice(qid, 'released', reason);
+    const released = new Set(live);
+    let resolved = 0;
+    for (const [qid, sig] of [...this.openQuestionSignatures]) {
+      if (released.has(qid)) continue;
+      this.resolveSupersededQuestion(qid, reason, sig.toolName);
+      resolved++;
+    }
+    log(
+      `[AutoApprove ${this.sessionTag}] Force-release (${reason}): released ${live.length} live hold(s) to the terminal, resolved ${resolved} other card(s)`,
+    );
+    return { resolved: live.length + resolved };
   }
 
   /**

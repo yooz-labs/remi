@@ -986,7 +986,9 @@ const sessionAdmitsHandles: Map<UUID, (input: HookInput) => boolean> = new Map()
 /**
  * Force-release every session's gate (#617, `remi unstick` -> SIGUSR2): the "just
  * get me out" lever when cards are stuck. Each gate resolves and dismisses every
- * open escalation it tracks. Idempotent and safe with zero sessions.
+ * open escalation it tracks, except that a live hold is released to the terminal
+ * with a notice (#1126; its dialog is on screen). Idempotent and safe with zero
+ * sessions.
  */
 function forceReleaseAllSessions(): void {
   let resolved = 0;
