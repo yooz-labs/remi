@@ -14,6 +14,7 @@ import type { HookBridgeHandle } from '../../../src/cli/session-phases/hook-brid
 import { setupHookBridge } from '../../../src/cli/session-phases/hook-bridge-setup.ts';
 import { REMI_REGISTERED_HOOK_EVENTS } from '../../../src/hooks/hook-types.ts';
 import type { HookServer } from '../../../src/hooks/index.ts';
+import { selectPushCategory } from '../../../src/notifications/notification-dispatcher.ts';
 import { parseQuestion } from '../../../src/parser/question-parser.ts';
 import type { PTYSession } from '../../../src/pty/pty-session.ts';
 import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
@@ -2289,12 +2290,15 @@ describe('setupHookBridge', () => {
       );
       expect(card.options.map((o) => o.value)).toEqual(['1', '2', '3']);
       expect(card.options[2]?.label).toBe('No');
-      // Yes/no meaning restored from the screen labels (the parse has none).
+      // Yes/no meaning restored from the screen labels (the parse has none),
+      // so the lock screen's positional "Yes / Yes, always / No" buttons are
+      // true of options 1-3.
       expect(card.options.map((o) => [o.isYes, o.isNo])).toEqual([
         [true, false],
         [true, false],
         [false, true],
       ]);
+      expect(selectPushCategory(card.options)).toBe('REMI_YNA');
       // The hook still names the command.
       expect(card.text).toBe('Allow Bash: touch e5-marker.txt');
     });

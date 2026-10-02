@@ -32,15 +32,68 @@ export interface PushConfig {
   pushSecret?: string | undefined;
 }
 
+/** A label that grants a standing permission ("always", "don't ask
+ *  again"). Substring match on purpose: screen-parsed labels lose their
+ *  spaces ("Yes,andalwaysallow..."), which defeats word boundaries. */
+const STANDING_LABEL = /always|don'?t\s*ask\s*again/i;
+/** "Yes, and ..." (Claude's "Yes, and always allow access to ..." / "Yes,
+ *  and don't ask again ..."). Counts as the standing option ONLY in the
+ *  REMI_YNA middle position; anywhere else it disqualifies a plain Yes. */
+const YES_AND_LABEL = /^\s*Yes,\s*and/;
+
+function isOneTimeYes(option: QuestionOption): boolean {
+  return (
+    option.isYes &&
+    !option.isNo &&
+    option.sessionGrant === undefined &&
+    !STANDING_LABEL.test(option.label) &&
+    !YES_AND_LABEL.test(option.label)
+  );
+}
+
+function isStandingYes(option: QuestionOption): boolean {
+  return (
+    option.isYes &&
+    !option.isNo &&
+    (STANDING_LABEL.test(option.label) || YES_AND_LABEL.test(option.label))
+  );
+}
+
+function isPlainNo(option: QuestionOption): boolean {
+  return option.isNo && !option.isYes;
+}
+
 /**
- * Select the APNS notification category from the number of question options.
- * iOS renders action buttons matching the category; watchOS mirrors them.
+ * Select the APNS notification category from what the options MEAN, not how
+ * many there are (#1134 review). iOS renders the category's action buttons
+ * (watchOS mirrors them) and each is POSITIONAL: `OPT_i` sends option i
+ * (`AppDelegate.swift`, `RemiAnswerRelay.swift`). The two permission
+ * categories have hardcoded titles, so they are chosen only when those titles
+ * are true:
+ *   - REMI_YN ("Yes" / "No"): exactly [one-time Yes, No].
+ *   - REMI_YNA ("Yes" / "Yes, always" / "No"): exactly [one-time Yes,
+ *     standing Yes, No].
+ * Every other 2-4 option card gets REMI_MULTI, whose generic "Option N"
+ * titles are overridden with the real labels by the Notification Service
+ * Extension when it runs (`dynOptions`). Counting alone gave a 2-option card
+ * whose second option is not a No (a parse that dropped "No") a "No" button
+ * that sent option 2, and gave picks such as ExitPlanMode's a "Yes, always".
+ * Outside 2-4 options there is no category, as before.
  */
 export function selectPushCategory(options: readonly QuestionOption[]): string | undefined {
-  if (options.length === 2) return 'REMI_YN';
-  if (options.length === 3) return 'REMI_YNA';
-  if (options.length === 4) return 'REMI_MULTI';
-  return undefined;
+  if (options.length < 2 || options.length > 4) return undefined;
+  const [first, second, third] = options as [QuestionOption, QuestionOption, QuestionOption?];
+  if (options.length === 2 && isOneTimeYes(first) && isPlainNo(second)) return 'REMI_YN';
+  if (
+    options.length === 3 &&
+    third !== undefined &&
+    isOneTimeYes(first) &&
+    isStandingYes(second) &&
+    isPlainNo(third)
+  ) {
+    return 'REMI_YNA';
+  }
+  return 'REMI_MULTI';
 }
 
 /**
@@ -371,10 +424,11 @@ export class NotificationDispatcher {
     const sessionName = session?.name || 'Agent';
     const cfg = pushConfig();
     const pushSessionId = this.deps.getPrimarySessionId() ?? this.sessionId;
-    // #626: an AskUserQuestion (kind === 'multi_question') never uses the
-    // count-based permission categories — REMI_YN/YNA carry hardcoded
-    // "Yes / Yes, always / No" button titles that would MISLABEL arbitrary picks
-    // (e.g. "PostgreSQL / MySQL / MongoDB"). With no category the lock screen
+    // #626: an AskUserQuestion (kind === 'multi_question') gets no category at
+    // all. `selectPushCategory` would already refuse it REMI_YN/YNA (their
+    // hardcoded "Yes / Yes, always / No" titles would MISLABEL picks such as
+    // "PostgreSQL / MySQL / MongoDB"), but a multi-question form cannot be
+    // answered by one positional tap either. With no category the lock screen
     // shows the summary and opens the app, where the structured card renders the
     // real options + descriptions. (One-tap AUQ answering arrives in #627.)
     const pushCategory =

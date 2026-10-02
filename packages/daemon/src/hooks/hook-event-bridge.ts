@@ -97,8 +97,8 @@ const DEFAULT_PERMISSION_OPTIONS: readonly QuestionOption[] = [
 ];
 
 /** Maximum options a permission card can show (iOS push-category/action
- *  budget: `selectPushCategory` maps 2/3/4 options to REMI_YN/REMI_YNA/
- *  REMI_MULTI; nothing beyond 4 has a category). Yes and No are always
+ *  budget: every category has at most 4 actions, and `selectPushCategory`
+ *  gives nothing beyond 4 a category). Yes and No are always
  *  present, so at most `MAX_PERMISSION_OPTIONS - 2` suggestion-derived
  *  middle options are kept. */
 const MAX_PERMISSION_OPTIONS = 4;

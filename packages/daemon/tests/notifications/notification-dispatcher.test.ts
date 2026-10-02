@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import type { Question, QuestionOption, UUID } from '@remi/shared';
 import type { DeviceTokenEntry } from '../../src/cli/handlers/trivial-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../src/cli/logger.ts';
+import { optionsFromSuggestions } from '../../src/hooks/hook-event-bridge.ts';
 import {
   NotificationDispatcher,
   type PushFn,
@@ -56,19 +57,130 @@ function fakePTY(): PTYSession {
   } as unknown as PTYSession;
 }
 
+/**
+ * #1134 review: the category is chosen by what the options MEAN. Its action
+ * buttons are positional (OPT_i sends option i) and the permission
+ * categories carry hardcoded titles, so REMI_YN / REMI_YNA are used only when
+ * "Yes" / "Yes, always" / "No" are true of options 1..n; everything else gets
+ * REMI_MULTI's generic titles (overridden by the NSE with the real labels).
+ */
 describe('selectPushCategory', () => {
-  test('maps option count to the iOS category', () => {
+  const pick = (value: string, label: string): QuestionOption => ({
+    value,
+    label,
+    isRecommended: false,
+    isYes: false,
+    isNo: false,
+  });
+  const yes = (value: string, label: string, extra: Partial<QuestionOption> = {}) => ({
+    ...pick(value, label),
+    isYes: true,
+    ...extra,
+  });
+  const no = (value: string, label: string): QuestionOption => ({
+    ...pick(value, label),
+    isNo: true,
+  });
+
+  test('REMI_YN only for exactly [one-time Yes, No]', () => {
     expect(selectPushCategory([yesOpt, noOpt])).toBe('REMI_YN');
-    expect(selectPushCategory([yesOpt, noOpt, yesOpt])).toBe('REMI_YNA');
+    expect(selectPushCategory([noOpt, yesOpt])).toBe('REMI_MULTI');
+    // A standing grant behind a "Yes" title would skip the unlock prompt.
+    expect(selectPushCategory([yes('1', 'Yes, always'), no('2', 'No')])).toBe('REMI_MULTI');
+  });
+
+  test('a dropped-No two-option card gets REMI_MULTI, never a "No" that sends option 2', () => {
+    // The pre-#1134 parse of the live dialog: "3. No" lost to a wrapped label.
+    const dropped = [
+      yes('1', 'Yes'),
+      yes('2', 'Yes,andalwaysallowaccessto/private/tmp/remi-e5/-Users-dev'),
+    ];
+    expect(selectPushCategory(dropped)).toBe('REMI_MULTI');
+  });
+
+  test('REMI_YNA only for exactly [one-time Yes, standing Yes, No]', () => {
+    expect(selectPushCategory(defaultThreeSet)).toBe('REMI_YNA');
+    // Claude's own wording, spaced and collapsed: "Yes, and ..." is the
+    // standing option in the middle position.
+    expect(
+      selectPushCategory([
+        yes('1', 'Yes'),
+        yes('2', "Yes, and don't ask again for this command"),
+        no('3', 'No, and tell Claude what to do differently (esc)'),
+      ]),
+    ).toBe('REMI_YNA');
+    expect(
+      selectPushCategory([
+        yes('1', 'Yes'),
+        yes('2', 'Yes,andalwaysallowaccessto/w'),
+        no('3', 'No'),
+      ]),
+    ).toBe('REMI_YNA');
+  });
+
+  test('the legacy ["Yes","Always","No"] suggestion set is REMI_YNA', () => {
+    const { options } = optionsFromSuggestions(['Yes', 'Always', 'No']);
+    expect(selectPushCategory(options)).toBe('REMI_YNA');
+  });
+
+  test('other three-option shapes get REMI_MULTI', () => {
+    // A suggestion-derived middle option that does not say "always".
+    expect(
+      selectPushCategory([
+        yes('1', 'Yes'),
+        yes('2', 'Yes, allow directory /w', { suggestionIndex: 0 }),
+        no('3', 'No'),
+      ]),
+    ).toBe('REMI_MULTI');
+    // Order matters: the titles are positional.
+    expect(selectPushCategory([yesAlwaysOpt, yes('1', 'Yes'), no('3', 'No')])).toBe('REMI_MULTI');
+    expect(selectPushCategory([yesOpt, noOpt, yesOpt])).toBe('REMI_MULTI');
+    // The workflow-grant action is a control marker, not a Yes.
+    expect(
+      selectPushCategory([
+        yes('1', 'Yes'),
+        {
+          ...pick('__grant', 'Allow planning actions for this session'),
+          sessionGrant: 'github-issue-planning',
+        },
+        no('2', 'No'),
+      ]),
+    ).toBe('REMI_MULTI');
+  });
+
+  test('an AskUserQuestion-style three-option card gets REMI_MULTI', () => {
+    expect(
+      selectPushCategory([pick('1', 'PostgreSQL'), pick('2', 'MySQL'), pick('3', 'MongoDB')]),
+    ).toBe('REMI_MULTI');
+  });
+
+  test("ExitPlanMode's picks get REMI_MULTI, with or without label-derived flags", () => {
+    const labels = [
+      'Yes, and auto-accept edits',
+      'Yes, and manually approve edits',
+      'No, keep planning',
+    ];
+    expect(selectPushCategory(labels.map((l, i) => pick(String(i + 1), l)))).toBe('REMI_MULTI');
+    // "Yes, and ..." in the FIRST position is not a one-time Yes.
+    expect(
+      selectPushCategory([
+        yes('1', labels[0] as string),
+        yes('2', labels[1] as string),
+        no('3', labels[2] as string),
+      ]),
+    ).toBe('REMI_MULTI');
+  });
+
+  test('four options get REMI_MULTI; fewer than two or more than four get none', () => {
     expect(selectPushCategory([yesOpt, noOpt, yesOpt, noOpt])).toBe('REMI_MULTI');
     expect(selectPushCategory([yesOpt])).toBeUndefined();
     expect(selectPushCategory([])).toBeUndefined();
+    expect(selectPushCategory([yesOpt, noOpt, yesOpt, noOpt, yesOpt])).toBeUndefined();
   });
 
   test('#718: the honest 2-option Yes/No fallback selects REMI_YN, not REMI_YNA', () => {
-    // Category correctness falls out of the count-based mapping once the
-    // daemon's fallback is a genuine 2-set instead of a fabricated 3-set —
-    // no dispatcher change was needed, this just pins the observable result.
+    // The fallback is a genuine [Yes, No] 2-set instead of a fabricated
+    // 3-set, so the meaning-based mapping (#1134) gives it REMI_YN.
     expect(selectPushCategory([yesOpt, noOpt])).toBe('REMI_YN');
   });
 });
@@ -389,8 +501,8 @@ describe('NotificationDispatcher.maybePush', () => {
     expect(pushed[0]?.opts['dynOptions']).toBeUndefined();
   });
 
-  // #626: an AskUserQuestion must NOT get a count-based category (REMI_YN/YNA
-  // would mislabel arbitrary picks as Yes/No); the lock screen opens the app.
+  // #626: an AskUserQuestion must NOT get a category (REMI_YN/YNA would
+  // mislabel arbitrary picks as Yes/No); the lock screen opens the app.
   test('multi-question (AskUserQuestion) pushes with NO category', () => {
     register(false);
     deviceTokens.set('a', { token: 'a', platform: 'ios', registeredAt: 1, connectionId: SID });
@@ -398,7 +510,7 @@ describe('NotificationDispatcher.maybePush', () => {
     const mq: Question = {
       id: 'q1' as UUID,
       text: 'Collab PI: Who is the PI?',
-      // Three options would normally select REMI_YNA — proving the kind guard wins.
+      // Three picks would otherwise get REMI_MULTI; the kind guard gives none.
       options: [
         { value: '1', label: 'Scott', isRecommended: true, isYes: false, isNo: false },
         { value: '2', label: 'Arnaud', isRecommended: false, isYes: false, isNo: false },
