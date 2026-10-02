@@ -2160,7 +2160,7 @@ describe('setupHookBridge', () => {
       expect(noticeLog.map((n) => n.reason)).toEqual(['hold_deadline_no_terminal']);
     });
 
-    test("daemon mode: Claude closing the request (an auto-mode fallback's 2:00 auto-deny) dismisses the card before the long deadline", async () => {
+    test('daemon mode: Claude closing the request with no hook (No, Esc, its own timeout) dismisses the card before the long deadline', async () => {
       const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
       const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
       const { handle } = build({
@@ -2184,13 +2184,57 @@ describe('setupHookBridge', () => {
         claude.signal,
       );
       const card = cards()[0] as Question;
-      // Claude's auto-deny closes the held request.
+      // Claude closes the held request without firing a hook.
       claude.abort();
       expect(cards()).toHaveLength(0);
       expect(broadcastResolvedLog).toEqual([{ questionId: card.id, reason: 'cancelled' }]);
       // Not a deadline: no "answer at the terminal" notice.
       expect(noticeLog).toEqual([]);
       expect(handle.gate.answerHeld(card.id, { kind: 'cancel' })).toBe('closed');
+      expect(ptySubmits).toEqual([]);
+    });
+
+    test("daemon mode: an auto-mode fallback's 2:00 auto-deny arrives as PermissionDenied and dismisses the card before the long deadline", async () => {
+      // Measured live on Claude Code 2.1.287 (#1126): the auto-deny fires
+      // PermissionDenied for the held call 120 s after the prompt, before
+      // any close of the request reaches remi.
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
+      const { handle } = build({
+        realTracker: true,
+        realMessageApi: true,
+        hasLocalTerminal: false,
+        holdMs: 3_540_000,
+        broadcastResolvedLog,
+        noticeLog,
+      });
+      lockSession('claude-daemon-autodeny-pd');
+      const call = {
+        session_id: 'claude-daemon-autodeny-pd',
+        tool_name: 'Bash',
+        tool_input: { command: 'curl -X POST https://example.com' },
+        permission_mode: 'auto',
+      };
+      hookServer.fire('PreToolUse', {
+        ...call,
+        hook_event_name: 'PreToolUse',
+        tool_use_id: 'tu-autodeny',
+      });
+      const hook = hookServer.firePermission({ ...call, hook_event_name: 'PermissionRequest' });
+      const card = cards()[0] as Question;
+      hookServer.fire('PermissionDenied', {
+        ...call,
+        hook_event_name: 'PermissionDenied',
+        tool_use_id: 'tu-autodeny',
+        reason: 'The server-side auto mode classifier judged this action dangerous',
+      });
+      expect(cards()).toHaveLength(0);
+      expect(broadcastResolvedLog).toEqual([{ questionId: card.id, reason: 'cancelled' }]);
+      expect(noticeLog).toEqual([]);
+      // The hold ends with the empty response; Claude has already decided.
+      expect(await hook).toBe('passthrough');
+      const yes = card.options.find((o) => o.isYes) as QuestionOption;
+      expect(handle.gate.answerHeld(card.id, { kind: 'option', option: yes })).toBe('closed');
       expect(ptySubmits).toEqual([]);
     });
 

@@ -243,8 +243,9 @@ the card at once by id (`holdForAnswer` -> `onHeldEscalate` ->
   `[prompts] daemon_hold_seconds` (default 3540, 5 to 3540) and registers
   the hook with a 3600 s timeout (`DAEMON_PERMISSION_REQUEST_HOOK_TIMEOUT`);
   its notice says `remi attach`, the only way left to answer. An auto-mode
-  fallback prompt still auto-denies at 2:00 there; Claude closes the
-  request and the abort path dismisses the card. The notice never claims the
+  fallback prompt still auto-denies at 2:00 there; Claude fires
+  `PermissionDenied` for it (measured), which dismisses the card and pushes
+  a `harness_denied` notice. The notice never claims the
   prompt is still waiting (a terminal Yes may already have answered it); it
   is dismissed when the prompt resolves, and a late phone answer does not
   resolve it.
@@ -428,7 +429,7 @@ those two are both exactly `{token, title, body}`.
 | `question` | permission prompt, AskUserQuestion, plan approval; an "answer at the terminal" notice (hold deadline, wrapper-mode subagent dialog; no actions, own collapse key) | yes, `pushPrefs.questions` |
 | `turn_complete` | `Stop` after a turn ≥ `turn_complete_min_seconds` (#914) | yes, `pushPrefs.turnComplete` |
 | `subagent_alert` | a background agent matched `[notifications] subagent_alert` | no — the pattern list IS the control |
-| `harness_denied` | `PermissionDenied`: Claude Code's auto-mode classifier blocked a call (#1126); informational, never a card | yes, `pushPrefs.harnessDenied` |
+| `harness_denied` | `PermissionDenied`: Claude Code's auto-mode classifier blocked a call, or auto-denied an unanswered fallback prompt at 2:00 (#1126); informational, never a card | yes, `pushPrefs.harnessDenied` |
 | `dismiss` | quiet `content-available` clearing a resolved card | **no, deliberately** |
 
 - **A client cannot mute APNS on its own.** The path is daemon → Worker → APNS

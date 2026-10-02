@@ -1026,7 +1026,10 @@ export function setupHookBridge(
     binder.onHookEvent(input);
     if (!binder.admits(input)) return;
     // A classifier denial fires no tool call, so PreToolUse/PostToolUse never
-    // observe it -- this is the ONLY external-resolution signal for it. Same
+    // observe it -- this is the ONLY external-resolution signal for it. It
+    // also fires when an auto-mode fallback prompt is auto-denied at 2:00
+    // (measured on 2.1.287, #1126), and then it is what closes that held
+    // card, before any close of the request reaches the hook server. Same
     // funnel, same signature-then-tool_use_id matching as PreToolUse/
     // PostToolUse above; a no-op when nothing open matches (the codebase-wide
     // rule "every ambiguous path resolves toward showing the user" -- NOT
@@ -1045,7 +1048,8 @@ export function setupHookBridge(
     );
     autoApproveGate.noteToolUseEnded(input.tool_use_id);
     // #1126: tell the phone why the agent changed course. Never a card:
-    // a classifier block fires no PermissionRequest, so nothing waits.
+    // a classifier block fires no PermissionRequest, so nothing waits (a
+    // fallback prompt's auto-deny also lands here, after its card closed).
     try {
       deps.onHarnessDenied?.(input);
     } catch (err) {

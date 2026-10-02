@@ -26,8 +26,9 @@ prompts any more.
   `PermissionRequest` hook is registered with a 3600 s timeout. After it the
   phone is told to use `remi attach`.
 - **`harness_denied` push**: when Claude Code's auto-mode classifier blocks a
-  tool call (`PermissionDenied`), the phone gets an informational notice with
-  the reason. Never a card; a per-device setting, on by default.
+  tool call, or auto-denies an unanswered fallback prompt after 2:00
+  (`PermissionDenied`), the phone gets an informational notice with the
+  reason. Never a card; a per-device setting, on by default.
 - **`REMI_HOME`**: an absolute path that relocates remi's whole state
   directory (default `~/.remi`), for running remi from source without touching
   real state.
