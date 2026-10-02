@@ -605,6 +605,11 @@ export function setupHookBridge(
   // card the phone would answer by typing. The one wiring point, here where
   // both the gate and the tracker exist.
   tracker.setHookPromptProbe(() => autoApproveGate.hasOpenHookPrompt());
+  // #1126: a held card may wait up to daemon_hold_seconds; the
+  // pending-question cap must never evict it while its hook is held.
+  sessionRegistry.setQuestionEvictionGuard(sessionId, (questionId) =>
+    autoApproveGate.isHeld(questionId),
+  );
 
   // Subagent/team-member events carry `agent_id` (confirmed via
   // REMI_HOOK_DEBUG capture 2026-04-16). They share main's session_id and

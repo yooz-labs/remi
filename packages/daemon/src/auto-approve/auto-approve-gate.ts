@@ -118,8 +118,9 @@ export type HeldAnswer =
 export type HeldAnswerOutcome = 'resolved' | 'refused' | 'closed' | 'unknown';
 
 /** How many ended binary-prompt ids `answerHeld` remembers as `closed`.
- *  The registry keeps at most 8 pending cards, so a late answer for any card
- *  a client can still show is far inside this window. */
+ *  The registry keeps at most 8 pending cards beyond the held ones (a held
+ *  card is never evicted), so a late answer for any card a client can still
+ *  show is far inside this window. */
 const CLOSED_HOLD_MEMORY = 256;
 
 /** Longest deny message passed to Claude. A phone keyboard can paste a
@@ -535,6 +536,12 @@ export class AutoApproveGate {
   /** Mark a prompt as waiting in the terminal, keeping its first time. */
   private markTerminalPrompt(questionId: UUID): void {
     if (!this.terminalPrompts.has(questionId)) this.terminalPrompts.set(questionId, Date.now());
+  }
+
+  /** True while `questionId`'s hook is held for a phone answer (#1126). The
+   *  pending-question cap never evicts such a card. */
+  isHeld(questionId: UUID): boolean {
+    return this.holds.has(questionId);
   }
 
   /**

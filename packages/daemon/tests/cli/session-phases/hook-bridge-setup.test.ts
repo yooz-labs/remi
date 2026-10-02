@@ -2302,6 +2302,40 @@ describe('setupHookBridge', () => {
       expect(ptySubmits).toEqual([]);
     });
 
+    test('daemon mode: ten concurrent held cards are all kept past the pending cap, oldest still answerable', async () => {
+      const { handle } = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+        hasLocalTerminal: false,
+      });
+      lockSession('claude-many-held');
+      const hooks: Array<Promise<PermissionDecision>> = [];
+      for (let i = 0; i < 10; i++) {
+        hooks.push(
+          hookServer.firePermission({
+            session_id: 'claude-many-held',
+            hook_event_name: 'PermissionRequest',
+            agent_id: `agent-${i}`,
+            agent_type: 'general-purpose',
+            tool_name: 'Bash',
+            tool_input: { command: `touch held-${i}.txt` },
+          }),
+        );
+      }
+      // Ten background agents each waiting on the phone: the cap (8) must
+      // not drop a card whose hook is still held.
+      const held = cards();
+      expect(held).toHaveLength(10);
+      const oldest = held[0] as Question;
+      expect(oldest.text).toContain('touch held-0.txt');
+      const yes = oldest.options.find((o) => o.isYes && !o.isNo) as QuestionOption;
+      expect(handle.gate.answerHeld(oldest.id, { kind: 'option', option: yes })).toBe('resolved');
+      expect(await hooks[0]).toBe('allow');
+      handle.gate.forceRelease('test');
+      await Promise.all(hooks);
+    });
+
     test('daemon mode: held, an answerable card at once, the phone answer is the hook response', async () => {
       const { handle, tracker } = build({
         realTracker: true,

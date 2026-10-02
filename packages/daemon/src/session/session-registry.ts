@@ -194,6 +194,9 @@ export interface ManagedSession {
  */
 export class SessionRegistry {
   private session: ManagedSession | null = null;
+  /** Per-session "never evict this question" reads (#1126), see
+   *  `setQuestionEvictionGuard`. */
+  private readonly evictionGuards = new Map<UUID, (questionId: UUID) => boolean>();
   private readonly events: SessionRegistryEvents;
   private readonly orphanTimeoutMs: number;
   private readonly maxReplayHistory: number;
@@ -234,9 +237,15 @@ export class SessionRegistry {
     // `currentQuestions` getter below can close over it directly, rather than
     // reading `this.session.questionStore` (which would not exist yet at
     // getter-definition time inside the same literal).
-    const questionStore = new QuestionStore(sessionId, {
-      onQuestionsChanged: (questions) => this.events.onQuestionsChanged?.(sessionId, questions),
-    });
+    const questionStore = new QuestionStore(
+      sessionId,
+      {
+        onQuestionsChanged: (questions) => this.events.onQuestionsChanged?.(sessionId, questions),
+      },
+      // #1126: read live, so a guard installed before or after this
+      // registration (the hook bridge is set up first) applies.
+      { isPinned: (questionId) => this.evictionGuards.get(sessionId)?.(questionId) ?? false },
+    );
     this.session = {
       sessionId,
       name,
@@ -534,6 +543,16 @@ export class SessionRegistry {
     if (this.session === null || this.session.sessionId !== sessionId) return;
     this.session.lastActivityAt = now();
     this.session.questionStore.clear(signal, 'SessionRegistry.clearQuestions');
+  }
+
+  /**
+   * Install the read that pins a question against the pending-question cap's
+   * eviction (#1126): the permission gate pins every card whose hook it
+   * holds. May be called before the session registers. See
+   * `QuestionStoreOptions.isPinned`.
+   */
+  setQuestionEvictionGuard(sessionId: UUID, isPinned: (questionId: UUID) => boolean): void {
+    this.evictionGuards.set(sessionId, isPinned);
   }
 
   /** Look up a pending question by id (null if not awaitable). */
