@@ -141,6 +141,22 @@ describe('askUserQuestionDecision', () => {
     });
   });
 
+  test('a multi-select answer is keyed by the raw question text and joins the raw labels', () => {
+    const input = {
+      questions: [
+        { question: 'Pick\nany', multiSelect: true, options: [{ label: 'A  b' }, 'C', 'D  e'] },
+      ],
+    };
+    const result = askUserQuestionDecision(input, [{ questionIndex: 0, optionIndices: [2, 0] }]);
+    expect(result).toEqual({
+      ok: true,
+      decision: {
+        behavior: 'allow',
+        updatedInput: { ...input, answers: { 'Pick\nany': 'A  b, D  e' } },
+      },
+    });
+  });
+
   test('free text answers a single-select question, trimmed and bounded', () => {
     const one = { questions: [TWO_QUESTIONS.questions[0]] };
     const typed = askUserQuestionDecision(one, [
