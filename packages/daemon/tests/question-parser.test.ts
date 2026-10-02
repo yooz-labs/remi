@@ -21,6 +21,7 @@ import {
   parseNumberedOptions,
   parseQuestion,
 } from '../src/parser/question-parser.ts';
+import { WRAPPED_DIRECTORY_DIALOG } from './parser/fixtures/claude-dialogs.ts';
 
 const fixture = (name: string): string =>
   readFileSync(join(import.meta.dir, 'parser', 'fixtures', name), 'utf8');
@@ -64,6 +65,55 @@ describe('parseQuestion() - selection-box chrome (Claude prompts)', () => {
     expect(result.question?.options.length).toBe(2);
     expect(result.question?.options[0]?.label).toBe('Allow');
     expect(result.question?.options[1]?.label).toBe('Deny');
+  });
+});
+
+/**
+ * #1134: a phone card's numbering now comes from this parse, so an option the
+ * parse drops is an option the phone cannot pick, and a 2-option card is sent
+ * with the static Yes/No push category whatever its second option says.
+ * Claude wraps a label that is wider than the terminal onto the next row(s);
+ * that row used to end the option block, losing every later option.
+ */
+describe('parseQuestion() - wrapped option labels (#1134)', () => {
+  test('the live wrapped dialog parses all three options, "No" included', () => {
+    const result = parseQuestion(WRAPPED_DIRECTORY_DIALOG);
+    expect(result.detected).toBe(true);
+    const options = result.question?.options ?? [];
+    expect(options.map((o) => o.value)).toEqual(['1', '2', '3']);
+    expect(options[0]?.label).toBe('Yes');
+    // Both rows of the wrapped label belong to option 2.
+    expect(options[1]?.label).toContain('/private/tmp/remi-e5/');
+    expect(options[1]?.label).toContain('e5-classic-detached-no');
+    expect(options[1]?.label).toContain('project');
+    // The footer after the last option is not absorbed into it.
+    expect(options[2]?.label).toBe('No');
+  });
+
+  test('a spaced wrap joins the rows with a space', () => {
+    const result = parseQuestion(
+      [
+        'Do you want to proceed?',
+        '❯ 1. Yes',
+        '  2. Yes, and always allow access to /a/very/long/path',
+        '     /continued/here from this project',
+        '  3. No',
+        ' Esc to cancel',
+      ].join('\n'),
+    );
+    expect(result.question?.options.map((o) => o.label)).toEqual([
+      'Yes',
+      'Yes, and always allow access to /a/very/long/path /continued/here from this project',
+      'No',
+    ]);
+  });
+
+  test('a non-option line still ends the block when the sequence does not resume', () => {
+    // A prose line, then a separate list starting at 1: not a continuation.
+    const result = parseQuestion(
+      ['❯ 1. Yes', '  2. No', 'Some prose Claude printed', '1. an unrelated list'].join('\n'),
+    );
+    expect(result.question?.options.map((o) => o.label)).toEqual(['Yes', 'No']);
   });
 });
 

@@ -141,8 +141,24 @@ function parseChromePrompt(lines: readonly string[]): Question | null {
   for (let i = 0; i < lines.length; i++) {
     const match = CHROME_OPTION.exec(lines[i] ?? '');
     if (!match) {
-      // A non-option line ends the contiguous block once we have started.
-      if (options.length > 0) break;
+      if (options.length === 0) continue;
+      // A label too long for the terminal wraps onto the next row(s) (#1134:
+      // "2. Yes, and always allow access to <long path> from this project").
+      // Those rows belong to the option above when the block resumes with the
+      // NEXT number after them. Ending the block there instead dropped every
+      // later option, including "No", from the parse that a card's numbering
+      // now comes from. Anything else (the footer, prose, another list) still
+      // ends the block.
+      const resumeAt = indexOfNextOption(lines, i + 1, expected);
+      if (resumeAt === -1) break;
+      const continuation = lines
+        .slice(i, resumeAt)
+        .map((l) => l.replace(/^[\s│|]+|[\s│|]+$/g, ''))
+        .filter((l) => l.length > 0)
+        .join(' ');
+      const last = options[options.length - 1] as QuestionOption;
+      options[options.length - 1] = { ...last, label: `${last.label} ${continuation}`.trim() };
+      i = resumeAt - 1;
       continue;
     }
 
@@ -177,6 +193,18 @@ function parseChromePrompt(lines: readonly string[]): Question | null {
 
   const questionText = firstOptionIdx > 0 ? extractPromptText(lines.slice(0, firstOptionIdx)) : '';
   return createQuestion(questionText || 'Select an option:', options, true);
+}
+
+/** Index of the first option line at or after `from` when it is numbered
+ *  `expected`, else -1 (no further option line, or one that does not
+ *  continue the sequence). */
+function indexOfNextOption(lines: readonly string[], from: number, expected: number): number {
+  for (let j = from; j < lines.length; j++) {
+    const match = CHROME_OPTION.exec(lines[j] ?? '');
+    if (!match) continue;
+    return Number.parseInt(match[2] ?? '', 10) === expected ? j : -1;
+  }
+  return -1;
 }
 
 /**
