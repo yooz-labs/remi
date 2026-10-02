@@ -2135,7 +2135,7 @@ describe('setupHookBridge', () => {
       const handlers = createInputHandlers({
         sessionRegistry,
         bindingStore,
-        send: () => {},
+        send: () => true,
         isPromptObservedOnPTY: () => tracker.isPromptObservedOnPTY(),
       });
       await handlers.onAnswer('conn-1' as UUID, SID, card.id, no.label);
