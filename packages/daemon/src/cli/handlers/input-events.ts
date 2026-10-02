@@ -400,8 +400,9 @@ function normalizeLabel(label: string): string {
  * numbers as the standing allow.
  *
  * Exact on purpose: the normalized labels (`normalizeLabel`) must be EQUAL,
- * or, for a pick with a description (a question-shaped tool's), equal once
- * its description is appended
+ * or, for a pick with a description (a card built from a tool's `questions`;
+ * a `terminalOnly` card is refused before this check), equal once its
+ * description is appended
  * (the parser folds the description row into the screen label). Nothing
  * looser is safe. A Yes/No class lets "Yes" pass for "Yes, and don't ask
  * again" and "Yes, use pnpm" for "Yes, use npm"; a shared prefix lets

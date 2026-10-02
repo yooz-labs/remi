@@ -302,10 +302,13 @@ resolves the hook with a structured `updatedInput` built in
   subagent routing and the chat guard are the binary prompt's.
 
 A **multi-choice string-label permission**, or a question-shaped tool that is
-not AskUserQuestion, is still answered `passthrough` and pushed by id at once,
-and its answer is typed behind the #1134 guard (no structured hook answer was
-verified for either). A structured `selections` answer for such a card is
-refused, never typed. An open card is also resolved by a matching `PreToolUse`/`PostToolUse`/
+not AskUserQuestion, is still answered `passthrough` and pushed by id at once
+(no structured hook answer was verified for either). The permission's answer
+is typed behind the #1134 guard. The question-shaped tool's card is
+`terminalOnly` (its dialog is Claude's permission prompt, not its questions):
+no Telegram buttons, no lock-screen category, and every phone answer is
+refused with the terminal wording, never typed. A structured `selections`
+answer for a card no hold stands behind is refused, never typed. An open card is also resolved by a matching `PreToolUse`/`PostToolUse`/
 `PermissionDenied`, a lead `Stop` or new user prompt (main), `SubagentStop`
 (that agent), `SessionEnd`, a transcript rotation, or `remi unstick`; a
 dismissal is broadcast only for a card that was actually pushed. `remi
@@ -368,7 +371,8 @@ STALE_ANSWER, card consumed, trace reason in parentheses). A refusal means
   (`observedPromptOptions`, wired by `trackerScreenDeps`) (`option-not-on-screen`),
   and that screen option's label must EQUAL the card option's after
   normalization (lowercase, all whitespace and box characters removed), or,
-  for a pick with a description (a question-shaped tool's), equal it with
+  for a pick with a description (a card built from a tool's `questions`; a
+  `terminalOnly` card is refused before this check), equal it with
   the description appended (`option-mismatch`). Nothing looser: it fails
   closed; the accepted cost is false refusals on short, partial-frame or
   reworded labels. A pushed-by-id card keeps the hook's numbering, so this

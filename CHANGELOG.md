@@ -22,7 +22,8 @@ is typed into the terminal for either.
   question two answers, is refused and the question keeps waiting.
 - **Plan approval by meaning.** A plan card shows the plan (in full in the
   app, its start in the push; on Telegram in full when it fits, otherwise
-  cut with a note and without buttons) with three choices: approve with edits auto-accepted, approve with edits
+  cut with a note and without buttons, and without buttons when the card
+  carries no plan text) with three choices: approve with edits auto-accepted, approve with edits
   approved manually, or keep planning (an optional note goes to Claude;
   the app has no field for it yet). Auto mode is not offered from the
   phone; the terminal's dialog still offers it. A background agent's plan
@@ -37,7 +38,13 @@ is typed into the terminal for either.
 - The lock screen answers an AskUserQuestion only when it is one
   single-choice question; any other, and every plan, is answered in the app.
   Telegram offers no buttons for several questions or a multi-select, and
-  its reply to a button says "Sent!" only when the answer was applied.
+  its reply to a button says "Sent!" only when the answer was applied; an
+  answer that fails is reported in the chat.
+- A question-shaped tool other than AskUserQuestion (an MCP tool with
+  `questions`, for example) is answered only in the terminal, where its
+  dialog is Claude's permission prompt: its card shows the questions and
+  says so, has no Telegram buttons or lock-screen actions, and an answer
+  from the app is refused, never typed.
 - A question or plan answered in the terminal clears its card as soon as
   Claude reports the answer (the tool's `PostToolUse`), and Esc there
   clears it at once.
@@ -47,9 +54,8 @@ is typed into the terminal for either.
 - The AskUserQuestion keystroke driver and the screen watcher for answers
   typed in the terminal, and the hardcoded plan-approval labels that no
   longer matched Claude's dialog.
-- A structured answer for a card that is not held (a multi-choice prompt,
-  a question-shaped tool other than AskUserQuestion) is refused instead of
-  being typed.
+- A structured answer for a card that is not held (a multi-choice
+  permission prompt) is refused instead of being typed.
 
 #### Known limits
 
@@ -193,7 +199,8 @@ source of several security bugs (#536, #1060, #1063).
   (#1134). (Since #1126 above, binary permission prompts are answered through
   the held hook instead, and since #1127 AskUserQuestion and plan approval
   too; typing remains only for hook-less prompts and multi-choice
-  permissions.) With nothing held, an answer is typed into Claude's dialog only
+  permissions, and a question-shaped tool other than AskUserQuestion is
+  answered only in the terminal.) With nothing held, an answer is typed into Claude's dialog only
   when a prompt is on screen and the chosen option's label exactly matches
   the screen's option at that number (whitespace and case aside); free text
   is refused on a card that takes a choice. A refusal consumes the card and

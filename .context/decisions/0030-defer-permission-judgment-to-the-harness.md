@@ -7,7 +7,7 @@
 > **Amended 2026-10-02 by [ADR 0031](0031-held-hook-answers-with-native-dialog-visible.md)** (#1126).
 > The decision stands: remi judges nothing.
 > What changed is the relay: a binary prompt is now held and answered through its hook response while Claude's dialog stays visible, subagent prompts depend on whether the session has a local terminal, and nothing is typed into a hook-backed binary prompt.
-> Its #1127 amendment holds AskUserQuestion and ExitPlanMode the same way and answers them with a structured `updatedInput`; only hook-less prompts and multi-choice string-label permissions are still typed.
+> Its #1127 amendment holds AskUserQuestion and ExitPlanMode the same way and answers them with a structured `updatedInput`; only hook-less prompts and multi-choice string-label permissions are still typed, and a question-shaped tool other than AskUserQuestion (an MCP tool with `questions`, for example) is answered only in the terminal.
 > The "Relay" and "Subagent prompts" bullets below describe the state right after #1125.
 
 ## Context
