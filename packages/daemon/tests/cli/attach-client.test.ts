@@ -288,7 +288,6 @@ describe('runAttachClient', () => {
       sessionId: targetSessionId,
       repo: 'remi',
       branch: 'develop',
-      autoApprove: { inFlight: 0, sinceS: 0, lastVerdict: 'none', lastVerdictAtS: 0 },
       attached: true,
       queuedCount: 0,
       ...overrides,
@@ -334,9 +333,11 @@ describe('runAttachClient', () => {
     );
   });
 
-  // #753: a HELD permission (Model B) blocks Claude inside the hook, so no
-  // raw PTY bytes for the prompt ever exist — the LIVE question message is
-  // the only signal an attached terminal gets, and it must render.
+  // #753: a question pushed through the `held` path is pushed at hook time,
+  // before Claude paints anything (built for held permissions, Model B, whose
+  // prompts never painted; since #1125 only multi-choice / design escalations
+  // use it) — the LIVE question message is the first signal an attached
+  // terminal gets, and it must render.
   test('renders a banner for a LIVE held question (held prompts never paint the PTY)', async () => {
     setupOutput();
     const targetSessionId = generateId();
@@ -567,12 +568,6 @@ describe('runAttachClient', () => {
                     sessionId: targetSessionId as UUID,
                     repo: 'remi',
                     branch: 'develop',
-                    autoApprove: {
-                      inFlight: 0,
-                      sinceS: 0,
-                      lastVerdict: 'none',
-                      lastVerdictAtS: 0,
-                    },
                     attached: true,
                     queuedCount: 0,
                   }),

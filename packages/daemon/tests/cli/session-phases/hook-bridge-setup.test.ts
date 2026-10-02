@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import type { ProtocolMessage, Question, UUID } from '@remi/shared';
+import type { Question, UUID } from '@remi/shared';
 import { generateId } from '@remi/shared';
 import { MessageAPI } from '../../../src/api/message-api.ts';
 import { QuestionPresenceTracker } from '../../../src/api/question-presence-tracker.ts';
@@ -61,18 +61,16 @@ class RecordingHookServer {
   }
 }
 
-/** PTYSession fake that tracks submitInput calls (drives the auto-approve inject assertions).
- *  When throws=true, submitInput rejects to exercise the inject() cancellation path. */
-function fakePTY(submits: string[], opts: { throws?: boolean } = {}): PTYSession {
+/** PTYSession fake that records submitInput calls. Since #1125 nothing in
+ *  the bridge types into the PTY on its own, so most tests assert it stays
+ *  empty; the push-on-render tests assert the phone's answer reaches it. */
+function fakePTY(submits: string[]): PTYSession {
   return {
     id: generateId(),
     isRunning: true,
     write: () => {},
     submitInput: async (content: string) => {
       submits.push(content);
-      if (opts.throws) {
-        throw new Error('test: submitInput synthetic failure');
-      }
     },
     close: async () => {},
   } as unknown as PTYSession;
@@ -202,7 +200,6 @@ describe('setupHookBridge', () => {
   function build(
     opts: {
       throwOnQuestionTimes?: number;
-      submitInputThrows?: boolean;
       /** Use a real QuestionPresenceTracker (no PTY-visible passthrough)
        *  so tests can exercise the actual record-pending / status-clear
        *  contract through the bridge wiring. Defaults to the passthrough
@@ -212,9 +209,6 @@ describe('setupHookBridge', () => {
        *  1.5s) so a test can drive the real hooked-session orphan path without
        *  a long wait. Only meaningful with `realTracker`. */
       orphanDebounceMs?: number;
-      /** Capture every message the bridge sends via sendAndRecord (#576: the
-       *  auto-approve status broadcasts). Defaults to a no-op send. */
-      sendLog?: ProtocolMessage[];
       /** Capture every broadcastQuestionResolved call (#585, P7). Each entry is
        *  the (questionId, reason) the bridge forwarded. Defaults to undefined
        *  (dep not wired). */
@@ -311,7 +305,7 @@ describe('setupHookBridge', () => {
     sessionRegistry.registerSession(
       SID,
       sessionWorkingDirectory,
-      fakePTY(ptySubmits, opts.submitInputThrows ? { throws: true } : {}),
+      fakePTY(ptySubmits),
       localMessageApi,
     );
 
@@ -330,11 +324,8 @@ describe('setupHookBridge', () => {
         ...(opts.subagentViews ? { subagentViews: opts.subagentViews } : {}),
         ...(opts.broadcastResolvedLog
           ? {
-              broadcastQuestionResolved: (
-                _sid: UUID,
-                questionId: UUID,
-                reason: 'auto_approved' | 'auto_denied' | 'cancelled',
-              ) => opts.broadcastResolvedLog?.push({ questionId, reason }),
+              broadcastQuestionResolved: (_sid: UUID, questionId: UUID, reason: 'cancelled') =>
+                opts.broadcastResolvedLog?.push({ questionId, reason }),
             }
           : {}),
         ...(opts.foreignEscalationLog
@@ -351,7 +342,7 @@ describe('setupHookBridge', () => {
         sessionId: SID,
         workingDirectory: sessionWorkingDirectory,
         messageApi: localMessageApi,
-        sendAndRecord: opts.sendLog ? (m) => opts.sendLog?.push(m) : () => {},
+        sendAndRecord: () => {},
         // PassthroughTracker is the default: it collapses
         // recordPendingHook into an immediate push so the legacy
         // "bridge emitted a question to the consumer" assertions via
@@ -553,7 +544,7 @@ describe('setupHookBridge', () => {
       tool_input: { command: 'ls' },
     });
 
-    // #807: never evaluated, so never auto-approved. Passthrough, no inject.
+    // #807: never evaluated. Passthrough, nothing typed into the PTY.
     expect(decision).toBe('passthrough');
     expect(ptySubmits).toEqual([]);
   });
@@ -625,8 +616,9 @@ describe('setupHookBridge', () => {
 
     // First hook event arrives while sibling exists -> must NOT lock onto
     // claude-A; events are deferred to the mtime fallback. PreToolUse during
-    // this window must also be filtered out (the headline #321 symptom: no
-    // [AutoApprove], no status updates).
+    // this window must also be filtered out (the headline #321 symptom: the
+    // auto-approve log and status updates went missing; #1125 removed the
+    // evaluator, the filter stays).
     hookServer.fire('Notification', {
       session_id: 'claude-A',
       transcript_path: path.join(tmpDir, 'a.jsonl'),
@@ -724,7 +716,7 @@ describe('setupHookBridge', () => {
     //
     // Test setup: seed a sibling and pre-populate sessionStore as the
     // fallback would have done. Fire a PermissionRequest for our session
-    // and assert the auto-approve inject fires (proving filterBySession
+    // and assert it is escalated as a question (proving filterBySession
     // adopted the lock).
     fs.mkdirSync(liveSessionsRegistry.dirPath, { recursive: true });
     fs.writeFileSync(
@@ -1243,8 +1235,8 @@ describe('setupHookBridge', () => {
       message: '',
     });
 
-    // No auto-approve: the listener falls through to escalateToUser,
-    // which calls handlePermissionRequest -> onQuestion ->
+    // The gate escalates every main-agent request (#1125): escalateToUser
+    // calls handlePermissionRequest -> onQuestion ->
     // tracker.recordPendingHook with the filtered options.
     hookServer.fire('PermissionRequest', {
       session_id: 'claude-mixed',
@@ -1588,9 +1580,10 @@ describe('setupHookBridge', () => {
       }
     }
 
-    test('no auto-approve: the prompt reaches the phone when it renders, numbered like the screen', async () => {
-      // The default install (auto_approve.enabled = false) cannot hold, so the
-      // gate answers 'passthrough' and Claude renders its native prompt at once.
+    test('a binary prompt reaches the phone when it renders, numbered like the screen', async () => {
+      // Nothing holds the hook (#1125; before it, the default install with
+      // auto_approve.enabled = false), so the gate answers 'passthrough' and
+      // Claude renders its native prompt at once.
       // Before `pushOnRender`, the stashed hook record made `isGateOwnedCycle`
       // read that render as already pushed and suppress it: the card never
       // reached the phone. Driven through `onOrphanPTYPrompt`, the routing
@@ -1707,8 +1700,8 @@ describe('setupHookBridge', () => {
     });
   });
 
-  test('#710: no auto-approve + active Task context but UNTAGGED PermissionRequest now escalates, not denies', async () => {
-    // Mirrors the escalate case above for the no-service branch.
+  test('#710: active Task context but UNTAGGED PermissionRequest escalates, not denies', async () => {
+    // An untagged request is the main agent's even while a Task is open.
     build();
 
     hookServer.fire('Notification', {

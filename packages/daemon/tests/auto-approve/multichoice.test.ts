@@ -88,9 +88,9 @@ describe('isMultiChoicePermission', () => {
     // Concrete shapes observed live from Claude Code (2026-05-13 onwards).
     // These are typed rule suggestions Claude Code attaches to a normal
     // Bash permission prompt; the user still sees the standard
-    // Yes/Yes-always/No UI. Classifying them as multi-choice + the
-    // default `multichoice = "skip"` regresses every Bash auto-approve
-    // into a silent escalate. Lock the binary route.
+    // Yes/Yes-always/No UI. Classifying them as multi-choice would push
+    // every Bash prompt at hook time instead of when it renders (#1121;
+    // before #1125 it also skipped the evaluator). Lock the binary route.
     expect(
       isMultiChoicePermission('Bash', [
         {
@@ -132,9 +132,9 @@ describe('isMultiChoicePermission', () => {
 
   test('single non-binary string label (with or without objects) routes to multi-choice', () => {
     // A 1-option string label has no meaningful binary mapping and must
-    // route to multi-choice so the safe escalate path runs. The LLM's
-    // ALWAYS-ESCALATE rules then prevent a nonsensical pick from a
-    // 1-item menu. Without this property, a future Claude Code payload
+    // route to multi-choice so the card is pushed with the menu as Claude
+    // sent it (nothing picks on the user's behalf since #1125). Without
+    // this property, a future Claude Code payload
     // like `["Continue"]` would slip into the binary path.
     expect(isMultiChoicePermission('CustomTool', ['Continue'])).toBe(true);
     // Mixed with rule-suggestion objects — same outcome.

@@ -1021,7 +1021,7 @@ describe('createInputHandlers', () => {
       );
       // No updateQuestion call: currentQuestion stays null. APNS tokens persist
       // across disconnect (#286), so a delayed lock-screen tap can deliver an
-      // answer for a question that has already been auto-approved or replaced.
+      // answer for a question that has already been answered or replaced.
       // The handler must NOT submit anything to the live PTY in that case, and
       // must signal the drop back to the iOS client so the user is not left
       // wondering whether their tap landed.

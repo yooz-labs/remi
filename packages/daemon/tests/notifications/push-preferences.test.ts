@@ -122,7 +122,7 @@ describe('wantsPush', () => {
 
   test('subagent_alert is never filtered, even with everything muted', () => {
     // It already has a user-facing control: it fires only on the patterns the
-    // user put in `auto_approve.subagent_alert`.
+    // user put in `[notifications] subagent_alert`.
     const muted = entry('t', { questions: false, turnComplete: false });
     expect(wantsPush(muted, 'subagent_alert')).toBe(true);
   });

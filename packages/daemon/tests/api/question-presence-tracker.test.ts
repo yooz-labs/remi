@@ -156,8 +156,8 @@ describe('QuestionPresenceTracker', () => {
   });
 
   it('hook only — no push until PTY confirms or status clears', () => {
-    // Auto-approve in progress: hook fired, LLM is evaluating. We have
-    // not yet seen the prompt on screen. No push must fire yet.
+    // The hook fired but the prompt has not rendered on screen yet. No
+    // push must fire yet.
     const pushes: Question[] = [];
     const tracker = new QuestionPresenceTracker((q) => {
       pushes.push(q);
@@ -171,10 +171,10 @@ describe('QuestionPresenceTracker', () => {
   });
 
   it('hook then status transitions to executing — pending dropped, no push', () => {
-    // Auto-approve approved silently: inject '1', Claude resumed → status
-    // changes to 'executing'. The prompt the hook described is gone from
-    // screen; the iOS user must not be poked for a prompt that no longer
-    // exists.
+    // The prompt was answered in the terminal (or Claude's own rules
+    // allowed the call) and Claude resumed → status changes to 'executing'.
+    // The prompt the hook described is gone from screen; the iOS user must
+    // not be poked for a prompt that no longer exists.
     const pushes: Question[] = [];
     const tracker = new QuestionPresenceTracker((q) => {
       pushes.push(q);
@@ -297,10 +297,10 @@ describe('QuestionPresenceTracker', () => {
   });
 
   it('clearPending — drops a pending hook record without pushing', () => {
-    // Used by the auto-approve cancelled branch: Claude advanced past the
-    // prompt without a status transition we can observe (e.g. user typed
-    // a slash command). Without clearPending, the pending hook would
-    // merge stale option labels onto the next unrelated prompt.
+    // Used on a transcript rotation (hook-bridge-setup's `onRotation`):
+    // Claude moved on without a status transition we can observe. Without
+    // clearPending, the pending hook would merge stale option labels onto
+    // the next unrelated prompt.
     const pushes: Question[] = [];
     const tracker = new QuestionPresenceTracker((q) => {
       pushes.push(q);
@@ -677,12 +677,11 @@ describe('QuestionPresenceTracker', () => {
   });
 
   describe('orphan PTY prompt fallback (#712)', () => {
-    // Short real timer (no fake-timer precedent in this suite) — see
-    // auto-approve-gate.test.ts's `holdMs: 30` pattern.
+    // Short real timer (no fake-timer precedent in this suite).
     const DEBOUNCE_MS = 20;
     const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-    it('genuine orphan (no live questions, no pending hooks, no eval) pushes after the debounce', async () => {
+    it('genuine orphan (no live questions, no pending hooks) pushes after the debounce', async () => {
       const pushes: Question[] = [];
       const tracker = new QuestionPresenceTracker(
         (q) => {

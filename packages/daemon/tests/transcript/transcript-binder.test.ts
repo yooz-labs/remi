@@ -1364,7 +1364,8 @@ describe('TranscriptBinder', () => {
   // #593: a subagent PermissionRequest that shares our bound transcript must be
   // admitted even when its session_id differs from our lock (parallel/team
   // subagents, empty 00000000 id) and even when the transcript marker is not yet
-  // readable — otherwise it is dropped to passthrough and never auto-approved.
+  // readable — otherwise it is dropped as foreign and never parked or pushed
+  // (at the time, never auto-approved; the evaluator was removed in #1125).
   // Covered here without a costly interactive repro: drive `admits` directly.
   // -------------------------------------------------------------------------
   describe('#593 subagent admits — connection-independent ownership', () => {
