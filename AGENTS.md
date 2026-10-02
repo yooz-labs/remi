@@ -193,7 +193,10 @@ screen's own prompt.
 (#1134). When a hook record merges onto a parsed prompt
 (`QuestionPresenceTracker.consumeAndMerge`), the card's options are the
 parse's options, labels and values unchanged; the hook contributes id, text,
-agent, source, summary and tool metadata, never options. Until #1134 the
+agent, source, summary and tool metadata (including `allowsFreeText`: a
+permission dialog takes a pick, not text), never options. The parse carries
+no yes/no flags, so the merge sets `isYes`/`isNo` from labels that start with
+the exact word "Yes" or "No". Until #1134 the
 hook's options won unless they were the Yes/No fallback, and they are not the
 screen's: live, `addDirectories` + `setMode` suggestions built a 4-option card
 over a 3-option dialog, the phone's "No" typed `4`, Claude ignored it, and the
@@ -203,8 +206,12 @@ release a hold, is typed only if the menu the tracker last observed on screen
 (`observedPromptOptions`) shows that value; otherwise it is refused like a
 stale answer and nothing is typed. This covers cards pushed by id before
 their render (passthrough multi-choice, stamped `held` but holding nothing),
-which still carry the hook's numbering. Free text is typed as before. Held
-cards, answered through the hook response, keep the hook's options. The
+which still carry the hook's numbering. Free text is refused too when the card
+has options, does not take free text, and a numbered menu is on screen (the
+menu ignores the text the same way); it is typed when the card takes text or
+no menu is on screen. Free-form `user_input` (including a Telegram text
+reply) is a separate path and is not checked. Held cards, answered through
+the hook response, keep the hook's options. The
 parser also keeps an option whose label wraps onto a second row; it used to
 end the option list there and drop every later option, "No" included.
 
@@ -259,7 +266,7 @@ amended #1024 2026-08-08, see [ADR 0004](.context/decisions/0004-pty-as-arbiter-
 
 - Daemon sends WebSocket `question` (in-app display) AND APNS push (lock screen).
 - Signaling server (Cloudflare Worker) relays push payloads to APNS.
-- iOS categories `REMI_YN`, `REMI_YNA`, `REMI_MULTI` registered in `AppDelegate.swift`.
+- iOS categories `REMI_YN`, `REMI_YNA`, `REMI_MULTI` registered in `AppDelegate.swift`. Their actions are positional (`OPT_i` sends option i) and the first two have hardcoded titles, so `selectPushCategory` picks by meaning, not count (#1134): `REMI_YN` only for exactly [one-time Yes, No], `REMI_YNA` only for exactly [one-time Yes, standing Yes ("always", "don't ask again" or "Yes, and ..."), No], every other 2-4 option card `REMI_MULTI` (generic titles the Notification Service Extension replaces with the real labels).
 
 **Push classes and who can mute them** (#968):
 
