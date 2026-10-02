@@ -52,6 +52,9 @@ export interface SessionHandlerDeps {
    * the tracker observes. A Stop types `/exit` + Enter, and into a Claude
    * dialog that Enter confirms the highlighted option, usually "1. Yes", so
    * a Stop while a prompt is up does not type and force-closes instead.
+   * This stays so even while a `terminal` entry may be stale (its dialog
+   * answered No at the terminal, which fires no hook): a forced close types
+   * nothing, so it is always safe, only less graceful (#1155 lead decision).
    * Absent, or null (nothing up): `/exit` is typed as before.
    */
   promptUp?: (sessionId: UUID) => PromptUp | null;

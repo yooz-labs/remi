@@ -16,8 +16,10 @@ Seams between the changes below, found by a review of all of them together.
   numbered menu on screen. Stop used to read only the screen, so it could type
   `/exit` + Enter into a held dialog, where the Enter confirms "Yes"; it now
   force-closes the session while a prompt is up. Chat text is refused then
-  too; while a prompt waits in the terminal the refusal says to answer it
-  there, since its card is gone.
+  too; while a prompt waits in the terminal (its card is gone) the refusal
+  says "Answer it there, press Esc from the app, or run remi unstick." An Esc
+  from the app (the Esc button, Telegram's `/interrupt`, an attach client's
+  Esc key) now clears a main-agent prompt waiting in the terminal at once.
 - **Background-agent alerts (`subagent_alert`) fire for the commands they are
   for.** Claude does not ask about a call its own allow rules permit, so the
   alert, which listened for permission requests, never fired for the
@@ -39,9 +41,15 @@ Seams between the changes below, found by a review of all of them together.
 
 #### Known limits
 
-- A prompt answered No in the terminal fires no hook, so for up to the hold
-  length afterwards Stop force-closes instead of typing `/exit`, and chat is
-  refused.
+- A prompt handed to the terminal counts as up for the hold length from when
+  it was handed over, not from when it appeared: up to 90 seconds in a
+  terminal session (about twice the hold in all), up to about 59 minutes in a
+  daemon or hub session. A No answered at the terminal fires no hook, so in
+  that window Stop force-closes instead of typing `/exit` and chat is refused,
+  until the prompt is answered, Esc is sent from the app, or `remi unstick`
+  runs; an Esc typed at a terminal session's own terminal is not seen. After
+  that window, a dialog still on screen whose screen reading was cleared is no
+  longer guarded.
 - A background agent's alert arrives when its command finishes, so a long
   command's alert comes at its end.
 - Whether a foreground (synchronous) subagent's dialog renders while its

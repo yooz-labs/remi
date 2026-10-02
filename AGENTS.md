@@ -416,8 +416,10 @@ Before #1155 Stop read only the screen parse and the chat guard only the parse
 and a main hold, so a dialog the parse missed (or that a text status had
 cleared) got the typed Enter. While a prompt is up the chat guard types nothing
 and the sender gets an `error` with code `PROMPT_WAITING`, its message by
-source (`PROMPT_WAITING_HELD_MESSAGE`, `PROMPT_WAITING_TERMINAL_MESSAGE`, which
-points at the terminal since the card is gone, or `PROMPT_WAITING_MESSAGE`:
+source (`PROMPT_WAITING_HELD_MESSAGE`; `PROMPT_WAITING_TERMINAL_MESSAGE`,
+"Claude is waiting on a prompt in the terminal. Answer it there, press Esc from
+the app, or run remi unstick.", since the card is gone; or
+`PROMPT_WAITING_MESSAGE`:
 "Claude is waiting on a prompt. Answer it from its card or in the terminal (Esc
 dismisses it)."; all in `@remi/shared` with `createPromptWaitingError`), plus a
 trace record (`input_refused`, reason `chat-into-held-prompt`,
@@ -463,11 +465,22 @@ hook-backed prompt the gate's half of `promptUp` still refuses then. (4) The
 no-tracker branch is effectively dead in production: `cli.ts` builds a tracker
 for every session, hook server or not. It exists for a caller that does not
 wire `promptUp` (tests, a future entry point) and it fails open (types the
-text), the opposite of the answer guards above. (5) A `terminal` entry lasts
-the session's hold length even when its dialog was answered No in the
-terminal (no hook fires for that), so a Stop in that window force-closes
-instead of typing `/exit`, and chat is refused until it expires or a hook
-signal closes it.
+text), the opposite of the answer guards above. (5) A `terminal` entry counts
+for the session's hold length from when it is MARKED (the deadline release,
+the early hand-back, or the subagent dialog's render), not from the prompt's
+start: in wrapper mode up to `hold_seconds` (90 s) after a deadline release,
+about twice the hold from the start; in daemon or hub mode up to
+`daemon_hold_seconds` (about 59 minutes). A No answered at the terminal fires
+no hook, so the entry can outlive its dialog; in that window Stop
+force-closes instead of typing `/exit` (kept by lead decision: a forced close
+is always safe) and chat is refused. Ways out: an answer a hook sees (the tool
+runs, `Stop`, a new prompt; a subagent's next tool call or `SubagentStop`), a
+bare Esc sent through remi (web Esc button, Telegram `/interrupt`, an attach
+Esc key), which clears the MAIN agent's entries (`noteTerminalEscape`,
+#1155), and `remi unstick`. An Esc typed at a wrapper session's own terminal
+does not pass through remi and is not seen. The opposite direction: once an
+entry ages out, a dialog still on screen whose parse a text status cleared is
+no longer guarded (chat would be typed into it, Stop would type `/exit`).
 
 The parser joins a label's wrapped rows (and an AskUserQuestion description
 row) onto the option above, at most two rows, never across footer rows

@@ -52,6 +52,16 @@ export interface InputHandlerDeps {
    */
   answerHeld?: (sessionId: UUID, questionId: UUID, answer: HeldAnswer) => HeldAnswerOutcome;
   /**
+   * A raw input that is a bare Escape was written to this session's
+   * terminal (#1155): the web client's Esc button, Telegram's `/interrupt`,
+   * an attach client's Esc key. It dismissed the dialog on screen without a
+   * hook, so the session's gate resolves the main agent's prompts waiting in
+   * the terminal (`SessionGateHandle.noteTerminalEscape`), which otherwise
+   * keep refusing chat for the rest of the hold length. Wired by
+   * `gateAnswerDeps`. Called only after the write succeeded. Absent => no-op.
+   */
+  onTerminalEscape?: (sessionId: UUID) => void;
+  /**
    * Is a prompt up on this session's screen, and by which source (#1155)?
    * The chat guard refuses chat text while it is not null: a held main
    * prompt, a hook-backed prompt waiting in the terminal, or a numbered
@@ -216,10 +226,12 @@ export type InputHandlers = ReturnType<typeof createInputHandlers>;
 
 /**
  * What a chat refusal tells the sender, by the source that says a prompt is
- * up (#1155). While a hook is held, or its prompt was handed to the
- * terminal, the dialog may already be answered: a Yes in the terminal ends
- * the hold only when its tool finishes, so neither message claims a dialog
- * is on screen (#1126, #1144). A handed-back prompt has no card any more.
+ * up (#1155). While a hook is held the dialog may already be answered (a Yes
+ * in the terminal ends the hold only when its tool finishes), so the held
+ * message does not claim a dialog is on screen (#1126, #1144). A prompt
+ * handed to the terminal has no card any more, and a No answered there fires
+ * no hook, so its message names the ways out: answer it there, an Esc sent
+ * from the app (`onTerminalEscape`), or `remi unstick`.
  */
 const PROMPT_UP_MESSAGE: Readonly<Record<PromptUp, string>> = {
   held: PROMPT_WAITING_HELD_MESSAGE,
@@ -272,11 +284,12 @@ export function trackerScreenDeps(
 export interface GateAnswerHandle {
   retireQuestion(questionId: UUID): void;
   answerHeld(questionId: UUID, answer: HeldAnswer): HeldAnswerOutcome;
+  noteTerminalEscape(): void;
 }
 
 /**
- * The gate deps (`retireQuestion`, `answerHeld`) backed by each session's
- * permission gate (#1126). The ONE wiring for them, shared by `cli.ts` and
+ * The gate deps (`retireQuestion`, `answerHeld`, `onTerminalEscape`) backed
+ * by each session's permission gate (#1126, #1155). The ONE wiring for them, shared by `cli.ts` and
  * the tests in the same way as `trackerScreenDeps`, so a test of the held
  * answer path exercises the production wiring. No gate for the session
  * reads as `unknown` (nothing held) and retires nothing. Whether a held
@@ -284,11 +297,12 @@ export interface GateAnswerHandle {
  */
 export function gateAnswerDeps(
   gateFor: (sessionId: UUID) => GateAnswerHandle | undefined,
-): Pick<InputHandlerDeps, 'retireQuestion' | 'answerHeld'> {
+): Pick<InputHandlerDeps, 'retireQuestion' | 'answerHeld' | 'onTerminalEscape'> {
   return {
     retireQuestion: (sessionId, questionId) => gateFor(sessionId)?.retireQuestion(questionId),
     answerHeld: (sessionId, questionId, answer) =>
       gateFor(sessionId)?.answerHeld(questionId, answer) ?? 'unknown',
+    onTerminalEscape: (sessionId) => gateFor(sessionId)?.noteTerminalEscape(),
   };
 }
 
@@ -528,6 +542,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     send,
     retireQuestion,
     answerHeld,
+    onTerminalEscape,
     promptUp,
     onQuestionResolved,
     isPromptCurrent,
@@ -1233,6 +1248,18 @@ export function createInputHandlers(deps: InputHandlerDeps) {
           // a client that reports success on its Escape (Telegram's
           // "Interrupt sent") reported it falsely when the terminal was gone.
           send(connectionId, createInputNotDeliveredError(session.sessionId, messageId));
+          return;
+        }
+        // #1155: a bare Escape dismissed the dialog on screen, and Claude
+        // fires no hook for that. Tell the gate, so a main prompt it handed
+        // to the terminal stops refusing chat now, not at the end of the
+        // hold length. A longer sequence (an arrow key) is not a dismissal.
+        if (content === ESC) {
+          try {
+            onTerminalEscape?.(session.sessionId);
+          } catch (err) {
+            logError(`[Input] terminal escape bookkeeping failed: ${errorToString(err)}`);
+          }
         }
         return;
       }

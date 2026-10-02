@@ -306,6 +306,10 @@ export interface SessionGateHandle {
    *  session's hold length (#1126)? Forwards to
    *  `AutoApproveGate.hasOpenHookPrompt`; read by `promptUpDeps` (#1155). */
   hasOpenHookPrompt: () => boolean;
+  /** A bare Escape reached the terminal through remi (#1155): resolve the
+   *  main agent's prompts waiting in the terminal. Forwards to
+   *  `AutoApproveGate.noteTerminalEscape`. */
+  noteTerminalEscape: () => void;
   /** Is `questionId`'s hook held for the phone (#1126)? Forwards to
    *  `AutoApproveGate.isHeld`; read by the tracker's live-question check
    *  (`hasLiveQuestionOnScreen`). */
@@ -1298,6 +1302,7 @@ export function setupHookBridge(
       answerHeld: (questionId, answer) => autoApproveGate.answerHeld(questionId, answer),
       hasMainHold: () => autoApproveGate.hasMainHold(),
       hasOpenHookPrompt: () => autoApproveGate.hasOpenHookPrompt(),
+      noteTerminalEscape: () => autoApproveGate.noteTerminalEscape(),
       isHeld: (questionId) => autoApproveGate.isHeld(questionId),
       forceRelease: (reason) => autoApproveGate.forceRelease(reason),
     },

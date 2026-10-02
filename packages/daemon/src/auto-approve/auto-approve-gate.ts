@@ -577,6 +577,28 @@ export class AutoApproveGate {
     }
   }
 
+  /**
+   * A bare Escape reached the terminal through remi (#1155 lead decision):
+   * the web client's Esc button, Telegram's `/interrupt`, or an attach
+   * client's Esc key. It dismisses the dialog on screen, and Claude fires no
+   * hook for that, so the MAIN agent's prompts waiting in the terminal are
+   * resolved now (their notice dismissed) instead of counting for the rest
+   * of the hold length; the chat guard and Stop then fall back to the
+   * screen parse. Two things are left alone: a live hold (Claude closes the
+   * held request itself, which the abort path handles) and a subagent's
+   * entry (cleared by that agent's next tool call, `SubagentStop` or
+   * `SessionEnd`). An Escape typed at the local terminal of a wrapper
+   * session never passes through remi, so it does not reach here.
+   */
+  noteTerminalEscape(): void {
+    for (const qid of [...this.terminalPrompts.keys()]) {
+      if (this.holds.has(qid)) continue;
+      const sig = this.openQuestionSignatures.get(qid);
+      if (sig?.isSubagent === true) continue;
+      this.resolveSupersededQuestion(qid, 'terminal-escape', sig?.toolName);
+    }
+  }
+
   /** Mark a prompt as waiting in the terminal, keeping its first time. */
   private markTerminalPrompt(questionId: UUID): void {
     if (!this.terminalPrompts.has(questionId)) this.terminalPrompts.set(questionId, Date.now());

@@ -23,6 +23,29 @@
  * status cleared, or a prompt released at its deadline) could receive typed
  * text.
  *
+ * How long `terminal` lasts (#1155 review). An entry counts for the
+ * session's hold length from when it is MARKED (the deadline release, the
+ * early hand-back, or the subagent dialog's render), not from when the
+ * prompt appeared:
+ *   - wrapper mode, `[prompts] hold_seconds` (default 90): up to 90 s after
+ *     a deadline release, so about twice the hold from the prompt's start;
+ *   - daemon or hub mode, `[prompts] daemon_hold_seconds` (default 3540): up
+ *     to about 59 minutes after the release.
+ * A No answered at the terminal fires no hook, so within that window the
+ * entry can outlive its dialog. Ways out: an answer the hook sees (the tool
+ * runs, `Stop`, a new user prompt; a subagent's next tool call or
+ * `SubagentStop`), a bare Esc sent through remi (the web Esc button,
+ * Telegram's `/interrupt`, an attach client's Esc key), which clears the main
+ * agent's entries (`noteTerminalEscape`), and `remi unstick`. An Esc typed at
+ * a wrapper session's own terminal does not pass through remi, so it is not
+ * seen. The opposite direction: once an entry ages out, a dialog still on
+ * screen whose parse was cleared (a text status guess) is no longer guarded;
+ * chat would be typed into it and Stop would type `/exit`.
+ *
+ * Stop stays on this signal even while an entry may be stale (lead
+ * decision): a forced close types nothing, so it is always safe, only less
+ * graceful than `/exit`.
+ *
  * `promptUpDeps` is the ONE wiring: `cli.ts` builds it once and spreads it
  * into both handler factories, and the tests use the same helper, so a test
  * of either guard exercises the production signal.

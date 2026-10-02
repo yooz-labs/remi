@@ -4819,6 +4819,88 @@ describe('setupHookBridge', () => {
       expect(ptySubmits).toEqual(['thanks', '/exit']);
       expect(sessionRegistry.getSession(SID)).toBeDefined();
     });
+
+    /** A main prompt released to the terminal at its hold deadline, with
+     *  nothing observed on screen. */
+    async function releasedToTerminal(tag: string) {
+      const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
+      const built = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+        holdMs: 300,
+        noticeLog,
+      });
+      lockSession(tag);
+      expect(await hookServer.firePermission(bashCall(tag, 'touch esc.txt'))).toBe('passthrough');
+      expect(noticeLog.map((n) => n.reason)).toEqual(['hold_deadline']);
+      return { ...built, noticeLog, ...handlersFor(built) };
+    }
+
+    test('the refusal for a prompt in the terminal names every way out', async () => {
+      const { input, refusal } = await releasedToTerminal('claude-1155-message');
+      await input.onUserInput(CONN, SID, 'hello?', false);
+      expect(refusal()?.message).toBe(
+        'Claude is waiting on a prompt in the terminal. Answer it there, press Esc from the app, or run remi unstick.',
+      );
+    });
+
+    test('a bare Esc from the app clears a main prompt handed to the terminal: chat is typed, Stop types /exit', async () => {
+      const { input, session, refusal, noticeLog } = await releasedToTerminal('claude-1155-esc');
+      await input.onUserInput(CONN, SID, 'first', false);
+      expect(refusal()?.message).toBe(PROMPT_WAITING_TERMINAL_MESSAGE);
+
+      // The web Esc button, Telegram /interrupt and an attach Esc key all
+      // send exactly this raw input.
+      await input.onUserInput(CONN, SID, '\x1b', true);
+      expect(ptySubmits).toEqual(['write:\x1b']);
+      // The prompt is resolved: its "answer at the terminal" notice goes.
+      expect(noticeLog.map((n) => n.reason)).toEqual(['hold_deadline', 'dismissed']);
+
+      await input.onUserInput(CONN, SID, 'second', false);
+      session.onKillSessionRequest(CONN, SID, REQ);
+      expect(ptySubmits).toEqual(['write:\x1b', 'second', '/exit']);
+    });
+
+    test('an arrow key is not a dismissal: the prompt keeps refusing chat', async () => {
+      const { input, refusal } = await releasedToTerminal('claude-1155-arrow');
+      await input.onUserInput(CONN, SID, '\x1b[B', true);
+      await input.onUserInput(CONN, SID, 'still there?', false);
+      expect(ptySubmits).toEqual(['write:\x1b[B']);
+      expect(refusal()?.message).toBe(PROMPT_WAITING_TERMINAL_MESSAGE);
+    });
+
+    test('remi unstick clears a prompt handed to the terminal', async () => {
+      const { input, handle } = await releasedToTerminal('claude-1155-unstick');
+      handle.gate.forceRelease('test');
+      await input.onUserInput(CONN, SID, 'after unstick', false);
+      expect(ptySubmits).toEqual(['after unstick']);
+    });
+
+    test("an Esc leaves a subagent's dialog in the terminal alone (main prompts only)", async () => {
+      const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
+      const built = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+        orphanDebounceMs: 5,
+        noticeLog,
+      });
+      lockSession('claude-1155-sub-esc');
+      await hookServer.firePermission({
+        ...bashCall('claude-1155-sub-esc', 'rm -rf build'),
+        agent_id: 'agent-bg',
+        agent_type: 'code-reviewer',
+      });
+      built.tracker.onOrphanPTYPrompt(parseQuestion(WRAPPED_DIRECTORY_DIALOG).question as Question);
+      built.tracker.onStatusChange('thinking');
+      const { input, refusal } = handlersFor(built);
+      await input.onUserInput(CONN, SID, '\x1b', true);
+      await input.onUserInput(CONN, SID, 'status?', false);
+      expect(ptySubmits).toEqual(['write:\x1b']);
+      expect(refusal()?.message).toBe(PROMPT_WAITING_TERMINAL_MESSAGE);
+      expect(noticeLog.map((n) => n.reason)).toEqual(['subagent']);
+    });
   });
 
   /**

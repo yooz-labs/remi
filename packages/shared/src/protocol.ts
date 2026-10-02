@@ -640,13 +640,15 @@ export const PROMPT_WAITING_HELD_MESSAGE =
 /**
  * The `message` of a `PROMPT_WAITING` error sent while a hook-backed prompt's
  * answer belongs to the terminal (#1155): a hold released at its deadline or
- * handed back early, or a background agent's dialog in a terminal session.
- * Its card is gone, so the message points at the terminal only, and it says
- * "may": a No answered there fires no hook, so the daemon cannot tell when
- * the dialog closed, and a Yes may already be running its command.
+ * handed back early, or a subagent's dialog in a terminal session. Its card
+ * is gone, and a No answered at the terminal fires no hook, so the daemon
+ * cannot see that dialog close; the message names every way out (lead
+ * decision): answering it there, an Esc sent from the app (the web Esc
+ * button, Telegram's `/interrupt`), which clears a main-agent prompt at
+ * once, and `remi unstick`.
  */
 export const PROMPT_WAITING_TERMINAL_MESSAGE =
-  'Claude may be waiting on a prompt in the terminal or finishing an approved step; answer it there.';
+  'Claude is waiting on a prompt in the terminal. Answer it there, press Esc from the app, or run remi unstick.';
 
 /**
  * Details attached to a `PROMPT_WAITING` error. `messageId` is the refused
