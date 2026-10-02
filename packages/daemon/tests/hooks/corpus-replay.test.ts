@@ -79,13 +79,12 @@
  *   {mainOnly:true})` sweeps every still-open MAIN escalation, and
  *   `cancelStaleForAgent` (SubagentStop) sweeps every still-open escalation
  *   for that exact agent. Those two are the assertions below.
- * - **`StopFailure`-sourced cards are excluded from every assertion here.**
- *   `hook-bridge-setup.ts`'s own `StopFailure` listener comment says so
- *   explicitly: "#799 deliberately does NOT clear open escalations here...
- *   Known residual leak, tracked as #802." Reporting that as a NEW finding
- *   would misrepresent an already-filed, already-understood gap as this
- *   PR's discovery. `source` is unset on a StopFailure question, which is
- *   what every filter below keys on to exclude it.
+ * - **`StopFailure` registers no card (#1153), and that is asserted.** It used
+ *   to emit a source-less "Retry?" card that was excluded from every
+ *   assertion here (#799 deliberately does not clear open escalations on it,
+ *   tracked as #802). Now a failed turn is a push, never a question, so the
+ *   loop below checks that each replayed `StopFailure` leaves the question
+ *   store exactly as it found it.
  *
  * ## A real phantom this harness found (#948, fixed)
  *
@@ -237,7 +236,7 @@ function fakePTY(): PTYSession {
  * Real `MessageAPI`, instrumented to record the `QuestionRegistrationOutcome`
  * (#888 criterion iii, PR #945) behind every `handleQuestion` call -- both
  * the tracker's push path (`pushHeldHook` -> `held: true`) and the bridge's
- * direct-emit path for a source-less StopFailure question. `super.handleQuestion`
+ * direct-emit path (an elicitation card). `super.handleQuestion`
  * is the REAL implementation; this only observes its return value from
  * outside, the same non-invasive pattern as the sibling test file's
  * `PassthroughTracker extends QuestionPresenceTracker`.
@@ -387,8 +386,7 @@ function replayEvent(hookServer: ReplayHookServer, rawRecord: CorpusRecord): voi
 // Assertions
 // ---------------------------------------------------------------------------
 
-/** MAIN-context, permission-request-sourced questions currently in the store
- *  (StopFailure's source-less cards are excluded -- see module doc). */
+/** MAIN-context, permission-request-sourced questions currently in the store. */
 function mainPermissionQuestions(rig: ReplayRig): Question[] {
   const current = rig.sessionRegistry.getSession(rig.remiSessionId)?.currentQuestions;
   if (!current) return [];
@@ -398,11 +396,17 @@ function mainPermissionQuestions(rig: ReplayRig): Question[] {
 }
 
 /** Every permission-request-sourced question currently in the store,
- *  main or subagent (StopFailure excluded, same as above). */
+ *  main or subagent. */
 function allPermissionQuestions(rig: ReplayRig): Question[] {
   const current = rig.sessionRegistry.getSession(rig.remiSessionId)?.currentQuestions;
   if (!current) return [];
   return [...current.values()].filter((q) => q.source === 'permission_request');
+}
+
+/** Ids of every question currently in the store, any source. */
+function questionIds(rig: ReplayRig): UUID[] {
+  const current = rig.sessionRegistry.getSession(rig.remiSessionId)?.currentQuestions;
+  return current ? [...current.keys()] : [];
 }
 
 function describeQuestion(q: Question): string {
@@ -507,7 +511,17 @@ describe('hook corpus replay (#888 criterion iv)', () => {
       const rig = buildReplayRig();
       try {
         events.forEach((event, i) => {
+          const questionsBefore = [...questionIds(rig)];
           replayEvent(rig.hookServer, event);
+
+          // A failed turn is a push, never a card (#1153): replaying a real
+          // StopFailure must not add (or remove) a question.
+          if (event['hook_event_name'] === 'StopFailure') {
+            expect(
+              [...questionIds(rig)],
+              `StopFailure at event ${i} of session ${corpusSessionId.slice(0, 8)} changed the question store`,
+            ).toEqual(questionsBefore);
+          }
 
           // Checkpoint 1 (non-downsampled resolution signal): immediately
           // after a Stop where Claude is genuinely idling (not intercepted),

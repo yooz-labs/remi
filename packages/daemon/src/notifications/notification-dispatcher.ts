@@ -202,8 +202,8 @@ function normalizeNotificationText(text: string): string {
  * The compact option list shown in the body, e.g. "1. Yes  2. Yes, always
  * 3. No". Uses the real option LABELS (#574, issue 4) so the user sees what
  * they are actually choosing. The prefix is the option's actual `value`, not
- * its positional index, so it stays accurate for non-indexed values like the
- * StopFailure y/n set ("y. Yes  n. No"). Empty when there are no options
+ * its positional index, so it stays accurate for non-indexed values like a
+ * y/n set ("y. Yes  n. No"). Empty when there are no options
  * (free-text prompt) so the body is just the ask.
  */
 function formatOptionList(options: readonly QuestionOption[]): string {

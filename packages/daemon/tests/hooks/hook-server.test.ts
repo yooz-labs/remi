@@ -321,11 +321,11 @@ describe('HookServer', () => {
     const res = await fetch(makeUrl(port), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(makePayload({ hook_event_name: 'StopFailure', error_type: 'timeout' })),
+      body: JSON.stringify(makePayload({ hook_event_name: 'StopFailure', error: 'rate_limit' })),
     });
     expect(res.status).toBe(200);
     expect(received.length).toBe(1);
-    expect(received[0]?.error_type).toBe('timeout');
+    expect(received[0]?.error).toBe('rate_limit');
   });
 
   it('dispatches SessionEnd events', async () => {

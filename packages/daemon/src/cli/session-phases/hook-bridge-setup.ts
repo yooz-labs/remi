@@ -43,8 +43,8 @@
  *     denial fires no tool call, so without this a still-open escalation for
  *     it would linger with no other resolution signal.
  *   - `Elicitation` builds an answerable card (`hookBridge.handleElicitation`,
- *     source `'elicitation'`, direct-emitted like a source-less StopFailure
- *     card) instead of leaving an MCP dialog as a PTY orphan; `elicitationQuestions`
+ *     source `'elicitation'`, direct-emitted, not gate-pushed) instead of
+ *     leaving an MCP dialog as a PTY orphan; `elicitationQuestions`
  *     (below) remembers its `elicitation_id` so a later `ElicitationResult`
  *     can resolve the SAME card by exact id, mirroring PermissionDenied's
  *     "close the lingering-card gap" shape.
@@ -103,8 +103,10 @@ import type {
   HookServer,
   PermissionDeniedHookInput,
   PermissionRequestHookInput,
+  StopFailureHookInput,
 } from '../../hooks/index.ts';
 import type { TerminalNoticeReason } from '../../notifications/notification-dispatcher.ts';
+import { describeTurnFailure } from '../../notifications/turn-failed.ts';
 import type {
   SessionBindingStore,
   SessionRegistry,
@@ -237,6 +239,14 @@ export interface HookBridgeDeps {
    * called only for an admitted event. Absent => no push. Throw-safe here.
    */
   onHarnessDenied?: (input: PermissionDeniedHookInput) => void;
+  /**
+   * A turn in this session ended on an API error (`StopFailure`, #1153):
+   * wired by cli.ts to the session's `NotificationDispatcher.pushTurnFailed`
+   * (the `turn_failed` push). Informational, never a card; called for an
+   * admitted event, after the status went to `idle`. Absent => no push.
+   * Throw-safe here.
+   */
+  pushTurnFailed?: (sessionId: UUID, input: StopFailureHookInput) => void;
 }
 
 export interface HookBridgeArgs {
@@ -535,10 +545,10 @@ export function setupHookBridge(
       //     synthesis after a capture corpus found 0 unpaired occurrences across
       //     4244 events / 5 sessions / one day (see `handleNotification`'s own
       //     comment for the full argument + residual failure mode).
-      // A STANDALONE hook question that no gate pushes (e.g. a Stop-failure "Retry?",
-      // source-less, or an 'elicitation' card, #889) is emitted directly to the
-      // client + lock screen, since the PTY-render push that used to deliver it
-      // is suppressed for hooked sessions.
+      // A STANDALONE hook question that no gate pushes (an 'elicitation' card,
+      // #889) is emitted directly to the client + lock screen, since the
+      // PTY-render push that used to deliver it is suppressed for hooked
+      // sessions.
       if (question.source === 'permission_request') {
         // recordPendingHook only stashes -- no `handleQuestion` call happens
         // here, so there is no registration outcome to report (#888 criterion
@@ -548,6 +558,17 @@ export function setupHookBridge(
         return undefined;
       }
       return messageApi.handleQuestion(question);
+    },
+    // #1153: a turn that ended on an API error. Never a question; the push is
+    // the whole surface. Guarded here, not in the bridge: a throw must not
+    // escape into the hook dispatch loop.
+    onTurnFailed: (input) => {
+      log(`[Hooks] Turn failed (${sessionId}): ${describeTurnFailure(input.error)}`);
+      try {
+        deps.pushTurnFailed?.(sessionId, input);
+      } catch (err) {
+        logError(`[Hooks] turn_failed push failed for ${sessionId}: ${errorToString(err)}`);
+      }
     },
   });
 
@@ -959,14 +980,16 @@ export function setupHookBridge(
   hookServer.on('StopFailure', (input) => {
     binder.onHookEvent(input);
     if (!binder.admits(input)) return;
-    // Question event: a failed Stop hook leaves the agent in an unknown state, so
-    // the bridge emits a "Retry?" card via onQuestion. Like PermissionRequest it
-    // is NOT agent_id-dropped — PTY-presence gating happens downstream in the
-    // tracker (#419).
+    // A turn that ended on an API error (usage or rate limit, authentication,
+    // and similar; #1153). Claude ignores the hook's answer, so this is NOT a
+    // question: the bridge sets the status to idle and raises `onTurnFailed`,
+    // which `pushTurnFailed` turns into one `turn_failed` push per session.
+    // Like PermissionRequest it is NOT agent_id-dropped.
     //
-    // #799 deliberately does NOT clear open escalations here: an unknown-state
-    // agent is exactly the ambiguous signal #799 avoids clearing on (unlike a
-    // clean Stop/SubagentStop). Known residual leak, tracked as #802.
+    // #799 deliberately does NOT clear open escalations here: whether a held
+    // prompt survives an errored turn is as ambiguous a signal as #799 avoids
+    // clearing on (unlike a clean Stop/SubagentStop). Known residual leak,
+    // tracked as #802.
     handlers.onStopFailure?.(input);
   });
 

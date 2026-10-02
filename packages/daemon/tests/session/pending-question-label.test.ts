@@ -59,9 +59,9 @@ describe('buildPendingQuestionLabel (#786/#787)', () => {
     expect(buildPendingQuestionLabel(q)).toBe('Exit plan mode and start implementing?');
   });
 
-  test('a StopFailure question (no source) uses the text verbatim', () => {
-    const q = mkQuestion({ text: 'Session stop failed (timeout). Retry?' });
-    expect(buildPendingQuestionLabel(q)).toBe('Session stop failed (timeout). Retry?');
+  test('a source-less question uses the text verbatim', () => {
+    const q = mkQuestion({ text: 'Continue with the other approach?' });
+    expect(buildPendingQuestionLabel(q)).toBe('Continue with the other approach?');
   });
 
   test('a PTY-fallback question (source pty) uses the text verbatim', () => {

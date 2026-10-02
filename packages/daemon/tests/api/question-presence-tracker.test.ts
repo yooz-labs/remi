@@ -436,7 +436,7 @@ describe('QuestionPresenceTracker', () => {
       expect(pushes[0]?.options).toEqual(ptyQ.options);
     });
 
-    it('a source-less (StopFailure-shaped) question does NOT evict a pending permission_request, but a newer permission_request DOES replace it (FIX 2A)', () => {
+    it('a source-less question does NOT evict a pending permission_request, but a newer permission_request DOES replace it (FIX 2A)', () => {
       const pushes: Question[] = [];
       const tracker = new QuestionPresenceTracker((q) => {
         pushes.push(q);
@@ -444,25 +444,25 @@ describe('QuestionPresenceTracker', () => {
       });
       tracker.recordPendingHook(makePermissionRequestHook('Allow Bash: git push'));
 
-      // A StopFailure "Retry?" card for the same agent carries no source; it
-      // must NOT silently evict the rich permission request (which would leave
-      // the real permission prompt without a push).
-      const stopFailureCard: Question = {
+      // A source-less question for the same agent must NOT silently evict the
+      // rich permission request (which would leave the real permission prompt
+      // without a push).
+      const sourcelessCard: Question = {
         id: generateId(),
-        text: 'Session stop failed (timeout). Retry?',
+        text: 'Continue with the other approach?',
         options: [
           makeOption('Yes', 'y', { isYes: true, isRecommended: true }),
           makeOption('No', 'n', { isNo: true }),
         ],
         allowsFreeText: false,
         isAnswered: false,
-        // source intentionally undefined (StopFailure does not set it)
+        // source intentionally undefined
       };
-      tracker.recordPendingHook(stopFailureCard);
+      tracker.recordPendingHook(sourcelessCard);
 
       tracker.onPTYPromptVisible(makePTYQuestion('Do you want to proceed?'));
       expect(pushes.length).toBe(1);
-      // The permission request survived the StopFailure arrival.
+      // The permission request survived the source-less arrival.
       expect(pushes[0]?.text).toBe('Allow Bash: git push');
 
       // A genuinely new permission cycle (another permission_request) DOES replace it.

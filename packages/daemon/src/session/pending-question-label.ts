@@ -58,7 +58,7 @@ function extractPermissionToolName(text: string): string | null {
  *   - a permission-request question shaped like "Allow <tool>: <command>"
  *     (or its subagent-prefixed variant): "Permission: <tool>"
  *   - everything else (AskUserQuestion/ExitPlanMode toolQuestion prompts,
- *     StopFailure, PTY-parsed fallback prompts): the question text,
+ *     PTY-parsed fallback prompts): the question text,
  *     truncated to `PENDING_QUESTION_LABEL_MAX` characters
  */
 export function buildPendingQuestionLabel(question: Question): string {

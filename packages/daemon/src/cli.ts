@@ -1708,6 +1708,12 @@ async function createNewSession(
         dismissTerminalNotice: (sid, questionId) =>
           sessionNotifiers.get(sid)?.dismissTerminalNotice(sid, questionId),
         onHarnessDenied,
+        // #1153: a turn that ended on an API error is one `turn_failed` push
+        // per session through the session's dispatcher, never a card. The
+        // dispatcher's promise never rejects; fire-and-forget.
+        pushTurnFailed: (sid, input) => {
+          void sessionNotifiers.get(sid)?.pushTurnFailed(input);
+        },
       },
       {
         hookServer,
