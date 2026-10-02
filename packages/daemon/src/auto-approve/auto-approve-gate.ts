@@ -227,10 +227,11 @@ function findDenyOption(options: readonly QuestionOption[]): QuestionOption | un
  * a wrong digit answers the wrong thing).
  *
  * `ptyOptions` (what the parser read off the ACTUAL screen) is preferred over
- * `renderedOptions` (the merged card's, which may be the hook's own set): the
- * value submitted is a 1-based index into the prompt as drawn, so the screen
- * is the ground truth for numbering. The merged set is the fallback for
- * prompt shapes the parser could not enumerate.
+ * `renderedOptions` (the merged card's): the value submitted is a 1-based
+ * index into the prompt as drawn, so the screen is the ground truth for
+ * numbering. Since #1134 the merged card carries the parse's options whenever
+ * the parse has any, so the two differ only when the parse found no options
+ * and the merge kept the hook's set; that set is the fallback here.
  *
  * Exported for direct unit testing of the mapping, independent of the gate.
  */

@@ -2062,8 +2062,9 @@ describe('setupHookBridge', () => {
       const registered = cards();
       expect(registered).toHaveLength(1);
       // No usable permission_suggestions, so the hook built the Yes/No fallback;
-      // the #718 merge must keep the screen's three options, or a phone "No"
-      // would type 2 and select the persistent allow.
+      // the merge takes the screen's three options (#1134: a merged card's
+      // options always come from the screen), or a phone "No" would type 2
+      // and select the persistent allow.
       expect(registered[0]?.options.map((o) => o.value)).toEqual(['1', '2', '3']);
       expect(registered[0]?.options[2]?.label.startsWith('No')).toBe(true);
     });
@@ -2130,9 +2131,10 @@ describe('setupHookBridge', () => {
     });
 
     test('a phone "No" types the screen\'s No (3), not the hook fallback\'s 2', async () => {
-      // The answer side of the #718 merge: an unheld card has no hold, so
-      // `handleAnswer` resolves the label to the option VALUE and types it.
-      // The tracker's own presence signal is wired the way cli.ts wires it.
+      // The answer side of the screen-numbered merge (#1134): an unheld card
+      // has no hold, so `handleAnswer` resolves the label to the option VALUE
+      // and types it. The tracker's screen reads are wired through
+      // `trackerScreenDeps`, the same helper cli.ts uses.
       const { tracker } = build({
         realTracker: true,
         realMessageApi: true,

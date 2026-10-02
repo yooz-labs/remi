@@ -448,11 +448,11 @@ export class QuestionPresenceTracker {
    * is NOT evicted by any other shape — only a NEWER `PermissionRequest` (a new
    * permission cycle) may replace it. Claude fires both a PermissionRequest and
    * a generic `Notification(permission_prompt)` for one prompt; the
-   * PermissionRequest carries the tool + command + real option labels ("Allow
-   * Bash: git push", Edit's Yes/Always/No), while the Notification is the bland
-   * "Claude needs your permission to use Bash" with the hardcoded 3-set.
-   * Letting the trailing notification win is exactly what garbled the push
-   * text/options (issues 3+4). A same-agent source-less question (e.g. a
+   * PermissionRequest carries the tool + command ("Allow Bash: git push"),
+   * while the Notification is the bland "Claude needs your permission to use
+   * Bash". Letting the trailing notification win is exactly what garbled the
+   * push text (issues 3+4); since #1134 the merged card's options come from
+   * the screen either way. A same-agent source-less question (e.g. a
    * StopFailure "Retry?" card) must likewise not silently evict the pending
    * permission request and leave the real prompt without a push. Different
    * agents never overwrite each other (#425).
@@ -1427,8 +1427,9 @@ export class QuestionPresenceTracker {
   /**
    * Drop all pending hook records without firing a push, and clear the
    * PTY-presence flag. Used by the auto-approve cancelled branch and on
-   * Claude restart (where the dying session's prompts must not merge stale
-   * labels onto the new session's first prompt).
+   * Claude restart (where the dying session's prompts must not lend their
+   * identity and text to the new session's first prompt; options never come
+   * from a hook record since #1134).
    */
   clearPending(): void {
     this.pending.clear();
