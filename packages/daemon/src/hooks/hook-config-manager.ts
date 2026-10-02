@@ -38,6 +38,13 @@ interface HookMatcher {
  * prompt submission / compaction (#203).
  */
 const PERMISSION_REQUEST_HOOK_TIMEOUT = 600;
+/**
+ * PermissionRequest timeout for a daemon or hub session (#1126 lead
+ * decision): with no terminal of its own, a held prompt can only be answered
+ * from the phone, so remi holds it for up to `[prompts] daemon_hold_seconds`
+ * (at most 3540 s) and the registration must outlast that.
+ */
+export const DAEMON_PERMISSION_REQUEST_HOOK_TIMEOUT = 3600;
 const DEFAULT_HOOK_TIMEOUT = 5;
 /** Per-event timeout overrides (seconds), below `DEFAULT_HOOK_TIMEOUT` (#893,
  *  Epic #885 Risk 3). `UserPromptSubmit`'s listener only drives the binder --
@@ -54,11 +61,21 @@ interface ClaudeSettings {
 export class HookConfigManager {
   private readonly settingsPath: string;
   private readonly hookUrl: string;
+  private readonly permissionRequestTimeout: number;
   private hasWritten = false;
 
-  constructor(projectDir: string, hookServerUrl: string) {
+  /** `opts.permissionRequestTimeout` (seconds) overrides the 600 s
+   *  PermissionRequest registration; a daemon or hub session passes
+   *  `DAEMON_PERMISSION_REQUEST_HOOK_TIMEOUT` (#1126). */
+  constructor(
+    projectDir: string,
+    hookServerUrl: string,
+    opts: { permissionRequestTimeout?: number } = {},
+  ) {
     this.settingsPath = path.join(projectDir, '.claude', 'settings.local.json');
     this.hookUrl = hookServerUrl;
+    this.permissionRequestTimeout =
+      opts.permissionRequestTimeout ?? PERMISSION_REQUEST_HOOK_TIMEOUT;
   }
 
   /**
@@ -71,7 +88,7 @@ export class HookConfigManager {
    */
   private hookTimeoutFor(event: string): number {
     if (event === 'PermissionRequest') {
-      return PERMISSION_REQUEST_HOOK_TIMEOUT;
+      return this.permissionRequestTimeout;
     }
     return SHORT_HOOK_TIMEOUTS[event] ?? DEFAULT_HOOK_TIMEOUT;
   }

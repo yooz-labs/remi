@@ -196,7 +196,12 @@ import {
 } from './config/index.ts';
 import type { LoadedConfig, RemiConfig } from './config/index.ts';
 import { isRemiHomeOverridden, remiHome } from './config/remi-home.ts';
-import { ForeignSessionEscalator, HookConfigManager, HookServer } from './hooks/index.ts';
+import {
+  DAEMON_PERMISSION_REQUEST_HOOK_TIMEOUT,
+  ForeignSessionEscalator,
+  HookConfigManager,
+  HookServer,
+} from './hooks/index.ts';
 import type {
   HookInput,
   PermissionDeniedHookInput,
@@ -1676,7 +1681,12 @@ async function createNewSession(
         broadcastQuestionResolved: onQuestionResolved,
         // #1126: how long a binary prompt's hook waits for the phone, and
         // the "answer at the terminal" notice when it does not come.
-        holdMs: remiConfig.prompts.hold_seconds * 1000,
+        // A wrapper session (local terminal) hands the prompt to its terminal
+        // after hold_seconds; a daemon or hub session has no terminal, so it
+        // keeps it for the phone much longer (daemon_hold_seconds, #1126).
+        holdMs:
+          (passThrough ? remiConfig.prompts.hold_seconds : remiConfig.prompts.daemon_hold_seconds) *
+          1000,
         pushTerminalNotice: (sid, question, reason) =>
           sessionNotifiers.get(sid)?.pushTerminalNotice(sid, question, reason),
         dismissTerminalNotice: (sid, questionId) =>
@@ -2578,7 +2588,11 @@ if (cliDaemonMode) {
 
     if (hookServer) {
       try {
-        hookConfigManager = new HookConfigManager(workingDirectory, hookServer.url);
+        // #1126: a daemon or hub session holds prompts for up to
+        // daemon_hold_seconds, so its hook registration outlasts that.
+        hookConfigManager = new HookConfigManager(workingDirectory, hookServer.url, {
+          permissionRequestTimeout: DAEMON_PERMISSION_REQUEST_HOOK_TIMEOUT,
+        });
         await hookConfigManager.install();
       } catch (err) {
         const msg = errorToString(err);

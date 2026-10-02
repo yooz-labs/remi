@@ -139,11 +139,22 @@ export interface PromptsConfig {
    * hook's registered 600 s timeout.
    */
   readonly hold_seconds: number;
+  /**
+   * The same hold for a daemon or hub session (#1126 lead decision), which
+   * has no terminal of its own: after the deadline only `remi attach` could
+   * answer, so the phone keeps the prompt much longer. 5 to 3540, below the
+   * 3600 s PermissionRequest registration such sessions use. An auto-mode
+   * fallback prompt still auto-denies at 2:00 on Claude's side; that closes
+   * the held request and the card is dismissed.
+   */
+  readonly daemon_hold_seconds: number;
 }
 
 /** Bounds for `prompts.hold_seconds` (#1126). */
 export const HOLD_SECONDS_MIN = 5;
 export const HOLD_SECONDS_MAX = 110;
+/** Bounds for `prompts.daemon_hold_seconds` (#1126). */
+export const DAEMON_HOLD_SECONDS_MAX = 3540;
 
 /**
  * Terminal settings. `notify` and `status_cue` configured the auto-approve
@@ -322,6 +333,9 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // 90 s: long enough to reach a phone in a pocket, short enough to stay
     // under the 2:00 auto-deny of auto-mode fallback prompts (#1126).
     hold_seconds: 90,
+    // 59 min: a daemon or hub session has no terminal, so the phone is the
+    // way to answer; below the 3600 s hook registration (#1126).
+    daemon_hold_seconds: 3540,
   },
 };
 
@@ -538,17 +552,15 @@ function validateNotifications(cfg: NotificationsConfig, configPath: string): vo
  * reach a phone.
  */
 function validatePrompts(cfg: PromptsConfig, configPath: string): void {
-  const v: unknown = cfg.hold_seconds;
-  if (
-    typeof v !== 'number' ||
-    !Number.isFinite(v) ||
-    v < HOLD_SECONDS_MIN ||
-    v > HOLD_SECONDS_MAX
-  ) {
-    throw new Error(
-      `Invalid prompts.hold_seconds in ${configPath}: must be a number of seconds from ${HOLD_SECONDS_MIN} to ${HOLD_SECONDS_MAX}, got ${typeof v === 'string' ? `string "${v}"` : String(v)}. Example: hold_seconds = 90`,
-    );
-  }
+  const check = (key: string, v: unknown, max: number, example: number): void => {
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < HOLD_SECONDS_MIN || v > max) {
+      throw new Error(
+        `Invalid prompts.${key} in ${configPath}: must be a number of seconds from ${HOLD_SECONDS_MIN} to ${max}, got ${typeof v === 'string' ? `string "${v}"` : String(v)}. Example: ${key} = ${example}`,
+      );
+    }
+  };
+  check('hold_seconds', cfg.hold_seconds, HOLD_SECONDS_MAX, 90);
+  check('daemon_hold_seconds', cfg.daemon_hold_seconds, DAEMON_HOLD_SECONDS_MAX, 3540);
 }
 
 /** Validate the terminal cue section has correct runtime types. */
@@ -731,6 +743,9 @@ subagent_alert = [${DEFAULT_CONFIG.notifications.subagent_alert.map((p) => `"${p
 # whichever answer comes first wins. After this many seconds the phone card
 # says "answer at the terminal" and the terminal dialog stays up. 5 to 110.
 hold_seconds = ${DEFAULT_CONFIG.prompts.hold_seconds}
+# The same for a daemon or hub session, which has no terminal of its own
+# (after the deadline only remi attach reaches the prompt). 5 to 3540.
+daemon_hold_seconds = ${DEFAULT_CONFIG.prompts.daemon_hold_seconds}
 `;
 }
 
@@ -808,6 +823,7 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push('');
   lines.push('[prompts]');
   lines.push(`  hold_seconds = ${config.prompts.hold_seconds}`);
+  lines.push(`  daemon_hold_seconds = ${config.prompts.daemon_hold_seconds}`);
 
   return lines.join('\n');
 }

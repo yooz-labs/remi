@@ -3,6 +3,7 @@ export {
   CONFIG_PATH,
   DEFAULT_CONFIG,
   formatConfig,
+  DAEMON_HOLD_SECONDS_MAX,
   generateDefaultConfig,
   HOLD_SECONDS_MAX,
   HOLD_SECONDS_MIN,

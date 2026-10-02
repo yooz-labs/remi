@@ -2143,6 +2143,40 @@ describe('setupHookBridge', () => {
       expect(noticeLog.map((n) => n.reason)).toEqual(['hold_deadline_no_terminal']);
     });
 
+    test("daemon mode: Claude closing the request (an auto-mode fallback's 2:00 auto-deny) dismisses the card before the long deadline", async () => {
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
+      const { handle } = build({
+        realTracker: true,
+        realMessageApi: true,
+        hasLocalTerminal: false,
+        holdMs: 3_540_000,
+        broadcastResolvedLog,
+        noticeLog,
+      });
+      lockSession('claude-daemon-autodeny');
+      const claude = new AbortController();
+      void hookServer.firePermission(
+        {
+          session_id: 'claude-daemon-autodeny',
+          hook_event_name: 'PermissionRequest',
+          tool_name: 'Bash',
+          tool_input: { command: 'curl -X POST https://example.com' },
+          permission_mode: 'auto',
+        },
+        claude.signal,
+      );
+      const card = cards()[0] as Question;
+      // Claude's auto-deny closes the held request.
+      claude.abort();
+      expect(cards()).toHaveLength(0);
+      expect(broadcastResolvedLog).toEqual([{ questionId: card.id, reason: 'cancelled' }]);
+      // Not a deadline: no "answer at the terminal" notice.
+      expect(noticeLog).toEqual([]);
+      expect(handle.gate.answerHeld(card.id, { kind: 'cancel' })).toBe('closed');
+      expect(ptySubmits).toEqual([]);
+    });
+
     test('daemon mode: held, an answerable card at once, the phone answer is the hook response', async () => {
       const { handle, tracker } = build({
         realTracker: true,

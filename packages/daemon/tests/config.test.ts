@@ -7,6 +7,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
+  DAEMON_HOLD_SECONDS_MAX,
   DEFAULT_CONFIG,
   HOLD_SECONDS_MAX,
   HOLD_SECONDS_MIN,
@@ -417,9 +418,24 @@ describe('notifications config (#914)', () => {
 });
 
 describe('prompts.hold_seconds (#1126)', () => {
-  test('defaults to 90 seconds', () => {
+  test('defaults to 90 seconds, and 3540 for a daemon or hub session', () => {
     expect(DEFAULT_CONFIG.prompts.hold_seconds).toBe(90);
-    expect(loadConfig(path.join(TEST_DIR, 'missing.toml')).prompts.hold_seconds).toBe(90);
+    expect(DEFAULT_CONFIG.prompts.daemon_hold_seconds).toBe(3540);
+    expect(loadConfig(path.join(TEST_DIR, 'missing.toml')).prompts).toEqual({
+      hold_seconds: 90,
+      daemon_hold_seconds: 3540,
+    });
+  });
+
+  test('daemon_hold_seconds loads within 5..3540 and is refused outside it', () => {
+    for (const v of [HOLD_SECONDS_MIN, 600, DAEMON_HOLD_SECONDS_MAX]) {
+      fs.writeFileSync(TEST_CONFIG, `[prompts]\ndaemon_hold_seconds = ${v}\n`);
+      expect(loadConfig(TEST_CONFIG).prompts.daemon_hold_seconds).toBe(v);
+    }
+    for (const bad of ['4', '3541', '3600', '"60"']) {
+      fs.writeFileSync(TEST_CONFIG, `[prompts]\ndaemon_hold_seconds = ${bad}\n`);
+      expect(() => loadConfig(TEST_CONFIG)).toThrow(/prompts\.daemon_hold_seconds/);
+    }
   });
 
   test('loads from [prompts], inclusive of both bounds', () => {
