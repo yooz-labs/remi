@@ -13,8 +13,9 @@
 import type { Question } from './types.ts';
 
 /**
- * Every harness remi names. Only `claude` has an implementation; the registry
- * (a later phase of #1161) holds only Claude until the Codex epic lands.
+ * Every harness remi names. Only `claude` has an implementation
+ * (`ClaudeHarness`, built once by the daemon); there is no id-keyed registry
+ * until the Codex epic adds the first caller that looks a harness up by id.
  */
 export const HARNESS_IDS = ['claude', 'codex', 'opencode'] as const;
 

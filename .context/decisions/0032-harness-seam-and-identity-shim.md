@@ -90,3 +90,34 @@ Add the vocabulary and make the store tolerate it, without changing what any dae
   - `grep -rn "getIdentity" packages/*/src` hits only its definition and comments.
   - `packages/shared/tests/harness.test.ts` asserts the `hello_ack`, `question` and `session_list_response` factories emit neither key.
 - ADR 0011 (verify before you describe) is why each wire field says "typed only" instead of describing intent; ADR 0012 (protocol registry) is untouched because no message type is added.
+
+## Phase 2 amendment: the `Harness` descriptor (#1163)
+
+Phase 2 adds the descriptor the daemon asks instead of spelling Claude's values at each call site.
+It changes no behavior: the same bytes are typed, the same arguments are spawned, the same paths are built.
+
+1. **Three members, each with a production caller.**
+   `packages/daemon/src/harness/types.ts` declares `gracefulExitInput: string | null` (Stop types it; `null` takes the existing force-close path), `resumeArgs(harnessSessionId)` (the resume handler's launch arguments) and `transcriptPath(projectPath, harnessSessionId)` (four call sites).
+   `ClaudeHarness` returns `'/exit'`, `['--resume', id]` and `<projectsDir>/<project path with every "/" replaced by "-">/<id>.jsonl`.
+2. **`id` and `command` are not declared, which departs from the issue text.**
+   Issue #1163 listed both, but also said the interface carries only members with a caller in this PR.
+   Nothing calls either: the one `command: 'claude'` site is `pty-session-setup.ts` 203, which the same issue says to leave alone, and nothing branches on a harness id while one harness exists.
+   Phase 3 adds `command` with `createSession`, which is the first thing that spawns through the harness, and the id with the first consumer that has more than one harness to tell apart.
+3. **No registry.**
+   The epic title says "descriptor and registry", but no code looks a harness up by id: a daemon hosts one session, so `cli.ts` builds one `ClaudeHarness` and passes it to the handler factories (`createSessionHandlers`, `createTranscriptHandlers`, `createResumeSessionHandlers`, `makeCurrentSessionResolver`).
+   An id-keyed registry arrives with the first caller that needs one, the `harness` field on `create_session_request` (#1165 section B).
+   The phrase "The registry (phase 2) holds only Claude" in decision 1 above is superseded by this item.
+4. **One transcript path rule.**
+   `current-session.ts`, the session-list decoration, the durable-index load in `transcript-events.ts` and `expectedTranscriptPath` all go through `transcriptPath`, so the rule lives in `ClaudeHarness` alone.
+   `expectedTranscriptPath` keeps its `(discovery, projectPath, id)` signature because `same-cwd-no-cross-binding.test.ts` calls it, and builds a `ClaudeHarness` per call; the harness holds no state beyond the discovery it is given.
+5. **Claude knowledge still outside the harness, by scope.**
+   The `claudeArgs.unshift('--resume', ...)` in `cli.ts` (for `remi --resume <id>`) and `pty-session-setup.ts` 203 (`'claude'`) are untouched, as the issue says.
+   `transcript-binder.ts` 995 asks the discovery for the project directory (the rotation poll), and `transcript-binder.ts` 1074-1075 and `transcript-discovery.ts` 167-174 strip the `.jsonl` suffix to recover an id.
+   Those read a directory or a filename rather than building a session's transcript path, so `transcriptPath` does not cover them; a second harness will have to.
+
+### Receipts
+
+- Pin test, passing on the unmodified source before any change: `packages/daemon/tests/cli/transcript-path-golden.test.ts` (a hand-built literal for `/Users/x/my.proj`, which pins that only `/` is replaced, at all four sites).
+  `session-events.test.ts` (`/exit`) and `resume-session-events.test.ts` (`['--resume', id]`) are the other pins; their assertions are unmodified.
+- `session-events-harness.test.ts` and `resume-session-events-harness.test.ts` give the handlers a harness whose exit input or resume arguments differ (and one with no exit input), because the pins above cannot tell a handler that asks the harness from one that still hardcodes Claude's value.
+- `grep -rn 'getProjectTranscriptDir(.*)}/\${' packages/daemon/src` hits only `ClaudeHarness.transcriptPath`.
