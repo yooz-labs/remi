@@ -229,6 +229,21 @@ describe('SessionBindingStore', () => {
       });
     });
 
+    test('a record with no harness key ignores a stray harnessSessionId and derives from claudeSessionId', () => {
+      // No `harness` key means Claude, and for Claude the claudeSessionId column
+      // is the only source: a stored harnessSessionId must never win over it.
+      const id = writeRow({ claudeSessionId: 'claude-real', harnessSessionId: 'stale' });
+      expect(binding.getIdentity(id)).toEqual({
+        harness: 'claude',
+        harnessSessionId: 'claude-real',
+      });
+    });
+
+    test('a claude record with no Claude id yet is null-id and does not fall back to harnessSessionId', () => {
+      const id = writeRow({ claudeSessionId: null, harness: 'claude', harnessSessionId: 'stale' });
+      expect(binding.getIdentity(id)).toEqual({ harness: 'claude', harnessSessionId: null });
+    });
+
     test('a record naming another known harness reports its own harnessSessionId', () => {
       const id = writeRow({ harness: 'codex', harnessSessionId: 'thread-9' });
       expect(binding.getIdentity(id)).toEqual({ harness: 'codex', harnessSessionId: 'thread-9' });
