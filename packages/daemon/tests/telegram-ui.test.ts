@@ -310,3 +310,32 @@ describe('formatQuestionText for a parsed Claude menu (#1140)', () => {
     expect(formatQuestionText(parsed)).toContain('Reply with your answer');
   });
 });
+
+describe('/interrupt help and the free-text hint (#1140)', () => {
+  test('/help says /interrupt sends Escape, which declines a pending prompt', () => {
+    const line = formatHelpMessage()
+      .split('\n')
+      .find((l) => l.startsWith('/interrupt'));
+    expect(line).toBe(
+      '/interrupt - Send Escape to Claude (interrupts its work; declines a pending prompt)',
+    );
+  });
+
+  test('a card with options gets no "reply with custom text" hint, even if it were flagged as taking text', () => {
+    // Nothing produces allowsFreeText together with options since the parser
+    // stopped marking selection boxes; the hint's branch was removed with it.
+    const flagged: Question = {
+      id: 'q-1' as UUID,
+      text: 'Pick one',
+      options: [
+        { label: 'A', value: '1', isRecommended: false, isYes: false, isNo: false },
+        { label: 'B', value: '2', isRecommended: false, isYes: false, isNo: false },
+      ],
+      allowsFreeText: true,
+      isAnswered: false,
+    };
+    const text = formatQuestionText(flagged);
+    expect(text).not.toContain('custom text');
+    expect(text).not.toContain('Reply with your answer');
+  });
+});
