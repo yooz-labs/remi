@@ -449,7 +449,7 @@ those two are both exactly `{token, title, body}`.
 | `question` | permission prompt, AskUserQuestion, plan approval; an "answer at the terminal" notice (hold deadline, wrapper-mode subagent dialog; no actions, own collapse key) | yes, `pushPrefs.questions` |
 | `turn_complete` | `Stop` after a turn ≥ `turn_complete_min_seconds` (#914) | yes, `pushPrefs.turnComplete` |
 | `subagent_alert` | a background agent matched `[notifications] subagent_alert` | no — the pattern list IS the control |
-| `harness_denied` | `PermissionDenied`: Claude Code's auto-mode classifier blocked a call, or auto-denied an unanswered fallback prompt at 2:00 (#1126); informational, never a card | yes, `pushPrefs.harnessDenied` |
+| `harness_denied` | `PermissionDenied`: Claude Code's auto-mode classifier blocked a call, or auto-denied an unanswered fallback prompt at 2:00 (#1126); informational, never a card; one collapse key per session (`harness-denied-<sessionId>`), so a blocked loop replaces its notice | yes, `pushPrefs.harnessDenied` |
 | `dismiss` | quiet `content-available` clearing a resolved card | **no, deliberately** |
 
 - **A client cannot mute APNS on its own.** The path is daemon → Worker → APNS

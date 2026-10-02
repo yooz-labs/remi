@@ -9,11 +9,13 @@ import type { UUID } from '@remi/shared';
 import type { DeviceTokenEntry } from '../../src/cli/handlers/trivial-events.ts';
 import {
   buildHarnessDeniedText,
+  harnessDeniedCollapseId,
   pushHarnessDenied,
 } from '../../src/notifications/harness-denied.ts';
 import type { PushTriggerOptions } from '../../src/notifications/push-client.ts';
 
 const CID = 'c0000000-0000-0000-0000-000000000000' as UUID;
+const SESSION = 'd0000000-0000-0000-0000-000000000000';
 
 function device(token: string, harnessDenied?: boolean): DeviceTokenEntry {
   return {
@@ -67,6 +69,7 @@ describe('pushHarnessDenied', () => {
       {
         deviceTokens: tokens,
         signalingUrl: 'https://signal.example',
+        sessionId: SESSION,
         sessionName: 'remi',
         send: async (_url, token, opts) => {
           sent.push({ token, opts });
@@ -84,14 +87,27 @@ describe('pushHarnessDenied', () => {
     expect(sent.map((s) => s.token)).toEqual(['legacy', 'on']);
   });
 
-  test('is informational: kind harness_denied, no question id, category or options', () => {
+  test('is informational: kind harness_denied, no category or options, never a card id', () => {
     const { sent } = run([device('on', true)]);
     const opts = sent[0]?.opts as PushTriggerOptions;
     expect(opts.kind).toBe('harness_denied');
-    expect(opts.questionId).toBeUndefined();
+    expect(opts.questionId).toBe(`harness-denied-${SESSION}`);
     expect(opts.category).toBeUndefined();
     expect(opts.options).toBeUndefined();
     expect(opts.title).toBe('remi: auto mode blocked Bash');
+  });
+
+  test('a blocked loop replaces its notice: every push of a session carries the same collapse key (#1126)', () => {
+    const first = run([device('on', true)]).sent[0]?.opts.questionId;
+    const second = run([device('on', true)]).sent[0]?.opts.questionId;
+    expect(first).toBe(harnessDeniedCollapseId(SESSION));
+    expect(second).toBe(first);
+    // Another session's notices collapse separately.
+    expect(harnessDeniedCollapseId('other-session')).not.toBe(first);
+    // APNS caps a collapse id at 64 bytes.
+    expect(
+      harnessDeniedCollapseId('aaaaaaaa-0000-0000-0000-000000000000').length,
+    ).toBeLessThanOrEqual(64);
   });
 
   test('every device muted: nothing sent', () => {

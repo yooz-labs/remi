@@ -1251,6 +1251,7 @@ function onHarnessDenied(input: PermissionDeniedHookInput): void {
   pushHarnessDenied(
     {
       deviceTokens: deviceTokens.values(),
+      sessionId: primarySessionId ?? 'unbound',
       signalingUrl: cliSignalingUrl ?? remiConfig.network.signaling_url,
       pushSecret: cliPushSecret,
       sessionName: session?.name || 'Agent',

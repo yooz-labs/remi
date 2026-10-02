@@ -41,8 +41,23 @@ export function buildHarnessDeniedText(
   return { title, body };
 }
 
+/**
+ * The collapse key of a session's `harness_denied` notices (#1126 review):
+ * one per session, so a blocked loop (Claude retrying a call the classifier
+ * keeps refusing) replaces the previous notice on the lock screen instead of
+ * stacking one per attempt. Sent as the push's `questionId`, which the
+ * signaling Worker turns into `apns-collapse-id`, as the terminal notice's
+ * `notice-<id>` is; the prefix keeps it from ever naming a real card. 51
+ * bytes for a UUID, under APNS's 64.
+ */
+export function harnessDeniedCollapseId(sessionId: string): string {
+  return `harness-denied-${sessionId}`;
+}
+
 export interface HarnessDeniedPushDeps {
   readonly deviceTokens: Iterable<DeviceTokenEntry>;
+  /** The remi session the blocked call belongs to (its collapse key). */
+  readonly sessionId: string;
   readonly signalingUrl: string;
   readonly pushSecret?: string | undefined;
   readonly sessionName: string;
@@ -52,9 +67,10 @@ export interface HarnessDeniedPushDeps {
 
 /**
  * Push one `harness_denied` notice to every device that wants it. No
- * `questionId`, `category` or `options`: nothing answers it. Fire-and-forget;
- * a failed push is reported to `onError` and never thrown. Returns how many
- * devices it was sent to.
+ * `category` or `options`: nothing answers it. Its `questionId` is the
+ * session's collapse key (`harnessDeniedCollapseId`), never a card's id.
+ * Fire-and-forget; a failed push is reported to `onError` and never thrown.
+ * Returns how many devices it was sent to.
  */
 export function pushHarnessDenied(
   deps: HarnessDeniedPushDeps,
@@ -69,6 +85,7 @@ export function pushHarnessDenied(
         title,
         body,
         ...(deps.pushSecret !== undefined ? { pushSecret: deps.pushSecret } : {}),
+        questionId: harnessDeniedCollapseId(deps.sessionId),
         kind: 'harness_denied',
       })
       .catch(deps.onError);
