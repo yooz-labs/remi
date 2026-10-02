@@ -7,6 +7,7 @@ import { describe, expect, test } from 'bun:test';
 
 // Test that all exports are accessible
 import {
+  INPUT_NOT_DELIVERED_ERROR_CODE,
   MessageIdTracker,
   PROMPT_WAITING_ERROR_CODE,
   PROMPT_WAITING_MESSAGE,
@@ -16,6 +17,7 @@ import {
   createError,
   createHello,
   createHelloAck,
+  createInputNotDeliveredError,
   createPing,
   createPong,
   createPromptWaitingError,
@@ -169,6 +171,11 @@ describe('Package exports', () => {
 
     // #1140: the daemon builds it and the web client matches on it, both
     // through the package entry point.
+    test('the INPUT_NOT_DELIVERED error is exported', () => {
+      expect(INPUT_NOT_DELIVERED_ERROR_CODE).toBe('INPUT_NOT_DELIVERED');
+      expect(createInputNotDeliveredError('s' as UUID).code).toBe(INPUT_NOT_DELIVERED_ERROR_CODE);
+    });
+
     test('the PROMPT_WAITING error is exported for both ends', () => {
       expect(PROMPT_WAITING_ERROR_CODE).toBe('PROMPT_WAITING');
       expect(PROMPT_WAITING_MESSAGE.length).toBeGreaterThan(0);

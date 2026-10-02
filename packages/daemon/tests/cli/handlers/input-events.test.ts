@@ -330,7 +330,7 @@ describe('createInputHandlers', () => {
       expect(msg.details?.messageId).toBe(droppedMessageId);
     });
 
-    test('swallows pty.write errors and logs them (raw path)', async () => {
+    test('a failed raw pty.write is logged and reported to the sender as INPUT_NOT_DELIVERED, not thrown (raw path)', async () => {
       const logs: string[] = [];
       configureLogger({ writeLog: (msg) => logs.push(msg) });
       const ptyCapture = {
@@ -354,11 +354,24 @@ describe('createInputHandlers', () => {
         ...PROMPT_ON_SCREEN,
       });
       // Should not throw
-      await handlers.onUserInput(CID, sessionId, 'x', true);
+      const inputId = generateId();
+      await handlers.onUserInput(CID, sessionId, 'x', true, undefined, inputId);
 
       expect(
         logs.some((m) => m.includes('[PTY] raw write failed') && m.includes('broken pipe')),
       ).toBe(true);
+      // And the sender is told (#1140 review): it used to be a log line only,
+      // so a client reporting success on its Escape reported it falsely.
+      expect(sendCalls).toHaveLength(1);
+      const msg = sendCalls[0]?.message as {
+        type: string;
+        code?: string;
+        details?: { sessionId?: string; messageId?: string };
+      };
+      expect(msg.type).toBe('error');
+      expect(msg.code).toBe('INPUT_NOT_DELIVERED');
+      expect(msg.details).toEqual({ sessionId, messageId: inputId });
+      expect(sendCalls[0]?.connectionId).toBe(CID);
     });
   });
 

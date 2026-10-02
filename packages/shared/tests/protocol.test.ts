@@ -4,6 +4,8 @@
 
 import { beforeEach, describe, expect, test } from 'bun:test';
 import {
+  INPUT_NOT_DELIVERED_ERROR_CODE,
+  INPUT_NOT_DELIVERED_MESSAGE,
   MessageIdTracker,
   PROMPT_WAITING_ERROR_CODE,
   PROMPT_WAITING_MESSAGE,
@@ -20,6 +22,7 @@ import {
   createHello,
   createHelloAck,
   createHubStatus,
+  createInputNotDeliveredError,
   createPing,
   createPong,
   createPromptWaitingError,
@@ -731,6 +734,26 @@ describe('Message factory functions', () => {
 
       expect(back).toEqual(msg);
       expect(isValidMessage(JSON.parse(wire))).toBe(true);
+    });
+  });
+
+  describe('createInputNotDeliveredError() (#1140)', () => {
+    test('is an error message with the INPUT_NOT_DELIVERED code and the user-facing text', () => {
+      const msg = createInputNotDeliveredError('session-1', 'message-1');
+
+      expect(msg.type).toBe('error');
+      expect(msg.code).toBe('INPUT_NOT_DELIVERED');
+      expect(msg.code).toBe(INPUT_NOT_DELIVERED_ERROR_CODE);
+      expect(msg.message).toBe('Input was not delivered: the terminal is not accepting input.');
+      expect(msg.message).toBe(INPUT_NOT_DELIVERED_MESSAGE);
+      expect(msg.details).toEqual({ sessionId: 'session-1', messageId: 'message-1' });
+    });
+
+    test('details carry no message id when the client sent none, and the error survives the wire', () => {
+      const msg = createInputNotDeliveredError('session-1');
+
+      expect(msg.details).toEqual({ sessionId: 'session-1' });
+      expect(deserialize(serialize(msg))).toEqual(msg);
     });
   });
 

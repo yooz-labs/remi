@@ -17,6 +17,8 @@ export const CID = 'conn0000-0000-0000-0000-000000000000' as UUID;
 export interface PtyCapture {
   writes: string[];
   submits: string[];
+  /** When set, `write` throws it, as a real PTYSession does once it has exited. */
+  writeError?: Error;
 }
 
 /** Records what reaches the terminal; a real PTYSession would spawn a shell. */
@@ -24,6 +26,7 @@ export function fakePTY(capture: PtyCapture): PTYSession {
   return {
     id: generateId(),
     write: (content: string) => {
+      if (capture.writeError) throw capture.writeError;
       capture.writes.push(content);
     },
     submitInput: async (content: string) => {

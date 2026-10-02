@@ -611,6 +611,27 @@ export interface PromptWaitingErrorDetails {
   readonly messageId?: UUID | undefined;
 }
 
+/**
+ * Wire `code` of the `error` the daemon sends when it could not write a raw
+ * `user_input` to the terminal (the PTY is not running, or the write failed).
+ * Raw input is a person's keystrokes (an attach client, the web client's Escape
+ * button, Telegram's `/interrupt`), which the daemon used to drop with a log
+ * line only, so the sender could not tell that its Escape never arrived and a
+ * client that reports success (Telegram's "Interrupt sent") reported it falsely.
+ */
+export const INPUT_NOT_DELIVERED_ERROR_CODE = 'INPUT_NOT_DELIVERED';
+
+/** The `message` of an `INPUT_NOT_DELIVERED` error: what the user is told. */
+export const INPUT_NOT_DELIVERED_MESSAGE =
+  'Input was not delivered: the terminal is not accepting input.';
+
+/** Details attached to an `INPUT_NOT_DELIVERED` error; `messageId` is the
+ *  failed input's own message id, when the client sent one. */
+export interface InputNotDeliveredErrorDetails {
+  readonly sessionId: UUID;
+  readonly messageId?: UUID | undefined;
+}
+
 /** Batch of messages to replay on session resume */
 export interface ReplayBatchMessage {
   readonly type: 'replay_batch';
@@ -1444,6 +1465,19 @@ export function createPromptWaitingError(sessionId: UUID, messageId?: UUID): Err
     ...(messageId !== undefined && { messageId }),
   };
   return createError(PROMPT_WAITING_ERROR_CODE, PROMPT_WAITING_MESSAGE, { ...details });
+}
+
+/**
+ * Create the `INPUT_NOT_DELIVERED` error: a raw `user_input` that could not be
+ * written to the terminal. `messageId` is the failed input's id, when the
+ * client sent one.
+ */
+export function createInputNotDeliveredError(sessionId: UUID, messageId?: UUID): ErrorMessage {
+  const details: InputNotDeliveredErrorDetails = {
+    sessionId,
+    ...(messageId !== undefined && { messageId }),
+  };
+  return createError(INPUT_NOT_DELIVERED_ERROR_CODE, INPUT_NOT_DELIVERED_MESSAGE, { ...details });
 }
 
 /**

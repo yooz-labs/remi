@@ -13,6 +13,7 @@ import {
   PROMPT_WAITING_ERROR_CODE,
   createBulletExpandResponse,
   createError,
+  createInputNotDeliveredError,
   createPromptWaitingError,
   errorToString,
 } from '@remi/shared';
@@ -1330,6 +1331,10 @@ export function createInputHandlers(deps: InputHandlerDeps) {
           await session.pty.write(content);
         } catch (err) {
           log(`[PTY] raw write failed: ${errorToString(err)}`);
+          // Tell the sender (#1140 review). It used to be a log line only, so
+          // a client that reports success on its Escape (Telegram's
+          // "Interrupt sent") reported it falsely when the terminal was gone.
+          send(connectionId, createInputNotDeliveredError(session.sessionId, messageId));
         }
         return;
       }

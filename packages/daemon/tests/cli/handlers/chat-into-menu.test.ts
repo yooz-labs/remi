@@ -345,6 +345,21 @@ describe('chat text while a prompt menu is on screen (#1140)', () => {
       expect(replies).toEqual([]);
     });
 
+    // A raw write that fails (the terminal has exited) was only logged, so
+    // "Interrupt sent" was claimed for an Escape that never arrived.
+    test('/interrupt whose raw terminal write fails shows the error, not "Interrupt sent"', async () => {
+      pty.writeError = new Error('terminal gone');
+      const { chatMessages, replies, interrupt } = telegramOverRealHandlers();
+
+      await interrupt();
+
+      expect(pty.writes).toEqual([]);
+      expect(chatMessages.map((m) => m.text)).toEqual([
+        'Error: Input was not delivered: the terminal is not accepting input.',
+      ]);
+      expect(replies).toEqual([]);
+    });
+
     test('custom text with no menu on screen is typed and nothing is reported', async () => {
       const { chatMessages, text } = telegramOverRealHandlers();
 
