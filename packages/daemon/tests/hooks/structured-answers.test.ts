@@ -296,6 +296,71 @@ describe('askUserQuestionDecision', () => {
       ],
       'malformed-selections',
     ],
+    // #1127 review T1: every off-the-wire shape is a refusal, never a throw.
+    ['a null entry', [null], 'malformed-selections'],
+    ['a string entry', ['0'], 'malformed-selections'],
+    ['an array entry', [[0, [1]]], 'malformed-selections'],
+    [
+      'a negative question index',
+      [
+        { questionIndex: -1, optionIndices: [0] },
+        { questionIndex: 1, optionIndices: [0] },
+      ],
+      'unknown-question',
+    ],
+    [
+      'a fractional question index',
+      [
+        { questionIndex: 0.5, optionIndices: [0] },
+        { questionIndex: 1, optionIndices: [0] },
+      ],
+      'unknown-question',
+    ],
+    [
+      'a string question index',
+      [
+        { questionIndex: '0', optionIndices: [0] },
+        { questionIndex: 1, optionIndices: [0] },
+      ],
+      'unknown-question',
+    ],
+    [
+      'a missing question index',
+      [{ optionIndices: [0] }, { questionIndex: 1, optionIndices: [0] }],
+      'unknown-question',
+    ],
+    [
+      'a negative option index',
+      [
+        { questionIndex: 0, optionIndices: [-1] },
+        { questionIndex: 1, optionIndices: [0] },
+      ],
+      'bad-option-index',
+    ],
+    [
+      'a string option index',
+      [
+        { questionIndex: 0, optionIndices: ['1'] },
+        { questionIndex: 1, optionIndices: [0] },
+      ],
+      'bad-option-index',
+    ],
+    [
+      'option indices that are not a list',
+      [
+        { questionIndex: 0, optionIndices: 1 },
+        { questionIndex: 1, optionIndices: [0] },
+      ],
+      'bad-option-index',
+    ],
+    [
+      'option indices given as an object',
+      [
+        { questionIndex: 0, optionIndices: { 0: 1 } },
+        { questionIndex: 1, optionIndices: [0] },
+      ],
+      'bad-option-index',
+    ],
   ])('refuses %s, never completing it', (_name, selections, reason) => {
     expect(askUserQuestionDecision(TWO_QUESTIONS, selections)).toEqual({
       ok: false,
