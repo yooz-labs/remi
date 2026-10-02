@@ -1,6 +1,6 @@
 # ADR 0015: Authority may resolve ambiguity, never decide — enforced by counterfactual, not by pattern
 
-**Status:** accepted
+**Status:** Superseded by ADR 0030 (2026-10-01)
 **Date:** 2026-08-01
 **Owner:** Yahya
 

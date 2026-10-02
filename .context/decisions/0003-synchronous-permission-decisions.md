@@ -1,8 +1,13 @@
 # ADR 0003: Synchronous hook-response auto-approve decisions + permission groups
 
-**Status:** accepted
+**Status:** accepted; amended by ADR 0030 (2026-10-01)
 **Date:** 2026-06-09
 **Owner:** Yahya
+
+> **Amended 2026-10-01 by [ADR 0030](0030-defer-permission-judgment-to-the-harness.md).**
+> remi no longer produces permission verdicts: the auto-approve LLM and the permission groups described below are deleted (#1125).
+> What survives from this ADR is the mechanism, not the judgment: the gate still answers every `PermissionRequest` synchronously in the hook response, and since #1125 that answer is always `passthrough` (a binary prompt then pushes on its render, #1121; a multi-choice prompt pushes at once).
+> The body below is kept as history.
 
 ## Context
 

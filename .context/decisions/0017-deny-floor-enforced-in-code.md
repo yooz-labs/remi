@@ -1,6 +1,6 @@
 # ADR 0017: A model-produced deny is silent, so it is floored in code, not by instruction
 
-**Status:** accepted
+**Status:** Superseded by ADR 0030 (2026-10-01)
 **Date:** 2026-08-01
 **Owner:** Yahya
 

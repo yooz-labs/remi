@@ -1,6 +1,6 @@
 # ADR 0028: Narrow remote reads and private session-precedent scope
 
-**Status:** accepted
+**Status:** Superseded by ADR 0030 (2026-10-01)
 **Date:** 2026-09-16
 **Owner:** Yahya
 

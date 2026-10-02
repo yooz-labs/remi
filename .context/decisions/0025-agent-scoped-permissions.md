@@ -1,6 +1,6 @@
 # ADR 0025: Permissions may be scoped per agent type; arbitrary URL egress is never a default
 
-**Status:** accepted (amended by ADR 0028 for scoped GitHub REST reads)
+**Status:** Superseded by ADR 0030 (2026-10-01)
 **Date:** 2026-08-11
 **Owner:** Seyed Yahya Shirazi
 
