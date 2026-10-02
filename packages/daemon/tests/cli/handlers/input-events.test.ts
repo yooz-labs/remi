@@ -2682,6 +2682,105 @@ describe('createInputHandlers', () => {
   // answer (native POST, Capacitor JS path, signaling relay). The first copy
   // wins; the losers must report 'delivered' — NOT 'stale' (HTTP 409), which
   // both client layers turned into a false "Answer not delivered" notification.
+  /**
+   * #1134 review, probe C: a lock-screen tap arrives on two channels by design
+   * (`RemiAnswerRelay` POSTs AND hands the tap to the Capacitor handler). The
+   * card stays registered until the submit finishes, so both deliveries used
+   * to pass the lookup and type the digit twice. The PTY below takes 50 ms per
+   * submit so the second delivery lands inside the first's window.
+   */
+  describe('concurrent deliveries of one answer (#1134 review)', () => {
+    function slowSession(): { sessionId: UUID; submits: string[] } {
+      const submits: string[] = [];
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        {
+          id: generateId(),
+          write: () => {},
+          submitInput: async (content: string) => {
+            await new Promise((r) => setTimeout(r, 50));
+            submits.push(content);
+          },
+          close: async () => {},
+        } as unknown as PTYSession,
+        fakeMessageAPI(new Map()),
+      );
+      sessionRegistry.addQuestion(sessionId, {
+        id: QID,
+        text: 'Allow Bash: ls',
+        options: [
+          { value: '1', label: 'Yes', isRecommended: true, isYes: true, isNo: false },
+          { value: '2', label: 'No', isRecommended: false, isYes: false, isNo: true },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+      });
+      return { sessionId, submits };
+    }
+
+    test('the same answer on two channels types once; the second reports delivered', async () => {
+      const { sessionId, submits } = slowSession();
+      const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
+        sessionRegistry,
+        bindingStore,
+        send,
+      });
+
+      // The in-app tap sends the value, the relay the label: one answer.
+      const first = handlers.onAnswer(CID, sessionId, QID, '1');
+      const second = handlers.relayAnswer(sessionId, QID, 'Yes');
+      const [, secondOutcome] = await Promise.all([first, second]);
+
+      expect(submits).toEqual(['1']);
+      expect(secondOutcome).toBe('delivered');
+      expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+    });
+
+    test('a different answer while one is being applied is refused', async () => {
+      const { sessionId, submits } = slowSession();
+      const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
+        sessionRegistry,
+        bindingStore,
+        send,
+      });
+
+      const first = handlers.relayAnswer(sessionId, QID, 'Yes');
+      const second = handlers.relayAnswer(sessionId, QID, 'No');
+      const [firstOutcome, secondOutcome] = await Promise.all([first, second]);
+
+      expect(submits).toEqual(['1']);
+      expect(firstOutcome).toBe('delivered');
+      expect(secondOutcome).toBe('stale');
+    });
+
+    test('the claim is released when the answer settles, even when the card survives it', async () => {
+      // Selections for a non-structured question escalate and KEEP the card,
+      // so a second identical attempt reaches the claim check: a leaked claim
+      // would report it 'delivered' silently instead of escalating again.
+      const { sessionId } = slowSession();
+      const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
+        sessionRegistry,
+        bindingStore,
+        send,
+      });
+      const selections = [{ questionIndex: 0, optionIndices: [0] }];
+
+      await handlers.onAnswer(CID, sessionId, QID, '', undefined, { selections });
+      await handlers.onAnswer(CID, sessionId, QID, '', undefined, { selections });
+
+      const codes = sendCalls
+        .filter((c) => c.message.type === 'error')
+        .map((c) => (c.message as { code?: string }).code);
+      expect(codes).toEqual(['AUQ_NOT_STRUCTURED', 'AUQ_NOT_STRUCTURED']);
+      expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(1);
+    });
+  });
+
   describe('duplicate answer deliveries (#752)', () => {
     function registerYesNo(): { sessionId: UUID; ptyCapture: { submits: string[] } } {
       const ptyCapture = { writes: [] as string[], submits: [] as string[] };

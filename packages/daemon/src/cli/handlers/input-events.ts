@@ -380,6 +380,18 @@ function screenRefusal(
     : null;
 }
 
+/** Every spelling of one answer to `active`: the raw answer (or its
+ *  selections), plus the resolved option's value and label, because the
+ *  in-app tap sends the value and a push action sends the label. */
+function answerKeys(
+  active: Question,
+  answer: string,
+  selections: readonly AnswerSelection[] | undefined,
+): string[] {
+  const option = selections?.length ? undefined : resolveOption(active.options, answer);
+  return [answerCacheKey(answer, selections), ...(option ? [option.value, option.label] : [])];
+}
+
 /**
  * No-op `send` for the connection-independent `/answer` relay (#575, P4a),
  * which has no WebSocket connection to write error frames to. The relay reports
@@ -463,6 +475,11 @@ export function createInputHandlers(deps: InputHandlerDeps) {
   // instead of 'stale', so the losing channel stops showing a false "Answer
   // not delivered" notification.
   const resolvedAnswers = new ResolvedAnswerCache();
+
+  // #1134 review: questions whose answer is being applied right now, with
+  // every spelling of that answer (see `answerKeys`). Claimed synchronously in
+  // `handleAnswer`, released when `applyAnswer` settles.
+  const answersInFlight = new Map<UUID, ReadonlySet<string>>();
 
   /**
    * Answer a structured AskUserQuestion (#627) by driving its interactive TUI.
@@ -742,6 +759,70 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       return 'stale';
     }
 
+    // #1134 review: claim the question synchronously, before anything awaits.
+    // A lock-screen tap arrives on two channels by design (`RemiAnswerRelay`
+    // POSTs to /answer AND hands the tap to the Capacitor handler), and the
+    // card stays registered until `applyAnswer`'s submit finishes, so without
+    // a claim both deliveries passed the lookup above and typed the digit
+    // twice; the second Enter then answered whatever Claude showed next. A
+    // same-choice duplicate reports 'delivered' and types nothing; a
+    // different answer while one is in flight is refused.
+    const claimKeys = answerKeys(active, answer, extra?.selections);
+    const inFlight = answersInFlight.get(questionId);
+    if (inFlight !== undefined) {
+      if (claimKeys.some((k) => inFlight.has(k))) {
+        log(
+          `[Answer] duplicate delivery for ${questionId.slice(0, 8)} while its answer is being applied; reporting delivered, typing nothing`,
+        );
+        return 'delivered';
+      }
+      log(
+        `[Answer] refusing a different answer for ${questionId.slice(0, 8)}: another answer is being applied`,
+      );
+      if (!viaRelay) {
+        send(
+          connectionId,
+          createError('STALE_ANSWER', 'Another answer for this question is already being applied', {
+            sessionId,
+            questionId,
+            pendingQuestionIds: [...session.currentQuestions.keys()],
+          }),
+        );
+      }
+      return 'stale';
+    }
+    answersInFlight.set(questionId, new Set(claimKeys));
+    try {
+      return await applyAnswer(
+        connectionId,
+        sessionId,
+        questionId,
+        answer,
+        viaRelay,
+        extra,
+        session,
+        active,
+      );
+    } finally {
+      answersInFlight.delete(questionId);
+    }
+  }
+
+  /**
+   * The part of `handleAnswer` that acts on a live, CLAIMED question (see the
+   * in-flight claim there): drive an AskUserQuestion, resolve or release a
+   * held hook, or type into the PTY, then consume the card.
+   */
+  async function applyAnswer(
+    connectionId: UUID,
+    sessionId: UUID,
+    questionId: UUID,
+    answer: string,
+    viaRelay: boolean,
+    extra: AnswerExtras | undefined,
+    session: ManagedSession,
+    active: Question,
+  ): Promise<AnswerOutcome> {
     // #627 structured AskUserQuestion answer: drive the interactive TUI from the
     // per-sub-question selections (the existing single-digit path can't express a
     // tabbed multi-question form). The runner verifies the review before submitting
