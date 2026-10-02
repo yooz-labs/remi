@@ -867,6 +867,34 @@ describe('AutoApproveGate held prompts (#1126)', () => {
       expect(g.hasOpenHookPrompt()).toBe(false);
     });
 
+    test('the paired PostToolUse closes the prompt even when its input differs (#1127)', async () => {
+      // Measured on Claude Code 2.1.287: an AskUserQuestion answered in the
+      // terminal posts PostToolUse with `{questions, answers}`, and an
+      // ExitPlanMode with `{}`, while the PreToolUse and PermissionRequest
+      // carried the call's own input. The id is the same call.
+      const g = gate();
+      const plan = { plan: '# Plan', planFilePath: '/p.md' };
+      g.notePreToolUse({ toolName: 'Bash', toolInput: plan, toolUseId: 'tu-plan' });
+      const hook = g.resolvePermission(pr({ tool_input: plan }));
+      const qid = ids[0] as UUID;
+      // Another call's id never matches, whatever its input.
+      g.cancelExternallyResolved(
+        { toolName: 'Bash', toolInput: {}, toolUseId: 'tu-other' },
+        'PostToolUse',
+      );
+      expect(registry.getQuestion(SID, qid)).not.toBeNull();
+      g.cancelExternallyResolved(
+        { toolName: 'Bash', toolInput: {}, toolUseId: 'tu-plan' },
+        'PostToolUse',
+      );
+      expect(await hook).toBe('passthrough');
+      expect(registry.getQuestion(SID, qid)).toBeNull();
+      // Matched by id: closed, not released with a notice.
+      expect(deadlines).toEqual([]);
+      expect(resolved).toEqual([qid]);
+      expect(g.hasOpenHookPrompt()).toBe(false);
+    });
+
     test("pairing respects the agent: a request never takes another agent's identical call", async () => {
       const g = gate();
       // A subagent and the main agent run the identical command.

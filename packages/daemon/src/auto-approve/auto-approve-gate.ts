@@ -1183,21 +1183,30 @@ export class AutoApproveGate {
     // near-universal "no open escalation at all" case must not pay for a
     // stableToolInputKey stringify it can never use.
     if (this.openQuestionSignatures.size === 0) return undefined;
-    const observedKey = stableToolInputKey(observed.toolInput);
+    let observedKey: string | undefined;
     for (const [qid, sig] of this.openQuestionSignatures) {
-      if (sig.toolName !== observed.toolName || sig.toolInputKey !== observedKey) continue;
+      if (sig.toolName !== observed.toolName) continue;
       // #799: never cross agents. A MAIN observation (agentId undefined) can
       // only match a MAIN-registered signature, and a subagent observation
       // only its OWN agent's signature.
       if (sig.agentId !== observed.agentId) continue;
       // Two DIFFERENT tool calls can legitimately share an identical
       // (tool_name, tool_input) (e.g. two `ls` calls in a row): if BOTH sides
-      // carry a tool_use_id, it must ALSO agree. When at least one side has
-      // no id, the signature alone is the best available proof.
+      // carry a tool_use_id, it alone decides. It also decides when the
+      // inputs differ (#1127): the PostToolUse of an AskUserQuestion answered
+      // in the terminal carries `{questions, answers}`, and an ExitPlanMode's
+      // carries `{}`, while their PermissionRequest carried the call's own
+      // input (measured on Claude Code 2.1.287), so an input check would
+      // never match the call that answered them. A tool_use_id names one
+      // call, so equal ids are the same call whatever its input.
       if (observed.toolUseId !== undefined && sig.toolUseId !== undefined) {
         if (observed.toolUseId === sig.toolUseId) return { qid, byId: true };
         continue;
       }
+      // When at least one side has no id, the signature alone is the best
+      // available proof.
+      observedKey ??= stableToolInputKey(observed.toolInput);
+      if (sig.toolInputKey !== observedKey) continue;
       return { qid, byId: false };
     }
     return undefined;
