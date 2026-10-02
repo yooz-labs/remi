@@ -35,9 +35,10 @@
  * AutoApproveGate.resolvePermission's own logging: a live 0.6.22 session
  * recorded 16 subagent-tagged (`agent_id` present) PermissionRequest hooks
  * against only 2 PTY renders. Task-tool /
- * background-subagent escalations DO fire the hook -- they are parked
- * (ADR 0004) and passed through unconditionally, and MOST never render,
- * which is different from "never fires." What #23983 may still describe
+ * background-subagent escalations DO fire the hook -- with a local
+ * terminal they are passed through and parked (ADR 0004, amended by ADR
+ * 0031), in daemon or hub mode held for the phone (#1126), and MOST never
+ * render, which is different from "never fires." What #23983 may still describe
  * correctly is narrower: native Agent-Teams teammate prompts specifically
  * (as opposed to Task-tool subagents generally) possibly firing no hook at
  * all. That narrower claim was not independently re-verified here. Either

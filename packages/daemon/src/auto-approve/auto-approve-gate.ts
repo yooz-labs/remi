@@ -342,7 +342,7 @@ export interface AutoApproveGateDeps {
    * through remi's answer path (an external-resolution signal, a Stop /
    * SubagentStop / SessionEnd sweep, `remi unstick`), so the daemon broadcasts
    * `question_resolved` + the APNS dismissal and the card clears on every
-   * client. NOT called for a user answer: that path (input-events
+   * remi client (Telegram does not dismiss, #1148). NOT called for a user answer: that path (input-events
    * `handleAnswer`) broadcasts its own 'answered' resolution. Throw-safe.
    */
   onResolved?: (questionId: UUID, reason: 'cancelled') => void;
@@ -456,7 +456,8 @@ export class AutoApproveGate {
 
   /**
    * Force-release escape (#617, `remi unstick`): clear every open escalation
-   * this gate tracks, main or subagent, so stale cards clear everywhere.
+   * this gate tracks, main or subagent, so stale cards clear on every remi
+   * client and from APNS (Telegram does not dismiss, #1148).
    * A LIVE hold is not closed but released to the terminal (#1126 lead
    * decision): its dialog is on screen, so the prompt stays open there
    * (orphan suppression kept) and the phone is told it was handed back.
@@ -1074,8 +1075,8 @@ export class AutoApproveGate {
 
   /**
    * Tell the daemon an open escalation resolved without a user answer (#585,
-   * P7), so it broadcasts `question_resolved` + dismisses the pushed card on
-   * every client. Throw-safe.
+   * P7), so it broadcasts `question_resolved` to every remi client and
+   * dismisses the APNS card (Telegram does not dismiss, #1148). Throw-safe.
    */
   private notifyResolved(questionId: UUID): void {
     const fn = this.deps.onResolved;
@@ -1204,8 +1205,8 @@ export class AutoApproveGate {
    * tracking its signature, end its hold with the empty response (#1126:
    * Claude ignores it once the prompt is answered, and it decides nothing
    * while the prompt is still up), remove it from the registry, and
-   * broadcast its resolution so the pushed card clears everywhere
-   * (`removeAndDismiss`).
+   * broadcast its resolution so the pushed card clears on every remi client
+   * and from APNS (`removeAndDismiss`; Telegram does not dismiss, #1148).
    *
    * The broadcast fires only when the question was actually registered: a
    * parked subagent prompt that never rendered was never pushed, and a card

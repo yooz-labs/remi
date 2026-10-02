@@ -185,8 +185,8 @@ export interface SessionStartHookInput extends HookCommonInput {
  *
  * `standingGrantFor` (hook-event-bridge.ts) is the single place that
  * decides which entries a held card offers and what a phone answer sends
- * back for one (#1126): `setMode` echoed verbatim, an allow `addRules`
- * echoed with `destination: "session"`, nothing else (live, an echoed
+ * back for one (#1126): `setMode` and an allow `addRules`, both echoed with
+ * `destination: "session"` (lead decision), nothing else (live, an echoed
  * `addDirectories` did not stop the repeat prompt). The echo is the hook's
  * `hookSpecificOutput.decision.updatedPermissions` — per the docs, "a hook
  * can echo one of the permission_suggestions it received as its own

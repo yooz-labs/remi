@@ -992,14 +992,15 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       } catch (err) {
         logError(`[Answer] gate retirement failed: ${errorToString(err)}`);
       }
-      // Free text on a card pushed by id (`pushHeldHook`: AskUserQuestion,
-      // ExitPlanMode, a multi-choice permission; such cards are stamped
-      // `held`) is refused before anything is typed (#1134 review). Only an
-      // option of this card can be expressed; text typed into the dialog is
-      // ignored and the Enter after it confirms the highlighted option. Built
-      // for held hooks, where the release skipped the screen check; nothing
-      // holds since #1125, but the refusal still guards those passthrough
-      // cards whether or not a menu has been observed yet, so it stays.
+      // Free text on a card pushed by id (`pushHeldHook`, stamped `held`) is
+      // refused before anything is typed (#1134 review). A held binary card
+      // never reaches this point: the gate answered it through its hook
+      // above (#1126). What arrives here stamped `held` is a passthrough
+      // card (AskUserQuestion, ExitPlanMode, a multi-choice permission).
+      // Only an option of this card can be expressed; text typed into the
+      // dialog is ignored and the Enter after it confirms the highlighted
+      // option, so free text is refused whether or not a menu has been
+      // observed yet.
       if (
         active.held === true &&
         active.options.length > 0 &&

@@ -183,8 +183,8 @@ export interface HookBridgeDeps {
    * Cross-client question dismissal (#585, P7). Called when an open question
    * resolves WITHOUT a user answer (an external-resolution signal, a Stop /
    * SubagentStop / SessionEnd sweep, a restart, `remi unstick`): the daemon
-   * broadcasts `question_resolved` to every client and fires the APNS
-   * dismissal so the pushed card clears everywhere. Must be throw-safe (the
+   * broadcasts `question_resolved` to every remi client and fires the APNS
+   * dismissal (Telegram does not dismiss cards, #1148). Must be throw-safe (the
    * gate also guards the call). Absent => no dismissal broadcast.
    */
   broadcastQuestionResolved?: (sessionId: UUID, questionId: UUID, reason: 'cancelled') => void;
@@ -612,7 +612,7 @@ export function setupHookBridge(
       },
       onTerminalNoticeResolved: (questionId) => deps.dismissTerminalNotice?.(sessionId, questionId),
       // #585: an open escalation that resolves without a user answer tells
-      // the daemon to dismiss the pushed card on every client.
+      // the daemon to dismiss the pushed card on every remi client and APNS.
       onResolved: (questionId, reason) =>
         deps.broadcastQuestionResolved?.(sessionId, questionId, reason),
       // #573: classify an escalation as binary (held, #1126) vs

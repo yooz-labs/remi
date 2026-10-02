@@ -56,14 +56,14 @@
  *       shape (a parked-then-rendered card going stale) at all -- it can
  *       only confirm the parked-and-never-rendered case stays silent, which
  *       is the DESIGNED behavior, not a phantom.
- *     - A BINARY MAIN-context escalation pushes only when its prompt
- *       renders (`AutoApproveGate.escalateForRender`, #1121), so it never
- *       reaches the store here either. Before #1125 this replay set
- *       `holdTimeoutSec` so binary escalations held and pushed from hook data
- *       alone; remi no longer holds (ADR 0030), so the MAIN-context card
- *       lifecycle this replay can still exercise is the PASSTHROUGH one
- *       (`AskUserQuestion` / `ExitPlanMode`, `escalatePassthrough`), which
- *       pushes at once regardless of the PTY.
+ *     - A BINARY MAIN-context escalation is held and pushed at once from
+ *       hook data alone (#1126, ADR 0031), so it DOES reach the store here,
+ *       as does the PASSTHROUGH one (`AskUserQuestion` / `ExitPlanMode`,
+ *       `escalatePassthrough`). Its hold is 60 s in this rig and the replay
+ *       never waits that long, so the deadline path is not exercised; a
+ *       held card leaves the store through the same resolution signals
+ *       (a matching tool event, `Stop`, `SessionEnd`) the checks below
+ *       assert.
  * - **`PreToolUse`/`PostToolUse` are DOWN-SAMPLED in this corpus**
  *   (`build-hook-corpus.ts`: at most 2 kept per (event, tool_name, key-set)
  *   shape group; 72/71 records total against 354 `PermissionRequest`s). A

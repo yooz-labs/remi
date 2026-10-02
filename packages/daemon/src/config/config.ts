@@ -144,8 +144,8 @@ export interface PromptsConfig {
    * has no terminal of its own: after the deadline only `remi attach` could
    * answer, so the phone keeps the prompt much longer. 5 to 3540, below the
    * 3600 s PermissionRequest registration such sessions use. An auto-mode
-   * fallback prompt still auto-denies at 2:00 on Claude's side; that closes
-   * the held request and the card is dismissed.
+   * fallback prompt still auto-denies at 2:00 on Claude's side; that arrives
+   * as a `PermissionDenied` hook (measured), which dismisses the card.
    */
   readonly daemon_hold_seconds: number;
 }

@@ -350,8 +350,9 @@ export interface QuestionOption {
    * plain Yes/No options and for the legacy plain-string suggestion path.
    * Since #1126 a phone answer naming such an option resolves the held hook
    * with `{behavior:"allow", updatedPermissions:[<that suggestion>]}`: a
-   * `setMode` echoed verbatim, an allow `addRules` echoed with
-   * `destination: "session"`, both verified live on Claude Code 2.1.287.
+   * `setMode` or an allow `addRules`, both echoed with
+   * `destination: "session"`; both kinds verified live on Claude Code
+   * 2.1.287.
    */
   readonly suggestionIndex?: number | undefined;
 
