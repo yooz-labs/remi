@@ -278,7 +278,8 @@ export interface SessionGateHandle {
    *  (`hasLiveQuestionOnScreen`). */
   isHeld: (questionId: UUID) => boolean;
   /** Force-release escape (#617 `remi unstick`): resolve and dismiss every
-   *  open escalation. Forwards to `forceRelease`. */
+   *  open escalation, except a live hold, which is handed to the terminal
+   *  with a notice (#1126). Forwards to `forceRelease`. */
   forceRelease: (reason: string) => { resolved: number };
 }
 

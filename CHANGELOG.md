@@ -31,7 +31,10 @@ prompts any more.
   reason. Never a card; a per-device setting, on by default.
 - **`REMI_HOME`**: an absolute path that relocates remi's whole state
   directory (default `~/.remi`), for running remi from source without touching
-  real state.
+  real state. A relative value stops remi at startup with one line and exit
+  code 1. Under an override `remi --install` and `remi --uninstall` refuse to
+  run (the service always uses `~/.remi`), and the statusline is not
+  registered in `~/.claude/settings.json`.
 - An optional `message` on the `answer` protocol message: sent with a "No",
   Claude receives it as the reason. Protocol only; the app has no field for
   it yet.
@@ -54,6 +57,10 @@ prompts any more.
   "Yes, always" action too and is answered in the app.
 - Chat text is refused while a held prompt's dialog is up, as it already was
   while a numbered menu was on screen (#1140).
+- `remi unstick` no longer closes a prompt whose hook is held: its dialog is
+  on screen, so it is handed back to the terminal and the phone is told so
+  ("answer in the terminal" / "answer with remi attach"); a second unstick
+  clears it. Other stuck cards are resolved and dismissed as before.
 - AskUserQuestion and plan approval are unchanged: still typed into Claude's
   dialog behind the exact-label screen check (#1134), until #1127.
 
@@ -127,8 +134,9 @@ source of several security bugs (#536, #1060, #1063).
   main-agent prompt shows in the
   terminal at once and is pushed when it renders (#1121); AskUserQuestion and
   plan approval are pushed immediately; a subagent prompt is pushed only if it
-  renders. `remi unstick` now resolves and dismisses stuck cards (there are no
-  holds or evals left to release).
+  renders. `remi unstick` now resolves and dismisses stuck cards (there were
+  no holds or evals left to release; since #1126 a live hold is handed back
+  to the terminal instead, see above).
 - **Every phone answer is typed, and checked against the screen first**
   (#1134). (Since #1126 above, binary permission prompts are answered through
   the held hook instead; typing remains only for hook-less prompts and for

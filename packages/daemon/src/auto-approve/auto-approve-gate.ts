@@ -74,9 +74,12 @@
  *     dialog is gone;
  *   - `cancelStaleForAgent`, called from `SubagentStop`: the single-agent
  *     mirror of the Stop reasoning;
- *   - `cancelStale('SessionEnd')` and `forceRelease` (`remi unstick`): real
- *     teardown, every open escalation is resolved.
- * Each one routes through `resolveSupersededQuestion`, which ends the hold
+ *   - `cancelStale('SessionEnd')`: real teardown, every open escalation is
+ *     resolved;
+ *   - `forceRelease` (`remi unstick`): every open escalation is resolved
+ *     except a LIVE hold, which is handed to the terminal with a notice
+ *     (`releaseWithNotice`, #1126) because its dialog is on screen.
+ * Each resolution routes through `resolveSupersededQuestion`, which ends the hold
  * (an empty response), removes the card from the registry and fires
  * `onResolved` (question_resolved + APNS dismissal), never a silent
  * bookkeeping-only delete. A phone answer (or a superseded render) retires
@@ -706,7 +709,7 @@ export class AutoApproveGate {
   /**
    * The hold deadline passed with no answer (#1126): release the hook with
    * the empty response (Claude's dialog stays on screen and the terminal
-   * answers it), tell the phone (`onHoldDeadline`, while the card is still
+   * answers it), tell the phone (`onReleasedToTerminal`, while the card is still
    * registered so the notice can name it), then dismiss the card. The
    * signature stays open: the prompt is still on screen, and a later tool
    * run, Stop or new user prompt resolves it.
