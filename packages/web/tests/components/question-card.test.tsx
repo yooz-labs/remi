@@ -97,6 +97,14 @@ describe('QuestionCard (#1127)', () => {
     expect(html).not.toContain('>Submit<');
     expect(html).toMatch(/<input[^>]* disabled=""/);
   });
+
+  test('a terminal-only card says its Cancel declines the tool call (#1155)', () => {
+    const html = render({ ...form, terminalOnly: true });
+    // The form's button and the header's X both carry it.
+    expect(html).toContain('>Decline tool call</button>');
+    expect(html).toContain('aria-label="Decline tool call"');
+    expect(html).not.toContain('Dismiss question');
+  });
 });
 
 /**

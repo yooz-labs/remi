@@ -125,8 +125,16 @@ function optionKind(option: UIQuestionOption): OptionKind {
  * it keeps planning, on a held AskUserQuestion it dismisses the question
  * (both through the hook); elsewhere it cancels the prompt (Esc where no
  * hook stands behind it).
+ *
+ * A terminal-only card (#1155) says what its Cancel does to the tool call:
+ * it declines it. For a question-shaped tool other than AskUserQuestion the
+ * daemon presses Esc in the terminal, where Claude's permission prompt for
+ * the tool is up; for an AskUserQuestion whose input did not parse it denies
+ * the held hook ("The user dismissed the question."). Either way the tool
+ * does not run, which "Dismiss question" did not say.
  */
 function cancelLabel(question: UIQuestion): string {
+  if (question.terminalOnly === true) return 'Decline tool call';
   if (question.kind === 'plan_approval') return 'Keep planning';
   if (question.kind === 'multi_question') return 'Dismiss question';
   return 'Cancel (Esc)';
