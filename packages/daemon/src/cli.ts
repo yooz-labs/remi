@@ -168,6 +168,7 @@ import {
   createTranscriptHandlers,
 } from './cli/handlers/transcript-events.ts';
 import { type TrivialHandlers, createTrivialHandlers } from './cli/handlers/trivial-events.ts';
+import { permissionHoldPolicy } from './cli/hold-policy.ts';
 import { HubClientTracker } from './cli/hub-client-tracker.ts';
 import { buildHubQuestionCensus } from './cli/hub-question-census.ts';
 import type { LiveSessionsCollectResult } from './cli/live-sessions-watcher.ts';
@@ -201,13 +202,7 @@ import {
   remiHome,
   serviceCommandRefusal,
 } from './config/remi-home.ts';
-import {
-  DAEMON_PERMISSION_REQUEST_HOOK_TIMEOUT,
-  ForeignSessionEscalator,
-  HookConfigManager,
-  HookServer,
-  PERMISSION_REQUEST_HOOK_TIMEOUT,
-} from './hooks/index.ts';
+import { ForeignSessionEscalator, HookConfigManager, HookServer } from './hooks/index.ts';
 import type {
   HookInput,
   PermissionDeniedHookInput,
@@ -1676,6 +1671,7 @@ async function createNewSession(
   });
 
   if (hookServer) {
+    const holdPolicy = permissionHoldPolicy(passThrough, remiConfig.prompts);
     const hookBridgeHandle = setupHookBridge(
       {
         sessionRegistry,
@@ -1694,18 +1690,11 @@ async function createNewSession(
         // its pushed card on every client.
         broadcastQuestionResolved: onQuestionResolved,
         // #1126: how long a binary prompt's hook waits for the phone, and
-        // the "answer at the terminal" notice when it does not come.
-        // A wrapper session (local terminal) hands the prompt to its terminal
-        // after hold_seconds; a daemon or hub session has no terminal, so it
-        // keeps it for the phone much longer (daemon_hold_seconds, #1126).
-        holdMs:
-          (passThrough ? remiConfig.prompts.hold_seconds : remiConfig.prompts.daemon_hold_seconds) *
-          1000,
-        // The PermissionRequest timeout this session registered with Claude:
-        // an abort at that timeout is not a terminal answer (#1126).
-        hookTimeoutMs:
-          (passThrough ? PERMISSION_REQUEST_HOOK_TIMEOUT : DAEMON_PERMISSION_REQUEST_HOOK_TIMEOUT) *
-          1000,
+        // the registered hook timeout an abort is compared with; a wrapper
+        // session hands an unanswered prompt to its terminal, a daemon or
+        // hub session keeps it for the phone (see hold-policy.ts).
+        holdMs: holdPolicy.holdMs,
+        hookTimeoutMs: holdPolicy.hookTimeoutMs,
         pushTerminalNotice: (sid, question, reason) =>
           sessionNotifiers.get(sid)?.pushTerminalNotice(sid, question, reason),
         dismissTerminalNotice: (sid, questionId) =>
@@ -1721,7 +1710,7 @@ async function createNewSession(
         tracker,
         // #1126: a wrapper session has a local terminal, so a subagent's
         // prompt is passed to it; a daemon-mode session holds it instead.
-        hasLocalTerminal: passThrough,
+        hasLocalTerminal: holdPolicy.hasLocalTerminal,
       },
     );
     // The binder owns the fallback poll + #452 dir-watch (armed by its start()
@@ -2610,7 +2599,8 @@ if (cliDaemonMode) {
         // #1126: a daemon or hub session holds prompts for up to
         // daemon_hold_seconds, so its hook registration outlasts that.
         hookConfigManager = new HookConfigManager(workingDirectory, hookServer.url, {
-          permissionRequestTimeout: DAEMON_PERMISSION_REQUEST_HOOK_TIMEOUT,
+          permissionRequestTimeout: permissionHoldPolicy(false, remiConfig.prompts)
+            .permissionRequestTimeoutSec,
         });
         await hookConfigManager.install();
       } catch (err) {
@@ -2816,8 +2806,12 @@ if (cliDaemonMode) {
     HOOK_PORT = hookServer.port;
     log(`Hook server listening on ${hookServer.url} (port ${HOOK_PORT})`);
 
-    // Configure Claude Code hooks to POST to our server
-    hookConfigManager = new HookConfigManager(workingDirectory, hookServer.url);
+    // Configure Claude Code hooks to POST to our server; a wrapper session
+    // has a local terminal (#1126, hold-policy.ts).
+    hookConfigManager = new HookConfigManager(workingDirectory, hookServer.url, {
+      permissionRequestTimeout: permissionHoldPolicy(true, remiConfig.prompts)
+        .permissionRequestTimeoutSec,
+    });
     await hookConfigManager.install();
     log('[Hooks] Claude Code hooks configured');
   } catch (err) {
