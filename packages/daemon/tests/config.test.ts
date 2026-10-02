@@ -9,33 +9,12 @@ import * as path from 'node:path';
 import {
   DEFAULT_CONFIG,
   applyEnvOverrides,
-  defaultModel,
-  detectLocalLLMPlatform,
   formatConfig,
   generateDefaultConfig,
   initConfigFile,
-  llamaServerCommand,
   loadConfig,
+  loadConfigWithNotices,
 } from '../src/config/config.ts';
-
-/** What `auto_approve.provider` should default to on the machine running these
- *  tests (#822). Derived from the platform detector rather than read back from
- *  `DEFAULT_CONFIG`, so assertions using it are real rather than circular. */
-function expectedDefaultProvider(): string {
-  const detected = detectLocalLLMPlatform();
-  return detected === 'unsupported' ? 'yooz' : detected;
-}
-
-/** #822: the evaluator model default is platform-resolved too — an MLX id
- *  cannot be loaded by llama.cpp. Derived from `detectLocalLLMPlatform`, not
- *  from DEFAULT_CONFIG, so it is a real expectation rather than a tautology.
- *  Without this these assertions pass on a macOS dev machine and fail on CI,
- *  which runs ubuntu-latest. */
-function expectedDefaultModel(): string {
-  return detectLocalLLMPlatform() === 'llamacpp'
-    ? 'YoozLabs/Qwen3.5-4B-qat-GGUF:Q4_0'
-    : 'YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx';
-}
 
 const TEST_DIR = path.join(os.tmpdir(), `remi-config-test-${process.pid}`);
 const TEST_CONFIG = path.join(TEST_DIR, 'config.toml');
@@ -187,18 +166,6 @@ describe('applyEnvOverrides', () => {
     expect(DEFAULT_CONFIG.features.transcript_binder_enabled).toBe(true);
   });
 
-  test('auto-approve stays opt-in but defaults safe read-only tools in allow (#482)', () => {
-    // Off by default (the trust line we never cross silently).
-    expect(DEFAULT_CONFIG.auto_approve.enabled).toBe(false);
-    // Read-only TOOL-NAME matches (not Bash substrings) so a compound command
-    // cannot bypass them; these fast-path file reads without an LLM call.
-    expect(DEFAULT_CONFIG.auto_approve.allow).toContain('Read');
-    expect(DEFAULT_CONFIG.auto_approve.allow).toContain('Glob');
-    expect(DEFAULT_CONFIG.auto_approve.allow).toContain('Grep');
-    // No Bash command substrings are defaulted (compound-command-unsafe).
-    expect(DEFAULT_CONFIG.auto_approve.allow.some((p) => p.includes(' '))).toBe(false);
-  });
-
   test('REMI_TRANSCRIPT_BINDER_ENABLED=false is read but no longer changes behavior (#470)', () => {
     process.env['REMI_TRANSCRIPT_BINDER_ENABLED'] = 'false';
     const config = applyEnvOverrides(DEFAULT_CONFIG);
@@ -302,520 +269,6 @@ describe('formatConfig', () => {
     expect(output).toContain('***');
     expect(output).not.toContain('secret-token');
   });
-
-  test('includes auto_approve section', () => {
-    const output = formatConfig(DEFAULT_CONFIG, path.join(TEST_DIR, 'nonexistent.toml'));
-    expect(output).toContain('[auto_approve]');
-    expect(output).toContain('enabled = false');
-    expect(output).toContain('risk_review = "off"');
-    // Platform-dependent by design (#822): the engine on Apple Silicon, a
-    // llama.cpp sidecar on Linux. Asserting a literal here passes on a macOS
-    // dev machine and fails on Linux CI, which is exactly what happened.
-    expect(output).toContain(`provider = "${expectedDefaultProvider()}"`);
-    // disable_thinking must be visible in `config show` so a user who set it
-    // can confirm it (it was missed in the initial formatConfig wiring).
-    expect(output).toContain('disable_thinking = true');
-    // approve_groups/deny_groups likewise visible (#494 phase 1).
-    expect(output).toContain('approve_groups = ["read-only", "vcs-read", "gh-read", "build-test"]');
-    expect(output).toContain('deny_groups = []');
-    // escalate_model visible (#522).
-    expect(output).toContain('escalate_model = ""');
-    // always_escalate_tools visible (#572).
-    expect(output).toContain('always_escalate_tools = ["AskUserQuestion", "ExitPlanMode"]');
-    // delivery_confirm_timeout / hold_unconfirmed_timeout visible (#603 Phase 1)
-    // — guards against the #517-class regression of omitting a field from `config
-    // show`.
-    expect(output).toContain('delivery_confirm_timeout = 6');
-    expect(output).toContain('hold_unconfirmed_timeout = 0');
-    // cache_idle visible (#820 stage 1), alongside its stage-2 sibling.
-    expect(output).toContain('cache_idle = 300');
-    expect(output).toContain('keep_alive = 1800');
-    // residual_action visible (#1045 phase 6) -- same #517-class regression
-    // guard as delivery_confirm_timeout/hold_unconfirmed_timeout above.
-    expect(output).toContain('residual_action = "escalate"');
-  });
-
-  test('default model is a fast 4b-class engine model; escalate_model empty (#522)', () => {
-    expect(DEFAULT_CONFIG.auto_approve.model).toBe(expectedDefaultModel());
-    expect(DEFAULT_CONFIG.auto_approve.escalate_model).toBe('');
-  });
-
-  // #822: the same weights in the container each backend can load. Asserted
-  // as an explicit platform->id table rather than through the helper above,
-  // so a wrong mapping cannot pass by matching a wrong expectation.
-  test('the default model matches the backend the platform resolves to (#822)', () => {
-    const backend = detectLocalLLMPlatform();
-    const model = DEFAULT_CONFIG.auto_approve.model;
-    if (backend === 'llamacpp') {
-      expect(model).toContain('GGUF');
-      // Explicit for determinism: `-hf` with no tag prefers Q4_K_M/Q8_0 then
-      // falls back to the FIRST .gguf in the repo, which is order-dependent
-      // if a second quant is ever published.
-      expect(model).toContain(':Q4_0');
-      expect(model).not.toContain('mlx');
-    } else {
-      expect(model).toContain('mlx');
-      expect(model).not.toContain('GGUF');
-    }
-  });
-
-  // CI runs ubuntu-latest ONLY, so detectLocalLLMPlatform() there is always
-  // 'llamacpp' and the tests above exercise only the GGUF branch. The macOS
-  // branch -- the primary shipping platform -- would be unprotected: making
-  // defaultModel return the GGUF id unconditionally passes the merge gate
-  // while shipping an id the engine rejects with 400 invalid_model, which
-  // surfaces as "every question escalates" rather than as a broken daemon.
-  // Injected args, like detectLocalLLMPlatform's own table test.
-  test('defaultModel maps every platform, on every platform (#822)', () => {
-    expect(defaultModel('darwin', 'arm64')).toBe('YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx');
-    expect(defaultModel('linux', 'x64')).toBe('YoozLabs/Qwen3.5-4B-qat-GGUF:Q4_0');
-    expect(defaultModel('linux', 'arm64')).toBe('YoozLabs/Qwen3.5-4B-qat-GGUF:Q4_0');
-    // unsupported targets inherit the engine's value, matching defaultProvider's
-    // 'yooz' fallback so the pair stays coherent.
-    expect(defaultModel('darwin', 'x64')).toBe('YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx');
-    expect(defaultModel('win32', 'x64')).toBe('YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx');
-  });
-
-  test('llamaServerCommand never prints an unrunnable -hf argument (#822)', () => {
-    // provider = "llamacpp" on Apple Silicon is a real setup and nothing
-    // validates provider/model consistency, so the configured id can be the
-    // MLX default or empty. Printing `-hf ...-mlx` hands the user a command
-    // that cannot load, which is worse than printing none.
-    expect(llamaServerCommand()).toContain(':Q4_0');
-    expect(llamaServerCommand('YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx')).toContain('GGUF');
-    expect(llamaServerCommand('')).toContain('GGUF');
-    // A real GGUF id is passed through untouched.
-    expect(llamaServerCommand('YoozLabs/Qwen3.5-0.8B-qat-GGUF:Q4_0')).toContain('0.8B');
-  });
-
-  test('the llama-server command remi prints is runnable and matches the config default (#822)', () => {
-    // The command in the boot message is the one thing a Linux user copies,
-    // so it must carry the quant suffix, bind loopback, and name remi's
-    // reserved port. Built from the same constant as the config default so
-    // the two cannot drift.
-    const cmd = llamaServerCommand('YoozLabs/Qwen3.5-4B-qat-GGUF:Q4_0');
-    expect(cmd).toBe(
-      'llama-server -hf YoozLabs/Qwen3.5-4B-qat-GGUF:Q4_0 --host 127.0.0.1 --port 19924',
-    );
-    // 19924 is remi's reserved port (see the ecosystem port table) and is what
-    // LLM_PROVIDERS.llamacpp points the client at.
-    expect(cmd).toContain('19924');
-    expect(DEFAULT_CONFIG.auto_approve.base_url).toContain('19924');
-  });
-
-  // The TouchUp tiers read 38/38 on the permission grid but reach it partly by
-  // returning no verdict at all (echoing the prompt back) on six of the most
-  // dangerous scenarios, which only "pass" because unparsable => escalate.
-  // Defaulting to one would be safety by accident (#809 Phase D, engine#303).
-  // #822: the supported targets carry DIFFERENT backends, so one hardcoded
-  // default is wrong on half of them. Apple Silicon runs the MLX engine; Linux
-  // runs a llama.cpp sidecar; an Intel Mac runs neither, and must be told so at
-  // boot rather than waiting 30s on an engine that cannot exist.
-  test('the local-LLM backend is chosen by platform, not hardcoded', () => {
-    expect(detectLocalLLMPlatform('darwin', 'arm64')).toBe('yooz');
-    expect(detectLocalLLMPlatform('linux', 'x64')).toBe('llamacpp');
-    expect(detectLocalLLMPlatform('linux', 'arm64')).toBe('llamacpp');
-  });
-
-  test('an Intel Mac is unsupported, not silently pointed at the MLX engine', () => {
-    // The trap this guards: "macOS" reads like the boundary, but MLX makes it
-    // Apple Silicon. Defaulting darwin-x64 to 'yooz' would look reasonable and
-    // fail as a startup timeout.
-    expect(detectLocalLLMPlatform('darwin', 'x64')).toBe('unsupported');
-    expect(detectLocalLLMPlatform('win32', 'x64')).toBe('unsupported');
-  });
-
-  test('the shipped default provider matches this machine', () => {
-    const expected = detectLocalLLMPlatform();
-    if (expected !== 'unsupported') {
-      expect(DEFAULT_CONFIG.auto_approve.provider).toBe(expected);
-    } else {
-      // Unsupported targets keep a stable config shape; the daemon reports the
-      // gap at boot instead of the config pretending it away.
-      expect(DEFAULT_CONFIG.auto_approve.provider).toBe('yooz');
-    }
-  });
-
-  test('default model is not one of the engine TouchUp grammar tiers', () => {
-    expect(['yooz-light-v3', 'yooz-quality-v3']).not.toContain(DEFAULT_CONFIG.auto_approve.model);
-  });
-
-  test('REMI_AUTO_APPROVE_ESCALATE_MODEL env override (#522)', () => {
-    process.env['REMI_AUTO_APPROVE_ESCALATE_MODEL'] = 'yooz-heavy';
-    const config = applyEnvOverrides(DEFAULT_CONFIG);
-    expect(config.auto_approve.escalate_model).toBe('yooz-heavy');
-    // biome-ignore lint/performance/noDelete: test isolation
-    delete process.env['REMI_AUTO_APPROVE_ESCALATE_MODEL'];
-  });
-
-  test('rejects escalate_model as a non-string (#522)', () => {
-    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\nescalate_model = 35\n');
-    expect(() => loadConfig(TEST_CONFIG)).toThrow(/escalate_model/);
-  });
-
-  test('masks auto_approve api_key', () => {
-    const config = {
-      ...DEFAULT_CONFIG,
-      auto_approve: { ...DEFAULT_CONFIG.auto_approve, api_key: 'sk-secret' },
-    };
-    const output = formatConfig(config);
-    expect(output).toContain('api_key = "***"');
-    expect(output).not.toContain('sk-secret');
-  });
-});
-
-describe('auto_approve config', () => {
-  test('defaults are present', () => {
-    expect(DEFAULT_CONFIG.auto_approve).toEqual({
-      enabled: false,
-      // ADR 0025: empty by default. No shipped config grants any agent type
-      // anything the base does not already grant — a non-empty default here
-      // would be a per-role permission nobody asked for.
-      agents: {},
-      // Resolved per platform (#822), so the expectation is too — but derived
-      // from `detectLocalLLMPlatform` rather than from `DEFAULT_CONFIG`, which
-      // would assert the value against itself and prove nothing.
-      provider: expectedDefaultProvider(),
-      model: expectedDefaultModel(),
-      api_key: '',
-      base_url: 'http://127.0.0.1:19924',
-      timeout: 30,
-      log_decisions: true,
-      risk_review: 'off' as const,
-      // #1045 phase 6: escalate is the safe, byte-for-byte pre-#1045 default.
-      residual_action: 'escalate' as const,
-      allow: ['Read', 'Glob', 'Grep'],
-      deny: [],
-      // #807: irreversible-only by default; broad patterns (curl/ssh) are
-      // opt-in per machine because they fire constantly under agent fleets.
-      subagent_alert: [
-        'rm -rf',
-        'rm -f',
-        'push --force',
-        'push -f ',
-        'reset --hard',
-        'DROP TABLE',
-        'TRUNCATE',
-        'sudo ',
-        'chmod 777',
-      ],
-      approve_groups: ['read-only', 'vcs-read', 'gh-read', 'build-test'],
-      level: 'strict',
-      deny_groups: [],
-      instructions: '',
-      multichoice: 'skip',
-      multichoice_model: '',
-      escalate_model: '',
-      escalate_timeout: 0,
-      queue_timeout: 240,
-      cache_idle: 300,
-      keep_alive: 1800,
-      engine: 'owned' as const,
-      engine_path: '',
-      model_cache: '',
-      disable_thinking: true,
-      always_escalate_tools: ['AskUserQuestion', 'ExitPlanMode'],
-      session_precedent: true,
-      hold_timeout: 1800,
-      push_hold_timeout: 60,
-      delivery_confirm_timeout: 6,
-      hold_unconfirmed_timeout: 0,
-    });
-  });
-
-  test('loads auto_approve from TOML', () => {
-    fs.writeFileSync(
-      TEST_CONFIG,
-      `
-[auto_approve]
-enabled = true
-provider = "openrouter"
-model = "anthropic/claude-3-haiku"
-api_key = "sk-test"
-timeout = 5
-`,
-    );
-
-    const config = loadConfig(TEST_CONFIG);
-    expect(config.auto_approve.enabled).toBe(true);
-    expect(config.auto_approve.provider).toBe('openrouter');
-    expect(config.auto_approve.model).toBe('anthropic/claude-3-haiku');
-    expect(config.auto_approve.api_key).toBe('sk-test');
-    expect(config.auto_approve.timeout).toBe(5);
-    // Defaults preserved for unset fields
-    expect(config.auto_approve.base_url).toBe('http://127.0.0.1:19924');
-    expect(config.auto_approve.log_decisions).toBe(true);
-  });
-
-  test('rejects provider = "ollama" with an actionable error (#809)', () => {
-    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\nprovider = "ollama"\n');
-    expect(() => loadConfig(TEST_CONFIG)).toThrow(/ollama support was removed/);
-    expect(() => loadConfig(TEST_CONFIG)).toThrow(/"yooz"/);
-  });
-
-  test('loads always_escalate_tools from TOML (#572)', () => {
-    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\nalways_escalate_tools = ["MyTool"]\n');
-    const config = loadConfig(TEST_CONFIG);
-    expect(config.auto_approve.always_escalate_tools).toEqual(['MyTool']);
-  });
-
-  test('rejects always_escalate_tools as a non-array (#572)', () => {
-    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\nalways_escalate_tools = "AskUserQuestion"\n');
-    expect(() => loadConfig(TEST_CONFIG)).toThrow(/always_escalate_tools/);
-  });
-
-  test('REMI_AUTO_APPROVE_ALWAYS_ESCALATE env override trims and drops empties (#572)', () => {
-    process.env['REMI_AUTO_APPROVE_ALWAYS_ESCALATE'] = 'AskUserQuestion, mcp__custom , ';
-    const config = applyEnvOverrides(DEFAULT_CONFIG);
-    expect(config.auto_approve.always_escalate_tools).toEqual(['AskUserQuestion', 'mcp__custom']);
-    // biome-ignore lint/performance/noDelete: test isolation
-    delete process.env['REMI_AUTO_APPROVE_ALWAYS_ESCALATE'];
-  });
-
-  test('preserves auto_approve defaults when section missing', () => {
-    fs.writeFileSync(TEST_CONFIG, '[daemon]\nbase_port = 19000\n');
-    const config = loadConfig(TEST_CONFIG);
-    expect(config.auto_approve).toEqual(DEFAULT_CONFIG.auto_approve);
-  });
-
-  test('REMI_AUTO_APPROVE env override', () => {
-    process.env['REMI_AUTO_APPROVE'] = 'true';
-    const config = applyEnvOverrides(DEFAULT_CONFIG);
-    expect(config.auto_approve.enabled).toBe(true);
-    // biome-ignore lint/performance/noDelete: test isolation
-    delete process.env['REMI_AUTO_APPROVE'];
-  });
-
-  test('REMI_AUTO_APPROVE_MODEL env override', () => {
-    process.env['REMI_AUTO_APPROVE_MODEL'] = 'gemma4:e2b';
-    const config = applyEnvOverrides(DEFAULT_CONFIG);
-    expect(config.auto_approve.model).toBe('gemma4:e2b');
-    // biome-ignore lint/performance/noDelete: test isolation
-    delete process.env['REMI_AUTO_APPROVE_MODEL'];
-  });
-
-  test('REMI_AUTO_APPROVE_API_KEY env override', () => {
-    process.env['REMI_AUTO_APPROVE_API_KEY'] = 'sk-override';
-    const config = applyEnvOverrides(DEFAULT_CONFIG);
-    expect(config.auto_approve.api_key).toBe('sk-override');
-    // biome-ignore lint/performance/noDelete: test isolation
-    delete process.env['REMI_AUTO_APPROVE_API_KEY'];
-  });
-
-  test('REMI_AUTO_APPROVE=false disables when config has enabled=true', () => {
-    const enabledConfig = {
-      ...DEFAULT_CONFIG,
-      auto_approve: { ...DEFAULT_CONFIG.auto_approve, enabled: true },
-    };
-    process.env['REMI_AUTO_APPROVE'] = 'false';
-    const config = applyEnvOverrides(enabledConfig);
-    expect(config.auto_approve.enabled).toBe(false);
-    // biome-ignore lint/performance/noDelete: test isolation
-    delete process.env['REMI_AUTO_APPROVE'];
-  });
-
-  test('REMI_AUTO_APPROVE_PROVIDER env override', () => {
-    process.env['REMI_AUTO_APPROVE_PROVIDER'] = 'openrouter';
-    const config = applyEnvOverrides(DEFAULT_CONFIG);
-    expect(config.auto_approve.provider).toBe('openrouter');
-    // biome-ignore lint/performance/noDelete: test isolation
-    delete process.env['REMI_AUTO_APPROVE_PROVIDER'];
-  });
-
-  test('REMI_AUTO_APPROVE_BASE_URL env override', () => {
-    process.env['REMI_AUTO_APPROVE_BASE_URL'] = 'http://custom:8080/v1';
-    const config = applyEnvOverrides(DEFAULT_CONFIG);
-    expect(config.auto_approve.base_url).toBe('http://custom:8080/v1');
-    // biome-ignore lint/performance/noDelete: test isolation
-    delete process.env['REMI_AUTO_APPROVE_BASE_URL'];
-  });
-
-  test('loads allow/deny/instructions from TOML', () => {
-    fs.writeFileSync(
-      TEST_CONFIG,
-      `
-[auto_approve]
-enabled = true
-allow = ["git status", "bun test", "bunx biome"]
-deny = ["rm -rf /", "sudo "]
-instructions = """
-Approve all test runs.
-Escalate anything touching secrets.
-"""
-`,
-    );
-
-    const config = loadConfig(TEST_CONFIG);
-    expect(config.auto_approve.allow).toEqual(['git status', 'bun test', 'bunx biome']);
-    expect(config.auto_approve.deny).toEqual(['rm -rf /', 'sudo ']);
-    expect(config.auto_approve.instructions).toContain('Approve all test runs');
-    expect(config.auto_approve.instructions).toContain('Escalate anything touching secrets');
-  });
-
-  test('allow defaults to safe read-only tools; deny/instructions default empty (#482)', () => {
-    // An [auto_approve] section that omits `allow` inherits the safe read-only
-    // tool defaults (Read/Glob/Grep); deny and instructions stay empty.
-    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\nenabled = true\n');
-    const config = loadConfig(TEST_CONFIG);
-    expect(config.auto_approve.allow).toEqual(['Read', 'Glob', 'Grep']);
-    expect(config.auto_approve.deny).toEqual([]);
-    expect(config.auto_approve.instructions).toBe('');
-  });
-
-  test('rejects allow as string (security: would match characters)', () => {
-    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\nallow = "git"\n');
-    expect(() => loadConfig(TEST_CONFIG)).toThrow(/auto_approve\.allow/);
-  });
-
-  test('rejects deny as string', () => {
-    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\ndeny = "rm"\n');
-    expect(() => loadConfig(TEST_CONFIG)).toThrow(/auto_approve\.deny/);
-  });
-
-  test('rejects instructions as array', () => {
-    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\ninstructions = ["line1", "line2"]\n');
-    expect(() => loadConfig(TEST_CONFIG)).toThrow(/auto_approve\.instructions/);
-  });
-
-  test('rejects approve_groups as string', () => {
-    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\napprove_groups = "read-only"\n');
-    expect(() => loadConfig(TEST_CONFIG)).toThrow(/auto_approve\.approve_groups/);
-  });
-
-  test('rejects deny_groups as string', () => {
-    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\ndeny_groups = "build-test"\n');
-    expect(() => loadConfig(TEST_CONFIG)).toThrow(/auto_approve\.deny_groups/);
-  });
-
-  test('omitted *_groups inherit the default groups', () => {
-    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\nenabled = true\n');
-    const config = loadConfig(TEST_CONFIG);
-    expect(config.auto_approve.approve_groups).toEqual([
-      'read-only',
-      'vcs-read',
-      'gh-read',
-      'build-test',
-    ]);
-    expect(config.auto_approve.deny_groups).toEqual([]);
-  });
-
-  test('loads hold_timeout / push_hold_timeout from TOML (#573)', () => {
-    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\nhold_timeout = 900\npush_hold_timeout = 45\n');
-    const config = loadConfig(TEST_CONFIG);
-    expect(config.auto_approve.hold_timeout).toBe(900);
-    expect(config.auto_approve.push_hold_timeout).toBe(45);
-  });
-
-  test('rejects a negative hold_timeout (#573)', () => {
-    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\nhold_timeout = -1\n');
-    expect(() => loadConfig(TEST_CONFIG)).toThrow(/hold_timeout/);
-  });
-
-  test('rejects a negative push_hold_timeout (#573)', () => {
-    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\npush_hold_timeout = -5\n');
-    expect(() => loadConfig(TEST_CONFIG)).toThrow(/push_hold_timeout/);
-  });
-
-  test('rejects a negative delivery_confirm_timeout (#603)', () => {
-    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\ndelivery_confirm_timeout = -1\n');
-    expect(() => loadConfig(TEST_CONFIG)).toThrow(/delivery_confirm_timeout/);
-  });
-
-  test('rejects a non-numeric delivery_confirm_timeout (#603)', () => {
-    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\ndelivery_confirm_timeout = "fast"\n');
-    expect(() => loadConfig(TEST_CONFIG)).toThrow(/delivery_confirm_timeout/);
-  });
-
-  test('rejects a negative hold_unconfirmed_timeout (#603)', () => {
-    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\nhold_unconfirmed_timeout = -1\n');
-    expect(() => loadConfig(TEST_CONFIG)).toThrow(/hold_unconfirmed_timeout/);
-  });
-
-  test('loads delivery_confirm_timeout / hold_unconfirmed_timeout from TOML (#603)', () => {
-    fs.writeFileSync(
-      TEST_CONFIG,
-      '[auto_approve]\ndelivery_confirm_timeout = 8\nhold_unconfirmed_timeout = 180\n',
-    );
-    const config = loadConfig(TEST_CONFIG);
-    expect(config.auto_approve.delivery_confirm_timeout).toBe(8);
-    expect(config.auto_approve.hold_unconfirmed_timeout).toBe(180);
-  });
-
-  test('REMI_AUTO_APPROVE_HOLD_TIMEOUT / PUSH_HOLD_TIMEOUT env overrides (#573)', () => {
-    process.env['REMI_AUTO_APPROVE_HOLD_TIMEOUT'] = '1200';
-    process.env['REMI_AUTO_APPROVE_PUSH_HOLD_TIMEOUT'] = '90';
-    const config = applyEnvOverrides(DEFAULT_CONFIG);
-    expect(config.auto_approve.hold_timeout).toBe(1200);
-    expect(config.auto_approve.push_hold_timeout).toBe(90);
-    // biome-ignore lint/performance/noDelete: test isolation
-    delete process.env['REMI_AUTO_APPROVE_HOLD_TIMEOUT'];
-    // biome-ignore lint/performance/noDelete: test isolation
-    delete process.env['REMI_AUTO_APPROVE_PUSH_HOLD_TIMEOUT'];
-  });
-
-  test('warns (does not throw) when push_hold_timeout > 0 but hold_timeout = 0 (FIX 4 / #573)', () => {
-    const warnings: string[] = [];
-    const original = console.warn;
-    console.warn = (msg?: unknown) => warnings.push(String(msg));
-    try {
-      fs.writeFileSync(TEST_CONFIG, '[auto_approve]\nhold_timeout = 0\npush_hold_timeout = 60\n');
-      const config = loadConfig(TEST_CONFIG); // must NOT throw
-      expect(config.auto_approve.hold_timeout).toBe(0);
-      expect(config.auto_approve.push_hold_timeout).toBe(60);
-      expect(
-        warnings.some((w) => w.includes('push_hold_timeout') && w.includes('hold_timeout = 0')),
-      ).toBe(true);
-    } finally {
-      console.warn = original;
-    }
-  });
-
-  test('does NOT warn when both hold_timeout and push_hold_timeout are set (FIX 4 / #573)', () => {
-    const warnings: string[] = [];
-    const original = console.warn;
-    console.warn = (msg?: unknown) => warnings.push(String(msg));
-    try {
-      fs.writeFileSync(
-        TEST_CONFIG,
-        '[auto_approve]\nhold_timeout = 1800\npush_hold_timeout = 60\n',
-      );
-      loadConfig(TEST_CONFIG);
-      expect(warnings.some((w) => w.includes('push_hold_timeout'))).toBe(false);
-    } finally {
-      console.warn = original;
-    }
-  });
-
-  test('rejects allow with non-string elements', () => {
-    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\nallow = ["git", 42]\n');
-    expect(() => loadConfig(TEST_CONFIG)).toThrow(/auto_approve\.allow/);
-  });
-
-  test('REMI_AUTO_APPROVE_ALLOW env var (comma-separated)', () => {
-    process.env['REMI_AUTO_APPROVE_ALLOW'] = 'git status, bun test , Read';
-    const config = applyEnvOverrides(DEFAULT_CONFIG);
-    expect(config.auto_approve.allow).toEqual(['git status', 'bun test', 'Read']);
-    // biome-ignore lint/performance/noDelete: test isolation
-    delete process.env['REMI_AUTO_APPROVE_ALLOW'];
-  });
-
-  test('REMI_AUTO_APPROVE_DENY env var (newline-separated, trimmed)', () => {
-    // Note: env vars strip surrounding whitespace. To use patterns with
-    // trailing spaces (like "sudo " disambiguation), use the config file.
-    process.env['REMI_AUTO_APPROVE_DENY'] = 'rm -rf /\nsudo -i\ncurl | sh';
-    const config = applyEnvOverrides(DEFAULT_CONFIG);
-    expect(config.auto_approve.deny).toEqual(['rm -rf /', 'sudo -i', 'curl | sh']);
-    // biome-ignore lint/performance/noDelete: test isolation
-    delete process.env['REMI_AUTO_APPROVE_DENY'];
-  });
-
-  test('REMI_AUTO_APPROVE_INSTRUCTIONS env var', () => {
-    process.env['REMI_AUTO_APPROVE_INSTRUCTIONS'] = 'Be careful with git push';
-    const config = applyEnvOverrides(DEFAULT_CONFIG);
-    expect(config.auto_approve.instructions).toBe('Be careful with git push');
-    // biome-ignore lint/performance/noDelete: test isolation
-    delete process.env['REMI_AUTO_APPROVE_INSTRUCTIONS'];
-  });
 });
 
 describe('terminal config (#513)', () => {
@@ -904,10 +357,8 @@ describe('terminal config (#513)', () => {
 
 describe('notifications config (#914)', () => {
   test('defaults: on_turn_complete true, 60s threshold', () => {
-    expect(DEFAULT_CONFIG.notifications).toEqual({
-      on_turn_complete: true,
-      turn_complete_min_seconds: 60,
-    });
+    expect(DEFAULT_CONFIG.notifications.on_turn_complete).toBe(true);
+    expect(DEFAULT_CONFIG.notifications.turn_complete_min_seconds).toBe(60);
   });
 
   test('loads notifications from TOML', () => {
@@ -959,115 +410,161 @@ describe('notifications config (#914)', () => {
     expect(output).toContain('[notifications]');
     expect(output).toContain('on_turn_complete = true');
     expect(output).toContain('turn_complete_min_seconds = 60');
+    expect(output).toContain('subagent_alert = ["rm -rf", "rm -f", "push --force"');
   });
 });
 
-describe('auto_approve.residual_action (#1045 phase 6)', () => {
-  /** Write a config and load it. Real file, real TOML parse -- no mocks. */
-  function load(toml: string) {
-    fs.writeFileSync(TEST_CONFIG, toml);
-    return loadConfig(TEST_CONFIG);
-  }
-
-  test('a config with no residual_action defaults to escalate, i.e. today unchanged', () => {
-    const c = load('[auto_approve]\nenabled = true\n');
-    expect(c.auto_approve.residual_action).toBe('escalate');
+describe('notifications.subagent_alert (#807, moved in #1125)', () => {
+  test('defaults to the irreversible-only list', () => {
+    expect(DEFAULT_CONFIG.notifications.subagent_alert).toEqual([
+      'rm -rf',
+      'rm -f',
+      'push --force',
+      'push -f ',
+      'reset --hard',
+      'DROP TABLE',
+      'TRUNCATE',
+      'sudo ',
+      'chmod 777',
+    ]);
   });
 
-  test('no config file at all also yields the escalate default', () => {
-    const c = loadConfig(path.join(TEST_DIR, 'nope.toml'));
-    expect(c.auto_approve.residual_action).toBe('escalate');
+  test('loads from [notifications]', () => {
+    fs.writeFileSync(TEST_CONFIG, '[notifications]\nsubagent_alert = ["curl", "ssh "]\n');
+    expect(loadConfig(TEST_CONFIG).notifications.subagent_alert).toEqual(['curl', 'ssh ']);
   });
 
-  test('residual_action = "deny" parses', () => {
-    const c = load('[auto_approve]\nresidual_action = "deny"\n');
-    expect(c.auto_approve.residual_action).toBe('deny');
+  test('an empty list is respected (alerts off)', () => {
+    fs.writeFileSync(TEST_CONFIG, '[notifications]\nsubagent_alert = []\n');
+    expect(loadConfig(TEST_CONFIG).notifications.subagent_alert).toEqual([]);
   });
 
-  test('residual_action = "escalate" parses (explicit, same as default)', () => {
-    const c = load('[auto_approve]\nresidual_action = "escalate"\n');
-    expect(c.auto_approve.residual_action).toBe('escalate');
+  test('rejects a string instead of a list', () => {
+    fs.writeFileSync(TEST_CONFIG, '[notifications]\nsubagent_alert = "rm -rf"\n');
+    expect(() => loadConfig(TEST_CONFIG)).toThrow(/notifications\.subagent_alert/);
   });
 
-  // Deliberately WARN + fall back, unlike `level` (which throws): a garbage
-  // enum value here should not refuse to start the daemon, because the
-  // fallback (`escalate`) is always the safe, pre-#1045 behavior.
-  test('an invalid residual_action falls back to escalate and warns, does NOT throw', () => {
-    const warnings: string[] = [];
-    const original = console.warn;
-    console.warn = (msg?: unknown) => warnings.push(String(msg));
-    try {
-      const c = load('[auto_approve]\nresidual_action = "block"\n');
-      expect(c.auto_approve.residual_action).toBe('escalate');
-      expect(
-        warnings.some(
-          (w) => w.includes('residual_action') && w.includes('escalate') && w.includes('block'),
-        ),
-      ).toBe(true);
-    } finally {
-      console.warn = original;
-    }
-  });
-
-  test('a non-string residual_action also falls back to escalate and warns', () => {
-    const warnings: string[] = [];
-    const original = console.warn;
-    console.warn = (msg?: unknown) => warnings.push(String(msg));
-    try {
-      const c = load('[auto_approve]\nresidual_action = 3\n');
-      expect(c.auto_approve.residual_action).toBe('escalate');
-      expect(warnings.some((w) => w.includes('residual_action'))).toBe(true);
-    } finally {
-      console.warn = original;
-    }
+  test('the generated default config carries it and parses back', () => {
+    const generated = generateDefaultConfig();
+    expect(generated).toContain('subagent_alert = ["rm -rf"');
+    fs.writeFileSync(TEST_CONFIG, generated);
+    expect(loadConfig(TEST_CONFIG).notifications.subagent_alert).toEqual(
+      DEFAULT_CONFIG.notifications.subagent_alert,
+    );
   });
 });
 
-describe('auto_approve.risk_review (#1081 phases 2-4)', () => {
-  function load(toml: string) {
-    fs.writeFileSync(TEST_CONFIG, toml);
-    return loadConfig(TEST_CONFIG);
-  }
+describe('a removed [auto_approve] table still loads (#1125)', () => {
+  const OLD_TABLE = [
+    '[auto_approve]',
+    'enabled = true',
+    'provider = "ollama"',
+    'model = 42',
+    'allow = "git"',
+    'deny = ["sudo "]',
+    'level = "bogus"',
+    'hold_timeout = -5',
+    'residual_action = "maybe"',
+    'always_escalate_tools = ["MyTool"]',
+    '',
+    '[auto_approve.agents.Explore]',
+    'approve_groups = ["nope"]',
+    '',
+  ].join('\n');
 
-  test('defaults to off', () => {
-    expect(load('[auto_approve]\nenabled = true\n').auto_approve.risk_review).toBe('off');
+  test('values that the old validator refused no longer stop the daemon', () => {
+    fs.writeFileSync(TEST_CONFIG, OLD_TABLE);
+    expect(() => loadConfig(TEST_CONFIG)).not.toThrow();
   });
 
-  test('accepts the opt-in shadow mode', () => {
-    expect(load('[auto_approve]\nrisk_review = "shadow"\n').auto_approve.risk_review).toBe(
-      'shadow',
+  test('reports every top-level key present, sorted, for the boot notice', () => {
+    fs.writeFileSync(TEST_CONFIG, OLD_TABLE);
+    expect(loadConfigWithNotices(TEST_CONFIG).removedAutoApproveKeys).toEqual([
+      'agents',
+      'allow',
+      'always_escalate_tools',
+      'deny',
+      'enabled',
+      'hold_timeout',
+      'level',
+      'model',
+      'provider',
+      'residual_action',
+    ]);
+  });
+
+  test('the loaded config has no auto_approve section at all', () => {
+    fs.writeFileSync(TEST_CONFIG, OLD_TABLE);
+    expect('auto_approve' in loadConfig(TEST_CONFIG)).toBe(false);
+  });
+
+  test('no table: no keys, no fallback', () => {
+    fs.writeFileSync(TEST_CONFIG, '[daemon]\nbase_port = 19000\n');
+    const loaded = loadConfigWithNotices(TEST_CONFIG);
+    expect(loaded.removedAutoApproveKeys).toEqual([]);
+    expect(loaded.subagentAlertFromLegacy).toBe(false);
+  });
+
+  test('no file: no keys, no fallback', () => {
+    const loaded = loadConfigWithNotices(path.join(TEST_DIR, 'missing.toml'));
+    expect(loaded.removedAutoApproveKeys).toEqual([]);
+    expect(loaded.subagentAlertFromLegacy).toBe(false);
+  });
+
+  test('a non-table auto_approve value is reported, not fatal', () => {
+    fs.writeFileSync(TEST_CONFIG, 'auto_approve = true\n');
+    expect(loadConfigWithNotices(TEST_CONFIG).removedAutoApproveKeys).toEqual(['auto_approve']);
+  });
+
+  test('legacy auto_approve.subagent_alert is honored when [notifications] does not set it', () => {
+    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\nsubagent_alert = ["curl"]\n');
+    const loaded = loadConfigWithNotices(TEST_CONFIG);
+    expect(loaded.config.notifications.subagent_alert).toEqual(['curl']);
+    expect(loaded.subagentAlertFromLegacy).toBe(true);
+    expect(loaded.removedAutoApproveKeys).toEqual(['subagent_alert']);
+  });
+
+  test('[notifications] subagent_alert wins over the legacy key', () => {
+    fs.writeFileSync(
+      TEST_CONFIG,
+      '[notifications]\nsubagent_alert = ["ssh "]\n\n[auto_approve]\nsubagent_alert = ["curl"]\n',
     );
+    const loaded = loadConfigWithNotices(TEST_CONFIG);
+    expect(loaded.config.notifications.subagent_alert).toEqual(['ssh ']);
+    expect(loaded.subagentAlertFromLegacy).toBe(false);
   });
 
-  test('accepts the opt-in verified mode', () => {
-    expect(load('[auto_approve]\nrisk_review = "verified"\n').auto_approve.risk_review).toBe(
-      'verified',
+  test('a malformed legacy subagent_alert is ignored, keeping the default', () => {
+    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\nsubagent_alert = "rm -rf"\n');
+    const loaded = loadConfigWithNotices(TEST_CONFIG);
+    expect(loaded.config.notifications.subagent_alert).toEqual(
+      DEFAULT_CONFIG.notifications.subagent_alert,
     );
+    expect(loaded.subagentAlertFromLegacy).toBe(false);
   });
 
-  test('supports the explicit environment opt-in', () => {
-    process.env['REMI_AUTO_APPROVE_RISK_REVIEW'] = 'shadow';
+  test('REMI_AUTO_APPROVE* environment variables change nothing', () => {
+    const before = { ...process.env };
+    // Baseline under whatever ambient env this test runs in (REMI_PORT may be
+    // set when the suite itself runs inside a remi session).
+    const baseline = applyEnvOverrides(DEFAULT_CONFIG);
     try {
-      expect(applyEnvOverrides(DEFAULT_CONFIG).auto_approve.risk_review).toBe('shadow');
+      process.env['REMI_AUTO_APPROVE'] = 'true';
+      process.env['REMI_AUTO_APPROVE_MODEL'] = 'x';
+      const config = applyEnvOverrides(DEFAULT_CONFIG);
+      expect(config).toEqual(baseline);
     } finally {
-      // biome-ignore lint/performance/noDelete: test isolation
-      delete process.env['REMI_AUTO_APPROVE_RISK_REVIEW'];
+      for (const key of Object.keys(process.env)) {
+        if (!(key in before)) process.env[key] = undefined;
+      }
     }
   });
 
-  test('supports the explicit verified environment opt-in', () => {
-    process.env['REMI_AUTO_APPROVE_RISK_REVIEW'] = 'verified';
-    try {
-      expect(applyEnvOverrides(DEFAULT_CONFIG).auto_approve.risk_review).toBe('verified');
-    } finally {
-      // biome-ignore lint/performance/noDelete: test isolation
-      delete process.env['REMI_AUTO_APPROVE_RISK_REVIEW'];
-    }
-  });
-
-  test('rejects unknown modes instead of silently enabling a new behavior', () => {
-    expect(() => load('[auto_approve]\nrisk_review = "live"\n')).toThrow(/risk_review/);
-    expect(() => load('[auto_approve]\nrisk_review = 1\n')).toThrow(/risk_review/);
+  test('neither the generated default config nor `remi config` mention it', () => {
+    expect(generateDefaultConfig()).not.toContain('auto_approve');
+    expect(formatConfig(DEFAULT_CONFIG, path.join(TEST_DIR, 'nonexistent.toml'))).not.toContain(
+      'auto_approve',
+    );
   });
 });
 

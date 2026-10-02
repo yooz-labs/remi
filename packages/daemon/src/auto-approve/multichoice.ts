@@ -17,8 +17,8 @@
  *
  * 1. Tool name. `ExitPlanMode` is always multi-choice: the user's intent
  *    (continue planning, accept plan, accept and stop asking) cannot be
- *    derived from tool input. (It is also matched earlier by
- *    `isDesignQuestion` through `ALWAYS_ESCALATE_TOOLS`.)
+ *    derived from tool input. (It is also matched by `isDesignQuestion`
+ *    through `ALWAYS_ESCALATE_TOOLS`.)
  * 2. String-label count > 3: a custom plugin tool with 4+ string choices
  *    cannot be expressed in the approve/deny mapping at all.
  * 3. String-label shape: any 2- or 3-label set whose labels are not all
@@ -33,6 +33,19 @@
  * `[{type:"addRules",...}]` payload is binary because it carries zero
  * string labels — the UI prompt is the default Yes/Yes-always/No.
  */
+
+/**
+ * Tools whose invocation is, by definition, a request for the user's intent
+ * (#572): `AskUserQuestion` (Claude explicitly solicited the user) and
+ * `ExitPlanMode` (plan-mode accept / keep-planning is a direction decision).
+ * `isDesignQuestion` classifies them as design questions, so their card is
+ * pushed immediately. Was the configurable `auto_approve.always_escalate_tools`
+ * default until #1125 removed the `[auto_approve]` table; now internal.
+ */
+export const ALWAYS_ESCALATE_TOOLS: ReadonlySet<string> = new Set([
+  'AskUserQuestion',
+  'ExitPlanMode',
+]);
 
 /**
  * Tools that always route through multi-choice handling regardless of
@@ -129,9 +142,9 @@ function hasQuestionField(toolInput: Record<string, unknown> | null | undefined)
  * plain allow/deny (#572), so its card is pushed immediately rather than on
  * its render. Two layers:
  *
- * 1. Tool-name allowlist (`alwaysEscalateTools`, default
- *    `DEFAULT_ALWAYS_ESCALATE_TOOLS` in types.ts plus any user-configured
- *    names): definitionally user-intent tools. Immune to tool_input shape drift.
+ * 1. Tool-name allowlist (`alwaysEscalateTools`, `ALWAYS_ESCALATE_TOOLS` in
+ *    production): definitionally user-intent tools. Immune to tool_input
+ *    shape drift.
  * 2. Free-text heuristic: a tool that structurally carries a question field
  *    (see `QUESTION_INPUT_FIELDS`) whose suggestions are not all yes/no-shaped
  *    is a long-form question with no binary mapping. Catches MCP / custom tools

@@ -706,126 +706,79 @@ describe('parseHostPath', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Auto-approve flags
+// Removed auto-approve flags (#1125, ADR 0030): accepted and ignored, so an
+// existing LaunchAgent plist or script keeps starting. Nothing reads their
+// values; the caller prints one notice naming them.
 // ---------------------------------------------------------------------------
-describe('parseArgs - auto-approve flags', () => {
-  test('--auto-approve sets autoApprove true', () => {
-    const r = parseArgs(['--auto-approve']);
-    expect(r.autoApprove).toBe(true);
+describe('parseArgs - removed auto-approve flags', () => {
+  test('no removed flags by default', () => {
+    expect(parseArgs([]).removedFlags).toEqual([]);
   });
 
-  test('--no-auto-approve sets autoApprove false', () => {
-    const r = parseArgs(['--no-auto-approve']);
-    expect(r.autoApprove).toBe(false);
+  test('--auto-approve and --no-auto-approve are accepted, recorded, not passed to Claude', () => {
+    const r = parseArgs(['--auto-approve', '--no-auto-approve']);
+    expect(r.error).toBeUndefined();
+    expect(r.removedFlags).toEqual(['--auto-approve', '--no-auto-approve']);
+    expect(r.claudeArgs).toEqual([]);
   });
 
-  test('auto-approve defaults to undefined', () => {
-    const r = parseArgs([]);
-    expect(r.autoApprove).toBeUndefined();
-  });
-
-  test('--auto-approve-model sets model', () => {
-    const r = parseArgs(['--auto-approve-model', 'qwen3.5:4b']);
-    expect(r.autoApproveModel).toBe('qwen3.5:4b');
-  });
-
-  test('--auto-approve-model without value errors', () => {
-    const r = parseArgs(['--auto-approve-model']);
-    expect(r.error).toContain('--auto-approve-model requires a value');
-  });
-
-  test('--auto-approve-provider sets provider', () => {
-    const r = parseArgs(['--auto-approve-provider', 'openrouter']);
-    expect(r.autoApproveProvider).toBe('openrouter');
-  });
-
-  test('--auto-approve-provider without value errors', () => {
-    const r = parseArgs(['--auto-approve-provider']);
-    expect(r.error).toContain('--auto-approve-provider requires a value');
-  });
-
-  test('--auto-approve-api-key sets api key', () => {
-    const r = parseArgs(['--auto-approve-api-key', 'sk-test-123']);
-    expect(r.autoApproveApiKey).toBe('sk-test-123');
-  });
-
-  test('--auto-approve-api-key without value errors', () => {
-    const r = parseArgs(['--auto-approve-api-key']);
-    expect(r.error).toContain('--auto-approve-api-key requires a value');
-  });
-
-  test('combined auto-approve flags', () => {
+  test('value flags swallow their value, so it never reaches Claude or the subcommand', () => {
     const r = parseArgs([
-      '--auto-approve',
       '--auto-approve-model',
       'yooz-light-v3',
       '--auto-approve-provider',
       'yooz',
-    ]);
-    expect(r.autoApprove).toBe(true);
-    expect(r.autoApproveModel).toBe('yooz-light-v3');
-    expect(r.autoApproveProvider).toBe('yooz');
-  });
-
-  test('auto-approve flags with new subcommand', () => {
-    const r = parseArgs(['new', '--auto-approve', '--auto-approve-model', 'llama3.2']);
-    expect(r.subcommand).toBe('new');
-    expect(r.autoApprove).toBe(true);
-    expect(r.autoApproveModel).toBe('llama3.2');
-  });
-
-  test('--auto-approve-allow is repeatable', () => {
-    const r = parseArgs([
+      '--auto-approve-api-key',
+      'sk-test-123',
       '--auto-approve-allow',
       'git push',
-      '--auto-approve-allow',
-      'bun test',
-      '--auto-approve-allow',
-      'Read',
-    ]);
-    expect(r.autoApproveAllow).toEqual(['git push', 'bun test', 'Read']);
-  });
-
-  test('--auto-approve-deny is repeatable', () => {
-    const r = parseArgs(['--auto-approve-deny', 'rm -rf /', '--auto-approve-deny', 'sudo ']);
-    expect(r.autoApproveDeny).toEqual(['rm -rf /', 'sudo ']);
-  });
-
-  test('--auto-approve-allow defaults to empty array', () => {
-    const r = parseArgs([]);
-    expect(r.autoApproveAllow).toEqual([]);
-    expect(r.autoApproveDeny).toEqual([]);
-  });
-
-  test('--auto-approve-allow without value errors', () => {
-    const r = parseArgs(['--auto-approve-allow']);
-    expect(r.error).toContain('--auto-approve-allow requires a value');
-  });
-
-  test('--auto-approve-instructions sets guidance string', () => {
-    const r = parseArgs(['--auto-approve-instructions', 'Approve all bun test runs']);
-    expect(r.autoApproveInstructions).toBe('Approve all bun test runs');
-  });
-
-  test('--auto-approve-instructions without value errors', () => {
-    const r = parseArgs(['--auto-approve-instructions']);
-    expect(r.error).toContain('--auto-approve-instructions requires a value');
-  });
-
-  test('allow and deny flags mixed with other auto-approve flags', () => {
-    const r = parseArgs([
-      '--auto-approve',
-      '--auto-approve-allow',
-      'git status',
       '--auto-approve-deny',
       'sudo ',
       '--auto-approve-instructions',
       'Be conservative',
+      '--auto-approve-multichoice',
+      'evaluate',
+      '--auto-approve-multichoice-model',
+      'big',
     ]);
-    expect(r.autoApprove).toBe(true);
-    expect(r.autoApproveAllow).toEqual(['git status']);
-    expect(r.autoApproveDeny).toEqual(['sudo ']);
-    expect(r.autoApproveInstructions).toBe('Be conservative');
+    expect(r.error).toBeUndefined();
+    expect(r.removedFlags).toEqual([
+      '--auto-approve-model',
+      '--auto-approve-provider',
+      '--auto-approve-api-key',
+      '--auto-approve-allow',
+      '--auto-approve-deny',
+      '--auto-approve-instructions',
+      '--auto-approve-multichoice',
+      '--auto-approve-multichoice-model',
+    ]);
+    expect(r.claudeArgs).toEqual([]);
+  });
+
+  test('a removed value flag with no value is not an error any more', () => {
+    const r = parseArgs(['--auto-approve-model']);
+    expect(r.error).toBeUndefined();
+    expect(r.removedFlags).toEqual(['--auto-approve-model']);
+  });
+
+  test('a removed value flag does not swallow a following flag', () => {
+    const r = parseArgs(['--auto-approve-model', '--daemon']);
+    expect(r.removedFlags).toEqual(['--auto-approve-model']);
+    expect(r.daemonMode).toBe(true);
+  });
+
+  test('removed flags alongside a subcommand and real flags', () => {
+    const r = parseArgs([
+      'serve',
+      '--auto-approve',
+      '--auto-approve-model',
+      'llama3.2',
+      '--port',
+      '19001',
+    ]);
+    expect(r.subcommand).toBe('serve');
+    expect(r.port).toBe(19001);
+    expect(r.removedFlags).toEqual(['--auto-approve', '--auto-approve-model']);
   });
 
   describe('--all (#859)', () => {

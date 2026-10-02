@@ -175,31 +175,24 @@ describe('help formatting', () => {
     expect(options).toContain('--force'); // after the internal blank line
   });
 
-  test('the model commands sit in the Auto-Approve section, not Configuration', () => {
-    // 0.7.0 shipped `remi model` with per-command help but no entry in the
-    // global list (#843). The fix put one line at the BOTTOM of Configuration,
-    // where a user read the whole output and still did not find it (#850) --
-    // so asserting mere presence is not enough to call it discoverable.
+  test('no auto-approve section, flags or model commands remain (#1125)', () => {
     const text = formatHelp('0.0.0-test');
-    expect(sectionOf(text, 'Auto-Approve (LLM):')).toContain('remi model');
-    expect(sectionOf(text, 'Configuration:')).not.toContain('remi model');
+    expect(text).not.toContain('Auto-Approve');
+    expect(text).not.toContain('--auto-approve');
+    expect(text).not.toContain('remi model');
   });
 
-  test('the model commands come before the auto-approve flags', () => {
-    // `remi model` is a ten-verb subsystem, not a setting; listing it after the
-    // flags would read as an afterthought of them.
-    const section = sectionOf(formatHelp('0.0.0-test'), 'Auto-Approve (LLM):');
-    expect(section.indexOf('remi model')).toBeLessThan(section.indexOf('--auto-approve'));
+  test('remi model help says it was removed', () => {
+    expect(formatCommandHelp('model')).toContain('Removed in #1125');
   });
 
   test('a term wider than the column still has a space before its description', () => {
     // `padEnd` is a no-op once the term is already at the column width, so a
-    // long flag ran straight into its text:
-    //   --auto-approve-multichoice-model MAlt-model for multi-choice
-    const text = formatHelp('0.0.0-test');
-    const line = text.split('\n').find((l) => l.includes('--auto-approve-multichoice-model'));
+    // long term ran straight into its text. The original case was a removed
+    // auto-approve flag (#1125); this is the widest term left.
+    const plain = formatCommandHelp('authorize').replace(/\x1b\[[0-9]+m/g, '');
+    const line = plain.split('\n').find((l) => l.includes('remi authorize <key> --label "name"'));
     expect(line).toBeDefined();
-    expect(line).not.toContain('MAlt-model');
-    expect(line).toContain('M Alt-model');
+    expect(line).toMatch(/--label "name" \S/);
   });
 });

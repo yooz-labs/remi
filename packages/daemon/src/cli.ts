@@ -125,8 +125,18 @@ import { loadOrCreateAnswerKey } from './auth/answer-key.ts';
 import { Authenticator } from './auth/authenticator.ts';
 import { loadOrCreateCapabilityToken } from './auth/capability-token.ts';
 import { IdentityStore } from './auth/identity-store.ts';
-import { SubagentAlerter, alertBody, alertTitle } from './auto-approve/index.ts';
-import { MODEL_COMMAND_REMOVED_MESSAGE } from './cli/auto-approve-removal.ts';
+import {
+  ALWAYS_ESCALATE_TOOLS,
+  SubagentAlerter,
+  alertBody,
+  alertTitle,
+} from './auto-approve/index.ts';
+import {
+  MODEL_COMMAND_REMOVED_MESSAGE,
+  legacyEnginePaths,
+  removedAutoApproveEnvVars,
+  removedAutoApproveNotice,
+} from './cli/auto-approve-removal.ts';
 import { detectAutostartState } from './cli/autostart-state.ts';
 import { resolveClaudeBinding } from './cli/claude-binding.ts';
 import { runConfigCommand } from './cli/cmd-config.ts';
@@ -173,8 +183,13 @@ import { StatusBar, childRows } from './cli/status-bar.ts';
 import { installStatusLine } from './cli/statusline-installer.ts';
 import { installSuspendHandler } from './cli/suspend-handler.ts';
 import { isRemiBinaryPath, startUpdateWatcher } from './cli/update-watcher.ts';
-import { DEFAULT_CONFIG, applyEnvOverrides, loadConfig } from './config/index.ts';
-import type { RemiConfig } from './config/index.ts';
+import {
+  CONFIG_PATH,
+  DEFAULT_CONFIG,
+  applyEnvOverrides,
+  loadConfigWithNotices,
+} from './config/index.ts';
+import type { LoadedConfig, RemiConfig } from './config/index.ts';
 import { ForeignSessionEscalator, HookConfigManager, HookServer } from './hooks/index.ts';
 import type { HookInput, PermissionRequestHookInput, StopHookInput } from './hooks/index.ts';
 // Static, unlike the publisher below it: this is a pure decision with no
@@ -267,11 +282,36 @@ if (parsedArgs.showHelp) {
 // Load config file (before consuming parsed args, so config provides defaults)
 // ---------------------------------------------------------------------------
 let remiConfig: RemiConfig;
+let loadedConfig: LoadedConfig;
 try {
-  remiConfig = applyEnvOverrides(loadConfig());
+  loadedConfig = loadConfigWithNotices();
+  remiConfig = applyEnvOverrides(loadedConfig.config);
 } catch (err) {
   console.error(errorToString(err));
   process.exit(1);
+}
+
+// #1125 (ADR 0030): settings and flags for the removed auto-approve judgment
+// are accepted and ignored, never fatal. Say so ONCE per boot -- the daemon /
+// wrapper start, `remi serve`, and `remi config` (the command a user runs to
+// check their config) -- not on every client subcommand (`remi ls`, ...).
+// process.stderr, not console.warn: Bun colors console output even when
+// piped, and the LaunchAgent captures this stream into remi-stderr.log.
+if (
+  parsedArgs.subcommand === undefined ||
+  parsedArgs.subcommand === 'serve' ||
+  parsedArgs.subcommand === 'config'
+) {
+  for (const line of removedAutoApproveNotice({
+    configPath: CONFIG_PATH,
+    removedConfigKeys: loadedConfig.removedAutoApproveKeys,
+    subagentAlertFromLegacy: loadedConfig.subagentAlertFromLegacy,
+    removedFlags: parsedArgs.removedFlags,
+    removedEnvVars: removedAutoApproveEnvVars(process.env),
+    ...legacyEnginePaths(),
+  })) {
+    process.stderr.write(`${line}\n`);
+  }
 }
 
 // Handle 'config' subcommand
@@ -1118,7 +1158,7 @@ const foreignSessionEscalator = new ForeignSessionEscalator({
 // above: the rate-limit window must be daemon-wide, or a fleet of agents spread
 // over several sessions each gets its own quota and the throttle stops
 // throttling. See `subagent-alert.ts` for why this alerts rather than gates.
-const subagentAlerter = new SubagentAlerter(remiConfig.auto_approve.subagent_alert);
+const subagentAlerter = new SubagentAlerter(remiConfig.notifications.subagent_alert);
 
 /** Report a subagent permission that passed through unevaluated: always an
  *  audit log line (#756 direction d), plus a dismiss-only push when the command
@@ -1582,7 +1622,7 @@ async function createNewSession(
         foreignSessionEscalator,
         onSubagentPassthrough,
         // Classify an escalation as binary vs design/plan-mode (#572/#573).
-        alwaysEscalateTools: new Set(remiConfig.auto_approve.always_escalate_tools),
+        alwaysEscalateTools: ALWAYS_ESCALATE_TOOLS,
         // #585: a held question the gate resolves without a user answer dismisses
         // its pushed card on every client.
         broadcastQuestionResolved: onQuestionResolved,
@@ -2538,7 +2578,7 @@ if (cliDaemonMode) {
   process.on('SIGUSR1', () => {
     console.log('[reload] Re-reading configuration...');
     try {
-      applyEnvOverrides(loadConfig());
+      applyEnvOverrides(loadConfigWithNotices().config);
       console.log('[reload] Config validated. Changes take effect on next daemon restart.');
     } catch (err) {
       console.error(`[reload] Failed to load config: ${errorToString(err)}`);
@@ -2934,7 +2974,7 @@ if (cliDaemonMode) {
   process.on('SIGUSR1', () => {
     log('[reload] Re-reading configuration...');
     try {
-      applyEnvOverrides(loadConfig());
+      applyEnvOverrides(loadConfigWithNotices().config);
       log('[reload] Config validated. Changes take effect on next daemon restart.');
     } catch (err) {
       logError(`[reload] Failed to load config: ${errorToString(err)}`);

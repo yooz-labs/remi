@@ -4,8 +4,11 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { isDesignQuestion, isMultiChoicePermission } from '../../src/auto-approve/multichoice.ts';
-import { DEFAULT_ALWAYS_ESCALATE_TOOLS } from '../../src/auto-approve/types.ts';
+import {
+  ALWAYS_ESCALATE_TOOLS,
+  isDesignQuestion,
+  isMultiChoicePermission,
+} from '../../src/auto-approve/multichoice.ts';
 
 describe('isMultiChoicePermission', () => {
   test('returns false for null/undefined/empty (default 3-set substitutes)', () => {
@@ -153,7 +156,7 @@ describe('isMultiChoicePermission', () => {
 });
 
 describe('isDesignQuestion (#572)', () => {
-  const DEFAULTS = new Set(DEFAULT_ALWAYS_ESCALATE_TOOLS);
+  const DEFAULTS = ALWAYS_ESCALATE_TOOLS;
 
   test('AskUserQuestion always escalates by tool name, even with binary suggestions', () => {
     expect(

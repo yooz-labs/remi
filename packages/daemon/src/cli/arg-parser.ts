@@ -52,6 +52,22 @@ const SUBCOMMANDS_WITH_POSITIONAL_ARG: ReadonlySet<Subcommand> = new Set<Subcomm
  *  `claudeArgs` -- a stray `pull` reaching Claude would be nonsense. #819 */
 const SUBCOMMANDS_WITH_ARG_LIST: ReadonlySet<Subcommand> = new Set<Subcommand>(['model']);
 
+/** Auto-approve switches removed in #1125 (ADR 0030). Accepted and ignored. */
+const REMOVED_SWITCH_FLAGS: ReadonlySet<string> = new Set(['--auto-approve', '--no-auto-approve']);
+
+/** Auto-approve flags removed in #1125 that took a value. Accepted and ignored,
+ *  value included. */
+const REMOVED_VALUE_FLAGS: ReadonlySet<string> = new Set([
+  '--auto-approve-model',
+  '--auto-approve-provider',
+  '--auto-approve-api-key',
+  '--auto-approve-allow',
+  '--auto-approve-deny',
+  '--auto-approve-instructions',
+  '--auto-approve-multichoice',
+  '--auto-approve-multichoice-model',
+]);
+
 export function isSubcommand(s: string): s is Subcommand {
   return SUBCOMMANDS.has(s);
 }
@@ -105,15 +121,12 @@ export interface ParsedArgs {
   readonly recent: boolean;
   readonly pushSecret: string | undefined;
   readonly orphanTimeout: number | undefined;
-  readonly autoApprove: boolean | undefined;
-  readonly autoApproveModel: string | undefined;
-  readonly autoApproveProvider: string | undefined;
-  readonly autoApproveApiKey: string | undefined;
-  readonly autoApproveAllow: readonly string[];
-  readonly autoApproveDeny: readonly string[];
-  readonly autoApproveInstructions: string | undefined;
-  readonly autoApproveMultichoice: 'skip' | 'evaluate' | undefined;
-  readonly autoApproveMultichoiceModel: string | undefined;
+  /**
+   * Removed auto-approve flags that were given (#1125, ADR 0030), in order,
+   * without their values. Accepted and ignored so existing LaunchAgent plists
+   * and scripts keep starting; the caller prints one notice naming them.
+   */
+  readonly removedFlags: readonly string[];
   readonly claudeArgs: readonly string[];
   readonly showVersion: boolean;
   readonly showHelp: boolean;
@@ -155,15 +168,7 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
   let pushSecret: string | undefined;
   let dir: string | undefined;
   let recent = false;
-  let autoApprove: boolean | undefined;
-  let autoApproveModel: string | undefined;
-  let autoApproveProvider: string | undefined;
-  let autoApproveApiKey: string | undefined;
-  const autoApproveAllow: string[] = [];
-  const autoApproveDeny: string[] = [];
-  let autoApproveInstructions: string | undefined;
-  let autoApproveMultichoice: 'skip' | 'evaluate' | undefined;
-  let autoApproveMultichoiceModel: string | undefined;
+  const removedFlags: string[] = [];
   let showVersion = false;
   let showHelp = false;
   let error: string | undefined;
@@ -336,66 +341,13 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
         host = nextArg;
         i++;
       }
-    } else if (arg === '--auto-approve') {
-      autoApprove = true;
-    } else if (arg === '--no-auto-approve') {
-      autoApprove = false;
-    } else if (arg === '--auto-approve-model') {
-      if (!nextArg || nextArg.startsWith('-')) {
-        error = 'Error: --auto-approve-model requires a value.';
-      } else {
-        autoApproveModel = nextArg;
-        i++;
-      }
-    } else if (arg === '--auto-approve-provider') {
-      if (!nextArg || nextArg.startsWith('-')) {
-        error = 'Error: --auto-approve-provider requires a value.';
-      } else {
-        autoApproveProvider = nextArg;
-        i++;
-      }
-    } else if (arg === '--auto-approve-api-key') {
-      if (!nextArg || nextArg.startsWith('-')) {
-        error = 'Error: --auto-approve-api-key requires a value.';
-      } else {
-        autoApproveApiKey = nextArg;
-        i++;
-      }
-    } else if (arg === '--auto-approve-allow') {
-      if (!nextArg || nextArg.startsWith('-')) {
-        error = 'Error: --auto-approve-allow requires a value.';
-      } else {
-        autoApproveAllow.push(nextArg);
-        i++;
-      }
-    } else if (arg === '--auto-approve-deny') {
-      if (!nextArg || nextArg.startsWith('-')) {
-        error = 'Error: --auto-approve-deny requires a value.';
-      } else {
-        autoApproveDeny.push(nextArg);
-        i++;
-      }
-    } else if (arg === '--auto-approve-instructions') {
-      if (!nextArg || nextArg.startsWith('-')) {
-        error = 'Error: --auto-approve-instructions requires a value.';
-      } else {
-        autoApproveInstructions = nextArg;
-        i++;
-      }
-    } else if (arg === '--auto-approve-multichoice') {
-      if (nextArg !== 'skip' && nextArg !== 'evaluate') {
-        error = 'Error: --auto-approve-multichoice requires "skip" or "evaluate".';
-      } else {
-        autoApproveMultichoice = nextArg;
-        i++;
-      }
-    } else if (arg === '--auto-approve-multichoice-model') {
-      if (!nextArg || nextArg.startsWith('-')) {
-        error = 'Error: --auto-approve-multichoice-model requires a value.';
-      } else {
-        autoApproveMultichoiceModel = nextArg;
-        i++;
-      }
+    } else if (arg !== undefined && REMOVED_SWITCH_FLAGS.has(arg)) {
+      removedFlags.push(arg);
+    } else if (arg !== undefined && REMOVED_VALUE_FLAGS.has(arg)) {
+      // Swallow the value too, so it is not mistaken for a Claude argument or
+      // a subcommand. A missing value is not an error any more: nothing reads it.
+      removedFlags.push(arg);
+      if (nextArg !== undefined && !nextArg.startsWith('-')) i++;
     } else if (arg === '--version' || arg === '-v') {
       showVersion = true;
     } else if (arg === '--help' || arg === '-h') {
@@ -488,15 +440,7 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
     pushSecret,
     dir,
     recent,
-    autoApprove,
-    autoApproveModel,
-    autoApproveProvider,
-    autoApproveApiKey,
-    autoApproveAllow,
-    autoApproveDeny,
-    autoApproveInstructions,
-    autoApproveMultichoice,
-    autoApproveMultichoiceModel,
+    removedFlags,
     orphanTimeout,
     claudeArgs,
     showVersion,
