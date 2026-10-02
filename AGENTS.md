@@ -517,7 +517,18 @@ those two are both exactly `{token, title, body}`.
   filters its per-token fan-out in `notifications/push-preferences.ts`.
 - **Never filter `dismiss`.** A muted device can still hold a card delivered
   before the mute; dropping its dismissal strands that card on the lock screen
-  of the device that asked for less noise.
+  of the device that asked for less noise. The next main-agent `Stop` or
+  `UserPromptSubmit` after a `turn_failed` push sends one (same collapse key,
+  only while a `turn_failed` push is outstanding), so a stale "Claude stopped"
+  does not outlive a turn that succeeded.
+- **Push text is plaintext to the Worker and APNS.** `turn_failed` carries up
+  to 140 characters of `last_assistant_message` (or a string `error_details`)
+  in its body, the same posture as `turn_complete` (the end of Claude's last
+  message) and a question's text: the daemon POSTs it to the signaling
+  Worker's `/push`, which forwards it to APNS, outside the relay data channel
+  and its encryption. Tracked by the relay and push privacy work
+  (`.context/strategy-2026-10.md` section 9); the relay channel has its own
+  state (#543, #881).
 - **A muted fan-out reports `no_channel`, not `pushed`.** Claiming delivery
   for a fan-out of zero says a card reached a lock screen it never appears on.
 - Malformed preferences fail toward DELIVERING (`sanitizePushPreferences`). A

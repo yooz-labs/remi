@@ -34,6 +34,23 @@ on a usage limit, one per prompt, stacking in the app and on the lock screen.
   default. It is separate from "Turn complete", and
   `notifications.on_turn_complete = false` does not silence it: a failed turn is
   the one turn end you must not miss by default.
+- A failure notice clears itself: the next successful turn (or your next
+  prompt) dismisses it, so a stale "Claude stopped" does not stay on the lock
+  screen. An agent (subagent) failure is pushed too but does not change the
+  main session's status.
+
+#### Changed
+
+- A main-agent `StopFailure` now closes any permission prompt still open for
+  the main agent, as `Stop` does: the turn is over, so the prompt cannot be
+  answered (the main half of #802).
+
+#### Known limits
+
+- The failure notice's text, including up to 140 characters of Claude's last
+  message, reaches the signaling Worker and Apple's push service in plaintext,
+  the same as the "Turn complete" notice. It is tracked by the relay and push
+  privacy work.
 
 ### AskUserQuestion and plan approval are answered through Claude's hook (#1127, [ADR 0031](.context/decisions/0031-held-hook-answers-with-native-dialog-visible.md) amendment)
 
