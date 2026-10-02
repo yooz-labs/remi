@@ -199,11 +199,11 @@ export interface PermissionOptionsResult {
  * `addDirectories` + `setMode` pair built a 4-option set over a 3-option
  * dialog). A card pushed when its prompt renders therefore takes the parsed
  * screen's options instead (`QuestionPresenceTracker.consumeAndMerge`,
- * #1134; a multi-choice passthrough escalation also waits for its render,
- * #1134 review). These options still reach the phone on a HELD card, pushed
- * by id before any render (`pushHeldHook`) and answered through the hook
- * response; a digit typed from one after its hold is gone must pass
- * `handleAnswer`'s screen check (on the menu, and the same choice there).
+ * #1134). These options still reach the phone on a card pushed by id before
+ * any render (`pushHeldHook`): a held card, answered through the hook
+ * response, or a passthrough multi-choice card, answered by a typed digit
+ * that `handleAnswer` types only when the screen's option at that value has
+ * the same label.
  *
  * Two shapes:
  *   - Legacy: >= 2 plain string labels (e.g. Edit's `["Yes","Always","No"]`)

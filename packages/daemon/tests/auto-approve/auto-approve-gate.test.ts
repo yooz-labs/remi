@@ -1378,9 +1378,6 @@ describe('AutoApproveGate hold + resolve (#573 Parts A/C)', () => {
   // recorded here so a test can assert push <=> escalate and that approve/deny push
   // nothing. The held-push primitive is onHeldEscalate -> tracker.pushHeldHook.
   let heldPushes: UUID[];
-  // #1134 review: a non-AskUserQuestion passthrough escalation (ExitPlanMode, a
-  // multi-choice permission) pushes on its render instead, recorded here.
-  let renderPushes: UUID[];
   // #628: the `summary` arg passed to each escalate() call (undefined when none).
   let escalateSummaries: (string | undefined)[];
 
@@ -1429,9 +1426,6 @@ describe('AutoApproveGate hold + resolve (#573 Parts A/C)', () => {
         onHeldEscalate: (qid) => {
           heldPushes.push(qid);
         },
-        pushOnRender: (qid) => {
-          renderPushes.push(qid);
-        },
         holdMs: opts.holdMs ?? 60_000,
         alwaysEscalateTools:
           opts.alwaysEscalateTools ?? new Set(['AskUserQuestion', 'ExitPlanMode']),
@@ -1459,7 +1453,6 @@ describe('AutoApproveGate hold + resolve (#573 Parts A/C)', () => {
     escalations = [];
     lastQuestionId = undefined;
     heldPushes = [];
-    renderPushes = [];
     escalateSummaries = [];
     configureLogger({ writeLog: () => {} });
   });
@@ -1580,37 +1573,12 @@ describe('AutoApproveGate hold + resolve (#573 Parts A/C)', () => {
     expect(escalateSummaries).toEqual([undefined]);
   });
 
-  test('#625/#1134 multi-choice escalate pushes on its render (pushOnRender), not at once', async () => {
-    // Its answer is a typed digit, so the card must carry the screen's
-    // numbering, which only the render can supply.
+  test('#625 multi-choice escalate pushes from the gate (onHeldEscalate)', async () => {
     const gate = holdGate(evaluator(escalate));
     await gate.resolvePermission(
       pr({ permission_suggestions: ['Alpha', 'Beta', 'Gamma', 'Delta'] }),
     );
-    expect(renderPushes).toEqual([lastQuestionId as UUID]);
-    expect(heldPushes).toEqual([]);
-  });
-
-  test('#1134 ExitPlanMode escalate pushes on its render: its option list is built by Claude', async () => {
-    const gate = holdGate(evaluator(escalate));
-    const d = await gate.resolvePermission(
-      pr({ tool_name: 'ExitPlanMode', tool_input: { plan: '# Plan' } }),
-    );
-    expect(d).toBe('passthrough');
-    expect(renderPushes).toEqual([lastQuestionId as UUID]);
-    expect(heldPushes).toEqual([]);
-  });
-
-  test('#1134 an AskUserQuestion-shaped tool still pushes at once (its runner answers it)', async () => {
-    const gate = holdGate(evaluator(escalate));
-    await gate.resolvePermission(
-      pr({
-        tool_name: 'mcp__forms__ask',
-        tool_input: { questions: [{ question: 'Which DB?', options: ['Postgres', 'SQLite'] }] },
-      }),
-    );
     expect(heldPushes).toEqual([lastQuestionId as UUID]);
-    expect(renderPushes).toEqual([]);
   });
 
   test('#625 binary escalate also pushes from the gate (createHold path)', async () => {
@@ -1669,8 +1637,7 @@ describe('AutoApproveGate hold + resolve (#573 Parts A/C)', () => {
     const d = await gate.resolvePermission(pr());
     expect(d).toBe('passthrough');
     expect(escalations).toHaveLength(1);
-    // Not AskUserQuestion: pushes on its render (#1134 review).
-    expect(renderPushes).toEqual([lastQuestionId as UUID]);
+    expect(heldPushes).toEqual([lastQuestionId as UUID]);
   });
 
   test('#625 pick inject failure (PTY throws) escalates AND pushes from the gate', async () => {
@@ -1679,8 +1646,7 @@ describe('AutoApproveGate hold + resolve (#573 Parts A/C)', () => {
     expect(d).toBe('passthrough');
     expect(submits).toEqual(['2']); // inject was attempted before it threw
     expect(escalations).toHaveLength(1);
-    // Not AskUserQuestion: pushes on its render (#1134 review).
-    expect(renderPushes).toEqual([lastQuestionId as UUID]);
+    expect(heldPushes).toEqual([lastQuestionId as UUID]);
   });
 
   test('#625 passthrough escalate with no question id skips the push (no throw)', async () => {
@@ -1694,7 +1660,6 @@ describe('AutoApproveGate hold + resolve (#573 Parts A/C)', () => {
     expect(d).toBe('passthrough');
     expect(escalations).toHaveLength(1);
     expect(heldPushes).toHaveLength(0);
-    expect(renderPushes).toHaveLength(0);
   });
 
   test('hold timeout -> passthrough and the pending map is cleaned', async () => {

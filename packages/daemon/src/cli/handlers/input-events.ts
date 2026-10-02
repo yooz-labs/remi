@@ -1127,9 +1127,10 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         // means Claude has not rendered the prompt yet, so there is nothing
         // to compare against (an option value is typed as before; free text
         // was already refused above). Note this keys on the release, not on
-        // `active.held`: an AskUserQuestion card pushed by id
-        // (`pushHeldHook`) is stamped `held` but has no hold, so it is
-        // answered right here, by a digit, with the hook's numbering.
+        // `active.held`: a passthrough card pushed by id (`pushHeldHook`:
+        // AskUserQuestion, ExitPlanMode, a multi-choice permission) is
+        // stamped `held` but has no hold, so it is answered right here, by a
+        // digit, with the hook's numbering.
         if (!released) {
           const screenOptions = observedPromptOptions?.(session.sessionId) ?? null;
           const refusal = screenRefusal(active, answer, ptyInput, screenOptions);

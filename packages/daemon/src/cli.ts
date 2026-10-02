@@ -1831,8 +1831,7 @@ async function createNewSession(
       onQuestion: (question) => {
         // #625 single gate: when a hook server is active the auto-approve gate is
         // the primary authority for permission questions and pushes escalations
-        // itself (binary via onHeldEscalate or pushOnRender, passthrough via
-        // escalatePassthrough).
+        // itself (binary via onHeldEscalate, passthrough via escalatePassthrough).
         // The PTY parser echoes EVERY on-screen prompt — including ones the gate
         // already auto-approved — so routing those through unconditionally was the
         // phantom-notification source (>1,100 confirmed pushes fired right after a

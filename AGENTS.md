@@ -202,12 +202,14 @@ were the Yes/No fallback, and they are not the screen's: live,
 3-option dialog, the phone's "No" typed `4`, Claude ignored it, and the Enter
 that follows every typed answer confirmed "1. Yes".
 
-Which cards push on render: an unheld binary prompt (#1121), and since the
-#1134 review every non-AskUserQuestion passthrough escalation too
-(ExitPlanMode, whose list Claude builds dynamically, and multi-choice
-permissions). AskUserQuestion (and tools shaped like it) still pushes at once:
-its runner answers from the structured questions. Held cards are pushed by id
-and answered through the hook response, so they keep the hook's options.
+Which cards push on render: an unheld binary prompt (#1121) only. Every
+passthrough escalation (AskUserQuestion, ExitPlanMode, multi-choice
+permissions) and every held card is pushed by id at once, so the notification
+arrives even when its dialog never parses (some ExitPlanMode renders do not),
+and keeps the hook's numbering. A held card is answered through the hook
+response; a passthrough card's digit must pass the exact-label guard below,
+which refuses it wherever the hook's list differs from Claude's (ExitPlanMode's
+list is hardcoded, Claude builds its own).
 
 Guards in `handleAnswer` before anything is typed (all refuse like a stale
 answer: STALE_ANSWER, card consumed, trace reason in parentheses):
@@ -324,7 +326,7 @@ those two are both exactly `{token, title, body}`.
 
 - Bash `PermissionRequest` may have `permission_suggestions=undefined` (no suggestions), a legacy plain-string label array (e.g. Edit's `["Yes","Always","No"]`), or — since ~Claude Code 2.0.54 — a STRUCTURED array of typed "permission update entries" (`addRules`, `addDirectories`, `setMode`, `removeRules`, `replaceRules`, `removeDirectories`, each carrying `behavior`/`destination`; ground truth: code.claude.com/docs/en/hooks).
 - Notification message is plain text ("Claude needs your permission to use Bash"), no numbered options, and never carries `permission_suggestions` at all.
-- Claude Code does NOT always offer a fixed option count. `optionsFromSuggestions` (hook-event-bridge.ts) builds a VARIABLE-count option set: [Yes] + one option per USABLE structured suggestion + [No], capped at 4 total. With no usable suggestions of either shape, the daemon falls back to the honest Yes/No 2-set (`optionsAreFallback: true` on the `Question`) instead of fabricating a 3rd option. This is the hook's view, not the screen's: Claude's dialog does not render one option per suggestion (two structured suggestions built 4 options over a 3-option dialog, #1134). So a card pushed when its prompt renders takes the parsed screen's options instead (it keeps these only if the parse found none); these options reach the phone only on HELD cards (pushed by id, answered through the hook response), and `handleAnswer` types a digit from one only if the screen's menu shows it and means the same choice there.
+- Claude Code does NOT always offer a fixed option count. `optionsFromSuggestions` (hook-event-bridge.ts) builds a VARIABLE-count option set: [Yes] + one option per USABLE structured suggestion + [No], capped at 4 total. With no usable suggestions of either shape, the daemon falls back to the honest Yes/No 2-set (`optionsAreFallback: true` on the `Question`) instead of fabricating a 3rd option. This is the hook's view, not the screen's: Claude's dialog does not render one option per suggestion (two structured suggestions built 4 options over a 3-option dialog, #1134). So a card pushed when its prompt renders takes the parsed screen's options instead (it keeps these only if the parse found none); these options reach the phone on cards pushed by id before a render (held, or passthrough multi-choice), and `handleAnswer` types a digit from one only if the screen's option at that value has the same label.
 - Numbered option text appears only in the terminal UI, not in hook events.
 - `HookEventBridge` emits the option set immediately; no parsing or merge timer needed.
 - A "Yes, always allow: ..." option answered on a HELD hook resolves it with `{behavior:"allow", updatedPermissions:[<the original permission_suggestions entry>]}` — echoing a received suggestion back is, per the hooks docs, "equivalent to the user selecting that 'always allow' option in the dialog." `QuestionOption.suggestionIndex` carries which original entry to echo.
