@@ -160,6 +160,12 @@ describe('createMessageApiForSession', () => {
     expect(questionMsgs).toHaveLength(1);
     const pending = [...(sessionRegistry.getSession(sessionId)?.currentQuestions.values() ?? [])];
     expect(pending[0]?.text).toBe('proceed?');
+
+    // The harness identity fields are typed on QuestionMessage but no producer
+    // sets them yet (#1162, ADR 0032): the real emit site must not add them.
+    const emitted = Object.keys(questionMsgs[0]?.message ?? {});
+    expect(emitted).not.toContain('harness');
+    expect(emitted).not.toContain('harnessSessionId');
   });
 
   test('a held push is stamped held on the wire and in the registry', () => {

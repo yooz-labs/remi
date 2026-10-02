@@ -154,7 +154,6 @@ describe('typed optional wire fields (#1162)', () => {
       expect(Object.keys(message)).not.toContain('harness');
       expect(Object.keys(message)).not.toContain('harnessSessionId');
     }
-    expect(Object.keys(discoverable)).not.toContain('harness');
   });
 
   test('a message that does carry them round-trips, and exactOptionalPropertyTypes allows absence and undefined', () => {
