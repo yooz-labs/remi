@@ -100,13 +100,7 @@ const REGISTRY: readonly Entry[] = [
     file: 'api/question-presence-tracker.ts',
     field: 'awaitingPTY',
     cls: 'pre-card',
-    note: 'Subset of pending that pushes on its PTY render: a subagent parked for PTY arbitration (#751, ADR 0004 surface) or a main-agent push-on-render mark (#1121).',
-  },
-  {
-    file: 'api/question-presence-tracker.ts',
-    field: 'ambiguousRenderKeys',
-    cls: 'pre-card',
-    note: "NEW (#1121 review). Agent keys whose unrendered push-on-render record was replaced by a newer hook; the next pushOnRender for that key declines to pair, so each render pushes the screen's own prompt. Cleared on consume, on leaving waiting, and on clearPending.",
+    note: 'Subset of pending parked for its PTY render: a subagent passed to the local terminal (#751, ADR 0004 surface), whose render pushes an answer-at-the-terminal notice (#1126). The main-agent push-on-render mark (#1121) was removed when #1126 held binary main prompts.',
   },
   {
     file: 'api/question-presence-tracker.ts',
@@ -160,7 +154,31 @@ const REGISTRY: readonly Entry[] = [
     file: 'auto-approve/auto-approve-gate.ts',
     field: 'openQuestionSignatures',
     cls: 'mixed',
-    note: 'Every OPEN escalation this gate created, keyed by Question.id (#673/#799). A passthrough escalation pushed at once is post-card metadata (the card is registered); a push-on-render (#1121) or parked (#751) entry is pre-card until its render pushes it. Per the #888 rescope comment. (#1125 deleted the hold, eval, delivery and parked-input maps that used to sit beside it.)',
+    note: 'Every OPEN escalation this gate created, keyed by Question.id (#673/#799). A held (#1126) or passthrough escalation pushed at once is post-card metadata (the card is registered); a parked subagent entry (#751) never gets a card (its render pushes a notice, #1126), and a held prompt released at its deadline stays open after its card is dismissed (its dialog is still on screen). Per the #888 rescope comment.',
+  },
+  {
+    file: 'auto-approve/auto-approve-gate.ts',
+    field: 'holds',
+    cls: 'post-card-metadata',
+    note: 'NEW (#1126). The pending hook response of a held binary prompt, keyed by Question.id. The card is pushed by id in the same synchronous call that registers the hold (holdForAnswer -> onHeldEscalate -> pushHeldHook -> addQuestion), so the hold is metadata about a card the store owns; it is never an opinion on whether the question is pending.',
+  },
+  {
+    file: 'auto-approve/auto-approve-gate.ts',
+    field: 'closedHoldIds',
+    cls: 'post-card-metadata',
+    note: 'NEW (#1126). Bounded memory of held ids whose hold ended, so a late phone answer for that card is refused (answer at the terminal) rather than typed. Outlives the card, like resolved-answer-cache entries; consulted only to refuse.',
+  },
+  {
+    file: 'auto-approve/auto-approve-gate.ts',
+    field: 'terminalPrompts',
+    cls: 'post-card-metadata',
+    note: 'NEW (#1126). Open prompts whose dialog may be on screen and whose answer belongs to the terminal (released at the deadline or early, or a rendered wrapper-mode subagent dialog). A subset of openQuestionSignatures keys; its card, if any, is already dismissed, and it is closed only by a hook signal. Read by the tracker probe so the dialog is not rebuilt into a typed card.',
+  },
+  {
+    file: 'auto-approve/auto-approve-gate.ts',
+    field: 'terminalNotices',
+    cls: 'post-card-metadata',
+    note: 'NEW (#1126). Open prompts whose "answer at the terminal" notice was pushed, so resolving them also dismisses the notice. A subset of terminalPrompts.',
   },
   {
     file: 'cli/session-phases/hook-bridge-setup.ts',
@@ -202,6 +220,11 @@ const REGISTRY: readonly Entry[] = [
  * container, which is the point: nothing in these files is un-triaged.
  */
 const EXCLUSIONS: readonly ExcludedEntry[] = [
+  {
+    file: 'auto-approve/auto-approve-gate.ts',
+    field: 'inFlightToolUses',
+    note: "NEW (#1126). Claude's unfinished tool calls by tool_use_id (from PreToolUse), so a PermissionRequest can be paired with its call's id. Tool-call data, not Question data: an entry is consumed when a request pairs with it, before any card exists, and never says whether a question is pending.",
+  },
   {
     file: 'api/question-presence-tracker.ts',
     field: 'orphanTimer',

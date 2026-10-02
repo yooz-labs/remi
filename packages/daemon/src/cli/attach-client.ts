@@ -60,7 +60,7 @@ export function formatQuestionBanner(question: Question): string {
   const options = question.options.map((o, i) => `${i + 1}) ${o.label}`).join('  ');
   const lines = [`\r\x1b[2K\x1b[36m[remi] pending question: ${question.text}\x1b[0m\r\n`];
   if (options) lines.push(`\x1b[36m[remi] options: ${options}\x1b[0m\r\n`);
-  lines.push(`\x1b[2m[remi] answer on your phone, or run 'remi unstick' to answer here\x1b[0m\r\n`);
+  lines.push('\x1b[2m[remi] answer the prompt here or on your phone\x1b[0m\r\n');
   return lines.join('');
 }
 
@@ -284,15 +284,14 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
   const banneredQuestionIds = new Set<string>();
 
   /**
-   * #753: print a pending HELD question into the attached terminal. A held
-   * permission (Model B) blocks Claude inside the hook call before its dialog
-   * paints, so the resize-nudge redraw has nothing to repaint — without this
-   * banner an attach shows only "waiting". Since #1125 nothing holds; the
-   * daemon still stamps `held` on cards pushed by id before their render
-   * (AskUserQuestion, ExitPlanMode, a multi-choice permission), whose dialog
-   * Claude does paint, so for those the banner repeats the question above
-   * the native dialog. Accepted until #1126: the stamp also keys the
-   * `free-text-on-held-card` answer guard.
+   * #753: print a pending HELD question into the attached terminal. Built
+   * when a held permission was believed to block Claude before its dialog
+   * painted. Verified false for Claude Code 2.1.287 (#1126 spike): the dialog
+   * renders about 0.1 s after the hook POST, during the hold, so the banner
+   * repeats the question above the native dialog, which answers it like any
+   * other local answer (first answer wins). Cards stamped `held`: a held
+   * binary permission prompt and an AskUserQuestion / ExitPlanMode /
+   * multi-choice card pushed by id.
    * ONLY held questions banner (#760 review finding 1): every other question class
    * renders natively in the raw PTY stream, and the daemon emits multiple
    * `question` messages per visible prompt cycle (hook bridge + PTY parser,

@@ -561,12 +561,13 @@ export class RelayAdapter implements ConnectionAdapter {
         );
       },
       answer: (m) => {
-        // Forward structured AskUserQuestion selections/cancel (#627) same
-        // as connection.ts's handleAnswer -- previously dropped over relay
-        // (found while unifying this dispatch; see the PR description).
+        // Forward structured AskUserQuestion selections/cancel (#627) and a
+        // held prompt's deny message (#1126) same as connection.ts's
+        // handleAnswer -- previously dropped over relay (found while
+        // unifying this dispatch; see the PR description).
         const extra =
-          m.selections !== undefined || m.cancel !== undefined
-            ? { selections: m.selections, cancel: m.cancel }
+          m.selections !== undefined || m.cancel !== undefined || m.message !== undefined
+            ? { selections: m.selections, cancel: m.cancel, message: m.message }
             : undefined;
         this.events.onAnswer?.(
           connectionId,

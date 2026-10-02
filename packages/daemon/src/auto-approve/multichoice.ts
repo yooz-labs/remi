@@ -1,9 +1,10 @@
 /**
  * Multi-choice and design-question permission detectors (#399, #572).
  *
- * Since #1125 (ADR 0030) these only classify how an escalation is pushed:
- * a binary prompt is pushed on its render, anything these detectors flag is
- * pushed immediately (`AutoApproveGate.isBinaryEscalation`). The LLM
+ * Since #1125 (ADR 0030) these only classify how an escalation is relayed:
+ * a binary prompt's hook is held for the phone's answer (#1126), anything
+ * these detectors flag is answered 'passthrough' and pushed immediately
+ * (`AutoApproveGate.isBinaryEscalation`). The LLM
  * multi-choice prompt builder that used to live here was deleted with the
  * evaluator.
  *

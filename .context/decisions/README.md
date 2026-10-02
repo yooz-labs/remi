@@ -17,9 +17,9 @@ add a row below.
 | ADR | Decision |
 |---|---|
 | [0001](0001-transcript-path-source-of-truth.md) | Transcript path is the session source of truth |
-| [0002](0002-model-b-hold-the-hook-notifications.md) | Hold-the-hook notification model; amended by 0030: not in effect until #1126, answers are typed and screen-checked (#1134) |
-| [0003](0003-synchronous-permission-decisions.md) | Synchronous permission decisions; amended by 0030: the hook answer is always `passthrough` now |
-| [0004](0004-pty-as-arbiter-subagent-questions.md) | PTY is the arbiter for subagent questions; amended by 0030: parked prompts push on render, nothing is evaluated |
+| [0002](0002-model-b-hold-the-hook-notifications.md) | Hold-the-hook notification model; amended by 0030 and 0031: held again since #1126, with Claude's dialog visible and the first answer winning |
+| [0003](0003-synchronous-permission-decisions.md) | Synchronous permission decisions; amended by 0030 and 0031: the hook answer is a human's phone answer to a held prompt, or the empty `passthrough` |
+| [0004](0004-pty-as-arbiter-subagent-questions.md) | PTY is the arbiter for subagent questions; amended by 0030 and 0031: wrapper mode passes them to the terminal with a notice, daemon mode holds them |
 | [0005](0005-hub-and-attach-only-clients.md) | Hub mode and attach-only clients |
 | [0006](0006-cc-ref-disavowed.md) | `cc-ref` is not ground truth for Claude Code |
 | [0007](0007-release-automation-and-pins.md) | Release automation and toolchain pins |
@@ -34,7 +34,7 @@ add a row below.
 | [0016](0016-strictness-levels-are-groups-not-prose.md) | Strictness is level-gated group membership, never prose to the model (superseded by 0030) |
 | [0017](0017-deny-floor-enforced-in-code.md) | A model-produced deny is silent, so it is floored in code (superseded by 0030) |
 | [0018](0018-write-group-safety-is-three-independent-vetoes.md) | A write-approving group needs three independent vetoes (superseded by 0030) |
-| [0019](0019-push-kind-mutability-asymmetry.md) | Push kinds are named on the wire; muting them is asymmetric; amended by 0030: alert patterns moved to `[notifications]`, no hook waits on delivery |
+| [0019](0019-push-kind-mutability-asymmetry.md) | Push kinds are named on the wire; muting them is asymmetric; amended by 0030: alert patterns moved to `[notifications]`, no hook waits on delivery; amended by 0031: a fifth, per-device mutable kind, `harness_denied` |
 | [0020](0020-client-status-cue-totality.md) | A client status cue must be total over its gate's end paths; amended by 0030: the cues it governed are gone, the rule stands |
 | [0021](0021-registration-outcome-not-requery.md) | Question registration outcome flows from the call, not a re-query |
 | [0022](0022-status-bar-never-freezes.md) | Status-bar liveness is bounded by `HEARTBEAT_MS`, never by a human |
@@ -46,6 +46,7 @@ add a row below.
 | [0028](0028-narrow-remote-read-and-session-precedent-scope.md) | Narrow `gh api` reads and private working-directory scope for session precedent (superseded by 0030) |
 | [0029](0029-capability-proofs-are-finite-and-group-gated.md) | Capability proofs are finite, effect-registered, and gated by requested groups (superseded by 0030) |
 | [0030](0030-defer-permission-judgment-to-the-harness.md) | remi no longer judges permissions; the harness decides and remi relays what is still asked |
+| [0031](0031-held-hook-answers-with-native-dialog-visible.md) | A binary prompt is answered through its held hook while Claude's dialog stays visible; first answer wins, nothing is typed |
 
 ## By area
 
@@ -53,8 +54,8 @@ Most work touches one of these clusters, and the ADRs in a cluster constrain
 each other — reading one without its siblings is how a "fix" reopens the case
 another one closed.
 
-- **Permission decisions:** 0030 (current), 0003; historical, superseded by 0030: 0010, 0015, 0016, 0017, 0018, 0023, 0025, 0026, 0027, 0028, 0029
-- **Questions + notifications:** 0002, 0004, 0019, 0020, 0021, 0022
+- **Permission decisions:** 0030 (current), 0031, 0003; historical, superseded by 0030: 0010, 0015, 0016, 0017, 0018, 0023, 0025, 0026, 0027, 0028, 0029
+- **Questions + notifications:** 0031 (current), 0002, 0004, 0019, 0020, 0021, 0022
 - **Protocol + contracts:** 0012, 0013, 0014, 0006
 - **Sessions + transport:** 0001, 0005, 0009, 0024
 - **Process:** 0007, 0008, 0011

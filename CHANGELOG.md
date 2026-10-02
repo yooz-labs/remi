@@ -4,6 +4,75 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### Permission prompts are answered through Claude's hook (#1126, [ADR 0031](.context/decisions/0031-held-hook-answers-with-native-dialog-visible.md))
+
+A binary permission prompt is now held while its card is on the phone, and
+the phone's answer is the hook's response: Yes, No, or a standing grant
+where Claude offers one
+(`setMode` or an `addRules` rule, both scoped to this session so a phone tap
+never writes a settings file; never `addDirectories`). Claude's own dialog stays in the terminal the whole time
+and whichever answer comes first wins: a Yes there is seen through the tool's
+`PostToolUse`, a No or Esc through Claude closing the held request, and the
+card is dismissed either way. Nothing is typed into the terminal for these
+prompts any more.
+
+#### Added
+
+- **`[prompts] hold_seconds`** (default 90, 5 to 110): how long a prompt waits
+  for the phone. After it, the hook is released without a decision, the
+  terminal dialog stays, and the phone is told to answer at the terminal.
+- **`[prompts] daemon_hold_seconds`** (default 3540, 5 to 3540): the same for a
+  daemon or hub session, which has no terminal of its own; its
+  `PermissionRequest` hook is registered with a 3600 s timeout. After it the
+  phone is told to use `remi attach`.
+- **`harness_denied` push**: when Claude Code's auto-mode classifier blocks a
+  tool call, or auto-denies an unanswered fallback prompt after 2:00
+  (`PermissionDenied`), the phone gets an informational notice with the
+  reason. Never a card; a per-device setting, on by default.
+- **`REMI_HOME`**: an absolute path that relocates remi's whole state
+  directory (default `~/.remi`), for running remi from source without touching
+  real state. A relative value stops remi at startup with one line and exit
+  code 1. Under an override `remi --install` and `remi --uninstall` refuse to
+  run (the service always uses `~/.remi`), and the statusline is not
+  registered in `~/.claude/settings.json`.
+- An optional `message` on the `answer` protocol message: sent with a "No",
+  Claude receives it as the reason. Protocol only; the app has no field for
+  it yet.
+
+#### Changed
+
+- **Background agent prompts depend on the session.** In a terminal (wrapper)
+  session they are answered at the terminal and the phone gets an "answer at
+  the terminal" notice; in a daemon or hub session they are held and answered
+  from the phone like any other prompt.
+- Card options are built from what each suggestion means, so a card can
+  differ from the numbered list on screen; it is never typed, so it no longer
+  has to match.
+- The attach client's banner for a pending card now reads "answer the prompt
+  here or on your phone".
+- The lock screen's "Yes, always" action is offered only when the standing
+  option is an allow rule; a mode-change option is answered in the app. A
+  hook-less prompt (sandbox network, an agent-team dialog), whose options
+  come from the screen and carry no standing-grant kind, loses its lock-screen
+  "Yes, always" action too and is answered in the app.
+- Chat text is refused while a held prompt's dialog is up, as it already was
+  while a numbered menu was on screen (#1140).
+- `remi unstick` no longer closes a prompt whose hook is held: its dialog is
+  on screen, so it is handed back to the terminal and the phone is told so
+  ("answer in the terminal" / "answer with remi attach"); a second unstick
+  clears it. Other stuck cards are resolved and dismissed as before.
+- AskUserQuestion and plan approval are unchanged: still typed into Claude's
+  dialog behind the exact-label screen check (#1134), until #1127.
+
+#### Known limits
+
+- A Yes answered in the terminal is seen only when the tool finishes, so for
+  a long-running command the phone card stays up meanwhile; a phone answer in
+  that window is accepted and ignored by Claude, and the deadline notice can
+  fire for a prompt already answered.
+- In a daemon or hub session the deadline leaves the prompt reachable only
+  with `remi attach`.
+
 ### Breaking: remi no longer judges permissions (#1125, [ADR 0030](.context/decisions/0030-defer-permission-judgment-to-the-harness.md))
 
 remi stops acting as a second permission judge on top of Claude Code. The
@@ -60,13 +129,18 @@ source of several security bugs (#536, #1060, #1063).
 
 - **`subagent_alert` moved to `[notifications]`.** `auto_approve.subagent_alert`
   is still honored as a deprecated fallback when the new key is unset.
-- **Every prompt goes to the human.** A binary main-agent prompt shows in the
+- **Every prompt goes to the human.** (Superseded for binary prompts by
+  #1126 above: they are now held and answered through the hook.) A binary
+  main-agent prompt shows in the
   terminal at once and is pushed when it renders (#1121); AskUserQuestion and
   plan approval are pushed immediately; a subagent prompt is pushed only if it
-  renders. `remi unstick` now resolves and dismisses stuck cards (there are no
-  holds or evals left to release).
+  renders. `remi unstick` now resolves and dismisses stuck cards (there were
+  no holds or evals left to release; since #1126 a live hold is handed back
+  to the terminal instead, see above).
 - **Every phone answer is typed, and checked against the screen first**
-  (#1134). With nothing held, an answer is typed into Claude's dialog only
+  (#1134). (Since #1126 above, binary permission prompts are answered through
+  the held hook instead; typing remains only for hook-less prompts and for
+  AskUserQuestion, ExitPlanMode and multi-choice permissions.) With nothing held, an answer is typed into Claude's dialog only
   when a prompt is on screen and the chosen option's label exactly matches
   the screen's option at that number (whitespace and case aside); free text
   is refused on a card that takes a choice. A refusal consumes the card and

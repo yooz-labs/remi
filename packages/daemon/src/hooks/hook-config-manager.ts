@@ -28,16 +28,28 @@ interface HookMatcher {
 
 /**
  * Seconds Claude Code waits for a hook's HTTP response before proceeding
- * WITHOUT it. PermissionRequest gets Claude Code's 600s hook-budget ceiling
- * (#496/#537), set when the synchronous auto-approve eval could take minutes.
- * Since #1125 (ADR 0030) the daemon answers PermissionRequest at once with
- * 'passthrough', so the ceiling costs nothing; it stays as the baseline the
- * hold-the-hook transport (ADR 0002, re-added in #1126) is sized against. A
- * dead daemon still fails fast (connection refused). Every other hook keeps
- * the short timeout so a slow/dead daemon never gates worktree creation /
- * prompt submission / compaction (#203).
+ * WITHOUT it; at that timeout it closes the request and decides nothing (the
+ * dialog stays, #1126 spike F5). A wrapper session registers
+ * PermissionRequest at 600 s (#496/#537 chose it when the synchronous
+ * auto-approve eval could take minutes). Since #1126 (ADR 0031) it bounds a
+ * real hold: a binary prompt's hook waits for a phone answer up to
+ * `[prompts] hold_seconds` (at most 110 s), which remi enforces itself, so
+ * Claude's own timeout stays well above it. 600 s is not a ceiling Claude
+ * imposes: measured on Claude Code 2.1.287 (#1126 review), a PermissionRequest
+ * HTTP hook registered with `timeout: 3600` and held 650 s was answered at
+ * 653.6 s and the tool ran. A dead daemon still fails fast (connection
+ * refused). Every other hook keeps the short timeout so a slow/dead daemon
+ * never gates worktree creation / prompt submission / compaction (#203).
  */
-const PERMISSION_REQUEST_HOOK_TIMEOUT = 600;
+export const PERMISSION_REQUEST_HOOK_TIMEOUT = 600;
+/**
+ * PermissionRequest timeout for a daemon or hub session (#1126 lead
+ * decision): with no terminal of its own, a held prompt can only be answered
+ * from the phone, so remi holds it for up to `[prompts] daemon_hold_seconds`
+ * (at most 3540 s) and the registration must outlast that. Claude honors it
+ * (see `PERMISSION_REQUEST_HOOK_TIMEOUT` for the measurement).
+ */
+export const DAEMON_PERMISSION_REQUEST_HOOK_TIMEOUT = 3600;
 const DEFAULT_HOOK_TIMEOUT = 5;
 /** Per-event timeout overrides (seconds), below `DEFAULT_HOOK_TIMEOUT` (#893,
  *  Epic #885 Risk 3). `UserPromptSubmit`'s listener only drives the binder --
@@ -54,24 +66,34 @@ interface ClaudeSettings {
 export class HookConfigManager {
   private readonly settingsPath: string;
   private readonly hookUrl: string;
+  private readonly permissionRequestTimeout: number;
   private hasWritten = false;
 
-  constructor(projectDir: string, hookServerUrl: string) {
+  /** `opts.permissionRequestTimeout` (seconds) overrides the 600 s
+   *  PermissionRequest registration; a daemon or hub session passes
+   *  `DAEMON_PERMISSION_REQUEST_HOOK_TIMEOUT` (#1126). */
+  constructor(
+    projectDir: string,
+    hookServerUrl: string,
+    opts: { permissionRequestTimeout?: number } = {},
+  ) {
     this.settingsPath = path.join(projectDir, '.claude', 'settings.local.json');
     this.hookUrl = hookServerUrl;
+    this.permissionRequestTimeout =
+      opts.permissionRequestTimeout ?? PERMISSION_REQUEST_HOOK_TIMEOUT;
   }
 
   /**
    * Seconds Claude Code waits for this hook's HTTP response. PermissionRequest
-   * gets the 600s baseline ceiling (the configurable hold timeout that could
-   * raise it, #573, went with the hold in #1125); events in
+   * gets the 600s baseline ceiling, above remi's own hold deadline
+   * (`[prompts] hold_seconds`, #1126); events in
    * `SHORT_HOOK_TIMEOUTS` get an even shorter budget than the default
    * fail-fast timeout (#893); everything else keeps the plain fail-fast
    * timeout (#203).
    */
   private hookTimeoutFor(event: string): number {
     if (event === 'PermissionRequest') {
-      return PERMISSION_REQUEST_HOOK_TIMEOUT;
+      return this.permissionRequestTimeout;
     }
     return SHORT_HOOK_TIMEOUTS[event] ?? DEFAULT_HOOK_TIMEOUT;
   }

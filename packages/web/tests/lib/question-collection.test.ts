@@ -17,6 +17,7 @@ import {
   removeQuestionById,
   removeQuestionByKeyIfId,
   resolveQuestionCard,
+  restoreRefusedAnswer,
   statusClearsMainQuestion,
 } from '../../src/lib/question-collection';
 import type { UIQuestion } from '../../src/types';
@@ -135,8 +136,10 @@ describe('statusClearsMainQuestion (#576)', () => {
 });
 
 describe('removeQuestionByKeyIfId (#652)', () => {
-  test('removes the entry when the slot still holds the same id', () => {
-    const map = build(q('s1', undefined, 'a'));
+  const answered = (id: string) => qWith(q('s1', undefined, id), { answeredWith: 'Yes' });
+
+  test('removes the entry when the slot still holds the same answered id', () => {
+    const map = build(answered('a'));
     const next = removeQuestionByKeyIfId(map, questionKey('s1'), 'a');
     expect(getSessionQuestions(next, 's1')).toEqual([]);
   });
@@ -144,14 +147,53 @@ describe('removeQuestionByKeyIfId (#652)', () => {
   test('NO-OP when the slot was reused by a newer prompt (the core fix)', () => {
     // The post-answer timer captured key s1#main for id 'a', but id 'b' took the
     // slot before it fired; deleting by key alone would wipe the new card.
-    const map = build(q('s1', undefined, 'b'));
+    const map = build(answered('b'));
     expect(removeQuestionByKeyIfId(map, questionKey('s1'), 'a')).toBe(map);
     expect(getSessionQuestions(map, 's1').map((x) => x.id)).toEqual(['b']);
   });
 
   test('NO-OP (same reference) when the key is absent', () => {
-    const map = build(q('s1', undefined, 'a'));
+    const map = build(answered('a'));
     expect(removeQuestionByKeyIfId(map, questionKey('s2'), 'a')).toBe(map);
+  });
+
+  test('NO-OP when the answer was refused and the card restored (#1126)', () => {
+    const map = build(q('s1', undefined, 'a'));
+    expect(removeQuestionByKeyIfId(map, questionKey('s1'), 'a')).toBe(map);
+  });
+});
+
+describe('restoreRefusedAnswer (#1126: a held card keeps its card)', () => {
+  test('a refused answer un-answers the card last answered here, and the timer then leaves it', () => {
+    const map = build(qWith(q('s1', undefined, 'held'), { answeredWith: 'Maybe' }));
+    const restored = restoreRefusedAnswer(map, 's1', 'held', ['held']);
+    const card = getSessionQuestions(restored, 's1')[0];
+    expect(card?.answeredWith).toBeUndefined();
+    expect(card && isQuestionPending(card)).toBe(true);
+    expect(removeQuestionByKeyIfId(restored, questionKey('s1'), 'held')).toBe(restored);
+  });
+
+  test('only the last answered card: another answered card in the session stays answered', () => {
+    const map = build(
+      qWith(q('s1', undefined, 'first'), { answeredWith: 'Yes' }),
+      qWith(q('s1', 'agent-1', 'last'), { answeredWith: 'Maybe' }),
+    );
+    const restored = restoreRefusedAnswer(map, 's1', 'last', ['first', 'last']);
+    const byId = new Map(getSessionQuestions(restored, 's1').map((c) => [c.id, c]));
+    expect(byId.get('last' as UIQuestion['id'])?.answeredWith).toBeUndefined();
+    expect(byId.get('first' as UIQuestion['id'])?.answeredWith).toBe('Yes');
+  });
+
+  test('no last answer, a card no longer pending, another session, or an unanswered card: same reference', () => {
+    const map = build(
+      qWith(q('s1', undefined, 'gone'), { answeredWith: 'Yes' }),
+      qWith(q('s2', undefined, 'other'), { answeredWith: 'Yes' }),
+      q('s1', 'agent-1', 'plain'),
+    );
+    expect(restoreRefusedAnswer(map, 's1', undefined, ['gone'])).toBe(map);
+    expect(restoreRefusedAnswer(map, 's1', 'gone', ['plain', 'other'])).toBe(map);
+    expect(restoreRefusedAnswer(map, 's1', 'other', ['other'])).toBe(map);
+    expect(restoreRefusedAnswer(map, 's1', 'plain', ['plain'])).toBe(map);
   });
 });
 

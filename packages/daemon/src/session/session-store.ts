@@ -15,6 +15,7 @@ import * as path from 'node:path';
 import { errorToString } from '@remi/shared';
 import type { UUID } from '@remi/shared';
 import { normalizeProjectPath } from '../cli/path-resolver.ts';
+import { remiHome } from '../config/remi-home.ts';
 import { isProcessAlive } from './process-alive.ts';
 
 export interface StoredSession {
@@ -33,7 +34,7 @@ interface SessionsFile {
   sessions: StoredSession[];
 }
 
-const REMI_DIR = path.join(os.homedir(), '.remi');
+const REMI_DIR = remiHome();
 const SESSIONS_FILE = path.join(REMI_DIR, 'sessions.json');
 const MAX_SESSIONS = 100;
 const STALE_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days

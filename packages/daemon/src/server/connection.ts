@@ -504,10 +504,13 @@ export class Connection {
     this.sendAck(message.id, 'delivered');
 
     // Notify. Forward the structured AskUserQuestion parts (#627) when present so
-    // the daemon can drive the TUI (selections) or escape it (cancel).
+    // the daemon can drive the TUI (selections) or escape it (cancel), and a
+    // "No"'s message for a held permission prompt (#1126).
     const extra: AnswerExtras | undefined =
-      message.selections !== undefined || message.cancel !== undefined
-        ? { selections: message.selections, cancel: message.cancel }
+      message.selections !== undefined ||
+      message.cancel !== undefined ||
+      message.message !== undefined
+        ? { selections: message.selections, cancel: message.cancel, message: message.message }
         : undefined;
     this.events.onAnswer?.(
       message.sessionId,

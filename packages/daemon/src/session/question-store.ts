@@ -35,8 +35,22 @@ import { traceQuestionEvent } from './question-trace.ts';
 
 /** Upper bound on concurrently-pending questions per session. Real prompts are
  *  few (main + a handful of subagents); the cap is a backstop against a runaway
- *  prompt loop growing the map unbounded. Oldest is evicted first. */
+ *  prompt loop growing the map unbounded. Oldest is evicted first, except a
+ *  pinned question (see `QuestionStoreOptions.isPinned`). */
 const MAX_PENDING_QUESTIONS = 8;
+
+/** Options for a `QuestionStore`. */
+export interface QuestionStoreOptions {
+  /**
+   * True for a question the cap must never evict (#1126): a card whose hook
+   * is held for the phone's answer (up to `daemon_hold_seconds`). Evicting it
+   * would leave the hold running with no card, chat refused and no notice.
+   * When every older question is pinned the store exceeds its cap instead,
+   * which is bounded by the number of open holds. Read live per eviction;
+   * a throw counts as not pinned.
+   */
+  isPinned?: (questionId: UUID) => boolean;
+}
 
 /** Events emitted by QuestionStore. */
 export interface QuestionStoreEvents {
@@ -55,6 +69,7 @@ export class QuestionStore {
   constructor(
     private readonly sessionId: UUID,
     private readonly events: QuestionStoreEvents = {},
+    private readonly options: QuestionStoreOptions = {},
   ) {}
 
   /** Read-only live view. Same underlying Map instance every call (not a
@@ -67,8 +82,9 @@ export class QuestionStore {
   /**
    * Register a pending question. Multiple can coexist (main + subagent); each
    * is tracked by its own id so answering one never invalidates another.
-   * Bounded by MAX_PENDING_QUESTIONS (oldest evicted first) so a runaway
-   * prompt loop cannot grow the map without limit.
+   * Bounded by MAX_PENDING_QUESTIONS (oldest unpinned evicted first, never
+   * the question just added) so a runaway prompt loop cannot grow the map
+   * without limit; with nothing evictable the cap is exceeded (#1126).
    *
    * `callSite` (#887/#888) names the internal caller for the question-trace;
    * `SessionRegistry.addQuestion` passes its own name so the trace is
@@ -78,8 +94,13 @@ export class QuestionStore {
     this.map.delete(question.id); // re-insert so a refreshed question is "newest"
     this.map.set(question.id, question);
     while (this.map.size > MAX_PENDING_QUESTIONS) {
-      const oldest = this.map.keys().next().value;
-      if (oldest === undefined) break;
+      const oldest = this.oldestEvictable(question.id);
+      if (oldest === undefined) {
+        console.warn(
+          `[QuestionStore] pending-question cap (${MAX_PENDING_QUESTIONS}) exceeded with ${this.map.size} questions; none is evictable (held for an answer)`,
+        );
+        break;
+      }
       const evicted = this.map.get(oldest);
       this.map.delete(oldest);
       // Log: an evicted prompt may have an outstanding APNS push whose answer
@@ -169,6 +190,30 @@ export class QuestionStore {
         callSite,
         throughFunnel: true,
       });
+    }
+  }
+
+  /** The oldest question the cap may evict: not pinned, and not `keep`
+   *  (the question being added). */
+  private oldestEvictable(keep: UUID): UUID | undefined {
+    for (const id of this.map.keys()) {
+      if (id === keep) continue;
+      if (this.isPinned(id)) continue;
+      return id;
+    }
+    return undefined;
+  }
+
+  private isPinned(questionId: UUID): boolean {
+    const pinned = this.options.isPinned;
+    if (!pinned) return false;
+    try {
+      return pinned(questionId);
+    } catch (err) {
+      console.error(
+        `[QuestionStore] isPinned threw for ${questionId}: ${err instanceof Error ? err.message : String(err)}; treating as not pinned`,
+      );
+      return false;
     }
   }
 

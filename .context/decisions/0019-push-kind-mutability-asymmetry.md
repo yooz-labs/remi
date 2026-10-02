@@ -1,6 +1,6 @@
 # ADR 0019: Push kinds are named on the wire; muting them is deliberately asymmetric
 
-**Status:** accepted; amended by ADR 0030 (2026-10-01)
+**Status:** accepted; amended by ADR 0030 (2026-10-01) and ADR 0031 (2026-10-02)
 **Date:** 2026-08-01
 **Owner:** Yahya
 
@@ -8,6 +8,11 @@
 > The decision stands; two of its supporting facts changed with #1125.
 > The `subagent_alert` patterns now live in `[notifications] subagent_alert` (the old `auto_approve.subagent_alert` is read as a deprecated fallback).
 > `awaitDelivery` and the held hook it fed were removed, so a muted fan-out reporting `no_channel` no longer gates a hook; it stays the honest outcome, and the asymmetry below still holds.
+
+> **Amended 2026-10-02 by [ADR 0031](0031-held-hook-answers-with-native-dialog-visible.md).**
+> `PushKind` has a fifth value, `harness_denied` (#1126): the informational notice for a call Claude Code's auto-mode classifier blocked (`PermissionDenied`).
+> It is mutable per device (`pushPrefs.harnessDenied`, on by default), like `question` and `turn_complete`, so the closed-set `switch` below now has three mutable kinds and the same two unmutable ones (`subagent_alert`, `dismiss`).
+> Its notices carry one collapse key per session, so a blocked retry loop replaces its notice instead of stacking.
 
 ## Context
 

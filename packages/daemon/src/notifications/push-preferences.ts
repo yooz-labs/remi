@@ -9,6 +9,10 @@
  * real once the sender honors it, so the device sends it up on
  * `register_device_token` and the daemon filters its per-token fan-out here.
  *
+ * Three preferences, one per mutable kind: `questions` (`question`),
+ * `turnComplete` (`turn_complete`) and `harnessDenied` (`harness_denied`,
+ * #1126 / ADR 0031: auto mode blocked a call; informational).
+ *
  * Two deliberate non-preferences:
  *   - `dismiss` pushes are never filtered. They are quiet `content-available`
  *     updates that CLEAR an already-delivered card; suppressing one strands
@@ -33,6 +37,7 @@ import type { PushKind } from './push-client.ts';
 export interface ResolvedPushPreferences {
   readonly questions: boolean;
   readonly turnComplete: boolean;
+  readonly harnessDenied: boolean;
 }
 
 /**
@@ -46,6 +51,7 @@ export interface ResolvedPushPreferences {
 export const DEFAULT_PUSH_PREFERENCES: ResolvedPushPreferences = {
   questions: true,
   turnComplete: true,
+  harnessDenied: true,
 };
 
 /**
@@ -70,6 +76,10 @@ export function sanitizePushPreferences(
       typeof input.turnComplete === 'boolean'
         ? input.turnComplete
         : DEFAULT_PUSH_PREFERENCES.turnComplete,
+    harnessDenied:
+      typeof input.harnessDenied === 'boolean'
+        ? input.harnessDenied
+        : DEFAULT_PUSH_PREFERENCES.harnessDenied,
   };
 }
 
@@ -86,6 +96,10 @@ export function wantsPush(entry: DeviceTokenEntry, kind: PushKind): boolean {
       return prefs.questions;
     case 'turn_complete':
       return prefs.turnComplete;
+    // An entry stored before #1126 has no `harnessDenied`; the store
+    // resolves it through `sanitizePushPreferences` on load, so it wants it.
+    case 'harness_denied':
+      return prefs.harnessDenied;
     // Never filtered — see the module doc for why each is exempt.
     case 'subagent_alert':
       return true;

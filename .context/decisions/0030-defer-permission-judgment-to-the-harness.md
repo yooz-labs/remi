@@ -1,8 +1,13 @@
 # ADR 0030: Defer permission judgment to the harness; remi only relays
 
-**Status:** accepted
+**Status:** accepted; its relay description amended by ADR 0031 (2026-10-02)
 **Date:** 2026-10-01
 **Owner:** Yahya
+
+> **Amended 2026-10-02 by [ADR 0031](0031-held-hook-answers-with-native-dialog-visible.md)** (#1126).
+> The decision stands: remi judges nothing.
+> What changed is the relay: a binary prompt is now held and answered through its hook response while Claude's dialog stays visible, subagent prompts depend on whether the session has a local terminal, and nothing is typed into a hook-backed binary prompt.
+> The "Relay" and "Subagent prompts" bullets below describe the state right after #1125.
 
 ## Context
 

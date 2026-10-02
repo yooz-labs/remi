@@ -31,8 +31,8 @@
 
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
+import { remiHome } from '../config/remi-home.ts';
 
 /** Header carrying the token on the WebSocket upgrade. */
 export const CAPABILITY_HEADER = 'x-remi-capability';
@@ -44,7 +44,7 @@ const TOKEN_BYTES = 32;
 const SECRET_MODE = 0o600;
 
 function defaultTokenPath(): string {
-  return path.join(os.homedir(), '.remi', 'capability.key');
+  return path.join(remiHome(), 'capability.key');
 }
 
 /**

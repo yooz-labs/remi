@@ -152,7 +152,7 @@ outside that union of 20 would fail Claude Code's own response validation.
 | Semantic power | Events | What the response can do |
 |---|---|---|
 | **Full override** | `PreToolUse` | `permissionDecision` (allow/deny/ask/defer), `permissionDecisionReason`, `updatedInput` (rewrite the tool call), `additionalContext` |
-| **Full override** | `PermissionRequest` | `decision: {behavior:"allow", updatedInput?, updatedPermissions?}` or `{behavior:"deny", message?, interrupt?}` — Model B (ADR 0002/0003). Since #1125 remi answers every request with an empty passthrough and uses none of this; #1126 plans to answer held requests through it |
+| **Full override** | `PermissionRequest` | `decision: {behavior:"allow", updatedInput?, updatedPermissions?}` or `{behavior:"deny", message?, interrupt?}` — Model B (ADR 0002/0003/0031). Since #1126 remi holds a binary request and answers it with the phone's choice: `allow`, `deny` with an optional `message`, or `allow` + `updatedPermissions` echoing a `setMode` or an allow `addRules`, both with `destination: "session"`; every non-answer path sends the empty response. `updatedInput` and `interrupt` are unused |
 | **Rewrite results** | `PostToolUse` | `updatedToolOutput`, `updatedMCPToolOutput` (rewrite what the model sees), `additionalContext` |
 | **Rewrite content** | `MessageDisplay` | `displayContent` — literally replaces a streamed message delta on screen |
 | **Steer the turn** | `UserPromptSubmit` | `additionalContext`, `sessionTitle`, `suppressOriginalPrompt`, plus the generic `decision:"block"` to reject the prompt outright |

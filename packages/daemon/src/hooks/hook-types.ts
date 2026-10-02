@@ -183,15 +183,17 @@ export interface SessionStartHookInput extends HookCommonInput {
  *     "userSettings" | "cliArg"` on every variant (binary enum `hor`; the
  *     5th value, `cliArg`, was missing from this comment until #886).
  *
- * `optionsFromSuggestions` (hook-event-bridge.ts) is the single place that
- * interprets this union into option labels; an answer that picks a
- * suggestion-derived option round-trips the ORIGINAL entry back to Claude
- * Code as `hookSpecificOutput.decision.updatedPermissions` (real "Yes,
- * always", #718) — per the docs, "a hook can echo one of the
- * permission_suggestions it received as its own updatedPermissions output,
- * which is equivalent to the user selecting that 'always allow' option in
- * the dialog." The wider shape is open: callers must treat unknown `type`
- * values as opaque and skip them rather than guess.
+ * `standingGrantFor` (hook-event-bridge.ts) is the single place that
+ * decides which entries a held card offers and what a phone answer sends
+ * back for one (#1126): `setMode` and an allow `addRules`, both echoed with
+ * `destination: "session"` (lead decision), nothing else (live, an echoed
+ * `addDirectories` did not stop the repeat prompt). The echo is the hook's
+ * `hookSpecificOutput.decision.updatedPermissions` — per the docs, "a hook
+ * can echo one of the permission_suggestions it received as its own
+ * updatedPermissions output, which is equivalent to the user selecting that
+ * 'always allow' option in the dialog." The wider shape is open: callers
+ * must treat unknown `type` values as opaque and skip them rather than
+ * guess.
  */
 export type PermissionSuggestion = string | { type: string; [k: string]: unknown };
 

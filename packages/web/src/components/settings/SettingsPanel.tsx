@@ -390,7 +390,7 @@ export function SettingsPanel({ open, settings, onClose, onChange }: SettingsPan
    * device whose OS permission was already revoked.
    */
   const enableNotify = async (
-    key: 'notifyQuestions' | 'notifyTurnComplete',
+    key: 'notifyQuestions' | 'notifyTurnComplete' | 'notifyHarnessDenied',
     value: boolean,
   ): Promise<void> => {
     if (!value || !isNative()) {
@@ -498,6 +498,11 @@ export function SettingsPanel({ open, settings, onClose, onChange }: SettingsPan
                 label="Turn complete"
                 checked={settings.notifyTurnComplete}
                 onChange={(v) => void enableNotify('notifyTurnComplete', v)}
+              />
+              <Toggle
+                label="Auto mode blocks"
+                checked={settings.notifyHarnessDenied}
+                onChange={(v) => void enableNotify('notifyHarnessDenied', v)}
               />
               <Toggle
                 label="Sound"

@@ -1,6 +1,8 @@
 /**
  * Tests for the multi-choice / design-question detectors (#399, #572), which
- * decide whether an escalation is pushed on its render or immediately.
+ * decide whether an escalation is a binary prompt held for the phone's answer
+ * through its hook (#1126) or a multi-choice / design prompt answered
+ * passthrough and pushed at once.
  */
 
 import { describe, expect, test } from 'bun:test';
@@ -88,9 +90,9 @@ describe('isMultiChoicePermission', () => {
     // Concrete shapes observed live from Claude Code (2026-05-13 onwards).
     // These are typed rule suggestions Claude Code attaches to a normal
     // Bash permission prompt; the user still sees the standard
-    // Yes/Yes-always/No UI. Classifying them as multi-choice would push
-    // every Bash prompt at hook time instead of when it renders (#1121;
-    // before #1125 it also skipped the evaluator). Lock the binary route.
+    // Yes/Yes-always/No UI. Classifying them as multi-choice would answer
+    // every Bash prompt passthrough with a typed card instead of holding it
+    // for an answer through its hook (#1126). Lock the binary route.
     expect(
       isMultiChoicePermission('Bash', [
         {

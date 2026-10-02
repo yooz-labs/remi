@@ -319,7 +319,7 @@ describe('runAttachClient', () => {
     expect(banner).toBe(
       '\r\x1b[2K\x1b[36m[remi] pending question: Allow file edit?\x1b[0m\r\n' +
         '\x1b[36m[remi] options: 1) Yes  2) No\x1b[0m\r\n' +
-        "\x1b[2m[remi] answer on your phone, or run 'remi unstick' to answer here\x1b[0m\r\n",
+        '\x1b[2m[remi] answer the prompt here or on your phone\x1b[0m\r\n',
     );
   });
 
@@ -329,7 +329,7 @@ describe('runAttachClient', () => {
 
     expect(banner).toBe(
       '\r\x1b[2K\x1b[36m[remi] pending question: Allow file edit?\x1b[0m\r\n' +
-        "\x1b[2m[remi] answer on your phone, or run 'remi unstick' to answer here\x1b[0m\r\n",
+        '\x1b[2m[remi] answer the prompt here or on your phone\x1b[0m\r\n',
     );
   });
 
@@ -381,7 +381,7 @@ describe('runAttachClient', () => {
     const output = readOutput();
     expect(output).toContain('[remi] pending question: Allow file edit?');
     expect(output).toContain('1) Yes  2) No');
-    expect(output).toContain("run 'remi unstick'");
+    expect(output).toContain('answer the prompt here or on your phone');
     // Bannered exactly once despite the duplicate delivery.
     expect(output.split('pending question: Allow file edit?').length).toBe(2);
   });

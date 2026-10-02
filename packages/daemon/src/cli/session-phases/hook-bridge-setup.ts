@@ -16,14 +16,15 @@
  *      — NOT /compact, which keeps the same session id) as a single atomic
  *      `session_rotated` event.
  *
- * A third concern, the **permission gate** (`AutoApproveGate`, name kept until
- * #1126), used to be inlined here (#453 phase 1). The bridge does the session
+ * A third concern, the **permission gate** (`AutoApproveGate`, a historical
+ * name), used to be inlined here (#453 phase 1). The bridge does the session
  * filtering, then routes PermissionRequest to the gate, which since #1125
- * (ADR 0030) never decides anything: it escalates every main-agent prompt
- * (pushed on its render, or at once for a multi-choice / design prompt) and
- * parks every subagent prompt for its PTY render, answering the hook
- * 'passthrough' either way. Stop / SessionEnd call `gate.cancelStale()` to
- * resolve escalations Claude no longer waits on. Stop passes
+ * (ADR 0030) decides nothing on its own: since #1126 (ADR 0031) it holds a
+ * binary prompt's hook for the phone's answer while Claude's dialog is on
+ * screen, pushes a multi-choice / design prompt at once and answers it
+ * 'passthrough', and passes a subagent prompt to the local terminal (wrapper
+ * mode) or holds it like a main one (daemon mode). Stop / SessionEnd call
+ * `gate.cancelStale()` to resolve escalations Claude no longer waits on. Stop passes
  * `{ mainOnly: true }` (#711): it fires whenever the LEAD idles even while
  * agent-team teammates keep working, so it resolves only MAIN-context
  * escalations, sparing a teammate's still-open one. SessionEnd is real
@@ -82,19 +83,26 @@
  */
 
 import { createSessionViews, errorToString } from '@remi/shared';
-import type { AgentStatus, ProtocolMessage, UUID } from '@remi/shared';
+import type { AgentStatus, ProtocolMessage, Question, UUID } from '@remi/shared';
 
 import type { MessageAPI, QuestionRegistrationOutcome } from '../../api/message-api.ts';
 import type { QuestionPresenceTracker } from '../../api/question-presence-tracker.ts';
 import type { SubagentViewRegistry } from '../../api/subagent-view-registry.ts';
 import { AutoApproveGate } from '../../auto-approve/index.ts';
+import type {
+  HeldAnswer,
+  HeldAnswerOutcome,
+  TerminalReleaseCause,
+} from '../../auto-approve/index.ts';
 import { HookEventBridge } from '../../hooks/index.ts';
 import type {
   ForeignSessionEscalator,
   HookInput,
   HookServer,
+  PermissionDeniedHookInput,
   PermissionRequestHookInput,
 } from '../../hooks/index.ts';
+import type { TerminalNoticeReason } from '../../notifications/notification-dispatcher.ts';
 import type {
   SessionBindingStore,
   SessionRegistry,
@@ -114,6 +122,19 @@ import { log, logError } from '../logger.ts';
  * reason `notification-dispatcher.ts` normalizes push text.
  */
 const STOP_LOG_MESSAGE_MAX = 200;
+
+/**
+ * The notice wording for a hold released to the terminal (#1126): why
+ * (`deadline`: nobody answered in time; `released`: remi let go early) and
+ * how to reach the terminal (a wrapper session's own, or `remi attach`).
+ */
+export function terminalNoticeReason(
+  cause: TerminalReleaseCause,
+  hasLocalTerminal: boolean,
+): TerminalNoticeReason {
+  if (cause === 'deadline') return hasLocalTerminal ? 'hold_deadline' : 'hold_deadline_no_terminal';
+  return hasLocalTerminal ? 'released' : 'released_no_terminal';
+}
 
 /** Truncate + collapse whitespace in a hook-carried message for a single log line. */
 function summarizeForLog(text: string, max: number): string {
@@ -154,16 +175,16 @@ export interface HookBridgeDeps {
   subagentViews?: SubagentViewRegistry;
   /**
    * Tools whose prompt is always a design question (#572). Passed to the gate
-   * so it classifies an escalation as binary (pushed on render, #1121) vs
-   * design/plan-mode (pushed immediately). Absent => `ALWAYS_ESCALATE_TOOLS`.
+   * so it classifies an escalation as binary (held, #1126) vs design/plan-mode
+   * (passthrough, pushed immediately). Absent => `ALWAYS_ESCALATE_TOOLS`.
    */
   alwaysEscalateTools?: ReadonlySet<string>;
   /**
    * Cross-client question dismissal (#585, P7). Called when an open question
    * resolves WITHOUT a user answer (an external-resolution signal, a Stop /
    * SubagentStop / SessionEnd sweep, a restart, `remi unstick`): the daemon
-   * broadcasts `question_resolved` to every client and fires the APNS
-   * dismissal so the pushed card clears everywhere. Must be throw-safe (the
+   * broadcasts `question_resolved` to every remi client and fires the APNS
+   * dismissal (Telegram does not dismiss cards, #1148). Must be throw-safe (the
    * gate also guards the call). Absent => no dismissal broadcast.
    */
   broadcastQuestionResolved?: (sessionId: UUID, questionId: UUID, reason: 'cancelled') => void;
@@ -187,6 +208,33 @@ export interface HookBridgeDeps {
    * `foreignSessionEscalator` above). Absent => no alert, no audit line.
    */
   onSubagentPassthrough?: (input: PermissionRequestHookInput) => void;
+  /**
+   * How long a binary prompt's hook is held for a phone answer, in ms
+   * (`[prompts] hold_seconds`, #1126). Required: see `AutoApproveGateDeps.holdMs`.
+   */
+  holdMs: number;
+  /** The registered PermissionRequest hook timeout, in ms (#1126). See
+   *  `AutoApproveGateDeps.hookTimeoutMs`. Required, so no session silently
+   *  treats Claude's own timeout as a terminal No. */
+  hookTimeoutMs: number;
+  /**
+   * Push an informational "answer at the terminal" notice for `question`
+   * (#1126), wired to the session's `NotificationDispatcher.pushTerminalNotice`.
+   * Fired when a held prompt reaches its deadline (the #733 handoff) and
+   * when a subagent prompt passed to the local terminal renders. Absent =>
+   * no notice (tests). Must be throw-safe; the gate also guards it.
+   */
+  pushTerminalNotice?: (sessionId: UUID, question: Question, reason: TerminalNoticeReason) => void;
+  /** Dismiss a notice `pushTerminalNotice` sent, once its prompt is
+   *  answered. Absent => the notice stays until the user clears it. */
+  dismissTerminalNotice?: (sessionId: UUID, questionId: UUID) => void;
+  /**
+   * Claude Code's auto-mode classifier blocked a tool call in this session
+   * (`PermissionDenied`, #1126): wired by cli.ts to the `harness_denied`
+   * push (`notifications/harness-denied.ts`). Informational, never a card;
+   * called only for an admitted event. Absent => no push. Throw-safe here.
+   */
+  onHarnessDenied?: (input: PermissionDeniedHookInput) => void;
 }
 
 export interface HookBridgeArgs {
@@ -202,6 +250,10 @@ export interface HookBridgeArgs {
    *  stale pending records. Required when wired into the createNewSession
    *  flow; tests construct their own per-bridge tracker. */
   tracker: QuestionPresenceTracker;
+  /** Whether this session has a local terminal (wrapper mode, #1126): it
+   *  decides whether a subagent prompt is passed to that terminal or held
+   *  for the phone. See `AutoApproveGateDeps.hasLocalTerminal`. */
+  hasLocalTerminal: boolean;
 }
 
 /**
@@ -215,8 +267,19 @@ export interface SessionGateHandle {
    *  tool event does not resolve (and dismiss) it again. Forwards to
    *  `retireQuestion`. */
   retireQuestion: (questionId: UUID) => void;
+  /** Apply a phone answer to a held prompt (#1126). Forwards to
+   *  `AutoApproveGate.answerHeld`; see `HeldAnswerOutcome`. */
+  answerHeld: (questionId: UUID, answer: HeldAnswer) => HeldAnswerOutcome;
+  /** Is a main-agent prompt's hook held, with its dialog on screen (#1126)?
+   *  Forwards to `AutoApproveGate.hasMainHold`. */
+  hasMainHold: () => boolean;
+  /** Is `questionId`'s hook held for the phone (#1126)? Forwards to
+   *  `AutoApproveGate.isHeld`; read by the tracker's live-question check
+   *  (`hasLiveQuestionOnScreen`). */
+  isHeld: (questionId: UUID) => boolean;
   /** Force-release escape (#617 `remi unstick`): resolve and dismiss every
-   *  open escalation. Forwards to `forceRelease`. */
+   *  open escalation, except a live hold, which is handed to the terminal
+   *  with a notice (#1126). Forwards to `forceRelease`. */
   forceRelease: (reason: string) => { resolved: number };
 }
 
@@ -267,7 +330,15 @@ export function setupHookBridge(
     transcriptDiscovery,
     subagentViews,
   } = deps;
-  const { hookServer, sessionId, workingDirectory, messageApi, sendAndRecord, tracker } = args;
+  const {
+    hookServer,
+    sessionId,
+    workingDirectory,
+    messageApi,
+    sendAndRecord,
+    tracker,
+    hasLocalTerminal,
+  } = args;
 
   // Push the session's subagent views to clients (epic #499 phase 3). Declared
   // here (before the binder/handlers reference it) so there is no fragile
@@ -449,9 +520,10 @@ export function setupHookBridge(
     },
     onQuestion: (question) => {
       // #625 single gate: a PERMISSION question is coordinated by the permission
-      // gate — it is stashed here and the gate drives its push on escalate (binary
-      // on its render via pushOnRender, multi-choice / design at once via
-      // onHeldEscalate). recordPendingHook only stashes; it never emits on its own.
+      // gate — it is stashed here and the gate drives its push on escalate (a
+      // held binary prompt and a multi-choice / design one at once via
+      // onHeldEscalate, #1126). recordPendingHook only stashes; it never emits
+      // on its own.
       //   - 'permission_request' (rich: tool + command + options) is the one the gate
       //     escalates and pushes by id. This is the ONLY source stashed here now:
       //     `HookEventBridge` used to also synthesize a redundant generic
@@ -502,32 +574,70 @@ export function setupHookBridge(
       // register its signature in `openQuestionSignatures` -- without it, a
       // subagent permission answered in the terminal has no removal path at
       // all (see the PreToolUse/PostToolUse/SubagentStop wiring below).
+      // #1126: when the parked prompt renders (wrapper mode), the phone gets
+      // an "answer at the terminal" notice, never an answerable card: the
+      // hook was answered passthrough, so only the terminal can answer it.
       parkForPTY: (i) => {
         const question = hookBridge.buildPermissionQuestion(i);
-        tracker.parkAwaitingPTY(question);
+        tracker.parkAwaitingPTY(question, {
+          onRender: (merged) => {
+            // Keep the parked id: the gate dismisses the notice by it.
+            deps.pushTerminalNotice?.(sessionId, { ...merged, id: question.id }, 'subagent');
+            autoApproveGate.noteTerminalNotice(question.id);
+          },
+        });
         return question.id;
       },
+      pushTerminalNoticeNow: (i) => {
+        if (!deps.pushTerminalNotice) return undefined;
+        const question = hookBridge.buildPermissionQuestion(i);
+        deps.pushTerminalNotice(sessionId, question, 'subagent');
+        return question.id;
+      },
+      hasLocalTerminal,
       ...(deps.onSubagentPassthrough ? { onSubagentPassthrough: deps.onSubagentPassthrough } : {}),
-      // #625: a multi-choice / design escalation (AskUserQuestion,
-      // ExitPlanMode) pushes immediately under its own id (-> addQuestion +
+      // A held binary prompt (#1126) and a multi-choice / design escalation
+      // (#625) push immediately under their own id (-> addQuestion +
       // maybePush); PTY question-emission is suppressed for hooked sessions.
       onHeldEscalate: (questionId) => tracker.pushHeldHook(questionId),
-      // #1121: a binary main escalation pushes when its native prompt
-      // renders, carrying the parsed screen's options (#1134); the answer is
-      // typed with the screen's numbering and refused on a label mismatch.
-      pushOnRender: (questionId) => {
-        tracker.pushOnRender(questionId);
+      holdMs: deps.holdMs,
+      hookTimeoutMs: deps.hookTimeoutMs,
+      // #1126: a held prompt was released to the terminal without an answer
+      // (its deadline, Claude's hook timeout, an ambiguous signal, `remi
+      // unstick`). Read the card while it is still registered (the gate
+      // dismisses it right after) so the notice names the actual ask; the
+      // wording says how to reach the terminal in this mode.
+      onReleasedToTerminal: (questionId, cause) => {
+        const question = sessionRegistry.getQuestion(sessionId, questionId);
+        if (question === null) return;
+        deps.pushTerminalNotice?.(
+          sessionId,
+          question,
+          terminalNoticeReason(cause, hasLocalTerminal),
+        );
       },
+      onTerminalNoticeResolved: (questionId) => deps.dismissTerminalNotice?.(sessionId, questionId),
       // #585: an open escalation that resolves without a user answer tells
-      // the daemon to dismiss the pushed card on every client.
+      // the daemon to dismiss the pushed card on every remi client and APNS.
       onResolved: (questionId, reason) =>
         deps.broadcastQuestionResolved?.(sessionId, questionId, reason),
-      // #573: classify an escalation as binary (pushed on render, #1121) vs
+      // #573: classify an escalation as binary (held, #1126) vs
       // design/multi-choice (pushed immediately). Absent => the gate's
       // `ALWAYS_ESCALATE_TOOLS` default.
       ...(deps.alwaysEscalateTools ? { alwaysEscalateTools: deps.alwaysEscalateTools } : {}),
     },
     sessionId,
+  );
+
+  // #1126: a render while a hook-backed prompt is open is that prompt (or a
+  // redraw of it), never a hook-less orphan, so it is not rebuilt into a
+  // card the phone would answer by typing. The one wiring point, here where
+  // both the gate and the tracker exist.
+  tracker.setHookPromptProbe(() => autoApproveGate.hasOpenHookPrompt());
+  // #1126: a held card may wait up to daemon_hold_seconds; the
+  // pending-question cap must never evict it while its hook is held.
+  sessionRegistry.setQuestionEvictionGuard(sessionId, (questionId) =>
+    autoApproveGate.isHeld(questionId),
   );
 
   // Subagent/team-member events carry `agent_id` (confirmed via
@@ -582,7 +692,11 @@ export function setupHookBridge(
         // record stashed before the rotation so the new session's first PTY
         // prompt cannot merge stale option labels, and dismiss + drop the
         // pending-question collection (cards clear on every device, #585) so
-        // stale answers are refused.
+        // stale answers are refused. The gate goes first (#1126): a hold
+        // must never outlive the Claude session that asked, so every open
+        // escalation is resolved and its hook released with the empty
+        // response before the registry is cleared.
+        autoApproveGate.cancelStale('session_restart');
         tracker.clearPending();
         resolveAndClearQuestions();
         // #889: drop any elicitation_id correlations too -- their target
@@ -635,6 +749,10 @@ export function setupHookBridge(
       // out-of-band) — expire its parked record so it cannot stale-merge
       // onto a later unrelated prompt.
       tracker.noteAgentAdvanced(input.agent_id);
+      // #1126: the agent moved on, so a prompt of its own still waiting in
+      // the terminal was answered there (a No fires no hook). Clears it and
+      // dismisses its notice.
+      autoApproveGate.noteAgentToolCall(input.agent_id, input.tool_use_id);
       // #799: mirrors the main-context external-resolution cancel below —
       // this agent's tool is now running, so any parked/pushed permission
       // question the gate is still tracking FOR THIS AGENT with a matching
@@ -650,6 +768,13 @@ export function setupHookBridge(
         },
         'PreToolUse-subagent',
       );
+      // #1126: remember the call so its PermissionRequest pairs with its id.
+      autoApproveGate.notePreToolUse({
+        toolName: input.tool_name,
+        toolInput: input.tool_input,
+        toolUseId: input.tool_use_id,
+        agentId: input.agent_id,
+      });
       return;
     }
     // #673: a PreToolUse whose (tool_name, tool_input) signature matches a
@@ -663,6 +788,15 @@ export function setupHookBridge(
       { toolName: input.tool_name, toolInput: input.tool_input, toolUseId: input.tool_use_id },
       'PreToolUse',
     );
+    // #1126: the PermissionRequest for this call (if any) fires about 10 ms
+    // later and carries no tool_use_id; remembering the call lets it pair,
+    // so the PostToolUse of a Yes answered in the terminal closes exactly
+    // that held prompt.
+    autoApproveGate.notePreToolUse({
+      toolName: input.tool_name,
+      toolInput: input.tool_input,
+      toolUseId: input.tool_use_id,
+    });
     handlers.onPreToolUse?.(input);
   });
   hookServer.on('PostToolUse', (input) => {
@@ -709,15 +843,21 @@ export function setupHookBridge(
         },
         'PostToolUse-subagent',
       );
+      autoApproveGate.noteToolUseEnded(input.tool_use_id);
       return;
     }
     // #673: same signature-scoped external-resolution cancel as PreToolUse
     // above (a tool that has already FINISHED is at least as strong a signal
     // that its permission was resolved elsewhere as one that just started).
+    // #1126: this is how a Yes answered in the terminal reaches a held
+    // prompt: Claude runs the tool and never closes the held request, and
+    // this PostToolUse carries the tool_use_id the prompt was paired with.
+    // The hold ends with the empty response Claude ignores.
     autoApproveGate.cancelExternallyResolved(
       { toolName: input.tool_name, toolInput: input.tool_input, toolUseId: input.tool_use_id },
       'PostToolUse',
     );
+    autoApproveGate.noteToolUseEnded(input.tool_use_id);
     handlers.onPostToolUse?.(input);
   });
   hookServer.on('Notification', (input) => {
@@ -746,7 +886,7 @@ export function setupHookBridge(
   // answers 'passthrough' (Claude renders its native prompt) after escalating
   // or parking the request. The binder binding runs first (as for any event);
   // a foreign event we do not own returns 'passthrough' ({}) so we ABSTAIN.
-  hookServer.setPermissionResolver(async (input) => {
+  hookServer.setPermissionResolver(async (input, signal) => {
     binder.onHookEvent(input);
     if (!binder.admits(input)) {
       // #593: a PermissionRequest we don't own returns passthrough so the owning
@@ -766,7 +906,7 @@ export function setupHookBridge(
       deps.foreignSessionEscalator?.handleUnadmitted(input, sessionId);
       return 'passthrough';
     }
-    return autoApproveGate.resolvePermission(input);
+    return autoApproveGate.resolvePermission(input, signal);
   });
   hookServer.on('Stop', (input) => {
     binder.onHookEvent(input);
@@ -837,12 +977,21 @@ export function setupHookBridge(
         {
           toolName: input.tool_name,
           toolInput: input.tool_input,
+          toolUseId: input.tool_use_id,
           agentId: input.agent_id,
         },
         'PostToolUseFailure-subagent',
       );
+      autoApproveGate.noteToolUseEnded(input.tool_use_id);
       return;
     }
+    // #1126: a Yes answered in the terminal whose tool then failed still
+    // proves the held prompt was answered; same cancel as PostToolUse.
+    autoApproveGate.cancelExternallyResolved(
+      { toolName: input.tool_name, toolInput: input.tool_input, toolUseId: input.tool_use_id },
+      'PostToolUseFailure',
+    );
+    autoApproveGate.noteToolUseEnded(input.tool_use_id);
     handlers.onPostToolUseFailure?.(input);
   });
 
@@ -915,7 +1064,10 @@ export function setupHookBridge(
     binder.onHookEvent(input);
     if (!binder.admits(input)) return;
     // A classifier denial fires no tool call, so PreToolUse/PostToolUse never
-    // observe it -- this is the ONLY external-resolution signal for it. Same
+    // observe it -- this is the ONLY external-resolution signal for it. It
+    // also fires when an auto-mode fallback prompt is auto-denied at 2:00
+    // (measured on 2.1.287, #1126), and then it is what closes that held
+    // card, before any close of the request reaches the hook server. Same
     // funnel, same signature-then-tool_use_id matching as PreToolUse/
     // PostToolUse above; a no-op when nothing open matches (the codebase-wide
     // rule "every ambiguous path resolves toward showing the user" -- NOT
@@ -932,6 +1084,15 @@ export function setupHookBridge(
       },
       'PermissionDenied',
     );
+    autoApproveGate.noteToolUseEnded(input.tool_use_id);
+    // #1126: tell the phone why the agent changed course. Never a card:
+    // a classifier block fires no PermissionRequest, so nothing waits (a
+    // fallback prompt's auto-deny also lands here, after its card closed).
+    try {
+      deps.onHarnessDenied?.(input);
+    } catch (err) {
+      logError(`[Hooks] harness_denied push failed for ${sessionId}: ${errorToString(err)}`);
+    }
   });
 
   hookServer.on('Elicitation', (input) => {
@@ -958,11 +1119,18 @@ export function setupHookBridge(
   // Registered so the turn-complete timer anchors each turn on the moment the
   // human submits it (`notifications/turn-timer.ts`, via HookServer's
   // `onAnyEvent`). Its other consumer, the auto-approve authority summary, was
-  // deleted in #1125. The listener only drives the binder like every other
-  // listener: `HookServer.dispatch` runs it SYNCHRONOUSLY before Claude Code's
-  // blocked hook response, so it must stay this cheap.
+  // deleted in #1125. The listener drives the binder like every other
+  // listener and, since #1126, closes stale main prompts (below):
+  // `HookServer.dispatch` runs it SYNCHRONOUSLY before Claude Code's blocked
+  // hook response, so it must stay this cheap.
   hookServer.on('UserPromptSubmit', (input) => {
     binder.onHookEvent(input);
+    if (!binder.admits(input) || isSubagentEvent(input)) return;
+    // #1126: the user typed a new prompt, so the main agent is not waiting
+    // on a permission dialog any more. Closes a main prompt that was
+    // answered No in the terminal after its hold was released (that fires
+    // no hook at all), so its open entry cannot outlive the turn.
+    autoApproveGate.cancelStale('UserPromptSubmit', { mainOnly: true });
   });
 
   log(`[Hooks] Event bridge active for session ${sessionId}`);
@@ -987,9 +1155,15 @@ export function setupHookBridge(
       // Drop the per-session PermissionRequest resolver (#496) so a stale
       // closure (over this session's gate/tracker) can't fire after teardown.
       hookServer.setPermissionResolver(null);
+      // #1126: release any hook still held for this session (the empty
+      // response decides nothing) and clear its cards.
+      autoApproveGate.cancelStale('session_closed');
     },
     gate: {
       retireQuestion: (questionId) => autoApproveGate.retireQuestion(questionId),
+      answerHeld: (questionId, answer) => autoApproveGate.answerHeld(questionId, answer),
+      hasMainHold: () => autoApproveGate.hasMainHold(),
+      isHeld: (questionId) => autoApproveGate.isHeld(questionId),
       forceRelease: (reason) => autoApproveGate.forceRelease(reason),
     },
   };

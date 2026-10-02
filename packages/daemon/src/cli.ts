@@ -35,7 +35,7 @@ const REMI_VERSION = (() => {
 // ---------------------------------------------------------------------------
 // Paths and utilities for log file and status file (used in wrapper mode)
 // ---------------------------------------------------------------------------
-const REMI_DIR = path.join(os.homedir(), '.remi');
+const REMI_DIR = remiHome();
 const LOG_FILE = path.join(REMI_DIR, 'remi.log');
 const DAEMON_STATUS_FILE = path.join(REMI_DIR, 'daemon-status.json');
 // Status file is per-port so multiple wrapper sessions don't overwrite each other.
@@ -119,6 +119,7 @@ import type { ProtocolMessage, UUID, UnlockedIdentity } from '@remi/shared';
 import { isEncrypted, unlockIdentity } from '@remi/shared';
 import type { AnswerKeyPair } from '@remi/shared';
 import { AdapterRegistry, TelegramAdapter, WebSocketAdapter } from './adapters/index.ts';
+import { hasLiveQuestionOnScreen } from './api/live-questions.ts';
 import { QuestionPresenceTracker } from './api/question-presence-tracker.ts';
 import { loadOrCreateAnswerKey } from './auth/answer-key.ts';
 import { Authenticator } from './auth/authenticator.ts';
@@ -155,6 +156,7 @@ import {
 import {
   type InputHandlers,
   createInputHandlers,
+  gateAnswerDeps,
   trackerScreenDeps,
 } from './cli/handlers/input-events.ts';
 import {
@@ -167,6 +169,7 @@ import {
   createTranscriptHandlers,
 } from './cli/handlers/transcript-events.ts';
 import { type TrivialHandlers, createTrivialHandlers } from './cli/handlers/trivial-events.ts';
+import { permissionHoldPolicy } from './cli/hold-policy.ts';
 import { HubClientTracker } from './cli/hub-client-tracker.ts';
 import { buildHubQuestionCensus } from './cli/hub-question-census.ts';
 import type { LiveSessionsCollectResult } from './cli/live-sessions-watcher.ts';
@@ -194,13 +197,25 @@ import {
   loadConfigWithNotices,
 } from './config/index.ts';
 import type { LoadedConfig, RemiConfig } from './config/index.ts';
+import {
+  configPathForDisplay,
+  isRemiHomeOverridden,
+  remiHome,
+  serviceCommandRefusal,
+} from './config/remi-home.ts';
 import { ForeignSessionEscalator, HookConfigManager, HookServer } from './hooks/index.ts';
-import type { HookInput, PermissionRequestHookInput, StopHookInput } from './hooks/index.ts';
+import type {
+  HookInput,
+  PermissionDeniedHookInput,
+  PermissionRequestHookInput,
+  StopHookInput,
+} from './hooks/index.ts';
 // Static, unlike the publisher below it: this is a pure decision with no
 // side effects and nothing to load, so there is nothing for a dynamic import
 // to defer -- and it is needed on the path where mDNS never starts at all.
 import { mdnsSuppression, mdnsSuppressionMessage } from './mdns/advertise-decision.ts';
 import { DeviceTokenStore } from './notifications/device-token-store.ts';
+import { pushHarnessDenied } from './notifications/harness-denied.ts';
 import type { NotificationDispatcher } from './notifications/notification-dispatcher.ts';
 import { sendPushTrigger } from './notifications/push-client.ts';
 import { tokensWanting } from './notifications/push-preferences.ts';
@@ -433,6 +448,11 @@ if (cliSubcommand === 'attach' || cliSubcommand === 'kill' || cliSubcommand === 
 
 // Handle --install / --uninstall
 if (cliInstall || cliUninstall) {
+  const refusal = serviceCommandRefusal(cliInstall ? '--install' : '--uninstall');
+  if (refusal !== null) {
+    console.error(refusal);
+    process.exit(1);
+  }
   const platform = process.platform;
   const home = os.homedir();
   // Prefer the PATH-resolved `remi` (a symlink like /opt/homebrew/bin/remi
@@ -450,6 +470,9 @@ if (cliInstall || cliUninstall) {
     if (cliInstall) {
       const content = buildLaunchAgentPlist(binaryPath, home);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
+      // The plist's log paths are `~/.remi` (service-templates.ts) and the
+      // service does not inherit this shell's REMI_HOME, so this stays the
+      // default directory rather than `remiHome()`.
       fs.mkdirSync(path.join(home, '.remi'), { recursive: true });
       const uid = process.getuid?.() ?? 501;
       // Idempotent reinstall: bootstrap fails if the label is already
@@ -969,7 +992,9 @@ const sessionAdmitsHandles: Map<UUID, (input: HookInput) => boolean> = new Map()
 /**
  * Force-release every session's gate (#617, `remi unstick` -> SIGUSR2): the "just
  * get me out" lever when cards are stuck. Each gate resolves and dismisses every
- * open escalation it tracks. Idempotent and safe with zero sessions.
+ * open escalation it tracks, except that a live hold is released to the terminal
+ * with a notice (#1126; its dialog is on screen). Idempotent and safe with zero
+ * sessions.
  */
 function forceReleaseAllSessions(): void {
   let resolved = 0;
@@ -1203,6 +1228,34 @@ function onSubagentPassthrough(input: PermissionRequestHookInput): void {
       logError('[SubagentAlert] push failed:', err);
     });
   }
+}
+
+/** Push a `harness_denied` notice (#1126): Claude Code's auto-mode
+ *  classifier blocked a tool call. Informational, per-device mutable
+ *  (`pushPrefs.harnessDenied`), fire-and-forget like the alert above. */
+function onHarnessDenied(input: PermissionDeniedHookInput): void {
+  const primarySessionId = getPrimarySessionId();
+  const session = primarySessionId ? sessionRegistry.getSession(primarySessionId) : undefined;
+  log(`[HarnessDenied] auto mode blocked ${input.tool_name}: ${input.reason ?? '(no reason)'}`);
+  // Pick up a device removed or muted by a sibling daemon since our last
+  // read (#690), as the question push does.
+  try {
+    deviceTokenStore.refreshFromDisk();
+  } catch (err) {
+    logError('[HarnessDenied] device token refresh failed:', err);
+  }
+  pushHarnessDenied(
+    {
+      deviceTokens: deviceTokens.values(),
+      sessionId: primarySessionId ?? 'unbound',
+      signalingUrl: cliSignalingUrl ?? remiConfig.network.signaling_url,
+      pushSecret: cliPushSecret,
+      sessionName: session?.name || 'Agent',
+      send: sendPushTrigger,
+      onError: (err) => logError('[HarnessDenied] push failed:', err),
+    },
+    input,
+  );
 }
 
 // Daemon-wide turn-duration tracker (#914). Fed from HookServer's onAnyEvent
@@ -1520,7 +1573,14 @@ async function createNewSession(
   // dep that re-queried `sessionRegistry.getQuestion` after the fact -- the
   // deleted dep used to live here.
   const tracker = new QuestionPresenceTracker((q, opts) => messageApi.handleQuestion(q, opts), {
-    hasLiveQuestions: () => (sessionRegistry.getSession(sessionId)?.currentQuestions.size ?? 0) > 0,
+    // #1126: a held subagent card does not count, its dialog is not on
+    // screen (see live-questions.ts). The gate handle is registered after
+    // the hook bridge is set up; read lazily, absent means nothing is held.
+    hasLiveQuestions: () =>
+      hasLiveQuestionOnScreen(
+        sessionRegistry.getSession(sessionId)?.currentQuestions.values() ?? [],
+        (questionId) => sessionGateHandles.get(sessionId)?.isHeld(questionId as UUID) ?? false,
+      ),
     // #888/#920 hard requirement: a hook-less pending question (no
     // PermissionRequest/Notification ever fired for it) has no tool
     // signature for AutoApproveGate to resolve it by, so its PTY render
@@ -1567,8 +1627,8 @@ async function createNewSession(
       onQuestion: (question) => {
         // #625 single gate: when a hook server is active the permission gate is
         // the primary authority for permission questions and drives their
-        // pushes itself (binary on render via pushOnRender, multi-choice at once
-        // via onHeldEscalate). The PTY parser echoes EVERY on-screen prompt, so
+        // pushes itself (held binary and multi-choice prompts at once via
+        // onHeldEscalate, #1126). The PTY parser echoes EVERY on-screen prompt, so
         // routing those through unconditionally was the phantom-notification
         // source (>1,100 confirmed pushes, measured while auto-approve still
         // existed). But #624/#712 review found real prompts that reach ONLY
@@ -1619,6 +1679,7 @@ async function createNewSession(
   });
 
   if (hookServer) {
+    const holdPolicy = permissionHoldPolicy(passThrough, remiConfig.prompts);
     const hookBridgeHandle = setupHookBridge(
       {
         sessionRegistry,
@@ -1636,8 +1697,29 @@ async function createNewSession(
         // #585: a held question the gate resolves without a user answer dismisses
         // its pushed card on every client.
         broadcastQuestionResolved: onQuestionResolved,
+        // #1126: how long a binary prompt's hook waits for the phone, and
+        // the registered hook timeout an abort is compared with; a wrapper
+        // session hands an unanswered prompt to its terminal, a daemon or
+        // hub session keeps it for the phone (see hold-policy.ts).
+        holdMs: holdPolicy.holdMs,
+        hookTimeoutMs: holdPolicy.hookTimeoutMs,
+        pushTerminalNotice: (sid, question, reason) =>
+          sessionNotifiers.get(sid)?.pushTerminalNotice(sid, question, reason),
+        dismissTerminalNotice: (sid, questionId) =>
+          sessionNotifiers.get(sid)?.dismissTerminalNotice(sid, questionId),
+        onHarnessDenied,
       },
-      { hookServer, sessionId, workingDirectory, messageApi, sendAndRecord, tracker },
+      {
+        hookServer,
+        sessionId,
+        workingDirectory,
+        messageApi,
+        sendAndRecord,
+        tracker,
+        // #1126: a wrapper session has a local terminal, so a subagent's
+        // prompt is passed to it; a daemon-mode session holds it instead.
+        hasLocalTerminal: holdPolicy.hasLocalTerminal,
+      },
     );
     // The binder owns the fallback poll + #452 dir-watch (armed by its start()
     // inside setupHookBridge); record its teardown so cleanup() reaches the
@@ -1846,10 +1928,11 @@ const inputHandlers: InputHandlers = createInputHandlers({
   sessionRegistry,
   bindingStore,
   send: sendToConnection,
-  // #573: tell the RIGHT session's gate (the map is populated per session in
-  // createNewSession) that an answered question no longer needs tracking.
-  retireQuestion: (sessionId, questionId) =>
-    sessionGateHandles.get(sessionId)?.retireQuestion(questionId),
+  // #573/#1126: the RIGHT session's gate (the map is populated per session in
+  // createNewSession) retires an answered question and answers a held
+  // prompt through its hook. One helper, shared with the tests, like
+  // trackerScreenDeps below.
+  ...gateAnswerDeps((sessionId) => sessionGateHandles.get(sessionId)),
   // #585: a locally answered question dismisses its card + lock-screen push on
   // every other client.
   onQuestionResolved: (sessionId, questionId) =>
@@ -2129,7 +2212,7 @@ if (authEnabled) {
       `WARNING: bound to ${bindHost} with authentication disabled. Any host that can reach this port can approve permission prompts and type into your Claude session.`,
     );
     console.error(
-      `  Remedy: set daemon.bind = "${DEFAULT_CONFIG.daemon.bind}" in ~/.remi/config.toml (the default since #880), or pass --auth to require authentication on this bind.`,
+      `  Remedy: set daemon.bind = "${DEFAULT_CONFIG.daemon.bind}" in ${configPathForDisplay()} (the default since #880), or pass --auth to require authentication on this bind.`,
     );
   } else {
     console.log('Authentication disabled (localhost binding)');
@@ -2400,7 +2483,7 @@ if (cliDaemonMode) {
   // (the first session child installs it anyway). Session daemons keep the
   // existing behavior.
   if (!serveMode) {
-    installStatusLine(REMI_DIR);
+    installStatusLine(REMI_DIR, undefined, !isRemiHomeOverridden());
   }
 
   if (serveMode) {
@@ -2521,7 +2604,12 @@ if (cliDaemonMode) {
 
     if (hookServer) {
       try {
-        hookConfigManager = new HookConfigManager(workingDirectory, hookServer.url);
+        // #1126: a daemon or hub session holds prompts for up to
+        // daemon_hold_seconds, so its hook registration outlasts that.
+        hookConfigManager = new HookConfigManager(workingDirectory, hookServer.url, {
+          permissionRequestTimeout: permissionHoldPolicy(false, remiConfig.prompts)
+            .permissionRequestTimeoutSec,
+        });
         await hookConfigManager.install();
       } catch (err) {
         const msg = errorToString(err);
@@ -2634,8 +2722,9 @@ if (cliDaemonMode) {
   // Close log fd as the very last thing on process exit
   process.on('exit', endLogFileSession);
 
-  // Install status line script (~/.remi/statusline.sh) and auto-configure Claude Code settings
-  installStatusLine(REMI_DIR);
+  // Install status line script (<state dir>/statusline.sh) and auto-configure
+  // Claude Code settings, except under a REMI_HOME override (see installStatusLine).
+  installStatusLine(REMI_DIR, undefined, !isRemiHomeOverridden());
   const workingDirectory = process.cwd();
   const sessionId = sessionRegistry.createSessionId();
   setPrimarySessionId(sessionId);
@@ -2725,8 +2814,12 @@ if (cliDaemonMode) {
     HOOK_PORT = hookServer.port;
     log(`Hook server listening on ${hookServer.url} (port ${HOOK_PORT})`);
 
-    // Configure Claude Code hooks to POST to our server
-    hookConfigManager = new HookConfigManager(workingDirectory, hookServer.url);
+    // Configure Claude Code hooks to POST to our server; a wrapper session
+    // has a local terminal (#1126, hold-policy.ts).
+    hookConfigManager = new HookConfigManager(workingDirectory, hookServer.url, {
+      permissionRequestTimeout: permissionHoldPolicy(true, remiConfig.prompts)
+        .permissionRequestTimeoutSec,
+    });
     await hookConfigManager.install();
     log('[Hooks] Claude Code hooks configured');
   } catch (err) {

@@ -150,10 +150,11 @@ describe('removedAutoApproveNotice', () => {
   });
 
   test('legacyEnginePaths reports only what exists, and touches nothing', () => {
-    expect(legacyEnginePaths(home)).toEqual({ engineDir: null, enginePidFile: null });
+    const stateDir = path.join(home, '.remi');
+    expect(legacyEnginePaths(stateDir)).toEqual({ engineDir: null, enginePidFile: null });
     fs.mkdirSync(path.join(home, '.remi', 'engine'), { recursive: true });
     fs.writeFileSync(path.join(home, '.remi', 'engine.pid'), '123');
-    expect(legacyEnginePaths(home)).toEqual({
+    expect(legacyEnginePaths(stateDir)).toEqual({
       engineDir: path.join(home, '.remi', 'engine'),
       enginePidFile: path.join(home, '.remi', 'engine.pid'),
     });

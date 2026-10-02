@@ -258,12 +258,12 @@ export interface Question {
 
   /**
    * #753: true when the question was pushed by id through the load-bearing
-   * `held` path (`QuestionPresenceTracker.pushHeldHook`). Built for HELD
-   * PermissionRequest hooks (Model B), whose dialog never painted the PTY;
-   * since #1125 nothing holds, and the flag marks a card pushed before its
-   * render (AskUserQuestion, ExitPlanMode, a multi-choice permission). The
-   * daemon's answer path refuses free text on such a card (#1134), and the
-   * terminal attach client banners it. Stamped once at question emission
+   * `held` path (`QuestionPresenceTracker.pushHeldHook`): a binary permission
+   * prompt whose hook is held for the phone's answer (#1126; Claude's dialog
+   * renders during the hold), or a card pushed before its render
+   * (AskUserQuestion, ExitPlanMode, a multi-choice permission). The daemon's
+   * answer path refuses free text on such a card (#1134), and the terminal
+   * attach client banners it. Stamped once at question emission
    * (message-api-setup), so live messages, registry entries, and attach-time
    * re-sends all carry it.
    */
@@ -348,14 +348,23 @@ export interface QuestionOption {
    * derived from (#718). Present only for a structured-suggestion-derived
    * "yes" option (e.g. "Yes, always allow: rm -rf ..."); absent for the
    * plain Yes/No options and for the legacy plain-string suggestion path.
-   * Since #1125 nothing holds, so an "always" option is answered by typing
-   * into Claude's dialog like any other (#1134) and this index is not read.
-   * It is kept for #1126, which plans to resolve a held hook with
-   * `{behavior:"allow", updatedPermissions:[suggestions[suggestionIndex]]}`:
-   * per the Claude Code hooks docs, the real "Yes, always" (not yet verified
-   * live).
+   * Since #1126 a phone answer naming such an option resolves the held hook
+   * with `{behavior:"allow", updatedPermissions:[<that suggestion>]}`: a
+   * `setMode` or an allow `addRules`, both echoed with
+   * `destination: "session"`; both kinds verified live on Claude Code
+   * 2.1.287.
    */
   readonly suggestionIndex?: number | undefined;
+
+  /**
+   * What a standing option grants (#1126), set with `suggestionIndex`:
+   * `'addRules'` allows a rule for this session, `'setMode'` switches the
+   * session's permission mode. The lock screen's static "Yes, always" button
+   * (REMI_YNA) is offered only for `'addRules'`, where its title is true; a
+   * card whose standing option is a `'setMode'` gets no actionable category
+   * and is answered in the app. Ignored on the wire otherwise.
+   */
+  readonly standingGrant?: 'addRules' | 'setMode' | undefined;
 
   /**
    * Public marker for an explicit, scoped session action. The grant's

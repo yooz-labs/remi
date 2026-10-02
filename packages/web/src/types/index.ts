@@ -262,6 +262,8 @@ export interface AppSettings {
   readonly notifyQuestions: boolean;
   /** Push the last assistant message when a long turn ends (#914). */
   readonly notifyTurnComplete: boolean;
+  /** Push when Claude Code's auto mode blocks a tool call (#1126). */
+  readonly notifyHarnessDenied: boolean;
   readonly sound: boolean;
   readonly autoReconnect: boolean;
   readonly showTimestamps: boolean;
@@ -285,6 +287,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   fontSize: 'medium',
   notifyQuestions: true,
   notifyTurnComplete: true,
+  notifyHarnessDenied: true,
   sound: true,
   autoReconnect: true,
   showTimestamps: true,

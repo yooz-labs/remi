@@ -11,6 +11,8 @@
 
 import {
   PROMPT_WAITING_ERROR_CODE,
+  PROMPT_WAITING_HELD_MESSAGE,
+  PROMPT_WAITING_MESSAGE,
   createBulletExpandResponse,
   createError,
   createInputNotDeliveredError,
@@ -19,6 +21,7 @@ import {
 } from '@remi/shared';
 import type { AnswerExtras, AnswerSelection, Question, QuestionOption, UUID } from '@remi/shared';
 
+import type { HeldAnswer, HeldAnswerOutcome } from '../../auto-approve/index.ts';
 import { clearAuqRunActive, markAuqRunActive } from '../../hooks/auq-active-runs.ts';
 import { AUQ_KEYS } from '../../hooks/auq-answer.ts';
 import { type AuqRunOutcome, runAuqAnswer } from '../../hooks/auq-runner.ts';
@@ -42,6 +45,22 @@ export interface InputHandlerDeps {
    * by cli.ts. Absent => no-op (tests, or no hook server).
    */
   retireQuestion?: (sessionId: UUID, questionId: UUID) => void;
+  /**
+   * Apply a phone answer to a held permission prompt (#1126), backed by the
+   * session's gate (`SessionGateHandle.answerHeld`, wired by
+   * `gateAnswerDeps`). Asked before anything could be typed: a held prompt
+   * is answered through its hook response, and a binary prompt whose hold
+   * has ended (`closed`) is never typed into, its answer belongs to the
+   * terminal. Absent (no hook server: no held prompts) reads as `unknown`.
+   */
+  answerHeld?: (sessionId: UUID, questionId: UUID, answer: HeldAnswer) => HeldAnswerOutcome;
+  /**
+   * Is a main-agent prompt's hook held for this session (#1126)? Its dialog
+   * is on screen, so the chat guard refuses chat text even when the PTY
+   * parser has not observed the menu. Wired by `gateAnswerDeps`. Absent
+   * reads as false (no hook server: nothing is held).
+   */
+  isMainPromptHeld?: (sessionId: UUID) => boolean;
   /**
    * Cross-client question dismissal (#585, P7). Called after a question is
    * answered here so the daemon broadcasts `question_resolved` to every client and
@@ -233,6 +252,31 @@ export function trackerScreenDeps(
   };
 }
 
+/** The gate reads the answer path uses (`SessionGateHandle`). */
+export interface GateAnswerHandle {
+  retireQuestion(questionId: UUID): void;
+  answerHeld(questionId: UUID, answer: HeldAnswer): HeldAnswerOutcome;
+  hasMainHold(): boolean;
+}
+
+/**
+ * The gate deps (`retireQuestion`, `answerHeld`, `isMainPromptHeld`) backed by each session's
+ * permission gate (#1126). The ONE wiring for them, shared by `cli.ts` and
+ * the tests in the same way as `trackerScreenDeps`, so a test of the held
+ * answer path exercises the production wiring. No gate for the session
+ * reads as `unknown` (nothing held) and retires nothing.
+ */
+export function gateAnswerDeps(
+  gateFor: (sessionId: UUID) => GateAnswerHandle | undefined,
+): Pick<InputHandlerDeps, 'retireQuestion' | 'answerHeld' | 'isMainPromptHeld'> {
+  return {
+    retireQuestion: (sessionId, questionId) => gateFor(sessionId)?.retireQuestion(questionId),
+    answerHeld: (sessionId, questionId, answer) =>
+      gateFor(sessionId)?.answerHeld(questionId, answer) ?? 'unknown',
+    isMainPromptHeld: (sessionId) => gateFor(sessionId)?.hasMainHold() ?? false,
+  };
+}
+
 /**
  * Resolve an incoming answer string to the active Question's matching option
  * (#574). The phone now sends the option LABEL for display (e.g. "Yes", "Yes,
@@ -374,6 +418,8 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     bindingStore,
     send,
     retireQuestion,
+    answerHeld,
+    isMainPromptHeld,
     onQuestionResolved,
     isPromptCurrent,
     isPromptObservedOnPTY,
@@ -580,8 +626,19 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     // removeQuestion, broadcast) is unconditional so the card always clears.
     if (extra?.cancel) {
       auqRuns.get(auqRunKey(session.sessionId, questionId))?.abort();
-      const stillActive = sessionRegistry.getQuestion(session.sessionId, questionId) !== null;
-      if (stillActive) {
+      // #1126: Cancel on a held permission card is a "No" through the hook;
+      // on a card whose hold has ended it only clears the card. Neither
+      // types Esc: nothing is typed into a hook-backed prompt.
+      const held = answerHeld?.(session.sessionId, questionId, { kind: 'cancel' }) ?? 'unknown';
+      const stillActive =
+        held === 'unknown' && sessionRegistry.getQuestion(session.sessionId, questionId) !== null;
+      if (held === 'resolved') {
+        log(`[Answer] cancel: denied held prompt ${questionId.slice(0, 8)} through its hook`);
+      } else if (held === 'closed') {
+        log(
+          `[Answer] cancel: ${questionId.slice(0, 8)} is no longer held; clearing the card, nothing typed`,
+        );
+      } else if (stillActive) {
         try {
           await session.pty.write(AUQ_KEYS.ESC);
           log(`[Answer] cancel: sent Esc to session ${session.sessionId.slice(0, 8)}`);
@@ -731,9 +788,102 @@ export function createInputHandlers(deps: InputHandlerDeps) {
   }
 
   /**
+   * The held-prompt half of `applyAnswer` (#1126). Returns the outcome when
+   * the gate held (or once held) this question, null when the caller's PTY
+   * path applies (`unknown`). Synchronous: the hook response is settled
+   * before anything else can run.
+   *   - `resolved`: the hook answered; the card is consumed and dismissed.
+   *   - `refused`: not an option this card offers (free text, a stale
+   *     label); the card and the hold stay so the user can pick again.
+   *   - `closed`: the hold ended (deadline, terminal answer, abort); refused
+   *     like a stale answer and the card is cleared. Nothing is typed.
+   */
+  function applyHeldAnswer(
+    connectionId: UUID,
+    sessionId: UUID,
+    questionId: UUID,
+    answer: string,
+    viaRelay: boolean,
+    extra: AnswerExtras | undefined,
+    session: ManagedSession,
+    active: Question,
+  ): AnswerOutcome | null {
+    if (!answerHeld) return null;
+    const option = resolveOption(active.options, answer);
+    // `message` crosses a trust boundary unvalidated (the protocol checks only
+    // the message type), so anything but a string is dropped here.
+    const message = typeof extra?.message === 'string' ? extra.message : undefined;
+    const held: HeldAnswer =
+      option === undefined
+        ? { kind: 'text' }
+        : { kind: 'option', option, ...(message !== undefined ? { message } : {}) };
+    const outcome = answerHeld(session.sessionId, questionId, held);
+    if (outcome === 'unknown') return null;
+    if (outcome === 'resolved') {
+      resolvedAnswers.record(questionId, [
+        answerCacheKey(answer),
+        ...(option ? [option.value, option.label] : []),
+      ]);
+      sessionRegistry.removeQuestion(session.sessionId, questionId, 'user_answer:hook');
+      try {
+        onQuestionResolved?.(session.sessionId, questionId);
+      } catch (err) {
+        logError(`[Answer] question_resolved broadcast failed: ${errorToString(err)}`);
+      }
+      log(`[Answer] held prompt ${questionId.slice(0, 8)} answered through its hook`);
+      return 'delivered';
+    }
+    const closed = outcome === 'closed';
+    log(
+      closed
+        ? `[Answer] refusing ${questionId.slice(0, 8)}: its hold has ended, answer at the terminal; nothing typed`
+        : `[Answer] refusing ${questionId.slice(0, 8)}: "${option === undefined ? `free text (${answer.length} chars)` : answer}" is not an answer this held card offers; card and hold kept`,
+    );
+    traceQuestionEvent({
+      action: 'stale_answer',
+      sessionId: session.sessionId,
+      questionId,
+      promptId: active.promptId,
+      signal: 'STALE_ANSWER',
+      callSite: 'input-events.handleAnswer:heldPrompt',
+      detail: { reason: closed ? 'hold-closed' : 'not-a-held-option', source: active.source },
+    });
+    if (closed) {
+      sessionRegistry.removeQuestion(session.sessionId, questionId, 'user_answer:hold_closed');
+      try {
+        onQuestionResolved?.(session.sessionId, questionId);
+      } catch (err) {
+        logError(`[Answer] question_resolved broadcast failed: ${errorToString(err)}`);
+      }
+    }
+    if (!viaRelay) {
+      send(
+        connectionId,
+        createError(
+          'STALE_ANSWER',
+          closed
+            ? 'This prompt is no longer waiting for the phone; answer it in the terminal'
+            : 'This prompt takes one of its own options',
+          {
+            sessionId,
+            // A refused answer leaves the card live, and a client drops the
+            // card a STALE_ANSWER names; only a closed one is named. The
+            // pending list still carries the refused card, so a client's
+            // reconciliation keeps it.
+            ...(closed ? { questionId } : {}),
+            pendingQuestionIds: [...session.currentQuestions.keys()],
+          },
+        ),
+      );
+    }
+    return 'stale';
+  }
+
+  /**
    * The part of `handleAnswer` that acts on a live, CLAIMED question (see the
-   * in-flight claim there): drive an AskUserQuestion or type into the PTY
-   * (behind the screen guards), then consume the card.
+   * in-flight claim there): drive an AskUserQuestion, answer a held prompt
+   * through its hook, or type into the PTY (behind the screen guards), then
+   * consume the card.
    */
   async function applyAnswer(
     connectionId: UUID,
@@ -760,8 +910,26 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       );
     }
 
-    // Submit the answer to the PTY, where Claude's native prompt is waiting
-    // (#1125: remi no longer holds the hook, so this is the only answer path).
+    // #1126: a held permission prompt is answered through its hook response,
+    // and a binary prompt whose hold has ended is answered only at the
+    // terminal. Both are decided here, before anything could be typed.
+    const heldOutcome = applyHeldAnswer(
+      connectionId,
+      sessionId,
+      questionId,
+      answer,
+      viaRelay,
+      extra,
+      session,
+      active,
+    );
+    if (heldOutcome !== null) return heldOutcome;
+
+    // Submit the answer to the PTY, where Claude's native prompt is waiting.
+    // Only prompts no held hook stands behind reach this point: hook-less
+    // prompts (sandbox, trust, agent-team dialogs) and the AskUserQuestion /
+    // ExitPlanMode / multi-choice cards pushed by id (#1127 moves those to
+    // the hook as well).
     //
     // The submit + question removal are wrapped so the question is ALWAYS
     // consumed exactly once: if `submitInput` throws, the `finally` still
@@ -824,14 +992,15 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       } catch (err) {
         logError(`[Answer] gate retirement failed: ${errorToString(err)}`);
       }
-      // Free text on a card pushed by id (`pushHeldHook`: AskUserQuestion,
-      // ExitPlanMode, a multi-choice permission; such cards are stamped
-      // `held`) is refused before anything is typed (#1134 review). Only an
-      // option of this card can be expressed; text typed into the dialog is
-      // ignored and the Enter after it confirms the highlighted option. Built
-      // for held hooks, where the release skipped the screen check; nothing
-      // holds since #1125, but the refusal still guards those passthrough
-      // cards whether or not a menu has been observed yet, so it stays.
+      // Free text on a card pushed by id (`pushHeldHook`, stamped `held`) is
+      // refused before anything is typed (#1134 review). A held binary card
+      // never reaches this point: the gate answered it through its hook
+      // above (#1126). What arrives here stamped `held` is a passthrough
+      // card (AskUserQuestion, ExitPlanMode, a multi-choice permission).
+      // Only an option of this card can be expressed; text typed into the
+      // dialog is ignored and the Enter after it confirms the highlighted
+      // option, so free text is refused whether or not a menu has been
+      // observed yet.
       if (
         active.held === true &&
         active.options.length > 0 &&
@@ -876,8 +1045,10 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       // would land in whatever Claude is doing. That is not hypothetical: it
       // was observed typing a bare `1` into an unrelated session, recorded in
       // the transcript as a user message. (Before #1125 an answer that
-      // released a held hook was exempt, because Claude was about to render;
-      // nothing holds now, so every answer needs a prompt on screen.)
+      // released a held hook was exempt, because Claude was about to render.
+      // A held prompt never reaches this path since #1126: it is answered
+      // through its hook above, so every typed answer needs a prompt on
+      // screen.)
       //
       // Absent deps (no tracker wired for this session) are treated as NOT
       // current: fail toward refusing the injection. A refused legitimate
@@ -944,8 +1115,9 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       // menu is on screen (a free-text prompt).
       //
       // Before #1125 an answer that released a held hook skipped this check
-      // (nothing had rendered yet); nothing holds now, so every typed answer
-      // is checked. A refusal means "answer at the terminal".
+      // (nothing had rendered yet). Nothing typed here comes from a held
+      // prompt since #1126, so every typed answer is checked. A refusal means
+      // "answer at the terminal".
       const screenOptions = observedPromptOptions?.(session.sessionId) ?? null;
       const refusal = screenRefusal(active, answer, ptyInput, screenOptions);
       if (refusal !== null) return refuseSubmit(refusal, ptyInput, screenOptions);
@@ -1068,11 +1240,18 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       // too, with options "y"/"n", and it takes typed text. Absent, or null (no
       // prompt observed, or no tracker): nothing is known to be on screen, so
       // the text is typed as before.
+      //
+      // #1126: a held main-agent prompt's dialog is on screen too (it renders
+      // during the hold), so it refuses as well, whether or not the parser
+      // has recognized the menu: the hook says a dialog is up even when the
+      // screen parse does not.
       const menu = observedPromptOptions?.(session.sessionId) ?? null;
-      if (menu !== null && isNumberedMenu(menu)) {
-        const screenValues = menu.map((o) => o.value);
+      const menuOnScreen = menu !== null && isNumberedMenu(menu);
+      const held = isMainPromptHeld?.(session.sessionId) ?? false;
+      if (menuOnScreen || held) {
+        const screenValues = (menu ?? []).map((o) => o.value);
         log(
-          `[Input] refusing ${content.length} chars of chat text for session ${session.sessionId.slice(0, 8)}: a prompt menu is on screen [${screenValues.join(', ')}]`,
+          `[Input] refusing ${content.length} chars of chat text for session ${session.sessionId.slice(0, 8)}: ${menuOnScreen ? `a prompt menu is on screen [${screenValues.join(', ')}]` : 'a held prompt is on screen'}`,
         );
         traceQuestionEvent({
           action: 'input_refused',
@@ -1080,9 +1259,23 @@ export function createInputHandlers(deps: InputHandlerDeps) {
           signal: PROMPT_WAITING_ERROR_CODE,
           callSite: 'input-events.onUserInput:chatIntoMenuGuard',
           // Only the length of what the user typed is recorded, never the text.
-          detail: { reason: 'chat-into-menu', textLength: content.length, screenValues },
+          detail: {
+            reason: menuOnScreen ? 'chat-into-menu' : 'chat-into-held-prompt',
+            textLength: content.length,
+            screenValues,
+          },
         });
-        send(connectionId, createPromptWaitingError(session.sessionId, messageId));
+        // While a hook is held the dialog may already be answered: a Yes in
+        // the terminal ends the hold only when its tool finishes, so the
+        // message must not claim a dialog is up (#1126, #1144).
+        send(
+          connectionId,
+          createPromptWaitingError(
+            session.sessionId,
+            messageId,
+            held ? PROMPT_WAITING_HELD_MESSAGE : PROMPT_WAITING_MESSAGE,
+          ),
+        );
         return;
       }
 

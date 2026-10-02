@@ -1,8 +1,15 @@
 # ADR 0002: Model B — hold the PermissionRequest hook; APNS-only question delivery
 
-**Status:** accepted; amended by ADR 0030 (2026-10-01)
+**Status:** accepted; amended by ADR 0030 (2026-10-01) and ADR 0031 (2026-10-02)
 **Date:** 2026-06-19
 **Owner:** Yahya
+
+> **Amended 2026-10-02 by [ADR 0031](0031-held-hook-answers-with-native-dialog-visible.md).**
+> The hold is back for every binary prompt the phone can answer, and it does not hide Claude's dialog: verified against Claude Code 2.1.287, the dialog renders about 0.1 s after the hook POST, during the hold, and a later hook answer resolves it.
+> So the first answer wins: the phone's through the hook response, the terminal's directly in the dialog (a Yes is seen as the paired `PostToolUse`, a No or Esc as Claude closing the held request).
+> remi releases its own hold at `[prompts] hold_seconds` with an empty response, which decides nothing.
+> "Always" answers echo only `setMode` and session-scoped `addRules`; nothing is typed into the PTY for a binary prompt.
+> The "Consequences" paragraph below about Claude not rendering while held is superseded by this.
 
 > **Amended 2026-10-01 by [ADR 0030](0030-defer-permission-judgment-to-the-harness.md).**
 > Holding is not in effect after #1125: holds were only enabled when an auto-approve service existed, and that service is deleted, so every `PermissionRequest` is answered `passthrough` at once and Claude's own dialog renders in the terminal.

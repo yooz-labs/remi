@@ -11,6 +11,7 @@ import {
   isTokenInvalidError,
   selectDynOptions,
   selectPushCategory,
+  terminalNoticeId,
 } from '../../src/notifications/notification-dispatcher.ts';
 import type { PTYSession } from '../../src/pty/pty-session.ts';
 import { SessionRegistry } from '../../src/session/session-registry.ts';
@@ -40,6 +41,8 @@ const yesAlwaysOpt: QuestionOption = {
   isRecommended: false,
   isYes: true,
   isNo: false,
+  suggestionIndex: 0,
+  standingGrant: 'addRules',
 };
 const defaultThreeSet: QuestionOption[] = [
   { value: '1', label: 'Yes', isRecommended: true, isYes: true, isNo: false },
@@ -100,30 +103,46 @@ describe('selectPushCategory', () => {
     expect(selectPushCategory(dropped)).toBeUndefined();
   });
 
-  test('REMI_YNA for exactly [one-time Yes, any Yes, No]', () => {
+  test('REMI_YNA only for [one-time Yes, an always-allow rule, No] (#1126 lead decision)', () => {
     expect(selectPushCategory(defaultThreeSet)).toBe('REMI_YNA');
+    expect(
+      selectPushCategory([
+        yes('1', 'Yes'),
+        yes('2', 'Yes, allow git push for this session', {
+          suggestionIndex: 0,
+          standingGrant: 'addRules',
+        }),
+        no('3', 'No'),
+      ]),
+    ).toBe('REMI_YNA');
+  });
+
+  test('a setMode or unmarked standing option gets no category: the static "Yes, always" would be untrue (#1126)', () => {
+    expect(
+      selectPushCategory([
+        yes('1', 'Yes'),
+        yes('2', 'Yes, and switch to acceptEdits mode', {
+          suggestionIndex: 1,
+          standingGrant: 'setMode',
+        }),
+        no('3', 'No'),
+      ]),
+    ).toBeUndefined();
+    // A screen-parsed standing option says nothing about what it grants.
     expect(
       selectPushCategory([
         yes('1', 'Yes'),
         yes('2', "Yes, and don't ask again for this command"),
         no('3', 'No, and tell Claude what to do differently (esc)'),
       ]),
-    ).toBe('REMI_YNA');
+    ).toBeUndefined();
     expect(
       selectPushCategory([
         yes('1', 'Yes'),
         yes('2', 'Yes,andalwaysallowaccessto/w'),
         no('3', 'No'),
       ]),
-    ).toBe('REMI_YNA');
-    // Any Yes in the middle is the standing option, whatever its wording.
-    expect(
-      selectPushCategory([
-        yes('1', 'Yes'),
-        yes('2', 'Yes, allow reading from /w during this session', { suggestionIndex: 0 }),
-        no('3', 'No'),
-      ]),
-    ).toBe('REMI_YNA');
+    ).toBeUndefined();
   });
 
   test('#1134 review: the first option is a one-time Yes only when it reads exactly "Yes"', () => {
@@ -157,9 +176,19 @@ describe('selectPushCategory', () => {
     expect(selectPushCategory([yes('1', ' Yes '), no('2', 'No')])).toBe('REMI_YN');
   });
 
-  test('the legacy ["Yes","Always","No"] suggestion set is REMI_YNA', () => {
-    const { options } = optionsFromSuggestions(['Yes', 'Always', 'No']);
-    expect(selectPushCategory(options)).toBe('REMI_YNA');
+  test('held cards: Yes/No is REMI_YN, Yes + a rule is REMI_YNA, a mode switch or two grants get no category (#1126)', () => {
+    expect(selectPushCategory(optionsFromSuggestions(['Yes', 'Always', 'No']).options)).toBe(
+      'REMI_YN',
+    );
+    const setMode = { type: 'setMode', mode: 'acceptEdits', destination: 'session' };
+    const rule = {
+      type: 'addRules',
+      rules: [{ toolName: 'Bash', ruleContent: 'ls' }],
+      behavior: 'allow',
+    };
+    expect(selectPushCategory(optionsFromSuggestions([rule]).options)).toBe('REMI_YNA');
+    expect(selectPushCategory(optionsFromSuggestions([setMode]).options)).toBeUndefined();
+    expect(selectPushCategory(optionsFromSuggestions([rule, setMode]).options)).toBeUndefined();
   });
 
   test('a standing option outside the REMI_YNA layout gets no category', () => {
@@ -1262,14 +1291,14 @@ describe('NotificationDispatcher per-device push preferences (#968)', () => {
 
   function token(
     name: string,
-    prefs?: { questions: boolean; turnComplete: boolean },
+    prefs?: { questions: boolean; turnComplete: boolean; harnessDenied?: boolean },
   ): DeviceTokenEntry {
     return {
       token: name,
       platform: 'ios',
       registeredAt: 1,
       connectionId: SID,
-      ...(prefs !== undefined && { pushPrefs: prefs }),
+      ...(prefs !== undefined && { pushPrefs: { harnessDenied: true, ...prefs } }),
     };
   }
 
@@ -1350,5 +1379,59 @@ describe('NotificationDispatcher per-device push preferences (#968)', () => {
     expect(pushed.map((p) => p.token)).toEqual(['muted']);
     expect(pushed[0]?.opts['dismiss']).toBe(true);
     expect(pushed[0]?.opts['kind']).toBe('dismiss');
+  });
+
+  test('a terminal notice (#1126) is never a card: no category or options, its own collapse key, sent even when attached', async () => {
+    register(true);
+    deviceTokens.set('muted', token('muted', { questions: false, turnComplete: true }));
+    deviceTokens.set('wants', token('wants', { questions: true, turnComplete: true }));
+
+    make().pushTerminalNotice(SID, question(QID, [yesOpt, noOpt]), 'hold_deadline');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    // Filtered as a question push; delivered despite the attached client.
+    expect(pushed.map((p) => p.token)).toEqual(['wants']);
+    const opts = pushed[0]?.opts ?? {};
+    expect(opts['category']).toBeUndefined();
+    expect(opts['options']).toBeUndefined();
+    expect(opts['dynOptions']).toBeUndefined();
+    expect(opts['kind']).toBe('question');
+    expect(opts['questionId']).toBe(terminalNoticeId(QID));
+    expect(opts['questionId']).not.toBe(QID);
+    expect(String(opts['title'])).toContain('answer in the terminal');
+  });
+
+  test('a deadline notice in a session with no terminal names remi attach', async () => {
+    register(false);
+    deviceTokens.set('a', token('a'));
+    make().pushTerminalNotice(SID, question(QID, [yesOpt, noOpt]), 'hold_deadline_no_terminal');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(String(pushed[0]?.opts['title'])).toContain('remi attach');
+    expect(String(pushed[0]?.opts['body'])).toContain('remi attach');
+  });
+
+  test('a released-early notice says the prompt was handed back, never that the phone ran out of time', async () => {
+    register(false);
+    deviceTokens.set('a', token('a'));
+    make().pushTerminalNotice(SID, question(QID, [yesOpt, noOpt]), 'released');
+    make().pushTerminalNotice(SID, question(QID, [yesOpt, noOpt]), 'released_no_terminal');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(String(pushed[0]?.opts['title'])).toContain('answer in the terminal');
+    expect(String(pushed[0]?.opts['body'])).toStartWith(
+      'This prompt was handed back to the terminal; if it is still open, answer it in the terminal:',
+    );
+    expect(String(pushed[1]?.opts['title'])).toContain('remi attach');
+    expect(String(pushed[1]?.opts['body'])).toStartWith(
+      'This prompt was handed back to the terminal; if it is still open, reach it with remi attach:',
+    );
+    for (const p of pushed) expect(String(p.opts['body'])).not.toContain('in time');
+  });
+
+  test('dismissTerminalNotice clears the notice by its own key, never the card', () => {
+    register(false);
+    deviceTokens.set('a', token('a', { questions: false, turnComplete: false }));
+    make().dismissTerminalNotice(SID, QID);
+    expect(pushed[0]?.opts['questionId']).toBe(terminalNoticeId(QID));
+    expect(pushed[0]?.opts['dismiss']).toBe(true);
   });
 });

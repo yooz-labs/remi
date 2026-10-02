@@ -42,7 +42,11 @@ function entry(cmd: string, desc: string, width = 30): string {
 // Per-command help
 // ---------------------------------------------------------------------------
 
+import { configPathForDisplay } from '../config/remi-home.ts';
 import type { Subcommand } from './arg-parser.ts';
+
+/** `~/.remi/config.toml`, or the real path under `REMI_HOME` (#1126). */
+const CONFIG_HINT = configPathForDisplay();
 
 const commandHelp: Record<Subcommand, string[]> = {
   ls: [
@@ -114,7 +118,7 @@ const commandHelp: Record<Subcommand, string[]> = {
     entry('--port PORT', 'Daemon port'),
   ],
   config: [
-    'Show or initialize the configuration file (~/.remi/config.toml).',
+    `Show or initialize the configuration file (${CONFIG_HINT}).`,
     '',
     bold('Usage:'),
     entry('remi config', 'Show effective configuration'),
@@ -139,7 +143,7 @@ const commandHelp: Record<Subcommand, string[]> = {
     bold('Usage:'),
     entry('remi reload', 'Validate config on all running daemons'),
     '',
-    dim('  Hot-reloads settings from ~/.remi/config.toml.'),
+    dim(`  Hot-reloads settings from ${CONFIG_HINT}.`),
     dim('  Currently all settings require a daemon restart to take effect.'),
     dim('  Future versions will support hot-reloading select settings.'),
   ],
@@ -153,7 +157,7 @@ const commandHelp: Record<Subcommand, string[]> = {
     'Print your old [auto_approve] allow/deny rules as Claude Code permissions.',
     '',
     bold('Usage:'),
-    entry('remi migrate-permissions', 'Read ~/.remi/config.toml'),
+    entry('remi migrate-permissions', `Read ${CONFIG_HINT}`),
     entry('remi migrate-permissions <file>', 'Read another config file (exit 1 if missing)'),
     '',
     dim('  remi no longer judges permissions (#1125); Claude Code decides them.'),

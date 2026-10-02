@@ -131,6 +131,7 @@ export {
   createError,
   createPromptWaitingError,
   PROMPT_WAITING_ERROR_CODE,
+  PROMPT_WAITING_HELD_MESSAGE,
   PROMPT_WAITING_MESSAGE,
   createInputNotDeliveredError,
   INPUT_NOT_DELIVERED_ERROR_CODE,

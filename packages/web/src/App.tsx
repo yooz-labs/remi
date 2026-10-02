@@ -43,6 +43,7 @@ import {
   questionKey,
   removeQuestionById,
   removeQuestionByKeyIfId,
+  restoreRefusedAnswer,
   resolveQuestionCard,
 } from '@/lib/question-collection';
 import { dismissDeliveredNotification } from '@/lib/notifications';
@@ -269,6 +270,9 @@ function App() {
   const loadedTranscriptsRef = useRef<Set<string>>(new Set());
   const messagesRef = useRef(messages);
   const questionsRef = useRef(questions);
+  /** The card this client most recently answered, per session (#1126): a
+   *  `STALE_ANSWER` naming no question restores only this one. */
+  const lastAnsweredIdRef = useRef<Map<string, string>>(new Map());
   const getSessionIdRef = useRef<((connId: ConnectionId) => string | null) | null>(null);
   // Stable handle so handleMessage (empty deps) can re-fetch a transcript when
   // it follows the daemon to its current session (reconnect adopt + stale
@@ -1591,6 +1595,21 @@ function App() {
               staleSessionId,
             );
           }
+          // #1126: no questionId means the card stayed live (a held card
+          // refused an answer it does not offer): un-answer the card this
+          // client last answered in that session, so the hold keeps a card
+          // instead of the post-answer timer removing it.
+          if (staleSessionId && !staleQuestionId && pendingQuestionIds) {
+            commitQuestionsIfChanged(
+              restoreRefusedAnswer(
+                questionsRef.current,
+                staleSessionId,
+                lastAnsweredIdRef.current.get(staleSessionId),
+                pendingQuestionIds,
+              ),
+              staleSessionId,
+            );
+          }
           if (staleSessionId && pendingQuestionIds) {
             reconcileLiveQuestions(staleSessionId, pendingQuestionIds);
           }
@@ -2121,6 +2140,7 @@ function App() {
   const pushPrefsRef = useRef<PushPreferences>({
     questions: settings.notifyQuestions,
     turnComplete: settings.notifyTurnComplete,
+    harnessDenied: settings.notifyHarnessDenied,
   });
   // #690: id -> resolver for a message awaiting its daemon `ack`. Currently
   // used only by handleDisconnect's unregister_device_token wait; see the
@@ -2173,9 +2193,16 @@ function App() {
       const next: PushPreferences = {
         questions: newSettings.notifyQuestions,
         turnComplete: newSettings.notifyTurnComplete,
+        harnessDenied: newSettings.notifyHarnessDenied,
       };
       const prev = pushPrefsRef.current;
-      if (prev.questions === next.questions && prev.turnComplete === next.turnComplete) return;
+      if (
+        prev.questions === next.questions &&
+        prev.turnComplete === next.turnComplete &&
+        prev.harnessDenied === next.harnessDenied
+      ) {
+        return;
+      }
       pushPrefsRef.current = next;
 
       const token = deviceTokenRef.current;
@@ -2287,6 +2314,8 @@ function App() {
       }
       const key = questionKey(sid, question.agentId);
       const answeredId = question.id;
+      // The card a refusal naming no question can be about (#1126).
+      lastAnsweredIdRef.current.set(sid, answeredId);
       // Mark this question answered (card shows collapsed state briefly), then
       // remove it; sibling prompts for the session stay in the stack.
       setQuestions((prev) => {

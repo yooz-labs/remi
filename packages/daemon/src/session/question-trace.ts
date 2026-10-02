@@ -27,9 +27,9 @@
  */
 
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import type { QuestionSource } from '@remi/shared';
+import { remiHome } from '../config/remi-home.ts';
 import { debugProvenance } from '../debug/provenance.ts';
 
 /** One question-lifecycle event. */
@@ -182,7 +182,7 @@ export function traceQuestionEvent(record: QuestionTraceRecord): void {
       provenance: debugProvenance(),
       ...record,
     });
-    const remiDir = path.join(os.homedir(), '.remi');
+    const remiDir = remiHome();
     fs.mkdirSync(remiDir, { recursive: true });
     fs.appendFileSync(path.join(remiDir, TRACE_FILE_NAME), `${line}\n`);
   } catch (err) {

@@ -95,9 +95,9 @@ describe('createTrivialHandlers', () => {
     } as unknown as { questions?: boolean });
 
     expect(calls).toEqual([
-      { token: 'tok-none', prefs: { questions: true, turnComplete: true } },
-      { token: 'tok-muted', prefs: { questions: true, turnComplete: false } },
-      { token: 'tok-bad', prefs: { questions: true, turnComplete: true } },
+      { token: 'tok-none', prefs: { questions: true, turnComplete: true, harnessDenied: true } },
+      { token: 'tok-muted', prefs: { questions: true, turnComplete: false, harnessDenied: true } },
+      { token: 'tok-bad', prefs: { questions: true, turnComplete: true, harnessDenied: true } },
     ]);
   });
 

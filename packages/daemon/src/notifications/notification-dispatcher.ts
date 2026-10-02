@@ -73,10 +73,13 @@ function isStanding(option: QuestionOption, index: number): boolean {
  * categories have hardcoded titles, so they are chosen only when those titles
  * are true:
  *   - REMI_YN ("Yes" / "No"): exactly [one-time Yes, No].
- *   - REMI_YNA ("Yes" / "Yes, always" / "No"): exactly [one-time Yes, Yes,
- *     No]. Its middle "Yes, always" button is the only static action that
- *     requires an unlocked device, so a standing grant is offered on the lock
- *     screen ONLY in this layout, and only through this static category: no
+ *   - REMI_YNA ("Yes" / "Yes, always" / "No"): exactly [one-time Yes, an
+ *     always-allow rule, No], the middle option marked `standingGrant:
+ *     'addRules'` (#1126 lead decision: only there is the static "Yes, always"
+ *     title true; a `setMode` or an unmarked standing option gets no
+ *     category). Its middle button is the only static action that requires
+ *     an unlocked device, so a standing grant is offered on the lock screen
+ *     ONLY in this layout, and only through this static category: no
  *     standing card gets the `dynOptions` hint (`selectDynOptions`).
  * A one-time Yes is an option labeled exactly "Yes" (`isOneTimeYes`).
  * A card with any other standing option (`isStanding`) gets NO category: a
@@ -99,6 +102,7 @@ export function selectPushCategory(options: readonly QuestionOption[]): string |
     isOneTimeYes(first) &&
     second.isYes &&
     !second.isNo &&
+    second.standingGrant === 'addRules' &&
     isPlainNo(third)
   ) {
     return 'REMI_YNA';
@@ -210,6 +214,22 @@ export function buildPushText(
   return { title, body };
 }
 
+/** Why the phone is told to answer at the terminal (#1126); see
+ *  `NotificationDispatcher.pushTerminalNotice`. */
+export type TerminalNoticeReason =
+  | 'hold_deadline'
+  | 'hold_deadline_no_terminal'
+  | 'released'
+  | 'released_no_terminal'
+  | 'subagent';
+
+/** The collapse key (`questionId` on the wire) of a terminal notice for a
+ *  question (#1126): distinct from the card's, so dismissing the card leaves
+ *  the notice and dismissing the notice leaves any card. */
+export function terminalNoticeId(questionId: string): string {
+  return `notice-${questionId}`;
+}
+
 /** Signature of the APNS-relay push call; injectable so the push branch is
  *  observable in tests without mocking a network module. */
 export type PushFn = typeof sendPushTrigger;
@@ -217,8 +237,9 @@ export type PushFn = typeof sendPushTrigger;
 /**
  * The outcome of attempting to deliver a question's notification (epic #603
  * Phase 1), returned by `maybePush`. Before #1125 the permission gate raced it
- * to decide whether a held hook kept blocking Claude; nothing holds now, so
- * it is diagnostic only:
+ * to decide whether a held hook kept blocking Claude. A hold since #1126 has
+ * a fixed deadline instead (`[prompts] hold_seconds`) and never waits on
+ * delivery, so this is diagnostic only:
  *   - `in_app`     a client is attached, so the question shows in-app (the only
  *                  case where `maybePush` deliberately does NOT push — but the
  *                  user IS reachable).
@@ -509,6 +530,93 @@ export class NotificationDispatcher {
         return false;
       }
     }
+  }
+
+  /**
+   * Alert push telling the user a prompt must be answered in the terminal
+   * (#1126), never a card: no category, no options, nothing to answer from
+   * the lock screen, and nothing registered in-app. Its reasons:
+   *   - `hold_deadline`: a held prompt waited `[prompts] hold_seconds` with no
+   *     answer (or reached Claude's hook timeout), so remi released its hold;
+   *     Claude's dialog is still up (the #733 handoff, restored for held
+   *     hooks).
+   *   - `released`: remi released a live hold early, with no answer (an
+   *     ambiguous signal that the hold may be stale, or `remi unstick`).
+   *   - `hold_deadline_no_terminal`, `released_no_terminal`: the same in a
+   *     daemon or hub session, which has no terminal of its own: the dialog
+   *     is reached with `remi attach`, and the notice says so.
+   *   - `subagent`: a background subagent's dialog rendered in a session with
+   *     a local terminal; its hook was answered 'passthrough' so it could
+   *     render at all, so only the terminal can answer it.
+   * Called while the question is still registered, so the body names the
+   * actual ask.
+   *
+   * Deliberate differences from `maybePush`:
+   *  - always pushes (no attached-client skip, no dedup): an attached client
+   *    only sees its card vanish, and this is a one-shot state change;
+   *  - collapse key `notice-<questionId>`, never the question id, so the
+   *    card's own quiet dismissal cannot collapse this notice away;
+   *    `dismissTerminalNotice` clears it once the prompt is answered.
+   *
+   * Filtered by per-device push preferences as a `question` push (#968): it
+   * buzzes, about a question, so a device that muted questions does not get
+   * it. It clears nothing, so skipping it strands nothing.
+   */
+  pushTerminalNotice(
+    questionSessionId: UUID,
+    question: Question,
+    reason: TerminalNoticeReason,
+  ): void {
+    const { deviceTokens, pushConfig } = this.deps;
+    this.deps.refreshDeviceTokens?.();
+    const wanting = tokensWanting(deviceTokens.values(), 'question');
+    if (wanting.length === 0) return;
+    const session = this.deps.sessionRegistry.getSession(this.sessionId);
+    const sessionName = session?.name || 'Agent';
+    const ask = normalizeNotificationText(question.text) || 'a permission request';
+    const noTerminal = reason === 'hold_deadline_no_terminal' || reason === 'released_no_terminal';
+    const title = (
+      noTerminal
+        ? `${sessionName}: answer with remi attach`
+        : `${sessionName}: answer in the terminal`
+    ).slice(0, TITLE_MAX);
+    // A release notice must not say the prompt is still waiting: a Yes
+    // answered in the terminal shows up only when its tool finishes, so the
+    // prompt may already be answered (#1126 lead decision).
+    const why =
+      reason === 'hold_deadline' || reason === 'hold_deadline_no_terminal'
+        ? 'No answer from the phone in time'
+        : 'This prompt was handed back to the terminal';
+    const how = noTerminal ? 'reach it with remi attach' : 'answer it in the terminal';
+    const body = (
+      reason === 'subagent' ? ask : `${why}; if it is still open, ${how}: ${ask}`
+    ).slice(0, BODY_MAX);
+    const cfg = pushConfig();
+    const pushSessionId = this.deps.getPrimarySessionId() ?? questionSessionId;
+    for (const dt of wanting) {
+      void this.pushOnceWithRetry(
+        cfg.signalingUrl,
+        dt.token,
+        {
+          title,
+          body,
+          ...(cfg.pushSecret !== undefined ? { pushSecret: cfg.pushSecret } : {}),
+          sessionId: pushSessionId,
+          questionId: terminalNoticeId(question.id),
+          kind: 'question' as const,
+        },
+        {
+          sent: `Push terminal notice (${reason}) sent for question ${question.id}`,
+          failed: `Push terminal notice (${reason}) failed for question ${question.id}`,
+        },
+      );
+    }
+  }
+
+  /** Clear a notice `pushTerminalNotice` sent, once its prompt is answered
+   *  (#1126). Same quiet, never-filtered dismissal as `dismiss`. */
+  dismissTerminalNotice(questionSessionId: UUID, questionId: UUID): void {
+    this.dismiss(questionSessionId, terminalNoticeId(questionId) as UUID);
   }
 
   /**
