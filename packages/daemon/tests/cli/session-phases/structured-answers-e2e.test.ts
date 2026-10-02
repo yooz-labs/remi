@@ -27,6 +27,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ProtocolMessage, Question, UUID } from '@remi/shared';
 import { PROMPT_WAITING_HELD_MESSAGE, generateId } from '@remi/shared';
+import { TelegramAdapter } from '../../../src/adapters/telegram-adapter.ts';
 import { formatQuestionCard } from '../../../src/adapters/telegram-ui.ts';
 import { hasLiveQuestionOnScreen } from '../../../src/api/live-questions.ts';
 import { MessageAPI } from '../../../src/api/message-api.ts';
@@ -669,6 +670,117 @@ describe('AskUserQuestion and ExitPlanMode through held hooks, end to end (#1127
       await ask('ExitPlanMode', PLAN, { permission_mode: 'plan' });
       await handlers.onUserInput(CONN, SID, 'looks good', false);
       expect(errors()[0]?.code).toBe('PROMPT_WAITING');
+      expect(ptyWrites).toEqual([]);
+    });
+  });
+
+  /**
+   * The Telegram chain end to end (verification review item 5): the real
+   * `TelegramAdapter` (only the Telegram Bot API is a recording double) whose
+   * answer button calls the real answer handler, whose refusals the adapter
+   * renders, over the real held AskUserQuestion.
+   */
+  describe('a Telegram answer button over a held AskUserQuestion', () => {
+    const NUMBERS = { questions: [{ question: 'Pick a number', options: ['4', '2', '1'] }] };
+    const TCONN = 'conn-telegram' as UUID;
+
+    function telegram() {
+      const { gate, tracker } = build();
+      const chat: Array<{ text: string; buttons: string[] }> = [];
+      const acks: string[] = [];
+      let keyboardRemoved = 0;
+      // `adapter` is assigned below; the handler's `send` reaches it lazily.
+      const ref: { adapter?: TelegramAdapter } = {};
+      const handlers = createInputHandlers({
+        sessionRegistry: registry,
+        bindingStore,
+        send: (connectionId, message) => ref.adapter?.sendRaw(connectionId, message) ?? false,
+        ...gateAnswerDeps(() => gate),
+        ...trackerScreenDeps(() => tracker),
+      });
+      const adapter = new TelegramAdapter(
+        { token: 'unused', enabled: true, defaultDirectory: tmpDir },
+        { onAnswer: (...args) => handlers.onAnswer(...args) },
+      );
+      ref.adapter = adapter;
+      const internal = adapter as unknown as {
+        bot: unknown;
+        sessions: Map<string, Record<string, unknown>>;
+        connectionToSession: Map<UUID, string>;
+      };
+      internal.bot = {
+        api: {
+          sendMessage: async (_chatId: number, text: string, opts?: Record<string, unknown>) => {
+            const markup = opts?.['reply_markup'] as
+              | { inline_keyboard?: Array<Array<{ callback_data?: string }>> }
+              | undefined;
+            chat.push({
+              text,
+              buttons: (markup?.inline_keyboard ?? []).flat().map((b) => b.callback_data ?? ''),
+            });
+            return { message_id: chat.length };
+          },
+        },
+      };
+      internal.sessions.set('100:200', {
+        connectionId: TCONN,
+        sessionId: SID,
+        chatId: 100,
+        topicId: 200,
+        workingDirectory: tmpDir,
+        machineName: 'test',
+        topicName: 'test',
+        sessionNumber: 1,
+        startedAt: new Date().toISOString(),
+        currentMessageId: undefined,
+        streamBuffer: '',
+        lastSentContent: '',
+        paused: false,
+      });
+      internal.connectionToSession.set(TCONN, '100:200');
+      const tap = (questionId: string, value: string) =>
+        (
+          adapter as unknown as { handleAnswerCallback: (ctx: unknown) => Promise<void> }
+        ).handleAnswerCallback({
+          match: ['', questionId, value],
+          chat: { id: 100 },
+          callbackQuery: { message: { message_thread_id: 200 } },
+          answerCallbackQuery: async (text: string) => {
+            acks.push(text);
+          },
+          editMessageReplyMarkup: async () => {
+            keyboardRemoved++;
+          },
+        });
+      return { adapter, gate, chat, acks, tap, removed: () => keyboardRemoved };
+    }
+
+    test('a refused tap is reported in the chat and keeps the buttons; a good one answers the hook', async () => {
+      const { adapter, gate, chat, acks, tap, removed } = telegram();
+      await lock();
+      const { card, response } = await ask('AskUserQuestion', NUMBERS);
+      adapter.sendQuestion(TCONN, card, SID);
+      // One single-select question: its buttons carry the option values.
+      expect(chat[0]?.buttons).toEqual([
+        `answer:${card.id}:1`,
+        `answer:${card.id}:2`,
+        `answer:${card.id}:3`,
+      ]);
+
+      // Value "1" is labeled "4", and "1" is another option's label: refused.
+      await tap(card.id, '1');
+      expect(chat.at(-1)?.text).toContain('Error: This answer matches one option by its number');
+      expect(acks).toEqual(['Not applied (see the message)']);
+      expect(removed()).toBe(0);
+      expect(gate.isHeld(card.id)).toBe(true);
+
+      await tap(card.id, '2');
+      expect(acks).toEqual(['Not applied (see the message)', 'Sent!']);
+      expect(removed()).toBe(1);
+      expect(await decisionOf(response)).toEqual({
+        behavior: 'allow',
+        updatedInput: { ...NUMBERS, answers: { 'Pick a number': '2' } },
+      });
       expect(ptyWrites).toEqual([]);
     });
   });
