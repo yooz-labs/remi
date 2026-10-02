@@ -834,11 +834,15 @@ describe('createInputHandlers', () => {
         ],
       });
 
+      const retired: UUID[] = [];
       const handlers = createInputHandlers({
         sessionRegistry,
         bindingStore,
         send,
         ...PROMPT_ON_SCREEN,
+        retireQuestion: (_sid, qid) => {
+          retired.push(qid);
+        },
       });
       // Pick Green (index 1): expect DOWN then ENTER, then closure -> question gone.
       await handlers.onAnswer(CID, sessionId, QID, '', undefined, {
@@ -847,6 +851,9 @@ describe('createInputHandlers', () => {
 
       expect(ptyCapture.writes).toEqual([AUQ_KEYS.DOWN, AUQ_KEYS.ENTER]);
       expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+      // #1125: the gate stops tracking it, so the AskUserQuestion PostToolUse
+      // that follows does not dismiss the answered card a second time.
+      expect(retired).toEqual([QID]);
     });
 
     // #627: a TWO-question AUQ exercises the byIndex label assembly + the review

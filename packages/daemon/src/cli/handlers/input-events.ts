@@ -294,6 +294,15 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       // #752: the selections were applied; a duplicate delivery of this same
       // tap must report 'delivered', not 'stale'.
       resolvedAnswers.record(questionId, [answerCacheKey('', selections)]);
+      // Retire the gate's signature first, as the cancel path does: the
+      // AskUserQuestion PostToolUse that follows would otherwise resolve (and
+      // dismiss) this already-answered card a second time. Guarded so a throw
+      // never skips the removal below.
+      try {
+        retireQuestion?.(session.sessionId, questionId);
+      } catch (err) {
+        logError(`[AUQ] gate retirement failed: ${errorToString(err)}`);
+      }
       sessionRegistry.removeQuestion(session.sessionId, questionId, 'user_answer:auq');
       try {
         onQuestionResolved?.(session.sessionId, questionId);

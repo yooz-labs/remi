@@ -73,6 +73,12 @@ export interface PtySessionSetupDeps {
    */
   onQuestionResolved?: (sessionId: UUID, questionId: UUID) => void;
   /**
+   * Stop the permission gate tracking a question this module just resolved
+   * (#1125), so the matching AskUserQuestion PostToolUse does not resolve and
+   * dismiss it a second time. Absent => nothing to retire (tests/old callers).
+   */
+  retireQuestion?: (sessionId: UUID, questionId: UUID) => void;
+  /**
    * #932 durable fix: observe every PTY chunk actually forwarded to the
    * wrapper's own local terminal fd -- the exact same fd the reserved-row
    * status bar draws into -- so a `PtyQuiescenceGate` can track whether a
@@ -140,6 +146,7 @@ export function detectAuqTerminalAnswers(
   sessionId: UUID,
   sessionRegistry: SessionRegistry,
   onQuestionResolved?: (sessionId: UUID, questionId: UUID) => void,
+  retireQuestion?: (sessionId: UUID, questionId: UUID) => void,
 ): void {
   const session = sessionRegistry.getSession(sessionId);
   if (!session || session.currentQuestions.size === 0) return;
@@ -152,6 +159,11 @@ export function detectAuqTerminalAnswers(
   const summaryTexts = new Set(summary.map((a) => normalizeLabel(a.question)));
   for (const q of auqQuestions) {
     if (!questionTexts(q).some((t) => summaryTexts.has(t))) continue;
+    try {
+      retireQuestion?.(sessionId, q.id);
+    } catch (err) {
+      logError(`[AUQ] terminal-answer gate retirement failed: ${errorToString(err)}`);
+    }
     sessionRegistry.removeQuestion(sessionId, q.id, 'terminal_auq_closed');
     try {
       onQuestionResolved?.(sessionId, q.id);
@@ -265,6 +277,7 @@ export function createPtySessionForSession(
     cleanup,
     exitProcess = (code: number) => process.exit(code),
     onQuestionResolved,
+    retireQuestion,
     observeLocalPtyOutput,
   } = deps;
   const { sessionId, workingDirectory, extraArgs, passThrough, reservedRows = 0 } = args;
@@ -357,7 +370,7 @@ export function createPtySessionForSession(
         // #538/#661: also catch an AUQ closing IN THE TERMINAL after the runner
         // gave up (escalated) — see `detectAuqTerminalAnswers` for why this is
         // the right tap.
-        detectAuqTerminalAnswers(sessionId, sessionRegistry, onQuestionResolved);
+        detectAuqTerminalAnswers(sessionId, sessionRegistry, onQuestionResolved, retireQuestion);
       },
       onExit: (code: number | null) => {
         try {
