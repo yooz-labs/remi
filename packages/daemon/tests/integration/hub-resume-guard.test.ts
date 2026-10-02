@@ -1,5 +1,9 @@
 /**
- * End-to-end test for the hub resume guard (#1124).
+ * Daemon-side test for the hub resume guard (#1124). DAEMON SIDE ONLY: the
+ * client here is a raw WebSocket, not the shipping web client, so per ADR 0014
+ * this is a one-sided test. Nothing here covers how the web UI consumes the
+ * refusal (its "resuming" spinner and chat message); that consumer is
+ * untested, see #1129.
  *
  * `remi serve` is a session-less supervisor and must NEVER run Claude in its
  * own process. A `resume_session_request` used to reach the shared resume
@@ -81,21 +85,27 @@ describe('remi serve resume guard (integration, #1124)', () => {
     expect(response?.sessionId).toBeUndefined();
     expect(response?.errorCode).toBe('UNSUPPORTED');
     expect(response?.error).toContain('hub');
-
-    // Give an (unwanted) spawn time to show itself, then prove nothing ran.
-    await new Promise((r) => setTimeout(r, 1000));
-    expect(fs.existsSync(marker)).toBe(false);
-    expect(hub.proc.exitCode).toBeNull();
-    expect(fs.existsSync(path.join(hub.work, '.claude'))).toBe(false);
-    const liveDir = path.join(hub.home, '.remi', 'live-sessions');
-    expect(fs.existsSync(liveDir) ? fs.readdirSync(liveDir) : []).toEqual([]);
+    // The requested id is UUID-shaped, so it is echoed into the command.
+    expect(response?.error).toContain(`remi --resume ${remiSessionId}`);
 
     // The hub is still serving: a second request is answered the same way.
+    // This round trip is also the ordering barrier for the negative checks
+    // below, which deliberately have no sleep: there is no event to wait for
+    // when nothing should happen. The discriminating assertion is the refusal
+    // above, which an unguarded hub cannot produce, because the unguarded
+    // handler answers only after `createNewSession` (which starts the fake
+    // `claude`) has resolved (before the guard this very response was
+    // `success: true`). The checks below corroborate it.
     received.length = 0;
     ws.send(serialize(createResumeSessionRequest(CLAUDE_SESSION_ID)));
     await pollUntil(() => resumeResponse(received) !== undefined, 8000, 'second response');
     expect(resumeResponse(received)?.errorCode).toBe('UNSUPPORTED');
+    expect(hub.proc.exitCode).toBeNull();
+
     expect(fs.existsSync(marker)).toBe(false);
+    expect(fs.existsSync(path.join(hub.work, '.claude'))).toBe(false);
+    const liveDir = path.join(hub.home, '.remi', 'live-sessions');
+    expect(fs.existsSync(liveDir) ? fs.readdirSync(liveDir) : []).toEqual([]);
 
     ws.close();
   }, 40000);
