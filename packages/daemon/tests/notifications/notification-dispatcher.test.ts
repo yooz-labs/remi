@@ -1384,14 +1384,21 @@ describe('NotificationDispatcher per-device push preferences (#968)', () => {
 
   function token(
     name: string,
-    prefs?: { questions: boolean; turnComplete: boolean; harnessDenied?: boolean },
+    prefs?: {
+      questions: boolean;
+      turnComplete: boolean;
+      harnessDenied?: boolean;
+      turnFailed?: boolean;
+    },
   ): DeviceTokenEntry {
     return {
       token: name,
       platform: 'ios',
       registeredAt: 1,
       connectionId: SID,
-      ...(prefs !== undefined && { pushPrefs: { harnessDenied: true, ...prefs } }),
+      ...(prefs !== undefined && {
+        pushPrefs: { harnessDenied: true, turnFailed: true, ...prefs },
+      }),
     };
   }
 

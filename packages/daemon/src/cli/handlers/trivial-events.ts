@@ -73,7 +73,7 @@ export function createTrivialHandlers(deps: TrivialHandlerDeps) {
       // nothing downstream has to re-decide what a missing field means.
       const resolved = sanitizePushPreferences(pushPrefs);
       log(
-        `Device token registered from ${connectionId}: ${token.slice(0, 20)}... (${platform}, questions=${resolved.questions}, turnComplete=${resolved.turnComplete}, harnessDenied=${resolved.harnessDenied})`,
+        `Device token registered from ${connectionId}: ${token.slice(0, 20)}... (${platform}, questions=${resolved.questions}, turnComplete=${resolved.turnComplete}, harnessDenied=${resolved.harnessDenied}, turnFailed=${resolved.turnFailed})`,
       );
       registerDeviceToken(token, platform, connectionId, resolved);
     },

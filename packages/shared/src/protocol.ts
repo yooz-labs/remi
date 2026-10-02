@@ -1077,6 +1077,11 @@ export interface PushPreferences {
   /** Push when Claude Code's auto-mode classifier blocks a tool call
    *  (`PermissionDenied`, #1126). Informational: nothing to answer. */
   readonly harnessDenied?: boolean;
+  /** Push when a turn ends on an API error (usage or rate limit,
+   *  authentication, and similar: Claude Code's `StopFailure`, #1153).
+   *  Informational: nothing to answer. Defaults ON, and
+   *  `notifications.on_turn_complete = false` does not mute it. */
+  readonly turnFailed?: boolean;
 }
 
 /** Register a device token for push notifications */
