@@ -1999,6 +1999,7 @@ const resumeSessionHandlers: ResumeSessionHandlers = createResumeSessionHandlers
   sessionStore,
   bindingStore,
   transcriptDiscovery,
+  harness,
   createNewSession,
   send: sendToConnection,
 });
