@@ -826,6 +826,11 @@ export interface ResumeSessionResponseMessage {
    * frame's `code` (e.g. `'UNSUPPORTED'`). Present only on failures that have
    * a stable code; absent on success and on older daemons, so clients must
    * keep treating `error` as the human-readable fallback (#1124).
+   *
+   * No client reads this field yet: the web client shows `error` only
+   * (`App.tsx`, `resume_session_response` case), and the Telegram adapter does
+   * the same. It exists so a client can start branching on it without a
+   * protocol change.
    */
   readonly errorCode?: string;
   /** ID of the original request */
