@@ -1,8 +1,9 @@
 /**
  * sharedEvents handlers for whole-session lifecycle requests:
  *   onSessionListRequest, enumerate daemon + external sessions
- *   onKillSessionRequest, gracefully end a session (type Claude /exit, with a
- *     force-close fallback) and notify any active client
+ *   onKillSessionRequest, gracefully end a session (type the harness's exit
+ *     input, Claude's /exit, with a force-close fallback) and notify any
+ *     active client
  *   onDetachSession, release a session's active connection without killing it
  *
  * These three are grouped because they all operate on session records via
@@ -38,8 +39,11 @@ export interface SessionHandlerDeps {
   sessionRegistry: SessionRegistry;
   bindingStore: SessionBindingStore;
   transcriptDiscovery: TranscriptDiscovery;
-  /** Derives each listed session's transcript path (`transcriptPath`). */
-  harness: Pick<Harness, 'transcriptPath'>;
+  /**
+   * What a Stop types (`gracefulExitInput`; null force-closes at once) and
+   * how each listed session's transcript path is derived (`transcriptPath`).
+   */
+  harness: Pick<Harness, 'gracefulExitInput' | 'transcriptPath'>;
   liveSessionsRegistry: SessionRegistryFile;
   /** PORT is reassigned during daemon-mode port probing; read lazily. */
   currentPort: () => number;
@@ -210,11 +214,14 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
       const sessionName = session.name;
       log(`Stopping session: ${sessionName} (${sessionId})`);
 
-      // Graceful stop (#641): type `/exit` on our own PTY so Claude quits cleanly
-      // (flushing its transcript + emitting the resume hint) and the PTY-exit path
-      // tears the session down and frees the daemon. Writing to our own PTY avoids
-      // the write-lock requirement a client-side input would have. A force-close
-      // fallback covers a Claude that ignores /exit (e.g. stuck mid-task).
+      // Graceful stop (#641): type the harness's exit input (Claude: `/exit`) on
+      // our own PTY so Claude quits cleanly (flushing its transcript + emitting
+      // the resume hint) and the PTY-exit path tears the session down and frees
+      // the daemon. Writing to our own PTY avoids the write-lock requirement a
+      // client-side input would have. A force-close fallback covers a Claude that
+      // ignores /exit (e.g. stuck mid-task). A harness with no exit input
+      // (`gracefulExitInput` null) skips the typing and force-closes, the same
+      // path a prompt that is up takes.
       //
       // #1140, #1155: not while a prompt is up (`promptUp`: a held main
       // prompt, a hook-backed prompt waiting in the terminal, or a numbered
@@ -223,22 +230,27 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
       // asks. Nothing is typed then; the session is force-closed below, the
       // same path a failed /exit write takes.
       const up = promptUp?.(sessionId) ?? null;
-      const forceClose = up !== null;
-      if (forceClose) {
+      const exitInput = harness.gracefulExitInput;
+      const forceClose = up !== null || exitInput === null;
+      if (up !== null) {
         log(
-          `[Stop] a prompt is up for ${sessionName} (${up}); not typing /exit into it, forcing close`,
+          `[Stop] a prompt is up for ${sessionName} (${up}); not typing ${exitInput ?? 'an exit command'} into it, forcing close`,
         );
+      } else if (exitInput === null) {
+        log(`[Stop] ${sessionName} has no graceful exit input; forcing close`);
       } else {
-        session.pty.submitInput('/exit').catch((err) => {
+        session.pty.submitInput(exitInput).catch((err) => {
           logError(
-            `[Stop] /exit write failed for ${sessionName}; forcing close: ${errorToString(err)}`,
+            `[Stop] ${exitInput} write failed for ${sessionName}; forcing close: ${errorToString(err)}`,
           );
           sessionRegistry.closeSession(sessionId, 'forced');
         });
       }
       const fallbackTimer = setTimeout(() => {
         if (sessionRegistry.getSession(sessionId)) {
-          log(`Session ${sessionName} did not exit on /exit within ${exitFallbackMs}ms; forcing`);
+          log(
+            `Session ${sessionName} did not exit on ${exitInput ?? 'a forced close'} within ${exitFallbackMs}ms; forcing`,
+          );
           sessionRegistry.closeSession(sessionId, 'forced');
         }
       }, exitFallbackMs);
