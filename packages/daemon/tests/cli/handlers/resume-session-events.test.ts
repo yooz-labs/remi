@@ -11,6 +11,7 @@ import {
   hubResumeUnsupportedMessage,
 } from '../../../src/cli/handlers/resume-session-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
+import { ClaudeHarness } from '../../../src/harness/index.ts';
 import type { PTYSession } from '../../../src/pty/pty-session.ts';
 import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
 import { SessionRegistry } from '../../../src/session/session-registry.ts';
@@ -84,6 +85,7 @@ describe('createResumeSessionHandlers', () => {
       sessionStore,
       bindingStore,
       transcriptDiscovery,
+      harness: new ClaudeHarness(transcriptDiscovery),
       createNewSession,
       send,
     });
@@ -169,6 +171,7 @@ describe('createResumeSessionHandlers', () => {
       sessionStore: failingStore,
       bindingStore,
       transcriptDiscovery,
+      harness: new ClaudeHarness(transcriptDiscovery),
       createNewSession: async () => undefined,
       send,
     });
@@ -200,6 +203,7 @@ describe('createResumeSessionHandlers', () => {
       sessionStore,
       bindingStore: ambiguousBindingStore,
       transcriptDiscovery: noFallbackDiscovery,
+      harness: new ClaudeHarness(noFallbackDiscovery),
       createNewSession: async () => undefined,
       send,
     });
@@ -396,6 +400,7 @@ describe('createResumeSessionHandlers', () => {
         sessionStore: throwingStore,
         bindingStore,
         transcriptDiscovery,
+        harness: new ClaudeHarness(transcriptDiscovery),
         createNewSession: async () => {
           throw new Error('createNewSession must not be called in hub mode');
         },

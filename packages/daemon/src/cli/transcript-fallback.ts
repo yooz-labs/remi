@@ -26,6 +26,7 @@ import { errorToString } from '@remi/shared';
 import type { ProtocolMessage, UUID } from '@remi/shared';
 
 import type { MessageAPI } from '../api/message-api.ts';
+import { ClaudeHarness } from '../harness/index.ts';
 import type { SessionRegistry } from '../session/index.ts';
 import type { TranscriptDiscovery } from '../transcript/index.ts';
 import type { TranscriptWatcher } from '../transcript/index.ts';
@@ -50,13 +51,17 @@ export interface TranscriptFallbackDeps {
  * Build the deterministic transcript path Claude will write to for a given
  * (projectPath, claudeSessionId) pair. Exposed so callers (and tests) can
  * agree on the same encoding rule as Claude Code itself.
+ *
+ * Delegates to `ClaudeHarness.transcriptPath`, the one place the path is
+ * built. The signature takes a discovery rather than a harness because the
+ * binder's fallback deps carry one and this poll is Claude-specific by name.
  */
 export function expectedTranscriptPath(
   transcriptDiscovery: TranscriptDiscovery,
   projectPath: string,
   claudeSessionId: string,
 ): string {
-  return `${transcriptDiscovery.getProjectTranscriptDir(projectPath)}/${claudeSessionId}.jsonl`;
+  return new ClaudeHarness(transcriptDiscovery).transcriptPath(projectPath, claudeSessionId);
 }
 
 /**

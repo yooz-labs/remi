@@ -7,6 +7,7 @@ import { SubagentViewRegistry } from '../../../src/api/subagent-view-registry.ts
 import type { CurrentOwnedSession } from '../../../src/cli/current-session.ts';
 import { createTranscriptHandlers } from '../../../src/cli/handlers/transcript-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
+import { ClaudeHarness } from '../../../src/harness/index.ts';
 import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
 import { SessionStore } from '../../../src/session/session-store.ts';
 import { TranscriptIndex } from '../../../src/session/transcript-index.ts';
@@ -80,6 +81,7 @@ describe('createTranscriptHandlers', () => {
   ) {
     return createTranscriptHandlers({
       transcriptDiscovery,
+      harness: new ClaudeHarness(transcriptDiscovery),
       transcriptWatchers,
       bindingStore,
       transcriptIndex,

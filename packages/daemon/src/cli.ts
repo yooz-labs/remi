@@ -205,6 +205,7 @@ import {
   remiHome,
   serviceCommandRefusal,
 } from './config/remi-home.ts';
+import { ClaudeHarness } from './harness/index.ts';
 import { ForeignSessionEscalator, HookConfigManager, HookServer } from './hooks/index.ts';
 import type { HookInput, PermissionDeniedHookInput, StopHookInput } from './hooks/index.ts';
 // Static, unlike the publisher below it: this is a pure decision with no
@@ -765,7 +766,10 @@ if (cliResume !== undefined) {
     process.exit(1);
   }
 
-  // Inject --resume into Claude args
+  // Inject --resume into Claude args. This is the same flag as
+  // `ClaudeHarness.resumeArgs` (harness/claude.ts); this block runs at module
+  // top level, before `harness` is constructed below, so it cannot call it.
+  // Change Claude's resume flag in both places.
   claudeArgs.unshift('--resume', session.claudeSessionId);
   log(
     `Resuming session ${session.remiSessionId.slice(0, 8)} (claude: ${session.claudeSessionId.slice(0, 8)}) in ${session.projectPath}`,
@@ -954,6 +958,9 @@ if (cliDaemonMode) {
 // ---------------------------------------------------------------------------
 const _ptyManager = new PTYManager();
 const transcriptDiscovery = new TranscriptDiscovery();
+// One daemon hosts one session, so the harness is a per-daemon singleton, built
+// once here and handed to the handler factories (epic #1161, phase 2).
+const harness = new ClaudeHarness(transcriptDiscovery);
 const transcriptWatchers: Map<UUID, TranscriptWatcher> = new Map();
 const transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>> = new Map();
 // Per-session TranscriptBinder teardown hooks (#453 phase 3, commit 5). The
@@ -1953,6 +1960,7 @@ const sessionHandlers: SessionHandlers = createSessionHandlers({
   sessionRegistry,
   bindingStore,
   transcriptDiscovery,
+  harness,
   liveSessionsRegistry,
   currentPort: () => PORT,
   untrackConnection: (id) => registry.untrackConnection(id),
@@ -1973,11 +1981,12 @@ resolveStopOnClose = sessionHandlers.resolveStopOnClose;
 const currentOwnedSession = makeCurrentSessionResolver({
   getPrimarySessionId,
   sessionStore,
-  transcriptDiscovery,
+  harness,
 });
 
 const transcriptHandlers: TranscriptHandlers = createTranscriptHandlers({
   transcriptDiscovery,
+  harness,
   transcriptWatchers,
   bindingStore,
   transcriptIndex,
@@ -1993,6 +2002,7 @@ const resumeSessionHandlers: ResumeSessionHandlers = createResumeSessionHandlers
   sessionStore,
   bindingStore,
   transcriptDiscovery,
+  harness,
   createNewSession,
   send: sendToConnection,
 });

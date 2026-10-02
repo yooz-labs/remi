@@ -9,6 +9,7 @@ import { QuestionPresenceTracker } from '../../../src/api/question-presence-trac
 import { type PromptUpDeps, promptUpDeps } from '../../../src/cli/handlers/prompt-up.ts';
 import { createSessionHandlers } from '../../../src/cli/handlers/session-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
+import { ClaudeHarness } from '../../../src/harness/index.ts';
 import { parseQuestion } from '../../../src/parser/question-parser.ts';
 import type { PTYSession } from '../../../src/pty/pty-session.ts';
 import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
@@ -90,6 +91,7 @@ describe('createSessionHandlers', () => {
       sessionRegistry,
       bindingStore,
       transcriptDiscovery,
+      harness: new ClaudeHarness(transcriptDiscovery),
       liveSessionsRegistry,
       currentPort: () => PORT,
       untrackConnection: (id) => {
