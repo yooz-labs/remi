@@ -2,14 +2,16 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import type { ProtocolMessage, UUID } from '@remi/shared';
+import type { ProtocolMessage, QuestionOption, UUID } from '@remi/shared';
 import { generateId } from '@remi/shared';
 import type { MessageAPI } from '../../../src/api/message-api.ts';
+import { QuestionPresenceTracker } from '../../../src/api/question-presence-tracker.ts';
 import { PrecedentStore, readerFrom } from '../../../src/auto-approve/precedent.ts';
-import { createInputHandlers } from '../../../src/cli/handlers/input-events.ts';
+import { createInputHandlers, trackerScreenDeps } from '../../../src/cli/handlers/input-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import { createSessionPrecedentRecorder } from '../../../src/cli/precedent-recording.ts';
 import { AUQ_KEYS } from '../../../src/hooks/auq-answer.ts';
+import { optionsFromSuggestions } from '../../../src/hooks/hook-event-bridge.ts';
 import { appendPtyOutput, clearPtyOutput } from '../../../src/pty/output-buffer.ts';
 import type { PTYSession } from '../../../src/pty/pty-session.ts';
 import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
@@ -61,8 +63,23 @@ const QID = 'ques0000-0000-0000-0000-000000000000' as UUID;
  * case where Claude IS showing its prompt, so they say so explicitly rather
  * than inheriting the refusing default. The refusal itself is covered by its
  * own tests in the `#1002` block.
+ *
+ * The same goes for the #1134 screen-numbering guard, which refuses an option
+ * value the screen's menu does not show: here the screen shows the menu the
+ * registered card describes, numbered the same way, which is what the
+ * tracker observes when the card was built from the screen. Because it always
+ * mirrors the card, every test using it passes the guard trivially (#1134
+ * review): mismatches, in range and out of range, are covered by the
+ * `#1134 screen-numbering guard` block, which wires its own screen.
  */
-const PROMPT_ON_SCREEN = { isPromptObservedOnPTY: () => true };
+let registryForScreen: SessionRegistry | undefined;
+const PROMPT_ON_SCREEN = {
+  isPromptObservedOnPTY: () => true,
+  observedPromptOptions: (sessionId: UUID) =>
+    [...(registryForScreen?.getSession(sessionId)?.currentQuestions.values() ?? [])].flatMap(
+      (q) => q.options,
+    ),
+};
 const REQ = 'req00000-0000-0000-0000-000000000000' as UUID;
 
 describe('createInputHandlers', () => {
@@ -75,6 +92,7 @@ describe('createInputHandlers', () => {
 
   beforeEach(() => {
     sessionRegistry = new SessionRegistry({ orphanTimeoutMs: 1000 });
+    registryForScreen = sessionRegistry;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-input-events-'));
     sessionStore = new SessionStore(path.join(tmpDir, 'sessions.json'));
     bindingStore = new SessionBindingStore(sessionStore);
@@ -590,7 +608,7 @@ describe('createInputHandlers', () => {
             sessionRegistry,
             bindingStore,
             send,
-            isPromptObservedOnPTY: () => true,
+            ...PROMPT_ON_SCREEN,
           });
 
           await handlers.onAnswer(CID, sessionId, QID, '1');
@@ -693,6 +711,482 @@ describe('createInputHandlers', () => {
 
         expect(ptyCapture.writes).toEqual(['\x1b[A']);
         expect(ptyCapture.submits).toEqual(['hello world']);
+      });
+    });
+
+    /**
+     * #1134: a phone "No" (value 4, from a card numbered by the hook) over a
+     * 3-option dialog: Claude ignored the digit and the Enter after it
+     * confirmed "1. Yes". An option value is now typed only when the menu on
+     * screen shows it. Free text and the release-a-hold path are unchanged.
+     */
+    describe('#1134 screen-numbering guard', () => {
+      const HOOK_NUMBERED = [
+        { value: '1', label: 'Yes', isRecommended: true, isYes: true, isNo: false },
+        {
+          value: '2',
+          label: 'Yes, allow directory /w',
+          isRecommended: false,
+          isYes: true,
+          isNo: false,
+        },
+        {
+          value: '3',
+          label: 'Yes, switch to acceptEdits mode',
+          isRecommended: false,
+          isYes: true,
+          isNo: false,
+        },
+        { value: '4', label: 'No', isRecommended: false, isYes: false, isNo: true },
+      ];
+      const SCREEN = [
+        { value: '1', label: 'Yes', isRecommended: true, isYes: false, isNo: false },
+        {
+          value: '2',
+          label: 'Yes, and always allow access to /w',
+          isRecommended: false,
+          isYes: false,
+          isNo: false,
+        },
+        { value: '3', label: 'No', isRecommended: false, isYes: false, isNo: false },
+      ];
+
+      function setUpCard(
+        options: typeof HOOK_NUMBERED,
+        extra: { held?: boolean; allowsFreeText?: boolean } = {},
+      ) {
+        const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+        const sessionId = sessionRegistry.createSessionId();
+        sessionRegistry.registerSession(
+          sessionId,
+          '/test/dir',
+          fakePTY(ptyCapture),
+          fakeMessageAPI(new Map()),
+        );
+        sessionRegistry.addQuestion(sessionId, {
+          id: QID,
+          text: 'Allow Bash: touch e5-marker.txt',
+          options,
+          allowsFreeText: false,
+          isAnswered: false,
+          source: 'permission_request',
+          ...extra,
+        });
+        return { sessionId, ptyCapture };
+      }
+
+      test('a card value the screen does not show: nothing typed, STALE_ANSWER, card cleared', async () => {
+        const { sessionId, ptyCapture } = setUpCard(HOOK_NUMBERED);
+        const logs: string[] = [];
+        configureLogger({ writeLog: (msg) => logs.push(msg) });
+        const handlers = createInputHandlers({
+          sessionRegistry,
+          bindingStore,
+          send,
+          isPromptObservedOnPTY: () => true,
+          observedPromptOptions: () => SCREEN,
+        });
+
+        await handlers.onAnswer(CID, sessionId, QID, 'No');
+
+        expect(ptyCapture.submits).toEqual([]);
+        const errors = sendCalls.filter((c) => c.message.type === 'error');
+        expect(errors).toHaveLength(1);
+        expect((errors[0]?.message as { code?: string }).code).toBe('STALE_ANSWER');
+        expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+        expect(logs.some((m) => m.includes('"4" is not an option on screen [1, 2, 3]'))).toBe(true);
+      });
+
+      test('the relay reports the same refusal as stale, with no error frame', async () => {
+        const { sessionId, ptyCapture } = setUpCard(HOOK_NUMBERED);
+        const handlers = createInputHandlers({
+          sessionRegistry,
+          bindingStore,
+          send,
+          isPromptObservedOnPTY: () => true,
+          observedPromptOptions: () => SCREEN,
+        });
+
+        expect(await handlers.relayAnswer(sessionId, QID, '4')).toBe('stale');
+        expect(ptyCapture.submits).toEqual([]);
+        expect(sendCalls).toHaveLength(0);
+      });
+
+      test('a value the screen shows is typed as before', async () => {
+        const { sessionId, ptyCapture } = setUpCard(SCREEN);
+        const handlers = createInputHandlers({
+          sessionRegistry,
+          bindingStore,
+          send,
+          isPromptObservedOnPTY: () => true,
+          observedPromptOptions: () => SCREEN,
+        });
+
+        await handlers.onAnswer(CID, sessionId, QID, 'No');
+
+        expect(ptyCapture.submits).toEqual(['3']);
+        expect(sendCalls.filter((c) => c.message.type === 'error')).toHaveLength(0);
+      });
+
+      test('an unwired screen read refuses an option answer (fails toward not typing)', async () => {
+        const { sessionId, ptyCapture } = setUpCard(SCREEN);
+        const handlers = createInputHandlers({
+          sessionRegistry,
+          bindingStore,
+          send,
+          isPromptObservedOnPTY: () => true,
+        });
+
+        await handlers.onAnswer(CID, sessionId, QID, '1');
+
+        expect(ptyCapture.submits).toEqual([]);
+      });
+
+      test('a card stamped held whose hook is NOT held is checked too', async () => {
+        // A passthrough escalation is pushed through `pushHeldHook` and so
+        // stamped `held`, but no hold exists: its answer is a typed digit in
+        // the hook's numbering, exactly the case the guard exists for.
+        const { sessionId, ptyCapture } = setUpCard(HOOK_NUMBERED, { held: true });
+        const handlers = createInputHandlers({
+          sessionRegistry,
+          bindingStore,
+          send,
+          resolveHeldPermission: () => false,
+          releaseHeldAsPassthrough: () => false,
+          isPromptObservedOnPTY: () => true,
+          observedPromptOptions: () => SCREEN,
+        });
+
+        await handlers.onAnswer(CID, sessionId, QID, 'No');
+
+        expect(ptyCapture.submits).toEqual([]);
+      });
+
+      // Lead decision on the #1134 review: free text into a numbered menu is
+      // refused too. Claude ignores the text and the Enter after it confirms
+      // the highlighted option, usually "1. Yes".
+      test('free text into a menu, on a card that takes no free text: refused, nothing typed', async () => {
+        const { sessionId, ptyCapture } = setUpCard(SCREEN);
+        const logs: string[] = [];
+        configureLogger({ writeLog: (msg) => logs.push(msg) });
+        const handlers = createInputHandlers({
+          sessionRegistry,
+          bindingStore,
+          send,
+          isPromptObservedOnPTY: () => true,
+          observedPromptOptions: () => SCREEN,
+        });
+
+        await handlers.onAnswer(CID, sessionId, QID, 'no, use rm -i instead');
+
+        expect(ptyCapture.submits).toEqual([]);
+        const errors = sendCalls.filter((c) => c.message.type === 'error');
+        expect(errors).toHaveLength(1);
+        expect((errors[0]?.message as { code?: string }).code).toBe('STALE_ANSWER');
+        expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+        expect(logs.some((m) => m.includes('free text (21 chars) into the option menu'))).toBe(
+          true,
+        );
+      });
+
+      test('the relay refuses free text into a menu the same way', async () => {
+        const { sessionId, ptyCapture } = setUpCard(SCREEN);
+        const handlers = createInputHandlers({
+          sessionRegistry,
+          bindingStore,
+          send,
+          isPromptObservedOnPTY: () => true,
+          observedPromptOptions: () => SCREEN,
+        });
+
+        expect(await handlers.relayAnswer(sessionId, QID, 'whatever')).toBe('stale');
+        expect(ptyCapture.submits).toEqual([]);
+      });
+
+      test('free text is typed when the card takes free text, even over a menu', async () => {
+        const { sessionId, ptyCapture } = setUpCard(SCREEN, { allowsFreeText: true });
+        const handlers = createInputHandlers({
+          sessionRegistry,
+          bindingStore,
+          send,
+          isPromptObservedOnPTY: () => true,
+          observedPromptOptions: () => SCREEN,
+        });
+
+        await handlers.onAnswer(CID, sessionId, QID, 'a custom answer');
+
+        expect(ptyCapture.submits).toEqual(['a custom answer']);
+      });
+
+      test('free text is typed when no menu is on screen (a free-text prompt)', async () => {
+        const { sessionId, ptyCapture } = setUpCard(SCREEN);
+        const handlers = createInputHandlers({
+          sessionRegistry,
+          bindingStore,
+          send,
+          isPromptObservedOnPTY: () => true,
+          observedPromptOptions: () => [],
+        });
+
+        await handlers.onAnswer(CID, sessionId, QID, 'my-widget');
+
+        expect(ptyCapture.submits).toEqual(['my-widget']);
+      });
+
+      test('free text on a card with no options is typed even over a menu', async () => {
+        const { sessionId, ptyCapture } = setUpCard([]);
+        const handlers = createInputHandlers({
+          sessionRegistry,
+          bindingStore,
+          send,
+          isPromptObservedOnPTY: () => true,
+          observedPromptOptions: () => SCREEN,
+        });
+
+        await handlers.onAnswer(CID, sessionId, QID, 'my-widget');
+
+        expect(ptyCapture.submits).toEqual(['my-widget']);
+      });
+
+      /**
+       * #1134 review: the value existing on screen is not enough, it must MEAN
+       * the same choice there. These cards and screens agree on which values
+       * exist and disagree on what they are, which the old `PROMPT_ON_SCREEN`
+       * (a screen mirroring the card) could never exercise.
+       */
+      describe('option identity (option-mismatch)', () => {
+        const opt = (value: string, label: string, extra: Partial<QuestionOption> = {}) => ({
+          value,
+          label,
+          isRecommended: false,
+          isYes: false,
+          isNo: false,
+          ...extra,
+        });
+
+        async function answerOver(
+          card: QuestionOption[],
+          screen: QuestionOption[],
+          answer: string,
+        ): Promise<{ submits: string[]; logs: string[] }> {
+          const { sessionId, ptyCapture } = setUpCard(card);
+          const logs: string[] = [];
+          configureLogger({ writeLog: (msg) => logs.push(msg) });
+          const handlers = createInputHandlers({
+            sessionRegistry,
+            bindingStore,
+            send,
+            resolveHeldPermission: () => false,
+            releaseHeldAsPassthrough: () => false,
+            isPromptObservedOnPTY: () => true,
+            observedPromptOptions: () => screen,
+          });
+          await handlers.onAnswer(CID, sessionId, QID, answer);
+          return { submits: ptyCapture.submits, logs };
+        }
+
+        const fallbackCard = [opt('1', 'Yes', { isYes: true }), opt('2', 'No', { isNo: true })];
+        const claudeThree = [
+          opt('1', 'Yes'),
+          opt('2', 'Yes, and always allow access to /w from this project'),
+          opt('3', 'No'),
+        ];
+
+        test('probe B: a hook-numbered "No" (2) over the screen\'s standing allow is refused', async () => {
+          const { submits, logs } = await answerOver(fallbackCard, claudeThree, 'No');
+          expect(submits).toEqual([]);
+          expect(logs.some((m) => m.includes('"2" means a different option on screen'))).toBe(true);
+          const errors = sendCalls.filter((c) => c.message.type === 'error');
+          expect((errors[0]?.message as { code?: string }).code).toBe('STALE_ANSWER');
+        });
+
+        test('probe B, matching answer: "Yes" still types 1', async () => {
+          const { submits } = await answerOver(fallbackCard, claudeThree, 'Yes');
+          expect(submits).toEqual(['1']);
+        });
+
+        const exitPlanCard = [
+          opt('1', 'Yes, and auto-accept edits'),
+          opt('2', 'Yes, and manually approve edits'),
+          opt('3', 'No, keep planning'),
+        ];
+
+        test('probe A: ExitPlanMode "No, keep planning" (3) over a screen with a clear-context row is refused', async () => {
+          const screen = [
+            opt('1', 'Yes, clear context and auto-accept edits'),
+            opt('2', 'Yes, auto-accept edits'),
+            opt('3', 'Yes, manually approve edits'),
+            opt('4', 'No, keep planning'),
+          ];
+          const { submits, logs } = await answerOver(exitPlanCard, screen, 'No, keep planning');
+          expect(submits).toEqual([]);
+          expect(logs.some((m) => m.includes('"3" means a different option on screen'))).toBe(true);
+        });
+
+        test('probe A, matching numbering: "No, keep planning" types 3', async () => {
+          const screen = [
+            opt('1', 'Yes,andauto-acceptedits'),
+            opt('2', 'Yes,andmanuallyapproveedits'),
+            opt('3', 'No,keepplanning'),
+          ];
+          const { submits } = await answerOver(exitPlanCard, screen, 'No, keep planning');
+          expect(submits).toEqual(['3']);
+        });
+
+        test('picks with no Yes/No word must match by label', async () => {
+          const card = [opt('1', 'PostgreSQL'), opt('2', 'MySQL')];
+          const swapped = [opt('1', 'MySQL'), opt('2', 'PostgreSQL')];
+          expect((await answerOver(card, swapped, 'PostgreSQL')).submits).toEqual([]);
+        });
+
+        test('label spacing lost by the parse (#1137) does not cause a refusal', async () => {
+          const card = [opt('1', 'Submit answers'), opt('2', 'Chat about this')];
+          const screen = [opt('1', 'Submitanswers'), opt('2', 'Chataboutthis')];
+          expect((await answerOver(card, screen, 'Chat about this')).submits).toEqual(['2']);
+        });
+
+        test('an AskUserQuestion pick matches its screen row with the description folded in', async () => {
+          const card = [
+            opt('1', 'Red', { description: 'The color red' }),
+            opt('2', 'Green', { description: 'The color green' }),
+          ];
+          const screen = [opt('1', 'Red The color red'), opt('2', 'Green Thecolorgreen')];
+          expect((await answerOver(card, screen, 'Green')).submits).toEqual(['2']);
+        });
+
+        /**
+         * Round-4 review probes. Each pair shares a value and a Yes/No class
+         * or a long prefix, and means a different thing; the guard fails
+         * closed (labels must be equal), so every one is refused and the user
+         * answers at the terminal.
+         */
+        test.each([
+          ['"Yes" vs "Yes, and don\'t ask again"', 'Yes', "Yes, and don't ask again for: git *"],
+          ['"No" vs "No, refine with Ultraplan"', 'No', 'No, refine with Ultraplan in the cloud'],
+          [
+            'a long shared prefix: /tmp/x vs /etc/...',
+            'Yes, allow reading from /tmp/x',
+            'Yes, allow reading from /etc/ssh during this session',
+          ],
+          ['"Yes, use pnpm" vs "Yes, use npm"', 'Yes, use pnpm', 'Yes, use npm'],
+          [
+            'a prefix: "Option one for A" vs "... (recommended)"',
+            'Option one for A',
+            'Option one for A (recommended)',
+          ],
+        ])('refuses %s', async (_name, cardLabel, screenLabel) => {
+          const card = [opt('1', cardLabel), opt('2', 'Something else')];
+          const screen = [opt('1', screenLabel), opt('2', 'Something else')];
+          const { submits, logs } = await answerOver(card, screen, '1');
+          expect(submits).toEqual([]);
+          expect(logs.some((m) => m.includes('"1" means a different option on screen'))).toBe(true);
+        });
+
+        test("the e4-echo-classic held-card shape: the hook's mode switch is not the screen's", async () => {
+          // A Write prompt whose only suggestion was setMode acceptEdits; the
+          // card is the hook's, the screen is the live parse (collapsed
+          // spacing). Option 2 is a mode switch on both, worded differently,
+          // so typing it is refused; the identical "Yes" and "No" still type.
+          const { options: card } = optionsFromSuggestions([
+            { type: 'setMode', mode: 'acceptEdits', destination: 'session' },
+          ]);
+          const screen = [
+            opt('1', 'Yes'),
+            opt(
+              '2',
+              'Yes,andswitchtoacceptedits(auto-approvefileeditsandcommonfilecommands)forthissession(shift+tab)',
+            ),
+            opt('3', 'No'),
+          ];
+          expect((await answerOver(card, screen, '2')).submits).toEqual([]);
+        });
+
+        test('the e4-echo-classic shape: an identical "No" still types its digit', async () => {
+          const { options: card } = optionsFromSuggestions([
+            { type: 'setMode', mode: 'acceptEdits', destination: 'session' },
+          ]);
+          const screen = [
+            opt('1', 'Yes'),
+            opt('2', 'Yes,andswitchtoaccepteditsforthissession'),
+            opt('3', 'No'),
+          ];
+          expect((await answerOver(card, screen, 'No')).submits).toEqual(['3']);
+        });
+
+        test('a short label that differs is refused (the accepted cost of failing closed)', async () => {
+          const card = [opt('1', 'Red'), opt('2', 'Blue')];
+          const screen = [opt('1', 'Reddish brown'), opt('2', 'Blue')];
+          expect((await answerOver(card, screen, 'Red')).submits).toEqual([]);
+        });
+      });
+
+      test('probe D: free text on a held card is refused before the hold is released', async () => {
+        // Releasing first made `released` true, which skipped the screen check
+        // and typed the text into the dialog Claude was about to draw.
+        const { sessionId, ptyCapture } = setUpCard(HOOK_NUMBERED, { held: true });
+        const calls: string[] = [];
+        const logs: string[] = [];
+        configureLogger({ writeLog: (msg) => logs.push(msg) });
+        const handlers = createInputHandlers({
+          sessionRegistry,
+          bindingStore,
+          send,
+          resolveHeldPermission: () => false,
+          releaseHeldAsPassthrough: () => {
+            calls.push(`release (typed so far: ${ptyCapture.submits.length})`);
+            return true;
+          },
+          isPromptObservedOnPTY: () => false,
+          observedPromptOptions: () => null,
+        });
+
+        await handlers.onAnswer(CID, sessionId, QID, 'approve it');
+
+        expect(ptyCapture.submits).toEqual([]);
+        const errors = sendCalls.filter((c) => c.message.type === 'error');
+        expect((errors[0]?.message as { code?: string }).code).toBe('STALE_ANSWER');
+        expect(logs.some((m) => m.includes('free text (10 chars) on a held card'))).toBe(true);
+        // The hold is still popped, with nothing typed, so Claude shows its own
+        // prompt in the terminal instead of blocking behind a consumed card.
+        expect(calls).toEqual(['release (typed so far: 0)']);
+        expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+      });
+
+      test('an option answer on a held card still releases and types its digit', async () => {
+        const { sessionId, ptyCapture } = setUpCard(HOOK_NUMBERED, { held: true });
+        const handlers = createInputHandlers({
+          sessionRegistry,
+          bindingStore,
+          send,
+          resolveHeldPermission: () => false,
+          releaseHeldAsPassthrough: () => true,
+          isPromptObservedOnPTY: () => false,
+          observedPromptOptions: () => null,
+        });
+
+        await handlers.onAnswer(CID, sessionId, QID, 'Yes, switch to acceptEdits mode');
+
+        expect(ptyCapture.submits).toEqual(['3']);
+      });
+
+      test('releasing a hold in this call is not checked: the prompt has not rendered yet', async () => {
+        const { sessionId, ptyCapture } = setUpCard(HOOK_NUMBERED, { held: true });
+        const handlers = createInputHandlers({
+          sessionRegistry,
+          bindingStore,
+          send,
+          resolveHeldPermission: () => false,
+          releaseHeldAsPassthrough: () => true,
+          isPromptObservedOnPTY: () => false,
+          observedPromptOptions: () => null,
+        });
+
+        // No hold resolves (as for a pick the binary response cannot
+        // express), so the answer releases the hold and types the digit
+        // into the prompt Claude is about to render.
+        await handlers.onAnswer(CID, sessionId, QID, '3');
+
+        expect(ptyCapture.submits).toEqual(['3']);
       });
     });
 
@@ -1031,10 +1525,12 @@ describe('createInputHandlers', () => {
         send,
         ...PROMPT_ON_SCREEN,
       });
-      // Pass a bogus sessionId, handler should still find the session via connection
-      await handlers.onAnswer(CID, 'bogus000-0000-0000-0000-000000000000' as UUID, QID, 'hello');
+      // Pass a bogus sessionId, handler should still find the session via connection.
+      // An option value, not free text: free text into an option menu is refused
+      // since #1134, and this test is about the session lookup.
+      await handlers.onAnswer(CID, 'bogus000-0000-0000-0000-000000000000' as UUID, QID, 'y');
 
-      expect(ptyCapture.submits).toEqual(['hello']);
+      expect(ptyCapture.submits).toEqual(['y']);
       // Question must be cleared on the real session id, not the bogus one.
       expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
     });
@@ -1779,7 +2275,7 @@ describe('createInputHandlers', () => {
       expect(ptyCapture.submits).toEqual(['my-widget']);
     });
 
-    test('logs a label->value resolution and an unresolved-label verbatim submit (FIX 1A)', async () => {
+    test('logs a label->value resolution, and refuses an unresolved label over a menu (FIX 1A, #1134)', async () => {
       const logs: string[] = [];
       configureLogger({ writeLog: (msg) => logs.push(msg) });
       const ptyCapture = { writes: [] as string[], submits: [] as string[] };
@@ -1805,12 +2301,17 @@ describe('createInputHandlers', () => {
       await handlers.onAnswer(CID, sessionId, QID, 'No');
       expect(logs.some((m) => m.includes('[Answer] resolved "No" -> "3"'))).toBe(true);
 
-      // A label that matches no option (options present) -> logged as verbatim submit.
+      // A label that matches no option (options present) is free text: still
+      // logged as unmatched, but no longer submitted verbatim. Lead decision on
+      // #1134 review: a card with options that takes no free text, over a
+      // numbered menu on screen, refuses free text, because Claude ignores the
+      // text and the Enter confirms the highlighted option, usually "1. Yes".
       addYesNoAlwaysQuestion(sessionId);
       logs.length = 0;
       await handlers.onAnswer(CID, sessionId, QID, 'Maybe');
       expect(logs.some((m) => m.includes('[Answer] "Maybe" matched no option (3)'))).toBe(true);
-      expect(ptyCapture.submits).toContain('Maybe');
+      expect(logs.some((m) => m.includes('free text (5 chars) into the option menu'))).toBe(true);
+      expect(ptyCapture.submits).not.toContain('Maybe');
     });
   });
 
@@ -2238,6 +2739,238 @@ describe('createInputHandlers', () => {
   // answer (native POST, Capacitor JS path, signaling relay). The first copy
   // wins; the losers must report 'delivered' — NOT 'stale' (HTTP 409), which
   // both client layers turned into a false "Answer not delivered" notification.
+  /**
+   * #1134 review, probe C: a lock-screen tap arrives on two channels by design
+   * (`RemiAnswerRelay` POSTs AND hands the tap to the Capacitor handler). The
+   * card stays registered until the submit finishes, so both deliveries used
+   * to pass the lookup and type the digit twice. The PTY below takes 50 ms per
+   * submit so the second delivery lands inside the first's window.
+   */
+  /**
+   * #1134 review: the screen deps used to be hand-copied into tests from
+   * `cli.ts`, so deleting the production line left every test green. Both now
+   * use `trackerScreenDeps`; these pin the helper against a real tracker and
+   * pin that `cli.ts` hands it to `createInputHandlers`.
+   */
+  describe('trackerScreenDeps (#1134 review)', () => {
+    test("reads the session's own tracker", () => {
+      const tracker = new QuestionPresenceTracker(() => undefined);
+      const deps = trackerScreenDeps((sid) => (sid === 'sid-a' ? tracker : undefined));
+      const screen = {
+        id: generateId(),
+        text: 'Do you want to proceed?',
+        options: [
+          { value: '1', label: 'Yes', isRecommended: true, isYes: false, isNo: false },
+          { value: '2', label: 'No', isRecommended: false, isYes: false, isNo: false },
+        ],
+        allowsFreeText: true,
+        isAnswered: false,
+      };
+      tracker.onPTYPromptVisible(screen);
+
+      expect(deps.isPromptObservedOnPTY?.('sid-a' as UUID)).toBe(true);
+      expect(deps.observedPromptOptions?.('sid-a' as UUID)).toEqual(screen.options);
+      expect(deps.isPromptCurrent?.('sid-a' as UUID, screen.id, screen.text)).toBe(true);
+    });
+
+    test('no tracker for the session reads as nothing observed', () => {
+      const deps = trackerScreenDeps(() => undefined);
+      expect(deps.isPromptObservedOnPTY?.('sid-x' as UUID)).toBe(false);
+      expect(deps.observedPromptOptions?.('sid-x' as UUID)).toBeNull();
+      expect(deps.isPromptCurrent?.('sid-x' as UUID, 'q', 't')).toBe(false);
+    });
+
+    /** Strip comments, so a commented-out spread cannot satisfy the check. */
+    function stripComments(src: string): string {
+      return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:\\])\/\/[^\n]*/g, '$1');
+    }
+
+    /** 'ok', or why `src`'s `createInputHandlers({...})` call does not use the
+     *  helper for its screen deps. */
+    function wiringVerdict(src: string): string {
+      const start = src.indexOf('createInputHandlers({');
+      if (start < 0) return 'no createInputHandlers call';
+      const end = src.indexOf('\n});', start);
+      if (end < 0) return 'no end of the call';
+      const call = stripComments(src.slice(start, end));
+      // Its own line, nothing else on it.
+      const spread =
+        /^[ \t]*\.\.\.trackerScreenDeps\(\(sessionId\) => sessionTrackers\.get\(sessionId\)\),?[ \t]*$/m.exec(
+          call,
+        );
+      if (!spread) return 'spread missing';
+      // A later key of any shape (property, method shorthand, shorthand)
+      // would override the helper's dep.
+      const after = call.slice(spread.index + spread[0].length);
+      if (/\b(isPromptCurrent|isPromptObservedOnPTY|observedPromptOptions)\b/.test(after)) {
+        return 'overridden after the spread';
+      }
+      return 'ok';
+    }
+
+    const cliSource = fs.readFileSync(
+      path.join(import.meta.dir, '..', '..', '..', 'src', 'cli.ts'),
+      'utf8',
+    );
+    const SPREAD = '  ...trackerScreenDeps((sessionId) => sessionTrackers.get(sessionId)),';
+
+    test('cli.ts wires it into the answer handlers', () => {
+      expect(wiringVerdict(cliSource)).toBe('ok');
+    });
+
+    // Round-4 review: the first version of this check passed a commented-out
+    // spread and a method-shorthand override.
+    test.each([
+      ['deleted', (s: string) => s.replace(`${SPREAD}\n`, ''), 'spread missing'],
+      [
+        'line-commented',
+        (s: string) => s.replace(SPREAD, `  // ${SPREAD.trim()}`),
+        'spread missing',
+      ],
+      [
+        'block-commented',
+        (s: string) => s.replace(SPREAD, `  /* ${SPREAD.trim()} */`),
+        'spread missing',
+      ],
+      [
+        'overridden by a property',
+        (s: string) => s.replace(SPREAD, `${SPREAD}\n  isPromptCurrent: () => true,`),
+        'overridden after the spread',
+      ],
+      [
+        'overridden by a method shorthand',
+        (s: string) => s.replace(SPREAD, `${SPREAD}\n  isPromptCurrent() { return true; },`),
+        'overridden after the spread',
+      ],
+      [
+        'overridden by a shorthand property',
+        (s: string) => s.replace(SPREAD, `${SPREAD}\n  observedPromptOptions,`),
+        'overridden after the spread',
+      ],
+    ])('the check fails when the spread is %s', (_name, mutate, verdict) => {
+      const mutated = mutate(cliSource);
+      expect(mutated).not.toBe(cliSource);
+      expect(wiringVerdict(mutated)).toBe(verdict);
+    });
+  });
+
+  describe('concurrent deliveries of one answer (#1134 review)', () => {
+    function slowSession(opts: { submitFails?: boolean } = {}): {
+      sessionId: UUID;
+      submits: string[];
+    } {
+      const submits: string[] = [];
+      const sessionId = sessionRegistry.createSessionId();
+      sessionRegistry.registerSession(
+        sessionId,
+        '/test/dir',
+        {
+          id: generateId(),
+          write: () => {},
+          submitInput: async (content: string) => {
+            await new Promise((r) => setTimeout(r, 50));
+            if (opts.submitFails) throw new Error('test: PTY write failed');
+            submits.push(content);
+          },
+          close: async () => {},
+        } as unknown as PTYSession,
+        fakeMessageAPI(new Map()),
+      );
+      sessionRegistry.addQuestion(sessionId, {
+        id: QID,
+        text: 'Allow Bash: ls',
+        options: [
+          { value: '1', label: 'Yes', isRecommended: true, isYes: true, isNo: false },
+          { value: '2', label: 'No', isRecommended: false, isYes: false, isNo: true },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+      });
+      return { sessionId, submits };
+    }
+
+    test('the same answer on two channels types once; the second reports delivered', async () => {
+      const { sessionId, submits } = slowSession();
+      const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
+        sessionRegistry,
+        bindingStore,
+        send,
+      });
+
+      // The in-app tap sends the value, the relay the label: one answer.
+      const first = handlers.onAnswer(CID, sessionId, QID, '1');
+      const second = handlers.relayAnswer(sessionId, QID, 'Yes');
+      const [, secondOutcome] = await Promise.all([first, second]);
+
+      expect(submits).toEqual(['1']);
+      expect(secondOutcome).toBe('delivered');
+      expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+    });
+
+    test("a duplicate reports the first delivery's outcome: a failed submit is not 'delivered'", async () => {
+      // Round-4 review: the duplicate used to report 'delivered'
+      // unconditionally, so a lock-screen tap whose first channel failed
+      // read as answered on the other.
+      const { sessionId, submits } = slowSession({ submitFails: true });
+      const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
+        sessionRegistry,
+        bindingStore,
+        send,
+      });
+
+      const first = handlers.relayAnswer(sessionId, QID, '1');
+      const second = handlers.relayAnswer(sessionId, QID, 'Yes');
+      const [firstResult, secondResult] = await Promise.allSettled([first, second]);
+
+      expect(firstResult.status).toBe('rejected');
+      expect(secondResult).toEqual({ status: 'fulfilled', value: 'stale' });
+      expect(submits).toEqual([]);
+    });
+
+    test('a different answer while one is being applied is refused', async () => {
+      const { sessionId, submits } = slowSession();
+      const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
+        sessionRegistry,
+        bindingStore,
+        send,
+      });
+
+      const first = handlers.relayAnswer(sessionId, QID, 'Yes');
+      const second = handlers.relayAnswer(sessionId, QID, 'No');
+      const [firstOutcome, secondOutcome] = await Promise.all([first, second]);
+
+      expect(submits).toEqual(['1']);
+      expect(firstOutcome).toBe('delivered');
+      expect(secondOutcome).toBe('stale');
+    });
+
+    test('the claim is released when the answer settles, even when the card survives it', async () => {
+      // Selections for a non-structured question escalate and KEEP the card,
+      // so a second identical attempt reaches the claim check: a leaked claim
+      // would report it 'delivered' silently instead of escalating again.
+      const { sessionId } = slowSession();
+      const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
+        sessionRegistry,
+        bindingStore,
+        send,
+      });
+      const selections = [{ questionIndex: 0, optionIndices: [0] }];
+
+      await handlers.onAnswer(CID, sessionId, QID, '', undefined, { selections });
+      await handlers.onAnswer(CID, sessionId, QID, '', undefined, { selections });
+
+      const codes = sendCalls
+        .filter((c) => c.message.type === 'error')
+        .map((c) => (c.message as { code?: string }).code);
+      expect(codes).toEqual(['AUQ_NOT_STRUCTURED', 'AUQ_NOT_STRUCTURED']);
+      expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(1);
+    });
+  });
+
   describe('duplicate answer deliveries (#752)', () => {
     function registerYesNo(): { sessionId: UUID; ptyCapture: { submits: string[] } } {
       const ptyCapture = { writes: [] as string[], submits: [] as string[] };
@@ -2868,8 +3601,11 @@ describe('createInputHandlers', () => {
         // "not current" and returns before ever reaching the precedent code --
         // that would make this test pass for the WRONG reason. Force it
         // current so the answer actually proceeds far enough to exercise the
-        // `source === 'permission_request'` check this test targets.
+        // `source === 'permission_request'` check this test targets. The
+        // #1134 screen-numbering guard would refuse the same way without a
+        // screen, so the screen shows the card's own menu.
         isPromptCurrent: () => true,
+        observedPromptOptions: PROMPT_ON_SCREEN.observedPromptOptions,
       });
 
       await handlers.onAnswer(CID, sessionId, QID, 'Yes');
