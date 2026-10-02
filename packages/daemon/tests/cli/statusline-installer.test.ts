@@ -33,14 +33,12 @@ describe('buildStatuslineScript', () => {
     expect(script).toContain('"$REMI_STATUS_BAR" != "1"');
   });
 
-  test('surfaces auto-approve eval state in the status segment (#560)', () => {
+  test('the status segment is the session status, with no auto-approve cue (#1125)', () => {
     const script = buildStatuslineScript('/x');
-    // reads the auto-approve fields from the per-port status JSON
-    expect(script).toContain('.autoApprove.inFlight');
-    expect(script).toContain('.autoApprove.lastVerdict');
-    // status segment reflects evaluating / needs-you when a permission is decided
-    expect(script).toContain('STATE="evaluating');
-    expect(script).toContain('STATE="needs you"');
+    expect(script).toContain('STATE="$S_STATUS"');
+    expect(script).not.toContain('autoApprove');
+    expect(script).not.toContain('evaluating');
+    expect(script).not.toContain('needs you');
   });
 
   test('labels the real attach state, keeping the counter label as legacy fallback (#755)', () => {

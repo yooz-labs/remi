@@ -62,7 +62,7 @@ function ensureRemiDir(): void {
 // Guard: only writes in wrapper mode (wrapperMode is set during arg parsing)
 // ---------------------------------------------------------------------------
 import { detectGitInfo, loadDotenvFile } from './cli/startup-env.ts';
-import { IDLE_AUTO_APPROVE, type RemiStatus, StatusWriter } from './cli/status-writer.ts';
+import { type RemiStatus, StatusWriter } from './cli/status-writer.ts';
 
 const gitInfo = detectGitInfo();
 
@@ -82,7 +82,6 @@ const statusWriter = new StatusWriter(
     sessionId: null,
     repo: gitInfo.repo,
     branch: gitInfo.branch,
-    autoApprove: { ...IDLE_AUTO_APPROVE },
     version: REMI_VERSION,
   },
   {

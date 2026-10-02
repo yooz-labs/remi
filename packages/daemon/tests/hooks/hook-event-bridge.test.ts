@@ -225,17 +225,19 @@ describe('HookEventBridge', () => {
     expect(questions[0]?.submitLabel).toBeUndefined();
   });
 
-  it('leaves Question.summary undefined (nothing produces one since #1125)', () => {
+  it('emits none of the deprecated auto-approve fields (#1125)', () => {
     const { bridge, questions } = createBridge();
 
     bridge.handlePermissionRequest({
       ...makeCommon(),
       hook_event_name: 'PermissionRequest',
       tool_name: 'Bash',
-      tool_input: { command: 'ls' },
+      tool_input: { command: 'git push origin main' },
     } as PermissionRequestHookInput);
 
     expect(questions[0]?.summary).toBeUndefined();
+    expect(questions[0]?.precedentSignature).toBeUndefined();
+    expect(questions[0]?.options.some((o) => o.sessionGrant !== undefined)).toBe(false);
   });
 
   // Inputs with NO usable suggestion of either shape (fewer than 2 string

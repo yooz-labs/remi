@@ -147,7 +147,8 @@ export function formatStatusText(status: AgentStatus): string {
       return '⚡ Executing...';
     case 'waiting':
       return '⏳ Waiting for input';
-    // Auto-approve + session-lifecycle states (#576).
+    // Session-lifecycle states (#576); evaluating/approved come only from a
+    // daemon older than #1125 (DeprecatedAgentStatus).
     case 'evaluating':
       return '⏳ Evaluating…';
     case 'approved':

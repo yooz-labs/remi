@@ -21,23 +21,29 @@ export type MessageState = 'sending' | 'sent' | 'delivered' | 'read';
 export type MessageSender = 'agent' | 'user' | 'system';
 
 /**
+ * Statuses only the removed auto-approve evaluator produced (#576):
+ * `evaluating` (deciding a permission) and `approved` (just allowed one).
+ * Kept in `AgentStatus` so a client still parses an older daemon.
+ *
+ * @deprecated #1125: no longer emitted.
+ */
+export type DeprecatedAgentStatus = 'evaluating' | 'approved';
+
+/**
  * Agent status while working.
  *
- * Hook- and auto-approve-sourced lifecycle states (#576):
+ * Hook-sourced lifecycle states (#576):
  *   - `waiting`     — blocked on the user (a permission/question is open).
- *   - `evaluating`  — auto-approve is deciding a permission right now.
- *   - `approved`    — auto-approve just allowed a permission (transient; the
- *                     next hook moves the session back to executing/thinking).
  *   - `starting`    — the session is spinning up before its first hook fires,
  *                     so clients have a defined pill state from hello_ack.
+ *   - `evaluating` / `approved` — see {@link DeprecatedAgentStatus}.
  */
 export type AgentStatus =
   | 'idle'
   | 'thinking'
   | 'executing'
   | 'waiting'
-  | 'evaluating'
-  | 'approved'
+  | DeprecatedAgentStatus
   | 'starting';
 
 /**
@@ -229,10 +235,10 @@ export interface Question {
   /**
    * A one-sentence, lock-screen-friendly restatement of what the user is approving
    * (#628), e.g. "Force-push to main?" instead of "Allow Bash: git push --force …".
-   * Produced by the deciding auto-approve LLM on an escalate verdict (or a cheap
-   * engine call for a rule-escalate). The notification prefers this over the raw
-   * tool text; absent for AskUserQuestion (which carries authored content) and for
-   * escalations with no model summary.
+   * Produced by the auto-approve LLM on an escalate verdict. The notification still
+   * prefers it over the raw tool text when present.
+   *
+   * @deprecated #1125: no longer emitted (the LLM that wrote it was removed).
    */
   readonly summary?: string | undefined;
 
@@ -250,14 +256,13 @@ export interface Question {
   readonly optionsAreFallback?: boolean | undefined;
 
   /**
-   * #753: true when the auto-approve gate is HOLDING this question's
-   * PermissionRequest hook (Model B) — Claude is blocked inside the hook call
-   * and never renders the prompt, so no PTY bytes for it exist. The terminal
-   * attach client banners exactly these (they are otherwise invisible in a
-   * terminal); non-held questions render natively and need no banner.
-   * Stamped once at question emission (message-api-setup) from the push
-   * options, so live messages, registry entries, and attach-time re-sends all
-   * carry it.
+   * #753: true when the question was pushed through the load-bearing `held`
+   * path (`QuestionPresenceTracker.pushHeldHook`). Built for held
+   * PermissionRequest hooks (Model B); since #1125 nothing holds, and the
+   * flag marks a multi-choice / design escalation pushed immediately. The
+   * terminal attach client banners these. Stamped once at question emission
+   * (message-api-setup) from the push options, so live messages, registry
+   * entries, and attach-time re-sends all carry it.
    */
   readonly held?: boolean | undefined;
 
@@ -291,6 +296,8 @@ export interface Question {
    * The session directory that bounds a recorded precedent is intentionally
    * NOT included in this wire-visible field. The daemon stores and compares
    * that private context separately.
+   *
+   * @deprecated #1125: no longer emitted (session precedent was removed).
    */
   readonly precedentSignature?: string | undefined;
 }
@@ -376,6 +383,8 @@ export interface QuestionOption {
    * Public marker for an explicit, scoped session action. The grant's
    * repository, working directory, expiry, and lineage remain daemon-private;
    * this marker only tells the client which deliberate action it is selecting.
+   *
+   * @deprecated #1125: no longer emitted (session workflow grants were removed).
    */
   readonly sessionGrant?: 'github-issue-planning' | undefined;
 }
@@ -523,9 +532,8 @@ export interface DiscoverableSession {
  * Times are epoch SECONDS so the statusline shell script can compute elapsed
  * with `date +%s`.
  *
- * Lives in shared (#754) because the daemon broadcasts the full status
- * snapshot to clients (`remi_status`), and the terminal attach client renders
- * the same reserved-row bar the wrapper does.
+ * @deprecated #1125: no longer emitted (`RemiStatus.autoApprove` is absent
+ * from a current daemon's status). Kept so a client still parses an older one.
  */
 export interface AutoApproveState {
   /** Evals in flight on this daemon. 0 = idle. */
@@ -555,7 +563,8 @@ export interface RemiStatus {
   sessionId: UUID | null;
   repo: string;
   branch: string;
-  autoApprove: AutoApproveState;
+  /** @deprecated #1125: no longer emitted. Present only from an older daemon. */
+  autoApprove?: AutoApproveState;
   /**
    * #755: true when at least one connection is attached to the session
    * (#795: any number can be, not just one) — the status label reads

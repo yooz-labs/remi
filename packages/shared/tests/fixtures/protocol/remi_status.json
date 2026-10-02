@@ -12,12 +12,6 @@
     "sessionId": "fixture-session-id",
     "repo": "remi",
     "branch": "develop",
-    "autoApprove": {
-      "inFlight": 0,
-      "sinceS": 0,
-      "lastVerdict": "none",
-      "lastVerdictAtS": 0
-    },
     "attached": true,
     "queuedCount": 0,
     "mode": "session",

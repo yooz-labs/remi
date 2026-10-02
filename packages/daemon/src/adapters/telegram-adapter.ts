@@ -306,8 +306,9 @@ export class TelegramAdapter implements ConnectionAdapter {
     }
 
     // Show typing indicator while the agent is busy: thinking, executing, or
-    // auto-approve evaluating a permission (#576). 'approved'/'starting' are
-    // transient/non-busy and intentionally produce no typing action.
+    // (from a daemon older than #1125) auto-approve evaluating a permission
+    // (#576). 'approved'/'starting' are transient/non-busy and intentionally
+    // produce no typing action.
     if (status === 'thinking' || status === 'executing' || status === 'evaluating') {
       // Send typing indicator repeatedly while working
       this.bot.api
