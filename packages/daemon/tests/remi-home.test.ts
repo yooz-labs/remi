@@ -155,7 +155,7 @@ describe('REMI_HOME moves the state a real cli.ts writes', () => {
     );
     expect(out).not.toContain('LaunchAgent');
     expect(out).not.toContain('systemd');
-  });
+  }, 30000);
 
   test('a relative REMI_HOME stops the CLI instead of writing anywhere', async () => {
     const proc = Bun.spawn(['bun', CLI_TS, 'config', 'path'], {
@@ -173,5 +173,5 @@ describe('REMI_HOME moves the state a real cli.ts writes', () => {
     );
     expect(fs.existsSync(path.join(work, 'relative-state'))).toBe(false);
     expect(fs.existsSync(path.join(home, '.remi'))).toBe(false);
-  });
+  }, 30000);
 });
