@@ -4,7 +4,11 @@
 
 import { beforeEach, describe, expect, test } from 'bun:test';
 import {
+  INPUT_NOT_DELIVERED_ERROR_CODE,
+  INPUT_NOT_DELIVERED_MESSAGE,
   MessageIdTracker,
+  PROMPT_WAITING_ERROR_CODE,
+  PROMPT_WAITING_MESSAGE,
   createAck,
   createAgentOutput,
   createAuqAnswer,
@@ -18,8 +22,10 @@ import {
   createHello,
   createHelloAck,
   createHubStatus,
+  createInputNotDeliveredError,
   createPing,
   createPong,
+  createPromptWaitingError,
   createQuestion,
   createQuestionResolved,
   createQuestionSnapshot,
@@ -38,6 +44,7 @@ import {
   createUserInput,
   deserialize,
   generateId,
+  isValidMessage,
   now,
   serialize,
 } from '../src/protocol.ts';
@@ -697,6 +704,56 @@ describe('Message factory functions', () => {
         field: 'email',
         reason: 'invalid format',
       });
+    });
+  });
+
+  describe('createPromptWaitingError() (#1140)', () => {
+    test('is an error message with the PROMPT_WAITING code and the user-facing text', () => {
+      const msg = createPromptWaitingError('session-1');
+
+      expect(msg.type).toBe('error');
+      expect(msg.code).toBe('PROMPT_WAITING');
+      expect(msg.code).toBe(PROMPT_WAITING_ERROR_CODE);
+      expect(msg.message).toBe(
+        'Claude is waiting on a prompt. Answer it from its card or in the terminal (Esc dismisses it).',
+      );
+      expect(msg.message).toBe(PROMPT_WAITING_MESSAGE);
+      expect(msg.details).toEqual({ sessionId: 'session-1' });
+    });
+
+    test('names the refused input message when the client sent an id', () => {
+      const msg = createPromptWaitingError('session-1', 'message-1');
+
+      expect(msg.details).toEqual({ sessionId: 'session-1', messageId: 'message-1' });
+    });
+
+    test('survives the wire: serialize, deserialize and validate', () => {
+      const msg = createPromptWaitingError('session-1', 'message-1');
+      const wire = serialize(msg);
+      const back = deserialize(wire);
+
+      expect(back).toEqual(msg);
+      expect(isValidMessage(JSON.parse(wire))).toBe(true);
+    });
+  });
+
+  describe('createInputNotDeliveredError() (#1140)', () => {
+    test('is an error message with the INPUT_NOT_DELIVERED code and the user-facing text', () => {
+      const msg = createInputNotDeliveredError('session-1', 'message-1');
+
+      expect(msg.type).toBe('error');
+      expect(msg.code).toBe('INPUT_NOT_DELIVERED');
+      expect(msg.code).toBe(INPUT_NOT_DELIVERED_ERROR_CODE);
+      expect(msg.message).toBe('Input was not delivered: the terminal is not accepting input.');
+      expect(msg.message).toBe(INPUT_NOT_DELIVERED_MESSAGE);
+      expect(msg.details).toEqual({ sessionId: 'session-1', messageId: 'message-1' });
+    });
+
+    test('details carry no message id when the client sent none, and the error survives the wire', () => {
+      const msg = createInputNotDeliveredError('session-1');
+
+      expect(msg.details).toEqual({ sessionId: 'session-1' });
+      expect(deserialize(serialize(msg))).toEqual(msg);
     });
   });
 

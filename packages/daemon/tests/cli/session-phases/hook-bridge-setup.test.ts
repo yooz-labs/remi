@@ -4555,4 +4555,154 @@ describe('setupHookBridge', () => {
       expect(slowLines[0]).toContain('9000ms');
     });
   });
+  /**
+   * #1140: the chat guard reads the tracker's observation of the menu on
+   * screen, and the status pipeline used to clear it on ANY non-waiting status,
+   * including a background subagent's or teammate's. Driven end to end: the
+   * real bridge listeners (`setupHookBridge`), the real tracker, and the real
+   * `createInputHandlers`, with the menu parsed from the live dialog bytes.
+   *
+   * Which agent-tagged events reach the status pipeline matters. The
+   * Pre/PostToolUse/PostToolUseFailure listeners drop a subagent-tagged event
+   * BEFORE any status handler (the #419 split policy), so those can never clear
+   * the observation; the first test pins that. SubagentStart/SubagentStop (always
+   * agent-tagged) and a teammate's Notification are forwarded to the status
+   * handlers, and those are what the `agentId` threading protects.
+   */
+  describe('the observed menu survives a subagent and clears for the main agent (#1140)', () => {
+    const CONN = 'conn-1140' as UUID;
+
+    function lockSession(id: string): void {
+      hookServer.fire('Notification', {
+        session_id: id,
+        hook_event_name: 'Notification',
+        transcript_path: path.join(tmpDir, `${id}.jsonl`),
+        notification_type: 'auth_success',
+        message: '',
+      });
+    }
+
+    function menuObserved(tag: string) {
+      const { tracker } = build({ realTracker: true });
+      lockSession(tag);
+      const parsed = parseQuestion(WRAPPED_DIRECTORY_DIALOG);
+      if (!parsed.question) throw new Error('the live dialog did not parse as a prompt');
+      tracker.onPTYPromptVisible(parsed.question);
+      expect(tracker.observedPromptOptions()?.map((o) => o.value)).toEqual(['1', '2', '3']);
+      sessionRegistry.attachConnection(SID, CONN);
+      const sent: ProtocolMessage[] = [];
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send: (_c, m) => {
+          sent.push(m);
+          return true;
+        },
+        ...trackerScreenDeps(() => tracker),
+      });
+      /** Chat text sent now: true when it was typed, false when refused. */
+      const chat = async (text: string): Promise<boolean> => {
+        const before = ptySubmits.length;
+        const errorsBefore = sent.filter((m) => m.type === 'error').length;
+        await handlers.onUserInput(CONN, SID, text, false);
+        const typed = ptySubmits.length > before;
+        const refused = sent.filter((m) => m.type === 'error').length > errorsBefore;
+        expect(typed).not.toBe(refused);
+        return typed;
+      };
+      return { tracker, chat, sent };
+    }
+
+    const tool = (tag: string, event: 'PreToolUse' | 'PostToolUse', extra: object) =>
+      hookServer.fire(event, {
+        session_id: tag,
+        hook_event_name: event,
+        tool_name: 'Bash',
+        tool_use_id: `tu-${event}`,
+        tool_input: { command: 'ls' },
+        tool_response: {},
+        ...extra,
+      });
+
+    test('a subagent PreToolUse or PostToolUse never reaches the status pipeline: chat stays refused', async () => {
+      const { chat } = menuObserved('claude-1140-tools');
+
+      tool('claude-1140-tools', 'PreToolUse', { agent_id: 'sub-1', agent_type: 'general-purpose' });
+      tool('claude-1140-tools', 'PostToolUse', {
+        agent_id: 'sub-1',
+        agent_type: 'general-purpose',
+      });
+
+      // No status change was made at all.
+      expect(messageApiLog.statusCalls).toEqual([]);
+      expect(await chat('while the subagent works')).toBe(false);
+      expect(ptySubmits).toEqual([]);
+    });
+
+    test('SubagentStart and SubagentStop reach the status pipeline and leave the menu observed: chat stays refused', async () => {
+      const { tracker, chat } = menuObserved('claude-1140-lifecycle');
+
+      hookServer.fire('SubagentStart', {
+        session_id: 'claude-1140-lifecycle',
+        agent_id: 'sub-1',
+        agent_type: 'general-purpose',
+      });
+      // The status pipeline did see it (the message API is not filtered) ...
+      expect(messageApiLog.statusCalls).toEqual(['executing']);
+      // ... but the main dialog is still on screen.
+      expect(tracker.observedPromptOptions()).not.toBeNull();
+      expect(await chat('after the subagent started')).toBe(false);
+
+      hookServer.fire('SubagentStop', { session_id: 'claude-1140-lifecycle', agent_id: 'sub-1' });
+      expect(messageApiLog.statusCalls).toEqual(['executing', 'thinking']);
+      expect(await chat('after the subagent stopped')).toBe(false);
+      expect(ptySubmits).toEqual([]);
+    });
+
+    test("a teammate's idle_prompt Notification leaves the menu observed: chat stays refused", async () => {
+      const { chat } = menuObserved('claude-1140-teammate');
+
+      hookServer.fire('Notification', {
+        session_id: 'claude-1140-teammate',
+        hook_event_name: 'Notification',
+        notification_type: 'idle_prompt',
+        message: '',
+        agent_id: 'team-1',
+        agent_type: 'general-purpose',
+      });
+
+      expect(messageApiLog.statusCalls).toEqual(['idle']);
+      expect(await chat('while the teammate idles')).toBe(false);
+    });
+
+    test('a main-agent PreToolUse (no agent_id) clears the observation: the next chat text is typed', async () => {
+      const { tracker, chat } = menuObserved('claude-1140-main');
+      hookServer.fire('SubagentStart', {
+        session_id: 'claude-1140-main',
+        agent_id: 'sub-1',
+        agent_type: 'general-purpose',
+      });
+      expect(await chat('still refused')).toBe(false);
+
+      tool('claude-1140-main', 'PreToolUse', {});
+
+      expect(messageApiLog.statusCalls).toEqual(['executing', 'executing']);
+      expect(tracker.observedPromptOptions()).toBeNull();
+      expect(await chat('typed now')).toBe(true);
+      expect(ptySubmits).toEqual(['typed now']);
+    });
+
+    test('a main-agent idle_prompt Notification clears it too', async () => {
+      const { chat } = menuObserved('claude-1140-main-idle');
+
+      hookServer.fire('Notification', {
+        session_id: 'claude-1140-main-idle',
+        hook_event_name: 'Notification',
+        notification_type: 'idle_prompt',
+        message: '',
+      });
+
+      expect(await chat('typed after idle')).toBe(true);
+    });
+  });
 });

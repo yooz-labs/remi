@@ -168,11 +168,13 @@ export function formatQuestionText(question: Question): string {
   // Add question indicator
   text = `❓ ${text.trim()}`;
 
-  // Add hint for free text if allowed and no options
+  // Add hint for free text if allowed and no options. A card WITH options takes
+  // a pick, not text, so it gets no "or reply with custom text" hint: the
+  // parser was the only producer of allowsFreeText together with options (it
+  // marked every selection box that way), and since #1140 it does not. Text
+  // sent against a menu would only be ignored, with the Enter confirming "1. Yes".
   if (question.allowsFreeText && question.options.length === 0) {
     text += '\n\n💬 Reply with your answer';
-  } else if (question.allowsFreeText && question.options.length > 0) {
-    text += '\n\n💬 Or reply with custom text';
   }
 
   return text;
@@ -235,7 +237,7 @@ export function formatHelpMessage(): string {
     '',
     '/start [directory] - Start new session',
     '/stop - End current session',
-    '/interrupt - Send Esc to Claude (cancel current action)',
+    '/interrupt - Send Escape to Claude (interrupts its work; declines a pending prompt)',
     '/pause - Pause the session',
     '/resume - Resume paused session',
     '/status - Show session info',

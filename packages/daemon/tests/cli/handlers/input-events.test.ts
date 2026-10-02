@@ -330,7 +330,7 @@ describe('createInputHandlers', () => {
       expect(msg.details?.messageId).toBe(droppedMessageId);
     });
 
-    test('swallows pty.write errors and logs them (raw path)', async () => {
+    test('a failed raw pty.write is logged and reported to the sender as INPUT_NOT_DELIVERED, not thrown (raw path)', async () => {
       const logs: string[] = [];
       configureLogger({ writeLog: (msg) => logs.push(msg) });
       const ptyCapture = {
@@ -354,11 +354,24 @@ describe('createInputHandlers', () => {
         ...PROMPT_ON_SCREEN,
       });
       // Should not throw
-      await handlers.onUserInput(CID, sessionId, 'x', true);
+      const inputId = generateId();
+      await handlers.onUserInput(CID, sessionId, 'x', true, undefined, inputId);
 
       expect(
         logs.some((m) => m.includes('[PTY] raw write failed') && m.includes('broken pipe')),
       ).toBe(true);
+      // And the sender is told (#1140 review): it used to be a log line only,
+      // so a client reporting success on its Escape reported it falsely.
+      expect(sendCalls).toHaveLength(1);
+      const msg = sendCalls[0]?.message as {
+        type: string;
+        code?: string;
+        details?: { sessionId?: string; messageId?: string };
+      };
+      expect(msg.type).toBe('error');
+      expect(msg.code).toBe('INPUT_NOT_DELIVERED');
+      expect(msg.details).toEqual({ sessionId, messageId: inputId });
+      expect(sendCalls[0]?.connectionId).toBe(CID);
     });
   });
 
@@ -2785,11 +2798,11 @@ describe('createInputHandlers', () => {
       return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:\\])\/\/[^\n]*/g, '$1');
     }
 
-    /** 'ok', or why `src`'s `createInputHandlers({...})` call does not use the
-     *  helper for its screen deps. */
-    function wiringVerdict(src: string): string {
-      const start = src.indexOf('createInputHandlers({');
-      if (start < 0) return 'no createInputHandlers call';
+    /** 'ok', or why `src`'s `<callName>({...})` call (`createInputHandlers` or
+     *  `createSessionHandlers`) does not use the helper for its screen deps. */
+    function wiringVerdict(src: string, callName = 'createInputHandlers'): string {
+      const start = src.indexOf(`${callName}({`);
+      if (start < 0) return `no ${callName} call`;
       const end = src.indexOf('\n});', start);
       if (end < 0) return 'no end of the call';
       const call = stripComments(src.slice(start, end));
@@ -2816,6 +2829,39 @@ describe('createInputHandlers', () => {
 
     test('cli.ts wires it into the answer handlers', () => {
       expect(wiringVerdict(cliSource)).toBe('ok');
+    });
+
+    // #1140: the Stop handler reads the same view so it never types "/exit"
+    // + Enter into a menu on screen.
+    test('cli.ts wires it into the session handlers too', () => {
+      expect(wiringVerdict(cliSource, 'createSessionHandlers')).toBe('ok');
+    });
+
+    /** `src` with the LAST `SPREAD` (the session handlers' call, which comes
+     *  after the answer handlers') replaced. */
+    function mutateSessionSpread(src: string, replacement: string): string {
+      const at = src.lastIndexOf(SPREAD);
+      return `${src.slice(0, at)}${replacement}${src.slice(at + SPREAD.length)}`;
+    }
+
+    test.each([
+      ['deleted', (s: string) => mutateSessionSpread(s, ''), 'spread missing'],
+      [
+        'line-commented',
+        (s: string) => mutateSessionSpread(s, `  // ${SPREAD.trim()}`),
+        'spread missing',
+      ],
+      [
+        'overridden by a property',
+        (s: string) => mutateSessionSpread(s, `${SPREAD}\n  observedPromptOptions: () => null,`),
+        'overridden after the spread',
+      ],
+    ])('the session-handler check fails when the spread is %s', (_name, mutate, verdict) => {
+      const mutated = mutate(cliSource);
+      expect(mutated).not.toBe(cliSource);
+      expect(wiringVerdict(mutated, 'createSessionHandlers')).toBe(verdict);
+      // The answer handlers' own call is untouched by these mutations.
+      expect(wiringVerdict(mutated)).toBe('ok');
     });
 
     // Round-4 review: the first version of this check passed a commented-out

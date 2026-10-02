@@ -211,6 +211,25 @@ function detectIdle(text: string): StatusResult | null {
 }
 
 /**
+ * True when the output's last non-empty line is Claude's empty input prompt
+ * (a bare `❯`) and nothing in it is a selection box or another waiting
+ * prompt: the render that follows a dialog being dismissed (Esc in the
+ * terminal fires no hook). `parseStatus` alone misses it because it reads only
+ * the LAST line, which is blank in these renders, so it falls to the 0.3
+ * default that the status pipeline ignores (#1140).
+ */
+export function isEmptyInputPrompt(rawOutput: string): boolean {
+  const text = cleanForParsing(rawOutput);
+  if (detectWaiting(text)) return false;
+  const last = text
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0)
+    .pop();
+  return last === '❯';
+}
+
+/**
  * Extract tool name from status context.
  * Returns undefined if not executing a tool.
  */

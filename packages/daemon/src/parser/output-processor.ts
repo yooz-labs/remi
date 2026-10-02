@@ -15,7 +15,7 @@ import {
   splitLines,
 } from './ansi.ts';
 import { hasQuestionIndicator, parseQuestion } from './question-parser.ts';
-import { parseStatus } from './status-parser.ts';
+import { isEmptyInputPrompt, parseStatus } from './status-parser.ts';
 
 /** Event types emitted by the processor */
 export interface OutputEvents {
@@ -198,7 +198,14 @@ export class OutputProcessor {
     // Detect status changes from raw content.
     // Only update status if the new detection has reasonable confidence;
     // low-confidence defaults (0.3) should not overwrite real status.
-    const statusResult = parseStatus(content);
+    let statusResult = parseStatus(content);
+    if (
+      this.currentStatus === 'waiting' &&
+      statusResult.confidence < 0.5 &&
+      isEmptyInputPrompt(content)
+    ) {
+      statusResult = { status: 'idle', confidence: 0.7 };
+    }
     if (statusResult.status !== this.currentStatus && statusResult.confidence >= 0.5) {
       this.currentStatus = statusResult.status;
       // Clear the rising-edge gate at BOTH edges of a non-waiting span so the

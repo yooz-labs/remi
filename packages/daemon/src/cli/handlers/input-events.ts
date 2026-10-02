@@ -9,7 +9,14 @@
  * answer is dropped because the question changed) and onBulletExpandRequest.
  */
 
-import { createBulletExpandResponse, createError, errorToString } from '@remi/shared';
+import {
+  PROMPT_WAITING_ERROR_CODE,
+  createBulletExpandResponse,
+  createError,
+  createInputNotDeliveredError,
+  createPromptWaitingError,
+  errorToString,
+} from '@remi/shared';
 import type { AnswerExtras, AnswerSelection, Question, QuestionOption, UUID } from '@remi/shared';
 
 import { precedentAgentScope, toolNameFromSignature } from '../../auto-approve/precedent.ts';
@@ -23,6 +30,7 @@ import type { ManagedSession, SessionBindingStore, SessionRegistry } from '../..
 import { traceQuestionEvent } from '../../session/question-trace.ts';
 import { log, logError } from '../logger.ts';
 import { ResolvedAnswerCache, answerCacheKey } from './resolved-answer-cache.ts';
+import { isNumberedMenu } from './screen-menu.ts';
 import type { SendToConnection } from './trivial-events.ts';
 
 export interface InputHandlerDeps {
@@ -141,6 +149,15 @@ export interface InputHandlerDeps {
    * Absent => no observed options, so an option answer is refused: the same
    * fail-toward-refusing default as `isPromptCurrent` and
    * `isPromptObservedOnPTY`.
+   *
+   * `onUserInput` reads it the other way round (#1140): a NUMBERED selection
+   * box in the list (`isNumberedMenu`) means chat text is refused, while
+   * absent or null (nothing observed, or the dep unwired) types the text as
+   * before. In production `cli.ts` builds a tracker for every session, hook
+   * server or not, so "no tracker" is effectively never the case there; the
+   * fail-open default only matters to a caller that does not wire this dep
+   * (tests, a future entry point), and it is the opposite of the answer
+   * guards above, which fail closed.
    */
   observedPromptOptions?: (sessionId: UUID) => readonly QuestionOption[] | null;
   /**
@@ -1314,7 +1331,43 @@ export function createInputHandlers(deps: InputHandlerDeps) {
           await session.pty.write(content);
         } catch (err) {
           log(`[PTY] raw write failed: ${errorToString(err)}`);
+          // Tell the sender (#1140 review). It used to be a log line only, so
+          // a client that reports success on its Escape (Telegram's
+          // "Interrupt sent") reported it falsely when the terminal was gone.
+          send(connectionId, createInputNotDeliveredError(session.sessionId, messageId));
         }
+        return;
+      }
+
+      // #1140: structured input is typed followed by Enter. While Claude
+      // shows a numbered selection menu (a permission prompt, or a hook-less
+      // one) it ignores the text and the Enter confirms the highlighted
+      // option, usually "1. Yes", so a chat message or a Telegram text reply
+      // sent while a prompt waits would approve the pending action. Refuse it
+      // and say why. Raw input (above) stays unguarded: it is a person's
+      // keystrokes at the terminal, which is how the menu gets answered.
+      //
+      // `observedPromptOptions` is the tracker's view of the screen, the same
+      // signal the card-answer guards use (#1134). Only a NUMBERED selection
+      // box refuses (`isNumberedMenu`): a subprocess `(y/n)` prompt is observed
+      // too, with options "y"/"n", and it takes typed text. Absent, or null (no
+      // prompt observed, or no tracker): nothing is known to be on screen, so
+      // the text is typed as before.
+      const menu = observedPromptOptions?.(session.sessionId) ?? null;
+      if (menu !== null && isNumberedMenu(menu)) {
+        const screenValues = menu.map((o) => o.value);
+        log(
+          `[Input] refusing ${content.length} chars of chat text for session ${session.sessionId.slice(0, 8)}: a prompt menu is on screen [${screenValues.join(', ')}]`,
+        );
+        traceQuestionEvent({
+          action: 'input_refused',
+          sessionId: session.sessionId,
+          signal: PROMPT_WAITING_ERROR_CODE,
+          callSite: 'input-events.onUserInput:chatIntoMenuGuard',
+          // Only the length of what the user typed is recorded, never the text.
+          detail: { reason: 'chat-into-menu', textLength: content.length, screenValues },
+        });
+        send(connectionId, createPromptWaitingError(session.sessionId, messageId));
         return;
       }
 

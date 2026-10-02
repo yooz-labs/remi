@@ -52,7 +52,14 @@ import { extractToolQuestion } from './tool-question.ts';
 import { summarizeToolInput } from './tool-summary.ts';
 
 export interface HookBridgeEvents {
-  onStatusChange: (status: AgentStatus, context?: string) => void;
+  /**
+   * `agentId` is the hook event's own `agent_id` (#1140): set when the event
+   * came from a background subagent or teammate, absent for the main agent.
+   * The status pipeline maps every PreToolUse/PostToolUse/SubagentStart to a
+   * status, so without it a subagent's tool call looked like the main agent
+   * moving on, and the tracker cleared the menu the main dialog still shows.
+   */
+  onStatusChange: (status: AgentStatus, context?: string, agentId?: string) => void;
   /**
    * Returns the `QuestionRegistrationOutcome` (#888 criterion iii) when the
    * implementation routed `question` through `MessageAPI.handleQuestion` --
@@ -382,12 +389,12 @@ export class HookEventBridge {
 
   handlePreToolUse(input: PreToolUseHookInput): void {
     this.subagentContext.onPreToolUse(input.tool_name, input.tool_use_id);
-    this.events.onStatusChange('executing', input.tool_name);
+    this.events.onStatusChange('executing', input.tool_name, input.agent_id);
   }
 
   handlePostToolUse(input: PostToolUseHookInput): void {
     this.subagentContext.onPostToolUse(input.tool_name, input.tool_use_id);
-    this.events.onStatusChange('thinking');
+    this.events.onStatusChange('thinking', undefined, input.agent_id);
   }
 
   handleNotification(input: NotificationHookInput): void {
@@ -432,9 +439,9 @@ export class HookEventBridge {
       // already set 'waiting' moments earlier, per this file's own module
       // doc), and it remains the only wait-signal at all for the theoretical
       // unpaired case above.
-      this.events.onStatusChange('waiting');
+      this.events.onStatusChange('waiting', undefined, input.agent_id);
     } else if (input.notification_type === 'idle_prompt') {
-      this.events.onStatusChange('idle');
+      this.events.onStatusChange('idle', undefined, input.agent_id);
     } else {
       // Intentionally unhandled notification types:
       // - 'auth_success': informational only, no status change needed
@@ -454,7 +461,7 @@ export class HookEventBridge {
     // When stop_hook_active is true, the stop hook is intercepting and the
     // session is NOT actually stopping; it remains active.
     if (!input.stop_hook_active) {
-      this.events.onStatusChange('idle');
+      this.events.onStatusChange('idle', undefined, input.agent_id);
       // Agent turn is done; clear any orphaned subagent tracking so a dropped
       // PostToolUse(Task) can't permanently block the user's permission prompts.
       this.subagentContext.reset();
@@ -480,7 +487,7 @@ export class HookEventBridge {
     // cases; this method now only builds the question payload.
     const question = this.buildPermissionQuestion(input, summary, workflowOffer);
     this.events.onQuestion(question);
-    this.events.onStatusChange('waiting');
+    this.events.onStatusChange('waiting', undefined, input.agent_id);
     return question.id;
   }
 
@@ -581,15 +588,19 @@ export class HookEventBridge {
   }
 
   handlePostToolUseFailure(input: PostToolUseFailureHookInput): void {
-    this.events.onStatusChange('executing', `${input.tool_name} failed: ${input.error}`);
+    this.events.onStatusChange(
+      'executing',
+      `${input.tool_name} failed: ${input.error}`,
+      input.agent_id,
+    );
   }
 
   handleSubagentStart(input: SubagentStartHookInput): void {
-    this.events.onStatusChange('executing', `subagent:${input.agent_type}`);
+    this.events.onStatusChange('executing', `subagent:${input.agent_type}`, input.agent_id);
   }
 
-  handleSubagentStop(_input: SubagentStopHookInput): void {
-    this.events.onStatusChange('thinking');
+  handleSubagentStop(input: SubagentStopHookInput): void {
+    this.events.onStatusChange('thinking', undefined, input.agent_id);
   }
 
   handleStopFailure(input: StopFailureHookInput): void {
@@ -611,7 +622,7 @@ export class HookEventBridge {
       promptId: input.prompt_id,
     };
     this.events.onQuestion(question);
-    this.events.onStatusChange('waiting');
+    this.events.onStatusChange('waiting', undefined, input.agent_id);
   }
 
   /**
@@ -670,12 +681,12 @@ export class HookEventBridge {
       source: 'elicitation',
     };
     const outcome = this.events.onQuestion(question);
-    this.events.onStatusChange('waiting');
+    this.events.onStatusChange('waiting', undefined, input.agent_id);
     return { questionId: question.id, outcome };
   }
 
-  handleSessionEnd(_input: SessionEndHookInput): void {
+  handleSessionEnd(input: SessionEndHookInput): void {
     this.subagentContext.reset();
-    this.events.onStatusChange('idle');
+    this.events.onStatusChange('idle', undefined, input.agent_id);
   }
 }

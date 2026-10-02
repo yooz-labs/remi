@@ -2190,6 +2190,10 @@ const sessionHandlers: SessionHandlers = createSessionHandlers({
   onConnectionRemoved: () =>
     updateRemiStatus({ connections: Math.max(0, remiStatus.connections - 1) }),
   send: sendToConnection,
+  // #1140: a Stop does not type "/exit" + Enter into a menu on screen (the Enter
+  // would confirm the highlighted option); it reads the same tracker view the
+  // answer and chat guards do.
+  ...trackerScreenDeps((sessionId) => sessionTrackers.get(sessionId)),
 });
 // Wire the deferred-Stop resolver now that the handlers exist (#641); the
 // registry's onSessionClosed reaches it through this holder.

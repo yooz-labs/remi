@@ -131,6 +131,7 @@ export function parseQuestion(rawOutput: string): ParseResult {
  * Parse a Claude Code selection box. Returns a Question only when the `❯`
  * cursor is present on one of at least two contiguous, sequentially-numbered
  * option lines. A plain numbered list has no cursor and so returns null.
+ * The question takes an option, not text (`allowsFreeText` false, #1140).
  */
 function parseChromePrompt(lines: readonly string[]): Question | null {
   const options: QuestionOption[] = [];
@@ -205,7 +206,23 @@ function parseChromePrompt(lines: readonly string[]): Question | null {
   }
 
   const questionText = firstOptionIdx > 0 ? extractPromptText(lines.slice(0, firstOptionIdx)) : '';
-  return createQuestion(questionText || 'Select an option:', options, true);
+  return {
+    // A selection box takes a pick, not text (#1140): Claude ignores typed
+    // letters at the menu, and the Enter that follows confirms the highlighted
+    // option, usually "1. Yes". The parser used to mark every box as free-text
+    // capable, which let `handleAnswer` type text into a hook-less card's menu
+    // and put "reply with custom text" on its Telegram card. When a hook
+    // record merges onto this parse, the record's own flag replaces this one
+    // (`QuestionPresenceTracker.consumeAndMerge`).
+    ...createQuestion(questionText || 'Select an option:', options, false),
+    // Read off the screen, so never the daemon's synthetic Yes/No fallback.
+    // Said outright because `looksLikeDefaultPermissionQuestion` used to get
+    // this answer from the free-text flag alone (`allowsFreeText` true meant
+    // "not the fallback"); with the flag false, a parsed Yes/No menu would
+    // read as the bland fallback and lose PushDedup's upgrade rule. Same
+    // signal, same reason as the (y/n) parser (#718).
+    optionsAreFallback: false,
+  };
 }
 
 /** Most non-option rows that may sit between two options and still join the
