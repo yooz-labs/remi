@@ -5,6 +5,8 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
 import {
   MessageIdTracker,
+  PROMPT_WAITING_ERROR_CODE,
+  PROMPT_WAITING_MESSAGE,
   createAck,
   createAgentOutput,
   createAuqAnswer,
@@ -20,6 +22,7 @@ import {
   createHubStatus,
   createPing,
   createPong,
+  createPromptWaitingError,
   createQuestion,
   createQuestionResolved,
   createQuestionSnapshot,
@@ -38,6 +41,7 @@ import {
   createUserInput,
   deserialize,
   generateId,
+  isValidMessage,
   now,
   serialize,
 } from '../src/protocol.ts';
@@ -697,6 +701,36 @@ describe('Message factory functions', () => {
         field: 'email',
         reason: 'invalid format',
       });
+    });
+  });
+
+  describe('createPromptWaitingError() (#1140)', () => {
+    test('is an error message with the PROMPT_WAITING code and the user-facing text', () => {
+      const msg = createPromptWaitingError('session-1');
+
+      expect(msg.type).toBe('error');
+      expect(msg.code).toBe('PROMPT_WAITING');
+      expect(msg.code).toBe(PROMPT_WAITING_ERROR_CODE);
+      expect(msg.message).toBe(
+        'Claude is waiting on a prompt. Answer it first, from its card or in the terminal.',
+      );
+      expect(msg.message).toBe(PROMPT_WAITING_MESSAGE);
+      expect(msg.details).toEqual({ sessionId: 'session-1' });
+    });
+
+    test('names the refused input message when the client sent an id', () => {
+      const msg = createPromptWaitingError('session-1', 'message-1');
+
+      expect(msg.details).toEqual({ sessionId: 'session-1', messageId: 'message-1' });
+    });
+
+    test('survives the wire: serialize, deserialize and validate', () => {
+      const msg = createPromptWaitingError('session-1', 'message-1');
+      const wire = serialize(msg);
+      const back = deserialize(wire);
+
+      expect(back).toEqual(msg);
+      expect(isValidMessage(JSON.parse(wire))).toBe(true);
     });
   });
 

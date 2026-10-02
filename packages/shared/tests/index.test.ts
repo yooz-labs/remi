@@ -8,6 +8,8 @@ import { describe, expect, test } from 'bun:test';
 // Test that all exports are accessible
 import {
   MessageIdTracker,
+  PROMPT_WAITING_ERROR_CODE,
+  PROMPT_WAITING_MESSAGE,
   createAck,
   createAgentOutput,
   createEdit,
@@ -16,6 +18,7 @@ import {
   createHelloAck,
   createPing,
   createPong,
+  createPromptWaitingError,
   createUserInput,
   deserialize,
   err,
@@ -162,6 +165,15 @@ describe('Package exports', () => {
     test('createError is exported and functional', () => {
       const msg = createError('E001', 'test error');
       expect(msg.type).toBe('error');
+    });
+
+    // #1140: the daemon builds it and the web client matches on it, both
+    // through the package entry point.
+    test('the PROMPT_WAITING error is exported for both ends', () => {
+      expect(PROMPT_WAITING_ERROR_CODE).toBe('PROMPT_WAITING');
+      expect(PROMPT_WAITING_MESSAGE.length).toBeGreaterThan(0);
+      const msg = createPromptWaitingError('s' as UUID, 'm' as UUID);
+      expect(msg.code).toBe(PROMPT_WAITING_ERROR_CODE);
     });
   });
 
