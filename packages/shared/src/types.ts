@@ -326,9 +326,9 @@ export interface QuestionStep {
  * `QuestionPresenceTracker.recordPendingHook` (the `hook-bridge-setup.ts`
  * `onQuestion` callback only stashes `'permission_request'` there — the ONLY
  * source it stashes since #890/Q5 deleted the `'notification'` synthesis) —
- * like a source-less `StopFailure` "Retry?" card, it emits directly, since it
- * is not part of the permission-escalation PTY-arbiter funnel (ADR 0004
- * scopes that to permission hooks specifically).
+ * like any other source-less question, it emits directly, since it is not
+ * part of the permission-escalation PTY-arbiter funnel (ADR 0004 scopes that
+ * to permission hooks specifically).
  */
 export type QuestionSource = 'permission_request' | 'notification' | 'pty' | 'elicitation';
 

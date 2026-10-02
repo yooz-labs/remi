@@ -30,6 +30,7 @@ import { clearNativeRoute, setNativeRoute, syncNativeIdentity } from '@/lib/nati
 import { syncNativeStatusBarTheme } from '@/lib/native-theme';
 import { setSoundEnabled } from '@/lib/notifications';
 import { promptWaitingRefusedMessageId } from '@/lib/prompt-waiting';
+import { pushPreferencesEqual, pushPreferencesFromSettings } from '@/lib/push-preferences';
 import { relayAnswerDirect } from '@/lib/push-answer-relay';
 import { resolvePushAnswerTarget } from '@/lib/push-answer-resolver';
 import {
@@ -2139,11 +2140,7 @@ function App() {
   // effects below read the CURRENT value without taking `settings` as a
   // dependency — that would re-run them (and re-register on every daemon) on an
   // unrelated theme or font-size change.
-  const pushPrefsRef = useRef<PushPreferences>({
-    questions: settings.notifyQuestions,
-    turnComplete: settings.notifyTurnComplete,
-    harnessDenied: settings.notifyHarnessDenied,
-  });
+  const pushPrefsRef = useRef<PushPreferences>(pushPreferencesFromSettings(settings));
   // #690: id -> resolver for a message awaiting its daemon `ack`. Currently
   // used only by handleDisconnect's unregister_device_token wait; see the
   // 'ack' case in handleMessage for the resolving side.
@@ -2192,17 +2189,8 @@ function App() {
       // sent up is a toggle that does nothing. Re-registering the SAME token is
       // the update: `register_device_token` is idempotent and keyed by token, so
       // there is no separate update message and no way for the two to drift.
-      const next: PushPreferences = {
-        questions: newSettings.notifyQuestions,
-        turnComplete: newSettings.notifyTurnComplete,
-        harnessDenied: newSettings.notifyHarnessDenied,
-      };
-      const prev = pushPrefsRef.current;
-      if (
-        prev.questions === next.questions &&
-        prev.turnComplete === next.turnComplete &&
-        prev.harnessDenied === next.harnessDenied
-      ) {
+      const next = pushPreferencesFromSettings(newSettings);
+      if (pushPreferencesEqual(pushPrefsRef.current, next)) {
         return;
       }
       pushPrefsRef.current = next;

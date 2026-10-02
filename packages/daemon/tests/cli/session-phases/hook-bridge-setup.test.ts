@@ -13,15 +13,26 @@ import {
   gateAnswerDeps,
   trackerScreenDeps,
 } from '../../../src/cli/handlers/input-events.ts';
+import type { DeviceTokenEntry } from '../../../src/cli/handlers/trivial-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import type { HookBridgeHandle } from '../../../src/cli/session-phases/hook-bridge-setup.ts';
 import {
   setupHookBridge,
   terminalNoticeReason,
 } from '../../../src/cli/session-phases/hook-bridge-setup.ts';
+import { HookServer } from '../../../src/hooks/hook-server.ts';
 import { REMI_REGISTERED_HOOK_EVENTS } from '../../../src/hooks/hook-types.ts';
-import type { HookServer, PermissionDecision } from '../../../src/hooks/index.ts';
-import { selectPushCategory } from '../../../src/notifications/notification-dispatcher.ts';
+import type { PermissionDecision, StopFailureHookInput } from '../../../src/hooks/index.ts';
+import {
+  NotificationDispatcher,
+  type PushFn,
+  selectPushCategory,
+} from '../../../src/notifications/notification-dispatcher.ts';
+import {
+  type TurnFailedNotifier,
+  createTurnFailedRoutes,
+  turnFailedCollapseId,
+} from '../../../src/notifications/turn-failed.ts';
 import { parseQuestion } from '../../../src/parser/question-parser.ts';
 import type { PTYSession } from '../../../src/pty/pty-session.ts';
 import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
@@ -33,6 +44,7 @@ import {
   WRAPPED_DIRECTORY,
   WRAPPED_DIRECTORY_DIALOG,
 } from '../../parser/fixtures/claude-dialogs.ts';
+import { reserveRange } from '../../session/port-test-helpers.ts';
 
 /**
  * Recording HookServer that captures `.on()` registrations AND lets tests
@@ -285,6 +297,13 @@ describe('setupHookBridge', () => {
       hasLocalTerminal?: boolean;
       /** The harness_denied sink (#1126). */
       onHarnessDenied?: (input: unknown) => void;
+      /** The turn_failed sink (#1153). */
+      pushTurnFailed?: (sessionId: UUID, input: StopFailureHookInput) => void;
+      /** The turn_failed dismissal sink (#1153). */
+      dismissTurnFailed?: (sessionId: UUID) => void;
+      /** A real `HookServer` to register the listeners on, instead of the
+       *  recording one (#1153: a recorded payload POSTed over HTTP). */
+      realServer?: HookServer;
     } = {},
   ): { tracker: QuestionPresenceTracker; messageApi: MessageAPI; handle: HookBridgeHandle } {
     const sessionWorkingDirectory = opts.workingDirectory ?? tmpDir;
@@ -370,6 +389,8 @@ describe('setupHookBridge', () => {
         holdMs: opts.holdMs ?? 60_000,
         hookTimeoutMs: (opts.hasLocalTerminal ?? true) ? 600_000 : 3_600_000,
         ...(opts.onHarnessDenied ? { onHarnessDenied: opts.onHarnessDenied } : {}),
+        ...(opts.pushTurnFailed ? { pushTurnFailed: opts.pushTurnFailed } : {}),
+        ...(opts.dismissTurnFailed ? { dismissTurnFailed: opts.dismissTurnFailed } : {}),
         ...(opts.noticeLog
           ? {
               pushTerminalNotice: (_sid: UUID, question: Question, reason: string) =>
@@ -395,7 +416,7 @@ describe('setupHookBridge', () => {
           : {}),
       },
       {
-        hookServer: hookServer as unknown as HookServer,
+        hookServer: opts.realServer ?? (hookServer as unknown as HookServer),
         sessionId: SID,
         workingDirectory: sessionWorkingDirectory,
         messageApi: localMessageApi,
@@ -486,30 +507,390 @@ describe('setupHookBridge', () => {
       });
     }
 
-    test('StopFailure emits a "Retry?" question + waiting status (no agent_id drop)', () => {
-      build();
+    // #1153: a StopFailure is a failed turn, not a question. The old cards
+    // ("Session stop failed (undefined). Retry?") had Yes/No no answer could
+    // reach, and stacked one per failed turn.
+    const stopFailure = (over: Record<string, unknown> = {}) => ({
+      session_id: 'claude-A',
+      hook_event_name: 'StopFailure',
+      error: 'rate_limit',
+      last_assistant_message: "You've hit your session limit",
+      ...over,
+    });
+
+    test('StopFailure registers no question and sets idle, not waiting (#1153)', () => {
+      build({ realMessageApi: true });
       lock('claude-A');
-      hookServer.fire('StopFailure', { session_id: 'claude-A', error_type: 'timeout' });
-      expect(messageApiLog.questionCalls).toBeGreaterThanOrEqual(1);
-      expect(messageApiLog.statusCalls).toContain('waiting');
+      messageApiLog.statusCalls.length = 0;
+      hookServer.fire('StopFailure', stopFailure());
+      expect(messageApiLog.questionCalls).toBe(0);
+      expect(sessionRegistry.getSession(SID)?.currentQuestions.size ?? 0).toBe(0);
+      expect(messageApiLog.statusCalls).toEqual(['idle']);
+    });
+
+    test('StopFailure registers no question with a real tracker either (#1153)', () => {
+      build({ realTracker: true, realMessageApi: true });
+      lock('claude-A');
+      hookServer.fire('StopFailure', stopFailure());
+      expect(messageApiLog.questionCalls).toBe(0);
+      expect(sessionRegistry.getSession(SID)?.currentQuestions.size ?? 0).toBe(0);
     });
 
     test('StopFailure for a FOREIGN session_id is dropped by the admit gate', () => {
-      build();
+      const pushed: StopFailureHookInput[] = [];
+      build({ pushTurnFailed: (_sid, input) => pushed.push(input) });
       lock('claude-A');
-      hookServer.fire('StopFailure', { session_id: 'claude-OTHER', error_type: 'timeout' });
+      messageApiLog.statusCalls.length = 0;
+      hookServer.fire('StopFailure', stopFailure({ session_id: 'claude-OTHER' }));
       expect(messageApiLog.questionCalls).toBe(0);
+      expect(messageApiLog.statusCalls).toEqual([]);
+      expect(pushed).toEqual([]);
     });
 
-    test('#625 StopFailure emits DIRECTLY even with a real (non-passthrough) tracker', () => {
-      // With a real QuestionPresenceTracker, recordPendingHook only STASHES (it does
-      // not push without a PTY-visible signal). A source-less Stop-failure question has
-      // no gate to push it, so the bridge must emit it directly to messageApi — proven
-      // here by questionCalls incrementing despite the real tracker never pushing.
-      build({ realTracker: true });
+    test('an admitted StopFailure reaches pushTurnFailed once, with this session id and the payload (#1153)', () => {
+      const pushed: Array<{ sessionId: UUID; input: StopFailureHookInput }> = [];
+      build({ pushTurnFailed: (sessionId, input) => pushed.push({ sessionId, input }) });
       lock('claude-A');
-      hookServer.fire('StopFailure', { session_id: 'claude-A', error_type: 'timeout' });
-      expect(messageApiLog.questionCalls).toBeGreaterThanOrEqual(1);
+      hookServer.fire('StopFailure', stopFailure());
+      expect(pushed).toHaveLength(1);
+      expect(pushed[0]?.sessionId).toBe(SID);
+      expect(pushed[0]?.input.error).toBe('rate_limit');
+      expect(pushed[0]?.input.last_assistant_message).toBe("You've hit your session limit");
+    });
+
+    test('a throwing pushTurnFailed never escapes into the hook dispatch loop (#1153)', () => {
+      build({
+        pushTurnFailed: () => {
+          throw new Error('test: push sink exploded');
+        },
+      });
+      lock('claude-A');
+      messageApiLog.statusCalls.length = 0;
+      expect(() => hookServer.fire('StopFailure', stopFailure())).not.toThrow();
+      // The status change happened before the push was attempted.
+      expect(messageApiLog.statusCalls).toEqual(['idle']);
+    });
+
+    test('with no pushTurnFailed wired, StopFailure still sets idle and does not throw', () => {
+      build();
+      lock('claude-A');
+      messageApiLog.statusCalls.length = 0;
+      expect(() => hookServer.fire('StopFailure', stopFailure())).not.toThrow();
+      expect(messageApiLog.statusCalls).toEqual(['idle']);
+    });
+
+    test('an agent_id-tagged StopFailure leaves the main status alone, registers no card, and is still pushed (#1153)', () => {
+      const pushed: StopFailureHookInput[] = [];
+      build({
+        realTracker: true,
+        realMessageApi: true,
+        pushTurnFailed: (_sid, input) => pushed.push(input),
+      });
+      lock('claude-A');
+      messageApiLog.statusCalls.length = 0;
+      hookServer.fire(
+        'StopFailure',
+        stopFailure({ agent_id: 'agent-9', agent_type: 'general-purpose' }),
+      );
+      // Main is still running: no status change reached the pipeline.
+      expect(messageApiLog.statusCalls).toEqual([]);
+      expect(sessionRegistry.getSession(SID)?.currentQuestions.size ?? 0).toBe(0);
+      expect(pushed).toHaveLength(1);
+      expect(pushed[0]?.agent_type).toBe('general-purpose');
+    });
+
+    describe('turn_failed push through a real NotificationDispatcher (#1153)', () => {
+      const TOKEN_ENTRY = (token: string, pushPrefs?: DeviceTokenEntry['pushPrefs']) => ({
+        token,
+        platform: 'ios',
+        registeredAt: 1,
+        connectionId: 'c0000000-0000-0000-0000-000000000000' as UUID,
+        ...(pushPrefs !== undefined && { pushPrefs }),
+      });
+
+      /** The wiring cli.ts does: the session's dispatcher behind the real
+       *  `createTurnFailedRoutes`. The sink is a recording `PushFn` (transport
+       *  only), and the notifier wrapper only records the dispatcher's
+       *  outcomes; everything between the hook and the sink is real. */
+      function wire(deviceTokens: Map<string, DeviceTokenEntry>, realServer?: HookServer) {
+        const sent: Array<{ token: string; opts: Record<string, unknown> }> = [];
+        const pushFn: PushFn = async (_url, token, opts) => {
+          sent.push({ token, opts: opts as unknown as Record<string, unknown> });
+        };
+        const dispatcher = new NotificationDispatcher(
+          {
+            sessionRegistry,
+            deviceTokens,
+            pushConfig: () => ({ signalingUrl: 'ws://x' }),
+            getPrimarySessionId: () => SID,
+            pushFn,
+          },
+          SID,
+        );
+        const outcomes: Array<Promise<string>> = [];
+        const notifier: TurnFailedNotifier = {
+          pushTurnFailed: (input) => {
+            const outcome = dispatcher.pushTurnFailed(input);
+            outcomes.push(outcome);
+            return outcome;
+          },
+          dismissTurnFailed: () => dispatcher.dismissTurnFailed(),
+        };
+        const routes = createTurnFailedRoutes(new Map([[SID, notifier]]));
+        build({
+          realTracker: true,
+          realMessageApi: true,
+          pushTurnFailed: routes.push,
+          dismissTurnFailed: routes.dismiss,
+          ...(realServer ? { realServer } : {}),
+        });
+        return { sent, outcomes };
+      }
+
+      test('a failed turn pushes exactly once, kind turn_failed, with readable text and no card', async () => {
+        const { sent, outcomes } = wire(new Map([['tok-a', TOKEN_ENTRY('tok-a')]]));
+        lock('claude-A');
+        hookServer.fire('StopFailure', stopFailure());
+        expect(await Promise.all(outcomes)).toEqual(['pushed']);
+
+        expect(sent).toHaveLength(1);
+        const opts = sent[0]?.opts ?? {};
+        expect(opts['kind']).toBe('turn_failed');
+        expect(opts['questionId']).toBe(turnFailedCollapseId(SID));
+        expect(opts['category']).toBeUndefined();
+        expect(opts['options']).toBeUndefined();
+        expect(String(opts['title'])).toContain('Claude stopped');
+        expect(String(opts['body'])).toBe(
+          "Rate or usage limit reached. You've hit your session limit",
+        );
+        expect(String(opts['body'])).not.toMatch(/undefined|null|Retry/);
+        expect(sessionRegistry.getSession(SID)?.currentQuestions.size ?? 0).toBe(0);
+      });
+
+      test('a repeat failure in the same session reuses the one collapse key', async () => {
+        const { sent, outcomes } = wire(new Map([['tok-a', TOKEN_ENTRY('tok-a')]]));
+        lock('claude-A');
+        hookServer.fire('StopFailure', stopFailure());
+        hookServer.fire('StopFailure', stopFailure({ prompt_id: 'second-turn' }));
+        await Promise.all(outcomes);
+
+        expect(sent).toHaveLength(2);
+        expect(sent[0]?.opts['questionId']).toBe(sent[1]?.opts['questionId']);
+        expect(sent[0]?.opts['questionId']).toBe(turnFailedCollapseId(SID));
+      });
+
+      test('the recorded #905 payload, POSTed to a real HookServer, becomes one readable turn_failed push', async () => {
+        // The shape of the 3 real captures (hook-corpus.jsonl) and the text
+        // the issue quotes, delivered the way Claude Code delivers it: an HTTP
+        // POST to the hook server. The transport is real end to end; only the
+        // APNS call is a recording sink.
+        const port = await reserveRange(1, 50, '127.0.0.1');
+        const server = new HookServer({ port });
+        const { sent, outcomes } = wire(new Map([['tok-a', TOKEN_ENTRY('tok-a')]]), server);
+        server.start();
+        try {
+          const post = (body: Record<string, unknown>) =>
+            fetch(`http://127.0.0.1:${port}/hooks`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                session_id: 'claude-A',
+                transcript_path: path.join(tmpDir, 'claude-A.jsonl'),
+                cwd: tmpDir,
+                prompt_id: '0569c6ec-d989-45eb-52d9-9779421073f7',
+                effort: { level: 'xhigh' },
+                ...body,
+              }),
+            });
+          // Locks the binder onto this Claude session, as the first event does.
+          await post({
+            hook_event_name: 'Notification',
+            notification_type: 'auth_success',
+            message: '',
+          });
+          const res = await post({
+            hook_event_name: 'StopFailure',
+            error: 'server_error',
+            last_assistant_message:
+              'API Error: 500 Internal server error. This is a server-side issue, usually temporary — try again in a moment. If it persists, check https://status.claude.com.',
+          });
+          expect(res.status).toBe(200);
+          expect(await Promise.all(outcomes)).toEqual(['pushed']);
+
+          expect(sent).toHaveLength(1);
+          const opts = sent[0]?.opts ?? {};
+          expect(opts['kind']).toBe('turn_failed');
+          expect(String(opts['title'])).toContain('Claude stopped');
+          expect(
+            String(opts['body']).startsWith('Server error. API Error: 500 Internal server error.'),
+          ).toBe(true);
+          expect(String(opts['body'])).not.toMatch(/undefined|null|Retry/);
+          expect(sessionRegistry.getSession(SID)?.currentQuestions.size ?? 0).toBe(0);
+          expect(messageApiLog.statusCalls.at(-1)).toBe('idle');
+        } finally {
+          server.stop();
+        }
+      });
+
+      describe('a later turn clears the notice (#1153)', () => {
+        const flush = () => new Promise((resolve) => setTimeout(resolve, 10));
+        const stop = (over: Record<string, unknown> = {}) => ({
+          session_id: 'claude-A',
+          hook_event_name: 'Stop',
+          stop_hook_active: false,
+          last_assistant_message: 'done',
+          ...over,
+        });
+        const prompt = (over: Record<string, unknown> = {}) => ({
+          session_id: 'claude-A',
+          hook_event_name: 'UserPromptSubmit',
+          prompt: 'try again',
+          ...over,
+        });
+        const MUTED = {
+          questions: true,
+          turnComplete: true,
+          harnessDenied: true,
+          turnFailed: false,
+        };
+        const dismissals = (sent: Array<{ token: string; opts: Record<string, unknown> }>) =>
+          sent.filter((p) => p.opts['kind'] === 'dismiss');
+
+        test('the next main Stop sends a quiet dismiss with the same collapse key to every device, a muted one included', async () => {
+          const { sent, outcomes } = wire(
+            new Map([
+              ['wants', TOKEN_ENTRY('wants')],
+              ['muted', TOKEN_ENTRY('muted', MUTED)],
+            ]),
+          );
+          lock('claude-A');
+          hookServer.fire('StopFailure', stopFailure());
+          await Promise.all(outcomes);
+          // The alert reached only the device that wants it.
+          expect(sent.map((p) => p.token)).toEqual(['wants']);
+
+          hookServer.fire('Stop', stop());
+          await flush();
+
+          const cleared = dismissals(sent);
+          // A device that muted failed turns may still hold a delivered notice.
+          expect(cleared.map((p) => p.token).sort()).toEqual(['muted', 'wants']);
+          for (const { opts } of cleared) {
+            expect(opts['questionId']).toBe(turnFailedCollapseId(SID));
+            expect(opts['dismiss']).toBe(true);
+            expect(opts['title']).toBeUndefined();
+            expect(opts['body']).toBeUndefined();
+          }
+        });
+
+        test('the next main UserPromptSubmit clears it the same way', async () => {
+          const { sent, outcomes } = wire(new Map([['wants', TOKEN_ENTRY('wants')]]));
+          lock('claude-A');
+          hookServer.fire('StopFailure', stopFailure());
+          await Promise.all(outcomes);
+
+          hookServer.fire('UserPromptSubmit', prompt());
+          await flush();
+
+          expect(dismissals(sent).map((p) => p.opts['questionId'])).toEqual([
+            turnFailedCollapseId(SID),
+          ]);
+        });
+
+        test('nothing is sent when no failure is outstanding, and only once per failure', async () => {
+          const { sent, outcomes } = wire(new Map([['wants', TOKEN_ENTRY('wants')]]));
+          lock('claude-A');
+
+          // No failure yet: a Stop and a prompt send nothing at all.
+          hookServer.fire('Stop', stop());
+          hookServer.fire('UserPromptSubmit', prompt());
+          await flush();
+          expect(sent).toEqual([]);
+
+          hookServer.fire('StopFailure', stopFailure());
+          await Promise.all(outcomes);
+          hookServer.fire('Stop', stop());
+          hookServer.fire('Stop', stop());
+          hookServer.fire('UserPromptSubmit', prompt());
+          await flush();
+          expect(dismissals(sent)).toHaveLength(1);
+
+          // A second failure re-arms it.
+          hookServer.fire('StopFailure', stopFailure());
+          await Promise.all(outcomes);
+          hookServer.fire('Stop', stop());
+          await flush();
+          expect(dismissals(sent)).toHaveLength(2);
+        });
+
+        test('a stop-hook re-entry, a subagent prompt and a foreign session clear nothing', async () => {
+          const { sent, outcomes } = wire(new Map([['wants', TOKEN_ENTRY('wants')]]));
+          lock('claude-A');
+          hookServer.fire('StopFailure', stopFailure());
+          await Promise.all(outcomes);
+
+          hookServer.fire('Stop', stop({ stop_hook_active: true }));
+          hookServer.fire('UserPromptSubmit', prompt({ agent_id: 'agent-1' }));
+          hookServer.fire('Stop', stop({ session_id: 'claude-OTHER' }));
+          await flush();
+
+          expect(dismissals(sent)).toEqual([]);
+        });
+
+        test('a failing repeat replaces the notice: dismiss, then a fresh alert under the same key', async () => {
+          const { sent, outcomes } = wire(new Map([['wants', TOKEN_ENTRY('wants')]]));
+          lock('claude-A');
+          hookServer.fire('StopFailure', stopFailure());
+          await Promise.all(outcomes);
+
+          // The user retries and it fails again at once.
+          hookServer.fire('UserPromptSubmit', prompt());
+          hookServer.fire('StopFailure', stopFailure({ prompt_id: 'retry' }));
+          await Promise.all(outcomes);
+          await flush();
+
+          expect(sent.map((p) => p.opts['kind'])).toEqual([
+            'turn_failed',
+            'dismiss',
+            'turn_failed',
+          ]);
+          expect(new Set(sent.map((p) => p.opts['questionId']))).toEqual(
+            new Set([turnFailedCollapseId(SID)]),
+          );
+        });
+
+        test('a throwing dismissal sink never escapes into the hook dispatch loop', () => {
+          build({
+            dismissTurnFailed: () => {
+              throw new Error('test: dismiss sink exploded');
+            },
+          });
+          lock('claude-A');
+          expect(() => hookServer.fire('Stop', stop())).not.toThrow();
+          expect(() => hookServer.fire('UserPromptSubmit', prompt())).not.toThrow();
+        });
+      });
+
+      test('a device that muted turnFailed gets nothing, and the fan-out reports no_channel', async () => {
+        const { sent, outcomes } = wire(
+          new Map([
+            [
+              'muted',
+              TOKEN_ENTRY('muted', {
+                questions: true,
+                turnComplete: true,
+                harnessDenied: true,
+                turnFailed: false,
+              }),
+            ],
+          ]),
+        );
+        lock('claude-A');
+        hookServer.fire('StopFailure', stopFailure());
+
+        expect(await Promise.all(outcomes)).toEqual(['no_channel']);
+        expect(sent).toEqual([]);
+      });
     });
 
     test('PostToolUseFailure sets executing status (main); a subagent failure is dropped', () => {
@@ -1887,6 +2268,48 @@ describe('setupHookBridge', () => {
       expect(broadcastResolvedLog).toEqual([{ questionId: card.id, reason: 'cancelled' }]);
       expect(handle.gate.answerHeld(card.id, { kind: 'cancel' })).toBe('closed');
       expect(ptySubmits).toEqual([]);
+    });
+
+    test('a main-agent StopFailure ends a live held prompt: hook released, card resolved, no later deadline notice (#1153)', async () => {
+      const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const { card, hook } = held(
+        'claude-held-sf',
+        {},
+        { holdMs: 40, noticeLog, broadcastResolvedLog },
+      );
+
+      hookServer.fire('StopFailure', {
+        session_id: 'claude-held-sf',
+        hook_event_name: 'StopFailure',
+        error: 'rate_limit',
+      });
+
+      expect(await hook).toBe('passthrough');
+      expect(cards()).toHaveLength(0);
+      expect(broadcastResolvedLog).toEqual([{ questionId: card.id, reason: 'cancelled' }]);
+      // Well past the 40 ms deadline: the released hold fires no notice.
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      expect(noticeLog).toEqual([]);
+      expect(ptySubmits).toEqual([]);
+    });
+
+    test('an agent_id-tagged StopFailure sweeps nothing: a live main hold survives it (#1153)', async () => {
+      const { handle, card, hook } = held('claude-held-sf-sub', {}, { holdMs: 60_000 });
+      messageApiLog.statusCalls.length = 0;
+
+      hookServer.fire('StopFailure', {
+        session_id: 'claude-held-sf-sub',
+        hook_event_name: 'StopFailure',
+        error: 'rate_limit',
+        agent_id: 'agent-9',
+        agent_type: 'general-purpose',
+      });
+
+      expect(cards().map((q) => q.id)).toEqual([card.id]);
+      expect(messageApiLog.statusCalls).toEqual([]);
+      handle.gate.forceRelease('test');
+      expect(await hook).toBe('passthrough');
     });
 
     test('a new user prompt closes a main prompt left open after its hold was released', async () => {

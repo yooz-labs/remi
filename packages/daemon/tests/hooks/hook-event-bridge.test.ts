@@ -28,6 +28,7 @@ describe('HookEventBridge', () => {
   function createBridge() {
     const statuses: Array<{ status: AgentStatus; context?: string }> = [];
     const questions: Question[] = [];
+    const turnFailures: StopFailureHookInput[] = [];
 
     const bridge = new HookEventBridge('session-1' as import('@remi/shared').UUID, {
       onStatusChange: (status, context) => {
@@ -41,9 +42,12 @@ describe('HookEventBridge', () => {
         questions.push(q);
         return undefined;
       },
+      onTurnFailed: (input) => {
+        turnFailures.push(input);
+      },
     });
 
-    return { bridge, statuses, questions };
+    return { bridge, statuses, questions, turnFailures };
   }
 
   it('maps PreToolUse to executing status with tool name', () => {
@@ -646,21 +650,112 @@ describe('HookEventBridge', () => {
     expect(statuses).toEqual([{ status: 'thinking' }]);
   });
 
-  it('maps StopFailure to question + waiting status', () => {
-    const { bridge, statuses, questions } = createBridge();
-
-    bridge.handleStopFailure({
+  describe('StopFailure (#1153)', () => {
+    const failure = {
       ...makeCommon(),
       hook_event_name: 'StopFailure',
-      error_type: 'timeout',
-    } as StopFailureHookInput);
+      error: 'rate_limit',
+      last_assistant_message: "You've hit your session limit",
+    } as StopFailureHookInput;
 
-    expect(statuses).toEqual([{ status: 'waiting' }]);
-    expect(questions.length).toBe(1);
-    expect(questions[0]?.text).toContain('timeout');
-    expect(questions[0]?.options.length).toBe(2);
-    expect(questions[0]?.options[0]?.isYes).toBe(true);
-    expect(questions[0]?.options[1]?.isNo).toBe(true);
+    it('registers no question: nothing in Claude waits for an answer', () => {
+      const { bridge, questions } = createBridge();
+
+      bridge.handleStopFailure(failure);
+
+      expect(questions).toEqual([]);
+    });
+
+    it('sets idle, not waiting: the turn is over, nothing is waiting', () => {
+      const { bridge, statuses } = createBridge();
+
+      bridge.handleStopFailure(failure);
+
+      expect(statuses).toEqual([{ status: 'idle' }]);
+    });
+
+    it('raises exactly one turn-failed event carrying the payload', () => {
+      const { bridge, turnFailures } = createBridge();
+
+      bridge.handleStopFailure(failure);
+
+      expect(turnFailures).toEqual([failure]);
+    });
+
+    it('raises the turn-failed event after the status change', () => {
+      const order: string[] = [];
+      const bridge = new HookEventBridge('session-1' as import('@remi/shared').UUID, {
+        onStatusChange: (status) => order.push(`status:${status}`),
+        onQuestion: () => {
+          order.push('question');
+          return undefined;
+        },
+        onTurnFailed: () => order.push('turn-failed'),
+      });
+
+      bridge.handleStopFailure(failure);
+
+      expect(order).toEqual(['status:idle', 'turn-failed']);
+    });
+
+    it('a subagent-tagged failure leaves the main status alone but still raises turn-failed', () => {
+      const { bridge, statuses, questions, turnFailures } = createBridge();
+      const tagged = { ...failure, agent_id: 'agent-7', agent_type: 'general-purpose' };
+
+      bridge.handleStopFailure(tagged);
+
+      // MAIN is still running: no idle (the tracker would drop main's pending
+      // records and menu), and no question.
+      expect(statuses).toEqual([]);
+      expect(questions).toEqual([]);
+      expect(turnFailures).toEqual([tagged]);
+    });
+
+    it('a subagent-tagged failure does not reset the subagent tracker; a main one does', () => {
+      const { bridge } = createBridge();
+      bridge.handlePreToolUse({
+        ...makeCommon(),
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Task',
+        tool_input: {},
+        tool_use_id: 'tu_live_subagent',
+      } as PreToolUseHookInput);
+      expect(bridge.isInSubagentContext()).toBe(true);
+
+      bridge.handleStopFailure({ ...failure, agent_id: 'agent-7' });
+      expect(bridge.isInSubagentContext()).toBe(true);
+
+      bridge.handleStopFailure(failure);
+      expect(bridge.isInSubagentContext()).toBe(false);
+    });
+
+    it('an empty agent_id counts as a main-agent failure', () => {
+      const { bridge, statuses } = createBridge();
+
+      bridge.handleStopFailure({ ...failure, agent_id: '' });
+
+      expect(statuses).toEqual([{ status: 'idle' }]);
+    });
+
+    it('a consumer with no turn-failed handler still gets the status change', () => {
+      const statuses: AgentStatus[] = [];
+      const bridge = new HookEventBridge('session-1' as import('@remi/shared').UUID, {
+        onStatusChange: (status) => statuses.push(status),
+        onQuestion: () => undefined,
+      });
+
+      expect(() => bridge.handleStopFailure(failure)).not.toThrow();
+      expect(statuses).toEqual(['idle']);
+    });
+
+    it('is wired as the onStopFailure hook handler', () => {
+      const { bridge, statuses, turnFailures } = createBridge();
+
+      bridge.hookHandlers().onStopFailure?.(failure);
+
+      expect(statuses).toEqual([{ status: 'idle' }]);
+      expect(turnFailures).toHaveLength(1);
+    });
   });
 
   describe('Elicitation (#889, Q4)', () => {
@@ -1038,8 +1133,8 @@ describe('HookEventBridge', () => {
       bridge.handleStopFailure({
         ...makeCommon(),
         hook_event_name: 'StopFailure',
-        error_type: 'network',
-        error: 'conn refused',
+        error: 'server_error',
+        error_details: 'conn refused',
       } as StopFailureHookInput);
 
       expect(bridge.isInSubagentContext()).toBe(false);

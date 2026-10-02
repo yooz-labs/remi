@@ -26,6 +26,13 @@
  *     sessions / one day — found 68/68 pairs, 0 unpaired; see
  *     `handleNotification` for the full argument and the residual-failure-
  *     mode analysis). It still flips status to `'waiting'`.
+ *
+ * A turn that ends on an API error (`StopFailure`, #1153) is NOT a question:
+ * Claude ignores the hook's answer, so a card with Yes/No could never be
+ * answered. For a main-agent failure the bridge sets the status to `'idle'`
+ * (the turn is over; an `agent_id`-tagged one leaves it alone) and raises
+ * `onTurnFailed`, which the session wiring turns into a `turn_failed` push
+ * (`notifications/turn-failed.ts`).
  */
 
 import { DEFAULT_PERMISSION_LABELS, generateId } from '@remi/shared';
@@ -72,10 +79,20 @@ export interface HookBridgeEvents {
    * instead of re-querying `SessionRegistry` after the fact (#925 gate).
    * `| undefined` (not `| void` -- this codebase's lint config forbids `void`
    * inside a union) covers every implementation that does not care about the
-   * outcome (`handlePermissionRequest`, `handleStopFailure`, and every test
-   * double that only collects emitted questions).
+   * outcome (`handlePermissionRequest` and every test double that only
+   * collects emitted questions).
    */
   onQuestion: (question: Question) => QuestionRegistrationOutcome | undefined;
+  /**
+   * A turn ended on an API error (`StopFailure`, #1153): a usage or rate
+   * limit, authentication, and similar. Informational, never a question
+   * (nothing in Claude waits for an answer), so it does not go through
+   * `onQuestion`. Raised AFTER the status change to `'idle'`. Optional: a
+   * consumer with no notification surface (a test double that only collects
+   * questions) simply ignores it. The implementation must not throw into the
+   * hook dispatch loop.
+   */
+  onTurnFailed?: (input: StopFailureHookInput) => void;
 }
 
 /** Honest Yes/No fallback options (#718): used when a PermissionRequest
@@ -572,26 +589,34 @@ export class HookEventBridge {
     this.events.onStatusChange('thinking', undefined, input.agent_id);
   }
 
+  /**
+   * `StopFailure` (#1153): the turn ended on an API error. Not a question and
+   * not `'waiting'`: nothing in Claude waits for anything (the hook's answer
+   * is ignored), so a Yes/No card could never be answered, and the agent is
+   * stopped, not waiting. A main-agent failure sets the status to `'idle'`
+   * like any other turn end, and `onTurnFailed` carries it to the
+   * notification path.
+   *
+   * An `agent_id`-tagged failure is a subagent's own turn ending: MAIN is
+   * still running, so it must neither flip the main status to idle (the
+   * tracker would drop main's pending records and the menu its dialog still
+   * shows, #1140) nor reset the subagent tracker (the other subagents are
+   * live). It still raises `onTurnFailed`: the user wants to hear that an
+   * agent hit a limit.
+   *
+   * Until #1153 this emitted "Session stop failed (<error_type>). Retry?",
+   * and `error_type` is a field Claude never sends (#905), so every card read
+   * "(undefined)".
+   */
   handleStopFailure(input: StopFailureHookInput): void {
-    // Stop failed: agent may be in an unknown state. Reset subagent tracking
-    // so orphaned Task IDs don't permanently block user permissions.
-    this.subagentContext.reset();
-    // Emit a question so the user is notified of the stop failure
-    const question: Question = {
-      id: generateId(),
-      text: `Session stop failed (${input.error_type}). Retry?`,
-      options: [
-        { label: 'Yes', value: 'y', isRecommended: true, isYes: true, isNo: false },
-        { label: 'No', value: 'n', isRecommended: false, isYes: false, isNo: true },
-      ],
-      allowsFreeText: false,
-      isAnswered: false,
-      agentId: input.agent_id,
-      // #887: same-turn correlation key, see `Question.promptId`.
-      promptId: input.prompt_id,
-    };
-    this.events.onQuestion(question);
-    this.events.onStatusChange('waiting', undefined, input.agent_id);
+    const fromSubagent = typeof input.agent_id === 'string' && input.agent_id.length > 0;
+    if (!fromSubagent) {
+      // The main turn is over: reset subagent tracking so orphaned Task IDs
+      // don't permanently block user permissions (same as `handleStop`).
+      this.subagentContext.reset();
+      this.events.onStatusChange('idle', undefined, input.agent_id);
+    }
+    this.events.onTurnFailed?.(input);
   }
 
   /**
@@ -646,7 +671,7 @@ export class HookEventBridge {
       // #889: NOT 'permission_request'/'notification' -- the onQuestion
       // callback in hook-bridge-setup.ts only stashes those two sources via
       // the PTY-arbiter tracker; every other source (this one included)
-      // direct-emits, same as a source-less StopFailure card.
+      // direct-emits.
       source: 'elicitation',
     };
     const outcome = this.events.onQuestion(question);

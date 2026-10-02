@@ -95,9 +95,48 @@ describe('createTrivialHandlers', () => {
     } as unknown as { questions?: boolean });
 
     expect(calls).toEqual([
-      { token: 'tok-none', prefs: { questions: true, turnComplete: true, harnessDenied: true } },
-      { token: 'tok-muted', prefs: { questions: true, turnComplete: false, harnessDenied: true } },
-      { token: 'tok-bad', prefs: { questions: true, turnComplete: true, harnessDenied: true } },
+      {
+        token: 'tok-none',
+        prefs: { questions: true, turnComplete: true, harnessDenied: true, turnFailed: true },
+      },
+      {
+        token: 'tok-muted',
+        prefs: { questions: true, turnComplete: false, harnessDenied: true, turnFailed: true },
+      },
+      {
+        token: 'tok-bad',
+        prefs: { questions: true, turnComplete: true, harnessDenied: true, turnFailed: true },
+      },
+    ]);
+  });
+
+  test('#1153: onRegisterDeviceToken carries a turnFailed mute through, and junk resolves ON', () => {
+    const calls: Array<{ token: string; prefs: unknown }> = [];
+    const { send } = makeSend();
+    const handlers = createTrivialHandlers({
+      registerDeviceToken: (token, _platform, _connectionId, pushPrefs) =>
+        calls.push({ token, prefs: pushPrefs }),
+      unregisterDeviceToken: () => {},
+      sessionStore,
+      sessionRegistry,
+      send,
+    });
+    configureLogger({ writeLog: () => {} });
+
+    handlers.onRegisterDeviceToken(CID, 'tok-muted', 'ios', { turnFailed: false });
+    handlers.onRegisterDeviceToken(CID, 'tok-junk', 'ios', {
+      turnFailed: 'false',
+    } as unknown as { turnFailed?: boolean });
+
+    expect(calls).toEqual([
+      {
+        token: 'tok-muted',
+        prefs: { questions: true, turnComplete: true, harnessDenied: true, turnFailed: false },
+      },
+      {
+        token: 'tok-junk',
+        prefs: { questions: true, turnComplete: true, harnessDenied: true, turnFailed: true },
+      },
     ]);
   });
 

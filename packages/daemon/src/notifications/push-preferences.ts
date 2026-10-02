@@ -9,9 +9,13 @@
  * real once the sender honors it, so the device sends it up on
  * `register_device_token` and the daemon filters its per-token fan-out here.
  *
- * Three preferences, one per mutable kind: `questions` (`question`),
- * `turnComplete` (`turn_complete`) and `harnessDenied` (`harness_denied`,
- * #1126 / ADR 0031: auto mode blocked a call; informational).
+ * Four preferences, one per mutable kind: `questions` (`question`),
+ * `turnComplete` (`turn_complete`), `harnessDenied` (`harness_denied`,
+ * #1126 / ADR 0031: auto mode blocked a call; informational) and
+ * `turnFailed` (`turn_failed`, #1153: a turn ended on an API error;
+ * informational). `turnFailed` is deliberately independent of
+ * `turnComplete` and of the machine-wide `notifications.on_turn_complete`:
+ * a failure is the one turn end a user must not miss by default.
  *
  * Two deliberate non-preferences:
  *   - `dismiss` pushes are never filtered. They are quiet `content-available`
@@ -38,6 +42,7 @@ export interface ResolvedPushPreferences {
   readonly questions: boolean;
   readonly turnComplete: boolean;
   readonly harnessDenied: boolean;
+  readonly turnFailed: boolean;
 }
 
 /**
@@ -52,6 +57,7 @@ export const DEFAULT_PUSH_PREFERENCES: ResolvedPushPreferences = {
   questions: true,
   turnComplete: true,
   harnessDenied: true,
+  turnFailed: true,
 };
 
 /**
@@ -80,6 +86,10 @@ export function sanitizePushPreferences(
       typeof input.harnessDenied === 'boolean'
         ? input.harnessDenied
         : DEFAULT_PUSH_PREFERENCES.harnessDenied,
+    turnFailed:
+      typeof input.turnFailed === 'boolean'
+        ? input.turnFailed
+        : DEFAULT_PUSH_PREFERENCES.turnFailed,
   };
 }
 
@@ -100,6 +110,9 @@ export function wantsPush(entry: DeviceTokenEntry, kind: PushKind): boolean {
     // resolves it through `sanitizePushPreferences` on load, so it wants it.
     case 'harness_denied':
       return prefs.harnessDenied;
+    // Same for `turnFailed` (#1153): an entry stored before it resolves ON.
+    case 'turn_failed':
+      return prefs.turnFailed;
     // Never filtered — see the module doc for why each is exempt.
     case 'subagent_alert':
       return true;

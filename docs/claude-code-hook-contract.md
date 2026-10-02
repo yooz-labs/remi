@@ -215,7 +215,7 @@ above for what it does).
 | `Setup` | — | `trigger` | Y (context only) | [B] new type this PR |
 | `SubagentStart` | Y | `agent_type` | Y (context only) | [B] matches pre-existing type |
 | `SessionEnd` | Y | `reason` | — | [B] matches pre-existing type |
-| `StopFailure` | Y | `error_type` (kept, but see below), `error?, error_details?, last_assistant_message?` | — | [B] `error_type` **does not exist** in the binary; see "A real bug this verification found" |
+| `StopFailure` | Y | `error?, error_details?, last_assistant_message?` | — | [B] `error_type` does not exist in the binary and was removed from the type in #1153 (it was #905); see "A real bug this verification found" |
 | `SubagentStop` | Y | `agent_type, agent_transcript_path?, last_assistant_message?, background_tasks?, session_crons?` | Y (context only) | [B] shares its builder with `Stop`; see below |
 | `Stop` | Y | `stop_hook_active, last_assistant_message?, background_tasks?, session_crons?` | Y (context only) | [B] issue #886 named this field `session_tasks`; binary shows `background_tasks` + `session_crons` instead — the issue's exploration guessed wrong here |
 | `TeammateIdle` | — | `teammate_name, team_name` | — | [B] was an empty event body |
@@ -248,23 +248,25 @@ on the old name.
 
 ### A real bug this verification found: `StopFailure.error_type`
 
-`StopFailureHookInput` was typed `error_type: string`, and
-`hook-event-bridge.ts:509` builds a user-facing retry prompt from it:
-`` `Session stop failed (${input.error_type}). Retry?` ``. The binary's
-StopFailure builder sends `{error, error_details, last_assistant_message}` —
-**no `error_type` field exists.** On every real `StopFailure` event,
-`input.error_type` is `undefined`, so that prompt has read **"Session stop
-failed (undefined). Retry?"** since it was written.
+**Resolved in #1153 (closes #905).** `StopFailureHookInput` was typed
+`error_type: string`, and `hook-event-bridge.ts` built a user-facing retry
+prompt from it: `` `Session stop failed (${input.error_type}). Retry?` ``. The
+binary's StopFailure builder sends `{error, error_details,
+last_assistant_message}` — **no `error_type` field exists.** On every real
+`StopFailure` event, `input.error_type` was `undefined`, so that prompt read
+**"Session stop failed (undefined). Retry?"** since it was written (3 of 3
+real captures, and again on Claude Code 2.1.287 for a usage-limit stop).
 
-This is a real, previously-unknown production bug, not a documentation gap —
-but fixing `hook-event-bridge.ts` to read `input.error` instead is a runtime
-behavior change, which is explicitly out of scope for this PR (see "Critical
-constraint" in the PR description). `hook_types.ts` now carries the real
-fields (`error`, `error_details?`, `last_assistant_message?`) alongside the
-legacy `error_type` (kept, unremoved, specifically so this PR doesn't also
-have to touch the three existing test fixtures that construct `{error_type:
-'timeout'}` payloads). Filed as **#905** with the fix and the fixture updates
-it needs; referenced from the type definition.
+The first PR that found this left the field in place on purpose, because
+fixing the reader was a runtime behavior change. #1153 made that change, and
+more: `StopFailure` fires when a turn ENDS on an API error (the hooks docs
+list the `error` values: `rate_limit`, `overloaded`, `authentication_failed`,
+`oauth_org_not_allowed`, `account_on_hold`, `billing_error`, `invalid_request`,
+`model_not_found`, `server_error`, `max_output_tokens`,
+`cloud_credential_error`, `unknown`) and ignores the hook's answer, so the
+Yes/No card could never be answered. A failed turn is now a `turn_failed` push
+(`notifications/turn-failed.ts`), never a card, and `error_type` is gone from
+the type and the fixtures.
 
 ### `Stop` / `SubagentStop`: `background_tasks` + `session_crons`, not `session_tasks`
 

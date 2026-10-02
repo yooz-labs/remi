@@ -300,25 +300,37 @@ export interface TaskCompletedHookInput extends HookCommonInput {
   team_name: string;
 }
 
-/** Fired when the stop hook itself fails */
+/**
+ * Fired INSTEAD of `Stop` when a turn ends because of an API error (usage or
+ * rate limit, authentication, billing, a server error, and similar). It is not
+ * about a stop hook failing, and nothing in Claude waits for a reply: the
+ * response is ignored. remi turns it into a `turn_failed` push, never a card
+ * (#1153).
+ *
+ * Fields, from the binary (`{...Kf(void 0,void 0,t),hook_event_name:
+ * "StopFailure",error:s,error_details:e.errorDetails,last_assistant_message:i}`
+ * where `s=e.error??"unknown"`, #886) and the hooks docs
+ * (code.claude.com/docs/en/hooks): there is no `error_type` field, which an
+ * earlier version of this type declared and the old "Retry?" card read, so
+ * every card said "(undefined)" (#905).
+ */
 export interface StopFailureHookInput extends HookCommonInput {
   hook_event_name: 'StopFailure';
   /**
-   * Binary: `{...Kf(void 0,void 0,t),hook_event_name:"StopFailure",
-   * error:s,error_details:e.errorDetails,last_assistant_message:i}` where
-   * `s=e.error??"unknown"` (#886) — there is no `error_type` field. `error`
-   * is kept alongside the pre-existing (wrong) `error_type` rather than
-   * replacing it, because `error_type` is read at runtime
-   * (hook-event-bridge.ts:509, `Session stop failed (${input.error_type})`)
-   * and by several test fixtures; removing it here would be a type change
-   * with a real behavior consequence (a user-facing message going from
-   * "undefined" to something else), which is out of scope for this PR. Filed
-   * as #905: `hook-event-bridge.ts` reads a field Claude Code never sends, so
-   * that retry prompt has shown "(undefined)" since it was written.
+   * Why the turn ended. The documented values are `rate_limit`, `overloaded`,
+   * `authentication_failed`, `oauth_org_not_allowed`, `account_on_hold`,
+   * `billing_error`, `invalid_request`, `model_not_found`, `server_error`,
+   * `max_output_tokens`, `cloud_credential_error` and `unknown`; kept an open
+   * string because a newer Claude Code may send another. Typed optional
+   * because the wire is untrusted input; the binary always sends one.
    */
-  error_type: string;
   error?: string;
+  /** Extra detail from the API. Untyped on purpose: the docs call it
+   *  "additional error information" and no capture has carried it, so it may
+   *  be a string or an object; only a string is ever shown. */
   error_details?: unknown;
+  /** The assistant's last message before the error. All 3 real captures
+   *  (#905) carry `API Error: 500 Internal server error. ...` here. */
   last_assistant_message?: string;
 }
 

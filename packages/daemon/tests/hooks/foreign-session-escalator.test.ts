@@ -257,11 +257,13 @@ describe('ForeignSessionEscalator (#672)', () => {
         questions: false,
         turnComplete: true,
         harnessDenied: true,
+        turnFailed: true,
       };
       deviceTokens.get('wants')!.pushPrefs = {
         questions: true,
         turnComplete: false,
         harnessDenied: true,
+        turnFailed: true,
       };
 
       const escalator = new ForeignSessionEscalator(deps());
@@ -278,6 +280,7 @@ describe('ForeignSessionEscalator (#672)', () => {
         questions: false,
         turnComplete: true,
         harnessDenied: true,
+        turnFailed: true,
       };
 
       const escalator = new ForeignSessionEscalator(deps());

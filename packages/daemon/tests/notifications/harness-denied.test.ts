@@ -24,7 +24,7 @@ function device(token: string, harnessDenied?: boolean): DeviceTokenEntry {
     registeredAt: 1,
     connectionId: CID,
     ...(harnessDenied !== undefined && {
-      pushPrefs: { questions: true, turnComplete: true, harnessDenied },
+      pushPrefs: { questions: true, turnComplete: true, harnessDenied, turnFailed: true },
     }),
   };
 }

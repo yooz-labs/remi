@@ -4,6 +4,54 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### A failed turn is a notification, not a Retry card (#1153, #905)
+
+When a turn ends on an API error (a usage or rate limit, authentication, a
+server error), Claude Code fires `StopFailure` and ignores whatever the hook
+answers. Remi turned it into a card, "Session stop failed (undefined). Retry?",
+with Yes / No that nothing could act on, and every failed turn added another:
+on a usage limit, one per prompt, stacking in the app and on the lock screen.
+
+#### Fixed
+
+- **The phantom "Retry?" cards.** A failed turn registers no card at all, so
+  nothing stacks in the app; a card an older client still holds disappears with
+  the next question snapshot.
+- The session status after a failed turn is `idle` (the turn is over), not
+  `waiting`.
+- The card text read `(undefined)` because it used `error_type`, a field Claude
+  Code never sends (#905). The type `StopFailureHookInput` no longer declares
+  it and its comment no longer says the stop hook itself failed.
+
+#### Added
+
+- **`turn_failed` push**: one informational notification per failed turn, titled
+  "<session>: Claude stopped", with a readable reason from the `error` code
+  (for example "Rate or usage limit reached", "Authentication failed"; an
+  unknown code is shown as is) and a short excerpt of Claude's last message.
+  One collapse key per session, so a repeat replaces the previous notification.
+- **"Failed turns" setting** in the app (`pushPrefs.turnFailed`), on by
+  default. It is separate from "Turn complete", and
+  `notifications.on_turn_complete = false` does not silence it: a failed turn is
+  the one turn end you must not miss by default.
+- A failure notice clears itself: the next successful turn (or your next
+  prompt) dismisses it, so a stale "Claude stopped" does not stay on the lock
+  screen. An agent (subagent) failure is pushed too but does not change the
+  main session's status.
+
+#### Changed
+
+- A main-agent `StopFailure` now closes any permission prompt still open for
+  the main agent, as `Stop` does: the turn is over, so the prompt cannot be
+  answered (the main half of #802).
+
+#### Known limits
+
+- The failure notice's text, including up to 140 characters of Claude's last
+  message, reaches the signaling Worker and Apple's push service in plaintext,
+  the same as the "Turn complete" notice. It is tracked by the relay and push
+  privacy work.
+
 ### AskUserQuestion and plan approval are answered through Claude's hook (#1127, [ADR 0031](.context/decisions/0031-held-hook-answers-with-native-dialog-visible.md) amendment)
 
 Claude's questions (AskUserQuestion) and plan approvals (ExitPlanMode) are

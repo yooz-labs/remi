@@ -355,18 +355,17 @@ export class QuestionPresenceTracker {
    * while the Notification is the bland "Claude needs your permission to use
    * Bash". Letting the trailing notification win is exactly what garbled the
    * push text (issues 3+4); since #1134 the merged card's options come from
-   * the screen either way. A same-agent source-less question (e.g. a
-   * StopFailure "Retry?" card) must likewise not silently evict the pending
-   * permission request and leave the real prompt without a push. Different
-   * agents never overwrite each other (#425).
+   * the screen either way. A same-agent source-less question must likewise
+   * not silently evict the pending permission request and leave the real
+   * prompt without a push. Different agents never overwrite each other (#425).
    */
   recordPendingHook(question: Question): void {
     const key = agentKey(question);
     const existing = this.pending.get(key);
     if (existing) {
       // A pending rich permission request stays put unless the incoming is a
-      // newer permission request: a generic Notification or a source-less
-      // StopFailure-shaped question for the same agent must NOT evict it.
+      // newer permission request: a generic Notification or any other
+      // source-less question for the same agent must NOT evict it.
       //
       // Currently UNREACHABLE, deliberately kept (#890/Q5): both entry points
       // -- `hook-bridge-setup.ts`'s `onQuestion` (gated to

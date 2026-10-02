@@ -466,14 +466,14 @@ describe('buildPushText (#574 issues 3+4)', () => {
   });
 
   test('option prefix is the actual VALUE, not the positional index (FIX 3C)', () => {
-    // StopFailure-style y/n options carry non-index values; the prefix must
+    // y/n options carry non-index values; the prefix must
     // reflect the real value ("y. Yes  n. No") so it stays accurate.
     const ynOpts: QuestionOption[] = [
       { value: 'y', label: 'Yes', isRecommended: true, isYes: true, isNo: false },
       { value: 'n', label: 'No', isRecommended: false, isYes: false, isNo: true },
     ];
-    const { body } = buildPushText('agent', question('q', ynOpts, 'Retry?'));
-    expect(body).toBe('Retry?\ny. Yes  n. No');
+    const { body } = buildPushText('agent', question('q', ynOpts, 'Continue?'));
+    expect(body).toBe('Continue?\ny. Yes  n. No');
   });
 
   // #628's summary came from the auto-approve LLM (removed, #1125). A question
@@ -1384,14 +1384,21 @@ describe('NotificationDispatcher per-device push preferences (#968)', () => {
 
   function token(
     name: string,
-    prefs?: { questions: boolean; turnComplete: boolean; harnessDenied?: boolean },
+    prefs?: {
+      questions: boolean;
+      turnComplete: boolean;
+      harnessDenied?: boolean;
+      turnFailed?: boolean;
+    },
   ): DeviceTokenEntry {
     return {
       token: name,
       platform: 'ios',
       registeredAt: 1,
       connectionId: SID,
-      ...(prefs !== undefined && { pushPrefs: { harnessDenied: true, ...prefs } }),
+      ...(prefs !== undefined && {
+        pushPrefs: { harnessDenied: true, turnFailed: true, ...prefs },
+      }),
     };
   }
 

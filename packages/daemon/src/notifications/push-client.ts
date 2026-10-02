@@ -24,6 +24,10 @@ export type PushKind =
   /** Claude Code's auto-mode classifier blocked a tool call (#1126), never a
    *  card: nothing waits for an answer. */
   | 'harness_denied'
+  /** A turn ended on an API error (usage or rate limit, authentication, and
+   *  similar; Claude Code's `StopFailure`, #1153), never a card: nothing
+   *  waits for an answer. */
+  | 'turn_failed'
   | 'dismiss';
 
 /** Options for sendPushTrigger */

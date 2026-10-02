@@ -132,12 +132,13 @@ export const EVENT_SPECS: Record<RemiRegisteredHookEvent, EventSpec> = {
     knownAbsentRequired: ['permission_mode'], // #929
   },
   StopFailure: {
-    required: ['error_type'],
+    // #1153 / #905: `error_type` was removed from the type (Claude never sent
+    // it; the 3 real captures carry `error` and `last_assistant_message`).
+    // `error` is optional in the type because the wire is untrusted input,
+    // although every capture carries it.
+    required: [],
     optional: ['error', 'error_details', 'last_assistant_message'],
-    // #929 (permission_mode) + #905 (error_type: hook-types.ts keeps this
-    // required on purpose, as a live marker of the bug hook-event-bridge.ts
-    // still has — see #905 for why fixing hook-types.ts here is deferred).
-    knownAbsentRequired: ['permission_mode', 'error_type'],
+    knownAbsentRequired: ['permission_mode'], // #929
   },
   PermissionDenied: {
     required: ['tool_name', 'tool_input'],
