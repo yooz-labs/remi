@@ -29,6 +29,7 @@ import type { ManagedSession, SessionBindingStore, SessionRegistry } from '../..
 import { traceQuestionEvent } from '../../session/question-trace.ts';
 import { log, logError } from '../logger.ts';
 import { ResolvedAnswerCache, answerCacheKey } from './resolved-answer-cache.ts';
+import { isNumberedMenu } from './screen-menu.ts';
 import type { SendToConnection } from './trivial-events.ts';
 
 export interface InputHandlerDeps {
@@ -148,11 +149,14 @@ export interface InputHandlerDeps {
    * fail-toward-refusing default as `isPromptCurrent` and
    * `isPromptObservedOnPTY`.
    *
-   * `onUserInput` reads it the other way round (#1140): a non-empty list means
-   * a menu is up and chat text is refused, while absent or null (no tracker
-   * for the session, so nothing is known) types the text as before. Refusing
-   * there would stop the chat from working in a session with no hook server,
-   * and the answer guards above are the ones that must fail closed.
+   * `onUserInput` reads it the other way round (#1140): a NUMBERED selection
+   * box in the list (`isNumberedMenu`) means chat text is refused, while
+   * absent or null (nothing observed, or the dep unwired) types the text as
+   * before. In production `cli.ts` builds a tracker for every session, hook
+   * server or not, so "no tracker" is effectively never the case there; the
+   * fail-open default only matters to a caller that does not wire this dep
+   * (tests, a future entry point), and it is the opposite of the answer
+   * guards above, which fail closed.
    */
   observedPromptOptions?: (sessionId: UUID) => readonly QuestionOption[] | null;
   /**
@@ -1339,11 +1343,13 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       // keystrokes at the terminal, which is how the menu gets answered.
       //
       // `observedPromptOptions` is the tracker's view of the screen, the same
-      // signal the card-answer guards use (#1134). Absent, or null (no tracker
-      // for this session, or no prompt observed): nothing is known to be on
-      // screen, so the text is typed as before.
+      // signal the card-answer guards use (#1134). Only a NUMBERED selection
+      // box refuses (`isNumberedMenu`): a subprocess `(y/n)` prompt is observed
+      // too, with options "y"/"n", and it takes typed text. Absent, or null (no
+      // prompt observed, or no tracker): nothing is known to be on screen, so
+      // the text is typed as before.
       const menu = observedPromptOptions?.(session.sessionId) ?? null;
-      if (menu !== null && menu.length > 0) {
+      if (menu !== null && isNumberedMenu(menu)) {
         const screenValues = menu.map((o) => o.value);
         log(
           `[Input] refusing ${content.length} chars of chat text for session ${session.sessionId.slice(0, 8)}: a prompt menu is on screen [${screenValues.join(', ')}]`,
