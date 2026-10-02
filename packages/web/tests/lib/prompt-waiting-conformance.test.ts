@@ -21,7 +21,7 @@
  * beside it.
  */
 
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -144,6 +144,24 @@ describe('PROMPT_WAITING: real web client <-> real daemon handlers (#1140)', () 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  // Each test starts from the same state, whatever ran before it: nothing
+  // typed or written, and no menu observed. A test that needs a menu puts it
+  // up itself (`showMenu`), so the tests pass in any order.
+  beforeEach(() => {
+    submits.length = 0;
+    writes.length = 0;
+    tracker.onStatusChange('idle');
+    expect(tracker.observedPromptOptions()).toBeNull();
+  });
+
+  /** The real captured Claude dialog, observed through the real parser. */
+  function showMenu(): void {
+    const parsed = parseQuestion(WRAPPED_DIRECTORY_DIALOG);
+    if (!parsed.question) throw new Error('the captured dialog did not parse as a prompt');
+    tracker.onPTYPromptVisible(parsed.question);
+    expect(tracker.observedPromptOptions()?.map((o) => o.value)).toEqual(['1', '2', '3']);
+  }
+
   function errorsFor(code: string, since: number) {
     return received
       .slice(since)
@@ -152,9 +170,7 @@ describe('PROMPT_WAITING: real web client <-> real daemon handlers (#1140)', () 
   }
 
   test('chat text sent while the real Claude menu is observed: nothing typed, the client reads which bubble failed', async () => {
-    const parsed = parseQuestion(WRAPPED_DIRECTORY_DIALOG);
-    if (!parsed.question) throw new Error('the captured dialog did not parse as a prompt');
-    tracker.onPTYPromptVisible(parsed.question);
+    showMenu();
     const messageId = generateId();
     const before = received.length;
 
@@ -173,23 +189,38 @@ describe('PROMPT_WAITING: real web client <-> real daemon handlers (#1140)', () 
   });
 
   test('a raw Escape from the client reaches the terminal while the menu is up', async () => {
+    showMenu();
     const before = received.length;
 
     client.send(createUserInput(sessionId, '\x1b', true));
     await waitFor(() => writes.length > 0);
 
     expect(writes).toEqual(['\x1b']);
+    expect(submits).toEqual([]);
     expect(errorsFor(PROMPT_WAITING_ERROR_CODE, before)).toHaveLength(0);
   });
 
   test('once the menu is gone the same chat text is typed and no error comes back', async () => {
+    showMenu();
     tracker.onStatusChange('thinking');
+    expect(tracker.observedPromptOptions()).toBeNull();
     const before = received.length;
 
     client.send(createUserInput(sessionId, 'now it is typed', undefined, undefined, generateId()));
     await waitFor(() => submits.length > 0);
 
     expect(submits).toEqual(['now it is typed']);
+    await wait(50);
+    expect(errorsFor(PROMPT_WAITING_ERROR_CODE, before)).toHaveLength(0);
+  });
+
+  test('chat text with no menu ever shown is typed (nothing carries over from another test)', async () => {
+    const before = received.length;
+
+    client.send(createUserInput(sessionId, 'plain chat', undefined, undefined, generateId()));
+    await waitFor(() => submits.length > 0);
+
+    expect(submits).toEqual(['plain chat']);
     await wait(50);
     expect(errorsFor(PROMPT_WAITING_ERROR_CODE, before)).toHaveLength(0);
   });
