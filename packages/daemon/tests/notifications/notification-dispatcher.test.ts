@@ -353,9 +353,10 @@ describe('selectDynOptions (#719)', () => {
 
 /**
  * #1127 lead decision: an AskUserQuestion is a lock-screen tap only when it
- * is one single-select question (its answer resolves by option index through
- * the held hook); every other AskUserQuestion, and every plan approval, is
- * answered in the app.
+ * is one single-select question (the tap sends the option's label, which the
+ * held hook answers as that option's label in `answers`, or refuses when it is
+ * also another option's number); every other AskUserQuestion, and every plan
+ * approval, gets no actionable category.
  */
 describe('pushCategoryFor (#1127)', () => {
   const picks = ['Red', 'Green', 'Blue'].map((label, i) => ({

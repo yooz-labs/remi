@@ -2769,8 +2769,10 @@ describe('setupHookBridge', () => {
     });
 
     test('AskUserQuestion: a lock-screen pick answers through the hook, even with the menu on screen', async () => {
-      // A plain pick, as the extension's buttons and the HTTP relay send it,
-      // resolves by option index into `answers` (#1127). The menu below is
+      // A plain pick, as the extension's buttons and the HTTP relay send it
+      // (an option's label or number), is matched to one option and answered
+      // through the hook with that option's label in `answers` (#1127). The
+      // menu below is
       // on screen and "SQLite" would match its row 2, which is exactly when
       // a typed digit used to go through; nothing may be typed now.
       const { tracker } = build({
