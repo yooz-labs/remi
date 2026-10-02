@@ -273,6 +273,9 @@ describe('setupHookBridge', () => {
        *  not claim the rest of cli.ts's wiring. Only meaningful with
        *  `realTracker`. */
       liveQuestionDeps?: boolean;
+      /** Record every push the REAL tracker makes, with its `held` flag.
+       *  Only meaningful with `realTracker`. */
+      pushLog?: Array<{ question: Question; held: boolean }>;
     } = {},
   ): { tracker: QuestionPresenceTracker; messageApi: MessageAPI } {
     const sessionWorkingDirectory = opts.workingDirectory ?? tmpDir;
@@ -297,7 +300,10 @@ describe('setupHookBridge', () => {
         );
     const tracker: QuestionPresenceTracker = opts.realTracker
       ? new QuestionPresenceTracker(
-          (q) => localMessageApi.handleQuestion(q),
+          (q, pushOpts) => {
+            opts.pushLog?.push({ question: q, held: pushOpts?.held === true });
+            return localMessageApi.handleQuestion(q, pushOpts);
+          },
           // Only pass deps when a test asked for them, so the pre-existing
           // realTracker tests keep their exact wiring (default 1.5s window, no
           // hasLiveQuestions dep).
@@ -1722,6 +1728,59 @@ describe('setupHookBridge', () => {
       await handlers.onAnswer('conn-1' as UUID, SID, card.id, no.label);
 
       expect(ptySubmits).toEqual(['3']);
+    });
+  });
+
+  describe('multi-choice / design escalations push at once (#625)', () => {
+    test('an AskUserQuestion pushes exactly one held card, once, and it reaches the registry', async () => {
+      // The immediate-push path end to end: gate -> escalatePassthrough ->
+      // onHeldEscalate -> tracker.pushHeldHook -> MessageAPI -> registry,
+      // with the real tracker and message API and the gate's default
+      // ALWAYS_ESCALATE_TOOLS (no alwaysEscalateTools passed).
+      const pushLog: Array<{ question: Question; held: boolean }> = [];
+      const { tracker } = build({ realTracker: true, realMessageApi: true, pushLog });
+      hookServer.fire('Notification', {
+        session_id: 'claude-auq-push',
+        hook_event_name: 'Notification',
+        transcript_path: path.join(tmpDir, 'claude-auq-push.jsonl'),
+        notification_type: 'auth_success',
+        message: '',
+      });
+
+      const decision = await hookServer.firePermission({
+        session_id: 'claude-auq-push',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'AskUserQuestion',
+        tool_input: {
+          questions: [
+            {
+              question: 'Which database?',
+              header: 'Database',
+              multiSelect: false,
+              options: [
+                { label: 'Postgres', description: 'relational' },
+                { label: 'SQLite', description: 'embedded' },
+              ],
+            },
+          ],
+        },
+      });
+
+      expect(decision).toBe('passthrough');
+      expect(pushLog).toHaveLength(1);
+      expect(pushLog[0]?.held).toBe(true);
+      const qid = pushLog[0]?.question.id;
+      if (!qid) throw new Error('no card pushed');
+      expect(sessionRegistry.getQuestion(SID, qid)).not.toBeNull();
+
+      // A repeat push for the same id is a no-op (pushedHeldIds).
+      expect(tracker.pushHeldHook(qid)).toBe(false);
+      expect(pushLog).toHaveLength(1);
+      expect(
+        [...(sessionRegistry.getSession(SID)?.currentQuestions.values() ?? [])].filter(
+          (q) => q.id === qid,
+        ),
+      ).toHaveLength(1);
     });
   });
 
