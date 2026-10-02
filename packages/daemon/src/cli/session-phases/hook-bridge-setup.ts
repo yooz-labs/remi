@@ -103,7 +103,6 @@ import {
   isNonHumanForAuthority,
   resolveAuthority,
 } from '../../auto-approve/index.ts';
-import type { AutoApproveService } from '../../auto-approve/index.ts';
 // Not re-exported from `auto-approve/index.ts` on purpose (#976 prerequisite
 // scope: that barrel is being edited concurrently by other work on the same
 // epic). Imported directly from its own module instead.
@@ -117,7 +116,6 @@ import type {
   HookServer,
   PermissionRequestHookInput,
 } from '../../hooks/index.ts';
-import type { DeliveryOutcome } from '../../notifications/notification-dispatcher.ts';
 import type {
   SessionBindingStore,
   SessionRegistry,
@@ -159,7 +157,6 @@ export interface HookBridgeDeps {
   liveSessionsRegistry: SessionRegistryFile;
   transcriptWatchers: Map<UUID, TranscriptWatcher>;
   transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>>;
-  autoApproveService: AutoApproveService | null;
   /** PORT is reassigned during daemon-mode port probing; read lazily. */
   currentPort: () => number;
   /**
@@ -190,54 +187,6 @@ export interface HookBridgeDeps {
    * empty set (tests / no-AA callers).
    */
   alwaysEscalateTools?: ReadonlySet<string>;
-  /**
-   * Seconds to HOLD a binary main-context PermissionRequest hook open until the
-   * user answers (Model B, #573). From `config.auto_approve.hold_timeout`. 0 /
-   * absent => no holding (escalate -> passthrough as before).
-   */
-  holdTimeoutSec?: number;
-  /**
-   * Seconds before a slow binary main-context eval triggers an early push + hold
-   * (Part B, #573). From `config.auto_approve.push_hold_timeout`. 0 / absent =>
-   * Part B disabled (the eval/timer race never arms).
-   */
-  pushHoldTimeoutSec?: number;
-  /**
-   * What a main-agent BINARY escalation `escalateMain` cannot approve becomes:
-   * `'escalate'` (default) asks the user as before; `'deny'` refuses with a
-   * reason instead (#1045 phase 6). From `config.auto_approve.residual_action`.
-   * Absent => the gate's own default (`'escalate'`), unaffected by whether
-   * auto-approve is enabled — unlike `holdTimeoutSec`/`pushHoldTimeoutSec`,
-   * this is NOT guarded on `autoApproveService` existing, because the
-   * no-service edge is itself one of `escalateMain`'s three call sites.
-   */
-  residualAction?: 'escalate' | 'deny';
-  /**
-   * Probe a held escalation's notification delivery outcome (epic #603 Phase 1).
-   * Wired from this session's `NotificationDispatcher.awaitDelivery`. Lets the
-   * gate fail a hold open fast when no notification reached the user instead of
-   * blocking for the full hold_timeout. Absent => delivery gating disabled.
-   */
-  awaitDelivery?: (questionId: UUID) => Promise<DeliveryOutcome> | undefined;
-  /**
-   * Hold-timeout handoff notice (#733). Wired from this session's
-   * `NotificationDispatcher.pushHoldTimeoutHandoff`: when a held escalation
-   * expires unanswered and moves to the native terminal prompt, tell the phone
-   * so the timeout is not silent. Absent => no handoff push (tests).
-   */
-  onHoldTimeout?: (questionId: UUID) => void;
-  /**
-   * Seconds to wait for a held escalation's delivery to be confirmed before
-   * treating it as undeliverable (epic #603 Phase 1). From
-   * `config.auto_approve.delivery_confirm_timeout`. 0 / absent => no gating.
-   */
-  deliveryConfirmSec?: number;
-  /**
-   * Seconds to keep holding an UNDELIVERED escalation instead of failing open
-   * immediately (epic #603 Phase 1, D2 hold-always-no-phone). From
-   * `config.auto_approve.hold_unconfirmed_timeout`. 0 / absent => fail open fast.
-   */
-  holdUnconfirmedSec?: number;
   /**
    * Cross-client question dismissal (#585, P7). Called by the gate when a HELD
    * question resolves WITHOUT a user answer (Part-B late verdict, hold timeout,
@@ -396,7 +345,6 @@ export function setupHookBridge(
     liveSessionsRegistry,
     transcriptWatchers,
     transcriptFallbackTimers,
-    autoApproveService,
     currentPort,
     transcriptDiscovery,
     subagentViews,
@@ -722,7 +670,9 @@ export function setupHookBridge(
   // injected callbacks, read live at inject time (async TOCTOU).
   const autoApproveGate = new AutoApproveGate(
     {
-      service: autoApproveService,
+      // #1125: remi no longer evaluates permissions (ADR 0030); the gate
+      // escalates every main-agent prompt and parks every subagent one.
+      service: null,
       sessionRegistry,
       tracker,
       isInSubagentContext: () => hookBridge.isInSubagentContext(),
@@ -858,48 +808,12 @@ export function setupHookBridge(
       // pushed card on every client. Forwarded with this session's id.
       onResolved: (questionId, reason) =>
         deps.broadcastQuestionResolved?.(sessionId, questionId, reason),
-      // #522: second-opinion model on a primary escalate (read from the service's
-      // config). Empty when unset -> escalate straight to the user.
-      escalateModel: autoApproveService?.escalateModel ?? '',
-      // #573: classify an escalation as binary (holdable) vs design/multi-choice
-      // (passthrough) the same way the service does; hold binary main-context
-      // hooks open until the user answers (holdMs) and optionally push early on a
-      // slow eval (pushHoldMs). Seconds -> ms; 0 disables (gate treats <=0 as off).
+      // #573: classify an escalation as binary (pushed on render, #1121) vs
+      // design/multi-choice (pushed immediately).
       alwaysEscalateTools: deps.alwaysEscalateTools ?? new Set<string>(),
-      holdMs: (deps.holdTimeoutSec ?? 0) * 1000,
-      pushHoldMs: (deps.pushHoldTimeoutSec ?? 0) * 1000,
-      // #1045 phase 6: escalate (default) vs deny-with-reason for a main-agent
-      // binary residual. No unit conversion needed, unlike the *Sec fields above.
-      residualAction: deps.residualAction ?? 'escalate',
-      // #603 Phase 1: gate a held hook on confirmed notification delivery, so a
-      // dead push channel fails open fast instead of stalling for holdMs.
-      ...(deps.awaitDelivery ? { awaitDelivery: deps.awaitDelivery } : {}),
-      // #733: hold-timeout handoff notice — the phone learns the prompt moved
-      // to the terminal instead of the card just silently vanishing.
-      ...(deps.onHoldTimeout ? { onHoldTimeout: deps.onHoldTimeout } : {}),
-      deliveryConfirmMs: (deps.deliveryConfirmSec ?? 0) * 1000,
-      holdUnconfirmedMs: (deps.holdUnconfirmedSec ?? 0) * 1000,
     },
     sessionId,
   );
-
-  // #814: with auto-approve configured, a PARKED subagent permission whose
-  // prompt actually renders on the main PTY is evaluated AT THAT MOMENT — the
-  // hook it arrived on was answered 'passthrough' long before (#807), so the
-  // render is the first point where we know a human would be interrupted. The
-  // gate answers it by PTY inject when it can, and only escalates (push) what
-  // the policy will not decide. Wired only when a service exists: without one
-  // there is nothing to evaluate, and the tracker keeps its pre-#814 behavior
-  // of pushing a parked render straight through (synchronously).
-  if (autoApproveService) {
-    tracker.setParkedRenderArbiter((ctx) =>
-      autoApproveGate.arbitrateParkedRender(
-        ctx.parkedQuestionId as UUID,
-        ctx.rendered,
-        ctx.ptyPrompt,
-      ),
-    );
-  }
 
   // Subagent/team-member events carry `agent_id` (confirmed via
   // REMI_HOOK_DEBUG capture 2026-04-16). They share main's session_id and

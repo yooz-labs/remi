@@ -15,13 +15,10 @@
  * logic, matching the precedent already established in
  * `tests/cli/session-phases/hook-bridge-setup.test.ts`:
  *   - `ReplayHookServer`: a `.on()`/`.setPermissionResolver()` recorder so
- *     events can be fired as plain synchronous calls instead of real HTTP.
- *     A real `HookServer` was considered (see `hook-server-bridge-integration
- *     .test.ts`'s precedent), but a HELD PermissionRequest's decision promise
- *     can stay pending for `holdTimeoutSec` (real HTTP would either hang the
- *     replay awaiting it, or race two concurrent unawaited fetches with no
- *     ordering guarantee -- the exact nondeterminism a corpus replay must
- *     not have).
+ *     events can be fired as plain synchronous calls instead of real HTTP,
+ *     so the replay order is exactly the corpus order (two concurrent
+ *     unawaited fetches would have no ordering guarantee -- the exact
+ *     nondeterminism a corpus replay must not have).
  *   - `fakePTY`: `registerSession` requires a `PTYSession`; nothing here
  *     writes to or reads from it (no PTY render events exist in this corpus
  *     at all -- see "Honest limits" below), so a real PTY has nothing to do.
@@ -59,12 +56,14 @@
  *       shape (a parked-then-rendered card going stale) at all -- it can
  *       only confirm the parked-and-never-rendered case stays silent, which
  *       is the DESIGNED behavior, not a phantom.
- *     - `holdTimeoutSec` is set to the real production default (1800s,
- *       `config.ts`) specifically so a MAIN-context escalation still pushes
- *       via `AutoApproveGate`'s hold/passthrough-push paths (both push
- *       regardless of PTY -- see `escalateAndHold`/`escalatePassthrough`).
- *       That is the ONLY reason this replay can exercise MAIN-context
- *       card lifecycle at all from hook data alone.
+ *     - A BINARY MAIN-context escalation pushes only when its prompt
+ *       renders (`AutoApproveGate.escalateForRender`, #1121), so it never
+ *       reaches the store here either. Before #1125 this replay set
+ *       `holdTimeoutSec` so binary escalations held and pushed from hook data
+ *       alone; remi no longer holds (ADR 0030), so the MAIN-context card
+ *       lifecycle this replay can still exercise is the PASSTHROUGH one
+ *       (`AskUserQuestion` / `ExitPlanMode`, `escalatePassthrough`), which
+ *       pushes at once regardless of the PTY.
  * - **`PreToolUse`/`PostToolUse` are DOWN-SAMPLED in this corpus**
  *   (`build-hook-corpus.ts`: at most 2 kept per (event, tool_name, key-set)
  *   shape group; 72/71 records total against 354 `PermissionRequest`s). A
@@ -191,9 +190,8 @@ type HookListener = (input: CorpusRecord) => void;
  * Records `setupHookBridge`'s `.on()`/`.setPermissionResolver()` calls and
  * lets the replay loop fire them as plain synchronous function calls. See
  * the module doc's "NO MOCKS" section for why this stands in for a real
- * `HookServer` here (a live-HTTP replay cannot express "fire this event,
- * but do not wait for a 1800s hold to resolve, and definitely do not race
- * the NEXT event against it").
+ * `HookServer` here (a live-HTTP replay cannot guarantee the NEXT event is
+ * not raced against this one).
  */
 class ReplayHookServer {
   private readonly listeners = new Map<string, HookListener>();
@@ -219,7 +217,7 @@ class ReplayHookServer {
   }
 
   /** Fires the synchronous PermissionRequest resolver. NOT awaited by the
-   *  replay loop when a hold is expected to stay open -- see the module doc. */
+   *  replay loop -- see `replayEvent`. */
   firePermission(input: CorpusRecord): Promise<unknown> {
     if (!this.permissionResolver) {
       throw new Error('Corpus replay hit a PermissionRequest with no resolver installed');
@@ -318,17 +316,11 @@ function buildReplayRig(): ReplayRig {
       liveSessionsRegistry,
       transcriptWatchers,
       transcriptFallbackTimers,
-      // No LLM auto-approve service: every MAIN permission escalates to the
-      // user (real `AutoApproveGate.resolvePermission` "no service" branch),
-      // and every SUBAGENT permission parks per ADR 0004. Neither is a test
-      // stand-in -- both are real, documented gate behaviors for this config.
-      autoApproveService: null,
+      // Every MAIN permission escalates to the user and every SUBAGENT
+      // permission parks per ADR 0004: the real, only gate behavior since
+      // #1125 removed the evaluator (ADR 0030).
       currentPort: () => 8765,
       transcriptDiscovery: new TranscriptDiscovery(),
-      // Production default (config.ts: `hold_timeout = 1800`). See the
-      // module doc's "Honest limits" section for why this is required for
-      // the replay to exercise MAIN-context card lifecycle at all.
-      holdTimeoutSec: 1800,
     },
     {
       hookServer: hookServer as unknown as HookServer,
@@ -349,9 +341,7 @@ function buildReplayRig(): ReplayRig {
     statusLog,
     cleanup: async () => {
       handle.closeBinder();
-      // Release any hold still open (production default holdMs=1800000 means
-      // a session whose capture window ended mid-hold would otherwise leave
-      // an unref'd-but-live timer for the rest of the test run).
+      // Resolve any escalation still open so no card outlives the rig.
       handle.gate.forceRelease('corpus-replay-test-cleanup');
       for (const watcher of transcriptWatchers.values()) {
         try {
@@ -377,13 +367,10 @@ function stripOwnFields(record: CorpusRecord): CorpusRecord {
 
 /**
  * Replay ONE corpus event through the rig. `PermissionRequest` is fired
- * without awaiting the returned decision: with `holdTimeoutSec` configured, a
- * binary MAIN escalation's promise can stay pending until a LATER event
- * (Stop/SubagentStop/SessionEnd) resolves it via the gate's own cancelStale
- * sweep -- see `createHold`: the push (`onHeldEscalate`) happens synchronously
- * before the pending promise is ever constructed, so the store-relevant side
- * effect this replay checks has already landed by the time this function
- * returns, with no `await` needed.
+ * without awaiting the returned decision: the gate's store-relevant side
+ * effects (a passthrough escalation's push, a park) all happen synchronously
+ * inside `resolvePermission` before its promise settles, so they have landed
+ * by the time this function returns, with no `await` needed.
  */
 function replayEvent(hookServer: ReplayHookServer, rawRecord: CorpusRecord): void {
   const record = stripOwnFields(rawRecord);

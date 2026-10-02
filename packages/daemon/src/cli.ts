@@ -125,16 +125,7 @@ import { loadOrCreateAnswerKey } from './auth/answer-key.ts';
 import { Authenticator } from './auth/authenticator.ts';
 import { loadOrCreateCapabilityToken } from './auth/capability-token.ts';
 import { IdentityStore } from './auth/identity-store.ts';
-import {
-  AutoApproveService,
-  EngineHost,
-  SubagentAlerter,
-  alertBody,
-  alertTitle,
-  llamaServerMissingHint,
-  resolveLlamaServer,
-  resolveProviderUrl,
-} from './auto-approve/index.ts';
+import { SubagentAlerter, alertBody, alertTitle } from './auto-approve/index.ts';
 import type { PrecedentStore } from './auto-approve/precedent.ts';
 import type { SessionWorkflowGrantStore } from './auto-approve/session-workflow-grant.ts';
 import type { DenySource } from './auto-approve/types.ts';
@@ -187,13 +178,7 @@ import { StatusBar, childRows } from './cli/status-bar.ts';
 import { installStatusLine } from './cli/statusline-installer.ts';
 import { installSuspendHandler } from './cli/suspend-handler.ts';
 import { isRemiBinaryPath, startUpdateWatcher } from './cli/update-watcher.ts';
-import {
-  DEFAULT_CONFIG,
-  applyEnvOverrides,
-  detectLocalLLMPlatform,
-  llamaServerCommand,
-  loadConfig,
-} from './config/index.ts';
+import { DEFAULT_CONFIG, applyEnvOverrides, loadConfig } from './config/index.ts';
 import type { RemiConfig } from './config/index.ts';
 import { ForeignSessionEscalator, HookConfigManager, HookServer } from './hooks/index.ts';
 import type { HookInput, PermissionRequestHookInput, StopHookInput } from './hooks/index.ts';
@@ -867,185 +852,6 @@ if (TELEGRAM_TOKEN) {
 }
 const TELEGRAM_AUTHORIZED_CHAT_IDS = [...remiConfig.telegram.authorized_chat_ids];
 const TELEGRAM_AUTHORIZED_USER_IDS = [...remiConfig.telegram.authorized_user_ids];
-
-// ---------------------------------------------------------------------------
-// Auto-approve service (optional, LLM-based permission evaluation)
-// ---------------------------------------------------------------------------
-let autoApproveService: AutoApproveService | null = null;
-{
-  const aaCfg = remiConfig.auto_approve;
-  const aaEnabled = parsedArgs.autoApprove ?? aaCfg.enabled;
-  if (aaEnabled) {
-    const provider = parsedArgs.autoApproveProvider ?? aaCfg.provider;
-    const model = parsedArgs.autoApproveModel ?? aaCfg.model;
-    const apiKey = parsedArgs.autoApproveApiKey ?? aaCfg.api_key;
-    const baseUrl = resolveProviderUrl(provider, aaCfg.base_url);
-    // CLI allow/deny flags append to config lists; instructions override config.
-    const allow = [...aaCfg.allow, ...parsedArgs.autoApproveAllow];
-    const deny = [...aaCfg.deny, ...parsedArgs.autoApproveDeny];
-    const instructions = parsedArgs.autoApproveInstructions ?? aaCfg.instructions;
-    if (parsedArgs.autoApproveInstructions && aaCfg.instructions) {
-      writeToLog(
-        `[AutoApprove] CLI --auto-approve-instructions overrides TOML instructions (${aaCfg.instructions.length} chars discarded)`,
-      );
-    }
-
-    const multichoice = parsedArgs.autoApproveMultichoice ?? aaCfg.multichoice;
-    const multichoiceModel = parsedArgs.autoApproveMultichoiceModel ?? aaCfg.multichoice_model;
-
-    // #822: say it plainly when this machine cannot run ANY local backend
-    // (notably an Intel Mac — "macOS" is not the boundary, Apple Silicon is).
-    // Without this the user gets a 30s startup timeout and then every question
-    // escalated, which is indistinguishable from a bug. Only a local provider
-    // is affected: a remote one (OpenRouter, a custom URL) works anywhere.
-    const localProvider = provider === 'yooz' || provider === 'llamacpp';
-    const detectedBackend = detectLocalLLMPlatform();
-    if (localProvider && detectedBackend === 'unsupported') {
-      logError(
-        `[AutoApprove] No local LLM backend exists for ${process.platform}/${process.arch}: the Yooz engine needs Apple Silicon (MLX) and the llama.cpp path is Linux. Auto-approve will escalate every permission until you point auto_approve.provider at a reachable backend (e.g. openrouter, or a custom URL).`,
-      );
-    } else if (provider === 'llamacpp' && resolveLlamaServer() === undefined) {
-      // remi SUPERVISES llama-server since #822 (spawn, health-probe, stop) but
-      // deliberately never INSTALLS it -- see llamacpp-backend.ts for where that
-      // line is drawn. So the only remaining boot-time gap is a missing binary,
-      // and it is worth saying here rather than at the first permission: left
-      // unsaid, a Linux user enabling auto-approve gets silence and then every
-      // permission escalated, which is precisely the unexplained degradation
-      // #818 was filed to remove, reintroduced on another platform.
-      //
-      // Nothing is printed when the binary IS present: remi starts it on
-      // demand, so there is no action for the user to take and a warning would
-      // describe a problem that does not exist.
-      logError(
-        `[AutoApprove] provider = "llamacpp": ${llamaServerMissingHint()}
-  Until something answers on ${baseUrl}, every permission escalates. A remote provider (openrouter, a custom URL) also works.
-  Once installed, remi runs it for you as: ${llamaServerCommand(model)}`,
-      );
-    }
-
-    // llama-server ignores the request's `model` field in single-model mode
-    // (verified against its README), so a configured escalate_model is
-    // answered by whatever GGUF was loaded at process start -- a "second
-    // opinion" from the same weights, reported as if a heavier model had
-    // agreed. Silent, and it makes escalate_model actively misleading rather
-    // than merely absent. #822's own scope calls this out as an open design
-    // question ("one model per process"); until it is decided, say so.
-    //
-    // Deliberately OUTSIDE the branch above. It used to be nested inside the
-    // llamacpp warning, which was harmless only because that warning fired for
-    // every llamacpp boot. Now that it fires just for a MISSING binary, nesting
-    // would silence this for exactly the users whose setup works -- i.e.
-    // everyone who would actually get the misleading second opinion.
-    if (provider === 'llamacpp' && aaCfg.escalate_model && aaCfg.escalate_model !== model) {
-      logError(
-        `[AutoApprove] escalate_model = "${aaCfg.escalate_model}" has no effect on provider = "llamacpp": llama-server serves the one model it was started with and ignores the requested model id, so the "second opinion" would come from the primary model (#822). There is no per-model base URL in the config, so there is no way to route it elsewhere today (#822 owns that design question) -- leave it empty until then.`,
-      );
-    }
-
-    // #818: who starts the engine. Only meaningful for the engine transport —
-    // an OpenRouter or llama.cpp base URL is not something remi supervises, and
-    // handing those an EngineHost would mean spawning a Yooz helper for a
-    // provider that never talks to one.
-    // #822: llamacpp is supervised too now. Both are local sidecars remi owns
-    // on its reserved port; what differs is the launch and the readiness probe,
-    // which `EngineHost` takes as configuration. A remote provider (OpenRouter,
-    // a custom URL) is still never supervised -- handing those a host would
-    // mean spawning a local backend for something that never talks to one.
-    const engineHost = localProvider
-      ? EngineHost.real(
-          {
-            baseUrl,
-            backend: provider === 'llamacpp' ? 'llamacpp' : 'yooz',
-            // llama.cpp needs the id at launch (one GGUF per process); the
-            // engine ignores it and selects per request.
-            model,
-            ownership: aaCfg.engine,
-            helperPath: aaCfg.engine_path,
-            modelCache: aaCfg.model_cache,
-          },
-          writeToLog,
-        )
-      : undefined;
-
-    autoApproveService = new AutoApproveService(
-      {
-        ...aaCfg,
-        provider,
-        model,
-        api_key: apiKey,
-        base_url: baseUrl,
-        enabled: true,
-        allow,
-        deny,
-        instructions,
-        multichoice,
-        multichoice_model: multichoiceModel,
-      },
-      writeToLog,
-      engineHost,
-    );
-
-    // Start (or attach to) the engine at boot, but do NOT block the daemon on
-    // it: a cold helper can take tens of seconds to bind, and remi must be
-    // answering its own port long before then. Evaluation escalates while the
-    // engine is coming up, which is the safe direction, and `ensureEngine`
-    // reports the outcome either way so "no engine" is never silent.
-    //
-    // On a hub machine the hub reaches here first and wins the pidfile race by
-    // construction; a standalone `remi --daemon` on a machine with no hub still
-    // gets one, because requiring a hub would recreate exactly the silent
-    // escalate-everything failure #818 exists to remove.
-    void autoApproveService
-      .ensureEngine()
-      .then(async (up) => {
-        // Only once an engine answers: a pull is an engine operation. Chained
-        // rather than fired alongside, so a cold start does not race the
-        // helper's own startup with a download request it cannot serve.
-        //
-        // Owner decision 2026-07-26: fetch the model if it is not local, do
-        // nothing if it is. Without this the weights still arrive, but
-        // implicitly, on the first permission -- so a fresh install's first
-        // question blocks on a silent multi-GB download instead of a visible
-        // one that happened at boot.
-        if (up) await autoApproveService?.ensureModelPresent();
-      })
-      .catch((err) => {
-        writeToLog(`[AutoApprove] Engine startup check failed: ${errorToString(err)}`);
-      });
-    const rulesSummary = `allow=${allow.length} deny=${deny.length} instructions=${instructions ? 'yes' : 'no'}`;
-    const mcSummary = `multichoice=${multichoice}${multichoiceModel ? ` mc_model=${multichoiceModel}` : ''}`;
-    const escalateSummary = aaCfg.escalate_model
-      ? `escalate_model=${aaCfg.escalate_model}${aaCfg.escalate_timeout > 0 ? ` (timeout=${aaCfg.escalate_timeout}s)` : ''}`
-      : 'escalate_model=none';
-    const queueSummary = `queue_timeout=${aaCfg.queue_timeout > 0 ? `${aaCfg.queue_timeout}s` : 'none'}`;
-    writeToLog(
-      `[AutoApprove] Enabled: model=${model}, provider=${provider}, base_url=${baseUrl}, ${rulesSummary}, ${mcSummary}, ${escalateSummary}, ${queueSummary}`,
-    );
-    // NOT warmed here (#818 advisory). `escalate_model` is typically a large
-    // model -- a 35B is ~20 GB resident -- and warming at daemon boot means
-    // merely CREATING a session pulls those weights in, even for a session
-    // that never sees a permission, only for keep_alive to evict them 30
-    // minutes later. Pure heat, multiplied by every session in a fleet. The
-    // service now warms on its FIRST evaluation instead, which still lands
-    // long before a typical escalation.
-  }
-}
-
-// The auto-approve eval cue (#560) is surfaced in Claude's native status line via
-// the StatusWriter (see the gate cue wiring in setupHookBridge); it replaced the
-// shared title-bar TerminalIndicator, which raced under concurrent evals.
-
-/**
- * Seconds to pass HookConfigManager as the PermissionRequest hold budget (#573):
- * the configured `hold_timeout` when auto-approve is actually enabled (so the
- * registered hook timeout outlasts a long human-paced hold), else 0 (the
- * baseline 600s ceiling, since a non-AA daemon never holds — it passes through
- * near-instantly). Keeps the hook timeout from being needlessly inflated when
- * holding can't happen.
- */
-function permissionHookHoldTimeoutSec(): number {
-  return autoApproveService ? remiConfig.auto_approve.hold_timeout : 0;
-}
 
 // ---------------------------------------------------------------------------
 // SIGTSTP / Ctrl+Z handling.
@@ -1886,7 +1692,6 @@ async function createNewSession(
         liveSessionsRegistry,
         transcriptWatchers,
         transcriptFallbackTimers,
-        autoApproveService,
         currentPort: () => PORT,
         transcriptDiscovery,
         subagentViews,
@@ -1894,32 +1699,8 @@ async function createNewSession(
         foreignSessionEscalator,
         onSubagentPassthrough,
         onAutoDenied,
-        // #573: classify holdable escalations + the hold / slow-eval-push budgets
-        // (seconds; the gate converts to ms and treats <=0 as disabled).
+        // Classify an escalation as binary vs design/plan-mode (#572/#573).
         alwaysEscalateTools: new Set(remiConfig.auto_approve.always_escalate_tools),
-        // Guard on AA being enabled (mirrors permissionHookHoldTimeoutSec): with
-        // no auto-approve service the gate must NOT hold a binary escalation —
-        // that would block Claude until the hook timeout instead of rendering the
-        // native prompt immediately (the pre-0.6.12 behavior). 0 => no hold.
-        holdTimeoutSec: autoApproveService ? remiConfig.auto_approve.hold_timeout : 0,
-        pushHoldTimeoutSec: autoApproveService ? remiConfig.auto_approve.push_hold_timeout : 0,
-        // #1045 phase 6: NOT guarded on autoApproveService, unlike the two
-        // lines above -- the no-service edge is itself one of escalateMain's
-        // three call sites, so residual_action must apply there too.
-        residualAction: remiConfig.auto_approve.residual_action,
-        // #603 Phase 1: gate a held hook on confirmed notification delivery. Same
-        // AA-enabled guard as holdTimeoutSec — gating is only meaningful when the
-        // gate can hold. The dispatcher records the per-question delivery outcome.
-        awaitDelivery: (questionId) => notifications.awaitDelivery(questionId),
-        // #733: when a held escalation times out unanswered, tell the phone the
-        // prompt moved to the terminal instead of silently dismissing the card.
-        onHoldTimeout: (questionId) => notifications.pushHoldTimeoutHandoff(sessionId, questionId),
-        deliveryConfirmSec: autoApproveService
-          ? remiConfig.auto_approve.delivery_confirm_timeout
-          : 0,
-        holdUnconfirmedSec: autoApproveService
-          ? remiConfig.auto_approve.hold_unconfirmed_timeout
-          : 0,
         // #585: a held question the gate resolves without a user answer dismisses
         // its pushed card on every client.
         broadcastQuestionResolved: onQuestionResolved,
@@ -2831,11 +2612,7 @@ if (cliDaemonMode) {
 
     if (hookServer) {
       try {
-        hookConfigManager = new HookConfigManager(
-          workingDirectory,
-          hookServer.url,
-          permissionHookHoldTimeoutSec(),
-        );
+        hookConfigManager = new HookConfigManager(workingDirectory, hookServer.url);
         await hookConfigManager.install();
       } catch (err) {
         const msg = errorToString(err);
@@ -3040,11 +2817,7 @@ if (cliDaemonMode) {
     log(`Hook server listening on ${hookServer.url} (port ${HOOK_PORT})`);
 
     // Configure Claude Code hooks to POST to our server
-    hookConfigManager = new HookConfigManager(
-      workingDirectory,
-      hookServer.url,
-      permissionHookHoldTimeoutSec(),
-    );
+    hookConfigManager = new HookConfigManager(workingDirectory, hookServer.url);
     await hookConfigManager.install();
     log('[Hooks] Claude Code hooks configured');
   } catch (err) {
