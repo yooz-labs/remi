@@ -125,6 +125,27 @@ export interface NotificationsConfig {
 }
 
 /**
+ * Permission prompt relay settings (#1126). A main-agent permission prompt
+ * holds its `PermissionRequest` hook while the card is on the phone, so the
+ * phone's answer becomes the hook's response; Claude's own dialog stays on
+ * screen the whole time and either answer wins.
+ */
+export interface PromptsConfig {
+  /**
+   * Seconds remi holds a permission hook for a phone answer before letting
+   * go (an empty response, so Claude's dialog simply stays and the card says
+   * "answer at the terminal"). 5 to 110: below the 2:00 auto-deny of Claude's
+   * auto-mode fallback prompts, which counts during a hold, and below the
+   * hook's registered 600 s timeout.
+   */
+  readonly hold_seconds: number;
+}
+
+/** Bounds for `prompts.hold_seconds` (#1126). */
+export const HOLD_SECONDS_MIN = 5;
+export const HOLD_SECONDS_MAX = 110;
+
+/**
  * Terminal settings. `notify` and `status_cue` configured the auto-approve
  * terminal cue (#513); nothing has read them since #560 replaced the title
  * cue, and the auto-approve evaluator itself was removed in #1125. They are
@@ -178,6 +199,7 @@ export interface RemiConfig {
   readonly telegram: TelegramConfig;
   readonly features: FeaturesConfig;
   readonly notifications: NotificationsConfig;
+  readonly prompts: PromptsConfig;
 }
 
 /** Built-in defaults used when no config file or CLI flags are provided */
@@ -296,6 +318,11 @@ export const DEFAULT_CONFIG: RemiConfig = {
       'chmod 777',
     ],
   },
+  prompts: {
+    // 90 s: long enough to reach a phone in a pocket, short enough to stay
+    // under the 2:00 auto-deny of auto-mode fallback prompts (#1126).
+    hold_seconds: 90,
+  },
 };
 
 /**
@@ -336,6 +363,7 @@ function deepMerge(base: RemiConfig, partial: Record<string, unknown>): RemiConf
       base.notifications,
       partial['notifications'] as Record<string, unknown> | undefined,
     ),
+    prompts: mergeSection(base.prompts, partial['prompts'] as Record<string, unknown> | undefined),
   };
 }
 
@@ -396,6 +424,7 @@ export function loadConfigWithNotices(configPath: string = CONFIG_PATH): LoadedC
     validateTerminal(config.terminal, configPath);
     validateDaemon(config.daemon, configPath);
     validateNotifications(config.notifications, configPath);
+    validatePrompts(config.prompts, configPath);
     return {
       config,
       removedAutoApproveKeys: legacy.keys,
@@ -498,6 +527,26 @@ function validateNotifications(cfg: NotificationsConfig, configPath: string): vo
   ) {
     throw new Error(
       `Invalid notifications.turn_complete_min_seconds in ${configPath}: must be a non-negative number (seconds), got ${typeof cfg.turn_complete_min_seconds === 'string' ? `string "${cfg.turn_complete_min_seconds}"` : typeof cfg.turn_complete_min_seconds}. Example: turn_complete_min_seconds = 60`,
+    );
+  }
+}
+
+/**
+ * Validate `[prompts]` (#1126). An out-of-range hold is refused rather than
+ * clamped: above 110 s an auto-mode fallback prompt can auto-deny while remi
+ * still holds it, and below 5 s the card would be released before it can
+ * reach a phone.
+ */
+function validatePrompts(cfg: PromptsConfig, configPath: string): void {
+  const v: unknown = cfg.hold_seconds;
+  if (
+    typeof v !== 'number' ||
+    !Number.isFinite(v) ||
+    v < HOLD_SECONDS_MIN ||
+    v > HOLD_SECONDS_MAX
+  ) {
+    throw new Error(
+      `Invalid prompts.hold_seconds in ${configPath}: must be a number of seconds from ${HOLD_SECONDS_MIN} to ${HOLD_SECONDS_MAX}, got ${typeof v === 'string' ? `string "${v}"` : String(v)}. Example: hold_seconds = 90`,
     );
   }
 }
@@ -675,6 +724,13 @@ turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_sec
 # (#807). Substring match on the command. Irreversible-only by default; add
 # broad ones (curl, ssh) per machine if you want them.
 subagent_alert = [${DEFAULT_CONFIG.notifications.subagent_alert.map((p) => `"${p}"`).join(', ')}]
+
+[prompts]
+# How long remi holds a Claude permission prompt for your phone's answer
+# (#1126). Claude's own dialog stays in the terminal the whole time, and
+# whichever answer comes first wins. After this many seconds the phone card
+# says "answer at the terminal" and the terminal dialog stays up. 5 to 110.
+hold_seconds = ${DEFAULT_CONFIG.prompts.hold_seconds}
 `;
 }
 
@@ -749,6 +805,9 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(
     `  subagent_alert = [${config.notifications.subagent_alert.map((s) => `"${s}"`).join(', ')}]`,
   );
+  lines.push('');
+  lines.push('[prompts]');
+  lines.push(`  hold_seconds = ${config.prompts.hold_seconds}`);
 
   return lines.join('\n');
 }

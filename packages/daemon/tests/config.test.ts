@@ -8,6 +8,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   DEFAULT_CONFIG,
+  HOLD_SECONDS_MAX,
+  HOLD_SECONDS_MIN,
   applyEnvOverrides,
   formatConfig,
   generateDefaultConfig,
@@ -411,6 +413,45 @@ describe('notifications config (#914)', () => {
     expect(output).toContain('on_turn_complete = true');
     expect(output).toContain('turn_complete_min_seconds = 60');
     expect(output).toContain('subagent_alert = ["rm -rf", "rm -f", "push --force"');
+  });
+});
+
+describe('prompts.hold_seconds (#1126)', () => {
+  test('defaults to 90 seconds', () => {
+    expect(DEFAULT_CONFIG.prompts.hold_seconds).toBe(90);
+    expect(loadConfig(path.join(TEST_DIR, 'missing.toml')).prompts.hold_seconds).toBe(90);
+  });
+
+  test('loads from [prompts], inclusive of both bounds', () => {
+    for (const v of [HOLD_SECONDS_MIN, 30, HOLD_SECONDS_MAX]) {
+      fs.writeFileSync(TEST_CONFIG, `[prompts]\nhold_seconds = ${v}\n`);
+      expect(loadConfig(TEST_CONFIG).prompts.hold_seconds).toBe(v);
+    }
+  });
+
+  test('refuses a value outside 5..110 or not a number, instead of clamping', () => {
+    for (const bad of ['4', '111', '600', '-1', '"90"', 'nan']) {
+      fs.writeFileSync(TEST_CONFIG, `[prompts]\nhold_seconds = ${bad}\n`);
+      expect(() => loadConfig(TEST_CONFIG)).toThrow(/prompts\.hold_seconds/);
+    }
+  });
+
+  test('is not an [auto_approve] key: an old table cannot set it', () => {
+    fs.writeFileSync(TEST_CONFIG, '[auto_approve]\nhold_seconds = 30\n');
+    expect(loadConfig(TEST_CONFIG).prompts.hold_seconds).toBe(90);
+  });
+
+  test('generateDefaultConfig and formatConfig show the [prompts] block', () => {
+    expect(generateDefaultConfig()).toContain('[prompts]\n');
+    expect(generateDefaultConfig()).toContain('hold_seconds = 90');
+    const output = formatConfig(DEFAULT_CONFIG, path.join(TEST_DIR, 'nonexistent.toml'));
+    expect(output).toContain('[prompts]');
+    expect(output).toContain('hold_seconds = 90');
+  });
+
+  test('the generated default file loads back to the defaults', () => {
+    fs.writeFileSync(TEST_CONFIG, generateDefaultConfig());
+    expect(loadConfig(TEST_CONFIG).prompts).toEqual(DEFAULT_CONFIG.prompts);
   });
 });
 

@@ -4,6 +4,8 @@ export {
   DEFAULT_CONFIG,
   formatConfig,
   generateDefaultConfig,
+  HOLD_SECONDS_MAX,
+  HOLD_SECONDS_MIN,
   initConfigFile,
   loadConfig,
   loadConfigWithNotices,
@@ -16,6 +18,7 @@ export type {
   LoadedConfig,
   NetworkConfig,
   NotificationsConfig,
+  PromptsConfig,
   RemiConfig,
   TelegramConfig,
 } from './config.ts';
