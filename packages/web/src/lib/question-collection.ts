@@ -165,7 +165,7 @@ export function statusClearsMainQuestion(status: AgentStatus): boolean {
  * timer fires (back-to-back auto-approve escalations). Deleting by key alone
  * then wipes the NEW card; the daemon re-emits and it "reappears". Verifying the
  * id makes the timer a no-op once the slot has been reused. A card whose
- * answer the daemon refused was un-answered meanwhile (`restoreRefusedAnswers`,
+ * answer the daemon refused was un-answered meanwhile (`restoreRefusedAnswer`,
  * STALE_BINDING): it is live again, so the timer leaves it too. Returns the
  * SAME reference when nothing was removed so React skips the re-render.
  */
@@ -182,29 +182,37 @@ export function removeQuestionByKeyIfId(
 }
 
 /**
- * Un-answer the cards of `sessionId` the user answered here whose answer the
- * daemon refused while keeping the card live (#1126 review): a `STALE_ANSWER`
- * that names no `questionId` (an answer a held card does not offer) leaves
- * the hook held, and its `pendingQuestionIds` still list the card. Without
- * this the optimistic "answered" card would be removed by its post-answer
- * timer and the live hold would have no card. Only cards still listed as
- * pending are restored. Returns the SAME reference when nothing changed.
+ * Un-answer the card the user most recently answered here in `sessionId`
+ * when the daemon refused that answer but kept the card live (#1126 review):
+ * a `STALE_ANSWER` that names no `questionId` (an answer a held card does not
+ * offer) leaves the hook held, and its `pendingQuestionIds` still list the
+ * card. Without this the optimistic "answered" card would be removed by its
+ * post-answer timer and the live hold would have no card.
+ *
+ * Scoped to `lastAnsweredId`, the one card the refusal can be about (the
+ * error carries no id, and only the answering connection receives it), so a
+ * second card answered meanwhile is not flipped back. Restored only while
+ * still answered here and still listed as pending. Returns the SAME
+ * reference when nothing changed.
  */
-export function restoreRefusedAnswers(
+export function restoreRefusedAnswer(
   questions: Map<string, UIQuestion>,
   sessionId: string,
+  lastAnsweredId: string | undefined,
   pendingQuestionIds: readonly string[],
 ): Map<string, UIQuestion> {
-  const pending = new Set(pendingQuestionIds);
-  let next: Map<string, UIQuestion> | undefined;
+  if (lastAnsweredId === undefined || !pendingQuestionIds.includes(lastAnsweredId)) {
+    return questions;
+  }
   for (const [key, q] of questions) {
-    if (q.sessionId !== sessionId || q.answeredWith == null || !pending.has(q.id)) continue;
-    if (!next) next = new Map(questions);
+    if (q.sessionId !== sessionId || q.id !== lastAnsweredId || q.answeredWith == null) continue;
+    const next = new Map(questions);
     const restored = { ...q };
     delete (restored as { answeredWith?: string }).answeredWith;
     next.set(key, restored);
+    return next;
   }
-  return next ?? questions;
+  return questions;
 }
 
 /**

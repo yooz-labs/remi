@@ -43,7 +43,7 @@ import {
   questionKey,
   removeQuestionById,
   removeQuestionByKeyIfId,
-  restoreRefusedAnswers,
+  restoreRefusedAnswer,
   resolveQuestionCard,
 } from '@/lib/question-collection';
 import { dismissDeliveredNotification } from '@/lib/notifications';
@@ -270,6 +270,9 @@ function App() {
   const loadedTranscriptsRef = useRef<Set<string>>(new Set());
   const messagesRef = useRef(messages);
   const questionsRef = useRef(questions);
+  /** The card this client most recently answered, per session (#1126): a
+   *  `STALE_ANSWER` naming no question restores only this one. */
+  const lastAnsweredIdRef = useRef<Map<string, string>>(new Map());
   const getSessionIdRef = useRef<((connId: ConnectionId) => string | null) | null>(null);
   // Stable handle so handleMessage (empty deps) can re-fetch a transcript when
   // it follows the daemon to its current session (reconnect adopt + stale
@@ -1593,11 +1596,17 @@ function App() {
             );
           }
           // #1126: no questionId means the card stayed live (a held card
-          // refused an answer it does not offer): un-answer it so the hold
-          // keeps a card instead of the post-answer timer removing it.
+          // refused an answer it does not offer): un-answer the card this
+          // client last answered in that session, so the hold keeps a card
+          // instead of the post-answer timer removing it.
           if (staleSessionId && !staleQuestionId && pendingQuestionIds) {
             commitQuestionsIfChanged(
-              restoreRefusedAnswers(questionsRef.current, staleSessionId, pendingQuestionIds),
+              restoreRefusedAnswer(
+                questionsRef.current,
+                staleSessionId,
+                lastAnsweredIdRef.current.get(staleSessionId),
+                pendingQuestionIds,
+              ),
               staleSessionId,
             );
           }
@@ -2305,6 +2314,8 @@ function App() {
       }
       const key = questionKey(sid, question.agentId);
       const answeredId = question.id;
+      // The card a refusal naming no question can be about (#1126).
+      lastAnsweredIdRef.current.set(sid, answeredId);
       // Mark this question answered (card shows collapsed state briefly), then
       // remove it; sibling prompts for the session stay in the stack.
       setQuestions((prev) => {

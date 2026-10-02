@@ -17,7 +17,7 @@ import {
   removeQuestionById,
   removeQuestionByKeyIfId,
   resolveQuestionCard,
-  restoreRefusedAnswers,
+  restoreRefusedAnswer,
   statusClearsMainQuestion,
 } from '../../src/lib/question-collection';
 import type { UIQuestion } from '../../src/types';
@@ -163,23 +163,37 @@ describe('removeQuestionByKeyIfId (#652)', () => {
   });
 });
 
-describe('restoreRefusedAnswers (#1126: a held card keeps its card)', () => {
-  test('a refused answer un-answers the card still listed as pending, and the timer then leaves it', () => {
+describe('restoreRefusedAnswer (#1126: a held card keeps its card)', () => {
+  test('a refused answer un-answers the card last answered here, and the timer then leaves it', () => {
     const map = build(qWith(q('s1', undefined, 'held'), { answeredWith: 'Maybe' }));
-    const restored = restoreRefusedAnswers(map, 's1', ['held']);
+    const restored = restoreRefusedAnswer(map, 's1', 'held', ['held']);
     const card = getSessionQuestions(restored, 's1')[0];
     expect(card?.answeredWith).toBeUndefined();
     expect(card && isQuestionPending(card)).toBe(true);
     expect(removeQuestionByKeyIfId(restored, questionKey('s1'), 'held')).toBe(restored);
   });
 
-  test('a card no longer pending, another session, or an unanswered card is left alone (same reference)', () => {
+  test('only the last answered card: another answered card in the session stays answered', () => {
+    const map = build(
+      qWith(q('s1', undefined, 'first'), { answeredWith: 'Yes' }),
+      qWith(q('s1', 'agent-1', 'last'), { answeredWith: 'Maybe' }),
+    );
+    const restored = restoreRefusedAnswer(map, 's1', 'last', ['first', 'last']);
+    const byId = new Map(getSessionQuestions(restored, 's1').map((c) => [c.id, c]));
+    expect(byId.get('last' as UIQuestion['id'])?.answeredWith).toBeUndefined();
+    expect(byId.get('first' as UIQuestion['id'])?.answeredWith).toBe('Yes');
+  });
+
+  test('no last answer, a card no longer pending, another session, or an unanswered card: same reference', () => {
     const map = build(
       qWith(q('s1', undefined, 'gone'), { answeredWith: 'Yes' }),
       qWith(q('s2', undefined, 'other'), { answeredWith: 'Yes' }),
       q('s1', 'agent-1', 'plain'),
     );
-    expect(restoreRefusedAnswers(map, 's1', ['plain', 'other'])).toBe(map);
+    expect(restoreRefusedAnswer(map, 's1', undefined, ['gone'])).toBe(map);
+    expect(restoreRefusedAnswer(map, 's1', 'gone', ['plain', 'other'])).toBe(map);
+    expect(restoreRefusedAnswer(map, 's1', 'other', ['other'])).toBe(map);
+    expect(restoreRefusedAnswer(map, 's1', 'plain', ['plain'])).toBe(map);
   });
 });
 
