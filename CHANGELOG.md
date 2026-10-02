@@ -191,8 +191,9 @@ source of several security bugs (#536, #1060, #1063).
   to the terminal instead, see above).
 - **Every phone answer is typed, and checked against the screen first**
   (#1134). (Since #1126 above, binary permission prompts are answered through
-  the held hook instead; typing remains only for hook-less prompts and for
-  AskUserQuestion, ExitPlanMode and multi-choice permissions.) With nothing held, an answer is typed into Claude's dialog only
+  the held hook instead, and since #1127 AskUserQuestion and plan approval
+  too; typing remains only for hook-less prompts and multi-choice
+  permissions.) With nothing held, an answer is typed into Claude's dialog only
   when a prompt is on screen and the chosen option's label exactly matches
   the screen's option at that number (whitespace and case aside); free text
   is refused on a card that takes a choice. A refusal consumes the card and

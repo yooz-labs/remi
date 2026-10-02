@@ -376,7 +376,9 @@ STALE_ANSWER, card consumed, trace reason in parentheses). A refusal means
 - free text is refused when the card has options and takes no text and a
   numbered menu is on screen (`free-text-into-menu`), and always on a
   pushed-by-id (`held`-stamped) card that has options and takes no text
-  (`free-text-on-held-card`). Free-form `user_input` (including a Telegram
+  (`free-text-on-held-card`). A structured `selections` answer on a card
+  no hold stands behind is refused before anything is typed
+  (`selections-not-held`, #1127). Free-form `user_input` (including a Telegram
   text reply) is a separate path with its own guard, next.
 - a question is claimed while its answer is applied: a duplicate delivery of
   the same choice (the lock screen sends every tap on two channels) reports

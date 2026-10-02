@@ -1042,13 +1042,17 @@ describe('createInputHandlers', () => {
           expect(submits).toEqual(['1']);
         });
 
+        // A typed multi-choice card whose numbering the screen shifts (probe
+        // A was first found on ExitPlanMode, which is held and answered
+        // through its hook since #1127; the typed path is the same for any
+        // multi-choice card).
         const exitPlanCard = [
           opt('1', 'Yes, and auto-accept edits'),
           opt('2', 'Yes, and manually approve edits'),
           opt('3', 'No, keep planning'),
         ];
 
-        test('probe A: ExitPlanMode "No, keep planning" (3) over a screen with a clear-context row is refused', async () => {
+        test('probe A: a typed pick (3) over a screen whose extra row shifts the numbering is refused', async () => {
           const screen = [
             opt('1', 'Yes, clear context and auto-accept edits'),
             opt('2', 'Yes, auto-accept edits'),
@@ -1060,7 +1064,7 @@ describe('createInputHandlers', () => {
           expect(logs.some((m) => m.includes('"3" means a different option on screen'))).toBe(true);
         });
 
-        test('probe A, matching numbering: "No, keep planning" types 3', async () => {
+        test('probe A, matching numbering: the same typed pick types 3', async () => {
           const screen = [
             opt('1', 'Yes,andauto-acceptedits'),
             opt('2', 'Yes,andmanuallyapproveedits'),

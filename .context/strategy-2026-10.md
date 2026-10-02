@@ -64,10 +64,10 @@ Also keep `subagent-alert.ts` (164 lines, informational, the only visibility pat
 
 | Finding | Status |
 |---|---|
-| Default install (auto-approve off): binary main-agent prompts never reached the phone | Fixed on `fix/no-service-binary-push`: pushes on the render through the #718 option merge so a phone "No" cannot type an "always allow"; full-bridge test (0 cards before, 1 after); live verification owed |
-| Claude fullscreen default (users since 2026-05-06) vs remi's inline assumption; owner's `"tui": "default"` masks it | Open: set `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` in the child environment while any screen reading remains |
-| Hub resume runs Claude inside the hub process (`cli.ts:1694`, no `serveMode` guard; corroborated by the advisor) | Open: refuse or spawn a child |
-| ExitPlanMode labels in `hooks/tool-question.ts` have drifted from current Claude docs | Open: replace with a structured answer (section 6) |
+| Default install (auto-approve off): binary main-agent prompts never reached the phone | Fixed by #1121 (push on render), then superseded by #1126 (PR #1143): binary prompts are held and pushed at hook time, answered through the hook; verified live |
+| Claude fullscreen default (users since 2026-05-06) vs remi's inline assumption; owner's `"tui": "default"` masks it | Fixed in #1124 (PR #1133): the Claude child gets `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` unless the user set a non-empty value |
+| Hub resume runs Claude inside the hub process (`cli.ts:1694`, no `serveMode` guard; corroborated by the advisor) | Fixed in #1124 (PR #1133): the hub refuses resume (`UNSUPPORTED`) and never runs Claude; spawning a child daemon instead is #1129 |
+| ExitPlanMode labels in `hooks/tool-question.ts` have drifted from current Claude docs | Fixed in #1127: the labels are deleted; ExitPlanMode is held and answered with a structured `updatedInput` by meaning (section 6) |
 | New sessions go to the first-connected socket; no machine object; socket per session | Open: section 9 |
 
 ## 6. Claude Code: hooks, `agents --json`, transcript
@@ -76,8 +76,8 @@ Also keep `subagent-alert.ts` (164 lines, informational, the only visibility pat
 |---|---|---|
 | Prompt on screen | `claude agents --json`: `status: "waiting"`, `waitingFor: "permission prompt" \| "sandbox request" \| "dialog open"` (documented; 0.21 s). Not the `Notification` hook, which fires ~6 s later | Medium-high |
 | Prompts with no hook | `Elicitation` hook for MCP forms; sandbox network, trust and model prompts become a "needs you at the terminal" card | Medium |
-| AskUserQuestion keystroke driver | Held `PreToolUse` returning `allow` + `updatedInput: {questions, answers}` (documented) | High, live spike owed |
-| ExitPlanMode digit order | Held `PermissionRequest` returning `allow` + `updatedPermissions: [{type: "setMode", ...}]`, or `deny` with a message | Medium |
+| AskUserQuestion keystroke driver | Shipped in #1127: a held `PermissionRequest` (not `PreToolUse`, so Claude's dialog stays visible) returning `allow` + `updatedInput: {questions, answers}`; the driver is deleted | High, verified live (spike E3, #1127 run) |
+| ExitPlanMode digit order | Shipped in #1127: a held `PermissionRequest` returning `allow` + `updatedInput` (the input echoed; a bare `allow` is ignored) + a session `setMode`, or `deny` with a message | High, verified live (spike E4, #1127 run) |
 | Status, errors, turns | `UserPromptSubmit`, `PreToolUse`, `PostToolUse(Failure)`, `Stop.last_assistant_message`, `StopFailure`, transcript `promptId` | High |
 | No hook server | Pass hooks with `claude --settings '<json>'` instead of writing `.claude/settings.local.json` | Medium |
 | Answering Claude's native dialog | A held `PermissionRequest` hook's later `allow`/`deny` resolves the dialog on screen (verified live 2026-10-02); first answer wins | High |
