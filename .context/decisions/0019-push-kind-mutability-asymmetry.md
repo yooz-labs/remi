@@ -39,11 +39,14 @@ immediately raised a second question the issue called out by name: not every
 
 ## Decision
 
-`PushKind` is a closed four-value set: `question`, `turn_complete`,
-`subagent_alert`, `dismiss`. `wantsPush()` (`push-preferences.ts`) is a
-`switch` over all four with no `default`, so a fifth kind is a compile error
-until an author makes an explicit call. Two of the four are hardcoded to
-return `true` unconditionally, never derived from stored preferences:
+`PushKind` is a closed six-value set: `question`, `turn_complete`,
+`subagent_alert`, `harness_denied` (ADR 0031), `turn_failed` (#1153) and
+`dismiss`. `wantsPush()` (`push-preferences.ts`) is a `switch` over all six
+with no `default`, so a seventh kind is a compile error until an author makes
+an explicit call. Four are mutable per device from stored preferences
+(`question`, `turn_complete`, `harness_denied`, `turn_failed`); two are
+hardcoded to return `true` unconditionally, never derived from stored
+preferences:
 
 - **`dismiss`** — a quiet `content-available` push that clears an
   already-delivered lock-screen card. Filtering it would strand that card on
@@ -69,7 +72,7 @@ implicit default that could silently land on either side.
 
 Harder, and the reason this ADR exists: **the asymmetry looks like an
 inconsistency to a reader who has not seen the mechanism it protects, and
-invites a "cleanup" that makes all four kinds go through the same
+invites a "cleanup" that makes all six kinds go through the same
 `pushPrefs` check for symmetry.** That change compiles, passes review on
 looks, and reopens two different bugs at once — a stranded lock-screen card
 for `dismiss`, and a `pushed` outcome reported for a delivery nobody will
