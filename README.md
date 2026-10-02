@@ -19,11 +19,11 @@ You start a Claude Code session on your workstation. It's working on a complex t
 ## Quick Start
 
 ```bash
-# Install
+# Install (the package name is scoped, but the command it provides is just `remi`)
 bun install -g @yooz-labs/remi
 
-# The installed binary is still named `remi`
-# If you previously installed the unrelated unscoped package, remove it first:
+# npm also has an unrelated package named plain `remi`.
+# If an older install step left that one on your machine, remove it:
 bun remove -g remi
 
 # Start Claude Code with Remi (session persists if terminal closes)
@@ -53,6 +53,7 @@ remi attach --host 192.168.1.5 macbook/remi/main
 
 - **Session persistence** - Survives terminal close (SIGHUP), detach/reattach like tmux
 - **Human-readable session names** - `hostname/project/branch` instead of UUIDs
+- **Inline Claude rendering** - remi sets `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` for the Claude it runs, because its status bar and prompt detection need the inline renderer. This overrides Claude's `tui` setting and `CLAUDE_CODE_NO_FLICKER`. To opt out, start remi with `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=0` set (the status bar is then unverified against fullscreen). An in-session `/tui` switch can still move Claude to the alternate screen (#1135)
 - **LAN discovery** - mDNS/Bonjour finds Remi daemons on your network, once you widen `daemon.bind`. Not on by default (#880): a stock daemon is loopback-only and does not advertise
 - **Multiple connection methods** - Direct WebSocket, relay via Cloudflare, SSH tunnel, Tailscale
 - **Chat view** - Clean conversation interface without terminal noise
@@ -114,15 +115,20 @@ See `.context/plan.md` for the detailed development roadmap.
 
 ## License
 
-Source code is licensed under [**PolyForm Shield 1.0.0**](LICENSE.md). You can:
+Remi is open core, and the license is set per directory.
+[`LICENSE.md`](LICENSE.md) maps each package directory to its license and states the license for everything outside them; each package directory carries its own license file.
 
-- Read, fork, modify, and use it for any purpose **except** building a competing product.
-- Embed it in apps that aren't direct Remi substitutes.
-- Contribute back via PRs.
+- **Daemon, CLI and shared protocol** (`packages/daemon`, `packages/shared`): [**Apache License 2.0**](packages/daemon/LICENSE).
+  Use, modify and redistribute them, commercially or not, under the terms of that license.
+- **Mobile and web client, hosted relay and native Mac app** (`packages/web`, `packages/signaling`, `packages/macos`): [**PolyForm Shield 1.0.0**](packages/web/LICENSE.md).
+  You can read, fork, modify and use them for any purpose **except** building a competing product, so you cannot offer a re-skinned commercial fork of the app or the relay.
+  For the strategic rationale, see [`yooz-engine/LICENSING.md`](https://github.com/yooz-labs/yooz-engine/blob/main/LICENSING.md).
+- **Everything else** (scripts, docs, CI configuration): Apache-2.0 unless a file says otherwise.
 
-You cannot offer a re-skinned commercial fork of Remi. For the strategic rationale, see [`yooz-engine/LICENSING.md`](https://github.com/yooz-labs/yooz-engine/blob/main/LICENSING.md).
+The `@yooz-labs/remi` npm package is a small Node launcher; the platform packages it installs hold the compiled `remi` binary, which bundles daemon and shared code plus third-party dependencies.
+The npm packages are Apache-2.0, and the bundled dependencies keep their own licenses (their notices are not shipped yet, see [`LICENSE.md`](LICENSE.md)).
 
-For commercial-use or dual-license inquiries: **dev@yooz.info**.
+For commercial-use or dual-license inquiries about the PolyForm Shield parts: **dev@yooz.info**.
 
 ## Contributing
 

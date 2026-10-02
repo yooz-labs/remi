@@ -4,8 +4,13 @@ Thanks for considering a contribution. Remi is the Yooz ecosystem's remote monit
 
 ## Before you start
 
-- **License agreement**: this repository is licensed under [PolyForm Shield 1.0.0](LICENSE.md). By contributing, you agree your contribution is provided under the same license. The strategic rationale lives in [yooz-engine/LICENSING.md](https://github.com/yooz-labs/yooz-engine/blob/main/LICENSING.md).
-- **DCO sign-off** (required): every commit must carry a `Signed-off-by:` trailer.
+- **License agreement**: this repository is open core, and your contribution is licensed under the license of the package it touches. [LICENSE.md](LICENSE.md) has the full map.
+  - `packages/daemon` and `packages/shared`: [Apache License 2.0](packages/daemon/LICENSE).
+  - `packages/web`, `packages/signaling` and `packages/macos`: [PolyForm Shield 1.0.0](packages/web/LICENSE.md). The strategic rationale lives in [yooz-engine/LICENSING.md](https://github.com/yooz-labs/yooz-engine/blob/main/LICENSING.md).
+  - Anything outside those packages (scripts, docs, CI configuration): Apache License 2.0.
+
+  A pull request that touches several packages is licensed per file, by the package each file lives in.
+- **DCO sign-off** (required, unchanged): every commit must carry a `Signed-off-by:` trailer.
 
   ```bash
   git commit -s -m "feat: add auto-discovery probe"
@@ -41,7 +46,7 @@ Thanks for considering a contribution. Remi is the Yooz ecosystem's remote monit
 ## What not to commit
 
 - Secrets (`.env`, API keys, npm tokens, signing certificates).
-- `node_modules`, `dist`, `build` artefacts unless they're explicitly tracked release assets.
+- `node_modules`, `dist`, `build` artifacts unless they're explicitly tracked release assets.
 - Personal IDE config that doesn't fit the team setup.
 
 ## Tests

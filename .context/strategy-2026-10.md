@@ -1,7 +1,7 @@
 # Strategy: retire the local judge, become a reliable multi-harness control plane
 
 Date: 2026-10-01 (revision 2, same day).
-Status: owner decisions D1, D2, D3a, D5 made; D8 (license) decided in direction, exact split to confirm; phase-0 hotfix is PR #1122.
+Status: owner decisions D1, D2, D3a, D5 made; D8 (license) decided 2026-10-01 and implemented in #1128 (Apache-2.0 core, PolyForm Shield apps and relay); phase-0 hotfix is PR #1122.
 Companion documents: [competitive-review-2026-10.md](competitive-review-2026-10.md) (feature matrix and positioning).
 Sources: `develop` at `3a5e8b27`; installed Claude Code 2.1.287 and Codex 0.159.1; Codex source at tag `rust-v0.159.1`; OpenCode source at v1.18.34; vendor docs; an independent second opinion (Fable advisor) that spot-checked the load-bearing claims.
 Claims not verified live are marked "(unverified)".
@@ -20,22 +20,20 @@ Claims not verified live are marked "(unverified)".
 |---|---|---|
 | D1 | Delete the LLM judge **and** the rule-matching layer | Decided |
 | D2 | `remi codex [args]`, `remi opencode [args]`; `remi` alone stays Claude; `remi -c` keeps passing `--continue` to Claude | Decided |
-| D3 | Prompts show in the terminal immediately; answering from the phone is possible but not the default mode; prefer hooks/structured answers over keystrokes | Direction decided; Claude mechanism needs D3a below |
+| D3 | Prompts show in the terminal immediately; answering from the phone is possible but not the default mode; prefer hooks/structured answers over keystrokes | Decided; Claude mechanism in D3a |
 | D5 | Finish the relay; Tailscale stays a documented option, not the requirement | Decided; see section 8 for "rebuild, don't patch" |
 | D6 | Keep and improve multi-choice cards (AskUserQuestion) in notifications; fix answers dropped from notifications and the Watch | Decided |
 | D7 | Later: native SwiftUI Mac and iOS apps built in Xcode, UX on par with OpenAI's apps and Conductor | Decided, sequenced after protocol freeze |
-| D3a | Claude prompts: remi-drawn prompt (hold the hook, draw remi's prompt on the status row, resolve from a local key or the phone) | Decided 2026-10-01 |
-| D8 | Open core: open-source the daemon, CLI and shared protocol (like OpenCode); keep the native Mac app, mobile app and hosted relay under PolyForm Shield as the first-class products | Direction decided; confirm the split and Apache-2.0 vs MIT |
+| D3a | Claude prompts: hold the hook, let Claude's own dialog show, answer from the phone through the hook response | Decided 2026-10-01 as a remi-drawn prompt; revised 2026-10-02 after the live spike (see D3a) |
+| D8 | Open core: open-source the daemon, CLI and shared protocol (like OpenCode); keep the native Mac app, mobile app and hosted relay under PolyForm Shield as the first-class products | Decided 2026-10-01: Apache-2.0 core (`packages/daemon`, `packages/shared`), PolyForm Shield for `packages/web`, `packages/signaling` and `packages/macos`; implemented in #1128 |
 
-### D3a (decided: remi-drawn prompt)
+### D3a (revised 2026-10-02: held hook, native dialog)
 
 On Codex and OpenCode, "show in the terminal now" and "answer structurally from the phone" are compatible: both harnesses let a second client answer the prompt the terminal is showing, first answer wins, and the terminal dismisses its prompt.
-On Claude they are **not** compatible for Claude's own dialog: nothing outside Claude can answer the native dialog once it is on screen (no hook, socket, SDK path or third-party Remote Control protocol does it), and holding the hook keeps the native dialog from rendering.
-Three options for Claude:
 
-- **(a) Remi-drawn prompt (recommended, advisor concurs).** Hold the hook and draw remi's own prompt in the terminal immediately, on the reserved status row, numbered like Claude's dialog. A local key (remi owns stdin) or a phone tap resolves the hold through the hook response. Timeout or an unknown prompt kind releases to Claude's native dialog, which is then terminal-only. Visible immediately, structural answers, no keystroke injection.
-- **(b) Native dialog plus keystroke injection.** What the hotfix does today: the native dialog renders at once; a phone answer is typed as a digit, guarded by `claude agents --json` reporting `waitingFor: "permission prompt"`. Works, but remains a bet on the screen.
-- **(c) A Claude mod.** Mods shipped in 2.1.287 today; a `tool.check` mod could replace the dialog and await remi. One-day spike, not a dependency (unverified).
+**Correction (2026-10-02).** Revision 1 of this document said that on Claude the two were incompatible, because "nothing outside Claude can answer the native dialog once it is on screen" and "holding the hook keeps the native dialog from rendering". Both claims were wrong; they came from desk research and remi's own Model B comments, not from a test. A live spike on Claude Code 2.1.287 (results on #1126) showed that the native dialog renders about 0.1 s after the `PermissionRequest` POST while remi holds the hook, in both renderers, and that the held hook's later `allow`/`deny` resolves the dialog already on screen. A local answer also works: first answer wins, and a local "No" aborts the held HTTP request.
+
+So Claude is compatible too, and the remi-drawn prompt chosen on 2026-10-01 is unnecessary. Decision: hold the hook, let Claude's own dialog show, and let the phone answer through the hook response (Phase 3, #1126; AskUserQuestion and ExitPlanMode in Phase 4, #1127). Typing digits into the PTY is retired for permission prompts; the spike also showed why it is dangerous: a card numbered from the hook's suggestions disagreed with the screen, and a phone "No" typed an out-of-range digit whose trailing Enter confirmed "Yes" (P0 hotfix against develop).
 
 ## 3. Why retire the local judge
 
@@ -82,7 +80,7 @@ Also keep `subagent-alert.ts` (164 lines, informational, the only visibility pat
 | ExitPlanMode digit order | Held `PermissionRequest` returning `allow` + `updatedPermissions: [{type: "setMode", ...}]`, or `deny` with a message | Medium |
 | Status, errors, turns | `UserPromptSubmit`, `PreToolUse`, `PostToolUse(Failure)`, `Stop.last_assistant_message`, `StopFailure`, transcript `promptId` | High |
 | No hook server | Pass hooks with `claude --settings '<json>'` instead of writing `.claude/settings.local.json` | Medium |
-| Answering Claude's native dialog | Nothing structural exists; see D3a | High |
+| Answering Claude's native dialog | A held `PermissionRequest` hook's later `allow`/`deny` resolves the dialog on screen (verified live 2026-10-02); first answer wins | High |
 
 Not recorded in the transcript: that a prompt was shown, which option was picked, or what is pending.
 The Agent SDK and its ACP adapter stay ruled out: Anthropic forbids third-party apps on the Agent SDK from offering claude.ai login.
@@ -123,7 +121,7 @@ Invariants: the first answer wins everywhere; remi never answers by guess; for C
 
 | Harness | Learn it exists | Show locally | Answer from phone |
 |---|---|---|---|
-| Claude | `PermissionRequest` / `PreToolUse` hooks | remi-drawn prompt (D3a); native dialog only after a timeout or for an unknown kind | Hook response |
+| Claude | `PermissionRequest` hook (held) | Claude's own dialog, immediately (D3a) | Hook response |
 | Codex | App-server server request; async questions from `item/completed` | Codex's own overlay (inline mode) | JSON-RPC response; `turn/steer` for async questions |
 | OpenCode | `permission.asked` / `question.asked` | OpenCode's own prompt via `attach` | `POST` reply |
 
@@ -144,8 +142,8 @@ Tailscale and SSH stay documented as the zero-server path.
 
 ## 10. Sequencing (next ~6 weeks)
 
-1. **Week 1:** land and live-verify the hotfix in both Claude renderers; set `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1`; fix hub resume; live spike of AskUserQuestion via held `PreToolUse` + `updatedInput`; design the remi-drawn prompt.
-2. **Weeks 2-3:** superseding ADR, then atomic deletion PRs; migration printer; boot warning; test audit; close the moot issues with one linked comment. Implement the remi-drawn prompt and the structured AskUserQuestion and ExitPlanMode answers.
+1. **Week 1:** land and live-verify the hotfix in both Claude renderers; set `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1`; fix hub resume; live spike of held hooks, AskUserQuestion and ExitPlanMode (done 2026-10-02, results on #1126).
+2. **Weeks 2-3:** superseding ADR, then atomic deletion PRs; migration printer; boot warning; test audit; close the moot issues with one linked comment. Implement held-hook answers for permissions (Phase 3) and for AskUserQuestion and ExitPlanMode (Phase 4).
 3. **Weeks 3-4:** harness seam with Claude as the only implementation (zero behavior change); the `Decision` object; `harness` + `harnessSessionId` with a compatibility shim; `create_session_request` gains `harness` and `args`.
 4. **Weeks 4-5:** Codex via the app-server, after a live spike of first-answer-wins and overlay dismissal. Done when a Codex approval reaches the phone, the phone's allow runs the command, and the TUI overlay closes.
 5. **Weeks 5-6:** relay rebuild, minimum viable: hub endpoint, per-machine room, always-on E2E, push privacy, no raw PTY. QR polish and `remi attach --code` later.
@@ -166,7 +164,7 @@ Measure weekly on the owner's own use: hook-to-card p50/p95; cards shown vs prom
 Positioning statements and claims to avoid are in the competitive review.
 
 License (D8): open core.
-The daemon, CLI and shared protocol become OSI open source (Apache-2.0 recommended: patent grant, same as Paseo; OpenCode uses MIT); the native Mac app, mobile app and hosted relay stay PolyForm Shield.
+The daemon, CLI and shared protocol become OSI open source under Apache-2.0 (decided: patent grant, same as Paseo; OpenCode uses MIT); the native Mac app, mobile app and hosted relay stay PolyForm Shield.
 Consequences to handle:
 
 - The open protocol means anyone can self-host a relay or write a client; that is a selling point, not a leak, as long as the first-class apps and the hosted relay are better.
@@ -177,10 +175,8 @@ Consequences to handle:
 
 ## 13. Unverified
 
-- Held hook suppresses Claude's native dialog (consistent with remi's Model B and corpus timing; not stated in docs).
-- `waitingFor` timing relative to the render, and whether it reads `waiting` during a held hook.
-- AskUserQuestion via `PermissionRequest` + `updatedInput`, and via `PreToolUse` in interactive mode.
-- ExitPlanMode option-to-`setMode` mapping.
+- Settled by the 2026-10-02 spike (#1126): a held hook does NOT suppress the native dialog; `waitingFor` reads "permission prompt" during a held hook; AskUserQuestion answers through both `PreToolUse` and `PermissionRequest` `updatedInput`; ExitPlanMode needs `updatedInput` plus `setMode`, with option 1's mode model-dependent.
+- Still open: whether `PermissionRequest` fires in auto mode for actions the classifier then approves; subagent prompt rendering under a held hook; whether echoing an "always" suggestion persists the rule.
 - Codex: first-answer-wins and overlay dismissal live; `turn/steer` answering async questions; the exact override list that forces an embedded server.
 - OpenCode: which reply route the installed version serves; TUI behavior when a request is aborted.
 - remi under API-key, Bedrock or gateway auth.
