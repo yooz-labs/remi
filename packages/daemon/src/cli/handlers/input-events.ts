@@ -9,7 +9,13 @@
  * answer is dropped because the question changed) and onBulletExpandRequest.
  */
 
-import { createBulletExpandResponse, createError, errorToString } from '@remi/shared';
+import {
+  PROMPT_WAITING_ERROR_CODE,
+  createBulletExpandResponse,
+  createError,
+  createPromptWaitingError,
+  errorToString,
+} from '@remi/shared';
 import type { AnswerExtras, AnswerSelection, Question, QuestionOption, UUID } from '@remi/shared';
 
 import { precedentAgentScope, toolNameFromSignature } from '../../auto-approve/precedent.ts';
@@ -141,6 +147,12 @@ export interface InputHandlerDeps {
    * Absent => no observed options, so an option answer is refused: the same
    * fail-toward-refusing default as `isPromptCurrent` and
    * `isPromptObservedOnPTY`.
+   *
+   * `onUserInput` reads it the other way round (#1140): a non-empty list means
+   * a menu is up and chat text is refused, while absent or null (no tracker
+   * for the session, so nothing is known) types the text as before. Refusing
+   * there would stop the chat from working in a session with no hook server,
+   * and the answer guards above are the ones that must fail closed.
    */
   observedPromptOptions?: (sessionId: UUID) => readonly QuestionOption[] | null;
   /**
@@ -1315,6 +1327,36 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         } catch (err) {
           log(`[PTY] raw write failed: ${errorToString(err)}`);
         }
+        return;
+      }
+
+      // #1140: structured input is typed followed by Enter. While Claude
+      // shows a numbered selection menu (a permission prompt, or a hook-less
+      // one) it ignores the text and the Enter confirms the highlighted
+      // option, usually "1. Yes", so a chat message or a Telegram text reply
+      // sent while a prompt waits would approve the pending action. Refuse it
+      // and say why. Raw input (above) stays unguarded: it is a person's
+      // keystrokes at the terminal, which is how the menu gets answered.
+      //
+      // `observedPromptOptions` is the tracker's view of the screen, the same
+      // signal the card-answer guards use (#1134). Absent, or null (no tracker
+      // for this session, or no prompt observed): nothing is known to be on
+      // screen, so the text is typed as before.
+      const menu = observedPromptOptions?.(session.sessionId) ?? null;
+      if (menu !== null && menu.length > 0) {
+        const screenValues = menu.map((o) => o.value);
+        log(
+          `[Input] refusing ${content.length} chars of chat text for session ${session.sessionId.slice(0, 8)}: a prompt menu is on screen [${screenValues.join(', ')}]`,
+        );
+        traceQuestionEvent({
+          action: 'input_refused',
+          sessionId: session.sessionId,
+          signal: PROMPT_WAITING_ERROR_CODE,
+          callSite: 'input-events.onUserInput:chatIntoMenuGuard',
+          // Only the length of what the user typed is recorded, never the text.
+          detail: { reason: 'chat-into-menu', textLength: content.length, screenValues },
+        });
+        send(connectionId, createPromptWaitingError(session.sessionId, messageId));
         return;
       }
 
