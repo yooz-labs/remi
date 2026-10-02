@@ -237,12 +237,20 @@ by ADR 0030):
 
 **Old auto-approve settings.** An old `config.toml` with an `[auto_approve]`
 table still loads; the daemon warns once at boot (daemon, `remi serve`,
-`remi config`) naming the ignored keys, and `--auto-approve*` flags are
-accepted and ignored so old LaunchAgent plists keep starting.
+`remi config`; not again in a hub-spawned session daemon, and `remi start`
+reports only removed flags) naming the ignored keys, and `--auto-approve*`
+flags are accepted and ignored so old LaunchAgent plists keep starting.
 `auto_approve.subagent_alert` is honored as a deprecated fallback when
-`[notifications] subagent_alert` is unset. `remi migrate-permissions` prints
-the old `allow`/`deny` lists as a Claude Code `permissions` block for the user
-to paste into `~/.claude/settings.json`; it never writes a file.
+`[notifications] subagent_alert` is unset, and gets its own "move it" line
+instead of being listed as ignored. `remi migrate-permissions` prints the old
+`allow`/`deny` lists as a Claude Code `permissions` block for the user to
+paste into `~/.claude/settings.json`; it never writes a file. It never emits a
+rule broader than the old entry (a bare `Bash` allow, which remi never
+applied, is not carried over), and deny entries change meaning: remi matched
+them as substrings anywhere in a command, Claude Code matches from the start
+of each subcommand, so a migrated deny is narrower and mid-command patterns
+(`push --force`) are not carried over. Everything not carried over is listed
+on stderr with its reason.
 
 **Notification channel — APNS push only** (no local notifications for questions):
 

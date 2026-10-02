@@ -10,7 +10,9 @@ remi stops acting as a second permission judge on top of Claude Code. The
 local-LLM auto-approve evaluator and the deterministic rule layer are both
 removed; Claude Code's own permission settings (auto mode,
 `permissions.allow` / `permissions.deny`) decide, and remi relays whatever is
-still asked. Measured reasons: the evaluator approved 31.6% of what it saw,
+still asked. Measured reasons: on one machine's LLM-only decision lines the
+evaluator approved 31.6% of what it saw (overall approve rates, deterministic
+layers included, were 53.4% and 72.2% on the two measured machines),
 escalations took p50 5.3 s / p95 25 s, the rule layer covered 12.9% of real
 main-agent commands, and the two together were a third of the daemon and the
 source of several security bugs (#536, #1060, #1063).
@@ -41,10 +43,17 @@ source of several security bugs (#536, #1060, #1063).
 #### Added
 
 - **`remi migrate-permissions [config]`** prints your old `[auto_approve]`
-  `allow` / `deny` lists as a Claude Code `permissions` block (bare tool names
-  as is, `Tool(...)` rules as is, command prefixes as `Bash(prefix:*)`), lists
-  what has no translation (groups, `level`, agent sections), and never writes
-  a file.
+  `allow` / `deny` lists as a Claude Code `permissions` block and never writes
+  a file. Allow commands become `Bash(command:*)`; known tool names and
+  `Tool(...)` rules pass through. **Deny entries change meaning:** remi
+  matched them as substrings anywhere in a command, Claude Code matches a Bash
+  rule from the start of each subcommand, so `rm -rf /` becomes the narrower
+  `Bash(rm -rf /*)` (flagged on stderr) and mid-command patterns such as
+  `push --force` are not carried over. A bare `Bash` (which never approved
+  anything in remi but allows every shell command in Claude Code), unknown
+  tool names, shell operators, groups, `level` and agent sections are listed
+  under "NOT carried over" with the reason. A config path you name that does
+  not exist exits 1.
 
 #### Changed
 
