@@ -101,6 +101,34 @@ export function spawnServeRaw(
 }
 
 /**
+ * Spawn a session daemon (`cli.ts --daemon`, not a hub) without waiting for
+ * readiness. A daemon starts Claude itself (`createNewSession`), so tests that
+ * need to observe the launch put a fake `claude` first on PATH through
+ * `envOverrides` (the launch characterization test, #1164).
+ */
+export function spawnDaemon(
+  home: string,
+  work: string,
+  port: number,
+  envOverrides: Record<string, string> = {},
+): Bun.Subprocess<'ignore', 'pipe', 'pipe'> {
+  return Bun.spawn(
+    [
+      'bun',
+      CLI_TS,
+      '--daemon',
+      '--port',
+      String(port),
+      '--no-relay',
+      '--no-telegram',
+      '--no-mdns',
+      '--no-auth',
+    ],
+    { cwd: work, env: isolatedEnv(home, envOverrides), stdout: 'pipe', stderr: 'pipe' },
+  );
+}
+
+/**
  * Spawn a hub in a fresh isolated $HOME and wait for its status file.
  * `envOverrides` is forwarded to the subprocess (e.g. a PATH that puts a fake
  * `claude` first, for tests that must observe whether the hub ever runs it).
