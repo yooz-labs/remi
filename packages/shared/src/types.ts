@@ -21,23 +21,29 @@ export type MessageState = 'sending' | 'sent' | 'delivered' | 'read';
 export type MessageSender = 'agent' | 'user' | 'system';
 
 /**
+ * Statuses only the removed auto-approve evaluator produced (#576):
+ * `evaluating` (deciding a permission) and `approved` (just allowed one).
+ * Kept in `AgentStatus` so a client still parses an older daemon.
+ *
+ * @deprecated #1125: no longer emitted.
+ */
+export type DeprecatedAgentStatus = 'evaluating' | 'approved';
+
+/**
  * Agent status while working.
  *
- * Hook- and auto-approve-sourced lifecycle states (#576):
+ * Hook-sourced lifecycle states (#576):
  *   - `waiting`     — blocked on the user (a permission/question is open).
- *   - `evaluating`  — auto-approve is deciding a permission right now.
- *   - `approved`    — auto-approve just allowed a permission (transient; the
- *                     next hook moves the session back to executing/thinking).
  *   - `starting`    — the session is spinning up before its first hook fires,
  *                     so clients have a defined pill state from hello_ack.
+ *   - `evaluating` / `approved` — see {@link DeprecatedAgentStatus}.
  */
 export type AgentStatus =
   | 'idle'
   | 'thinking'
   | 'executing'
   | 'waiting'
-  | 'evaluating'
-  | 'approved'
+  | DeprecatedAgentStatus
   | 'starting';
 
 /**
@@ -229,10 +235,10 @@ export interface Question {
   /**
    * A one-sentence, lock-screen-friendly restatement of what the user is approving
    * (#628), e.g. "Force-push to main?" instead of "Allow Bash: git push --force …".
-   * Produced by the deciding auto-approve LLM on an escalate verdict (or a cheap
-   * engine call for a rule-escalate). The notification prefers this over the raw
-   * tool text; absent for AskUserQuestion (which carries authored content) and for
-   * escalations with no model summary.
+   * Produced by the auto-approve LLM on an escalate verdict; the daemon no longer
+   * reads or writes it.
+   *
+   * @deprecated #1125: no longer emitted (the LLM that wrote it was removed).
    */
   readonly summary?: string | undefined;
 
@@ -251,47 +257,24 @@ export interface Question {
   readonly optionsAreFallback?: boolean | undefined;
 
   /**
-   * #753: true when the auto-approve gate is HOLDING this question's
-   * PermissionRequest hook (Model B) — Claude is blocked inside the hook call
-   * and never renders the prompt, so no PTY bytes for it exist. The terminal
-   * attach client banners exactly these (they are otherwise invisible in a
-   * terminal); non-held questions render natively and need no banner.
-   * Stamped once at question emission (message-api-setup) from the push
-   * options, so live messages, registry entries, and attach-time re-sends all
-   * carry it.
+   * #753: true when the question was pushed by id through the load-bearing
+   * `held` path (`QuestionPresenceTracker.pushHeldHook`). Built for HELD
+   * PermissionRequest hooks (Model B), whose dialog never painted the PTY;
+   * since #1125 nothing holds, and the flag marks a card pushed before its
+   * render (AskUserQuestion, ExitPlanMode, a multi-choice permission). The
+   * daemon's answer path refuses free text on such a card (#1134), and the
+   * terminal attach client banners it. Stamped once at question emission
+   * (message-api-setup), so live messages, registry entries, and attach-time
+   * re-sends all carry it.
    */
   readonly held?: boolean | undefined;
 
   /**
-   * The exact-match precedent signature for this operation (#990), UNTRUNCATED
-   * — distinct from `text`, which is the human-facing DISPLAY string and may
-   * be truncated to a bounded length for a lock-screen card or terminal
-   * prompt. NOT for display: this field exists solely so `handleAnswer`
-   * (`daemon/cli/handlers/input-events.ts`) can record a provenance-safe
-   * human answer into session precedent (`daemon/auto-approve/precedent.ts`,
-   * ADR 0015) without reconstructing it by parsing the (possibly truncated)
-   * `text` — the previous approach, and the source of the #990 collision: two
-   * different >120-character Bash commands sharing their first 117 characters
-   * truncated to the identical `text`, so approving one silently authorized
-   * the other.
+   * The untruncated signature a human answer was recorded under as session
+   * precedent (#990, ADR 0015). Historical: precedent and the code that read
+   * this field were removed with the auto-approve judgment.
    *
-   * Built by `HookEventBridge.buildPermissionQuestion` from
-   * `signatureForOperation(toolName, tool_input)` — the SAME function the
-   * consult side calls at decision time — so the recorded and consulted
-   * signatures are byte-identical by construction, not by care.
-   *
-   * Present only for a precedent-eligible operation (today: `Bash` with a
-   * `command` field and a valid private session working directory — see
-   * `precedentMayAuthorize`);
-   * `undefined` for every
-   * other question, including a question-bearing-tool prompt (AskUserQuestion
-   * / ExitPlanMode) and any question predating this field. `handleAnswer`
-   * treats an absent value as FAIL CLOSED: it records nothing rather than
-   * falling back to parsing `text`.
-   *
-   * The session directory that bounds a recorded precedent is intentionally
-   * NOT included in this wire-visible field. The daemon stores and compares
-   * that private context separately.
+   * @deprecated #1125: no longer emitted (session precedent was removed).
    */
   readonly precedentSignature?: string | undefined;
 }
@@ -365,11 +348,12 @@ export interface QuestionOption {
    * derived from (#718). Present only for a structured-suggestion-derived
    * "yes" option (e.g. "Yes, always allow: rm -rf ..."); absent for the
    * plain Yes/No options and for the legacy plain-string suggestion path.
-   * The daemon threads this back through the answer path so picking the
-   * option can resolve a held PermissionRequest hook with
-   * `{behavior:"allow", updatedPermissions:[suggestions[suggestionIndex]]}` —
-   * the real "Yes, always" the Claude Code hooks docs describe, instead of a
-   * bare `allow` that persists nothing.
+   * Since #1125 nothing holds, so an "always" option is answered by typing
+   * into Claude's dialog like any other (#1134) and this index is not read.
+   * It is kept for #1126, which plans to resolve a held hook with
+   * `{behavior:"allow", updatedPermissions:[suggestions[suggestionIndex]]}`:
+   * per the Claude Code hooks docs, the real "Yes, always" (not yet verified
+   * live).
    */
   readonly suggestionIndex?: number | undefined;
 
@@ -377,6 +361,8 @@ export interface QuestionOption {
    * Public marker for an explicit, scoped session action. The grant's
    * repository, working directory, expiry, and lineage remain daemon-private;
    * this marker only tells the client which deliberate action it is selecting.
+   *
+   * @deprecated #1125: no longer emitted (session workflow grants were removed).
    */
   readonly sessionGrant?: 'github-issue-planning' | undefined;
 }
@@ -524,9 +510,8 @@ export interface DiscoverableSession {
  * Times are epoch SECONDS so the statusline shell script can compute elapsed
  * with `date +%s`.
  *
- * Lives in shared (#754) because the daemon broadcasts the full status
- * snapshot to clients (`remi_status`), and the terminal attach client renders
- * the same reserved-row bar the wrapper does.
+ * @deprecated #1125: no longer emitted (`RemiStatus.autoApprove` is absent
+ * from a current daemon's status). Kept so a client still parses an older one.
  */
 export interface AutoApproveState {
   /** Evals in flight on this daemon. 0 = idle. */
@@ -556,7 +541,8 @@ export interface RemiStatus {
   sessionId: UUID | null;
   repo: string;
   branch: string;
-  autoApprove: AutoApproveState;
+  /** @deprecated #1125: no longer emitted. Present only from an older daemon. */
+  autoApprove?: AutoApproveState;
   /**
    * #755: true when at least one connection is attached to the session
    * (#795: any number can be, not just one) — the status label reads

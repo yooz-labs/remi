@@ -1,8 +1,14 @@
 # ADR 0004: PTY-as-arbiter for subagent question routing
 
-**Status:** accepted
+**Status:** accepted; amended by ADR 0030 (2026-10-01)
 **Date:** 2026-07-09
 **Owner:** Yahya
+
+> **Amended 2026-10-01 by [ADR 0030](0030-defer-permission-judgment-to-the-harness.md).**
+> The PTY is still the arbiter of whether a parked subagent prompt reaches the phone: a subagent-tagged request is parked and answered `passthrough`, and its card pushes only when its prompt renders on the main PTY.
+> What is gone is every evaluation around that: the render-time LLM arbitration (`arbitrateParkedRender`, #814), the main-eval buffer window (#484, #767) and the 2026-08-08 amendment's hook-time deterministic approve (#1024) were all deleted in #1125.
+> No subagent request is answered by remi any more; each one either renders and is pushed, or is handled by Claude Code's own permission flow without a card.
+> The body below is kept as history.
 
 ## Context
 

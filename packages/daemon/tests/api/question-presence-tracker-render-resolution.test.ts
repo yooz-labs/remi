@@ -393,14 +393,16 @@ describe('QuestionPresenceTracker render-resolution (#888/#920)', () => {
  * the two are not "simplified" back together.
  */
 describe('#1002 prompt-on-screen signals are not interchangeable', () => {
-  test('a gate-owned hook render: visible=false, observed=true', () => {
+  test('a gate-owned hook render: current=false, observed=true', () => {
     const { tracker } = buildTracker();
     const hook = makeHookRecord('Allow Bash: ls -la');
     tracker.recordPendingHook(hook);
-    tracker.onOrphanPTYPrompt(makeHooklessPTYQuestion('Allow Bash: ls -la'));
+    const render = makeHooklessPTYQuestion('Allow Bash: ls -la');
+    tracker.onOrphanPTYPrompt(render);
 
-    // Suppressed as a gate-owned echo, so it never pushed a card off the render.
-    expect(tracker.isPromptVisibleOnPTY()).toBe(false);
+    // Suppressed as a gate-owned echo, so it never pushed a card off the
+    // render: the pushed-card flag behind `isPromptCurrent` stays unset.
+    expect(tracker.isPromptCurrent(render.id, render.text)).toBe(false);
     // But a prompt IS genuinely on screen, and this reports it.
     expect(tracker.isPromptObservedOnPTY()).toBe(true);
   });
@@ -430,40 +432,39 @@ describe('#1002 prompt-on-screen signals are not interchangeable', () => {
 
   test('a hookless render sets both signals', () => {
     const { tracker } = buildTracker();
-    tracker.onPTYPromptVisible(makeHooklessPTYQuestion());
-    expect(tracker.isPromptVisibleOnPTY()).toBe(true);
+    const render = makeHooklessPTYQuestion();
+    tracker.onPTYPromptVisible(render);
+    expect(tracker.isPromptCurrent(render.id, render.text)).toBe(true);
     expect(tracker.isPromptObservedOnPTY()).toBe(true);
   });
 });
 
 /**
- * #1005 Change B. The parked-render ARBITRATION push (an escalate verdict, the
- * "45 born live" cohort) went through `pushMerged` directly, bypassing the
- * render-owned bookkeeping entirely — so those cards were tracked by nothing
- * and could only ever leave the store via LRU eviction.
+ * #1005 Change B. A parked-render push (the "45 born live" cohort) used to go
+ * through `pushMerged` directly, bypassing the render-owned bookkeeping
+ * entirely, so those cards were tracked by nothing and could only ever leave
+ * the store via LRU eviction. (The parked-render arbiter these cards first
+ * went through was deleted in #1125; the push itself is unchanged.)
  */
-describe('#1005 an arbitration-verdict push takes the render-owned slot', () => {
-  function trackerWithArbiter(
+describe('#1005 a parked-render push takes the render-owned slot', () => {
+  function parkingTracker(
     pushes: Question[],
     gone: Array<{ id: string; reason: string }>,
-    verdict: 'push' | 'answered',
     deliver: () => boolean = () => true,
   ): QuestionPresenceTracker {
-    const tracker = new QuestionPresenceTracker(
+    return new QuestionPresenceTracker(
       (q) => {
         pushes.push(q);
         return deliver() ? { status: 'registered' as const } : { status: 'deduped' as const };
       },
       { onHooklessQuestionGone: (id, reason) => gone.push({ id, reason }) },
     );
-    tracker.setParkedRenderArbiter(async () => ({ outcome: verdict }));
-    return tracker;
   }
 
   test('an escalated parked render is superseded by the next confirmed render', async () => {
     const pushes: Question[] = [];
     const gone: Array<{ id: string; reason: string }> = [];
-    const tracker = trackerWithArbiter(pushes, gone, 'push');
+    const tracker = parkingTracker(pushes, gone);
 
     const hook = makeHookRecord('reviewer · Bash: git push');
     tracker.recordPendingHook(hook);
@@ -480,10 +481,10 @@ describe('#1005 an arbitration-verdict push takes the render-owned slot', () => 
     expect(gone).toEqual([{ id: hook.id, reason: 'pty_render_superseded' }]);
   });
 
-  test('an UNCONFIRMED arbitration push does not claim the slot (ADR 0021)', async () => {
+  test('an UNCONFIRMED parked-render push does not claim the slot (ADR 0021)', async () => {
     const pushes: Question[] = [];
     const gone: Array<{ id: string; reason: string }> = [];
-    const tracker = trackerWithArbiter(pushes, gone, 'push', () => false);
+    const tracker = parkingTracker(pushes, gone, () => false);
 
     const hook = makeHookRecord('reviewer · Bash: git push');
     tracker.recordPendingHook(hook);
@@ -495,21 +496,6 @@ describe('#1005 an arbitration-verdict push takes the render-owned slot', () => 
     // nothing is resolved on its strength.
     expect(tracker.observedRenderOwnedQuestionForTest()).toBeNull();
     expect(gone).toHaveLength(0);
-  });
-
-  test('an ANSWERED verdict pushes nothing and claims nothing', async () => {
-    const pushes: Question[] = [];
-    const gone: Array<{ id: string; reason: string }> = [];
-    const tracker = trackerWithArbiter(pushes, gone, 'answered');
-
-    const hook = makeHookRecord('reviewer · Bash: git push');
-    tracker.recordPendingHook(hook);
-    tracker.parkAwaitingPTY(hook);
-    tracker.onOrphanPTYPrompt(makeHooklessPTYQuestion('Do you want to proceed?'));
-    await new Promise((r) => setTimeout(r, 5));
-
-    expect(pushes).toHaveLength(0);
-    expect(tracker.observedRenderOwnedQuestionForTest()).toBeNull();
   });
 });
 
@@ -550,7 +536,6 @@ describe('#1008 a different agent never supersedes, driven through the real path
 
   test('subagent B rendering does NOT resolve subagent A card', async () => {
     const { tracker, gone } = buildTracker();
-    tracker.setParkedRenderArbiter(async () => ({ outcome: 'push' }));
 
     const a = parkAndRender(tracker, 'agent-a', 'reviewer · Bash: git push');
     await new Promise((r) => setTimeout(r, 5));
@@ -565,7 +550,6 @@ describe('#1008 a different agent never supersedes, driven through the real path
 
   test('the SAME agent rendering something different does supersede', async () => {
     const { tracker, gone } = buildTracker();
-    tracker.setParkedRenderArbiter(async () => ({ outcome: 'push' }));
 
     const first = parkAndRender(tracker, 'agent-a', 'reviewer · Bash: git push');
     await new Promise((r) => setTimeout(r, 5));
@@ -602,7 +586,6 @@ describe('#1008 a different agent never supersedes, driven through the real path
 describe('#1008 a parked subagent card is scoped by its HOOK agent, not the PTY parse', () => {
   test('a main-agent prompt does not resolve a parked subagent card', async () => {
     const { tracker, gone } = buildTracker();
-    tracker.setParkedRenderArbiter(async () => ({ outcome: 'push' }));
 
     const hook = makeHookRecord('reviewer · Bash: git push');
     (hook as { agentId?: string }).agentId = 'agent-1';

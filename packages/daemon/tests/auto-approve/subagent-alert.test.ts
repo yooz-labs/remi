@@ -9,7 +9,12 @@
 
 import { describe, expect, test } from 'bun:test';
 
-import { SubagentAlerter, alertBody, alertTitle } from '../../src/auto-approve/subagent-alert.ts';
+import {
+  SubagentAlerter,
+  alertBody,
+  alertTitle,
+  matchAlertPattern,
+} from '../../src/auto-approve/subagent-alert.ts';
 
 /** Patterns matching the shipped default plus two broad opt-ins. */
 const PATTERNS = ['rm -rf', 'push --force', 'sudo ', 'curl'];
@@ -63,6 +68,40 @@ describe('SubagentAlerter matching', () => {
     const a = new SubagentAlerter(['Write']);
     expect(a.check('Write', { file_path: '/tmp/x' }, 'agent-1', undefined)?.pattern).toBe('Write');
     expect(a.check('Read', { file_path: '/tmp/x' }, 'agent-1', undefined)).toBeNull();
+  });
+});
+
+// The matcher moved here from the deleted auto-approve pattern matcher
+// (#1125), where the deny list shared it. Same rule, pinned directly.
+describe('matchAlertPattern', () => {
+  test('Bash: substring over the command, first matching pattern wins', () => {
+    expect(matchAlertPattern('Bash', bash('cd x && sudo rm -rf y'), PATTERNS)).toBe('rm -rf');
+  });
+
+  test('Bash: a tool-name-shaped pattern is tested against the command, never the tool name', () => {
+    expect(matchAlertPattern('Bash', bash('ls'), ['Bash'])).toBeNull();
+    expect(matchAlertPattern('Bash', bash('echo Bash'), ['Bash'])).toBe('Bash');
+  });
+
+  test('Bash with no command never matches', () => {
+    expect(matchAlertPattern('Bash', {}, PATTERNS)).toBeNull();
+    expect(matchAlertPattern('Bash', { command: '' }, PATTERNS)).toBeNull();
+  });
+
+  test('a non-Bash tool carrying a command is scanned too (#1020)', () => {
+    expect(matchAlertPattern('terminal', { command: 'git push --force' }, PATTERNS)).toBe(
+      'push --force',
+    );
+  });
+
+  test('a non-Bash tool also matches its bare name exactly', () => {
+    expect(matchAlertPattern('WebFetch', { url: 'https://x' }, ['WebFetch'])).toBe('WebFetch');
+    expect(matchAlertPattern('WebFetch', { url: 'https://x' }, ['webfetch'])).toBeNull();
+  });
+
+  test('an empty pattern is never a match, and no patterns means no match', () => {
+    expect(matchAlertPattern('Bash', bash('anything'), [''])).toBeNull();
+    expect(matchAlertPattern('Bash', bash('anything'), [])).toBeNull();
   });
 });
 

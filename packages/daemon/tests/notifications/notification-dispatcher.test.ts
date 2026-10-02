@@ -7,7 +7,6 @@ import {
   NotificationDispatcher,
   type PushFn,
   buildPushText,
-  isDelivered,
   isRetriablePushError,
   isTokenInvalidError,
   selectDynOptions,
@@ -369,8 +368,9 @@ describe('buildPushText (#574 issues 3+4)', () => {
     expect(body).toBe('Retry?\ny. Yes  n. No');
   });
 
-  // #628: prefer the auto-approve LLM's lock-screen summary over raw tool text.
-  test('prefers the summary over the raw tool text when present', () => {
+  // #628's summary came from the auto-approve LLM (removed, #1125). A question
+  // that still carries one (an older payload) is pushed with its own text.
+  test('ignores the deprecated summary and pushes the question text', () => {
     const q: Question = {
       id: 'q' as UUID,
       text: 'Allow Bash: git push --force origin main',
@@ -380,8 +380,8 @@ describe('buildPushText (#574 issues 3+4)', () => {
       summary: 'Force-push to main?',
     };
     const { title, body } = buildPushText('proj', q);
-    expect(title).toBe('proj: Force-push to main?');
-    expect(body.startsWith('Force-push to main?')).toBe(true);
+    expect(title).toBe('proj: Allow Bash: git push --force origin main');
+    expect(body).not.toContain('Force-push to main?');
     expect(body).toContain('1. Yes  2. Yes, always  3. No');
   });
 
@@ -770,83 +770,6 @@ describe('NotificationDispatcher.dismiss (#585 P7)', () => {
   });
 });
 
-describe('NotificationDispatcher.pushHoldTimeoutHandoff (#733)', () => {
-  let registry: SessionRegistry;
-  let deviceTokens: Map<string, DeviceTokenEntry>;
-  let pushed: Array<{ token: string; opts: Record<string, unknown> }>;
-  const SID = 's0000000-0000-0000-0000-000000000000' as UUID;
-  const QID = 'q0000000-0000-0000-0000-000000000000' as UUID;
-
-  const pushFn: PushFn = async (_url, token, opts) => {
-    pushed.push({ token, opts: opts as unknown as Record<string, unknown> });
-  };
-
-  function make(): NotificationDispatcher {
-    return new NotificationDispatcher(
-      {
-        sessionRegistry: registry,
-        deviceTokens,
-        pushConfig: () => ({ signalingUrl: 'ws://x' }),
-        getPrimarySessionId: () => null,
-        pushFn,
-      },
-      SID,
-    );
-  }
-
-  beforeEach(() => {
-    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
-    deviceTokens = new Map();
-    pushed = [];
-    configureLogger({ writeLog: () => {} });
-    registry.registerSession(SID, '/d', fakePTY(), {
-      handleMessage: () => {},
-      handleQuestion: () => {},
-      handleStatusChange: () => {},
-    } as never);
-  });
-
-  afterEach(async () => {
-    __resetLoggerForTests();
-    await registry.shutdown();
-  });
-
-  test('carries the ask, a handoff collapse key, and NO answer category', async () => {
-    deviceTokens.set('a', { token: 'a', platform: 'ios', registeredAt: 1, connectionId: SID });
-    registry.addQuestion(SID, question(QID, [yesOpt, noOpt], 'Allow Bash: rm -rf .venv?'));
-
-    make().pushHoldTimeoutHandoff(SID, QID);
-    // pushOnceWithRetry resolves on a microtask; flush it.
-    await new Promise((r) => setTimeout(r, 10));
-
-    expect(pushed).toHaveLength(1);
-    const opts = pushed[0]?.opts as Record<string, unknown>;
-    expect(String(opts['title'])).toContain('answer in the terminal');
-    expect(String(opts['body'])).toContain('Allow Bash: rm -rf .venv?');
-    // Distinct collapse key: the original card's quiet dismissal (collapse-id
-    // = the question id) must NOT collapse this handoff notice away.
-    expect(opts['questionId']).toBe(`handoff-${QID}`);
-    expect(opts['category']).toBeUndefined();
-    expect(opts['options']).toBeUndefined();
-    expect(opts['dynOptions']).toBeUndefined();
-  });
-
-  test('question already gone from the registry: still pushes with a generic ask', async () => {
-    deviceTokens.set('a', { token: 'a', platform: 'ios', registeredAt: 1, connectionId: SID });
-
-    make().pushHoldTimeoutHandoff(SID, QID);
-    await new Promise((r) => setTimeout(r, 10));
-
-    expect(pushed).toHaveLength(1);
-    expect(String(pushed[0]?.opts['body'])).toContain('a permission request');
-  });
-
-  test('no device tokens: no-op', () => {
-    make().pushHoldTimeoutHandoff(SID, QID);
-    expect(pushed).toHaveLength(0);
-  });
-});
-
 describe('NotificationDispatcher delivery outcome (#603 Phase 1)', () => {
   let registry: SessionRegistry;
   let deviceTokens: Map<string, DeviceTokenEntry>;
@@ -901,13 +824,12 @@ describe('NotificationDispatcher delivery outcome (#603 Phase 1)', () => {
     expect(await make(okPush).maybePush(SID, question('q1', [yesOpt, noOpt]))).toBe('no_channel');
   });
 
-  test('pushed when a device accepts; awaitDelivery returns the same outcome', async () => {
+  test('pushed when a device accepts', async () => {
     register(false);
     addToken('a');
     const d = make(okPush);
     const q = question('q1', [yesOpt, noOpt]);
     expect(await d.maybePush(SID, q)).toBe('pushed');
-    expect(await d.awaitDelivery(q.id)).toBe('pushed');
   });
 
   test('deduped when a second identical prompt is suppressed', async () => {
@@ -984,12 +906,6 @@ describe('NotificationDispatcher delivery outcome (#603 Phase 1)', () => {
     };
     expect(await make(allFail).maybePush(SID, question('q1', [yesOpt, noOpt]))).toBe('failed');
   });
-
-  test('awaitDelivery is undefined for an unknown question id', () => {
-    expect(
-      make(okPush).awaitDelivery('zzzzzzzz-0000-0000-0000-000000000000' as UUID),
-    ).toBeUndefined();
-  });
 });
 
 describe('NotificationDispatcher held escalation (#603 Phase 3)', () => {
@@ -1065,7 +981,8 @@ describe('NotificationDispatcher held escalation (#603 Phase 3)', () => {
       SID,
     );
     // The attached client may be backgrounded, so a dead token must NOT mask as
-    // in_app — it reports failed so the held hook fails open fast (#603 Phase 3).
+    // in_app — it reports failed (#603 Phase 3; the caller that held a hook on
+    // this outcome was removed in #1125, the outcome stays honest).
     expect(await d.maybePush(SID, question('q1', [yesOpt, noOpt]), { held: true })).toBe('failed');
   });
 
@@ -1094,7 +1011,7 @@ describe('NotificationDispatcher held escalation (#603 Phase 3)', () => {
   });
 });
 
-describe('isRetriablePushError / isDelivered (#603 Phase 1)', () => {
+describe('isRetriablePushError (#603 Phase 1)', () => {
   test('permanent APNS token rejections are NOT retriable (even wrapped as 502)', () => {
     expect(
       isRetriablePushError(
@@ -1130,15 +1047,6 @@ describe('isRetriablePushError / isDelivered (#603 Phase 1)', () => {
   test('a 4xx (non-token) is not retriable', () => {
     expect(isRetriablePushError(new Error('Push trigger failed: 401 unauthorized'))).toBe(false);
     expect(isRetriablePushError(new Error('Push trigger failed: 400 bad request'))).toBe(false);
-  });
-
-  test('isDelivered: in_app/pushed reach the user; deduped/no_channel/failed do not', () => {
-    expect(isDelivered('in_app')).toBe(true);
-    expect(isDelivered('pushed')).toBe(true);
-    // deduped is NOT treated as confirmed (the deduped-against push may have failed).
-    expect(isDelivered('deduped')).toBe(false);
-    expect(isDelivered('no_channel')).toBe(false);
-    expect(isDelivered('failed')).toBe(false);
   });
 });
 
@@ -1399,10 +1307,8 @@ describe('NotificationDispatcher per-device push preferences (#968)', () => {
   });
 
   test('every device muted + no client attached reports no_channel, not pushed', async () => {
-    // The load-bearing case. `awaitDelivery` decides whether a HELD hook keeps
-    // Claude blocked; reporting `pushed` for a fan-out of zero would block the
-    // hook on a card that will never appear on any lock screen. `no_channel`
-    // fails the hold open fast instead.
+    // Reporting `pushed` for a fan-out of zero would claim a card reached a
+    // lock screen it never appears on; `no_channel` is the honest outcome.
     register(false);
     deviceTokens.set('a', token('a', { questions: false, turnComplete: true }));
     deviceTokens.set('b', token('b', { questions: false, turnComplete: false }));
@@ -1414,8 +1320,7 @@ describe('NotificationDispatcher per-device push preferences (#968)', () => {
   });
 
   test('every device muted WITH a client attached still reports in_app', async () => {
-    // The user is reachable over the socket, so the held hook may keep waiting;
-    // only the push channel is gone.
+    // The user is reachable over the socket; only the push channel is gone.
     register(true);
     deviceTokens.set('a', token('a', { questions: false, turnComplete: true }));
 
@@ -1445,18 +1350,5 @@ describe('NotificationDispatcher per-device push preferences (#968)', () => {
     expect(pushed.map((p) => p.token)).toEqual(['muted']);
     expect(pushed[0]?.opts['dismiss']).toBe(true);
     expect(pushed[0]?.opts['kind']).toBe('dismiss');
-  });
-
-  test('pushHoldTimeoutHandoff skips a device that muted questions', () => {
-    // Unlike dismiss, the handoff is a visible buzzing card about a question and
-    // clears nothing, so skipping it strands nothing.
-    register(false);
-    deviceTokens.set('muted', token('muted', { questions: false, turnComplete: true }));
-    deviceTokens.set('wants', token('wants', { questions: true, turnComplete: false }));
-
-    make().pushHoldTimeoutHandoff(SID, QID);
-
-    expect(pushed.map((p) => p.token)).toEqual(['wants']);
-    expect(pushed[0]?.opts['kind']).toBe('question');
   });
 });

@@ -90,14 +90,14 @@ type Listener<T> = (input: T) => void;
  *   - 'allow' / 'deny' => Claude proceeds WITHOUT rendering the prompt, via
  *                         `{behavior: decision}`.
  *   - 'passthrough'    => `{}` body; Claude renders the prompt as usual (the
- *                         resolver has already escalated to the user / injected
- *                         a multi-choice pick).
+ *                         resolver has already escalated to the user).
  *   - `{behavior:'allow', updatedPermissions}` (#718) => Claude proceeds AND
  *     persists the echoed `permission_suggestions` entry, exactly as if the
  *     user had picked that "always allow" option in its own dialog (ground
- *     truth: code.claude.com/docs/en/hooks). Produced when the user's answer
- *     picked a suggestion-derived option on a HELD escalation
- *     (`AutoApproveGate.resolveHeld` with a `suggestionIndex`).
+ *     truth: code.claude.com/docs/en/hooks).
+ *
+ * Since #1125 (ADR 0030) the gate only ever returns 'passthrough'; the other
+ * shapes are kept for the hold-the-hook answer path #1126 re-adds.
  */
 export type PermissionDecision =
   | 'allow'
@@ -306,10 +306,11 @@ export class HookServer {
     }
 
     // Synchronous PermissionRequest decision (#496). When a resolver is
-    // installed, Claude BLOCKS on this response; we AWAIT the verdict and
-    // return allow/deny (Claude proceeds without rendering the prompt) or
-    // passthrough ({}). The resolver owns the eval + escalate-to-user side
-    // effects, so we do NOT also fire the legacy dispatch for this event.
+    // installed, Claude blocks on this response; we AWAIT it. Since #1125 the
+    // resolver always answers passthrough ({}) at once, so Claude renders its
+    // own dialog; allow/deny stay in the type for #1126's held hooks. The
+    // resolver owns the escalate-to-user side effects, so we do NOT also fire
+    // the legacy dispatch for this event.
     if (eventName === 'PermissionRequest' && this.permissionResolver) {
       let decision: PermissionDecision = 'passthrough';
       try {

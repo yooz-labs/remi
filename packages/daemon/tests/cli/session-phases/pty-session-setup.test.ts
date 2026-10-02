@@ -543,18 +543,34 @@ describe('detectAuqTerminalAnswers', () => {
     registerWithQuestion(auqQuestion(QID));
     appendPtyOutput(SID, CLOSED_MARKER);
     const resolved: Array<[UUID, UUID]> = [];
-    const cancelled: Array<[UUID, UUID, string]> = [];
 
-    detectAuqTerminalAnswers(
-      SID,
-      sessionRegistry,
-      (sid, qid) => resolved.push([sid, qid]),
-      (sid, qid, reason) => cancelled.push([sid, qid, reason]),
-    );
+    detectAuqTerminalAnswers(SID, sessionRegistry, (sid, qid) => resolved.push([sid, qid]));
 
     expect(sessionRegistry.getSession(SID)?.currentQuestions.size).toBe(0);
     expect(resolved).toEqual([[SID, QID]]);
-    expect(cancelled).toEqual([[SID, QID, 'user-answered-auq-terminal']]);
+  });
+
+  test('retires the gate signature of an AUQ closed in the terminal (#1125)', () => {
+    registerWithQuestion(auqQuestion(QID));
+    appendPtyOutput(SID, CLOSED_MARKER);
+    const retired: Array<[UUID, UUID]> = [];
+
+    detectAuqTerminalAnswers(SID, sessionRegistry, undefined, (sid, qid) =>
+      retired.push([sid, qid]),
+    );
+
+    expect(retired).toEqual([[SID, QID]]);
+  });
+
+  test('a throwing retireQuestion never blocks the removal', () => {
+    registerWithQuestion(auqQuestion(QID));
+    appendPtyOutput(SID, CLOSED_MARKER);
+
+    detectAuqTerminalAnswers(SID, sessionRegistry, undefined, () => {
+      throw new Error('test: retire failure');
+    });
+
+    expect(sessionRegistry.getSession(SID)?.currentQuestions.size).toBe(0);
   });
 
   test('does nothing when no AUQ question is pending (no session, no throw)', () => {

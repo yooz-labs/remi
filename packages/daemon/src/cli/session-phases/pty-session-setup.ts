@@ -73,13 +73,11 @@ export interface PtySessionSetupDeps {
    */
   onQuestionResolved?: (sessionId: UUID, questionId: UUID) => void;
   /**
-   * Cancel the auto-approve eval for a specific question (#617), mirroring
-   * `input-events.ts`'s `cancelAutoApproveForQuestion`. Fired alongside the
-   * terminal-answer cleanup so a GPU eval in flight for a question the user
-   * just answered by typing is freed the same way a phone answer would free
-   * it. Absent => no-op (tests/old callers, or auto-approve disabled).
+   * Stop the permission gate tracking a question this module just resolved
+   * (#1125), so the matching AskUserQuestion PostToolUse does not resolve and
+   * dismiss it a second time. Absent => nothing to retire (tests/old callers).
    */
-  cancelAutoApproveForQuestion?: (sessionId: UUID, questionId: UUID, reason: string) => void;
+  retireQuestion?: (sessionId: UUID, questionId: UUID) => void;
   /**
    * #932 durable fix: observe every PTY chunk actually forwarded to the
    * wrapper's own local terminal fd -- the exact same fd the reserved-row
@@ -148,7 +146,7 @@ export function detectAuqTerminalAnswers(
   sessionId: UUID,
   sessionRegistry: SessionRegistry,
   onQuestionResolved?: (sessionId: UUID, questionId: UUID) => void,
-  cancelAutoApproveForQuestion?: (sessionId: UUID, questionId: UUID, reason: string) => void,
+  retireQuestion?: (sessionId: UUID, questionId: UUID) => void,
 ): void {
   const session = sessionRegistry.getSession(sessionId);
   if (!session || session.currentQuestions.size === 0) return;
@@ -161,12 +159,10 @@ export function detectAuqTerminalAnswers(
   const summaryTexts = new Set(summary.map((a) => normalizeLabel(a.question)));
   for (const q of auqQuestions) {
     if (!questionTexts(q).some((t) => summaryTexts.has(t))) continue;
-    // Guarded so a throwing eval-cancel can never skip removeQuestion below
-    // (the zombie-card pattern #661 fixed in input-events.ts's answer paths).
     try {
-      cancelAutoApproveForQuestion?.(sessionId, q.id, 'user-answered-auq-terminal');
+      retireQuestion?.(sessionId, q.id);
     } catch (err) {
-      logError(`[AUQ] terminal-answer eval cancel failed: ${errorToString(err)}`);
+      logError(`[AUQ] terminal-answer gate retirement failed: ${errorToString(err)}`);
     }
     sessionRegistry.removeQuestion(sessionId, q.id, 'terminal_auq_closed');
     try {
@@ -281,7 +277,7 @@ export function createPtySessionForSession(
     cleanup,
     exitProcess = (code: number) => process.exit(code),
     onQuestionResolved,
-    cancelAutoApproveForQuestion,
+    retireQuestion,
     observeLocalPtyOutput,
   } = deps;
   const { sessionId, workingDirectory, extraArgs, passThrough, reservedRows = 0 } = args;
@@ -374,12 +370,7 @@ export function createPtySessionForSession(
         // #538/#661: also catch an AUQ closing IN THE TERMINAL after the runner
         // gave up (escalated) — see `detectAuqTerminalAnswers` for why this is
         // the right tap.
-        detectAuqTerminalAnswers(
-          sessionId,
-          sessionRegistry,
-          onQuestionResolved,
-          cancelAutoApproveForQuestion,
-        );
+        detectAuqTerminalAnswers(sessionId, sessionRegistry, onQuestionResolved, retireQuestion);
       },
       onExit: (code: number | null) => {
         try {

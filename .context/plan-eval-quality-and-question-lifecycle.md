@@ -1,5 +1,7 @@
 # Plan: evaluation quality + question lifecycle
 
+> **Historical (2026-10-01).** The evaluation-quality track was made moot by #1125 ([ADR 0030](decisions/0030-defer-permission-judgment-to-the-harness.md)): remi no longer evaluates permissions. The question-lifecycle track's surviving parts (external resolution, render-owned cards) are described by ADR 0004 and AGENTS.md, not by this plan.
+
 Two tracks the owner raised together. They are separable to ship but share one
 substrate, so they are planned together.
 

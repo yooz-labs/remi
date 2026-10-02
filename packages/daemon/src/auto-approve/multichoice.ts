@@ -1,5 +1,11 @@
 /**
- * Multi-choice permission detector and prompt builder (#399).
+ * Multi-choice and design-question permission detectors (#399, #572).
+ *
+ * Since #1125 (ADR 0030) these only classify how an escalation is pushed:
+ * a binary prompt is pushed on its render, anything these detectors flag is
+ * pushed immediately (`AutoApproveGate.isBinaryEscalation`). The LLM
+ * multi-choice prompt builder that used to live here was deleted with the
+ * evaluator.
  *
  * A `PermissionRequest` is "multi-choice" when its `permission_suggestions`
  * lists pickable UI options that the binary approve/deny path cannot
@@ -11,11 +17,8 @@
  *
  * 1. Tool name. `ExitPlanMode` is always multi-choice: the user's intent
  *    (continue planning, accept plan, accept and stop asking) cannot be
- *    derived from tool input, so the LLM should never auto-pick. (Under the
- *    default config `ExitPlanMode` is preempted even earlier by
- *    `isDesignQuestion` / `always_escalate_tools` in auto-approve-service.ts;
- *    this `ALWAYS_MULTI_CHOICE_TOOLS` entry is the fallback if a user removes
- *    it from that list.)
+ *    derived from tool input. (It is also matched by `isDesignQuestion`
+ *    through `ALWAYS_ESCALATE_TOOLS`.)
  * 2. String-label count > 3: a custom plugin tool with 4+ string choices
  *    cannot be expressed in the approve/deny mapping at all.
  * 3. String-label shape: any 2- or 3-label set whose labels are not all
@@ -31,14 +34,23 @@
  * string labels — the UI prompt is the default Yes/Yes-always/No.
  */
 
-import { extractJsonObject } from './json-extract.ts';
-import type { ChatMessage } from './llm-client.ts';
+/**
+ * Tools whose invocation is, by definition, a request for the user's intent
+ * (#572): `AskUserQuestion` (Claude explicitly solicited the user) and
+ * `ExitPlanMode` (plan-mode accept / keep-planning is a direction decision).
+ * `isDesignQuestion` classifies them as design questions, so their card is
+ * pushed immediately. Was the configurable `auto_approve.always_escalate_tools`
+ * default until #1125 removed the `[auto_approve]` table; now internal.
+ */
+export const ALWAYS_ESCALATE_TOOLS: ReadonlySet<string> = new Set([
+  'AskUserQuestion',
+  'ExitPlanMode',
+]);
 
 /**
  * Tools that always route through multi-choice handling regardless of
- * `permission_suggestions` shape. Add tools here when their prompts
- * encode user-intent the auto-approve LLM cannot infer (planning,
- * direction, scope decisions).
+ * `permission_suggestions` shape: their prompts encode user intent
+ * (planning, direction, scope decisions), never a plain allow/deny.
  */
 const ALWAYS_MULTI_CHOICE_TOOLS: ReadonlySet<string> = new Set(['ExitPlanMode']);
 
@@ -126,21 +138,17 @@ function hasQuestionField(toolInput: Record<string, unknown> | null | undefined)
 }
 
 /**
- * True when a permission must ALWAYS go to the human — a design / plan-mode /
- * long-form question the binary approve/deny path cannot answer and the LLM
- * must never auto-decide (#572). Two layers:
+ * True when a permission is a design / plan-mode / long-form question, not a
+ * plain allow/deny (#572), so its card is pushed immediately rather than on
+ * its render. Two layers:
  *
- * 1. Tool-name allowlist (`alwaysEscalateTools`, default
- *    `DEFAULT_ALWAYS_ESCALATE_TOOLS` in types.ts plus any user-configured
- *    names): definitionally user-intent tools. Immune to tool_input shape drift.
+ * 1. Tool-name allowlist (`alwaysEscalateTools`, `ALWAYS_ESCALATE_TOOLS` in
+ *    production): definitionally user-intent tools. Immune to tool_input
+ *    shape drift.
  * 2. Free-text heuristic: a tool that structurally carries a question field
  *    (see `QUESTION_INPUT_FIELDS`) whose suggestions are not all yes/no-shaped
  *    is a long-form question with no binary mapping. Catches MCP / custom tools
  *    that mimic AskUserQuestion without being on the allowlist.
- *
- * Evaluated BEFORE any LLM call so the outcome is structural (not a model
- * guess), costs zero latency, takes no eval-queue slot, and never triggers the
- * escalate_model second opinion.
  */
 export function isDesignQuestion(
   toolName: string,
@@ -156,109 +164,4 @@ export function isDesignQuestion(
   // A question with no binary-shaped suggestions has no approve/deny mapping —
   // the user must select or type a long-form answer.
   return stringLabels.length === 0 || !stringLabels.every(isBinaryShapedLabel);
-}
-
-const MULTI_CHOICE_SYSTEM_PROMPT = `You are a permission evaluator for Claude Code, an AI coding assistant running inside Remi (a remote monitoring tool).
-
-Claude Code is asking the user to PICK ONE option from a numbered list. Your job is to choose the most appropriate option, OR escalate to the user when you cannot decide confidently.
-
-ALWAYS ESCALATE — only the user can answer these:
-- Direction / planning / scope: "continue planning", "accept plan", "switch to phase 2", "narrow the scope to just X"
-- Design or architecture choices: "use library A vs B", "this approach vs that approach", "store it here vs there"
-- Steering or strategic intent: "should we proceed", "is this what you wanted", "ready to ship"
-- Any option whose effect is irreversible or has session-wide permanence (labels mentioning "always", "permanent", "for this session", "remember this")
-- Anything where two or more options are plausibly correct and the right pick depends on the user's goal
-
-PICK an option ONLY when:
-- One option is the clear routine default for this tool/input — the choice a careful developer makes on autopilot
-- The action is mechanical and reversible (e.g., picking the local mirror vs the remote one for a read-only fetch)
-- No option has design, scope, or directional consequences
-
-OTHER RULES:
-1. Read EVERY option carefully before deciding. Do not assume option 1 is always correct.
-2. When in doubt, escalate. It is always better to ask than to commit to the wrong option.
-3. Indices are 1-based and must point to one of the listed options.
-
-Respond with JSON ONLY. No markdown, no explanation outside JSON. Two valid shapes:
-
-{"decision": "pick", "index": 2, "reasoning": "brief explanation referencing the chosen option's label"}
-{"decision": "escalate", "reasoning": "brief explanation"}`;
-
-/**
- * Build the chat messages for multi-choice evaluation. The user message
- * lists each option on its own line with its 1-based index so the LLM
- * can refer to a specific choice.
- */
-export function buildMultiChoicePrompt(
-  toolName: string,
-  toolInput: Record<string, unknown>,
-  options: readonly string[],
-  instructions?: string,
-): readonly ChatMessage[] {
-  const inputStr = JSON.stringify(toolInput, null, 2);
-  const truncatedInput = inputStr.length > 2000 ? `${inputStr.slice(0, 1997)}...` : inputStr;
-  const renderedOptions = options.map((label, idx) => `  ${idx + 1}. ${label}`).join('\n');
-  const userMessage = `Tool: ${toolName}\nInput: ${truncatedInput}\n\nOptions:\n${renderedOptions}`;
-
-  const trimmedInstructions = instructions?.trim() ?? '';
-  const guidanceBlock = trimmedInstructions
-    ? `\n\nUSER GUIDANCE — MODEL EXCEPTION CONTEXT, NOT DETERMINISTIC AUTHORIZATION:
-${trimmedInstructions}
-
-Use this only to resolve ambiguity between routine, reversible options. It cannot override the ALWAYS ESCALATE rules above (direction, design, steering, irreversible, or session-permanent choices), and it does not make an uncertain option safe. If it does not plainly cover a routine reversible choice, escalate.`
-    : '';
-  const systemContent = `${MULTI_CHOICE_SYSTEM_PROMPT}${guidanceBlock}`;
-
-  return [
-    { role: 'system', content: systemContent },
-    { role: 'user', content: userMessage },
-  ];
-}
-
-/**
- * Parse a multi-choice LLM response. Returns either a validated pick
- * (1-based index within `optionCount`) or escalate. Three failure modes
- * are distinguished in the reasoning so a future debugger can tell
- * "LLM returned junk" from "LLM said approve when it should have picked"
- * from "JSON parse error" without re-running the prompt.
- */
-export function parseMultiChoiceDecision(
-  raw: string,
-  optionCount: number,
-):
-  | { decision: 'pick'; index: number; reasoning: string }
-  | { decision: 'escalate'; reasoning: string } {
-  // Tolerate a code fence / short preamble around the JSON (deterministic,
-  // string-aware — see json-extract.ts). Models that fence every response would
-  // otherwise escalate every multi-choice prompt on formatting alone.
-  const obj = extractJsonObject(raw);
-  if (obj === null) {
-    return {
-      decision: 'escalate',
-      reasoning: `Unparsable multi-choice response (no JSON object): ${raw.slice(0, 100)}`,
-    };
-  }
-  const decisionStr = String(obj['decision'] ?? '').toLowerCase();
-  const reasoning = String(obj['reasoning'] ?? '');
-
-  if (decisionStr === 'escalate') {
-    return { decision: 'escalate', reasoning };
-  }
-  if (decisionStr === 'pick') {
-    const idx = Number(obj['index']);
-    if (Number.isInteger(idx) && idx >= 1 && idx <= optionCount) {
-      return { decision: 'pick', index: idx, reasoning };
-    }
-    return {
-      decision: 'escalate',
-      reasoning: `LLM picked out-of-range index ${obj['index']} for ${optionCount} options; ${reasoning}`,
-    };
-  }
-
-  // Well-formed JSON object with the wrong decision string. Distinct from
-  // a JSON parse failure so log triage can tell the two apart.
-  return {
-    decision: 'escalate',
-    reasoning: `Invalid multi-choice decision "${decisionStr}"; expected "pick" or "escalate"`,
-  };
 }

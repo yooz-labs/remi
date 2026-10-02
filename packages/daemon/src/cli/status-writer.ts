@@ -18,30 +18,18 @@
  */
 
 import * as fs from 'node:fs';
-import type { AgentStatus, AutoApproveState, RemiStatus } from '@remi/shared';
+import type { AgentStatus, RemiStatus } from '@remi/shared';
 
 /** Session status surfaced in the status file. `starting` now lives in the
  *  shared `AgentStatus` (#576), so this is just an alias kept for callers. */
 export type RemiSessionStatus = AgentStatus;
 
-/** `AutoApproveState` and `RemiStatus` moved to @remi/shared (#754) so the
- *  daemon can broadcast the snapshot to clients (`remi_status`) and the attach
- *  client can render the same reserved-row bar. Re-exported for existing
- *  daemon-side importers. */
-export type { AutoApproveState, RemiStatus };
-
-export const IDLE_AUTO_APPROVE: AutoApproveState = {
-  inFlight: 0,
-  sinceS: 0,
-  lastVerdict: 'none',
-  lastVerdictAtS: 0,
-};
-
-/** Seconds an 'escalated' verdict is considered fresh/actionable. A later
- *  'approved' from a concurrent eval must not hide a still-fresh escalate, and
- *  the statusline shows "needs you" only within this window (kept in sync with
- *  the render in statusline-installer.ts). */
-export const ESCALATE_FRESH_S = 60;
+/** `RemiStatus` moved to @remi/shared (#754) so the daemon can broadcast the
+ *  snapshot to clients (`remi_status`) and the attach client can render the
+ *  same reserved-row bar. Re-exported for existing daemon-side importers. The
+ *  auto-approve cue it used to carry (`autoApprove`, #560) is no longer
+ *  written (#1125). */
+export type { RemiStatus };
 
 export interface StatusWriterDeps {
   /** Returns the path to write to. Called on every flush so caller can swap files at runtime. */
@@ -125,52 +113,6 @@ export class StatusWriter {
    */
   refresh(): void {
     if (this.pullAttachState()) this.schedule();
-  }
-
-  /**
-   * An auto-approve eval started (#560). Increments the in-flight count; stamps
-   * the batch start on the 0->1 edge so the statusline can show elapsed time.
-   * `nowMs` is Date.now() (floored to seconds for the shell script).
-   */
-  autoApproveStart(nowMs: number): void {
-    const aa = this.status.autoApprove;
-    if (aa.inFlight === 0) aa.sinceS = Math.floor(nowMs / 1000);
-    aa.inFlight += 1;
-    this.schedule();
-  }
-
-  /**
-   * An auto-approve eval settled. Decrements the in-flight count (floored at 0 so
-   * an unbalanced end can never make it negative) and records the verdict for the
-   * post-eval cue. 'cancelled' just decrements (no actionable verdict). Because
-   * every gate end-path calls this exactly once, the count returns to 0 and the
-   * "evaluating" cue can never get stuck.
-   */
-  autoApproveEnd(verdict: 'approved' | 'escalated' | 'cancelled', nowMs: number): void {
-    const aa = this.status.autoApprove;
-    // Only record a verdict for an eval that actually ran (a matching start).
-    // When auto-approve is OFF, the gate's normal escalate-to-user path still
-    // fires onEscalate without a prior start; without this guard that would
-    // stamp a spurious permanent 'needs you' (#560 review).
-    const wasInFlight = aa.inFlight > 0;
-    aa.inFlight = Math.max(0, aa.inFlight - 1);
-    if (aa.inFlight === 0) aa.sinceS = 0;
-    if (!wasInFlight) return;
-    const nowS = Math.floor(nowMs / 1000);
-    if (verdict === 'escalated') {
-      aa.lastVerdict = 'escalated';
-      aa.lastVerdictAtS = nowS;
-    } else if (verdict === 'approved') {
-      // A concurrent eval's silent approve must not hide a still-fresh escalate
-      // the user still needs to act on (#560 review).
-      const escalateFresh =
-        aa.lastVerdict === 'escalated' && nowS - aa.lastVerdictAtS < ESCALATE_FRESH_S;
-      if (!escalateFresh) {
-        aa.lastVerdict = 'approved';
-        aa.lastVerdictAtS = nowS;
-      }
-    }
-    this.schedule();
   }
 
   /** Immediately write to disk (skips the debounce). Used on graceful shutdown. */

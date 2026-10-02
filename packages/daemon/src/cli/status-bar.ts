@@ -54,9 +54,10 @@
  *      as long as `hasLiveQuestions()` reported a pending question, painting
  *      once on the transition in. It had no upper bound -- a prompt a human
  *      sits on for ten minutes froze row N for ten minutes -- and since the
- *      escalate that raises a prompt is also what sets the state to
+ *      escalate that raises a prompt is also what set the state to
  *      "needs you", the frozen frame was almost always a cue contractually
- *      bounded by `ESCALATE_FRESH_S`, pinned on screen indefinitely
+ *      bounded to 60s (the auto-approve cue, removed in #1125), pinned on
+ *      screen indefinitely
  *      (reproduced verbatim from a user report: `remi:18766 website:main |
  *      no clients | needs you`, unchanged across 20 simulated minutes and a
  *      phone attaching). It was also redundant: #942's boundary + quiescence
@@ -110,18 +111,12 @@
 
 import * as fs from 'node:fs';
 import { errorToString } from '@remi/shared';
-import { ESCALATE_FRESH_S, type RemiStatus } from './status-writer.ts';
+import type { RemiStatus } from './status-writer.ts';
 
 /** Rows reserved for the status bar. */
 export const RESERVED_ROWS = 1;
 /** A bar needs at least one row for Claude plus one for itself. */
 export const MIN_ROWS_FOR_BAR = 2;
-/** Leak-safety cap: a stuck `inFlight` stops reading as "evaluating" after this
- *  many seconds (mirrors the 600s in statusline-installer.ts). */
-export const EVALUATING_CAP_S = 600;
-/** An 'approved' verdict fades from the bar after this many seconds (mirrors the
- *  5s in statusline-installer.ts). */
-export const APPROVED_FRESH_S = 5;
 /** Consecutive render failures tolerated before the bar backs off for good. A
  *  single transient write error (e.g. an interrupted syscall) must not silence
  *  the bar for the whole session; a genuinely dead fd trips this within seconds. */
@@ -167,27 +162,16 @@ export function childRows(realRows: number, reserve: boolean): number {
 /**
  * Build the human-readable status string (no styling, no truncation). Mirrors
  * the render logic in `statusline-installer.ts` so the reserved-row bar and the
- * native statusLine agree on what the auto-approve state reads as.
+ * native statusLine agree.
  *
  *   remi:<port> <repo>:<branch> | <N> client(s) | <state>
  *
- * `state` is the live auto-approve cue when a permission is being decided
- * (`evaluating Ns` / `needs you` / `approved`), otherwise Claude's agent status.
+ * `state` is Claude's agent status. The auto-approve cue that used to replace
+ * it (`evaluating Ns` / `needs you` / `approved`, #560) was removed with the
+ * evaluator (#1125). `nowMs` is kept for the signature the bar's tick uses.
  */
-export function formatStatusBar(status: Readonly<RemiStatus>, nowMs: number): string {
-  const nowS = Math.floor(nowMs / 1000);
-  const aa = status.autoApprove;
-  const elapsed = nowS - aa.sinceS;
-  const age = nowS - aa.lastVerdictAtS;
-
-  let state: string = status.sessionStatus;
-  if (aa.inFlight > 0 && elapsed >= 0 && elapsed < EVALUATING_CAP_S) {
-    state = `evaluating ${elapsed}s`;
-  } else if (aa.lastVerdict === 'escalated' && age >= 0 && age < ESCALATE_FRESH_S) {
-    state = 'needs you';
-  } else if (aa.lastVerdict === 'approved' && age >= 0 && age < APPROVED_FRESH_S) {
-    state = 'approved';
-  }
+export function formatStatusBar(status: Readonly<RemiStatus>, _nowMs: number): string {
+  const state: string = status.sessionStatus;
 
   // #755: label from the REAL attach state (the session's attached-connections
   // set, #795), not the raw connection counter — `connections` also counts
@@ -321,9 +305,9 @@ export interface StatusBarDeps {
   /** Logger for render-failure notes. Required so a draw failure is never
    *  silently swallowed by an accidental no-op default. */
   readonly log: (msg: string) => void;
-  /** Refresh cadence in ms. Default 250 so the `evaluating Ns` counter and AA
-   *  state changes feel smooth (#576). The repaint reads in-memory status only —
-   *  no disk I/O — so a faster cadence costs just one small fd write per tick. */
+  /** Refresh cadence in ms. Default 250 (#576, set when the bar carried a live
+   *  `evaluating Ns` counter). The repaint reads in-memory status only — no
+   *  disk I/O — so the cadence costs just one small fd write per tick. */
   readonly intervalMs?: number;
 }
 

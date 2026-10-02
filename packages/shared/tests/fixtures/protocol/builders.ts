@@ -169,12 +169,7 @@ const FIXED_REMI_STATUS: RemiStatus = {
   sessionId: SESSION_ID,
   repo: 'remi',
   branch: 'develop',
-  autoApprove: {
-    inFlight: 0,
-    sinceS: 0,
-    lastVerdict: 'none',
-    lastVerdictAtS: 0,
-  },
+  // #1125: no `autoApprove` -- a current daemon no longer emits it.
   attached: true,
   queuedCount: 0,
   mode: 'session',

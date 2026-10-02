@@ -223,7 +223,6 @@ describe('TranscriptBinder drive mode (#453 phase 3, commit 5)', () => {
         liveSessionsRegistry,
         transcriptWatchers,
         transcriptFallbackTimers,
-        autoApproveService: null,
         currentPort: () => PORT,
         transcriptDiscovery,
       },

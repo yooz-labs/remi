@@ -1,5 +1,8 @@
 # Curated Permission-Bank Replay
 
+> **Historical (2026-10-01).** The read-only auto-approve path, its proofs and dual review, and the bank replay harness this document describes were removed in #1125 ([ADR 0030](decisions/0030-defer-permission-judgment-to-the-harness.md)); its commands no longer run on this tree.
+> Kept as the record of how that path was evaluated.
+
 The permission bank is the repeatable evaluation corpus for the verified
 read-only auto-approve path. It lets changes to proof, prompts, context
 handling, and dual review be tested without asking the user to reproduce a

@@ -67,7 +67,7 @@ describe('QuestionPresenceTracker per-agent pending', () => {
     expect(pushed[0]?.options.map((o) => o.label)).toEqual(['1']);
     // main consumed; sub-7 still pending.
     expect(tracker.pendingCountForTest()).toBe(1);
-    expect(tracker.isPromptVisibleOnPTY()).toBe(true);
+    expect(tracker.isPromptObservedOnPTY()).toBe(true);
   });
 
   test('PTY-only prompt (no hook) is pushed as-is', () => {
@@ -94,10 +94,10 @@ describe('QuestionPresenceTracker per-agent pending', () => {
     const { tracker } = makeTracker();
     tracker.recordPendingHook(question({ agentId: 'sub-7' }));
     tracker.onPTYPromptVisible(question({ agentId: undefined }));
-    expect(tracker.isPromptVisibleOnPTY()).toBe(true);
+    expect(tracker.isPromptObservedOnPTY()).toBe(true);
     tracker.onStatusChange('thinking');
     expect(tracker.pendingCountForTest()).toBe(0);
-    expect(tracker.isPromptVisibleOnPTY()).toBe(false);
+    expect(tracker.isPromptObservedOnPTY()).toBe(false);
   });
 
   test('a throwing push consumes the hook but leaves presence set, so a retry re-pushes', () => {
@@ -111,7 +111,7 @@ describe('QuestionPresenceTracker per-agent pending', () => {
     tracker.onPTYPromptVisible(question({ agentId: undefined }));
     // hook consumed, presence set, error swallowed (not rethrown).
     expect(tracker.hasPendingForTest()).toBe(false);
-    expect(tracker.isPromptVisibleOnPTY()).toBe(true);
+    expect(tracker.isPromptObservedOnPTY()).toBe(true);
     // A re-render emits again; the second push (no hook to merge) succeeds.
     tracker.onPTYPromptVisible(question({ agentId: undefined }));
     expect(calls).toBe(2);
@@ -123,6 +123,6 @@ describe('QuestionPresenceTracker per-agent pending', () => {
     tracker.recordPendingHook(question({ agentId: 'sub-7' }));
     tracker.clearPending();
     expect(tracker.hasPendingForTest()).toBe(false);
-    expect(tracker.isPromptVisibleOnPTY()).toBe(false);
+    expect(tracker.isPromptObservedOnPTY()).toBe(false);
   });
 });

@@ -285,15 +285,20 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
 
   /**
    * #753: print a pending HELD question into the attached terminal. A held
-   * permission (Model B) blocks Claude inside the hook call, so no raw PTY
-   * bytes for the prompt exist and the resize-nudge redraw has nothing to
-   * repaint — without this banner an attach shows only "waiting". ONLY held
-   * questions banner (#760 review finding 1): every other question class
+   * permission (Model B) blocks Claude inside the hook call before its dialog
+   * paints, so the resize-nudge redraw has nothing to repaint — without this
+   * banner an attach shows only "waiting". Since #1125 nothing holds; the
+   * daemon still stamps `held` on cards pushed by id before their render
+   * (AskUserQuestion, ExitPlanMode, a multi-choice permission), whose dialog
+   * Claude does paint, so for those the banner repeats the question above
+   * the native dialog. Accepted until #1126: the stamp also keys the
+   * `free-text-on-held-card` answer guard.
+   * ONLY held questions banner (#760 review finding 1): every other question class
    * renders natively in the raw PTY stream, and the daemon emits multiple
    * `question` messages per visible prompt cycle (hook bridge + PTY parser,
    * different ids), so bannering those would double- or triple-print around
    * the native prompt — the exact noise the old blanket suppression avoided.
-   * #1026 correction: a held permission blocking Claude's hook call does NOT
+   * #1026 correction: a held permission blocking Claude's hook call did NOT
    * guarantee an idle PTY — the TUI spinner keeps animating on its own timer
    * while the hook is pending, and a live session showed the cue's old bare
    * `\r\n` lead interleaving with that spinner's redraw on the same row.

@@ -95,13 +95,7 @@ describe('sanitizePushPreferences', () => {
 describe('wantsPush', () => {
   test('an entry with no stored preferences wants every class', () => {
     const legacy = entry('t');
-    const kinds: PushKind[] = [
-      'question',
-      'turn_complete',
-      'subagent_alert',
-      'dismiss',
-      'auto_denied',
-    ];
+    const kinds: PushKind[] = ['question', 'turn_complete', 'subagent_alert', 'dismiss'];
     for (const kind of kinds) {
       expect(wantsPush(legacy, kind)).toBe(true);
     }
@@ -128,18 +122,9 @@ describe('wantsPush', () => {
 
   test('subagent_alert is never filtered, even with everything muted', () => {
     // It already has a user-facing control: it fires only on the patterns the
-    // user put in `auto_approve.subagent_alert`.
+    // user put in `[notifications] subagent_alert`.
     const muted = entry('t', { questions: false, turnComplete: false });
     expect(wantsPush(muted, 'subagent_alert')).toBe(true);
-  });
-
-  test('auto_denied is never filtered, even with everything muted (#1015)', () => {
-    // The strongest of the three exemptions. A deny builds no Question, so
-    // there is no card to find later and no history entry to scroll back to --
-    // this push IS the record. Muting it does not reduce noise; it restores
-    // the invisibility the notification exists to end.
-    const muted = entry('t', { questions: false, turnComplete: false });
-    expect(wantsPush(muted, 'auto_denied')).toBe(true);
   });
 });
 

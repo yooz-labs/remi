@@ -1,6 +1,6 @@
 # ADR 0029: Capability proofs are finite and group-gated
 
-**Status:** accepted
+**Status:** Superseded by ADR 0030 (2026-10-01)
 **Date:** 2026-09-17
 **Owner:** Yahya
 

@@ -456,7 +456,6 @@ describe('createRemiStatus() (#754)', () => {
       sessionId: null,
       repo: 'remi',
       branch: 'develop',
-      autoApprove: { inFlight: 0, sinceS: 0, lastVerdict: 'none' as const, lastVerdictAtS: 0 },
       attached: true,
       queuedCount: 1,
     };
@@ -472,7 +471,8 @@ describe('createRemiStatus() (#754)', () => {
     if (parsed?.type === 'remi_status') {
       expect(parsed.status.attached).toBe(true);
       expect(parsed.status.queuedCount).toBe(1);
-      expect(parsed.status.autoApprove.lastVerdict).toBe('none');
+      // #1125: a current daemon no longer emits the deprecated field.
+      expect('autoApprove' in parsed.status).toBe(false);
     }
   });
 
@@ -480,9 +480,17 @@ describe('createRemiStatus() (#754)', () => {
     const status = mkRemiStatus();
     const msg = createRemiStatus(generateId(), status);
     status.attached = false;
-    status.autoApprove.inFlight = 5;
     expect(msg.status.attached).toBe(true);
-    expect(msg.status.autoApprove.inFlight).toBe(0);
+  });
+
+  test('an older status that still carries autoApprove is copied one level deep', () => {
+    const status = {
+      ...mkRemiStatus(),
+      autoApprove: { inFlight: 0, sinceS: 0, lastVerdict: 'none' as const, lastVerdictAtS: 0 },
+    };
+    const msg = createRemiStatus(generateId(), status);
+    status.autoApprove.inFlight = 5;
+    expect(msg.status.autoApprove?.inFlight).toBe(0);
   });
 });
 

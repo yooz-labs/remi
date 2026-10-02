@@ -189,8 +189,10 @@ describe('formatStatusText', () => {
     expect(formatStatusText('waiting')).toContain('Waiting');
   });
 
-  test('formats the auto-approve + lifecycle statuses with human labels (#576)', () => {
+  test('formats the lifecycle statuses with human labels (#576)', () => {
     // No raw "evaluating"/"approved"/"starting" leaking through the default arm.
+    // `evaluating`/`approved` are deprecated (#1125: a current daemon never
+    // sets them) but stay in `AgentStatus`, so they keep their labels.
     expect(formatStatusText('evaluating')).toContain('Evaluating');
     expect(formatStatusText('approved')).toContain('Approved');
     expect(formatStatusText('starting')).toContain('Starting');

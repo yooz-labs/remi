@@ -28,29 +28,22 @@ interface HookMatcher {
 
 /**
  * Seconds Claude Code waits for a hook's HTTP response before proceeding
- * WITHOUT it. PermissionRequest must outlast the synchronous auto-approve eval
- * (#496/#537): a heavy local model plus the serialization queue can take far
- * longer than a few seconds, and at the old blanket 5s Claude Code gave up and
- * showed its own prompt before the daemon's verdict arrived (so a decision that
- * WOULD approve landed too late). A dead daemon still fails fast (connection
- * refused), so the long timeout only delays while the daemon is actively
- * deciding. Every other hook keeps the short timeout so a slow/dead daemon never
- * gates worktree creation / prompt submission / compaction (#203).
- *
- * 600s = Claude Code's hook-budget ceiling, chosen so a verdict is never dropped
- * even for the heaviest realistic config: the auto-approve worst case is roughly
- * `queue_timeout` (default 240s) + `timeout` (user-configurable, e.g. 120s) =
- * 360s, which a 300s ceiling would still drop. The eval itself self-limits
- * (`timeout`) and queued requests escalate at `queue_timeout`, so the daemon
- * always answers well within 600s; this is a ceiling, not a typical wait.
+ * WITHOUT it. PermissionRequest gets Claude Code's 600s hook-budget ceiling
+ * (#496/#537), set when the synchronous auto-approve eval could take minutes.
+ * Since #1125 (ADR 0030) the daemon answers PermissionRequest at once with
+ * 'passthrough', so the ceiling costs nothing; it stays as the baseline the
+ * hold-the-hook transport (ADR 0002, re-added in #1126) is sized against. A
+ * dead daemon still fails fast (connection refused). Every other hook keeps
+ * the short timeout so a slow/dead daemon never gates worktree creation /
+ * prompt submission / compaction (#203).
  */
 const PERMISSION_REQUEST_HOOK_TIMEOUT = 600;
 const DEFAULT_HOOK_TIMEOUT = 5;
 /** Per-event timeout overrides (seconds), below `DEFAULT_HOOK_TIMEOUT` (#893,
- *  Epic #885 Risk 3). `UserPromptSubmit`'s listener is a single array push
- *  (`AuthorityStore.record`, `auto-approve/authority.ts`) -- it never needs
- *  the full 5s fail-fast budget, and a short one still gates the human's
- *  prompt submission for less wall-clock time when the daemon is slow/dead. */
+ *  Epic #885 Risk 3). `UserPromptSubmit`'s listener only drives the binder --
+ *  it never needs the full 5s fail-fast budget, and a short one still gates
+ *  the human's prompt submission for less wall-clock time when the daemon is
+ *  slow/dead. */
 const SHORT_HOOK_TIMEOUTS: Readonly<Record<string, number>> = { UserPromptSubmit: 1 };
 
 interface ClaudeSettings {
@@ -62,36 +55,23 @@ export class HookConfigManager {
   private readonly settingsPath: string;
   private readonly hookUrl: string;
   private hasWritten = false;
-  /**
-   * Seconds the daemon may HOLD a PermissionRequest hook open before answering
-   * (Model B, #573). The registered PermissionRequest hook timeout must be >=
-   * this, or Claude Code gives up on the hook and renders its native prompt
-   * BEFORE the hold's own fail-open fires — so the registered timeout is
-   * `max(PERMISSION_REQUEST_HOOK_TIMEOUT, holdTimeoutSec)`. 0 / omitted keeps the
-   * baseline ceiling (the pre-#573 behavior).
-   */
-  private readonly permissionHoldTimeoutSec: number;
 
-  constructor(projectDir: string, hookServerUrl: string, permissionHoldTimeoutSec = 0) {
+  constructor(projectDir: string, hookServerUrl: string) {
     this.settingsPath = path.join(projectDir, '.claude', 'settings.local.json');
     this.hookUrl = hookServerUrl;
-    this.permissionHoldTimeoutSec =
-      Number.isFinite(permissionHoldTimeoutSec) && permissionHoldTimeoutSec > 0
-        ? permissionHoldTimeoutSec
-        : 0;
   }
 
   /**
    * Seconds Claude Code waits for this hook's HTTP response. PermissionRequest
-   * gets the long budget (baseline 600s ceiling, raised to the configured hold
-   * timeout when larger so a long human-paced hold is not cut short, #573);
-   * events in `SHORT_HOOK_TIMEOUTS` get an even shorter budget than the
-   * default fail-fast timeout (#893); everything else keeps the plain
-   * fail-fast timeout (#203).
+   * gets the 600s baseline ceiling (the configurable hold timeout that could
+   * raise it, #573, went with the hold in #1125); events in
+   * `SHORT_HOOK_TIMEOUTS` get an even shorter budget than the default
+   * fail-fast timeout (#893); everything else keeps the plain fail-fast
+   * timeout (#203).
    */
   private hookTimeoutFor(event: string): number {
     if (event === 'PermissionRequest') {
-      return Math.max(PERMISSION_REQUEST_HOOK_TIMEOUT, this.permissionHoldTimeoutSec);
+      return PERMISSION_REQUEST_HOOK_TIMEOUT;
     }
     return SHORT_HOOK_TIMEOUTS[event] ?? DEFAULT_HOOK_TIMEOUT;
   }

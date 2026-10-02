@@ -194,54 +194,70 @@ See `.context/notification-and-session-flow.md` for the full flow diagram.
 - `HookEventBridge` — emits questions from `PermissionRequest` hooks; suppresses redundant notifications.
 - `OutputProcessor` — PTY-output parsing (fallback when hooks are unavailable).
 
-**Unheld binary main-agent prompts push on render** (#1121). With auto-approve
-off (the default install) or `hold_timeout = 0`, the gate answers the hook
-`passthrough`, so the prompt shows in the terminal at once, and marks the
-question with `pushOnRender`. The card is pushed when the native prompt
-renders, and it takes the render-owned slot so the next render retires it.
-Before #1121 this combination pushed nothing at all. Two outstanding main
-prompts before a render are never paired by agent key; each render pushes the
-screen's own prompt.
+**remi relays permissions; Claude Code decides them** (#1125,
+[ADR 0030](.context/decisions/0030-defer-permission-judgment-to-the-harness.md)).
+There is no auto-approve evaluator and no rule layer: remi never answers a
+permission on the user's behalf. `AutoApproveGate` (name kept until #1126)
+answers every `PermissionRequest` hook `passthrough`, so Claude renders its own
+dialog in the terminal at once, and routes the escalation:
+
+- A **binary main-agent prompt** is stashed and marked `pushOnRender` (#1121).
+  The card is pushed when the native prompt renders, and it takes the
+  render-owned slot so the next render retires it. Two outstanding main
+  prompts before a render are never paired by agent key; each render pushes
+  the screen's own prompt.
+- A **multi-choice or design prompt** (`AskUserQuestion`, `ExitPlanMode`,
+  multi-choice permissions; `ALWAYS_ESCALATE_TOOLS` in
+  `auto-approve/multichoice.ts`) is pushed by id at once
+  (`escalatePassthrough` -> `pushHeldHook`, #625), so the notification arrives
+  even when its dialog never parses (some ExitPlanMode renders do not). It
+  keeps the hook's numbering, and is stamped `held` (the name predates #1125;
+  nothing holds).
+- An open card is resolved without an answer by a matching
+  `PreToolUse`/`PostToolUse`/`PermissionDenied`, a lead `Stop` (main cards),
+  `SubagentStop` (that agent's cards), `SessionEnd`, or `remi unstick`; a
+  dismissal is broadcast only for a card that was actually pushed.
+
+Nothing holds the hook in this phase; the next phase (#1126) answers prompts
+structurally through held hooks while Claude's own dialog stays visible.
 
 **A card answered by typing into the PTY carries the screen's numbering**
 (#1134). When a hook record merges onto a parsed prompt
 (`QuestionPresenceTracker.consumeAndMerge`), the card's options are the
 parse's options, labels and values unchanged; the hook contributes id, text,
-agent, source, summary and tool metadata (including `allowsFreeText`: a
-permission dialog takes a pick, not text), never options. The parse carries
-no yes/no flags, so the merge sets `isYes`/`isNo` from labels that start with
-the exact word "Yes" or "No". Until #1134 the hook's options won unless they
-were the Yes/No fallback, and they are not the screen's: live,
-`addDirectories` + `setMode` suggestions built a 4-option card over a
-3-option dialog, the phone's "No" typed `4`, Claude ignored it, and the Enter
-that follows every typed answer confirmed "1. Yes".
+agent, source and tool metadata (including `allowsFreeText`: a permission
+dialog takes a pick, not text), never options. The parse carries no yes/no
+flags, so the merge sets `isYes`/`isNo` from labels that start with the exact
+word "Yes" or "No". Until #1134 the hook's options won unless they were the
+Yes/No fallback, and they are not the screen's: live, `addDirectories` +
+`setMode` suggestions built a 4-option card over a 3-option dialog, the
+phone's "No" typed `4`, Claude ignored it, and the Enter that follows every
+typed answer confirmed "1. Yes".
 
-Which cards push on render: an unheld binary prompt (#1121) only. Every
-passthrough escalation (AskUserQuestion, ExitPlanMode, multi-choice
-permissions) and every held card is pushed by id at once, so the notification
-arrives even when its dialog never parses (some ExitPlanMode renders do not),
-and keeps the hook's numbering. A held card is answered through the hook
-response; a passthrough card's digit must pass the exact-label guard below,
-which refuses it wherever the hook's list differs from Claude's (ExitPlanMode's
-list is hardcoded, Claude builds its own).
-
-Guards in `handleAnswer` before anything is typed (all refuse like a stale
-answer: STALE_ANSWER, card consumed, trace reason in parentheses):
+**Every phone answer is typed, and checked against the screen first.** Guards
+in `handleAnswer` before anything is typed (all refuse like a stale answer:
+STALE_ANSWER, card consumed, trace reason in parentheses). A refusal means
+"answer at the terminal": Claude's own dialog is still there.
+- a prompt must be on screen: the card's own prompt for a `source: 'pty'`
+  card (`prompt-not-current`, #920), any prompt for a hook card
+  (`no-prompt-on-screen`, #1002).
 - an option value must be on the menu the tracker last observed
   (`observedPromptOptions`, wired by `trackerScreenDeps`) (`option-not-on-screen`),
   and that screen option's label must EQUAL the card option's after
   normalization (lowercase, all whitespace and box characters removed), or,
   for an AskUserQuestion pick, equal it with the description appended
   (`option-mismatch`). Nothing looser: this is a stopgap until hook-backed
-  prompts stop being answered by typing (epic #1123 Phase 3), so it fails
-  closed. A refusal means "answer at the terminal"; the accepted cost is
-  false refusals on short, partial-frame or reworded labels. Applies unless
-  this answer just released a hold.
+  prompts stop being answered by typing (#1126), so it fails closed; the
+  accepted cost is false refusals on short, partial-frame or reworded labels.
+  A pushed-by-id card keeps the hook's numbering, so this refuses its digit
+  wherever the hook's list differs from Claude's (ExitPlanMode's list is
+  hardcoded, Claude builds its own).
 - free text is refused when the card has options and takes no text and a
-  numbered menu is on screen (`free-text-into-menu`), and on a HELD card before
-  its hold is released (`free-text-on-held-card`; the hold is then released
-  with nothing typed). Free-form `user_input` (including a Telegram text
-  reply) is a separate path and is not checked.
+  numbered menu is on screen (`free-text-into-menu`), and always on a
+  pushed-by-id (`held`-stamped) card that has options and takes no text
+  (`free-text-on-held-card`; built for held hooks, kept for these cards).
+  Free-form `user_input` (including a Telegram text reply) is a separate
+  path and is not checked.
 - a question is claimed while its answer is applied: a duplicate delivery of
   the same choice (the lock screen sends every tap on two channels) reports
   delivered and types nothing; a different concurrent answer is refused.
@@ -251,52 +267,39 @@ row) onto the option above, at most two rows, never across footer rows
 ("Esc to cancel · ..."), dropping divider rows; it used to end the option list
 at the first such row and drop every later option, "No" included.
 
-**Subagent permissions: the PTY is the arbiter** (#756 policy, #807 + #814;
-amended #1024 2026-08-08, see [ADR 0004](.context/decisions/0004-pty-as-arbiter-subagent-questions.md)):
 
-- An `agent_id`-tagged `PermissionRequest` NEVER reaches the LLM at hook time — that part of
-  the original policy is unchanged. `AutoApproveGate` first asks ONLY the deterministic
-  pre-LLM layers (`AutoApproveService.evaluateDeterministic`: deny — list + groups — checked
-  first, then user `allow`, then the level's `approve_groups`; the exact matcher calls
-  `evaluate()` itself runs, shared so the two can never drift). A deterministic **approve**
-  (no deny match) answers the hook `{behavior:'allow'}` immediately — no park, no render, no
-  LLM, no GPU queue. Everything else — no deterministic verdict, or a **deny** match — parks
-  it (`parkForPTY` → `QuestionPresenceTracker.parkAwaitingPTY`) and answers the hook
-  `passthrough`, exactly as before #1024. A subagent's config-level deny is never turned into
-  a hook-time deny: it has no human-visible channel until a render happens, so it stays on the
-  render-time path below. Claude blocks on the hook response, so for anything that parks,
-  nothing can know whether the prompt will ever render — and most never do (16 hooks → 2
-  renders in a live 0.6.22 session).
-- If the prompt DOES render, `arbitrateParkedRender` evaluates it then (LLM included): `approve`/
-  `deny`/`pick` are typed into the prompt on screen (never a persisting "always" option), and
-  only an `escalate` verdict pushes a card. Every failure direction escalates; nothing is ever
-  auto-answered by guess.
-- An allowlist-covered subagent command — whether answered at hook time (#1024) or absorbed
-  silently after parking — never surfaces to a human by itself; the `subagent_alert`
-  informational push (`auto-approve/subagent-alert.ts`) is the visibility path for both cases,
-  fired via the same `onSubagentPassthrough` cue regardless of which path answered the hook,
-  deliberately alerting rather than blocking.
-- A bare tool-name `allow` entry (`allow = ["Write"]`, `["Edit"]`) carries no destination veto
-  by design (ADR 0010) and, since #1024, now grants a subagent silent hook-time write access to
-  sensitive destinations a curated `approve_groups` write group would block. Already true for
-  main-context requests; #1024 is the first time it applies with zero chance of a human ever
-  seeing the prompt. Tracked as #1032 (not yet decided).
-- **Permissions can be scoped per `agent_type`**
-  ([ADR 0025](.context/decisions/0025-agent-scoped-permissions.md)). Because the deterministic
-  layers are the ONLY ones a subagent reaches at hook time, they are also the only place a
-  per-role grant can live: `[auto_approve.agents.Explore]` with
-  `approve_groups = [..., "net-read"]` lets research agents read the web while nothing else
-  does. `deny`/`deny_groups` UNION with the base (a section can never weaken a machine-wide
-  prohibition — pinned by test); `allow`/`approve_groups` REPLACE it (the motivating case is
-  giving a role LESS). An unmatched agent type falls through to the base, so a typo in a
-  section name silently does nothing — there is no registry to validate against.
-- **`net-read` (WebFetch + WebSearch) is in no preset and no default.** It exists because
-  those tools previously matched *nothing*, so every web call from every subagent parked,
-  rendered and entered the serial eval queue; a measured fan-out of five `general-purpose`
-  agents saturated it and the waiters escalated on `queue_timeout` **without the LLM ever
-  running**. Not added to `trusted`: that level is chosen for git mutation, and quietly
-  attaching outbound egress to it is the same widening ADR 0023 fixed in `matchGroups`.
-  A wrongly-escalated fetch is a nuisance; a wrongly-approved one is an exfil channel.
+**Subagent permissions: the PTY is the arbiter**
+([ADR 0004](.context/decisions/0004-pty-as-arbiter-subagent-questions.md), amended
+by ADR 0030):
+
+- An `agent_id`-tagged `PermissionRequest` is parked (`parkForPTY` →
+  `QuestionPresenceTracker.parkAwaitingPTY`) and answered `passthrough`, for
+  every subagent request. Claude then runs its own permission flow: its rules
+  may allow the call without rendering anything, or the native prompt renders
+  on the main PTY and the parked card is pushed then. Most never render (16
+  hooks → 2 renders in a live 0.6.22 session).
+- A subagent command Claude allowed without rendering never surfaces to a
+  human by itself. The `subagent_alert` informational push
+  (`auto-approve/subagent-alert.ts`, patterns in `[notifications]
+  subagent_alert`) is the visibility path, fired from the gate's
+  `onSubagentPassthrough` cue, deliberately alerting rather than blocking.
+
+**Old auto-approve settings.** An old `config.toml` with an `[auto_approve]`
+table still loads; the daemon warns once at boot (daemon, `remi serve`,
+`remi config`; not again in a hub-spawned session daemon, and `remi start`
+reports only removed flags) naming the ignored keys, and `--auto-approve*`
+flags are accepted and ignored so old LaunchAgent plists keep starting.
+`auto_approve.subagent_alert` is honored as a deprecated fallback when
+`[notifications] subagent_alert` is unset, and gets its own "move it" line
+instead of being listed as ignored. `remi migrate-permissions` prints the old
+`allow`/`deny` lists as a Claude Code `permissions` block for the user to
+paste into `~/.claude/settings.json`; it never writes a file. It never emits a
+rule broader than the old entry (a bare `Bash` allow, which remi never
+applied, is not carried over), and deny entries change meaning: remi matched
+them as substrings anywhere in a command, Claude Code matches from the start
+of each subcommand, so a migrated deny is narrower and mid-command patterns
+(`push --force`) are not carried over. Everything not carried over is listed
+on stderr with its reason.
 
 **Notification channel — APNS push only** (no local notifications for questions):
 
@@ -313,9 +316,9 @@ those two are both exactly `{token, title, body}`.
 
 | `kind` | Fires on | Mutable per device |
 |---|---|---|
-| `question` | permission prompt, escalation, hold-timeout handoff | yes, `pushPrefs.questions` |
+| `question` | permission prompt, AskUserQuestion, plan approval | yes, `pushPrefs.questions` |
 | `turn_complete` | `Stop` after a turn ≥ `turn_complete_min_seconds` (#914) | yes, `pushPrefs.turnComplete` |
-| `subagent_alert` | a background agent matched `auto_approve.subagent_alert` | no — the pattern list IS the control |
+| `subagent_alert` | a background agent matched `[notifications] subagent_alert` | no — the pattern list IS the control |
 | `dismiss` | quiet `content-available` clearing a resolved card | **no, deliberately** |
 
 - **A client cannot mute APNS on its own.** The path is daemon → Worker → APNS
@@ -327,9 +330,8 @@ those two are both exactly `{token, title, body}`.
 - **Never filter `dismiss`.** A muted device can still hold a card delivered
   before the mute; dropping its dismissal strands that card on the lock screen
   of the device that asked for less noise.
-- **A muted fan-out must report `no_channel`, not `pushed`.** `awaitDelivery`
-  decides whether a held hook keeps Claude blocked; claiming delivery for a
-  fan-out of zero blocks the hook on a card nobody will ever see.
+- **A muted fan-out reports `no_channel`, not `pushed`.** Claiming delivery
+  for a fan-out of zero says a card reached a lock screen it never appears on.
 - Malformed preferences fail toward DELIVERING (`sanitizePushPreferences`). A
   wrongly-delivered notification is a nuisance; a wrongly-dropped one is the
   product failing at its only job.
@@ -340,61 +342,19 @@ those two are both exactly `{token, title, body}`.
 
 - Bash `PermissionRequest` may have `permission_suggestions=undefined` (no suggestions), a legacy plain-string label array (e.g. Edit's `["Yes","Always","No"]`), or — since ~Claude Code 2.0.54 — a STRUCTURED array of typed "permission update entries" (`addRules`, `addDirectories`, `setMode`, `removeRules`, `replaceRules`, `removeDirectories`, each carrying `behavior`/`destination`; ground truth: code.claude.com/docs/en/hooks).
 - Notification message is plain text ("Claude needs your permission to use Bash"), no numbered options, and never carries `permission_suggestions` at all.
-- Claude Code does NOT always offer a fixed option count. `optionsFromSuggestions` (hook-event-bridge.ts) builds a VARIABLE-count option set: [Yes] + one option per USABLE structured suggestion + [No], capped at 4 total. With no usable suggestions of either shape, the daemon falls back to the honest Yes/No 2-set (`optionsAreFallback: true` on the `Question`) instead of fabricating a 3rd option. This is the hook's view, not the screen's: Claude's dialog does not render one option per suggestion (two structured suggestions built 4 options over a 3-option dialog, #1134). So a card pushed when its prompt renders takes the parsed screen's options instead (it keeps these only if the parse found none); these options reach the phone on cards pushed by id before a render (held, or passthrough multi-choice), and `handleAnswer` types a digit from one only if the screen's option at that value has the same label.
+- Claude Code does NOT always offer a fixed option count. `optionsFromSuggestions` (hook-event-bridge.ts) builds a VARIABLE-count option set: [Yes] + one option per USABLE structured suggestion + [No], capped at 4 total. With no usable suggestions of either shape, the daemon falls back to the honest Yes/No 2-set (`optionsAreFallback: true` on the `Question`) instead of fabricating a 3rd option. This is the hook's view, not the screen's: Claude's dialog does not render one option per suggestion (two structured suggestions built 4 options over a 3-option dialog, #1134). So a card pushed when its prompt renders takes the parsed screen's options instead (it keeps these only if the parse found none); these options reach the phone on cards pushed by id before a render (AskUserQuestion, ExitPlanMode, multi-choice permissions; nothing holds since #1125), and `handleAnswer` types a digit from one only if the screen's option at that value has the same label.
 - Numbered option text appears only in the terminal UI, not in hook events.
-- `HookEventBridge` emits the option set immediately; no parsing or merge timer needed.
-- A "Yes, always allow: ..." option answered on a HELD hook resolves it with `{behavior:"allow", updatedPermissions:[<the original permission_suggestions entry>]}` — echoing a received suggestion back is, per the hooks docs, "equivalent to the user selecting that 'always allow' option in the dialog." `QuestionOption.suggestionIndex` carries which original entry to echo.
+- `HookEventBridge` builds the option set at hook time; a binary card is pushed when its prompt renders, and the answer is checked against the screen before it is typed (#1121, #1134).
+- A "Yes, always allow: ..." option is answered today like any other: typed using the screen's numbering, only when its label exactly matches the screen's option at that number, and otherwise refused (answer at the terminal) (#1134). `QuestionOption.suggestionIndex` still records which original `permission_suggestions` entry it came from. Echoing that entry back as `{behavior:"allow", updatedPermissions:[...]}` on a held hook is, per the hooks docs, "equivalent to the user selecting that 'always allow' option in the dialog"; that is the documented contract, NOT yet verified live, and it is how #1126 plans to answer it.
 - Redeploy the signaling server after any `packages/signaling/` change.
 
-### Local LLM backend is chosen by platform (#822)
+### No local model
 
-`detectLocalLLMPlatform()` decides what answers on remi's reserved port
-**19924**, and both `auto_approve.provider` and `auto_approve.model` default
-from it. One hardcoded default is wrong on one of the two supported targets.
-
-| Target | `provider` | `model` default | Who runs it |
-|---|---|---|---|
-| macOS Apple Silicon | `yooz` | `YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx` | remi fetches + supervises the helper (#834) |
-| Linux (any arch) | `llamacpp` | `YoozLabs/Qwen3.5-4B-qat-GGUF:Q4_0` | **you** install `llama-server` once; remi spawns + supervises it (#822) |
-| macOS Intel, Windows | `yooz` (kept deliberately, so the boot warning fires) | (engine's, unused) | nothing; boot says so |
-
-Same trained weights, but **not the same artifact**: QAT was trained against
-the MLX 4-bit grid and the GGUF is those weights re-quantized to `Q4_0`. So
-#809 Phase D's 38/38 permission-grid result is evidence for the **MLX build
-only** — it has never been run against llama.cpp, and `SWEEP_PROVIDER=llamacpp`
-in `run-model-sweep.ts` exists precisely to close that. Owed by #822. What else
-differs is everything *around* the weights, and three things bite:
-
-- **Name the quant explicitly.** `-hf` with no tag prefers `Q4_K_M`/`Q8_0` then
-  falls back to the first `.gguf` in the repo, so a bare id works today but is
-  order-dependent if a second quant is ever published.
-- **`llama-server` ignores the request's `model` field** in single-model mode.
-  So `auto_approve.model` is cosmetic there — and a configured `escalate_model`
-  would be answered by the *primary* model, reported as if a heavier model had
-  agreed. The daemon warns; deciding the real story is #822's open question.
-- **`remi model *` has no meaning on single-model llamacpp.** The engine
-  control plane (`/v1/llm/*`, `/v1/touchup/*`, `/v1/modules`) does not exist
-  there; `GET /v1/models` does, but remi's llamacpp base URL already ends in
-  `/v1`, so it would be requested at `/v1/v1/models`. Every verb but `use`
-  refuses with the restart command instead of emitting a 404. Router mode
-  (`--models-dir`) is out of scope for all of remi's engine shapes.
-
-**remi supervises `llama-server` but never installs it** (#822 slice 1). It
-spawns it on demand through the same `EngineHost` the engine uses — attach
-first, claim the pidfile before spawning, health-probe `/health` (NOT
-`/v1/llm/status`, which llama.cpp has never served), stop what it started — and
-reports an actionable "install it" reason when the binary is absent. The line is
-drawn there deliberately: the macOS path fetches a **pinned artifact remi
-controls** (#834), while `llama-server` is a third-party binary across an arch
-matrix, so supervising one the user installed is a different trust proposition
-from downloading and executing one. The GGUF is not remi's job either — `-hf`
-makes llama.cpp pull it — which narrows what #822 originally assumed
-("Download is remi's job"). Still open on that issue: acquiring the binary,
-`keep_alive`/idle-stop, and the `escalate_model` design question.
-
-`warmModel()` is engine-only for the same reason, and the `llamacpp` base URL
-already carries `/v1` — calling it there requests `/v1/v1/llm/preload`. Its one
-caller guards on `providerIsYooz`; keep it that way.
+remi runs no local model any more (#1125): no Yooz engine or `llama-server`,
+no first-run model download, and no reserved model port. The old model
+command prints a one-line removal notice and exits 2. The old engine install under
+`~/.remi/engine` is left on disk; the boot notice says it can be deleted by
+hand.
 
 ### PTY-fallback question patterns
 

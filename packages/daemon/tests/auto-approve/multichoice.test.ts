@@ -1,15 +1,14 @@
 /**
- * Tests for the multi-choice auto-approve helpers (#399).
+ * Tests for the multi-choice / design-question detectors (#399, #572), which
+ * decide whether an escalation is pushed on its render or immediately.
  */
 
 import { describe, expect, test } from 'bun:test';
 import {
-  buildMultiChoicePrompt,
+  ALWAYS_ESCALATE_TOOLS,
   isDesignQuestion,
   isMultiChoicePermission,
-  parseMultiChoiceDecision,
 } from '../../src/auto-approve/multichoice.ts';
-import { DEFAULT_ALWAYS_ESCALATE_TOOLS } from '../../src/auto-approve/types.ts';
 
 describe('isMultiChoicePermission', () => {
   test('returns false for null/undefined/empty (default 3-set substitutes)', () => {
@@ -89,9 +88,9 @@ describe('isMultiChoicePermission', () => {
     // Concrete shapes observed live from Claude Code (2026-05-13 onwards).
     // These are typed rule suggestions Claude Code attaches to a normal
     // Bash permission prompt; the user still sees the standard
-    // Yes/Yes-always/No UI. Classifying them as multi-choice + the
-    // default `multichoice = "skip"` regresses every Bash auto-approve
-    // into a silent escalate. Lock the binary route.
+    // Yes/Yes-always/No UI. Classifying them as multi-choice would push
+    // every Bash prompt at hook time instead of when it renders (#1121;
+    // before #1125 it also skipped the evaluator). Lock the binary route.
     expect(
       isMultiChoicePermission('Bash', [
         {
@@ -133,9 +132,9 @@ describe('isMultiChoicePermission', () => {
 
   test('single non-binary string label (with or without objects) routes to multi-choice', () => {
     // A 1-option string label has no meaningful binary mapping and must
-    // route to multi-choice so the safe escalate path runs. The LLM's
-    // ALWAYS-ESCALATE rules then prevent a nonsensical pick from a
-    // 1-item menu. Without this property, a future Claude Code payload
+    // route to multi-choice so the card is pushed with the menu as Claude
+    // sent it (nothing picks on the user's behalf since #1125). Without
+    // this property, a future Claude Code payload
     // like `["Continue"]` would slip into the binary path.
     expect(isMultiChoicePermission('CustomTool', ['Continue'])).toBe(true);
     // Mixed with rule-suggestion objects — same outcome.
@@ -156,160 +155,8 @@ describe('isMultiChoicePermission', () => {
   });
 });
 
-describe('buildMultiChoicePrompt', () => {
-  test('lists options with 1-based indices in the user message', () => {
-    const messages = buildMultiChoicePrompt('ExitPlanMode', { plan: 'Refactor auth module' }, [
-      'Approve plan',
-      'Approve and stay in plan mode',
-      'Reject plan',
-    ]);
-    expect(messages).toHaveLength(2);
-    const [system, user] = messages as [
-      { role: string; content: string },
-      { role: string; content: string },
-    ];
-    expect(system.role).toBe('system');
-    expect(system.content).toContain('PICK ONE option');
-    expect(user.role).toBe('user');
-    expect(user.content).toContain('  1. Approve plan');
-    expect(user.content).toContain('  2. Approve and stay in plan mode');
-    expect(user.content).toContain('  3. Reject plan');
-  });
-
-  test('appends user instructions when provided', () => {
-    const messages = buildMultiChoicePrompt(
-      'ExitPlanMode',
-      { plan: 'x' },
-      ['Yes', 'No'],
-      'Always escalate plans involving database migrations.',
-    );
-    const [system] = messages as [{ role: string; content: string }];
-    expect(system.content).toContain(
-      'USER GUIDANCE — MODEL EXCEPTION CONTEXT, NOT DETERMINISTIC AUTHORIZATION',
-    );
-    expect(system.content).toContain('database migrations');
-    expect(system.content).toContain('cannot override the ALWAYS ESCALATE rules above');
-    expect(system.content).not.toContain('overrides/refines the defaults above');
-  });
-
-  test('guidance cannot rewrite irreversible or uncertain-choice boundaries', () => {
-    const messages = buildMultiChoicePrompt(
-      'CustomTool',
-      { plan: 'x' },
-      ['Always apply this change', 'No'],
-      'Always choose the first option.',
-    );
-    const [system] = messages as [{ role: string; content: string }];
-    expect(system.content).toContain('does not make an uncertain option safe');
-    expect(system.content).toContain('irreversible');
-    expect(system.content).toContain('session-permanent');
-  });
-
-  test('truncates very long inputs', () => {
-    const longInput = { plan: 'x'.repeat(5000) };
-    const messages = buildMultiChoicePrompt('ExitPlanMode', longInput, ['Yes', 'No']);
-    const user = messages[1] as { content: string };
-    expect(user.content.length).toBeLessThan(2500);
-    expect(user.content).toContain('...');
-  });
-
-  test('system prompt makes the design/direction/steering escalate rule explicit', () => {
-    // The prompt must steer the LLM away from picking on direction,
-    // design, scope, or steering questions. Locks the rule so a future
-    // prompt rewrite cannot quietly drop it.
-    const messages = buildMultiChoicePrompt('ExitPlanMode', {}, ['A', 'B']);
-    const system = messages[0] as { content: string };
-    const lower = system.content.toLowerCase();
-    expect(lower).toContain('always escalate');
-    expect(lower).toContain('direction');
-    expect(lower).toContain('design');
-    expect(lower).toContain('scope');
-  });
-
-  test('system prompt flags irreversible/permanent options as escalate', () => {
-    // Options that mention "always", "permanent", or session-wide
-    // commitment must escalate. Locks the rule.
-    const messages = buildMultiChoicePrompt('ExitPlanMode', {}, ['A', 'B']);
-    const system = messages[0] as { content: string };
-    const lower = system.content.toLowerCase();
-    expect(lower).toContain('irreversible');
-    expect(lower).toContain('always');
-  });
-});
-
-describe('parseMultiChoiceDecision', () => {
-  test('parses a valid pick within range', () => {
-    const r = parseMultiChoiceDecision(
-      '{"decision":"pick","index":2,"reasoning":"middle option fits the user intent"}',
-      4,
-    );
-    expect(r.decision).toBe('pick');
-    if (r.decision === 'pick') {
-      expect(r.index).toBe(2);
-      expect(r.reasoning).toBe('middle option fits the user intent');
-    }
-  });
-
-  test('parses a valid escalate', () => {
-    const r = parseMultiChoiceDecision(
-      '{"decision":"escalate","reasoning":"plan-mode question; user intent unclear"}',
-      4,
-    );
-    expect(r.decision).toBe('escalate');
-    expect(r.reasoning).toContain('plan-mode');
-  });
-
-  test('escalates on out-of-range index', () => {
-    const r = parseMultiChoiceDecision('{"decision":"pick","index":99,"reasoning":"x"}', 4);
-    expect(r.decision).toBe('escalate');
-    expect(r.reasoning).toContain('out-of-range');
-  });
-
-  test('escalates on zero or negative index', () => {
-    const r1 = parseMultiChoiceDecision('{"decision":"pick","index":0,"reasoning":"x"}', 4);
-    expect(r1.decision).toBe('escalate');
-    const r2 = parseMultiChoiceDecision('{"decision":"pick","index":-1,"reasoning":"x"}', 4);
-    expect(r2.decision).toBe('escalate');
-  });
-
-  test('escalates on non-integer index', () => {
-    const r = parseMultiChoiceDecision('{"decision":"pick","index":2.5,"reasoning":"x"}', 4);
-    expect(r.decision).toBe('escalate');
-  });
-
-  test('escalates on malformed JSON with parser hint', () => {
-    const r = parseMultiChoiceDecision('not json at all', 4);
-    expect(r.decision).toBe('escalate');
-    expect(r.reasoning).toContain('Unparsable');
-  });
-
-  test('escalates on well-formed JSON with the wrong decision string (#400 review)', () => {
-    // Pre-#400-review behavior labelled this "Unparsable", which is misleading
-    // when triaging logs. The new branch distinguishes the failure modes.
-    const r = parseMultiChoiceDecision('{"decision":"approve","reasoning":"x"}', 4);
-    expect(r.decision).toBe('escalate');
-    expect(r.reasoning).toContain('Invalid multi-choice decision');
-    expect(r.reasoning).not.toContain('Unparsable');
-  });
-
-  test('escalates on JSON that is not an object', () => {
-    const r = parseMultiChoiceDecision('"just a string"', 4);
-    expect(r.decision).toBe('escalate');
-    expect(r.reasoning).toContain('no JSON object');
-  });
-
-  test('parses a markdown-fenced pick (qwen3.6:35b emits ```json fences)', () => {
-    const r = parseMultiChoiceDecision(
-      '```json\n{"decision":"pick","index":2,"reasoning":"opt 2"}\n```',
-      4,
-    );
-    expect(r.decision).toBe('pick');
-    if (r.decision === 'pick') expect(r.index).toBe(2);
-  });
-});
-
 describe('isDesignQuestion (#572)', () => {
-  const DEFAULTS = new Set(DEFAULT_ALWAYS_ESCALATE_TOOLS);
+  const DEFAULTS = ALWAYS_ESCALATE_TOOLS;
 
   test('AskUserQuestion always escalates by tool name, even with binary suggestions', () => {
     expect(

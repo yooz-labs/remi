@@ -4,6 +4,76 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### Breaking: remi no longer judges permissions (#1125, [ADR 0030](.context/decisions/0030-defer-permission-judgment-to-the-harness.md))
+
+remi stops acting as a second permission judge on top of Claude Code. The
+local-LLM auto-approve evaluator and the deterministic rule layer are both
+removed; Claude Code's own permission settings (auto mode,
+`permissions.allow` / `permissions.deny`) decide, and remi relays whatever is
+still asked. Measured reasons: on one machine's LLM-only decision lines the
+evaluator approved 31.6% of what it saw (overall approve rates, deterministic
+layers included, were 53.4% and 72.2% on the two measured machines),
+escalations took p50 5.3 s / p95 25 s, the rule layer covered 12.9% of real
+main-agent commands, and the two together were a third of the daemon and the
+source of several security bugs (#536, #1060, #1063).
+
+#### Removed
+
+- **Auto-approve.** The LLM evaluator, the Yooz engine and `llama-server`
+  supervision, model download and residency, permission groups, levels,
+  per-agent sections, session precedent, workflow grants, the deny floor and
+  `residual_action`. Nothing is auto-answered any more.
+- **`remi model`.** Prints a one-line removal notice and exits 2. The old
+  engine install under `~/.remi/engine` is left on disk; delete it by hand.
+- **The `[auto_approve]` config table and `REMI_AUTO_APPROVE*` variables.** An
+  old `config.toml` still loads: the daemon warns once at boot naming the
+  ignored keys. `--auto-approve` and the other `--auto-approve-*` flags are
+  accepted and ignored, so existing LaunchAgent plists and scripts keep
+  starting.
+- **The status-bar and statusline auto-approve cue** (`evaluating Ns`,
+  `needs you`, `approved`).
+- **Wire fields no longer emitted:** the `evaluating` / `approved` agent
+  statuses, `RemiStatus.autoApprove`, the `auto_approved` / `auto_denied`
+  resolution reasons, the `auto_denied` push kind, `Question.summary`,
+  `Question.precedentSignature` and `QuestionOption.sessionGrant`. The shared
+  types keep them, marked deprecated, so clients still parse an older daemon.
+  An attach client from an older remi loses its status bar against an
+  upgraded daemon (its render backs off; it does not crash).
+
+#### Added
+
+- **`remi migrate-permissions [config]`** prints your old `[auto_approve]`
+  `allow` / `deny` lists as a Claude Code `permissions` block and never writes
+  a file. Allow commands become `Bash(command:*)`; known tool names and
+  `Tool(...)` rules pass through. **Deny entries change meaning:** remi
+  matched them as substrings anywhere in a command, Claude Code matches a Bash
+  rule from the start of each subcommand, so `rm -rf /` becomes the narrower
+  `Bash(rm -rf /*)` (flagged on stderr) and mid-command patterns such as
+  `push --force` are not carried over (the same shape in `allow` is kept as a
+  prefix rule and flagged: it matches only commands that start with it). A
+  bare `Bash` (which never approved anything in remi but allows every shell
+  command in Claude Code), unknown tool names, shell operators, groups,
+  `level` and agent sections are listed under "NOT carried over" with the
+  reason. A config path you name that does not exist exits 1.
+
+#### Changed
+
+- **`subagent_alert` moved to `[notifications]`.** `auto_approve.subagent_alert`
+  is still honored as a deprecated fallback when the new key is unset.
+- **Every prompt goes to the human.** A binary main-agent prompt shows in the
+  terminal at once and is pushed when it renders (#1121); AskUserQuestion and
+  plan approval are pushed immediately; a subagent prompt is pushed only if it
+  renders. `remi unstick` now resolves and dismisses stuck cards (there are no
+  holds or evals left to release).
+- **Every phone answer is typed, and checked against the screen first**
+  (#1134). With nothing held, an answer is typed into Claude's dialog only
+  when a prompt is on screen and the chosen option's label exactly matches
+  the screen's option at that number (whitespace and case aside); free text
+  is refused on a card that takes a choice. A refusal consumes the card and
+  means "answer at the terminal", where Claude's dialog is still showing.
+
+### Earlier changes on this line (much of it removed again by #1125 above)
+
 The auto-approve **approval-rate epic** (#1057) plus follow-ups. The epic's
 diagnosis: overall approve rate 52% local / 72% on a second machine against a
 90–95% target, with band=high 0/85 approvable — routine agent work was being

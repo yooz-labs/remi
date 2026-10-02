@@ -152,7 +152,7 @@ outside that union of 20 would fail Claude Code's own response validation.
 | Semantic power | Events | What the response can do |
 |---|---|---|
 | **Full override** | `PreToolUse` | `permissionDecision` (allow/deny/ask/defer), `permissionDecisionReason`, `updatedInput` (rewrite the tool call), `additionalContext` |
-| **Full override** | `PermissionRequest` | `decision: {behavior:"allow", updatedInput?, updatedPermissions?}` or `{behavior:"deny", message?, interrupt?}` — this is Model B (ADR 0002/0003): the entire synchronous verdict channel remi uses today |
+| **Full override** | `PermissionRequest` | `decision: {behavior:"allow", updatedInput?, updatedPermissions?}` or `{behavior:"deny", message?, interrupt?}` — Model B (ADR 0002/0003). Since #1125 remi answers every request with an empty passthrough and uses none of this; #1126 plans to answer held requests through it |
 | **Rewrite results** | `PostToolUse` | `updatedToolOutput`, `updatedMCPToolOutput` (rewrite what the model sees), `additionalContext` |
 | **Rewrite content** | `MessageDisplay` | `displayContent` — literally replaces a streamed message delta on screen |
 | **Steer the turn** | `UserPromptSubmit` | `additionalContext`, `sessionTitle`, `suppressOriginalPrompt`, plus the generic `decision:"block"` to reject the prompt outright |
@@ -221,7 +221,7 @@ above for what it does).
 | `TeammateIdle` | — | `teammate_name, team_name` | — | [B] was an empty event body |
 | `TaskCreated` | — | `task_id, task_subject, task_description, teammate_name, team_name` | — | [B] new type this PR |
 | `TaskCompleted` | — | `task_id, task_subject, task_description, teammate_name, team_name` | — | [B] was an empty event body |
-| `UserPromptSubmit` | Y (#893) | `prompt, session_title` | Y | [B][D] this is Q9's authority source — the human's typed input, direct from Claude Code, no transcript parsing. Registered; see `auto-approve/authority.ts` and `hook-bridge-setup.ts` |
+| `UserPromptSubmit` | Y (#893) | `prompt, session_title` | Y | [B][D] the human's typed input, direct from Claude Code. Registered by #893 as the auto-approve authority source (deleted in #1125); still registered because the turn-complete timer anchors each turn on it (`notifications/turn-timer.ts`). Listener: `hook-bridge-setup.ts` |
 | `WorktreeCreate` | — | `name` | Y (`worktreePath` **required**) | [B] new field this PR |
 | `WorktreeRemove` | — | `worktree_path` | — | [B] new field this PR |
 

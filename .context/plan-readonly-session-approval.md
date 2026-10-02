@@ -1,5 +1,7 @@
 # Read-only approval and session precedent plan
 
+> **Historical (2026-10-01).** Read-only approval and session precedent were removed with the rest of remi's permission judgment in #1125 ([ADR 0030](decisions/0030-defer-permission-judgment-to-the-harness.md)). Nothing in this plan describes current code.
+
 Status: implementation complete on `feature/readonly-session-approval`; awaiting review.
 Approved by the user on 2026-09-16.
 

@@ -480,8 +480,17 @@ export interface QuestionResolvedMessage {
   /** The resolved question's id; clients remove the card carrying it. */
   readonly questionId: UUID;
   /** Why it resolved, for diagnostics + client UX (all dismiss the card the same). */
-  readonly reason: 'answered' | 'auto_approved' | 'auto_denied' | 'cancelled';
+  readonly reason: 'answered' | 'cancelled' | DeprecatedQuestionResolvedReason;
 }
+
+/**
+ * Resolution reasons only the removed auto-approve evaluator produced: a
+ * late verdict that approved or denied a pushed card.
+ *
+ * @deprecated #1125: no longer emitted. Kept so a client still parses an
+ * older daemon.
+ */
+export type DeprecatedQuestionResolvedReason = 'auto_approved' | 'auto_denied';
 
 /**
  * Daemon -> client broadcast: the authoritative set of question ids currently
@@ -976,7 +985,7 @@ export interface DetachSessionAckMessage {
  *
  * Deliberately does NOT cover two other push classes:
  *   - subagent alerts, which already have a user-facing control (they fire only
- *     on the user's own `auto_approve.subagent_alert` patterns);
+ *     on the user's own `[notifications] subagent_alert` patterns);
  *   - question DISMISSALS, which are quiet `content-available` pushes that clear
  *     an already-delivered card. Muting those would strand a card on the lock
  *     screen of the very device that asked for less noise.
@@ -1532,9 +1541,9 @@ export function createQuestionSnapshot(
 
 /**
  * Create a daemon status snapshot broadcast (#754). The status object is
- * copied shallowly (plus autoApprove one level deep) so a later in-place
- * mutation of the daemon's live status cannot retroactively change a message
- * already queued for serialization.
+ * copied shallowly (plus the deprecated `autoApprove`, when present, one level
+ * deep) so a later in-place mutation of the daemon's live status cannot
+ * retroactively change a message already queued for serialization.
  */
 export function createRemiStatus(sessionId: UUID, status: RemiStatus): RemiStatusMessage {
   return {
@@ -1542,7 +1551,10 @@ export function createRemiStatus(sessionId: UUID, status: RemiStatus): RemiStatu
     id: generateId(),
     timestamp: now(),
     sessionId,
-    status: { ...status, autoApprove: { ...status.autoApprove } },
+    status:
+      status.autoApprove === undefined
+        ? { ...status }
+        : { ...status, autoApprove: { ...status.autoApprove } },
   };
 }
 
