@@ -229,10 +229,13 @@ the card at once by id (`holdForAnswer` -> `onHeldEscalate` ->
   the tool finishes, so during a long command the card stays up and a phone
   answer is accepted and ignored by Claude. Two identical calls in flight are
   not paired; a name + input match then releases the hold to the terminal
-  (card dismissed, prompt kept open), never closes it.
+  (card dismissed, prompt kept open, a "handed back to the terminal" notice
+  pushed), never closes it. Every release of a live hold that is not an
+  answer pushes a notice (`onReleasedToTerminal`).
 - **Terminal No / Esc:** Claude closes the held request. `HookServer` hands the
-  resolver `req.signal`; its abort (also a session end or Claude's own hook
-  timeout) dismisses the card. No hook fires for it, so a new
+  resolver `req.signal`; its abort (also a session end) dismisses the card
+  (an abort at Claude's own hook timeout is handled like the deadline, see
+  below). No hook fires for it, so a new
   `UserPromptSubmit` also closes main prompts left open.
 - **Deadline:** in wrapper mode at `[prompts] hold_seconds` (default 90, 5
   to 110: under the 2:00 auto-deny of auto-mode fallback prompts, which

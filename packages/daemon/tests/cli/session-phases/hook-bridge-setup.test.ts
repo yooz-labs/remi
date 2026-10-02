@@ -14,7 +14,10 @@ import {
 } from '../../../src/cli/handlers/input-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import type { HookBridgeHandle } from '../../../src/cli/session-phases/hook-bridge-setup.ts';
-import { setupHookBridge } from '../../../src/cli/session-phases/hook-bridge-setup.ts';
+import {
+  setupHookBridge,
+  terminalNoticeReason,
+} from '../../../src/cli/session-phases/hook-bridge-setup.ts';
 import { REMI_REGISTERED_HOOK_EVENTS } from '../../../src/hooks/hook-types.ts';
 import type { HookServer, PermissionDecision } from '../../../src/hooks/index.ts';
 import { selectPushCategory } from '../../../src/notifications/notification-dispatcher.ts';
@@ -1938,8 +1941,13 @@ describe('setupHookBridge', () => {
       expect(noticeLog.map((n) => n.reason)).toEqual(['hold_deadline', 'dismissed']);
     });
 
-    test('an early release by a name + input match keeps the dialog open: its redraw builds no typed card', async () => {
-      const { tracker, card, hook } = held('claude-held-early', {}, { orphanDebounceMs: 5 });
+    test('an early release by a name + input match keeps the dialog open, tells the phone, and its redraw builds no typed card', async () => {
+      const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
+      const { tracker, card, hook } = held(
+        'claude-held-early',
+        {},
+        { orphanDebounceMs: 5, noticeLog },
+      );
       const dialog = parseQuestion(WRAPPED_DIRECTORY_DIALOG).question as Question;
       tracker.onOrphanPTYPrompt(dialog);
       // Unpaired (no PreToolUse seen): an identical call's PostToolUse can
@@ -1953,10 +1961,29 @@ describe('setupHookBridge', () => {
       });
       expect(await hook).toBe('passthrough');
       expect(cards().map((q) => q.id)).not.toContain(card.id);
+      // Not silent (#1126 review): the card is gone, so the phone is told
+      // the prompt went back to the terminal.
+      expect(noticeLog).toEqual([
+        { questionId: card.id, text: 'Allow Bash: touch e5-marker.txt', reason: 'released' },
+      ]);
       tracker.onOrphanPTYPrompt({ ...dialog, id: generateId() });
       await new Promise((resolve) => setTimeout(resolve, 30));
       expect(cards()).toHaveLength(0);
       expect(ptySubmits).toEqual([]);
+      // The terminal answers it later: the notice clears.
+      hookServer.fire('UserPromptSubmit', {
+        session_id: 'claude-held-early',
+        hook_event_name: 'UserPromptSubmit',
+        prompt: 'next',
+      });
+      expect(noticeLog.map((n) => n.reason)).toEqual(['released', 'dismissed']);
+    });
+
+    test('the release notice wording follows the cause and the mode', () => {
+      expect(terminalNoticeReason('deadline', true)).toBe('hold_deadline');
+      expect(terminalNoticeReason('deadline', false)).toBe('hold_deadline_no_terminal');
+      expect(terminalNoticeReason('released', true)).toBe('released');
+      expect(terminalNoticeReason('released', false)).toBe('released_no_terminal');
     });
 
     test('a non-string message is dropped, not thrown on: the No still denies', async () => {

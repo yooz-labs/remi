@@ -1410,6 +1410,23 @@ describe('NotificationDispatcher per-device push preferences (#968)', () => {
     expect(String(pushed[0]?.opts['body'])).toContain('remi attach');
   });
 
+  test('a released-early notice says the prompt was handed back, never that the phone ran out of time', async () => {
+    register(false);
+    deviceTokens.set('a', token('a'));
+    make().pushTerminalNotice(SID, question(QID, [yesOpt, noOpt]), 'released');
+    make().pushTerminalNotice(SID, question(QID, [yesOpt, noOpt]), 'released_no_terminal');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(String(pushed[0]?.opts['title'])).toContain('answer in the terminal');
+    expect(String(pushed[0]?.opts['body'])).toStartWith(
+      'This prompt was handed back to the terminal; if it is still open, answer it in the terminal:',
+    );
+    expect(String(pushed[1]?.opts['title'])).toContain('remi attach');
+    expect(String(pushed[1]?.opts['body'])).toStartWith(
+      'This prompt was handed back to the terminal; if it is still open, reach it with remi attach:',
+    );
+    for (const p of pushed) expect(String(p.opts['body'])).not.toContain('in time');
+  });
+
   test('dismissTerminalNotice clears the notice by its own key, never the card', () => {
     register(false);
     deviceTokens.set('a', token('a', { questions: false, turnComplete: false }));

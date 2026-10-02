@@ -4,6 +4,7 @@ export type {
   HeldAnswer,
   HeldAnswerOutcome,
   ObservedToolCall,
+  TerminalReleaseCause,
 } from './auto-approve-gate.ts';
 export { ALWAYS_ESCALATE_TOOLS } from './multichoice.ts';
 export { alertBody, alertTitle, SubagentAlerter } from './subagent-alert.ts';

@@ -216,7 +216,12 @@ export function buildPushText(
 
 /** Why the phone is told to answer at the terminal (#1126); see
  *  `NotificationDispatcher.pushTerminalNotice`. */
-export type TerminalNoticeReason = 'hold_deadline' | 'hold_deadline_no_terminal' | 'subagent';
+export type TerminalNoticeReason =
+  | 'hold_deadline'
+  | 'hold_deadline_no_terminal'
+  | 'released'
+  | 'released_no_terminal'
+  | 'subagent';
 
 /** The collapse key (`questionId` on the wire) of a terminal notice for a
  *  question (#1126): distinct from the card's, so dismissing the card leaves
@@ -530,13 +535,16 @@ export class NotificationDispatcher {
   /**
    * Alert push telling the user a prompt must be answered in the terminal
    * (#1126), never a card: no category, no options, nothing to answer from
-   * the lock screen, and nothing registered in-app. Two reasons:
+   * the lock screen, and nothing registered in-app. Its reasons:
    *   - `hold_deadline`: a held prompt waited `[prompts] hold_seconds` with no
-   *     answer, so remi released its hold; Claude's dialog is still up (the
-   *     #733 handoff, restored for held hooks).
-   *   - `hold_deadline_no_terminal`: the same in a daemon or hub session,
-   *     which has no terminal of its own: the dialog is reached with
-   *     `remi attach`, and the notice says so.
+   *     answer (or reached Claude's hook timeout), so remi released its hold;
+   *     Claude's dialog is still up (the #733 handoff, restored for held
+   *     hooks).
+   *   - `released`: remi released a live hold early, with no answer (an
+   *     ambiguous signal that the hold may be stale, or `remi unstick`).
+   *   - `hold_deadline_no_terminal`, `released_no_terminal`: the same in a
+   *     daemon or hub session, which has no terminal of its own: the dialog
+   *     is reached with `remi attach`, and the notice says so.
    *   - `subagent`: a background subagent's dialog rendered in a session with
    *     a local terminal; its hook was answered 'passthrough' so it could
    *     render at all, so only the terminal can answer it.
@@ -566,20 +574,22 @@ export class NotificationDispatcher {
     const session = this.deps.sessionRegistry.getSession(this.sessionId);
     const sessionName = session?.name || 'Agent';
     const ask = normalizeNotificationText(question.text) || 'a permission request';
+    const noTerminal = reason === 'hold_deadline_no_terminal' || reason === 'released_no_terminal';
     const title = (
-      reason === 'hold_deadline_no_terminal'
+      noTerminal
         ? `${sessionName}: answer with remi attach`
         : `${sessionName}: answer in the terminal`
     ).slice(0, TITLE_MAX);
-    // A deadline notice must not say the prompt is still waiting: a Yes
+    // A release notice must not say the prompt is still waiting: a Yes
     // answered in the terminal shows up only when its tool finishes, so the
     // prompt may already be answered (#1126 lead decision).
+    const why =
+      reason === 'hold_deadline' || reason === 'hold_deadline_no_terminal'
+        ? 'No answer from the phone in time'
+        : 'This prompt was handed back to the terminal';
+    const how = noTerminal ? 'reach it with remi attach' : 'answer it in the terminal';
     const body = (
-      reason === 'hold_deadline'
-        ? `No answer from the phone in time; if it is still open, answer it in the terminal: ${ask}`
-        : reason === 'hold_deadline_no_terminal'
-          ? `No answer from the phone in time; if it is still open, reach it with remi attach: ${ask}`
-          : ask
+      reason === 'subagent' ? ask : `${why}; if it is still open, ${how}: ${ask}`
     ).slice(0, BODY_MAX);
     const cfg = pushConfig();
     const pushSessionId = this.deps.getPrimarySessionId() ?? questionSessionId;

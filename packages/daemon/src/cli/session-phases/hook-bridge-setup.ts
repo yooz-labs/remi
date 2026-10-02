@@ -89,7 +89,11 @@ import type { MessageAPI, QuestionRegistrationOutcome } from '../../api/message-
 import type { QuestionPresenceTracker } from '../../api/question-presence-tracker.ts';
 import type { SubagentViewRegistry } from '../../api/subagent-view-registry.ts';
 import { AutoApproveGate } from '../../auto-approve/index.ts';
-import type { HeldAnswer, HeldAnswerOutcome } from '../../auto-approve/index.ts';
+import type {
+  HeldAnswer,
+  HeldAnswerOutcome,
+  TerminalReleaseCause,
+} from '../../auto-approve/index.ts';
 import { HookEventBridge } from '../../hooks/index.ts';
 import type {
   ForeignSessionEscalator,
@@ -118,6 +122,19 @@ import { log, logError } from '../logger.ts';
  * reason `notification-dispatcher.ts` normalizes push text.
  */
 const STOP_LOG_MESSAGE_MAX = 200;
+
+/**
+ * The notice wording for a hold released to the terminal (#1126): why
+ * (`deadline`: nobody answered in time; `released`: remi let go early) and
+ * how to reach the terminal (a wrapper session's own, or `remi attach`).
+ */
+export function terminalNoticeReason(
+  cause: TerminalReleaseCause,
+  hasLocalTerminal: boolean,
+): TerminalNoticeReason {
+  if (cause === 'deadline') return hasLocalTerminal ? 'hold_deadline' : 'hold_deadline_no_terminal';
+  return hasLocalTerminal ? 'released' : 'released_no_terminal';
+}
 
 /** Truncate + collapse whitespace in a hook-carried message for a single log line. */
 function summarizeForLog(text: string, max: number): string {
@@ -579,16 +596,18 @@ export function setupHookBridge(
       onHeldEscalate: (questionId) => tracker.pushHeldHook(questionId),
       holdMs: deps.holdMs,
       ...(deps.hookTimeoutMs !== undefined ? { hookTimeoutMs: deps.hookTimeoutMs } : {}),
-      // #1126: a held prompt reached its deadline. Read the card while it is
-      // still registered (the gate dismisses it right after) so the notice
-      // names the actual ask.
-      onHoldDeadline: (questionId) => {
+      // #1126: a held prompt was released to the terminal without an answer
+      // (its deadline, Claude's hook timeout, an ambiguous signal, `remi
+      // unstick`). Read the card while it is still registered (the gate
+      // dismisses it right after) so the notice names the actual ask; the
+      // wording says how to reach the terminal in this mode.
+      onReleasedToTerminal: (questionId, cause) => {
         const question = sessionRegistry.getQuestion(sessionId, questionId);
         if (question === null) return;
         deps.pushTerminalNotice?.(
           sessionId,
           question,
-          hasLocalTerminal ? 'hold_deadline' : 'hold_deadline_no_terminal',
+          terminalNoticeReason(cause, hasLocalTerminal),
         );
       },
       onTerminalNoticeResolved: (questionId) => deps.dismissTerminalNotice?.(sessionId, questionId),

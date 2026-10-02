@@ -24,7 +24,9 @@
  *     reports (`onHoldAborted`), and the card is dismissed;
  *   - the hold deadline (`[prompts] hold_seconds`) releases the hook with an
  *     empty response, Claude's dialog simply stays, the card is dismissed
- *     and `onHoldDeadline` tells the phone to answer at the terminal (#733).
+ *     and `onReleasedToTerminal` tells the phone to answer at the terminal
+ *     (#733). Every other release of a live hold to the terminal (an
+ *     ambiguous signal, `remi unstick`, Claude's hook timeout) tells it too.
  * An empty response never decides anything: it is what every non-answer
  * path sends.
  *
@@ -137,6 +139,11 @@ interface Hold {
   readonly detachAbort: () => void;
   readonly startedAt: number;
 }
+
+/** Why a live hold was released to the terminal with no answer (#1126):
+ *  nobody answered in time (`deadline`, also Claude's hook timeout), or remi
+ *  let go early (`released`: an ambiguous signal, `remi unstick`). */
+export type TerminalReleaseCause = 'deadline' | 'released';
 
 /** An abort this close to the registered hook timeout is Claude's timeout,
  *  not an answer in the terminal (#1126 lead decision). */
@@ -315,16 +322,19 @@ export interface AutoApproveGateDeps {
    */
   hookTimeoutMs?: number;
   /**
-   * The hold deadline passed with no answer (#1126, the #733 handoff): tell
-   * the phone the prompt is waiting in the terminal. Called while the card is
-   * still registered, so the notice can carry its text; the gate then
-   * dismisses the card. Throw-safe.
+   * A live hold was released to the terminal with no answer (#1126, the
+   * #733 handoff): tell the phone the prompt may be waiting there. `cause`
+   * is `deadline` for the hold deadline or Claude's hook timeout (nobody
+   * answered in time), and `released` when remi let go early (an ambiguous
+   * signal that the hold may be stale, or `remi unstick`). Called while the
+   * card is still registered, so the notice can carry its text; the gate
+   * then dismisses the card. Throw-safe.
    */
-  onHoldDeadline?: (questionId: UUID) => void;
+  onReleasedToTerminal?: (questionId: UUID, cause: TerminalReleaseCause) => void;
   /**
    * A prompt whose "answer at the terminal" notice was pushed
-   * (`onHoldDeadline`) is resolved now: dismiss that notice from the lock
-   * screen (#1126). Throw-safe.
+   * (`onReleasedToTerminal`) is resolved now: dismiss that notice from the
+   * lock screen (#1126). Throw-safe.
    */
   onTerminalNoticeResolved?: (questionId: UUID) => void;
   /**
@@ -700,8 +710,25 @@ export class AutoApproveGate {
     log(
       `[AutoApprove ${this.sessionTag}] Held ${questionId.slice(0, 8)} reached its deadline (${reason}); released to the terminal`,
     );
-    this.safeCueWithArg('onHoldDeadline', this.deps.onHoldDeadline, questionId);
-    if (this.deps.onHoldDeadline) this.terminalNotices.add(questionId);
+    this.releaseWithNotice(questionId, 'deadline', reason);
+  }
+
+  /**
+   * Release a live hold to the terminal and tell the phone (#1126): the
+   * notice first, while the card is still registered so it can name the
+   * ask, then `releaseToTerminal`. Every release of a live hold that is not
+   * an answer goes through here, so none is silent.
+   */
+  private releaseWithNotice(questionId: UUID, cause: TerminalReleaseCause, reason: string): void {
+    const notify = this.deps.onReleasedToTerminal;
+    if (notify) {
+      try {
+        notify(questionId, cause);
+      } catch (err) {
+        logError(`[AutoApprove ${this.sessionTag}] onReleasedToTerminal cue threw (ignored):`, err);
+      }
+      this.terminalNotices.add(questionId);
+    }
     this.releaseToTerminal(questionId, reason);
   }
 
@@ -1130,7 +1157,7 @@ export class AutoApproveGate {
       log(
         `[AutoApprove ${this.sessionTag}] Held ${match.qid.slice(0, 8)} matched ${reason} by name and input only; released to the terminal`,
       );
-      this.releaseToTerminal(match.qid, reason);
+      this.releaseWithNotice(match.qid, 'released', reason);
       return;
     }
     this.resolveSupersededQuestion(match.qid, reason, observed.toolName);

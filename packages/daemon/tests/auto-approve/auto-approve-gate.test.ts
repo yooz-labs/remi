@@ -470,7 +470,7 @@ describe('AutoApproveGate held prompts (#1126)', () => {
   let registry: SessionRegistry;
   let ids: UUID[];
   let resolved: UUID[];
-  let deadlines: Array<{ qid: UUID; registered: boolean }>;
+  let deadlines: Array<{ qid: UUID; registered: boolean; cause: string }>;
   let noticesCleared: UUID[];
 
   function gate(over: Partial<AutoApproveGateDeps> = {}): AutoApproveGate {
@@ -500,8 +500,8 @@ describe('AutoApproveGate held prompts (#1126)', () => {
         onResolved: (qid) => {
           resolved.push(qid);
         },
-        onHoldDeadline: (qid) => {
-          deadlines.push({ qid, registered: registry.getQuestion(SID, qid) !== null });
+        onReleasedToTerminal: (qid, cause) => {
+          deadlines.push({ qid, registered: registry.getQuestion(SID, qid) !== null, cause });
         },
         onTerminalNoticeResolved: (qid) => {
           noticesCleared.push(qid);
@@ -684,7 +684,7 @@ describe('AutoApproveGate held prompts (#1126)', () => {
     const hook = g.resolvePermission(pr());
     const qid = ids[0] as UUID;
     expect(await hook).toBe('passthrough');
-    expect(deadlines).toEqual([{ qid, registered: true }]);
+    expect(deadlines).toEqual([{ qid, registered: true, cause: 'deadline' }]);
     expect(registry.getQuestion(SID, qid)).toBeNull();
     expect(resolved).toEqual([qid]);
     // Claude's dialog is still up, so the prompt stays open for the probe,
@@ -767,7 +767,7 @@ describe('AutoApproveGate held prompts (#1126)', () => {
     expect(await hook).toBe('passthrough');
     // Like the deadline: the notice is pushed while the card is registered,
     // the card is dismissed, and the prompt stays open in the terminal.
-    expect(deadlines).toEqual([{ qid, registered: true }]);
+    expect(deadlines).toEqual([{ qid, registered: true, cause: 'deadline' }]);
     expect(registry.getQuestion(SID, qid)).toBeNull();
     expect(g.hasOpenHookPrompt()).toBe(true);
     expect(g.answerHeld(qid, { kind: 'option', option: YES })).toBe('closed');
@@ -832,14 +832,17 @@ describe('AutoApproveGate held prompts (#1126)', () => {
       g.cancelExternallyResolved({ ...call, toolUseId: 'tu-b' }, 'PostToolUse');
       expect(await hook).toBe('passthrough');
       expect(registry.getQuestion(SID, qid)).toBeNull();
+      // Not silent: the phone is told while the card is still registered.
+      expect(deadlines).toEqual([{ qid, registered: true, cause: 'released' }]);
       // ...and its dialog may still be up (the other call ran), so the prompt
       // stays open for the probe and is not retired by a late phone answer.
       expect(g.hasOpenHookPrompt()).toBe(true);
       g.retireQuestion(qid);
       expect(g.hasOpenHookPrompt()).toBe(true);
-      // The next matching run closes it.
+      // The next matching run closes it, and its notice clears.
       g.cancelExternallyResolved({ ...call, toolUseId: 'tu-a' }, 'PostToolUse');
       expect(g.hasOpenHookPrompt()).toBe(false);
+      expect(noticesCleared).toEqual([qid]);
     });
 
     test('an identical unpaired re-request releases the earlier hold to the terminal', async () => {
@@ -848,6 +851,7 @@ describe('AutoApproveGate held prompts (#1126)', () => {
       const second = g.resolvePermission(pr());
       expect(await first).toBe('passthrough');
       expect(registry.getQuestion(SID, ids[0] as UUID)).toBeNull();
+      expect(deadlines).toEqual([{ qid: ids[0] as UUID, registered: true, cause: 'released' }]);
       // Both prompts stay open: the first in the terminal, the second held.
       expect(g.answerHeld(ids[1] as UUID, { kind: 'option', option: YES })).toBe('resolved');
       expect(await second).toBe('allow');
@@ -1105,7 +1109,7 @@ describe('AutoApproveGate subagent routing by local terminal (#1126)', () => {
   test("a subagent's prompt waiting in the terminal is cleared by that agent's next tool call (#1126)", async () => {
     // Daemon mode, deadline passed: the prompt is released to the terminal
     // with its notice out. A No answered there fires no hook.
-    const g = gate(false, { holdMs: 5, onHoldDeadline: () => {} });
+    const g = gate(false, { holdMs: 5, onReleasedToTerminal: () => {} });
     const hook = g.resolvePermission(sub());
     const qid = ids[0] as UUID;
     expect(await hook).toBe('passthrough');
