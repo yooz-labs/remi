@@ -256,46 +256,19 @@ export interface Question {
   readonly optionsAreFallback?: boolean | undefined;
 
   /**
-   * #753: true when the question was pushed through the load-bearing `held`
-   * path (`QuestionPresenceTracker.pushHeldHook`). Built for held
-   * PermissionRequest hooks (Model B); since #1125 nothing holds, and the
-   * flag marks a multi-choice / design escalation pushed immediately. The
-   * terminal attach client banners these. Stamped once at question emission
-   * (message-api-setup) from the push options, so live messages, registry
-   * entries, and attach-time re-sends all carry it.
+   * #753: true when the question belongs to a HELD PermissionRequest hook
+   * (Model B), whose dialog never paints the PTY; the terminal attach client
+   * banners these. Stamped once at question emission (message-api-setup), so
+   * live messages, registry entries, and attach-time re-sends all carry it.
+   * Since #1125 nothing holds and a current daemon never sets it; #1126 sets
+   * it again when it reintroduces holds.
    */
   readonly held?: boolean | undefined;
 
   /**
-   * The exact-match precedent signature for this operation (#990), UNTRUNCATED
-   * — distinct from `text`, which is the human-facing DISPLAY string and may
-   * be truncated to a bounded length for a lock-screen card or terminal
-   * prompt. NOT for display: this field exists solely so `handleAnswer`
-   * (`daemon/cli/handlers/input-events.ts`) can record a provenance-safe
-   * human answer into session precedent (`daemon/auto-approve/precedent.ts`,
-   * ADR 0015) without reconstructing it by parsing the (possibly truncated)
-   * `text` — the previous approach, and the source of the #990 collision: two
-   * different >120-character Bash commands sharing their first 117 characters
-   * truncated to the identical `text`, so approving one silently authorized
-   * the other.
-   *
-   * Built by `HookEventBridge.buildPermissionQuestion` from
-   * `signatureForOperation(toolName, tool_input)` — the SAME function the
-   * consult side calls at decision time — so the recorded and consulted
-   * signatures are byte-identical by construction, not by care.
-   *
-   * Present only for a precedent-eligible operation (today: `Bash` with a
-   * `command` field and a valid private session working directory — see
-   * `precedentMayAuthorize`);
-   * `undefined` for every
-   * other question, including a question-bearing-tool prompt (AskUserQuestion
-   * / ExitPlanMode) and any question predating this field. `handleAnswer`
-   * treats an absent value as FAIL CLOSED: it records nothing rather than
-   * falling back to parsing `text`.
-   *
-   * The session directory that bounds a recorded precedent is intentionally
-   * NOT included in this wire-visible field. The daemon stores and compares
-   * that private context separately.
+   * The untruncated signature a human answer was recorded under as session
+   * precedent (#990, ADR 0015). Historical: precedent and the code that read
+   * this field were removed with the auto-approve judgment.
    *
    * @deprecated #1125: no longer emitted (session precedent was removed).
    */

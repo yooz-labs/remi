@@ -8,8 +8,8 @@
  * already-answered question replays indistinguishably from a pending one.
  * The registry's `currentQuestions` (returned by every successful
  * `attachConnection`) is the source of truth. Clients dedupe by
- * `question.id`; the terminal attach client banners the held ones (the class
- * that never renders on the PTY).
+ * `question.id`; the terminal attach client banners held ones (the class
+ * that never renders on the PTY; none since #1125, see `Question.held`).
  *
  * Shared by every attach surface (#760 review finding 2): the hello attach
  * path (connection-events) and the resume-request attach path

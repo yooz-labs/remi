@@ -149,6 +149,29 @@ describe('createMessageApiForSession', () => {
     expect(pending[0]?.text).toBe('proceed?');
   });
 
+  test('a held push is not stamped held while nothing holds (#1125)', () => {
+    // Since #1125 the only held pushes are multi-choice / design escalations,
+    // which Claude renders natively; stamping them would make the terminal
+    // attach client banner the same question twice.
+    const sessionId = sessionRegistry.createSessionId();
+    sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    const { messageApi } = build(sessionId);
+
+    expect(messageApi.handleQuestion(questionWith([yesOpt, noOpt]), { held: true })).toEqual({
+      status: 'held',
+    });
+
+    const sent = sendCalls.find((c) => c.message.type === 'question')?.message;
+    expect(sent?.type === 'question' ? sent.question.held : 'missing').toBeUndefined();
+    const pending = [...(sessionRegistry.getSession(sessionId)?.currentQuestions.values() ?? [])];
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.held).toBeUndefined();
+  });
+
   test('onQuestion does NOT push when a client is attached', () => {
     const sessionId = sessionRegistry.createSessionId();
     sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), {

@@ -137,16 +137,18 @@ export function createMessageApiForSession(
       log(`Question detected: ${question.text.substring(0, 50)}...`);
       const questionSessionId = getPrimarySessionId() ?? sessionId;
       const claudeSessionId = getClaudeSessionId?.() ?? undefined;
-      // #753: stamp held-ness onto the question itself so every downstream
-      // copy (live message, registry entry, attach-time re-send) carries it —
-      // the terminal attach client banners ONLY held questions, the one class
-      // that never renders on the PTY.
-      const stamped: Question = opts?.held === true ? { ...question, held: true } : question;
+      // #753 stamped held-ness onto the question so the terminal attach client
+      // could banner held questions, the one class that never painted the
+      // PTY. Since #1125 nothing holds: the only `held` pushes are multi-choice
+      // / design escalations whose dialog Claude renders natively, so a banner
+      // would print the same question twice in an attached terminal. The flag
+      // is no longer stamped (the push option below still bypasses dedup and
+      // reaches the lock screen); #1126 stamps it again for real held hooks.
       const msg: ProtocolMessage = {
         type: 'question',
         id: generateId(),
         timestamp: now(),
-        question: stamped,
+        question,
         sessionId: questionSessionId,
         ...(claudeSessionId !== undefined && claudeSessionId !== null && { claudeSessionId }),
       };
@@ -155,7 +157,7 @@ export function createMessageApiForSession(
       // 'pty' | 'elicitation', #889) is the richest "why did this appear"
       // signal already on the Question, and free to pass through -- no extra
       // threading needed.
-      sessionRegistry.addQuestion(questionSessionId, stamped, stamped.source ?? 'unknown');
+      sessionRegistry.addQuestion(questionSessionId, question, question.source ?? 'unknown');
 
       // Push: a non-held question only pushes when no client is attached (the
       // client sees it in-app). A `held` push (`pushHeldHook`, #603 Phase 3)
@@ -166,7 +168,7 @@ export function createMessageApiForSession(
       // pushConfig/refreshDeviceTokens contract change surfacing as an
       // unhandled rejection (matches the escalator's #672 push guard).
       void notifications
-        .maybePush(questionSessionId, stamped, { held: opts?.held === true })
+        .maybePush(questionSessionId, question, { held: opts?.held === true })
         .catch((err) => {
           logError(`[Session ${sessionId}] Question push threw:`, err);
         });
