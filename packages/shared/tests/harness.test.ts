@@ -6,8 +6,26 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { DEFAULT_HARNESS, HARNESS_IDS, identityFromClaudeId, isHarnessId } from '../src/index.ts';
-import type { Decision, HarnessId, Question, SessionIdentity } from '../src/index.ts';
+import {
+  DEFAULT_HARNESS,
+  HARNESS_IDS,
+  createHelloAck,
+  createQuestion,
+  createSessionListResponse,
+  deserialize,
+  identityFromClaudeId,
+  isHarnessId,
+  serialize,
+} from '../src/index.ts';
+import type {
+  Decision,
+  DiscoverableSession,
+  HarnessId,
+  HelloAckMessage,
+  Question,
+  QuestionMessage,
+  SessionIdentity,
+} from '../src/index.ts';
 
 describe('HARNESS_IDS', () => {
   test('names exactly claude, codex and opencode, in that order', () => {
@@ -95,5 +113,92 @@ describe('Decision', () => {
 
   test('is the same type as Question (checked at compile time)', () => {
     expect(decisionIsQuestion).toBe(true);
+  });
+});
+
+describe('typed optional wire fields (#1162)', () => {
+  const sessionId = '11111111-1111-4111-8111-111111111111';
+  const claudeId = '22222222-2222-4222-8222-222222222222';
+  const question: Question = {
+    id: '33333333-3333-4333-8333-333333333333',
+    text: 'Allow Bash: ls?',
+    options: [],
+    allowsFreeText: false,
+    isAnswered: false,
+  };
+  const discoverable: DiscoverableSession = {
+    sessionId,
+    projectPath: '/tmp/project',
+    status: 'active',
+    lastActivity: '2026-10-02T00:00:00.000Z',
+    messageCount: 0,
+    source: 'daemon',
+    canAttach: true,
+    canResume: false,
+    claudeSessionId: claudeId,
+  };
+
+  test('no message factory emits harness or harnessSessionId', () => {
+    const ack = createHelloAck('0.0.0-test', sessionId, {
+      resumeInfo: { isResume: true, replayCount: 3, nextBulletId: 7 },
+      binding: { claudeSessionId: claudeId, transcriptPath: '/tmp/t.jsonl' },
+      attachState: 'attached',
+      daemonVersion: '0.0.0-test',
+    });
+    const asked = createQuestion(question, sessionId, claudeId);
+    const list = createSessionListResponse([discoverable], sessionId, [18765]);
+
+    for (const message of [ack, asked, list]) {
+      const wire = serialize(message);
+      expect(wire).not.toContain('harness');
+      expect(Object.keys(message)).not.toContain('harness');
+      expect(Object.keys(message)).not.toContain('harnessSessionId');
+    }
+    expect(Object.keys(discoverable)).not.toContain('harness');
+  });
+
+  test('a message that does carry them round-trips, and exactOptionalPropertyTypes allows absence and undefined', () => {
+    // Each assignment only compiles with `harness?: HarnessId | undefined` and
+    // `harnessSessionId?: ... | undefined`: the repo sets exactOptionalPropertyTypes.
+    const base = createQuestion(question, sessionId, claudeId);
+    const withIdentity: QuestionMessage = {
+      ...base,
+      harness: 'codex',
+      harnessSessionId: 'thread-1',
+    };
+    const withUndefined: QuestionMessage = {
+      ...base,
+      harness: undefined,
+      harnessSessionId: undefined,
+    };
+    const ack: HelloAckMessage = {
+      ...createHelloAck('0.0.0-test', null),
+      harness: 'claude',
+      harnessSessionId: null,
+    };
+    const listed: DiscoverableSession = {
+      ...discoverable,
+      harness: 'opencode',
+      harnessSessionId: 'ses_1',
+    };
+
+    const back = deserialize(serialize(withIdentity)) as QuestionMessage;
+    expect(back.harness).toBe('codex');
+    expect(back.harnessSessionId).toBe('thread-1');
+    expect(back.claudeSessionId).toBe(claudeId);
+
+    // JSON drops undefined, so the wire form of an undefined field is absence.
+    expect(serialize(withUndefined)).not.toContain('harness');
+
+    const backAck = deserialize(serialize(ack)) as HelloAckMessage;
+    expect(backAck.harness).toBe('claude');
+    expect(backAck.harnessSessionId).toBeNull();
+
+    const backList = deserialize(serialize(createSessionListResponse([listed], sessionId)));
+    expect(backList?.type).toBe('session_list_response');
+    if (backList?.type === 'session_list_response') {
+      expect(backList.sessions[0]?.harness).toBe('opencode');
+      expect(backList.sessions[0]?.harnessSessionId).toBe('ses_1');
+    }
   });
 });

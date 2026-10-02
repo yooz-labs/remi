@@ -10,6 +10,7 @@
  * - Messages are ordered within a session
  */
 
+import type { HarnessId } from './harness.ts';
 import type {
   Acknowledgment,
   AgentStatus,
@@ -300,6 +301,18 @@ export interface HelloAckMessage {
    */
   readonly claudeSessionId?: UUID | null;
   /**
+   * The harness this daemon's session runs under (#1162, ADR 0032). Typed
+   * only: no daemon code sets it, so every ack omits it, and a client treats
+   * absence as the default harness (`claude`).
+   */
+  readonly harness?: HarnessId | undefined;
+  /**
+   * The harness's own id for this daemon's session (#1162, ADR 0032). Typed
+   * only and never set today; for a Claude session the id is
+   * {@link claudeSessionId}. Null would mean the harness has not reported one.
+   */
+  readonly harnessSessionId?: string | null | undefined;
+  /**
    * Absolute path to the .jsonl transcript file Claude writes to.
    * Pre-assigned alongside claudeSessionId; the file may not yet exist on
    * disk when this ack is sent. Null when claudeSessionId is null.
@@ -411,6 +424,18 @@ export interface QuestionMessage {
    * tap). Populated when the daemon has a binding; omitted otherwise.
    */
   readonly claudeSessionId?: UUID | undefined;
+  /**
+   * The harness the question came from (#1162, ADR 0032). Typed only: no
+   * daemon code sets it, so every question omits it, and a client treats
+   * absence as the default harness (`claude`).
+   */
+  readonly harness?: HarnessId | undefined;
+  /**
+   * The harness's own session id for the question (#1162, ADR 0032). Typed
+   * only and never set today; for a Claude question the id is
+   * {@link claudeSessionId}.
+   */
+  readonly harnessSessionId?: string | undefined;
 }
 
 /**
