@@ -969,8 +969,18 @@ export class TelegramAdapter implements ConnectionAdapter {
     try {
       await this.events.onAnswer?.(session.connectionId, session.sessionId, questionId, answer);
     } catch (err) {
+      // The handler threw instead of answering with an `error`: say so in
+      // the chat, which the toast below points to (verification review 3).
       console.error('Telegram answer failed:', err);
       pending.refused = true;
+      const message = err instanceof Error ? err.message : String(err);
+      await this.bot?.api
+        .sendMessage(session.chatId, `Error: ${message}`, {
+          message_thread_id: session.topicId,
+        })
+        .catch(() => {
+          /* ignore send errors */
+        });
     } finally {
       this.pendingAnswers.delete(tapId);
     }

@@ -769,6 +769,29 @@ describe('TelegramAdapter answer button outcome (#1127)', () => {
     expect(markupEdits).toHaveLength(0);
   });
 
+  test('an answer handler that throws is reported in the chat, never as "Sent!"', async () => {
+    const events: Partial<AdapterEvents> = {
+      onAnswer: async () => {
+        throw new Error('pty closed');
+      },
+    };
+    const { adapter, sendMessage } = withBoundSession(events);
+    const acks: string[] = [];
+    await (
+      adapter as unknown as { handleAnswerCallback: (ctx: unknown) => Promise<void> }
+    ).handleAnswerCallback({
+      match: ['', 'q-1', '1'],
+      chat: { id: 100 },
+      callbackQuery: { message: { message_thread_id: 200 } },
+      answerCallbackQuery: async (text: string) => {
+        acks.push(text);
+      },
+      editMessageReplyMarkup: async () => {},
+    });
+    expect(sendMessage.mock.calls.map((c) => c[1])).toEqual(['Error: pty closed']);
+    expect(acks).toEqual(['Not applied (see the message)']);
+  });
+
   test('an error naming another question does not refuse this tap', async () => {
     const { adapter, connectionId, taps, acks, tap } = answerRig();
     const pending = tap('q-1', '1');
