@@ -19,6 +19,11 @@ export class ClaudeHarness implements Harness {
     private readonly transcriptDiscovery: Pick<TranscriptDiscovery, 'getProjectTranscriptDir'>,
   ) {}
 
+  /**
+   * `cli.ts` spells the same `--resume` flag for `remi --resume <id>` (that
+   * block runs at module top level, before the harness is constructed), so
+   * change Claude's resume flag in both places.
+   */
   resumeArgs(harnessSessionId: string): string[] {
     return ['--resume', harnessSessionId];
   }

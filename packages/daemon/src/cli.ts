@@ -766,7 +766,10 @@ if (cliResume !== undefined) {
     process.exit(1);
   }
 
-  // Inject --resume into Claude args
+  // Inject --resume into Claude args. This is the same flag as
+  // `ClaudeHarness.resumeArgs` (harness/claude.ts); this block runs at module
+  // top level, before `harness` is constructed below, so it cannot call it.
+  // Change Claude's resume flag in both places.
   claudeArgs.unshift('--resume', session.claudeSessionId);
   log(
     `Resuming session ${session.remiSessionId.slice(0, 8)} (claude: ${session.claudeSessionId.slice(0, 8)}) in ${session.projectPath}`,
