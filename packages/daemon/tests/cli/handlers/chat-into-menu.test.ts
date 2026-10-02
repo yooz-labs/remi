@@ -206,8 +206,10 @@ describe('chat text while a prompt menu is on screen (#1140)', () => {
      *  `bot.api.sendMessage`. Its `onUserInput` event is the real handler and
      *  its `error` rendering is what the handler's `send` reaches (cli.ts's
      *  `sendToConnection` is `registry.sendRaw`, which lands on `sendRaw`). */
-    function telegramOverRealHandlers() {
+    function telegramOverRealHandlers(options: { attached?: boolean } = {}) {
       const chatMessages: Array<{ chatId: number; text: string }> = [];
+      /** What the bot said back through the command context (`ctx.reply`). */
+      const replies: string[] = [];
       // The daemon's reply path for this connection (cli.ts's `sendToConnection`
       // is `registry.sendRaw`, which lands on the adapter's `sendRaw`). Set
       // before the handlers are built, because they capture `send` there.
@@ -235,7 +237,9 @@ describe('chat text while a prompt menu is on screen (#1140)', () => {
         },
       };
       const telegramConn = generateId();
-      sessionRegistry.attachConnection(sessionId, telegramConn);
+      // An unattached connection is one the daemon cannot route input for
+      // (SESSION_NOT_FOUND), the refusal path that does not depend on a menu.
+      if (options.attached !== false) sessionRegistry.attachConnection(sessionId, telegramConn);
       const key = `${CHAT_ID}:${TOPIC_ID}`;
       internal.sessions.set(key, {
         connectionId: telegramConn,
@@ -257,15 +261,19 @@ describe('chat text while a prompt menu is on screen (#1140)', () => {
         internal.handleTextMessage({
           chat: { id: CHAT_ID },
           message: { text: body, message_thread_id: TOPIC_ID },
-          reply: async () => {},
+          reply: async (body: string) => {
+            replies.push(body);
+          },
         });
       const interrupt = () =>
         internal.handleInterrupt({
           chat: { id: CHAT_ID },
           message: { message_thread_id: TOPIC_ID },
-          reply: async () => {},
+          reply: async (body: string) => {
+            replies.push(body);
+          },
         });
-      return { chatMessages, text, interrupt };
+      return { chatMessages, replies, text, interrupt };
     }
 
     test('custom text sent while a menu is up is refused back into the Telegram chat, nothing typed', async () => {
@@ -283,20 +291,58 @@ describe('chat text while a prompt menu is on screen (#1140)', () => {
       ]);
     });
 
-    // /interrupt sends its Escape as structured input (the web client's is
-    // raw), so the guard refuses it while a menu is up: Escape plus the Enter
-    // `submitInput` appends would land on whatever Claude draws next.
-    test('/interrupt while a menu is up is refused like text (its Escape is structured input)', async () => {
+    // /interrupt sends its Escape RAW, as the web client's Escape button does:
+    // exactly `\x1b` reaches the terminal (structured input would append an
+    // Enter, which lands on whatever Claude draws next), and the daemon's
+    // chat-into-menu guard never sees it.
+    test('/interrupt with a menu up writes exactly the raw Escape and replies success', async () => {
       tracker.onPTYPromptVisible(claudeMenu());
-      const { chatMessages, interrupt } = telegramOverRealHandlers();
+      const { chatMessages, replies, interrupt } = telegramOverRealHandlers();
 
       await interrupt();
 
+      expect(pty.writes).toEqual(['\x1b']);
       expect(pty.submits).toEqual([]);
-      expect(pty.writes).toEqual([]);
+      expect(replies).toEqual(['⏹️ Interrupt sent to Claude (Escape key)']);
+      expect(chatMessages).toEqual([]);
+    });
+
+    test('/interrupt with no menu up is the same raw Escape and the same reply', async () => {
+      const { chatMessages, replies, interrupt } = telegramOverRealHandlers();
+
+      await interrupt();
+
+      expect(pty.writes).toEqual(['\x1b']);
+      expect(pty.submits).toEqual([]);
+      expect(replies).toEqual(['⏹️ Interrupt sent to Claude (Escape key)']);
+      expect(chatMessages).toEqual([]);
+    });
+
+    // A refusal that does not depend on a menu: the daemon cannot route input
+    // for a connection that is not attached to the session. Text and
+    // /interrupt both surface the daemon's error text in the chat.
+    test('text the daemon cannot route is answered with the error text', async () => {
+      const { chatMessages, text } = telegramOverRealHandlers({ attached: false });
+
+      await text('hello from telegram');
+
+      expect(pty.submits).toEqual([]);
       expect(chatMessages.map((m) => m.text)).toEqual([
-        'Error: Claude is waiting on a prompt. Answer it first, from its card or in the terminal.',
+        `Error: This connection is not attached to session ${sessionId}; input was not delivered.`,
       ]);
+    });
+
+    test('/interrupt the daemon cannot route replies with the error text, not "Interrupt sent"', async () => {
+      const { chatMessages, replies, interrupt } = telegramOverRealHandlers({ attached: false });
+
+      await interrupt();
+
+      expect(pty.writes).toEqual([]);
+      expect(pty.submits).toEqual([]);
+      expect(chatMessages.map((m) => m.text)).toEqual([
+        `Error: This connection is not attached to session ${sessionId}; input was not delivered.`,
+      ]);
+      expect(replies).toEqual([]);
     });
 
     test('custom text with no menu on screen is typed and nothing is reported', async () => {

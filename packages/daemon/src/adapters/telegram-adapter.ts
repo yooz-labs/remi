@@ -160,6 +160,10 @@ export class TelegramAdapter implements ConnectionAdapter {
   /** Rate limiter: last input timestamp per session key */
   private readonly lastInputTimestamp: Map<string, number> = new Map();
 
+  /** Connections with an `/interrupt` in flight, each called when the daemon
+   *  sends that connection an `error` (see `handleInterrupt`). */
+  private readonly errorObservers: Map<UUID, () => void> = new Map();
+
   /** Minimum interval between inputs in milliseconds */
   private static readonly RATE_LIMIT_MS = 1000;
 
@@ -397,6 +401,8 @@ export class TelegramAdapter implements ConnectionAdapter {
 
       case 'error': {
         const err = message as ErrorMessage;
+        // An `/interrupt` waiting on the daemon learns its input was refused.
+        this.errorObservers.get(connectionId)?.();
         const errSession = this.getSession(connectionId);
         if (errSession && this.bot) {
           this.bot.api
@@ -810,9 +816,26 @@ export class TelegramAdapter implements ConnectionAdapter {
       return;
     }
 
-    // Send Escape key to interrupt Claude
-    // The daemon will handle this by sending \x1b to the PTY
-    this.events.onUserInput?.(session.connectionId, session.sessionId, '\x1b');
+    // Escape is a keystroke, not chat text: send it RAW, as the web client's
+    // Escape button does. The daemon then writes exactly `\x1b` to the PTY
+    // (structured input would append an Enter, which lands on whatever Claude
+    // draws next) and never refuses it for a prompt menu on screen (#1140),
+    // so `/interrupt` works with or without one.
+    //
+    // The reply reports the outcome: when the daemon refuses the input it
+    // sends this connection an `error` (rendered to the chat by `sendRaw`'s
+    // `error` case), which the observer sees before `onUserInput` settles, and
+    // "Interrupt sent" is then not claimed.
+    let refused = false;
+    this.errorObservers.set(session.connectionId, () => {
+      refused = true;
+    });
+    try {
+      await this.events.onUserInput?.(session.connectionId, session.sessionId, '\x1b', true);
+    } finally {
+      this.errorObservers.delete(session.connectionId);
+    }
+    if (refused) return;
 
     await ctx.reply('⏹️ Interrupt sent to Claude (Escape key)');
   }
