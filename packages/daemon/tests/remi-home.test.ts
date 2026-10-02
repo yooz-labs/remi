@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { isRemiHomeOverridden, remiHome } from '../src/config/remi-home.ts';
+import { isRemiHomeOverridden, remiHome, serviceCommandRefusal } from '../src/config/remi-home.ts';
 import { CLI_TS, findTestPort, isolatedEnv, pollUntil } from './integration/hub-test-utils.ts';
 
 describe('remiHome()', () => {
@@ -31,6 +31,18 @@ describe('remiHome()', () => {
   test('a relative REMI_HOME is refused, never resolved against the cwd', () => {
     expect(() => remiHome({ REMI_HOME: 'state' }, '/u/me')).toThrow(/absolute path/);
     expect(() => remiHome({ REMI_HOME: './state' }, '/u/me')).toThrow(/absolute path/);
+  });
+
+  test('--install and --uninstall are refused under an override, in one line', () => {
+    expect(serviceCommandRefusal('--install', {})).toBeNull();
+    expect(serviceCommandRefusal('--uninstall', { REMI_HOME: '' })).toBeNull();
+    for (const flag of ['--install', '--uninstall'] as const) {
+      const refusal = serviceCommandRefusal(flag, { REMI_HOME: '/tmp/state' });
+      expect(refusal).toContain(`remi ${flag}`);
+      expect(refusal).toContain('REMI_HOME');
+      expect(refusal).toContain('~/.remi');
+      expect(refusal).not.toContain('\n');
+    }
   });
 });
 
@@ -103,6 +115,31 @@ describe('REMI_HOME moves the state a real cli.ts writes', () => {
       await proc.exited;
     }
   }, 30000);
+
+  test('remi --uninstall under REMI_HOME refuses before touching any service', async () => {
+    // --uninstall, never --install: if the refusal ever regressed, this
+    // sandbox HOME has no service file, so the command would only print
+    // "No LaunchAgent installed." instead of loading anything.
+    const proc = Bun.spawn(['bun', CLI_TS, '--uninstall'], {
+      cwd: work,
+      env: isolatedEnv(home, { REMI_HOME: state }),
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const [out, err, code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    expect(code).toBe(1);
+    // Strip the ANSI color the logger adds.
+    const plain = err.replace(/\x1b\[[0-9;]*m/g, '').trim();
+    expect(plain).toBe(
+      'remi --uninstall does not run with REMI_HOME set: the service always uses ~/.remi. Unset REMI_HOME and run it again.',
+    );
+    expect(out).not.toContain('LaunchAgent');
+    expect(out).not.toContain('systemd');
+  });
 
   test('a relative REMI_HOME stops the CLI instead of writing anywhere', async () => {
     const proc = Bun.spawn(['bun', CLI_TS, 'config', 'path'], {

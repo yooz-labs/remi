@@ -195,7 +195,7 @@ import {
   loadConfigWithNotices,
 } from './config/index.ts';
 import type { LoadedConfig, RemiConfig } from './config/index.ts';
-import { isRemiHomeOverridden, remiHome } from './config/remi-home.ts';
+import { isRemiHomeOverridden, remiHome, serviceCommandRefusal } from './config/remi-home.ts';
 import {
   DAEMON_PERMISSION_REQUEST_HOOK_TIMEOUT,
   ForeignSessionEscalator,
@@ -447,6 +447,11 @@ if (cliSubcommand === 'attach' || cliSubcommand === 'kill' || cliSubcommand === 
 
 // Handle --install / --uninstall
 if (cliInstall || cliUninstall) {
+  const refusal = serviceCommandRefusal(cliInstall ? '--install' : '--uninstall');
+  if (refusal !== null) {
+    console.error(refusal);
+    process.exit(1);
+  }
   const platform = process.platform;
   const home = os.homedir();
   // Prefer the PATH-resolved `remi` (a symlink like /opt/homebrew/bin/remi

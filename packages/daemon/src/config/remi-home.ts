@@ -17,7 +17,10 @@
  *
  * What it does not move: `remi --install` writes a LaunchAgent / systemd unit
  * whose log paths and process environment are the default `~/.remi`, because
- * the service starts outside the shell that set the variable. Claude Code's
+ * the service starts outside the shell that set the variable. So `--install`
+ * and `--uninstall` refuse to run under an override
+ * (`serviceCommandRefusal`) rather than act on a state directory the caller
+ * did not mean. Claude Code's
  * own files (`~/.claude`, project `.claude/settings.local.json`) are not
  * remi state and are not moved either.
  */
@@ -45,6 +48,20 @@ export function remiHome(
     );
   }
   return path.normalize(raw);
+}
+
+/**
+ * The one-line refusal for `remi --install` / `--uninstall` under a
+ * `REMI_HOME` override (#1126 review), or null when the command may run. The
+ * service always uses `~/.remi`, so installing it from a shell that relocated
+ * the state would split remi's state between two directories.
+ */
+export function serviceCommandRefusal(
+  flag: '--install' | '--uninstall',
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): string | null {
+  if (!isRemiHomeOverridden(env)) return null;
+  return `remi ${flag} does not run with ${REMI_HOME_ENV} set: the service always uses ~/.remi. Unset ${REMI_HOME_ENV} and run it again.`;
 }
 
 /** True when `REMI_HOME` relocates the state directory away from `~/.remi`. */
