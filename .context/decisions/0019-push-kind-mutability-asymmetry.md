@@ -1,6 +1,6 @@
 # ADR 0019: Push kinds are named on the wire; muting them is deliberately asymmetric
 
-**Status:** accepted; amended by ADR 0030 (2026-10-01) and ADR 0031 (2026-10-02)
+**Status:** accepted; amended by ADR 0030 (2026-10-01), ADR 0031 (2026-10-02) and #1153 (2026-10-02)
 **Date:** 2026-08-01
 **Owner:** Yahya
 
@@ -13,6 +13,14 @@
 > `PushKind` has a fifth value, `harness_denied` (#1126): the informational notice for a call Claude Code's auto-mode classifier blocked (`PermissionDenied`).
 > It is mutable per device (`pushPrefs.harnessDenied`, on by default), like `question` and `turn_complete`, so the closed-set `switch` below now has three mutable kinds and the same two unmutable ones (`subagent_alert`, `dismiss`).
 > Its notices carry one collapse key per session, so a blocked retry loop replaces its notice instead of stacking.
+
+> **Amended 2026-10-02 by #1153.**
+> `PushKind` has a sixth value, `turn_failed`: the informational notice for a turn that ended on an API error (`StopFailure`: a usage or rate limit, authentication, and similar).
+> It replaced a "Session stop failed (undefined). Retry?" card that nothing could answer, one more on every failed turn.
+> It is mutable per device (`pushPrefs.turnFailed`, on by default), so the closed-set `switch` below now has four mutable kinds and the same two unmutable ones (`subagent_alert`, `dismiss`).
+> A fifth, independent preference rather than a share of `turnComplete`: the machine-wide `notifications.on_turn_complete = false` and the per-device `turnComplete` mute silence only the "done" notice, because a failed turn is the one turn end a user must not miss by default (the agent is stopped until something is done).
+> Its notices carry one collapse key per session (`turn-failed-<sessionId>`), so a usage limit that fails every following prompt keeps one notice on the lock screen.
+> A fan-out where every device muted it resolves `no_channel`, as for a question.
 
 ## Context
 

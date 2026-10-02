@@ -506,6 +506,7 @@ those two are both exactly `{token, title, body}`.
 | `turn_complete` | `Stop` after a turn ≥ `turn_complete_min_seconds` (#914) | yes, `pushPrefs.turnComplete` |
 | `subagent_alert` | a background agent matched `[notifications] subagent_alert` | no — the pattern list IS the control |
 | `harness_denied` | `PermissionDenied`: Claude Code's auto-mode classifier blocked a call, or auto-denied an unanswered fallback prompt at 2:00 (#1126); informational, never a card; one collapse key per session (`harness-denied-<sessionId>`), so a blocked loop replaces its notice | yes, `pushPrefs.harnessDenied` |
+| `turn_failed` | `StopFailure`: a turn ended on an API error (usage or rate limit, authentication, and similar; #1153); informational, never a card (nothing in Claude waits, so there is nothing to answer); readable reason from `error`, an excerpt of `last_assistant_message`; one collapse key per session (`turn-failed-<sessionId>`), so a repeat replaces the previous notice | yes, `pushPrefs.turnFailed`, default on; **not** muted by `notifications.on_turn_complete = false` |
 | `dismiss` | quiet `content-available` clearing a resolved card | **no, deliberately** |
 
 - **A client cannot mute APNS on its own.** The path is daemon → Worker → APNS
@@ -523,7 +524,10 @@ those two are both exactly `{token, title, body}`.
   wrongly-delivered notification is a nuisance; a wrongly-dropped one is the
   product failing at its only job.
 - `notifications.on_turn_complete = false` in `config.toml` stays the
-  machine-wide master switch and wins over any per-device preference.
+  machine-wide master switch for `turn_complete` and wins over any per-device
+  preference for it. It does NOT silence `turn_failed` (#1153): a failed turn
+  is the one turn end a user must not miss by default, and only the per-device
+  `turnFailed` preference mutes it.
 
 **Constraints from real logs (2026-04-12 analysis, updated #718 2026-07-06):**
 
