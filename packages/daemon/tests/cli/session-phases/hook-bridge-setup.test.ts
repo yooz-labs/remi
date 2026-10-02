@@ -2382,6 +2382,149 @@ describe('setupHookBridge', () => {
       // Consumed like the other refusals: the card no longer matches the screen.
       expect(cards()).toHaveLength(0);
     });
+
+    test('the same by-id multi-choice card: an identical "Yes" still types 1', async () => {
+      const { tracker } = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+      });
+      lockSession('claude-e5-multi-yes');
+      await hookServer.firePermission({
+        session_id: 'claude-e5-multi-yes',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'touch e5-marker.txt' },
+        permission_suggestions: [
+          'Yes',
+          'Yes, allow directory',
+          'Yes, switch to acceptEdits mode',
+          'No',
+        ],
+      });
+      const card = cards()[0];
+      if (!card) throw new Error('the passthrough escalation registered no card');
+      tracker.onOrphanPTYPrompt(liveDialog());
+
+      await answerHandlers(tracker, []).onAnswer('conn-e5' as UUID, SID, card.id, 'Yes');
+      expect(ptySubmits).toEqual(['1']);
+    });
+
+    /**
+     * ExitPlanMode pushes by id at once with the hook's hardcoded list, so the
+     * notification always arrives (some plan renders never parse). Claude
+     * 2.1.287 builds its own list; the screen below is the e4-bare-classic
+     * capture's layout, re-spaced and fed through the real parser. No card
+     * label equals the screen's at its value, so every digit is refused and
+     * the plan is answered at the terminal.
+     */
+    describe("ExitPlanMode answered over Claude's own list", () => {
+      async function planCard(sessionTag: string) {
+        const { tracker } = build({
+          realTracker: true,
+          realMessageApi: true,
+          liveQuestionDeps: true,
+        });
+        lockSession(sessionTag);
+        const decision = await hookServer.firePermission({
+          session_id: sessionTag,
+          hook_event_name: 'PermissionRequest',
+          tool_name: 'ExitPlanMode',
+          tool_input: { plan: '# Plan\n1. Do the thing' },
+        });
+        expect(decision).toBe('passthrough');
+        const card = cards()[0];
+        if (!card) throw new Error('ExitPlanMode pushed no card before its render');
+        const parsed = parseQuestion(
+          [
+            ' Claude has written up a plan and is ready to execute. Would you like to proceed?',
+            ' ❯ 1. Yes, auto-accept edits',
+            '   2. Yes, manually approve edits',
+            '   3. Tell Claude what to change',
+            '      shift+tab to approve with this feedback',
+            ' ctrl+g to edit in Nvim · ~/.claude/plans/x.md',
+          ].join('\n'),
+        );
+        if (!parsed.question) throw new Error('the plan dialog did not parse');
+        tracker.onOrphanPTYPrompt(parsed.question);
+        return { tracker, card };
+      }
+
+      test('"No, keep planning" (3) is refused: the screen\'s 3 is "Tell Claude what to change"', async () => {
+        const { tracker, card } = await planCard('claude-plan-no');
+        await answerHandlers(tracker, []).onAnswer(
+          'conn-plan' as UUID,
+          SID,
+          card.id,
+          'No, keep planning',
+        );
+        expect(ptySubmits).toEqual([]);
+      });
+
+      test('"Yes, and auto-accept edits" (1) is refused: worded differently on screen', async () => {
+        const { tracker, card } = await planCard('claude-plan-yes');
+        await answerHandlers(tracker, []).onAnswer(
+          'conn-plan' as UUID,
+          SID,
+          card.id,
+          'Yes, and auto-accept edits',
+        );
+        expect(ptySubmits).toEqual([]);
+      });
+    });
+
+    test('AskUserQuestion pushes at once, and a plain pick types its screen digit', async () => {
+      // Its runner answers from the structured questions; a plain pick, as
+      // the extension's buttons send, goes through the guard: "SQLite"
+      // equals the screen row once its description is appended, and types 2.
+      const { tracker } = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+      });
+      lockSession('claude-auq');
+      const decision = await hookServer.firePermission({
+        session_id: 'claude-auq',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'AskUserQuestion',
+        tool_input: {
+          questions: [
+            {
+              question: 'Which database?',
+              header: 'DB',
+              multiSelect: false,
+              options: [
+                { label: 'Postgres', description: 'Relational' },
+                { label: 'SQLite', description: 'Embedded' },
+              ],
+            },
+          ],
+        },
+      });
+      expect(decision).toBe('passthrough');
+      const card = cards()[0];
+      if (!card) throw new Error('AskUserQuestion pushed no card before its render');
+      expect(card.kind).toBe('multi_question');
+
+      const parsed = parseQuestion(
+        [
+          ' Which database?',
+          ' ❯ 1. Postgres',
+          '      Relational',
+          '   2. SQLite',
+          '      Embedded',
+          '   3. Type something.',
+          ' Enter to select · ↑/↓ to navigate · Esc to cancel',
+        ].join('\n'),
+      );
+      if (!parsed.question) throw new Error('the AskUserQuestion menu did not parse');
+      tracker.onOrphanPTYPrompt(parsed.question);
+      expect(cards()).toHaveLength(1);
+
+      const outcome = await answerHandlers(tracker, []).relayAnswer(SID, card.id, 'SQLite');
+      expect(outcome).toBe('delivered');
+      expect(ptySubmits).toEqual(['2']);
+    });
   });
 
   test('#807: a subagent never reaches an approve verdict — passthrough, no inject, no escalate', async () => {
