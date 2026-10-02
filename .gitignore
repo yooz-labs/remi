@@ -93,8 +93,9 @@ playwright-report/
 
 # Locally-captured, structure-preserving command corpus (real Bash commands
 # from the owner's machine, pseudonymized but never redacted-to-placeholder).
-# The builder mode and replay test that produced and read it were removed in
-# #1125; the entry stays so a copy left on disk is never committed by accident.
+# The builder, the replay test and their fixtures directory were removed in
+# #1125, but checkouts made before that still hold the file (one did when
+# #1155 was checked), and removing this entry would make it committable.
 packages/daemon/tests/auto-approve/fixtures/.local-command-corpus.jsonl
 
 # Agent worktrees: full checkouts of in-progress branches. Never committed. The

@@ -11,19 +11,27 @@
  *     within the window — even though most Bash commands take longer than
  *     1 s to emit PostToolUse, so the timer false-fired constantly.
  *
- * This tracker replaces both. Pairing is structural rather than time-based:
+ * This tracker replaces both. What pushes a card depends on what stands
+ * behind the prompt (#1126, #1127):
  *
- *   - Hooks (`recordPendingHook`) carry tool / option metadata but do NOT
- *     trigger a push by themselves; this tracker only governs the iOS
- *     notification path.
- *   - PTY (`onPTYPromptVisible`) is the truth signal: a prompt is on the
- *     user's terminal RIGHT NOW. Push immediately, merging hook metadata
- *     if a pending hook record matches (tool + command text, agent_id,
- *     etc.; the options stay the screen's own, #1134).
+ *   - A hook the gate holds (a binary main-agent prompt, an AskUserQuestion,
+ *     an ExitPlanMode, a subagent prompt in daemon or hub mode), and a
+ *     multi-choice prompt, is stashed by `recordPendingHook` and pushed at
+ *     once by id (`pushHeldHook`), before any render. Its dialog's renders
+ *     are that prompt, never an orphan (`setHookPromptProbe`, the
+ *     live-question check), so no second card is built from the screen.
+ *   - A wrapper-mode subagent prompt is parked (`parkAwaitingPTY`); its
+ *     render calls its `onRender`, which pushes an informational "answer at
+ *     the terminal" notice, never an answerable card.
+ *   - A prompt with no hook behind it (sandbox network, trust, agent-team
+ *     dialogs) is the one render-driven card: the PTY (`onPTYPromptVisible`,
+ *     `onOrphanPTYPrompt` after its debounce) is the truth signal that it
+ *     is on the terminal RIGHT NOW, and its card carries the screen's own
+ *     options (#1134).
  *   - Status transitions OUT of `'waiting'` (`onStatusChange`) clear any
- *     pending hook records. The user advanced past the prompt — Claude's own
- *     permission rules handled it silently, or the subagent stayed in the
- *     background, or the user answered in-terminal. No push needed.
+ *     pending hook records that were not pushed. The user advanced past the
+ *     prompt — Claude's own permission rules handled it silently, or the
+ *     subagent stayed in the background, or the user answered in-terminal.
  *
  * Pending hook records are keyed by agent (`agentId` or `'main'`), so two
  * concurrent agents (main + a subagent, #419) keep separate records and a
@@ -341,10 +349,11 @@ export class QuestionPresenceTracker {
   }
 
   /**
-   * Hook fired (PermissionRequest or Notification(permission_prompt)).
-   * Stash the question by agent; do NOT push yet. Push happens when PTY
-   * confirms the prompt is visible, or never if status moves past 'waiting'
-   * first.
+   * Hook fired (PermissionRequest). Stash the question by agent; do NOT push
+   * here. The gate pushes it by id right after (`pushHeldHook`) for a held
+   * or multi-choice prompt; a parked subagent prompt is acted on at its
+   * render (`parkAwaitingPTY`); otherwise it merges onto a matching render,
+   * or is dropped if status moves past 'waiting' first.
    *
    * Replacement policy: per agent, the newer hook normally wins. The one
    * exception (#574): a pending rich `PermissionRequest` is authoritative and

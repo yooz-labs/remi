@@ -61,8 +61,8 @@ evidence, not just its conclusion.
 ```bash
 bun install
 bun run dev          # web dev server
-bun run daemon       # start Remi daemon
-bun test             # tests (NO MOCKS)
+REMI_HOME=/tmp/remi-dev bun run daemon   # daemon from source; state under REMI_HOME, not ~/.remi
+bun test             # tests (NO MOCKS); a bunfig preload unsets REMI_HOME for them
 
 # Mobile
 bun run build && npx cap sync ios && npx cap open ios

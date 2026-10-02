@@ -106,7 +106,7 @@ Phone/Browser ──► Direct WebSocket (same network, Tailscale, VPN — needs
 bun install           # Install deps + set up pre-commit hooks
 bun run dev           # Web dev server
 bun run daemon        # Start Remi daemon
-bun test              # Run tests (854 tests)
+bun test              # Run all tests (an exported REMI_HOME is ignored)
 bun run lint          # Biome check
 bun run typecheck     # TypeScript check
 ```

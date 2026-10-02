@@ -642,19 +642,18 @@ export type HookEventName = (typeof HOOK_EVENT_NAMES)[number];
  *     into the SAME external-resolution funnel PreToolUse/PostToolUse use
  *     (`AutoApproveGate.cancelExternallyResolved`).
  *
- *     It DOES carry a `tool_use_id`, unlike `PermissionRequest` — but that id
- *     buys nothing yet, and an earlier draft of this comment claimed it did
- *     ("taking advantage of its exact `tool_use_id`"). Matching is
- *     `tool_name` + `tool_input` + `agentId`; the id is consulted only when
- *     BOTH sides carry one (`findOpenQuestionMatching`,
- *     `auto-approve-gate.ts`). The registered side is built from the
- *     `PermissionRequest` that opened the escalation, and that event never
- *     sends a `tool_use_id` (see `PermissionRequestHookInput` above, read out
- *     of the binary), so `sig.toolUseId` is always `undefined` and the exact-id
- *     branch is unreachable from this path today. Passing the id through is
- *     forward-compatible dead weight, not a live disambiguator — worth stating
- *     precisely, because "it matches on an exact id" would read as stronger
- *     than the signature match it actually performs.
+ *     It DOES carry a `tool_use_id`, unlike `PermissionRequest`, and since
+ *     #1126 that id is a live disambiguator. The registered side is built
+ *     from the `PermissionRequest` that opened the escalation, which sends no
+ *     `tool_use_id` (see `PermissionRequestHookInput` above, read out of the
+ *     binary), so the gate pairs it on arrival with the in-flight
+ *     `PreToolUse` of the same agent, tool and input (`pairToolUse`,
+ *     `auto-approve-gate.ts`) and records that call's id. A paired escalation
+ *     is then matched by exact id (`findOpenQuestionMatching`: when BOTH
+ *     sides carry one, the id alone decides); an unpaired one (two identical
+ *     calls in flight) falls back to `tool_name` + `tool_input` + `agentId`.
+ *     (Before #1126 nothing was paired and this paragraph said the id branch
+ *     was unreachable; that stopped being true with the pairing.)
  *   - `Elicitation` / `ElicitationResult`: an MCP dialog previously arrived
  *     only as a PTY orphan (`hook-event-bridge.ts`'s `handleNotification`
  *     logs and ignores `notification_type === 'elicitation_dialog'`, and the

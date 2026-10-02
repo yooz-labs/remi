@@ -573,8 +573,9 @@ export function setupHookBridge(
       if (question.source === 'permission_request') {
         // recordPendingHook only stashes -- no `handleQuestion` call happens
         // here, so there is no registration outcome to report (#888 criterion
-        // iii). This question is not registered until a later PTY render
-        // pairs with it (`QuestionPresenceTracker.pairAndPush`).
+        // iii). The gate then pushes it by id (`pushHeldHook`: a held prompt
+        // or a multi-choice one, #1126/#1127), or parks it for a subagent
+        // prompt's render, which pushes a notice and never registers it.
         tracker.recordPendingHook(question);
         return undefined;
       }
@@ -967,10 +968,13 @@ export function setupHookBridge(
     // a background subagent does not (PTY never confirms presence).
     handlers.onNotification?.(input);
   });
-  // Synchronous PermissionRequest response (#496). Since #1125 the gate always
-  // answers 'passthrough' (Claude renders its native prompt) after escalating
-  // or parking the request. The binder binding runs first (as for any event);
-  // a foreign event we do not own returns 'passthrough' ({}) so we ABSTAIN.
+  // Synchronous PermissionRequest response (#496). The gate holds a binary
+  // main-agent prompt, an AskUserQuestion or an ExitPlanMode (and, with no
+  // local terminal, a subagent's) until the phone answers, the terminal
+  // answers or the deadline passes (#1126, #1127); every other request is
+  // answered 'passthrough' (Claude renders its native prompt) after it is
+  // pushed or parked. The binder binding runs first (as for any event); a
+  // foreign event we do not own returns 'passthrough' ({}) so we ABSTAIN.
   hookServer.setPermissionResolver(async (input, signal) => {
     binder.onHookEvent(input);
     if (!binder.admits(input)) {
