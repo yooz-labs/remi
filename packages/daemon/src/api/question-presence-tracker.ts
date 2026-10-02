@@ -77,9 +77,9 @@ export interface PushOptions {
    * The gate decided this card must reach the user NOW (`pushHeldHook`), so it
    * is LOAD-BEARING, not a cosmetic PTY/hook echo: it BYPASSES the
    * content-dedup and delivers to the lock screen even when a client is
-   * attached (it may be backgrounded). #603 Phase 3. Callers: a held binary
-   * permission prompt (Model B, #573, restored by #1126) and a multi-choice /
-   * design escalation.
+   * attached (it may be backgrounded). #603 Phase 3. Callers: a held prompt
+   * (a binary permission, Model B, #573, restored by #1126; an
+   * AskUserQuestion or ExitPlanMode, #1127) and a multi-choice escalation.
    */
   held?: boolean;
 }
@@ -446,11 +446,11 @@ export class QuestionPresenceTracker {
 
   /**
    * Push an escalation's question IMMEDIATELY, without waiting for a PTY
-   * render. Callers: a binary prompt whose PermissionRequest hook is held for
-   * the phone's answer (Model B, #573; `AutoApproveGate.holdForAnswer`,
-   * #1126), and a multi-choice / design escalation
-   * (`AutoApproveGate.escalatePassthrough`, #625). Neither waits for a
-   * render. Pushes under the stashed question's own id.
+   * render. Callers: a prompt whose PermissionRequest hook is held for the
+   * phone's answer (Model B, #573; `AutoApproveGate.holdForAnswer`, #1126; an
+   * AskUserQuestion or ExitPlanMode since #1127), and a multi-choice
+   * escalation (`AutoApproveGate.escalatePassthrough`, #625). Neither waits
+   * for a render. Pushes under the stashed question's own id.
    *
    * Locates the stashed hook record by id (the `pending` map is agent-keyed, so
    * we scan its values for the matching `Question.id`), routes it through the
@@ -817,12 +817,13 @@ export class QuestionPresenceTracker {
             optionsAreFallback: useHookOptions ? hookRecord.optionsAreFallback : false,
             // #626: the PTY base carries none of the structured fields, so a
             // merge must preserve the hook record's AskUserQuestion structure —
-            // else a merged card loses questions[].
+            // else a merged card loses questions[] — and its plan (#1127).
             // (Dormant while PTY emission is gated off for hooked sessions (#625),
             // but correct for the no-hook fallback + any future re-enable.)
             ...(hookRecord.kind ? { kind: hookRecord.kind } : {}),
             ...(hookRecord.questions ? { questions: hookRecord.questions } : {}),
             ...(hookRecord.submitLabel ? { submitLabel: hookRecord.submitLabel } : {}),
+            ...(hookRecord.detail !== undefined ? { detail: hookRecord.detail } : {}),
           }
         : // NOTE (#887 review): identity adoption above is gated on
           // `options.length > 0`, so an optionless hook record falls here and

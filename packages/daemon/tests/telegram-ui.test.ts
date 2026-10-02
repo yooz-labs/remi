@@ -8,6 +8,7 @@ import {
   formatHelpMessage,
   formatMessageForTelegram,
   formatQuestionKeyboard,
+  formatQuestionMessage,
   formatQuestionText,
   formatSessionList,
   formatStatusText,
@@ -171,6 +172,32 @@ describe('formatQuestionKeyboard', () => {
     // Should not throw
     const keyboard = formatQuestionKeyboard(question);
     expect(keyboard).toBeDefined();
+  });
+});
+
+describe('formatQuestionMessage (#1127)', () => {
+  const base: Question = {
+    id: 'q-plan' as UUID,
+    text: 'Plan ready for review',
+    options: [],
+    allowsFreeText: false,
+    isAnswered: false,
+  };
+
+  test('a card without detail is its text', () => {
+    expect(formatQuestionMessage({ ...base, text: 'Allow Bash: ls' })).toBe('Allow Bash: ls');
+  });
+
+  test('a plan card carries the plan below its ask, so the approval is not blind', () => {
+    expect(formatQuestionMessage({ ...base, detail: '# Plan\n\n- step 1\n' })).toBe(
+      'Plan ready for review\n\n# Plan\n\n- step 1',
+    );
+  });
+
+  test("a long plan is cut below Telegram's 4096-character limit", () => {
+    const message = formatQuestionMessage({ ...base, detail: 'x'.repeat(10_000) });
+    expect(message.length).toBe(4000);
+    expect(message.endsWith('...')).toBe(true);
   });
 });
 

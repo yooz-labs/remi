@@ -230,7 +230,9 @@ export interface PermissionOptionsResult {
  *   - A multi-choice string-label set (`isMultiChoicePermission`: more than
  *     three labels, or labels that are not all yes/no-shaped) maps label by
  *     label to picks, unchanged since #574. Such a card is pushed by id and
- *     answered through the PTY, like AskUserQuestion (Phase 4 work).
+ *     its answer typed into the PTY behind the #1134 screen guard: its
+ *     labels are a legacy shape no structured hook answer was verified for
+ *     (#1127 kept it typed).
  *   - Everything else is a binary prompt, answered through the held hook
  *     (#1126): [Yes] + one standing option per offerable suggestion
  *     ({@link standingGrantFor}) + [No], built by meaning so each option maps
@@ -483,11 +485,12 @@ export class HookEventBridge {
     const toolName = input.tool_name || 'unknown tool';
 
     // Question-bearing tools (AskUserQuestion, ExitPlanMode) carry the real
-    // question + option labels in tool_input; surface those instead of the
-    // generic "Allow <tool>" + whatever optionsFromSuggestions derives (or the
-    // honest Yes/No 2-set, #718; #597). The options are picks (1-based value,
-    // never isYes/isNo) so a user answer submits the matching digit to
-    // Claude's native numbered prompt.
+    // question in tool_input; surface it instead of the generic
+    // "Allow <tool>" + whatever optionsFromSuggestions derives (or the honest
+    // Yes/No 2-set, #718; #597). Since #1127 both are held and answered
+    // through the hook (`structured-answers.ts`): AskUserQuestion's picks are
+    // numbered by the index an answer names, ExitPlanMode's options are
+    // built by meaning, and nothing is typed.
     const toolQuestion = extractToolQuestion(toolName, input.tool_input);
 
     let promptText: string;
@@ -537,6 +540,13 @@ export class HookEventBridge {
             kind: 'multi_question' as const,
             questions: toolQuestion.questions,
             ...(toolQuestion.submitLabel ? { submitLabel: toolQuestion.submitLabel } : {}),
+          }
+        : {}),
+      // #1127: an ExitPlanMode card carries the plan itself for the app.
+      ...(toolQuestion?.kind === 'plan_approval'
+        ? {
+            kind: 'plan_approval' as const,
+            ...(toolQuestion.detail !== undefined ? { detail: toolQuestion.detail } : {}),
           }
         : {}),
     };

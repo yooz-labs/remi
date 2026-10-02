@@ -226,8 +226,11 @@ export interface UIQuestion {
   /** The Claude agent this prompt belongs to ('main' default). Keys the
    *  collection so a main + subagent prompt coexist rather than overwrite. */
   readonly agentId?: string;
-  /** #626: 'multi_question' for an AskUserQuestion with structured sub-questions. */
-  readonly kind?: 'permission' | 'multi_question';
+  /** #626: 'multi_question' for an AskUserQuestion with structured sub-questions;
+   *  #1127: 'plan_approval' for an ExitPlanMode (its plan in `detail`). */
+  readonly kind?: 'permission' | 'multi_question' | 'plan_approval';
+  /** #1127: the long text the prompt is about (an ExitPlanMode's plan), shown in full. */
+  readonly detail?: string;
   /** #626: the full sub-question set (AskUserQuestion), rendered as an interactive
    *  form in #627. */
   readonly questions?: readonly UIQuestionStep[];

@@ -587,22 +587,25 @@ describe('HookEventBridge', () => {
     expect(questions[0]?.options.every((o) => !o.isYes && !o.isNo)).toBe(true);
   });
 
-  it('surfaces ExitPlanMode plan-approval choices (#597)', () => {
+  it('surfaces ExitPlanMode as a plan approval: options by meaning, the plan as detail (#597, #1127)', () => {
     const { bridge, questions } = createBridge();
 
     bridge.handlePermissionRequest({
       ...makeCommon(),
       hook_event_name: 'PermissionRequest',
       tool_name: 'ExitPlanMode',
-      tool_input: { plan: '# Plan\n- do the thing' },
+      tool_input: { plan: '# Plan\n- do the thing', planFilePath: '/p.md' },
     } as PermissionRequestHookInput);
 
     expect(questions[0]?.options.map((o) => o.label)).toEqual([
-      'Yes, and auto-accept edits',
-      'Yes, and manually approve edits',
-      'No, keep planning',
+      'Approve, auto-accept edits',
+      'Approve, approve edits manually',
+      'Keep planning',
     ]);
-    expect(questions[0]?.text).toContain('Plan ready');
+    expect(questions[0]?.text).toBe('Plan ready for review');
+    expect(questions[0]?.kind).toBe('plan_approval');
+    // The plan verbatim, newlines kept, for the app.
+    expect(questions[0]?.detail).toBe('# Plan\n- do the thing');
   });
 
   it('maps PostToolUseFailure to executing status with error context', () => {

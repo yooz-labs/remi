@@ -43,6 +43,7 @@ import {
   formatHelpMessage,
   formatMessageForTelegram,
   formatQuestionKeyboard,
+  formatQuestionMessage,
   formatSessionList,
   isValidContent,
   stripTerminalCodes,
@@ -291,7 +292,7 @@ export class TelegramAdapter implements ConnectionAdapter {
     const keyboard = formatQuestionKeyboard(question);
 
     this.bot.api
-      .sendMessage(session.chatId, question.text, {
+      .sendMessage(session.chatId, formatQuestionMessage(question), {
         message_thread_id: session.topicId,
         reply_markup: keyboard,
       })

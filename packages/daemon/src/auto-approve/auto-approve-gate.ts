@@ -30,11 +30,18 @@
  * An empty response never decides anything: it is what every non-answer
  * path sends.
  *
+ * Since #1127 AskUserQuestion and ExitPlanMode are held the same way (their
+ * dialogs render during the hold too), and a phone answer resolves the hook
+ * with a structured `updatedInput` (`structured-answers.ts`): the tool input
+ * echoed with the user's `answers`, or a plan approval echoed with a
+ * session `setMode`. An answer that is not complete is refused and the hold
+ * stays; nothing is completed with a guess.
+ *
  * Other shapes:
- *   - a multi-choice / design prompt (AskUserQuestion, ExitPlanMode, a
- *     multi-choice string-label permission) is answered 'passthrough' and
- *     pushed at once (`escalatePassthrough`); its answer is still typed
- *     into the PTY (Phase 4, #1127, replaces that);
+ *   - a multi-choice string-label permission, or a question-shaped tool that
+ *     is not AskUserQuestion, is answered 'passthrough' and pushed at once
+ *     (`escalatePassthrough`); its answer is typed into the PTY behind the
+ *     #1134 screen guard (no structured hook answer was verified for it);
  *   - a SUBAGENT-tagged prompt (`agent_id` present) depends on
  *     `hasLocalTerminal` (#1126): a background subagent's dialog does not
  *     render while its hook is held. With a local terminal it is answered
@@ -87,26 +94,38 @@
  * removes and dismisses the card itself.
  */
 
-import type { QuestionOption, UUID } from '@remi/shared';
+import type { AnswerSelection, QuestionOption, UUID } from '@remi/shared';
 
 import { log, logError } from '../cli/logger.ts';
 import { standingGrantFor } from '../hooks/hook-event-bridge.ts';
 import type { PermissionDecision, PermissionRequestHookInput } from '../hooks/index.ts';
+import {
+  ASK_DISMISSED_MESSAGE,
+  askOptionIndex,
+  askUserQuestionDecision,
+  exitPlanModeDecision,
+  keepPlanningDecision,
+  parseAskUserQuestion,
+} from '../hooks/structured-answers.ts';
 import type { SessionRegistry } from '../session/index.ts';
 import { ALWAYS_ESCALATE_TOOLS, isDesignQuestion, isMultiChoicePermission } from './multichoice.ts';
 
 /**
- * A phone answer to a held prompt (#1126), already resolved by the answer
- * path to one of the card's own options. `message` is the optional text a
- * "No" carries; Claude receives it as the denied tool's result. `cancel` is
- * the card's universal Cancel (Esc) action, which on a held card is a "No".
+ * A phone answer to a held prompt (#1126), as the answer path received it.
+ * `option` is one of the card's own options; `message` is the optional text
+ * a "No" (or "Keep planning") carries, which Claude receives as the denied
+ * tool's result. `cancel` is the card's universal Cancel (Esc) action, which
+ * on a held card is a "No". `selections` is a structured AskUserQuestion
+ * answer (#1127), not yet validated.
  */
 export type HeldAnswer =
   | { readonly kind: 'option'; readonly option: QuestionOption; readonly message?: string }
   | { readonly kind: 'cancel' }
-  /** Free text, or an answer matching none of the card's options: never an
-   *  answer a held card offers, so a live hold refuses it. */
-  | { readonly kind: 'text' };
+  /** Free text, or an answer matching none of the card's options. Only a
+   *  one-question, single-select AskUserQuestion takes it (as that
+   *  question's answer, #1127); any other live hold refuses it. */
+  | { readonly kind: 'text'; readonly text: string }
+  | { readonly kind: 'selections'; readonly selections: readonly AnswerSelection[] };
 
 /**
  * What `answerHeld` did with a phone answer (#1126):
@@ -117,8 +136,8 @@ export type HeldAnswer =
  *   - `closed`: a binary prompt this gate held whose hold has ended (answered
  *     in the terminal, released at the deadline, aborted). Its answer belongs
  *     to the terminal now; nothing may be typed for it.
- *   - `unknown`: not a binary prompt this gate held (a hook-less prompt,
- *     AskUserQuestion, ExitPlanMode); the caller's own path applies.
+ *   - `unknown`: not a prompt this gate held (a hook-less prompt, a
+ *     multi-choice permission); the caller's own path applies.
  */
 export type HeldAnswerOutcome = 'resolved' | 'refused' | 'closed' | 'unknown';
 
@@ -132,13 +151,23 @@ const CLOSED_HOLD_MEMORY = 256;
  *  novel; Claude reads this as the tool result, so it is bounded. */
 const DENY_MESSAGE_MAX = 2000;
 
+/**
+ * What a held prompt asks, which decides how a phone answer maps to its hook
+ * response (`decisionFor`): a binary permission (#1126), an AskUserQuestion
+ * or an ExitPlanMode (#1127).
+ */
+type HoldKind = 'binary' | 'ask' | 'plan';
+
 /** A held PermissionRequest hook (#1126): the pending hook response, its
- *  deadline timer, the suggestions a standing grant echoes from, how to
- *  stop listening for the request's abort, and when the hold began. */
+ *  deadline timer, the suggestions a standing grant echoes from, the tool
+ *  input a structured answer echoes (#1127), how to stop listening for the
+ *  request's abort, and when the hold began. */
 interface Hold {
+  readonly kind: HoldKind;
   readonly resolve: (decision: PermissionDecision) => void;
   readonly timer: ReturnType<typeof setTimeout>;
   readonly suggestions: readonly unknown[] | undefined;
+  readonly toolInput: Readonly<Record<string, unknown>>;
   readonly detachAbort: () => void;
   readonly startedAt: number;
 }
@@ -302,8 +331,9 @@ export interface AutoApproveGateDeps {
   escalate: (input: PermissionRequestHookInput) => UUID | undefined;
   /** Push a stashed question IMMEDIATELY (-> `tracker.pushHeldHook` ->
    *  sessionRegistry.addQuestion + APNS), stamped `held`. Called for a held
-   *  binary prompt (#1126) and for a multi-choice / design escalation (#625),
-   *  neither of which waits for a render. PTY question-emission is suppressed
+   *  prompt (binary #1126; AskUserQuestion, ExitPlanMode #1127) and for a
+   *  passthrough multi-choice escalation (#625), none of which waits for a
+   *  render. PTY question-emission is suppressed
    *  for hooked sessions (#625), so this is the SOLE push trigger for both.
    *  Idempotent per id. */
   onHeldEscalate?: (questionId: UUID) => void;
@@ -351,7 +381,9 @@ export interface AutoApproveGateDeps {
   onResolved?: (questionId: UUID, reason: 'cancelled') => void;
   /** Tools whose prompt is always a design question, never binary (#572):
    *  used to classify an escalation as binary (held, #1126) vs design
-   *  (passthrough, pushed immediately). Absent => `ALWAYS_ESCALATE_TOOLS`. */
+   *  (passthrough, pushed immediately). AskUserQuestion and ExitPlanMode are
+   *  held by name before this applies (#1127). Absent =>
+   *  `ALWAYS_ESCALATE_TOOLS`. */
   alwaysEscalateTools?: ReadonlySet<string>;
 }
 
@@ -535,8 +567,9 @@ export class AutoApproveGate {
    *     (`noteAgentToolCall`), `SubagentStop` or `SessionEnd`. A redraw past
    *     that takes the guarded hook-less path (#1134: typed only on an exact
    *     label match, fail closed).
-   * A passthrough card (AskUserQuestion, ExitPlanMode) is registered, which
-   * the tracker's live-question check already covers.
+   * A held AskUserQuestion or ExitPlanMode (#1127) counts as a main hold;
+   * a passthrough multi-choice card is registered, which the tracker's
+   * live-question check already covers.
    */
   hasOpenHookPrompt(): boolean {
     if (this.hasMainHold()) return true;
@@ -597,14 +630,15 @@ export class AutoApproveGate {
    * the hook response is resolved before this returns, so no other answer
    * or resolution signal can interleave. See `HeldAnswerOutcome`.
    *
-   * The mapping is by meaning, from the card's own option flags, never from
-   * a position on Claude's screen:
+   * The mapping is by meaning, never from a position on Claude's screen.
+   * For a binary permission, from the card's own option flags:
    *   - Cancel, or a No option -> `deny` (a No may carry `message`);
    *   - a standing option (`suggestionIndex`) -> `allow` +
    *     `updatedPermissions: [standingGrantFor(suggestion).echo]`, only when
    *     the stashed suggestion is still one a card may offer;
-   *   - the one-time Yes (labeled exactly "Yes", no suggestion) -> `allow`;
-   *   - anything else is refused and the hold stays.
+   *   - the one-time Yes (labeled exactly "Yes", no suggestion) -> `allow`.
+   * For an AskUserQuestion or ExitPlanMode (#1127), see `askDecision` and
+   * `planDecision`. Anything else is refused and the hold stays.
    */
   answerHeld(questionId: UUID, answer: HeldAnswer): HeldAnswerOutcome {
     const hold = this.holds.get(questionId);
@@ -627,8 +661,10 @@ export class AutoApproveGate {
   /** The hook decision a phone answer maps to, or null when the held card
    *  does not offer it. See `answerHeld`. */
   private decisionFor(hold: Hold, answer: HeldAnswer): PermissionDecision | null {
+    if (hold.kind === 'ask') return askDecision(hold.toolInput, answer);
+    if (hold.kind === 'plan') return planDecision(hold.toolInput, answer);
     if (answer.kind === 'cancel') return 'deny';
-    if (answer.kind === 'text') return null;
+    if (answer.kind === 'text' || answer.kind === 'selections') return null;
     const { option } = answer;
     if (option.isNo && !option.isYes) {
       const message =
@@ -644,19 +680,19 @@ export class AutoApproveGate {
   }
 
   /**
-   * Escalate a main-context permission to the user. A BINARY prompt holds its
-   * hook for a phone answer (`holdForAnswer`, #1126); a multi-choice / design
-   * prompt is answered 'passthrough' and pushed immediately
+   * Escalate a main-context permission to the user. A binary prompt (#1126),
+   * an AskUserQuestion or an ExitPlanMode (#1127) holds its hook for a phone
+   * answer (`holdForAnswer`); a multi-choice permission or another
+   * question-shaped tool is answered 'passthrough' and pushed immediately
    * (`escalatePassthrough`).
    */
   private escalateMain(
     input: PermissionRequestHookInput,
     signal: AbortSignal | undefined,
   ): Promise<PermissionDecision> {
-    if (!this.isBinaryEscalation(input)) {
-      return Promise.resolve(this.escalatePassthrough(input));
-    }
-    return this.holdForAnswer(input, signal);
+    const kind = this.holdKindFor(input);
+    if (kind === null) return Promise.resolve(this.escalatePassthrough(input));
+    return this.holdForAnswer(input, signal, kind);
   }
 
   /**
@@ -676,6 +712,7 @@ export class AutoApproveGate {
   private holdForAnswer(
     input: PermissionRequestHookInput,
     signal: AbortSignal | undefined,
+    kind: HoldKind,
   ): Promise<PermissionDecision> {
     if (signal?.aborted) return Promise.resolve('passthrough');
     const qid = this.escalateToUser(input);
@@ -692,9 +729,11 @@ export class AutoApproveGate {
       const onAbort = (): void => this.onHoldAborted(qid);
       signal?.addEventListener('abort', onAbort, { once: true });
       this.holds.set(qid, {
+        kind,
         resolve,
         timer,
         suggestions: input.permission_suggestions as readonly unknown[] | undefined,
+        toolInput: input.tool_input,
         detachAbort: () => signal?.removeEventListener('abort', onAbort),
         startedAt: Date.now(),
       });
@@ -909,12 +948,13 @@ export class AutoApproveGate {
   }
 
   /**
-   * Escalate a multi-choice / design permission (AskUserQuestion,
-   * ExitPlanMode) and push it from the gate at once (#625). Claude renders its
-   * native prompt and waits there; the user answers the pushed card (digits
-   * typed via the PTY, or the #627 AskUserQuestion runner) or the terminal
-   * directly. With PTY question-emission gated off for hooked sessions (#625),
-   * this push is the only one the escalation gets.
+   * Escalate a multi-choice string-label permission, or a question-shaped
+   * tool that is not AskUserQuestion, and push it from the gate at once
+   * (#625). Claude renders its native prompt and waits there; the user
+   * answers the pushed card (its digit typed via the PTY behind the #1134
+   * screen guard) or the terminal directly. With PTY question-emission gated
+   * off for hooked sessions (#625), this push is the only one the escalation
+   * gets.
    */
   private escalatePassthrough(input: PermissionRequestHookInput): PermissionDecision {
     const qid = this.escalateToUser(input);
@@ -929,18 +969,22 @@ export class AutoApproveGate {
   }
 
   /**
-   * Whether an escalated permission is BINARY (a plain allow/deny prompt),
-   * which is held for the phone's answer (#1126). Multi-choice prompts and
-   * design / plan-mode / long-form questions are not: they are answered
-   * 'passthrough' and pushed immediately.
+   * How an escalated permission is held for the phone's answer, or null when
+   * it is not held. AskUserQuestion and ExitPlanMode are held by name (#1127:
+   * their structured answers were verified live for exactly these tools); a
+   * plain allow/deny prompt is held as binary (#1126). A multi-choice
+   * string-label permission and any other design / long-form question are
+   * not held: they are answered 'passthrough' and pushed immediately.
    */
-  private isBinaryEscalation(input: PermissionRequestHookInput): boolean {
+  private holdKindFor(input: PermissionRequestHookInput): HoldKind | null {
+    if (input.tool_name === 'AskUserQuestion') return 'ask';
+    if (input.tool_name === 'ExitPlanMode') return 'plan';
     const suggestions = input.permission_suggestions as readonly unknown[] | undefined;
     const alwaysEscalate = this.deps.alwaysEscalateTools ?? ALWAYS_ESCALATE_TOOLS;
-    return (
+    const binary =
       !isMultiChoicePermission(input.tool_name, suggestions) &&
-      !isDesignQuestion(input.tool_name, input.tool_input, suggestions, alwaysEscalate)
-    );
+      !isDesignQuestion(input.tool_name, input.tool_input, suggestions, alwaysEscalate);
+    return binary ? 'binary' : null;
   }
 
   /**
@@ -1241,11 +1285,71 @@ export class AutoApproveGate {
   }
 }
 
-/** A hook decision as one log fragment, without the deny message text. */
+/** A hook decision as one log fragment, without the deny message or the
+ *  user's answers. */
 function describeDecision(decision: PermissionDecision): string {
   if (typeof decision === 'string') return decision;
   if (decision.behavior === 'deny') {
     return decision.message === undefined ? 'deny' : 'deny (with message)';
   }
+  if ('updatedInput' in decision) {
+    return decision.updatedPermissions === undefined
+      ? 'allow (answers in updatedInput)'
+      : 'allow (input echoed, mode set)';
+  }
   return 'allow (standing grant echoed)';
+}
+
+/**
+ * The hook decision for a phone answer to a held AskUserQuestion (#1127), or
+ * null to refuse it (the hold stays):
+ *   - `selections` -> `askUserQuestionDecision` (every question answered,
+ *     validated against the tool input);
+ *   - a single card option or free text answers a one-question,
+ *     single-select AskUserQuestion only (the lock screen and Telegram send
+ *     one option, not `selections`); the option must be that question's own
+ *     by value and label;
+ *   - Cancel -> `deny` with "The user dismissed the question.", so the
+ *     dialog closes and Claude reads why. Nothing is typed (no Esc).
+ */
+function askDecision(
+  toolInput: Readonly<Record<string, unknown>>,
+  answer: HeldAnswer,
+): PermissionDecision | null {
+  if (answer.kind === 'cancel') return { behavior: 'deny', message: ASK_DISMISSED_MESSAGE };
+  let selections: unknown;
+  if (answer.kind === 'selections') {
+    selections = answer.selections;
+  } else {
+    const questions = parseAskUserQuestion(toolInput);
+    if (questions === null || questions.length !== 1 || questions[0]?.multiSelect) return null;
+    if (answer.kind === 'text') {
+      selections = [{ questionIndex: 0, optionIndices: [], text: answer.text }];
+    } else {
+      const index = askOptionIndex(questions, answer.option);
+      if (index === null) return null;
+      selections = [{ questionIndex: 0, optionIndices: [index] }];
+    }
+  }
+  const result = askUserQuestionDecision(toolInput, selections);
+  if (!result.ok) {
+    log(`[AutoApprove] AskUserQuestion answer refused (${result.reason}); hold kept`);
+    return null;
+  }
+  return result.decision;
+}
+
+/**
+ * The hook decision for a phone answer to a held ExitPlanMode (#1127), or
+ * null to refuse it: one of the plan card's own options
+ * (`exitPlanModeDecision`), or Cancel, which keeps planning like a "No".
+ * Free text and `selections` are not plan answers.
+ */
+function planDecision(
+  toolInput: Readonly<Record<string, unknown>>,
+  answer: HeldAnswer,
+): PermissionDecision | null {
+  if (answer.kind === 'cancel') return keepPlanningDecision();
+  if (answer.kind !== 'option') return null;
+  return exitPlanModeDecision(toolInput, answer.option, answer.message);
 }

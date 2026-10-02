@@ -290,8 +290,8 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
    * renders about 0.1 s after the hook POST, during the hold, so the banner
    * repeats the question above the native dialog, which answers it like any
    * other local answer (first answer wins). Cards stamped `held`: a held
-   * binary permission prompt and an AskUserQuestion / ExitPlanMode /
-   * multi-choice card pushed by id.
+   * binary permission prompt, AskUserQuestion or ExitPlanMode (#1127), and
+   * a multi-choice card pushed by id.
    * ONLY held questions banner (#760 review finding 1): every other question class
    * renders natively in the raw PTY stream, and the daemon emits multiple
    * `question` messages per visible prompt cycle (hook bridge + PTY parser,

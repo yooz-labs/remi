@@ -88,6 +88,25 @@ export function formatMessageForTelegram(message: Message): string {
   return content;
 }
 
+/** Telegram's message limit is 4096 characters; a question body stays
+ *  below it with room for the ellipsis. */
+const TELEGRAM_QUESTION_MAX = 4000;
+
+/**
+ * The message text a question card is sent with: its ask, and when the card
+ * is about a long text (a plan to approve, #1127) that text below it, so a
+ * Telegram user sees what they are approving. Bounded to Telegram's limit.
+ */
+export function formatQuestionMessage(question: Question): string {
+  const text =
+    question.detail !== undefined && question.detail.trim().length > 0
+      ? `${question.text}\n\n${question.detail.trim()}`
+      : question.text;
+  return text.length > TELEGRAM_QUESTION_MAX
+    ? `${text.slice(0, TELEGRAM_QUESTION_MAX - 3)}...`
+    : text;
+}
+
 /**
  * Format a Question with inline keyboard buttons.
  */

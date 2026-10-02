@@ -350,7 +350,8 @@ function normalizeLabel(label: string): string {
  * numbers as the standing allow.
  *
  * Exact on purpose: the normalized labels (`normalizeLabel`) must be EQUAL,
- * or, for an AskUserQuestion pick, equal once its description is appended
+ * or, for a pick with a description (a question-shaped tool's), equal once
+ * its description is appended
  * (the parser folds the description row into the screen label). Nothing
  * looser is safe. A Yes/No class lets "Yes" pass for "Yes, and don't ask
  * again" and "Yes, use pnpm" for "Yes, use npm"; a shared prefix lets
@@ -401,8 +402,36 @@ function answerKeys(
   answer: string,
   selections: readonly AnswerSelection[] | undefined,
 ): string[] {
-  const option = selections?.length ? undefined : resolveOption(active.options, answer);
+  const option =
+    Array.isArray(selections) && selections.length > 0
+      ? undefined
+      : resolveOption(active.options, answer);
   return [answerCacheKey(answer, selections), ...(option ? [option.value, option.label] : [])];
+}
+
+/** The answer's structured AskUserQuestion selections (#627), when it carries
+ *  a non-empty list of them. Their entries are not validated here: the gate
+ *  checks them against the tool input (#1127). */
+function structuredSelections(
+  extra: AnswerExtras | undefined,
+): readonly AnswerSelection[] | undefined {
+  const selections = extra?.selections;
+  return Array.isArray(selections) && selections.length > 0 ? selections : undefined;
+}
+
+/** A phone answer to a held card as one log fragment, without the user's
+ *  text (only its length). */
+function describeHeldAnswer(held: HeldAnswer): string {
+  switch (held.kind) {
+    case 'option':
+      return `"${held.option.label}"`;
+    case 'text':
+      return `free text (${held.text.length} chars)`;
+    case 'selections':
+      return `an answer to ${held.selections.length} question(s)`;
+    case 'cancel':
+      return 'Cancel';
+  }
 }
 
 /**
@@ -793,10 +822,13 @@ export function createInputHandlers(deps: InputHandlerDeps) {
    * path applies (`unknown`). Synchronous: the hook response is settled
    * before anything else can run.
    *   - `resolved`: the hook answered; the card is consumed and dismissed.
-   *   - `refused`: not an option this card offers (free text, a stale
-   *     label); the card and the hold stay so the user can pick again.
+   *   - `refused`: not an answer this card offers (free text on a permission,
+   *     a stale label, an incomplete AskUserQuestion answer, #1127); the
+   *     card and the hold stay so the user can answer again.
    *   - `closed`: the hold ended (deadline, terminal answer, abort); refused
    *     like a stale answer and the card is cleared. Nothing is typed.
+   * A structured AskUserQuestion answer (`selections`, #1127) goes to the
+   * gate as it came; the gate validates it against the tool input.
    */
   function applyHeldAnswer(
     connectionId: UUID,
@@ -809,19 +841,22 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     active: Question,
   ): AnswerOutcome | null {
     if (!answerHeld) return null;
-    const option = resolveOption(active.options, answer);
+    const selections = structuredSelections(extra);
+    const option = selections === undefined ? resolveOption(active.options, answer) : undefined;
     // `message` crosses a trust boundary unvalidated (the protocol checks only
     // the message type), so anything but a string is dropped here.
     const message = typeof extra?.message === 'string' ? extra.message : undefined;
     const held: HeldAnswer =
-      option === undefined
-        ? { kind: 'text' }
-        : { kind: 'option', option, ...(message !== undefined ? { message } : {}) };
+      selections !== undefined
+        ? { kind: 'selections', selections }
+        : option === undefined
+          ? { kind: 'text', text: answer }
+          : { kind: 'option', option, ...(message !== undefined ? { message } : {}) };
     const outcome = answerHeld(session.sessionId, questionId, held);
     if (outcome === 'unknown') return null;
     if (outcome === 'resolved') {
       resolvedAnswers.record(questionId, [
-        answerCacheKey(answer),
+        answerCacheKey(answer, selections),
         ...(option ? [option.value, option.label] : []),
       ]);
       sessionRegistry.removeQuestion(session.sessionId, questionId, 'user_answer:hook');
@@ -837,7 +872,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     log(
       closed
         ? `[Answer] refusing ${questionId.slice(0, 8)}: its hold has ended, answer at the terminal; nothing typed`
-        : `[Answer] refusing ${questionId.slice(0, 8)}: "${option === undefined ? `free text (${answer.length} chars)` : answer}" is not an answer this held card offers; card and hold kept`,
+        : `[Answer] refusing ${questionId.slice(0, 8)}: ${describeHeldAnswer(held)} is not an answer this held card offers; card and hold kept`,
     );
     traceQuestionEvent({
       action: 'stale_answer',
@@ -863,7 +898,9 @@ export function createInputHandlers(deps: InputHandlerDeps) {
           'STALE_ANSWER',
           closed
             ? 'This prompt is no longer waiting for the phone; answer it in the terminal'
-            : 'This prompt takes one of its own options',
+            : selections !== undefined
+              ? 'Answer every question: one choice, or your own text, for each single-choice question, and at least one choice for each multiple-choice question'
+              : 'This prompt takes one of its own options',
           {
             sessionId,
             // A refused answer leaves the card live, and a client drops the
@@ -895,24 +932,10 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     session: ManagedSession,
     active: Question,
   ): Promise<AnswerOutcome> {
-    // #627 structured AskUserQuestion answer: drive the interactive TUI from the
-    // per-sub-question selections (the existing single-digit path can't express a
-    // tabbed multi-question form). The runner verifies the review before submitting
-    // and escalates (leaving the prompt for Cancel / terminal) on any mismatch.
-    if (extra?.selections && extra.selections.length > 0) {
-      return await handleAuqAnswer(
-        connectionId,
-        session,
-        questionId,
-        active,
-        extra.selections,
-        viaRelay,
-      );
-    }
-
-    // #1126: a held permission prompt is answered through its hook response,
-    // and a binary prompt whose hold has ended is answered only at the
-    // terminal. Both are decided here, before anything could be typed.
+    // #1126: a held prompt is answered through its hook response, and a
+    // prompt whose hold has ended is answered only at the terminal. Both are
+    // decided here, before anything could be typed. Since #1127 that covers
+    // AskUserQuestion (its `selections` included) and ExitPlanMode.
     const heldOutcome = applyHeldAnswer(
       connectionId,
       sessionId,
@@ -925,11 +948,21 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     );
     if (heldOutcome !== null) return heldOutcome;
 
+    // #627 structured AskUserQuestion answer for a card no hold stands
+    // behind: drive the interactive TUI from the per-sub-question selections.
+    // The runner verifies the review before submitting and escalates
+    // (leaving the prompt for Cancel / terminal) on any mismatch.
+    const selections = structuredSelections(extra);
+    if (selections !== undefined) {
+      return await handleAuqAnswer(connectionId, session, questionId, active, selections, viaRelay);
+    }
+
     // Submit the answer to the PTY, where Claude's native prompt is waiting.
     // Only prompts no held hook stands behind reach this point: hook-less
-    // prompts (sandbox, trust, agent-team dialogs) and the AskUserQuestion /
-    // ExitPlanMode / multi-choice cards pushed by id (#1127 moves those to
-    // the hook as well).
+    // prompts (sandbox, trust, agent-team dialogs) and the multi-choice
+    // cards pushed by id (a string-label permission, a question-shaped tool
+    // that is not AskUserQuestion). AskUserQuestion and ExitPlanMode are
+    // held and answered above (#1127).
     //
     // The submit + question removal are wrapped so the question is ALWAYS
     // consumed exactly once: if `submitInput` throws, the `finally` still
@@ -995,8 +1028,8 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       // Free text on a card pushed by id (`pushHeldHook`, stamped `held`) is
       // refused before anything is typed (#1134 review). A held binary card
       // never reaches this point: the gate answered it through its hook
-      // above (#1126). What arrives here stamped `held` is a passthrough
-      // card (AskUserQuestion, ExitPlanMode, a multi-choice permission).
+      // above (#1126), as it does AskUserQuestion and ExitPlanMode (#1127).
+      // What arrives here stamped `held` is a passthrough multi-choice card.
       // Only an option of this card can be expressed; text typed into the
       // dialog is ignored and the Enter after it confirms the highlighted
       // option, so free text is refused whether or not a menu has been

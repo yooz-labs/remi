@@ -3,12 +3,14 @@ import type { Question, QuestionOption, UUID } from '@remi/shared';
 import type { DeviceTokenEntry } from '../../src/cli/handlers/trivial-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../src/cli/logger.ts';
 import { optionsFromSuggestions } from '../../src/hooks/hook-event-bridge.ts';
+import { exitPlanModeOptions } from '../../src/hooks/structured-answers.ts';
 import {
   NotificationDispatcher,
   type PushFn,
   buildPushText,
   isRetriablePushError,
   isTokenInvalidError,
+  pushCategoryFor,
   selectDynOptions,
   selectPushCategory,
   terminalNoticeId,
@@ -349,6 +351,76 @@ describe('selectDynOptions (#719)', () => {
   });
 });
 
+/**
+ * #1127 lead decision: an AskUserQuestion is a lock-screen tap only when it
+ * is one single-select question (its answer resolves by option index through
+ * the held hook); every other AskUserQuestion, and every plan approval, is
+ * answered in the app.
+ */
+describe('pushCategoryFor (#1127)', () => {
+  const picks = ['Red', 'Green', 'Blue'].map((label, i) => ({
+    value: String(i + 1),
+    label,
+    isRecommended: i === 0,
+    isYes: false,
+    isNo: false,
+  }));
+  function ask(steps: Array<{ multiSelect: boolean }>): Question {
+    return {
+      ...question('q', picks, 'Color: Which color?'),
+      kind: 'multi_question',
+      questions: steps.map((s, i) => ({
+        text: `Q${i}`,
+        multiSelect: s.multiSelect,
+        options: picks,
+      })),
+    };
+  }
+  const plan: Question = {
+    ...question('p', exitPlanModeOptions(), 'Plan ready for review'),
+    kind: 'plan_approval',
+    detail: '# Plan\n\nWrite `hello.txt`.',
+  };
+
+  test('one single-select question: REMI_MULTI with dynamic labels', () => {
+    expect(pushCategoryFor(ask([{ multiSelect: false }]))).toBe('REMI_MULTI');
+    expect(selectDynOptions(ask([{ multiSelect: false }]))).toBe(true);
+  });
+
+  test('one multi-select question: no category, no dynamic buttons', () => {
+    expect(pushCategoryFor(ask([{ multiSelect: true }]))).toBeUndefined();
+    expect(selectDynOptions(ask([{ multiSelect: true }]))).toBe(false);
+  });
+
+  test('two questions: no category, no dynamic buttons', () => {
+    const two = ask([{ multiSelect: false }, { multiSelect: false }]);
+    expect(pushCategoryFor(two)).toBeUndefined();
+    expect(selectDynOptions(two)).toBe(false);
+  });
+
+  test('a plan approval is never a lock-screen tap, whatever its options say', () => {
+    expect(pushCategoryFor(plan)).toBeUndefined();
+    expect(selectDynOptions(plan)).toBe(false);
+    // Even unmarked, its approvals are not a one-time "Yes".
+    expect(selectPushCategory(exitPlanModeOptions())).toBeUndefined();
+    // Marked, three plain picks would still get nothing.
+    expect(pushCategoryFor({ ...plan, options: picks })).toBeUndefined();
+  });
+
+  test("a plan card's push body is the start of the plan", () => {
+    const { title, body } = buildPushText('proj', plan);
+    expect(title).toBe('proj: Plan ready for review');
+    expect(body).toBe('# Plan Write `hello.txt`.');
+    const long = buildPushText('proj', { ...plan, detail: 'x'.repeat(1000) });
+    expect(long.body).toHaveLength(200);
+  });
+
+  test('every other card keeps its category by meaning', () => {
+    expect(pushCategoryFor(question('q', [yesOpt, noOpt]))).toBe('REMI_YN');
+    expect(pushCategoryFor(question('q', defaultThreeSet))).toBe('REMI_YNA');
+  });
+});
+
 describe('buildPushText (#574 issues 3+4)', () => {
   test('title carries session + clean hook ask; body lists the real option labels', () => {
     const { title, body } = buildPushText(
@@ -643,6 +715,20 @@ describe('NotificationDispatcher.maybePush', () => {
     expect(pushed[0]?.opts['category']).toBeUndefined();
     expect(pushed[0]?.opts['title']).toContain('2 questions');
     expect(pushed[0]?.opts['body']).toBe('1. Collab PI\n2. Software focus');
+  });
+
+  test('a plan approval pushes with no category and no dynamic buttons (#1127)', () => {
+    register(false);
+    deviceTokens.set('a', { token: 'a', platform: 'ios', registeredAt: 1, connectionId: SID });
+    make().maybePush(SID, {
+      ...question('q-plan', exitPlanModeOptions(), 'Plan ready for review'),
+      kind: 'plan_approval',
+      detail: '# Plan',
+    });
+    expect(pushed).toHaveLength(1);
+    expect(pushed[0]?.opts['category']).toBeUndefined();
+    expect(pushed[0]?.opts['dynOptions']).toBeUndefined();
+    expect(pushed[0]?.opts['body']).toBe('# Plan');
   });
 
   test('body shows the ask + real labels and is never the collapsed PTY garble (#574 issue 3)', () => {

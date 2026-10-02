@@ -217,9 +217,19 @@ export interface Question {
    * single prompt described by `text` + `options`. `'multi_question'` is a
    * structured `AskUserQuestion` tool call: the full set of sub-questions is in
    * `questions`, while `text`/`options` mirror `questions[0]` for back-compat
-   * (lock-screen summary + the first-question answer path).
+   * (the lock-screen summary). `'plan_approval'` (#1127) is an `ExitPlanMode`
+   * call: the plan is in `detail`, and `options` are the approval choices.
+   * A client that does not know a kind renders `text` + `options`.
    */
-  readonly kind?: 'permission' | 'multi_question' | undefined;
+  readonly kind?: 'permission' | 'multi_question' | 'plan_approval' | undefined;
+
+  /**
+   * Long-form text the prompt is about (#1127): the plan of a
+   * `'plan_approval'` card, verbatim (markdown). The app shows it in full;
+   * the push shows its start; a text-only surface may shorten it. `text`
+   * stays a short ask.
+   */
+  readonly detail?: string | undefined;
 
   /**
    * The sub-questions for `kind === 'multi_question'` (#626): each carries its

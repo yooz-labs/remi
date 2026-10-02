@@ -30,13 +30,25 @@ const DEFAULT_MAX_ENTRIES = 500;
 
 /** Canonical cache key for an answer payload: the raw answer string, or a
  *  stable serialization of structured AskUserQuestion selections (#627),
- *  which carry the answer in `extra.selections` instead of `answer`. */
+ *  which carry the answer in `extra.selections` instead of `answer`, free
+ *  text included (#1127). The selections come off the wire unvalidated, so
+ *  a malformed entry still serializes (the gate refuses it later). */
 export function answerCacheKey(
   answer: string,
-  selections?: readonly { questionIndex: number; optionIndices: readonly number[] }[],
+  selections?: readonly {
+    questionIndex: number;
+    optionIndices: readonly number[];
+    text?: string | undefined;
+  }[],
 ): string {
-  if (selections && selections.length > 0) {
-    return `auq:${JSON.stringify(selections.map((s) => [s.questionIndex, [...s.optionIndices].sort((a, b) => a - b)]))}`;
+  if (Array.isArray(selections) && selections.length > 0) {
+    return `auq:${JSON.stringify(
+      selections.map((s) => [
+        s?.questionIndex,
+        Array.isArray(s?.optionIndices) ? [...s.optionIndices].sort((a, b) => a - b) : null,
+        typeof s?.text === 'string' ? s.text : null,
+      ]),
+    )}`;
   }
   return answer;
 }

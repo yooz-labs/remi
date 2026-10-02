@@ -4,7 +4,9 @@
  * Since #1125 (ADR 0030) these only classify how an escalation is relayed:
  * a binary prompt's hook is held for the phone's answer (#1126), anything
  * these detectors flag is answered 'passthrough' and pushed immediately
- * (`AutoApproveGate.isBinaryEscalation`). The LLM
+ * (`AutoApproveGate.holdKindFor`). AskUserQuestion and ExitPlanMode never
+ * reach them: the gate holds both by name first and answers them with a
+ * structured `updatedInput` (#1127). The LLM
  * multi-choice prompt builder that used to live here was deleted with the
  * evaluator.
  *
@@ -39,9 +41,11 @@
  * Tools whose invocation is, by definition, a request for the user's intent
  * (#572): `AskUserQuestion` (Claude explicitly solicited the user) and
  * `ExitPlanMode` (plan-mode accept / keep-planning is a direction decision).
- * `isDesignQuestion` classifies them as design questions, so their card is
- * pushed immediately. Was the configurable `auto_approve.always_escalate_tools`
- * default until #1125 removed the `[auto_approve]` table; now internal.
+ * `isDesignQuestion` classifies them as design questions. Since #1127 the
+ * gate holds both by name before it asks, so this set no longer changes
+ * their routing; it stays the allowlist layer of `isDesignQuestion`. Was the
+ * configurable `auto_approve.always_escalate_tools` default until #1125
+ * removed the `[auto_approve]` table; now internal.
  */
 export const ALWAYS_ESCALATE_TOOLS: ReadonlySet<string> = new Set([
   'AskUserQuestion',

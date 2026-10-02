@@ -21,9 +21,11 @@
  * filtering, then routes PermissionRequest to the gate, which since #1125
  * (ADR 0030) decides nothing on its own: since #1126 (ADR 0031) it holds a
  * binary prompt's hook for the phone's answer while Claude's dialog is on
- * screen, pushes a multi-choice / design prompt at once and answers it
- * 'passthrough', and passes a subagent prompt to the local terminal (wrapper
- * mode) or holds it like a main one (daemon mode). Stop / SessionEnd call
+ * screen (and, since #1127, an AskUserQuestion's or ExitPlanMode's, answered
+ * with a structured `updatedInput`), pushes a multi-choice string-label
+ * prompt at once and answers it 'passthrough', and passes a subagent prompt
+ * to the local terminal (wrapper mode) or holds it like a main one (daemon
+ * mode). Stop / SessionEnd call
  * `gate.cancelStale()` to resolve escalations Claude no longer waits on. Stop passes
  * `{ mainOnly: true }` (#711): it fires whenever the LEAD idles even while
  * agent-team teammates keep working, so it resolves only MAIN-context
@@ -521,9 +523,9 @@ export function setupHookBridge(
     onQuestion: (question) => {
       // #625 single gate: a PERMISSION question is coordinated by the permission
       // gate — it is stashed here and the gate drives its push on escalate (a
-      // held binary prompt and a multi-choice / design one at once via
-      // onHeldEscalate, #1126). recordPendingHook only stashes; it never emits
-      // on its own.
+      // held prompt and a passthrough multi-choice one at once via
+      // onHeldEscalate, #1126, #1127). recordPendingHook only stashes; it
+      // never emits on its own.
       //   - 'permission_request' (rich: tool + command + options) is the one the gate
       //     escalates and pushes by id. This is the ONLY source stashed here now:
       //     `HookEventBridge` used to also synthesize a redundant generic
@@ -596,9 +598,10 @@ export function setupHookBridge(
       },
       hasLocalTerminal,
       ...(deps.onSubagentPassthrough ? { onSubagentPassthrough: deps.onSubagentPassthrough } : {}),
-      // A held binary prompt (#1126) and a multi-choice / design escalation
-      // (#625) push immediately under their own id (-> addQuestion +
-      // maybePush); PTY question-emission is suppressed for hooked sessions.
+      // A held prompt (binary #1126; AskUserQuestion, ExitPlanMode #1127) and
+      // a passthrough multi-choice escalation (#625) push immediately under
+      // their own id (-> addQuestion + maybePush); PTY question-emission is
+      // suppressed for hooked sessions.
       onHeldEscalate: (questionId) => tracker.pushHeldHook(questionId),
       holdMs: deps.holdMs,
       hookTimeoutMs: deps.hookTimeoutMs,
@@ -622,7 +625,8 @@ export function setupHookBridge(
       onResolved: (questionId, reason) =>
         deps.broadcastQuestionResolved?.(sessionId, questionId, reason),
       // #573: classify an escalation as binary (held, #1126) vs
-      // design/multi-choice (pushed immediately). Absent => the gate's
+      // design/multi-choice (pushed immediately); AskUserQuestion and
+      // ExitPlanMode are held by name first (#1127). Absent => the gate's
       // `ALWAYS_ESCALATE_TOOLS` default.
       ...(deps.alwaysEscalateTools ? { alwaysEscalateTools: deps.alwaysEscalateTools } : {}),
     },
