@@ -2799,7 +2799,10 @@ describe('createInputHandlers', () => {
   });
 
   describe('concurrent deliveries of one answer (#1134 review)', () => {
-    function slowSession(): { sessionId: UUID; submits: string[] } {
+    function slowSession(opts: { submitFails?: boolean } = {}): {
+      sessionId: UUID;
+      submits: string[];
+    } {
       const submits: string[] = [];
       const sessionId = sessionRegistry.createSessionId();
       sessionRegistry.registerSession(
@@ -2810,6 +2813,7 @@ describe('createInputHandlers', () => {
           write: () => {},
           submitInput: async (content: string) => {
             await new Promise((r) => setTimeout(r, 50));
+            if (opts.submitFails) throw new Error('test: PTY write failed');
             submits.push(content);
           },
           close: async () => {},
@@ -2846,6 +2850,27 @@ describe('createInputHandlers', () => {
       expect(submits).toEqual(['1']);
       expect(secondOutcome).toBe('delivered');
       expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+    });
+
+    test("a duplicate reports the first delivery's outcome: a failed submit is not 'delivered'", async () => {
+      // Round-4 review: the duplicate used to report 'delivered'
+      // unconditionally, so a lock-screen tap whose first channel failed
+      // read as answered on the other.
+      const { sessionId, submits } = slowSession({ submitFails: true });
+      const handlers = createInputHandlers({
+        ...PROMPT_ON_SCREEN,
+        sessionRegistry,
+        bindingStore,
+        send,
+      });
+
+      const first = handlers.relayAnswer(sessionId, QID, '1');
+      const second = handlers.relayAnswer(sessionId, QID, 'Yes');
+      const [firstResult, secondResult] = await Promise.allSettled([first, second]);
+
+      expect(firstResult.status).toBe('rejected');
+      expect(secondResult).toEqual({ status: 'fulfilled', value: 'stale' });
+      expect(submits).toEqual([]);
     });
 
     test('a different answer while one is being applied is refused', async () => {

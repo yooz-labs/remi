@@ -486,9 +486,13 @@ export function createInputHandlers(deps: InputHandlerDeps) {
   const resolvedAnswers = new ResolvedAnswerCache();
 
   // #1134 review: questions whose answer is being applied right now, with
-  // every spelling of that answer (see `answerKeys`). Claimed synchronously in
-  // `handleAnswer`, released when `applyAnswer` settles.
-  const answersInFlight = new Map<UUID, ReadonlySet<string>>();
+  // every spelling of that answer (see `answerKeys`) and the outcome it will
+  // settle to. Claimed synchronously in `handleAnswer`, released when
+  // `applyAnswer` settles.
+  const answersInFlight = new Map<
+    UUID,
+    { readonly keys: ReadonlySet<string>; readonly outcome: Promise<AnswerOutcome> }
+  >();
 
   /**
    * Answer a structured AskUserQuestion (#627) by driving its interactive TUI.
@@ -774,16 +778,20 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     // card stays registered until `applyAnswer`'s submit finishes, so without
     // a claim both deliveries passed the lookup above and typed the digit
     // twice; the second Enter then answered whatever Claude showed next. A
-    // same-choice duplicate reports 'delivered' and types nothing; a
-    // different answer while one is in flight is refused.
+    // same-choice duplicate types nothing and reports what the FIRST
+    // delivery's answer came to (a refused or failed first answer must not
+    // read as delivered on the other channel); a different answer while one
+    // is in flight is refused.
     const claimKeys = answerKeys(active, answer, extra?.selections);
     const inFlight = answersInFlight.get(questionId);
     if (inFlight !== undefined) {
-      if (claimKeys.some((k) => inFlight.has(k))) {
+      if (claimKeys.some((k) => inFlight.keys.has(k))) {
         log(
-          `[Answer] duplicate delivery for ${questionId.slice(0, 8)} while its answer is being applied; reporting delivered, typing nothing`,
+          `[Answer] duplicate delivery for ${questionId.slice(0, 8)} while its answer is being applied; typing nothing, reporting the first delivery's outcome`,
         );
-        return 'delivered';
+        // A first delivery that threw was not delivered; the thrower reports
+        // that itself, the duplicate reports it as not delivered.
+        return inFlight.outcome.catch((): AnswerOutcome => 'stale');
       }
       log(
         `[Answer] refusing a different answer for ${questionId.slice(0, 8)}: another answer is being applied`,
@@ -800,18 +808,22 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       }
       return 'stale';
     }
-    answersInFlight.set(questionId, new Set(claimKeys));
+    // `applyAnswer` runs synchronously up to its first await, and nothing
+    // else can run before this call returns, so the claim is in place before
+    // any other delivery can look.
+    const outcome = applyAnswer(
+      connectionId,
+      sessionId,
+      questionId,
+      answer,
+      viaRelay,
+      extra,
+      session,
+      active,
+    );
+    answersInFlight.set(questionId, { keys: new Set(claimKeys), outcome });
     try {
-      return await applyAnswer(
-        connectionId,
-        sessionId,
-        questionId,
-        answer,
-        viaRelay,
-        extra,
-        session,
-        active,
-      );
+      return await outcome;
     } finally {
       answersInFlight.delete(questionId);
     }
