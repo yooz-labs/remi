@@ -41,7 +41,7 @@ The following invariants are non-negotiable:
    write, network, subprocess, persistence, or credential capability.
 3. Conversation/task context is descriptive evidence only. It cannot mint
    explicit authorization and cannot cross sessions.
-4. Missing, truncated, malformed, conflicting, or unparseable evidence fails
+4. Missing, truncated, malformed, conflicting, or unparsable evidence fails
    toward escalation.
 5. A remote mutation can be auto-approved only through an explicit,
    session-scoped workflow grant with bounded target and expiry.
