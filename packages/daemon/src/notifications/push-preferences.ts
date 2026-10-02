@@ -9,6 +9,10 @@
  * real once the sender honors it, so the device sends it up on
  * `register_device_token` and the daemon filters its per-token fan-out here.
  *
+ * Three preferences, one per mutable kind: `questions` (`question`),
+ * `turnComplete` (`turn_complete`) and `harnessDenied` (`harness_denied`,
+ * #1126 / ADR 0031: auto mode blocked a call; informational).
+ *
  * Two deliberate non-preferences:
  *   - `dismiss` pushes are never filtered. They are quiet `content-available`
  *     updates that CLEAR an already-delivered card; suppressing one strands

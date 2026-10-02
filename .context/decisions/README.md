@@ -34,7 +34,7 @@ add a row below.
 | [0016](0016-strictness-levels-are-groups-not-prose.md) | Strictness is level-gated group membership, never prose to the model (superseded by 0030) |
 | [0017](0017-deny-floor-enforced-in-code.md) | A model-produced deny is silent, so it is floored in code (superseded by 0030) |
 | [0018](0018-write-group-safety-is-three-independent-vetoes.md) | A write-approving group needs three independent vetoes (superseded by 0030) |
-| [0019](0019-push-kind-mutability-asymmetry.md) | Push kinds are named on the wire; muting them is asymmetric; amended by 0030: alert patterns moved to `[notifications]`, no hook waits on delivery |
+| [0019](0019-push-kind-mutability-asymmetry.md) | Push kinds are named on the wire; muting them is asymmetric; amended by 0030: alert patterns moved to `[notifications]`, no hook waits on delivery; amended by 0031: a fifth, per-device mutable kind, `harness_denied` |
 | [0020](0020-client-status-cue-totality.md) | A client status cue must be total over its gate's end paths; amended by 0030: the cues it governed are gone, the rule stands |
 | [0021](0021-registration-outcome-not-requery.md) | Question registration outcome flows from the call, not a re-query |
 | [0022](0022-status-bar-never-freezes.md) | Status-bar liveness is bounded by `HEARTBEAT_MS`, never by a human |
