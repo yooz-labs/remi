@@ -699,20 +699,6 @@ Escalate anything touching secrets.
     expect(config.auto_approve.deny_groups).toEqual([]);
   });
 
-  test('unknown group name warns but does not throw (ignored)', () => {
-    const warnings: string[] = [];
-    const original = console.warn;
-    console.warn = (msg?: unknown) => warnings.push(String(msg));
-    try {
-      fs.writeFileSync(TEST_CONFIG, '[auto_approve]\napprove_groups = ["read-only", "bogus"]\n');
-      const config = loadConfig(TEST_CONFIG);
-      expect(config.auto_approve.approve_groups).toEqual(['read-only', 'bogus']);
-      expect(warnings.some((w) => w.includes('unknown permission group "bogus"'))).toBe(true);
-    } finally {
-      console.warn = original;
-    }
-  });
-
   test('loads hold_timeout / push_hold_timeout from TOML (#573)', () => {
     fs.writeFileSync(TEST_CONFIG, '[auto_approve]\nhold_timeout = 900\npush_hold_timeout = 45\n');
     const config = loadConfig(TEST_CONFIG);
@@ -976,72 +962,6 @@ describe('notifications config (#914)', () => {
   });
 });
 
-describe('auto_approve.level (#963)', () => {
-  /** Write a config and load it. Real file, real TOML parse -- no mocks. */
-  function load(toml: string) {
-    fs.writeFileSync(TEST_CONFIG, toml);
-    return loadConfig(TEST_CONFIG);
-  }
-
-  test('a config with no level gets the strict local-read default', () => {
-    const c = load('[auto_approve]\nenabled = true\n');
-    expect(c.auto_approve.level).toBe('strict');
-    expect([...c.auto_approve.approve_groups].sort()).toEqual(
-      ['build-test', 'gh-read', 'read-only', 'vcs-read'].sort(),
-    );
-  });
-
-  test('level = "balanced" adds fs-write', () => {
-    const c = load('[auto_approve]\nlevel = "balanced"\n');
-    expect(c.auto_approve.approve_groups).toContain('fs-write');
-    expect(c.auto_approve.approve_groups).not.toContain('vcs-write');
-  });
-
-  test('level = "trusted" adds fs-write and vcs-write', () => {
-    const c = load('[auto_approve]\nlevel = "trusted"\n');
-    expect(c.auto_approve.approve_groups).toContain('fs-write');
-    expect(c.auto_approve.approve_groups).toContain('vcs-write');
-    // Still never the cut group, at any level (#961).
-    expect(c.auto_approve.approve_groups).not.toContain('net-read');
-  });
-
-  test('an explicit approve_groups overrides the level', () => {
-    // The upgrade-safety case: someone who set groups before levels existed
-    // keeps exactly their behavior.
-    const c = load('[auto_approve]\nlevel = "trusted"\napprove_groups = ["read-only"]\n');
-    expect(c.auto_approve.approve_groups).toEqual(['read-only']);
-    expect(c.auto_approve.level).toBe('trusted');
-  });
-
-  test('an explicit EMPTY approve_groups is respected', () => {
-    // `[]` means "approve no groups" and must not be mistaken for "unset",
-    // which would silently re-enable them.
-    const c = load('[auto_approve]\nlevel = "trusted"\napprove_groups = []\n');
-    expect(c.auto_approve.approve_groups).toEqual([]);
-  });
-
-  test('an explicit approve_groups WITHOUT a level still wins over the default preset', () => {
-    // The pre-#963 config shape. Loading it must not have the strict preset
-    // overwrite what the user wrote.
-    const c = load('[auto_approve]\napprove_groups = ["build-test"]\n');
-    expect(c.auto_approve.approve_groups).toEqual(['build-test']);
-  });
-
-  test('an invalid level is a startup error naming the valid ones', () => {
-    expect(() => load('[auto_approve]\nlevel = "loose"\n')).toThrow(/level/);
-    expect(() => load('[auto_approve]\nlevel = "loose"\n')).toThrow(/strict/);
-  });
-
-  test('a non-string level is refused too', () => {
-    expect(() => load('[auto_approve]\nlevel = 3\n')).toThrow(/level/);
-  });
-
-  test('no config file at all yields the strict default', () => {
-    const c = loadConfig(path.join(TEST_DIR, 'nope.toml'));
-    expect(c.auto_approve.level).toBe('strict');
-  });
-});
-
 describe('auto_approve.residual_action (#1045 phase 6)', () => {
   /** Write a config and load it. Real file, real TOML parse -- no mocks. */
   function load(toml: string) {
@@ -1198,74 +1118,5 @@ describe('#880 the shipped defaults do not expose an unauthenticated daemon', ()
     const generated = generateDefaultConfig();
     fs.writeFileSync(TEST_CONFIG, generated);
     expect(loadConfig(TEST_CONFIG).daemon.bind).toBe('127.0.0.1');
-  });
-});
-
-describe('per-agent policy survives the config LOAD path (ADR 0025)', () => {
-  // Review found this untested end to end: `validateAgents`, `resolvePolicy`
-  // and the service were each covered in isolation, but nothing wrote a real
-  // TOML section and asserted it arrived. Deleting the `validateAgents(...)`
-  // call from `loadConfig` left the whole suite green.
-  //
-  // It guards a live coupling, not just wiring: `mergeSection` iterates
-  // `Object.keys(defaults)`, so a key absent from DEFAULT_CONFIG is silently
-  // DROPPED. `agents: {}` in the defaults is the only reason a user's section
-  // is reachable at all — and before this test, removing that line was pinned
-  // solely by a `toEqual` snapshot that anyone deleting it would "fix".
-  test('a real [auto_approve.agents.<type>] section reaches the loaded config', () => {
-    fs.writeFileSync(
-      TEST_CONFIG,
-      `[auto_approve]
-approve_groups = ["read-only"]
-
-[auto_approve.agents.Explore]
-approve_groups = ["read-only", "net-read"]
-deny = ["curl"]
-`,
-    );
-    const config = loadConfig(TEST_CONFIG);
-    expect(config.auto_approve.agents?.['Explore']?.approve_groups).toEqual([
-      'read-only',
-      'net-read',
-    ]);
-    expect(config.auto_approve.agents?.['Explore']?.deny).toEqual(['curl']);
-    // The base is untouched by the section.
-    expect(config.auto_approve.approve_groups).toEqual(['read-only']);
-  });
-
-  test('an unknown KEY inside a section is rejected at load', () => {
-    fs.writeFileSync(
-      TEST_CONFIG,
-      `[auto_approve.agents.Explore]
-approve_group = ["read-only"]
-`,
-    );
-    expect(() => loadConfig(TEST_CONFIG)).toThrow(/approve_group/);
-  });
-
-  test('an unknown GROUP name inside a section warns but loads', () => {
-    // Warn, not throw: a throw reaches cli.ts's exit(1), and under the
-    // --install LaunchAgent (KeepAlive.SuccessfulExit=false) that is a
-    // crash-restart loop over a one-character typo. Matches the base path.
-    const warnings: string[] = [];
-    const original = console.warn;
-    console.warn = (...args: unknown[]) => {
-      warnings.push(args.join(' '));
-    };
-    try {
-      fs.writeFileSync(
-        TEST_CONFIG,
-        `[auto_approve.agents.Explore]
-approve_groups = ["net-reed"]
-`,
-      );
-      const config = loadConfig(TEST_CONFIG);
-      expect(config.auto_approve.agents?.['Explore']?.approve_groups).toEqual(['net-reed']);
-    } finally {
-      console.warn = original;
-    }
-    // Because approve_groups REPLACES, this typo silently narrows the agent
-    // below base — which is exactly why it must be reported.
-    expect(warnings.join('\n')).toContain('net-reed');
   });
 });

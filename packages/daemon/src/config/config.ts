@@ -10,15 +10,6 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { DAEMON_BASE_PORT, DAEMON_PORT_RANGE, errorToString } from '@remi/shared';
 import { parse as parseToml } from 'smol-toml';
-import { validateAgents } from '../auto-approve/agent-policy.ts';
-import {
-  AUTO_APPROVE_LEVELS,
-  DEFAULT_AUTO_APPROVE_LEVEL,
-  isAutoApproveLevel,
-  resolveApproveGroups,
-} from '../auto-approve/levels.ts';
-import { KNOWN_TOOL_NAMES, looksLikeToolName } from '../auto-approve/pattern-matcher.ts';
-import { isKnownGroup, knownGroupNames } from '../auto-approve/permission-groups.ts';
 import { DEFAULT_ALWAYS_ESCALATE_TOOLS } from '../auto-approve/types.ts';
 import type { AutoApproveConfig, ResidualAction } from '../auto-approve/types.ts';
 
@@ -466,7 +457,7 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // `approve_groups` line above, including the separately parsed `gh-read`
     // group. Raising it to "balanced"/"trusted" swaps in the write-side
     // groups (#959).
-    level: DEFAULT_AUTO_APPROVE_LEVEL,
+    level: 'strict',
     deny_groups: [],
     instructions: '',
     multichoice: 'skip',
@@ -637,19 +628,10 @@ export function loadConfig(configPath: string = CONFIG_PATH): RemiConfig {
     const parsed = parseToml(raw) as Record<string, unknown>;
     const merged = deepMerge(DEFAULT_CONFIG, parsed);
     validateAutoApprove(merged.auto_approve, configPath);
-    // ADR 0025. Validated against the MERGED value, which is safe here because
-    // `mergeSection` replaces the `agents` table wholesale rather than deep-
-    // merging it -- a user table never blends with the empty default.
-    validateAgents(merged.auto_approve.agents, configPath);
-    // Apply the level preset AFTER merge, but decide from the RAW parsed
-    // table (#963). By this point `merged.approve_groups` is populated either
-    // way, so it cannot answer "did the user write this?" — reading it here
-    // would make every install look explicit and no level would ever apply.
     const rawAutoApprove = parsed['auto_approve'] as Record<string, unknown> | undefined;
-    const levelled = applyLevel(merged, rawAutoApprove, configPath);
-    // #1045 phase 6: same raw-table-driven shape as applyLevel above, but
-    // warn + fall back instead of throw -- see applyResidualAction's own doc.
-    const withResidualAction = applyResidualAction(levelled, rawAutoApprove, configPath);
+    // #1045 phase 6: warn + fall back instead of throw -- see
+    // applyResidualAction's own doc.
+    const withResidualAction = applyResidualAction(merged, rawAutoApprove, configPath);
     validateTerminal(merged.terminal, configPath);
     validateDaemon(merged.daemon, configPath);
     validateNotifications(merged.notifications, configPath);
@@ -659,66 +641,6 @@ export function loadConfig(configPath: string = CONFIG_PATH): RemiConfig {
       `Invalid TOML in ${configPath}: ${errorToString(err)}. Fix the syntax or delete the file to use defaults.`,
     );
   }
-}
-
-/**
- * Apply the `[auto_approve] level` preset to the merged config (#963).
- *
- * Separated from `deepMerge` because the decision needs something the merged
- * value cannot express: whether `approve_groups` was WRITTEN by the user or
- * filled in by the default. Both look identical afterwards, so this reads the
- * raw parsed table instead.
- *
- * An explicit `approve_groups` wins over the preset, and the daemon says so —
- * a user who set groups before levels existed keeps exactly their behavior,
- * and learns from one log line why their level appears to have no effect.
- */
-function applyLevel(
-  merged: RemiConfig,
-  rawAutoApprove: Record<string, unknown> | undefined,
-  configPath: string,
-): RemiConfig {
-  const rawLevel = rawAutoApprove?.['level'];
-  if (rawLevel !== undefined && !isAutoApproveLevel(rawLevel)) {
-    throw new Error(
-      `Invalid auto_approve.level in ${configPath}: got ${JSON.stringify(rawLevel)}. Valid levels: ${AUTO_APPROVE_LEVELS.join(', ')}. Example: level = "balanced"`,
-    );
-  }
-  const level = isAutoApproveLevel(rawLevel) ? rawLevel : DEFAULT_AUTO_APPROVE_LEVEL;
-
-  const explicitGroups =
-    rawAutoApprove !== undefined && 'approve_groups' in rawAutoApprove
-      ? merged.auto_approve.approve_groups
-      : undefined;
-  const resolved = resolveApproveGroups(level, explicitGroups);
-
-  if (resolved.source === 'explicit' && rawLevel !== undefined) {
-    console.warn(
-      `[AutoApprove] Warning: both level = "${level}" and an explicit approve_groups are set in ${configPath}; approve_groups wins. Remove it to use the level preset.`,
-    );
-  }
-
-  // Validate the RESOLVED list, not just the user's (#964 review). The
-  // unknown-group warning in `validateAutoApprove` already ran, against the
-  // pre-preset value — so a typo in `LEVEL_GROUPS` (`vcs-writ`) would reach
-  // `matchGroups`, which ignores unknown names, and the level would silently
-  // approve nothing while appearing to work. A user's own typo warns; the
-  // shipped preset's would not have. `levels.test.ts` covers this, but a test
-  // is not the runtime, and this epic has already produced three defects in
-  // code written to fix the previous one.
-  if (resolved.source === 'level') {
-    const unknown = resolved.groups.filter((g) => !isKnownGroup(g));
-    if (unknown.length > 0) {
-      throw new Error(
-        `Internal error: auto_approve.level "${level}" names unknown permission group(s) ${unknown.map((g) => `"${g}"`).join(', ')}. Known groups: ${knownGroupNames().join(', ')}. This is a bug in the shipped level presets, not in ${configPath}.`,
-      );
-    }
-  }
-
-  return {
-    ...merged,
-    auto_approve: { ...merged.auto_approve, level, approve_groups: resolved.groups },
-  };
 }
 
 const VALID_RESIDUAL_ACTIONS: readonly ResidualAction[] = ['escalate', 'deny'];
@@ -971,7 +893,7 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
   }
   if (!isStringArray(cfg.approve_groups)) {
     throw new Error(
-      `Invalid auto_approve.approve_groups in ${configPath}: must be an array of group names. Known groups: ${knownGroupNames().join(', ')}. Example: approve_groups = ["read-only", "vcs-read", "gh-read", "build-test"]`,
+      `Invalid auto_approve.approve_groups in ${configPath}: must be an array of group names.`,
     );
   }
   if (!isStringArray(cfg.subagent_alert)) {
@@ -981,15 +903,8 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
   }
   if (!isStringArray(cfg.deny_groups)) {
     throw new Error(
-      `Invalid auto_approve.deny_groups in ${configPath}: must be an array of group names. Known groups: ${knownGroupNames().join(', ')}.`,
+      `Invalid auto_approve.deny_groups in ${configPath}: must be an array of group names.`,
     );
-  }
-  for (const g of [...cfg.approve_groups, ...cfg.deny_groups]) {
-    if (!isKnownGroup(g)) {
-      console.warn(
-        `[AutoApprove] Warning: unknown permission group "${g}" in ${configPath}; ignored. Known groups: ${knownGroupNames().join(', ')}.`,
-      );
-    }
   }
   if (typeof cfg.instructions !== 'string') {
     throw new Error(
@@ -1035,20 +950,6 @@ function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
     if (p.trim().length < MIN_PATTERN_LENGTH) {
       console.warn(
         `[AutoApprove] Warning: deny pattern "${p}" is shorter than ${MIN_PATTERN_LENGTH} chars and will block many commands. Use a more specific pattern.`,
-      );
-    }
-  }
-
-  // An allow entry shaped like a tool name matches that TOOL and is never
-  // tested against a Bash command (#536). That is the point of the fix, but it
-  // silently changes what a capitalized real binary does: `Rscript`, `MSBuild`
-  // and friends look like tool names and stop covering their own commands. The
-  // entry keeps working for a tool of that name, so this is a warning rather
-  // than an error, but it must not be silent.
-  for (const p of cfg.allow) {
-    if (looksLikeToolName(p) && !KNOWN_TOOL_NAMES.has(p)) {
-      console.warn(
-        `[AutoApprove] Warning: allow entry "${p}" is shaped like a tool name, so it matches the ${p} TOOL and never a Bash command containing it. If you meant the shell command, lowercase it or give a longer prefix (e.g. "${p} " with an argument).`,
       );
     }
   }

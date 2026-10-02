@@ -1,117 +1,11 @@
 /**
- * Types for the auto-approve feature.
- *
- * The auto-approve system intercepts PermissionRequest hook events and uses
- * an LLM (via OpenAI-compatible API) to decide: approve, deny, escalate,
- * or, for multi-choice prompts, pick a specific option index.
+ * Types for the auto-approve configuration. The evaluator and rule layer they
+ * configured were deleted in #1125 (ADR 0030); the `[auto_approve]` table
+ * itself is removed in the following commit.
  */
-
-import type { AutoApproveLevel } from './levels.ts';
 
 /** Phase 2 advisory and phase 4 verified reviewer modes. */
 export type RiskReviewMode = 'off' | 'shadow' | 'verified';
-/**
- * Possible decisions returned by AutoApproveService.evaluate().
- *
- * 'pick' is for multi-choice prompts (#399): the LLM chose a specific
- *   option by 1-based index, surfaced via `pickIndex` on the result.
- * 'cancelled' is set ONLY when AutoApproveService.cancel() aborted an
- *   in-flight call; it cannot come from the LLM. See cancel() docs for
- *   the bridge-side contract.
- */
-export type AutoApproveDecision = 'approve' | 'deny' | 'escalate' | 'pick' | 'cancelled';
-
-/**
- * What produced a `deny`, and what it matched (#1015). The distinction is the
- * whole point of carrying it: it decides whether the user gets told.
- *
- * - `config` — the user's own `deny` / `deny_groups` matched, at 0ms, before
- *   any model ran. Their standing rule fired as written; an audit line is
- *   warranted, a push is not.
- * - `model-floor` — the MODEL said deny and `enforceDenyFloor` let it stand
- *   because `matchesCatastrophicPattern` matched. Nobody configured this one,
- *   and the floor's match is measurably wrong most of the time it fires (7 of
- *   8 hits on 918 real commands were prose that merely QUOTED a dangerous
- *   string — #997). This is the class that must not be silent.
- * - `residual` — `AutoApproveGate.escalateMain` converted what would have been
- *   an escalation-to-the-user into a deny, because `residual_action = "deny"`
- *   (#1045 phase 6). The user opted INTO fewer pings via this setting, so
- *   unlike `model-floor` this never pushes — but it is still logged
- *   unconditionally, for the same reason every deny is: silence is the bug
- *   `onAutoDenied` exists to end, not a feature of quiet mode.
- *
- * `pattern` is what matched in either case (the config entry, the group name,
- * or the catastrophic label), so a report can say WHY without re-running any
- * matcher. `residual` carries no pattern — there is nothing to match, only a
- * setting — so it is always `''`.
- */
-export interface DenySource {
-  readonly kind: 'config' | 'model-floor' | 'residual';
-  readonly pattern: string;
-}
-
-/**
- * LLM-produced (or pattern-matched) decision. `model` is the model that
- * produced the verdict (or the configured model for pattern-matched
- * decisions, since downstream telemetry treats them uniformly).
- *
- * Discriminated by `decision` so the `pick`-only `pickIndex` field is
- * load-bearing in TypeScript: a `pick` result MUST carry `pickIndex`
- * and the approve/deny/escalate variants cannot accidentally set it.
- */
-export type AutoApproveDecisionResult =
-  | {
-      readonly decision: 'approve' | 'deny' | 'escalate';
-      readonly reasoning: string;
-      readonly durationMs: number;
-      readonly model: string;
-      /** #628: a one-sentence, lock-screen-friendly question the model produces on
-       *  an `escalate` verdict (e.g. "Force-push to main?"). Used for the push
-       *  title/body instead of the raw "Allow Bash: <command>". Absent for
-       *  approve/deny, pattern-matched verdicts, or when the model omits it. */
-      readonly summary?: string | undefined;
-      /**
-       * #1081 phase 4: this escalation came from the verified read-only path
-       * and is terminal for the gate. It must not be sent to `escalate_model`,
-       * because that would let an unverified second opinion undo a proof,
-       * provenance, risk, or reviewer failure.
-       */
-      readonly suppressSecondOpinion?: true;
-      /** #1015: which mechanism produced a `deny`. Present on `deny` results
-       *  only; absent on approve/escalate.
-       *
-       *  Carried structurally rather than left to be re-derived downstream. The
-       *  reasoning strings ARE currently distinguishable (`deny-matched
-       *  pattern:` / `deny-matched group:` vs the model's own prose), so a
-       *  consumer could sniff them — and that is exactly the defect shape this
-       *  module has hit repeatedly: two pieces of code independently deriving
-       *  the same judgement and drifting apart the first time one side's
-       *  wording changes. The site that decides is the site that reports. */
-      readonly denySource?: DenySource | undefined;
-    }
-  | {
-      readonly decision: 'pick';
-      /** 1-based index into the permission_suggestions array.
-       *  Validated by `parseMultiChoiceDecision` against the actual
-       *  options length before this result is constructed. */
-      readonly pickIndex: number;
-      readonly reasoning: string;
-      readonly durationMs: number;
-      readonly model: string;
-    };
-
-/**
- * Control-plane outcome: cancel() aborted the in-flight call, no decision
- * exists. `model` is intentionally omitted — there is no verdict to attribute.
- */
-export interface AutoApproveCancelledResult {
-  readonly decision: 'cancelled';
-  readonly reasoning: string;
-  readonly durationMs: number;
-}
-
-export type AutoApproveResult = AutoApproveDecisionResult | AutoApproveCancelledResult;
-
 /** How auto-approve treats multi-choice permission prompts (#399). */
 export type MultiChoiceMode = 'skip' | 'evaluate';
 
@@ -300,7 +194,7 @@ export interface AutoApproveConfig {
    * `resolveApproveGroups` in `auto-approve/levels.ts` for why override rather
    * than union, and `loadConfig` for where the two are reconciled.
    */
-  readonly level: AutoApproveLevel;
+  readonly level: string;
   /**
    * Built-in permission groups to deny without calling the LLM. Checked before
    * `approve_groups` (and before `allow`); any group/pattern deny wins.
