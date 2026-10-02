@@ -19,11 +19,11 @@ You start a Claude Code session on your workstation. It's working on a complex t
 ## Quick Start
 
 ```bash
-# Install
+# Install (the package name is scoped, but the command it provides is just `remi`)
 bun install -g @yooz-labs/remi
 
-# The installed binary is still named `remi`
-# If you previously installed the unrelated unscoped package, remove it first:
+# npm also has an unrelated package named plain `remi`.
+# If an older install step left that one on your machine, remove it:
 bun remove -g remi
 
 # Start Claude Code with Remi (session persists if terminal closes)
@@ -114,15 +114,20 @@ See `.context/plan.md` for the detailed development roadmap.
 
 ## License
 
-Source code is licensed under [**PolyForm Shield 1.0.0**](LICENSE.md). You can:
+Remi is open core, and the license is set per directory.
+[`LICENSE.md`](LICENSE.md) maps each package directory to its license and states the license for everything outside them; each package directory carries its own license file.
 
-- Read, fork, modify, and use it for any purpose **except** building a competing product.
-- Embed it in apps that aren't direct Remi substitutes.
-- Contribute back via PRs.
+- **Daemon, CLI and shared protocol** (`packages/daemon`, `packages/shared`): [**Apache License 2.0**](packages/daemon/LICENSE).
+  Use, modify and redistribute them, commercially or not, under the terms of that license.
+- **Mobile and web client, hosted relay and native Mac app** (`packages/web`, `packages/signaling`, `packages/macos`): [**PolyForm Shield 1.0.0**](packages/web/LICENSE.md).
+  You can read, fork, modify and use them for any purpose **except** building a competing product, so you cannot offer a re-skinned commercial fork of the app or the relay.
+  For the strategic rationale, see [`yooz-engine/LICENSING.md`](https://github.com/yooz-labs/yooz-engine/blob/main/LICENSING.md).
+- **Everything else** (scripts, docs, CI configuration): Apache-2.0 unless a file says otherwise.
 
-You cannot offer a re-skinned commercial fork of Remi. For the strategic rationale, see [`yooz-engine/LICENSING.md`](https://github.com/yooz-labs/yooz-engine/blob/main/LICENSING.md).
+The `@yooz-labs/remi` npm package is a small Node launcher; the platform packages it installs hold the compiled `remi` binary, which bundles daemon and shared code plus third-party dependencies.
+The npm packages are Apache-2.0, and the bundled dependencies keep their own licenses (their notices are not shipped yet, see [`LICENSE.md`](LICENSE.md)).
 
-For commercial-use or dual-license inquiries: **dev@yooz.info**.
+For commercial-use or dual-license inquiries about the PolyForm Shield parts: **dev@yooz.info**.
 
 ## Contributing
 
