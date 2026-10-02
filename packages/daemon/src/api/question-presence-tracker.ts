@@ -162,6 +162,25 @@ function agentKey(question: Question): string {
   return question.agentId ?? MAIN_AGENT_ID;
 }
 
+/**
+ * A screen-parsed option with `isYes`/`isNo` derived from its label (#1134).
+ * The parser reads a numbered menu as bare picks (both flags false), so a
+ * merged card built from the screen would otherwise lose the yes/no meaning
+ * the hook's options carried: the lock-screen category, the client's
+ * styling and the answer path's allow/deny classification all read these
+ * flags. Conservative: only a label that starts with the exact word "Yes" or
+ * "No" counts (case-sensitive, so "Yesterday", "None" and "yes" do not).
+ * Labels and values are untouched; flags already set are kept.
+ */
+function withScreenLabelFlags(option: QuestionOption): QuestionOption {
+  const label = option.label.trim();
+  return {
+    ...option,
+    isYes: option.isYes || /^Yes\b/.test(label),
+    isNo: option.isNo || /^No\b/.test(label),
+  };
+}
+
 /** Debounce (ms) before an orphan PTY prompt (#712: no pending hook record,
  *  no live registered question) is pushed. Guards a residual render flash —
  *  a prompt painted mid-redraw that is gone a moment later (status leaves
@@ -641,7 +660,9 @@ export class QuestionPresenceTracker {
    * typing its option value into the PTY, so it must carry the screen's
    * numbering; the hook's suggestion-derived set does not match Claude's
    * dialog one-for-one, and a mismatch typed a phone "No" as an approval. The
-   * hook's options are kept only when the parse has none.
+   * hook's options are kept only when the parse has none. The parse carries
+   * no yes/no flags, so the merge derives them from the screen labels
+   * (`withScreenLabelFlags`).
    * Text/agentId/kind/questions/submitLabel/summary still prefer the hook
    * record.
    *
@@ -919,7 +940,9 @@ export class QuestionPresenceTracker {
             // The hook text carries the tool/command/agent context; the PTY's is
             // the bare terminal prompt. Use the hook's when it has one (#497).
             text: hookRecord.text || ptyQuestion.text,
-            options: useHookOptions ? [...hookRecord.options] : [...ptyQuestion.options],
+            options: useHookOptions
+              ? [...hookRecord.options]
+              : ptyQuestion.options.map(withScreenLabelFlags),
             agentId: ptyQuestion.agentId ?? hookRecord.agentId,
             promptId: hookRecord.promptId ?? ptyQuestion.promptId,
             // #888 review finding: the `...ptyQuestion` spread above silently

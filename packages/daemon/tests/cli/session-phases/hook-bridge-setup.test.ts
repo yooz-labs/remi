@@ -2283,9 +2283,18 @@ describe('setupHookBridge', () => {
     test("the card carries the screen's options, not the hook's four", async () => {
       const { card, screen } = await e5Card('claude-e5-card');
 
-      expect(card.options).toEqual(screen.options);
+      // The screen's labels and values, unchanged.
+      expect(card.options.map((o) => [o.value, o.label])).toEqual(
+        screen.options.map((o) => [o.value, o.label]),
+      );
       expect(card.options.map((o) => o.value)).toEqual(['1', '2', '3']);
       expect(card.options[2]?.label).toBe('No');
+      // Yes/no meaning restored from the screen labels (the parse has none).
+      expect(card.options.map((o) => [o.isYes, o.isNo])).toEqual([
+        [true, false],
+        [true, false],
+        [false, true],
+      ]);
       // The hook still names the command.
       expect(card.text).toBe('Allow Bash: touch e5-marker.txt');
     });

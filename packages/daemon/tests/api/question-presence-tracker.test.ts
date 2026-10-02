@@ -629,11 +629,56 @@ describe('QuestionPresenceTracker', () => {
       expect(pushes.length).toBe(1);
       expect(pushes[0]?.id).toBe(structuredHook.id);
       expect(pushes[0]?.text).toBe('Allow Bash: touch e5-marker.txt');
-      expect(pushes[0]?.options).toEqual(ptyQ.options);
+      // The screen's labels and values; yes/no flags derived from the labels.
+      expect(pushes[0]?.options.map((o) => [o.value, o.label])).toEqual(
+        ptyQ.options.map((o) => [o.value, o.label]),
+      );
+      expect(pushes[0]?.options.map((o) => [o.isYes, o.isNo])).toEqual([
+        [true, false],
+        [true, false],
+        [false, true],
+      ]);
       // No hook-only artifacts survive: nothing to echo, no value 4.
       expect(pushes[0]?.options.some((o) => o.suggestionIndex !== undefined)).toBe(false);
       expect(pushes[0]?.options.map((o) => o.value)).toEqual(['1', '2', '3']);
       expect(pushes[0]?.optionsAreFallback).toBe(false);
+    });
+
+    it('derives yes/no flags from the screen labels, conservatively', () => {
+      // The parser reads a numbered menu as bare picks (no flags); the merge
+      // restores the meaning from the label, counting only a label that
+      // starts with the exact word "Yes" or "No".
+      const pushes: Question[] = [];
+      const tracker = new QuestionPresenceTracker((q) => {
+        pushes.push(q);
+        return undefined;
+      });
+      tracker.recordPendingHook(makePermissionRequestHook('Allow Bash: ls'));
+      const labels = [
+        'Yes',
+        "Yes, and don't ask again for this command",
+        'Yes,andalwaysallowaccessto/w',
+        'No, and tell Claude what to do differently (esc)',
+        "Yesterday's build",
+        'None of these',
+        'yes',
+        'Nope',
+      ];
+      tracker.onPTYPromptVisible({
+        ...makePTYQuestion('Do you want to proceed?'),
+        options: labels.map((l, i) => makeOption(l, String(i + 1))),
+      });
+
+      expect(pushes[0]?.options.map((o) => [o.label, o.isYes, o.isNo])).toEqual([
+        ['Yes', true, false],
+        ["Yes, and don't ask again for this command", true, false],
+        ['Yes,andalwaysallowaccessto/w', true, false],
+        ['No, and tell Claude what to do differently (esc)', false, true],
+        ["Yesterday's build", false, false],
+        ['None of these', false, false],
+        ['yes', false, false],
+        ['Nope', false, false],
+      ]);
     });
 
     it('a hook record keeps its own options only when the PTY question has none', () => {
