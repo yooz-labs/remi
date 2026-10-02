@@ -24,7 +24,7 @@ Two live spikes against Claude Code 2.1.287 (#1126 comments, the lead's scratchp
 | A deny with a message reaches Claude as the tool result, `is_error: true` | round 1 |
 | A background subagent's dialog does not render while its hook is held; after a passthrough it renders on the main screen | F2 |
 | In auto mode a classifier block fires `PermissionDenied` (with `tool_use_id`, `reason`) and no `PermissionRequest`; an auto-mode fallback prompt auto-denies after 2:00, counting during a hold | F1a-F1d |
-| A call the session's own allow rules permit fires no `PermissionRequest`, for a background subagent, a foreground subagent and the main agent alike (`Bash(ls:*)` allowed: `ls` produced only PreToolUse/PostToolUse; the `touch` control fired `PermissionRequest` each time) | #1126 lead item 3, `p3m-allowrules` |
+| A call the session's own allow rules permit fires no `PermissionRequest`, for a background subagent, a foreground subagent and the main agent alike (`Bash(touch p3m-allowed*)` allowed: that `touch` produced only PreToolUse/PostToolUse, the unallowed `touch` control fired `PermissionRequest` each time) | #1126 lead item 3, `p3m2-allowrules-touch` |
 
 ## Decision
 
