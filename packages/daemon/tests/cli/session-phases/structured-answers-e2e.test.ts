@@ -459,6 +459,29 @@ describe('AskUserQuestion and ExitPlanMode through held hooks, end to end (#1127
       expect(ptyWrites).toEqual([]);
     });
 
+    test('an input that does not parse exactly: a terminal-only card, every answer refused with its own message (review S7)', async () => {
+      const { handlers, gate } = build();
+      await lock();
+      // Two options with the same label: the card's numbering cannot be trusted.
+      const LOOSE = { questions: [{ question: 'Pick', options: ['A', 'A', 'B'] }] };
+      const { card, response } = await ask('AskUserQuestion', LOOSE);
+      expect(card.terminalOnly).toBe(true);
+      expect(pushes.at(-1)?.question.terminalOnly).toBe(true);
+      await handlers.onAnswer(CONN, SID, card.id, 'B');
+      expect(errors()[0]).toMatchObject({
+        code: 'STALE_ANSWER',
+        message: 'This question can only be answered in the terminal (or Cancel).',
+      });
+      expect(gate.isHeld(card.id)).toBe(true);
+      // Cancel still works.
+      await handlers.onAnswer(CONN, SID, card.id, '', undefined, { cancel: true });
+      expect(await decisionOf(response)).toEqual({
+        behavior: 'deny',
+        message: 'The user dismissed the question.',
+      });
+      expect(ptyWrites).toEqual([]);
+    });
+
     test('Cancel from the phone denies with the dismissal message; no Esc is typed', async () => {
       const { handlers } = build();
       await lock();

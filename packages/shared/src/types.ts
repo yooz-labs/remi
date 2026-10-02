@@ -224,6 +224,16 @@ export interface Question {
   readonly kind?: 'permission' | 'multi_question' | 'plan_approval' | undefined;
 
   /**
+   * True when no phone answer can be applied to this card (#1127 review S7):
+   * an AskUserQuestion whose input does not parse exactly, so its option
+   * numbers cannot be trusted to name the input's options. Every answer to
+   * it is refused; it is answered in the terminal, or cancelled from the
+   * phone. Clients show no answer controls but Cancel, and the push gets no
+   * actionable category.
+   */
+  readonly terminalOnly?: boolean | undefined;
+
+  /**
    * Long-form text the prompt is about (#1127): the plan of a
    * `'plan_approval'` card, verbatim (markdown). The app shows it in full;
    * the push shows its start; a text-only surface may shorten it. `text`

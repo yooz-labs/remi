@@ -127,13 +127,14 @@ function isOneTapAskUserQuestion(question: Question): boolean {
 
 /**
  * The APNS category for a question card. A plan approval (#1127) never gets
- * one: approving a plan is not a lock-screen tap. An AskUserQuestion card
+ * one: approving a plan is not a lock-screen tap; nor does a card no phone
+ * answer can be applied to (`terminalOnly`, review S7). An AskUserQuestion card
  * gets REMI_MULTI only when it is one single-select question
  * (`isOneTapAskUserQuestion`), and none otherwise. Every other card is
  * chosen by what its options mean (`selectPushCategory`).
  */
 export function pushCategoryFor(question: Question): string | undefined {
-  if (question.kind === 'plan_approval') return undefined;
+  if (question.kind === 'plan_approval' || question.terminalOnly === true) return undefined;
   if (question.kind === 'multi_question') {
     return isOneTapAskUserQuestion(question) ? selectPushCategory(question.options) : undefined;
   }
@@ -163,7 +164,7 @@ export function pushCategoryFor(question: Question): string | undefined {
  * NotificationService.swift (`buildDynamicCategory`'s `0...5` loop).
  */
 export function selectDynOptions(question: Question): boolean {
-  if (question.kind === 'plan_approval') return false;
+  if (question.kind === 'plan_approval' || question.terminalOnly === true) return false;
   if (question.kind === 'multi_question' && !isOneTapAskUserQuestion(question)) return false;
   const { options } = question;
   if (options.length < 2 || options.length > 4) return false;

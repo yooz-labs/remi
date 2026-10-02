@@ -826,6 +826,7 @@ export class QuestionPresenceTracker {
             ...(hookRecord.questions ? { questions: hookRecord.questions } : {}),
             ...(hookRecord.submitLabel ? { submitLabel: hookRecord.submitLabel } : {}),
             ...(hookRecord.detail !== undefined ? { detail: hookRecord.detail } : {}),
+            ...(hookRecord.terminalOnly === true ? { terminalOnly: true } : {}),
           }
         : // NOTE (#887 review): identity adoption above is gated on
           // `options.length > 0`, so an optionless hook record falls here and

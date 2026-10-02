@@ -174,6 +174,11 @@ describe('mapQuestionToUIQuestion', () => {
     expect(ui.prompt).toBe('Plan ready for review');
   });
 
+  test('threads terminalOnly for a card no phone answer can be applied to (#1127 review S7)', () => {
+    expect(mapQuestionToUIQuestion(question({ terminalOnly: true }), SID).terminalOnly).toBe(true);
+    expect(mapQuestionToUIQuestion(question(), SID).terminalOnly).toBeUndefined();
+  });
+
   describe('timestamp (#798 part 4)', () => {
     test('prefers the wire message timestamp over local receipt time', () => {
       const wireTs = '2026-01-01T00:00:00.000Z';

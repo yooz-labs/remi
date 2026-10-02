@@ -544,6 +544,8 @@ export class HookEventBridge {
             ...(toolQuestion.submitLabel ? { submitLabel: toolQuestion.submitLabel } : {}),
           }
         : {}),
+      // #1127 review S7: an AskUserQuestion no phone answer can be applied to.
+      ...(toolQuestion?.terminalOnly === true ? { terminalOnly: true } : {}),
       // #1127: an ExitPlanMode card carries the plan itself for the app.
       ...(toolQuestion?.kind === 'plan_approval'
         ? {

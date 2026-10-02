@@ -275,7 +275,9 @@ resolves the hook with a structured `updatedInput` built in
   question anything but one option or its own text, gives a multi-select
   question no option or text, or names an option that does not exist is
   refused and the hold stays (never completed with a guess); so is every
-  answer to an input that does not parse exactly. A single option answers
+  answer to an input that does not parse exactly, whose card is marked
+  `terminalOnly` (no lock-screen category, no Telegram keyboard, "This
+  question can only be answered in the terminal (or Cancel)."). A single option answers
   only a one-question single-select call: the lock screen sends its label,
   Telegram its value, and on any held card a string that is one option's
   value and a DIFFERENT option's label (numeric labels) is ambiguous and

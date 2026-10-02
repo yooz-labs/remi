@@ -311,6 +311,10 @@ function namedOption(options: readonly QuestionOption[], answer: string): NamedO
   return option === undefined ? { kind: 'none' } : { kind: 'one', option };
 }
 
+/** The refusal of every answer to a card no phone answer can be applied to
+ *  (`Question.terminalOnly`, #1127 review S7). Cancel still works. */
+const TERMINAL_ONLY_MESSAGE = 'This question can only be answered in the terminal (or Cancel).';
+
 /** The refusal of an answer that names two different options (see
  *  `namedOption`). */
 const AMBIGUOUS_ANSWER_MESSAGE =
@@ -806,9 +810,11 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       detail: {
         reason: closed
           ? 'hold-closed'
-          : held.kind === 'ambiguous'
-            ? 'ambiguous-option'
-            : 'not-a-held-option',
+          : active.terminalOnly === true
+            ? 'terminal-only'
+            : held.kind === 'ambiguous'
+              ? 'ambiguous-option'
+              : 'not-a-held-option',
         source: active.source,
       },
     });
@@ -827,11 +833,13 @@ export function createInputHandlers(deps: InputHandlerDeps) {
           'STALE_ANSWER',
           closed
             ? 'This prompt is no longer waiting for the phone; answer it in the terminal'
-            : held.kind === 'ambiguous'
-              ? AMBIGUOUS_ANSWER_MESSAGE
-              : selections !== undefined
-                ? 'Answer every question: one choice, or your own text of up to 2000 characters, for each single-choice question, and at least one choice for each multiple-choice question'
-                : 'This prompt takes one of its own options',
+            : active.terminalOnly === true
+              ? TERMINAL_ONLY_MESSAGE
+              : held.kind === 'ambiguous'
+                ? AMBIGUOUS_ANSWER_MESSAGE
+                : selections !== undefined
+                  ? 'Answer every question: one choice, or your own text of up to 2000 characters, for each single-choice question, and at least one choice for each multiple-choice question'
+                  : 'This prompt takes one of its own options',
           {
             sessionId,
             // A refused answer leaves the card live, and a client drops the

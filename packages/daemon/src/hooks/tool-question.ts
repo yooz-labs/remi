@@ -40,6 +40,9 @@ export interface ToolQuestion {
   readonly submitLabel?: string;
   /** #1127: the plan an ExitPlanMode asks to approve, verbatim. */
   readonly detail?: string;
+  /** #1127 review S7: an AskUserQuestion that did not parse exactly; no
+   *  phone answer can be applied to it (see `Question.terminalOnly`). */
+  readonly terminalOnly?: boolean;
 }
 
 /**
@@ -123,27 +126,38 @@ export function extractToolQuestion(
 
   // #1127: an AskUserQuestion whose input parses exactly is numbered from
   // that parse, so a card option's index is the index the answer names. One
-  // that does not parse exactly falls through to the lenient card below,
-  // whose answers the gate refuses (only the terminal can answer it).
+  // that does not parse exactly gets the lenient card, marked `terminalOnly`
+  // (review S7): the gate refuses every phone answer to it.
   if (toolName === 'AskUserQuestion') {
     const parsed = parseAskUserQuestion(toolInput);
     if (parsed !== null) return multiQuestion(askQuestionSteps(parsed));
+    const lenient = lenientQuestion(toolInput);
+    return lenient === null ? null : { ...lenient, terminalOnly: true };
   }
+  return lenientQuestion(toolInput);
+}
 
-  // The lenient card: an AskUserQuestion that did not parse exactly above,
-  // and shape-compatible tools (intentional, not name-gated): any tool whose
-  // tool_input carries `questions: [{ question, options }]`. This mirrors the
-  // `isDesignQuestion` detector (multichoice.ts), which routes the SAME shape
-  // to a pushed card, so an MCP/custom tool that mimics AskUserQuestion gets
-  // its real options surfaced here too. Malformed entries are dropped, so its
-  // option numbers need not match the input's. The shape guards (record with
-  // a `question` string + a non-empty `options` array) are tight, so a tool
-  // with an unrelated `questions` field returns null and falls through to
-  // permission_suggestions.
-  //
-  // #626: surface the FULL set of sub-questions (header / text / multiSelect /
-  // options with descriptions) as `questions`, not just the first. `text`/
-  // `options` mirror questions[0] for back-compat (the lock-screen summary).
+/**
+ * The lenient card for a `questions`-shaped input, or null: an
+ * AskUserQuestion that did not parse exactly (marked `terminalOnly` by the
+ * caller, since every phone answer to it is refused), and shape-compatible
+ * tools (intentional, not name-gated): any tool whose
+ * tool_input carries `questions: [{ question, options }]`. This mirrors the
+ * `isDesignQuestion` detector (multichoice.ts), which routes the SAME shape
+ * to a pushed card, so an MCP/custom tool that mimics AskUserQuestion gets
+ * its real options surfaced here too. Malformed entries are dropped, so its
+ * option numbers need not match the input's. The shape guards (record with
+ * a `question` string + a non-empty `options` array) are tight, so a tool
+ * with an unrelated `questions` field returns null and falls through to
+ * permission_suggestions.
+ *
+ * #626: surface the FULL set of sub-questions (header / text / multiSelect /
+ * options with descriptions) as `questions`, not just the first. `text`/
+ * `options` mirror questions[0] for back-compat (the lock-screen summary).
+ */
+function lenientQuestion(
+  toolInput: Record<string, unknown> | null | undefined,
+): ToolQuestion | null {
   if (!isRecord(toolInput)) return null;
   const rawQuestions = toolInput['questions'];
   if (!Array.isArray(rawQuestions) || rawQuestions.length === 0) return null;

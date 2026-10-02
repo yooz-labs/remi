@@ -415,6 +415,12 @@ describe('pushCategoryFor (#1127)', () => {
     expect(long.body).toHaveLength(200);
   });
 
+  test('a card no phone answer can be applied to gets no category (review S7)', () => {
+    const loose = { ...ask([{ multiSelect: false }]), terminalOnly: true };
+    expect(pushCategoryFor(loose)).toBeUndefined();
+    expect(selectDynOptions(loose)).toBe(false);
+  });
+
   test('every other card keeps its category by meaning', () => {
     expect(pushCategoryFor(question('q', [yesOpt, noOpt]))).toBe('REMI_YN');
     expect(pushCategoryFor(question('q', defaultThreeSet))).toBe('REMI_YNA');

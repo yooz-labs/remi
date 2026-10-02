@@ -297,7 +297,10 @@ function MultiQuestionForm({
   const [selected, setSelected] = useState<Map<number, Set<number>>>(new Map());
   const [typed, setTyped] = useState<Map<number, string>>(new Map());
   const submitting = question.submitting ?? false;
-  const failed = question.autoAnswerFailed ?? false;
+  // #1127 review S7: no phone answer can be applied to this card; it is
+  // answered in the terminal, or cancelled. Shown like a failed one.
+  const terminalOnly = question.terminalOnly ?? false;
+  const failed = (question.autoAnswerFailed ?? false) || terminalOnly;
 
   const toggle = useCallback((qi: number, oi: number, multi: boolean) => {
     setSelected((prev) => {
@@ -394,7 +397,9 @@ function MultiQuestionForm({
           className="rounded-[10px] px-3 py-2 text-[12px]"
           style={{ background: 'var(--color-surface-elevated)', color: 'var(--color-text)' }}
         >
-          Couldn't auto-answer this on your device. Cancel it, or answer it in the terminal.
+          {terminalOnly
+            ? 'This question can only be answered in the terminal (or Cancel).'
+            : "Couldn't auto-answer this on your device. Cancel it, or answer it in the terminal."}
         </p>
       )}
 
