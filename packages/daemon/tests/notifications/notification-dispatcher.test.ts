@@ -84,24 +84,25 @@ describe('selectPushCategory', () => {
 
   test('REMI_YN only for exactly [one-time Yes, No]', () => {
     expect(selectPushCategory([yesOpt, noOpt])).toBe('REMI_YN');
-    expect(selectPushCategory([noOpt, yesOpt])).toBe('REMI_MULTI');
-    // A standing grant behind a "Yes" title would skip the unlock prompt.
-    expect(selectPushCategory([yes('1', 'Yes, always'), no('2', 'No')])).toBe('REMI_MULTI');
+    // A Yes after the first option is a standing grant (#1134 review): no
+    // lock-screen buttons at all, never a "Yes" that grants it.
+    expect(selectPushCategory([noOpt, yesOpt])).toBeUndefined();
+    expect(selectPushCategory([yes('1', 'Yes, always'), no('2', 'No')])).toBeUndefined();
   });
 
-  test('a dropped-No two-option card gets REMI_MULTI, never a "No" that sends option 2', () => {
+  test('a dropped-No two-option card gets no actionable category', () => {
     // The pre-#1134 parse of the live dialog: "3. No" lost to a wrapped label.
+    // Its second option is a standing allow, so no "No" button may send it,
+    // and no generic button may either: the user answers in the app.
     const dropped = [
       yes('1', 'Yes'),
       yes('2', 'Yes,andalwaysallowaccessto/private/tmp/remi-e5/-Users-dev'),
     ];
-    expect(selectPushCategory(dropped)).toBe('REMI_MULTI');
+    expect(selectPushCategory(dropped)).toBeUndefined();
   });
 
-  test('REMI_YNA only for exactly [one-time Yes, standing Yes, No]', () => {
+  test('REMI_YNA for exactly [one-time Yes, any Yes, No]', () => {
     expect(selectPushCategory(defaultThreeSet)).toBe('REMI_YNA');
-    // Claude's own wording, spaced and collapsed: "Yes, and ..." is the
-    // standing option in the middle position.
     expect(
       selectPushCategory([
         yes('1', 'Yes'),
@@ -116,6 +117,14 @@ describe('selectPushCategory', () => {
         no('3', 'No'),
       ]),
     ).toBe('REMI_YNA');
+    // Any Yes in the middle is the standing option, whatever its wording.
+    expect(
+      selectPushCategory([
+        yes('1', 'Yes'),
+        yes('2', 'Yes, allow reading from /w during this session', { suggestionIndex: 0 }),
+        no('3', 'No'),
+      ]),
+    ).toBe('REMI_YNA');
   });
 
   test('the legacy ["Yes","Always","No"] suggestion set is REMI_YNA', () => {
@@ -123,19 +132,21 @@ describe('selectPushCategory', () => {
     expect(selectPushCategory(options)).toBe('REMI_YNA');
   });
 
-  test('other three-option shapes get REMI_MULTI', () => {
-    // A suggestion-derived middle option that does not say "always".
+  test('a standing option outside the REMI_YNA layout gets no category', () => {
+    // Two standing options (the live four-option hook card).
     expect(
       selectPushCategory([
         yes('1', 'Yes'),
-        yes('2', 'Yes, allow directory /w', { suggestionIndex: 0 }),
-        no('3', 'No'),
+        yes('2', 'Yes, allow reading from /w during this session', { suggestionIndex: 0 }),
+        yes('3', 'Yes, switch to acceptEdits mode', { suggestionIndex: 1 }),
+        no('4', 'No'),
       ]),
-    ).toBe('REMI_MULTI');
+    ).toBeUndefined();
     // Order matters: the titles are positional.
-    expect(selectPushCategory([yesAlwaysOpt, yes('1', 'Yes'), no('3', 'No')])).toBe('REMI_MULTI');
-    expect(selectPushCategory([yesOpt, noOpt, yesOpt])).toBe('REMI_MULTI');
-    // The workflow-grant action is a control marker, not a Yes.
+    expect(selectPushCategory([yesAlwaysOpt, yes('1', 'Yes'), no('3', 'No')])).toBeUndefined();
+    expect(selectPushCategory([yesOpt, noOpt, yesOpt])).toBeUndefined();
+    expect(selectPushCategory([yesOpt, noOpt, yesOpt, noOpt])).toBeUndefined();
+    // The workflow-grant action is a standing grant without being a Yes.
     expect(
       selectPushCategory([
         yes('1', 'Yes'),
@@ -145,7 +156,7 @@ describe('selectPushCategory', () => {
         },
         no('2', 'No'),
       ]),
-    ).toBe('REMI_MULTI');
+    ).toBeUndefined();
   });
 
   test('an AskUserQuestion-style three-option card gets REMI_MULTI', () => {
@@ -154,28 +165,37 @@ describe('selectPushCategory', () => {
     ).toBe('REMI_MULTI');
   });
 
-  test("ExitPlanMode's picks get REMI_MULTI, with or without label-derived flags", () => {
+  test("ExitPlanMode's picks get REMI_MULTI, or nothing once label flags mark them Yes", () => {
     const labels = [
       'Yes, and auto-accept edits',
       'Yes, and manually approve edits',
       'No, keep planning',
     ];
     expect(selectPushCategory(labels.map((l, i) => pick(String(i + 1), l)))).toBe('REMI_MULTI');
-    // "Yes, and ..." in the FIRST position is not a one-time Yes.
     expect(
       selectPushCategory([
         yes('1', labels[0] as string),
         yes('2', labels[1] as string),
         no('3', labels[2] as string),
       ]),
-    ).toBe('REMI_MULTI');
+    ).toBeUndefined();
   });
 
-  test('four options get REMI_MULTI; fewer than two or more than four get none', () => {
-    expect(selectPushCategory([yesOpt, noOpt, yesOpt, noOpt])).toBe('REMI_MULTI');
+  test('four non-standing options get REMI_MULTI; fewer than two or more than four get none', () => {
+    expect(
+      selectPushCategory([pick('1', 'A'), pick('2', 'B'), pick('3', 'C'), no('4', 'No')]),
+    ).toBe('REMI_MULTI');
     expect(selectPushCategory([yesOpt])).toBeUndefined();
     expect(selectPushCategory([])).toBeUndefined();
-    expect(selectPushCategory([yesOpt, noOpt, yesOpt, noOpt, yesOpt])).toBeUndefined();
+    expect(
+      selectPushCategory([
+        pick('1', 'A'),
+        pick('2', 'B'),
+        pick('3', 'C'),
+        pick('4', 'D'),
+        pick('5', 'E'),
+      ]),
+    ).toBeUndefined();
   });
 
   test('#718: the honest 2-option Yes/No fallback selects REMI_YN, not REMI_YNA', () => {
@@ -210,8 +230,24 @@ describe('selectDynOptions (#719)', () => {
     expect(selectDynOptions(q)).toBe(true);
   });
 
-  test('a 4-option structured-suggestion permission card qualifies', () => {
-    expect(selectDynOptions(question('q', [yesOpt, yesAlwaysOpt, noOpt, yesOpt]))).toBe(true);
+  test('a 4-option card of picks qualifies', () => {
+    const picks = ['A', 'B', 'C', 'D'].map((l, i) => ({
+      value: String(i + 1),
+      label: l,
+      isRecommended: false,
+      isYes: false,
+      isNo: false,
+    }));
+    expect(selectDynOptions(question('q', picks))).toBe(true);
+  });
+
+  test('#1134 review: a standing grant outside REMI_YNA gets no dynamic buttons either', () => {
+    // The structured-suggestion permission card: two standing options. Its
+    // static category is withheld, and the extension's buttons would not
+    // require an unlocked device any more than REMI_MULTI's.
+    expect(selectDynOptions(question('q', [yesOpt, yesAlwaysOpt, yesOpt, noOpt]))).toBe(false);
+    // The REMI_YNA layout keeps its hint.
+    expect(selectDynOptions(question('q', defaultThreeSet))).toBe(true);
   });
 
   test('a multi-sub-question AskUserQuestion form does NOT qualify (stays app-routed)', () => {

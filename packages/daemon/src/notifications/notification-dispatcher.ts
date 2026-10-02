@@ -37,8 +37,7 @@ export interface PushConfig {
  *  spaces ("Yes,andalwaysallow..."), which defeats word boundaries. */
 const STANDING_LABEL = /always|don'?t\s*ask\s*again/i;
 /** "Yes, and ..." (Claude's "Yes, and always allow access to ..." / "Yes,
- *  and don't ask again ..."). Counts as the standing option ONLY in the
- *  REMI_YNA middle position; anywhere else it disqualifies a plain Yes. */
+ *  and don't ask again ..."): never a one-time Yes. */
 const YES_AND_LABEL = /^\s*Yes,\s*and/;
 
 function isOneTimeYes(option: QuestionOption): boolean {
@@ -51,16 +50,27 @@ function isOneTimeYes(option: QuestionOption): boolean {
   );
 }
 
-function isStandingYes(option: QuestionOption): boolean {
-  return (
-    option.isYes &&
-    !option.isNo &&
-    (STANDING_LABEL.test(option.label) || YES_AND_LABEL.test(option.label))
-  );
-}
-
 function isPlainNo(option: QuestionOption): boolean {
   return option.isNo && !option.isYes;
+}
+
+/**
+ * Whether option `index` grants something standing (#1134 review). Any Yes
+ * after the first option counts, whatever its label says ("Yes, allow reading
+ * from <dir> during this session", "Yes, switch to acceptEdits mode"): the
+ * label of a grant is not a reliable signal, and the only safe one-time Yes on
+ * a lock screen is the first. So does a first Yes worded as a grant, and a
+ * session-grant action.
+ */
+function isStanding(option: QuestionOption, index: number): boolean {
+  if (option.sessionGrant !== undefined) return true;
+  return option.isYes && (index > 0 || !isOneTimeYes(option));
+}
+
+/** A card with a standing option whose layout is not exactly REMI_YNA (the
+ *  only category whose standing button requires an unlocked device). */
+function hasUnguardedStandingOption(options: readonly QuestionOption[]): boolean {
+  return options.some(isStanding) && selectPushCategory(options) !== 'REMI_YNA';
 }
 
 /**
@@ -71,14 +81,19 @@ function isPlainNo(option: QuestionOption): boolean {
  * categories have hardcoded titles, so they are chosen only when those titles
  * are true:
  *   - REMI_YN ("Yes" / "No"): exactly [one-time Yes, No].
- *   - REMI_YNA ("Yes" / "Yes, always" / "No"): exactly [one-time Yes,
- *     standing Yes, No].
- * Every other 2-4 option card gets REMI_MULTI, whose generic "Option N"
- * titles are overridden with the real labels by the Notification Service
- * Extension when it runs (`dynOptions`). Counting alone gave a 2-option card
+ *   - REMI_YNA ("Yes" / "Yes, always" / "No"): exactly [one-time Yes, Yes,
+ *     No]. Its middle "Yes, always" button is the only static action that
+ *     requires an unlocked device, so a standing grant is offered on the lock
+ *     screen ONLY in this layout.
+ * A card with any other standing option (`isStanding`) gets NO category: a
+ * plain notification, answered in the app, because REMI_MULTI's buttons do
+ * not require an unlocked device. Every other 2-4 option card gets
+ * REMI_MULTI, whose generic "Option N" titles the Notification Service
+ * Extension replaces with the real labels when it runs (`dynOptions`); when
+ * it does not, the four static buttons show, and one with no option behind it
+ * sends nothing the answer path accepts. Counting alone gave a 2-option card
  * whose second option is not a No (a parse that dropped "No") a "No" button
- * that sent option 2, and gave picks such as ExitPlanMode's a "Yes, always".
- * Outside 2-4 options there is no category, as before.
+ * that sent option 2. Outside 2-4 options there is no category, as before.
  */
 export function selectPushCategory(options: readonly QuestionOption[]): string | undefined {
   if (options.length < 2 || options.length > 4) return undefined;
@@ -88,12 +103,13 @@ export function selectPushCategory(options: readonly QuestionOption[]): string |
     options.length === 3 &&
     third !== undefined &&
     isOneTimeYes(first) &&
-    isStandingYes(second) &&
+    second.isYes &&
+    !second.isNo &&
     isPlainNo(third)
   ) {
     return 'REMI_YNA';
   }
-  return 'REMI_MULTI';
+  return options.some(isStanding) ? undefined : 'REMI_MULTI';
 }
 
 /**
@@ -123,6 +139,10 @@ export function selectDynOptions(question: Question): boolean {
   }
   const { options } = question;
   if (options.length < 2 || options.length > 4) return false;
+  // #1134 review: a standing grant outside the REMI_YNA layout is answered in
+  // the app. The extension's dynamic buttons do not require an unlocked
+  // device either, so no hint that would put them back on the lock screen.
+  if (hasUnguardedStandingOption(options)) return false;
   return options.every((o) => o.label.trim().length > 0);
 }
 

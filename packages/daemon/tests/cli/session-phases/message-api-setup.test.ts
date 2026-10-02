@@ -57,11 +57,13 @@ describe('selectPushCategory', () => {
     const yesAlways: QuestionOption = { ...yesOpt, value: 'a', label: 'Yes, always' };
     expect(selectPushCategory([yesOpt, yesAlways, noOpt])).toBe('REMI_YNA');
   });
-  test('returns REMI_MULTI for a 3-option card that is not [Yes, Yes always, No]', () => {
-    expect(selectPushCategory([yesOpt, noOpt, yesOpt])).toBe('REMI_MULTI');
+  test('returns no category for a standing option outside [Yes, Yes, No]', () => {
+    expect(selectPushCategory([yesOpt, noOpt, yesOpt])).toBeUndefined();
+    expect(selectPushCategory([yesOpt, noOpt, yesOpt, noOpt])).toBeUndefined();
   });
-  test('returns REMI_MULTI for 4 options', () => {
-    expect(selectPushCategory([yesOpt, noOpt, yesOpt, noOpt])).toBe('REMI_MULTI');
+  test('returns REMI_MULTI for picks', () => {
+    const pick = (v: string): QuestionOption => ({ ...noOpt, value: v, label: v, isNo: false });
+    expect(selectPushCategory([pick('a'), pick('b'), pick('c'), pick('d')])).toBe('REMI_MULTI');
   });
   test('returns undefined for other counts', () => {
     expect(selectPushCategory([yesOpt])).toBeUndefined();
