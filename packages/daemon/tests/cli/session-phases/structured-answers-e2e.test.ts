@@ -47,6 +47,7 @@ import { SessionRegistry } from '../../../src/session/session-registry.ts';
 import { SessionStore } from '../../../src/session/session-store.ts';
 import { TranscriptDiscovery } from '../../../src/transcript/index.ts';
 import type { TranscriptWatcher } from '../../../src/transcript/transcript-watcher.ts';
+import { reserveRange } from '../../session/port-test-helpers.ts';
 
 const SID = generateId() as UUID;
 const CLAUDE = 'claude-1127';
@@ -740,8 +741,11 @@ describe('AskUserQuestion and ExitPlanMode through held hooks, end to end (#1127
     async function startRelay(
       relayAnswer: ReturnType<typeof build>['handlers']['relayAnswer'],
     ): Promise<number> {
-      for (let attempt = 0; attempt < 5; attempt++) {
-        const port = 42_000 + Math.floor(Math.random() * 8_000);
+      // A port probed free on the host the server binds (the repo helper,
+      // never a guess). Only a bind lost to a race since the probe is retried;
+      // any other start failure is the test's to report.
+      for (let attempt = 0; ; attempt++) {
+        const port = await reserveRange(1, 50, '127.0.0.1');
         const s = new WebSocketServer(
           { port, host: '127.0.0.1' },
           { onAnswerRelay: (sid, qid, answer, csid) => relayAnswer(sid, qid, answer, csid) },
@@ -750,11 +754,11 @@ describe('AskUserQuestion and ExitPlanMode through held hooks, end to end (#1127
           await s.start();
           wsServer = s;
           return port;
-        } catch {
-          // Port taken; try another.
+        } catch (err) {
+          const inUse = /EADDRINUSE|in use/i.test(String((err as { code?: string }).code ?? err));
+          if (!inUse || attempt >= 2) throw err;
         }
       }
-      throw new Error('no free port for the relay server');
     }
 
     test("a one-question AskUserQuestion is answered by the tapped option's label, structurally, with nothing on screen", async () => {
