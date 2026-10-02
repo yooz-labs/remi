@@ -18,6 +18,12 @@ import { PROMPT_WAITING_ERROR_CODE } from '@remi/shared';
 import { QuestionPresenceTracker } from '../../../src/api/question-presence-tracker.ts';
 import { createInputHandlers, trackerScreenDeps } from '../../../src/cli/handlers/input-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
+import { HookEventBridge } from '../../../src/hooks/hook-event-bridge.ts';
+import type {
+  PreToolUseHookInput,
+  SubagentStartHookInput,
+  SubagentStopHookInput,
+} from '../../../src/hooks/hook-types.ts';
 import { OutputProcessor } from '../../../src/parser/output-processor.ts';
 import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
 import { SessionRegistry } from '../../../src/session/session-registry.ts';
@@ -122,6 +128,100 @@ describe('chat guard driven by the real OutputProcessor (#1140)', () => {
 
       expect(pty.submits).toEqual(['my answer']);
       expect(errorsOf(sent)).toHaveLength(0);
+    });
+  });
+  /**
+   * What clears the observation, driven from both status sources: a PTY-parsed
+   * status (the OutputProcessor, naming no agent) clears as it always did, and
+   * a hook status from a subagent or teammate (the real `HookEventBridge`, its
+   * `onStatusChange` wired to the tracker exactly as `setupHookBridge` does it,
+   * which `hook-bridge-setup.test.ts` drives through the real listeners) does
+   * not.
+   */
+  describe('what clears the observation (#1140)', () => {
+    let bridge: HookEventBridge;
+
+    beforeEach(() => {
+      bridge = new HookEventBridge(
+        sessionId,
+        {
+          onStatusChange: (status, _context, agentId) =>
+            tracker.onStatusChange(status, { agentId }),
+          onQuestion: () => undefined,
+        },
+        '/test/dir',
+      );
+    });
+
+    const common = {
+      session_id: 'claude-1',
+      transcript_path: '/tmp/t.jsonl',
+      cwd: '/test/dir',
+      permission_mode: 'default',
+    };
+
+    test('a subagent starting and stopping while the dialog is up does not unlock the chat', async () => {
+      screen(WRAPPED_DIRECTORY_DIALOG);
+      expect(observedValues()).toEqual(['1', '2', '3']);
+
+      bridge.handleSubagentStart({
+        ...common,
+        hook_event_name: 'SubagentStart',
+        agent_id: 'sub-1',
+        agent_type: 'general-purpose',
+      } as SubagentStartHookInput);
+      await handlers.onUserInput(CID, sessionId, 'after the subagent started', false);
+      bridge.handleSubagentStop({
+        ...common,
+        hook_event_name: 'SubagentStop',
+        agent_id: 'sub-1',
+      } as SubagentStopHookInput);
+      await handlers.onUserInput(CID, sessionId, 'after the subagent stopped', false);
+
+      expect(observedValues()).toEqual(['1', '2', '3']);
+      expect(pty.submits).toEqual([]);
+      expect(errorsOf(sent)).toHaveLength(2);
+    });
+
+    test('the main agent moving on (a hook event with no agent_id) unlocks it', async () => {
+      screen(WRAPPED_DIRECTORY_DIALOG);
+      bridge.handlePreToolUse({
+        ...common,
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+      } as PreToolUseHookInput);
+
+      expect(observedValues()).toBeNull();
+      await handlers.onUserInput(CID, sessionId, 'typed now', false);
+      expect(pty.submits).toEqual(['typed now']);
+      expect(errorsOf(sent)).toHaveLength(0);
+    });
+
+    test('a PTY-parsed non-waiting status (it names no agent) clears it as before', async () => {
+      screen(WRAPPED_DIRECTORY_DIALOG);
+      expect(observedValues()).toEqual(['1', '2', '3']);
+
+      // A tool-use line: the real parser reads it as 'executing'.
+      screen('\u23fa Running the test suite\n');
+
+      expect(observedValues()).toBeNull();
+      await handlers.onUserInput(CID, sessionId, 'typed now', false);
+      expect(pty.submits).toEqual(['typed now']);
+      expect(errorsOf(sent)).toHaveLength(0);
+    });
+
+    test('a subagent status after a PTY-parsed one changes nothing: still unlocked', async () => {
+      screen(WRAPPED_DIRECTORY_DIALOG);
+      screen('\u23fa Running the test suite\n');
+      bridge.handleSubagentStart({
+        ...common,
+        hook_event_name: 'SubagentStart',
+        agent_id: 'sub-1',
+        agent_type: 'general-purpose',
+      } as SubagentStartHookInput);
+
+      expect(observedValues()).toBeNull();
     });
   });
 });

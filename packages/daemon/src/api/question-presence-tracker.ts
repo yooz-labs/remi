@@ -96,6 +96,13 @@ export interface PushOptions {
  * returns the real outcome because `cli.ts` wires this straight to
  * `messageApi.handleQuestion`.
  */
+/** Where a status change came from (#1140): `agentId` is the hook event's
+ *  `agent_id` for a background subagent or teammate, absent for the main agent
+ *  and for a PTY-parsed status. See `onStatusChange`. */
+export interface StatusOrigin {
+  readonly agentId?: string | undefined;
+}
+
 export type PushQuestion = (
   question: Question,
   opts?: PushOptions,
@@ -1307,8 +1314,21 @@ export class QuestionPresenceTracker {
    * advanced past whatever prompts were up: drop all pending hook records
    * so they cannot push later (Claude is busy executing, the prompts are
    * gone from screen, the iOS cards would be stale).
+   *
+   * `origin.agentId` (#1140) is the hook event's `agent_id`: set when the
+   * status came from a background subagent or teammate, absent for a
+   * main-agent hook event and for a PTY-parsed status (which names no agent).
+   * An agent's activity says nothing about the MAIN dialog on screen, but the
+   * status pipeline maps every PreToolUse/PostToolUse/SubagentStart to a
+   * status, so such a change must not forget what the screen shows: it leaves
+   * `observedPTYQuestionId`/`observedPTYText`/the observed options and
+   * `ptyShowingQuestion` alone. The chat guard reads the observation, and a
+   * subagent's tool call used to wipe it while the dialog was still up, so
+   * chat text was typed into the menu. Everything else here (the pending
+   * records and their #763 parked-record rules, the eval windows, the timers)
+   * is unchanged by the origin.
    */
-  onStatusChange(status: AgentStatus): void {
+  onStatusChange(status: AgentStatus, origin?: StatusOrigin): void {
     if (status !== 'waiting') {
       // #763: spare still-fresh PARKED records — the main status pipeline
       // flips on every agent's hook activity, and a teammate's routine
@@ -1338,9 +1358,12 @@ export class QuestionPresenceTracker {
         this.awaitingPTY.delete(key);
       }
       this.ambiguousRenderKeys.clear();
-      this.ptyShowingQuestion = false;
-      // #814: nothing is on screen now.
-      this.clearObservedPTYQuestion();
+      // #814: nothing is on screen now. Not for an agent's status (#1140): that
+      // agent moved on, the main dialog did not.
+      if (origin?.agentId === undefined) {
+        this.ptyShowingQuestion = false;
+        this.clearObservedPTYQuestion();
+      }
       // #888/#920 review fix: deliberately NOT a hook-less resolution trigger.
       // `status` here can come from a PTY-TEXT-parsed guess
       // (`output-processor.ts`, confidence >= 0.5, not certainty) as well as
