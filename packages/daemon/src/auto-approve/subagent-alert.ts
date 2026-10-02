@@ -162,6 +162,21 @@ function callSignature(call: SubagentToolCall): string {
   return `${call.agentId ?? ''}\u0000${call.toolName}\u0000${stableToolInputKey(call.toolInput)}`;
 }
 
+/**
+ * What the alerter keeps of a remembered call: only what its alert and its
+ * pairing need, never the whole tool input (a `Write`'s file content, a long
+ * heredoc). `command` is the input's `command` string, when it has one: the
+ * only field the patterns and the alert read (`matchAlertPattern`, `check`).
+ */
+interface PendingCall {
+  readonly toolName: string;
+  readonly command: string | undefined;
+  readonly agentId: string | undefined;
+  readonly agentType: string | undefined;
+  /** `callSignature` of the call, computed once at its start. */
+  readonly signature: string;
+}
+
 /** What a matched alert reports to its sink. */
 export interface SubagentAlert {
   /** The alert pattern that matched. */
@@ -194,7 +209,7 @@ export class SubagentAlerter {
   /** Matching calls started and not yet finished, prompted or stopped, by
    *  `tool_use_id` (or `callSignature` when the hook carried none), oldest
    *  first (#1155). */
-  private readonly pendingCalls = new Map<string, SubagentToolCall>();
+  private readonly pendingCalls = new Map<string, PendingCall>();
 
   constructor(
     private readonly patterns: readonly string[],
@@ -247,9 +262,17 @@ export class SubagentAlerter {
    */
   noteToolStarted(call: SubagentToolCall): void {
     if (matchAlertPattern(call.toolName, call.toolInput, this.patterns) === null) return;
-    const key = call.toolUseId ?? callSignature(call);
+    const signature = callSignature(call);
+    const key = call.toolUseId ?? signature;
+    const command = call.toolInput['command'];
     this.pendingCalls.delete(key);
-    this.pendingCalls.set(key, call);
+    this.pendingCalls.set(key, {
+      toolName: call.toolName,
+      command: typeof command === 'string' ? command : undefined,
+      agentId: call.agentId,
+      agentType: call.agentType,
+      signature,
+    });
     const over = this.pendingCalls.size - MAX_PENDING_CALLS;
     if (over > 0) {
       for (const oldest of [...this.pendingCalls.keys()].slice(0, over)) {
@@ -272,7 +295,7 @@ export class SubagentAlerter {
     }
     const signature = callSignature(call);
     for (const [key, pending] of [...this.pendingCalls]) {
-      if (callSignature(pending) === signature) this.pendingCalls.delete(key);
+      if (pending.signature === signature) this.pendingCalls.delete(key);
     }
   }
 
@@ -287,7 +310,9 @@ export class SubagentAlerter {
     const pending = this.pendingCalls.get(key);
     if (pending === undefined) return null;
     this.pendingCalls.delete(key);
-    return this.check(pending.toolName, pending.toolInput, pending.agentId, pending.agentType);
+    // The patterns and the alert read only `command` from the input.
+    const input = pending.command === undefined ? {} : { command: pending.command };
+    return this.check(pending.toolName, input, pending.agentId, pending.agentType);
   }
 
   /** The agent stopped (`SubagentStop`): forget its unfinished calls. */

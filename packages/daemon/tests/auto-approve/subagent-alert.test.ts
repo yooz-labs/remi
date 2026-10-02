@@ -261,6 +261,40 @@ describe('SubagentAlerter call lifecycle (#1155)', () => {
     expect(a.noteToolFinished(call('rm -rf dist', 'tu-2', 'agent-2'))).not.toBeNull();
   });
 
+  test('a tool matched by its name alerts with its name; a command tool with its command', () => {
+    // Only the command string is kept for a remembered call (#1155 review),
+    // so both shapes of match must survive to the alert.
+    const a = new SubagentAlerter(['Write', 'rm -rf']);
+    a.noteToolStarted({
+      toolUseId: 'tu-w',
+      toolName: 'Write',
+      toolInput: { file_path: 'x.txt', content: 'y'.repeat(10_000) },
+      agentId: 'agent-1',
+    });
+    a.noteToolStarted({
+      toolUseId: 'tu-c',
+      toolName: 'mcp__shell__run',
+      toolInput: { command: 'rm -rf build', cwd: '/tmp' },
+      agentId: 'agent-1',
+    });
+    expect(
+      a.noteToolFinished({
+        toolUseId: 'tu-w',
+        toolName: 'Write',
+        toolInput: {},
+        agentId: 'agent-1',
+      }),
+    ).toMatchObject({ pattern: 'Write', detail: 'Write' });
+    expect(
+      a.noteToolFinished({
+        toolUseId: 'tu-c',
+        toolName: 'mcp__shell__run',
+        toolInput: {},
+        agentId: 'agent-1',
+      }),
+    ).toMatchObject({ pattern: 'rm -rf', detail: 'rm -rf build' });
+  });
+
   test('a call whose hooks carry no id pairs by agent, tool and input', () => {
     const a = new SubagentAlerter(PATTERNS);
     a.noteToolStarted(call('rm -rf build', undefined));
