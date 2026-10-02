@@ -227,10 +227,35 @@ answer: STALE_ANSWER, card consumed, trace reason in parentheses):
   numbered menu is on screen (`free-text-into-menu`), and on a HELD card before
   its hold is released (`free-text-on-held-card`; the hold is then released
   with nothing typed). Free-form `user_input` (including a Telegram text
-  reply) is a separate path and is not checked.
+  reply) is a separate path with its own guard, next.
 - a question is claimed while its answer is applied: a duplicate delivery of
   the same choice (the lock screen sends every tap on two channels) reports
   delivered and types nothing; a different concurrent answer is refused.
+
+**Chat text is refused while a prompt menu is on screen** (#1140). `onUserInput`
+types structured input (web chat, a Telegram text reply or custom text) followed
+by Enter, and Claude's numbered menu ignores the letters while the Enter
+confirms the highlighted option, usually "1. Yes", so a message sent from the
+phone while a prompt waits would approve it. When the session's tracker observes
+a non-empty option list (`observedPromptOptions`, wired by `trackerScreenDeps`,
+the same signal the guards above read) nothing is typed and the sender gets an
+`error` with code `PROMPT_WAITING` ("Claude is waiting on a prompt. Answer it
+first, from its card or in the terminal."; `PROMPT_WAITING_ERROR_CODE` and
+`createPromptWaitingError` in `@remi/shared`), plus a trace record
+(`input_refused`, reason `chat-into-menu`). Telegram renders it as "Error: ...";
+the web client marks the refused bubble failed from `details.messageId`.
+Deliberately not refused: raw input (`raw: true`, an attach client's keystrokes
+and the web client's persistent Escape, which is how a menu gets answered), and
+any input when no option list is observed, including a session with no tracker,
+so the chat keeps working without a hook server. An empty list (a free-text
+prompt) does not refuse. Telegram `/interrupt` sends its Escape as structured
+input, so it is refused too while a menu is up. The observation clears when
+status leaves `waiting`; if that signal is missed the chat stays refused until
+it arrives, and the card and the terminal still answer. The parser now returns
+`allowsFreeText: false` (and `optionsAreFallback: false`) for a Claude selection
+box, so a hook-less card is covered by the `free-text-into-menu` guard above and
+its Telegram card no longer says "reply with custom text"; a hook record's own
+flag still wins when one merges.
 
 The parser joins a label's wrapped rows (and an AskUserQuestion description
 row) onto the option above, at most two rows, never across footer rows
