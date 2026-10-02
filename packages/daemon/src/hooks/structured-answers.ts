@@ -215,7 +215,10 @@ export function askUserQuestionDecision(
   if (!Array.isArray(selections) || selections.length === 0) {
     return refuse('malformed-selections');
   }
-  const answers: Record<string, string> = {};
+  // A prototype-free map: a question whose text is `__proto__` (or any other
+  // Object.prototype name) must become an own key like every other, never
+  // the object's prototype.
+  const answers: Record<string, string> = Object.create(null);
   const answered = new Set<number>();
   for (const entry of selections as readonly unknown[]) {
     // One sub-question's answer as the phone sent it (`AnswerSelection`),

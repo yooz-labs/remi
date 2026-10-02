@@ -141,6 +141,28 @@ describe('askUserQuestionDecision', () => {
     });
   });
 
+  test('a question whose text is __proto__ (or another Object.prototype name) keeps its answer', () => {
+    const input = {
+      questions: [
+        { question: '__proto__', options: ['A', 'B'] },
+        { question: 'constructor', options: ['C', 'D'] },
+      ],
+    };
+    const result = askUserQuestionDecision(input, [
+      { questionIndex: 0, optionIndices: [1] },
+      { questionIndex: 1, optionIndices: [0] },
+    ]);
+    const updatedInput =
+      result.ok && typeof result.decision === 'object' && 'updatedInput' in result.decision
+        ? result.decision.updatedInput
+        : null;
+    // What Claude receives is the JSON: both keys present as plain answers.
+    expect(JSON.parse(JSON.stringify(updatedInput))['answers']).toEqual(
+      JSON.parse('{"__proto__":"B","constructor":"C"}'),
+    );
+    expect(JSON.stringify(updatedInput)).toContain('"answers":{"__proto__":"B","constructor":"C"}');
+  });
+
   test('a multi-select answer is keyed by the raw question text and joins the raw labels', () => {
     const input = {
       questions: [
