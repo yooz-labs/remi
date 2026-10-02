@@ -29,6 +29,7 @@ import { mergeResyncSurvivors, selectResyncSurvivors } from '@/lib/message-resyn
 import { clearNativeRoute, setNativeRoute, syncNativeIdentity } from '@/lib/native-bridge';
 import { syncNativeStatusBarTheme } from '@/lib/native-theme';
 import { setSoundEnabled } from '@/lib/notifications';
+import { promptWaitingRefusedMessageId } from '@/lib/prompt-waiting';
 import { relayAnswerDirect } from '@/lib/push-answer-relay';
 import { resolvePushAnswerTarget } from '@/lib/push-answer-resolver';
 import {
@@ -1504,6 +1505,24 @@ function App() {
             );
             break;
           }
+        }
+        // PROMPT_WAITING (#1140): Claude is showing a numbered menu, so the
+        // daemon typed nothing (text typed into it would confirm the
+        // highlighted option). The daemon acked the input before deciding, so
+        // flip that one bubble to 'failed' like SESSION_NOT_FOUND above, then
+        // fall through so the daemon's message ("Claude is waiting on a
+        // prompt. Answer it first, ...") shows in the chat.
+        const promptWaitingRefusedId = promptWaitingRefusedMessageId(
+          message as { code?: string; details?: Record<string, unknown> },
+        );
+        if (promptWaitingRefusedId) {
+          pendingSendsRef.current = rejectSend(pendingSendsRef.current, promptWaitingRefusedId);
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === promptWaitingRefusedId ? { ...m, state: 'failed' as const } : m,
+            ),
+          );
+          console.warn('[App] PROMPT_WAITING: input not typed, a prompt menu is on screen');
         }
         if (errorCode === 'STALE_BINDING') {
           const details = (message as { details?: Record<string, unknown> }).details;
