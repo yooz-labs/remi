@@ -1004,6 +1004,52 @@ describe('setupHookBridge', () => {
     expect(ptySubmits).toEqual([]);
   });
 
+  test('a rotation with no SessionEnd (a port-marker reclaim) still releases a live hold: the rotation sweep itself (#1126)', async () => {
+    // The usual rotation arrives after a SessionEnd, whose own sweep would
+    // hide a missing rotation sweep. A stale-lock reclaim (#518) rotates
+    // with nothing else firing: an event for an unknown id whose transcript
+    // carries OUR port marker.
+    const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+    build({ realMessageApi: true, broadcastResolvedLog });
+    hookServer.fire('Notification', {
+      session_id: 'claude-sweep-A',
+      transcript_path: path.join(tmpDir, 'sweep-a.jsonl'),
+      hook_event_name: 'Notification',
+      notification_type: 'auth_success',
+      message: '',
+    });
+    let settled = false;
+    const first = hookServer
+      .firePermission({
+        session_id: 'claude-sweep-A',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+      })
+      .then((d) => {
+        settled = true;
+        return d;
+      });
+    const card = [...(sessionRegistry.getSession(SID)?.currentQuestions.values() ?? [])][0];
+    if (!card) throw new Error('no held card');
+    const transcriptB = path.join(tmpDir, 'sweep-b.jsonl');
+    fs.writeFileSync(
+      transcriptB,
+      `${JSON.stringify({ type: 'custom-title', customTitle: 'remi:8765' })}\n`,
+    );
+    hookServer.fire('Notification', {
+      session_id: 'claude-sweep-B',
+      transcript_path: transcriptB,
+      hook_event_name: 'Notification',
+      notification_type: 'auth_success',
+      message: '',
+    });
+    expect(await first).toBe('passthrough');
+    expect(settled).toBe(true);
+    expect(broadcastResolvedLog.map((r) => r.questionId)).toContain(card.id);
+    expect(sessionRegistry.getSession(SID)?.currentQuestions.size ?? 0).toBe(0);
+  });
+
   test('adoptLockFromStore catches sessionStore throws and keeps the daemon running', () => {
     // EMFILE / permissions / mid-write JSON.parse failures inside
     // sessionStore.read can throw out of findByRemiSessionId. Pre-fix
@@ -1345,89 +1391,12 @@ describe('setupHookBridge', () => {
   // tracker; push is gated by PTY presence, not by the agent_id tag.
   // -------------------------------------------------------------------------
 
-  test('Phase 4 wiring: subagent PermissionRequest + PTY-visible prompt fires a push', async () => {
-    // The user hot-switches to a subagent's view; the subagent's prompt
-    // is on the user's PTY screen. The hook fires with agent_id set.
-    // Under the new contract, this is an answerable prompt: tracker
-    // records the hook, PTY confirms, push fires with merged metadata.
-    const pushed: Question[] = [];
-    const localApi = fakeMessageAPI(messageApiLog);
-    sessionRegistry.registerSession(SID, tmpDir, fakePTY(ptySubmits), localApi);
-    const tracker = new QuestionPresenceTracker((q) => {
-      pushed.push(q);
-      return undefined;
-    });
-
-    bridgeHandles.push(
-      setupHookBridge(
-        {
-          sessionRegistry,
-          bindingStore,
-          liveSessionsRegistry,
-          transcriptWatchers: transcriptWatchers as unknown as Map<
-            UUID,
-            import('../../../src/transcript/transcript-watcher.ts').TranscriptWatcher
-          >,
-          transcriptFallbackTimers,
-          currentPort: () => 8765,
-          transcriptDiscovery: new TranscriptDiscovery(),
-          holdMs: 60_000,
-        },
-        {
-          hookServer: hookServer as unknown as HookServer,
-          sessionId: SID,
-          workingDirectory: tmpDir,
-          messageApi: localApi,
-          sendAndRecord: () => {},
-          tracker,
-          hasLocalTerminal: true,
-        },
-      ),
-    );
-
-    hookServer.fire('Notification', {
-      session_id: 'claude-sub-A',
-      hook_event_name: 'Notification',
-      transcript_path: path.join(tmpDir, 'subA.jsonl'),
-      notification_type: 'auth_success',
-      message: '',
-    });
-
-    hookServer.fire('PermissionRequest', {
-      session_id: 'claude-sub-A',
-      agent_id: 'subagent-A',
-      agent_type: 'general-purpose',
-      hook_event_name: 'PermissionRequest',
-      tool_name: 'Edit',
-      tool_input: { file_path: '/tmp/foo.ts' },
-      permission_suggestions: ['Yes', 'Always', 'No'],
-    });
-
-    // Hook recorded the question in the tracker (no push yet).
-    expect(tracker.hasPendingForTest()).toBe(true);
-    expect(pushed.length).toBe(0);
-
-    // PTY parser confirms the prompt is on the user's terminal.
-    const screen: Question = {
-      id: generateId(),
-      text: 'Allow Edit: /tmp/foo.ts?',
-      options: [
-        { label: '1', value: '1', isRecommended: false, isYes: false, isNo: false },
-        { label: '2', value: '2', isRecommended: false, isYes: false, isNo: false },
-        { label: '3', value: '3', isRecommended: false, isYes: false, isNo: false },
-      ],
-      allowsFreeText: false,
-      isAnswered: false,
-    };
-    tracker.onPTYPromptVisible(screen);
-
-    expect(pushed.length).toBe(1);
-    // Merged metadata: the subagent's agent and named text, the screen's
-    // options (#1134).
-    expect(pushed[0]?.agentId).toBe('subagent-A');
-    expect(pushed[0]?.text).toBe('general-purpose · Edit: /tmp/foo.ts');
-    expect(pushed[0]?.options).toEqual(screen.options);
-  });
+  // (#1126 review) The test that drove a subagent prompt through the
+  // non-hooked `onPTYPromptVisible` core and expected an answerable card was
+  // removed: production routes a hooked session's renders through
+  // `onOrphanPTYPrompt`, and a wrapper-mode subagent prompt gets a notice,
+  // never a card (see "wrapper mode: passthrough, a notice when the dialog
+  // renders").
 
   test('Phase 4 wiring: subagent PermissionRequest with no PTY confirmation drops cleanly', async () => {
     // Background subagent path: hook fires (agent_id set), no PTY emit
@@ -2327,6 +2296,84 @@ describe('setupHookBridge', () => {
       const yes = card.options.find((o) => o.isYes) as QuestionOption;
       expect(handle.gate.answerHeld(card.id, { kind: 'option', option: yes })).toBe('closed');
       expect(ptySubmits).toEqual([]);
+    });
+
+    test("daemon mode: a subagent's request pairs with its own PreToolUse, so only that call's PostToolUse closes it", async () => {
+      const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
+      build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+        hasLocalTerminal: false,
+        noticeLog,
+      });
+      lockSession('claude-sub-pair');
+      const call = subCall('claude-sub-pair');
+      hookServer.fire('PreToolUse', {
+        ...call,
+        hook_event_name: 'PreToolUse',
+        tool_use_id: 'tu-sub',
+      });
+      let settled = false;
+      const hook = hookServer
+        .firePermission({ ...call, hook_event_name: 'PermissionRequest' })
+        .then((d) => {
+          settled = true;
+          return d;
+        });
+      const card = cards()[0] as Question;
+      // An identical call of the same agent with another id finishes: not
+      // this prompt's call, so the hold and the card stay.
+      hookServer.fire('PostToolUse', {
+        ...call,
+        hook_event_name: 'PostToolUse',
+        tool_use_id: 'tu-twin',
+      });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(settled).toBe(false);
+      expect(cards().map((q) => q.id)).toEqual([card.id]);
+      expect(noticeLog).toEqual([]);
+      // Its own call's PostToolUse (Yes answered at the terminal) closes it.
+      hookServer.fire('PostToolUse', {
+        ...call,
+        hook_event_name: 'PostToolUse',
+        tool_use_id: 'tu-sub',
+      });
+      expect(await hook).toBe('passthrough');
+      expect(cards()).toHaveLength(0);
+      expect(noticeLog).toEqual([]);
+    });
+
+    test('daemon mode: a held subagent prompt does not refuse chat (its dialog is not on screen)', async () => {
+      const built = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+        hasLocalTerminal: false,
+      });
+      lockSession('claude-sub-chat');
+      const hook = hookServer.firePermission({
+        ...subCall('claude-sub-chat'),
+        hook_event_name: 'PermissionRequest',
+      });
+      expect(cards()).toHaveLength(1);
+      const sent: ProtocolMessage[] = [];
+      const handlers = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send: (_c, m) => {
+          sent.push(m);
+          return true;
+        },
+        ...gateAnswerDeps(() => built.handle.gate),
+        ...trackerScreenDeps(() => built.tracker),
+      });
+      sessionRegistry.attachConnection(SID, 'conn-sub-chat' as UUID);
+      await handlers.onUserInput('conn-sub-chat' as UUID, SID, 'status?', false);
+      expect(sent.find((m) => m.type === 'error')).toBeUndefined();
+      expect(ptySubmits).toEqual(['status?']);
+      built.handle.gate.forceRelease('test');
+      await hook;
     });
 
     test('daemon mode: ten concurrent held cards are all kept past the pending cap, oldest still answerable', async () => {

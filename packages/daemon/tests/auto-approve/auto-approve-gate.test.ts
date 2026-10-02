@@ -850,11 +850,34 @@ describe('AutoApproveGate held prompts (#1126)', () => {
     test('the paired PostToolUse closes the prompt; an identical call with another id does not', async () => {
       const g = gate();
       g.notePreToolUse({ ...call, toolUseId: 'tu-1' });
-      const hook = g.resolvePermission(pr());
+      let settled = false;
+      const hook = g.resolvePermission(pr()).then((d) => {
+        settled = true;
+        return d;
+      });
+      const qid = ids[0] as UUID;
       g.cancelExternallyResolved({ ...call, toolUseId: 'tu-other' }, 'PostToolUse');
-      expect(g.hasOpenHookPrompt()).toBe(true);
+      // Untouched: still held, card still registered, nothing told the phone.
+      await Bun.sleep(1);
+      expect(settled).toBe(false);
+      expect(registry.getQuestion(SID, qid)).not.toBeNull();
+      expect(deadlines).toEqual([]);
       g.cancelExternallyResolved({ ...call, toolUseId: 'tu-1' }, 'PostToolUse');
       expect(await hook).toBe('passthrough');
+      expect(g.hasOpenHookPrompt()).toBe(false);
+    });
+
+    test("pairing respects the agent: a request never takes another agent's identical call", async () => {
+      const g = gate();
+      // A subagent and the main agent run the identical command.
+      g.notePreToolUse({ ...call, toolUseId: 'tu-sub', agentId: 'agent-1' });
+      g.notePreToolUse({ ...call, toolUseId: 'tu-main' });
+      const hook = g.resolvePermission(pr());
+      // The main request paired with the main call, so the main call's
+      // PostToolUse closes it exactly (no early release, no notice).
+      g.cancelExternallyResolved({ ...call, toolUseId: 'tu-main' }, 'PostToolUse');
+      expect(await hook).toBe('passthrough');
+      expect(deadlines).toEqual([]);
       expect(g.hasOpenHookPrompt()).toBe(false);
     });
 
