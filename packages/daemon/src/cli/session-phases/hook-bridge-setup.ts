@@ -214,8 +214,9 @@ export interface HookBridgeDeps {
    */
   holdMs: number;
   /** The registered PermissionRequest hook timeout, in ms (#1126). See
-   *  `AutoApproveGateDeps.hookTimeoutMs`. */
-  hookTimeoutMs?: number;
+   *  `AutoApproveGateDeps.hookTimeoutMs`. Required, so no session silently
+   *  treats Claude's own timeout as a terminal No. */
+  hookTimeoutMs: number;
   /**
    * Push an informational "answer at the terminal" notice for `question`
    * (#1126), wired to the session's `NotificationDispatcher.pushTerminalNotice`.
@@ -599,7 +600,7 @@ export function setupHookBridge(
       // maybePush); PTY question-emission is suppressed for hooked sessions.
       onHeldEscalate: (questionId) => tracker.pushHeldHook(questionId),
       holdMs: deps.holdMs,
-      ...(deps.hookTimeoutMs !== undefined ? { hookTimeoutMs: deps.hookTimeoutMs } : {}),
+      hookTimeoutMs: deps.hookTimeoutMs,
       // #1126: a held prompt was released to the terminal without an answer
       // (its deadline, Claude's hook timeout, an ambiguous signal, `remi
       // unstick`). Read the card while it is still registered (the gate

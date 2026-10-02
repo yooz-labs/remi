@@ -316,6 +316,7 @@ function buildReplayRig(): ReplayRig {
       currentPort: () => 8765,
       transcriptDiscovery: new TranscriptDiscovery(),
       holdMs: 60_000,
+      hookTimeoutMs: 600_000,
     },
     {
       hookServer: hookServer as unknown as HookServer,

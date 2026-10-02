@@ -368,6 +368,7 @@ describe('setupHookBridge', () => {
         currentPort: () => 8765,
         transcriptDiscovery: new TranscriptDiscovery(),
         holdMs: opts.holdMs ?? 60_000,
+        hookTimeoutMs: (opts.hasLocalTerminal ?? true) ? 600_000 : 3_600_000,
         ...(opts.onHarnessDenied ? { onHarnessDenied: opts.onHarnessDenied } : {}),
         ...(opts.noticeLog
           ? {
@@ -1335,6 +1336,7 @@ describe('setupHookBridge', () => {
         currentPort: () => 8765,
         transcriptDiscovery: new TranscriptDiscovery(),
         holdMs: 60_000,
+        hookTimeoutMs: 600_000,
       },
       {
         hookServer: hookServer as unknown as HookServer,
@@ -1435,6 +1437,7 @@ describe('setupHookBridge', () => {
           currentPort: () => 8765,
           transcriptDiscovery: new TranscriptDiscovery(),
           holdMs: 60_000,
+          hookTimeoutMs: 600_000,
         },
         {
           hookServer: hookServer as unknown as HookServer,
