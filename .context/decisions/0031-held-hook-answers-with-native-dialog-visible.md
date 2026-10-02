@@ -102,7 +102,7 @@ Until #1127 both tools were answered `passthrough` and pushed by id, and a phone
 ### Consequences
 
 - Nothing is typed for an AskUserQuestion or a plan from the phone; a terminal answer and a phone answer race, first answer wins, exactly as for a binary prompt.
-- The chat guard covers both dialogs (`hasMainHold`), so a chat sent while either is held is refused.
+- The chat guard covers both dialogs (a main hold, read through `promptUp` since #1155), so a chat sent while either is held is refused.
 - The web form takes free text for a single-select question and enables Submit only for an answer the daemon accepts; a refused form answer stops showing "Answering" so it can be sent again.
 
 ### Residuals

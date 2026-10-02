@@ -1,8 +1,9 @@
 /**
  * Whether the prompt the PTY parser observed is a NUMBERED selection box
  * (#1140): the shape where typed text is ignored and the Enter after it
- * confirms the highlighted option. Shared by the chat guard
- * (`onUserInput`) and the Stop handler (`/exit` typed into a menu).
+ * confirms the highlighted option. Read through `promptUpFor`
+ * (`prompt-up.ts`), the one signal the chat guard (`onUserInput`) and the
+ * Stop handler (`/exit` typed into a menu) share.
  *
  * The test is on the option VALUES, which the parser takes from the screen's
  * own numbering: a Claude selection box yields "1", "2", "3", while a

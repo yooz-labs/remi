@@ -17,6 +17,7 @@ import type { ProtocolMessage, UUID } from '@remi/shared';
 import { generateId } from '@remi/shared';
 import { QuestionPresenceTracker } from '../../../src/api/question-presence-tracker.ts';
 import { createInputHandlers, trackerScreenDeps } from '../../../src/cli/handlers/input-events.ts';
+import { promptUpDeps } from '../../../src/cli/handlers/prompt-up.ts';
 import { configureLogger } from '../../../src/cli/logger.ts';
 import type { PTYSession } from '../../../src/pty/pty-session.ts';
 import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
@@ -61,6 +62,10 @@ const handlers = createInputHandlers({
     return true;
   },
   ...trackerScreenDeps((sid) => (sid === sessionId ? tracker : undefined)),
+  ...promptUpDeps(
+    () => undefined,
+    (sid) => (sid === sessionId ? tracker : undefined),
+  ),
 });
 await handlers.onUserInput(connectionId, sessionId, 'a secret message', false);
 

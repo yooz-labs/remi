@@ -13,6 +13,7 @@ import {
   PROMPT_WAITING_ERROR_CODE,
   PROMPT_WAITING_HELD_MESSAGE,
   PROMPT_WAITING_MESSAGE,
+  PROMPT_WAITING_TERMINAL_MESSAGE,
   createBulletExpandResponse,
   createError,
   createInputNotDeliveredError,
@@ -25,8 +26,8 @@ import type { HeldAnswer, HeldAnswerOutcome } from '../../auto-approve/index.ts'
 import type { ManagedSession, SessionBindingStore, SessionRegistry } from '../../session/index.ts';
 import { traceQuestionEvent } from '../../session/question-trace.ts';
 import { log, logError } from '../logger.ts';
+import type { PromptUp } from './prompt-up.ts';
 import { ResolvedAnswerCache, answerCacheKey } from './resolved-answer-cache.ts';
-import { isNumberedMenu } from './screen-menu.ts';
 import type { SendToConnection } from './trivial-events.ts';
 
 export interface InputHandlerDeps {
@@ -51,12 +52,14 @@ export interface InputHandlerDeps {
    */
   answerHeld?: (sessionId: UUID, questionId: UUID, answer: HeldAnswer) => HeldAnswerOutcome;
   /**
-   * Is a main-agent prompt's hook held for this session (#1126)? Its dialog
-   * is on screen, so the chat guard refuses chat text even when the PTY
-   * parser has not observed the menu. Wired by `gateAnswerDeps`. Absent
-   * reads as false (no hook server: nothing is held).
+   * Is a prompt up on this session's screen, and by which source (#1155)?
+   * The chat guard refuses chat text while it is not null: a held main
+   * prompt, a hook-backed prompt waiting in the terminal, or a numbered
+   * menu the tracker observes (`prompt-up.ts`). The same signal Stop reads.
+   * Wired by `promptUpDeps`. Absent reads as nothing up (no gate, no
+   * tracker), which types the text: fail open, unlike the answer guards.
    */
-  isMainPromptHeld?: (sessionId: UUID) => boolean;
+  promptUp?: (sessionId: UUID) => PromptUp | null;
   /**
    * Cross-client question dismissal (#585, P7). Called after a question is
    * answered here so the daemon broadcasts `question_resolved` to every client and
@@ -133,14 +136,8 @@ export interface InputHandlerDeps {
    * fail-toward-refusing default as `isPromptCurrent` and
    * `isPromptObservedOnPTY`.
    *
-   * `onUserInput` reads it the other way round (#1140): a NUMBERED selection
-   * box in the list (`isNumberedMenu`) means chat text is refused, while
-   * absent or null (nothing observed, or the dep unwired) types the text as
-   * before. In production `cli.ts` builds a tracker for every session, hook
-   * server or not, so "no tracker" is effectively never the case there; the
-   * fail-open default only matters to a caller that does not wire this dep
-   * (tests, a future entry point), and it is the opposite of the answer
-   * guards above, which fail closed.
+   * `onUserInput` reads the menu through `promptUp` instead (#1140,
+   * #1155), and this dep only for the screen values its refusal records.
    */
   observedPromptOptions?: (sessionId: UUID) => readonly QuestionOption[] | null;
 }
@@ -217,6 +214,33 @@ export type AnswerOutcome = 'delivered' | 'session-not-found' | 'stale-binding' 
 
 export type InputHandlers = ReturnType<typeof createInputHandlers>;
 
+/**
+ * What a chat refusal tells the sender, by the source that says a prompt is
+ * up (#1155). While a hook is held, or its prompt was handed to the
+ * terminal, the dialog may already be answered: a Yes in the terminal ends
+ * the hold only when its tool finishes, so neither message claims a dialog
+ * is on screen (#1126, #1144). A handed-back prompt has no card any more.
+ */
+const PROMPT_UP_MESSAGE: Readonly<Record<PromptUp, string>> = {
+  held: PROMPT_WAITING_HELD_MESSAGE,
+  terminal: PROMPT_WAITING_TERMINAL_MESSAGE,
+  menu: PROMPT_WAITING_MESSAGE,
+};
+
+/** The `input_refused` trace record's reason, by source. */
+const PROMPT_UP_TRACE_REASON: Readonly<Record<PromptUp, string>> = {
+  held: 'chat-into-held-prompt',
+  terminal: 'chat-into-terminal-prompt',
+  menu: 'chat-into-menu',
+};
+
+/** The daemon log's wording, by source. */
+const PROMPT_UP_LOG: Readonly<Record<PromptUp, string>> = {
+  held: 'a held prompt is on screen',
+  terminal: 'a prompt handed to the terminal may be on screen',
+  menu: 'a prompt menu is on screen',
+};
+
 /** The tracker reads the answer guards use (`QuestionPresenceTracker`). */
 export interface ScreenObserver {
   isPromptCurrent(questionId: string, ptyText?: string): boolean;
@@ -248,24 +272,23 @@ export function trackerScreenDeps(
 export interface GateAnswerHandle {
   retireQuestion(questionId: UUID): void;
   answerHeld(questionId: UUID, answer: HeldAnswer): HeldAnswerOutcome;
-  hasMainHold(): boolean;
 }
 
 /**
- * The gate deps (`retireQuestion`, `answerHeld`, `isMainPromptHeld`) backed by each session's
+ * The gate deps (`retireQuestion`, `answerHeld`) backed by each session's
  * permission gate (#1126). The ONE wiring for them, shared by `cli.ts` and
  * the tests in the same way as `trackerScreenDeps`, so a test of the held
  * answer path exercises the production wiring. No gate for the session
- * reads as `unknown` (nothing held) and retires nothing.
+ * reads as `unknown` (nothing held) and retires nothing. Whether a held
+ * prompt is up is `promptUpDeps`'s (#1155).
  */
 export function gateAnswerDeps(
   gateFor: (sessionId: UUID) => GateAnswerHandle | undefined,
-): Pick<InputHandlerDeps, 'retireQuestion' | 'answerHeld' | 'isMainPromptHeld'> {
+): Pick<InputHandlerDeps, 'retireQuestion' | 'answerHeld'> {
   return {
     retireQuestion: (sessionId, questionId) => gateFor(sessionId)?.retireQuestion(questionId),
     answerHeld: (sessionId, questionId, answer) =>
       gateFor(sessionId)?.answerHeld(questionId, answer) ?? 'unknown',
-    isMainPromptHeld: (sessionId) => gateFor(sessionId)?.hasMainHold() ?? false,
   };
 }
 
@@ -505,7 +528,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     send,
     retireQuestion,
     answerHeld,
-    isMainPromptHeld,
+    promptUp,
     onQuestionResolved,
     isPromptCurrent,
     isPromptObservedOnPTY,
@@ -1215,31 +1238,26 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       }
 
       // #1140: structured input is typed followed by Enter. While Claude
-      // shows a numbered selection menu (a permission prompt, or a hook-less
-      // one) it ignores the text and the Enter confirms the highlighted
-      // option, usually "1. Yes", so a chat message or a Telegram text reply
-      // sent while a prompt waits would approve the pending action. Refuse it
-      // and say why. Raw input (above) stays unguarded: it is a person's
-      // keystrokes at the terminal, which is how the menu gets answered.
+      // shows a dialog (a permission prompt, or a hook-less one) it ignores
+      // the text and the Enter confirms the highlighted option, usually
+      // "1. Yes", so a chat message or a Telegram text reply sent while a
+      // prompt waits would approve the pending action. Refuse it and say
+      // why. Raw input (above) stays unguarded: it is a person's keystrokes
+      // at the terminal, which is how the dialog gets answered.
       //
-      // `observedPromptOptions` is the tracker's view of the screen, the same
-      // signal the card-answer guards use (#1134). Only a NUMBERED selection
-      // box refuses (`isNumberedMenu`): a subprocess `(y/n)` prompt is observed
-      // too, with options "y"/"n", and it takes typed text. Absent, or null (no
-      // prompt observed, or no tracker): nothing is known to be on screen, so
-      // the text is typed as before.
-      //
-      // #1126: a held main-agent prompt's dialog is on screen too (it renders
-      // during the hold), so it refuses as well, whether or not the parser
-      // has recognized the menu: the hook says a dialog is up even when the
-      // screen parse does not.
-      const menu = observedPromptOptions?.(session.sessionId) ?? null;
-      const menuOnScreen = menu !== null && isNumberedMenu(menu);
-      const held = isMainPromptHeld?.(session.sessionId) ?? false;
-      if (menuOnScreen || held) {
-        const screenValues = (menu ?? []).map((o) => o.value);
+      // `promptUp` is the one "a prompt is up" signal Stop reads too
+      // (#1155, `prompt-up.ts`): a held main prompt (its dialog renders
+      // during the hold, #1126), a hook-backed prompt waiting in the
+      // terminal (released at its deadline, or a background agent's dialog
+      // in a terminal session), or a NUMBERED selection box the tracker
+      // observes (a subprocess `(y/n)` prompt is observed too, with options
+      // "y"/"n", and it takes typed text, so it does not count). Null:
+      // nothing is known to be up, so the text is typed as before.
+      const up = promptUp?.(session.sessionId) ?? null;
+      if (up !== null) {
+        const screenValues = (observedPromptOptions?.(session.sessionId) ?? []).map((o) => o.value);
         log(
-          `[Input] refusing ${content.length} chars of chat text for session ${session.sessionId.slice(0, 8)}: ${menuOnScreen ? `a prompt menu is on screen [${screenValues.join(', ')}]` : 'a held prompt is on screen'}`,
+          `[Input] refusing ${content.length} chars of chat text for session ${session.sessionId.slice(0, 8)}: ${PROMPT_UP_LOG[up]}${screenValues.length > 0 ? ` [${screenValues.join(', ')}]` : ''}`,
         );
         traceQuestionEvent({
           action: 'input_refused',
@@ -1248,21 +1266,14 @@ export function createInputHandlers(deps: InputHandlerDeps) {
           callSite: 'input-events.onUserInput:chatIntoMenuGuard',
           // Only the length of what the user typed is recorded, never the text.
           detail: {
-            reason: menuOnScreen ? 'chat-into-menu' : 'chat-into-held-prompt',
+            reason: PROMPT_UP_TRACE_REASON[up],
             textLength: content.length,
             screenValues,
           },
         });
-        // While a hook is held the dialog may already be answered: a Yes in
-        // the terminal ends the hold only when its tool finishes, so the
-        // message must not claim a dialog is up (#1126, #1144).
         send(
           connectionId,
-          createPromptWaitingError(
-            session.sessionId,
-            messageId,
-            held ? PROMPT_WAITING_HELD_MESSAGE : PROMPT_WAITING_MESSAGE,
-          ),
+          createPromptWaitingError(session.sessionId, messageId, PROMPT_UP_MESSAGE[up]),
         );
         return;
       }

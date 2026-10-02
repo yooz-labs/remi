@@ -159,6 +159,7 @@ import {
   gateAnswerDeps,
   trackerScreenDeps,
 } from './cli/handlers/input-events.ts';
+import { promptUpDeps } from './cli/handlers/prompt-up.ts';
 import {
   type ResumeSessionHandlers,
   createResumeSessionHandlers,
@@ -1926,6 +1927,15 @@ const trivialHandlers: TrivialHandlers = createTrivialHandlers({
   send: sendToConnection,
 });
 
+// #1155: the one "a prompt is up" signal (a held main prompt, a hook-backed
+// prompt waiting in the terminal, or a numbered menu on screen), built once
+// and spread into both handler factories below, so the chat guard and Stop
+// cannot disagree. Backed by the RIGHT session's gate and tracker.
+const promptUpWiring = promptUpDeps(
+  (sessionId) => sessionGateHandles.get(sessionId),
+  (sessionId) => sessionTrackers.get(sessionId),
+);
+
 const inputHandlers: InputHandlers = createInputHandlers({
   sessionRegistry,
   bindingStore,
@@ -1935,6 +1945,8 @@ const inputHandlers: InputHandlers = createInputHandlers({
   // prompt through its hook. One helper, shared with the tests, like
   // trackerScreenDeps below.
   ...gateAnswerDeps((sessionId) => sessionGateHandles.get(sessionId)),
+  // #1155: the chat guard reads the one "a prompt is up" signal Stop reads.
+  ...promptUpWiring,
   // #585: a locally answered question dismisses its card + lock-screen push on
   // every other client.
   onQuestionResolved: (sessionId, questionId) =>
@@ -1959,10 +1971,10 @@ const sessionHandlers: SessionHandlers = createSessionHandlers({
   onConnectionRemoved: () =>
     updateRemiStatus({ connections: Math.max(0, remiStatus.connections - 1) }),
   send: sendToConnection,
-  // #1140: a Stop does not type "/exit" + Enter into a menu on screen (the Enter
-  // would confirm the highlighted option); it reads the same tracker view the
-  // answer and chat guards do.
-  ...trackerScreenDeps((sessionId) => sessionTrackers.get(sessionId)),
+  // #1140, #1155: a Stop does not type "/exit" + Enter while a prompt is up
+  // (the Enter would confirm the highlighted option); it reads the same
+  // signal the chat guard does.
+  ...promptUpWiring,
 });
 // Wire the deferred-Stop resolver now that the handlers exist (#641); the
 // registry's onSessionClosed reaches it through this holder.

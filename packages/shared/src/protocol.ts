@@ -638,6 +638,17 @@ export const PROMPT_WAITING_HELD_MESSAGE =
   'Claude is waiting on a prompt or finishing an approved step; answer the card or use the terminal.';
 
 /**
+ * The `message` of a `PROMPT_WAITING` error sent while a hook-backed prompt's
+ * answer belongs to the terminal (#1155): a hold released at its deadline or
+ * handed back early, or a background agent's dialog in a terminal session.
+ * Its card is gone, so the message points at the terminal only, and it says
+ * "may": a No answered there fires no hook, so the daemon cannot tell when
+ * the dialog closed, and a Yes may already be running its command.
+ */
+export const PROMPT_WAITING_TERMINAL_MESSAGE =
+  'Claude may be waiting on a prompt in the terminal or finishing an approved step; answer it there.';
+
+/**
  * Details attached to a `PROMPT_WAITING` error. `messageId` is the refused
  * input's own message id (when the client sent one), so the client can flip
  * that one bubble to failed; the daemon acks `user_input` before it decides

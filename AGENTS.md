@@ -339,11 +339,11 @@ fail closed). `handleAnswer` asks
 the gate first (`gateAnswerDeps`): a held card is answered through the hook,
 and a binary card whose hold has ended is refused (`closed`: answer at the
 terminal), never typed. While a main-agent hold is open its dialog is on
-screen, so `onUserInput` refuses chat text with `PROMPT_WAITING`
-(`isMainPromptHeld`) even before the screen parse sees the menu (#1140). Its
-message is `PROMPT_WAITING_HELD_MESSAGE`, which does not claim a dialog is
-up: after a terminal Yes the hold lasts until `PostToolUse`, so the refusal
-also covers the approved command's run (#1144).
+screen, so `onUserInput` refuses chat text with `PROMPT_WAITING` even before
+the screen parse sees the menu (#1140; `promptUp`, below). Its message is
+`PROMPT_WAITING_HELD_MESSAGE`, which does not claim a dialog is up: after a
+terminal Yes the hold lasts until `PostToolUse`, so the refusal also covers
+the approved command's run (#1144).
 
 **A typed answer carries the screen's numbering** (#1134). This applies only
 where no held hook stands behind the card: hook-less prompts (sandbox network,
@@ -388,28 +388,46 @@ STALE_ANSWER, card consumed, trace reason in parentheses). A refusal means
   the same choice (the lock screen sends every tap on two channels) reports
   delivered and types nothing; a different concurrent answer is refused.
 
-**Chat text is refused while a numbered prompt menu is on screen** (#1140).
-`onUserInput` types structured input (web chat, a Telegram text reply or custom
-text) followed by Enter, and Claude's numbered menu ignores the letters while
-the Enter confirms the highlighted option, usually "1. Yes", so a message sent
-from the phone while a prompt waits would approve it. When the session's
-tracker observes a numbered selection box (`observedPromptOptions`, wired by
-`trackerScreenDeps`, the same signal the guards above read; `isNumberedMenu`:
-every option value is numeric) nothing is typed and the sender gets an `error`
-with code `PROMPT_WAITING` ("Claude is waiting on a prompt. Answer it from its
-card or in the terminal (Esc dismisses it)."; `PROMPT_WAITING_ERROR_CODE` and
-`createPromptWaitingError` in `@remi/shared`), plus a trace record
-(`input_refused`, reason `chat-into-menu`). Telegram renders it as "Error:
-..."; the web client marks the refused bubble failed from `details.messageId`.
-A Stop (`onKillSessionRequest`) reads the same view and, with a numbered menu
-up, types no `/exit` and force-closes the session instead.
+**Chat text and Stop's `/exit` are refused while a prompt is up** (#1140,
+#1155). `onUserInput` types structured input (web chat, a Telegram text reply
+or custom text) followed by Enter, and a Stop (`onKillSessionRequest`) types
+`/exit` + Enter; into a Claude dialog the letters are ignored and the Enter
+confirms the highlighted option, usually "1. Yes", so a message or a Stop sent
+from the phone while a prompt waits would approve it. Both read ONE signal,
+`promptUp` (`cli/handlers/prompt-up.ts`, built once in `cli.ts` by
+`promptUpDeps` and spread into both handler factories; a source-level test pins
+that wiring), which says a prompt is up when any of three sources does:
+
+- `held`: a main-agent hook is held (`hasMainHold`; its dialog renders during
+  the hold);
+- `terminal`: a hook-backed prompt waits in the terminal (`hasOpenHookPrompt`
+  beyond a main hold: a hold released at its deadline or handed back early,
+  or a rendered wrapper-mode subagent dialog, each for at most the session's
+  hold length);
+- `menu`: the tracker observes a numbered selection box
+  (`observedPromptOptions`; `isNumberedMenu`: every option value is numeric),
+  which covers hook-less prompts.
+
+Before #1155 Stop read only the screen parse and the chat guard only the parse
+and a main hold, so a dialog the parse missed (or that a text status had
+cleared) got the typed Enter. While a prompt is up the chat guard types nothing
+and the sender gets an `error` with code `PROMPT_WAITING`, its message by
+source (`PROMPT_WAITING_HELD_MESSAGE`, `PROMPT_WAITING_TERMINAL_MESSAGE`, which
+points at the terminal since the card is gone, or `PROMPT_WAITING_MESSAGE`:
+"Claude is waiting on a prompt. Answer it from its card or in the terminal (Esc
+dismisses it)."; all in `@remi/shared` with `createPromptWaitingError`), plus a
+trace record (`input_refused`, reason `chat-into-held-prompt`,
+`chat-into-terminal-prompt` or `chat-into-menu`). Telegram renders it as
+"Error: ..."; the web client marks the refused bubble failed from
+`details.messageId`. Stop types no `/exit` and force-closes the session
+instead.
 
 Deliberately typeable: raw input (`raw: true`, an attach client's keystrokes,
 the web client's Escape button and Telegram's `/interrupt`, which is how a menu
 gets answered or dismissed; its Escape is written exactly, no Enter); a
 subprocess `(y/n)` prompt, or Claude prose ending in "(y/n)", which observes
 options "y"/"n" and takes text; a free-text prompt (an empty option list); and
-anything when nothing is observed. A raw write that fails is answered with
+anything when nothing is up. A raw write that fails is answered with
 `INPUT_NOT_DELIVERED`, and `/interrupt` then shows that error instead of
 "Interrupt sent". The parser returns `allowsFreeText: false` (and
 `optionsAreFallback: false`) for a Claude selection box, so a hook-less card is
@@ -436,11 +454,16 @@ card and the terminal still answer). (2) `submitInput` writes the text, waits
 50 ms, then writes the Enter; the observation is checked once, before the
 text, so a menu that renders inside that window still gets the Enter. Chat has
 no atomic "no prompt now" check to wait on. (3) A PTY-parsed status is a text
-guess and can clear the observation while the menu is still up. (4) The
+guess and can clear the observation while the menu is still up; for a
+hook-backed prompt the gate's half of `promptUp` still refuses then. (4) The
 no-tracker branch is effectively dead in production: `cli.ts` builds a tracker
 for every session, hook server or not. It exists for a caller that does not
-wire `observedPromptOptions` (tests, a future entry point) and it fails open
-(types the text), the opposite of the answer guards above.
+wire `promptUp` (tests, a future entry point) and it fails open (types the
+text), the opposite of the answer guards above. (5) A `terminal` entry lasts
+the session's hold length even when its dialog was answered No in the
+terminal (no hook fires for that), so a Stop in that window force-closes
+instead of typing `/exit`, and chat is refused until it expires or a hook
+signal closes it.
 
 The parser joins a label's wrapped rows (and an AskUserQuestion description
 row) onto the option above, at most two rows, never across footer rows

@@ -3,7 +3,11 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ProtocolMessage, Question, QuestionOption, UUID } from '@remi/shared';
-import { PROMPT_WAITING_HELD_MESSAGE, generateId } from '@remi/shared';
+import {
+  PROMPT_WAITING_HELD_MESSAGE,
+  PROMPT_WAITING_TERMINAL_MESSAGE,
+  generateId,
+} from '@remi/shared';
 import { hasLiveQuestionOnScreen } from '../../../src/api/live-questions.ts';
 import { MessageAPI } from '../../../src/api/message-api.ts';
 import { QuestionPresenceTracker } from '../../../src/api/question-presence-tracker.ts';
@@ -13,6 +17,8 @@ import {
   gateAnswerDeps,
   trackerScreenDeps,
 } from '../../../src/cli/handlers/input-events.ts';
+import { promptUpDeps } from '../../../src/cli/handlers/prompt-up.ts';
+import { createSessionHandlers } from '../../../src/cli/handlers/session-events.ts';
 import type { DeviceTokenEntry } from '../../../src/cli/handlers/trivial-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import type { HookBridgeHandle } from '../../../src/cli/session-phases/hook-bridge-setup.ts';
@@ -2033,6 +2039,10 @@ describe('setupHookBridge', () => {
         },
         ...gateAnswerDeps(() => built.handle.gate),
         ...trackerScreenDeps(() => built.tracker),
+        ...promptUpDeps(
+          () => built.handle.gate,
+          () => built.tracker,
+        ),
       });
       return { ...built, hook, card, handlers, sent };
     }
@@ -2852,6 +2862,10 @@ describe('setupHookBridge', () => {
         },
         ...gateAnswerDeps(() => built.handle.gate),
         ...trackerScreenDeps(() => built.tracker),
+        ...promptUpDeps(
+          () => built.handle.gate,
+          () => built.tracker,
+        ),
       });
       sessionRegistry.attachConnection(SID, 'conn-sub-chat' as UUID);
       await handlers.onUserInput('conn-sub-chat' as UUID, SID, 'status?', false);
@@ -2916,6 +2930,10 @@ describe('setupHookBridge', () => {
         send: () => true,
         ...gateAnswerDeps(() => handle.gate),
         ...trackerScreenDeps(() => tracker),
+        ...promptUpDeps(
+          () => handle.gate,
+          () => tracker,
+        ),
       });
       expect(await handlers.relayAnswer(SID, card.id, 'No')).toBe('delivered');
       expect(await hook).toBe('deny');
@@ -3024,6 +3042,10 @@ describe('setupHookBridge', () => {
         },
         ...gateAnswerDeps(() => gate),
         ...trackerScreenDeps(() => tracker),
+        ...promptUpDeps(
+          () => gate,
+          () => tracker,
+        ),
       });
     }
 
@@ -4493,7 +4515,7 @@ describe('setupHookBridge', () => {
     }
 
     function menuObserved(tag: string) {
-      const { tracker } = build({ realTracker: true });
+      const { tracker, handle } = build({ realTracker: true });
       lockSession(tag);
       const parsed = parseQuestion(WRAPPED_DIRECTORY_DIALOG);
       if (!parsed.question) throw new Error('the live dialog did not parse as a prompt');
@@ -4509,6 +4531,10 @@ describe('setupHookBridge', () => {
           return true;
         },
         ...trackerScreenDeps(() => tracker),
+        ...promptUpDeps(
+          () => handle.gate,
+          () => tracker,
+        ),
       });
       /** Chat text sent now: true when it was typed, false when refused. */
       const chat = async (text: string): Promise<boolean> => {
@@ -4613,6 +4639,177 @@ describe('setupHookBridge', () => {
       });
 
       expect(await chat('typed after idle')).toBe(true);
+    });
+  });
+
+  /**
+   * #1155: the chat guard and Stop read one "a prompt is up" signal
+   * (`promptUpDeps`, built once in cli.ts and spread into both handler
+   * factories, as here): a held main prompt, a hook-backed prompt waiting in
+   * the terminal, or a numbered menu. Before it, Stop read only the screen
+   * parse and typed "/exit" + Enter into a dialog the parse had not seen (or
+   * that a text status had cleared), and the chat guard missed a prompt
+   * released to the terminal. Real bridge, gate, tracker, MessageAPI and
+   * both handler factories; the PTY records every keystroke.
+   */
+  describe('Stop and chat read one "a prompt is up" signal (#1155)', () => {
+    const CONN = 'conn-1155' as UUID;
+    const REQ = 'req-1155' as UUID;
+
+    function lockSession(id: string): void {
+      hookServer.fire('Notification', {
+        session_id: id,
+        hook_event_name: 'Notification',
+        transcript_path: path.join(tmpDir, `${id}.jsonl`),
+        notification_type: 'auth_success',
+        message: '',
+      });
+    }
+
+    /** The chat and Stop handlers, wired as cli.ts wires them. */
+    function handlersFor(built: { tracker: QuestionPresenceTracker; handle: HookBridgeHandle }) {
+      const sent: ProtocolMessage[] = [];
+      const send = (_c: UUID, m: ProtocolMessage) => {
+        sent.push(m);
+        return true;
+      };
+      const promptUpWiring = promptUpDeps(
+        () => built.handle.gate,
+        () => built.tracker,
+      );
+      const input = createInputHandlers({
+        sessionRegistry,
+        bindingStore,
+        send,
+        ...gateAnswerDeps(() => built.handle.gate),
+        ...trackerScreenDeps(() => built.tracker),
+        ...promptUpWiring,
+      });
+      const session = createSessionHandlers({
+        sessionRegistry,
+        bindingStore,
+        transcriptDiscovery: new TranscriptDiscovery({
+          projectsDir: path.join(tmpDir, 'claude-projects'),
+        }),
+        liveSessionsRegistry,
+        currentPort: () => 8765,
+        untrackConnection: () => {},
+        onConnectionRemoved: () => {},
+        send,
+        ...promptUpWiring,
+        exitFallbackMs: 60_000,
+      });
+      sessionRegistry.attachConnection(SID, CONN);
+      /** The refusal sent for the last chat text, if any. */
+      const refusal = () =>
+        sent.filter((m) => m.type === 'error').at(-1) as
+          | { code?: string; message?: string }
+          | undefined;
+      return { input, session, sent, refusal };
+    }
+
+    const bashCall = (session: string, command: string) => ({
+      session_id: session,
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command },
+    });
+
+    test('a held main prompt the screen parse has not seen: chat refused, Stop types nothing and force-closes', async () => {
+      const built = build({ realTracker: true, realMessageApi: true, liveQuestionDeps: true });
+      lockSession('claude-1155-held');
+      const hook = hookServer.firePermission(bashCall('claude-1155-held', 'touch held.txt'));
+      // Only the hold says a dialog is up: nothing was observed on screen.
+      expect(built.tracker.observedPromptOptions()).toBeNull();
+      const { input, session, refusal } = handlersFor(built);
+
+      await input.onUserInput(CONN, SID, 'please go ahead', false);
+      expect(refusal()?.code).toBe('PROMPT_WAITING');
+      expect(refusal()?.message).toBe(PROMPT_WAITING_HELD_MESSAGE);
+
+      session.onKillSessionRequest(CONN, SID, REQ);
+      expect(ptySubmits).toEqual([]);
+      expect(sessionRegistry.getSession(SID)).toBeUndefined();
+
+      built.handle.closeBinder();
+      expect(await hook).toBe('passthrough');
+    });
+
+    test('a prompt released to the terminal at its deadline: chat refused (answer in the terminal), Stop force-closes', async () => {
+      const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
+      const built = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+        holdMs: 200,
+        noticeLog,
+      });
+      lockSession('claude-1155-deadline');
+      const hook = hookServer.firePermission(bashCall('claude-1155-deadline', 'touch late.txt'));
+      // The deadline releases the hold; Claude's dialog stays up.
+      expect(await hook).toBe('passthrough');
+      expect(noticeLog.map((n) => n.reason)).toEqual(['hold_deadline']);
+      expect(built.handle.gate.hasMainHold()).toBe(false);
+      expect(built.tracker.observedPromptOptions()).toBeNull();
+      const { input, session, refusal } = handlersFor(built);
+
+      await input.onUserInput(CONN, SID, 'are you there?', false);
+      expect(refusal()?.code).toBe('PROMPT_WAITING');
+      expect(refusal()?.message).toBe(PROMPT_WAITING_TERMINAL_MESSAGE);
+
+      session.onKillSessionRequest(CONN, SID, REQ);
+      expect(ptySubmits).toEqual([]);
+      expect(sessionRegistry.getSession(SID)).toBeUndefined();
+    });
+
+    test("a background agent's dialog in a terminal session, its parse cleared by a text status: chat refused, Stop force-closes", async () => {
+      const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
+      const built = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+        orphanDebounceMs: 5,
+        noticeLog,
+      });
+      lockSession('claude-1155-sub');
+      expect(
+        await hookServer.firePermission({
+          ...bashCall('claude-1155-sub', 'rm -rf build'),
+          agent_id: 'agent-bg',
+          agent_type: 'code-reviewer',
+        }),
+      ).toBe('passthrough');
+      built.tracker.onOrphanPTYPrompt(parseQuestion(WRAPPED_DIRECTORY_DIALOG).question as Question);
+      expect(noticeLog.map((n) => n.reason)).toEqual(['subagent']);
+      // A PTY-parsed status is a text guess: it clears the observation while
+      // the dialog is still up (AGENTS.md, chat guard limit 3).
+      built.tracker.onStatusChange('thinking');
+      expect(built.tracker.observedPromptOptions()).toBeNull();
+      const { input, session, refusal } = handlersFor(built);
+
+      await input.onUserInput(CONN, SID, 'status?', false);
+      expect(refusal()?.message).toBe(PROMPT_WAITING_TERMINAL_MESSAGE);
+
+      session.onKillSessionRequest(CONN, SID, REQ);
+      expect(ptySubmits).toEqual([]);
+      expect(sessionRegistry.getSession(SID)).toBeUndefined();
+    });
+
+    test('nothing up (a held prompt answered from the phone): chat is typed and Stop types /exit', async () => {
+      const built = build({ realTracker: true, realMessageApi: true, liveQuestionDeps: true });
+      lockSession('claude-1155-none');
+      const hook = hookServer.firePermission(bashCall('claude-1155-none', 'touch ok.txt'));
+      const { input, session, sent } = handlersFor(built);
+      const card = [...(sessionRegistry.getSession(SID)?.currentQuestions.values() ?? [])][0];
+      if (!card) throw new Error('the held prompt pushed no card');
+      expect(await input.relayAnswer(SID, card.id, 'Yes')).toBe('delivered');
+      expect(await hook).toBe('allow');
+
+      await input.onUserInput(CONN, SID, 'thanks', false);
+      session.onKillSessionRequest(CONN, SID, REQ);
+      expect(sent.filter((m) => m.type === 'error')).toEqual([]);
+      expect(ptySubmits).toEqual(['thanks', '/exit']);
+      expect(sessionRegistry.getSession(SID)).toBeDefined();
     });
   });
 });

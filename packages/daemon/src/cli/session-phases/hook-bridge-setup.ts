@@ -296,6 +296,11 @@ export interface SessionGateHandle {
   /** Is a main-agent prompt's hook held, with its dialog on screen (#1126)?
    *  Forwards to `AutoApproveGate.hasMainHold`. */
   hasMainHold: () => boolean;
+  /** Is a hook-backed dialog this gate knows about (or may be) on screen:
+   *  a live main hold, or a prompt waiting in the terminal younger than the
+   *  session's hold length (#1126)? Forwards to
+   *  `AutoApproveGate.hasOpenHookPrompt`; read by `promptUpDeps` (#1155). */
+  hasOpenHookPrompt: () => boolean;
   /** Is `questionId`'s hook held for the phone (#1126)? Forwards to
    *  `AutoApproveGate.isHeld`; read by the tracker's live-question check
    *  (`hasLiveQuestionOnScreen`). */
@@ -1231,6 +1236,7 @@ export function setupHookBridge(
       retireQuestion: (questionId) => autoApproveGate.retireQuestion(questionId),
       answerHeld: (questionId, answer) => autoApproveGate.answerHeld(questionId, answer),
       hasMainHold: () => autoApproveGate.hasMainHold(),
+      hasOpenHookPrompt: () => autoApproveGate.hasOpenHookPrompt(),
       isHeld: (questionId) => autoApproveGate.isHeld(questionId),
       forceRelease: (reason) => autoApproveGate.forceRelease(reason),
     },

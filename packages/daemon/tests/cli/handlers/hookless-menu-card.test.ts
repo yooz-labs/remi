@@ -17,6 +17,7 @@ import * as path from 'node:path';
 import type { ProtocolMessage, UUID } from '@remi/shared';
 import { QuestionPresenceTracker } from '../../../src/api/question-presence-tracker.ts';
 import { createInputHandlers, trackerScreenDeps } from '../../../src/cli/handlers/input-events.ts';
+import { promptUpDeps } from '../../../src/cli/handlers/prompt-up.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
 import { SessionRegistry } from '../../../src/session/session-registry.ts';
@@ -60,6 +61,10 @@ describe('hook-less card from the parser (#1140)', () => {
         return true;
       },
       ...trackerScreenDeps((sid) => (sid === sessionId ? tracker : undefined)),
+      ...promptUpDeps(
+        () => undefined,
+        (sid) => (sid === sessionId ? tracker : undefined),
+      ),
     });
   });
 
