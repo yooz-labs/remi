@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { optionsFromSuggestions } from '../../src/hooks/hook-event-bridge.ts';
-import { extractToolQuestion } from '../../src/hooks/tool-question.ts';
+import { PLAN_DETAIL_MAX, extractToolQuestion } from '../../src/hooks/tool-question.ts';
 
 describe('extractToolQuestion', () => {
   it('extracts the real AskUserQuestion question + option labels as picks', () => {
@@ -60,6 +60,18 @@ describe('extractToolQuestion', () => {
     expect(q.detail).toBe('# Plan\n- step 1\n- step 2');
     // No plan, no detail; the card still asks.
     expect(extractToolQuestion('ExitPlanMode', {})?.detail).toBeUndefined();
+    // A plan longer than the card's bound is cut with a visible marker; the
+    // hook's input (what an approval echoes) is untouched (review S6).
+    const long = `${'p'.repeat(PLAN_DETAIL_MAX)}TAIL`;
+    const capped = extractToolQuestion('ExitPlanMode', { plan: long })?.detail ?? '';
+    expect(capped.startsWith('p'.repeat(PLAN_DETAIL_MAX))).toBe(true);
+    expect(capped).not.toContain('TAIL');
+    expect(capped).toEndWith(
+      '[Plan truncated: 4 more characters. Read the full plan in the terminal.]',
+    );
+    expect(extractToolQuestion('ExitPlanMode', { plan: 'p'.repeat(PLAN_DETAIL_MAX) })?.detail).toBe(
+      'p'.repeat(PLAN_DETAIL_MAX),
+    );
     // A subagent's plan: an approval that sets no session mode (review S5).
     expect(
       extractToolQuestion('ExitPlanMode', { plan: '# P' }, { subagent: true })?.options.map(

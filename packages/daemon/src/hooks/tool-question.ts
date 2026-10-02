@@ -62,6 +62,22 @@ function pickOption(label: string, index: number, description?: string): Questio
   };
 }
 
+/**
+ * The longest plan a card carries (#1127 review S6). The card is broadcast
+ * to every client, stored for replays, relayed and pushed, so its size is
+ * bounded; a longer plan is cut with a visible marker saying how much is
+ * missing (the hook's own input, which the answer echoes, is never cut).
+ */
+export const PLAN_DETAIL_MAX = 20_000;
+
+/** A plan as a card's `detail`: verbatim up to `PLAN_DETAIL_MAX`, otherwise
+ *  cut there with a marker. */
+export function planDetail(plan: string): string {
+  if (plan.length <= PLAN_DETAIL_MAX) return plan;
+  const missing = plan.length - PLAN_DETAIL_MAX;
+  return `${plan.slice(0, PLAN_DETAIL_MAX)}\n\n[Plan truncated: ${missing} more characters. Read the full plan in the terminal.]`;
+}
+
 function isRecord(v: unknown): v is Record<string, unknown> {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
@@ -120,7 +136,7 @@ export function extractToolQuestion(
       text: 'Plan ready for review',
       options: exitPlanModeOptions(opts.subagent === true),
       kind: 'plan_approval',
-      ...(typeof plan === 'string' && plan.trim().length > 0 ? { detail: plan } : {}),
+      ...(typeof plan === 'string' && plan.trim().length > 0 ? { detail: planDetail(plan) } : {}),
     };
   }
 

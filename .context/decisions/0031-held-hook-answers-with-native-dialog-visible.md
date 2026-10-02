@@ -111,4 +111,6 @@ Until #1127 both tools were answered `passthrough` and pushed by id, and a phone
 - Free text on a multi-select question is refused (only labels were verified for it); the terminal dialog's "Type something" row still takes it.
 - A question-shaped MCP or custom tool still shows its questions on the card, and a pick is typed behind the label check, which normally refuses it because its dialog is a permission prompt; such a card with one single-select question now gets REMI_MULTI too (the category rule reads the card's shape, not the tool).
 - After a deadline release the card is dismissed and the terminal answers, as for a binary prompt; a long plan can easily outlast `hold_seconds` while being read.
+- A card carries at most 20000 characters of the plan (`PLAN_DETAIL_MAX`); a longer plan is cut with a visible marker and read in full only in the terminal. The approval still echoes the whole input (review S6).
+- Privacy: the start of the plan (the push body, 200 characters) goes in plaintext to the signaling Worker's `/push` and on to APNS (verified with the live harness's recording Worker), and Telegram receives the plan in full or cut. Not changed here; tracked by the relay and push privacy work (`.context/strategy-2026-10.md` section 9). The relay data channel has its own state (#543, #881).
 
