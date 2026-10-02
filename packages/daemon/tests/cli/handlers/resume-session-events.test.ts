@@ -7,8 +7,8 @@ import { generateId } from '@remi/shared';
 import type { MessageAPI } from '../../../src/api/message-api.ts';
 import {
   HUB_RESUME_UNSUPPORTED_CODE,
-  HUB_RESUME_UNSUPPORTED_MESSAGE,
   createResumeSessionHandlers,
+  hubResumeUnsupportedMessage,
 } from '../../../src/cli/handlers/resume-session-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import type { PTYSession } from '../../../src/pty/pty-session.ts';
@@ -357,9 +357,10 @@ describe('createResumeSessionHandlers', () => {
       expect(msg.sessionId).toBeUndefined();
       expect(msg.errorCode).toBe(HUB_RESUME_UNSUPPORTED_CODE);
       expect(msg.errorCode).toBe('UNSUPPORTED');
-      expect(msg.error).toBe(HUB_RESUME_UNSUPPORTED_MESSAGE);
-      // Names the way that works today, not just the refusal.
-      expect(msg.error).toContain('remi --resume');
+      expect(msg.error).toBe(hubResumeUnsupportedMessage(remiSessionId));
+      // Names the way that works today, and echoes the (UUID-shaped) id back
+      // inside the command so it can be pasted as is.
+      expect(msg.error).toContain(`remi --resume ${remiSessionId}`);
       // Nothing was registered: no session, and no connection attached.
       expect(sessionRegistry.activeSession).toBeNull();
     });
@@ -404,9 +405,45 @@ describe('createResumeSessionHandlers', () => {
       await handlers.onResumeSessionRequest(CID, 'no-such-session', REQ);
 
       expect(sendCalls).toHaveLength(1);
-      const msg = sendCalls[0]?.message as { success: boolean; errorCode?: string };
+      const msg = sendCalls[0]?.message as {
+        success: boolean;
+        errorCode?: string;
+        error?: string;
+      };
       expect(msg.success).toBe(false);
       expect(msg.errorCode).toBe('UNSUPPORTED');
+      // Not UUID-shaped, so it is not echoed: the generic placeholder instead.
+      expect(msg.error).toBe(hubResumeUnsupportedMessage('no-such-session'));
+      expect(msg.error).toContain("'remi --resume <session>'");
+      expect(msg.error).not.toContain('no-such-session');
+    });
+
+    test('never echoes arbitrary client input into the refusal message', async () => {
+      const hostile = [
+        "x'; echo pwned #",
+        '$(touch /tmp/pwned)',
+        '<script>alert(1)</script>',
+        '11111111-2222-4333-8444-555555555555\n; reboot',
+        '11111111-2222-4333-8444-5555555555555',
+        'z1111111-2222-4333-8444-555555555555',
+        '',
+      ];
+      const handlers = makeHandlers(async () => undefined, true);
+      for (const input of hostile) {
+        sendCalls = [];
+        await handlers.onResumeSessionRequest(CID, input, REQ);
+        const msg = sendCalls[0]?.message as { error?: string };
+        expect(msg.error).toBe(hubResumeUnsupportedMessage('<session>'));
+        if (input.length > 0) expect(msg.error).not.toContain(input);
+      }
+    });
+
+    test('echoes a UUID-shaped id in either case and nothing else', () => {
+      const lower = '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d';
+      const upper = lower.toUpperCase();
+      expect(hubResumeUnsupportedMessage(lower)).toContain(`remi --resume ${lower}'`);
+      expect(hubResumeUnsupportedMessage(upper)).toContain(`remi --resume ${upper}'`);
+      expect(hubResumeUnsupportedMessage('not-a-uuid')).toContain("'remi --resume <session>'");
     });
 
     test('hubMode false behaves exactly like the session daemon: spawns with --resume', async () => {

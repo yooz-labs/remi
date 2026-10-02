@@ -57,13 +57,22 @@ export type CreateNewSessionFn = (
   extraArgs: string[],
 ) => Promise<unknown>;
 
+/** Canonical 8-4-4-4-12 hex UUID shape; anything else is never echoed back. */
+const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /**
  * Why a hub refuses resume. Names the one way that works today so the phone
  * user is not left at a dead end. The hub only answers; it never starts
  * Claude (#1124, follow-up #1129).
+ *
+ * The requested id is echoed into the command only when it is UUID-shaped;
+ * anything else (the id is client-supplied) gets the generic `<session>`
+ * placeholder, so the refusal can never reflect arbitrary input.
  */
-export const HUB_RESUME_UNSUPPORTED_MESSAGE =
-  "Resuming a session through the hub is not supported yet. Run 'remi --resume <session>' from a terminal on the host machine.";
+export function hubResumeUnsupportedMessage(requestedSessionId: string): string {
+  const session = UUID_SHAPE.test(requestedSessionId) ? requestedSessionId : '<session>';
+  return `Resuming a session through the hub is not supported yet. Run 'remi --resume ${session}' from a terminal on the host machine.`;
+}
 
 /** Same code vocabulary as the `error` frame (see `connection.ts` UNSUPPORTED). */
 export const HUB_RESUME_UNSUPPORTED_CODE = 'UNSUPPORTED';
@@ -114,14 +123,14 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
       // a bare `error` frame) because that is the only reply the web client
       // uses to clear its "resuming" spinner and show the reason in chat.
       if (hubMode) {
-        log(`Refusing resume of ${targetSessionId}: hub mode never starts Claude`);
+        log('Refusing resume: hub mode never starts Claude');
         send(
           connectionId,
           createResumeSessionResponse(
             false,
             requestId,
             undefined,
-            HUB_RESUME_UNSUPPORTED_MESSAGE,
+            hubResumeUnsupportedMessage(targetSessionId),
             HUB_RESUME_UNSUPPORTED_CODE,
           ),
         );
