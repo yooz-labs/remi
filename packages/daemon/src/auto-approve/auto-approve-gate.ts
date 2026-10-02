@@ -392,8 +392,8 @@ export class AutoApproveGate {
    * its dialog rendered. A subset of `openQuestionSignatures`' keys, closed
    * only by a hook signal (its tool run, Stop, a new prompt, the agent's
    * next tool call or SubagentStop, teardown), never by a late phone answer
-   * (`retireQuestion`). A MAIN-agent entry younger than the session's hold
-   * length is what `hasOpenHookPrompt` reports besides a live main hold.
+   * (`retireQuestion`). An entry younger than the session's hold length is
+   * what `hasOpenHookPrompt` reports besides a live main hold.
    */
   private readonly terminalPrompts = new Map<UUID, number>();
 
@@ -512,34 +512,34 @@ export class AutoApproveGate {
   }
 
   /**
-   * True while a MAIN-agent hook-backed dialog this gate knows about is (or
-   * may be) on screen (#1126): a live main hold (its dialog renders during
-   * the hold), or a main prompt in `terminalPrompts` younger than the
+   * True while a hook-backed dialog this gate knows about is (or may be) on
+   * screen (#1126): a live main hold (its dialog renders during the hold),
+   * or any prompt in `terminalPrompts` (main or subagent) younger than the
    * session's hold length (`holdMs`). The presence tracker asks this before
    * treating a PTY render as an orphan: such a render is that dialog or a
    * redraw of it, and must not be rebuilt into a card the phone would answer
-   * by typing. Read live per call.
+   * by typing; for a wrapper-mode subagent prompt the phone keeps exactly one
+   * artifact, its notice. Read live per call.
    *
    * Bounded on purpose (#1126 lead decision), because every entry this
    * counts suppresses a genuinely hook-less prompt's card (sandbox network,
-   * trust, an agent-team dialog) while it lasts:
-   *   - subagent holds never count: their dialog does not render while held;
-   *   - subagent `terminalPrompts` entries never count either; they are
-   *     cleared by that agent's next tool call (`noteAgentToolCall`) or
-   *     `SubagentStop`;
-   *   - a main entry stops counting once it is older than `holdMs` (a No
-   *     answered in the terminal after the deadline fires no hook). A redraw
-   *     after that takes the guarded hook-less path (#1134: typed only on an
-   *     exact label match, fail closed).
+   * trust, an agent-team dialog) while it lasts. Only what does not render
+   * is excluded:
+   *   - subagent HOLDS never count: their dialog does not render while held;
+   *   - a `terminalPrompts` entry stops counting once it is older than
+   *     `holdMs` (a No answered in the terminal fires no hook), and a
+   *     subagent's entry is also cleared by that agent's next tool call
+   *     (`noteAgentToolCall`), `SubagentStop` or `SessionEnd`. A redraw past
+   *     that takes the guarded hook-less path (#1134: typed only on an exact
+   *     label match, fail closed).
    * A passthrough card (AskUserQuestion, ExitPlanMode) is registered, which
    * the tracker's live-question check already covers.
    */
   hasOpenHookPrompt(): boolean {
     if (this.hasMainHold()) return true;
     const cutoff = Date.now() - this.deps.holdMs;
-    for (const [qid, at] of this.terminalPrompts) {
-      if (at <= cutoff) continue;
-      if (this.openQuestionSignatures.get(qid)?.isSubagent === false) return true;
+    for (const at of this.terminalPrompts.values()) {
+      if (at > cutoff) return true;
     }
     return false;
   }

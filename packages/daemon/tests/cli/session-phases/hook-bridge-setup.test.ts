@@ -2117,6 +2117,11 @@ describe('setupHookBridge', () => {
       // Informational only: no card exists to answer, so nothing can be typed.
       expect(cards()).toHaveLength(0);
 
+      // A redraw is the same open prompt, never an orphan card: the phone
+      // keeps exactly one artifact, the notice.
+      tracker.onOrphanPTYPrompt({ ...dialog, id: generateId() });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(cards()).toHaveLength(0);
       expect(ptySubmits).toEqual([]);
 
       // Answered Yes in the terminal: the tool runs, the notice clears.
@@ -2125,7 +2130,7 @@ describe('setupHookBridge', () => {
       expect(noticeLog[1]?.questionId).toBe(noticeLog[0]?.questionId as UUID);
     });
 
-    test("wrapper mode: a teammate's prompt answered No in the terminal does not hide a hook-less prompt; its next call clears the notice", async () => {
+    test("wrapper mode: a teammate's prompt answered No in the terminal is cleared by its next call; then a hook-less prompt gets its card", async () => {
       const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
       const { tracker } = build({
         realTracker: true,
@@ -2141,8 +2146,18 @@ describe('setupHookBridge', () => {
       ).toBe('passthrough');
       tracker.onOrphanPTYPrompt(parseQuestion(WRAPPED_DIRECTORY_DIALOG).question as Question);
       expect(noticeLog.map((n) => n.reason)).toEqual(['subagent']);
-      // The user answers No in the terminal: no hook fires. A hook-less
-      // prompt (a sandbox network dialog) renders next and gets its card.
+      // The user answers No in the terminal: no hook fires. The teammate
+      // moves on: its next call proves the No, so the prompt is cleared and
+      // its notice dismissed without waiting for SubagentStop.
+      hookServer.fire('PreToolUse', {
+        ...call,
+        hook_event_name: 'PreToolUse',
+        tool_input: { command: 'ls' },
+        tool_use_id: 'tu-next',
+      });
+      expect(noticeLog.map((n) => n.reason)).toEqual(['subagent', 'dismissed']);
+      // A hook-less prompt (a sandbox network dialog) renders next: the
+      // cleared entry no longer suppresses it, so it gets its card.
       tracker.onOrphanPTYPrompt({
         id: generateId(),
         text: 'Allow network access to example.com?',
@@ -2156,15 +2171,6 @@ describe('setupHookBridge', () => {
       });
       await new Promise((resolve) => setTimeout(resolve, 40));
       expect(cards().map((q) => q.text)).toEqual(['Allow network access to example.com?']);
-      // The teammate moves on: its next call proves the No, so the notice
-      // is dismissed without waiting for SubagentStop.
-      hookServer.fire('PreToolUse', {
-        ...call,
-        hook_event_name: 'PreToolUse',
-        tool_input: { command: 'ls' },
-        tool_use_id: 'tu-next',
-      });
-      expect(noticeLog.map((n) => n.reason)).toEqual(['subagent', 'dismissed']);
       expect(ptySubmits).toEqual([]);
     });
 

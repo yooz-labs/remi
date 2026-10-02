@@ -272,19 +272,20 @@ and a second unstick clears it.
 **No card answer is typed into the PTY for a hook-backed binary prompt**
 (raw input from `remi attach` and the phone's Escape button still reach the
 dialog by design: they are a person at the terminal). While a
-MAIN-agent hook is held, or a main prompt waits in the terminal
-(`terminalPrompts`: released at its deadline or early) for less than the
-session's hold length, the tracker treats a PTY render as that dialog
-(`setHookPromptProbe` -> `hasOpenHookPrompt`), never as an orphan, so no typed
-card is rebuilt from it. The probe is bounded on purpose (#1126 lead
-decision), since everything it counts suppresses a hook-less prompt's card
-(sandbox network, trust, an agent-team dialog): subagent holds never count
-(their dialog does not render while held), subagent `terminalPrompts` entries
-never count (they are cleared by that agent's next `PreToolUse`,
-`noteAgentToolCall`, or `SubagentStop`), and a main entry stops counting after
-the hold length, after which a redraw takes the guarded hook-less path (#1134,
-fail closed). So a redraw of a rendered wrapper-mode subagent dialog can
-become a guarded typed card. `handleAnswer` asks
+MAIN-agent hook is held, or a prompt waits in the terminal (`terminalPrompts`:
+a hold released at its deadline or early, or a rendered wrapper-mode subagent
+dialog) for less than the session's hold length, the tracker treats a PTY
+render as that dialog (`setHookPromptProbe` -> `hasOpenHookPrompt`), never as
+an orphan, so no typed card is rebuilt from it; for a wrapper-mode subagent
+prompt the phone keeps exactly one artifact, its notice. The probe is bounded
+on purpose (#1126 lead decision), since everything it counts suppresses a
+hook-less prompt's card (sandbox network, trust, an agent-team dialog). Only
+what does not render is excluded: a subagent HOLD (daemon mode) never counts,
+since its dialog does not render while held. A `terminalPrompts` entry stops
+counting after the hold length, and a subagent's entry is also cleared by
+that agent's next `PreToolUse` (`noteAgentToolCall`), `SubagentStop` or
+`SessionEnd`; past that a redraw takes the guarded hook-less path (#1134,
+fail closed). `handleAnswer` asks
 the gate first (`gateAnswerDeps`): a held card is answered through the hook,
 and a binary card whose hold has ended is refused (`closed`: answer at the
 terminal), never typed. While a main-agent hold is open its dialog is on

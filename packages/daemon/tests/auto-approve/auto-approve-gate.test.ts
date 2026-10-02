@@ -1088,12 +1088,33 @@ describe('AutoApproveGate subagent routing by local terminal (#1126)', () => {
     expect(pushedNow).toEqual([]);
     expect(alerts).toEqual([input]);
     expect(g.answerHeld(ids[0] as UUID, { kind: 'option', option: YES })).toBe('unknown');
-    // A subagent's prompt never suppresses a hook-less prompt's card, before
-    // or after it rendered (#1126 lead decision: only main-agent prompts
-    // count); its own render is matched through its parked record first.
+    // Not rendered yet: it must not suppress a hook-less prompt's card (its
+    // own render is matched through its parked record first).
     expect(g.hasOpenHookPrompt()).toBe(false);
+    // Rendered: its dialog is on screen, so its redraws are echoes, not
+    // orphans, for the entry's bounded lifetime (#1126 lead decision).
     g.noteTerminalNotice(ids[0] as UUID);
+    expect(g.hasOpenHookPrompt()).toBe(true);
+  });
+
+  test('a rendered subagent prompt stops suppressing once it is older than the hold length', async () => {
+    const g = gate(true, { holdMs: 25 });
+    await g.resolvePermission(sub());
+    g.noteTerminalNotice(ids[0] as UUID);
+    expect(g.hasOpenHookPrompt()).toBe(true);
+    await Bun.sleep(40);
     expect(g.hasOpenHookPrompt()).toBe(false);
+  });
+
+  test("a rendered subagent prompt stops suppressing at that agent's next tool call", async () => {
+    const g = gate(true);
+    await g.resolvePermission(sub());
+    const qid = ids[0] as UUID;
+    g.noteTerminalNotice(qid);
+    expect(g.hasOpenHookPrompt()).toBe(true);
+    g.noteAgentToolCall('agent-1', 'tu-next');
+    expect(g.hasOpenHookPrompt()).toBe(false);
+    expect(noticesCleared).toEqual([qid]);
   });
 
   test('a rendered notice is dismissed when the prompt resolves', async () => {
