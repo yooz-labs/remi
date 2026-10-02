@@ -148,9 +148,14 @@ describe('REMI_HOME moves the state a real cli.ts writes', () => {
       proc.exited,
     ]);
     expect(code).toBe(1);
-    // Strip the ANSI color the logger adds.
-    const plain = err.replace(/\x1b\[[0-9;]*m/g, '').trim();
-    expect(plain).toBe(
+    // Strip the ANSI color the logger adds. Another test in the suite may
+    // leave an env var behind that the CLI warns about on its own line, so
+    // the refusal is matched as one whole line, not as all of stderr.
+    const lines = err
+      .replace(/\x1b\[[0-9;]*m/g, '')
+      .trim()
+      .split('\n');
+    expect(lines).toContain(
       'remi --uninstall does not run with REMI_HOME set: the service always uses ~/.remi. Unset REMI_HOME and run it again.',
     );
     expect(out).not.toContain('LaunchAgent');
