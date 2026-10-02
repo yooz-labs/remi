@@ -157,14 +157,17 @@ export function statusClearsMainQuestion(status: AgentStatus): boolean {
 }
 
 /**
- * Remove the entry at `key` ONLY if it still holds question `id` (#652).
+ * Remove the entry at `key` ONLY if it still holds question `id` (#652) and is
+ * still answered here (`answeredWith`).
  *
  * The post-answer cleanup timer captures the slot key when the user answers,
  * but a newer prompt can take that same `sessionId#agentId` slot before the
  * timer fires (back-to-back auto-approve escalations). Deleting by key alone
  * then wipes the NEW card; the daemon re-emits and it "reappears". Verifying the
- * id makes the timer a no-op once the slot has been reused. Returns the SAME
- * reference when nothing was removed so React skips the re-render.
+ * id makes the timer a no-op once the slot has been reused. A card whose
+ * answer the daemon refused was un-answered meanwhile (`restoreRefusedAnswers`,
+ * STALE_BINDING): it is live again, so the timer leaves it too. Returns the
+ * SAME reference when nothing was removed so React skips the re-render.
  */
 export function removeQuestionByKeyIfId(
   questions: Map<string, UIQuestion>,
@@ -172,10 +175,36 @@ export function removeQuestionByKeyIfId(
   id: string,
 ): Map<string, UIQuestion> {
   const existing = questions.get(key);
-  if (!existing || existing.id !== id) return questions;
+  if (!existing || existing.id !== id || existing.answeredWith == null) return questions;
   const next = new Map(questions);
   next.delete(key);
   return next;
+}
+
+/**
+ * Un-answer the cards of `sessionId` the user answered here whose answer the
+ * daemon refused while keeping the card live (#1126 review): a `STALE_ANSWER`
+ * that names no `questionId` (an answer a held card does not offer) leaves
+ * the hook held, and its `pendingQuestionIds` still list the card. Without
+ * this the optimistic "answered" card would be removed by its post-answer
+ * timer and the live hold would have no card. Only cards still listed as
+ * pending are restored. Returns the SAME reference when nothing changed.
+ */
+export function restoreRefusedAnswers(
+  questions: Map<string, UIQuestion>,
+  sessionId: string,
+  pendingQuestionIds: readonly string[],
+): Map<string, UIQuestion> {
+  const pending = new Set(pendingQuestionIds);
+  let next: Map<string, UIQuestion> | undefined;
+  for (const [key, q] of questions) {
+    if (q.sessionId !== sessionId || q.answeredWith == null || !pending.has(q.id)) continue;
+    if (!next) next = new Map(questions);
+    const restored = { ...q };
+    delete (restored as { answeredWith?: string }).answeredWith;
+    next.set(key, restored);
+  }
+  return next ?? questions;
 }
 
 /**

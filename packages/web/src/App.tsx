@@ -43,6 +43,7 @@ import {
   questionKey,
   removeQuestionById,
   removeQuestionByKeyIfId,
+  restoreRefusedAnswers,
   resolveQuestionCard,
 } from '@/lib/question-collection';
 import { dismissDeliveredNotification } from '@/lib/notifications';
@@ -1588,6 +1589,15 @@ function App() {
           if (staleSessionId && staleQuestionId) {
             commitQuestionsIfChanged(
               removeQuestionById(questionsRef.current, staleSessionId, staleQuestionId),
+              staleSessionId,
+            );
+          }
+          // #1126: no questionId means the card stayed live (a held card
+          // refused an answer it does not offer): un-answer it so the hold
+          // keeps a card instead of the post-answer timer removing it.
+          if (staleSessionId && !staleQuestionId && pendingQuestionIds) {
+            commitQuestionsIfChanged(
+              restoreRefusedAnswers(questionsRef.current, staleSessionId, pendingQuestionIds),
               staleSessionId,
             );
           }
