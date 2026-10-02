@@ -166,9 +166,53 @@ describe('parseQuestion() - wrapped option labels (#1134)', () => {
     ]);
   });
 
-  test('more than two rows before the next number end the block', () => {
-    const result = parseQuestion(['❯ 1. Yes', '  2. a', '  x', '  y', '  z', '  3. No'].join('\n'));
+  test('more than five rows before the next number end the block', () => {
+    const result = parseQuestion(
+      ['❯ 1. Yes', '  2. a', '  u', '  v', '  w', '  x', '  y', '  z', '  3. No'].join('\n'),
+    );
     expect(result.question?.options.map((o) => o.label)).toEqual(['Yes', 'a']);
+  });
+
+  test('a label wrapping onto three more rows keeps the "No" after it', () => {
+    const result = parseQuestion(
+      [
+        'Allow?',
+        '❯ 1. Yes',
+        '  2. Yes, and always allow access to aaaaaaaaaaaaaaaaaaaaaaaaa',
+        '     bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        '     cccccccccccccccccccccccccccc',
+        '     ddddddddddddddddddddd from this project',
+        '  3. No',
+      ].join('\n'),
+    );
+    expect(result.question?.options.map((o) => o.value)).toEqual(['1', '2', '3']);
+    expect(result.question?.options[2]?.label).toBe('No');
+  });
+
+  test('an AskUserQuestion description with one "·" is not a footer', () => {
+    const result = parseQuestion(
+      [
+        'Which store?',
+        '❯ 1. Redis',
+        '     Fast · in-memory',
+        '  2. Postgres',
+        '     Durable · SQL',
+        '  3. Type something.',
+        'Enter to select · ↑/↓ to navigate · Esc to cancel',
+      ].join('\n'),
+    );
+    expect(result.question?.options.map((o) => o.label)).toEqual([
+      'Redis Fast · in-memory',
+      'Postgres Durable · SQL',
+      'Type something.',
+    ]);
+  });
+
+  test('a row of three "·" phrases is a footer wherever it starts', () => {
+    const result = parseQuestion(
+      ['❯ 1. Yes', '  2. No', 'Saved · 3 files · 12s', '3. run the tests'].join('\n'),
+    );
+    expect(result.question?.options.map((o) => o.label)).toEqual(['Yes', 'No']);
   });
 });
 

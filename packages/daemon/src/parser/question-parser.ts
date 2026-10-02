@@ -149,8 +149,8 @@ function parseChromePrompt(lines: readonly string[]): Question | null {
       // Ending the block at such a row dropped every later option, including
       // "No", from the parse that a card's numbering now comes from. So the
       // rows join the option above, but only when ALL of these hold:
-      //   - the block resumes with the NEXT number at most
-      //     `MAX_CONTINUATION_ROWS` rows below that option;
+      //   - the block resumes with the NEXT number, after at most
+      //     `MAX_CONTINUATION_ROWS` rows (a long path can wrap several);
       //   - no row in between is dialog chrome (`isFooterRow`: "Esc to
       //     cancel · Tab to amend" and friends), so a footer followed by
       //     something like "3.5k tokens used" or "3. run the tests" never
@@ -212,15 +212,19 @@ function parseChromePrompt(lines: readonly string[]): Question | null {
  *  one above (a wrapped label or an AskUserQuestion description). The next
  *  option must start within `MAX_CONTINUATION_ROWS + 1` rows of the option it
  *  continues. Blank rows are already gone (`parseQuestion` filters them). */
-const MAX_CONTINUATION_ROWS = 2;
+const MAX_CONTINUATION_ROWS = 5;
 
 /** Dialog chrome under an option list ("Esc to cancel · Tab to amend",
- *  "Enter to select · ↑/↓ to navigate", "ctrl+e to explain"). Spacing is
- *  optional because ANSI stripping often collapses it ("Esctocancel·Tab..."),
- *  and any "·" counts: it is the footer's separator, never a label's. */
+ *  "Enter to select · ↑/↓ to navigate", "ctrl+e to explain"): a row that
+ *  STARTS with a footer phrase (after box characters), or that strings three
+ *  or more phrases together with "·". Spacing is optional because ANSI
+ *  stripping often collapses it ("Esctocancel·Tab..."). One "·" alone is not
+ *  enough: an AskUserQuestion description such as "Fast · in-memory" uses it
+ *  too, and must stay a continuation of its option. */
 function isFooterRow(line: string): boolean {
   const t = line.replace(/^[\s│|]+/, '');
-  return /^(esc\s*to|enter\s*to|tab\s*to|ctrl\s*\+|↑)/i.test(t) || t.includes('·');
+  if (/^(esc\s*to|enter\s*to|tab\s*to|ctrl\s*\+|↑)/i.test(t)) return true;
+  return (t.match(/·/g) ?? []).length >= 2;
 }
 
 /**
