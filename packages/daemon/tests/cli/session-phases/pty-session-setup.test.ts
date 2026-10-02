@@ -742,14 +742,28 @@ describe('buildClaudeChildEnv inline renderer policy (#1124)', () => {
     expect(CLAUDE_INLINE_RENDERER_ENV).toBe('CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN');
   });
 
-  test('a pre-set value is preserved (nothing is emitted that could override it)', () => {
-    const env = buildClaudeChildEnv(9999, 0, { [CLAUDE_INLINE_RENDERER_ENV]: '0' });
-    expect(CLAUDE_INLINE_RENDERER_ENV in env).toBe(false);
+  test('"0", the documented opt-out, and any other non-empty value are preserved', () => {
+    // Nothing is emitted for the key, so PTYSession's `{...process.env, ...env}`
+    // spread keeps the user's value and `=0` reaches Claude untouched.
+    for (const value of ['0', '1', 'false']) {
+      const env = buildClaudeChildEnv(9999, 0, { [CLAUDE_INLINE_RENDERER_ENV]: value });
+      expect(CLAUDE_INLINE_RENDERER_ENV in env).toBe(false);
+    }
   });
 
-  test('an explicitly empty value counts as defined and is preserved', () => {
+  test('an empty value counts as unset and is forced to 1', () => {
     const env = buildClaudeChildEnv(9999, 0, { [CLAUDE_INLINE_RENDERER_ENV]: '' });
-    expect(CLAUDE_INLINE_RENDERER_ENV in env).toBe(false);
+    expect(env[CLAUDE_INLINE_RENDERER_ENV]).toBe('1');
+  });
+
+  test('a whitespace-only value counts as unset and is forced to 1', () => {
+    const env = buildClaudeChildEnv(9999, 0, { [CLAUDE_INLINE_RENDERER_ENV]: '  ' });
+    expect(env[CLAUDE_INLINE_RENDERER_ENV]).toBe('1');
+  });
+
+  test('a key present with an undefined value counts as unset and is forced to 1', () => {
+    const env = buildClaudeChildEnv(9999, 0, { [CLAUDE_INLINE_RENDERER_ENV]: undefined });
+    expect(env[CLAUDE_INLINE_RENDERER_ENV]).toBe('1');
   });
 
   test('keeps REMI_PORT and the reserved-row REMI_STATUS_BAR flag unchanged', () => {
@@ -863,8 +877,8 @@ describe('createPtySessionForSession spawned child env (#1124)', () => {
     expect(await spawnedValue()).toBe('0');
   });
 
-  test('the child receives an explicitly empty value as empty, not forced to 1', async () => {
+  test('the child receives 1 when the user set the variable to empty', async () => {
     process.env[CLAUDE_INLINE_RENDERER_ENV] = '';
-    expect(await spawnedValue()).toBe('');
+    expect(await spawnedValue()).toBe('1');
   });
 });

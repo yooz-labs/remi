@@ -12,14 +12,19 @@
  *      whole screen and the bar would bleed up into Claude's content. The
  *      region pins row `N` fixed.
  *
- * Inline rendering is not Claude's default any more: Claude Code renders
- * fullscreen (alternate screen) for users who started after 2026-05-06, and
- * this bar (and remi's PTY prompt parsing) was built against the inline
- * renderer. So remi FORCES the inline renderer by setting
- * `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` in the child's environment
- * (`buildClaudeChildEnv` in `session-phases/pty-session-setup.ts`), unless the
- * user's environment already defines that variable; in that case their
- * explicit choice wins and the bar is unverified against fullscreen. See #1124.
+ * remi FORCES Claude's inline renderer. Claude Code's docs
+ * (code.claude.com/docs/en/fullscreen) say fullscreen (alternate screen) is the
+ * default for users who first used it on or after 2026-05-06; 2.1.287 gates it
+ * on first-start version and server flags unless `tui` is `default`. This bar
+ * (and remi's PTY prompt parsing) was built against the inline renderer, so
+ * remi sets `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` in the child's environment
+ * (`buildClaudeChildEnv` in `session-phases/pty-session-setup.ts`). That
+ * overrides Claude's `tui` setting and `CLAUDE_CODE_NO_FLICKER`, including a
+ * user's own fullscreen opt-in. It is skipped only when the user already set
+ * the variable to a non-empty value, so `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=0`
+ * is the opt-out (the bar is then unverified against fullscreen). An in-session
+ * `/tui` switch can still move Claude to the alternate screen; tracked in
+ * #1135. See also #1124.
  *
  * remi then owns row `N` exclusively and draws a persistent status bar there —
  * visible even while Claude shows a permission/question prompt, which is exactly

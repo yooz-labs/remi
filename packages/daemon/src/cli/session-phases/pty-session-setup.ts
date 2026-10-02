@@ -219,10 +219,13 @@ export function computeTermSize(
 }
 
 /**
- * Env var that makes Claude Code use its inline renderer instead of the
- * fullscreen alternate-screen one (the default for users who started after
- * 2026-05-06). remi's status bar and PTY prompt parsing assume inline
- * rendering, so remi forces it for the Claude child (#1124).
+ * Env var that makes Claude Code use its classic inline renderer instead of
+ * the fullscreen alternate-screen one. Claude Code's docs
+ * (code.claude.com/docs/en/fullscreen) say fullscreen is the default for users
+ * who first used it on or after 2026-05-06; 2.1.287 gates it on first-start
+ * version and server flags unless `tui` is `default`. remi's status bar and PTY
+ * prompt parsing were built against the inline renderer, so remi sets this for
+ * the Claude child (#1124).
  */
 export const CLAUDE_INLINE_RENDERER_ENV = 'CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN';
 
@@ -230,19 +233,25 @@ export const CLAUDE_INLINE_RENDERER_ENV = 'CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN'
  * Environment overrides remi adds on top of the incoming environment for the
  * Claude child. `PTYSession.start()` spreads `process.env` first and these
  * after, so anything returned here wins over the user's environment; that is
- * why the inline-renderer variable is only emitted when the incoming
- * environment does not define it.
+ * why the inline-renderer variable is only emitted when the user has not set
+ * it to something non-empty.
  *
  * - `REMI_PORT`: lets Claude's hooks report back to this daemon.
  * - `REMI_STATUS_BAR` (only when `reservedRows > 0`, #565): tells Claude's
  *   statusLine script to drop the remi prefix and show only model/context,
  *   because the reserved-row bar already renders the remi fields.
- * - `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` (#1124): forces the inline
- *   renderer unless the user chose explicitly. ANY value already present in
- *   `incoming`, including the empty string, counts as an explicit choice and
- *   is left untouched (nothing is emitted, so the spread keeps the user's
- *   value). The sole spawn site always runs `claude`; if a non-Claude command
- *   is ever spawned here, it must not get this variable.
+ * - `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` (#1124): remi FORCES the inline
+ *   renderer. Claude checks this variable before `CLAUDE_CODE_NO_FLICKER=1`
+ *   and before the `tui` setting (read from the 2.1.287 binary), so setting it
+ *   overrides both, including a user's own fullscreen opt-in. It is skipped
+ *   only when `incoming` already has the variable with a non-empty value
+ *   (nothing is emitted, so the spread keeps the user's value): that makes
+ *   `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=0` the opt-out. An empty,
+ *   whitespace-only, or undefined value counts as unset and is forced to `1`.
+ *   Claude's in-session `/tui` switch relaunches with `dropEnv` removing this
+ *   variable, so a session can still end up on the alternate screen (#1135).
+ *   The sole spawn site always runs `claude`; if a non-Claude command is ever
+ *   spawned here, it must not get this variable.
  */
 export function buildClaudeChildEnv(
   wsPort: number,
@@ -251,7 +260,8 @@ export function buildClaudeChildEnv(
 ): Record<string, string> {
   const env: Record<string, string> = { REMI_PORT: String(wsPort) };
   if (reservedRows > 0) env['REMI_STATUS_BAR'] = '1';
-  if (!Object.hasOwn(incoming, CLAUDE_INLINE_RENDERER_ENV)) {
+  const userValue = incoming[CLAUDE_INLINE_RENDERER_ENV];
+  if (userValue === undefined || userValue.trim() === '') {
     env[CLAUDE_INLINE_RENDERER_ENV] = '1';
   }
   return env;
