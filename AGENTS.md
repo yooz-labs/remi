@@ -269,7 +269,9 @@ unstick` does not close a LIVE hold: its dialog is on screen, so it is
 released to the terminal with a "handed back" notice (suppression kept),
 and a second unstick clears it.
 
-**Nothing is typed into the PTY for a hook-backed binary prompt.** While a
+**No card answer is typed into the PTY for a hook-backed binary prompt**
+(raw input from `remi attach` and the phone's Escape button still reach the
+dialog by design: they are a person at the terminal). While a
 MAIN-agent hook is held, or a main prompt waits in the terminal
 (`terminalPrompts`: released at its deadline or early) for less than the
 session's hold length, the tracker treats a PTY render as that dialog
@@ -294,7 +296,9 @@ also covers the approved command's run (#1144).
 
 **A typed answer carries the screen's numbering** (#1134). This applies only
 where no held hook stands behind the card: hook-less prompts (sandbox network,
-trust, agent-team dialogs) and, until #1127, AskUserQuestion / ExitPlanMode /
+trust, agent-team dialogs; not all of them reach the phone, the daemon's
+startup folder-trust dialog does not, #1147) and, until #1127,
+AskUserQuestion / ExitPlanMode /
 multi-choice cards. When a hook record merges onto a parsed prompt
 (`QuestionPresenceTracker.consumeAndMerge`), the card's options are the
 parse's options, labels and values unchanged; the hook contributes id, text,

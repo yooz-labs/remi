@@ -48,7 +48,10 @@ prompts any more.
 - The attach client's banner for a pending card now reads "answer the prompt
   here or on your phone".
 - The lock screen's "Yes, always" action is offered only when the standing
-  option is an allow rule; a mode-change option is answered in the app.
+  option is an allow rule; a mode-change option is answered in the app. A
+  hook-less prompt (sandbox network, an agent-team dialog), whose options
+  come from the screen and carry no standing-grant kind, loses its lock-screen
+  "Yes, always" action too and is answered in the app.
 - Chat text is refused while a held prompt's dialog is up, as it already was
   while a numbered menu was on screen (#1140).
 - AskUserQuestion and plan approval are unchanged: still typed into Claude's
@@ -119,13 +122,17 @@ source of several security bugs (#536, #1060, #1063).
 
 - **`subagent_alert` moved to `[notifications]`.** `auto_approve.subagent_alert`
   is still honored as a deprecated fallback when the new key is unset.
-- **Every prompt goes to the human.** A binary main-agent prompt shows in the
+- **Every prompt goes to the human.** (Superseded for binary prompts by
+  #1126 above: they are now held and answered through the hook.) A binary
+  main-agent prompt shows in the
   terminal at once and is pushed when it renders (#1121); AskUserQuestion and
   plan approval are pushed immediately; a subagent prompt is pushed only if it
   renders. `remi unstick` now resolves and dismisses stuck cards (there are no
   holds or evals left to release).
 - **Every phone answer is typed, and checked against the screen first**
-  (#1134). With nothing held, an answer is typed into Claude's dialog only
+  (#1134). (Since #1126 above, binary permission prompts are answered through
+  the held hook instead; typing remains only for hook-less prompts and for
+  AskUserQuestion, ExitPlanMode and multi-choice permissions.) With nothing held, an answer is typed into Claude's dialog only
   when a prompt is on screen and the chosen option's label exactly matches
   the screen's option at that number (whitespace and case aside); free text
   is refused on a card that takes a choice. A refusal consumes the card and
