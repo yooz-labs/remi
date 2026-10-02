@@ -25,7 +25,8 @@ is typed into the terminal for either.
   three choices: approve with edits auto-accepted, approve with edits
   approved manually, or keep planning (an optional note goes to Claude;
   the app has no field for it yet). Auto mode is not offered from the
-  phone; the terminal's dialog still offers it.
+  phone; the terminal's dialog still offers it. A background agent's plan
+  (daemon or hub mode) is approved without changing the session's mode.
 - `Question.kind: 'plan_approval'` and `Question.detail` (the plan) on the
   wire.
 

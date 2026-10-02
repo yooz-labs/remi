@@ -1218,6 +1218,19 @@ describe('AutoApproveGate held prompts (#1126)', () => {
       });
     });
 
+    test("a subagent's plan (daemon mode) approves without changing the session mode (review S5)", async () => {
+      const g = gate({ hasLocalTerminal: false });
+      const sub = { agent_id: 'agent-1', agent_type: 'Plan' };
+      const [approve] = exitPlanModeOptions(true) as [QuestionOption];
+      const a = g.resolvePermission({ ...plan(), ...sub });
+      const qid = ids[0] as UUID;
+      // The main agent's mode-setting approvals are not this card's.
+      expect(g.answerHeld(qid, { kind: 'option', option: ACCEPT_EDITS })).toBe('refused');
+      expect(g.answerHeld(qid, { kind: 'option', option: MANUAL })).toBe('refused');
+      expect(g.answerHeld(qid, { kind: 'option', option: approve })).toBe('resolved');
+      expect(await a).toEqual({ behavior: 'allow', updatedInput: PLAN });
+    });
+
     test('Keep planning denies with the message; Cancel keeps planning too', async () => {
       const g = gate();
       const a = g.resolvePermission(plan());

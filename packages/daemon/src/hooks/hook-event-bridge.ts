@@ -491,7 +491,9 @@ export class HookEventBridge {
     // through the hook (`structured-answers.ts`): AskUserQuestion's picks are
     // numbered by the index an answer names, ExitPlanMode's options are
     // built by meaning, and nothing is typed.
-    const toolQuestion = extractToolQuestion(toolName, input.tool_input);
+    const toolQuestion = extractToolQuestion(toolName, input.tool_input, {
+      subagent: typeof input.agent_id === 'string' && input.agent_id.length > 0,
+    });
 
     let promptText: string;
     let options: QuestionOption[];

@@ -60,6 +60,12 @@ describe('extractToolQuestion', () => {
     expect(q.detail).toBe('# Plan\n- step 1\n- step 2');
     // No plan, no detail; the card still asks.
     expect(extractToolQuestion('ExitPlanMode', {})?.detail).toBeUndefined();
+    // A subagent's plan: an approval that sets no session mode (review S5).
+    expect(
+      extractToolQuestion('ExitPlanMode', { plan: '# P' }, { subagent: true })?.options.map(
+        (o) => o.label,
+      ),
+    ).toEqual(['Approve', 'Keep planning']);
   });
 
   it('numbers an exactly parsed AskUserQuestion from its input; a malformed one keeps the lenient card (#1127)', () => {

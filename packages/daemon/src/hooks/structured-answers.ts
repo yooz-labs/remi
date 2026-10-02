@@ -288,9 +288,10 @@ export const ASK_DISMISSED_MESSAGE = 'The user dismissed the question.';
 // ExitPlanMode
 // ---------------------------------------------------------------------------
 
-/** What a plan card's option does. */
+/** What a plan card's option does. `mode` is the session permission mode an
+ *  approval sets; a subagent's approval sets none (`undefined`). */
 type PlanChoice =
-  | { readonly kind: 'approve'; readonly mode: 'acceptEdits' | 'default' }
+  | { readonly kind: 'approve'; readonly mode: 'acceptEdits' | 'default' | undefined }
   | { readonly kind: 'keep-planning' };
 
 interface PlanOptionDef {
@@ -320,16 +321,33 @@ const PLAN_OPTIONS: readonly PlanOptionDef[] = [
   { label: 'Keep planning', value: '3', choice: { kind: 'keep-planning' } },
 ];
 
+/**
+ * A SUBAGENT's plan card (#1127 review S5): held only in daemon or hub mode,
+ * where a subagent prompt is answerable from the phone. A `setMode` would
+ * change the permission mode of the whole session, the main agent's
+ * included, so the approval sets none: it answers the subagent's
+ * ExitPlanMode with its input echoed and nothing else.
+ */
+const SUBAGENT_PLAN_OPTIONS: readonly PlanOptionDef[] = [
+  { label: 'Approve', value: '1', choice: { kind: 'approve', mode: undefined } },
+  { label: 'Keep planning', value: '2', choice: { kind: 'keep-planning' } },
+];
+
+/** The option table for a main-agent or a subagent plan. */
+function planOptions(forSubagent: boolean): readonly PlanOptionDef[] {
+  return forSubagent ? SUBAGENT_PLAN_OPTIONS : PLAN_OPTIONS;
+}
+
 /** The deny message when the user keeps planning without saying why. */
 export const KEEP_PLANNING_MESSAGE = 'Keep planning.';
 
 /**
- * The plan card's options. Both approvals are `isYes` (they change the
- * session's permission mode, so no lock-screen category offers them: the
- * push sends a plan card with none); "Keep planning" is the `isNo`.
+ * The plan card's options: the main agent's three, or a subagent's two
+ * (`forSubagent`, no mode change). Approvals are `isYes`; "Keep planning" is
+ * the `isNo`. No plan card gets a lock-screen category (`pushCategoryFor`).
  */
-export function exitPlanModeOptions(): QuestionOption[] {
-  return PLAN_OPTIONS.map((o, i) => ({
+export function exitPlanModeOptions(forSubagent = false): QuestionOption[] {
+  return planOptions(forSubagent).map((o, i) => ({
     label: o.label,
     value: o.value,
     isRecommended: i === 0,
@@ -345,20 +363,26 @@ function boundedMessage(message: string | undefined): string {
 
 /**
  * Map a plan card's option to its hook response, or null when the option is
- * not one of the plan card's own (label and value must both match):
- *   - an approval: `allow` + `updatedInput` (the tool input echoed
+ * not one of that card's own (label and value must both match, in the main
+ * or the subagent table as `forSubagent` says):
+ *   - a main-agent approval: `allow` + `updatedInput` (the tool input echoed
  *     unchanged: `plan` and `planFilePath`) + a `setMode` to the option's
  *     mode, always with `destination: "session"`;
+ *   - a subagent's "Approve": `allow` + `updatedInput` only, never a mode;
  *   - "Keep planning": `deny` with the user's message, or "Keep planning.".
  */
 export function exitPlanModeDecision(
   toolInput: Readonly<Record<string, unknown>>,
   option: QuestionOption,
   message?: string,
+  forSubagent = false,
 ): PermissionDecision | null {
-  const def = PLAN_OPTIONS.find((o) => o.label === option.label && o.value === option.value);
+  const def = planOptions(forSubagent).find(
+    (o) => o.label === option.label && o.value === option.value,
+  );
   if (def === undefined) return null;
   if (def.choice.kind === 'keep-planning') return keepPlanningDecision(message);
+  if (def.choice.mode === undefined) return { behavior: 'allow', updatedInput: { ...toolInput } };
   return {
     behavior: 'allow',
     updatedInput: { ...toolInput },

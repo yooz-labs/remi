@@ -476,6 +476,28 @@ describe('ExitPlanMode', () => {
     expect(keepPlanningDecision('   ')).toEqual({ behavior: 'deny', message: 'Keep planning.' });
   });
 
+  test("a subagent's plan offers Approve (no mode change) and Keep planning (review S5)", () => {
+    const options = exitPlanModeOptions(true);
+    expect(options.map((o) => [o.label, o.value, o.isYes, o.isNo])).toEqual([
+      ['Approve', '1', true, false],
+      ['Keep planning', '2', false, true],
+    ]);
+    const [approve, keep] = options as [QuestionOption, QuestionOption];
+    // Never an updatedPermissions: a setMode would change the whole session.
+    expect(exitPlanModeDecision(PLAN_INPUT, approve, undefined, true)).toEqual({
+      behavior: 'allow',
+      updatedInput: PLAN_INPUT,
+    });
+    expect(exitPlanModeDecision(PLAN_INPUT, keep, 'More detail.', true)).toEqual({
+      behavior: 'deny',
+      message: 'More detail.',
+    });
+    // Neither table answers the other's options.
+    expect(exitPlanModeDecision(PLAN_INPUT, ACCEPT_EDITS, undefined, true)).toBeNull();
+    expect(exitPlanModeDecision(PLAN_INPUT, MANUAL, undefined, true)).toBeNull();
+    expect(exitPlanModeDecision(PLAN_INPUT, approve)).toBeNull();
+  });
+
   test('an option that is not one of the plan card own answers nothing', () => {
     expect(exitPlanModeDecision(PLAN_INPUT, { ...ACCEPT_EDITS, value: '2' })).toBeNull();
     expect(exitPlanModeDecision(PLAN_INPUT, { ...ACCEPT_EDITS, label: 'Yes' })).toBeNull();

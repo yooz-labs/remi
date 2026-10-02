@@ -649,6 +649,22 @@ describe('AskUserQuestion and ExitPlanMode through held hooks, end to end (#1127
       expect(ptyWrites).toEqual([]);
     });
 
+    test("daemon mode: a subagent's plan is approved without changing the session's mode (review S5)", async () => {
+      const { handlers } = build({ hasLocalTerminal: false });
+      await lock();
+      const { card, response } = await ask('ExitPlanMode', PLAN, {
+        permission_mode: 'plan',
+        ...SUBAGENT,
+      });
+      expect(card.options.map((o) => o.label)).toEqual(['Approve', 'Keep planning']);
+      // The main agent's mode-setting label is not this card's: refused.
+      await handlers.onAnswer(CONN, SID, card.id, 'Approve, auto-accept edits');
+      expect(errors()[0]?.code).toBe('STALE_ANSWER');
+      await handlers.onAnswer(CONN, SID, card.id, 'Approve');
+      expect(await decisionOf(response)).toEqual({ behavior: 'allow', updatedInput: PLAN });
+      expect(ptyWrites).toEqual([]);
+    });
+
     test('daemon mode: held with an answerable card, answered from the phone', async () => {
       const { handlers, gate } = build({ hasLocalTerminal: false });
       await lock();

@@ -168,6 +168,9 @@ type HoldKind = 'binary' | 'ask' | 'plan';
  *  request's abort, and when the hold began. */
 interface Hold {
   readonly kind: HoldKind;
+  /** The request came from a subagent (`agent_id`, daemon or hub mode): its
+   *  plan approval sets no session mode (#1127 review S5). */
+  readonly subagent: boolean;
   readonly resolve: (decision: PermissionDecision) => void;
   readonly timer: ReturnType<typeof setTimeout>;
   readonly suggestions: readonly unknown[] | undefined;
@@ -666,7 +669,7 @@ export class AutoApproveGate {
    *  does not offer it. See `answerHeld`. */
   private decisionFor(hold: Hold, answer: HeldAnswer): PermissionDecision | null {
     if (hold.kind === 'ask') return askDecision(hold.toolInput, answer);
-    if (hold.kind === 'plan') return planDecision(hold.toolInput, answer);
+    if (hold.kind === 'plan') return planDecision(hold.toolInput, answer, hold.subagent);
     if (answer.kind === 'cancel') return 'deny';
     if (answer.kind !== 'option') return null;
     const { option } = answer;
@@ -734,6 +737,7 @@ export class AutoApproveGate {
       signal?.addEventListener('abort', onAbort, { once: true });
       this.holds.set(qid, {
         kind,
+        subagent: this.isSubagentEvent(input),
         resolve,
         timer,
         suggestions: input.permission_suggestions as readonly unknown[] | undefined,
@@ -1347,14 +1351,16 @@ function askDecision(
 /**
  * The hook decision for a phone answer to a held ExitPlanMode (#1127), or
  * null to refuse it: one of the plan card's own options
- * (`exitPlanModeDecision`), or Cancel, which keeps planning like a "No".
- * Free text and `selections` are not plan answers.
+ * (`exitPlanModeDecision`; a subagent's plan has its own two, whose approval
+ * sets no session mode), or Cancel, which keeps planning like a "No". Free
+ * text and `selections` are not plan answers.
  */
 function planDecision(
   toolInput: Readonly<Record<string, unknown>>,
   answer: HeldAnswer,
+  subagent: boolean,
 ): PermissionDecision | null {
   if (answer.kind === 'cancel') return keepPlanningDecision();
   if (answer.kind !== 'option') return null;
-  return exitPlanModeDecision(toolInput, answer.option, answer.message);
+  return exitPlanModeDecision(toolInput, answer.option, answer.message, subagent);
 }

@@ -106,14 +106,16 @@ function buildStep(raw: unknown): QuestionStep | null {
 export function extractToolQuestion(
   toolName: string,
   toolInput: Record<string, unknown> | null | undefined,
+  opts: { readonly subagent?: boolean } = {},
 ): ToolQuestion | null {
   if (toolName === 'ExitPlanMode') {
     // #1127: the options are remi's own, by meaning (Claude's dialog list is
-    // model-dependent); the plan itself rides as `detail`.
+    // model-dependent); the plan itself rides as `detail`. A subagent's plan
+    // offers an approval that sets no session mode (review S5).
     const plan = isRecord(toolInput) ? toolInput['plan'] : undefined;
     return {
       text: 'Plan ready for review',
-      options: exitPlanModeOptions(),
+      options: exitPlanModeOptions(opts.subagent === true),
       kind: 'plan_approval',
       ...(typeof plan === 'string' && plan.trim().length > 0 ? { detail: plan } : {}),
     };

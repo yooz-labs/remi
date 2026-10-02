@@ -287,7 +287,10 @@ resolves the hook with a structured `updatedInput` built in
   `setMode` `acceptEdits` / `default` with `destination: "session"`) and
   "Keep planning" (`deny` with the phone's message or "Keep planning.";
   Claude revises and asks again). `auto` is not offered (not knowable from
-  the payload); the terminal still offers it. Cancel keeps planning.
+  the payload); the terminal still offers it. Cancel keeps planning. A
+  subagent's plan (held in daemon or hub mode) offers "Approve" (`allow` +
+  `updatedInput`, no `setMode`: a mode would apply to the whole session)
+  and "Keep planning".
 - A terminal answer fires `PostToolUse` with the paired `tool_use_id` but a
   different `tool_input` (`{questions, answers}`, or `{}` for a plan), so
   the gate matches a paired id whatever the input. Deadlines, abort,
