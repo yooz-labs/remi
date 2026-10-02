@@ -1,5 +1,7 @@
 # Handoff — 2026-07-28
 
+> **Superseded in part (2026-10-01).** The engine, `remi model` and local-model paragraphs below describe code removed in #1125 (ADR 0030): remi runs no local model and depends on no Yooz engine. Current direction: [strategy-2026-10.md](strategy-2026-10.md).
+
 State of the world after the 0.7.3 release.
 Decisions live in `.context/decisions/` (ADRs 0001-0008); this file is the working snapshot.
 Superseded development journals moved to `.context/archive/` on this date.
@@ -101,7 +103,7 @@ Running 0.7.3 from a fresh install, against a live engine:
 - `plan.md` — pointer stub to this handoff.
 - `notification-and-session-flow.md` — flow diagram referenced by AGENTS.md;
   PARTIALLY STALE (pre-Model B in places); refresh against ADR 0002 before trusting details.
-- `auq-tui-interaction-model.md` — current AUQ TUI ground truth (#654/#661/#675).
+- `auq-tui-interaction-model.md` — AUQ TUI captures (#654/#661/#675); historical since #1127 (AskUserQuestion is answered through its hook).
 - `native-ios-live-activities-guide.md` — research for open #276/#575.
 - `archive/` — historical journals, with an index explaining what each is and what superseded it.
   Archived 2026-07-28: `ideas.md`, `research.md`, `scratch_history.md`.

@@ -11,7 +11,7 @@ import {
   childRows,
   formatStatusBar,
 } from '../../src/cli/status-bar.ts';
-import { ESCALATE_FRESH_S, type RemiStatus } from '../../src/cli/status-writer.ts';
+import type { RemiStatus } from '../../src/cli/status-writer.ts';
 
 const NOW_MS = 1_000_000_000; // fixed clock; NOW_MS/1000 = 1_000_000 s
 const NOW_S = Math.floor(NOW_MS / 1000);
@@ -26,7 +26,6 @@ function mkStatus(overrides: Partial<RemiStatus> = {}): RemiStatus {
     sessionId: null,
     repo: 'remi',
     branch: 'develop',
-    autoApprove: { inFlight: 0, sinceS: 0, lastVerdict: 'none', lastVerdictAtS: 0 },
     ...overrides,
   };
 }
@@ -87,66 +86,25 @@ describe('formatStatusBar', () => {
     ).toContain('| no clients |');
   });
 
-  test('in-flight eval shows evaluating with elapsed seconds', () => {
-    const status = mkStatus({
-      autoApprove: { inFlight: 1, sinceS: NOW_S - 3, lastVerdict: 'none', lastVerdictAtS: 0 },
-    });
-    expect(formatStatusBar(status, NOW_MS)).toContain('| evaluating 3s');
-  });
-
-  test('a stuck eval past the cap falls back to the session status', () => {
-    const status = mkStatus({
-      sessionStatus: 'idle',
-      autoApprove: { inFlight: 1, sinceS: NOW_S - 601, lastVerdict: 'none', lastVerdictAtS: 0 },
-    });
-    expect(formatStatusBar(status, NOW_MS)).toContain('| idle');
-    expect(formatStatusBar(status, NOW_MS)).not.toContain('evaluating');
-  });
-
-  test('a fresh escalate shows needs you', () => {
-    const status = mkStatus({
-      autoApprove: { inFlight: 0, sinceS: 0, lastVerdict: 'escalated', lastVerdictAtS: NOW_S - 10 },
-    });
-    expect(formatStatusBar(status, NOW_MS)).toContain('| needs you');
-  });
-
-  test('an escalate older than the fresh window decays to the session status', () => {
-    const status = mkStatus({
-      sessionStatus: 'idle',
-      autoApprove: { inFlight: 0, sinceS: 0, lastVerdict: 'escalated', lastVerdictAtS: NOW_S - 61 },
-    });
-    expect(formatStatusBar(status, NOW_MS)).not.toContain('needs you');
-    expect(formatStatusBar(status, NOW_MS)).toContain('| idle');
-  });
-
-  test('a fresh approve shows approved, then fades', () => {
-    const fresh = mkStatus({
-      autoApprove: { inFlight: 0, sinceS: 0, lastVerdict: 'approved', lastVerdictAtS: NOW_S - 2 },
-    });
-    expect(formatStatusBar(fresh, NOW_MS)).toContain('| approved');
-    const faded = mkStatus({
-      sessionStatus: 'idle',
-      autoApprove: { inFlight: 0, sinceS: 0, lastVerdict: 'approved', lastVerdictAtS: NOW_S - 6 },
-    });
-    expect(formatStatusBar(faded, NOW_MS)).not.toContain('approved');
-  });
-
   test('omits the repo:branch chunk when repo is empty', () => {
     const out = formatStatusBar(mkStatus({ repo: '', branch: '' }), NOW_MS);
     expect(out).toBe('remi:19924 | no clients | idle');
   });
 
-  test('in-flight wins over a stale verdict', () => {
+  test("an older daemon's auto-approve field is ignored: the state is the session status (#1125)", () => {
+    // A status from a daemon that predates #1125 still carries `autoApprove`;
+    // the cue it drove is gone, so even an in-flight eval reads as the session
+    // status rather than "evaluating".
     const status = mkStatus({
+      sessionStatus: 'waiting',
       autoApprove: {
         inFlight: 1,
         sinceS: NOW_S - 1,
         lastVerdict: 'escalated',
-        lastVerdictAtS: NOW_S - 5,
+        lastVerdictAtS: NOW_S,
       },
     });
-    expect(formatStatusBar(status, NOW_MS)).toContain('evaluating 1s');
-    expect(formatStatusBar(status, NOW_MS)).not.toContain('needs you');
+    expect(formatStatusBar(status, NOW_MS)).toBe('remi:19924 remi:develop | no clients | waiting');
   });
 });
 
@@ -260,7 +218,7 @@ describe('StatusBar', () => {
     expect(writes.length).toBeGreaterThan(2);
   });
 
-  test('the default interval is ~250ms so the evaluating counter is smooth (#576)', async () => {
+  test('the default interval is ~250ms (#576)', async () => {
     // No explicit intervalMs: exercise the constructor default. Within 320ms a
     // 250ms timer must have ticked at least once past the immediate paint
     // (the old 1000ms default would not have). Kept comfortably above 250ms to
@@ -422,27 +380,22 @@ describe('StatusBar', () => {
     expect(writes[2]).toContain('2 client(s)');
   });
 
-  test('a "needs you" cue still decays while the question that raised it is open', () => {
-    // The reported bug, end to end: an escalate is what raises the prompt, so
-    // the frozen frame was almost always the one reading "needs you" -- a cue
-    // whose whole contract is that it decays after ESCALATE_FRESH_S, pinned
-    // on screen for as long as the prompt stayed open.
-    let nowMs = NOW_MS;
-    const status = mkStatus({
-      sessionStatus: 'waiting',
-      autoApprove: { inFlight: 0, sinceS: 0, lastVerdict: 'escalated', lastVerdictAtS: NOW_S },
-    });
+  test('a status change still reaches the row while a question is open', () => {
+    // The reported bug, end to end: the frame painted when a prompt was raised
+    // stayed pinned for as long as the prompt stayed open (#1038). The cue
+    // that froze then was the auto-approve "needs you" (removed in #1125);
+    // the property is the same for any change to the row.
+    const status = mkStatus({ sessionStatus: 'waiting' });
     const { bar, writes } = harness({
       hasLiveQuestions: () => true,
       getStatus: () => status,
-      now: () => nowMs,
     });
     bar.render();
-    expect(writes[0]).toContain('needs you');
-    nowMs += ESCALATE_FRESH_S * 1000; // the escalate is no longer fresh
+    expect(writes[0]).toContain('waiting');
+    status.sessionStatus = 'executing';
     bar.render();
-    expect(writes.at(-1)).toContain('waiting');
-    expect(writes.at(-1)).not.toContain('needs you');
+    expect(writes.at(-1)).toContain('executing');
+    expect(writes.at(-1)).not.toContain('waiting');
   });
 
   test('the resumed repaint reflects a status change made while the question was open', () => {
@@ -750,7 +703,6 @@ describe('StatusBar against the real PtyQuiescenceGate (#1038)', () => {
       sessionStatus: 'waiting',
       attached: false,
       queuedCount: 0,
-      autoApprove: { inFlight: 0, sinceS: 0, lastVerdict: 'escalated', lastVerdictAtS: NOW_S },
     });
     const writes: string[] = [];
     const bar = new StatusBar({
@@ -795,13 +747,12 @@ describe('StatusBar against the real PtyQuiescenceGate (#1038)', () => {
   });
 
   test('the row reflects state that changed during the prompt, not the frame that raised it', () => {
-    // The user-visible bug: "needs you" is contractually bounded by
-    // ESCALATE_FRESH_S and the attach label changed mid-prompt. Both must
+    // The user-visible bug: the attach label changed mid-prompt and must
     // reach the row even though Claude never stopped writing.
     const { writes } = runWithSpinner(10);
-    expect(writes[0]).toContain('needs you');
+    expect(writes[0]).toContain('no clients');
     expect(writes.at(-1)).toContain('attached');
-    expect(writes.at(-1)).not.toContain('needs you');
+    expect(writes.at(-1)).not.toContain('no clients');
   });
 
   test('no paint ever lands at a dirty escape-sequence boundary', () => {

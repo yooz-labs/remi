@@ -15,13 +15,10 @@
  * logic, matching the precedent already established in
  * `tests/cli/session-phases/hook-bridge-setup.test.ts`:
  *   - `ReplayHookServer`: a `.on()`/`.setPermissionResolver()` recorder so
- *     events can be fired as plain synchronous calls instead of real HTTP.
- *     A real `HookServer` was considered (see `hook-server-bridge-integration
- *     .test.ts`'s precedent), but a HELD PermissionRequest's decision promise
- *     can stay pending for `holdTimeoutSec` (real HTTP would either hang the
- *     replay awaiting it, or race two concurrent unawaited fetches with no
- *     ordering guarantee -- the exact nondeterminism a corpus replay must
- *     not have).
+ *     events can be fired as plain synchronous calls instead of real HTTP,
+ *     so the replay order is exactly the corpus order (two concurrent
+ *     unawaited fetches would have no ordering guarantee -- the exact
+ *     nondeterminism a corpus replay must not have).
  *   - `fakePTY`: `registerSession` requires a `PTYSession`; nothing here
  *     writes to or reads from it (no PTY render events exist in this corpus
  *     at all -- see "Honest limits" below), so a real PTY has nothing to do.
@@ -59,12 +56,14 @@
  *       shape (a parked-then-rendered card going stale) at all -- it can
  *       only confirm the parked-and-never-rendered case stays silent, which
  *       is the DESIGNED behavior, not a phantom.
- *     - `holdTimeoutSec` is set to the real production default (1800s,
- *       `config.ts`) specifically so a MAIN-context escalation still pushes
- *       via `AutoApproveGate`'s hold/passthrough-push paths (both push
- *       regardless of PTY -- see `escalateAndHold`/`escalatePassthrough`).
- *       That is the ONLY reason this replay can exercise MAIN-context
- *       card lifecycle at all from hook data alone.
+ *     - A BINARY MAIN-context escalation is held and pushed at once from
+ *       hook data alone (#1126, ADR 0031), so it DOES reach the store here,
+ *       as does the PASSTHROUGH one (`AskUserQuestion` / `ExitPlanMode`,
+ *       `escalatePassthrough`). Its hold is 60 s in this rig and the replay
+ *       never waits that long, so the deadline path is not exercised; a
+ *       held card leaves the store through the same resolution signals
+ *       (a matching tool event, `Stop`, `SessionEnd`) the checks below
+ *       assert.
  * - **`PreToolUse`/`PostToolUse` are DOWN-SAMPLED in this corpus**
  *   (`build-hook-corpus.ts`: at most 2 kept per (event, tool_name, key-set)
  *   shape group; 72/71 records total against 354 `PermissionRequest`s). A
@@ -80,34 +79,27 @@
  *   {mainOnly:true})` sweeps every still-open MAIN escalation, and
  *   `cancelStaleForAgent` (SubagentStop) sweeps every still-open escalation
  *   for that exact agent. Those two are the assertions below.
- * - **`StopFailure`-sourced cards are excluded from every assertion here.**
- *   `hook-bridge-setup.ts`'s own `StopFailure` listener comment says so
- *   explicitly: "#799 deliberately does NOT clear open escalations here...
- *   Known residual leak, tracked as #802." Reporting that as a NEW finding
- *   would misrepresent an already-filed, already-understood gap as this
- *   PR's discovery. `source` is unset on a StopFailure question, which is
- *   what every filter below keys on to exclude it.
+ * - **`StopFailure` registers no card (#1153), and that is asserted.** It used
+ *   to emit a source-less "Retry?" card that was excluded from every
+ *   assertion here (#799 deliberately does not clear open escalations on it,
+ *   tracked as #802). Now a failed turn is a push, never a question, so the
+ *   loop below checks that each replayed `StopFailure` leaves the question
+ *   store exactly as it found it.
  *
- * ## A real phantom exists, but this corpus cannot trigger it (filed as #948)
+ * ## A real phantom this harness found (#948, fixed)
  *
- * Building this harness surfaced a genuine #808-class bug:
- * `AutoApproveGate.cancelStale(reason, {mainOnly:false})` (the SessionEnd /
- * full-teardown path) only releases BINARY holds (`pendingHolds`); a
- * PASSTHROUGH MAIN escalation (multi-choice/design, e.g. `AskUserQuestion`)
- * is tracked only in `openQuestionSignatures`, and the non-mainOnly branch
- * just does `this.openQuestionSignatures.clear()` -- unlike the `mainOnly`
- * (Stop) branch, which routes every survivor through
- * `resolveSupersededQuestion` (-> `sessionRegistry.removeQuestion`). So a
- * passthrough escalation still open when `SessionEnd` fires with NO
- * intervening `Stop` survives in the store forever. `forceRelease` has the
- * identical shape (`openQuestionSignatures.clear()` with no per-entry
- * resolution). Confirmed by an ISOLATED reproduction (not corpus data,
- * `service:null`, `AskUserQuestion` PermissionRequest immediately followed
- * by `SessionEnd`, no `Stop` between): store size 1 before, 1 after.
+ * Building this harness surfaced a genuine #808-class bug: the full-teardown
+ * path (`AutoApproveGate.cancelStale` without `mainOnly`, used by
+ * `SessionEnd`) and `forceRelease` cleared `openQuestionSignatures` without
+ * resolving each entry, so a passthrough escalation (e.g. `AskUserQuestion`)
+ * still open when `SessionEnd` fired with no intervening `Stop` survived in
+ * the store. Fixed in #948: both paths now route every survivor through
+ * `resolveSupersededQuestion` (`resolveAllOpenQuestions`), pinned by
+ * `auto-approve-gate.test.ts`'s "full teardown resolves ALL survivors (#948)".
  *
- * The REPLAY below does not hit this: every session in the current 962-event
+ * The REPLAY below never had that shape: every session in the current 962-event
  * corpus that reaches a captured `SessionEnd` also has a `Stop` earlier in
- * that same session, and Stop's `mainOnly` sweep (the correct branch) already
+ * that same session, and Stop's `mainOnly` sweep already
  * clears the signature before SessionEnd ever runs. The SessionEnd checkpoint
  * (`Checkpoint 3` below) is therefore currently VACUOUS against this specific
  * corpus -- it is real, correctly-scoped, and will catch a future capture
@@ -191,9 +183,8 @@ type HookListener = (input: CorpusRecord) => void;
  * Records `setupHookBridge`'s `.on()`/`.setPermissionResolver()` calls and
  * lets the replay loop fire them as plain synchronous function calls. See
  * the module doc's "NO MOCKS" section for why this stands in for a real
- * `HookServer` here (a live-HTTP replay cannot express "fire this event,
- * but do not wait for a 1800s hold to resolve, and definitely do not race
- * the NEXT event against it").
+ * `HookServer` here (a live-HTTP replay cannot guarantee the NEXT event is
+ * not raced against this one).
  */
 class ReplayHookServer {
   private readonly listeners = new Map<string, HookListener>();
@@ -219,7 +210,7 @@ class ReplayHookServer {
   }
 
   /** Fires the synchronous PermissionRequest resolver. NOT awaited by the
-   *  replay loop when a hold is expected to stay open -- see the module doc. */
+   *  replay loop -- see `replayEvent`. */
   firePermission(input: CorpusRecord): Promise<unknown> {
     if (!this.permissionResolver) {
       throw new Error('Corpus replay hit a PermissionRequest with no resolver installed');
@@ -245,7 +236,7 @@ function fakePTY(): PTYSession {
  * Real `MessageAPI`, instrumented to record the `QuestionRegistrationOutcome`
  * (#888 criterion iii, PR #945) behind every `handleQuestion` call -- both
  * the tracker's push path (`pushHeldHook` -> `held: true`) and the bridge's
- * direct-emit path for a source-less StopFailure question. `super.handleQuestion`
+ * direct-emit path (an elicitation card). `super.handleQuestion`
  * is the REAL implementation; this only observes its return value from
  * outside, the same non-invasive pattern as the sibling test file's
  * `PassthroughTracker extends QuestionPresenceTracker`.
@@ -318,17 +309,13 @@ function buildReplayRig(): ReplayRig {
       liveSessionsRegistry,
       transcriptWatchers,
       transcriptFallbackTimers,
-      // No LLM auto-approve service: every MAIN permission escalates to the
-      // user (real `AutoApproveGate.resolvePermission` "no service" branch),
-      // and every SUBAGENT permission parks per ADR 0004. Neither is a test
-      // stand-in -- both are real, documented gate behaviors for this config.
-      autoApproveService: null,
+      // Every MAIN permission escalates to the user and every SUBAGENT
+      // permission parks per ADR 0004: the real, only gate behavior since
+      // #1125 removed the evaluator (ADR 0030).
       currentPort: () => 8765,
       transcriptDiscovery: new TranscriptDiscovery(),
-      // Production default (config.ts: `hold_timeout = 1800`). See the
-      // module doc's "Honest limits" section for why this is required for
-      // the replay to exercise MAIN-context card lifecycle at all.
-      holdTimeoutSec: 1800,
+      holdMs: 60_000,
+      hookTimeoutMs: 600_000,
     },
     {
       hookServer: hookServer as unknown as HookServer,
@@ -337,6 +324,7 @@ function buildReplayRig(): ReplayRig {
       messageApi,
       sendAndRecord: () => {},
       tracker,
+      hasLocalTerminal: true,
     },
   );
 
@@ -349,9 +337,7 @@ function buildReplayRig(): ReplayRig {
     statusLog,
     cleanup: async () => {
       handle.closeBinder();
-      // Release any hold still open (production default holdMs=1800000 means
-      // a session whose capture window ended mid-hold would otherwise leave
-      // an unref'd-but-live timer for the rest of the test run).
+      // Resolve any escalation still open so no card outlives the rig.
       handle.gate.forceRelease('corpus-replay-test-cleanup');
       for (const watcher of transcriptWatchers.values()) {
         try {
@@ -377,13 +363,10 @@ function stripOwnFields(record: CorpusRecord): CorpusRecord {
 
 /**
  * Replay ONE corpus event through the rig. `PermissionRequest` is fired
- * without awaiting the returned decision: with `holdTimeoutSec` configured, a
- * binary MAIN escalation's promise can stay pending until a LATER event
- * (Stop/SubagentStop/SessionEnd) resolves it via the gate's own cancelStale
- * sweep -- see `createHold`: the push (`onHeldEscalate`) happens synchronously
- * before the pending promise is ever constructed, so the store-relevant side
- * effect this replay checks has already landed by the time this function
- * returns, with no `await` needed.
+ * without awaiting the returned decision: the gate's store-relevant side
+ * effects (a passthrough escalation's push, a park) all happen synchronously
+ * inside `resolvePermission` before its promise settles, so they have landed
+ * by the time this function returns, with no `await` needed.
  */
 function replayEvent(hookServer: ReplayHookServer, rawRecord: CorpusRecord): void {
   const record = stripOwnFields(rawRecord);
@@ -403,8 +386,7 @@ function replayEvent(hookServer: ReplayHookServer, rawRecord: CorpusRecord): voi
 // Assertions
 // ---------------------------------------------------------------------------
 
-/** MAIN-context, permission-request-sourced questions currently in the store
- *  (StopFailure's source-less cards are excluded -- see module doc). */
+/** MAIN-context, permission-request-sourced questions currently in the store. */
 function mainPermissionQuestions(rig: ReplayRig): Question[] {
   const current = rig.sessionRegistry.getSession(rig.remiSessionId)?.currentQuestions;
   if (!current) return [];
@@ -414,11 +396,17 @@ function mainPermissionQuestions(rig: ReplayRig): Question[] {
 }
 
 /** Every permission-request-sourced question currently in the store,
- *  main or subagent (StopFailure excluded, same as above). */
+ *  main or subagent. */
 function allPermissionQuestions(rig: ReplayRig): Question[] {
   const current = rig.sessionRegistry.getSession(rig.remiSessionId)?.currentQuestions;
   if (!current) return [];
   return [...current.values()].filter((q) => q.source === 'permission_request');
+}
+
+/** Ids of every question currently in the store, any source. */
+function questionIds(rig: ReplayRig): UUID[] {
+  const current = rig.sessionRegistry.getSession(rig.remiSessionId)?.currentQuestions;
+  return current ? [...current.keys()] : [];
 }
 
 function describeQuestion(q: Question): string {
@@ -523,7 +511,17 @@ describe('hook corpus replay (#888 criterion iv)', () => {
       const rig = buildReplayRig();
       try {
         events.forEach((event, i) => {
+          const questionsBefore = [...questionIds(rig)];
           replayEvent(rig.hookServer, event);
+
+          // A failed turn is a push, never a card (#1153): replaying a real
+          // StopFailure must not add (or remove) a question.
+          if (event['hook_event_name'] === 'StopFailure') {
+            expect(
+              [...questionIds(rig)],
+              `StopFailure at event ${i} of session ${corpusSessionId.slice(0, 8)} changed the question store`,
+            ).toEqual(questionsBefore);
+          }
 
           // Checkpoint 1 (non-downsampled resolution signal): immediately
           // after a Stop where Claude is genuinely idling (not intercepted),

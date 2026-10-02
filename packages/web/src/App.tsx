@@ -30,6 +30,7 @@ import { clearNativeRoute, setNativeRoute, syncNativeIdentity } from '@/lib/nati
 import { syncNativeStatusBarTheme } from '@/lib/native-theme';
 import { setSoundEnabled } from '@/lib/notifications';
 import { promptWaitingRefusedMessageId } from '@/lib/prompt-waiting';
+import { pushPreferencesEqual, pushPreferencesFromSettings } from '@/lib/push-preferences';
 import { relayAnswerDirect } from '@/lib/push-answer-relay';
 import { resolvePushAnswerTarget } from '@/lib/push-answer-resolver';
 import {
@@ -43,6 +44,7 @@ import {
   questionKey,
   removeQuestionById,
   removeQuestionByKeyIfId,
+  restoreRefusedAnswer,
   resolveQuestionCard,
 } from '@/lib/question-collection';
 import { dismissDeliveredNotification } from '@/lib/notifications';
@@ -269,6 +271,9 @@ function App() {
   const loadedTranscriptsRef = useRef<Set<string>>(new Set());
   const messagesRef = useRef(messages);
   const questionsRef = useRef(questions);
+  /** The card this client most recently answered, per session (#1126): a
+   *  `STALE_ANSWER` naming no question restores only this one. */
+  const lastAnsweredIdRef = useRef<Map<string, string>>(new Map());
   const getSessionIdRef = useRef<((connId: ConnectionId) => string | null) | null>(null);
   // Stable handle so handleMessage (empty deps) can re-fetch a transcript when
   // it follows the daemon to its current session (reconnect adopt + stale
@@ -1334,10 +1339,12 @@ function App() {
         // packages/daemon/src/cli/handlers/input-events.ts:guardBinding;
         // update both ends together if the field names change.
         const errorCode = (message as { code?: string }).code;
-        // #627: the daemon could not auto-answer a structured AskUserQuestion
-        // (review mismatch / timeout / unexpected variant). Flip the card to the
-        // "needs you" state so the user can Cancel or answer in the terminal —
-        // the prompt is intentionally left up (never a wrong auto-submit).
+        // #627: a daemon older than #1127 could not auto-answer a structured
+        // AskUserQuestion (review mismatch / timeout / unexpected variant).
+        // Flip the card to the "needs you" state so the user can Cancel or
+        // answer in the terminal — the prompt is intentionally left up (never
+        // a wrong auto-submit). A current daemon answers through the held
+        // hook and never sends this.
         if (errorCode === 'AUQ_AUTOANSWER_FAILED') {
           const details = (message as { details?: Record<string, unknown> }).details;
           const failedQid = asNonEmptyString(details?.['questionId']);
@@ -1588,6 +1595,21 @@ function App() {
           if (staleSessionId && staleQuestionId) {
             commitQuestionsIfChanged(
               removeQuestionById(questionsRef.current, staleSessionId, staleQuestionId),
+              staleSessionId,
+            );
+          }
+          // #1126: no questionId means the card stayed live (a held card
+          // refused an answer it does not offer): un-answer the card this
+          // client last answered in that session, so the hold keeps a card
+          // instead of the post-answer timer removing it.
+          if (staleSessionId && !staleQuestionId && pendingQuestionIds) {
+            commitQuestionsIfChanged(
+              restoreRefusedAnswer(
+                questionsRef.current,
+                staleSessionId,
+                lastAnsweredIdRef.current.get(staleSessionId),
+                pendingQuestionIds,
+              ),
               staleSessionId,
             );
           }
@@ -2118,10 +2140,7 @@ function App() {
   // effects below read the CURRENT value without taking `settings` as a
   // dependency — that would re-run them (and re-register on every daemon) on an
   // unrelated theme or font-size change.
-  const pushPrefsRef = useRef<PushPreferences>({
-    questions: settings.notifyQuestions,
-    turnComplete: settings.notifyTurnComplete,
-  });
+  const pushPrefsRef = useRef<PushPreferences>(pushPreferencesFromSettings(settings));
   // #690: id -> resolver for a message awaiting its daemon `ack`. Currently
   // used only by handleDisconnect's unregister_device_token wait; see the
   // 'ack' case in handleMessage for the resolving side.
@@ -2170,12 +2189,10 @@ function App() {
       // sent up is a toggle that does nothing. Re-registering the SAME token is
       // the update: `register_device_token` is idempotent and keyed by token, so
       // there is no separate update message and no way for the two to drift.
-      const next: PushPreferences = {
-        questions: newSettings.notifyQuestions,
-        turnComplete: newSettings.notifyTurnComplete,
-      };
-      const prev = pushPrefsRef.current;
-      if (prev.questions === next.questions && prev.turnComplete === next.turnComplete) return;
+      const next = pushPreferencesFromSettings(newSettings);
+      if (pushPreferencesEqual(pushPrefsRef.current, next)) {
+        return;
+      }
       pushPrefsRef.current = next;
 
       const token = deviceTokenRef.current;
@@ -2287,6 +2304,8 @@ function App() {
       }
       const key = questionKey(sid, question.agentId);
       const answeredId = question.id;
+      // The card a refusal naming no question can be about (#1126).
+      lastAnsweredIdRef.current.set(sid, answeredId);
       // Mark this question answered (card shows collapsed state briefly), then
       // remove it; sibling prompts for the session stay in the stack.
       setQuestions((prev) => {
@@ -2327,12 +2346,16 @@ function App() {
     [getActiveConnectionId, sendAnswer],
   );
 
-  // #627: submit a structured AskUserQuestion answer. The daemon drives the TUI
-  // and verifies before submitting, so the card flips to "Answering…" and clears
-  // on question_resolved (or flips to failed on AUQ_AUTOANSWER_FAILED) — it is NOT
-  // removed optimistically here.
+  // #627: submit a structured AskUserQuestion answer. The daemon answers it
+  // through the held hook (#1127; an older daemon drove the TUI), so the card
+  // flips to "Answering…" and clears on question_resolved (or flips to failed
+  // on an older daemon's AUQ_AUTOANSWER_FAILED) — it is NOT removed
+  // optimistically here.
   const handleAuqAnswer = useCallback(
-    (question: UIQuestion, selections: { questionIndex: number; optionIndices: number[] }[]) => {
+    (
+      question: UIQuestion,
+      selections: { questionIndex: number; optionIndices: number[]; text?: string }[],
+    ) => {
       const sid = question.sessionId;
       const connId =
         sessionsRef.current.find((s) => s.id === sid)?.connectionId ?? getActiveConnectionId();
@@ -2340,6 +2363,9 @@ function App() {
       const binding = sessionsRef.current.find((s) => s.id === sid)?.claudeSessionId;
       const sent = sendAuqAnswer(connId, sid, question.id, selections, binding as UUID | undefined);
       if (!sent) return;
+      // The card a refusal naming no question can be about (#1126): a held
+      // AskUserQuestion keeps its hold on an answer it refuses (#1127).
+      lastAnsweredIdRef.current.set(sid, question.id);
       const key = questionKey(sid, question.agentId);
       setQuestions((prev) => {
         const existing = prev.get(key);
@@ -2352,8 +2378,9 @@ function App() {
     [getActiveConnectionId, sendAuqAnswer],
   );
 
-  // #627: cancel/escape a pending question — the universal unstick. The daemon
-  // sends Esc to the prompt; the card clears on the resulting question_resolved.
+  // #627: cancel a pending question — the universal unstick. The daemon
+  // cancels a held card through its hook (#1127) or sends Esc to the prompt;
+  // the card clears on the resulting question_resolved.
   const handleCancelQuestion = useCallback(
     (question: UIQuestion) => {
       const sid = question.sessionId;

@@ -100,19 +100,7 @@ const REGISTRY: readonly Entry[] = [
     file: 'api/question-presence-tracker.ts',
     field: 'awaitingPTY',
     cls: 'pre-card',
-    note: 'Subset of pending that pushes on its PTY render: a subagent parked for PTY arbitration (#751, ADR 0004 surface) or a main-agent push-on-render mark (#1121).',
-  },
-  {
-    file: 'api/question-presence-tracker.ts',
-    field: 'ambiguousRenderKeys',
-    cls: 'pre-card',
-    note: "NEW (#1121 review). Agent keys whose unrendered push-on-render record was replaced by a newer hook; the next pushOnRender for that key declines to pair, so each render pushes the screen's own prompt. Cleared on consume, on leaving waiting, and on clearPending.",
-  },
-  {
-    file: 'api/question-presence-tracker.ts',
-    field: 'bufferedDuringEval',
-    cls: 'pre-card',
-    note: 'PTY prompt buffered while a MAIN auto-approve eval is in flight (#484/#767).',
+    note: 'Subset of pending parked for its PTY render: a subagent passed to the local terminal (#751, ADR 0004 surface), whose render pushes an answer-at-the-terminal notice (#1126). The main-agent push-on-render mark (#1121) was removed when #1126 held binary main prompts.',
   },
   {
     file: 'api/question-presence-tracker.ts',
@@ -122,15 +110,9 @@ const REGISTRY: readonly Entry[] = [
   },
   {
     file: 'api/question-presence-tracker.ts',
-    field: 'arbitratingPTYTexts',
-    cls: 'pre-card',
-    note: 'NEW, not in the #888 rescope table. Text of parked-render arbitrations in flight (#814); suppresses a same-text echo while the arbiter decides push vs. answered. ADR 0004 surface (arbitrateParkedRender).',
-  },
-  {
-    file: 'api/question-presence-tracker.ts',
     field: 'observedPTYQuestionId',
     cls: 'pre-card',
-    note: 'Raw pre-merge PTY-parsed identity (#814), set before any push/buffer/arbitrate decision. Paired with observedPTYText for isPromptCurrent. ADR 0004 surface.',
+    note: 'Raw pre-merge PTY-parsed identity (#814), set before any push/suppress decision. Paired with observedPTYText for isPromptCurrent. ADR 0004 surface.',
   },
   {
     file: 'api/question-presence-tracker.ts',
@@ -154,7 +136,7 @@ const REGISTRY: readonly Entry[] = [
     file: 'api/question-presence-tracker.ts',
     field: 'pushedHeldIds',
     cls: 'post-card-metadata',
-    note: 'Idempotency guard on an already-pushed held card (#573); set at/after push time.',
+    note: 'Idempotency guard on a card already pushed by pushHeldHook (#573; since #1125 the multi-choice / design escalation push); set at/after push time.',
   },
   {
     file: 'api/question-dedup.ts',
@@ -169,52 +151,34 @@ const REGISTRY: readonly Entry[] = [
     note: 'NEW, not in the #888 rescope table. PushDedup baseline (#409), instantiated as NotificationDispatcher.pushDedup. Gates the APNS push for a question that is ALREADY registered: message-api-setup.ts calls addQuestion (line ~158) before notifications.maybePush (line ~168), so this runs after the card exists.',
   },
   {
-    file: 'notifications/notification-dispatcher.ts',
-    field: 'deliveryOutcomes',
-    cls: 'post-card-metadata',
-    note: 'NEW, not in the #888 rescope table. Delivery outcome per question id (#603 Phase 1), recorded by maybePush for an already-registered card so a held hook can awaitDelivery. Same role as AutoApproveGate.confirmedDeliveries, different class.',
-  },
-  {
-    file: 'auto-approve/auto-approve-gate.ts',
-    field: 'pendingHolds',
-    cls: 'post-card-metadata',
-    note: 'Binary main-context holds keyed by the escalated Question.id (#573).',
-  },
-  {
-    file: 'auto-approve/auto-approve-gate.ts',
-    field: 'pendingWorkflowOffers',
-    cls: 'post-card-metadata',
-    note: 'Private workflow facts keyed by the held Question.id (#1095); the public card carries only the family marker, while this entry is consumed exactly once by the held-answer path.',
-  },
-  {
-    file: 'auto-approve/auto-approve-gate.ts',
-    field: 'confirmedDeliveries',
-    cls: 'post-card-metadata',
-    note: 'Held question ids whose notification was confirmed delivered (#603 Phase 1).',
-  },
-  {
-    file: 'auto-approve/auto-approve-gate.ts',
-    field: 'evalIdByQuestion',
-    cls: 'post-card-metadata',
-    note: 'Held question id mapped to its in-flight eval id (#617), so an answer can cancel it.',
-  },
-  {
     file: 'auto-approve/auto-approve-gate.ts',
     field: 'openQuestionSignatures',
     cls: 'mixed',
-    note: 'Every OPEN escalation this gate created, keyed by Question.id (#673/#799). Held entries are post-card metadata (the card is registered); parked entries (#814) are pre-card (parkAwaitingPTY, no card yet). Per the #888 rescope comment.',
+    note: 'Every OPEN escalation this gate created, keyed by Question.id (#673/#799). A held (#1126) or passthrough escalation pushed at once is post-card metadata (the card is registered); a parked subagent entry (#751) never gets a card (its render pushes a notice, #1126), and a held prompt released at its deadline stays open after its card is dismissed (its dialog is still on screen). Per the #888 rescope comment.',
   },
   {
     file: 'auto-approve/auto-approve-gate.ts',
-    field: 'retiredEscalations',
-    cls: 'mixed',
-    note: "NEW (#1005). Ids of escalations this gate RETIRED -- resolved, released, or answered on the user's behalf -- so a later parked render can tell 'already settled' from 'never seen' and refuse to push a card no sweep could ever remove. Mixed for the same reason openQuestionSignatures is: retiring a HELD escalation is post-card metadata (its card was registered), retiring a PARKED one (#814) is pre-card (parkAwaitingPTY, no card ever existed). Never a pendingness opinion -- consulted only to SUPPRESS creating a card, never to claim one is live, and forgetting an entry past the cap fails toward pushing.",
+    field: 'holds',
+    cls: 'post-card-metadata',
+    note: 'NEW (#1126). The pending hook response of a held binary prompt, keyed by Question.id. The card is pushed by id in the same synchronous call that registers the hold (holdForAnswer -> onHeldEscalate -> pushHeldHook -> addQuestion), so the hold is metadata about a card the store owns; it is never an opinion on whether the question is pending.',
   },
   {
     file: 'auto-approve/auto-approve-gate.ts',
-    field: 'parkedInputs',
-    cls: 'pre-card',
-    note: 'Original hook input of every PARKED subagent permission (#814) -- the sole surviving record of what a parked permission asked, before any card exists.',
+    field: 'closedHoldIds',
+    cls: 'post-card-metadata',
+    note: 'NEW (#1126). Bounded memory of held ids whose hold ended, so a late phone answer for that card is refused (answer at the terminal) rather than typed. Outlives the card, like resolved-answer-cache entries; consulted only to refuse.',
+  },
+  {
+    file: 'auto-approve/auto-approve-gate.ts',
+    field: 'terminalPrompts',
+    cls: 'post-card-metadata',
+    note: 'NEW (#1126). Open prompts whose dialog may be on screen and whose answer belongs to the terminal (released at the deadline or early, or a rendered wrapper-mode subagent dialog). A subset of openQuestionSignatures keys; its card, if any, is already dismissed, and it is closed only by a hook signal. Read by the tracker probe so the dialog is not rebuilt into a typed card.',
+  },
+  {
+    file: 'auto-approve/auto-approve-gate.ts',
+    field: 'terminalNotices',
+    cls: 'post-card-metadata',
+    note: 'NEW (#1126). Open prompts whose "answer at the terminal" notice was pushed, so resolving them also dismisses the notice. A subset of terminalPrompts.',
   },
   {
     file: 'cli/session-phases/hook-bridge-setup.ts',
@@ -257,24 +221,19 @@ const REGISTRY: readonly Entry[] = [
  */
 const EXCLUSIONS: readonly ExcludedEntry[] = [
   {
+    file: 'auto-approve/auto-approve-gate.ts',
+    field: 'inFlightToolUses',
+    note: "NEW (#1126). Claude's unfinished tool calls by tool_use_id (from PreToolUse), so a PermissionRequest can be paired with its call's id. Tool-call data, not Question data: an entry is consumed when a request pairs with it, before any card exists, and never says whether a question is pending.",
+  },
+  {
     file: 'api/question-presence-tracker.ts',
     field: 'orphanTimer',
     note: 'A timer HANDLE for armedOrphanQuestion, not Question data itself.',
   },
   {
-    file: 'api/question-presence-tracker.ts',
-    field: 'parkedRenderArbiter',
-    note: 'A wired callback reference (the #814 arbiter dependency), not per-question state.',
-  },
-  {
     file: 'notifications/notification-dispatcher.ts',
     field: 'pushDedup',
     note: 'Holds a PushDedup INSTANCE. That instance owns its own container (notifications/push-dedup.ts, field "last"), classified separately above; this field is a wiring reference, not itself Question data.',
-  },
-  {
-    file: 'auto-approve/auto-approve-gate.ts',
-    field: 'evalIsSubagentById',
-    note: 'Keyed by evalId, a number, not by Question id -- per-eval bookkeeping, not per-question.',
   },
   {
     file: 'parser/output-processor.ts',

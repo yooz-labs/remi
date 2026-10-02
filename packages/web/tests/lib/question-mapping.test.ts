@@ -151,11 +151,32 @@ describe('mapQuestionToUIQuestion', () => {
     expect(ui.questions?.[0]?.options[0]?.description).toBe('EEGLAB founder');
   });
 
-  test('omits kind/questions/submitLabel when absent', () => {
+  test('omits kind/questions/submitLabel/detail when absent', () => {
     const ui = mapQuestionToUIQuestion(question(), SID);
     expect(ui.kind).toBeUndefined();
     expect(ui.questions).toBeUndefined();
     expect(ui.submitLabel).toBeUndefined();
+    expect(ui.detail).toBeUndefined();
+  });
+
+  test('threads kind and the plan for a plan approval (#1127)', () => {
+    const ui = mapQuestionToUIQuestion(
+      question({
+        text: 'Plan ready for review',
+        kind: 'plan_approval',
+        detail: '# Plan\n\n- step 1',
+        options: [opt('Approve, auto-accept edits', { isYes: true }), opt('Keep planning')],
+      }),
+      SID,
+    );
+    expect(ui.kind).toBe('plan_approval');
+    expect(ui.detail).toBe('# Plan\n\n- step 1');
+    expect(ui.prompt).toBe('Plan ready for review');
+  });
+
+  test('threads terminalOnly for a card no phone answer can be applied to (#1127 review S7)', () => {
+    expect(mapQuestionToUIQuestion(question({ terminalOnly: true }), SID).terminalOnly).toBe(true);
+    expect(mapQuestionToUIQuestion(question(), SID).terminalOnly).toBeUndefined();
   });
 
   describe('timestamp (#798 part 4)', () => {

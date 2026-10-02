@@ -10,7 +10,9 @@ import {
   INPUT_NOT_DELIVERED_ERROR_CODE,
   MessageIdTracker,
   PROMPT_WAITING_ERROR_CODE,
+  PROMPT_WAITING_HELD_MESSAGE,
   PROMPT_WAITING_MESSAGE,
+  PROMPT_WAITING_TERMINAL_MESSAGE,
   createAck,
   createAgentOutput,
   createEdit,
@@ -179,6 +181,8 @@ describe('Package exports', () => {
     test('the PROMPT_WAITING error is exported for both ends', () => {
       expect(PROMPT_WAITING_ERROR_CODE).toBe('PROMPT_WAITING');
       expect(PROMPT_WAITING_MESSAGE.length).toBeGreaterThan(0);
+      expect(PROMPT_WAITING_HELD_MESSAGE.length).toBeGreaterThan(0);
+      expect(PROMPT_WAITING_TERMINAL_MESSAGE.length).toBeGreaterThan(0);
       const msg = createPromptWaitingError('s' as UUID, 'm' as UUID);
       expect(msg.code).toBe(PROMPT_WAITING_ERROR_CODE);
     });

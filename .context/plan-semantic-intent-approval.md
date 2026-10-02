@@ -1,5 +1,7 @@
 # Implementation Plan: Semantic Intent Approval and Scoped Workflow Context
 
+> **Historical (2026-10-01).** Semantic intent approval and scoped workflow grants were removed with the rest of remi's permission judgment in #1125 ([ADR 0030](decisions/0030-defer-permission-judgment-to-the-harness.md)). Nothing in this plan describes current code.
+
 ## Context
 
 Remi 0.7.11 routes the current evaluations to the correct PID, port, and
@@ -39,7 +41,7 @@ The following invariants are non-negotiable:
    write, network, subprocess, persistence, or credential capability.
 3. Conversation/task context is descriptive evidence only. It cannot mint
    explicit authorization and cannot cross sessions.
-4. Missing, truncated, malformed, conflicting, or unparseable evidence fails
+4. Missing, truncated, malformed, conflicting, or unparsable evidence fails
    toward escalation.
 5. A remote mutation can be auto-approved only through an explicit,
    session-scoped workflow grant with bounded target and expiry.

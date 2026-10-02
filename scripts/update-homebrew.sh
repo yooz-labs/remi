@@ -28,7 +28,7 @@ FORMULA="class Remi < Formula
   desc \"Remote monitor for Claude Code CLI sessions\"
   homepage \"https://github.com/yooz-labs/remi\"
   version \"${VERSION}\"
-  license :cannot_represent
+  license \"Apache-2.0\"
 
   on_macos do
     if Hardware::CPU.arm?

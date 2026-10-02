@@ -362,31 +362,71 @@ describe('DeviceTokenStore push preferences (#968)', () => {
   test('register without preferences stores the all-on default', () => {
     const s = new DeviceTokenStore(file);
     s.register('tok-a', 'ios', CID);
-    expect(s.map.get('tok-a')?.pushPrefs).toEqual({ questions: true, turnComplete: true });
+    expect(s.map.get('tok-a')?.pushPrefs).toEqual({
+      questions: true,
+      turnComplete: true,
+      harnessDenied: true,
+      turnFailed: true,
+    });
   });
 
   test('preferences survive a restart via the persisted file', () => {
     const s = new DeviceTokenStore(file);
-    s.register('tok-a', 'ios', CID, { questions: true, turnComplete: false });
+    s.register('tok-a', 'ios', CID, {
+      questions: true,
+      turnComplete: false,
+      harnessDenied: true,
+      turnFailed: true,
+    });
 
     const reloaded = new DeviceTokenStore(file);
     reloaded.load();
-    expect(reloaded.map.get('tok-a')?.pushPrefs).toEqual({ questions: true, turnComplete: false });
+    expect(reloaded.map.get('tok-a')?.pushPrefs).toEqual({
+      questions: true,
+      turnComplete: false,
+      harnessDenied: true,
+      turnFailed: true,
+    });
   });
 
   test('re-registering the same token replaces its preferences, including widening them', () => {
     // Re-registration IS how the app pushes a toggle change, so a stored value
     // must never survive a newer one -- in either direction.
     const s = new DeviceTokenStore(file);
-    s.register('tok-a', 'ios', CID, { questions: false, turnComplete: false });
-    expect(s.map.get('tok-a')?.pushPrefs).toEqual({ questions: false, turnComplete: false });
+    s.register('tok-a', 'ios', CID, {
+      questions: false,
+      turnComplete: false,
+      harnessDenied: true,
+      turnFailed: true,
+    });
+    expect(s.map.get('tok-a')?.pushPrefs).toEqual({
+      questions: false,
+      turnComplete: false,
+      harnessDenied: true,
+      turnFailed: true,
+    });
 
-    s.register('tok-a', 'ios', CID, { questions: true, turnComplete: true });
-    expect(s.map.get('tok-a')?.pushPrefs).toEqual({ questions: true, turnComplete: true });
+    s.register('tok-a', 'ios', CID, {
+      questions: true,
+      turnComplete: true,
+      harnessDenied: true,
+      turnFailed: true,
+    });
+    expect(s.map.get('tok-a')?.pushPrefs).toEqual({
+      questions: true,
+      turnComplete: true,
+      harnessDenied: true,
+      turnFailed: true,
+    });
 
     const reloaded = new DeviceTokenStore(file);
     reloaded.load();
-    expect(reloaded.map.get('tok-a')?.pushPrefs).toEqual({ questions: true, turnComplete: true });
+    expect(reloaded.map.get('tok-a')?.pushPrefs).toEqual({
+      questions: true,
+      turnComplete: true,
+      harnessDenied: true,
+      turnFailed: true,
+    });
   });
 
   test('an entry written before #968 loads with no preferences, meaning all-on', () => {
@@ -399,6 +439,44 @@ describe('DeviceTokenStore push preferences (#968)', () => {
     const s = new DeviceTokenStore(file);
     s.load();
     expect(s.map.get('legacy')?.pushPrefs).toBeUndefined();
+  });
+
+  test('an entry stored before #1153 (no turnFailed) loads with failed-turn pushes ON', () => {
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        tokens: [
+          {
+            token: 'pre-1153',
+            platform: 'ios',
+            registeredAt: 1,
+            connectionId: CID,
+            pushPrefs: { questions: true, turnComplete: false, harnessDenied: false },
+          },
+        ],
+      }),
+    );
+    const s = new DeviceTokenStore(file);
+    s.load();
+    expect(s.map.get('pre-1153')?.pushPrefs).toEqual({
+      questions: true,
+      turnComplete: false,
+      harnessDenied: false,
+      turnFailed: true,
+    });
+  });
+
+  test('a turnFailed mute survives a restart (#1153)', () => {
+    const s = new DeviceTokenStore(file);
+    s.register('tok-a', 'ios', CID, {
+      questions: true,
+      turnComplete: true,
+      harnessDenied: true,
+      turnFailed: false,
+    });
+    const reloaded = new DeviceTokenStore(file);
+    reloaded.load();
+    expect(reloaded.map.get('tok-a')?.pushPrefs?.turnFailed).toBe(false);
   });
 
   test('a hand-edited non-boolean preference is normalized on load, not trusted', () => {
@@ -420,6 +498,11 @@ describe('DeviceTokenStore push preferences (#968)', () => {
     );
     const s = new DeviceTokenStore(file);
     s.load();
-    expect(s.map.get('edited')?.pushPrefs).toEqual({ questions: true, turnComplete: false });
+    expect(s.map.get('edited')?.pushPrefs).toEqual({
+      questions: true,
+      turnComplete: false,
+      harnessDenied: true,
+      turnFailed: true,
+    });
   });
 });

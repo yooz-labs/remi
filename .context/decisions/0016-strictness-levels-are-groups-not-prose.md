@@ -1,6 +1,6 @@
 # ADR 0016: Strictness is level-gated group membership, never prose to the model
 
-**Status:** accepted (amended by ADR 0028 for the narrow `gh-read` group)
+**Status:** Superseded by ADR 0030 (2026-10-01)
 **Date:** 2026-08-01
 **Owner:** Yahya
 

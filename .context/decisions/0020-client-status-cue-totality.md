@@ -1,8 +1,12 @@
 # ADR 0020: A client-visible status cue must be total over its gate's end paths
 
-**Status:** accepted
+**Status:** accepted; amended by ADR 0030 (2026-10-01)
 **Date:** 2026-08-01
 **Owner:** Yahya
+
+> **Amended 2026-10-01 by [ADR 0030](0030-defer-permission-judgment-to-the-harness.md).**
+> Both cues this ADR governs (the terminal `evaluating` count and the client `evaluating`/`approved` broadcast) were removed with the evaluator in #1125, so nothing currently applies it.
+> The rule stands for any future client-visible cue: it must be total over its gate's end paths.
 
 ## Context
 

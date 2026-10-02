@@ -413,20 +413,29 @@ export interface QuestionMessage {
   readonly claudeSessionId?: UUID | undefined;
 }
 
-/** One sub-question's chosen option indices in a structured AskUserQuestion
- *  answer (#627). `optionIndices` are 0-based into that sub-question's options
- *  (one entry for single-select, 1+ for multi-select). */
+/**
+ * One sub-question's answer in a structured AskUserQuestion answer (#627,
+ * #1127). `optionIndices` are 0-based into that sub-question's options.
+ * A single-select question takes exactly one: one option index, or `text`
+ * (free text the user typed instead) with no index. A multi-select question
+ * takes one or more option indices and no text. The daemon refuses any other
+ * shape and keeps the prompt waiting.
+ */
 export interface AnswerSelection {
   readonly questionIndex: number;
   readonly optionIndices: readonly number[];
+  /** Free text instead of an option, for a single-select question (#1127). */
+  readonly text?: string | undefined;
 }
 
 /** The non-string parts of an {@link AnswerMessage} (#627), threaded through the
- *  answer event chain so the daemon can drive a structured AskUserQuestion answer
- *  (`selections`) or cancel/escape the prompt (`cancel`). */
+ *  answer event chain so the daemon can answer a structured AskUserQuestion
+ *  (`selections`) or cancel the prompt (`cancel`). */
 export interface AnswerExtras {
   readonly selections?: readonly AnswerSelection[] | undefined;
   readonly cancel?: boolean | undefined;
+  /** See {@link AnswerMessage.message}. */
+  readonly message?: string | undefined;
 }
 
 /** Answer to a question */
@@ -445,18 +454,28 @@ export interface AnswerMessage {
   readonly claudeSessionId?: UUID | undefined;
   /**
    * Structured AskUserQuestion answer (#627): per-sub-question selected option
-   * indices. Present INSTEAD of a meaningful `answer` for a multi-question prompt
-   * (`answer` is then ''). The daemon drives the interactive TUI from these and
-   * verifies the review screen before submitting.
+   * indices, or free text for a single-select question. Present INSTEAD of a
+   * meaningful `answer` for a multi-question prompt (`answer` is then ''). Since
+   * #1127 the daemon validates them against the tool input (every question
+   * answered) and answers the held hook with them; an incomplete answer is
+   * refused and the prompt keeps waiting. Nothing is typed.
    */
   readonly selections?: readonly AnswerSelection[] | undefined;
   /**
-   * Cancel/escape the active prompt (#627): the daemon sends `Esc` to the TUI,
-   * cancelling the AskUserQuestion so Claude unblocks. The universal unstick —
-   * honored regardless of whether the prompt could be auto-answered. `answer` is
-   * '' when this is set.
+   * Cancel the active prompt (#627), the universal unstick. A held prompt is
+   * cancelled through its hook (#1126, #1127): a "No" for a permission, a
+   * dismissal for an AskUserQuestion, "keep planning" for a plan. Any other
+   * prompt gets `Esc`. `answer` is '' when this is set.
    */
   readonly cancel?: boolean | undefined;
+  /**
+   * Optional text sent with a "No" to a held permission prompt (#1126), or
+   * with "Keep planning" on a plan (#1127). The daemon passes it to Claude as
+   * the denial reason, which Claude receives as the denied tool's result, so
+   * the user can say why or what to do instead. Ignored for every other
+   * answer.
+   */
+  readonly message?: string | undefined;
 }
 
 /**
@@ -480,8 +499,17 @@ export interface QuestionResolvedMessage {
   /** The resolved question's id; clients remove the card carrying it. */
   readonly questionId: UUID;
   /** Why it resolved, for diagnostics + client UX (all dismiss the card the same). */
-  readonly reason: 'answered' | 'auto_approved' | 'auto_denied' | 'cancelled';
+  readonly reason: 'answered' | 'cancelled' | DeprecatedQuestionResolvedReason;
 }
+
+/**
+ * Resolution reasons only the removed auto-approve evaluator produced: a
+ * late verdict that approved or denied a pushed card.
+ *
+ * @deprecated #1125: no longer emitted. Kept so a client still parses an
+ * older daemon.
+ */
+export type DeprecatedQuestionResolvedReason = 'auto_approved' | 'auto_denied';
 
 /**
  * Daemon -> client broadcast: the authoritative set of question ids currently
@@ -599,6 +627,28 @@ export const PROMPT_WAITING_ERROR_CODE = 'PROMPT_WAITING';
 /** The `message` of a `PROMPT_WAITING` error: what the user is told. */
 export const PROMPT_WAITING_MESSAGE =
   'Claude is waiting on a prompt. Answer it from its card or in the terminal (Esc dismisses it).';
+
+/**
+ * The `message` of a `PROMPT_WAITING` error sent while a main-agent prompt's
+ * hook is held (#1126). It must not claim a dialog is on screen: a Yes
+ * answered in the terminal ends the hold only when its tool finishes, so the
+ * approved command may already be running (#1144).
+ */
+export const PROMPT_WAITING_HELD_MESSAGE =
+  'Claude is waiting on a prompt or finishing an approved step; answer the card or use the terminal.';
+
+/**
+ * The `message` of a `PROMPT_WAITING` error sent while a hook-backed prompt's
+ * answer belongs to the terminal (#1155): a hold released at its deadline or
+ * handed back early, or a subagent's dialog in a terminal session. Its card
+ * is gone, and a No answered at the terminal fires no hook, so the daemon
+ * cannot see that dialog close; the message names every way out (lead
+ * decision): answering it there, an Esc sent from the app (the web Esc
+ * button, Telegram's `/interrupt`), which clears a main-agent prompt at
+ * once, and `remi unstick`.
+ */
+export const PROMPT_WAITING_TERMINAL_MESSAGE =
+  'Claude is waiting on a prompt in the terminal. Answer it there, press Esc from the app, or run remi unstick.';
 
 /**
  * Details attached to a `PROMPT_WAITING` error. `messageId` is the refused
@@ -872,6 +922,18 @@ export interface ResumeSessionResponseMessage {
   readonly success: boolean;
   /** Error message if resume failed */
   readonly error?: string;
+  /**
+   * Machine-readable failure code, from the same vocabulary as the `error`
+   * frame's `code` (e.g. `'UNSUPPORTED'`). Present only on failures that have
+   * a stable code; absent on success and on older daemons, so clients must
+   * keep treating `error` as the human-readable fallback (#1124).
+   *
+   * No client reads this field yet: the web client shows `error` only
+   * (`App.tsx`, `resume_session_response` case), and the Telegram adapter does
+   * the same. It exists so a client can start branching on it without a
+   * protocol change.
+   */
+  readonly errorCode?: string;
   /** ID of the original request */
   readonly requestId: UUID;
 }
@@ -1015,7 +1077,7 @@ export interface DetachSessionAckMessage {
  *
  * Deliberately does NOT cover two other push classes:
  *   - subagent alerts, which already have a user-facing control (they fire only
- *     on the user's own `auto_approve.subagent_alert` patterns);
+ *     on the user's own `[notifications] subagent_alert` patterns);
  *   - question DISMISSALS, which are quiet `content-available` pushes that clear
  *     an already-delivered card. Muting those would strand a card on the lock
  *     screen of the very device that asked for less noise.
@@ -1025,6 +1087,14 @@ export interface PushPreferences {
   readonly questions?: boolean;
   /** Push the last assistant message when a long turn ends (#914). */
   readonly turnComplete?: boolean;
+  /** Push when Claude Code's auto-mode classifier blocks a tool call
+   *  (`PermissionDenied`, #1126). Informational: nothing to answer. */
+  readonly harnessDenied?: boolean;
+  /** Push when a turn ends on an API error (usage or rate limit,
+   *  authentication, and similar: Claude Code's `StopFailure`, #1153).
+   *  Informational: nothing to answer. Defaults ON, and
+   *  `notifications.on_turn_complete = false` does not mute it. */
+  readonly turnFailed?: boolean;
 }
 
 /** Register a device token for push notifications */
@@ -1457,14 +1527,20 @@ export function createError(
 /**
  * Create the `PROMPT_WAITING` error (#1140): the refusal of a structured
  * `user_input` while Claude shows a numbered menu. `messageId` is the refused
- * input's id, when the client sent one.
+ * input's id, when the client sent one. `message` is what the user is told:
+ * `PROMPT_WAITING_MESSAGE` by default, `PROMPT_WAITING_HELD_MESSAGE` while a
+ * hook is held (#1126).
  */
-export function createPromptWaitingError(sessionId: UUID, messageId?: UUID): ErrorMessage {
+export function createPromptWaitingError(
+  sessionId: UUID,
+  messageId?: UUID,
+  message: string = PROMPT_WAITING_MESSAGE,
+): ErrorMessage {
   const details: PromptWaitingErrorDetails = {
     sessionId,
     ...(messageId !== undefined && { messageId }),
   };
-  return createError(PROMPT_WAITING_ERROR_CODE, PROMPT_WAITING_MESSAGE, { ...details });
+  return createError(PROMPT_WAITING_ERROR_CODE, message, { ...details });
 }
 
 /**
@@ -1499,13 +1575,15 @@ export function createQuestion(
 }
 
 /**
- * Create an answer message for a question.
+ * Create an answer message for a question. `message` rides along with a "No"
+ * to a held permission prompt (#1126, see `AnswerMessage.message`).
  */
 export function createAnswer(
   sessionId: UUID,
   questionId: UUID,
   answer: string,
   claudeSessionId?: UUID,
+  message?: string,
 ): AnswerMessage {
   return {
     type: 'answer',
@@ -1515,11 +1593,13 @@ export function createAnswer(
     questionId,
     answer,
     ...(claudeSessionId !== undefined && { claudeSessionId }),
+    ...(message !== undefined && { message }),
   };
 }
 
-/** Structured AskUserQuestion answer (#627): the daemon drives the TUI from the
- *  per-sub-question selections and verifies the review before submitting. */
+/** Structured AskUserQuestion answer (#627): the daemon answers the held hook
+ *  with the per-sub-question selections once every question is answered
+ *  (#1127). */
 export function createAuqAnswer(
   sessionId: UUID,
   questionId: UUID,
@@ -1538,8 +1618,9 @@ export function createAuqAnswer(
   };
 }
 
-/** Cancel/escape the active prompt (#627): the daemon sends `Esc` to the TUI. The
- *  universal unstick when a prompt can't be auto-answered or the user changes mind. */
+/** Cancel the active prompt (#627): through its held hook (#1127), or `Esc`
+ *  where no hook stands behind it. The universal unstick when the user changes
+ *  their mind. */
 export function createCancelQuestion(
   sessionId: UUID,
   questionId: UUID,
@@ -1597,9 +1678,9 @@ export function createQuestionSnapshot(
 
 /**
  * Create a daemon status snapshot broadcast (#754). The status object is
- * copied shallowly (plus autoApprove one level deep) so a later in-place
- * mutation of the daemon's live status cannot retroactively change a message
- * already queued for serialization.
+ * copied shallowly (plus the deprecated `autoApprove`, when present, one level
+ * deep) so a later in-place mutation of the daemon's live status cannot
+ * retroactively change a message already queued for serialization.
  */
 export function createRemiStatus(sessionId: UUID, status: RemiStatus): RemiStatusMessage {
   return {
@@ -1607,7 +1688,10 @@ export function createRemiStatus(sessionId: UUID, status: RemiStatus): RemiStatu
     id: generateId(),
     timestamp: now(),
     sessionId,
-    status: { ...status, autoApprove: { ...status.autoApprove } },
+    status:
+      status.autoApprove === undefined
+        ? { ...status }
+        : { ...status, autoApprove: { ...status.autoApprove } },
   };
 }
 
@@ -1989,6 +2073,7 @@ export function createResumeSessionResponse(
   requestId: UUID,
   sessionId?: UUID,
   error?: string,
+  errorCode?: string,
 ): ResumeSessionResponseMessage {
   return {
     type: 'resume_session_response',
@@ -1998,6 +2083,7 @@ export function createResumeSessionResponse(
     requestId,
     ...(sessionId !== undefined && { sessionId }),
     ...(error !== undefined && { error }),
+    ...(errorCode !== undefined && { errorCode }),
   };
 }
 

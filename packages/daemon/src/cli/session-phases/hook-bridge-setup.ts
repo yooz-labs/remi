@@ -16,23 +16,25 @@
  *      — NOT /compact, which keeps the same session id) as a single atomic
  *      `session_rotated` event.
  *
- * A third concern, the **auto-approve gate**, used to be inlined here; it is now
- * delegated to `AutoApproveGate` (#453 phase 1). The bridge does the session
- * filtering, then routes PermissionRequest to the gate, which runs the
- * auto-approve eval and injects "1"/"3"/pick into the PTY, escalates to the user,
- * or default-denies a subagent prompt no one can answer. The gate is wired with
- * the bridge's `isInSubagentContext` + the router's `onPermissionRequest` as
- * callbacks; Stop/SessionEnd call `gate.cancelStale()` to abort an in-flight eval
- * when the Claude session actually ends. (Pre/PostToolUse deliberately do NOT
- * cancel — under synchronous decisions the eval is never stale; see #537.) Stop
- * passes `{ mainOnly: true }` (#711): it fires whenever the LEAD idles even
- * while agent-team teammates keep working, so it releases/cancels only
- * MAIN-context holds and evals, sparing a teammate's still-open escalation.
- * SessionEnd is real teardown and stays unscoped (releases/cancels everything).
- * #799: `SubagentStop` calls `gate.cancelStaleForAgent(agent_id)`, the
- * single-agent mirror of Stop's mainOnly sweep — resolves any permission
- * still open for THAT agent (the terminal-rejection case a matching tool
- * call can never signal, since a deny produces no tool call at all).
+ * A third concern, the **permission gate** (`AutoApproveGate`, a historical
+ * name), used to be inlined here (#453 phase 1). The bridge does the session
+ * filtering, then routes PermissionRequest to the gate, which since #1125
+ * (ADR 0030) decides nothing on its own: since #1126 (ADR 0031) it holds a
+ * binary prompt's hook for the phone's answer while Claude's dialog is on
+ * screen (and, since #1127, an AskUserQuestion's or ExitPlanMode's, answered
+ * with a structured `updatedInput`), pushes a multi-choice string-label
+ * prompt at once and answers it 'passthrough', and passes a subagent prompt
+ * to the local terminal (wrapper mode) or holds it like a main one (daemon
+ * mode). Stop / SessionEnd call
+ * `gate.cancelStale()` to resolve escalations Claude no longer waits on. Stop passes
+ * `{ mainOnly: true }` (#711): it fires whenever the LEAD idles even while
+ * agent-team teammates keep working, so it resolves only MAIN-context
+ * escalations, sparing a teammate's still-open one. SessionEnd is real
+ * teardown and stays unscoped. #799: `SubagentStop` calls
+ * `gate.cancelStaleForAgent(agent_id)`, the single-agent mirror of Stop's
+ * mainOnly sweep: it resolves any permission still open for THAT agent (the
+ * terminal-rejection case a matching tool call can never signal, since a deny
+ * produces no tool call at all).
  *
  * #889 (Q4) adds two more observe-only resolution/surfacing paths, both
  * registered in `REMI_REGISTERED_HOOK_EVENTS` for the first time here:
@@ -41,24 +43,17 @@
  *     denial fires no tool call, so without this a still-open escalation for
  *     it would linger with no other resolution signal.
  *   - `Elicitation` builds an answerable card (`hookBridge.handleElicitation`,
- *     source `'elicitation'`, direct-emitted like a source-less StopFailure
- *     card) instead of leaving an MCP dialog as a PTY orphan; `elicitationQuestions`
+ *     source `'elicitation'`, direct-emitted, not gate-pushed) instead of
+ *     leaving an MCP dialog as a PTY orphan; `elicitationQuestions`
  *     (below) remembers its `elicitation_id` so a later `ElicitationResult`
  *     can resolve the SAME card by exact id, mirroring PermissionDenied's
  *     "close the lingering-card gap" shape.
  *
- * #893 (Q9) adds a 4th newly-registered event: `UserPromptSubmit`. Unlike
- * Q4's three (resolution/surfacing), this one FEEDS a decision input rather
- * than resolving a question: its listener pushes the human's typed `prompt`
- * into `authorityStore` (an `AuthorityStore`, `auto-approve/authority.ts`),
- * the PRIMARY source for the auto-approve prompt's CONVERSATION CONTEXT block
- * (`AutoApproveGateDeps.getAuthority`, wired into the gate below). A filtered
- * transcript read is the FALLBACK for a resumed session's prior turns, which
- * this registration never saw fire for. See `authority.ts`'s module doc for
- * the trust boundary this feature is built around, INCLUDING why the
- * listener also runs `isWrappedNonHumanText` over `input.prompt` before
- * recording it -- defense in depth for an unverified premise (#938), not
- * proof the primary source is clean.
+ * #893 (Q9) registered a 4th event, `UserPromptSubmit`, to feed the
+ * auto-approve authority summary. That consumer was deleted in #1125; the
+ * listener stays (it drives `binder.onHookEvent` like every other listener),
+ * and the registration stays because the turn-complete timer anchors each
+ * turn on it (`notifications/turn-timer.ts`).
  *
  * This listener block IS the per-session hook router (admit-then-fan-out); a
  * formal HookRouter class is deferred to a later refactor (#470). The function
@@ -89,35 +84,30 @@
  * #470 once the TranscriptBinder soaked as the unconditional driver (#503).
  */
 
-import { createSessionUpdate, createSessionViews, errorToString } from '@remi/shared';
-import type { AgentStatus, ProtocolMessage, UUID } from '@remi/shared';
+import { createSessionViews, errorToString } from '@remi/shared';
+import type { AgentStatus, ProtocolMessage, Question, UUID } from '@remi/shared';
 
 import type { MessageAPI, QuestionRegistrationOutcome } from '../../api/message-api.ts';
 import type { QuestionPresenceTracker } from '../../api/question-presence-tracker.ts';
 import type { SubagentViewRegistry } from '../../api/subagent-view-registry.ts';
-import {
-  AuthorityStore,
-  AutoApproveGate,
-  SessionWorkflowGrantStore,
-  detectGitHubRepository,
-  isNonHumanForAuthority,
-  resolveAuthority,
+import { AutoApproveGate, subagentCall } from '../../auto-approve/index.ts';
+import type {
+  HeldAnswer,
+  HeldAnswerOutcome,
+  SubagentAlert,
+  SubagentAlertSink,
+  TerminalReleaseCause,
 } from '../../auto-approve/index.ts';
-import type { AutoApproveService } from '../../auto-approve/index.ts';
-// Not re-exported from `auto-approve/index.ts` on purpose (#976 prerequisite
-// scope: that barrel is being edited concurrently by other work on the same
-// epic). Imported directly from its own module instead.
-import { PrecedentStore, readerFrom } from '../../auto-approve/precedent.ts';
-import type { SessionWorkflowFamily } from '../../auto-approve/session-workflow-grant.ts';
-import type { DenySource } from '../../auto-approve/types.ts';
 import { HookEventBridge } from '../../hooks/index.ts';
 import type {
   ForeignSessionEscalator,
   HookInput,
   HookServer,
-  PermissionRequestHookInput,
+  PermissionDeniedHookInput,
+  StopFailureHookInput,
 } from '../../hooks/index.ts';
-import type { DeliveryOutcome } from '../../notifications/notification-dispatcher.ts';
+import type { TerminalNoticeReason } from '../../notifications/notification-dispatcher.ts';
+import { describeTurnFailure } from '../../notifications/turn-failed.ts';
 import type {
   SessionBindingStore,
   SessionRegistry,
@@ -127,7 +117,6 @@ import { TranscriptBinder } from '../../transcript/index.ts';
 import type { TranscriptWatcher } from '../../transcript/index.ts';
 import type { TranscriptDiscovery } from '../../transcript/transcript-discovery.ts';
 import { log, logError } from '../logger.ts';
-import type { StatusWriter } from '../status-writer.ts';
 
 /**
  * Cap for the Stop-turn log line (#891). `last_assistant_message` can run
@@ -138,6 +127,19 @@ import type { StatusWriter } from '../status-writer.ts';
  * reason `notification-dispatcher.ts` normalizes push text.
  */
 const STOP_LOG_MESSAGE_MAX = 200;
+
+/**
+ * The notice wording for a hold released to the terminal (#1126): why
+ * (`deadline`: nobody answered in time; `released`: remi let go early) and
+ * how to reach the terminal (a wrapper session's own, or `remi attach`).
+ */
+export function terminalNoticeReason(
+  cause: TerminalReleaseCause,
+  hasLocalTerminal: boolean,
+): TerminalNoticeReason {
+  if (cause === 'deadline') return hasLocalTerminal ? 'hold_deadline' : 'hold_deadline_no_terminal';
+  return hasLocalTerminal ? 'released' : 'released_no_terminal';
+}
 
 /** Truncate + collapse whitespace in a hook-carried message for a single log line. */
 function summarizeForLog(text: string, max: number): string {
@@ -159,7 +161,6 @@ export interface HookBridgeDeps {
   liveSessionsRegistry: SessionRegistryFile;
   transcriptWatchers: Map<UUID, TranscriptWatcher>;
   transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>>;
-  autoApproveService: AutoApproveService | null;
   /** PORT is reassigned during daemon-mode port probing; read lazily. */
   currentPort: () => number;
   /**
@@ -178,78 +179,20 @@ export interface HookBridgeDeps {
    */
   subagentViews?: SubagentViewRegistry;
   /**
-   * Process-wide terminal cue (#513): animates the wrapper terminal title and
-   * fires a desktop notification across the auto-approve lifecycle. Shared by
-   * all sessions (one terminal). Optional; inert when absent or headless.
-   */
-  statusWriter?: StatusWriter | undefined;
-  /**
-   * Tools that always escalate to the user (#572). Passed to the gate so it
-   * classifies an escalation as binary (holdable, #573) vs design/plan-mode
-   * (passthrough). From `config.auto_approve.always_escalate_tools`. Absent =>
-   * empty set (tests / no-AA callers).
+   * Tools whose prompt is always a design question (#572). Passed to the gate
+   * so it classifies an escalation as binary (held, #1126) vs design/plan-mode
+   * (passthrough, pushed immediately). Absent => `ALWAYS_ESCALATE_TOOLS`.
    */
   alwaysEscalateTools?: ReadonlySet<string>;
   /**
-   * Seconds to HOLD a binary main-context PermissionRequest hook open until the
-   * user answers (Model B, #573). From `config.auto_approve.hold_timeout`. 0 /
-   * absent => no holding (escalate -> passthrough as before).
+   * Cross-client question dismissal (#585, P7). Called when an open question
+   * resolves WITHOUT a user answer (an external-resolution signal, a Stop /
+   * SubagentStop / SessionEnd sweep, a restart, `remi unstick`): the daemon
+   * broadcasts `question_resolved` to every remi client and fires the APNS
+   * dismissal (Telegram does not dismiss cards, #1148). Must be throw-safe (the
+   * gate also guards the call). Absent => no dismissal broadcast.
    */
-  holdTimeoutSec?: number;
-  /**
-   * Seconds before a slow binary main-context eval triggers an early push + hold
-   * (Part B, #573). From `config.auto_approve.push_hold_timeout`. 0 / absent =>
-   * Part B disabled (the eval/timer race never arms).
-   */
-  pushHoldTimeoutSec?: number;
-  /**
-   * What a main-agent BINARY escalation `escalateMain` cannot approve becomes:
-   * `'escalate'` (default) asks the user as before; `'deny'` refuses with a
-   * reason instead (#1045 phase 6). From `config.auto_approve.residual_action`.
-   * Absent => the gate's own default (`'escalate'`), unaffected by whether
-   * auto-approve is enabled — unlike `holdTimeoutSec`/`pushHoldTimeoutSec`,
-   * this is NOT guarded on `autoApproveService` existing, because the
-   * no-service edge is itself one of `escalateMain`'s three call sites.
-   */
-  residualAction?: 'escalate' | 'deny';
-  /**
-   * Probe a held escalation's notification delivery outcome (epic #603 Phase 1).
-   * Wired from this session's `NotificationDispatcher.awaitDelivery`. Lets the
-   * gate fail a hold open fast when no notification reached the user instead of
-   * blocking for the full hold_timeout. Absent => delivery gating disabled.
-   */
-  awaitDelivery?: (questionId: UUID) => Promise<DeliveryOutcome> | undefined;
-  /**
-   * Hold-timeout handoff notice (#733). Wired from this session's
-   * `NotificationDispatcher.pushHoldTimeoutHandoff`: when a held escalation
-   * expires unanswered and moves to the native terminal prompt, tell the phone
-   * so the timeout is not silent. Absent => no handoff push (tests).
-   */
-  onHoldTimeout?: (questionId: UUID) => void;
-  /**
-   * Seconds to wait for a held escalation's delivery to be confirmed before
-   * treating it as undeliverable (epic #603 Phase 1). From
-   * `config.auto_approve.delivery_confirm_timeout`. 0 / absent => no gating.
-   */
-  deliveryConfirmSec?: number;
-  /**
-   * Seconds to keep holding an UNDELIVERED escalation instead of failing open
-   * immediately (epic #603 Phase 1, D2 hold-always-no-phone). From
-   * `config.auto_approve.hold_unconfirmed_timeout`. 0 / absent => fail open fast.
-   */
-  holdUnconfirmedSec?: number;
-  /**
-   * Cross-client question dismissal (#585, P7). Called by the gate when a HELD
-   * question resolves WITHOUT a user answer (Part-B late verdict, hold timeout,
-   * or cancelStale): the daemon broadcasts `question_resolved` to every client and
-   * fires the APNS dismissal so the pushed card clears everywhere. Must be
-   * throw-safe (the gate also guards the call). Absent => no dismissal broadcast.
-   */
-  broadcastQuestionResolved?: (
-    sessionId: UUID,
-    questionId: UUID,
-    reason: 'auto_approved' | 'auto_denied' | 'cancelled',
-  ) => void;
+  broadcastQuestionResolved?: (sessionId: UUID, questionId: UUID, reason: 'cancelled') => void;
   /**
    * Fail-safe fallback for a PermissionRequest that `binder.admits()` rejects
    * (#672): decides whether a live sibling daemon owns the foreign session
@@ -262,26 +205,64 @@ export interface HookBridgeDeps {
    */
   foreignSessionEscalator?: ForeignSessionEscalator;
   /**
-   * Observer for every subagent-tagged permission that passed through
-   * unevaluated (#807). Forwarded verbatim to the gate's
-   * `onSubagentPassthrough`; see that dep's doc for why it cannot influence
-   * the decision. Supplied by `cli.ts`, which owns the `SubagentAlerter` and
-   * the push transport (daemon-wide, so alert rate-limiting is shared across
-   * sessions rather than reset per session — same reasoning as
-   * `foreignSessionEscalator` above). Absent => no alert, no audit line.
+   * The subagent alert feed (#807, #1155): every admitted subagent tool
+   * call's hooks drive `alerter` (see `subagent-alert.ts` for the rules), and
+   * an alert it returns is handed to `deliver`. Fed from the tool hooks, not
+   * from `PermissionRequest`: a call Claude's own allow rules permit fires
+   * no `PermissionRequest`, and that silent branch is what the alert is for.
+   * Observation only: nothing here changes a hook response. Supplied by
+   * `cli.ts`, which owns the `SubagentAlerter` and the push transport
+   * (daemon-wide, so alert rate-limiting is shared across sessions rather
+   * than reset per session — same reasoning as `foreignSessionEscalator`
+   * above). Absent => no alert.
    */
-  onSubagentPassthrough?: (input: PermissionRequestHookInput) => void;
+  subagentAlerts?: SubagentAlertSink;
   /**
-   * Observer for every `deny` the gate returns to the hook (#1015). Forwarded
-   * verbatim to the gate's `onAutoDenied`; see that dep's doc for why a deny
-   * is the one verdict with no user-facing surface of its own.
-   *
-   * Supplied by `cli.ts`, which owns the push transport — same reasoning as
-   * `onSubagentPassthrough` above. Absent => a deny stays invisible, which is
-   * the pre-#1015 behavior and is correct for tests that build their own
-   * bridge without push wiring.
+   * How long a binary prompt's hook is held for a phone answer, in ms
+   * (`[prompts] hold_seconds`, #1126). Required: see `AutoApproveGateDeps.holdMs`.
    */
-  onAutoDenied?: (input: PermissionRequestHookInput, source: DenySource, reasoning: string) => void;
+  holdMs: number;
+  /** The registered PermissionRequest hook timeout, in ms (#1126). See
+   *  `AutoApproveGateDeps.hookTimeoutMs`. Required, so no session silently
+   *  treats Claude's own timeout as a terminal No. */
+  hookTimeoutMs: number;
+  /**
+   * Push an informational "answer at the terminal" notice for `question`
+   * (#1126), wired to the session's `NotificationDispatcher.pushTerminalNotice`.
+   * Fired when a held prompt reaches its deadline (the #733 handoff) and
+   * when a subagent prompt passed to the local terminal renders. Absent =>
+   * no notice (tests). Must be throw-safe; the gate also guards it.
+   */
+  pushTerminalNotice?: (sessionId: UUID, question: Question, reason: TerminalNoticeReason) => void;
+  /** Dismiss a notice `pushTerminalNotice` sent, once its prompt is
+   *  answered. Absent => the notice stays until the user clears it. */
+  dismissTerminalNotice?: (sessionId: UUID, questionId: UUID) => void;
+  /**
+   * Claude Code's auto-mode classifier blocked a tool call in this session
+   * (`PermissionDenied`, #1126): wired by cli.ts to the `harness_denied`
+   * push (`notifications/harness-denied.ts`). Informational, never a card;
+   * called only for an admitted event. Absent => no push. Throw-safe here.
+   */
+  onHarnessDenied?: (input: PermissionDeniedHookInput) => void;
+  /**
+   * A turn in this session ended on an API error (`StopFailure`, #1153):
+   * wired by cli.ts to the session's `NotificationDispatcher.pushTurnFailed`
+   * (the `turn_failed` push). Informational, never a card; called for an
+   * admitted event, after the status went to `idle` (a main-agent failure;
+   * an `agent_id`-tagged one leaves the status alone). Absent => no push.
+   * Throw-safe here.
+   */
+  pushTurnFailed?: (sessionId: UUID, input: StopFailureHookInput) => void;
+  /**
+   * Clear the `turn_failed` notice this session may have pushed (#1153): the
+   * quiet dismissal sharing its collapse key, fired on the next main-agent
+   * `Stop` or `UserPromptSubmit`, so a stale "Claude stopped" does not sit on
+   * the lock screen after a later turn succeeded. Wired by cli.ts to the
+   * session's `NotificationDispatcher.dismissTurnFailed`, which sends nothing
+   * unless a `turn_failed` push is outstanding. Absent => nothing cleared.
+   * Throw-safe here.
+   */
+  dismissTurnFailed?: (sessionId: UUID) => void;
 }
 
 export interface HookBridgeArgs {
@@ -297,48 +278,46 @@ export interface HookBridgeArgs {
    *  stale pending records. Required when wired into the createNewSession
    *  flow; tests construct their own per-bridge tracker. */
   tracker: QuestionPresenceTracker;
+  /** Whether this session has a local terminal (wrapper mode, #1126): it
+   *  decides whether a subagent prompt is passed to that terminal or held
+   *  for the phone. See `AutoApproveGateDeps.hasLocalTerminal`. */
+  hasLocalTerminal: boolean;
 }
 
 /**
- * Per-session control surface for the auto-approve gate (#573). Registered by
- * cli.ts keyed by `sessionId` so the WebSocket answer handler reaches the RIGHT
- * session's gate when the user answers a held permission.
+ * Per-session control surface for the permission gate (#573). Registered by
+ * cli.ts keyed by `sessionId` so the answer handler and `remi unstick` reach
+ * the RIGHT session's gate.
  */
 export interface SessionGateHandle {
-  /**
-   * Resolve a held binary PermissionRequest hook with the user's answer (Model
-   * B). Returns true when a hold for `questionId` existed and was resolved (the
-   * caller then SKIPS the PTY inject — Claude is blocked on the hook, not
-   * rendering); false when no hold exists (the answer takes the PTY path, e.g. a
-   * multi-choice pick or a non-AA session).
-   *
-   * `suggestionIndex` (#718): present when the answered option was derived
-   * from a structured `permission_suggestions` entry ("Yes, always allow:
-   * ..."); forwarded to `AutoApproveGate.resolveHeld` so the hook resolves
-   * with the real `updatedPermissions` echo instead of a bare `allow`.
-   */
-  resolveHeld: (
-    questionId: UUID,
-    decision: 'allow' | 'deny',
-    suggestionIndex?: number,
-    sessionGrant?: SessionWorkflowFamily,
-  ) => boolean;
-  /**
-   * Release a held hook to 'passthrough' so Claude renders its native numbered
-   * prompt (#573), for answers the binary hook response cannot express ("Yes,
-   * always", a multi-choice pick). Returns true iff a hold existed; the caller
-   * then injects the digit into the rendered prompt.
-   */
-  releaseHeldAsPassthrough: (questionId: UUID) => boolean;
-  /** Cancel any in-flight eval AND release pending holds for this session (the
-   *  user answered / advanced). Forwards to the gate's `cancelStale`. */
-  cancelStale: (reason: string) => void;
-  /** Cancel ONLY the eval for the question the user just answered, freeing the
-   *  GPU without touching other holds (#617). Forwards to `cancelEvalForQuestion`. */
-  cancelEvalForQuestion: (questionId: UUID, reason: string) => void;
-  /** Force-release escape (#617 `remi unstick`): release all holds to passthrough,
-   *  abort the in-flight eval, drain the queue. Forwards to `forceRelease`. */
-  forceRelease: (reason: string) => { holds: number; cancelled: boolean; drained: number };
+  /** Another path already removed and dismissed `questionId` (a user answer,
+   *  a superseded render): stop tracking its signature so a later matching
+   *  tool event does not resolve (and dismiss) it again. Forwards to
+   *  `retireQuestion`. */
+  retireQuestion: (questionId: UUID) => void;
+  /** Apply a phone answer to a held prompt (#1126). Forwards to
+   *  `AutoApproveGate.answerHeld`; see `HeldAnswerOutcome`. */
+  answerHeld: (questionId: UUID, answer: HeldAnswer) => HeldAnswerOutcome;
+  /** Is a main-agent prompt's hook held, with its dialog on screen (#1126)?
+   *  Forwards to `AutoApproveGate.hasMainHold`. */
+  hasMainHold: () => boolean;
+  /** Is a hook-backed dialog this gate knows about (or may be) on screen:
+   *  a live main hold, or a prompt waiting in the terminal younger than the
+   *  session's hold length (#1126)? Forwards to
+   *  `AutoApproveGate.hasOpenHookPrompt`; read by `promptUpDeps` (#1155). */
+  hasOpenHookPrompt: () => boolean;
+  /** A bare Escape reached the terminal through remi (#1155): resolve the
+   *  main agent's prompts waiting in the terminal. Forwards to
+   *  `AutoApproveGate.noteTerminalEscape`. */
+  noteTerminalEscape: () => void;
+  /** Is `questionId`'s hook held for the phone (#1126)? Forwards to
+   *  `AutoApproveGate.isHeld`; read by the tracker's live-question check
+   *  (`hasLiveQuestionOnScreen`). */
+  isHeld: (questionId: UUID) => boolean;
+  /** Force-release escape (#617 `remi unstick`): resolve and dismiss every
+   *  open escalation, except a live hold, which is handed to the terminal
+   *  with a notice (#1126). Forwards to `forceRelease`. */
+  forceRelease: (reason: string) => { resolved: number };
 }
 
 export interface HookBridgeHandle {
@@ -367,23 +346,11 @@ export interface HookBridgeHandle {
    */
   closeBinder: () => void;
   /**
-   * Per-session auto-approve gate handle (#573): `resolveHeld` + `cancelStale`,
-   * so the WebSocket answer path can resolve a held hook / cancel the eval for
-   * this exact session. Always present (the gate is constructed unconditionally).
+   * Per-session gate handle (#573), so the answer path and `remi unstick`
+   * reach this exact session's gate. Always present (the gate is constructed
+   * unconditionally).
    */
   gate: SessionGateHandle;
-  /**
-   * This session's precedent store (#976 prerequisite,
-   * `auto-approve/precedent.ts`). cli.ts collects this (keyed by sessionId,
-   * mirroring `sessionGateHandles`) so `input-events.ts`'s `handleAnswer` can
-   * reach the RIGHT session's store through the `recordPrecedent` dependency.
-   * Always present (constructed unconditionally, like `gate`); cleared on
-   * session restart inside this closure (see the `onRotation` callback
-   * above), not by the caller.
-   */
-  precedentStore: PrecedentStore;
-  /** Per-session, in-memory workflow grant store; scope never reaches clients. */
-  workflowGrantStore: SessionWorkflowGrantStore;
 }
 
 export function setupHookBridge(
@@ -396,39 +363,19 @@ export function setupHookBridge(
     liveSessionsRegistry,
     transcriptWatchers,
     transcriptFallbackTimers,
-    autoApproveService,
     currentPort,
     transcriptDiscovery,
     subagentViews,
   } = deps;
-  const { hookServer, sessionId, workingDirectory, messageApi, sendAndRecord, tracker } = args;
-
-  // ---- Authority (#893, Q9) --------------------------------------------------
-  // PRIMARY source: `UserPromptSubmit`'s `prompt` field, recorded verbatim by
-  // the listener registered below (a cheap in-memory push; see the policy
-  // comment at hook-types.ts:660). FALLBACK: the transcript, for a resumed
-  // session's prior turns, which this daemon's `UserPromptSubmit` registration
-  // never saw fire (`resolveAuthority`, `auto-approve/authority.ts`, filters
-  // out tool-result and wrapper-tagged transcript entries the hook path never
-  // has to worry about). Read fresh per eval via `AutoApproveGateDeps.
-  // getAuthority` below, so a turn submitted mid-eval is picked up for the
-  // NEXT permission, not stale.
-  const authorityStore = new AuthorityStore();
-
-  // ---- Precedent (#976 prerequisite, ADR 0015 amendment) --------------------
-  // Per-session, in-memory record of operations a HUMAN actually answered
-  // (`auto-approve/precedent.ts`). Recorded ONLY from `handleAnswer`
-  // (`input-events.ts`) via the `recordPrecedent` callback cli.ts wires
-  // through this handle's `precedentStore` field below — see that module's
-  // doc for the full provenance-safety argument. The gate receives only a
-  // context-bound read-only adapter; `handleAnswer` remains the sole writer.
-  const precedentStore = new PrecedentStore();
-
-  // Phase 3 (#1095): derive the repository once from the local origin. This
-  // is metadata for a private session scope, never a network lookup or a wire
-  // field. A non-GitHub/malformed origin simply disables the grant offer.
-  const repository = detectGitHubRepository(workingDirectory);
-  const workflowGrantStore = new SessionWorkflowGrantStore(sessionId, workingDirectory, repository);
+  const {
+    hookServer,
+    sessionId,
+    workingDirectory,
+    messageApi,
+    sendAndRecord,
+    tracker,
+    hasLocalTerminal,
+  } = args;
 
   // Push the session's subagent views to clients (epic #499 phase 3). Declared
   // here (before the binder/handlers reference it) so there is no fragile
@@ -489,10 +436,8 @@ export function setupHookBridge(
   // Scoped to this session's closure (dropped with the bridge on teardown, so
   // it cannot outlive the session); capped defensively so a pathological
   // stream of never-resolved elicitations cannot grow it unbounded within one
-  // session's lifetime. Same motivation as `AutoApproveGate`'s
-  // `MAX_PARKED_INPUTS` but deliberately a smaller number, not a mirror of it
-  // (that one is 64, `auto-approve-gate.ts`): an MCP dialog per session is far
-  // rarer than a parked permission input.
+  // session's lifetime: an MCP dialog per session is rare, so 32 is far above
+  // any real count.
   const MAX_PENDING_ELICITATIONS = 32;
   const elicitationQuestions = new Map<string, UUID>();
   /**
@@ -603,306 +548,147 @@ export function setupHookBridge(
 
   // ---- Bridge + hook handler registration ---------------------------------
 
-  const hookBridge = new HookEventBridge(
-    sessionId,
-    {
-      onStatusChange: (status: AgentStatus, context?: string, agentId?: string) => {
-        messageApi.handleStatusChange(status, context);
-        // #1140: the event's agent_id rides along, so a subagent's or
-        // teammate's tool call does not clear the menu the main dialog shows.
-        tracker.onStatusChange(status, { agentId });
-      },
-      onQuestion: (question) => {
-        // #625 single gate: a PERMISSION question is coordinated by the auto-approve
-        // gate — it is stashed here and the gate drives its push on escalate (binary
-        // via onHeldEscalate, passthrough via escalatePassthrough). recordPendingHook
-        // only stashes; it never emits on its own.
-        //   - 'permission_request' (rich: tool + command + options) is the one the gate
-        //     escalates and pushes by id. This is the ONLY source stashed here now:
-        //     `HookEventBridge` used to also synthesize a redundant generic
-        //     'notification' question from Claude's Notification(permission_prompt)
-        //     (Claude still fires it — it just pairs with the PermissionRequest above
-        //     rather than producing a second Question); #890/Q5 deleted that
-        //     synthesis after a capture corpus found 0 unpaired occurrences across
-        //     4244 events / 5 sessions / one day (see `handleNotification`'s own
-        //     comment for the full argument + residual failure mode).
-        // A STANDALONE hook question that no gate pushes (e.g. a Stop-failure "Retry?",
-        // source-less, or an 'elicitation' card, #889) is emitted directly to the
-        // client + lock screen, since the PTY-render push that used to deliver it
-        // is suppressed for hooked sessions.
-        if (question.source === 'permission_request') {
-          // recordPendingHook only stashes -- no `handleQuestion` call happens
-          // here, so there is no registration outcome to report (#888 criterion
-          // iii). This question is not registered until a later PTY render
-          // pairs with it (`QuestionPresenceTracker.pairAndPush`).
-          tracker.recordPendingHook(question);
-          return undefined;
-        }
-        return messageApi.handleQuestion(question);
-      },
+  const hookBridge = new HookEventBridge(sessionId, {
+    onStatusChange: (status: AgentStatus, context?: string, agentId?: string) => {
+      messageApi.handleStatusChange(status, context);
+      // #1140: the event's agent_id rides along, so a subagent's or
+      // teammate's tool call does not clear the menu the main dialog shows.
+      tracker.onStatusChange(status, { agentId });
     },
-    workingDirectory,
-  );
+    onQuestion: (question) => {
+      // #625 single gate: a PERMISSION question is coordinated by the permission
+      // gate — it is stashed here and the gate drives its push on escalate (a
+      // held prompt and a passthrough multi-choice one at once via
+      // onHeldEscalate, #1126, #1127). recordPendingHook only stashes; it
+      // never emits on its own.
+      //   - 'permission_request' (rich: tool + command + options) is the one the gate
+      //     escalates and pushes by id. This is the ONLY source stashed here now:
+      //     `HookEventBridge` used to also synthesize a redundant generic
+      //     'notification' question from Claude's Notification(permission_prompt)
+      //     (Claude still fires it — it just pairs with the PermissionRequest above
+      //     rather than producing a second Question); #890/Q5 deleted that
+      //     synthesis after a capture corpus found 0 unpaired occurrences across
+      //     4244 events / 5 sessions / one day (see `handleNotification`'s own
+      //     comment for the full argument + residual failure mode).
+      // A STANDALONE hook question that no gate pushes (an 'elicitation' card,
+      // #889) is emitted directly to the client + lock screen, since the
+      // PTY-render push that used to deliver it is suppressed for hooked
+      // sessions.
+      if (question.source === 'permission_request') {
+        // recordPendingHook only stashes -- no `handleQuestion` call happens
+        // here, so there is no registration outcome to report (#888 criterion
+        // iii). The gate then pushes it by id (`pushHeldHook`: a held prompt
+        // or a multi-choice one, #1126/#1127), or parks it for a subagent
+        // prompt's render, which pushes a notice and never registers it.
+        tracker.recordPendingHook(question);
+        return undefined;
+      }
+      return messageApi.handleQuestion(question);
+    },
+    // #1153: a turn that ended on an API error. Never a question; the push is
+    // the whole surface. Guarded here, not in the bridge: a throw must not
+    // escape into the hook dispatch loop.
+    onTurnFailed: (input) => {
+      log(`[Hooks] Turn failed (${sessionId}): ${describeTurnFailure(input.error)}`);
+      try {
+        deps.pushTurnFailed?.(sessionId, input);
+      } catch (err) {
+        logError(`[Hooks] turn_failed push failed for ${sessionId}: ${errorToString(err)}`);
+      }
+    },
+  });
 
   const handlers = hookBridge.hookHandlers();
 
-  // #576: push an auto-approve lifecycle status to clients so the pill reflects
-  // `evaluating` -> `approved` promptly, instead of waiting for the next hook.
-  //
-  // CRITICAL: the gate invokes the cue callbacks below through its `safeCue`
-  // wrapper (cosmetic; a throw there is logged and absorbed so it can never
-  // re-enter the decision/buffer path). This helper adds its OWN try/catch so a
-  // broadcast send error can never propagate into the gate even if the call site
-  // changes. It emits a client-only `session_update` and deliberately does NOT
-  // touch the StatusWriter `sessionStatus` (the wrapper bar + native statusline
-  // already cue the AA state from the `autoApprove` sub-field) nor the existing
-  // hook-driven onStatusChange path, so it neither double-emits nor fights the
-  // real PreToolUse/PermissionRequest status that follows.
-  const broadcastAutoApproveStatus = (status: AgentStatus): void => {
-    try {
-      sendAndRecord(createSessionUpdate(sessionId, status));
-    } catch (err) {
-      logError(
-        `[Hooks] auto-approve status broadcast failed for ${sessionId}: ${errorToString(err)}`,
-      );
-    }
-  };
-
-  /**
-   * Return clients to the session's REAL status after an eval ended without a
-   * verdict (#970).
-   *
-   * Because `broadcastAutoApproveStatus` is client-only by design (see the note
-   * above), the daemon holds no record that clients are showing `evaluating` —
-   * the pill is fire-and-forget display state, and only another broadcast or a
-   * later hook can move it off. That made the client cue NOT total over the
-   * gate's end paths, unlike the terminal one, whose own invariant
-   * (`status-writer.ts`: "the count returns to 0 and the 'evaluating' cue can
-   * never get stuck") holds precisely because every end path decrements it.
-   * The full enumeration, corrected against the live code (an earlier pass at
-   * this table, ADR 0020, asserted two rows below without checking their call
-   * sites — see the #970 note on `AutoApproveGate.resolveHeld`):
-   *
-   *   onHandled                    -> 'approved' broadcast (covered)
-   *   onEscalate                   -> the question path's 'waiting' (covered, indirectly)
-   *   onCancelled                  -> NOTHING                (closed by this function, PR #973)
-   *   resolveHeld (Part-B allow/deny) -> markHandled -> onHandled -> 'approved' (ALREADY covered;
-   *                                    resolveHeld calls markHandled unconditionally, #711)
-   *   releaseHeld, hold-timeout / undelivered fail-open -> NOTHING NEEDED ('waiting' from
-   *                                    the hold's own onEscalate is still accurate: same
-   *                                    permission, now rendered in the terminal instead)
-   *   releaseHeld, Part-B cancelled -> NOTHING            (closed by onHeldCancelled below)
-   *   releaseHeld, Stop/SessionEnd/external-resolve/SubagentStop -> NOTHING NEEDED (the
-   *                                    driving hook event's own onStatusChange covers it,
-   *                                    or — SubagentStop — no MAIN pill was ever moved)
-   *
-   * A cancelled verdict self-healed only when a later `Stop`/`SessionEnd`
-   * `idle` or a `PreToolUse` `executing` happened to follow. None is guaranteed
-   * — and by construction none arrives when the eval was cancelled at the end
-   * of a turn or during a disconnect, which is exactly when it was observed
-   * stuck. The same reasoning applies to a HELD hook's Part-B cancelled
-   * branch, which is why `onHeldCancelled` reuses this exact function.
-   *
-   * Broadcasts the registry's CURRENT status rather than a chosen constant. The
-   * gate does not know what the session became (nothing was approved, denied,
-   * or escalated), so any fixed value would be a guess, and a wrong status is
-   * the same class of bug as a stuck one. Reading the status the daemon already
-   * tracks is honest by construction: "stop showing evaluating; here is what
-   * this session actually is."
-   */
-  const broadcastCurrentStatus = (): void => {
-    const current = sessionRegistry.getSession(sessionId)?.currentStatus;
-    // No session (torn down mid-eval): nothing to correct, and inventing a
-    // status for a session that no longer exists would be worse than silence.
-    if (current === undefined) return;
-    broadcastAutoApproveStatus(current);
-  };
-
-  // Auto-approve control plane (#453 phase 1): owns the PermissionRequest eval +
-  // inject + escalate + cancelStale. Constructed after the bridge + handlers so it
-  // can wrap the two outward couplings (isInSubagentContext, onPermissionRequest) as
-  // injected callbacks, read live at inject time (async TOCTOU).
+  // Permission gate (#453 phase 1): owns the PermissionRequest response,
+  // escalation and external-resolution cleanup. Constructed after the bridge +
+  // handlers so it can wrap the two outward couplings (isInSubagentContext,
+  // handlePermissionRequest) as injected callbacks.
   const autoApproveGate = new AutoApproveGate(
     {
-      service: autoApproveService,
       sessionRegistry,
-      tracker,
       isInSubagentContext: () => hookBridge.isInSubagentContext(),
-      // #893 (Q9): resolve this eval's authority text fresh — the live
-      // UserPromptSubmit-fed store, or the filtered transcript fallback when
-      // the store has recorded nothing yet this session. Both reads are
-      // synchronous and in-memory (see the module doc above); no disk I/O on
-      // this call path.
-      getAuthority: () =>
-        resolveAuthority(
-          authorityStore,
-          () => transcriptWatchers.get(sessionId)?.getUserMessages() ?? [],
-        ),
-      // #976: THIS session's precedent, read-only. The store itself is never
-      // handed out — `handleAnswer` stays the single writer by construction,
-      // which is what keeps the gate from recording its own ADR-0004
-      // arbitration verdicts as human precedent (see `precedent.ts`).
-      // `readerFrom` (precedent.ts) hands out only the two matchers — never the
-      // store's `record` — and forwards the `whole` provenance bit (#1067). See
-      // its doc for why both properties are load-bearing.
-      getPrecedent: () => readerFrom(precedentStore),
-      // Keep evaluation on the same canonical private scope that the answer
-      // path records, even if Claude reports a changed hook cwd mid-session.
-      workingDirectory,
-      ...(repository === undefined ? {} : { repository }),
-      workflowGrantStore,
       // #710: lets the gate recover from a tracker leak (a MAIN-tagged
       // PermissionRequest observing isInSubagentContext() stuck true) instead
-      // of denying the main agent forever.
+      // of treating the main agent's prompt as a subagent's.
       resetSubagentContext: () => hookBridge.resetSubagentContext(),
       // Call the bridge DIRECTLY (not via the void-typed handlers map) so the
-      // created Question.id flows back to the gate; a binary escalation holds
-      // the hook keyed by it (#573). The bridge still does the onQuestion +
-      // status side effects exactly as before.
-      escalate: (i, summary, workflowOffer) =>
-        hookBridge.handlePermissionRequest(i, summary, workflowOffer),
-      // #751 PTY-arbiter: a subagent-tagged escalation the gate cannot decide
-      // parks its rich question (same builder as a real escalation, minus the
-      // push/registration side effects) and answers 'passthrough'; the tracker
-      // pushes it only if Claude's native prompt actually renders on the PTY.
-      // #799: return the parked question's id so the gate can register its
-      // signature in `openQuestionSignatures` -- without it, a subagent
-      // permission answered in the terminal has no removal path at all (see
-      // the PreToolUse/PostToolUse/SubagentStop wiring below).
+      // created Question.id flows back to the gate, which pushes and tracks it
+      // by that id. The bridge still does the onQuestion + status side effects.
+      escalate: (i) => hookBridge.handlePermissionRequest(i),
+      // #751: a subagent-tagged prompt parks its rich question (same builder
+      // as a real escalation, minus the push/registration side effects); the
+      // tracker pushes it only if Claude's native prompt actually renders on
+      // the PTY. #799: return the parked question's id so the gate can
+      // register its signature in `openQuestionSignatures` -- without it, a
+      // subagent permission answered in the terminal has no removal path at
+      // all (see the PreToolUse/PostToolUse/SubagentStop wiring below).
+      // #1126: when the parked prompt renders (wrapper mode), the phone gets
+      // an "answer at the terminal" notice, never an answerable card: the
+      // hook was answered passthrough, so only the terminal can answer it.
       parkForPTY: (i) => {
         const question = hookBridge.buildPermissionQuestion(i);
-        tracker.parkAwaitingPTY(question);
+        tracker.parkAwaitingPTY(question, {
+          onRender: (merged) => {
+            // Keep the parked id: the gate dismisses the notice by it.
+            deps.pushTerminalNotice?.(sessionId, { ...merged, id: question.id }, 'subagent');
+            autoApproveGate.noteTerminalNotice(question.id);
+          },
+        });
         return question.id;
       },
-      ...(deps.onSubagentPassthrough ? { onSubagentPassthrough: deps.onSubagentPassthrough } : {}),
-      ...(deps.onAutoDenied ? { onAutoDenied: deps.onAutoDenied } : {}),
-      // #484: buffer the PTY prompt while the eval runs; release it only on an
-      // escalate verdict, so silently auto-approved permissions never push APNS.
-      // #560: the same lifecycle drives the auto-approve cue in Claude's native
-      // status line via the StatusWriter. A COUNT (start/end) replaces the old
-      // shared title spinner, which raced under concurrent evals.
-      onEvalStart: (ctx) => {
-        // #767: only a MAIN-context eval opens the tracker's #484 buffer
-        // window. A subagent eval holds only its own subagent's hook, so a
-        // prompt rendering during it is some OTHER question (teammate
-        // permission, parked #751 render) that must flow, not buffer.
-        tracker.onAutoApproveStart(ctx.isSubagent);
-        deps.statusWriter?.autoApproveStart(Date.now());
-        // #576: surface the in-flight eval on the client pill ('working').
-        // #711: skip the CLIENT broadcast for a subagent/team-member eval --
-        // the user never saw it asked, so flashing the pill to 'evaluating'
-        // for it reads as a phantom auto-approval. The tracker buffer + the
-        // StatusWriter terminal cue above still fire unconditionally.
-        if (!ctx.isSubagent) broadcastAutoApproveStatus('evaluating');
+      pushTerminalNoticeNow: (i) => {
+        if (!deps.pushTerminalNotice) return undefined;
+        const question = hookBridge.buildPermissionQuestion(i);
+        deps.pushTerminalNotice(sessionId, question, 'subagent');
+        return question.id;
       },
-      onEscalate: (ctx) => {
-        // #767: a subagent escalate (the #751 park path) never opened the
-        // buffer window; it must not release/discard a MAIN eval's buffer.
-        tracker.onAutoApproveEscalate(ctx.isSubagent);
-        deps.statusWriter?.autoApproveEnd('escalated', Date.now());
-        // No status broadcast here: a MAIN escalate routes through
-        // handlePermissionRequest -> onStatusChange('waiting'), which broadcasts
-        // the 'waiting' session_update; re-emitting would double-emit. A PARKED
-        // subagent escalation (#751) bypasses handlePermissionRequest, so no
-        // 'waiting' fires here either — deliberately: the prompt may never
-        // render (allowlist absorption). When it does render, the PTY parser
-        // flips the status, and the web pill prioritizes the pushed question
-        // over raw status anyway (#763 finding 3).
-      },
-      // #573: a binary escalation that HOLDS its hook blocks Claude's response,
-      // so Claude never renders the native prompt and the tracker's PTY-render
-      // push trigger (onPTYPromptVisible) never fires. Without this, the held
-      // question is stashed via recordPendingHook but never registered in
-      // sessionRegistry nor pushed -> the user cannot answer it and the hold sits
-      // until hold_timeout. The gate calls this ONLY in the held branch with the
-      // held Question.id, so the tracker pushes that exact question immediately
-      // (-> addQuestion + maybePush) under the id the hold is keyed by.
+      hasLocalTerminal,
+      // A held prompt (binary #1126; AskUserQuestion, ExitPlanMode #1127) and
+      // a passthrough multi-choice escalation (#625) push immediately under
+      // their own id (-> addQuestion + maybePush); PTY question-emission is
+      // suppressed for hooked sessions.
       onHeldEscalate: (questionId) => tracker.pushHeldHook(questionId),
-      // #1121: an unheld binary main escalation (auto-approve off, or
-      // hold_timeout = 0) pushes when its native prompt renders, carrying the
-      // parsed screen's options (#1134) so a phone digit matches the screen's
-      // numbering.
-      pushOnRender: (questionId) => {
-        tracker.pushOnRender(questionId);
+      holdMs: deps.holdMs,
+      hookTimeoutMs: deps.hookTimeoutMs,
+      // #1126: a held prompt was released to the terminal without an answer
+      // (its deadline, Claude's hook timeout, an ambiguous signal, `remi
+      // unstick`). Read the card while it is still registered (the gate
+      // dismisses it right after) so the notice names the actual ask; the
+      // wording says how to reach the terminal in this mode.
+      onReleasedToTerminal: (questionId, cause) => {
+        const question = sessionRegistry.getQuestion(sessionId, questionId);
+        if (question === null) return;
+        deps.pushTerminalNotice?.(
+          sessionId,
+          question,
+          terminalNoticeReason(cause, hasLocalTerminal),
+        );
       },
-      onHandled: (ctx) => {
-        deps.statusWriter?.autoApproveEnd('approved', Date.now());
-        // #576: the permission was silently allowed; tell clients so the pill
-        // doesn't sit stale on 'evaluating' until the next hook fires.
-        // #711: same subagent skip as onEvalStart above -- see that comment.
-        if (!ctx.isSubagent) broadcastAutoApproveStatus('approved');
-      },
-      onCancelled: () => {
-        deps.statusWriter?.autoApproveEnd('cancelled', Date.now());
-        // #970: the client pill was moved to 'evaluating' by onEvalStart and
-        // this was the only end path that never moved it back. See
-        // `broadcastCurrentStatus` for why it re-broadcasts the real status
-        // instead of picking one.
-        //
-        // Unconditional, with no `isSubagent` skip like onEvalStart/onHandled
-        // have: this cue is reachable only from a MAIN-context eval, which is
-        // exactly the case that DID broadcast 'evaluating'. See the cue's own
-        // doc on `AutoApproveGateDeps` for why the subagent path cannot reach
-        // it (a cancelled parked render escalates instead).
-        broadcastCurrentStatus();
-      },
-      // #970 (follow-up to the onCancelled fix above): the HELD-hook sibling
-      // gap ADR 0020 left open. `reconcileLateVerdict`'s cancelled branch
-      // (Part B: the slow eval decides Claude already advanced past the
-      // prompt while the early push+hold was showing) calls `releaseHeld`,
-      // never `markHandled` -- so unlike a Part-B ALLOW/DENY late verdict
-      // (which already broadcasts 'approved' via `onHandled`, see the note on
-      // `AutoApproveGate.resolveHeld`), nothing corrected the pill here before
-      // this cue existed. Same fix as `onCancelled`: re-broadcast whatever the
-      // registry's CURRENT status actually is, not a guessed constant.
-      onHeldCancelled: () => broadcastCurrentStatus(),
-      // #585: a held question that resolves without a user answer (Part-B late
-      // verdict / hold timeout / cancelStale) tells the daemon to dismiss the
-      // pushed card on every client. Forwarded with this session's id.
+      onTerminalNoticeResolved: (questionId) => deps.dismissTerminalNotice?.(sessionId, questionId),
+      // #585: an open escalation that resolves without a user answer tells
+      // the daemon to dismiss the pushed card on every remi client and APNS.
       onResolved: (questionId, reason) =>
         deps.broadcastQuestionResolved?.(sessionId, questionId, reason),
-      // #522: second-opinion model on a primary escalate (read from the service's
-      // config). Empty when unset -> escalate straight to the user.
-      escalateModel: autoApproveService?.escalateModel ?? '',
-      // #573: classify an escalation as binary (holdable) vs design/multi-choice
-      // (passthrough) the same way the service does; hold binary main-context
-      // hooks open until the user answers (holdMs) and optionally push early on a
-      // slow eval (pushHoldMs). Seconds -> ms; 0 disables (gate treats <=0 as off).
-      alwaysEscalateTools: deps.alwaysEscalateTools ?? new Set<string>(),
-      holdMs: (deps.holdTimeoutSec ?? 0) * 1000,
-      pushHoldMs: (deps.pushHoldTimeoutSec ?? 0) * 1000,
-      // #1045 phase 6: escalate (default) vs deny-with-reason for a main-agent
-      // binary residual. No unit conversion needed, unlike the *Sec fields above.
-      residualAction: deps.residualAction ?? 'escalate',
-      // #603 Phase 1: gate a held hook on confirmed notification delivery, so a
-      // dead push channel fails open fast instead of stalling for holdMs.
-      ...(deps.awaitDelivery ? { awaitDelivery: deps.awaitDelivery } : {}),
-      // #733: hold-timeout handoff notice — the phone learns the prompt moved
-      // to the terminal instead of the card just silently vanishing.
-      ...(deps.onHoldTimeout ? { onHoldTimeout: deps.onHoldTimeout } : {}),
-      deliveryConfirmMs: (deps.deliveryConfirmSec ?? 0) * 1000,
-      holdUnconfirmedMs: (deps.holdUnconfirmedSec ?? 0) * 1000,
+      // #573: classify an escalation as binary (held, #1126) vs
+      // design/multi-choice (pushed immediately); AskUserQuestion and
+      // ExitPlanMode are held by name first (#1127). Absent => the gate's
+      // `ALWAYS_ESCALATE_TOOLS` default.
+      ...(deps.alwaysEscalateTools ? { alwaysEscalateTools: deps.alwaysEscalateTools } : {}),
     },
     sessionId,
   );
 
-  // #814: with auto-approve configured, a PARKED subagent permission whose
-  // prompt actually renders on the main PTY is evaluated AT THAT MOMENT — the
-  // hook it arrived on was answered 'passthrough' long before (#807), so the
-  // render is the first point where we know a human would be interrupted. The
-  // gate answers it by PTY inject when it can, and only escalates (push) what
-  // the policy will not decide. Wired only when a service exists: without one
-  // there is nothing to evaluate, and the tracker keeps its pre-#814 behavior
-  // of pushing a parked render straight through (synchronously).
-  if (autoApproveService) {
-    tracker.setParkedRenderArbiter((ctx) =>
-      autoApproveGate.arbitrateParkedRender(
-        ctx.parkedQuestionId as UUID,
-        ctx.rendered,
-        ctx.ptyPrompt,
-      ),
-    );
-  }
+  // #1126: a render while a hook-backed prompt is open is that prompt (or a
+  // redraw of it), never a hook-less orphan, so it is not rebuilt into a
+  // card the phone would answer by typing. The one wiring point, here where
+  // both the gate and the tracker exist.
+  tracker.setHookPromptProbe(() => autoApproveGate.hasOpenHookPrompt());
+  // #1126: a held card may wait up to daemon_hold_seconds; the
+  // pending-question cap must never evict it while its hook is held.
+  sessionRegistry.setQuestionEvictionGuard(sessionId, (questionId) =>
+    autoApproveGate.isHeld(questionId),
+  );
 
   // Subagent/team-member events carry `agent_id` (confirmed via
   // REMI_HOOK_DEBUG capture 2026-04-16). They share main's session_id and
@@ -924,6 +710,16 @@ export function setupHookBridge(
   //     the rich tool/option metadata for that case.
   const isSubagentEvent = (input: { agent_id?: string }): boolean =>
     typeof input.agent_id === 'string' && input.agent_id.length > 0;
+
+  /** Clear this session's outstanding `turn_failed` notice (#1153), if any.
+   *  Contained: a throwing sink never reaches the hook dispatch loop. */
+  const dismissTurnFailedNotice = (): void => {
+    try {
+      deps.dismissTurnFailed?.(sessionId);
+    } catch (err) {
+      logError(`[Hooks] turn_failed dismissal failed for ${sessionId}: ${errorToString(err)}`);
+    }
+  };
 
   // ---- TranscriptBinder (#453 phase 3, commit 5; unconditional since #503) --
   //
@@ -956,7 +752,11 @@ export function setupHookBridge(
         // record stashed before the rotation so the new session's first PTY
         // prompt cannot merge stale option labels, and dismiss + drop the
         // pending-question collection (cards clear on every device, #585) so
-        // stale answers are refused.
+        // stale answers are refused. The gate goes first (#1126): a hold
+        // must never outlive the Claude session that asked, so every open
+        // escalation is resolved and its hook released with the empty
+        // response before the registry is cleared.
+        autoApproveGate.cancelStale('session_restart');
         tracker.clearPending();
         resolveAndClearQuestions();
         // #889: drop any elicitation_id correlations too -- their target
@@ -964,17 +764,6 @@ export function setupHookBridge(
         // the new session could (in principle, if Claude Code ever reused an
         // elicitation_id) resolve an unrelated future card.
         elicitationQuestions.clear();
-        // #893: a PRIOR conversation's authority must not leak into a fresh
-        // one -- /clear, /resume, and /compact's restart case all start over.
-        // The transcript fallback re-derives naturally from the new
-        // transcript path once the binder re-adopts; only the live store
-        // needs an explicit drop.
-        authorityStore.clear();
-        // #976 prerequisite: same reasoning applies to precedent -- a PRIOR
-        // conversation's human answers must not authorize or block anything
-        // in a fresh one (ADR 0015 amendment, "Obligations this creates").
-        precedentStore.clear();
-        workflowGrantStore.clear();
         // The new session starts with no subagents (#499 phase 3).
         if (subagentViews) {
           subagentViews.clear();
@@ -1010,6 +799,25 @@ export function setupHookBridge(
     );
   }
 
+  /**
+   * Drive the subagent alert feed for one admitted subagent hook (#1155) and
+   * deliver the alert it returns, if any. Throw-safe: an alerter or delivery
+   * failure is logged and never reaches the hook dispatch loop.
+   */
+  const feedSubagentAlerts = (
+    event: string,
+    step: (alerter: SubagentAlertSink['alerter']) => SubagentAlert | null,
+  ): void => {
+    const sink = deps.subagentAlerts;
+    if (sink === undefined) return;
+    try {
+      const alert = step(sink.alerter);
+      if (alert !== null) sink.deliver(alert);
+    } catch (err) {
+      logError(`[Hooks] subagent alert (${event}) failed for ${sessionId}: ${errorToString(err)}`);
+    }
+  };
+
   hookServer.on('PreToolUse', (input) => {
     binder.onHookEvent(input);
     if (!binder.admits(input)) return;
@@ -1020,6 +828,10 @@ export function setupHookBridge(
       // out-of-band) — expire its parked record so it cannot stale-merge
       // onto a later unrelated prompt.
       tracker.noteAgentAdvanced(input.agent_id);
+      // #1126: the agent moved on, so a prompt of its own still waiting in
+      // the terminal was answered there (a No fires no hook). Clears it and
+      // dismisses its notice.
+      autoApproveGate.noteAgentToolCall(input.agent_id, input.tool_use_id);
       // #799: mirrors the main-context external-resolution cancel below —
       // this agent's tool is now running, so any parked/pushed permission
       // question the gate is still tracking FOR THIS AGENT with a matching
@@ -1035,29 +847,41 @@ export function setupHookBridge(
         },
         'PreToolUse-subagent',
       );
+      // #1126: remember the call so its PermissionRequest pairs with its id.
+      autoApproveGate.notePreToolUse({
+        toolName: input.tool_name,
+        toolInput: input.tool_input,
+        toolUseId: input.tool_use_id,
+        agentId: input.agent_id,
+      });
+      // #1155: a call that matches an alert pattern is remembered; it alerts
+      // when it finishes, unless it prompted first.
+      feedSubagentAlerts('PreToolUse', (alerter) => {
+        alerter.noteToolStarted(subagentCall(input));
+        return null;
+      });
       return;
     }
-    // NB: do NOT cancel the in-flight auto-approve eval here (#537). Under
-    // synchronous decisions (#496) Claude BLOCKS on the PermissionRequest until
-    // the daemon answers, so a running eval is never stale — it is the verdict
-    // Claude is waiting for. A PreToolUse/PostToolUse for a PREVIOUS tool would
-    // otherwise abort the NEXT permission's eval mid-flight ("Decision dropped"),
-    // dropping a decision that was about to approve. Only Stop/SessionEnd (a real
-    // session-end) cancel an eval now.
-    //
-    // #673: distinct from the above -- this does NOT broadly cancel evals. A
-    // PreToolUse whose (tool_name, tool_input) signature matches a currently
-    // OPEN escalation/hold proves that EXACT permission was already resolved
-    // externally (answered directly in the terminal, bypassing Remi's own
-    // answer path, or the other process's own permission mode), so the tool
-    // is now running and the pushed card would otherwise linger as an
-    // unanswerable "needs you" notification. Signature-scoped: it can only
-    // ever match the ONE question with that exact signature, never a
-    // different permission's still-running eval, so it cannot regress #537.
+    // #673: a PreToolUse whose (tool_name, tool_input) signature matches a
+    // currently OPEN escalation proves that EXACT permission was already
+    // resolved externally (answered directly in the terminal, bypassing remi's
+    // own answer path, or Claude's own permission mode), so the tool is now
+    // running and the pushed card would otherwise linger as an unanswerable
+    // "needs you" notification. Signature-scoped: it can only ever match the
+    // ONE question with that exact signature (#537).
     autoApproveGate.cancelExternallyResolved(
       { toolName: input.tool_name, toolInput: input.tool_input, toolUseId: input.tool_use_id },
       'PreToolUse',
     );
+    // #1126: the PermissionRequest for this call (if any) fires about 10 ms
+    // later and carries no tool_use_id; remembering the call lets it pair,
+    // so the PostToolUse of a Yes answered in the terminal closes exactly
+    // that held prompt.
+    autoApproveGate.notePreToolUse({
+      toolName: input.tool_name,
+      toolInput: input.tool_input,
+      toolUseId: input.tool_use_id,
+    });
     handlers.onPreToolUse?.(input);
   });
   hookServer.on('PostToolUse', (input) => {
@@ -1103,18 +927,27 @@ export function setupHookBridge(
           agentId: input.agent_id,
         },
         'PostToolUse-subagent',
+        { toolFinished: true },
       );
+      autoApproveGate.noteToolUseEnded(input.tool_use_id);
+      // #1155: it ran; it alerts if it matched and never prompted.
+      feedSubagentAlerts('PostToolUse', (alerter) => alerter.noteToolFinished(subagentCall(input)));
       return;
     }
-    // See the PreToolUse note above: no cancelStale here (#537). The previous
-    // tool's PostToolUse must not abort the next permission's in-flight eval.
     // #673: same signature-scoped external-resolution cancel as PreToolUse
     // above (a tool that has already FINISHED is at least as strong a signal
     // that its permission was resolved elsewhere as one that just started).
+    // #1126: this is how a Yes answered in the terminal reaches a held
+    // prompt: Claude runs the tool and never closes the held request, and
+    // this PostToolUse carries the tool_use_id the prompt was paired with.
+    // The hold ends with the empty response Claude ignores.
     autoApproveGate.cancelExternallyResolved(
       { toolName: input.tool_name, toolInput: input.tool_input, toolUseId: input.tool_use_id },
       'PostToolUse',
+      // #1127 review S4: an unpaired AskUserQuestion / ExitPlanMode hold.
+      { toolFinished: true },
     );
+    autoApproveGate.noteToolUseEnded(input.tool_use_id);
     handlers.onPostToolUse?.(input);
   });
   hookServer.on('Notification', (input) => {
@@ -1139,22 +972,23 @@ export function setupHookBridge(
     // a background subagent does not (PTY never confirms presence).
     handlers.onNotification?.(input);
   });
-  // Synchronous PermissionRequest decision (#496). Claude BLOCKS on this
-  // response; the gate returns allow/deny (Claude proceeds without rendering the
-  // prompt) or passthrough (escalated to the user / multi-choice inject). The
-  // binder binding runs first (as for any event); a foreign event we do not own
-  // returns 'passthrough' ({}) so we ABSTAIN and the owning daemon decides.
-  hookServer.setPermissionResolver(async (input) => {
+  // Synchronous PermissionRequest response (#496). The gate holds a binary
+  // main-agent prompt, an AskUserQuestion or an ExitPlanMode (and, with no
+  // local terminal, a subagent's) until the phone answers, the terminal
+  // answers or the deadline passes (#1126, #1127); every other request is
+  // answered 'passthrough' (Claude renders its native prompt) after it is
+  // pushed or parked. The binder binding runs first (as for any event); a
+  // foreign event we do not own returns 'passthrough' ({}) so we ABSTAIN.
+  hookServer.setPermissionResolver(async (input, signal) => {
     binder.onHookEvent(input);
     if (!binder.admits(input)) {
       // #593: a PermissionRequest we don't own returns passthrough so the owning
       // daemon decides. Log it so the drop is diagnosable: e.g. a SUBAGENT
       // permission rejected here (a different/empty session_id, or arriving
-      // during a startup/binding window) never reaches the auto-approve gate,
-      // and the user sees the native prompt with no AA and no "evaluating"
-      // status. A `subagent` tag on these lines is the smell for #593.
+      // during a startup/binding window) never reaches the gate, so no card
+      // is pushed for it. A `subagent` tag on these lines is the smell for #593.
       log(
-        `[Hooks] PermissionRequest NOT admitted -> passthrough (no AA eval): tool=${input.tool_name} ` +
+        `[Hooks] PermissionRequest NOT admitted -> passthrough (no card): tool=${input.tool_name} ` +
           `incoming=${input.session_id?.slice(0, 8) ?? '-'} ` +
           `agent=${isSubagentEvent(input) ? (input.agent_id?.slice(0, 8) ?? 'subagent') : 'main'}`,
       );
@@ -1165,18 +999,28 @@ export function setupHookBridge(
       deps.foreignSessionEscalator?.handleUnadmitted(input, sessionId);
       return 'passthrough';
     }
-    return autoApproveGate.resolvePermission(input);
+    // #1155: a call that prompts never alerts; its notice (a terminal
+    // session) or its held card (daemon or hub) is what the phone gets.
+    if (isSubagentEvent(input)) {
+      feedSubagentAlerts('PermissionRequest', (alerter) => {
+        alerter.notePrompted(subagentCall(input));
+        return null;
+      });
+    }
+    return autoApproveGate.resolvePermission(input, signal);
   });
   hookServer.on('Stop', (input) => {
     binder.onHookEvent(input);
     if (!binder.admits(input)) return;
     // #711: mainOnly -- Stop fires whenever the LEAD agent idles, even while
     // teammates (subagent/agent_id-tagged permission escalations) are still
-    // running. A wholesale cancelStale here released every teammate's
-    // already-pushed held card as passthrough (phantom: answering it resolved
-    // nothing) and killed their in-flight evals. SessionEnd below is real
-    // teardown and keeps the wholesale release/cancel.
+    // running. A wholesale cancelStale here resolved every teammate's
+    // already-pushed card (phantom: answering it resolved nothing). SessionEnd
+    // below is real teardown and keeps the wholesale sweep.
     autoApproveGate.cancelStale('Stop', { mainOnly: true });
+    // #1153: a turn that finished well supersedes an earlier "Claude stopped"
+    // notice. Not for a stop-hook re-entry (the turn is still going).
+    if (!input.stop_hook_active && !isSubagentEvent(input)) dismissTurnFailedNotice();
     // #891: Stop now carries the turn's real content (last_assistant_message),
     // previously dropped entirely. There is no client-facing surface to carry
     // it to a phone/lock-screen yet -- `Session`/`SessionUpdateMessage` have no
@@ -1212,14 +1056,25 @@ export function setupHookBridge(
   hookServer.on('StopFailure', (input) => {
     binder.onHookEvent(input);
     if (!binder.admits(input)) return;
-    // Question event: a failed Stop hook leaves the agent in an unknown state, so
-    // the bridge emits a "Retry?" card via onQuestion. Like PermissionRequest it
-    // is NOT agent_id-dropped — PTY-presence gating happens downstream in the
-    // tracker (#419).
+    // A turn that ended on an API error (usage or rate limit, authentication,
+    // and similar; #1153). Claude ignores the hook's answer, so this is NOT a
+    // question: the bridge sets the status to idle (main agent only) and
+    // raises `onTurnFailed`, which `pushTurnFailed` turns into one
+    // `turn_failed` push per session. Not agent_id-dropped: a subagent's
+    // failure is pushed too, but leaves the main status alone.
     //
-    // #799 deliberately does NOT clear open escalations here: an unknown-state
-    // agent is exactly the ambiguous signal #799 avoids clearing on (unlike a
-    // clean Stop/SubagentStop). Known residual leak, tracked as #802.
+    // A MAIN-agent StopFailure ends the turn exactly as Stop does (Claude
+    // cannot report an ended turn while blocked on its own native prompt), so
+    // it sweeps the stale main escalations the same way. That is the main
+    // half of #802, which kept StopFailure out of #799's sweep on the premise
+    // that it was an ambiguous "unknown state" signal; that premise was the
+    // "Retry?" card's. A subagent-tagged failure is that agent's own turn
+    // ending, not main's, so it sweeps nothing: the subagent half of #802
+    // stays open (its escalations are cleared by its SubagentStop, or
+    // SessionEnd).
+    if (!isSubagentEvent(input)) {
+      autoApproveGate.cancelStale('StopFailure', { mainOnly: true });
+    }
     handlers.onStopFailure?.(input);
   });
 
@@ -1237,12 +1092,29 @@ export function setupHookBridge(
         {
           toolName: input.tool_name,
           toolInput: input.tool_input,
+          toolUseId: input.tool_use_id,
           agentId: input.agent_id,
         },
         'PostToolUseFailure-subagent',
+        { toolFinished: true },
+      );
+      autoApproveGate.noteToolUseEnded(input.tool_use_id);
+      // #1155: it ran (and failed); it alerts if it matched and never
+      // prompted.
+      feedSubagentAlerts('PostToolUseFailure', (alerter) =>
+        alerter.noteToolFinished(subagentCall(input)),
       );
       return;
     }
+    // #1126: a Yes answered in the terminal whose tool then failed still
+    // proves the held prompt was answered; same cancel as PostToolUse.
+    autoApproveGate.cancelExternallyResolved(
+      { toolName: input.tool_name, toolInput: input.tool_input, toolUseId: input.tool_use_id },
+      'PostToolUseFailure',
+      // #1127 review S4: an unpaired AskUserQuestion / ExitPlanMode hold.
+      { toolFinished: true },
+    );
+    autoApproveGate.noteToolUseEnded(input.tool_use_id);
     handlers.onPostToolUseFailure?.(input);
   });
 
@@ -1301,6 +1173,12 @@ export function setupHookBridge(
     if (input.agent_id) {
       tracker.noteAgentAdvanced(input.agent_id);
       autoApproveGate.cancelStaleForAgent(input.agent_id, 'SubagentStop');
+      const stoppedAgent = input.agent_id;
+      // #1155: its unfinished calls will not finish; forget them.
+      feedSubagentAlerts('SubagentStop', (alerter) => {
+        alerter.noteAgentStopped(stoppedAgent);
+        return null;
+      });
     }
   });
 
@@ -1315,12 +1193,14 @@ export function setupHookBridge(
     binder.onHookEvent(input);
     if (!binder.admits(input)) return;
     // A classifier denial fires no tool call, so PreToolUse/PostToolUse never
-    // observe it -- this is the ONLY external-resolution signal for it. Same
+    // observe it -- this is the ONLY external-resolution signal for it. It
+    // also fires when an auto-mode fallback prompt is auto-denied at 2:00
+    // (measured on 2.1.287, #1126), and then it is what closes that held
+    // card, before any close of the request reaches the hook server. Same
     // funnel, same signature-then-tool_use_id matching as PreToolUse/
     // PostToolUse above; a no-op when nothing open matches (the codebase-wide
-    // rule from `auto-approve-gate.ts`, "every ambiguous path resolves toward
-    // showing the user" -- see `question-presence-tracker.ts`'s own citation of
-    // it; NOT something #889 introduced -- this never guesses,
+    // rule "every ambiguous path resolves toward showing the user" -- NOT
+    // something #889 introduced -- this never guesses,
     // it only clears an escalation THIS gate is still tracking under the
     // exact same tool_name+tool_input+agentId, and tool_use_id when both
     // sides carry one).
@@ -1333,6 +1213,22 @@ export function setupHookBridge(
       },
       'PermissionDenied',
     );
+    autoApproveGate.noteToolUseEnded(input.tool_use_id);
+    // #1155: the call did not run, so it never alerts.
+    if (isSubagentEvent(input)) {
+      feedSubagentAlerts('PermissionDenied', (alerter) => {
+        alerter.notePrompted(subagentCall(input));
+        return null;
+      });
+    }
+    // #1126: tell the phone why the agent changed course. Never a card:
+    // a classifier block fires no PermissionRequest, so nothing waits (a
+    // fallback prompt's auto-deny also lands here, after its card closed).
+    try {
+      deps.onHarnessDenied?.(input);
+    } catch (err) {
+      logError(`[Hooks] harness_denied push failed for ${sessionId}: ${errorToString(err)}`);
+    }
   });
 
   hookServer.on('Elicitation', (input) => {
@@ -1355,38 +1251,24 @@ export function setupHookBridge(
     resolveElicitation(input.elicitation_id);
   });
 
-  // ---- Q9 (#893): UserPromptSubmit -> AuthorityStore (primary source) -----
-  // Newly registered in REMI_REGISTERED_HOOK_EVENTS by this change. STRICT
-  // policy (hook-types.ts:660): `HookServer.dispatch` runs this listener
-  // SYNCHRONOUSLY before Claude Code's blocked hook response, and an HTTP hook
-  // has no async escape hatch -- see the module doc's Q9 paragraph. This
-  // handler is therefore intentionally minimal on top of what every other
-  // listener in this file already pays: `binder.onHookEvent` +
-  // `binder.admits` each call `adoptLockFromStore`
-  // (`transcript-binder.ts`), which does a synchronous `fs.readFileSync`
-  // per call (`session-binding-store.ts:11,16-17`) -- so TWO reads per
-  // event, shared, pre-existing infrastructure, not something Q9
-  // introduces (documented elsewhere as microseconds, not a budget risk
-  // against the 1s timeout). What Q9 ADDS on top of that shared cost is
-  // one string-prefix scan (`isWrappedNonHumanText`) and one array push
-  // (`AuthorityStore.record`) -- no NEW file I/O, no network, no LLM call.
-  //
-  // The `isWrappedNonHumanText` check is DEFENSE IN DEPTH, not confirmation
-  // that this source is safe (#893 review, #938). `authority.ts`'s module doc
-  // documents the premise it guards -- that Claude Code only ever puts the
-  // human's own keystrokes in `UserPromptSubmit.prompt` -- as UNVERIFIED. If
-  // that premise holds, this line is a permanent no-op. If it is wrong in the
-  // same wrapped-string shape the transcript fallback was hardened against,
-  // this is what catches it on the primary path too. #938 tracks getting a
-  // live capture to actually settle the premise; do not read this line as
-  // having settled it.
+  // ---- UserPromptSubmit (#893) --------------------------------------------
+  // Registered so the turn-complete timer anchors each turn on the moment the
+  // human submits it (`notifications/turn-timer.ts`, via HookServer's
+  // `onAnyEvent`). Its other consumer, the auto-approve authority summary, was
+  // deleted in #1125. The listener drives the binder like every other
+  // listener and, since #1126, closes stale main prompts (below):
+  // `HookServer.dispatch` runs it SYNCHRONOUSLY before Claude Code's blocked
+  // hook response, so it must stay this cheap.
   hookServer.on('UserPromptSubmit', (input) => {
     binder.onHookEvent(input);
-    if (!binder.admits(input)) return;
-    // #982: 35% of live UserPromptSubmit prompts were machine-generated
-    // (<task-notification>, <agent-message>) and ALL passed the old denylist.
-    if (isNonHumanForAuthority(input.prompt)) return;
-    authorityStore.record(input.prompt);
+    if (!binder.admits(input) || isSubagentEvent(input)) return;
+    // #1126: the user typed a new prompt, so the main agent is not waiting
+    // on a permission dialog any more. Closes a main prompt that was
+    // answered No in the terminal after its hold was released (that fires
+    // no hook at all), so its open entry cannot outlive the turn.
+    autoApproveGate.cancelStale('UserPromptSubmit', { mainOnly: true });
+    // #1153: a new prompt supersedes a "Claude stopped" notice from before it.
+    dismissTurnFailedNotice();
   });
 
   log(`[Hooks] Event bridge active for session ${sessionId}`);
@@ -1411,18 +1293,18 @@ export function setupHookBridge(
       // Drop the per-session PermissionRequest resolver (#496) so a stale
       // closure (over this session's gate/tracker) can't fire after teardown.
       hookServer.setPermissionResolver(null);
+      // #1126: release any hook still held for this session (the empty
+      // response decides nothing) and clear its cards.
+      autoApproveGate.cancelStale('session_closed');
     },
     gate: {
-      resolveHeld: (questionId, decision, suggestionIndex, sessionGrant) =>
-        autoApproveGate.resolveHeld(questionId, decision, suggestionIndex, sessionGrant),
-      releaseHeldAsPassthrough: (questionId) =>
-        autoApproveGate.releaseHeldAsPassthrough(questionId),
-      cancelStale: (reason) => autoApproveGate.cancelStale(reason),
-      cancelEvalForQuestion: (questionId, reason) =>
-        autoApproveGate.cancelEvalForQuestion(questionId, reason),
+      retireQuestion: (questionId) => autoApproveGate.retireQuestion(questionId),
+      answerHeld: (questionId, answer) => autoApproveGate.answerHeld(questionId, answer),
+      hasMainHold: () => autoApproveGate.hasMainHold(),
+      hasOpenHookPrompt: () => autoApproveGate.hasOpenHookPrompt(),
+      noteTerminalEscape: () => autoApproveGate.noteTerminalEscape(),
+      isHeld: (questionId) => autoApproveGate.isHeld(questionId),
       forceRelease: (reason) => autoApproveGate.forceRelease(reason),
     },
-    precedentStore,
-    workflowGrantStore,
   };
 }

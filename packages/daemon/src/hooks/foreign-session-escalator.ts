@@ -25,7 +25,7 @@
  *      is blocked waiting in that OTHER process, not ours — so an "answer"
  *      from the phone would have nowhere valid to go. Reusing the normal
  *      Question/hold machinery would risk exactly that: an answer routed back
- *      through OUR `resolveHeld` would inject into OUR PTY, the wrong session
+ *      through OUR answer path would inject into OUR PTY, the wrong session
  *      entirely (the evil twin of #538). The push therefore carries no
  *      `category` and no `options`: iOS only renders action buttons for the
  *      three registered categories (REMI_YN / REMI_YNA / REMI_MULTI,

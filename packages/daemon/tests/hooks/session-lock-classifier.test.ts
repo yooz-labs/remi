@@ -69,7 +69,7 @@ describe('classifySessionEvent', () => {
   });
 
   test('realistic background team spawn: foreign', () => {
-    // User runs `remi --auto-approve` and the agent spawns background teams.
+    // The agent spawns background teams.
     // Teams have different session_ids but fire hooks to the same server.
     // Must NOT hijack our lock.
     expect(

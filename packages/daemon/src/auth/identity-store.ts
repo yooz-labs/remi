@@ -7,7 +7,6 @@
  */
 
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { errorToString } from '@remi/shared';
 import type {
@@ -26,6 +25,7 @@ import {
   serializeIdentity,
   unlockIdentity,
 } from '@remi/shared';
+import { remiHome } from '../config/remi-home.ts';
 
 export class DuplicateKeyError extends Error {
   constructor(fingerprint: string) {
@@ -34,7 +34,7 @@ export class DuplicateKeyError extends Error {
   }
 }
 
-const REMI_DIR = path.join(os.homedir(), '.remi');
+const REMI_DIR = remiHome();
 const IDENTITY_FILE = 'identity.json';
 const AUTHORIZED_KEYS_FILE = 'authorized_keys.json';
 

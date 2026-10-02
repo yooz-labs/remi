@@ -58,8 +58,8 @@ function extractPermissionToolName(text: string): string | null {
  *   - a permission-request question shaped like "Allow <tool>: <command>"
  *     (or its subagent-prefixed variant): "Permission: <tool>"
  *   - everything else (AskUserQuestion/ExitPlanMode toolQuestion prompts,
- *     StopFailure, PTY-parsed fallback prompts): the summary or question
- *     text, truncated to `PENDING_QUESTION_LABEL_MAX` characters
+ *     PTY-parsed fallback prompts): the question text,
+ *     truncated to `PENDING_QUESTION_LABEL_MAX` characters
  */
 export function buildPendingQuestionLabel(question: Question): string {
   if (question.kind === 'multi_question' && question.questions && question.questions.length > 0) {
@@ -70,5 +70,5 @@ export function buildPendingQuestionLabel(question: Question): string {
     const toolName = extractPermissionToolName(question.text);
     if (toolName) return `Permission: ${toolName}`;
   }
-  return truncateLabel(question.summary || question.text, PENDING_QUESTION_LABEL_MAX);
+  return truncateLabel(question.text, PENDING_QUESTION_LABEL_MAX);
 }

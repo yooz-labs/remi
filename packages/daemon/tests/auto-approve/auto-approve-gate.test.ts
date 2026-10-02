@@ -1,2381 +1,328 @@
+/**
+ * AutoApproveGate after #1125 (ADR 0030) and #1126 (ADR 0031): the gate
+ * decides nothing on its own. A binary main-agent prompt holds its hook and
+ * pushes its card at once; only a human answer (the phone's, through
+ * `answerHeld`, or the terminal's) settles it, and every non-answer path
+ * releases the hook with the empty response. An AskUserQuestion or an
+ * ExitPlanMode is held the same way and answered with a structured
+ * `updatedInput` (#1127). A multi-choice string-label prompt is pushed at
+ * once and answered 'passthrough'; a subagent prompt parks for its PTY
+ * render. What is pinned here: the routing, the push triggers, the
+ * answer-to-decision mapping, the deadline, and the external-resolution
+ * bookkeeping that clears cards nobody will answer through remi.
+ *
+ * Real gate, real `SessionRegistry`. The deps
+ * are recording sinks for the gate's outward calls (escalate, park, push),
+ * not replacements for any decision logic.
+ */
+
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { generateId } from '@remi/shared';
-import type { Question, UUID } from '@remi/shared';
-import { QuestionPresenceTracker } from '../../src/api/question-presence-tracker.ts';
-import {
-  type AutoApproveEvaluator,
-  AutoApproveGate,
-  autoAnswerValue,
-} from '../../src/auto-approve/auto-approve-gate.ts';
-import {
-  SessionWorkflowGrantStore,
-  classifySessionWorkflowOperation,
-} from '../../src/auto-approve/session-workflow-grant.ts';
-import type { AutoApproveResult, DenySource } from '../../src/auto-approve/types.ts';
+import type { QuestionOption, UUID } from '@remi/shared';
+import { AutoApproveGate } from '../../src/auto-approve/auto-approve-gate.ts';
+import type { AutoApproveGateDeps } from '../../src/auto-approve/auto-approve-gate.ts';
 import { __resetLoggerForTests, configureLogger } from '../../src/cli/logger.ts';
 import type { PermissionRequestHookInput } from '../../src/hooks/index.ts';
-import type { DeliveryOutcome } from '../../src/notifications/notification-dispatcher.ts';
+import { exitPlanModeOptions } from '../../src/hooks/structured-answers.ts';
 import type { PTYSession } from '../../src/pty/pty-session.ts';
 import { SessionRegistry } from '../../src/session/session-registry.ts';
 
-// Real test double for the PTY: records every submitInput so inject() is
-// observable. `throws` exercises the inject() failure -> escalate fallback.
-function fakePTY(submits: string[], opts: { throws?: boolean } = {}): PTYSession {
+// Transport double for the PTY: the gate never types into it any more, which
+// several tests below assert by checking `submits` stays empty.
+function fakePTY(submits: string[]): PTYSession {
   return {
     id: generateId(),
     isRunning: true,
     write: () => {},
     submitInput: async (content: string) => {
       submits.push(content);
-      if (opts.throws) throw new Error('test: submitInput synthetic failure');
     },
     close: async () => {},
   } as unknown as PTYSession;
 }
 
-// Real AutoApproveResult builders (no mock framework; plain domain objects).
-const approve: AutoApproveResult = {
-  decision: 'approve',
-  reasoning: 't',
-  durationMs: 0,
-  model: 'm',
-};
-const deny: AutoApproveResult = { decision: 'deny', reasoning: 't', durationMs: 0, model: 'm' };
-const escalate: AutoApproveResult = {
-  decision: 'escalate',
-  reasoning: 't',
-  durationMs: 0,
-  model: 'm',
-};
-// #628: an escalate verdict carrying the model's lock-screen summary.
-const escalateWithSummary: AutoApproveResult = {
-  decision: 'escalate',
-  reasoning: 't',
-  durationMs: 0,
-  model: 'm',
-  summary: 'Force-push to main?',
-};
-const cancelled: AutoApproveResult = { decision: 'cancelled', reasoning: 't', durationMs: 0 };
-const pick = (pickIndex: number): AutoApproveResult => ({
-  decision: 'pick',
-  pickIndex,
-  reasoning: 't',
-  durationMs: 0,
-  model: 'm',
-});
-
-describe('AutoApproveGate', () => {
-  const SID = generateId() as UUID;
-  let registry: SessionRegistry;
-  let submits: string[];
-  let escalations: PermissionRequestHookInput[];
-  let cancels: string[];
-  let tracker: QuestionPresenceTracker;
-  let subagent: boolean;
-  // #710: records resetSubagentContext() calls, so tests can assert the gate
-  // resets the leaked tracker ONLY for a MAIN-tagged event, never for a
-  // genuine subagent-tagged one.
-  let resets: number;
-  // #751: records parkForPTY() calls (subagent escalations parked for PTY
-  // arbitration instead of held/denied).
-  let parks: PermissionRequestHookInput[];
-
-  function evaluator(
-    result: AutoApproveResult,
-    opts: { throws?: boolean } = {},
-  ): AutoApproveEvaluator {
-    return {
-      evaluate: async () => {
-        if (opts.throws) throw new Error('test: llm provider down');
-        return result;
-      },
-      cancel: (reason: string) => {
-        cancels.push(reason);
-        return true;
-      },
-    };
-  }
-
-  function gateWith(service: AutoApproveEvaluator | null, ptyThrows = false): AutoApproveGate {
-    // (Re)register the session with the desired PTY behavior.
-    registry.registerSession(SID, '/d', fakePTY(submits, { throws: ptyThrows }), {
-      handleMessage: () => {},
-      handleQuestion: () => {},
-      handleStatusChange: () => {},
-    } as never);
-    return new AutoApproveGate(
-      {
-        service,
-        sessionRegistry: registry,
-        tracker,
-        isInSubagentContext: () => subagent,
-        resetSubagentContext: () => {
-          resets++;
-        },
-        escalate: (i) => {
-          escalations.push(i);
-          return generateId();
-        },
-        parkForPTY: (i) => {
-          parks.push(i);
-          return undefined; // these tests don't exercise #799 signature registration
-        },
-      },
-      SID,
-    );
-  }
-
-  /** Gate whose PRIMARY model returns `primaryResult` and whose escalate_model
-   *  ('big-model') returns `secondResult` (#522 second opinion). */
-  function gateWithSecondOpinion(
-    secondResult: AutoApproveResult,
-    primaryResult: AutoApproveResult = escalate,
-  ): AutoApproveGate {
-    registry.registerSession(SID, '/d', fakePTY(submits), {
-      handleMessage: () => {},
-      handleQuestion: () => {},
-      handleStatusChange: () => {},
-    } as never);
-    const service: AutoApproveEvaluator = {
-      evaluate: async (_t, _i, _tag, _s, modelOverride) =>
-        modelOverride === 'big-model' ? secondResult : primaryResult,
-      cancel: () => true,
-    };
-    return new AutoApproveGate(
-      {
-        service,
-        sessionRegistry: registry,
-        tracker,
-        isInSubagentContext: () => subagent,
-        resetSubagentContext: () => {
-          resets++;
-        },
-        escalate: (i) => {
-          escalations.push(i);
-          return generateId();
-        },
-        parkForPTY: (i) => {
-          parks.push(i);
-          return undefined; // these tests don't exercise #799 signature registration
-        },
-        escalateModel: 'big-model',
-      },
-      SID,
-    );
-  }
-
-  function pr(over: Partial<PermissionRequestHookInput> = {}): PermissionRequestHookInput {
-    return {
-      session_id: 'claude-test',
-      transcript_path: '/tmp/t.jsonl',
-      cwd: '/d',
-      permission_mode: 'default',
-      hook_event_name: 'PermissionRequest',
-      tool_name: 'Bash',
-      tool_input: { command: 'ls' },
-      ...over,
-    };
-  }
-
-  beforeEach(() => {
-    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
-    submits = [];
-    escalations = [];
-    cancels = [];
-    subagent = false;
-    resets = 0;
-    parks = [];
-    tracker = new QuestionPresenceTracker(() => undefined);
-    configureLogger({ writeLog: () => {} });
-  });
-
-  afterEach(async () => {
-    __resetLoggerForTests();
-    await registry.shutdown();
-  });
-
-  test('approve returns "allow" with NO inject (main context) (#496)', async () => {
-    const d = await gateWith(evaluator(approve)).resolvePermission(pr());
-    expect(d).toBe('allow');
-    expect(submits).toHaveLength(0); // synchronous decision, no PTY inject
-    expect(escalations).toHaveLength(0);
-  });
-
-  test('deny returns "deny" with NO inject (main context) (#496)', async () => {
-    const d = await gateWith(evaluator(deny)).resolvePermission(pr());
-    // #976: a deny now carries its reason to Claude instead of a bare refusal.
-    expect(d).toEqual({ behavior: 'deny', message: expect.stringContaining('ask the user') });
-    expect(submits).toHaveLength(0);
-    expect(escalations).toHaveLength(0);
-  });
-
-  test('pick injects the 1-based index and returns passthrough (main context)', async () => {
-    const d = await gateWith(evaluator(pick(2))).resolvePermission(pr());
-    expect(d).toBe('passthrough');
-    expect(submits).toEqual(['2']);
-    expect(escalations).toHaveLength(0);
-  });
-
-  test('malformed pick (no pickIndex) escalates, never silently denies (#521 review)', async () => {
-    const malformed = {
-      decision: 'pick',
-      reasoning: 't',
-      durationMs: 0,
-      model: 'm',
-    } as unknown as AutoApproveResult;
-    const d = await gateWith({
-      evaluate: async () => malformed,
-      cancel: () => true,
-    }).resolvePermission(pr());
-    expect(d).toBe('passthrough');
-    expect(submits).toHaveLength(0);
-    expect(escalations).toHaveLength(1);
-  });
-
-  test('escalate in main context escalates + passthrough, never injects', async () => {
-    const d = await gateWith(evaluator(escalate)).resolvePermission(pr());
-    expect(d).toBe('passthrough');
-    expect(submits).toHaveLength(0);
-    expect(escalations).toHaveLength(1);
-    expect(escalations[0]?.tool_name).toBe('Bash');
-  });
-
-  test('escalate that THROWS still fires onEscalate (buffer must not stick) (#484)', async () => {
-    // The worst outcome is a stuck buffer that silently drops later prompts.
-    // onEscalate is in a finally, so it runs even when the escalate target throws.
-    let onEscalateCalls = 0;
-    registry.registerSession(SID, '/d', fakePTY(submits), {
-      handleMessage: () => {},
-      handleQuestion: () => {},
-      handleStatusChange: () => {},
-    } as never);
-    const gate = new AutoApproveGate(
-      {
-        service: evaluator(escalate),
-        sessionRegistry: registry,
-        tracker,
-        isInSubagentContext: () => false,
-        escalate: () => {
-          throw new Error('test: escalate target down');
-        },
-        onEscalate: () => {
-          onEscalateCalls++;
-        },
-      },
-      SID,
-    );
-    const d = await gate.resolvePermission(pr());
-    expect(d).toBe('passthrough');
-    expect(onEscalateCalls).toBe(1);
-  });
-
-  test('#751: subagent-tagged escalate parks for PTY arbitration (sync-Task shape, tracker true)', async () => {
-    subagent = true;
-    // A subagent-tagged escalate no longer denies (silent teammate breakage)
-    // nor holds/pushes (cards for prompts the user never saw): it parks the
-    // rich question and answers 'passthrough', so Claude's normal permission
-    // flow decides whether the prompt renders — the PTY is the arbiter.
-    const d = await gateWith(evaluator(escalate)).resolvePermission(pr({ agent_id: 'agent-1' }));
-    expect(d).toBe('passthrough');
-    expect(submits).toHaveLength(0); // nothing injected
-    expect(escalations).toHaveLength(0); // no immediate push
-    expect(parks).toHaveLength(1); // parked awaiting PTY render
-    expect(parks[0]?.agent_id).toBe('agent-1');
-    expect(resets).toBe(0); // a real subagent event never resets the tracker
-  });
-
-  test('#710 regression: MAIN-tagged escalate with a stuck tracker resets it and escalates instead of denying', async () => {
-    // The bug: isInSubagentContext() stuck true (tracker leak) must NOT deny a
-    // MAIN-agent PermissionRequest (agent_id absent) — that silently ate the
-    // main agent's own AskUserQuestion/permission prompts in the 0.6.18-dev.24
-    // soak. The gate must recognize the missing agent_id as proof of a leak,
-    // reset the tracker, and escalate to the user like any other main event.
-    subagent = true;
-    const d = await gateWith(evaluator(escalate)).resolvePermission(pr());
-    expect(d).toBe('passthrough');
-    expect(submits).toHaveLength(0);
-    expect(escalations).toHaveLength(1); // escalated as main, not denied
-    expect(resets).toBe(1); // tracker reset exactly once
-  });
-
-  test('#710 regression: MAIN-tagged no-service with a stuck tracker resets and escalates', async () => {
-    subagent = true;
-    const d = await gateWith(null).resolvePermission(pr());
-    expect(d).toBe('passthrough');
-    expect(escalations).toHaveLength(1);
-    expect(resets).toBe(1);
-  });
-
-  test('#710 regression: MAIN-tagged eval-error with a stuck tracker resets and escalates', async () => {
-    subagent = true;
-    const d = await gateWith(evaluator(approve, { throws: true })).resolvePermission(pr());
-    expect(d).toBe('passthrough');
-    expect(escalations).toHaveLength(1);
-    expect(resets).toBe(1);
-  });
-
-  test('cancelled clears the tracker pending and returns passthrough; no inject/escalate', async () => {
-    // Stash a pending hook so clearPending() is observable.
-    tracker.recordPendingHook({
-      id: generateId(),
-      text: 'proceed?',
-      options: [],
-      allowsFreeText: false,
-      isAnswered: false,
-    });
-    expect(tracker.hasPendingForTest()).toBe(true);
-
-    const d = await gateWith(evaluator(cancelled)).resolvePermission(pr());
-
-    expect(d).toBe('passthrough');
-    expect(tracker.hasPendingForTest()).toBe(false);
-    expect(submits).toHaveLength(0);
-    expect(escalations).toHaveLength(0);
-  });
-
-  test('approve in a subagent returns "allow" with NO inject (no leak; #496)', async () => {
-    // The headline fix: approve no longer needs the PTY, so a parallel subagent
-    // read approves with no inject and no contention, regardless of presence.
-    subagent = true;
-    const d = await gateWith(evaluator(approve)).resolvePermission(pr());
-    expect(d).toBe('allow');
-    expect(submits).toHaveLength(0);
-    expect(escalations).toHaveLength(0);
-  });
-
-  test('pick in a subagent without PTY presence is gated -> escalate (the only inject path)', async () => {
-    subagent = true; // background subagent, prompt not on the main PTY
-    const d = await gateWith(evaluator(pick(2))).resolvePermission(pr());
-    expect(submits).toHaveLength(0); // PTY-presence gate blocked the pick inject
-    expect(escalations).toHaveLength(1); // pick has a fallback -> escalate
-    expect(d).toBe('passthrough');
-  });
-
-  test('pick in a subagent WITH PTY presence injects', async () => {
-    subagent = true;
-    tracker.onPTYPromptVisible({
-      id: generateId(),
-      text: 'proceed?',
-      options: [],
-      allowsFreeText: false,
-      isAnswered: false,
-    });
-    const d = await gateWith(evaluator(pick(2))).resolvePermission(pr());
-    expect(submits).toEqual(['2']);
-    expect(d).toBe('passthrough');
-  });
-
-  test('pick inject failure (PTY throws) falls back to escalate (main context)', async () => {
-    const d = await gateWith(evaluator(pick(2)), /* ptyThrows */ true).resolvePermission(pr());
-    expect(escalations).toHaveLength(1);
-    expect(d).toBe('passthrough');
-  });
-
-  test('eval rejection in main context escalates + passthrough', async () => {
-    const d = await gateWith(evaluator(approve, { throws: true })).resolvePermission(pr());
-    expect(d).toBe('passthrough');
-    expect(submits).toHaveLength(0);
-    expect(escalations).toHaveLength(1);
-  });
-
-  test('#751: eval rejection on a subagent-tagged event parks + passthrough', async () => {
-    subagent = true;
-    const d = await gateWith(evaluator(approve, { throws: true })).resolvePermission(
-      pr({ agent_id: 'agent-1' }),
-    );
-    expect(d).toBe('passthrough');
-    expect(submits).toHaveLength(0);
-    expect(escalations).toHaveLength(0);
-    expect(parks).toHaveLength(1);
-    expect(resets).toBe(0);
-  });
-
-  test('#751: no service + subagent-tagged event parks + passthrough', async () => {
-    subagent = true;
-    const d = await gateWith(null).resolvePermission(pr({ agent_id: 'agent-1' }));
-    expect(d).toBe('passthrough');
-    expect(submits).toHaveLength(0);
-    expect(escalations).toHaveLength(0);
-    expect(parks).toHaveLength(1);
-    expect(resets).toBe(0);
-  });
-
-  test('no service + main context: escalate to user, passthrough', async () => {
-    const d = await gateWith(null).resolvePermission(pr());
-    expect(d).toBe('passthrough');
-    expect(submits).toHaveLength(0);
-    expect(escalations).toHaveLength(1);
-  });
-
-  test('escalate_model second opinion approves -> "allow" (no escalation) (#522)', async () => {
-    const d = await gateWithSecondOpinion(approve).resolvePermission(pr());
-    expect(d).toBe('allow');
-    expect(escalations).toHaveLength(0);
-    expect(submits).toHaveLength(0);
-  });
-
-  test('terminal verified escalation bypasses escalate_model (#1081 phase 4)', async () => {
-    const terminalVerifiedEscalate: AutoApproveResult = {
-      ...escalate,
-      suppressSecondOpinion: true,
-    };
-    const d = await gateWithSecondOpinion(approve, terminalVerifiedEscalate).resolvePermission(
-      pr(),
-    );
-    expect(d).toBe('passthrough');
-    expect(escalations).toHaveLength(1);
-    expect(submits).toHaveLength(0);
-  });
-
-  test('escalate_model second opinion denies -> "deny" (no escalation) (#522)', async () => {
-    const d = await gateWithSecondOpinion(deny).resolvePermission(pr());
-    // #976: a deny now carries its reason to Claude instead of a bare refusal.
-    expect(d).toEqual({ behavior: 'deny', message: expect.stringContaining('ask the user') });
-    expect(escalations).toHaveLength(0);
-    expect(submits).toHaveLength(0);
-  });
-
-  test('escalate_model still unsure -> escalate to the user (#522)', async () => {
-    const d = await gateWithSecondOpinion(escalate).resolvePermission(pr());
-    expect(d).toBe('passthrough');
-    expect(escalations).toHaveLength(1);
-  });
-
-  test('escalate_model cancelled -> passthrough, clears pending, no phantom escalation (#523 review)', async () => {
-    tracker.recordPendingHook({
-      id: generateId(),
-      text: 'proceed?',
-      options: [],
-      allowsFreeText: false,
-      isAnswered: false,
-    });
-    const d = await gateWithSecondOpinion(cancelled).resolvePermission(pr());
-    expect(d).toBe('passthrough');
-    expect(escalations).toHaveLength(0); // no phantom question
-    expect(tracker.hasPendingForTest()).toBe(false); // pending cleared
-  });
-
-  test('escalate_model is NOT consulted for a subagent-tagged event (parks instead) (#522/#751)', async () => {
-    subagent = true;
-    const d = await gateWithSecondOpinion(approve).resolvePermission(pr({ agent_id: 'agent-1' }));
-    // Subagent escalate parks + passthrough; the second opinion (which would
-    // allow) must not run — the hook answer is passthrough either way.
-    expect(d).toBe('passthrough');
-    expect(escalations).toHaveLength(0);
-    expect(parks).toHaveLength(1);
-  });
-
-  // #751 regression: routing keys on the event's own agent_id ALONE. The
-  // SubagentContextTracker only brackets SYNCHRONOUS Task/Agent spawns, so
-  // team members and async/background subagents always observe
-  // isInSubagentContext() false (the production shape of the 2026-07-08
-  // soak). AND-gating on the tracker escalated their prompts to the phone
-  // as if they were the main agent's (hold + push).
-  test('#751: subagent-tagged escalate with tracker FALSE parks + passthrough (team/async shape)', async () => {
-    subagent = false; // async/team spawn: the tracker never bracketed it
-    const d = await gateWith(evaluator(escalate)).resolvePermission(pr({ agent_id: 'agent-1' }));
-    expect(d).toBe('passthrough');
-    expect(submits).toHaveLength(0);
-    expect(escalations).toHaveLength(0); // never pushed as a main-agent card
-    expect(parks).toHaveLength(1);
-    expect(resets).toBe(0); // no leak: nothing to reset
-  });
-
-  test('#751: subagent-tagged eval-error with tracker FALSE parks + passthrough', async () => {
-    subagent = false;
-    const d = await gateWith(evaluator(approve, { throws: true })).resolvePermission(
-      pr({ agent_id: 'agent-1' }),
-    );
-    expect(d).toBe('passthrough');
-    expect(submits).toHaveLength(0);
-    expect(escalations).toHaveLength(0);
-    expect(parks).toHaveLength(1);
-    expect(resets).toBe(0);
-  });
-
-  test('#751: subagent-tagged no-service with tracker FALSE parks + passthrough', async () => {
-    subagent = false;
-    const d = await gateWith(null).resolvePermission(pr({ agent_id: 'agent-1' }));
-    expect(d).toBe('passthrough');
-    expect(submits).toHaveLength(0);
-    expect(escalations).toHaveLength(0);
-    expect(parks).toHaveLength(1);
-    expect(resets).toBe(0);
-  });
-
-  test('#751: subagent-tagged pick forfeits the inject and parks + passthrough', async () => {
-    subagent = false;
-    const d = await gateWith(evaluator(pick(2))).resolvePermission(pr({ agent_id: 'agent-1' }));
-    expect(d).toBe('passthrough');
-    expect(submits).toHaveLength(0); // never types into the main PTY
-    expect(escalations).toHaveLength(0);
-    expect(parks).toHaveLength(1);
-  });
-
-  test('#807: a subagent-tagged permission is NEVER evaluated', async () => {
-    subagent = false;
-    let evaluateCalls = 0;
-    const counting: AutoApproveEvaluator = {
-      evaluate: async () => {
-        evaluateCalls++;
-        return approve;
-      },
-      cancel: () => true,
-    };
-    const d = await gateWith(counting).resolvePermission(pr({ agent_id: 'agent-1' }));
-    // No LLM call at all: the hook is answered before Claude renders anything,
-    // so the gate cannot know whether this prompt will ever reach the main PTY.
-    expect(evaluateCalls).toBe(0);
-    expect(d).toBe('passthrough');
-    expect(parks).toHaveLength(1);
-    // ...and no verdict was silently applied to an agent the user never saw.
-    expect(submits).toHaveLength(0);
-    expect(escalations).toHaveLength(0);
-  });
-
-  test('#807: onSubagentPassthrough reports the subagent call, never a main one', async () => {
-    subagent = false;
-    const observed: PermissionRequestHookInput[] = [];
-    registry.registerSession(SID, '/d', fakePTY(submits), {
-      handleMessage: () => {},
-      handleQuestion: () => {},
-      handleStatusChange: () => {},
-    } as never);
-    const g = new AutoApproveGate(
-      {
-        service: evaluator(approve),
-        sessionRegistry: registry,
-        tracker,
-        isInSubagentContext: () => false,
-        escalate: () => generateId(),
-        parkForPTY: () => undefined,
-        onSubagentPassthrough: (i) => observed.push(i),
-      },
-      SID,
-    );
-
-    expect(await g.resolvePermission(pr({ agent_id: 'agent-1' }))).toBe('passthrough');
-    expect(observed).toHaveLength(1);
-    expect(observed[0]?.agent_id).toBe('agent-1');
-
-    // The main path is not an audit/alert subject: it already produces a card.
-    expect(await g.resolvePermission(pr({}))).toBe('allow');
-    expect(observed).toHaveLength(1);
-  });
-
-  test('#807: a throwing onSubagentPassthrough cannot break the hook answer', async () => {
-    subagent = false;
-    registry.registerSession(SID, '/d', fakePTY(submits), {
-      handleMessage: () => {},
-      handleQuestion: () => {},
-      handleStatusChange: () => {},
-    } as never);
-    const g = new AutoApproveGate(
-      {
-        service: evaluator(approve),
-        sessionRegistry: registry,
-        tracker,
-        isInSubagentContext: () => false,
-        escalate: () => generateId(),
-        parkForPTY: () => undefined,
-        onSubagentPassthrough: () => {
-          throw new Error('push transport down');
-        },
-      },
-      SID,
-    );
-    // Observation is cosmetic; a dead notification path must never turn into a
-    // stuck hook or a changed decision.
-    expect(await g.resolvePermission(pr({ agent_id: 'agent-1' }))).toBe('passthrough');
-  });
-
-  test('#807: a MAIN-tagged permission still evaluates', async () => {
-    subagent = false;
-    let evaluateCalls = 0;
-    const counting: AutoApproveEvaluator = {
-      evaluate: async () => {
-        evaluateCalls++;
-        return approve;
-      },
-      cancel: () => true,
-    };
-    const d = await gateWith(counting).resolvePermission(pr({}));
-    expect(evaluateCalls).toBe(1);
-    expect(d).toBe('allow');
-    expect(parks).toHaveLength(0);
-  });
-
-  test('#751: a parkForPTY throw is absorbed; the passthrough still stands', async () => {
-    subagent = false;
-    registry.registerSession(SID, '/d', fakePTY(submits), {
-      handleMessage: () => {},
-      handleQuestion: () => {},
-      handleStatusChange: () => {},
-    } as never);
-    const g = new AutoApproveGate(
-      {
-        service: evaluator(escalate),
-        sessionRegistry: registry,
-        tracker,
-        isInSubagentContext: () => false,
-        escalate: (i) => {
-          escalations.push(i);
-          return generateId();
-        },
-        parkForPTY: () => {
-          throw new Error('test: tracker down');
-        },
-      },
-      SID,
-    );
-    const d = await g.resolvePermission(pr({ agent_id: 'agent-1' }));
-    expect(d).toBe('passthrough');
-    expect(escalations).toHaveLength(0);
-  });
-
-  test('cancelStale forwards the reason to service.cancel', () => {
-    gateWith(evaluator(approve)).cancelStale('PreToolUse');
-    expect(cancels).toEqual(['PreToolUse']);
-  });
-
-  test('cancelStale is a no-op when no service is configured', () => {
-    expect(() => gateWith(null).cancelStale('Stop')).not.toThrow();
-    expect(cancels).toHaveLength(0);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// #1045 phase 6: residual_action converts what would have been a main-agent
-// BINARY escalate into a deny-with-reason. Covers all three `escalateMain`
-// call sites (no-service edge, eval-error, primary escalate verdict), and
-// pins that a NON-binary escalate (multichoice/design, e.g. ExitPlanMode)
-// stays a passthrough regardless of the setting -- `escalateMain` routes
-// those to `escalatePassthrough` internally, so residualAction must never be
-// consulted on that branch.
-// ---------------------------------------------------------------------------
-describe('AutoApproveGate residual_action (#1045 phase 6)', () => {
-  const SID = generateId() as UUID;
-  let registry: SessionRegistry;
-  let escalations: PermissionRequestHookInput[];
-  let denied: Array<{ tool: string; source: DenySource; reasoning: string }>;
-  // Buffer-window cue balance (#484/#711): every `onEvalStart` for a main eval
-  // must be matched by exactly one `onHandled` or `onEscalate`, or
-  // `mainEvalsInFlight` sticks > 0 and the NEXT prompt's push is dropped.
-  let cues: { start: number; handled: number; escalate: number };
-
-  function evaluator(
-    result: AutoApproveResult,
-    opts: { throws?: boolean } = {},
-  ): AutoApproveEvaluator {
-    return {
-      evaluate: async () => {
-        if (opts.throws) throw new Error('test: llm provider down');
-        return result;
-      },
-      cancel: () => true,
-    };
-  }
-
-  function gate(
-    service: AutoApproveEvaluator | null,
-    opts: { residualAction?: 'escalate' | 'deny' } = {},
-  ): AutoApproveGate {
-    registry.registerSession(SID, '/d', fakePTY([]), {
-      handleMessage: () => {},
-      handleQuestion: () => {},
-      handleStatusChange: () => {},
-    } as never);
-    return new AutoApproveGate(
-      {
-        service,
-        sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => undefined),
-        isInSubagentContext: () => false,
-        escalate: (i) => {
-          escalations.push(i);
-          return generateId();
-        },
-        onAutoDenied: (input, source, reasoning) => {
-          denied.push({ tool: input.tool_name, source, reasoning });
-        },
-        onEvalStart: () => {
-          cues.start += 1;
-        },
-        onHandled: () => {
-          cues.handled += 1;
-        },
-        onEscalate: () => {
-          cues.escalate += 1;
-        },
-        ...(opts.residualAction ? { residualAction: opts.residualAction } : {}),
-      },
-      SID,
-    );
-  }
-
-  function pr(over: Partial<PermissionRequestHookInput> = {}): PermissionRequestHookInput {
-    return {
-      session_id: 'claude-test',
-      transcript_path: '/tmp/t.jsonl',
-      cwd: '/d',
-      permission_mode: 'default',
-      hook_event_name: 'PermissionRequest',
-      tool_name: 'Bash',
-      tool_input: { command: 'git push' },
-      ...over,
-    };
-  }
-
-  beforeEach(() => {
-    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
-    escalations = [];
-    denied = [];
-    cues = { start: 0, handled: 0, escalate: 0 };
-    configureLogger({ writeLog: () => {} });
-  });
-
-  afterEach(async () => {
-    __resetLoggerForTests();
-    await registry.shutdown();
-  });
-
-  test('default (residualAction absent): a binary escalate still holds/pushes, byte-for-byte unchanged', async () => {
-    const d = await gate(evaluator(escalate)).resolvePermission(pr());
-    expect(d).toBe('passthrough'); // no holdMs configured here -> immediate passthrough
-    expect(escalations).toHaveLength(1);
-    expect(denied).toEqual([]);
-  });
-
-  test('residualAction: "escalate" explicitly: same as default, still escalates', async () => {
-    const d = await gate(evaluator(escalate), { residualAction: 'escalate' }).resolvePermission(
-      pr(),
-    );
-    expect(d).toBe('passthrough');
-    expect(escalations).toHaveLength(1);
-    expect(denied).toEqual([]);
-  });
-
-  test('residualAction: "deny" -- no-service edge converts to a reasoned deny', async () => {
-    const d = await gate(null, { residualAction: 'deny' }).resolvePermission(pr());
-    expect(d).toEqual({
-      behavior: 'deny',
-      message: expect.stringContaining('auto-approve had no evaluation service'),
-    });
-    expect(escalations).toHaveLength(0); // never asked the human
-    expect(denied).toEqual([
-      {
-        tool: 'Bash',
-        source: { kind: 'residual', pattern: '' },
-        reasoning: 'auto-approve had no evaluation service for this operation',
-      },
-    ]);
-    // The no-service edge returns before `onEvalStart` (no `start`), so the
-    // residual deny's `markHandled` closes a window that was never opened --
-    // exactly as the DEFAULT no-service edge fires `onEscalate` without a
-    // start (both via a close cue; the tracker floors `mainEvalsInFlight` at 0,
-    // so neither underflows). `markHandled` covers a silently-denied permission
-    // by its own doc, so this is the correct parallel, not a leak.
-    expect(cues).toEqual({ start: 0, handled: 1, escalate: 0 });
-  });
-
-  test('residualAction: "deny" -- an eval error converts to a reasoned deny', async () => {
-    const d = await gate(evaluator(escalate, { throws: true }), {
-      residualAction: 'deny',
-    }).resolvePermission(pr());
-    expect(d).toEqual({
-      behavior: 'deny',
-      message: expect.stringContaining('auto-approve evaluation failed'),
-    });
-    expect(escalations).toHaveLength(0);
-    expect(denied).toHaveLength(1);
-    expect(denied[0]?.source).toEqual({ kind: 'residual', pattern: '' });
-    expect(denied[0]?.reasoning).toContain('auto-approve evaluation failed');
-    expect(denied[0]?.reasoning).toContain('test: llm provider down');
-    // Buffer-window balance (regression, epic-wide review 2026-08-16): the real
-    // eval opened the window (`start`), and the residual deny MUST close it via
-    // `markHandled` (`handled`) -- else `mainEvalsInFlight` sticks > 0 and the
-    // NEXT escalated prompt's push is silently dropped. Was start:1 handled:0.
-    expect(cues).toEqual({ start: 1, handled: 1, escalate: 0 });
-  });
-
-  test('residualAction: "deny" -- a primary escalate verdict converts, carrying its reasoning', async () => {
-    const withReasoning: AutoApproveResult = {
-      decision: 'escalate',
-      reasoning: 'ambiguous: could delete user data',
-      durationMs: 5,
-      model: 'm',
-    };
-    const d = await gate(evaluator(withReasoning), {
-      residualAction: 'deny',
-    }).resolvePermission(pr());
-    expect(d).toEqual({
-      behavior: 'deny',
-      message: expect.stringContaining('ambiguous: could delete user data'),
-    });
-    expect(escalations).toHaveLength(0);
-    expect(denied).toEqual([
-      {
-        tool: 'Bash',
-        source: { kind: 'residual', pattern: '' },
-        reasoning: 'ambiguous: could delete user data',
-      },
-    ]);
-    // Same buffer-window balance on the primary-escalate-verdict path.
-    expect(cues).toEqual({ start: 1, handled: 1, escalate: 0 });
-  });
-
-  test('residualAction: "deny" does NOT affect a NON-binary (design/multichoice) escalate', async () => {
-    // ExitPlanMode is ALWAYS multi-choice (ALWAYS_MULTI_CHOICE_TOOLS), so this
-    // must stay a passthrough even under deny mode -- escalateMain routes it
-    // to escalatePassthrough before the residualAction check is ever reached.
-    // Uses the no-service edge (service: null) the same way the pre-existing
-    // #799 "Stop resolves a still-open MAIN passthrough question" test does.
-    const d = await gate(null, { residualAction: 'deny' }).resolvePermission(
-      pr({ tool_name: 'ExitPlanMode', tool_input: {}, permission_mode: 'plan' }),
-    );
-    expect(d).toBe('passthrough');
-    expect(escalations).toHaveLength(1); // still pushed to the user, not denied
-    expect(denied).toEqual([]); // never reaches the deny sink
-  });
-
-  test('residualAction: "deny" leaves an approve/deny/pick primary verdict untouched', async () => {
-    // escalateMain is reached ONLY on the escalate path; approve/deny/pick
-    // return long before it, so this setting cannot affect them.
-    const d = await gate(evaluator(approve), { residualAction: 'deny' }).resolvePermission(pr());
-    expect(d).toBe('allow');
-    expect(denied).toEqual([]);
-  });
-
-  // The #1015 audit coupling: a residual deny fires unconditionally but
-  // `reportDeny` no-ops without an `onAutoDenied` sink. cli.ts (the sole
-  // constructor) wires both, but the deps are independent -- so the gate warns
-  // LOUDLY at construction rather than let a `deny`-without-sink misconfig
-  // silently un-audit every residual deny (epic-wide review, 2026-08-16).
-  test('residualAction="deny" with NO onAutoDenied sink warns at construction', () => {
-    const errors: string[] = [];
-    configureLogger({
-      writeLog: (m) => errors.push(String(m)),
-      consoleError: (...a) => errors.push(a.map(String).join(' ')),
-    });
-    // Minimal deps, deliberately omitting onAutoDenied.
-    new AutoApproveGate(
-      {
-        service: null,
-        sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => undefined),
-        isInSubagentContext: () => false,
-        escalate: () => generateId(),
-        residualAction: 'deny',
-      },
-      SID,
-    );
-    expect(
-      errors.some((e) => e.includes("residual_action='deny'") && e.includes('onAutoDenied')),
-    ).toBe(true);
-  });
-
-  test('residualAction="deny" WITH an onAutoDenied sink does not warn', () => {
-    const errors: string[] = [];
-    configureLogger({
-      writeLog: (m) => errors.push(String(m)),
-      consoleError: (...a) => errors.push(a.map(String).join(' ')),
-    });
-    // gate() wires onAutoDenied.
-    gate(null, { residualAction: 'deny' });
-    expect(errors.filter((e) => e.includes('residual_action'))).toEqual([]);
-  });
-
-  test('default (escalate) with no onAutoDenied sink does not warn', () => {
-    const errors: string[] = [];
-    configureLogger({
-      writeLog: (m) => errors.push(String(m)),
-      consoleError: (...a) => errors.push(a.map(String).join(' ')),
-    });
-    new AutoApproveGate(
-      {
-        service: null,
-        sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => undefined),
-        isInSubagentContext: () => false,
-        escalate: () => generateId(),
-      },
-      SID,
-    );
-    expect(errors.filter((e) => e.includes('residual_action'))).toEqual([]);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// An unheld binary main-context escalation (no auto-approve service, which is
-// the default install, or hold_timeout = 0) answers 'passthrough' and asks the
-// tracker to push on the render via `pushOnRender`. Before that dep existed it
-// pushed nothing: `createHold` returned passthrough without `onHeldEscalate`.
-// These tests stop at the gate's side of the contract (which dep fires); the
-// render and push through a real tracker are covered in
-// hook-bridge-setup.test.ts and question-presence-tracker.test.ts.
-// ---------------------------------------------------------------------------
-describe('AutoApproveGate unheld binary escalation marks the question for render (#1121)', () => {
-  const SID = generateId() as UUID;
-  let registry: SessionRegistry;
-  let escalatedIds: UUID[];
-  let pushOnRenderIds: UUID[];
-  let heldPushIds: UUID[];
-
-  function gate(
-    holdMs?: number,
-    opts: { service?: AutoApproveEvaluator; pushHoldMs?: number } = {},
-  ): AutoApproveGate {
-    registry.registerSession(SID, '/d', fakePTY([]), {
-      handleMessage: () => {},
-      handleQuestion: () => {},
-      handleStatusChange: () => {},
-    } as never);
-    return new AutoApproveGate(
-      {
-        service: opts.service ?? null,
-        ...(opts.pushHoldMs !== undefined ? { pushHoldMs: opts.pushHoldMs } : {}),
-        sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => undefined),
-        isInSubagentContext: () => false,
-        escalate: () => {
-          const id = generateId() as UUID;
-          escalatedIds.push(id);
-          return id;
-        },
-        pushOnRender: (id) => {
-          pushOnRenderIds.push(id);
-        },
-        onHeldEscalate: (id) => {
-          heldPushIds.push(id);
-        },
-        ...(holdMs !== undefined ? { holdMs } : {}),
-      },
-      SID,
-    );
-  }
-
-  const bash: PermissionRequestHookInput = {
+function pr(over: Partial<PermissionRequestHookInput> = {}): PermissionRequestHookInput {
+  return {
     session_id: 'claude-test',
     transcript_path: '/tmp/t.jsonl',
     cwd: '/d',
     permission_mode: 'default',
     hook_event_name: 'PermissionRequest',
     tool_name: 'Bash',
-    tool_input: { command: 'curl example.com' },
+    tool_input: { command: 'git push' },
+    ...over,
   };
+}
+
+describe('AutoApproveGate routing (#1125: nothing is decided, everything is relayed)', () => {
+  const SID = generateId() as UUID;
+  let registry: SessionRegistry;
+  let submits: string[];
+  let escalated: PermissionRequestHookInput[];
+  let escalatedIds: UUID[];
+  let parks: PermissionRequestHookInput[];
+  let pushNowIds: UUID[];
+  let resets: number;
+  let subagentContext: boolean;
+
+  function gate(over: Partial<AutoApproveGateDeps> = {}): AutoApproveGate {
+    registry.registerSession(SID, '/d', fakePTY(submits), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    return new AutoApproveGate(
+      {
+        sessionRegistry: registry,
+        isInSubagentContext: () => subagentContext,
+        holdMs: 60_000,
+        hasLocalTerminal: true,
+        resetSubagentContext: () => {
+          resets++;
+        },
+        escalate: (i) => {
+          escalated.push(i);
+          const id = generateId() as UUID;
+          escalatedIds.push(id);
+          return id;
+        },
+        parkForPTY: (i) => {
+          parks.push(i);
+          return generateId() as UUID;
+        },
+        onHeldEscalate: (id) => {
+          pushNowIds.push(id);
+        },
+        alwaysEscalateTools: new Set(['AskUserQuestion', 'ExitPlanMode']),
+        ...over,
+      },
+      SID,
+    );
+  }
+
+  beforeEach(() => {
+    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    submits = [];
+    escalated = [];
+    escalatedIds = [];
+    parks = [];
+    pushNowIds = [];
+    resets = 0;
+    subagentContext = false;
+    configureLogger({ writeLog: () => {} });
+  });
+
+  afterEach(async () => {
+    __resetLoggerForTests();
+    await registry.shutdown();
+  });
+
+  test('a binary main prompt holds its hook and pushes its card at once (#1126)', async () => {
+    const g = gate();
+    let settled = false;
+    const hook = g.resolvePermission(pr()).then((d) => {
+      settled = true;
+      return d;
+    });
+    await Bun.sleep(5);
+    expect(escalated).toHaveLength(1);
+    // Pushed now, by id: the dialog renders during the hold, the card does
+    // not wait for it.
+    expect(pushNowIds).toEqual(escalatedIds);
+    expect(parks).toEqual([]);
+    expect(submits).toEqual([]);
+    expect(settled).toBe(false);
+    expect(g.hasOpenHookPrompt()).toBe(true);
+    // Every non-answer release is the empty response.
+    g.forceRelease('test');
+    expect(await hook).toBe('passthrough');
+    // `remi unstick` hands a live hold to the terminal: still open there.
+    expect(g.hasOpenHookPrompt()).toBe(true);
+  });
+
+  test('an AskUserQuestion holds its hook and pushes its card at once (#1127)', async () => {
+    const g = gate();
+    const hook = g.resolvePermission(
+      pr({
+        tool_name: 'AskUserQuestion',
+        tool_input: { questions: [{ question: 'Which approach?', options: ['A', 'B'] }] },
+      }),
+    );
+    expect(pushNowIds).toEqual(escalatedIds);
+    expect(pushNowIds).toHaveLength(1);
+    expect(g.isHeld(escalatedIds[0] as UUID)).toBe(true);
+    // Its dialog renders during the hold, like a binary prompt's.
+    expect(g.hasMainHold()).toBe(true);
+    expect(submits).toEqual([]);
+    g.forceRelease('test');
+    expect(await hook).toBe('passthrough');
+  });
+
+  test('an ExitPlanMode is held by name, even with no configured tools (#1127)', async () => {
+    const g = gate({ alwaysEscalateTools: new Set() });
+    const hook = g.resolvePermission(
+      pr({ tool_name: 'ExitPlanMode', tool_input: { plan: '# P' }, permission_mode: 'plan' }),
+    );
+    expect(pushNowIds).toEqual(escalatedIds);
+    expect(g.isHeld(escalatedIds[0] as UUID)).toBe(true);
+    g.forceRelease('test');
+    expect(await hook).toBe('passthrough');
+  });
+
+  test('a question-shaped tool that is not AskUserQuestion is not held (#1127)', async () => {
+    // Its structured answer was never verified, and its dialog is Claude's
+    // permission prompt: pushed at once, answered passthrough.
+    const d = await gate().resolvePermission(
+      pr({
+        tool_name: 'mcp__custom__ask',
+        tool_input: { questions: [{ question: 'Proceed?', options: ['A', 'B'] }] },
+      }),
+    );
+    expect(d).toBe('passthrough');
+    expect(pushNowIds).toEqual(escalatedIds);
+  });
+
+  test('a string-label multi-choice permission_suggestions set is pushed immediately', async () => {
+    const d = await gate().resolvePermission(
+      pr({ permission_suggestions: ['Option A', 'Option B', 'Option C'] }),
+    );
+    expect(d).toBe('passthrough');
+    expect(pushNowIds).toEqual(escalatedIds);
+  });
+
+  test('an escalate that throws still answers passthrough and pushes nothing', async () => {
+    const g = gate({
+      escalate: () => {
+        throw new Error('test: escalate failed');
+      },
+    });
+    expect(await g.resolvePermission(pr())).toBe('passthrough');
+    expect(
+      await g.resolvePermission(
+        pr({ tool_name: 'AskUserQuestion', tool_input: { question: 'q' } }),
+      ),
+    ).toBe('passthrough');
+    expect(pushNowIds).toEqual([]);
+  });
+
+  test('an escalate that creates no question pushes nothing', async () => {
+    const g = gate({ escalate: () => undefined });
+    expect(await g.resolvePermission(pr())).toBe('passthrough');
+    expect(
+      await g.resolvePermission(
+        pr({ tool_name: 'AskUserQuestion', tool_input: { question: 'q' } }),
+      ),
+    ).toBe('passthrough');
+    expect(pushNowIds).toEqual([]);
+  });
+
+  test('a throwing push trigger is absorbed: the hook is still answered, never left dangling', async () => {
+    const g = gate({
+      onHeldEscalate: () => {
+        throw new Error('test: push failed');
+      },
+    });
+    // The binary prompt still holds (its dialog is on screen and the
+    // terminal can answer it); the release is the empty response.
+    const hook = g.resolvePermission(pr());
+    expect(g.hasOpenHookPrompt()).toBe(true);
+    g.forceRelease('test');
+    expect(await hook).toBe('passthrough');
+    expect(
+      await g.resolvePermission(
+        pr({ permission_suggestions: ['Option A', 'Option B', 'Option C'] }),
+      ),
+    ).toBe('passthrough');
+  });
+
+  test('#751: a subagent-tagged prompt parks for its render, answers passthrough, never escalates', async () => {
+    const input = pr({ agent_id: 'agent-1', agent_type: 'general-purpose' });
+    expect(await gate().resolvePermission(input)).toBe('passthrough');
+    expect(parks).toEqual([input]);
+    expect(escalated).toEqual([]);
+    expect(pushNowIds).toEqual([]);
+    expect(submits).toEqual([]);
+    expect(resets).toBe(0);
+  });
+
+  test('#751: the tag on the event decides, not the subagent-context tracker', async () => {
+    subagentContext = true;
+    const input = pr({ agent_id: 'agent-1', agent_type: 'task' });
+    expect(await gate().resolvePermission(input)).toBe('passthrough');
+    expect(parks).toEqual([input]);
+    expect(escalated).toEqual([]);
+    // A genuine subagent event never resets the tracker (that is #710's
+    // leak-recovery path, for MAIN-tagged events only).
+    expect(resets).toBe(0);
+  });
+
+  test('#710: a MAIN-tagged prompt with the tracker stuck true resets it and escalates as main', async () => {
+    subagentContext = true;
+    const g = gate();
+    const hook = g.resolvePermission(pr());
+    expect(resets).toBe(1);
+    expect(escalated).toHaveLength(1);
+    expect(parks).toEqual([]);
+    expect(pushNowIds).toEqual(escalatedIds);
+    g.forceRelease('test');
+    expect(await hook).toBe('passthrough');
+  });
+
+  test('#751: a parkForPTY throw is absorbed; the passthrough still stands', async () => {
+    const g = gate({
+      parkForPTY: () => {
+        throw new Error('test: park failed');
+      },
+    });
+    expect(await g.resolvePermission(pr({ agent_id: 'agent-1' }))).toBe('passthrough');
+    expect(escalated).toEqual([]);
+  });
+});
+
+describe('AutoApproveGate external resolution (#673)', () => {
+  const SID = generateId() as UUID;
+  let registry: SessionRegistry;
+  let escalatedIds: UUID[];
+  let resolved: Array<{ qid: UUID; reason: string }>;
+
+  function gate(over: Partial<AutoApproveGateDeps> = {}): AutoApproveGate {
+    registry.registerSession(SID, '/d', fakePTY([]), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    return new AutoApproveGate(
+      {
+        sessionRegistry: registry,
+        isInSubagentContext: () => false,
+        holdMs: 60_000,
+        hasLocalTerminal: true,
+        escalate: () => {
+          const id = generateId() as UUID;
+          escalatedIds.push(id);
+          // Register the card the way the render push would, so removal is
+          // observable in the real store.
+          registry.addQuestion(SID, {
+            id,
+            text: 'Allow Bash',
+            options: [],
+            allowsFreeText: false,
+            isAnswered: false,
+          });
+          return id;
+        },
+        onResolved: (qid, reason) => {
+          resolved.push({ qid, reason });
+        },
+        ...over,
+      },
+      SID,
+    );
+  }
 
   beforeEach(() => {
     registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
     escalatedIds = [];
-    pushOnRenderIds = [];
-    heldPushIds = [];
-    configureLogger({ writeLog: () => {} });
-  });
-
-  afterEach(async () => {
-    __resetLoggerForTests();
-    await registry.shutdown();
-  });
-
-  test('no service, no hold: passthrough, and the escalated question is marked to push on render', async () => {
-    const d = await gate().resolvePermission(bash);
-    expect(d).toBe('passthrough');
-    expect(escalatedIds).toHaveLength(1);
-    expect(pushOnRenderIds).toEqual(escalatedIds);
-    // Not the held push: nothing blocks Claude, and the card must wait for the
-    // render that carries the on-screen option numbering.
-    expect(heldPushIds).toEqual([]);
-  });
-
-  // Review finding on #1121: with hold_timeout = 0 but push_hold_timeout > 0
-  // (default 60 s), Part B used to arm, call `createHold` with no hold, answer
-  // passthrough with no push, and drop the late verdict.
-  function slowEvaluator(result: AutoApproveResult, delayMs: number): AutoApproveEvaluator {
-    return {
-      evaluate: () => new Promise((resolve) => setTimeout(() => resolve(result), delayMs)),
-      cancel: () => true,
-    };
-  }
-
-  test('Part B does not arm without a hold: a slow escalate verdict still marks for render', async () => {
-    const d = await gate(0, {
-      service: slowEvaluator(escalate, 60),
-      pushHoldMs: 10,
-    }).resolvePermission(bash);
-    expect(d).toBe('passthrough');
-    expect(pushOnRenderIds).toEqual(escalatedIds);
-    expect(pushOnRenderIds).toHaveLength(1);
-    expect(heldPushIds).toEqual([]);
-  });
-
-  test('Part B does not arm without a hold: a slow approve verdict is applied, not dropped', async () => {
-    const d = await gate(0, {
-      service: slowEvaluator(approve, 60),
-      pushHoldMs: 10,
-    }).resolvePermission(bash);
-    expect(d).toBe('allow');
-    expect(escalatedIds).toEqual([]);
-    expect(pushOnRenderIds).toEqual([]);
-  });
-
-  test('a real hold still pushes immediately and never marks for render', async () => {
-    const d = await gate(20).resolvePermission(bash);
-    // Unanswered, the hold times out to passthrough.
-    expect(d).toBe('passthrough');
-    expect(heldPushIds).toEqual(escalatedIds);
-    expect(pushOnRenderIds).toEqual([]);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// #1024: a subagent-tagged PermissionRequest that the config's own
-// deterministic layers (deny, then allow, then approve_groups --
-// `evaluateDeterministic`) already approve is answered 'allow' at hook time
-// instead of parked. The LLM must still never run for a subagent at hook
-// time (ADR 0004); anything not deterministically approved -- including a
-// deny match -- parks + passthroughs exactly as before this issue.
-// ---------------------------------------------------------------------------
-describe('AutoApproveGate subagent hook-time deterministic answer (#1024)', () => {
-  const SID = generateId() as UUID;
-  let registry: SessionRegistry;
-  let submits: string[];
-  let escalations: PermissionRequestHookInput[];
-  let parks: PermissionRequestHookInput[];
-  let observed: PermissionRequestHookInput[];
-  let evaluateCalls: number;
-  let tracker: QuestionPresenceTracker;
-
-  type Deterministic =
-    | { decision: 'approve'; reasoning: string }
-    | { decision: 'deny-covered'; reasoning: string; denySource: DenySource }
-    | null;
-
-  function gateWithDeterministic(det: Deterministic): AutoApproveGate {
-    registry.registerSession(SID, '/d', fakePTY(submits), {
-      handleMessage: () => {},
-      handleQuestion: () => {},
-      handleStatusChange: () => {},
-    } as never);
-    const service: AutoApproveEvaluator = {
-      evaluate: async () => {
-        evaluateCalls++;
-        return approve;
-      },
-      cancel: () => true,
-      evaluateDeterministic: () => det,
-    };
-    return new AutoApproveGate(
-      {
-        service,
-        sessionRegistry: registry,
-        tracker,
-        isInSubagentContext: () => false,
-        escalate: (i) => {
-          escalations.push(i);
-          return generateId();
-        },
-        parkForPTY: (i) => {
-          parks.push(i);
-          return undefined;
-        },
-        onSubagentPassthrough: (i) => observed.push(i),
-      },
-      SID,
-    );
-  }
-
-  function pr(over: Partial<PermissionRequestHookInput> = {}): PermissionRequestHookInput {
-    return {
-      session_id: 'claude-test',
-      transcript_path: '/tmp/t.jsonl',
-      cwd: '/d',
-      permission_mode: 'default',
-      hook_event_name: 'PermissionRequest',
-      tool_name: 'Bash',
-      tool_input: { command: 'grep foo src/' },
-      agent_id: 'agent-1',
-      ...over,
-    };
-  }
-
-  beforeEach(() => {
-    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
-    submits = [];
-    escalations = [];
-    parks = [];
-    observed = [];
-    evaluateCalls = 0;
-    tracker = new QuestionPresenceTracker(() => undefined);
-    configureLogger({ writeLog: () => {} });
-  });
-
-  afterEach(async () => {
-    __resetLoggerForTests();
-    await registry.shutdown();
-  });
-
-  test('approve_groups-covered command answers "allow", does not park, LLM never runs', async () => {
-    const det: Deterministic = {
-      decision: 'approve',
-      reasoning: 'approve-matched group: "read-only:Bash"',
-    };
-    const d = await gateWithDeterministic(det).resolvePermission(pr());
-    expect(d).toBe('allow');
-    expect(parks).toHaveLength(0);
-    expect(submits).toHaveLength(0);
-    expect(escalations).toHaveLength(0);
-    expect(evaluateCalls).toBe(0);
-  });
-
-  test('user allow-covered tool name (WebFetch) answers "allow"', async () => {
-    const det: Deterministic = {
-      decision: 'approve',
-      reasoning: 'allow-matched pattern: "WebFetch"',
-    };
-    const d = await gateWithDeterministic(det).resolvePermission(
-      pr({ tool_name: 'WebFetch', tool_input: { url: 'https://example.com' } }),
-    );
-    expect(d).toBe('allow');
-    expect(parks).toHaveLength(0);
-    expect(evaluateCalls).toBe(0);
-  });
-
-  test('deterministic approve still fires the subagent_alert observation cue', async () => {
-    const det: Deterministic = {
-      decision: 'approve',
-      reasoning: 'approve-matched group: "read-only:Bash"',
-    };
-    const input = pr({ tool_input: { command: 'curl https://example.com' } });
-    const d = await gateWithDeterministic(det).resolvePermission(input);
-    expect(d).toBe('allow');
-    expect(observed).toHaveLength(1);
-    expect(observed[0]?.tool_input).toEqual({ command: 'curl https://example.com' });
-  });
-
-  test('deny-covered match parks (deny wins; no hook-time allow)', async () => {
-    const det: Deterministic = {
-      decision: 'deny-covered',
-      reasoning: 'deny-matched pattern: "rm -rf /"',
-      denySource: { kind: 'config', pattern: 'rm -rf /' },
-    };
-    const d = await gateWithDeterministic(det).resolvePermission(
-      pr({ tool_input: { command: 'rm -rf /tmp/x' } }),
-    );
-    expect(d).toBe('passthrough');
-    expect(parks).toHaveLength(1);
-    expect(evaluateCalls).toBe(0);
-    // Still observed via the same park-path cue, exactly as before #1024.
-    expect(observed).toHaveLength(1);
-  });
-
-  test('no deterministic verdict parks + passthrough exactly as before #1024', async () => {
-    const d = await gateWithDeterministic(null).resolvePermission(
-      pr({ tool_input: { command: 'npm install' } }),
-    );
-    expect(d).toBe('passthrough');
-    expect(parks).toHaveLength(1);
-    expect(evaluateCalls).toBe(0);
-    expect(observed).toHaveLength(1);
-  });
-
-  test('a test double omitting evaluateDeterministic parks exactly as before #1024', async () => {
-    registry.registerSession(SID, '/d', fakePTY(submits), {
-      handleMessage: () => {},
-      handleQuestion: () => {},
-      handleStatusChange: () => {},
-    } as never);
-    const minimal: AutoApproveEvaluator = {
-      evaluate: async () => {
-        evaluateCalls++;
-        return approve;
-      },
-      cancel: () => true,
-    };
-    const g = new AutoApproveGate(
-      {
-        service: minimal,
-        sessionRegistry: registry,
-        tracker,
-        isInSubagentContext: () => false,
-        escalate: (i) => {
-          escalations.push(i);
-          return generateId();
-        },
-        parkForPTY: (i) => {
-          parks.push(i);
-          return undefined;
-        },
-        onSubagentPassthrough: (i) => observed.push(i),
-      },
-      SID,
-    );
-    const d = await g.resolvePermission(pr());
-    expect(d).toBe('passthrough');
-    expect(parks).toHaveLength(1);
-    expect(evaluateCalls).toBe(0);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Lifecycle callbacks that drive the terminal cue (#513). They must fire on the
-// matching verdict and never cross-fire (a leaked spinner / missed notification
-// would be the symptom).
-// ---------------------------------------------------------------------------
-describe('AutoApproveGate lifecycle callbacks (#513)', () => {
-  const SID = generateId() as UUID;
-  let registry: SessionRegistry;
-  let submits: string[];
-  let events: string[];
-  let tracker: QuestionPresenceTracker;
-  let subagent: boolean;
-
-  function evaluator(result: AutoApproveResult): AutoApproveEvaluator {
-    return { evaluate: async () => result, cancel: () => true };
-  }
-
-  function gate(service: AutoApproveEvaluator, ptyThrows = false): AutoApproveGate {
-    registry.registerSession(SID, '/d', fakePTY(submits, { throws: ptyThrows }), {
-      handleMessage: () => {},
-      handleQuestion: () => {},
-      handleStatusChange: () => {},
-    } as never);
-    return new AutoApproveGate(
-      {
-        service,
-        sessionRegistry: registry,
-        tracker,
-        isInSubagentContext: () => subagent,
-        escalate: () => undefined,
-        onEvalStart: () => events.push('start'),
-        // #767: the cue carries whose verdict this is, so the setup layer can
-        // keep a subagent park from touching the main-eval buffer window.
-        onEscalate: (ctx) => events.push(ctx.isSubagent ? 'escalate:subagent' : 'escalate'),
-        onHandled: () => events.push('handled'),
-        onCancelled: () => events.push('cancelled'),
-      },
-      SID,
-    );
-  }
-
-  function pr(over: Partial<PermissionRequestHookInput> = {}): PermissionRequestHookInput {
-    return {
-      session_id: 'claude-test',
-      transcript_path: '/tmp/t.jsonl',
-      cwd: '/d',
-      permission_mode: 'default',
-      hook_event_name: 'PermissionRequest',
-      tool_name: 'Bash',
-      tool_input: { command: 'ls' },
-      ...over,
-    };
-  }
-
-  beforeEach(() => {
-    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
-    submits = [];
-    events = [];
-    subagent = false;
-    tracker = new QuestionPresenceTracker(() => undefined);
-    configureLogger({ writeLog: () => {} });
-  });
-
-  afterEach(async () => {
-    __resetLoggerForTests();
-    await registry.shutdown();
-  });
-
-  test('approve fires start then handled (never escalate/cancelled)', async () => {
-    expect(await gate(evaluator(approve)).resolvePermission(pr())).toBe('allow');
-    expect(events).toEqual(['start', 'handled']);
-  });
-
-  test('deny fires start then handled', async () => {
-    expect(await gate(evaluator(deny)).resolvePermission(pr())).toEqual({
-      behavior: 'deny',
-      message: expect.stringContaining('ask the user'),
-    });
-    expect(events).toEqual(['start', 'handled']);
-  });
-
-  test('escalate fires start then escalate (never handled)', async () => {
-    expect(await gate(evaluator(escalate)).resolvePermission(pr())).toBe('passthrough');
-    expect(events).toEqual(['start', 'escalate']);
-  });
-
-  test('cancelled fires start then cancelled (never handled/escalate)', async () => {
-    expect(await gate(evaluator(cancelled)).resolvePermission(pr())).toBe('passthrough');
-    expect(events).toEqual(['start', 'cancelled']);
-  });
-
-  test('pick whose inject fails escalates -> start then escalate (not handled)', async () => {
-    // approve/deny no longer inject; the inject-failure->escalate path is now pick-only.
-    expect(await gate(evaluator(pick(2)), /* ptyThrows */ true).resolvePermission(pr())).toBe(
-      'passthrough',
-    );
-    expect(events).toEqual(['start', 'escalate']);
-  });
-
-  test('#807: a subagent park fires escalate ONLY — no start cue, no inject', async () => {
-    subagent = true;
-    expect(await gate(evaluator(escalate)).resolvePermission(pr({ agent_id: 'agent-1' }))).toBe(
-      'passthrough',
-    );
-    // Parking is semantically an escalation (PTY-mediated): the onEscalate cue
-    // still fires for the statusline, tagged subagent (#767) — a subagent
-    // never opens the #484 buffer window, so its cue must not release or
-    // discard a prompt buffered by a concurrent MAIN eval.
-    //
-    // #807: 'start' is now ABSENT. No eval runs, so there is no in-flight
-    // work for the statusline spinner or the client pill to advertise —
-    // flashing 'evaluating' for a background prompt was itself part of the
-    // phantom-auto-approval read.
-    expect(submits).toHaveLength(0);
-    expect(events).toEqual(['escalate:subagent']);
-  });
-
-  test('a throwing cue callback is absorbed: decision not re-run, no re-escalation', async () => {
-    // The cue is cosmetic. If onHandled throws it must NOT change the verdict
-    // (approve stays 'allow') or trigger an escalation.
-    registry.registerSession(SID, '/d', fakePTY(submits), {
-      handleMessage: () => {},
-      handleQuestion: () => {},
-      handleStatusChange: () => {},
-    } as never);
-    let escalations = 0;
-    const g = new AutoApproveGate(
-      {
-        service: evaluator(approve),
-        sessionRegistry: registry,
-        tracker,
-        isInSubagentContext: () => false,
-        escalate: () => {
-          escalations++;
-          return undefined;
-        },
-        onHandled: () => {
-          throw new Error('test: cue boom');
-        },
-      },
-      SID,
-    );
-    expect(await g.resolvePermission(pr())).toBe('allow'); // approved once, verdict intact
-    expect(escalations).toBe(0); // no re-escalation
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Phase 2 (#573): hold the hook (Model B) + resolve-on-answer + slow-eval push.
-// All real objects (no mock framework): a plain evaluator literal returns real
-// AutoApproveResult values, and the held hook is a real pending promise.
-// ---------------------------------------------------------------------------
-describe('AutoApproveGate hold + resolve (#573 Parts A/C)', () => {
-  const SID = generateId() as UUID;
-  let registry: SessionRegistry;
-  let submits: string[];
-  let escalations: PermissionRequestHookInput[];
-  let lastQuestionId: UUID | undefined;
-  // #625: every gate-driven push (binary createHold AND passthrough escalate) is
-  // recorded here so a test can assert push <=> escalate and that approve/deny push
-  // nothing. The held-push primitive is onHeldEscalate -> tracker.pushHeldHook.
-  let heldPushes: UUID[];
-  // #628: the `summary` arg passed to each escalate() call (undefined when none).
-  let escalateSummaries: (string | undefined)[];
-
-  function evaluator(result: AutoApproveResult): AutoApproveEvaluator {
-    return { evaluate: async () => result, cancel: () => true };
-  }
-
-  /** A gate that escalates (recording the created Question.id) and holds binary
-   *  main-context hooks for `holdMs`. The created id is exposed via
-   *  `lastQuestionId` so tests can resolve the hold. */
-  function holdGate(
-    service: AutoApproveEvaluator | null,
-    opts: {
-      holdMs?: number;
-      subagent?: boolean;
-      alwaysEscalateTools?: ReadonlySet<string>;
-      /** PTY.submitInput throws — exercises inject() failure -> escalatePassthrough. */
-      ptyThrows?: boolean;
-      /** escalate() returns undefined (push creation failed) — exercises the
-       *  escalatePassthrough `qid === undefined` skip-push branch (#625). */
-      escalateUndefined?: boolean;
-    } = {},
-  ): AutoApproveGate {
-    registry.registerSession(SID, '/d', fakePTY(submits, { throws: opts.ptyThrows ?? false }), {
-      handleMessage: () => {},
-      handleQuestion: () => {},
-      handleStatusChange: () => {},
-    } as never);
-    const tracker = new QuestionPresenceTracker(() => undefined);
-    return new AutoApproveGate(
-      {
-        service,
-        sessionRegistry: registry,
-        tracker,
-        isInSubagentContext: () => opts.subagent ?? false,
-        escalate: (i, summary) => {
-          escalations.push(i);
-          escalateSummaries.push(summary); // #628
-          if (opts.escalateUndefined) {
-            lastQuestionId = undefined;
-            return undefined;
-          }
-          lastQuestionId = generateId();
-          return lastQuestionId;
-        },
-        onHeldEscalate: (qid) => {
-          heldPushes.push(qid);
-        },
-        holdMs: opts.holdMs ?? 60_000,
-        alwaysEscalateTools:
-          opts.alwaysEscalateTools ?? new Set(['AskUserQuestion', 'ExitPlanMode']),
-      },
-      SID,
-    );
-  }
-
-  function pr(over: Partial<PermissionRequestHookInput> = {}): PermissionRequestHookInput {
-    return {
-      session_id: 'claude-test',
-      transcript_path: '/tmp/t.jsonl',
-      cwd: '/d',
-      permission_mode: 'default',
-      hook_event_name: 'PermissionRequest',
-      tool_name: 'Bash',
-      tool_input: { command: 'git push' },
-      ...over,
-    };
-  }
-
-  beforeEach(() => {
-    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
-    submits = [];
-    escalations = [];
-    lastQuestionId = undefined;
-    heldPushes = [];
-    escalateSummaries = [];
-    configureLogger({ writeLog: () => {} });
-  });
-
-  afterEach(async () => {
-    __resetLoggerForTests();
-    await registry.shutdown();
-  });
-
-  test('binary escalate WITHHOLDS the decision until resolveHeld -> allow', async () => {
-    const gate = holdGate(evaluator(escalate));
-    const pending = gate.resolvePermission(pr());
-    // Give the eval + escalate a tick; the promise must still be pending (held).
-    let settled = false;
-    void pending.then(() => {
-      settled = true;
-    });
-    await new Promise((r) => setTimeout(r, 20));
-    expect(settled).toBe(false);
-    expect(escalations).toHaveLength(1);
-    expect(lastQuestionId).toBeDefined();
-
-    // The user answers Yes -> the held hook resolves 'allow'.
-    expect(gate.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(true);
-    expect(await pending).toBe('allow');
-  });
-
-  test('binary escalate held -> deny when the user answers No', async () => {
-    const gate = holdGate(evaluator(escalate));
-    const pending = gate.resolvePermission(pr());
-    await new Promise((r) => setTimeout(r, 20));
-    expect(gate.resolveHeld(lastQuestionId as UUID, 'deny')).toBe(true);
-    expect(await pending).toBe('deny');
-  });
-
-  test('resolveHeld for an unknown id returns false (non-held answer)', async () => {
-    const gate = holdGate(evaluator(escalate));
-    const pending = gate.resolvePermission(pr());
-    await new Promise((r) => setTimeout(r, 20));
-    expect(gate.resolveHeld(generateId() as UUID, 'allow')).toBe(false);
-    // The real hold is still pending; resolve it to avoid a dangling promise.
-    gate.resolveHeld(lastQuestionId as UUID, 'allow');
-    await pending;
-  });
-
-  test('resolveHeld with a suggestionIndex echoes updatedPermissions with the EXACT original entry (#718)', async () => {
-    const suggestion = {
-      type: 'addRules',
-      rules: [{ toolName: 'Bash', ruleContent: 'git push' }],
-      behavior: 'allow',
-      destination: 'session',
-    };
-    const gate = holdGate(evaluator(escalate));
-    const pending = gate.resolvePermission(pr({ permission_suggestions: [suggestion] }));
-    await new Promise((r) => setTimeout(r, 20));
-
-    expect(gate.resolveHeld(lastQuestionId as UUID, 'allow', 0)).toBe(true);
-    const decision = await pending;
-    expect(decision).toEqual({ behavior: 'allow', updatedPermissions: [suggestion] });
-  });
-
-  test('resolveHeld with a stale/out-of-range suggestionIndex falls back to plain allow', async () => {
-    const suggestion = { type: 'addRules', rules: [{ toolName: 'Bash' }], behavior: 'allow' };
-    const gate = holdGate(evaluator(escalate));
-    // Only ONE suggestion was stashed with the hold; the answer path asks for
-    // index 5, which does not exist.
-    const pending = gate.resolvePermission(pr({ permission_suggestions: [suggestion] }));
-    await new Promise((r) => setTimeout(r, 20));
-
-    expect(gate.resolveHeld(lastQuestionId as UUID, 'allow', 5)).toBe(true);
-    expect(await pending).toBe('allow');
-  });
-
-  test('resolveHeld without a suggestionIndex still resolves a plain allow (unchanged)', async () => {
-    const suggestion = { type: 'addRules', rules: [{ toolName: 'Bash' }], behavior: 'allow' };
-    const gate = holdGate(evaluator(escalate));
-    const pending = gate.resolvePermission(pr({ permission_suggestions: [suggestion] }));
-    await new Promise((r) => setTimeout(r, 20));
-
-    expect(gate.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(true);
-    expect(await pending).toBe('allow');
-  });
-
-  test('multi-choice escalate returns passthrough immediately (NO hold)', async () => {
-    // 4+ string suggestions => multi-choice; the hook response cannot pick.
-    const gate = holdGate(evaluator(escalate));
-    const d = await gate.resolvePermission(
-      pr({ permission_suggestions: ['Alpha', 'Beta', 'Gamma', 'Delta'] }),
-    );
-    expect(d).toBe('passthrough');
-    expect(escalations).toHaveLength(1);
-  });
-
-  test('design question escalate returns passthrough immediately (NO hold)', async () => {
-    const gate = holdGate(evaluator(escalate));
-    // AskUserQuestion is in always_escalate_tools -> design -> not binary.
-    const d = await gate.resolvePermission(
-      pr({ tool_name: 'AskUserQuestion', tool_input: { question: 'Which approach?' } }),
-    );
-    expect(d).toBe('passthrough');
-    expect(escalations).toHaveLength(1);
-  });
-
-  // #625 single gate: the gate is the SOLE push trigger. A passthrough escalation
-  // (design / AskUserQuestion / multi-choice) must push from the gate too — it can no
-  // longer rely on the PTY render, which is suppressed for hooked sessions.
-  test('#625 design (AskUserQuestion) escalate pushes from the gate (onHeldEscalate)', async () => {
-    const gate = holdGate(evaluator(escalate));
-    await gate.resolvePermission(
-      pr({ tool_name: 'AskUserQuestion', tool_input: { question: 'Which approach?' } }),
-    );
-    expect(escalations).toHaveLength(1);
-    expect(heldPushes).toEqual([lastQuestionId as UUID]);
-    // #628: the passthrough (AskUserQuestion) escalate path propagates no summary
-    // here. In production AUQ never even produces one — the service's design
-    // short-circuit returns escalate with no `summary` field (0ms, no LLM) — so AUQ
-    // (which carries authored content, #626) is never given a generic summary.
-    expect(escalateSummaries).toEqual([undefined]);
-  });
-
-  test('#625 multi-choice escalate pushes from the gate (onHeldEscalate)', async () => {
-    const gate = holdGate(evaluator(escalate));
-    await gate.resolvePermission(
-      pr({ permission_suggestions: ['Alpha', 'Beta', 'Gamma', 'Delta'] }),
-    );
-    expect(heldPushes).toEqual([lastQuestionId as UUID]);
-  });
-
-  test('#625 binary escalate also pushes from the gate (createHold path)', async () => {
-    const gate = holdGate(evaluator(escalate));
-    const pending = gate.resolvePermission(pr());
-    await new Promise((r) => setTimeout(r, 20));
-    expect(heldPushes).toEqual([lastQuestionId as UUID]);
-    gate.resolveHeld(lastQuestionId as UUID, 'allow');
-    await pending;
-  });
-
-  // #628: the escalate verdict's lock-screen summary is threaded to escalate().
-  test('#628 threads the verdict summary to the escalation', async () => {
-    const gate = holdGate(evaluator(escalateWithSummary));
-    const pending = gate.resolvePermission(pr());
-    await new Promise((r) => setTimeout(r, 20));
-    expect(escalateSummaries).toEqual(['Force-push to main?']);
-    gate.resolveHeld(lastQuestionId as UUID, 'allow');
-    await pending;
-  });
-
-  test('#628 escalate without a summary passes undefined (no synthesis)', async () => {
-    const gate = holdGate(evaluator(escalate));
-    const pending = gate.resolvePermission(pr());
-    await new Promise((r) => setTimeout(r, 20));
-    expect(escalateSummaries).toEqual([undefined]);
-    gate.resolveHeld(lastQuestionId as UUID, 'allow');
-    await pending;
-  });
-
-  test('#625 approve pushes NOTHING (no phantom)', async () => {
-    const gate = holdGate(evaluator(approve));
-    const d = await gate.resolvePermission(pr());
-    expect(d).toBe('allow');
-    expect(heldPushes).toHaveLength(0);
-    expect(escalations).toHaveLength(0);
-  });
-
-  test('#625 deny pushes NOTHING (no phantom)', async () => {
-    const gate = holdGate(evaluator(deny));
-    const d = await gate.resolvePermission(pr());
-    // #976: a deny now carries its reason to Claude instead of a bare refusal.
-    expect(d).toEqual({ behavior: 'deny', message: expect.stringContaining('ask the user') });
-    expect(heldPushes).toHaveLength(0);
-    expect(escalations).toHaveLength(0);
-  });
-
-  test('#625 malformed pick (no pickIndex) escalates AND pushes from the gate', async () => {
-    const malformedPick = {
-      decision: 'pick',
-      reasoning: 't',
-      durationMs: 0,
-      model: 'm',
-    } as unknown as AutoApproveResult;
-    const gate = holdGate(evaluator(malformedPick));
-    const d = await gate.resolvePermission(pr());
-    expect(d).toBe('passthrough');
-    expect(escalations).toHaveLength(1);
-    expect(heldPushes).toEqual([lastQuestionId as UUID]);
-  });
-
-  test('#625 pick inject failure (PTY throws) escalates AND pushes from the gate', async () => {
-    const gate = holdGate(evaluator(pick(2)), { ptyThrows: true });
-    const d = await gate.resolvePermission(pr());
-    expect(d).toBe('passthrough');
-    expect(submits).toEqual(['2']); // inject was attempted before it threw
-    expect(escalations).toHaveLength(1);
-    expect(heldPushes).toEqual([lastQuestionId as UUID]);
-  });
-
-  test('#625 passthrough escalate with no question id skips the push (no throw)', async () => {
-    // escalate() returns undefined (push creation failed): escalatePassthrough must
-    // not call onHeldEscalate(undefined), and must not throw — Claude still
-    // passes through to its native terminal prompt.
-    const gate = holdGate(evaluator(escalate), { escalateUndefined: true });
-    const d = await gate.resolvePermission(
-      pr({ tool_name: 'AskUserQuestion', tool_input: { question: 'Which approach?' } }),
-    );
-    expect(d).toBe('passthrough');
-    expect(escalations).toHaveLength(1);
-    expect(heldPushes).toHaveLength(0);
-  });
-
-  test('hold timeout -> passthrough and the pending map is cleaned', async () => {
-    const gate = holdGate(evaluator(escalate), { holdMs: 30 });
-    const d = await gate.resolvePermission(pr());
-    expect(d).toBe('passthrough'); // failed open after 30ms
-    // The hold timed out; a late answer for the same id must report "no hold".
-    expect(gate.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(false);
-  });
-
-  test('holdMs <= 0 disables holding: binary escalate -> passthrough', async () => {
-    const gate = holdGate(evaluator(escalate), { holdMs: 0 });
-    const d = await gate.resolvePermission(pr());
-    expect(d).toBe('passthrough');
-    expect(escalations).toHaveLength(1);
-  });
-
-  test('releaseHeldAsPassthrough pops a held hook to passthrough (FIX 1)', async () => {
-    const gate = holdGate(evaluator(escalate));
-    const pending = gate.resolvePermission(pr());
-    await new Promise((r) => setTimeout(r, 20));
-    const qid = lastQuestionId as UUID;
-    // The user picked "Yes, always": the binary response can't express it, so the
-    // hook is released to passthrough (Claude renders its native prompt).
-    expect(gate.releaseHeldAsPassthrough(qid)).toBe(true);
-    expect(await pending).toBe('passthrough');
-    // The hold is gone; a second release reports no hold.
-    expect(gate.releaseHeldAsPassthrough(qid)).toBe(false);
-  });
-
-  test('releaseHeldAsPassthrough returns false when no hold exists', async () => {
-    const gate = holdGate(evaluator(escalate));
-    const pending = gate.resolvePermission(pr());
-    await new Promise((r) => setTimeout(r, 20));
-    expect(gate.releaseHeldAsPassthrough(generateId() as UUID)).toBe(false);
-    // Resolve the real hold to avoid a dangling promise.
-    gate.resolveHeld(lastQuestionId as UUID, 'allow');
-    await pending;
-  });
-
-  test('cancelStale releases a pending hold to passthrough + cancels the eval', async () => {
-    const cancels: string[] = [];
-    registry.registerSession(SID, '/d', fakePTY(submits), {
-      handleMessage: () => {},
-      handleQuestion: () => {},
-      handleStatusChange: () => {},
-    } as never);
-    const tracker = new QuestionPresenceTracker(() => undefined);
-    const gate = new AutoApproveGate(
-      {
-        service: {
-          evaluate: async () => escalate,
-          cancel: (reason: string) => {
-            cancels.push(reason);
-            return true;
-          },
-        },
-        sessionRegistry: registry,
-        tracker,
-        isInSubagentContext: () => false,
-        escalate: (i) => {
-          escalations.push(i);
-          lastQuestionId = generateId();
-          return lastQuestionId;
-        },
-        holdMs: 60_000,
-        alwaysEscalateTools: new Set(),
-      },
-      SID,
-    );
-    const pending = gate.resolvePermission(pr());
-    await new Promise((r) => setTimeout(r, 20));
-    gate.cancelStale('SessionEnd');
-    expect(await pending).toBe('passthrough'); // hold released by teardown
-    expect(cancels).toContain('SessionEnd'); // eval also cancelled
-    // The hold is gone.
-    expect(gate.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(false);
-  });
-
-  test('per-session isolation: resolving session A does not touch session B', async () => {
-    const SID_B = generateId() as UUID;
-    const registryB = new SessionRegistry({ orphanTimeoutMs: 60000 });
-    registryB.registerSession(SID_B, '/d', fakePTY([]), {
-      handleMessage: () => {},
-      handleQuestion: () => {},
-      handleStatusChange: () => {},
-    } as never);
-    let qidB: UUID | undefined;
-    const gateB = new AutoApproveGate(
-      {
-        service: { evaluate: async () => escalate, cancel: () => true },
-        sessionRegistry: registryB,
-        tracker: new QuestionPresenceTracker(() => undefined),
-        isInSubagentContext: () => false,
-        escalate: () => {
-          qidB = generateId();
-          return qidB;
-        },
-        holdMs: 60_000,
-        alwaysEscalateTools: new Set(),
-      },
-      SID_B,
-    );
-
-    const gateA = holdGate(evaluator(escalate));
-    const pendingA = gateA.resolvePermission(pr());
-    const pendingB = gateB.resolvePermission(pr());
-    await new Promise((r) => setTimeout(r, 20));
-    const qidA = lastQuestionId as UUID;
-
-    // Resolving A's question id on gate B finds no hold; A's own hold is intact.
-    expect(gateB.resolveHeld(qidA, 'allow')).toBe(false);
-    // Resolve each on its own gate.
-    expect(gateA.resolveHeld(qidA, 'allow')).toBe(true);
-    expect(gateB.resolveHeld(qidB as UUID, 'deny')).toBe(true);
-    expect(await pendingA).toBe('allow');
-    expect(await pendingB).toBe('deny');
-    await registryB.shutdown();
-  });
-});
-
-describe('AutoApproveGate session workflow authorization (#1095)', () => {
-  const SID = generateId() as UUID;
-  const REPOSITORY = 'yooz-labs/remi';
-
-  test('offers only the public family marker and installs a scoped grant on held answer', async () => {
-    const registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
-    const tracker = new QuestionPresenceTracker(() => undefined);
-    const submits: string[] = [];
-    const store = new SessionWorkflowGrantStore(SID, '/d', REPOSITORY);
-    let questionId: UUID | undefined;
-    let offer: { readonly family: 'github-issue-planning' } | undefined;
-    registry.registerSession(SID, '/d', fakePTY(submits), {
-      handleMessage: () => {},
-      handleQuestion: () => {},
-      handleStatusChange: () => {},
-    } as never);
-
-    const gate = new AutoApproveGate(
-      {
-        service: { evaluate: async () => escalate, cancel: () => true },
-        sessionRegistry: registry,
-        tracker,
-        isInSubagentContext: () => false,
-        workingDirectory: '/d',
-        repository: REPOSITORY,
-        workflowGrantStore: store,
-        holdMs: 60_000,
-        alwaysEscalateTools: new Set(),
-        escalate: (_input, _summary, workflowOffer) => {
-          offer = workflowOffer;
-          questionId = generateId();
-          return questionId;
-        },
-      },
-      SID,
-    );
-
-    const input: PermissionRequestHookInput = {
-      session_id: 'claude-test',
-      transcript_path: '/tmp/t.jsonl',
-      cwd: '/d',
-      permission_mode: 'default',
-      hook_event_name: 'PermissionRequest',
-      tool_name: 'Bash',
-      tool_input: { command: "gh issue create --title 'x' --body 'y'" },
-    };
-    const pending = gate.resolvePermission(input);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-
-    expect(offer).toEqual({ family: 'github-issue-planning' });
-    expect(JSON.stringify(offer)).not.toContain('/d');
-    expect(JSON.stringify(offer)).not.toContain(REPOSITORY);
-
-    const operation = classifySessionWorkflowOperation('Bash', input.tool_input, {
-      sessionId: SID,
-      workingDirectory: '/d',
-      repository: REPOSITORY,
-    });
-    expect(operation).toBeDefined();
-    expect(store.matches(operation as NonNullable<typeof operation>)).toBe(false);
-    expect(gate.resolveHeld(questionId as UUID, 'allow', undefined, offer?.family)).toBe(true);
-    expect(await pending).toBe('allow');
-    expect(store.matches(operation as NonNullable<typeof operation>)).toBe(true);
-
-    const siblingOperation = classifySessionWorkflowOperation('Bash', input.tool_input, {
-      sessionId: generateId(),
-      workingDirectory: '/d',
-      repository: REPOSITORY,
-    });
-    expect(store.matches(siblingOperation as NonNullable<typeof siblingOperation>)).toBe(false);
-    await registry.shutdown();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// #711: a lead agent's Stop fires whenever it idles even while agent-team
-// teammates (subagent/`agent_id`-tagged PermissionRequests) keep working. A
-// wholesale cancelStale('Stop') released every teammate's already-pushed held
-// card as passthrough (phantom -- answering it resolved nothing) and killed
-// their in-flight evals. `cancelStale('Stop', { mainOnly: true })` scopes the
-// release/cancel to MAIN-tagged holds + evals only; `SessionEnd` and
-// `forceRelease` are real teardown and keep releasing/cancelling everything.
-// ---------------------------------------------------------------------------
-describe('AutoApproveGate Stop mainOnly scoping (#711)', () => {
-  const SID = generateId() as UUID;
-  let registry: SessionRegistry;
-  let lastQuestionId: UUID | undefined;
-
-  function evaluator(result: AutoApproveResult): AutoApproveEvaluator {
-    return { evaluate: async () => result, cancel: () => true };
-  }
-
-  function gate(
-    service: AutoApproveEvaluator,
-    opts: {
-      holdMs?: number;
-      onResolved?: (
-        questionId: UUID,
-        reason: 'auto_approved' | 'auto_denied' | 'cancelled',
-      ) => void;
-    } = {},
-  ): AutoApproveGate {
-    registry.registerSession(SID, '/d', fakePTY([]), {
-      handleMessage: () => {},
-      handleQuestion: () => {},
-      handleStatusChange: () => {},
-    } as never);
-    return new AutoApproveGate(
-      {
-        service,
-        sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => undefined),
-        isInSubagentContext: () => false,
-        escalate: () => {
-          lastQuestionId = generateId();
-          return lastQuestionId;
-        },
-        holdMs: opts.holdMs ?? 60_000,
-        alwaysEscalateTools: new Set(),
-        ...(opts.onResolved ? { onResolved: opts.onResolved } : {}),
-      },
-      SID,
-    );
-  }
-
-  function pr(over: Partial<PermissionRequestHookInput> = {}): PermissionRequestHookInput {
-    return {
-      session_id: 'claude-test',
-      transcript_path: '/tmp/t.jsonl',
-      cwd: '/d',
-      permission_mode: 'default',
-      hook_event_name: 'PermissionRequest',
-      tool_name: 'Bash',
-      tool_input: { command: 'git push' },
-      ...over,
-    };
-  }
-
-  /** An `agent_id`-tagged override -- the sole discriminator `isSubagentEvent`
-   *  reads (#711). */
-  const teammate = { agent_id: 'teammate-1', agent_type: 'general-purpose' };
-
-  beforeEach(() => {
-    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
-    lastQuestionId = undefined;
-    configureLogger({ writeLog: () => {} });
-  });
-
-  afterEach(async () => {
-    __resetLoggerForTests();
-    await registry.shutdown();
-  });
-
-  test('(a) #751: a SUBAGENT-tagged escalate never holds -- parks + passthrough immediately', async () => {
-    // Pre-#751 this shape (agent_id present, tracker false) created a held
-    // teammate card that (#711) had to survive a mainOnly Stop. Post-#751 no
-    // subagent hold exists at all: the question parks for PTY arbitration and
-    // the hook resolves passthrough at once, so there is nothing for Stop to
-    // spare or for the user to answer until the prompt renders.
-    const g = gate(evaluator(escalate));
-    expect(await g.resolvePermission(pr(teammate))).toBe('passthrough');
-    expect(lastQuestionId).toBeUndefined(); // no escalate() call, no card
-    g.cancelStale('Stop', { mainOnly: true }); // nothing to release; must not throw
-  });
-
-  test('(b) a MAIN hold IS released on cancelStale(Stop, mainOnly), with notifyResolved(cancelled)', async () => {
-    const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
-    const g = gate(evaluator(escalate), {
-      onResolved: (qid, reason) => resolvedLog.push({ qid, reason }),
-    });
-    const pending = g.resolvePermission(pr());
-    await new Promise((r) => setTimeout(r, 20));
-    const qid = lastQuestionId as UUID;
-
-    g.cancelStale('Stop', { mainOnly: true });
-
-    expect(await pending).toBe('passthrough');
-    expect(resolvedLog).toEqual([{ qid, reason: 'cancelled' }]);
-    expect(g.resolveHeld(qid, 'allow')).toBe(false); // the hold is gone
-  });
-
-  test('(c) SessionEnd (cancelStale with no opts) releases a main hold; a concurrent subagent event parked (#751)', async () => {
-    const g = gate(evaluator(escalate));
-    const pendingMain = g.resolvePermission(pr());
-    await new Promise((r) => setTimeout(r, 20));
-    const qidMain = lastQuestionId as UUID;
-    // #751: the subagent event resolves passthrough immediately (parked), so
-    // teardown only ever has the main hold to release.
-    expect(await g.resolvePermission(pr(teammate))).toBe('passthrough');
-
-    g.cancelStale('SessionEnd');
-
-    expect(await pendingMain).toBe('passthrough');
-    expect(g.resolveHeld(qidMain, 'allow')).toBe(false);
-  });
-
-  test('(e) forceRelease still releases a main hold; a concurrent subagent event parked (#751)', async () => {
-    const g = gate(evaluator(escalate));
-    const pendingMain = g.resolvePermission(pr());
-    await new Promise((r) => setTimeout(r, 20));
-    const qidMain = lastQuestionId as UUID;
-    expect(await g.resolvePermission(pr(teammate))).toBe('passthrough');
-
-    g.forceRelease('remi unstick');
-
-    expect(await pendingMain).toBe('passthrough');
-    expect(g.resolveHeld(qidMain, 'allow')).toBe(false);
-  });
-
-  test('cancelStale(Stop, mainOnly) cancels the in-flight MAIN eval; a subagent has no eval to cancel (#807)', async () => {
-    const cancelLog: Array<{ reason: string; evalId: number | undefined }> = [];
-    const resolvers = new Map<string, (r: AutoApproveResult) => void>();
-    const service: AutoApproveEvaluator = {
-      evaluate: (_toolName, toolInput) => {
-        const key = JSON.stringify(toolInput);
-        return new Promise<AutoApproveResult>((resolve) => {
-          resolvers.set(key, resolve);
-        });
-      },
-      cancel: (reason, evalId) => {
-        cancelLog.push({ reason, evalId });
-        return true;
-      },
-    };
-    registry.registerSession(SID, '/d', fakePTY([]), {
-      handleMessage: () => {},
-      handleQuestion: () => {},
-      handleStatusChange: () => {},
-    } as never);
-    // Part B (pushHoldMs) so BOTH evals are held early WHILE still running --
-    // the exact concurrent-teammate shape the #711 rationale is about.
-    const g = new AutoApproveGate(
-      {
-        service,
-        sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => undefined),
-        isInSubagentContext: () => false,
-        escalate: () => {
-          lastQuestionId = generateId();
-          return lastQuestionId;
-        },
-        holdMs: 60_000,
-        pushHoldMs: 10,
-        alwaysEscalateTools: new Set(),
-      },
-      SID,
-    );
-
-    const pendingMain = g.resolvePermission(pr({ tool_input: { command: 'echo main' } }));
-    await new Promise((r) => setTimeout(r, 20));
-    // #807: a subagent permission settles IMMEDIATELY as an unevaluated
-    // passthrough — it never becomes an in-flight eval, so there is no
-    // subagent hold and no subagent eval for a Stop to spare in the first
-    // place. `mainOnly` is now trivially satisfied rather than load-bearing;
-    // the flag stays because the post-render subagent evaluation (the #807
-    // follow-up) will reintroduce genuinely concurrent subagent evals.
-    expect(
-      await g.resolvePermission(pr({ tool_input: { command: 'echo sub' }, ...teammate })),
-    ).toBe('passthrough');
-
-    g.cancelStale('Stop', { mainOnly: true });
-
-    expect(await pendingMain).toBe('passthrough'); // main hold released + eval cancelled
-    expect(cancelLog).toHaveLength(1); // ONLY the main eval's cancel() call
-    // The subagent's own eval never existed, so nothing of its could be cancelled.
-    expect(cancelLog.every((c) => c.evalId !== undefined)).toBe(true);
-    expect(resolvers.has(JSON.stringify({ command: 'echo sub' }))).toBe(false);
-  });
-
-  test('#807 a subagent fires NO onEvalStart/onHandled; main still reports isSubagent false', async () => {
-    const ctxLog: Array<{ isSubagent: boolean }> = [];
-    registry.registerSession(SID, '/d', fakePTY([]), {
-      handleMessage: () => {},
-      handleQuestion: () => {},
-      handleStatusChange: () => {},
-    } as never);
-    const g = new AutoApproveGate(
-      {
-        service: evaluator(approve),
-        sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => undefined),
-        isInSubagentContext: () => false,
-        escalate: () => undefined,
-        onEvalStart: (ctx) => ctxLog.push(ctx),
-        onHandled: (ctx) => ctxLog.push(ctx),
-      },
-      SID,
-    );
-    // Subagent: parked unevaluated, so neither the eval-start nor the
-    // silently-handled cue has anything to report.
-    expect(await g.resolvePermission(pr(teammate))).toBe('passthrough');
-    expect(ctxLog).toEqual([]);
-    // Main: unchanged — start then handled, both main-tagged.
-    expect(await g.resolvePermission(pr())).toBe('allow');
-    expect(ctxLog).toEqual([{ isSubagent: false }, { isSubagent: false }]);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Part B (#573): slow-eval early push + hold. ISOLATED behind push_hold_timeout.
-// A deferred eval lets the test control whether the eval or the push-hold timer
-// wins the race deterministically.
-// ---------------------------------------------------------------------------
-describe('AutoApproveGate slow-eval push (#573 Part B)', () => {
-  const SID = generateId() as UUID;
-  let registry: SessionRegistry;
-  let escalations: PermissionRequestHookInput[];
-  let lastQuestionId: UUID | undefined;
-
-  /** An evaluator whose verdict is delayed until `release(result)` is called,
-   *  so the test decides when the eval finishes relative to push_hold_timeout. */
-  function deferredEvaluator(): {
-    service: AutoApproveEvaluator;
-    release: (r: AutoApproveResult) => void;
-  } {
-    let resolveEval: (r: AutoApproveResult) => void = () => {};
-    const pending = new Promise<AutoApproveResult>((res) => {
-      resolveEval = res;
-    });
-    return {
-      service: { evaluate: () => pending, cancel: () => true },
-      release: (r) => resolveEval(r),
-    };
-  }
-
-  function gate(
-    service: AutoApproveEvaluator,
-    opts: {
-      holdMs?: number;
-      pushHoldMs?: number;
-      /** #1015: records every deny reported to the observer, so a Part B late
-       *  deny can be checked for the report it must produce. */
-      onAutoDenied?: (
-        input: PermissionRequestHookInput,
-        source: DenySource,
-        reasoning: string,
-      ) => void;
-    } = {},
-  ): AutoApproveGate {
-    registry.registerSession(SID, '/d', fakePTY([]), {
-      handleMessage: () => {},
-      handleQuestion: () => {},
-      handleStatusChange: () => {},
-    } as never);
-    return new AutoApproveGate(
-      {
-        service,
-        sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => undefined),
-        isInSubagentContext: () => false,
-        escalate: (i) => {
-          escalations.push(i);
-          lastQuestionId = generateId();
-          return lastQuestionId;
-        },
-        holdMs: opts.holdMs ?? 60_000,
-        pushHoldMs: opts.pushHoldMs ?? 0,
-        alwaysEscalateTools: new Set(),
-        ...(opts.onAutoDenied ? { onAutoDenied: opts.onAutoDenied } : {}),
-      },
-      SID,
-    );
-  }
-
-  function pr(): PermissionRequestHookInput {
-    return {
-      session_id: 'claude-test',
-      transcript_path: '/tmp/t.jsonl',
-      cwd: '/d',
-      permission_mode: 'default',
-      hook_event_name: 'PermissionRequest',
-      tool_name: 'Bash',
-      tool_input: { command: 'git push' },
-    };
-  }
-
-  beforeEach(() => {
-    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
-    escalations = [];
-    lastQuestionId = undefined;
-    configureLogger({ writeLog: () => {} });
-  });
-
-  afterEach(async () => {
-    __resetLoggerForTests();
-    await registry.shutdown();
-  });
-
-  test('a slow eval pushes + holds early; a late approve resolves allow (no double push)', async () => {
-    const { service, release } = deferredEvaluator();
-    // push after 20ms; the eval has not finished yet -> early push + hold.
-    const g = gate(service, { pushHoldMs: 20 });
-    const pending = g.resolvePermission(pr());
-
-    await new Promise((r) => setTimeout(r, 40)); // let the push-hold timer fire
-    expect(escalations).toHaveLength(1); // pushed early exactly once
-    expect(lastQuestionId).toBeDefined();
-
-    // The late verdict arrives: approve -> the held hook resolves allow, and the
-    // reconciliation must NOT push a second time.
-    release(approve);
-    expect(await pending).toBe('allow');
-    expect(escalations).toHaveLength(1); // still one push (no double-push)
-  });
-
-  test('a slow eval whose late verdict is deny resolves the held hook deny', async () => {
-    const { service, release } = deferredEvaluator();
-    const g = gate(service, { pushHoldMs: 20 });
-    const pending = g.resolvePermission(pr());
-    await new Promise((r) => setTimeout(r, 40));
-    expect(escalations).toHaveLength(1);
-    release(deny);
-    expect(await pending).toBe('deny');
-    expect(escalations).toHaveLength(1);
-  });
-
-  test('#1015: a slow eval whose late verdict is deny REPORTS it', async () => {
-    // The third deny path, and the least visible of the three: the user is
-    // already looking at a pushed card saying "needs your permission", and
-    // this resolution makes it vanish via a quiet content-available dismiss
-    // that carries no title and no body. Without the report the refusal is
-    // worse than invisible -- the user saw a prompt and then saw it disappear.
-    //
-    // Found in review, not in writing: `reportDeny` was wired at the two
-    // SYNCHRONOUS deny returns and this async one needed `input` threaded down
-    // a level, which is exactly why it was missed.
-    const denied: DenySource[] = [];
-    const { service, release } = deferredEvaluator();
-    const g = gate(service, {
-      pushHoldMs: 20,
-      onAutoDenied: (_input, source) => denied.push(source),
-    });
-    const pending = g.resolvePermission(pr());
-    await new Promise((r) => setTimeout(r, 40));
-    expect(escalations).toHaveLength(1); // the early card is on screen
-
-    release({
-      decision: 'deny',
-      reasoning: 'the model refused',
-      durationMs: 90_000,
-      model: 'm',
-      denySource: { kind: 'model-floor', pattern: 'rm -rf /' },
-    });
-    expect(await pending).toBe('deny');
-    // The reconciliation is fired-and-forgotten off the hook response, so the
-    // report can land a microtask later than the hook resolves.
-    await new Promise((r) => setTimeout(r, 10));
-    expect(denied).toEqual([{ kind: 'model-floor', pattern: 'rm -rf /' }]);
-  });
-
-  test('#1015: a slow eval whose late verdict is APPROVE reports nothing', async () => {
-    const denied: DenySource[] = [];
-    const { service, release } = deferredEvaluator();
-    const g = gate(service, {
-      pushHoldMs: 20,
-      onAutoDenied: (_input, source) => denied.push(source),
-    });
-    const pending = g.resolvePermission(pr());
-    await new Promise((r) => setTimeout(r, 40));
-    release(approve);
-    expect(await pending).toBe('allow');
-    await new Promise((r) => setTimeout(r, 10));
-    expect(denied).toEqual([]);
-  });
-
-  test('a slow eval whose late verdict is escalate keeps the existing hold (no double push)', async () => {
-    const { service, release } = deferredEvaluator();
-    const g = gate(service, { pushHoldMs: 20, holdMs: 60_000 });
-    const pending = g.resolvePermission(pr());
-    await new Promise((r) => setTimeout(r, 40));
-    expect(escalations).toHaveLength(1);
-    // Late escalate: already pushed + holding, so no second push; the hold stays
-    // pending until the user answers.
-    release(escalate);
-    await new Promise((r) => setTimeout(r, 20));
-    expect(escalations).toHaveLength(1);
-    // The user then answers the (single) held question.
-    expect(g.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(true);
-    expect(await pending).toBe('allow');
-  });
-
-  test('a fast eval (verdict before push_hold_timeout) never pushes early', async () => {
-    const { service, release } = deferredEvaluator();
-    const g = gate(service, { pushHoldMs: 200 });
-    const pending = g.resolvePermission(pr());
-    // Verdict arrives well before the 200ms push-hold timer.
-    release(approve);
-    expect(await pending).toBe('allow');
-    expect(escalations).toHaveLength(0); // no early push
-  });
-
-  test('push_hold_timeout = 0 disables Part B: a slow escalate just holds on verdict', async () => {
-    const { service, release } = deferredEvaluator();
-    const g = gate(service, { pushHoldMs: 0, holdMs: 60_000 });
-    const pending = g.resolvePermission(pr());
-    // No early push while the eval runs.
-    await new Promise((r) => setTimeout(r, 30));
-    expect(escalations).toHaveLength(0);
-    // The eval escalates -> NOW it pushes + holds (Part A path), once.
-    release(escalate);
-    await new Promise((r) => setTimeout(r, 10));
-    expect(escalations).toHaveLength(1);
-    g.resolveHeld(lastQuestionId as UUID, 'allow');
-    expect(await pending).toBe('allow');
-  });
-
-  test('#751: a subagent-tagged slow eval never arms the early push (tracker FALSE)', async () => {
-    // The gate() harness pins isInSubagentContext() false, which is exactly
-    // the async/team-spawn shape: the tag on the event itself must veto the
-    // early USER push+hold, and the late escalate verdict then parks.
-    const { service, release } = deferredEvaluator();
-    const g = gate(service, { pushHoldMs: 20 });
-    const pending = g.resolvePermission({ ...pr(), agent_id: 'agent-1' });
-
-    await new Promise((r) => setTimeout(r, 40)); // past the push-hold timer
-    expect(escalations).toHaveLength(0); // no early push for a subagent prompt
-
-    release(escalate);
-    expect(await pending).toBe('passthrough'); // #751 parks + passthrough, still no push
-    expect(escalations).toHaveLength(0);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// #585 (P7): onResolved fires when a HELD question resolves WITHOUT a user
-// answer, so the daemon can dismiss the pushed card on every client. It must NOT
-// fire for a user-driven resolveHeld (the answer path broadcasts its own
-// 'answered'), and a throw must be absorbed.
-// ---------------------------------------------------------------------------
-describe('AutoApproveGate onResolved cross-client dismissal (#585 P7)', () => {
-  const SID = generateId() as UUID;
-  let registry: SessionRegistry;
-  let lastQuestionId: UUID | undefined;
-  let resolved: Array<{ questionId: UUID; reason: string }>;
-
-  function deferredEvaluator(): {
-    service: AutoApproveEvaluator;
-    release: (r: AutoApproveResult) => void;
-  } {
-    let resolveEval: (r: AutoApproveResult) => void = () => {};
-    const pending = new Promise<AutoApproveResult>((res) => {
-      resolveEval = res;
-    });
-    return {
-      service: { evaluate: () => pending, cancel: () => true },
-      release: (r) => resolveEval(r),
-    };
-  }
-
-  function gate(
-    service: AutoApproveEvaluator,
-    opts: { holdMs?: number; pushHoldMs?: number; onResolvedThrows?: boolean } = {},
-  ): AutoApproveGate {
-    registry.registerSession(SID, '/d', fakePTY([]), {
-      handleMessage: () => {},
-      handleQuestion: () => {},
-      handleStatusChange: () => {},
-    } as never);
-    return new AutoApproveGate(
-      {
-        service,
-        sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => undefined),
-        isInSubagentContext: () => false,
-        escalate: () => {
-          lastQuestionId = generateId();
-          return lastQuestionId;
-        },
-        holdMs: opts.holdMs ?? 60_000,
-        pushHoldMs: opts.pushHoldMs ?? 0,
-        alwaysEscalateTools: new Set(),
-        onResolved: (questionId, reason) => {
-          if (opts.onResolvedThrows) throw new Error('test: onResolved synthetic failure');
-          resolved.push({ questionId, reason });
-        },
-      },
-      SID,
-    );
-  }
-
-  function pr(): PermissionRequestHookInput {
-    return {
-      session_id: 'claude-test',
-      transcript_path: '/tmp/t.jsonl',
-      cwd: '/d',
-      permission_mode: 'default',
-      hook_event_name: 'PermissionRequest',
-      tool_name: 'Bash',
-      tool_input: { command: 'git push' },
-    };
-  }
-
-  beforeEach(() => {
-    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
-    lastQuestionId = undefined;
     resolved = [];
     configureLogger({ writeLog: () => {} });
   });
@@ -2385,923 +332,1195 @@ describe('AutoApproveGate onResolved cross-client dismissal (#585 P7)', () => {
     await registry.shutdown();
   });
 
-  test('Part-B late approve fires onResolved auto_approved', async () => {
-    const { service, release } = deferredEvaluator();
-    const g = gate(service, { pushHoldMs: 20 });
-    const pending = g.resolvePermission(pr());
-    await new Promise((r) => setTimeout(r, 40)); // early push + hold
-    release(approve);
-    expect(await pending).toBe('allow');
-    expect(resolved).toEqual([{ questionId: lastQuestionId as UUID, reason: 'auto_approved' }]);
+  test('a matching (tool_name, tool_input) removes the card, fires onResolved(cancelled) and releases the hold empty', async () => {
+    const g = gate();
+    const hook = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
+    const qid = escalatedIds[0] as UUID;
+    expect(registry.getQuestion(SID, qid)).not.toBeNull();
+
+    g.cancelExternallyResolved(
+      { toolName: 'Bash', toolInput: { command: 'git push' } },
+      'PreToolUse',
+    );
+
+    expect(registry.getQuestion(SID, qid)).toBeNull();
+    expect(resolved).toEqual([{ qid, reason: 'cancelled' }]);
+    // The terminal answered: the hook gets the empty response Claude ignores.
+    expect(await hook).toBe('passthrough');
+    expect(g.answerHeld(qid, { kind: 'cancel' })).toBe('closed');
   });
 
-  test('Part-B late deny fires onResolved auto_denied', async () => {
-    const { service, release } = deferredEvaluator();
-    const g = gate(service, { pushHoldMs: 20 });
-    const pending = g.resolvePermission(pr());
-    await new Promise((r) => setTimeout(r, 40));
-    release(deny);
-    expect(await pending).toBe('deny');
-    expect(resolved).toEqual([{ questionId: lastQuestionId as UUID, reason: 'auto_denied' }]);
-  });
-
-  test('cancelStale on a held hook fires onResolved cancelled', async () => {
-    const { service } = deferredEvaluator();
-    const g = gate(service, { pushHoldMs: 20 });
-    const pending = g.resolvePermission(pr());
-    await new Promise((r) => setTimeout(r, 40)); // early push + hold
-    g.cancelStale('SessionEnd');
-    expect(await pending).toBe('passthrough');
-    expect(resolved).toEqual([{ questionId: lastQuestionId as UUID, reason: 'cancelled' }]);
-  });
-
-  test('hold timeout fires onResolved cancelled', async () => {
-    const { service } = deferredEvaluator();
-    // Short hold so the timeout fail-open fires during the test.
-    const g = gate(service, { pushHoldMs: 10, holdMs: 30 });
-    const pending = g.resolvePermission(pr());
-    expect(await pending).toBe('passthrough'); // failed open on hold timeout
-    expect(resolved).toEqual([{ questionId: lastQuestionId as UUID, reason: 'cancelled' }]);
-  });
-
-  test('a user-driven resolveHeld does NOT fire onResolved (no double-broadcast)', async () => {
-    // Part A: a normal binary escalate holds; the user answers via resolveHeld.
-    // The answer path (input-events) broadcasts 'answered' itself, so the gate
-    // must stay silent here.
-    const service: AutoApproveEvaluator = { evaluate: async () => escalate, cancel: () => true };
-    const g = gate(service, { holdMs: 60_000 });
-    const pending = g.resolvePermission(pr());
-    await new Promise((r) => setTimeout(r, 20));
-    expect(g.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(true);
-    expect(await pending).toBe('allow');
+  test('same tool_name but a DIFFERENT tool_input does not match', async () => {
+    const g = gate();
+    void g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
+    g.cancelExternallyResolved({ toolName: 'Bash', toolInput: { command: 'ls' } }, 'PreToolUse');
+    expect(registry.getQuestion(SID, escalatedIds[0] as UUID)).not.toBeNull();
     expect(resolved).toEqual([]);
   });
 
-  test('a throwing onResolved never breaks the decision path', async () => {
-    const { service, release } = deferredEvaluator();
-    const g = gate(service, { pushHoldMs: 20, onResolvedThrows: true });
-    const pending = g.resolvePermission(pr());
-    await new Promise((r) => setTimeout(r, 40));
-    release(approve);
-    // Despite the throwing onResolved, the held hook still resolves allow.
-    expect(await pending).toBe('allow');
-  });
-
-  // #585 P7 FIX 2: a Part-B held question is registered (pushHeldHook ->
-  // addQuestion); the gate-side resolution must drop it from the registry so no
-  // ghost card replays and a late handleAnswer can't find it "live".
-  test('Part-B auto-approve removes the held question from sessionRegistry', async () => {
-    const { service, release } = deferredEvaluator();
-    const g = gate(service, { pushHoldMs: 20 });
-    const pending = g.resolvePermission(pr());
-    await new Promise((r) => setTimeout(r, 40)); // early push + hold
-    // Simulate the real push having registered the question under the held id.
-    const qid = lastQuestionId as UUID;
-    registry.addQuestion(SID, {
-      id: qid,
-      text: 'proceed?',
-      options: [{ value: 'y', label: 'Yes', isRecommended: true, isYes: true, isNo: false }],
-      allowsFreeText: false,
-      isAnswered: false,
-    });
-    expect(registry.getQuestion(SID, qid)).not.toBeNull();
-
-    release(approve);
-    expect(await pending).toBe('allow');
-    // The held question is gone from the registry (no ghost card / misroute).
-    expect(registry.getQuestion(SID, qid)).toBeNull();
-  });
-
-  test('hold timeout removes the held question from sessionRegistry', async () => {
-    const { service } = deferredEvaluator();
-    const g = gate(service, { pushHoldMs: 10, holdMs: 30 });
-    const pending = g.resolvePermission(pr());
-    await new Promise((r) => setTimeout(r, 15)); // after the early push, before timeout
-    const qid = lastQuestionId as UUID;
-    registry.addQuestion(SID, {
-      id: qid,
-      text: 'proceed?',
-      options: [{ value: 'y', label: 'Yes', isRecommended: true, isYes: true, isNo: false }],
-      allowsFreeText: false,
-      isAnswered: false,
-    });
-    expect(await pending).toBe('passthrough'); // failed open on hold timeout
-    expect(registry.getQuestion(SID, qid)).toBeNull();
-  });
-
-  test('cancelStale removes the held question from sessionRegistry', async () => {
-    const { service } = deferredEvaluator();
-    const g = gate(service, { pushHoldMs: 20 });
-    const pending = g.resolvePermission(pr());
-    await new Promise((r) => setTimeout(r, 40));
-    const qid = lastQuestionId as UUID;
-    registry.addQuestion(SID, {
-      id: qid,
-      text: 'proceed?',
-      options: [{ value: 'y', label: 'Yes', isRecommended: true, isYes: true, isNo: false }],
-      allowsFreeText: false,
-      isAnswered: false,
-    });
-    g.cancelStale('SessionEnd');
-    expect(await pending).toBe('passthrough');
-    expect(registry.getQuestion(SID, qid)).toBeNull();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Delivery gating (#603 Phase 1, R1/R2): a held hook is only worth blocking
-// Claude for if the user can actually be notified. The gate races the held
-// escalation's notification delivery against delivery_confirm_timeout; an
-// undeliverable hold fails open FAST instead of stalling for hold_timeout.
-// ---------------------------------------------------------------------------
-describe('AutoApproveGate delivery gating (#603 Phase 1)', () => {
-  const SID = generateId() as UUID;
-  let registry: SessionRegistry;
-  let escalations: PermissionRequestHookInput[];
-  let lastQuestionId: UUID | undefined;
-
-  function evaluator(result: AutoApproveResult): AutoApproveEvaluator {
-    return { evaluate: async () => result, cancel: () => true };
-  }
-
-  function pr(over: Partial<PermissionRequestHookInput> = {}): PermissionRequestHookInput {
-    return {
-      session_id: 'claude-test',
-      transcript_path: '/tmp/t.jsonl',
-      cwd: '/d',
-      permission_mode: 'default',
-      hook_event_name: 'PermissionRequest',
-      tool_name: 'Bash',
-      tool_input: { command: 'git push' },
-      ...over,
-    };
-  }
-
-  /** A holding gate whose held escalation's delivery outcome and gating timeouts
-   *  the test controls. `delivery` is what `awaitDelivery` resolves to (or
-   *  undefined for "no delivery signal recorded"). `evalNeverSettles` + a
-   *  `pushHoldMs` exercise the Part-B early-push path combined with the gate. */
-  // #733 invariant: the timeout-handoff cue must NEVER fire on the
-  // undeliverable fail-open paths (the push channel is already known broken,
-  // so a handoff push would be pointless). Every deliveryGate() wires the cue
-  // into this shared recorder; the fail-open tests assert it stays empty.
-  let holdTimeoutCues: UUID[];
-
-  function deliveryGate(opts: {
-    delivery: Promise<DeliveryOutcome> | undefined;
-    deliveryConfirmMs?: number;
-    holdUnconfirmedMs?: number;
-    holdMs?: number;
-    pushHoldMs?: number;
-    evalNeverSettles?: boolean;
-    onResolved?: (questionId: UUID, reason: 'auto_approved' | 'auto_denied' | 'cancelled') => void;
-  }): AutoApproveGate {
-    registry.registerSession(SID, '/d', fakePTY([]), {
-      handleMessage: () => {},
-      handleQuestion: () => {},
-      handleStatusChange: () => {},
-    } as never);
-    const service: AutoApproveEvaluator = opts.evalNeverSettles
-      ? { evaluate: () => new Promise<AutoApproveResult>(() => {}), cancel: () => true }
-      : evaluator(escalate);
-    return new AutoApproveGate(
-      {
-        service,
-        sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => undefined),
-        isInSubagentContext: () => false,
-        escalate: (i) => {
-          escalations.push(i);
-          lastQuestionId = generateId() as UUID;
-          return lastQuestionId;
-        },
-        holdMs: opts.holdMs ?? 60_000,
-        pushHoldMs: opts.pushHoldMs ?? 0,
-        awaitDelivery: () => opts.delivery,
-        deliveryConfirmMs: opts.deliveryConfirmMs ?? 0,
-        holdUnconfirmedMs: opts.holdUnconfirmedMs ?? 0,
-        onHoldTimeout: (id) => holdTimeoutCues.push(id),
-        ...(opts.onResolved ? { onResolved: opts.onResolved } : {}),
-        alwaysEscalateTools: new Set(['AskUserQuestion', 'ExitPlanMode']),
-      },
-      SID,
+  test('a different tool_name with the SAME tool_input does not match', async () => {
+    const g = gate();
+    void g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
+    g.cancelExternallyResolved(
+      { toolName: 'Terminal', toolInput: { command: 'git push' } },
+      'PreToolUse',
     );
-  }
-
-  beforeEach(() => {
-    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
-    escalations = [];
-    lastQuestionId = undefined;
-    holdTimeoutCues = [];
-    configureLogger({ writeLog: () => {} });
+    expect(resolved).toEqual([]);
   });
 
-  afterEach(async () => {
-    __resetLoggerForTests();
-    await registry.shutdown();
-    // #733: no delivery-gate fail-open in this block may EVER have fired the
-    // timeout-handoff cue — it belongs exclusively to the hold-timeout path.
-    expect(holdTimeoutCues).toEqual([]);
-  });
-
-  test('undelivered (failed push) fails the hold open fast, not after hold_timeout', async () => {
-    const gate = deliveryGate({
-      delivery: Promise.resolve('failed'),
-      deliveryConfirmMs: 200,
-      holdMs: 60_000,
-    });
-    // If the hold blocked for holdMs (60s) this await would hang the test; it
-    // resolves promptly to passthrough because delivery was never confirmed.
-    expect(await gate.resolvePermission(pr())).toBe('passthrough');
-    // The hold is gone (failed open): a late answer reports "no hold".
-    expect(gate.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(false);
-  });
-
-  test('no_channel (no client, no token) fails the hold open fast', async () => {
-    const gate = deliveryGate({ delivery: Promise.resolve('no_channel'), deliveryConfirmMs: 200 });
-    expect(await gate.resolvePermission(pr())).toBe('passthrough');
-  });
-
-  test('a delivery probe that never resolves fails open after delivery_confirm_timeout', async () => {
-    const gate = deliveryGate({
-      delivery: new Promise<DeliveryOutcome>(() => {}),
-      deliveryConfirmMs: 40,
-      holdMs: 60_000,
-    });
-    expect(await gate.resolvePermission(pr())).toBe('passthrough');
-  });
-
-  test('confirmed delivery (pushed) keeps holding; the user answer resolves it', async () => {
-    const gate = deliveryGate({
-      delivery: Promise.resolve('pushed'),
-      deliveryConfirmMs: 30,
-      holdMs: 60_000,
-    });
-    const pending = gate.resolvePermission(pr());
-    let settled = false;
-    void pending.then(() => {
-      settled = true;
-    });
-    await new Promise((r) => setTimeout(r, 60)); // past delivery_confirm_timeout
-    expect(settled).toBe(false); // still held — delivery was confirmed
-    expect(gate.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(true);
-    expect(await pending).toBe('allow');
-  });
-
-  test('confirmed delivery (in_app) keeps holding', async () => {
-    const gate = deliveryGate({
-      delivery: Promise.resolve('in_app'),
-      deliveryConfirmMs: 30,
-      holdMs: 60_000,
-    });
-    const pending = gate.resolvePermission(pr());
-    let settled = false;
-    void pending.then(() => {
-      settled = true;
-    });
-    await new Promise((r) => setTimeout(r, 60));
-    expect(settled).toBe(false);
-    gate.resolveHeld(lastQuestionId as UUID, 'allow');
-    await pending;
-  });
-
-  test('gating disabled (delivery_confirm_timeout = 0) keeps the legacy hold even if delivery failed', async () => {
-    const gate = deliveryGate({
-      delivery: Promise.resolve('failed'),
-      deliveryConfirmMs: 0,
-      holdMs: 60_000,
-    });
-    const pending = gate.resolvePermission(pr());
-    let settled = false;
-    void pending.then(() => {
-      settled = true;
-    });
-    await new Promise((r) => setTimeout(r, 40));
-    expect(settled).toBe(false);
-    gate.resolveHeld(lastQuestionId as UUID, 'allow');
-    expect(await pending).toBe('allow');
-  });
-
-  test('no recorded delivery signal (awaitDelivery undefined) keeps the legacy hold', async () => {
-    const gate = deliveryGate({ delivery: undefined, deliveryConfirmMs: 50, holdMs: 60_000 });
-    const pending = gate.resolvePermission(pr());
-    let settled = false;
-    void pending.then(() => {
-      settled = true;
-    });
-    await new Promise((r) => setTimeout(r, 70));
-    expect(settled).toBe(false);
-    gate.resolveHeld(lastQuestionId as UUID, 'allow');
-    await pending;
-  });
-
-  test('hold_unconfirmed mode: an undelivered hold waits the short window, then fails open', async () => {
-    const gate = deliveryGate({
-      delivery: Promise.resolve('failed'),
-      deliveryConfirmMs: 20,
-      holdUnconfirmedMs: 150,
-      holdMs: 60_000,
-    });
-    const pending = gate.resolvePermission(pr());
-    let settled = false;
-    void pending.then(() => {
-      settled = true;
-    });
-    // It does NOT fail open immediately on the unconfirmed signal — it re-arms a
-    // short 150ms hold.
-    await new Promise((r) => setTimeout(r, 60));
-    expect(settled).toBe(false);
-    // ...which then fails open (well before the 60s holdMs).
-    expect(await pending).toBe('passthrough');
-  });
-
-  test('hold_unconfirmed mode: the user can still answer during the short window', async () => {
-    const gate = deliveryGate({
-      delivery: Promise.resolve('failed'),
-      deliveryConfirmMs: 20,
-      holdUnconfirmedMs: 500,
-      holdMs: 60_000,
-    });
-    const pending = gate.resolvePermission(pr());
-    await new Promise((r) => setTimeout(r, 50)); // inside the short secondary window
-    expect(gate.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(true);
-    expect(await pending).toBe('allow');
-  });
-
-  test('a delivery outcome that resolves AFTER the hold already failed open does not double-resolve', async () => {
-    const resolved: Array<'auto_approved' | 'auto_denied' | 'cancelled'> = [];
-    const gate = deliveryGate({
-      // Resolves 'failed' well after the (short) holdMs timer has already fired.
-      delivery: new Promise<DeliveryOutcome>((r) => {
-        const t = setTimeout(() => r('failed'), 80);
-        t.unref?.();
-      }),
-      deliveryConfirmMs: 500, // longer than holdMs -> the holdMs timeout wins the fail-open
-      holdMs: 30,
-      onResolved: (_q, reason) => resolved.push(reason),
-    });
-    expect(await gate.resolvePermission(pr())).toBe('passthrough'); // failed open via holdMs timeout
-    // Let the slow delivery probe resolve, now that the hold is already gone.
-    await new Promise((r) => setTimeout(r, 120));
-    // Exactly ONE resolution broadcast (the timeout fail-open); the late probe
-    // sees pendingHolds no longer has the id and no-ops (no spurious 2nd dismiss).
-    expect(resolved).toEqual(['cancelled']);
-    expect(gate.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(false);
-  });
-
-  test('Part B early push + delivery gating: a slow eval whose push is undelivered fails open fast', async () => {
-    const gate = deliveryGate({
-      delivery: Promise.resolve('failed'),
-      deliveryConfirmMs: 20,
-      pushHoldMs: 15, // Part B pushes + holds early at ~15ms
-      evalNeverSettles: true, // the eval never returns a verdict
-      holdMs: 60_000,
-    });
-    // Part B holds early; delivery is 'failed', so the gate fails the hold open
-    // fast (~deliveryConfirmMs) instead of waiting the 60s holdMs for a verdict
-    // that never comes.
-    expect(await gate.resolvePermission(pr())).toBe('passthrough');
-    expect(gate.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(false);
-  });
-
-  // #751: a subagent-tagged escalation never enters the hold/delivery-gating
-  // machinery at all -- it parks for PTY arbitration and resolves passthrough
-  // before any delivery probe or hold timer can arm. (Pre-#751 this shape
-  // created a re-armable subagent hold whose isSubagent tag had to survive
-  // the onDeliveryUnconfirmed rebuild.)
-  test('#751 a SUBAGENT-tagged escalation bypasses delivery gating entirely (parks, no hold)', async () => {
-    const gate = deliveryGate({
-      delivery: Promise.resolve('failed'),
-      deliveryConfirmMs: 20,
-      holdUnconfirmedMs: 500,
-      holdMs: 60_000,
-    });
-    const pending = gate.resolvePermission(
-      pr({ agent_id: 'teammate-1', agent_type: 'general-purpose' }),
+  test('key order in tool_input does not defeat the signature match', async () => {
+    const g = gate();
+    void g.resolvePermission(pr({ tool_input: { command: 'git push', description: 'push' } }));
+    g.cancelExternallyResolved(
+      { toolName: 'Bash', toolInput: { description: 'push', command: 'git push' } },
+      'PostToolUse',
     );
-    expect(await pending).toBe('passthrough'); // immediate: no hold, no delivery probe
-    expect(lastQuestionId).toBeUndefined(); // no escalate() call, no pushed card
-    gate.cancelStale('Stop', { mainOnly: true }); // nothing held; must not throw
+    expect(resolved).toEqual([{ qid: escalatedIds[0] as UUID, reason: 'cancelled' }]);
   });
-});
 
-// ---------------------------------------------------------------------------
-// #673: the gate has no channel for "this permission was already resolved
-// elsewhere" -- cancelStale only fires on the bound session's own
-// PreToolUse/PostToolUse/Stop/SessionEnd, deliberately narrow (#537), so a
-// permission answered directly in the terminal (a passthrough escalation is
-// never held, so Remi's own answer path never runs) or resolved by a
-// duplicate re-request left a stale push with nothing to answer it. Fixed by
-// `cancelExternallyResolved`, called from PreToolUse/PostToolUse in
-// hook-bridge-setup.ts on a signature match, plus a duplicate-re-request
-// check inside `escalateToUser` itself.
-// ---------------------------------------------------------------------------
-describe('AutoApproveGate external-resolution cancel (#673)', () => {
-  const SID = generateId() as UUID;
-  let registry: SessionRegistry;
-  let escalations: PermissionRequestHookInput[];
-  let lastQuestionId: UUID | undefined;
-
-  function evaluator(result: AutoApproveResult): AutoApproveEvaluator {
-    return { evaluate: async () => result, cancel: () => true };
-  }
-
-  /** An evaluator with an INDEPENDENT deferred verdict per distinct
-   *  `tool_input`, so two concurrent evals (for two different permissions)
-   *  can be released separately. `cancelLog` records every `cancel()` call
-   *  with its reason, so a test can prove a specific eval was (or, for the
-   *  #537 regression, was NOT) cancelled. */
-  function multiDeferredEvaluator(
-    cancelLog: Array<{ reason: string; evalId: number | undefined }>,
-  ): {
-    service: AutoApproveEvaluator;
-    release: (toolInput: Record<string, unknown>, r: AutoApproveResult) => void;
-  } {
-    const resolvers = new Map<string, (r: AutoApproveResult) => void>();
-    const service: AutoApproveEvaluator = {
-      evaluate: (_toolName, toolInput) => {
-        const key = JSON.stringify(toolInput);
-        return new Promise<AutoApproveResult>((resolve) => {
-          resolvers.set(key, resolve);
-        });
-      },
-      cancel: (reason, evalId) => {
-        cancelLog.push({ reason, evalId });
-        return true;
-      },
-    };
-    return {
-      service,
-      release: (toolInput, r) => {
-        resolvers.get(JSON.stringify(toolInput))?.(r);
-      },
-    };
-  }
-
-  function gate(
-    service: AutoApproveEvaluator,
-    opts: {
-      holdMs?: number;
-      pushHoldMs?: number;
-      onResolved?: (
-        questionId: UUID,
-        reason: 'auto_approved' | 'auto_denied' | 'cancelled',
-      ) => void;
-      onHandled?: (ctx: { isSubagent: boolean }) => void;
-      onHeldCancelled?: () => void;
-    } = {},
-  ): AutoApproveGate {
-    registry.registerSession(SID, '/d', fakePTY([]), {
-      handleMessage: () => {},
-      handleQuestion: () => {},
-      handleStatusChange: () => {},
-    } as never);
-    return new AutoApproveGate(
-      {
-        service,
-        sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => undefined),
-        isInSubagentContext: () => false,
-        escalate: (i) => {
-          escalations.push(i);
-          lastQuestionId = generateId();
-          return lastQuestionId;
-        },
-        holdMs: opts.holdMs ?? 60_000,
-        pushHoldMs: opts.pushHoldMs ?? 0,
-        alwaysEscalateTools: new Set(),
-        ...(opts.onResolved ? { onResolved: opts.onResolved } : {}),
-        ...(opts.onHandled ? { onHandled: opts.onHandled } : {}),
-        ...(opts.onHeldCancelled ? { onHeldCancelled: opts.onHeldCancelled } : {}),
-      },
-      SID,
+  test('when both sides carry a tool_use_id it must agree as well', async () => {
+    const g = gate();
+    void g.resolvePermission(pr({ tool_use_id: 'use-a' }));
+    g.cancelExternallyResolved(
+      { toolName: 'Bash', toolInput: { command: 'git push' }, toolUseId: 'use-b' },
+      'PreToolUse',
     );
-  }
-
-  function pr(over: Partial<PermissionRequestHookInput> = {}): PermissionRequestHookInput {
-    return {
-      session_id: 'claude-test',
-      transcript_path: '/tmp/t.jsonl',
-      cwd: '/d',
-      permission_mode: 'default',
-      hook_event_name: 'PermissionRequest',
-      tool_name: 'Bash',
-      tool_input: { command: 'git push' },
-      ...over,
-    };
-  }
-
-  beforeEach(() => {
-    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
-    escalations = [];
-    lastQuestionId = undefined;
-    configureLogger({ writeLog: () => {} });
+    expect(resolved).toEqual([]);
+    g.cancelExternallyResolved(
+      { toolName: 'Bash', toolInput: { command: 'git push' }, toolUseId: 'use-a' },
+      'PreToolUse',
+    );
+    expect(resolved).toEqual([{ qid: escalatedIds[0] as UUID, reason: 'cancelled' }]);
   });
 
-  afterEach(async () => {
-    __resetLoggerForTests();
-    await registry.shutdown();
+  test('a duplicate re-request for the SAME signature resolves the earlier, now-stale card', async () => {
+    const g = gate();
+    void g.resolvePermission(pr());
+    void g.resolvePermission(pr());
+    const [first, second] = escalatedIds as [UUID, UUID];
+    expect(resolved).toEqual([{ qid: first, reason: 'cancelled' }]);
+    expect(registry.getQuestion(SID, first)).toBeNull();
+    expect(registry.getQuestion(SID, second)).not.toBeNull();
   });
 
-  describe('signature-scoped matching', () => {
-    test('a matching (tool_name, tool_input) cancels the held question -> passthrough, never a fabricated allow/deny', async () => {
-      const g = gate(evaluator(escalate), { holdMs: 60_000 });
-      const pending = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
-      await new Promise((r) => setTimeout(r, 20));
-      expect(escalations).toHaveLength(1);
+  test('retireQuestion: a card answered through remi is not resolved again by its tool run', async () => {
+    const g = gate();
+    const hook = g.resolvePermission(pr());
+    const qid = escalatedIds[0] as UUID;
+    // The answer path removes + dismisses the card itself, then retires it.
+    registry.removeQuestion(SID, qid, 'user_answer');
+    g.retireQuestion(qid);
 
-      g.cancelExternallyResolved(
-        { toolName: 'Bash', toolInput: { command: 'git push' } },
-        'PreToolUse',
-      );
+    g.cancelExternallyResolved(
+      { toolName: 'Bash', toolInput: { command: 'git push' } },
+      'PreToolUse',
+    );
 
-      expect(await pending).toBe('passthrough');
-    });
-
-    test('same tool_name but DIFFERENT tool_input does NOT match', async () => {
-      const g = gate(evaluator(escalate), { holdMs: 60_000 });
-      const pending = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
-      await new Promise((r) => setTimeout(r, 20));
-      const qid = lastQuestionId as UUID;
-
-      g.cancelExternallyResolved(
-        { toolName: 'Bash', toolInput: { command: 'rm -rf /' } },
-        'PreToolUse',
-      );
-
-      // Untouched: the hold still resolves normally.
-      expect(g.resolveHeld(qid, 'allow')).toBe(true);
-      expect(await pending).toBe('allow');
-    });
-
-    test('different tool_name but SAME tool_input does NOT match', async () => {
-      const g = gate(evaluator(escalate), { holdMs: 60_000 });
-      const pending = g.resolvePermission(pr({ tool_name: 'Bash', tool_input: { path: 'x.ts' } }));
-      await new Promise((r) => setTimeout(r, 20));
-      const qid = lastQuestionId as UUID;
-
-      g.cancelExternallyResolved({ toolName: 'Edit', toolInput: { path: 'x.ts' } }, 'PreToolUse');
-
-      expect(g.resolveHeld(qid, 'allow')).toBe(true);
-      expect(await pending).toBe('allow');
-    });
-
-    test('key order in tool_input does not defeat the signature match', async () => {
-      const g = gate(evaluator(escalate), {
-        holdMs: 60_000,
-      });
-      const pending = g.resolvePermission(
-        pr({ tool_input: { command: 'ls', cwd: '/tmp', flags: '-la' } }),
-      );
-      await new Promise((r) => setTimeout(r, 20));
-
-      // Same object, keys in a different order.
-      g.cancelExternallyResolved(
-        { toolName: 'Bash', toolInput: { flags: '-la', command: 'ls', cwd: '/tmp' } },
-        'PreToolUse',
-      );
-
-      expect(await pending).toBe('passthrough');
-    });
-
-    test('an exact tool_use_id match disambiguates two open escalations that share (tool_name, tool_input)', async () => {
-      const g = gate(evaluator(escalate), { holdMs: 60_000 });
-      const pendingA = g.resolvePermission(
-        pr({ tool_input: { command: 'ls' }, tool_use_id: 'toolu_A' }),
-      );
-      await new Promise((r) => setTimeout(r, 20));
-      const qidA = lastQuestionId as UUID;
-      const pendingB = g.resolvePermission(
-        pr({ tool_input: { command: 'ls' }, tool_use_id: 'toolu_B' }),
-      );
-      await new Promise((r) => setTimeout(r, 20));
-      const qidB = lastQuestionId as UUID;
-      expect(qidA).not.toBe(qidB);
-
-      g.cancelExternallyResolved(
-        { toolName: 'Bash', toolInput: { command: 'ls' }, toolUseId: 'toolu_A' },
-        'PreToolUse',
-      );
-
-      expect(await pendingA).toBe('passthrough');
-      // B is untouched -- still directly resolvable.
-      expect(g.resolveHeld(qidB, 'allow')).toBe(true);
-      expect(await pendingB).toBe('allow');
-    });
+    expect(resolved).toEqual([]);
+    // A retired hold is released with the empty response, never left
+    // pending to its deadline.
+    expect(await hook).toBe('passthrough');
   });
 
-  describe("#537 regression: never touches a DIFFERENT permission's in-flight eval", () => {
-    test("cancelling A does not resolve B, and B's eval keeps running and reconciles normally", async () => {
-      const cancelLog: Array<{ reason: string; evalId: number | undefined }> = [];
-      const { service, release } = multiDeferredEvaluator(cancelLog);
-      // Part B (pushHoldMs) so BOTH A and B push+hold early WHILE their evals
-      // are still running -- the exact shape #537 is about.
-      const g = gate(service, { holdMs: 60_000, pushHoldMs: 10 });
-
-      const pendingA = g.resolvePermission(pr({ tool_input: { command: 'echo A' } }));
-      await new Promise((r) => setTimeout(r, 20));
-      const pendingB = g.resolvePermission(pr({ tool_input: { command: 'echo B' } }));
-      await new Promise((r) => setTimeout(r, 20));
-      expect(escalations).toHaveLength(2);
-
-      let bSettled = false;
-      void pendingB.then(() => {
-        bSettled = true;
-      });
-
-      g.cancelExternallyResolved(
-        { toolName: 'Bash', toolInput: { command: 'echo A' } },
-        'PreToolUse',
-      );
-
-      expect(await pendingA).toBe('passthrough');
-      // B must be completely unaffected by A's cancellation.
-      await new Promise((r) => setTimeout(r, 10));
-      expect(bSettled).toBe(false);
-      expect(cancelLog).toHaveLength(1); // ONLY A's eval was cancelled
-
-      // Prove B's eval was never aborted: its late verdict still reconciles.
-      release({ command: 'echo B' }, approve);
-      expect(await pendingB).toBe('allow');
-    });
+  test('retireQuestion is a no-op for an id the gate never tracked', () => {
+    const g = gate();
+    expect(() => g.retireQuestion(generateId() as UUID)).not.toThrow();
   });
 
-  describe('full cleanup sequence fires on a match', () => {
-    test('releases the hold, cancels the tracked eval, removes the sessionRegistry question, and fires onResolved(cancelled)', async () => {
-      const cancelLog: Array<{ reason: string; evalId: number | undefined }> = [];
-      const { service } = multiDeferredEvaluator(cancelLog);
-      const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
-      const g = gate(service, {
-        holdMs: 60_000,
-        pushHoldMs: 10, // Part B: an eval is tracked (evalIdByQuestion) for this held question
-        onResolved: (qid, reason) => resolvedLog.push({ qid, reason }),
-      });
-      const pending = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
-      await new Promise((r) => setTimeout(r, 20));
-      const qid = lastQuestionId as UUID;
-      registry.addQuestion(SID, {
-        id: qid,
-        text: 'proceed?',
-        options: [{ value: 'y', label: 'Yes', isRecommended: true, isYes: true, isNo: false }],
-        allowsFreeText: false,
-        isAnswered: false,
-      });
-      expect(registry.getQuestion(SID, qid)).not.toBeNull();
-
-      g.cancelExternallyResolved(
-        { toolName: 'Bash', toolInput: { command: 'git push' } },
-        'PreToolUse',
-      );
-
-      expect(await pending).toBe('passthrough');
-      expect(registry.getQuestion(SID, qid)).toBeNull();
-      expect(cancelLog).toHaveLength(1);
-      expect(cancelLog[0]?.reason).toBe('PreToolUse');
-      expect(resolvedLog).toEqual([{ qid, reason: 'cancelled' }]);
-    });
-
-    test('a NEVER-HELD (holding disabled) escalation is also cleaned up via signature match', async () => {
-      const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
-      const g = gate(evaluator(escalate), {
-        holdMs: 0, // holding disabled -> createHold resolves 'passthrough' immediately, no pendingHolds entry
-        onResolved: (qid, reason) => resolvedLog.push({ qid, reason }),
-      });
-      const decision = await g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
-      expect(decision).toBe('passthrough');
-      const qid = lastQuestionId as UUID;
-      registry.addQuestion(SID, {
-        id: qid,
-        text: 'proceed?',
-        options: [{ value: 'y', label: 'Yes', isRecommended: true, isYes: true, isNo: false }],
-        allowsFreeText: false,
-        isAnswered: false,
-      });
-      expect(registry.getQuestion(SID, qid)).not.toBeNull();
-
-      g.cancelExternallyResolved(
-        { toolName: 'Bash', toolInput: { command: 'git push' } },
-        'PostToolUse',
-      );
-
-      expect(registry.getQuestion(SID, qid)).toBeNull();
-      expect(resolvedLog).toEqual([{ qid, reason: 'cancelled' }]);
-    });
-  });
-
-  describe('duplicate re-request', () => {
-    test('a second escalation for the SAME signature cancels the first, now-stale one', async () => {
-      const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
-      const g = gate(evaluator(escalate), {
-        holdMs: 60_000,
-        onResolved: (qid, reason) => resolvedLog.push({ qid, reason }),
-      });
-      const pendingFirst = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
-      await new Promise((r) => setTimeout(r, 20));
-      const firstQid = lastQuestionId as UUID;
-      expect(escalations).toHaveLength(1);
-
-      // Claude re-issues the IDENTICAL PermissionRequest a second time.
-      const pendingSecond = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
-      await new Promise((r) => setTimeout(r, 20));
-      const secondQid = lastQuestionId as UUID;
-      expect(secondQid).not.toBe(firstQid);
-      expect(escalations).toHaveLength(2);
-
-      // The FIRST hold was cleaned up automatically -- it can never be held
-      // open forever waiting for an answer that will route to the SECOND.
-      expect(await pendingFirst).toBe('passthrough');
-      expect(resolvedLog).toEqual([{ qid: firstQid, reason: 'cancelled' }]);
-
-      // The SECOND is unaffected and answerable normally.
-      expect(g.resolveHeld(secondQid, 'allow')).toBe(true);
-      expect(await pendingSecond).toBe('allow');
-    });
-  });
-
-  // ---------------------------------------------------------------------------
-  // Leak regression (PR #689 review): the private releaseHeld -- reached by
-  // failOpenHeld (hold-timeout / undelivered fail-open) and
-  // reconcileLateVerdict's cancelled branch (Part B) -- must delete the
-  // openQuestionSignatures entry UNCONDITIONALLY, not just when it happens to
-  // be called via the public wrappers. Proven behaviorally: if an entry
-  // leaked, a LATER duplicate re-request for the identical signature would
-  // find the dead entry and fire a SECOND, spurious notifyResolved('cancelled')
-  // for a question resolved (and possibly long gone) already.
-  // ---------------------------------------------------------------------------
-  describe('leak regression: hold-timeout and Part-B-cancelled must not leak entries', () => {
-    test('a timed-out hold does not leak: a later duplicate does not re-fire notifyResolved for it', async () => {
-      const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
-      const g = gate(evaluator(escalate), {
-        holdMs: 20, // short timeout so the hold fails open quickly
-        onResolved: (qid, reason) => resolvedLog.push({ qid, reason }),
-      });
-      const pendingFirst = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
-      await new Promise((r) => setTimeout(r, 40)); // let the hold time out
-      expect(await pendingFirst).toBe('passthrough');
-      expect(resolvedLog).toHaveLength(1); // failOpenHeld's own notifyResolved
-
-      // A LATER duplicate for the SAME signature must find nothing -- the
-      // timed-out entry must already be gone, not leaked.
-      const pendingSecond = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
-      await new Promise((r) => setTimeout(r, 20));
-      expect(resolvedLog).toHaveLength(1); // still just one; no spurious re-fire
-      expect(g.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(true);
-      expect(await pendingSecond).toBe('allow');
-    });
-
-    test("Part-B's cancelled late-verdict reconciliation does not leak: a later duplicate does not re-fire notifyResolved", async () => {
-      const cancelLog: Array<{ reason: string; evalId: number | undefined }> = [];
-      const { service, release } = multiDeferredEvaluator(cancelLog);
-      const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
-      const g = gate(service, {
-        holdMs: 60_000,
-        pushHoldMs: 10, // Part B: push + hold early, while the eval keeps running
-        onResolved: (qid, reason) => resolvedLog.push({ qid, reason }),
-      });
-      const pending = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
-      await new Promise((r) => setTimeout(r, 20)); // early push + hold fires
-
-      // The late verdict is 'cancelled' -- Claude already advanced past the
-      // prompt during the slow eval; reconcileLateVerdict fails the hold open.
-      release({ command: 'git push' }, cancelled);
-      expect(await pending).toBe('passthrough');
-      expect(resolvedLog).toHaveLength(1); // reconcileLateVerdict's own notifyResolved
-
-      const pendingSecond = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
-      await new Promise((r) => setTimeout(r, 20));
-      expect(resolvedLog).toHaveLength(1); // no spurious re-fire for the dead entry
-      expect(g.resolveHeld(lastQuestionId as UUID, 'allow')).toBe(true);
-      expect(await pendingSecond).toBe('allow');
-    });
-  });
-
-  // ---------------------------------------------------------------------------
-  // #970: the client status-pill cue must be total over the HELD hook's own
-  // end paths, not just the primary eval loop's (#973 closed that half via
-  // onCancelled). Enumerated in ADR 0020 -- corrected here against the live
-  // code, since the ADR's own "resolveHeld skips markHandled too" claim did
-  // not survive a grep (see the #970 note on `AutoApproveGate.resolveHeld`).
-  // ---------------------------------------------------------------------------
-  describe('#970 held-hook client status cue totality', () => {
-    test('Part-B ALLOW late verdict fires onHandled -- already total before #970 (resolveHeld calls markHandled unconditionally)', async () => {
-      const cancelLog: Array<{ reason: string; evalId: number | undefined }> = [];
-      const { service, release } = multiDeferredEvaluator(cancelLog);
-      const handledLog: Array<{ isSubagent: boolean }> = [];
-      const heldCancelledLog: number[] = [];
-      const g = gate(service, {
-        holdMs: 60_000,
-        pushHoldMs: 10,
-        onHandled: (ctx) => handledLog.push(ctx),
-        onHeldCancelled: () => heldCancelledLog.push(1),
-      });
-      const pending = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
-      await new Promise((r) => setTimeout(r, 20)); // early push + hold fires
-
-      release({ command: 'git push' }, approve);
-      expect(await pending).toBe('allow');
-      expect(handledLog).toEqual([{ isSubagent: false }]);
-      expect(heldCancelledLog).toHaveLength(0); // wrong cue must not also fire
-    });
-
-    test('Part-B DENY late verdict fires onHandled -- same coverage as ALLOW', async () => {
-      const cancelLog: Array<{ reason: string; evalId: number | undefined }> = [];
-      const { service, release } = multiDeferredEvaluator(cancelLog);
-      const handledLog: Array<{ isSubagent: boolean }> = [];
-      const g = gate(service, {
-        holdMs: 60_000,
-        pushHoldMs: 10,
-        onHandled: (ctx) => handledLog.push(ctx),
-      });
-      const pending = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
-      await new Promise((r) => setTimeout(r, 20));
-
-      release({ command: 'git push' }, deny);
-      expect(await pending).toBe('deny');
-      expect(handledLog).toEqual([{ isSubagent: false }]);
-    });
-
-    test('Part-B CANCELLED late verdict fires onHeldCancelled (the actual #970 gap)', async () => {
-      const cancelLog: Array<{ reason: string; evalId: number | undefined }> = [];
-      const { service, release } = multiDeferredEvaluator(cancelLog);
-      const handledLog: Array<{ isSubagent: boolean }> = [];
-      const heldCancelledLog: number[] = [];
-      const g = gate(service, {
-        holdMs: 60_000,
-        pushHoldMs: 10,
-        onHandled: (ctx) => handledLog.push(ctx),
-        onHeldCancelled: () => heldCancelledLog.push(1),
-      });
-      const pending = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
-      await new Promise((r) => setTimeout(r, 20));
-
-      release({ command: 'git push' }, cancelled);
-      expect(await pending).toBe('passthrough');
-      expect(heldCancelledLog).toHaveLength(1);
-      expect(handledLog).toHaveLength(0); // wrong cue must not also fire
-    });
-
-    test('hold-timeout fail-open fires NEITHER onHandled NOR onHeldCancelled (the pill is already "waiting" and stays correct)', async () => {
-      const handledLog: Array<{ isSubagent: boolean }> = [];
-      const heldCancelledLog: number[] = [];
-      const g = gate(evaluator(escalate), {
-        holdMs: 20, // short timeout so the hold fails open quickly
-        onHandled: (ctx) => handledLog.push(ctx),
-        onHeldCancelled: () => heldCancelledLog.push(1),
-      });
-      const pending = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
-      expect(await pending).toBe('passthrough'); // resolves once the hold times out
-
-      expect(handledLog).toHaveLength(0);
-      expect(heldCancelledLog).toHaveLength(0);
-    });
-  });
-
-  describe('teardown clears tracking', () => {
-    test('cancelStale clears openQuestionSignatures (a later signature match is a harmless no-op)', async () => {
-      const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
-      const g = gate(evaluator(escalate), {
-        holdMs: 60_000,
-        onResolved: (qid, reason) => resolvedLog.push({ qid, reason }),
-      });
-      const pending = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
-      await new Promise((r) => setTimeout(r, 20));
-      g.cancelStale('SessionEnd');
-      expect(await pending).toBe('passthrough');
-      expect(resolvedLog).toHaveLength(1); // cancelStale's own releaseAllHolds fired it once
-
-      g.cancelExternallyResolved(
-        { toolName: 'Bash', toolInput: { command: 'git push' } },
-        'PreToolUse',
-      );
-      // No double-resolution: the signature is no longer tracked.
-      expect(resolvedLog).toHaveLength(1);
-    });
-
-    test('forceRelease clears openQuestionSignatures', async () => {
-      const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
-      const g = gate(evaluator(escalate), {
-        holdMs: 60_000,
-        onResolved: (qid, reason) => resolvedLog.push({ qid, reason }),
-      });
-      const pending = g.resolvePermission(pr({ tool_input: { command: 'git push' } }));
-      await new Promise((r) => setTimeout(r, 20));
-      g.forceRelease('remi unstick');
-      expect(await pending).toBe('passthrough');
-      expect(resolvedLog).toHaveLength(1);
-
-      g.cancelExternallyResolved(
-        { toolName: 'Bash', toolInput: { command: 'git push' } },
-        'PreToolUse',
-      );
-      expect(resolvedLog).toHaveLength(1);
-    });
-  });
-
-  test('no match -> harmless no-op (no throw, nothing resolved)', () => {
-    const g = gate(evaluator(escalate), { holdMs: 60_000 });
+  test('no open escalation: a tool event is a harmless no-op', () => {
+    const g = gate();
     expect(() =>
       g.cancelExternallyResolved({ toolName: 'Bash', toolInput: { command: 'ls' } }, 'PreToolUse'),
     ).not.toThrow();
+    expect(resolved).toEqual([]);
+  });
+
+  test('a throwing onResolved is absorbed and the card is still removed', async () => {
+    const g = gate({
+      onResolved: () => {
+        throw new Error('test: broadcast failed');
+      },
+    });
+    void g.resolvePermission(pr());
+    const qid = escalatedIds[0] as UUID;
+    expect(() =>
+      g.cancelExternallyResolved(
+        { toolName: 'Bash', toolInput: { command: 'git push' } },
+        'PreToolUse',
+      ),
+    ).not.toThrow();
+    expect(registry.getQuestion(SID, qid)).toBeNull();
+  });
+
+  test('forceRelease (remi unstick) on a live main hold: released to the terminal with a notice, suppression kept, a late answer refused', async () => {
+    const notices: Array<{ qid: UUID; cause: string; registered: boolean }> = [];
+    const noticeCleared: UUID[] = [];
+    const g = gate({
+      onReleasedToTerminal: (qid, cause) => {
+        notices.push({ qid, cause, registered: registry.getQuestion(SID, qid) !== null });
+      },
+      onTerminalNoticeResolved: (qid) => {
+        noticeCleared.push(qid);
+      },
+    });
+    const hook = g.resolvePermission(pr());
+    const qid = escalatedIds[0] as UUID;
+    g.forceRelease('remi unstick');
+    expect(await hook).toBe('passthrough');
+    expect(notices).toEqual([{ qid, cause: 'released', registered: true }]);
+    expect(registry.getQuestion(SID, qid)).toBeNull();
+    expect(g.hasOpenHookPrompt()).toBe(true);
+    expect(g.hasMainHold()).toBe(false);
+    expect(g.answerHeld(qid, { kind: 'cancel' })).toBe('closed');
+    // The terminal answers it: the notice clears.
+    g.cancelExternallyResolved(
+      { toolName: 'Bash', toolInput: { command: 'git push' } },
+      'PostToolUse',
+    );
+    expect(noticeCleared).toEqual([qid]);
+  });
+
+  test('forceRelease clears every open card and reports how many; live holds go to the terminal', async () => {
+    const g = gate();
+    const a = g.resolvePermission(pr({ tool_input: { command: 'a' } }));
+    const b = g.resolvePermission(pr({ tool_input: { command: 'b' } }));
+    expect(g.forceRelease('remi unstick')).toEqual({ resolved: 2 });
+    expect(await a).toBe('passthrough');
+    expect(await b).toBe('passthrough');
+    expect(resolved.map((r) => r.qid).sort()).toEqual([...escalatedIds].sort());
+    // Released to the terminal, not closed: their dialogs are still up.
+    expect(g.hasOpenHookPrompt()).toBe(true);
+    // A second unstick clears what waits in the terminal (no card left to
+    // dismiss), and then nothing is left.
+    expect(g.forceRelease('remi unstick')).toEqual({ resolved: 2 });
+    expect(resolved).toHaveLength(2);
+    expect(g.hasOpenHookPrompt()).toBe(false);
+    expect(g.forceRelease('remi unstick')).toEqual({ resolved: 0 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1126: a held binary prompt is settled by exactly one human answer (the
+// phone's through `answerHeld`, or the terminal's through a resolution
+// signal), or released empty at its deadline. The phone's answer maps by the
+// card option's MEANING; nothing a card does not offer can be expressed.
+// ---------------------------------------------------------------------------
+describe('AutoApproveGate held prompts (#1126)', () => {
+  const SID = generateId() as UUID;
+  let registry: SessionRegistry;
+  let ids: UUID[];
+  let resolved: UUID[];
+  let deadlines: Array<{ qid: UUID; registered: boolean; cause: string }>;
+  let noticesCleared: UUID[];
+
+  function gate(over: Partial<AutoApproveGateDeps> = {}): AutoApproveGate {
+    registry.registerSession(SID, '/d', fakePTY([]), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    return new AutoApproveGate(
+      {
+        sessionRegistry: registry,
+        isInSubagentContext: () => false,
+        holdMs: 60_000,
+        hasLocalTerminal: true,
+        escalate: () => {
+          const id = generateId() as UUID;
+          ids.push(id);
+          registry.addQuestion(SID, {
+            id,
+            text: 'Allow Bash: git push',
+            options: [],
+            allowsFreeText: false,
+            isAnswered: false,
+          });
+          return id;
+        },
+        onResolved: (qid) => {
+          resolved.push(qid);
+        },
+        onReleasedToTerminal: (qid, cause) => {
+          deadlines.push({ qid, registered: registry.getQuestion(SID, qid) !== null, cause });
+        },
+        onTerminalNoticeResolved: (qid) => {
+          noticesCleared.push(qid);
+        },
+        ...over,
+      },
+      SID,
+    );
+  }
+
+  const YES: QuestionOption = {
+    label: 'Yes',
+    value: '1',
+    isRecommended: true,
+    isYes: true,
+    isNo: false,
+  };
+  const NO: QuestionOption = {
+    label: 'No',
+    value: '3',
+    isRecommended: false,
+    isYes: false,
+    isNo: true,
+  };
+  function standing(suggestionIndex: number, label = 'Yes, and switch to acceptEdits mode') {
+    return {
+      label,
+      value: '2',
+      isRecommended: false,
+      isYes: true,
+      isNo: false,
+      suggestionIndex,
+    } satisfies QuestionOption;
+  }
+  const SET_MODE = { type: 'setMode', mode: 'acceptEdits', destination: 'session' };
+  const ADD_RULES = {
+    type: 'addRules',
+    rules: [{ toolName: 'Bash', ruleContent: 'git push' }],
+    behavior: 'allow',
+    destination: 'localSettings',
+  };
+  const ADD_DIRS = { type: 'addDirectories', directories: ['/tmp/x'], destination: 'session' };
+
+  beforeEach(() => {
+    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    ids = [];
+    resolved = [];
+    deadlines = [];
+    noticesCleared = [];
+    configureLogger({ writeLog: () => {} });
+  });
+
+  afterEach(async () => {
+    __resetLoggerForTests();
+    await registry.shutdown();
+  });
+
+  test('phone Yes resolves the hook with allow, exactly once', async () => {
+    const g = gate();
+    const hook = g.resolvePermission(pr());
+    const qid = ids[0] as UUID;
+    expect(g.answerHeld(qid, { kind: 'option', option: YES })).toBe('resolved');
+    expect(await hook).toBe('allow');
+    // The hold is over: a second answer is refused as closed, and the
+    // prompt no longer counts as open.
+    expect(g.answerHeld(qid, { kind: 'option', option: NO })).toBe('closed');
+    expect(g.hasOpenHookPrompt()).toBe(false);
+  });
+
+  test('phone No resolves deny; a message rides along trimmed, an empty one is dropped', async () => {
+    const g = gate();
+    const plain = g.resolvePermission(pr({ tool_input: { command: 'a' } }));
+    expect(g.answerHeld(ids[0] as UUID, { kind: 'option', option: NO })).toBe('resolved');
+    expect(await plain).toBe('deny');
+
+    const withMsg = g.resolvePermission(pr({ tool_input: { command: 'b' } }));
+    expect(
+      g.answerHeld(ids[1] as UUID, {
+        kind: 'option',
+        option: NO,
+        message: '  use the staging branch instead  ',
+      }),
+    ).toBe('resolved');
+    expect(await withMsg).toEqual({ behavior: 'deny', message: 'use the staging branch instead' });
+
+    const blank = g.resolvePermission(pr({ tool_input: { command: 'c' } }));
+    expect(g.answerHeld(ids[2] as UUID, { kind: 'option', option: NO, message: '   ' })).toBe(
+      'resolved',
+    );
+    expect(await blank).toBe('deny');
+  });
+
+  test('a very long deny message is bounded before it reaches Claude', async () => {
+    const g = gate();
+    const hook = g.resolvePermission(pr());
+    g.answerHeld(ids[0] as UUID, { kind: 'option', option: NO, message: 'x'.repeat(5000) });
+    const decision = (await hook) as { behavior: string; message: string };
+    expect(decision.behavior).toBe('deny');
+    expect(decision.message.length).toBe(2000);
+  });
+
+  test('Cancel on a held card is a No through the hook, never an Esc', async () => {
+    const g = gate();
+    const hook = g.resolvePermission(pr());
+    expect(g.answerHeld(ids[0] as UUID, { kind: 'cancel' })).toBe('resolved');
+    expect(await hook).toBe('deny');
+  });
+
+  test('a setMode standing option echoes the suggestion scoped to this session', async () => {
+    const g = gate();
+    const hook = g.resolvePermission(pr({ permission_suggestions: [ADD_DIRS, SET_MODE] }));
+    expect(g.answerHeld(ids[0] as UUID, { kind: 'option', option: standing(1) })).toBe('resolved');
+    expect(await hook).toEqual({ behavior: 'allow', updatedPermissions: [SET_MODE] });
+    // Even a mode change Claude suggested for a settings file stays in the
+    // session: a phone tap never writes one (#1126 lead decision).
+    const hook2 = g.resolvePermission(
+      pr({
+        tool_input: { command: 'other' },
+        permission_suggestions: [{ ...SET_MODE, destination: 'localSettings' }],
+      }),
+    );
+    g.answerHeld(ids[1] as UUID, { kind: 'option', option: standing(0) });
+    expect(await hook2).toEqual({ behavior: 'allow', updatedPermissions: [SET_MODE] });
+  });
+
+  test('an addRules standing option echoes the rule scoped to this session', async () => {
+    const g = gate();
+    const hook = g.resolvePermission(pr({ permission_suggestions: [ADD_RULES] }));
+    expect(
+      g.answerHeld(ids[0] as UUID, {
+        kind: 'option',
+        option: standing(0, 'Yes, allow git push for this session'),
+      }),
+    ).toBe('resolved');
+    expect(await hook).toEqual({
+      behavior: 'allow',
+      updatedPermissions: [{ ...ADD_RULES, destination: 'session' }],
+    });
+  });
+
+  test('what a card does not offer is refused and the hold stays: addDirectories, a missing suggestion, a reworded Yes, free text', async () => {
+    const g = gate();
+    let settled = false;
+    const hook = g
+      .resolvePermission(pr({ permission_suggestions: [ADD_DIRS, SET_MODE] }))
+      .then((d) => {
+        settled = true;
+        return d;
+      });
+    const qid = ids[0] as UUID;
+    // An option naming the addDirectories entry (no card offers it).
+    expect(g.answerHeld(qid, { kind: 'option', option: standing(0) })).toBe('refused');
+    // An index with no suggestion behind it.
+    expect(g.answerHeld(qid, { kind: 'option', option: standing(7) })).toBe('refused');
+    // A Yes that is not the one-time Yes and names no suggestion.
+    expect(
+      g.answerHeld(qid, {
+        kind: 'option',
+        option: { ...YES, label: 'Yes, and always allow' },
+      }),
+    ).toBe('refused');
+    expect(g.answerHeld(qid, { kind: 'text', text: 'go ahead' })).toBe('refused');
+    await Bun.sleep(5);
+    expect(settled).toBe(false);
+    expect(registry.getQuestion(SID, qid)).not.toBeNull();
+    // The hold is intact: a real option still resolves it.
+    expect(g.answerHeld(qid, { kind: 'option', option: YES })).toBe('resolved');
+    expect(await hook).toBe('allow');
+  });
+
+  test('an id this gate never held is unknown (hook-less and passthrough cards use their own path)', async () => {
+    const g = gate();
+    expect(g.answerHeld(generateId() as UUID, { kind: 'option', option: YES })).toBe('unknown');
+    await g.resolvePermission(pr({ permission_suggestions: ['Option A', 'Option B', 'Option C'] }));
+    expect(g.answerHeld(ids[0] as UUID, { kind: 'option', option: YES })).toBe('unknown');
+  });
+
+  test('the deadline releases the hook empty, tells the phone while the card is registered, then dismisses it', async () => {
+    const g = gate({ holdMs: 30 });
+    const hook = g.resolvePermission(pr());
+    const qid = ids[0] as UUID;
+    expect(await hook).toBe('passthrough');
+    expect(deadlines).toEqual([{ qid, registered: true, cause: 'deadline' }]);
+    expect(registry.getQuestion(SID, qid)).toBeNull();
+    expect(resolved).toEqual([qid]);
+    // Claude's dialog is still up, so the prompt stays open for the probe,
+    // and a late phone answer is refused as closed.
+    expect(g.hasOpenHookPrompt()).toBe(true);
+    expect(g.answerHeld(qid, { kind: 'option', option: YES })).toBe('closed');
+    // The terminal answers later: the prompt closes and the notice clears,
+    // with no second card dismissal.
+    g.cancelExternallyResolved(
+      { toolName: 'Bash', toolInput: { command: 'git push' } },
+      'PostToolUse',
+    );
+    expect(g.hasOpenHookPrompt()).toBe(false);
+    expect(noticesCleared).toEqual([qid]);
+    expect(resolved).toEqual([qid]);
+  });
+
+  test('a prompt released at its deadline is not retired by a late answer path (its dialog is still up)', async () => {
+    const g = gate({ holdMs: 20 });
+    const hook = g.resolvePermission(pr());
+    const qid = ids[0] as UUID;
+    expect(await hook).toBe('passthrough');
+    // The stale-answer path for the dismissed card retires its id.
+    g.retireQuestion(qid);
+    expect(g.hasOpenHookPrompt()).toBe(true);
+    expect(noticesCleared).toEqual([]);
+    // Only a hook signal closes it, and the notice clears then.
+    g.cancelStale('UserPromptSubmit', { mainOnly: true });
+    expect(g.hasOpenHookPrompt()).toBe(false);
+    expect(noticesCleared).toEqual([qid]);
+  });
+
+  test('a prompt waiting in the terminal stops suppressing orphans after the hold length (#1126)', async () => {
+    // A No answered in the terminal after the deadline fires no hook, so the
+    // entry cannot rely on a signal to end; it expires instead.
+    const g = gate({ holdMs: 25 });
+    const hook = g.resolvePermission(pr());
+    const qid = ids[0] as UUID;
+    expect(await hook).toBe('passthrough');
+    expect(g.hasOpenHookPrompt()).toBe(true);
+    await Bun.sleep(40);
+    expect(g.hasOpenHookPrompt()).toBe(false);
+    // Expiry only ends the suppression: the prompt is still tracked, so its
+    // notice still clears when a hook signal closes it.
+    g.cancelStale('UserPromptSubmit', { mainOnly: true });
+    expect(noticesCleared).toEqual([qid]);
+  });
+
+  test('an answer before the deadline cancels it: no notice, no late release', async () => {
+    const g = gate({ holdMs: 40 });
+    const hook = g.resolvePermission(pr());
+    g.answerHeld(ids[0] as UUID, { kind: 'option', option: YES });
+    expect(await hook).toBe('allow');
+    await Bun.sleep(80);
+    expect(deadlines).toEqual([]);
+  });
+
+  test('an abort of the hook request (Claude closed it) dismisses the card and closes the prompt', async () => {
+    const g = gate();
+    const client = new AbortController();
+    const hook = g.resolvePermission(pr(), client.signal);
+    const qid = ids[0] as UUID;
+    client.abort();
+    expect(await hook).toBe('passthrough');
+    expect(registry.getQuestion(SID, qid)).toBeNull();
+    expect(resolved).toEqual([qid]);
+    expect(g.hasOpenHookPrompt()).toBe(false);
+    expect(g.answerHeld(qid, { kind: 'option', option: YES })).toBe('closed');
+  });
+
+  test("an abort at Claude's registered hook timeout is a timeout, not a terminal No: released to the terminal with the notice", async () => {
+    // Registered timeout 5.03 s, so any abort after 30 ms is within the
+    // 5 s margin of it; the deadline itself is far away.
+    const g = gate({ holdMs: 60_000, hookTimeoutMs: 5_030 });
+    const client = new AbortController();
+    const hook = g.resolvePermission(pr(), client.signal);
+    const qid = ids[0] as UUID;
+    await Bun.sleep(45);
+    client.abort();
+    expect(await hook).toBe('passthrough');
+    // Like the deadline: the notice is pushed while the card is registered,
+    // the card is dismissed, and the prompt stays open in the terminal.
+    expect(deadlines).toEqual([{ qid, registered: true, cause: 'deadline' }]);
+    expect(registry.getQuestion(SID, qid)).toBeNull();
+    expect(g.hasOpenHookPrompt()).toBe(true);
+    expect(g.answerHeld(qid, { kind: 'option', option: YES })).toBe('closed');
+    // Its tool run later closes it and clears the notice.
+    g.cancelExternallyResolved(
+      { toolName: 'Bash', toolInput: { command: 'git push' } },
+      'PostToolUse',
+    );
+    expect(noticesCleared).toEqual([qid]);
+  });
+
+  test('an abort well before the registered hook timeout is an answer in the terminal: closed, no notice', async () => {
+    const g = gate({ holdMs: 60_000, hookTimeoutMs: 600_000 });
+    const client = new AbortController();
+    const hook = g.resolvePermission(pr(), client.signal);
+    client.abort();
+    expect(await hook).toBe('passthrough');
+    expect(deadlines).toEqual([]);
+    expect(g.hasOpenHookPrompt()).toBe(false);
+  });
+
+  test('an abort after a phone answer is a no-op (the answer already settled the hold)', async () => {
+    const g = gate();
+    const client = new AbortController();
+    const hook = g.resolvePermission(pr(), client.signal);
+    g.answerHeld(ids[0] as UUID, { kind: 'option', option: YES });
+    client.abort();
+    expect(await hook).toBe('allow');
+    expect(resolved).toEqual([]);
+  });
+
+  test('a request already aborted on arrival is not held and creates no card', async () => {
+    const g = gate();
+    const client = new AbortController();
+    client.abort();
+    expect(await g.resolvePermission(pr(), client.signal)).toBe('passthrough');
+    expect(ids).toEqual([]);
+  });
+
+  describe('pairing a request with its PreToolUse (#1126)', () => {
+    const call = { toolName: 'Bash', toolInput: { command: 'git push' } };
+
+    test('the paired PostToolUse closes the prompt; an identical call with another id does not', async () => {
+      const g = gate();
+      g.notePreToolUse({ ...call, toolUseId: 'tu-1' });
+      let settled = false;
+      const hook = g.resolvePermission(pr()).then((d) => {
+        settled = true;
+        return d;
+      });
+      const qid = ids[0] as UUID;
+      g.cancelExternallyResolved({ ...call, toolUseId: 'tu-other' }, 'PostToolUse');
+      // Untouched: still held, card still registered, nothing told the phone.
+      await Bun.sleep(1);
+      expect(settled).toBe(false);
+      expect(registry.getQuestion(SID, qid)).not.toBeNull();
+      expect(deadlines).toEqual([]);
+      g.cancelExternallyResolved({ ...call, toolUseId: 'tu-1' }, 'PostToolUse');
+      expect(await hook).toBe('passthrough');
+      expect(g.hasOpenHookPrompt()).toBe(false);
+    });
+
+    test('the paired PostToolUse closes the prompt even when its input differs (#1127)', async () => {
+      // Measured on Claude Code 2.1.287: an AskUserQuestion answered in the
+      // terminal posts PostToolUse with `{questions, answers}`, and an
+      // ExitPlanMode with `{}`, while the PreToolUse and PermissionRequest
+      // carried the call's own input. The id is the same call.
+      const g = gate();
+      const plan = { plan: '# Plan', planFilePath: '/p.md' };
+      g.notePreToolUse({ toolName: 'Bash', toolInput: plan, toolUseId: 'tu-plan' });
+      const hook = g.resolvePermission(pr({ tool_input: plan }));
+      const qid = ids[0] as UUID;
+      // Another call's id never matches, whatever its input.
+      g.cancelExternallyResolved(
+        { toolName: 'Bash', toolInput: {}, toolUseId: 'tu-other' },
+        'PostToolUse',
+      );
+      expect(registry.getQuestion(SID, qid)).not.toBeNull();
+      g.cancelExternallyResolved(
+        { toolName: 'Bash', toolInput: {}, toolUseId: 'tu-plan' },
+        'PostToolUse',
+      );
+      expect(await hook).toBe('passthrough');
+      expect(registry.getQuestion(SID, qid)).toBeNull();
+      // Matched by id: closed, not released with a notice.
+      expect(deadlines).toEqual([]);
+      expect(resolved).toEqual([qid]);
+      expect(g.hasOpenHookPrompt()).toBe(false);
+    });
+
+    describe('an unpaired AskUserQuestion / ExitPlanMode that finished (#1127 review S4)', () => {
+      const AUQ = { questions: [{ question: 'Which?', options: ['A', 'B'] }] };
+      const answered = { ...AUQ, answers: { 'Which?': 'A' } };
+      const auq = (over: Partial<PermissionRequestHookInput> = {}) =>
+        pr({ tool_name: 'AskUserQuestion', tool_input: AUQ, ...over });
+
+      test('the one open hold of that tool and agent is released to the terminal', async () => {
+        const g = gate();
+        // No PreToolUse noted: the request is unpaired.
+        const hook = g.resolvePermission(auq());
+        const qid = ids[0] as UUID;
+        g.cancelExternallyResolved(
+          { toolName: 'AskUserQuestion', toolInput: answered, toolUseId: 'tu-x' },
+          'PostToolUse',
+          { toolFinished: true },
+        );
+        expect(await hook).toBe('passthrough');
+        expect(registry.getQuestion(SID, qid)).toBeNull();
+        expect(deadlines).toEqual([{ qid, registered: true, cause: 'released' }]);
+        // Kept open for orphan suppression until a hook signal closes it.
+        expect(g.hasOpenHookPrompt()).toBe(true);
+      });
+
+      test('the same for a plan, whose finished input is {}', async () => {
+        const g = gate();
+        const hook = g.resolvePermission(
+          pr({ tool_name: 'ExitPlanMode', tool_input: { plan: '# P' }, permission_mode: 'plan' }),
+        );
+        g.cancelExternallyResolved({ toolName: 'ExitPlanMode', toolInput: {} }, 'PostToolUse', {
+          toolFinished: true,
+        });
+        expect(await hook).toBe('passthrough');
+        expect(deadlines.map((d) => d.cause)).toEqual(['released']);
+      });
+
+      test('nothing is released on a PreToolUse, for two open holds, for a hold paired to another call, or for another agent', async () => {
+        const g = gate();
+        const unpaired = g.resolvePermission(auq());
+        const finished = { toolName: 'AskUserQuestion', toolInput: answered, toolUseId: 'tu-x' };
+        // A PreToolUse is not a finished tool.
+        g.cancelExternallyResolved(finished, 'PreToolUse');
+        // Another agent's finished call.
+        g.cancelExternallyResolved({ ...finished, agentId: 'agent-9' }, 'PostToolUse-subagent', {
+          toolFinished: true,
+        });
+        expect(g.isHeld(ids[0] as UUID)).toBe(true);
+        // Two open holds: no guess between them.
+        const second = g.resolvePermission(
+          auq({ tool_input: { questions: [{ question: 'Other?', options: ['C', 'D'] }] } }),
+        );
+        g.cancelExternallyResolved(finished, 'PostToolUse', { toolFinished: true });
+        expect(g.isHeld(ids[0] as UUID)).toBe(true);
+        expect(g.isHeld(ids[1] as UUID)).toBe(true);
+        expect(deadlines).toEqual([]);
+        g.forceRelease('test');
+        await Promise.all([unpaired, second]);
+      });
+
+      test("a hold paired with its own PreToolUse is not released by another call's finish", async () => {
+        const g = gate();
+        g.notePreToolUse({ toolName: 'AskUserQuestion', toolInput: AUQ, toolUseId: 'tu-own' });
+        const paired = g.resolvePermission(auq());
+        const finished = { toolName: 'AskUserQuestion', toolInput: answered, toolUseId: 'tu-x' };
+        g.cancelExternallyResolved(finished, 'PostToolUse', { toolFinished: true });
+        expect(g.isHeld(ids[0] as UUID)).toBe(true);
+        expect(deadlines).toEqual([]);
+        // Its own finish closes it exactly (by id), no notice.
+        g.cancelExternallyResolved({ ...finished, toolUseId: 'tu-own' }, 'PostToolUse', {
+          toolFinished: true,
+        });
+        expect(await paired).toBe('passthrough');
+        expect(deadlines).toEqual([]);
+      });
+    });
+
+    test("pairing respects the agent: a request never takes another agent's identical call", async () => {
+      const g = gate();
+      // A subagent and the main agent run the identical command.
+      g.notePreToolUse({ ...call, toolUseId: 'tu-sub', agentId: 'agent-1' });
+      g.notePreToolUse({ ...call, toolUseId: 'tu-main' });
+      const hook = g.resolvePermission(pr());
+      // The main request paired with the main call, so the main call's
+      // PostToolUse closes it exactly (no early release, no notice).
+      g.cancelExternallyResolved({ ...call, toolUseId: 'tu-main' }, 'PostToolUse');
+      expect(await hook).toBe('passthrough');
+      expect(deadlines).toEqual([]);
+      expect(g.hasOpenHookPrompt()).toBe(false);
+    });
+
+    test('two identical calls in flight: no pairing; a name + input match releases the hold to the terminal, never closes it', async () => {
+      const g = gate();
+      g.notePreToolUse({ ...call, toolUseId: 'tu-a' });
+      g.notePreToolUse({ ...call, toolUseId: 'tu-b' });
+      const hook = g.resolvePermission(pr());
+      const qid = ids[0] as UUID;
+      // Unpaired: either call's PostToolUse ends the hold. The worst case is
+      // an early empty release, never a decision...
+      g.cancelExternallyResolved({ ...call, toolUseId: 'tu-b' }, 'PostToolUse');
+      expect(await hook).toBe('passthrough');
+      expect(registry.getQuestion(SID, qid)).toBeNull();
+      // Not silent: the phone is told while the card is still registered.
+      expect(deadlines).toEqual([{ qid, registered: true, cause: 'released' }]);
+      // ...and its dialog may still be up (the other call ran), so the prompt
+      // stays open for the probe and is not retired by a late phone answer.
+      expect(g.hasOpenHookPrompt()).toBe(true);
+      g.retireQuestion(qid);
+      expect(g.hasOpenHookPrompt()).toBe(true);
+      // The next matching run closes it, and its notice clears.
+      g.cancelExternallyResolved({ ...call, toolUseId: 'tu-a' }, 'PostToolUse');
+      expect(g.hasOpenHookPrompt()).toBe(false);
+      expect(noticesCleared).toEqual([qid]);
+    });
+
+    test('an identical unpaired re-request releases the earlier hold to the terminal', async () => {
+      const g = gate();
+      const first = g.resolvePermission(pr());
+      const second = g.resolvePermission(pr());
+      expect(await first).toBe('passthrough');
+      expect(registry.getQuestion(SID, ids[0] as UUID)).toBeNull();
+      expect(deadlines).toEqual([{ qid: ids[0] as UUID, registered: true, cause: 'released' }]);
+      // Both prompts stay open: the first in the terminal, the second held.
+      expect(g.answerHeld(ids[1] as UUID, { kind: 'option', option: YES })).toBe('resolved');
+      expect(await second).toBe('allow');
+      expect(g.hasOpenHookPrompt()).toBe(true);
+      g.cancelStale('Stop', { mainOnly: true });
+      expect(g.hasOpenHookPrompt()).toBe(false);
+    });
+
+    test('closed-hold memory and in-flight calls are bounded', async () => {
+      const g = gate();
+      for (let i = 0; i < 260; i++) {
+        const hook = g.resolvePermission(pr({ tool_input: { command: `c${i}` } }));
+        g.answerHeld(ids[i] as UUID, { kind: 'option', option: YES });
+        await hook;
+      }
+      // The oldest ended hold has been forgotten; recent ones are remembered.
+      expect(g.answerHeld(ids[0] as UUID, { kind: 'cancel' })).toBe('unknown');
+      expect(g.answerHeld(ids[259] as UUID, { kind: 'cancel' })).toBe('closed');
+      // Only the newest 64 unfinished calls stay pairable.
+      for (let i = 0; i < 70; i++) {
+        g.notePreToolUse({
+          toolName: 'Bash',
+          toolInput: { command: `p${i}` },
+          toolUseId: `tu-${i}`,
+        });
+      }
+      const oldest = g.resolvePermission(pr({ tool_input: { command: 'p0' } }));
+      const newest = g.resolvePermission(pr({ tool_input: { command: 'p69' } }));
+      g.cancelExternallyResolved(
+        { toolName: 'Bash', toolInput: { command: 'p69' }, toolUseId: 'tu-69' },
+        'PostToolUse',
+      );
+      expect(await newest).toBe('passthrough');
+      // p0 was evicted, so it is unpaired: an id-carrying event for it can
+      // only release it to the terminal by name and input.
+      g.cancelExternallyResolved(
+        { toolName: 'Bash', toolInput: { command: 'p0' }, toolUseId: 'tu-0' },
+        'PostToolUse',
+      );
+      expect(await oldest).toBe('passthrough');
+      expect(g.hasOpenHookPrompt()).toBe(true);
+    });
+
+    test('two requests each paired with its own call stay separate holds', async () => {
+      const g = gate();
+      g.notePreToolUse({ ...call, toolUseId: 'tu-1' });
+      const first = g.resolvePermission(pr());
+      g.notePreToolUse({ ...call, toolUseId: 'tu-2' });
+      const second = g.resolvePermission(pr());
+      // The identical re-request did not cancel the first: different ids.
+      expect(resolved).toEqual([]);
+      g.answerHeld(ids[1] as UUID, { kind: 'option', option: NO });
+      expect(await second).toBe('deny');
+      g.cancelExternallyResolved({ ...call, toolUseId: 'tu-1' }, 'PostToolUse');
+      expect(await first).toBe('passthrough');
+    });
+
+    test("a finished call cannot pair, and another agent's call never pairs", async () => {
+      const g = gate();
+      g.notePreToolUse({ ...call, toolUseId: 'tu-done' });
+      g.noteToolUseEnded('tu-done');
+      g.notePreToolUse({ ...call, toolUseId: 'tu-sub', agentId: 'agent-1' });
+      const hook = g.resolvePermission(pr());
+      // Unpaired, so a PostToolUse with any id falls back to name + input,
+      // except the subagent's (agent scoping still holds).
+      g.cancelExternallyResolved({ ...call, toolUseId: 'tu-sub', agentId: 'agent-1' }, 'x');
+      expect(g.hasOpenHookPrompt()).toBe(true);
+      g.cancelExternallyResolved(call, 'PostToolUse');
+      expect(await hook).toBe('passthrough');
+    });
+  });
+
+  describe('a held AskUserQuestion (#1127)', () => {
+    const ONE = {
+      questions: [{ question: 'Which color?', options: [{ label: 'Red' }, { label: 'Green' }] }],
+    };
+    const TWO = {
+      questions: [
+        ONE.questions[0],
+        { question: 'Which fruits?', multiSelect: true, options: ['Apple', 'Cherry'] },
+      ],
+    };
+    const ask = (toolInput: Record<string, unknown>) =>
+      pr({ tool_name: 'AskUserQuestion', tool_input: toolInput });
+    const GREEN: QuestionOption = {
+      label: 'Green',
+      value: '2',
+      isRecommended: false,
+      isYes: false,
+      isNo: false,
+    };
+
+    test('selections answer every question: allow with the input echoed and the answers', async () => {
+      const g = gate();
+      const hook = g.resolvePermission(ask(TWO));
+      const qid = ids[0] as UUID;
+      expect(
+        g.answerHeld(qid, {
+          kind: 'selections',
+          selections: [
+            { questionIndex: 1, optionIndices: [1, 0] },
+            { questionIndex: 0, optionIndices: [1] },
+          ],
+        }),
+      ).toBe('resolved');
+      expect(await hook).toEqual({
+        behavior: 'allow',
+        updatedInput: {
+          ...TWO,
+          answers: { 'Which color?': 'Green', 'Which fruits?': 'Apple, Cherry' },
+        },
+      });
+      expect(g.hasOpenHookPrompt()).toBe(false);
+    });
+
+    test('an incomplete answer is refused and the hold stays; a complete one then resolves it', async () => {
+      const g = gate();
+      let settled = false;
+      const hook = g.resolvePermission(ask(TWO)).then((d) => {
+        settled = true;
+        return d;
+      });
+      const qid = ids[0] as UUID;
+      expect(
+        g.answerHeld(qid, {
+          kind: 'selections',
+          selections: [{ questionIndex: 0, optionIndices: [0] }],
+        }),
+      ).toBe('refused');
+      // A single pick or free text cannot answer two questions.
+      expect(g.answerHeld(qid, { kind: 'option', option: GREEN })).toBe('refused');
+      expect(g.answerHeld(qid, { kind: 'text', text: 'Teal' })).toBe('refused');
+      await Bun.sleep(5);
+      expect(settled).toBe(false);
+      expect(registry.getQuestion(SID, qid)).not.toBeNull();
+      expect(g.isHeld(qid)).toBe(true);
+      expect(
+        g.answerHeld(qid, {
+          kind: 'selections',
+          selections: [
+            { questionIndex: 0, optionIndices: [0] },
+            { questionIndex: 1, optionIndices: [0] },
+          ],
+        }),
+      ).toBe('resolved');
+      expect(await hook).toMatchObject({ behavior: 'allow' });
+    });
+
+    test('one single-select question takes a single pick or free text', async () => {
+      const g = gate();
+      const picked = g.resolvePermission(ask(ONE));
+      expect(g.answerHeld(ids[0] as UUID, { kind: 'option', option: GREEN })).toBe('resolved');
+      expect(await picked).toEqual({
+        behavior: 'allow',
+        updatedInput: { ...ONE, answers: { 'Which color?': 'Green' } },
+      });
+      const typed = g.resolvePermission(ask(ONE));
+      expect(g.answerHeld(ids[1] as UUID, { kind: 'text', text: 'Teal' })).toBe('resolved');
+      expect(await typed).toEqual({
+        behavior: 'allow',
+        updatedInput: { ...ONE, answers: { 'Which color?': 'Teal' } },
+      });
+    });
+
+    test('a pick that is not the question own option is refused', async () => {
+      const g = gate();
+      const hook = g.resolvePermission(ask(ONE));
+      const qid = ids[0] as UUID;
+      expect(g.answerHeld(qid, { kind: 'option', option: { ...GREEN, value: '1' } })).toBe(
+        'refused',
+      );
+      expect(g.answerHeld(qid, { kind: 'option', option: { ...GREEN, label: 'Blue' } })).toBe(
+        'refused',
+      );
+      g.forceRelease('test');
+      expect(await hook).toBe('passthrough');
+    });
+
+    test('Cancel denies with the dismissal message; nothing is typed', async () => {
+      const g = gate();
+      const hook = g.resolvePermission(ask(TWO));
+      expect(g.answerHeld(ids[0] as UUID, { kind: 'cancel' })).toBe('resolved');
+      expect(await hook).toEqual({
+        behavior: 'deny',
+        message: 'The user dismissed the question.',
+      });
+    });
+
+    test('an ambiguous answer is refused on every kind of hold (#1127 review S1)', async () => {
+      const g = gate();
+      const asked = g.resolvePermission(ask(ONE));
+      const binary = g.resolvePermission(pr({ tool_input: { command: 'ls' } }));
+      const plan = g.resolvePermission(
+        pr({ tool_name: 'ExitPlanMode', tool_input: { plan: '# P' }, permission_mode: 'plan' }),
+      );
+      for (const qid of ids) {
+        expect(g.answerHeld(qid, { kind: 'ambiguous' })).toBe('refused');
+        expect(g.isHeld(qid)).toBe(true);
+      }
+      g.forceRelease('test');
+      expect(await Promise.all([asked, binary, plan])).toEqual([
+        'passthrough',
+        'passthrough',
+        'passthrough',
+      ]);
+    });
+
+    test('selections never answer a binary prompt', async () => {
+      const g = gate();
+      const hook = g.resolvePermission(pr());
+      expect(
+        g.answerHeld(ids[0] as UUID, {
+          kind: 'selections',
+          selections: [{ questionIndex: 0, optionIndices: [0] }],
+        }),
+      ).toBe('refused');
+      g.forceRelease('test');
+      expect(await hook).toBe('passthrough');
+    });
+  });
+
+  describe('a held ExitPlanMode (#1127)', () => {
+    const PLAN = { plan: '# Plan', planFilePath: '/p/plan.md' };
+    const plan = () => pr({ tool_name: 'ExitPlanMode', tool_input: PLAN, permission_mode: 'plan' });
+    const [ACCEPT_EDITS, MANUAL, KEEP] = exitPlanModeOptions() as [
+      QuestionOption,
+      QuestionOption,
+      QuestionOption,
+    ];
+
+    test('each approval echoes the plan and sets its mode for the session', async () => {
+      const g = gate();
+      const a = g.resolvePermission(plan());
+      expect(g.answerHeld(ids[0] as UUID, { kind: 'option', option: ACCEPT_EDITS })).toBe(
+        'resolved',
+      );
+      expect(await a).toEqual({
+        behavior: 'allow',
+        updatedInput: PLAN,
+        updatedPermissions: [{ type: 'setMode', mode: 'acceptEdits', destination: 'session' }],
+      });
+      const b = g.resolvePermission(plan());
+      expect(g.answerHeld(ids[1] as UUID, { kind: 'option', option: MANUAL })).toBe('resolved');
+      expect(await b).toEqual({
+        behavior: 'allow',
+        updatedInput: PLAN,
+        updatedPermissions: [{ type: 'setMode', mode: 'default', destination: 'session' }],
+      });
+    });
+
+    test("a subagent's plan (daemon mode) approves without changing the session mode (review S5)", async () => {
+      const g = gate({ hasLocalTerminal: false });
+      const sub = { agent_id: 'agent-1', agent_type: 'Plan' };
+      const [approve] = exitPlanModeOptions(true) as [QuestionOption];
+      const a = g.resolvePermission({ ...plan(), ...sub });
+      const qid = ids[0] as UUID;
+      // The main agent's mode-setting approvals are not this card's.
+      expect(g.answerHeld(qid, { kind: 'option', option: ACCEPT_EDITS })).toBe('refused');
+      expect(g.answerHeld(qid, { kind: 'option', option: MANUAL })).toBe('refused');
+      expect(g.answerHeld(qid, { kind: 'option', option: approve })).toBe('resolved');
+      expect(await a).toEqual({ behavior: 'allow', updatedInput: PLAN });
+    });
+
+    test('Keep planning denies with the message; Cancel keeps planning too', async () => {
+      const g = gate();
+      const a = g.resolvePermission(plan());
+      g.answerHeld(ids[0] as UUID, { kind: 'option', option: KEEP, message: 'Add tests.' });
+      expect(await a).toEqual({ behavior: 'deny', message: 'Add tests.' });
+      const b = g.resolvePermission(plan());
+      g.answerHeld(ids[1] as UUID, { kind: 'cancel' });
+      expect(await b).toEqual({ behavior: 'deny', message: 'Keep planning.' });
+    });
+
+    test('a binary Yes, free text or selections are not plan answers', async () => {
+      const g = gate();
+      const hook = g.resolvePermission(plan());
+      const qid = ids[0] as UUID;
+      expect(g.answerHeld(qid, { kind: 'option', option: YES })).toBe('refused');
+      expect(g.answerHeld(qid, { kind: 'text', text: 'ship it' })).toBe('refused');
+      expect(
+        g.answerHeld(qid, {
+          kind: 'selections',
+          selections: [{ questionIndex: 0, optionIndices: [0] }],
+        }),
+      ).toBe('refused');
+      expect(g.isHeld(qid)).toBe(true);
+      g.forceRelease('test');
+      expect(await hook).toBe('passthrough');
+    });
+  });
+
+  test('Stop, SubagentStop-style sweeps and SessionEnd release a held hook empty', async () => {
+    const g = gate();
+    const atStop = g.resolvePermission(pr({ tool_input: { command: 'a' } }));
+    g.cancelStale('Stop', { mainOnly: true });
+    expect(await atStop).toBe('passthrough');
+    const atEnd = g.resolvePermission(pr({ tool_input: { command: 'b' } }));
+    g.cancelStale('SessionEnd');
+    expect(await atEnd).toBe('passthrough');
+    expect(resolved).toEqual(ids);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1126: a background subagent's dialog does not render while its hook is
+// held, so the route depends on whether the session has a local terminal.
+// ---------------------------------------------------------------------------
+describe('AutoApproveGate subagent routing by local terminal (#1126)', () => {
+  const SID = generateId() as UUID;
+  let registry: SessionRegistry;
+  let ids: UUID[];
+  let parks: PermissionRequestHookInput[];
+  let noticesNow: PermissionRequestHookInput[];
+  let pushedNow: UUID[];
+  let noticesCleared: UUID[];
+
+  function gate(hasLocalTerminal: boolean, over: Partial<AutoApproveGateDeps> = {}) {
+    registry.registerSession(SID, '/d', fakePTY([]), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    return new AutoApproveGate(
+      {
+        sessionRegistry: registry,
+        isInSubagentContext: () => false,
+        holdMs: 60_000,
+        hasLocalTerminal,
+        escalate: () => {
+          const id = generateId() as UUID;
+          ids.push(id);
+          return id;
+        },
+        parkForPTY: (i) => {
+          parks.push(i);
+          const id = generateId() as UUID;
+          ids.push(id);
+          return id;
+        },
+        pushTerminalNoticeNow: (i) => {
+          noticesNow.push(i);
+          const id = generateId() as UUID;
+          ids.push(id);
+          return id;
+        },
+        onHeldEscalate: (id) => {
+          pushedNow.push(id);
+        },
+        onTerminalNoticeResolved: (id) => {
+          noticesCleared.push(id);
+        },
+        ...over,
+      },
+      SID,
+    );
+  }
+
+  const sub = (over: Partial<PermissionRequestHookInput> = {}) =>
+    pr({ agent_id: 'agent-1', agent_type: 'general-purpose', ...over });
+  const YES: QuestionOption = {
+    label: 'Yes',
+    value: '1',
+    isRecommended: true,
+    isYes: true,
+    isNo: false,
+  };
+
+  beforeEach(() => {
+    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    ids = [];
+    parks = [];
+    noticesNow = [];
+    pushedNow = [];
+    noticesCleared = [];
+    configureLogger({ writeLog: () => {} });
+  });
+
+  afterEach(async () => {
+    __resetLoggerForTests();
+    await registry.shutdown();
+  });
+
+  test('with a local terminal: passthrough at once, parked for its render, nothing held', async () => {
+    const g = gate(true);
+    const input = sub();
+    expect(await g.resolvePermission(input)).toBe('passthrough');
+    expect(parks).toEqual([input]);
+    expect(pushedNow).toEqual([]);
+    expect(g.answerHeld(ids[0] as UUID, { kind: 'option', option: YES })).toBe('unknown');
+    // Not rendered yet: it must not suppress a hook-less prompt's card (its
+    // own render is matched through its parked record first).
+    expect(g.hasOpenHookPrompt()).toBe(false);
+    // Rendered: its dialog is on screen, so its redraws are echoes, not
+    // orphans, for the entry's bounded lifetime (#1126 lead decision).
+    g.noteTerminalNotice(ids[0] as UUID);
+    expect(g.hasOpenHookPrompt()).toBe(true);
+  });
+
+  test('a rendered subagent prompt stops suppressing once it is older than the hold length', async () => {
+    const g = gate(true, { holdMs: 25 });
+    await g.resolvePermission(sub());
+    g.noteTerminalNotice(ids[0] as UUID);
+    expect(g.hasOpenHookPrompt()).toBe(true);
+    await Bun.sleep(40);
+    expect(g.hasOpenHookPrompt()).toBe(false);
+  });
+
+  test("a rendered subagent prompt stops suppressing at that agent's next tool call", async () => {
+    const g = gate(true);
+    await g.resolvePermission(sub());
+    const qid = ids[0] as UUID;
+    g.noteTerminalNotice(qid);
+    expect(g.hasOpenHookPrompt()).toBe(true);
+    g.noteAgentToolCall('agent-1', 'tu-next');
+    expect(g.hasOpenHookPrompt()).toBe(false);
+    expect(noticesCleared).toEqual([qid]);
+  });
+
+  test('a rendered notice is dismissed when the prompt resolves', async () => {
+    const g = gate(true);
+    await g.resolvePermission(sub());
+    const qid = ids[0] as UUID;
+    g.noteTerminalNotice(qid);
+    g.cancelExternallyResolved(
+      { toolName: 'Bash', toolInput: { command: 'git push' }, agentId: 'agent-1' },
+      'PostToolUse-subagent',
+    );
+    expect(noticesCleared).toEqual([qid]);
+    // A notice for a prompt no longer open is not tracked.
+    g.noteTerminalNotice(qid);
+    g.forceRelease('probe');
+    expect(noticesCleared).toEqual([qid]);
+  });
+
+  test('with no render path the notice is pushed at once, and still dismissed on resolution', async () => {
+    const g = gate(true, {
+      parkForPTY: () => {
+        throw new Error('test: park failed');
+      },
+    });
+    const input = sub();
+    expect(await g.resolvePermission(input)).toBe('passthrough');
+    expect(noticesNow).toEqual([input]);
+    g.cancelStaleForAgent('agent-1', 'SubagentStop');
+    expect(noticesCleared).toEqual([ids[0] as UUID]);
+  });
+
+  test('without a local terminal: held and pushed like a main prompt, answerable from the phone', async () => {
+    const g = gate(false);
+    const hook = g.resolvePermission(sub());
+    const qid = ids[0] as UUID;
+    expect(parks).toEqual([]);
+    expect(pushedNow).toEqual([qid]);
+    // The lead idling does not release a subagent's hold (#711).
+    g.cancelStale('Stop', { mainOnly: true });
+    expect(g.answerHeld(qid, { kind: 'option', option: YES })).toBe('resolved');
+    expect(await hook).toBe('allow');
+  });
+
+  test("without a local terminal: that agent's SubagentStop releases its hold empty", async () => {
+    const g = gate(false);
+    let settled = false;
+    const hook = g.resolvePermission(sub()).then((d) => {
+      settled = true;
+      return d;
+    });
+    g.cancelStaleForAgent('agent-other', 'SubagentStop');
+    await Bun.sleep(1);
+    expect(settled).toBe(false);
+    g.cancelStaleForAgent('agent-1', 'SubagentStop');
+    expect(await hook).toBe('passthrough');
+  });
+
+  test('the hook-prompt probe ignores a held subagent prompt and counts a held main prompt (#1126)', async () => {
+    const g = gate(false);
+    const subHook = g.resolvePermission(sub());
+    // Its dialog does not render while held, so a render is something else.
+    expect(g.hasOpenHookPrompt()).toBe(false);
+    expect(g.hasMainHold()).toBe(false);
+    const mainHook = g.resolvePermission(pr({ tool_input: { command: 'make deploy' } }));
+    expect(g.hasOpenHookPrompt()).toBe(true);
+    expect(g.hasMainHold()).toBe(true);
+    g.forceRelease('test');
+    await Promise.all([subHook, mainHook]);
+  });
+
+  test("a subagent's prompt waiting in the terminal is cleared by that agent's next tool call (#1126)", async () => {
+    // Daemon mode, deadline passed: the prompt is released to the terminal
+    // with its notice out. A No answered there fires no hook.
+    const g = gate(false, { holdMs: 5, onReleasedToTerminal: () => {} });
+    const hook = g.resolvePermission(sub());
+    const qid = ids[0] as UUID;
+    expect(await hook).toBe('passthrough');
+    // Another agent moving on, or this agent's call that has no id
+    // relation, does not touch it until it is this agent's next call.
+    g.noteAgentToolCall('agent-other', 'tu-x');
+    g.noteAgentToolCall(undefined, 'tu-main');
+    expect(noticesCleared).toEqual([]);
+    g.noteAgentToolCall('agent-1', 'tu-next');
+    expect(noticesCleared).toEqual([qid]);
+    // Gone from the gate: a matching tool event later finds nothing.
+    g.noteAgentToolCall('agent-1', 'tu-next-2');
+    expect(noticesCleared).toEqual([qid]);
   });
 });
 
@@ -3320,10 +1539,7 @@ describe('AutoApproveGate subagent external-resolution (#799)', () => {
 
   function gate(
     opts: {
-      onResolved?: (
-        questionId: UUID,
-        reason: 'auto_approved' | 'auto_denied' | 'cancelled',
-      ) => void;
+      onResolved?: (questionId: UUID, reason: 'cancelled') => void;
     } = {},
   ): AutoApproveGate {
     registry.registerSession(SID, '/d', fakePTY([]), {
@@ -3333,12 +1549,10 @@ describe('AutoApproveGate subagent external-resolution (#799)', () => {
     } as never);
     return new AutoApproveGate(
       {
-        // No service configured: a subagent-tagged event parks synchronously
-        // (deterministic, no eval timing to await).
-        service: null,
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
+        holdMs: 60_000,
+        hasLocalTerminal: true,
         // Unused by these subagent-only tests (no main escalation is ever
         // driven), but AutoApproveGateDeps requires it.
         escalate: () => generateId(),
@@ -3477,12 +1691,30 @@ describe('AutoApproveGate subagent external-resolution (#799)', () => {
     const g = gate({ onResolved: (qid, reason) => resolvedLog.push({ qid, reason }) });
     expect(await g.resolvePermission(pr())).toBe('passthrough');
     const firstQid = parkedIds[0] as UUID;
+    stashQuestion(firstQid, 'agent-1'); // its prompt rendered and was pushed
     // Claude re-issues the IDENTICAL PermissionRequest for the same agent.
     expect(await g.resolvePermission(pr())).toBe('passthrough');
     const secondQid = parkedIds[1] as UUID;
     expect(secondQid).not.toBe(firstQid);
 
     expect(resolvedLog).toEqual([{ qid: firstQid, reason: 'cancelled' }]);
+  });
+
+  test('a prompt that never rendered dismisses nothing when resolved, and is still untracked (#1125)', async () => {
+    // Parked, never rendered, so never pushed: there is no card on any client
+    // and nothing to dismiss. The signature must still go, or a later
+    // matching tool event would find it again.
+    const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
+    const g = gate({ onResolved: (qid, reason) => resolvedLog.push({ qid, reason }) });
+    expect(await g.resolvePermission(pr())).toBe('passthrough');
+
+    g.cancelExternallyResolved(
+      { toolName: 'Bash', toolInput: { command: 'git push' }, agentId: 'agent-1' },
+      'PreToolUse-subagent',
+    );
+
+    expect(resolvedLog).toEqual([]);
+    expect(g.forceRelease('probe')).toEqual({ resolved: 0 });
   });
 });
 
@@ -3502,10 +1734,7 @@ describe('AutoApproveGate Stop resolves a still-open MAIN passthrough question (
 
   function gate(
     opts: {
-      onResolved?: (
-        questionId: UUID,
-        reason: 'auto_approved' | 'auto_denied' | 'cancelled',
-      ) => void;
+      onResolved?: (questionId: UUID, reason: 'cancelled') => void;
     } = {},
   ): AutoApproveGate {
     registry.registerSession(SID, '/d', fakePTY([]), {
@@ -3515,10 +1744,10 @@ describe('AutoApproveGate Stop resolves a still-open MAIN passthrough question (
     } as never);
     return new AutoApproveGate(
       {
-        service: null,
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
+        holdMs: 60_000,
+        hasLocalTerminal: true,
         escalate: () => {
           lastQuestionId = generateId();
           return lastQuestionId;
@@ -3528,7 +1757,6 @@ describe('AutoApproveGate Stop resolves a still-open MAIN passthrough question (
           parkedIds.push(id);
           return id;
         },
-        holdMs: 60_000, // holding is on, but ExitPlanMode is always multi-choice -> passthrough
         alwaysEscalateTools: new Set(),
         ...(opts.onResolved ? { onResolved: opts.onResolved } : {}),
       },
@@ -3536,18 +1764,20 @@ describe('AutoApproveGate Stop resolves a still-open MAIN passthrough question (
     );
   }
 
-  /** ExitPlanMode is ALWAYS multi-choice (`ALWAYS_MULTI_CHOICE_TOOLS`), so
-   *  this escalates as a PASSTHROUGH -- never held -- exactly the
-   *  "No, keep planning" shape #799 targets. */
-  function planModePr(): PermissionRequestHookInput {
+  /** A multi-choice string-label permission escalates as a PASSTHROUGH,
+   *  never held: the shape #799 targets (an answer given in the terminal
+   *  fires nothing remi can pair). ExitPlanMode, the original example, is
+   *  held since #1127. */
+  function passthroughPr(): PermissionRequestHookInput {
     return {
       session_id: 'claude-test',
       transcript_path: '/tmp/t.jsonl',
       cwd: '/d',
-      permission_mode: 'plan',
+      permission_mode: 'default',
       hook_event_name: 'PermissionRequest',
-      tool_name: 'ExitPlanMode',
+      tool_name: 'mcp__custom__choose',
       tool_input: {},
+      permission_suggestions: ['Option A', 'Option B', 'Option C'],
     };
   }
 
@@ -3563,10 +1793,10 @@ describe('AutoApproveGate Stop resolves a still-open MAIN passthrough question (
     await registry.shutdown();
   });
 
-  test('fires: Stop(mainOnly) resolves a still-open MAIN passthrough question ("keep planning" answered in the terminal)', async () => {
+  test('fires: Stop(mainOnly) resolves a still-open MAIN passthrough question (answered in the terminal)', async () => {
     const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
     const g = gate({ onResolved: (qid, reason) => resolvedLog.push({ qid, reason }) });
-    expect(await g.resolvePermission(planModePr())).toBe('passthrough');
+    expect(await g.resolvePermission(passthroughPr())).toBe('passthrough');
     const qid = lastQuestionId as UUID;
     registry.addQuestion(SID, {
       id: qid,
@@ -3612,7 +1842,7 @@ describe('AutoApproveGate Stop resolves a still-open MAIN passthrough question (
 
     // A genuinely open MAIN question too, so the test proves Stop(mainOnly)
     // resolves ITS OWN kind while sparing the subagent's.
-    expect(await g.resolvePermission(planModePr())).toBe('passthrough');
+    expect(await g.resolvePermission(passthroughPr())).toBe('passthrough');
     const mainQid = lastQuestionId as UUID;
     registry.addQuestion(SID, {
       id: mainQid,
@@ -3650,10 +1880,7 @@ describe('AutoApproveGate full teardown resolves ALL survivors (#948)', () => {
 
   function gate(
     opts: {
-      onResolved?: (
-        questionId: UUID,
-        reason: 'auto_approved' | 'auto_denied' | 'cancelled',
-      ) => void;
+      onResolved?: (questionId: UUID, reason: 'cancelled') => void;
     } = {},
   ): AutoApproveGate {
     registry.registerSession(SID, '/d', fakePTY([]), {
@@ -3663,10 +1890,10 @@ describe('AutoApproveGate full teardown resolves ALL survivors (#948)', () => {
     } as never);
     return new AutoApproveGate(
       {
-        service: null,
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
+        holdMs: 60_000,
+        hasLocalTerminal: true,
         escalate: () => {
           lastQuestionId = generateId();
           return lastQuestionId;
@@ -3676,7 +1903,6 @@ describe('AutoApproveGate full teardown resolves ALL survivors (#948)', () => {
           parkedIds.push(id);
           return id;
         },
-        holdMs: 60_000,
         alwaysEscalateTools: new Set(['AskUserQuestion']),
         ...(opts.onResolved ? { onResolved: opts.onResolved } : {}),
       },
@@ -3684,17 +1910,19 @@ describe('AutoApproveGate full teardown resolves ALL survivors (#948)', () => {
     );
   }
 
-  /** AskUserQuestion is in `alwaysEscalateTools` -> design -> escalates as a
-   *  PASSTHROUGH, never held -- the exact #948 repro shape. */
-  function askUserQuestionPr(): PermissionRequestHookInput {
+  /** A multi-choice string-label permission escalates as a PASSTHROUGH,
+   *  never held: the #948 repro shape. (#948 was found with AskUserQuestion,
+   *  which is held since #1127; a hold is released by the same sweeps.) */
+  function passthroughPr(): PermissionRequestHookInput {
     return {
       session_id: 'claude-test',
       transcript_path: '/tmp/t.jsonl',
       cwd: '/d',
       permission_mode: 'default',
       hook_event_name: 'PermissionRequest',
-      tool_name: 'AskUserQuestion',
+      tool_name: 'mcp__custom__choose',
       tool_input: { question: 'Which approach?' },
+      permission_suggestions: ['Option A', 'Option B', 'Option C'],
     };
   }
 
@@ -3724,10 +1952,10 @@ describe('AutoApproveGate full teardown resolves ALL survivors (#948)', () => {
     await registry.shutdown();
   });
 
-  test('the exact #948 repro: SessionEnd with NO Stop in between resolves a still-open MAIN AskUserQuestion card', async () => {
+  test('the #948 repro: SessionEnd with NO Stop in between resolves a still-open MAIN passthrough card', async () => {
     const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
     const g = gate({ onResolved: (qid, reason) => resolvedLog.push({ qid, reason }) });
-    expect(await g.resolvePermission(askUserQuestionPr())).toBe('passthrough');
+    expect(await g.resolvePermission(passthroughPr())).toBe('passthrough');
     const qid = lastQuestionId as UUID;
     registry.addQuestion(SID, {
       id: qid,
@@ -3782,7 +2010,7 @@ describe('AutoApproveGate full teardown resolves ALL survivors (#948)', () => {
       agentId: 'agent-1',
     });
 
-    expect(await g.resolvePermission(askUserQuestionPr())).toBe('passthrough');
+    expect(await g.resolvePermission(passthroughPr())).toBe('passthrough');
     const mainQid = lastQuestionId as UUID;
     registry.addQuestion(SID, {
       id: mainQid,
@@ -3810,7 +2038,7 @@ describe('AutoApproveGate full teardown resolves ALL survivors (#948)', () => {
     const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
     const g = gate({ onResolved: (qid, reason) => resolvedLog.push({ qid, reason }) });
 
-    expect(await g.resolvePermission(askUserQuestionPr())).toBe('passthrough');
+    expect(await g.resolvePermission(passthroughPr())).toBe('passthrough');
     const mainQid = lastQuestionId as UUID;
     registry.addQuestion(SID, {
       id: mainQid,
@@ -3858,7 +2086,7 @@ describe('AutoApproveGate full teardown resolves ALL survivors (#948)', () => {
   test('forceRelease (remi unstick) also resolves a still-open passthrough survivor, mirroring the teardown branch', async () => {
     const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
     const g = gate({ onResolved: (qid, reason) => resolvedLog.push({ qid, reason }) });
-    expect(await g.resolvePermission(askUserQuestionPr())).toBe('passthrough');
+    expect(await g.resolvePermission(passthroughPr())).toBe('passthrough');
     const qid = lastQuestionId as UUID;
     registry.addQuestion(SID, {
       id: qid,
@@ -3885,10 +2113,7 @@ describe('AutoApproveGate cancelStaleForAgent (#799 part 2, subagent)', () => {
 
   function gate(
     opts: {
-      onResolved?: (
-        questionId: UUID,
-        reason: 'auto_approved' | 'auto_denied' | 'cancelled',
-      ) => void;
+      onResolved?: (questionId: UUID, reason: 'cancelled') => void;
     } = {},
   ): AutoApproveGate {
     registry.registerSession(SID, '/d', fakePTY([]), {
@@ -3898,10 +2123,10 @@ describe('AutoApproveGate cancelStaleForAgent (#799 part 2, subagent)', () => {
     } as never);
     return new AutoApproveGate(
       {
-        service: null,
         sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => undefined),
         isInSubagentContext: () => false,
+        holdMs: 60_000,
+        hasLocalTerminal: true,
         // Unused by these subagent-only tests (no main escalation is ever
         // driven), but AutoApproveGateDeps requires it.
         escalate: () => generateId(),
@@ -3991,1041 +2216,5 @@ describe('AutoApproveGate cancelStaleForAgent (#799 part 2, subagent)', () => {
     expect(registry.getQuestion(SID, qid1)).toBeNull(); // agent-1's is resolved
     expect(registry.getQuestion(SID, qid2)).not.toBeNull(); // agent-2's is untouched
     expect(resolvedLog).toEqual([{ qid: qid1, reason: 'cancelled' }]);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// #814: a PARKED subagent permission is evaluated when (and only when) its
-// prompt actually RENDERS on the main PTY. approve/deny/pick are typed into
-// that prompt; anything the policy will not decide becomes a card for the user.
-// ---------------------------------------------------------------------------
-describe('AutoApproveGate parked-render arbitration (#814)', () => {
-  const SID = generateId() as UUID;
-  let registry: SessionRegistry;
-  let parkedIds: UUID[];
-  let submits: string[];
-  let evalCalls: Array<{ toolName: string; isSubagent: boolean | undefined }>;
-  let tracker: QuestionPresenceTracker;
-  let resolvedLog: Array<{ qid: UUID; reason: string }>;
-
-  /** Hook-derived permission options: plain Yes, a persisting "always" option,
-   *  and No — the shape `optionsFromSuggestions` produces (#718). */
-  const HOOK_OPTIONS = [
-    { label: 'Yes', value: '1', isRecommended: true, isYes: true, isNo: false },
-    {
-      label: 'Yes, always allow: git push',
-      value: '2',
-      isRecommended: false,
-      isYes: true,
-      isNo: false,
-      suggestionIndex: 0,
-    },
-    { label: 'No', value: '3', isRecommended: false, isYes: false, isNo: true },
-  ];
-
-  /** PTY-parsed numbered options: NO isYes/isNo flags at all (see
-   *  question-parser.ts), so identification falls to the label heuristic. */
-  const PTY_OPTIONS = [
-    { label: 'Yes', value: '1', isRecommended: true, isYes: false, isNo: false },
-    {
-      label: "Yes, and don't ask again for git push commands",
-      value: '2',
-      isRecommended: false,
-      isYes: false,
-      isNo: false,
-    },
-    {
-      label: 'No, and tell Claude what to do differently (esc)',
-      value: '3',
-      isRecommended: false,
-      isYes: false,
-      isNo: false,
-    },
-  ];
-
-  /** What the PTY parser read off the screen for `r` (same id + text, since
-   *  the merged card is built from it). */
-  function screen(r: { id: UUID; text: string }, options = PTY_OPTIONS) {
-    return {
-      id: r.id,
-      text: r.text,
-      options,
-      allowsFreeText: false,
-      isAnswered: false,
-    };
-  }
-
-  function rendered(id: UUID, options = HOOK_OPTIONS) {
-    return {
-      id,
-      text: 'reviewer · Bash: git push',
-      options,
-      allowsFreeText: false,
-      isAnswered: false,
-      agentId: 'agent-1',
-    };
-  }
-
-  function gate(
-    result: AutoApproveResult | null,
-    opts: {
-      throws?: boolean;
-      secondResult?: AutoApproveResult;
-      ptyThrows?: boolean;
-      customService?: AutoApproveEvaluator;
-      /** #1045 phase 6: parked-render arbitration never calls `escalateMain`
-       *  (it uses `escalateRenderedParked` instead), so this must have no
-       *  effect here -- see the dedicated test below. */
-      residualAction?: 'escalate' | 'deny';
-    } = {},
-  ): AutoApproveGate {
-    registry.registerSession(SID, '/d', fakePTY(submits, { throws: opts.ptyThrows ?? false }), {
-      handleMessage: () => {},
-      handleQuestion: () => {},
-      handleStatusChange: () => {},
-    } as never);
-    const service: AutoApproveEvaluator | null =
-      opts.customService ??
-      (result === null
-        ? null
-        : {
-            evaluate: async (
-              toolName,
-              _toolInput,
-              _tag,
-              _suggestions,
-              modelOverride,
-              _evalId,
-              _scope,
-              isSubagent,
-            ) => {
-              evalCalls.push({ toolName, isSubagent });
-              if (opts.throws) throw new Error('test: llm provider down');
-              if (modelOverride === 'big-model' && opts.secondResult) return opts.secondResult;
-              return result;
-            },
-            cancel: () => true,
-          });
-    return new AutoApproveGate(
-      {
-        service,
-        sessionRegistry: registry,
-        tracker,
-        isInSubagentContext: () => false,
-        escalate: () => generateId(),
-        parkForPTY: () => {
-          const id = generateId() as UUID;
-          parkedIds.push(id);
-          return id;
-        },
-        onResolved: (qid, reason) => resolvedLog.push({ qid, reason }),
-        ...(opts.secondResult ? { escalateModel: 'big-model' } : {}),
-        ...(opts.residualAction ? { residualAction: opts.residualAction } : {}),
-      },
-      SID,
-    );
-  }
-
-  function pr(command = 'git push'): PermissionRequestHookInput {
-    return {
-      session_id: 'claude-test',
-      transcript_path: '/tmp/t.jsonl',
-      cwd: '/d',
-      permission_mode: 'default',
-      hook_event_name: 'PermissionRequest',
-      tool_name: 'Bash',
-      tool_input: { command },
-      agent_id: 'agent-1',
-      agent_type: 'general-purpose',
-    };
-  }
-
-  /** Put `q` on the "screen": the tracker's presence flag AND its
-   *  last-observed id both have to point at it, since the gate refuses to
-   *  type into a prompt that is no longer the current one. */
-  function promptOnScreen(q: Question): void {
-    tracker.onPTYPromptVisible(q);
-  }
-
-  /** A DIFFERENT prompt took the screen over (the first was answered in the
-   *  terminal and the agent asked again). */
-  function otherPromptOnScreen(): void {
-    tracker.onPTYPromptVisible({
-      id: generateId(),
-      text: 'A different prompt entirely',
-      options: [],
-      allowsFreeText: false,
-      isAnswered: false,
-    });
-  }
-
-  beforeEach(() => {
-    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
-    parkedIds = [];
-    submits = [];
-    evalCalls = [];
-    resolvedLog = [];
-    tracker = new QuestionPresenceTracker(() => undefined);
-    configureLogger({ writeLog: () => {} });
-  });
-
-  afterEach(async () => {
-    __resetLoggerForTests();
-    await registry.shutdown();
-  });
-
-  test('approve types the plain Yes into the rendered prompt and never pushes', async () => {
-    const g = gate(approve);
-    expect(await g.resolvePermission(pr())).toBe('passthrough');
-    expect(evalCalls).toHaveLength(0); // #807: not evaluated at hook time
-    const r = rendered(generateId() as UUID);
-    promptOnScreen(r);
-
-    const verdict = await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r));
-
-    expect(verdict).toEqual({ outcome: 'answered' });
-    expect(evalCalls).toEqual([{ toolName: 'Bash', isSubagent: true }]);
-    expect(submits).toEqual(['1']);
-  });
-
-  test('deny types the No option (the same option a phone "No" resolves to)', async () => {
-    const g = gate(deny);
-    await g.resolvePermission(pr());
-    const r = rendered(generateId() as UUID);
-    promptOnScreen(r);
-
-    const verdict = await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r));
-
-    expect(verdict).toEqual({ outcome: 'answered' });
-    expect(submits).toEqual(['3']);
-  });
-
-  test('pick types the 1-based index', async () => {
-    const g = gate(pick(2));
-    await g.resolvePermission(pr());
-    const r = rendered(generateId() as UUID);
-    promptOnScreen(r);
-
-    expect(await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r, []))).toEqual({
-      outcome: 'answered',
-    });
-    expect(submits).toEqual(['2']);
-  });
-
-  test('never auto-picks a PERSISTING option: only the one-time Yes is typed', async () => {
-    const g = gate(approve);
-    await g.resolvePermission(pr());
-    // Only "always" flavors offered plus No: nothing safe to auto-answer.
-    const r = rendered(generateId() as UUID, [
-      {
-        label: 'Yes, always allow: git push',
-        value: '1',
-        isRecommended: true,
-        isYes: true,
-        isNo: false,
-        suggestionIndex: 0,
-      },
-      { label: 'No', value: '2', isRecommended: false, isYes: false, isNo: true },
-    ]);
-    promptOnScreen(r);
-
-    await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r, []));
-
-    expect(submits).toHaveLength(0); // escalated instead of persisting a rule
-  });
-
-  test('escalate becomes a push carrying the model summary', async () => {
-    const g = gate(escalateWithSummary);
-    await g.resolvePermission(pr());
-    const r = rendered(generateId() as UUID);
-    promptOnScreen(r);
-
-    const verdict = await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r));
-
-    expect(verdict).toEqual({ outcome: 'push', summary: 'Force-push to main?' });
-    expect(submits).toHaveLength(0);
-  });
-
-  test('#1045 phase 6: residual_action="deny" does NOT affect a subagent parked-render escalate', async () => {
-    // ADR 0004 render-time arbitration is its own path -- arbitrateParkedRender
-    // calls escalateRenderedParked, never escalateMain -- so this setting must
-    // have zero effect here, deliberately out of scope for this phase.
-    const g = gate(escalateWithSummary, { residualAction: 'deny' });
-    await g.resolvePermission(pr());
-    const r = rendered(generateId() as UUID);
-    promptOnScreen(r);
-
-    const verdict = await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r));
-
-    expect(verdict).toEqual({ outcome: 'push', summary: 'Force-push to main?' });
-    expect(submits).toHaveLength(0);
-  });
-
-  test('escalate_model second opinion can still answer it before the user is bothered', async () => {
-    const g = gate(escalate, { secondResult: approve });
-    await g.resolvePermission(pr());
-    const r = rendered(generateId() as UUID);
-    promptOnScreen(r);
-
-    const verdict = await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r));
-
-    expect(verdict).toEqual({ outcome: 'answered' });
-    expect(submits).toEqual(['1']);
-    expect(evalCalls).toHaveLength(2); // primary + second opinion
-  });
-
-  test('an eval error pushes rather than guessing', async () => {
-    const g = gate(approve, { throws: true });
-    await g.resolvePermission(pr());
-    const r = rendered(generateId() as UUID);
-    promptOnScreen(r);
-
-    expect(await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r))).toEqual({
-      outcome: 'push',
-    });
-    expect(submits).toHaveLength(0);
-  });
-
-  test('a cancelled eval pushes, never fabricates an answer', async () => {
-    const g = gate(cancelled);
-    await g.resolvePermission(pr());
-    const r = rendered(generateId() as UUID);
-    promptOnScreen(r);
-
-    expect(await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r))).toEqual({
-      outcome: 'push',
-    });
-    expect(submits).toHaveLength(0);
-  });
-
-  test('approve with no identifiable option pushes instead of typing a guess (#751 hazard)', async () => {
-    const g = gate(approve);
-    await g.resolvePermission(pr());
-    const r = rendered(generateId() as UUID, [
-      { label: 'Proceed', value: '1', isRecommended: true, isYes: false, isNo: false },
-      { label: 'Abort', value: '2', isRecommended: false, isYes: false, isNo: false },
-    ]);
-    promptOnScreen(r);
-
-    expect(await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r, []))).toEqual({
-      outcome: 'push',
-    });
-    expect(submits).toHaveLength(0);
-  });
-
-  test('a prompt that left the screen mid-flight is never typed into', async () => {
-    const g = gate(approve);
-    await g.resolvePermission(pr());
-    // No promptOnScreen(): isPromptVisibleOnPTY() is false, exactly as after
-    // the user answered in the terminal.
-
-    const gone = rendered(generateId() as UUID);
-    expect(await g.arbitrateParkedRender(parkedIds[0] as UUID, gone, screen(gone))).toEqual({
-      outcome: 'push',
-    });
-    expect(submits).toHaveLength(0);
-  });
-
-  test('a verdict is NEVER typed into a DIFFERENT prompt that took the screen over', async () => {
-    // The #751 wrong-prompt hazard, reachable only on this async path: the
-    // user denied the parked prompt in the terminal (a deny fires no tool
-    // call, so nothing cancelled the eval), the agent asked again, and the
-    // new prompt is on screen when the old verdict lands.
-    const g = gate(approve);
-    await g.resolvePermission(pr());
-    const r = rendered(generateId() as UUID);
-    promptOnScreen(r);
-    otherPromptOnScreen();
-
-    expect(await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r))).toEqual({
-      outcome: 'push',
-    });
-    expect(submits).toHaveLength(0);
-  });
-
-  test('an inject failure falls back to the user', async () => {
-    const g = gate(approve, { ptyThrows: true });
-    await g.resolvePermission(pr());
-    const r = rendered(generateId() as UUID);
-    promptOnScreen(r);
-
-    expect(await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r))).toEqual({
-      outcome: 'push',
-    });
-  });
-
-  test('exactly ONE evaluation per park: a second render does not re-evaluate', async () => {
-    const g = gate(escalate);
-    await g.resolvePermission(pr());
-    const r = rendered(generateId() as UUID);
-    promptOnScreen(r);
-    const qid = parkedIds[0] as UUID;
-
-    await g.arbitrateParkedRender(qid, r, screen(r));
-    const second = await g.arbitrateParkedRender(qid, r, screen(r));
-
-    expect(evalCalls).toHaveLength(1);
-    expect(second).toEqual({ outcome: 'push' });
-  });
-
-  test('no auto-approve service: pushes without evaluating (pre-#814 behavior)', async () => {
-    const g = gate(null);
-    await g.resolvePermission(pr());
-    const r = rendered(generateId() as UUID);
-    promptOnScreen(r);
-
-    expect(await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r))).toEqual({
-      outcome: 'push',
-    });
-    expect(evalCalls).toHaveLength(0);
-  });
-
-  /**
-   * #1005. A parked render whose escalation was ALREADY retired must not push:
-   * retirement deleted its `openQuestionSignatures` entry, and every sweep this
-   * gate has iterates that map, so the resulting card is unremovable by anything
-   * except LRU eviction or a user answer. That is how 7 of the 8 cards found
-   * stuck in a live pending set were born.
-   *
-   * Keyed on a positive record of retirement, NOT on the signature entry being
-   * absent -- absent cannot tell "settled" from "never parked", and the test
-   * immediately below pins that the latter must still push.
-   */
-  describe('#1005 a retired escalation does not push a card', () => {
-    test('externally resolved before its render: answered, no push', async () => {
-      const g = gate(escalate);
-      await g.resolvePermission(pr('git push'));
-      const r = rendered(parkedIds[0] as UUID);
-      promptOnScreen(r);
-
-      // The tool actually ran -- PostToolUse retires the escalation.
-      g.cancelExternallyResolved(
-        { toolName: 'Bash', toolInput: { command: 'git push' }, agentId: 'agent-1' },
-        'PostToolUse-subagent',
-      );
-
-      expect(await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r))).toEqual({
-        outcome: 'answered',
-      });
-    });
-
-    test('a cancelled eval for a retired question is answered, not pushed', async () => {
-      const g = gate(cancelled);
-      await g.resolvePermission(pr('git push'));
-      const r = rendered(parkedIds[0] as UUID);
-      promptOnScreen(r);
-      g.cancelExternallyResolved(
-        { toolName: 'Bash', toolInput: { command: 'git push' }, agentId: 'agent-1' },
-        'PostToolUse-subagent',
-      );
-
-      expect(await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r))).toEqual({
-        outcome: 'answered',
-      });
-    });
-
-    test('a cancelled eval whose OWN escalation is still open still pushes', async () => {
-      // The cancel was collateral -- a sibling agent's PostToolUse aborted this
-      // eval. The prompt may well be live, so mapping `cancelled` to `answered`
-      // unconditionally would swallow it.
-      const g = gate(cancelled);
-      await g.resolvePermission(pr('git push'));
-      const r = rendered(parkedIds[0] as UUID);
-      promptOnScreen(r);
-
-      expect(await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r))).toEqual({
-        outcome: 'push',
-      });
-    });
-  });
-
-  test('an unknown parked id pushes without evaluating', async () => {
-    const g = gate(approve);
-    const unknown = rendered(generateId() as UUID);
-    expect(await g.arbitrateParkedRender(generateId() as UUID, unknown, screen(unknown))).toEqual({
-      outcome: 'push',
-    });
-    expect(evalCalls).toHaveLength(0);
-  });
-
-  test('an evicted park (parkedInputs at cap) escalates unevaluated instead of guessing', async () => {
-    const g = gate(approve);
-    // MAX_PARKED_INPUTS is 64; the 65th park evicts the oldest.
-    for (let i = 0; i < 65; i++) {
-      expect(await g.resolvePermission(pr(`cmd-${i}`))).toBe('passthrough');
-    }
-    expect(evalCalls).toHaveLength(0);
-
-    // The FIRST park lost its remembered input: its render must fall open to
-    // the user, never be answered from a verdict computed for something else.
-    const evicted = rendered(generateId() as UUID);
-    promptOnScreen(evicted);
-    expect(await g.arbitrateParkedRender(parkedIds[0] as UUID, evicted, screen(evicted))).toEqual({
-      outcome: 'push',
-    });
-    expect(evalCalls).toHaveLength(0);
-    expect(submits).toHaveLength(0);
-
-    // The newest park is untouched and still evaluates normally.
-    const live = rendered(generateId() as UUID);
-    promptOnScreen(live);
-    expect(await g.arbitrateParkedRender(parkedIds[64] as UUID, live, screen(live))).toEqual({
-      outcome: 'answered',
-    });
-    expect(evalCalls).toHaveLength(1);
-  });
-
-  test('an external cancel mid-eval aborts THIS parked eval and falls open to the user', async () => {
-    // The eval resolves only when something cancels it — how a 'cancelled'
-    // verdict really arrives (the service aborts the in-flight request).
-    let finishEval: ((r: AutoApproveResult) => void) | undefined;
-    const cancelReasons: string[] = [];
-    const customService: AutoApproveEvaluator = {
-      evaluate: async (toolName, _i, _tag, _s, _m, _e, _scope, isSubagent) => {
-        evalCalls.push({ toolName, isSubagent });
-        return await new Promise<AutoApproveResult>((res) => {
-          finishEval = res;
-        });
-      },
-      cancel: (reason: string) => {
-        cancelReasons.push(reason);
-        finishEval?.({ decision: 'cancelled', reasoning: reason, durationMs: 0 });
-        return true;
-      },
-    };
-    const g = gate(null, { customService });
-    await g.resolvePermission(pr());
-    const r = rendered(generateId() as UUID);
-    promptOnScreen(r);
-    const qid = parkedIds[0] as UUID;
-
-    const verdictPromise = g.arbitrateParkedRender(qid, r, screen(r));
-    await Promise.resolve(); // let the eval start
-    // A PreToolUse proved the permission resolved elsewhere while we thought.
-    g.cancelEvalForQuestion(qid, 'external-resolution');
-
-    expect(await verdictPromise).toEqual({ outcome: 'push' });
-    expect(cancelReasons).toEqual(['external-resolution']);
-    expect(submits).toHaveLength(0);
-  });
-
-  test("two agents' renders arbitrate independently; only the prompt on screen is typed into", async () => {
-    const g = gate(approve);
-    await g.resolvePermission(pr('git push'));
-    await g.resolvePermission({ ...pr('rm -rf build'), agent_id: 'agent-2' });
-    const rA = rendered(generateId() as UUID);
-    const rB = { ...rendered(generateId() as UUID), text: 'agent-2 · Bash: rm -rf build' };
-
-    // Both evaluate concurrently; B's prompt is the one actually on screen.
-    promptOnScreen(rB);
-    const [vA, vB] = await Promise.all([
-      g.arbitrateParkedRender(parkedIds[0] as UUID, rA, screen(rA)),
-      g.arbitrateParkedRender(parkedIds[1] as UUID, rB, screen(rB)),
-    ]);
-
-    expect(vB).toEqual({ outcome: 'answered' });
-    expect(vA).toEqual({ outcome: 'push' }); // A's prompt is not on screen
-    expect(submits).toEqual(['1']); // exactly one answer typed
-    expect(evalCalls).toHaveLength(2); // both were evaluated, independently
-  });
-
-  test('a pushed render is resolvable by the PARKED id: no re-key needed (#887)', async () => {
-    // Pre-#887 the tracker's merge minted the pushed card's id from the PTY
-    // parse, so this test built `rendered` with a DIFFERENT id than the park
-    // and relied on `rekeySignatureToRendered` to move `openQuestionSignatures`
-    // onto it. #887 removed the mismatch at its source instead:
-    // `QuestionPresenceTracker.consumeAndMerge` now ADOPTS the hook's id, so
-    // `rendered.id` IS `parkedQuestionId` in every real call — this test
-    // builds `rendered` that way and proves resolution needs no re-key.
-    const g = gate(escalate);
-    await g.resolvePermission(pr());
-    const parkedId = parkedIds[0] as UUID;
-    const r = rendered(parkedId);
-    promptOnScreen(r);
-
-    expect(await g.arbitrateParkedRender(parkedId, r, screen(r))).toEqual({ outcome: 'push' });
-    // The tracker pushes the MERGED question under the parked id (#887).
-    registry.addQuestion(SID, r);
-
-    // The subagent's tool now runs => it was answered in the terminal.
-    g.cancelExternallyResolved(
-      { toolName: 'Bash', toolInput: { command: 'git push' }, agentId: 'agent-1' },
-      'PreToolUse-subagent',
-    );
-
-    expect(registry.getQuestion(SID, parkedId)).toBeNull();
-    expect(resolvedLog).toEqual([{ qid: parkedId, reason: 'cancelled' }]);
-  });
-
-  test('an auto-answered render leaves NO open escalation behind (a deny fires no tool call)', async () => {
-    const g = gate(deny);
-    await g.resolvePermission(pr());
-    const r = rendered(generateId() as UUID);
-    promptOnScreen(r);
-    const qid = parkedIds[0] as UUID;
-
-    expect(await g.arbitrateParkedRender(qid, r, screen(r))).toEqual({
-      outcome: 'answered',
-    });
-
-    // Nothing left for SubagentStop to resolve: no phantom resolution fires.
-    g.cancelStaleForAgent('agent-1', 'SubagentStop');
-    expect(resolvedLog).toHaveLength(0);
-  });
-
-  test('#970 a cancelled verdict on a parked render ESCALATES; onCancelled is never reached', async () => {
-    // Pins the routing fact that lets `onCancelled` stay ctx-free. The setup
-    // layer's client status correction (#970) fires unconditionally on that
-    // cue, which is only safe because the cue cannot be reached by a subagent
-    // eval — a subagent eval never broadcasts 'evaluating', so correcting one
-    // would emit the phantom pill #711/#807 removed.
-    //
-    // The subagent path reaches a cancelled verdict ONLY here: a plain
-    // `agent_id` PermissionRequest is parked and never evaluated (#807), so the
-    // hook-bridge harness cannot drive this at all. And arbitration routes
-    // `cancelled` to `escalateRenderedParked()` rather than the cancelled cue.
-    // If that ever changes, this test fails and the ctx-free assumption above
-    // must be revisited in the same change.
-    const cancelledCues: number[] = [];
-    const escalateCues: Array<{ isSubagent: boolean }> = [];
-    const g = new AutoApproveGate(
-      {
-        service: { evaluate: async () => cancelled, cancel: () => true },
-        sessionRegistry: registry,
-        tracker,
-        isInSubagentContext: () => false,
-        escalate: () => generateId(),
-        parkForPTY: () => {
-          const id = generateId() as UUID;
-          parkedIds.push(id);
-          return id;
-        },
-        onCancelled: () => cancelledCues.push(1),
-        onEscalate: (ctx) => escalateCues.push(ctx),
-      },
-      SID,
-    );
-
-    // Park it (never evaluated at hook time), then render it so the gate
-    // arbitrates — which is where a subagent permission is actually evaluated.
-    expect(await g.resolvePermission(pr())).toBe('passthrough');
-    const escalatesAtPark = escalateCues.length;
-
-    const r = rendered(generateId() as UUID);
-    promptOnScreen(r);
-    await g.arbitrateParkedRender(parkedIds[0] as UUID, r, screen(r));
-
-    // The claim: the cancelled verdict produced an ESCALATE, not a cancelled
-    // cue. Measured as growth past the park-time escalate rather than a total,
-    // so the park path's own cue does not have to be counted here.
-    expect(cancelledCues).toHaveLength(0);
-    expect(escalateCues.length).toBeGreaterThan(escalatesAtPark);
-    expect(escalateCues.every((c) => c.isSubagent)).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// #814: the pure verdict -> PTY-input mapping.
-// ---------------------------------------------------------------------------
-describe('autoAnswerValue (#814)', () => {
-  const yes = { label: 'Yes', value: '1', isRecommended: true, isYes: true, isNo: false };
-  const always = {
-    label: 'Yes, always allow: git push',
-    value: '2',
-    isRecommended: false,
-    isYes: true,
-    isNo: false,
-    suggestionIndex: 0,
-  };
-  const no = { label: 'No', value: '3', isRecommended: false, isYes: false, isNo: true };
-  const ptyNumbered = [
-    { label: 'Yes', value: '1', isRecommended: true, isYes: false, isNo: false },
-    {
-      label: "Yes, and don't ask again for git push commands",
-      value: '2',
-      isRecommended: false,
-      isYes: false,
-      isNo: false,
-    },
-    {
-      label: 'No, and tell Claude what to do differently (esc)',
-      value: '3',
-      isRecommended: false,
-      isYes: false,
-      isNo: false,
-    },
-  ];
-
-  test('approve resolves the flagged one-time Yes', () => {
-    expect(autoAnswerValue(approve, [yes, always, no], [])).toBe('1');
-  });
-
-  test('approve resolves an unflagged PTY-parsed Yes by label', () => {
-    expect(autoAnswerValue(approve, [], ptyNumbered)).toBe('1');
-  });
-
-  test('approve never resolves a persisting ("always" / "don\'t ask again") option', () => {
-    expect(autoAnswerValue(approve, [always, no], [])).toBeUndefined();
-    expect(
-      autoAnswerValue(approve, [], [ptyNumbered[1] as never, ptyNumbered[2] as never]),
-    ).toBeUndefined();
-  });
-
-  test('deny resolves the No option by flag or by label', () => {
-    expect(autoAnswerValue(deny, [yes, no], [])).toBe('3');
-    expect(autoAnswerValue(deny, [], ptyNumbered)).toBe('3');
-  });
-
-  test('the ON-SCREEN options win over the merged card options (numbering ground truth)', () => {
-    // Hook options say Yes = "1"; the rendered prompt happens to number it "2".
-    const shifted = [
-      { label: 'No', value: '1', isRecommended: false, isYes: false, isNo: false },
-      { label: 'Yes', value: '2', isRecommended: true, isYes: false, isNo: false },
-    ];
-    expect(autoAnswerValue(approve, [yes, no], shifted)).toBe('2');
-  });
-
-  test('pick maps to its index ONLY when the prompt on screen has that many options', () => {
-    expect(autoAnswerValue(pick(2), [yes, no], [])).toBe('2');
-    expect(autoAnswerValue(pick(1), [], ptyNumbered)).toBe('1');
-    // Out of range for the prompt as drawn: the park-time index no longer
-    // addresses a real option, so refuse rather than type a stray digit.
-    expect(autoAnswerValue(pick(3), [yes, no], [])).toBeUndefined();
-    expect(autoAnswerValue(pick(4), [], ptyNumbered)).toBeUndefined();
-    expect(autoAnswerValue(pick(0), [yes, no], [])).toBeUndefined();
-    expect(autoAnswerValue(escalate, [yes, no], [])).toBeUndefined();
-    expect(autoAnswerValue(cancelled, [yes, no], [])).toBeUndefined();
-  });
-
-  test('no options at all resolves to nothing (caller escalates)', () => {
-    expect(autoAnswerValue(approve, [], [])).toBeUndefined();
-    expect(autoAnswerValue(deny, [], [])).toBeUndefined();
-  });
-});
-
-/**
- * #1005, end to end through the REAL tracker pairing path.
- *
- * The parked-render tests above call `gate.arbitrateParkedRender` directly,
- * which is the right unit for the verdict logic but skips how the arbiter is
- * actually reached in production: the tracker pairs a PTY render against its
- * `awaitingPTY` map (`matchAwaitingPTYKey`) and invokes the arbiter itself.
- * A fix verified only at the unit level could pass while the wiring that feeds
- * it changed underneath — noted in review of this PR, and closed here rather
- * than left as a manual check somebody ran once.
- */
-describe('#1005 end-to-end: a retired escalation registers no card via the real pairing path', () => {
-  let registry: SessionRegistry;
-
-  beforeEach(() => {
-    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
-    configureLogger({ writeLog: () => {} });
-  });
-  afterEach(async () => {
-    __resetLoggerForTests();
-    await registry.shutdown();
-  });
-
-  /** Real tracker + real gate, wired the way cli.ts wires them. */
-  function wire(pushes: Question[]) {
-    const sid = registry.createSessionId();
-    const submits: string[] = [];
-    registry.registerSession(sid, '/d', fakePTY(submits), {
-      handleMessage: () => {},
-      handleQuestion: (q: Question) => {
-        pushes.push(q);
-        registry.addQuestion(sid, q as never);
-      },
-      handleStatusChange: () => {},
-    } as never);
-    const tracker = new QuestionPresenceTracker((q) => {
-      pushes.push(q);
-      registry.addQuestion(sid, q as never);
-      return { status: 'registered' as const };
-    });
-    const gate = new AutoApproveGate(
-      {
-        service: { evaluate: async () => escalate, cancel: () => true },
-        sessionRegistry: registry,
-        tracker,
-        isInSubagentContext: () => true,
-        escalate: () => undefined,
-        // Wired exactly as cli.ts does: the gate hands the rich question to the
-        // tracker, which is what makes the PTY render pair with it later. The
-        // unit tests above stub this out and call the arbiter directly; that is
-        // precisely the wiring this end-to-end pair exists to cover.
-        parkForPTY: (input) => {
-          const q = {
-            id: generateId(),
-            text: `reviewer · Bash: ${String((input.tool_input as { command?: string }).command)}`,
-            options: [
-              { value: '1', label: '1', isRecommended: false, isYes: false, isNo: false },
-              { value: '2', label: '2', isRecommended: false, isYes: false, isNo: false },
-            ],
-            allowsFreeText: false,
-            isAnswered: false,
-            source: 'permission_request',
-            agentId: input.agent_id,
-          } as unknown as Question;
-          tracker.recordPendingHook(q);
-          tracker.parkAwaitingPTY(q);
-          return q.id as UUID;
-        },
-      },
-      sid,
-    );
-    tracker.setParkedRenderArbiter((ctx) =>
-      gate.arbitrateParkedRender(ctx.parkedQuestionId, ctx.rendered, ctx.ptyPrompt),
-    );
-    return { sid, tracker, gate };
-  }
-
-  test('baseline: a parked render with no retirement DOES push (harness is not vacuous)', async () => {
-    const pushes: Question[] = [];
-    const { sid, tracker, gate } = wire(pushes);
-    await gate.resolvePermission({
-      session_id: 'c',
-      transcript_path: '/tmp/t.jsonl',
-      cwd: '/d',
-      permission_mode: 'default',
-      hook_event_name: 'PermissionRequest',
-      tool_name: 'Bash',
-      tool_input: { command: 'git push' },
-      agent_id: 'agent-1',
-      agent_type: 'general-purpose',
-    } as PermissionRequestHookInput);
-    tracker.onOrphanPTYPrompt({
-      id: generateId(),
-      text: 'Do you want to proceed?',
-      options: [
-        { value: '1', label: '1', isRecommended: false, isYes: false, isNo: false },
-        { value: '2', label: '2', isRecommended: false, isYes: false, isNo: false },
-      ],
-      allowsFreeText: false,
-      isAnswered: false,
-    } as Question);
-    await new Promise((r) => setTimeout(r, 0));
-    expect(pushes.length).toBeGreaterThan(0);
-    expect(registry.getSession(sid)?.currentQuestions.size).toBeGreaterThan(0);
-  });
-
-  test('retired before its render: no card, and the pending set stays empty', async () => {
-    const pushes: Question[] = [];
-    const { sid, tracker, gate } = wire(pushes);
-    await gate.resolvePermission({
-      session_id: 'c',
-      transcript_path: '/tmp/t.jsonl',
-      cwd: '/d',
-      permission_mode: 'default',
-      hook_event_name: 'PermissionRequest',
-      tool_name: 'Bash',
-      tool_input: { command: 'git push' },
-      agent_id: 'agent-1',
-      agent_type: 'general-purpose',
-    } as PermissionRequestHookInput);
-
-    // The tool actually ran: PostToolUse retires the escalation before any
-    // prompt reaches the screen.
-    gate.cancelExternallyResolved(
-      { toolName: 'Bash', toolInput: { command: 'git push' }, agentId: 'agent-1' },
-      'PostToolUse-subagent',
-    );
-
-    tracker.onOrphanPTYPrompt({
-      id: generateId(),
-      text: 'Do you want to proceed?',
-      options: [
-        { value: '1', label: '1', isRecommended: false, isYes: false, isNo: false },
-        { value: '2', label: '2', isRecommended: false, isYes: false, isNo: false },
-      ],
-      allowsFreeText: false,
-      isAnswered: false,
-    } as Question);
-    await new Promise((r) => setTimeout(r, 0));
-
-    expect(pushes).toHaveLength(0);
-    // The whole point: nothing accumulates in the store that no sweep can clear.
-    expect(registry.getSession(sid)?.currentQuestions.size).toBe(0);
-  });
-});
-
-/**
- * #1015: every `deny` the gate returns must reach the `onAutoDenied` sink.
- *
- * A deny is the one verdict with no user-facing surface of its own -- no
- * Question, so no card, no push, no `question_resolved`. This sink is the
- * human's only channel, so what matters is that NOTHING reaching the hook as a
- * deny bypasses it, and that a broken sink cannot break the decision.
- */
-describe('AutoApproveGate onAutoDenied (#1015)', () => {
-  const SID = generateId() as UUID;
-  let registry: SessionRegistry;
-  let denied: Array<{ tool: string; source: DenySource; reasoning: string }>;
-
-  const denyFromConfig: AutoApproveResult = {
-    decision: 'deny',
-    reasoning: 'deny-matched group: "fs-write"',
-    durationMs: 0,
-    model: 'm',
-    denySource: { kind: 'config', pattern: 'fs-write' },
-  };
-  const denyFromFloor: AutoApproveResult = {
-    decision: 'deny',
-    reasoning: 'the model refused',
-    durationMs: 12,
-    model: 'm',
-    denySource: { kind: 'model-floor', pattern: 'rm -rf /' },
-  };
-  const approveResult: AutoApproveResult = {
-    decision: 'approve',
-    reasoning: 't',
-    durationMs: 0,
-    model: 'm',
-  };
-  const escalateResult: AutoApproveResult = {
-    decision: 'escalate',
-    reasoning: 't',
-    durationMs: 0,
-    model: 'm',
-  };
-
-  function makeGate(
-    result: AutoApproveResult,
-    opts: { secondOpinion?: AutoApproveResult; sinkThrows?: boolean } = {},
-  ): AutoApproveGate {
-    registry.registerSession(SID, '/d', fakePTY([]), {
-      handleMessage: () => {},
-      handleQuestion: () => {},
-      handleStatusChange: () => {},
-    } as never);
-    const service: AutoApproveEvaluator = {
-      evaluate: async (_t, _i, _tag, _s, modelOverride) =>
-        modelOverride === 'big-model' ? (opts.secondOpinion ?? result) : result,
-      cancel: () => true,
-    };
-    return new AutoApproveGate(
-      {
-        service,
-        sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => undefined),
-        isInSubagentContext: () => false,
-        escalate: () => generateId(),
-        onAutoDenied: (input, source, reasoning) => {
-          if (opts.sinkThrows) throw new Error('test: sink synthetic failure');
-          denied.push({ tool: input.tool_name, source, reasoning });
-        },
-        ...(opts.secondOpinion ? { escalateModel: 'big-model' } : {}),
-      },
-      SID,
-    );
-  }
-
-  function pr(): PermissionRequestHookInput {
-    return {
-      session_id: 'claude-test',
-      transcript_path: '/tmp/t.jsonl',
-      cwd: '/d',
-      permission_mode: 'default',
-      hook_event_name: 'PermissionRequest',
-      tool_name: 'Bash',
-      tool_input: { command: 'rm -rf /' },
-    };
-  }
-
-  beforeEach(() => {
-    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
-    denied = [];
-    configureLogger({ writeLog: () => {} });
-  });
-
-  afterEach(async () => {
-    __resetLoggerForTests();
-    await registry.shutdown();
-  });
-
-  test('a primary deny reaches the sink, carrying source and reasoning verbatim', async () => {
-    const d = await makeGate(denyFromFloor).resolvePermission(pr());
-    expect(d).toEqual({ behavior: 'deny', message: expect.stringContaining('ask the user') });
-    expect(denied).toEqual([
-      {
-        tool: 'Bash',
-        source: { kind: 'model-floor', pattern: 'rm -rf /' },
-        reasoning: 'the model refused',
-      },
-    ]);
-  });
-
-  test('a config deny reaches the sink too -- filtering is the sink’s call, not the gate’s', async () => {
-    // cli.ts logs both and pushes only for model-floor. Deciding that HERE
-    // would put the policy in two places, and the gate is the wrong one: it
-    // cannot see the user's config.
-    await makeGate(denyFromConfig).resolvePermission(pr());
-    expect(denied).toHaveLength(1);
-    expect(denied[0]?.source.kind).toBe('config');
-  });
-
-  test('a SECOND-OPINION deny reaches the sink: it is equally invisible', async () => {
-    // The primary escalates, the heavy escalate_model refuses. This return is
-    // as silent as the primary one and was the easier of the two to miss.
-    const d = await makeGate(escalateResult, { secondOpinion: denyFromFloor }).resolvePermission(
-      pr(),
-    );
-    expect(d).toEqual({ behavior: 'deny', message: expect.stringContaining('ask the user') });
-    expect(denied).toHaveLength(1);
-    expect(denied[0]?.source).toEqual({ kind: 'model-floor', pattern: 'rm -rf /' });
-  });
-
-  test('an untagged deny is still reported, not dropped', async () => {
-    // Unreachable today (every deny return in `evaluate` tags itself) but the
-    // type permits it. A missing tag must degrade the report, never silence
-    // it -- silence is the bug.
-    const untagged: AutoApproveResult = {
-      decision: 'deny',
-      reasoning: 'no source field',
-      durationMs: 0,
-      model: 'm',
-    };
-    await makeGate(untagged).resolvePermission(pr());
-    expect(denied).toHaveLength(1);
-    expect(denied[0]?.source).toEqual({ kind: 'model-floor', pattern: '' });
-  });
-
-  test('an approve never reaches the sink', async () => {
-    await makeGate(approveResult).resolvePermission(pr());
-    expect(denied).toEqual([]);
-  });
-
-  test('an escalate never reaches the sink', async () => {
-    await makeGate(escalateResult).resolvePermission(pr());
-    expect(denied).toEqual([]);
-  });
-
-  test('a sink that throws is absorbed: the deny still reaches the hook', async () => {
-    // Same contract as the cosmetic cues. An observer must never be able to
-    // turn a decided permission into an unanswered hook.
-    const d = await makeGate(denyFromFloor, { sinkThrows: true }).resolvePermission(pr());
-    expect(d).toEqual({ behavior: 'deny', message: expect.stringContaining('ask the user') });
-  });
-
-  test('an absent sink is fine: the gate does not require one', async () => {
-    registry.registerSession(SID, '/d', fakePTY([]), {
-      handleMessage: () => {},
-      handleQuestion: () => {},
-      handleStatusChange: () => {},
-    } as never);
-    const gate = new AutoApproveGate(
-      {
-        service: { evaluate: async () => denyFromFloor, cancel: () => true },
-        sessionRegistry: registry,
-        tracker: new QuestionPresenceTracker(() => undefined),
-        isInSubagentContext: () => false,
-        escalate: () => generateId(),
-      },
-      SID,
-    );
-    expect(await gate.resolvePermission(pr())).toEqual({
-      behavior: 'deny',
-      message: expect.stringContaining('ask the user'),
-    });
   });
 });

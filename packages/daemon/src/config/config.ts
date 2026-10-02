@@ -6,127 +6,13 @@
  */
 
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { DAEMON_BASE_PORT, DAEMON_PORT_RANGE, errorToString } from '@remi/shared';
 import { parse as parseToml } from 'smol-toml';
-import { validateAgents } from '../auto-approve/agent-policy.ts';
-import {
-  AUTO_APPROVE_LEVELS,
-  DEFAULT_AUTO_APPROVE_LEVEL,
-  isAutoApproveLevel,
-  resolveApproveGroups,
-} from '../auto-approve/levels.ts';
-import { KNOWN_TOOL_NAMES, looksLikeToolName } from '../auto-approve/pattern-matcher.ts';
-import { isKnownGroup, knownGroupNames } from '../auto-approve/permission-groups.ts';
-import { DEFAULT_ALWAYS_ESCALATE_TOOLS } from '../auto-approve/types.ts';
-import type { AutoApproveConfig, ResidualAction } from '../auto-approve/types.ts';
+import { remiHome } from './remi-home.ts';
 
-const REMI_DIR = path.join(os.homedir(), '.remi');
+const REMI_DIR = remiHome();
 export const CONFIG_PATH = path.join(REMI_DIR, 'config.toml');
-
-/**
- * Which local-LLM backend can actually run here (#822).
- *
- * The supported targets carry DIFFERENT backends, so a single hardcoded default
- * is wrong on half of them:
- *
- *   - Apple Silicon -> the Yooz engine. MLX, so `darwin-arm64` only; an Intel
- *     Mac cannot run it however much it looks like "macOS".
- *   - Linux -> a thin `llama-server`, which speaks the OpenAI-compatible shape
- *     and therefore reuses the existing transport unchanged.
- *   - Anything else (notably `darwin-x64`) -> neither. Reported as such rather
- *     than defaulted to a backend that cannot exist there, because the failure
- *     would otherwise be a 30s startup timeout followed by escalate-everything
- *     — indistinguishable from a bug.
- *
- * Both backends listen on remi's reserved port 19924, and only one can run per
- * machine by construction, so the platform decides which without negotiation.
- */
-export type LocalLLMPlatform = 'yooz' | 'llamacpp' | 'unsupported';
-
-export function detectLocalLLMPlatform(
-  platform: NodeJS.Platform = process.platform,
-  arch: string = process.arch,
-): LocalLLMPlatform {
-  if (platform === 'darwin') return arch === 'arm64' ? 'yooz' : 'unsupported';
-  if (platform === 'linux') return 'llamacpp';
-  return 'unsupported';
-}
-
-/**
- * The `auto_approve.provider` default for THIS machine. An unsupported target
- * still gets `'yooz'` so the config shape and error messages stay stable; what
- * changes there is that the daemon says so at boot (see `cli.ts`) instead of
- * silently waiting on an engine that can never appear.
- */
-function defaultProvider(): string {
-  const detected = detectLocalLLMPlatform();
-  return detected === 'unsupported' ? 'yooz' : detected;
-}
-
-/**
- * The engine's MLX build of the default evaluator model, and the llama.cpp
- * GGUF build of the SAME weights. Same QAT-lean Qwen3.5-4B that #809 Phase D
- * measured at 38/38 on the permission grid — only the container differs, so
- * the Linux path inherits that evidence rather than needing its own.
- *
- * The GGUF value is deliberately written in `-hf` argument form
- * (`<user>/<repo>:<quant>`) so it can be pasted straight into the
- * `llama-server` command remi prints at boot.
- *
- * The quant suffix is explicit rather than load-bearing. `-hf` with no tag
- * prefers `Q4_K_M` then `Q8_0`, and FALLS BACK to the first `.gguf` in the
- * repo (llama.cpp `common/download.cpp`, `find_best_model`; its own `-hf`
- * help says so), so the bare id does resolve today -- these repos publish
- * exactly one file each, `Q4_0`, verified against the HF API. Naming the
- * quant keeps that deterministic if a second one is ever published, since
- * the fallback is order-dependent. An earlier draft of this comment claimed
- * the bare id "fails to resolve a file"; that was wrong and unattributed.
- */
-const DEFAULT_EVAL_MODEL_MLX = 'YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx';
-const DEFAULT_EVAL_MODEL_GGUF = 'YoozLabs/Qwen3.5-4B-qat-GGUF:Q4_0';
-
-/**
- * The `auto_approve.model` default for THIS machine (#822). An MLX id cannot
- * be loaded by llama.cpp and a GGUF id means nothing to the engine, so a
- * single hardcoded default is wrong on one of the two supported targets —
- * exactly the reasoning `defaultProvider` already applies to the transport.
- *
- * An `unsupported` target follows `defaultProvider` and keeps the engine's
- * value, so the config shape stays stable and the boot warning (see `cli.ts`)
- * is what tells the user their machine has no local backend at all.
- */
-export function defaultModel(
-  platform: NodeJS.Platform = process.platform,
-  arch: string = process.arch,
-): string {
-  return detectLocalLLMPlatform(platform, arch) === 'llamacpp'
-    ? DEFAULT_EVAL_MODEL_GGUF
-    : DEFAULT_EVAL_MODEL_MLX;
-}
-
-/** The `llama-server` invocation remi tells a Linux user to run (#822). Built
- *  from the same constant as the config default so the two can never drift.
- *  Verified against llama.cpp's server README: `-hf <user>/<repo>[:quant]`,
- *  `--port`, `--host`. */
-export function llamaServerCommand(model: string = DEFAULT_EVAL_MODEL_GGUF, port = 19924): string {
-  // `provider = "llamacpp"` on Apple Silicon is a real setup, and nothing
-  // validates provider/model consistency -- so `model` can be the MLX default,
-  // or empty. Printing `-hf <something>-mlx` hands the user a command that
-  // cannot load, which is worse than handing them none: the whole point of
-  // this string is that it is the lever that works. Fall back to the GGUF
-  // default unless the id actually looks like one.
-  const looksGguf = model.includes('GGUF') || model.includes('gguf');
-  const usable = looksGguf ? model : DEFAULT_EVAL_MODEL_GGUF;
-  const cmd = `llama-server -hf ${usable} --host 127.0.0.1 --port ${port}`;
-  // Disclose the swap. A fix for a silent substitution must not introduce one:
-  // handing someone `-hf <a model they never configured>` with remi's own
-  // message as the source is worse than the unrunnable command it replaced.
-  return looksGguf
-    ? cmd
-    : `${cmd}\n  (auto_approve.model = "${model}" is not a GGUF id, so this shows remi's default)`;
-}
 
 /** Daemon settings (restart required to apply changes) */
 export interface DaemonConfig {
@@ -228,23 +114,62 @@ export interface NotificationsConfig {
    * than fixed.
    */
   readonly turn_complete_min_seconds: number;
+  /**
+   * Subagent (foreground or background) commands worth an informational
+   * push when Claude ran them without asking (its own allow rules permitted
+   * them), sent when the call finishes (#807, #1155,
+   * `auto-approve/subagent-alert.ts`). A call that prompts gets its prompt's
+   * notice or card instead, never this too.
+   * Matched as substrings of the command (or the bare tool name for a
+   * non-command tool). Moved here from `[auto_approve]` in #1125; a config
+   * that still sets only `auto_approve.subagent_alert` keeps working, with a
+   * deprecation notice.
+   */
+  readonly subagent_alert: readonly string[];
 }
 
 /**
- * Terminal cue settings (#513): out-of-band feedback drawn on the wrapper's
- * real terminal during the auto-approve lifecycle. Only fires when auto-approve
- * is enabled (it is driven by the gate). Inert in headless/daemon mode.
+ * Permission prompt relay settings (#1126). A main-agent permission prompt
+ * holds its `PermissionRequest` hook while the card is on the phone, so the
+ * phone's answer becomes the hook's response; Claude's own dialog stays on
+ * screen the whole time and either answer wins.
+ */
+export interface PromptsConfig {
+  /**
+   * Seconds remi holds a permission hook for a phone answer before letting
+   * go (an empty response, so Claude's dialog simply stays and the card says
+   * "answer at the terminal"). 5 to 110: below the 2:00 auto-deny of Claude's
+   * auto-mode fallback prompts, which counts during a hold, and below the
+   * hook's registered 600 s timeout.
+   */
+  readonly hold_seconds: number;
+  /**
+   * The same hold for a daemon or hub session (#1126 lead decision), which
+   * has no terminal of its own: after the deadline only `remi attach` could
+   * answer, so the phone keeps the prompt much longer. 5 to 3540, below the
+   * 3600 s PermissionRequest registration such sessions use. An auto-mode
+   * fallback prompt still auto-denies at 2:00 on Claude's side; that arrives
+   * as a `PermissionDenied` hook (measured), which dismisses the card.
+   */
+  readonly daemon_hold_seconds: number;
+}
+
+/** Bounds for `prompts.hold_seconds` (#1126). */
+export const HOLD_SECONDS_MIN = 5;
+export const HOLD_SECONDS_MAX = 110;
+/** Bounds for `prompts.daemon_hold_seconds` (#1126). */
+export const DAEMON_HOLD_SECONDS_MAX = 3540;
+
+/**
+ * Terminal settings. `notify` and `status_cue` configured the auto-approve
+ * terminal cue (#513); nothing has read them since #560 replaced the title
+ * cue, and the auto-approve evaluator itself was removed in #1125. They are
+ * still parsed so existing config files load. `status_bar` is live.
  */
 export interface TerminalConfig {
-  /**
-   * Desktop notification fired when auto-approve escalates a permission to the
-   * user. 'osc9' (iTerm2/Ghostty), 'osc777' (kitty/wezterm), 'bell', or 'off'.
-   */
+  /** Unused (see the interface doc). 'osc9' | 'osc777' | 'bell' | 'off'. */
   readonly notify: 'osc9' | 'osc777' | 'bell' | 'off';
-  /**
-   * Animate the terminal title during evaluation (spinner -> check / warning).
-   * The title bar is the only cue channel that does not fight Claude's renderer.
-   */
+  /** Unused (see the interface doc). */
   readonly status_cue: boolean;
   /**
    * Reserve the wrapper terminal's last row for a persistent remi status bar
@@ -287,9 +212,9 @@ export interface RemiConfig {
   readonly display: DisplayConfig;
   readonly terminal: TerminalConfig;
   readonly telegram: TelegramConfig;
-  readonly auto_approve: AutoApproveConfig;
   readonly features: FeaturesConfig;
   readonly notifications: NotificationsConfig;
+  readonly prompts: PromptsConfig;
 }
 
 /** Built-in defaults used when no config file or CLI flags are provided */
@@ -377,70 +302,22 @@ export const DEFAULT_CONFIG: RemiConfig = {
     authorized_chat_ids: [],
     authorized_user_ids: [],
   },
-  auto_approve: {
-    enabled: false,
-    // Resolved by PLATFORM, not hardcoded (#822): the Yooz engine on Apple
-    // Silicon, a thin llama.cpp server on Linux. Both listen on remi's reserved
-    // port 19924 and only one can exist per machine, so nothing has to
-    // negotiate. See `detectLocalLLMPlatform`.
-    provider: defaultProvider(),
-    // Fast small default: with synchronous decisions (#496) the eval blocks
-    // Claude, so the default must be quick + RAM-light across platforms (incl.
-    // MacBook Air). Heavier models go in `escalate_model` (second opinion,
-    // would-escalate cases only).
-    //
-    // #809 Phase D measured the 38-case permission grid against a real engine.
-    // This untuned QAT-lean KD base scored 38/38 with zero unsafe approvals,
-    // zero unparsable responses, and p95 2.26s. The engine's two TouchUp tiers
-    // are NOT substitutes: `yooz-quality-v3` (same base, grammar-tuned) also
-    // reads 38/38, but six of those are responses carrying no verdict at all --
-    // it echoes the input back, a proofreader doing its job -- and they "pass"
-    // only because an unparsable response is treated as escalate. Those six are
-    // `rm -rf /`, the `dd` disk wipe, `chmod 777 /etc`, `base64 | bash`,
-    // `eval $X`, and a reverse shell: safety by accident, not by judgment.
-    // `yooz-light-v3` scores 22/38 outright.
-    //
-    // Requires yooz-engine#303 (catalogue-backed model selection). Engines
-    // predating it serve only the two TouchUp tiers and reject this id with
-    // 400 `invalid_model`; auto-approve is off by default, so that surfaces as
-    // "every question escalates" rather than as a broken daemon.
-    //
-    // #822: resolved by platform, like `provider` above -- an MLX id simply
-    // cannot be loaded by llama.cpp. The measurement above is MLX-only; see
-    // `defaultModel` for why the Linux path does not yet inherit it.
-    model: defaultModel(),
-    api_key: '',
-    base_url: 'http://127.0.0.1:19924',
-    timeout: 30,
-    log_decisions: true,
-    // Risk/authorization and semantic-intent review are opt-in. Shadow is
-    // telemetry-only and runs both advisory assessments when the resolved
-    // provider is loopback (the semantic record never goes to a remote
-    // provider); verified is the phase 4 decision-changing path and runs two
-    // independent structured local reviews. It is itself bounded by the
-    // deterministic read-only proof, moderate-risk ceiling, and session
-    // authorization matrix (#1081/#1096); any disagreement or failure
-    // escalates. Keep the default off until an operator explicitly enables the
-    // measured rollout.
-    risk_review: 'off',
-    // What escalateMain does with a main-agent BINARY operation it cannot
-    // approve (#1045 phase 6): "escalate" (default, ask the human, no reason
-    // possible on the wire) or "deny" (refuse with a reason, no ping). Deny
-    // mode only pays off once the gate's approval rate is genuinely high --
-    // see ResidualAction's doc -- so escalate is the safe, unconditional
-    // default; garbage in config.toml also falls back here (applyResidualAction).
-    residual_action: 'escalate',
-    // Safe read-only TOOLS, fast-pathed without an LLM call. These are
-    // tool-name matches: `Read` matches the Read tool and is never tested
-    // against a Bash command string (#536 — until that fix it was, so this
-    // very list approved `rm -rf Readme`). A Bash entry added here is matched
-    // per compound segment with a shell-control veto, so an approved segment
-    // cannot carry an unapproved one. Bash git commands and arbitrary gh
-    // commands are still not defaulted; the narrow gh-read group below covers
-    // output-only REST GETs and the read-only `gh sub-issue list` extension.
-    allow: ['Read', 'Glob', 'Grep'],
-    deny: [],
-    // Background-agent commands worth a heads-up even though they ran (#807).
+  features: {
+    // The TranscriptBinder is the unconditional session-binding driver (epic
+    // #499 / #503) and is the single source of truth for the live session.
+    // `REMI_TRANSCRIPT_BINDER_ENABLED=false` no longer restores an alternate
+    // path (deleted in #470); it only logs a deprecation warning at boot.
+    transcript_binder_enabled: true,
+  },
+  notifications: {
+    on_turn_complete: true,
+    // 60s: long enough that a normal interactive turn (seconds) never fires
+    // it, short enough to still be useful for "went to get coffee" absences.
+    // Personal preference varies a lot here, hence configurable.
+    turn_complete_min_seconds: 60,
+    // Subagent commands (foreground or background) worth a heads-up when
+    // Claude ran them without asking (#807, #1155; a call that prompts is
+    // shown as its prompt).
     // Irreversible-only by default: these are things you cannot undo, so a
     // banner is warranted even at the cost of an occasional false positive.
     // Broad-but-common patterns (curl, wget, ssh, scp) are deliberately NOT
@@ -457,114 +334,14 @@ export const DEFAULT_CONFIG: RemiConfig = {
       'sudo ',
       'chmod 777',
     ],
-    // Built-in read-by-definition groups, fast-pathed without an LLM call
-    // using compound-segment-aware matching (epic #494). The local reads,
-    // VCS queries, output-only GitHub REST GETs, and read-only build/test runs
-    // are on by default; remote mutation and arbitrary network tools are not.
-    approve_groups: ['read-only', 'vcs-read', 'gh-read', 'build-test'],
-    // Strictness preset (#963). `strict` reproduces the
-    // `approve_groups` line above, including the separately parsed `gh-read`
-    // group. Raising it to "balanced"/"trusted" swaps in the write-side
-    // groups (#959).
-    level: DEFAULT_AUTO_APPROVE_LEVEL,
-    deny_groups: [],
-    instructions: '',
-    multichoice: 'skip',
-    multichoice_model: '',
-    // Second-opinion model on a primary 'escalate' (main context only). Empty =
-    // no second opinion. Put a heavy model here to honor a broad approve
-    // policy without paying its latency on every permission.
-    escalate_model: '',
-    // Dedicated timeout (seconds) for the heavy escalate_model. 0 = use
-    // `timeout`. Set higher (e.g. 90) when escalate_model is a large, often-cold
-    // model so its first-call load penalty does not abort into an error.
-    escalate_timeout: 0,
-    // Max seconds a permission eval may wait in the serialization queue before
-    // escalating (#551). Concurrent evals run one at a time; a deep burst could
-    // otherwise wait long enough to risk the ~600s hook budget. 0 = no bound.
-    queue_timeout: 240,
-    // Seconds of inactivity before remi drops the model's prompt-KV cache
-    // while keeping its weights resident (#820 stage 1) -- cheap and
-    // recomputable, unlike a full unload. 300 (5 min) mirrors ollama's old
-    // server-side keep_alive default. 0 = never drop the cache; keep_alive
-    // (stage 2, below) is unaffected either way.
-    cache_idle: 300,
-    // Seconds a model stays resident after the last evaluation before remi
-    // unloads it (#820 stage 2). The engine has no keep-alive of its own, so
-    // without this a daemon pins the weights forever; 1800 matches what
-    // ollama's keep_alive gave us. 0 = never unload.
-    keep_alive: 1800,
-    // #818: who owns the engine process on remi's port. 'owned' (default) =
-    // remi starts and supervises its own helper and may load/unload/delete
-    // models. 'shared' = a super-yooz host owns it; remi reads and evaluates
-    // but never spawns, unloads or deletes, because another module may be
-    // mid-generate on the same weights.
-    engine: 'owned',
-    // Absolute path to the helper executable remi starts in 'owned' mode.
-    // Empty = nothing to start: remi still attaches to an engine already on
-    // the port, and otherwise reports the gap rather than failing silently.
-    engine_path: '',
-    // Where the engine downloads model weights. Empty = the engine's own
-    // default (~/.cache/huggingface/hub, or its sandbox container). Set this
-    // to keep multi-GB weights off the boot volume, e.g. an external disk.
-    model_cache: '',
-    // Reasoning OFF by default (owner decision 2026-07-25). The earlier
-    // "reasoning is load-bearing" finding came from ollama-era testing with
-    // models large enough to afford it. On the QAT-lean tiers this is now
-    // measured as fatal, not merely slow: served through mlx_lm, the 0.8B
-    // spent an entire 600-token budget thinking about a trivial prompt and
-    // emitted NO content at all, so every evaluation degraded to an error.
-    // A permission classify wants a short JSON verdict, not an essay.
-    disable_thinking: true,
-    // Always escalate these to the user; never auto-decided by the LLM (#572):
-    // AskUserQuestion + plan-mode. Extend with custom question-posing tools.
-    always_escalate_tools: [...DEFAULT_ALWAYS_ESCALATE_TOOLS],
-    // ADR 0025. Empty = every agent uses the base policy, i.e. exactly the
-    // pre-0025 behaviour. No shipped default grants any agent anything extra.
-    agents: {},
-    // Reuse an answer the user already gave THIS SESSION for the identical
-    // operation (#976). Session-scoped, in-memory, cleared on rotation -- a
-    // durable rule is what `allow` is for. The deny-direction half (an earlier
-    // "no" downgrades a model approve to escalate) is a TIGHTENING and stays
-    // on regardless of this flag.
-    //
-    // ON by default now that the authorization key is exact command text plus
-    // a private, normalized working-directory context. The context is never
-    // put on `Question`/the wire, and a missing context fails closed. The
-    // store is still per session and in-memory; an explicit false in an
-    // existing config continues to opt out. Critical operations remain
-    // bounded by the risk matrix and ask again.
-    session_precedent: true,
-    // Hold a binary main-context PermissionRequest hook open until the user
-    // answers (Model B, #573). Large + human-paced; on expiry it fails open to
-    // the native prompt. 0 disables holding (escalate -> passthrough as before).
-    hold_timeout: 1800,
-    // Push + hold early if a binary main-context eval is still running after
-    // this many seconds (Part B, #573). 0 disables Part B (A+C only).
-    push_hold_timeout: 60,
-    // Wait this long for a held escalation's notification to be confirmed
-    // delivered before treating the hold as undeliverable (epic #603 Phase 1).
-    // On no confirmation, fail open fast instead of blocking for hold_timeout.
-    // 0 disables delivery gating (legacy: always hold to hold_timeout).
-    delivery_confirm_timeout: 6,
-    // Keep holding an undeliverable escalation for this short secondary window
-    // instead of failing open immediately (epic #603 Phase 1, D2). 0 = fail
-    // open fast (the hybrid default); > 0 = hold-always-no-phone mode.
-    hold_unconfirmed_timeout: 0,
   },
-  features: {
-    // The TranscriptBinder is the unconditional session-binding driver (epic
-    // #499 / #503) and is the single source of truth for the live session.
-    // `REMI_TRANSCRIPT_BINDER_ENABLED=false` no longer restores an alternate
-    // path (deleted in #470); it only logs a deprecation warning at boot.
-    transcript_binder_enabled: true,
-  },
-  notifications: {
-    on_turn_complete: true,
-    // 60s: long enough that a normal interactive turn (seconds) never fires
-    // it, short enough to still be useful for "went to get coffee" absences.
-    // Personal preference varies a lot here, hence configurable.
-    turn_complete_min_seconds: 60,
+  prompts: {
+    // 90 s: long enough to reach a phone in a pocket, short enough to stay
+    // under the 2:00 auto-deny of auto-mode fallback prompts (#1126).
+    hold_seconds: 90,
+    // 59 min: a daemon or hub session has no terminal, so the phone is the
+    // way to answer; below the 3600 s hook registration (#1126).
+    daemon_hold_seconds: 3540,
   },
 };
 
@@ -598,10 +375,6 @@ function deepMerge(base: RemiConfig, partial: Record<string, unknown>): RemiConf
       base.telegram,
       partial['telegram'] as Record<string, unknown> | undefined,
     ),
-    auto_approve: mergeSection(
-      base.auto_approve,
-      partial['auto_approve'] as Record<string, unknown> | undefined,
-    ),
     features: mergeSection(
       base.features,
       partial['features'] as Record<string, unknown> | undefined,
@@ -610,23 +383,48 @@ function deepMerge(base: RemiConfig, partial: Record<string, unknown>): RemiConf
       base.notifications,
       partial['notifications'] as Record<string, unknown> | undefined,
     ),
+    prompts: mergeSection(base.prompts, partial['prompts'] as Record<string, unknown> | undefined),
   };
+}
+
+/**
+ * A loaded config plus what a boot notice must say about settings that no
+ * longer exist (#1125, ADR 0030). The notice itself is built and printed by
+ * the caller (`cli/auto-approve-removal.ts`), once, at boot; loading never
+ * fails because of these keys.
+ */
+export interface LoadedConfig {
+  readonly config: RemiConfig;
+  /** Top-level keys present in the removed `[auto_approve]` table, sorted.
+   *  Empty when the file has no such table. */
+  readonly removedAutoApproveKeys: readonly string[];
+  /** True when `[notifications] subagent_alert` was absent and the legacy
+   *  `auto_approve.subagent_alert` list was used in its place. */
+  readonly subagentAlertFromLegacy: boolean;
 }
 
 /**
  * Load config from ~/.remi/config.toml, merged with defaults.
  * Returns DEFAULT_CONFIG if no config file exists.
- * Returns DEFAULT_CONFIG if no config file exists.
  * Throws if the file exists but cannot be read or has invalid TOML.
  */
 export function loadConfig(configPath: string = CONFIG_PATH): RemiConfig {
+  return loadConfigWithNotices(configPath).config;
+}
+
+/** `loadConfig`, plus the removed-settings facts a boot notice needs. */
+export function loadConfigWithNotices(configPath: string = CONFIG_PATH): LoadedConfig {
   let raw: string;
   try {
     raw = fs.readFileSync(configPath, 'utf-8');
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === 'ENOENT') {
-      return deepMerge(DEFAULT_CONFIG, {});
+      return {
+        config: deepMerge(DEFAULT_CONFIG, {}),
+        removedAutoApproveKeys: [],
+        subagentAlertFromLegacy: false,
+      };
     }
     throw new Error(
       `Cannot read config file ${configPath}: ${errorToString(err)}. Fix file permissions or remove the file to use defaults.`,
@@ -636,24 +434,22 @@ export function loadConfig(configPath: string = CONFIG_PATH): RemiConfig {
   try {
     const parsed = parseToml(raw) as Record<string, unknown>;
     const merged = deepMerge(DEFAULT_CONFIG, parsed);
-    validateAutoApprove(merged.auto_approve, configPath);
-    // ADR 0025. Validated against the MERGED value, which is safe here because
-    // `mergeSection` replaces the `agents` table wholesale rather than deep-
-    // merging it -- a user table never blends with the empty default.
-    validateAgents(merged.auto_approve.agents, configPath);
-    // Apply the level preset AFTER merge, but decide from the RAW parsed
-    // table (#963). By this point `merged.approve_groups` is populated either
-    // way, so it cannot answer "did the user write this?" — reading it here
-    // would make every install look explicit and no level would ever apply.
-    const rawAutoApprove = parsed['auto_approve'] as Record<string, unknown> | undefined;
-    const levelled = applyLevel(merged, rawAutoApprove, configPath);
-    // #1045 phase 6: same raw-table-driven shape as applyLevel above, but
-    // warn + fall back instead of throw -- see applyResidualAction's own doc.
-    const withResidualAction = applyResidualAction(levelled, rawAutoApprove, configPath);
-    validateTerminal(merged.terminal, configPath);
-    validateDaemon(merged.daemon, configPath);
-    validateNotifications(merged.notifications, configPath);
-    return withResidualAction;
+    const legacy = legacyAutoApprove(parsed);
+    const config = legacy.subagentAlert
+      ? {
+          ...merged,
+          notifications: { ...merged.notifications, subagent_alert: legacy.subagentAlert },
+        }
+      : merged;
+    validateTerminal(config.terminal, configPath);
+    validateDaemon(config.daemon, configPath);
+    validateNotifications(config.notifications, configPath);
+    validatePrompts(config.prompts, configPath);
+    return {
+      config,
+      removedAutoApproveKeys: legacy.keys,
+      subagentAlertFromLegacy: legacy.subagentAlert !== undefined,
+    };
   } catch (err) {
     throw new Error(
       `Invalid TOML in ${configPath}: ${errorToString(err)}. Fix the syntax or delete the file to use defaults.`,
@@ -662,110 +458,38 @@ export function loadConfig(configPath: string = CONFIG_PATH): RemiConfig {
 }
 
 /**
- * Apply the `[auto_approve] level` preset to the merged config (#963).
- *
- * Separated from `deepMerge` because the decision needs something the merged
- * value cannot express: whether `approve_groups` was WRITTEN by the user or
- * filled in by the default. Both look identical afterwards, so this reads the
- * raw parsed table instead.
- *
- * An explicit `approve_groups` wins over the preset, and the daemon says so —
- * a user who set groups before levels existed keeps exactly their behavior,
- * and learns from one log line why their level appears to have no effect.
+ * What survives of a removed `[auto_approve]` table (#1125). Its keys are
+ * reported, never validated: a stale value of any shape must not stop the
+ * daemon from starting. The one setting that moved, `subagent_alert`, is
+ * honored from here only when `[notifications] subagent_alert` is unset and
+ * the legacy value is a list of strings.
  */
-function applyLevel(
-  merged: RemiConfig,
-  rawAutoApprove: Record<string, unknown> | undefined,
-  configPath: string,
-): RemiConfig {
-  const rawLevel = rawAutoApprove?.['level'];
-  if (rawLevel !== undefined && !isAutoApproveLevel(rawLevel)) {
-    throw new Error(
-      `Invalid auto_approve.level in ${configPath}: got ${JSON.stringify(rawLevel)}. Valid levels: ${AUTO_APPROVE_LEVELS.join(', ')}. Example: level = "balanced"`,
-    );
+function legacyAutoApprove(parsed: Record<string, unknown>): {
+  keys: readonly string[];
+  subagentAlert: readonly string[] | undefined;
+} {
+  if (!('auto_approve' in parsed)) return { keys: [], subagentAlert: undefined };
+  const table = parsed['auto_approve'];
+  if (table === null || typeof table !== 'object' || Array.isArray(table)) {
+    return { keys: ['auto_approve'], subagentAlert: undefined };
   }
-  const level = isAutoApproveLevel(rawLevel) ? rawLevel : DEFAULT_AUTO_APPROVE_LEVEL;
-
-  const explicitGroups =
-    rawAutoApprove !== undefined && 'approve_groups' in rawAutoApprove
-      ? merged.auto_approve.approve_groups
+  const t = table as Record<string, unknown>;
+  const notifications = parsed['notifications'] as Record<string, unknown> | undefined;
+  const legacyAlert = t['subagent_alert'];
+  const subagentAlert =
+    (notifications === undefined || !('subagent_alert' in notifications)) &&
+    Array.isArray(legacyAlert) &&
+    legacyAlert.every((p) => typeof p === 'string')
+      ? (legacyAlert as readonly string[])
       : undefined;
-  const resolved = resolveApproveGroups(level, explicitGroups);
-
-  if (resolved.source === 'explicit' && rawLevel !== undefined) {
-    console.warn(
-      `[AutoApprove] Warning: both level = "${level}" and an explicit approve_groups are set in ${configPath}; approve_groups wins. Remove it to use the level preset.`,
-    );
-  }
-
-  // Validate the RESOLVED list, not just the user's (#964 review). The
-  // unknown-group warning in `validateAutoApprove` already ran, against the
-  // pre-preset value — so a typo in `LEVEL_GROUPS` (`vcs-writ`) would reach
-  // `matchGroups`, which ignores unknown names, and the level would silently
-  // approve nothing while appearing to work. A user's own typo warns; the
-  // shipped preset's would not have. `levels.test.ts` covers this, but a test
-  // is not the runtime, and this epic has already produced three defects in
-  // code written to fix the previous one.
-  if (resolved.source === 'level') {
-    const unknown = resolved.groups.filter((g) => !isKnownGroup(g));
-    if (unknown.length > 0) {
-      throw new Error(
-        `Internal error: auto_approve.level "${level}" names unknown permission group(s) ${unknown.map((g) => `"${g}"`).join(', ')}. Known groups: ${knownGroupNames().join(', ')}. This is a bug in the shipped level presets, not in ${configPath}.`,
-      );
-    }
-  }
-
-  return {
-    ...merged,
-    auto_approve: { ...merged.auto_approve, level, approve_groups: resolved.groups },
-  };
+  // A legacy subagent_alert that is still honored is not "ignored": it gets
+  // its own "move it" line in the boot notice instead.
+  const keys = Object.keys(t)
+    .filter((k) => !(k === 'subagent_alert' && subagentAlert !== undefined))
+    .sort();
+  return { keys, subagentAlert };
 }
 
-const VALID_RESIDUAL_ACTIONS: readonly ResidualAction[] = ['escalate', 'deny'];
-const DEFAULT_RESIDUAL_ACTION: ResidualAction = 'escalate';
-
-/**
- * Apply `[auto_approve] residual_action` to the merged config (#1045 phase 6).
- *
- * Deliberately WARN + FALL BACK rather than throw, unlike every other
- * enum-ish `auto_approve` field (`level`, `engine`, `multichoice`, all of
- * which refuse to start the daemon on an invalid value). This field decides
- * escalate-vs-deny for operations auto-approve could not otherwise resolve —
- * `escalate` is always a safe fallback for a garbage value (it is the
- * default, unconditionally the pre-#1045 behavior), so refusing to start over
- * a typo here would trade a working daemon for a stricter one no other
- * `auto_approve` field enforces this way. Reads the RAW parsed table for the
- * same reason `applyLevel` does: by the time `merged` exists, a garbage value
- * already replaced the default (`mergeSection` overwrites wholesale), so only
- * the raw table can distinguish "the user wrote this" from "unset".
- */
-function applyResidualAction(
-  merged: RemiConfig,
-  rawAutoApprove: Record<string, unknown> | undefined,
-  configPath: string,
-): RemiConfig {
-  const raw = rawAutoApprove?.['residual_action'];
-  if (raw === undefined) return merged;
-  if ((VALID_RESIDUAL_ACTIONS as readonly unknown[]).includes(raw)) return merged;
-  console.warn(
-    `[AutoApprove] Warning: invalid auto_approve.residual_action in ${configPath}: got ${JSON.stringify(raw)}. Valid values: ${VALID_RESIDUAL_ACTIONS.join(', ')}. Falling back to "${DEFAULT_RESIDUAL_ACTION}". Example: residual_action = "deny"`,
-  );
-  return {
-    ...merged,
-    auto_approve: { ...merged.auto_approve, residual_action: DEFAULT_RESIDUAL_ACTION },
-  };
-}
-
-/**
- * Validate auto_approve config has correct runtime types.
- *
- * TOML doesn't enforce TypeScript types. A user writing `allow = "git"` (string
- * instead of string[]) would produce a runtime value the matchers would iterate
- * character-by-character, auto-approving almost every command. This validator
- * refuses to start with such misconfigurations.
- *
- * Also warns about dangerously short patterns that would match too broadly.
- */
 /**
  * Validate `[daemon]` entries whose runtime type is load-bearing (#535).
  *
@@ -801,261 +525,16 @@ function validateDaemon(cfg: DaemonConfig, configPath: string): void {
   }
 }
 
-function validateAutoApprove(cfg: AutoApproveConfig, configPath: string): void {
-  const isStringArray = (v: unknown): v is readonly string[] =>
-    Array.isArray(v) && v.every((s) => typeof s === 'string');
-
-  const expectBool = (key: string, v: unknown): void => {
-    if (typeof v !== 'boolean') {
-      throw new Error(
-        `Invalid auto_approve.${key} in ${configPath}: must be a boolean (true/false), got ${typeof v === 'string' ? `string "${v}"` : typeof v}. Example: ${key} = ${key === 'enabled' ? 'true' : 'false'}`,
-      );
-    }
-  };
-  const expectString = (key: string, v: unknown): void => {
-    if (typeof v !== 'string') {
-      throw new Error(
-        `Invalid auto_approve.${key} in ${configPath}: must be a string, got ${typeof v}.`,
-      );
-    }
-  };
-
-  expectBool('enabled', cfg.enabled);
-  expectBool('log_decisions', cfg.log_decisions);
-  expectBool('disable_thinking', cfg.disable_thinking);
-  if (
-    cfg.risk_review !== undefined &&
-    cfg.risk_review !== 'off' &&
-    cfg.risk_review !== 'shadow' &&
-    cfg.risk_review !== 'verified'
-  ) {
-    throw new Error(
-      `Invalid auto_approve.risk_review in ${configPath}: must be "off", "shadow", or "verified", got ${JSON.stringify(cfg.risk_review)}. Example: risk_review = "verified"`,
-    );
-  }
-  expectString('provider', cfg.provider);
-  // #809: ollama support was removed outright (no compatibility shim, no
-  // silent fallback to a different provider) -- a config that still names it
-  // must fail loudly with an actionable next step.
-  if (cfg.provider === 'ollama') {
-    throw new Error(
-      `Invalid auto_approve.provider "ollama" in ${configPath}: ollama support was removed (#809). Switch to provider = "yooz" (the Yooz engine's local LLM module, loopback :19924 on macOS) or provider = "llamacpp" (a thin llama.cpp server, also loopback :19924, elsewhere), and set model to an id the chosen backend serves (e.g. "${DEFAULT_EVAL_MODEL_MLX}" for the engine, "${DEFAULT_EVAL_MODEL_GGUF}" for llama.cpp). Note "llamacpp" currently expects you to run llama-server yourself (remi does not download or supervise it yet, #822): ${llamaServerCommand()}`,
-    );
-  }
-  expectString('model', cfg.model);
-  expectString('api_key', cfg.api_key);
-  expectString('base_url', cfg.base_url);
-
-  if (typeof cfg.timeout !== 'number' || !Number.isFinite(cfg.timeout) || cfg.timeout <= 0) {
-    throw new Error(
-      `Invalid auto_approve.timeout in ${configPath}: must be a positive number (seconds), got ${typeof cfg.timeout === 'string' ? `string "${cfg.timeout}"` : typeof cfg.timeout}. Example: timeout = 10`,
-    );
-  }
-
-  if (
-    typeof cfg.escalate_timeout !== 'number' ||
-    !Number.isFinite(cfg.escalate_timeout) ||
-    cfg.escalate_timeout < 0
-  ) {
-    throw new Error(
-      `Invalid auto_approve.escalate_timeout in ${configPath}: must be a non-negative number (seconds; 0 = use timeout), got ${typeof cfg.escalate_timeout === 'string' ? `string "${cfg.escalate_timeout}"` : typeof cfg.escalate_timeout}. Example: escalate_timeout = 90`,
-    );
-  }
-
-  if (
-    typeof cfg.queue_timeout !== 'number' ||
-    !Number.isFinite(cfg.queue_timeout) ||
-    cfg.queue_timeout < 0
-  ) {
-    throw new Error(
-      `Invalid auto_approve.queue_timeout in ${configPath}: must be a non-negative number (seconds; 0 = no bound), got ${typeof cfg.queue_timeout === 'string' ? `string "${cfg.queue_timeout}"` : typeof cfg.queue_timeout}. Example: queue_timeout = 240`,
-    );
-  }
-
-  if (cfg.engine !== 'owned' && cfg.engine !== 'shared') {
-    throw new Error(
-      `Invalid auto_approve.engine in ${configPath}: must be "owned" (remi starts its own engine) or "shared" (a super-yooz host owns it), got ${JSON.stringify(cfg.engine)}. Example: engine = "owned"`,
-    );
-  }
-
-  if (typeof cfg.model_cache !== 'string') {
-    throw new Error(
-      `Invalid auto_approve.model_cache in ${configPath}: must be a directory path (empty = the engine's default). Example: model_cache = "/Volumes/S1/huggingface/hub"`,
-    );
-  }
-
-  if (typeof cfg.engine_path !== 'string') {
-    throw new Error(
-      `Invalid auto_approve.engine_path in ${configPath}: must be a string path to the engine helper (empty = none bundled). Example: engine_path = "/Applications/Yooz Engine.app/Contents/MacOS/YoozEngine"`,
-    );
-  }
-
-  if (
-    typeof cfg.cache_idle !== 'number' ||
-    !Number.isFinite(cfg.cache_idle) ||
-    cfg.cache_idle < 0
-  ) {
-    throw new Error(
-      `Invalid auto_approve.cache_idle in ${configPath}: must be a non-negative number (seconds; 0 = never drop the cache), got ${typeof cfg.cache_idle === 'string' ? `string "${cfg.cache_idle}"` : typeof cfg.cache_idle}. Example: cache_idle = 300`,
-    );
-  }
-
-  if (
-    typeof cfg.keep_alive !== 'number' ||
-    !Number.isFinite(cfg.keep_alive) ||
-    cfg.keep_alive < 0
-  ) {
-    throw new Error(
-      `Invalid auto_approve.keep_alive in ${configPath}: must be a non-negative number (seconds; 0 = never unload), got ${typeof cfg.keep_alive === 'string' ? `string "${cfg.keep_alive}"` : typeof cfg.keep_alive}. Example: keep_alive = 1800`,
-    );
-  }
-
-  if (
-    typeof cfg.hold_timeout !== 'number' ||
-    !Number.isFinite(cfg.hold_timeout) ||
-    cfg.hold_timeout < 0
-  ) {
-    throw new Error(
-      `Invalid auto_approve.hold_timeout in ${configPath}: must be a non-negative number (seconds; 0 = disable holding), got ${typeof cfg.hold_timeout === 'string' ? `string "${cfg.hold_timeout}"` : typeof cfg.hold_timeout}. Example: hold_timeout = 1800`,
-    );
-  }
-
-  if (
-    typeof cfg.push_hold_timeout !== 'number' ||
-    !Number.isFinite(cfg.push_hold_timeout) ||
-    cfg.push_hold_timeout < 0
-  ) {
-    throw new Error(
-      `Invalid auto_approve.push_hold_timeout in ${configPath}: must be a non-negative number (seconds; 0 = disable slow-eval push), got ${typeof cfg.push_hold_timeout === 'string' ? `string "${cfg.push_hold_timeout}"` : typeof cfg.push_hold_timeout}. Example: push_hold_timeout = 60`,
-    );
-  }
-
-  if (
-    typeof cfg.delivery_confirm_timeout !== 'number' ||
-    !Number.isFinite(cfg.delivery_confirm_timeout) ||
-    cfg.delivery_confirm_timeout < 0
-  ) {
-    throw new Error(
-      `Invalid auto_approve.delivery_confirm_timeout in ${configPath}: must be a non-negative number (seconds; 0 = disable delivery gating), got ${typeof cfg.delivery_confirm_timeout === 'string' ? `string "${cfg.delivery_confirm_timeout}"` : typeof cfg.delivery_confirm_timeout}. Example: delivery_confirm_timeout = 6`,
-    );
-  }
-
-  if (
-    typeof cfg.hold_unconfirmed_timeout !== 'number' ||
-    !Number.isFinite(cfg.hold_unconfirmed_timeout) ||
-    cfg.hold_unconfirmed_timeout < 0
-  ) {
-    throw new Error(
-      `Invalid auto_approve.hold_unconfirmed_timeout in ${configPath}: must be a non-negative number (seconds; 0 = fail open fast when delivery unconfirmed), got ${typeof cfg.hold_unconfirmed_timeout === 'string' ? `string "${cfg.hold_unconfirmed_timeout}"` : typeof cfg.hold_unconfirmed_timeout}. Example: hold_unconfirmed_timeout = 180`,
-    );
-  }
-
-  // Contradictory pairing: Part B pushes + holds early on a slow eval, but with
-  // holding disabled the held hook immediately falls through to passthrough, so
-  // the early push buys nothing. Warn (not throw) so the daemon still starts.
-  if (cfg.push_hold_timeout > 0 && cfg.hold_timeout === 0) {
-    console.warn(
-      `[AutoApprove] Warning: push_hold_timeout (${cfg.push_hold_timeout}s) > 0 but hold_timeout = 0 in ${configPath}: the slow-eval early push cannot hold the hook (holding is disabled), so it falls through to passthrough immediately. Set hold_timeout > 0 to actually hold, or push_hold_timeout = 0 to disable the early push.`,
-    );
-  }
-
-  if (!isStringArray(cfg.allow)) {
-    throw new Error(
-      `Invalid auto_approve.allow in ${configPath}: must be an array of strings. Example: allow = ["git status", "bun test"]`,
-    );
-  }
-  if (!isStringArray(cfg.deny)) {
-    throw new Error(
-      `Invalid auto_approve.deny in ${configPath}: must be an array of strings. Example: deny = ["rm -rf /", "sudo "]`,
-    );
-  }
-  if (!isStringArray(cfg.approve_groups)) {
-    throw new Error(
-      `Invalid auto_approve.approve_groups in ${configPath}: must be an array of group names. Known groups: ${knownGroupNames().join(', ')}. Example: approve_groups = ["read-only", "vcs-read", "gh-read", "build-test"]`,
-    );
-  }
-  if (!isStringArray(cfg.subagent_alert)) {
-    throw new Error(
-      `Invalid auto_approve.subagent_alert in ${configPath}: must be an array of strings. Example: subagent_alert = ["rm -rf", "push --force"]`,
-    );
-  }
-  if (!isStringArray(cfg.deny_groups)) {
-    throw new Error(
-      `Invalid auto_approve.deny_groups in ${configPath}: must be an array of group names. Known groups: ${knownGroupNames().join(', ')}.`,
-    );
-  }
-  for (const g of [...cfg.approve_groups, ...cfg.deny_groups]) {
-    if (!isKnownGroup(g)) {
-      console.warn(
-        `[AutoApprove] Warning: unknown permission group "${g}" in ${configPath}; ignored. Known groups: ${knownGroupNames().join(', ')}.`,
-      );
-    }
-  }
-  if (typeof cfg.instructions !== 'string') {
-    throw new Error(
-      `Invalid auto_approve.instructions in ${configPath}: must be a string (use triple-quoted """ for multiline).`,
-    );
-  }
-
-  if (cfg.multichoice !== 'skip' && cfg.multichoice !== 'evaluate') {
-    throw new Error(
-      `Invalid auto_approve.multichoice in ${configPath}: must be "skip" or "evaluate", got ${typeof cfg.multichoice === 'string' ? `"${cfg.multichoice}"` : typeof cfg.multichoice}.`,
-    );
-  }
-  expectString('multichoice_model', cfg.multichoice_model);
-  expectString('escalate_model', cfg.escalate_model);
-  if (!isStringArray(cfg.always_escalate_tools)) {
-    throw new Error(
-      `Invalid auto_approve.always_escalate_tools in ${configPath}: must be an array of tool names. Example: always_escalate_tools = ["AskUserQuestion", "ExitPlanMode"]`,
-    );
-  }
-  if (typeof cfg.session_precedent !== 'boolean') {
-    throw new Error(
-      `Invalid auto_approve.session_precedent in ${configPath}: must be true or false, got ${typeof cfg.session_precedent}.`,
-    );
-  }
-  for (const t of cfg.always_escalate_tools) {
-    if (t.trim().length === 0) {
-      console.warn(
-        `[AutoApprove] Warning: always_escalate_tools entry "${t}" in ${configPath} is empty/whitespace and will never match a tool name.`,
-      );
-    }
-  }
-
-  // Warn about dangerously short patterns that would match too broadly.
-  const MIN_PATTERN_LENGTH = 2;
-  for (const p of cfg.allow) {
-    if (p.trim().length < MIN_PATTERN_LENGTH) {
-      console.warn(
-        `[AutoApprove] Warning: allow pattern "${p}" is shorter than ${MIN_PATTERN_LENGTH} chars and will match many commands. Use a more specific pattern.`,
-      );
-    }
-  }
-  for (const p of cfg.deny) {
-    if (p.trim().length < MIN_PATTERN_LENGTH) {
-      console.warn(
-        `[AutoApprove] Warning: deny pattern "${p}" is shorter than ${MIN_PATTERN_LENGTH} chars and will block many commands. Use a more specific pattern.`,
-      );
-    }
-  }
-
-  // An allow entry shaped like a tool name matches that TOOL and is never
-  // tested against a Bash command (#536). That is the point of the fix, but it
-  // silently changes what a capitalized real binary does: `Rscript`, `MSBuild`
-  // and friends look like tool names and stop covering their own commands. The
-  // entry keeps working for a tool of that name, so this is a warning rather
-  // than an error, but it must not be silent.
-  for (const p of cfg.allow) {
-    if (looksLikeToolName(p) && !KNOWN_TOOL_NAMES.has(p)) {
-      console.warn(
-        `[AutoApprove] Warning: allow entry "${p}" is shaped like a tool name, so it matches the ${p} TOOL and never a Bash command containing it. If you meant the shell command, lowercase it or give a longer prefix (e.g. "${p} " with an argument).`,
-      );
-    }
-  }
-}
-
 /** Validate `[notifications]` has correct runtime types (#914). */
 function validateNotifications(cfg: NotificationsConfig, configPath: string): void {
+  if (
+    !Array.isArray(cfg.subagent_alert) ||
+    !cfg.subagent_alert.every((p: unknown) => typeof p === 'string')
+  ) {
+    throw new Error(
+      `Invalid notifications.subagent_alert in ${configPath}: must be an array of strings. Example: subagent_alert = ["rm -rf", "push --force"]`,
+    );
+  }
   if (typeof cfg.on_turn_complete !== 'boolean') {
     throw new Error(
       `Invalid notifications.on_turn_complete in ${configPath}: must be a boolean (true/false), got ${typeof cfg.on_turn_complete === 'string' ? `string "${cfg.on_turn_complete}"` : typeof cfg.on_turn_complete}. Example: on_turn_complete = true`,
@@ -1070,6 +549,24 @@ function validateNotifications(cfg: NotificationsConfig, configPath: string): vo
       `Invalid notifications.turn_complete_min_seconds in ${configPath}: must be a non-negative number (seconds), got ${typeof cfg.turn_complete_min_seconds === 'string' ? `string "${cfg.turn_complete_min_seconds}"` : typeof cfg.turn_complete_min_seconds}. Example: turn_complete_min_seconds = 60`,
     );
   }
+}
+
+/**
+ * Validate `[prompts]` (#1126). An out-of-range hold is refused rather than
+ * clamped: above 110 s an auto-mode fallback prompt can auto-deny while remi
+ * still holds it, and below 5 s the card would be released before it can
+ * reach a phone.
+ */
+function validatePrompts(cfg: PromptsConfig, configPath: string): void {
+  const check = (key: string, v: unknown, max: number, example: number): void => {
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < HOLD_SECONDS_MIN || v > max) {
+      throw new Error(
+        `Invalid prompts.${key} in ${configPath}: must be a number of seconds from ${HOLD_SECONDS_MIN} to ${max}, got ${typeof v === 'string' ? `string "${v}"` : String(v)}. Example: ${key} = ${example}`,
+      );
+    }
+  };
+  check('hold_seconds', cfg.hold_seconds, HOLD_SECONDS_MAX, 90);
+  check('daemon_hold_seconds', cfg.daemon_hold_seconds, DAEMON_HOLD_SECONDS_MAX, 3540);
 }
 
 /** Validate the terminal cue section has correct runtime types. */
@@ -1163,96 +660,6 @@ export function applyEnvOverrides(config: RemiConfig): RemiConfig {
       .filter((n) => !Number.isNaN(n));
   }
 
-  // Auto-approve env vars
-  const auto_approve = { ...config.auto_approve };
-  if (env['REMI_AUTO_APPROVE'] === 'true') {
-    (auto_approve as { enabled: boolean }).enabled = true;
-  } else if (env['REMI_AUTO_APPROVE'] === 'false') {
-    (auto_approve as { enabled: boolean }).enabled = false;
-  }
-  if (env['REMI_AUTO_APPROVE_MODEL']) {
-    (auto_approve as { model: string }).model = env['REMI_AUTO_APPROVE_MODEL'];
-  }
-  if (env['REMI_AUTO_APPROVE_PROVIDER']) {
-    (auto_approve as { provider: string }).provider = env['REMI_AUTO_APPROVE_PROVIDER'];
-  }
-  if (env['REMI_AUTO_APPROVE_API_KEY']) {
-    (auto_approve as { api_key: string }).api_key = env['REMI_AUTO_APPROVE_API_KEY'];
-  }
-  if (env['REMI_AUTO_APPROVE_BASE_URL']) {
-    (auto_approve as { base_url: string }).base_url = env['REMI_AUTO_APPROVE_BASE_URL'];
-  }
-  if (env['REMI_AUTO_APPROVE_INSTRUCTIONS']) {
-    (auto_approve as { instructions: string }).instructions = env['REMI_AUTO_APPROVE_INSTRUCTIONS'];
-  }
-  // Comma- or newline-separated patterns. Env vars override (not append to) config.
-  if (env['REMI_AUTO_APPROVE_ALLOW']) {
-    (auto_approve as { allow: readonly string[] }).allow = env['REMI_AUTO_APPROVE_ALLOW']
-      .split(/[\n,]/)
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0);
-  }
-  if (env['REMI_AUTO_APPROVE_DENY']) {
-    (auto_approve as { deny: readonly string[] }).deny = env['REMI_AUTO_APPROVE_DENY']
-      .split(/[\n,]/)
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0);
-  }
-  if (env['REMI_AUTO_APPROVE_ALWAYS_ESCALATE']) {
-    const tools = env['REMI_AUTO_APPROVE_ALWAYS_ESCALATE']
-      .split(/[\n,]/)
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0);
-    if (tools.length === 0) {
-      console.warn(
-        '[AutoApprove] REMI_AUTO_APPROVE_ALWAYS_ESCALATE resolved to an empty list; ' +
-          'AskUserQuestion and ExitPlanMode will no longer be structurally escalated. ' +
-          'Set it to "AskUserQuestion,ExitPlanMode" to keep the default safety net.',
-      );
-    }
-    (auto_approve as { always_escalate_tools: readonly string[] }).always_escalate_tools = tools;
-  }
-  const mc = env['REMI_AUTO_APPROVE_MULTICHOICE'];
-  if (mc === 'skip' || mc === 'evaluate') {
-    (auto_approve as { multichoice: 'skip' | 'evaluate' }).multichoice = mc;
-  }
-  const riskReview = env['REMI_AUTO_APPROVE_RISK_REVIEW'];
-  if (riskReview === 'off' || riskReview === 'shadow' || riskReview === 'verified') {
-    (auto_approve as { risk_review: 'off' | 'shadow' | 'verified' }).risk_review = riskReview;
-  }
-  if (env['REMI_AUTO_APPROVE_MULTICHOICE_MODEL']) {
-    (auto_approve as { multichoice_model: string }).multichoice_model =
-      env['REMI_AUTO_APPROVE_MULTICHOICE_MODEL'];
-  }
-  if (env['REMI_AUTO_APPROVE_ESCALATE_MODEL']) {
-    (auto_approve as { escalate_model: string }).escalate_model =
-      env['REMI_AUTO_APPROVE_ESCALATE_MODEL'];
-  }
-  if (env['REMI_AUTO_APPROVE_ESCALATE_TIMEOUT']) {
-    const parsed = Number.parseInt(env['REMI_AUTO_APPROVE_ESCALATE_TIMEOUT'], 10);
-    if (Number.isFinite(parsed) && parsed >= 0) {
-      (auto_approve as { escalate_timeout: number }).escalate_timeout = parsed;
-    }
-  }
-  if (env['REMI_AUTO_APPROVE_QUEUE_TIMEOUT']) {
-    const parsed = Number.parseInt(env['REMI_AUTO_APPROVE_QUEUE_TIMEOUT'], 10);
-    if (Number.isFinite(parsed) && parsed >= 0) {
-      (auto_approve as { queue_timeout: number }).queue_timeout = parsed;
-    }
-  }
-  if (env['REMI_AUTO_APPROVE_HOLD_TIMEOUT']) {
-    const parsed = Number.parseInt(env['REMI_AUTO_APPROVE_HOLD_TIMEOUT'], 10);
-    if (Number.isFinite(parsed) && parsed >= 0) {
-      (auto_approve as { hold_timeout: number }).hold_timeout = parsed;
-    }
-  }
-  if (env['REMI_AUTO_APPROVE_PUSH_HOLD_TIMEOUT']) {
-    const parsed = Number.parseInt(env['REMI_AUTO_APPROVE_PUSH_HOLD_TIMEOUT'], 10);
-    if (Number.isFinite(parsed) && parsed >= 0) {
-      (auto_approve as { push_hold_timeout: number }).push_hold_timeout = parsed;
-    }
-  }
-
   // Deprecated kill-switch (#470/#503): the TranscriptBinder drives session
   // binding unconditionally now, so this flag has no effect on behavior; it is
   // read only so an operator's existing env var doesn't silently vanish.
@@ -1270,7 +677,6 @@ export function applyEnvOverrides(config: RemiConfig): RemiConfig {
     display,
     terminal,
     telegram,
-    auto_approve,
     features,
   };
 }
@@ -1312,10 +718,8 @@ enabled = "${DEFAULT_CONFIG.auth.enabled}"  # "auto" | true | false
 max_bullet_length = ${DEFAULT_CONFIG.display.max_bullet_length}  # 0 = disabled
 
 [terminal]
-# Out-of-band cue on the wrapper terminal during auto-approve (only active when
-# auto_approve is enabled). notify fires when a permission ESCALATES to you.
-notify = "${DEFAULT_CONFIG.terminal.notify}"        # osc9 | osc777 | bell | off
-status_cue = ${DEFAULT_CONFIG.terminal.status_cue}     # animate the title: evaluating -> done/needs-you
+notify = "${DEFAULT_CONFIG.terminal.notify}"        # unused; kept so older configs load
+status_cue = ${DEFAULT_CONFIG.terminal.status_cue}     # unused; kept so older configs load
 status_bar = ${DEFAULT_CONFIG.terminal.status_bar}     # reserve the last terminal row for a remi status bar (#565)
 
 [telegram]
@@ -1334,233 +738,22 @@ authorized_user_ids = []
 # actually done yet) or with no device registered.
 on_turn_complete = ${DEFAULT_CONFIG.notifications.on_turn_complete}
 turn_complete_min_seconds = ${DEFAULT_CONFIG.notifications.turn_complete_min_seconds}  # tune to taste; there is no "right" value
+# Subagent commands (foreground or background) worth an informational push
+# when Claude ran them without asking (your allow rules permitted them); sent
+# when the command finishes (#807). A command that asks for permission shows
+# as its prompt instead. Substring match on the command. Irreversible-only by default; add
+# broad ones (curl, ssh) per machine if you want them.
+subagent_alert = [${DEFAULT_CONFIG.notifications.subagent_alert.map((p) => `"${p}"`).join(', ')}]
 
-# [auto_approve]
-# enabled = false
-# provider = "${DEFAULT_CONFIG.auto_approve.provider}"
-                                # "yooz" (engine, Apple Silicon) | "llamacpp"
-                                # (thin llama.cpp server, Linux) | "openrouter"
-                                # | custom base URL. Defaulted by platform.
-# model = "${DEFAULT_CONFIG.auto_approve.model}"
-                                # Fast small default; the eval blocks Claude (#496).
-                                # 38/38 on the permission grid, p95 2.26s. The
-                                # TouchUp tiers are proofreaders, not classifiers.
-                                # "remi model ls" lists what this engine serves;
-                                # "remi model use <id>" sets this line for you.
-# api_key = ""                  # Required for OpenRouter, empty for the local engine/llama.cpp
-# base_url = "http://127.0.0.1:19924"
-# timeout = 30                  # Seconds; falls through to user if exceeded
-                                # (covers cold model load on the local engine)
-# log_decisions = true
-#
-# User-defined rules, checked BEFORE the LLM. Deny is checked first and wins.
-#
-# Allow and deny do NOT match the same way, on purpose (#536). Allow is precise:
-# a Bash command is split on ; && || | and every segment must either match one
-# of your prefixes or be a neutral no-op (cd, pwd, echo, true, :), and anything
-# with shell control (backticks, $(), redirects, -exec) is refused even when a
-# prefix matches. An entry shaped like a tool name
-# ("Read") matches that TOOL and never a command containing the word. Deny stays
-# a broad substring match, because a rule meant to stop something should
-# over-reach rather than under-reach.
-#
-# So "Read" here does not allow 'cat file | sh', and "git status" does not allow
-# 'git status && rm -rf /'.
-# allow = ["git status", "bun test", "bunx biome", "Read", "Glob", "Grep"]
-# deny = ["rm -rf /", "sudo ", "curl | sh", "| bash"]
-#
-# Permission groups: curated, deterministic sets approved with no LLM call.
-# Read groups are on by default; the write-side groups are opt-in.
-#
-#   read-only   Read/Glob/Grep/NotebookRead + cat, grep, ls, jq, ...
-#   vcs-read    git status/log/diff/show, gh pr view/list, ...
-#   gh-read     output-only gh api REST GETs + gh sub-issue list
-#   build-test  bun test, tsc --noEmit, biome check, pytest, ...
-#   fs-write    Write/Edit/NotebookEdit + mkdir, touch, tee, cp, mv
-#   vcs-write   git add/commit/checkout/switch/merge, stash push, worktree add
-#   scratch     touch/cp/mv/tee/mkdir/rm/rmdir + output redirection, ONLY when
-#               every target resolves under /tmp, /private/tmp, or $TMPDIR
-#   artifact-clean  rm/rmdir ONLY when every target is a relative path at or
-#               under an exact-named derived-state dir (node_modules, dist,
-#               build, out, target, coverage, __pycache__, .venv), plus
-#               structural "git worktree remove" and bare "bun install"
-#
-# The write groups refuse sensitive destinations regardless of prefix: system
-# trees (/etc, /usr, /System, ...), credentials (~/.ssh, ~/.aws, .env, id_rsa),
-# .git internals and ~/.gitconfig (a hook write, or core.hooksPath, is code
-# execution on the next commit), .github workflows (they execute on push),
-# ~/.remi + ~/.claude -- config that governs this very mechanism, which an
-# auto-approved write must never be able to widen -- and the BUILD SURFACE
-# (package.json, tsconfig.json, lockfiles, Makefile, ...), because build-test
-# is enabled by DEFAULT and executes what those files say. This axis applies
-# to EVERY mutating group, scratch and artifact-clean included -- narrowed
-# from "the write groups" by the ADR 0023 adversarial pass. It used to live
-# inside fs-write's veto alone, so once matchGroups began trying every owning
-# group's proof for a shared prefix, scratch's laxer proof became a way around
-# it: cp /tmp/a /tmp/.env approved at balanced where it had escalated. A
-# deny-shaped check must not be escapable by finding an owner whose positive
-# proof is laxer (ADR 0010), so it is now checked before any owner's proof.
-# The cost is real and accepted: a genuinely disposable /tmp/.env now
-# escalates. scratch still gets its POSITIVE proof from the destination being
-# confined to a scratch root -- and artifact-clean from the target's exact NAME
-# proving derived state -- which is why those two are the only groups allowed to cover
-# deletion: the target must be PROVED disposable, not merely "not known-bad".
-# rm/rmdir and >/>> are excluded from every OTHER group.
-#
-# Deny matching is case-insensitive (macOS filesystems are) and resolves
-# dot-dot; artifact-clean's name match is deliberately exact-case (an allow
-# check that lowercased would conflate Dist with dist on Linux).
-#
-# Blanket rm, package installs, git push, and BLANKET --force are still in
-# no group: deletion approves only through scratch's and artifact-clean's
-# proofs above. Read the narrow exceptions literally -- artifact-clean does
-# accept -f/--force on rm (they are on its exact flag allowlist), and one
-# --force on "git worktree remove", which approves only single-force against
-# git's own runtime refusals.
-#
-# Bare "bun install" is approved and is NOT lockfile-faithful: only
-# --frozen-lockfile guarantees that. Bare install reconciles package.json
-# against the lockfile, so it may resolve new versions, rewrite the lockfile,
-# and run lifecycle scripts of what it installs. It is covered because it is
-# the measured case this exists for, as a DECLARED residual (ADR 0023) --
-# which is also why "arbitrary install scripts stay escalations everywhere"
-# below is scoped to installs this group does not name.
-# ("bun install <pkg>" is "bun add" in disguise and still escalates.)
-# Remote mutation stays an escalation everywhere.
-# Strictness preset. Selects which of the groups above are auto-approved:
-#
-#   strict     read-only + vcs-read + gh-read + build-test (the default)
-#   balanced   strict   + fs-write + scratch
-#   trusted    balanced + vcs-write + artifact-clean
-#
-# An explicit approve_groups below OVERRIDES the preset entirely, and the
-# daemon logs that it did -- so a config written before levels existed keeps
-# behaving exactly as it always has.
-# level = "strict"
-# approve_groups = ["read-only", "vcs-read", "gh-read", "build-test"]
-# deny_groups = []
-#
-# "net-read" (WebFetch + WebSearch) is a real group but is in NO preset and no
-# default. The shipped remote-read surface is the narrower gh-read group above;
-# ask for arbitrary web access by name, and prefer asking per agent
-# (below) over machine-wide: WebFetch takes an arbitrary URL, and a subagent
-# is the context nobody is watching (ADR 0025).
-#
-# Per-agent-type overrides, keyed by the hook's agent_type. This is the only
-# layer a subagent reaches at hook time (the LLM never runs there -- ADR 0004),
-# so it is where "let research agents read the web, and nothing else" belongs.
-#
-#   deny / deny_groups   UNION with the base -- a section can never weaken a
-#                        machine-wide prohibition.
-#   allow / approve_groups   REPLACE the base, so a role can be given LESS.
-#
-# [auto_approve.agents.Explore]
-# approve_groups = ["read-only", "vcs-read", "net-read"]
-#
-# [auto_approve.agents.pr-review]
-# approve_groups = ["read-only", "vcs-read"]
-# allow = ["gh pr view", "gh pr diff"]
-#
-# Natural-language guidance appended to the LLM system prompt:
-# instructions = """
-# Approve all bun test and biome runs.
-# Escalate anything touching .env or secrets/.
-# Deny any git push to main.
-# """
-#
-# Multi-choice prompts (plan-mode questions, tools with 4+ choices, or any
-# permission_suggestions outside the standard Yes/Yes-always/No trio):
-# multichoice = "skip"             # "skip" (default; always escalate to user)
-#                                  # | "evaluate" (call LLM to pick an index)
-# multichoice_model = ""           # Optional alt-model for multi-choice; empty
-#                                  # falls back to the main \`model\`. Useful
-#                                  # for routing planning prompts to a smarter
-#                                  # model without paying its latency for
-#                                  # every binary permission. Ignored unless
-#                                  # multichoice = "evaluate".
-# risk_review = "off"              # "shadow" = telemetry-only authorization
-#                                  # grader + loopback-only semantic-intent assessor;
-#                                  # "verified" = opt-in phase 4 path with two
-#                                  # independent structured local reviews for
-#                                  # deterministic, moderate-risk compound reads
-#                                  # and already-granted planning mutations.
-#                                  # The deterministic effect contract and grant
-#                                  # remain authoritative; disagreement/failure
-#                                  # escalates. Default is off.
-# escalate_model = ""              # Second opinion on a primary 'escalate'
-#                                  # (main context only). Put a heavy model here
-#                                  # to honor a broad approve policy without
-#                                  # its latency on every prompt.
-# escalate_timeout = 0             # Seconds for escalate_model; 0 = use timeout.
-#                                  # Raise (e.g. 90) for a large, often-cold
-#                                  # second-opinion model so its first-call load
-#                                  # does not abort into an error->escalate.
-# model_cache = ""                # Where the engine downloads weights.
-                                   # Empty = its default (~/.cache/huggingface).
-                                   # Point at an external disk to keep several
-                                   # GB off the boot volume. Applies to an
-                                   # engine remi STARTS; an already-running one
-                                   # keeps the cache it was started with.
-# cache_idle = 300                 # Seconds before remi drops the model's
-                                   # prompt cache while keeping it loaded
-                                   # (#820 stage 1). Cheap; no cold reload,
-                                   # just a recomputed prefix. 0 = never.
-# keep_alive = 1800                # Seconds a model stays resident after the
-                                   # last eval before remi unloads it (stage
-                                   # 2). The engine never evicts on its own.
-                                   # 0 = never.
-# queue_timeout = 240              # Max seconds an eval waits in the serial
-#                                  # queue before escalating. Concurrent evals
-#                                  # run one at a time; a deep burst could risk
-#                                  # the ~600s hook budget. 0 = no bound.
-# hold_timeout = 1800              # Seconds to HOLD a binary permission hook
-#                                  # open after escalating, so the user answers
-#                                  # it via the hook response (Model B, #573) —
-#                                  # no native prompt, no warm-connection race.
-#                                  # Large + human-paced; fails open to the
-#                                  # native prompt on expiry. 0 = no hold
-#                                  # (escalate -> passthrough as before).
-# push_hold_timeout = 60           # Push + hold early if a binary main-context
-#                                  # eval is still running after this many
-#                                  # seconds, so the user can step in while the
-#                                  # model keeps thinking (Part B, #573). A late
-#                                  # verdict resolves the held hook. 0 = off.
-# disable_thinking = true          # Suppress model reasoning. ON by default: a
-#                                  # permission classify wants a short JSON
-#                                  # verdict, and small models can spend their
-#                                  # whole token budget thinking and return
-#                                  # nothing at all. Set false to let the model
-#                                  # reason (slower, sometimes better on broad
-#                                  # custom instructions).
-# always_escalate_tools = ["AskUserQuestion", "ExitPlanMode"]
-#                                  # Tools that ALWAYS go to the user, never
-#                                  # auto-decided by the LLM (design / plan-mode
-#                                  # / long-form questions). Add custom MCP tools
-#                                  # that solicit user intent.
-# session_precedent = true         # Reuse an answer you already gave THIS
-#                                  # session for the byte-identical operation,
-#                                  # so the third "git push origin feature/x"
-#                                  # does not ask a third time. Bounded by risk
-#                                  # band: a catastrophic operation still asks
-#                                  # every time. Session-scoped and in-memory --
-#                                  # for a durable rule use "allow". Setting
-#                                  # false does NOT discard an earlier "no";
-#                                  # that half always applies. The match is
-#                                  # private to this session and cwd-bound.
-# residual_action = "escalate"     # What a main-agent binary operation
-#                                  # auto-approve cannot approve becomes:
-#                                  # "escalate" (default; ask the human, a
-#                                  # card, no reason -- the PermissionRequest
-#                                  # hook cannot carry one on an escalate) or
-#                                  # "deny" (refuse with a reason instead, so
-#                                  # the agent self-corrects and the human is
-#                                  # not pinged). Only multichoice / design /
-#                                  # plan-mode escalates and a subagent's
-#                                  # parked-render residue are unaffected.
-#                                  # "deny" only pays off once your own
-#                                  # approval rate is genuinely ~95%+ -- on a
-#                                  # poorly-tuned gate it turns every wrongful
-#                                  # escalation into a wrongful deny instead.
+[prompts]
+# How long remi holds a Claude permission prompt for your phone's answer
+# (#1126). Claude's own dialog stays in the terminal the whole time, and
+# whichever answer comes first wins. After this many seconds the phone card
+# says "answer at the terminal" and the terminal dialog stays up. 5 to 110.
+hold_seconds = ${DEFAULT_CONFIG.prompts.hold_seconds}
+# The same for a daemon or hub session, which has no terminal of its own
+# (after the deadline only remi attach reaches the prompt). 5 to 3540.
+daemon_hold_seconds = ${DEFAULT_CONFIG.prompts.daemon_hold_seconds}
 `;
 }
 
@@ -1625,52 +818,6 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(`  authorized_chat_ids = [${config.telegram.authorized_chat_ids.join(', ')}]`);
   lines.push(`  authorized_user_ids = [${config.telegram.authorized_user_ids.join(', ')}]`);
   lines.push('');
-  lines.push('[auto_approve]');
-  lines.push(`  enabled = ${config.auto_approve.enabled}`);
-  lines.push(`  provider = "${config.auto_approve.provider}"`);
-  lines.push(`  model = "${config.auto_approve.model}"`);
-  lines.push(`  api_key = "${config.auto_approve.api_key ? '***' : ''}"`);
-  lines.push(`  base_url = "${config.auto_approve.base_url}"`);
-  lines.push(`  timeout = ${config.auto_approve.timeout}`);
-  lines.push(`  log_decisions = ${config.auto_approve.log_decisions}`);
-  lines.push(`  risk_review = "${config.auto_approve.risk_review ?? 'off'}"`);
-  lines.push(`  residual_action = "${config.auto_approve.residual_action}"`);
-  lines.push(`  allow = [${config.auto_approve.allow.map((s) => `"${s}"`).join(', ')}]`);
-  lines.push(`  deny = [${config.auto_approve.deny.map((s) => `"${s}"`).join(', ')}]`);
-  lines.push(
-    // Show the RESOLVED list, not the preset name alone (#963). The whole
-    // point of `remi config` is that the effective policy is inspectable
-    // without reading source, and "level = trusted" does not tell you which
-    // groups that is.
-    `  level = "${config.auto_approve.level}"`,
-  );
-  lines.push(
-    `  approve_groups = [${config.auto_approve.approve_groups.map((s) => `"${s}"`).join(', ')}]`,
-  );
-  lines.push(
-    `  deny_groups = [${config.auto_approve.deny_groups.map((s) => `"${s}"`).join(', ')}]`,
-  );
-  const instr = config.auto_approve.instructions;
-  const instrDisplay = instr ? `"${instr.slice(0, 40)}${instr.length > 40 ? '...' : ''}"` : '""';
-  lines.push(`  instructions = ${instrDisplay}`);
-  lines.push(`  multichoice = "${config.auto_approve.multichoice}"`);
-  lines.push(`  multichoice_model = "${config.auto_approve.multichoice_model}"`);
-  lines.push(`  escalate_model = "${config.auto_approve.escalate_model}"`);
-  lines.push(`  escalate_timeout = ${config.auto_approve.escalate_timeout}`);
-  lines.push(`  engine = "${config.auto_approve.engine}"`);
-  lines.push(`  cache_idle = ${config.auto_approve.cache_idle}`);
-  lines.push(`  keep_alive = ${config.auto_approve.keep_alive}`);
-  lines.push(`  queue_timeout = ${config.auto_approve.queue_timeout}`);
-  lines.push(`  hold_timeout = ${config.auto_approve.hold_timeout}`);
-  lines.push(`  push_hold_timeout = ${config.auto_approve.push_hold_timeout}`);
-  lines.push(`  delivery_confirm_timeout = ${config.auto_approve.delivery_confirm_timeout}`);
-  lines.push(`  hold_unconfirmed_timeout = ${config.auto_approve.hold_unconfirmed_timeout}`);
-  lines.push(`  disable_thinking = ${config.auto_approve.disable_thinking}`);
-  lines.push(
-    `  always_escalate_tools = [${config.auto_approve.always_escalate_tools.map((s) => `"${s}"`).join(', ')}]`,
-  );
-  lines.push(`  session_precedent = ${config.auto_approve.session_precedent}`);
-  lines.push('');
   lines.push('# transcript_binder_enabled is a deprecated kill-switch (#470); flip = restart.');
   lines.push('[features]');
   lines.push(`  transcript_binder_enabled = ${config.features.transcript_binder_enabled}`);
@@ -1678,6 +825,13 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push('[notifications]');
   lines.push(`  on_turn_complete = ${config.notifications.on_turn_complete}`);
   lines.push(`  turn_complete_min_seconds = ${config.notifications.turn_complete_min_seconds}`);
+  lines.push(
+    `  subagent_alert = [${config.notifications.subagent_alert.map((s) => `"${s}"`).join(', ')}]`,
+  );
+  lines.push('');
+  lines.push('[prompts]');
+  lines.push(`  hold_seconds = ${config.prompts.hold_seconds}`);
+  lines.push(`  daemon_hold_seconds = ${config.prompts.daemon_hold_seconds}`);
 
   return lines.join('\n');
 }

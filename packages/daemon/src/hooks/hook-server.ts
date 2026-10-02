@@ -25,9 +25,9 @@
  */
 
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { errorToString } from '@remi/shared';
+import { remiHome } from '../config/remi-home.ts';
 import { debugProvenance } from '../debug/provenance.ts';
 import type {
   HookInput,
@@ -90,20 +90,31 @@ type Listener<T> = (input: T) => void;
  *   - 'allow' / 'deny' => Claude proceeds WITHOUT rendering the prompt, via
  *                         `{behavior: decision}`.
  *   - 'passthrough'    => `{}` body; Claude renders the prompt as usual (the
- *                         resolver has already escalated to the user / injected
- *                         a multi-choice pick).
+ *                         resolver has already escalated to the user).
  *   - `{behavior:'allow', updatedPermissions}` (#718) => Claude proceeds AND
  *     persists the echoed `permission_suggestions` entry, exactly as if the
  *     user had picked that "always allow" option in its own dialog (ground
- *     truth: code.claude.com/docs/en/hooks). Produced when the user's answer
- *     picked a suggestion-derived option on a HELD escalation
- *     (`AutoApproveGate.resolveHeld` with a `suggestionIndex`).
+ *     truth: code.claude.com/docs/en/hooks).
+ *   - `{behavior:'allow', updatedInput, updatedPermissions?}` (#1127) =>
+ *     Claude runs the tool with `updatedInput` in place of its own input: an
+ *     AskUserQuestion's input echoed with the user's `answers`, or an
+ *     ExitPlanMode's input echoed with a `setMode` (`structured-answers.ts`).
+ *
+ * Since #1126 (ADR 0031) every non-passthrough shape is a human's answer from
+ * the phone to a held prompt; remi never produces one on its own. A
+ * 'passthrough' sent to a request whose dialog is already on screen decides
+ * nothing: the dialog stays and the terminal answers it.
  */
 export type PermissionDecision =
   | 'allow'
   | 'deny'
   | 'passthrough'
   | { readonly behavior: 'allow'; readonly updatedPermissions: readonly unknown[] }
+  | {
+      readonly behavior: 'allow';
+      readonly updatedInput: Readonly<Record<string, unknown>>;
+      readonly updatedPermissions?: readonly unknown[];
+    }
   /**
    * A deny that tells Claude WHY (#976). Per the official hooks reference's
    * PermissionRequest decision-control table:
@@ -131,7 +142,18 @@ export type PermissionDecision =
       readonly interrupt?: boolean;
     };
 
-export type PermissionResolver = (input: PermissionRequestHookInput) => Promise<PermissionDecision>;
+/**
+ * Resolve a PermissionRequest to its hook response. `signal` is the request's
+ * own abort signal (#1126): it aborts when Claude closes the held request,
+ * which is how a "No" or Esc answered in the terminal shows up (no hook event
+ * fires for it), as does a session ending or Claude's own hook timeout.
+ * Verified on Bun.serve against Claude Code 2.1.287: the signal fires 0-50 ms
+ * after the key, on a clean FIN.
+ */
+export type PermissionResolver = (
+  input: PermissionRequestHookInput,
+  signal: AbortSignal,
+) => Promise<PermissionDecision>;
 
 export class HookServer {
   private server: ReturnType<typeof Bun.serve> | null = null;
@@ -272,7 +294,7 @@ export class HookServer {
           _provenance: debugProvenance(),
           ...body,
         });
-        const remiDir = path.join(os.homedir(), '.remi');
+        const remiDir = remiHome();
         const logPath = path.join(remiDir, 'hook-diag.jsonl');
         fs.mkdirSync(remiDir, { recursive: true });
         fs.appendFileSync(logPath, `${logLine}\n`);
@@ -306,14 +328,23 @@ export class HookServer {
     }
 
     // Synchronous PermissionRequest decision (#496). When a resolver is
-    // installed, Claude BLOCKS on this response; we AWAIT the verdict and
-    // return allow/deny (Claude proceeds without rendering the prompt) or
-    // passthrough ({}). The resolver owns the eval + escalate-to-user side
-    // effects, so we do NOT also fire the legacy dispatch for this event.
+    // installed, Claude blocks on this response; we AWAIT it. A binary prompt
+    // is held for the phone's answer while Claude's own dialog is on screen
+    // (#1126); everything else is answered passthrough ({}) at once. The
+    // resolver owns the escalate-to-user side effects, so we do NOT also fire
+    // the legacy dispatch for this event.
     if (eventName === 'PermissionRequest' && this.permissionResolver) {
+      // A held request waits on a human (#1126). Bun 1.4 does not apply the
+      // connection idle timeout while a handler is pending (probed), but a
+      // held hook must never depend on that: its only deadlines are remi's
+      // own hold and Claude's registered hook timeout.
+      this.server?.timeout(req, 0);
       let decision: PermissionDecision = 'passthrough';
       try {
-        decision = await this.permissionResolver(body as unknown as PermissionRequestHookInput);
+        decision = await this.permissionResolver(
+          body as unknown as PermissionRequestHookInput,
+          req.signal,
+        );
       } catch (err) {
         // Fail to the user: a resolver error must never block Claude or
         // silently allow. passthrough renders the prompt for a human.
@@ -344,9 +375,10 @@ export class HookServer {
   /**
    * Serialise a PermissionDecision into the Claude Code hook response. allow/
    * deny use the verified `hookSpecificOutput.decision.behavior` shape;
-   * passthrough is the bare `{}` that lets Claude render the prompt; the
-   * object variant (#718) passes its `{behavior:'allow', updatedPermissions}`
-   * through verbatim, so Claude persists the echoed suggestion.
+   * passthrough is the bare `{}` that lets Claude render the prompt; an
+   * object variant passes through verbatim: `updatedPermissions` (#718) so
+   * Claude applies the echoed suggestion, `updatedInput` (#1127) so it runs
+   * the tool with the answered input.
    */
   private permissionDecisionResponse(decision: PermissionDecision): Response {
     const headers = { 'Content-Type': 'application/json' };

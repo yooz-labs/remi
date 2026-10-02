@@ -48,7 +48,8 @@ describe('runConfigCommand', () => {
     });
     expect(code).toBe(0);
     expect(out).toHaveLength(1);
-    expect(out[0]).toContain('auto_approve');
+    expect(out[0]).toContain('[notifications]');
+    expect(out[0]).not.toContain('auto_approve');
     expect(err).toHaveLength(0);
   });
 

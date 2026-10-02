@@ -1,6 +1,6 @@
 # ADR 0010: Allow matching is precise, deny matching is broad
 
-**Status:** accepted
+**Status:** Superseded by ADR 0030 (2026-10-01)
 **Date:** 2026-07-28
 **Owner:** Yahya
 

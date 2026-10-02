@@ -33,6 +33,8 @@
  * would hand the bypass to exactly the contexts most likely to be hostile.
  */
 
+import { configPathForDisplay } from '../config/remi-home.ts';
+
 /** The hosted web client. Exact match only. */
 export const HOSTED_WEB_ORIGIN = 'https://remi.yooz.live';
 
@@ -119,7 +121,7 @@ export function corsHeadersForOrigin(origin: string | null | undefined): Record<
 export function rejectionNotice(origin: string): string {
   return [
     `Refused a request from origin ${origin}: not in the allow-list (#535).`,
-    'If this is your own remi web client, add it to ~/.remi/config.toml:',
+    `If this is your own remi web client, add it to ${configPathForDisplay()}:`,
     '  [daemon]',
     `  allowed_origins = ["${origin}"]`,
   ].join('\n');

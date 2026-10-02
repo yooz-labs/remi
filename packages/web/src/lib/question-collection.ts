@@ -157,14 +157,17 @@ export function statusClearsMainQuestion(status: AgentStatus): boolean {
 }
 
 /**
- * Remove the entry at `key` ONLY if it still holds question `id` (#652).
+ * Remove the entry at `key` ONLY if it still holds question `id` (#652) and is
+ * still answered here (`answeredWith`).
  *
  * The post-answer cleanup timer captures the slot key when the user answers,
  * but a newer prompt can take that same `sessionId#agentId` slot before the
  * timer fires (back-to-back auto-approve escalations). Deleting by key alone
  * then wipes the NEW card; the daemon re-emits and it "reappears". Verifying the
- * id makes the timer a no-op once the slot has been reused. Returns the SAME
- * reference when nothing was removed so React skips the re-render.
+ * id makes the timer a no-op once the slot has been reused. A card whose
+ * answer the daemon refused was un-answered meanwhile (`restoreRefusedAnswer`,
+ * STALE_BINDING): it is live again, so the timer leaves it too. Returns the
+ * SAME reference when nothing was removed so React skips the re-render.
  */
 export function removeQuestionByKeyIfId(
   questions: Map<string, UIQuestion>,
@@ -172,10 +175,48 @@ export function removeQuestionByKeyIfId(
   id: string,
 ): Map<string, UIQuestion> {
   const existing = questions.get(key);
-  if (!existing || existing.id !== id) return questions;
+  if (!existing || existing.id !== id || existing.answeredWith == null) return questions;
   const next = new Map(questions);
   next.delete(key);
   return next;
+}
+
+/**
+ * Un-answer the card the user most recently answered here in `sessionId`
+ * when the daemon refused that answer but kept the card live (#1126 review):
+ * a `STALE_ANSWER` that names no `questionId` (an answer a held card does not
+ * offer) leaves the hook held, and its `pendingQuestionIds` still list the
+ * card. Without this the optimistic "answered" card would be removed by its
+ * post-answer timer and the live hold would have no card. An AskUserQuestion
+ * form submitted here is `submitting` rather than answered (#1127): it is
+ * restored too, so its Submit works again instead of staying "Answering…".
+ *
+ * Scoped to `lastAnsweredId`, the one card the refusal can be about (the
+ * error carries no id, and only the answering connection receives it), so a
+ * second card answered meanwhile is not flipped back. Restored only while
+ * still answered here and still listed as pending. Returns the SAME
+ * reference when nothing changed.
+ */
+export function restoreRefusedAnswer(
+  questions: Map<string, UIQuestion>,
+  sessionId: string,
+  lastAnsweredId: string | undefined,
+  pendingQuestionIds: readonly string[],
+): Map<string, UIQuestion> {
+  if (lastAnsweredId === undefined || !pendingQuestionIds.includes(lastAnsweredId)) {
+    return questions;
+  }
+  for (const [key, q] of questions) {
+    if (q.sessionId !== sessionId || q.id !== lastAnsweredId) continue;
+    if (q.answeredWith == null && q.submitting !== true) continue;
+    const next = new Map(questions);
+    const restored = { ...q };
+    delete (restored as { answeredWith?: string }).answeredWith;
+    delete (restored as { submitting?: boolean }).submitting;
+    next.set(key, restored);
+    return next;
+  }
+  return questions;
 }
 
 /**

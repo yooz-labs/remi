@@ -9,14 +9,14 @@
  */
 
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { DAEMON_BASE_PORT, DAEMON_PORT_RANGE, errorToString } from '@remi/shared';
 import { normalizeProjectPath } from '../cli/path-resolver.ts';
+import { remiHome } from '../config/remi-home.ts';
 import { findAvailableTcpPort } from './port-utils.ts';
 import { isProcessAlive } from './process-alive.ts';
 
-const REMI_DIR = path.join(os.homedir(), '.remi');
+const REMI_DIR = remiHome();
 const LIVE_SESSIONS_DIR = path.join(REMI_DIR, 'live-sessions');
 
 /**

@@ -32,7 +32,7 @@ function dim(text: string): string {
 /** Pad command to fixed width and dim the description. */
 function entry(cmd: string, desc: string, width = 30): string {
   // A term at or past the column runs straight into its description
-  // (`--auto-approve-multichoice-model MAlt-model for ...`). `padEnd` cannot
+  // (`remi authorize <key> --label "name"Name ...`). `padEnd` cannot
   // separate them — it is a no-op once the string is already wide enough — so
   // guarantee one space rather than assuming every term fits.
   return `  ${cmd.padEnd(width)}${cmd.length >= width ? ' ' : ''}${dim(desc)}`;
@@ -42,7 +42,11 @@ function entry(cmd: string, desc: string, width = 30): string {
 // Per-command help
 // ---------------------------------------------------------------------------
 
+import { configPathForDisplay } from '../config/remi-home.ts';
 import type { Subcommand } from './arg-parser.ts';
+
+/** `~/.remi/config.toml`, or the real path under `REMI_HOME` (#1126). */
+const CONFIG_HINT = configPathForDisplay();
 
 const commandHelp: Record<Subcommand, string[]> = {
   ls: [
@@ -114,7 +118,7 @@ const commandHelp: Record<Subcommand, string[]> = {
     entry('--port PORT', 'Daemon port'),
   ],
   config: [
-    'Show or initialize the configuration file (~/.remi/config.toml).',
+    `Show or initialize the configuration file (${CONFIG_HINT}).`,
     '',
     bold('Usage:'),
     entry('remi config', 'Show effective configuration'),
@@ -139,50 +143,44 @@ const commandHelp: Record<Subcommand, string[]> = {
     bold('Usage:'),
     entry('remi reload', 'Validate config on all running daemons'),
     '',
-    dim('  Hot-reloads settings from ~/.remi/config.toml.'),
+    dim(`  Hot-reloads settings from ${CONFIG_HINT}.`),
     dim('  Currently all settings require a daemon restart to take effect.'),
     dim('  Future versions will support hot-reloading select settings.'),
   ],
   model: [
-    'Manage the local LLM the auto-approve evaluator runs on.',
+    'Removed in #1125: remi no longer runs a local model to judge permissions.',
+    '',
+    dim('  Claude Code decides permissions itself now; remi relays what it still asks.'),
+    dim('  `remi model` prints this notice and exits 2.'),
+  ],
+  'migrate-permissions': [
+    'Print your old [auto_approve] allow/deny rules as Claude Code permissions.',
     '',
     bold('Usage:'),
-    entry('remi model ls', 'Inventory: size on disk, downloaded, resident'),
-    entry('remi model ps', 'Models resident in memory right now'),
-    entry('remi model status', 'Engine reachable? which model? download in flight?'),
-    entry('remi model pull <id>', 'Download weights (does not change the active model)'),
-    entry('remi model cancel <id>', 'Abort an in-flight download'),
-    entry('remi model rm <id>', 'Delete weights, reporting disk reclaimed'),
-    entry('remi model cleanup', "Engine's one-shot disk-hygiene sweep"),
-    entry('remi model load <id>', 'Load already-downloaded weights'),
-    entry('remi model unload <id>', 'Free a model from memory'),
-    entry('remi model use <id>', 'Set the default model (persisted in config)'),
-    entry('remi model restart', 'Relaunch the engine on the version remi pins'),
+    entry('remi migrate-permissions', `Read ${CONFIG_HINT}`),
+    entry('remi migrate-permissions <file>', 'Read another config file (exit 1 if missing)'),
     '',
-    '',
-    dim('  Models are named by their registered HuggingFace repo id, e.g.'),
-    dim('  "YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx". The engine also accepts its'),
-    dim('  own short id for the same model; either works wherever <id> is taken.'),
-    '',
-    dim('  Replaces "ollama pull/ls/ps": the Yooz engine ships no CLI of its own.'),
-    dim('  No daemon needed -- a verb that needs an engine starts one (fetching'),
-    dim('  the helper on first use). "status" deliberately does not, so it can'),
-    dim('  report an engine being down, and "use" needs none at all.'),
-    dim('  A first pull downloads several GB from HuggingFace. Progress may sit at'),
-    dim('  0% throughout (engine bug); completion is detected from bytes on disk.'),
-    dim('  "use" writes remi config -- the engine forgets its own preference on'),
-    dim('  restart -- so restart running daemons for it to take effect.'),
+    dim('  remi no longer judges permissions (#1125); Claude Code decides them.'),
+    dim('  Prints {"permissions":{"allow":[...],"deny":[...]}} to stdout. An allow'),
+    dim('  command becomes Bash(<command>:*); a deny command becomes Bash(<command>*),'),
+    dim('  which Claude Code matches only at the start of a command where remi'),
+    dim('  matched it anywhere. Known tool names and Tool(...) rules pass through.'),
+    dim('  Entries with no faithful form (bare Bash, shell operators, mid-command'),
+    dim('  deny patterns like "push --force", groups, level, per-agent sections)'),
+    dim('  are listed on stderr under "NOT carried over"; a mid-command allow entry'),
+    dim('  is kept as a prefix rule and flagged, since it matches only commands'),
+    dim('  that start with it. Never writes a file: paste the block into'),
+    dim('  ~/.claude/settings.json yourself.'),
   ],
   unstick: [
-    'Force-release stuck auto-approve evals / held permissions.',
+    'Resolve and dismiss stuck permission cards on running daemons.',
     '',
     bold('Usage:'),
     entry('remi unstick', 'Unstick every running daemon'),
     entry('remi unstick <port>', 'Unstick only the daemon on <port>'),
     '',
-    dim('  The "just get me out" lever when the LLM eval and a question are wedged.'),
-    dim('  Releases held permissions to the native terminal prompt, cancels the'),
-    dim('  in-flight eval (freeing the GPU), and drains the eval queue.'),
+    dim('  The "just get me out" lever when a card is stuck on a phone: every'),
+    dim('  open permission card the daemon tracks is resolved and dismissed.'),
   ],
   start: [
     'Start the Remi hub in the background (session-less).',
@@ -316,35 +314,8 @@ export function formatHelp(version: string): string {
     '',
     bold('Quick Start:'),
     entry('remi', 'Start Claude with monitoring'),
-    entry('remi --auto-approve', 'Start with LLM auto-approve (Yooz engine)'),
     entry('remi ls', 'List running sessions'),
     entry('remi attach [name]', 'Attach to a session (Ctrl+B d to detach)'),
-    '',
-    bold('Auto-Approve (LLM):'),
-    // The model commands live here, not under Configuration, because the
-    // models exist only to serve this evaluator -- and commands come before
-    // flags because `remi model` is a ten-verb subsystem, not a setting. It
-    // shipped in 0.7.0 listed nowhere at all (#843), then spent 0.7.1 as one
-    // line at the bottom of Configuration, where a user read the whole help
-    // output and still did not find it (#850).
-    //
-    // "which one remi uses", not "active": `ls` marks remi's CONFIGURED model
-    // with `*`, while a possibly different row is labelled `engine active` for
-    // the engine picker's resident tier. Calling the first one "active" is the
-    // same conflation `remi model rm` used to make.
-    entry('remi model ls', "What's downloaded, and which one remi uses"),
-    entry('remi model use <id>', 'Switch the model auto-approve runs on'),
-    entry('remi model --help', 'All model commands (pull, rm, ps, ...)'),
-    entry('--auto-approve', 'Enable LLM auto-approve for permissions'),
-    entry('--no-auto-approve', 'Disable auto-approve (overrides config)'),
-    entry('--auto-approve-model M', 'LLM model (default: the engine 4B qat-lean)'),
-    entry('--auto-approve-provider P', 'yooz | llamacpp | openrouter | custom URL'),
-    entry('--auto-approve-api-key K', 'API key (OpenRouter, etc.)'),
-    entry('--auto-approve-allow STR', 'Allow-list pattern (repeatable, per-segment prefix)'),
-    entry('--auto-approve-deny STR', 'Deny-list pattern (repeatable, substring match)'),
-    entry('--auto-approve-instructions T', 'Natural-language guidance for the LLM'),
-    entry('--auto-approve-multichoice MODE', 'skip (default) | evaluate (LLM picks index)'),
-    entry('--auto-approve-multichoice-model M', 'Alt-model for multi-choice; empty = main model'),
     '',
     bold('Remote Access:'),
     entry('remi ls --host <ip>', 'List sessions on remote machine'),
@@ -371,6 +342,7 @@ export function formatHelp(version: string): string {
     entry('remi config', 'Show effective configuration'),
     entry('remi config init', 'Create default config file'),
     entry('remi reload', 'Hot-reload config on running daemons'),
+    entry('remi migrate-permissions', 'Print old allow/deny rules as Claude Code JSON'),
     '',
     bold('Service:'),
     entry('remi start', 'Start the hub in the background'),

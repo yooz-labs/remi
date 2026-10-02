@@ -4,137 +4,527 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### Integration fixes for this line (#1155)
+
+Seams between the changes below, found by a review of all of them together.
+
+#### Fixed
+
+- **Stop and chat never type into a prompt the screen parse missed.** Both
+  now read one signal: a held prompt, a prompt handed back to the terminal (at
+  its deadline, or a subagent's dialog in a terminal session), or a
+  numbered menu on screen. Stop used to read only the screen, so it could type
+  `/exit` + Enter into a held dialog, where the Enter confirms "Yes"; it now
+  force-closes the session while a prompt is up. Chat text is refused then
+  too; while a prompt waits in the terminal (its card is gone) the refusal
+  says "Answer it there, press Esc from the app, or run remi unstick." An Esc
+  from the app (the Esc button, Telegram's `/interrupt`, an attach client's
+  Esc key) now clears a main-agent prompt waiting in the terminal at once.
+- **Subagent alerts (`subagent_alert`) fire for the commands they are for.** Claude does not ask about a call its own allow rules permit, so the
+  alert, which listened for permission requests, never fired for the
+  allowlisted commands it exists to report, and repeated the "answer at the
+  terminal" notice for the ones that did ask. It now fires for a matching
+  command Claude ran without asking, when that command finishes; a command
+  that asks shows only as its prompt (a notice, or a card in a daemon or hub
+  session).
+- **Standing options say what they grant.** In the app, the hint beside
+  "Yes, allow ... for this session" or a mode switch read "Allow once"; it now
+  reads "This session", and "Allow once" appears only beside the plain Yes.
+  Telegram cuts a button at 32 characters, which dropped "for this session";
+  when a button is cut, the message now lists every option in full and the
+  buttons are numbered to match. The list counts toward Telegram's message
+  limit: a plan keeps its buttons only when it fits with the list, and a card
+  whose list does not fit has no buttons and says to answer in the app.
+- **A terminal-only question's Cancel reads "Decline tool call"** in the app,
+  which is what it does (it read "Dismiss question").
+- **`bun test` passes with `REMI_HOME` exported**, as the README suggests for
+  running remi from source: a test preload unsets it.
+
+#### Known limits
+
+- A prompt handed to the terminal counts as up for the hold length from when
+  it was handed over, not from when it appeared: up to 90 seconds in a
+  terminal session (about twice the hold in all), up to about 59 minutes in a
+  daemon or hub session. A No answered at the terminal fires no hook, so in
+  that window Stop force-closes instead of typing `/exit` and chat is refused,
+  until the prompt is answered, Esc is sent from the app, or `remi unstick`
+  runs; an Esc typed at a terminal session's own terminal is not seen. After
+  that window, a dialog still on screen whose screen reading was cleared is no
+  longer guarded.
+- A subagent's alert (foreground or background) arrives when its command
+  finishes, so a long command's alert comes at its end. A subagent alert with
+  no agent type is now titled "Subagent ran a flagged command" (it said
+  "Background agent").
+- Whether a foreground (synchronous) subagent's dialog renders while its
+  prompt is held in a daemon or hub session is unmeasured
+  ([ADR 0031](.context/decisions/0031-held-hook-answers-with-native-dialog-visible.md),
+  #1155 amendment).
+
+### A failed turn is a notification, not a Retry card (#1153, #905)
+
+When a turn ends on an API error (a usage or rate limit, authentication, a
+server error), Claude Code fires `StopFailure` and ignores whatever the hook
+answers. Remi turned it into a card, "Session stop failed (undefined). Retry?",
+with Yes / No that nothing could act on, and every failed turn added another:
+on a usage limit, one per prompt, stacking in the app and on the lock screen.
+
+#### Fixed
+
+- **The phantom "Retry?" cards.** A failed turn registers no card at all, so
+  nothing stacks in the app; a card an older client still holds disappears with
+  the next question snapshot.
+- The session status after a failed turn is `idle` (the turn is over), not
+  `waiting`.
+- The card text read `(undefined)` because it used `error_type`, a field Claude
+  Code never sends (#905). The type `StopFailureHookInput` no longer declares
+  it and its comment no longer says the stop hook itself failed.
+
+#### Added
+
+- **`turn_failed` push**: one informational notification per failed turn, titled
+  "<session>: Claude stopped", with a readable reason from the `error` code
+  (for example "Rate or usage limit reached", "Authentication failed"; an
+  unknown code is shown as is) and a short excerpt of Claude's last message.
+  One collapse key per session, so a repeat replaces the previous notification.
+- **"Failed turns" setting** in the app (`pushPrefs.turnFailed`), on by
+  default. It is separate from "Turn complete", and
+  `notifications.on_turn_complete = false` does not silence it: a failed turn is
+  the one turn end you must not miss by default.
+- A failure notice clears itself: the next successful turn (or your next
+  prompt) dismisses it, so a stale "Claude stopped" does not stay on the lock
+  screen. An agent (subagent) failure is pushed too but does not change the
+  main session's status.
+
+#### Changed
+
+- A main-agent `StopFailure` now closes any permission prompt still open for
+  the main agent, as `Stop` does: the turn is over, so the prompt cannot be
+  answered (the main half of #802).
+
+#### Known limits
+
+- The failure notice's text, including up to 140 characters of Claude's last
+  message, reaches the signaling Worker and Apple's push service in plaintext,
+  the same as the "Turn complete" notice. It is tracked by the relay and push
+  privacy work.
+
+### AskUserQuestion and plan approval are answered through Claude's hook (#1127, [ADR 0031](.context/decisions/0031-held-hook-answers-with-native-dialog-visible.md) amendment)
+
+Claude's questions (AskUserQuestion) and plan approvals (ExitPlanMode) are
+now held like a permission prompt: the card is pushed at once, Claude's own
+dialog stays in the terminal, and the first answer wins. A phone answer is
+the hook's response, with the answers or the approved plan in it; nothing
+is typed into the terminal for either.
+
+#### Added
+
+- **Answers to every question at once.** The card carries all of an
+  AskUserQuestion's questions; the phone answers each one, a multi-select
+  with one or more choices, a single-choice question with a choice or your
+  own text (the app has a text field for it; `AnswerSelection.text` in the
+  protocol). An answer that leaves a question out, or gives a single-choice
+  question two answers, is refused and the question keeps waiting.
+- **Plan approval by meaning.** A plan card shows the plan (in full in the
+  app, its start in the push; on Telegram in full when it fits, otherwise
+  cut with a note and without buttons, and without buttons when the card
+  carries no plan text) with three choices: approve with edits auto-accepted, approve with edits
+  approved manually, or keep planning (an optional note goes to Claude;
+  the app has no field for it yet). Auto mode is not offered from the
+  phone; the terminal's dialog still offers it. A background agent's plan
+  (daemon or hub mode) is approved without changing the session's mode.
+- `Question.kind: 'plan_approval'` and `Question.detail` (the plan) on the
+  wire.
+
+#### Changed
+
+- Cancel on a question card dismisses it through the hook ("The user
+  dismissed the question."); on a plan it keeps planning. Nothing is typed.
+- The lock screen answers an AskUserQuestion only when it is one
+  single-choice question; any other, and every plan, is answered in the app.
+  Telegram offers no buttons for several questions or a multi-select, and
+  its reply to a button says "Sent!" only when the answer was applied; an
+  answer that fails is reported in the chat.
+- A question-shaped tool other than AskUserQuestion (an MCP tool with
+  `questions`, for example) is answered only in the terminal, where its
+  dialog is Claude's permission prompt: its card shows the questions and
+  says so, has no Telegram buttons or lock-screen actions, and an answer
+  from the app is refused, never typed.
+- A question or plan answered in the terminal clears its card as soon as
+  Claude reports the answer (the tool's `PostToolUse`), and Esc there
+  clears it at once.
+
+#### Removed
+
+- The AskUserQuestion keystroke driver and the screen watcher for answers
+  typed in the terminal, and the hardcoded plan-approval labels that no
+  longer matched Claude's dialog.
+- A structured answer for a card that is not held (a multi-choice
+  permission prompt) is refused instead of being typed.
+
+#### Known limits
+
+- A long plan can take longer to read than `[prompts] hold_seconds`; the
+  card is then handed back to the terminal as for any prompt.
+
+### Permission prompts are answered through Claude's hook (#1126, [ADR 0031](.context/decisions/0031-held-hook-answers-with-native-dialog-visible.md))
+
+A binary permission prompt is now held while its card is on the phone, and
+the phone's answer is the hook's response: Yes, No, or a standing grant
+where Claude offers one
+(`setMode` or an `addRules` rule, both scoped to this session so a phone tap
+never writes a settings file; never `addDirectories`). Claude's own dialog stays in the terminal the whole time
+and whichever answer comes first wins: a Yes there is seen through the tool's
+`PostToolUse`, a No or Esc through Claude closing the held request, and the
+card is dismissed either way. Nothing is typed into the terminal for these
+prompts any more.
+
+#### Added
+
+- **`[prompts] hold_seconds`** (default 90, 5 to 110): how long a prompt waits
+  for the phone. After it, the hook is released without a decision, the
+  terminal dialog stays, and the phone is told to answer at the terminal.
+- **`[prompts] daemon_hold_seconds`** (default 3540, 5 to 3540): the same for a
+  daemon or hub session, which has no terminal of its own; its
+  `PermissionRequest` hook is registered with a 3600 s timeout. After it the
+  phone is told to use `remi attach`.
+- **`harness_denied` push**: when Claude Code's auto-mode classifier blocks a
+  tool call, or auto-denies an unanswered fallback prompt after 2:00
+  (`PermissionDenied`), the phone gets an informational notice with the
+  reason. Never a card; a per-device setting, on by default.
+- **`REMI_HOME`**: an absolute path that relocates remi's whole state
+  directory (default `~/.remi`), for running remi from source without touching
+  real state. A relative value stops remi at startup with one line and exit
+  code 1. Under an override `remi --install` and `remi --uninstall` refuse to
+  run (the service always uses `~/.remi`), and the statusline is not
+  registered in `~/.claude/settings.json`.
+- An optional `message` on the `answer` protocol message: sent with a "No",
+  Claude receives it as the reason. Protocol only; the app has no field for
+  it yet.
+
+#### Changed
+
+- **Background agent prompts depend on the session.** In a terminal (wrapper)
+  session they are answered at the terminal and the phone gets an "answer at
+  the terminal" notice; in a daemon or hub session they are held and answered
+  from the phone like any other prompt.
+- Card options are built from what each suggestion means, so a card can
+  differ from the numbered list on screen; it is never typed, so it no longer
+  has to match.
+- The attach client's banner for a pending card now reads "answer the prompt
+  here or on your phone".
+- The lock screen's "Yes, always" action is offered only when the standing
+  option is an allow rule; a mode-change option is answered in the app. A
+  hook-less prompt (sandbox network, an agent-team dialog), whose options
+  come from the screen and carry no standing-grant kind, loses its lock-screen
+  "Yes, always" action too and is answered in the app.
+- Chat text is refused while a held prompt's dialog is up, as it already was
+  while a numbered menu was on screen (#1140).
+- `remi unstick` no longer closes a prompt whose hook is held: its dialog is
+  on screen, so it is handed back to the terminal and the phone is told so
+  ("answer in the terminal" / "answer with remi attach"); a second unstick
+  clears it. Other stuck cards are resolved and dismissed as before.
+- AskUserQuestion and plan approval were left typed by #1126; #1127 (above)
+  moves them to the hook as well.
+
+#### Known limits
+
+- A Yes answered in the terminal is seen only when the tool finishes, so for
+  a long-running command the phone card stays up meanwhile; a phone answer in
+  that window is accepted and ignored by Claude, and the deadline notice can
+  fire for a prompt already answered.
+- In a daemon or hub session the deadline leaves the prompt reachable only
+  with `remi attach`.
+
+### Chat text and Stop never type into a prompt menu (#1142, #1140)
+
+Chat text from the phone is typed into Claude's terminal followed by Enter.
+While Claude shows a numbered permission menu it ignores the letters and the
+Enter confirms the highlighted option, usually "1. Yes", so a message sent
+while a prompt waited could approve it.
+
+#### Fixed
+
+- **Chat text is refused while a numbered menu is on screen** (web chat, a
+  Telegram text reply or custom text): nothing is typed, the sender gets a
+  `PROMPT_WAITING` error ("Claude is waiting on a prompt. Answer it from its
+  card or in the terminal (Esc dismisses it)."), and the app marks that
+  message failed. A subprocess `(y/n)` prompt and a free-text prompt still take
+  text. (Since #1126 above a held prompt refuses chat too, and since #1155 a
+  prompt handed back to the terminal.)
+- **Stop no longer types `/exit` into a menu**: with a numbered menu up it
+  force-closes the session instead (since #1155, with any prompt up).
+- **A keystroke the terminal did not take is reported.** A failed raw write is
+  answered with an `INPUT_NOT_DELIVERED` error, so Telegram's `/interrupt`
+  shows the error instead of "Interrupt sent". `/interrupt` sends its Escape
+  raw (exactly the Escape, no Enter), so it works with a menu up.
+- A Claude selection box no longer parses as taking free text, so its
+  Telegram card no longer says "reply with custom text".
+- After Esc dismisses a dialog, Claude's empty input prompt is read as idle,
+  which unlocks the chat.
+
+#### Known limits
+
+- Esc in the terminal fires no hook: until the idle input prompt is recognized
+  or the next status arrives, chat stays refused.
+
+### Breaking: remi no longer judges permissions (#1125, [ADR 0030](.context/decisions/0030-defer-permission-judgment-to-the-harness.md))
+
+remi stops acting as a second permission judge on top of Claude Code. The
+local-LLM auto-approve evaluator and the deterministic rule layer are both
+removed; Claude Code's own permission settings (auto mode,
+`permissions.allow` / `permissions.deny`) decide, and remi relays whatever is
+still asked. Measured reasons: on one machine's LLM-only decision lines the
+evaluator approved 31.6% of what it saw (overall approve rates, deterministic
+layers included, were 53.4% and 72.2% on the two measured machines),
+escalations took p50 5.3 s / p95 25 s, the rule layer covered 12.9% of real
+main-agent commands, and the two together were a third of the daemon and the
+source of several security bugs (#536, #1060, #1063).
+
+#### Removed
+
+- **Auto-approve.** The LLM evaluator, the Yooz engine and `llama-server`
+  supervision, model download and residency, permission groups, levels,
+  per-agent sections, session precedent, workflow grants, the deny floor and
+  `residual_action`. Nothing is auto-answered any more.
+- **`remi model`.** Prints a one-line removal notice and exits 2. The old
+  engine install under `~/.remi/engine` is left on disk; delete it by hand.
+- **The `[auto_approve]` config table and `REMI_AUTO_APPROVE*` variables.** An
+  old `config.toml` still loads: the daemon warns once at boot naming the
+  ignored keys. `--auto-approve` and the other `--auto-approve-*` flags are
+  accepted and ignored, so existing LaunchAgent plists and scripts keep
+  starting.
+- **The status-bar and statusline auto-approve cue** (`evaluating Ns`,
+  `needs you`, `approved`).
+- **Wire fields no longer emitted:** the `evaluating` / `approved` agent
+  statuses, `RemiStatus.autoApprove`, the `auto_approved` / `auto_denied`
+  resolution reasons, the `auto_denied` push kind, `Question.summary`,
+  `Question.precedentSignature` and `QuestionOption.sessionGrant`. The shared
+  types keep them, marked deprecated, so clients still parse an older daemon.
+  An attach client from an older remi loses its status bar against an
+  upgraded daemon (its render backs off; it does not crash).
+
+#### Added
+
+- **`remi migrate-permissions [config]`** prints your old `[auto_approve]`
+  `allow` / `deny` lists as a Claude Code `permissions` block and never writes
+  a file. Allow commands become `Bash(command:*)`; known tool names and
+  `Tool(...)` rules pass through. **Deny entries change meaning:** remi
+  matched them as substrings anywhere in a command, Claude Code matches a Bash
+  rule from the start of each subcommand, so `rm -rf /` becomes the narrower
+  `Bash(rm -rf /*)` (flagged on stderr) and mid-command patterns such as
+  `push --force` are not carried over (the same shape in `allow` is kept as a
+  prefix rule and flagged: it matches only commands that start with it). A
+  bare `Bash` (which never approved anything in remi but allows every shell
+  command in Claude Code), unknown tool names, shell operators, groups,
+  `level` and agent sections are listed under "NOT carried over" with the
+  reason. A config path you name that does not exist exits 1.
+
+#### Changed
+
+- **`subagent_alert` moved to `[notifications]`.** `auto_approve.subagent_alert`
+  is still honored as a deprecated fallback when the new key is unset.
+- **Every prompt goes to the human.** (Superseded for binary prompts by
+  #1126 above: they are now held and answered through the hook.) A binary
+  main-agent prompt shows in the
+  terminal at once and is pushed when it renders (#1121); AskUserQuestion and
+  plan approval are pushed immediately; a subagent prompt is pushed only if it
+  renders. `remi unstick` now resolves and dismisses stuck cards (there were
+  no holds or evals left to release; since #1126 a live hold is handed back
+  to the terminal instead, see above).
+- **Every phone answer is typed, and checked against the screen first**
+  (#1134). (Since #1126 above, binary permission prompts are answered through
+  the held hook instead, and since #1127 AskUserQuestion and plan approval
+  too; typing remains only for hook-less prompts and multi-choice
+  permissions, and a question-shaped tool other than AskUserQuestion is
+  answered only in the terminal.) With nothing held, an answer is typed into Claude's dialog only
+  when a prompt is on screen and the chosen option's label exactly matches
+  the screen's option at that number (whitespace and case aside); free text
+  is refused on a card that takes a choice. A refusal consumes the card and
+  means "answer at the terminal", where Claude's dialog is still showing.
+
+### Claude's inline renderer is forced; the hub refuses to resume (#1124)
+
+#### Changed
+
+- **remi starts Claude with `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1`.** remi's
+  status bar and prompt parsing assume Claude's inline renderer, and Claude's
+  docs say fullscreen became the default for users who started after
+  2026-05-06. A non-empty value you set yourself wins, so
+  `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=0` opts out; an empty value counts as
+  unset. An in-session `/tui` switch can still leave inline (#1135).
+
+#### Fixed
+
+- **`remi serve` refuses a resume request instead of running Claude in the
+  hub.** The hub used to start the session itself; when that Claude exited the
+  hub exited cleanly, and the LaunchAgent did not restart it. It now answers
+  with `resume_session_response` `success: false`, `errorCode: 'UNSUPPORTED'`
+  and a suggested `remi --resume` command. `errorCode` is new and optional; no
+  client reads it yet. Spawning a session daemon for the resume instead is
+  #1129.
+
+### License: Apache-2.0 core, PolyForm Shield apps and relay (#1128)
+
+- **`packages/daemon` and `packages/shared`** (the daemon, CLI and protocol,
+  and so the compiled `remi` binary and the npm packages) are licensed
+  **Apache-2.0** from the first release containing this change.
+  `packages/web`, `packages/signaling` and `packages/macos` stay PolyForm
+  Shield 1.0.0. `LICENSE.md` maps every directory to its license, the Homebrew
+  formula declares Apache-2.0, and a contribution is licensed under the
+  license of the package it touches. A test fails if daemon or shared code
+  imports from a PolyForm Shield package.
+
+### Binary prompts reach the phone with auto-approve off (#1121, #1122)
+
+#### Fixed
+
+- With auto-approve off (the default then) or `[auto_approve] hold_timeout = 0`,
+  a binary main-agent permission prompt was answered without a push and its
+  render was suppressed as already handled, so it never reached the phone. It
+  was then pushed when its prompt rendered, carrying the screen's option
+  numbering. (Superseded by #1126 above: binary prompts are now held and pushed
+  at once.)
+
+### Earlier changes on this line (auto-approve; all of it removed by #1125 above)
+
 The auto-approve **approval-rate epic** (#1057) plus follow-ups. The epic's
 diagnosis: overall approve rate 52% local / 72% on a second machine against a
 90–95% target, with band=high 0/85 approvable — routine agent work was being
-escalated to the phone in volume. This release makes in-context authorization
+escalated to the phone in volume. This release made in-context authorization
 actually approve that work while keeping every security veto fail-closed. Every
 phase was independently reviewed (adversarial + mutation on the
 security-sensitive ones), and the composed-gate review before this release
-caught a pre-existing ceiling bypass (#1076), fixed here.
+caught a pre-existing ceiling bypass (#1076), fixed here. Every entry below
+describes the auto-approve evaluator or its rule layer, which #1125 removed
+(ADR 0030); each is marked so, and they stay as a record of what shipped.
 
-### Added
+#### Added
 
-- **`auto_approve.residual_action`** (`escalate` default, opt-in `deny`) —
-  [ADR 0027] (#1045). Default is byte-unchanged: residual work the model does
-  not approve still escalates to you. Set to `deny` and that work is refused
-  *with a reason* the agent sees, so it self-corrects to a safer approach
-  instead of pinging you — only worth flipping once your measured approval rate
-  is genuinely sound, since it converts a wrongful escalation into a wrongful
-  deny.
-- **Destination-checked write grants** — [ADR 0026] (#996, #1041, #1060). File
-  writes by shell redirection, heredocs, and `sed -i` are now covered by the
-  write groups (they previously escalated because the groups matched the tool,
-  not the Bash command), but only when the destination provably resolves inside
-  the project or a scratch root and is not sensitive. Any target that cannot be
-  proven safe still escalates, fail-closed.
-- **Output-only GitHub API reads and context-bound session precedent.** The new
-  `gh-read` group deterministically approves only single-endpoint REST GETs
-  without body or mutation flags; arbitrary network commands remain outside
-  shipped presets. Session precedent is enabled for new/default configurations
-  after binding records to the private normalized hook working directory, so a
-  human answer in one project/worktree cannot silently authorize the identical
-  command in another. Existing explicit config values continue to win.
+- *(Removed in #1125.)* **`auto_approve.residual_action`** (`escalate` default,
+  opt-in `deny`) — [ADR 0027] (#1045). Default is byte-unchanged: residual work
+  the model does not approve still escalates to you. Set to `deny` and that work
+  is refused *with a reason* the agent sees, so it self-corrects to a safer
+  approach instead of pinging you — only worth flipping once your measured
+  approval rate is genuinely sound, since it converts a wrongful escalation into
+  a wrongful deny.
+- *(Removed in #1125.)* **Destination-checked write grants** — [ADR 0026] (#996,
+  #1041, #1060). File writes by shell redirection, heredocs, and `sed -i` are
+  now covered by the write groups (they previously escalated because the groups
+  matched the tool, not the Bash command), but only when the destination
+  provably resolves inside the project or a scratch root and is not sensitive.
+  Any target that cannot be proven safe still escalates, fail-closed.
+- *(Removed in #1125.)* **Output-only GitHub API reads and context-bound session
+  precedent.** The new `gh-read` group deterministically approves only
+  single-endpoint REST GETs without body or mutation flags; arbitrary network
+  commands remain outside shipped presets. Session precedent is enabled for
+  new/default configurations after binding records to the private normalized
+  hook working directory, so a human answer in one project/worktree cannot
+  silently authorize the identical command in another. Existing explicit config
+  values continue to win.
 
-### Changed
+#### Changed
 
-- **Composed commands, loops, and conditionals stop over-escalating** (#999,
-  #962). A safe body inside `for`/`while`/`if` no longer escalates the whole
-  line (measured at 25.9% of real main-agent commands), composed `allow`+group
-  segments are recognized, and `git -c` is scoped so `git -c core.hooksPath=…`
-  still escalates while an ordinary `git -c` does not.
+- *(Removed in #1125.)* **Composed commands, loops, and conditionals stop
+  over-escalating** (#999, #962). A safe body inside `for`/`while`/`if` no
+  longer escalates the whole line (measured at 25.9% of real main-agent
+  commands), composed `allow`+group segments are recognized, and `git -c` is
+  scoped so `git -c core.hooksPath=…` still escalates while an ordinary `git -c`
+  does not.
 
-### Fixed
+#### Fixed
 
-- **The prompt promised what the risk ceiling revoked** (#1040). High-band
-  operations now escalate directly under user guidance instead of being approved
-  and then silently overridden a layer later; the model is told the honest rule.
-  The unsafe half of #976's text-widening (which would have auto-approved
-  persistence/credential ops on benign authority) was deliberately dropped.
-- **Session precedent could authorize the wrong command** (#990). Its signature
-  was the truncated display string, so approving a long command could
-  exact-match a *different* command sharing its first 117 characters — reachable
-  in ordinary use in this repo, whose paths routinely exceed that. The signature
-  is now derived untruncated by construction (new `Question.precedentSignature`
-  field); record and consult share one derivation.
-- **A genuine long DENY was silently dropped from precedent** (#1067). A real
-  command ≥120 chars that legitimately ends in `...` looked like a display
-  truncation to the heuristic, so a human "no" was not persisted as a stop rule.
-  It now persists via a signature-provenance bit, without reopening the
-  truncation-collision it guards.
-- **The risk ceiling force-escalated scratch-confined deletes** (#1071). A
-  deletion whose every target resolves under a scratch root — which the
-  `scratch` group already approves — no longer bands high, so the ceiling stops
-  re-escalating a delete the model correctly approved.
-- **Eight command wrappers hid a high-band command from the ceiling** (#1013).
-  `setsid`, `runuser`, `ionice`, `script`, `chrt`, `taskset`, `proxychains`,
-  and `systemd-run` are unwrapped now, so `setsid git push --force` bands high
-  like the bare command.
-- **Model-adherence, measured** (#972). On the shipping default model
-  (qat-lean 4B) the "`git stash` is a remote mutation" failure does not
-  reproduce — that was the 0.8B light tier, never a default.
-- **A multi-line `git commit -m` message defeated its own deterministic
-  coverage** (#1104). The standard, Claude-Code-recommended
-  `$(cat <<'MARKER' ... MARKER)` idiom for a multi-line commit message tripped
-  the blanket command-substitution veto, so `vcs-write`'s existing `git commit`
-  coverage never got a chance to apply and every such commit fell through to
-  the model. The heredoc-into-substitution wrapper is now recognized as inert
+- *(Removed in #1125.)* **The prompt promised what the risk ceiling revoked**
+  (#1040). High-band operations now escalate directly under user guidance
+  instead of being approved and then silently overridden a layer later; the
+  model is told the honest rule. The unsafe half of #976's text-widening (which
+  would have auto-approved persistence/credential ops on benign authority) was
+  deliberately dropped.
+- *(Removed in #1125.)* **Session precedent could authorize the wrong command**
+  (#990). Its signature was the truncated display string, so approving a long
+  command could exact-match a *different* command sharing its first 117
+  characters — reachable in ordinary use in this repo, whose paths routinely
+  exceed that. The signature is now derived untruncated by construction (new
+  `Question.precedentSignature` field); record and consult share one derivation.
+- *(Removed in #1125.)* **A genuine long DENY was silently dropped from
+  precedent** (#1067). A real command ≥120 chars that legitimately ends in `...`
+  looked like a display truncation to the heuristic, so a human "no" was not
+  persisted as a stop rule. It now persists via a signature-provenance bit,
+  without reopening the truncation-collision it guards.
+- *(Removed in #1125.)* **The risk ceiling force-escalated scratch-confined
+  deletes** (#1071). A deletion whose every target resolves under a scratch root
+  — which the `scratch` group already approves — no longer bands high, so the
+  ceiling stops re-escalating a delete the model correctly approved.
+- *(Removed in #1125.)* **Eight command wrappers hid a high-band command from
+  the ceiling** (#1013). `setsid`, `runuser`, `ionice`, `script`, `chrt`,
+  `taskset`, `proxychains`, and `systemd-run` are unwrapped now, so `setsid git
+  push --force` bands high like the bare command.
+- *(Removed in #1125.)* **Model-adherence, measured** (#972). On the shipping
+  default model (qat-lean 4B) the "`git stash` is a remote mutation" failure
+  does not reproduce — that was the 0.8B light tier, never a default.
+- *(Removed in #1125.)* **A multi-line `git commit -m` message defeated its own
+  deterministic coverage** (#1104). The standard, Claude-Code-recommended `$(cat
+  <<'MARKER' ... MARKER)` idiom for a multi-line commit message tripped the
+  blanket command-substitution veto, so `vcs-write`'s existing `git commit`
+  coverage never got a chance to apply and every such commit fell through to the
+  model. The heredoc-into-substitution wrapper is now recognized as inert
   (mirroring the existing quoted-heredoc-body proof) and erased alongside it.
-- **An authority-induced false escalate was never corrected** (#1105). The
-  existing #954 authority-counterfactual guard only re-checked a model
-  `approve` that conversation context might have wrongly produced; an
-  ordinary, read-only check could still be escalated with reasoning that
-  traced to unrelated conversation text rather than the command itself, with
-  nothing catching it. Adds the symmetric escalate-direction counterfactual,
-  scoped to the model's own untouched, direct escalate on a Bash command only
-  — every other guard's escalate (deny floor, session precedent, trust
-  boundary, risk ceiling) is structurally excluded from being re-litigated by
-  it, and a would-be correction still passes through the same risk-ceiling and
-  trust-boundary checks an ordinary approve does before it can stand.
-- **Prompt guidance now matches the deciding pipeline** (#1110). User guidance
-  is treated as context for routine or moderate ambiguity, while deterministic
-  grants and code-owned safety guards remain authoritative; contradictory
-  action guidance was removed and the prompt-builder contract is pinned by
-  tests. The real-engine regression remains a separate live-environment check.
-- **Post-model decisions now retain their actual deciding layer** (#1111).
-  Deny-floor, trust-boundary, risk-ceiling, precedent, counterfactual, and
-  model outcomes are attributed consistently, with HTTP-fixture regression
-  coverage for the guard chain so telemetry cannot claim that a later layer
-  decided an outcome it did not produce.
-- **Future cross-agent session-precedent matches are now measurable** (#1112).
-  Newly recorded human approvals and denials carry private `main`/`subagent`
-  scope and grep-friendly cross-scope fields through the production recorder;
-  legacy records remain `unknown`. The new audit fields add no command text,
-  agent IDs, or directories, and the matcher is unchanged.
-- **Verified-review effect contracts are explicit and fail closed** (#1113).
-  The independent reviewer receives an exact effect set, and missing,
-  duplicate, unknown, empty, or non-string facts are rejected before a
+- *(Removed in #1125.)* **An authority-induced false escalate was never
+  corrected** (#1105). The existing #954 authority-counterfactual guard only
+  re-checked a model `approve` that conversation context might have wrongly
+  produced; an ordinary, read-only check could still be escalated with reasoning
+  that traced to unrelated conversation text rather than the command itself,
+  with nothing catching it. Adds the symmetric escalate-direction
+  counterfactual, scoped to the model's own untouched, direct escalate on a Bash
+  command only — every other guard's escalate (deny floor, session precedent,
+  trust boundary, risk ceiling) is structurally excluded from being re-litigated
+  by it, and a would-be correction still passes through the same risk-ceiling
+  and trust-boundary checks an ordinary approve does before it can stand.
+- *(Removed in #1125.)* **Prompt guidance now matches the deciding pipeline**
+  (#1110). User guidance is treated as context for routine or moderate
+  ambiguity, while deterministic grants and code-owned safety guards remain
+  authoritative; contradictory action guidance was removed and the
+  prompt-builder contract is pinned by tests. The real-engine regression remains
+  a separate live-environment check.
+- *(Removed in #1125.)* **Post-model decisions now retain their actual deciding
+  layer** (#1111). Deny-floor, trust-boundary, risk-ceiling, precedent,
+  counterfactual, and model outcomes are attributed consistently, with
+  HTTP-fixture regression coverage for the guard chain so telemetry cannot claim
+  that a later layer decided an outcome it did not produce.
+- *(Removed in #1125.)* **Future cross-agent session-precedent matches are now
+  measurable** (#1112). Newly recorded human approvals and denials carry private
+  `main`/`subagent` scope and grep-friendly cross-scope fields through the
+  production recorder; legacy records remain `unknown`. The new audit fields add
+  no command text, agent IDs, or directories, and the matcher is unchanged.
+- *(Removed in #1125.)* **Verified-review effect contracts are explicit and fail
+  closed** (#1113). The independent reviewer receives an exact effect set, and
+  missing, duplicate, unknown, empty, or non-string facts are rejected before a
   verified review call; bounded interpreter effects and scoped workflow
   `remote_mutation` mappings remain covered by the production two-call path.
-  This path remains opt-in (`risk_review = "verified"`); llama.cpp/GGUF
-  coverage remains a separate evidence gate.
-- **Permission routing distinguishes waiting from mutation** (follow-up to
-  #1092). The primary-model guidance now identifies `sleep 30` and
-  `gh pr checks --watch` as read-only wait/status operations. The production
-  routing bank checks that direct status checks remain deterministic, safe
-  compound checks take one model call, and contextual package installs and
+  This path remains opt-in (`risk_review = "verified"`); llama.cpp/GGUF coverage
+  remains a separate evidence gate.
+- *(Removed in #1125.)* **Permission routing distinguishes waiting from
+  mutation** (follow-up to #1092). The primary-model guidance now identifies
+  `sleep 30` and `gh pr checks --watch` as read-only wait/status operations. The
+  production routing bank checks that direct status checks remain deterministic,
+  safe compound checks take one model call, and contextual package installs and
   pull-request creation still escalate at the risk ceiling.
 
-### Security
+#### Security
 
-- **`/dev/tcp` / `/dev/udp` input redirects are vetoed fail-closed** (#1063). An
-  input redirect from these paths opens an outbound socket; it was approved by
-  `read-only` at `strict`. Closed over nine adversarial rounds.
-- **Shell grammar and grouping no longer hide a must-escalate op from the
-  ceiling** (#1076). `while ! git push; do …; done`, `if …; then git push; fi`,
-  `for pkg in …; do npm install`, and `( git push --force )` graded `moderate`
-  and a model approve stood silently, because the ceiling's head-token checks
-  never saw past the keyword or the group. They are graded `high` again. (The
-  narrower unenumerated-wrapper vector — `flock … git push` — remains open on
-  the issue.)
-- **A brace-expansion escape is refused** in both the risk ceiling and the
-  `scratch` group: `rm -rf /tmp/{x,../etc/passwd}` deletes a file outside
-  scratch, and the glued `..` was invisible to the path resolver.
+- *(Removed in #1125.)* **`/dev/tcp` / `/dev/udp` input redirects are vetoed
+  fail-closed** (#1063). An input redirect from these paths opens an outbound
+  socket; it was approved by `read-only` at `strict`. Closed over nine
+  adversarial rounds.
+- *(Removed in #1125.)* **Shell grammar and grouping no longer hide a
+  must-escalate op from the ceiling** (#1076). `while ! git push; do …; done`,
+  `if …; then git push; fi`, `for pkg in …; do npm install`, and `( git push
+  --force )` graded `moderate` and a model approve stood silently, because the
+  ceiling's head-token checks never saw past the keyword or the group. They are
+  graded `high` again. (The narrower unenumerated-wrapper vector — `flock … git
+  push` — remains open on the issue.)
+- *(Removed in #1125.)* **A brace-expansion escape is refused** in both the risk
+  ceiling and the `scratch` group: `rm -rf /tmp/{x,../etc/passwd}` deletes a
+  file outside scratch, and the glued `..` was invisible to the path resolver.
 
 [ADR 0026]: .context/decisions/0026-destination-checked-write-grants.md
 [ADR 0027]: .context/decisions/0027-residual-action-deny-vs-escalate.md

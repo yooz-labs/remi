@@ -27,9 +27,9 @@
  */
 
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import type { QuestionSource } from '@remi/shared';
+import { remiHome } from '../config/remi-home.ts';
 import { debugProvenance } from '../debug/provenance.ts';
 
 /** One question-lifecycle event. */
@@ -106,7 +106,7 @@ export interface QuestionTraceRecord {
   /**
    * The internal function that emitted THIS record (#887), e.g.
    * `'SessionRegistry.addQuestion'`, `'SessionRegistry.removeQuestion'`,
-   * `'AutoApproveGate.resolveHeld'`. Distinct from `signal`, which names the
+   * `'AutoApproveGate.resolveSupersededQuestion'`. Distinct from `signal`, which names the
    * EXTERNAL reason (a Claude Code hook event name, an internal reason
    * string) — several different internal call sites can legitimately share
    * one `signal` (e.g. both the main and subagent PostToolUse listeners in
@@ -121,7 +121,7 @@ export interface QuestionTraceRecord {
    * reading `'SessionRegistry.removeQuestion'` do NOT prove "one path fired
    * twice" — they may be two different upstream callers that have not been
    * threaded yet. Only a value naming a specific upstream (e.g.
-   * `'AutoApproveGate.resolveHeld'`) is evidence about which path ran. When
+   * `'AutoApproveGate.resolveSupersededQuestion'`) is evidence about which path ran. When
    * chasing the #888 double-removal, treat an unthreaded default as UNKNOWN,
    * not as a match.
    */
@@ -182,7 +182,7 @@ export function traceQuestionEvent(record: QuestionTraceRecord): void {
       provenance: debugProvenance(),
       ...record,
     });
-    const remiDir = path.join(os.homedir(), '.remi');
+    const remiDir = remiHome();
     fs.mkdirSync(remiDir, { recursive: true });
     fs.appendFileSync(path.join(remiDir, TRACE_FILE_NAME), `${line}\n`);
   } catch (err) {

@@ -13,16 +13,16 @@
  */
 
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import type { AnswerKeyPair } from '@remi/shared';
 import { generateAnswerKeyPair } from '@remi/shared';
+import { remiHome } from '../config/remi-home.ts';
 
 /** Owner read/write only. */
 const SECRET_MODE = 0o600;
 
 function defaultKeyPath(): string {
-  return path.join(os.homedir(), '.remi', 'answer-key.json');
+  return path.join(remiHome(), 'answer-key.json');
 }
 
 /**

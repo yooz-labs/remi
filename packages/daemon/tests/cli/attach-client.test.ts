@@ -288,7 +288,6 @@ describe('runAttachClient', () => {
       sessionId: targetSessionId,
       repo: 'remi',
       branch: 'develop',
-      autoApprove: { inFlight: 0, sinceS: 0, lastVerdict: 'none', lastVerdictAtS: 0 },
       attached: true,
       queuedCount: 0,
       ...overrides,
@@ -320,7 +319,7 @@ describe('runAttachClient', () => {
     expect(banner).toBe(
       '\r\x1b[2K\x1b[36m[remi] pending question: Allow file edit?\x1b[0m\r\n' +
         '\x1b[36m[remi] options: 1) Yes  2) No\x1b[0m\r\n' +
-        "\x1b[2m[remi] answer on your phone, or run 'remi unstick' to answer here\x1b[0m\r\n",
+        '\x1b[2m[remi] answer the prompt here or on your phone\x1b[0m\r\n',
     );
   });
 
@@ -330,13 +329,15 @@ describe('runAttachClient', () => {
 
     expect(banner).toBe(
       '\r\x1b[2K\x1b[36m[remi] pending question: Allow file edit?\x1b[0m\r\n' +
-        "\x1b[2m[remi] answer on your phone, or run 'remi unstick' to answer here\x1b[0m\r\n",
+        '\x1b[2m[remi] answer the prompt here or on your phone\x1b[0m\r\n',
     );
   });
 
-  // #753: a HELD permission (Model B) blocks Claude inside the hook, so no
-  // raw PTY bytes for the prompt ever exist — the LIVE question message is
-  // the only signal an attached terminal gets, and it must render.
+  // #753: a question pushed through the `held` path is pushed at hook time,
+  // before Claude paints anything (built for held permissions, Model B, whose
+  // prompts never painted; since #1125 only multi-choice / design escalations
+  // use it) — the LIVE question message is the first signal an attached
+  // terminal gets, and it must render.
   test('renders a banner for a LIVE held question (held prompts never paint the PTY)', async () => {
     setupOutput();
     const targetSessionId = generateId();
@@ -380,7 +381,7 @@ describe('runAttachClient', () => {
     const output = readOutput();
     expect(output).toContain('[remi] pending question: Allow file edit?');
     expect(output).toContain('1) Yes  2) No');
-    expect(output).toContain("run 'remi unstick'");
+    expect(output).toContain('answer the prompt here or on your phone');
     // Bannered exactly once despite the duplicate delivery.
     expect(output.split('pending question: Allow file edit?').length).toBe(2);
   });
@@ -567,12 +568,6 @@ describe('runAttachClient', () => {
                     sessionId: targetSessionId as UUID,
                     repo: 'remi',
                     branch: 'develop',
-                    autoApprove: {
-                      inFlight: 0,
-                      sinceS: 0,
-                      lastVerdict: 'none',
-                      lastVerdictAtS: 0,
-                    },
                     attached: true,
                     queuedCount: 0,
                   }),

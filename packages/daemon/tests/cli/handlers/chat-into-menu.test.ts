@@ -30,6 +30,7 @@ import {
 import { TelegramAdapter } from '../../../src/adapters/telegram-adapter.ts';
 import { QuestionPresenceTracker } from '../../../src/api/question-presence-tracker.ts';
 import { createInputHandlers, trackerScreenDeps } from '../../../src/cli/handlers/input-events.ts';
+import { promptUpDeps } from '../../../src/cli/handlers/prompt-up.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import { parseQuestion } from '../../../src/parser/question-parser.ts';
 import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
@@ -88,6 +89,10 @@ describe('chat text while a prompt menu is on screen (#1140)', () => {
       bindingStore,
       send,
       ...trackerScreenDeps((sid) => (sid === sessionId ? tracker : undefined)),
+      ...promptUpDeps(
+        () => undefined,
+        (sid) => (sid === sessionId ? tracker : undefined),
+      ),
     });
   }
 
@@ -155,6 +160,10 @@ describe('chat text while a prompt menu is on screen (#1140)', () => {
       bindingStore,
       send,
       ...trackerScreenDeps(() => undefined),
+      ...promptUpDeps(
+        () => undefined,
+        () => undefined,
+      ),
     });
 
     await noTracker.onUserInput(CID, sessionId, 'no tracker here', false);

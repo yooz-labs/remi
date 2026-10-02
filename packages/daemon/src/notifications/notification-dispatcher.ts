@@ -21,6 +21,7 @@ import type { SessionRegistry } from '../session/index.ts';
 import { sendPushTrigger } from './push-client.ts';
 import { PushDedup } from './push-dedup.ts';
 import { tokensWanting } from './push-preferences.ts';
+import { type TurnFailedInput, buildTurnFailedText, turnFailedCollapseId } from './turn-failed.ts';
 
 export interface PushConfig {
   /**
@@ -73,10 +74,13 @@ function isStanding(option: QuestionOption, index: number): boolean {
  * categories have hardcoded titles, so they are chosen only when those titles
  * are true:
  *   - REMI_YN ("Yes" / "No"): exactly [one-time Yes, No].
- *   - REMI_YNA ("Yes" / "Yes, always" / "No"): exactly [one-time Yes, Yes,
- *     No]. Its middle "Yes, always" button is the only static action that
- *     requires an unlocked device, so a standing grant is offered on the lock
- *     screen ONLY in this layout, and only through this static category: no
+ *   - REMI_YNA ("Yes" / "Yes, always" / "No"): exactly [one-time Yes, an
+ *     always-allow rule, No], the middle option marked `standingGrant:
+ *     'addRules'` (#1126 lead decision: only there is the static "Yes, always"
+ *     title true; a `setMode` or an unmarked standing option gets no
+ *     category). Its middle button is the only static action that requires
+ *     an unlocked device, so a standing grant is offered on the lock screen
+ *     ONLY in this layout, and only through this static category: no
  *     standing card gets the `dynOptions` hint (`selectDynOptions`).
  * A one-time Yes is an option labeled exactly "Yes" (`isOneTimeYes`).
  * A card with any other standing option (`isStanding`) gets NO category: a
@@ -99,6 +103,7 @@ export function selectPushCategory(options: readonly QuestionOption[]): string |
     isOneTimeYes(first) &&
     second.isYes &&
     !second.isNo &&
+    second.standingGrant === 'addRules' &&
     isPlainNo(third)
   ) {
     return 'REMI_YNA';
@@ -107,11 +112,43 @@ export function selectPushCategory(options: readonly QuestionOption[]): string |
 }
 
 /**
+ * Whether an AskUserQuestion card can be answered with one lock-screen tap
+ * (#1127 lead decision): exactly one question, single-select. The tap sends
+ * its option's label, and the held answer path takes it only when it names
+ * exactly one option (a label that is another option's value is refused,
+ * review S1) that matches the parsed input by value and label, so a
+ * positional button answers that option or nothing. Any other
+ * AskUserQuestion (several questions, a multi-select) is answered in the
+ * app.
+ */
+function isOneTapAskUserQuestion(question: Question): boolean {
+  const steps = question.questions;
+  return steps !== undefined && steps.length === 1 && steps[0]?.multiSelect === false;
+}
+
+/**
+ * The APNS category for a question card. A plan approval (#1127) never gets
+ * one: approving a plan is not a lock-screen tap; nor does a card no phone
+ * answer can be applied to (`terminalOnly`, review S7). An AskUserQuestion card
+ * gets REMI_MULTI only when it is one single-select question
+ * (`isOneTapAskUserQuestion`), and none otherwise. Every other card is
+ * chosen by what its options mean (`selectPushCategory`).
+ */
+export function pushCategoryFor(question: Question): string | undefined {
+  if (question.kind === 'plan_approval' || question.terminalOnly === true) return undefined;
+  if (question.kind === 'multi_question') {
+    return isOneTapAskUserQuestion(question) ? selectPushCategory(question.options) : undefined;
+  }
+  return selectPushCategory(question.options);
+}
+
+/**
  * Whether a question qualifies for the NSE's per-notification dynamic
- * category (#719): a single-question prompt (never a multi-sub-question
- * AskUserQuestion form, which stays app-routed via its topic-list summary)
- * with 2-4 options, each carrying a REAL label (not just a fallback value —
- * the entire point of the dynamic category is showing the true option text).
+ * category (#719): a single-question prompt (never a multi-sub-question or
+ * multi-select AskUserQuestion form, which stays app-routed via its summary,
+ * #1127, and never a plan approval) with 2-4 options, each carrying a REAL
+ * label (not just a fallback value — the entire point of the dynamic
+ * category is showing the true option text).
  *
  * This is an ADDITIVE hint alongside `selectPushCategory`'s STATIC category,
  * which is always sent unconditionally as the fallback. A client without the
@@ -128,9 +165,8 @@ export function selectPushCategory(options: readonly QuestionOption[]): string |
  * NotificationService.swift (`buildDynamicCategory`'s `0...5` loop).
  */
 export function selectDynOptions(question: Question): boolean {
-  if (question.kind === 'multi_question' && question.questions && question.questions.length > 1) {
-    return false;
-  }
+  if (question.kind === 'plan_approval' || question.terminalOnly === true) return false;
+  if (question.kind === 'multi_question' && !isOneTapAskUserQuestion(question)) return false;
   const { options } = question;
   if (options.length < 2 || options.length > 4) return false;
   // #1134 review: the extension builds its dynamic buttons without
@@ -166,8 +202,8 @@ function normalizeNotificationText(text: string): string {
  * The compact option list shown in the body, e.g. "1. Yes  2. Yes, always
  * 3. No". Uses the real option LABELS (#574, issue 4) so the user sees what
  * they are actually choosing. The prefix is the option's actual `value`, not
- * its positional index, so it stays accurate for non-indexed values like the
- * StopFailure y/n set ("y. Yes  n. No"). Empty when there are no options
+ * its positional index, so it stays accurate for non-indexed values like a
+ * y/n set ("y. Yes  n. No"). Empty when there are no options
  * (free-text prompt) so the body is just the ask.
  */
 function formatOptionList(options: readonly QuestionOption[]): string {
@@ -201,13 +237,33 @@ export function buildPushText(
       .slice(0, BODY_MAX);
     return { title, body };
   }
-  // #628: prefer the auto-approve LLM's lock-screen one-liner ("Force-push to
-  // main?") over the raw "Allow Bash: <command>" when present.
-  const ask = normalizeNotificationText(question.summary || question.text) || 'Allow this action?';
+  // #628's lock-screen one-liner (`Question.summary`) came from the
+  // auto-approve LLM, removed in #1125; the push reads the question text.
+  const ask = normalizeNotificationText(question.text) || 'Allow this action?';
   const title = `${sessionName}: ${ask}`.slice(0, TITLE_MAX);
+  // #1127: a card about a long text (a plan) shows the start of that text;
+  // the app shows all of it, and the options are chosen there.
+  const detail = question.detail !== undefined ? normalizeNotificationText(question.detail) : '';
+  if (detail.length > 0) return { title, body: detail.slice(0, BODY_MAX) };
   const optionList = formatOptionList(question.options);
   const body = (optionList ? `${ask}\n${optionList}` : ask).slice(0, BODY_MAX);
   return { title, body };
+}
+
+/** Why the phone is told to answer at the terminal (#1126); see
+ *  `NotificationDispatcher.pushTerminalNotice`. */
+export type TerminalNoticeReason =
+  | 'hold_deadline'
+  | 'hold_deadline_no_terminal'
+  | 'released'
+  | 'released_no_terminal'
+  | 'subagent';
+
+/** The collapse key (`questionId` on the wire) of a terminal notice for a
+ *  question (#1126): distinct from the card's, so dismissing the card leaves
+ *  the notice and dismissing the notice leaves any card. */
+export function terminalNoticeId(questionId: string): string {
+  return `notice-${questionId}`;
 }
 
 /** Signature of the APNS-relay push call; injectable so the push branch is
@@ -216,8 +272,10 @@ export type PushFn = typeof sendPushTrigger;
 
 /**
  * The outcome of attempting to deliver a question's notification (epic #603
- * Phase 1). The gate consumes this via `awaitDelivery` to decide whether a held
- * hook should keep blocking Claude or fail open fast:
+ * Phase 1), returned by `maybePush`. Before #1125 the permission gate raced it
+ * to decide whether a held hook kept blocking Claude. A hold since #1126 has
+ * a fixed deadline instead (`[prompts] hold_seconds`) and never waits on
+ * delivery, so this is diagnostic only:
  *   - `in_app`     a client is attached, so the question shows in-app (the only
  *                  case where `maybePush` deliberately does NOT push — but the
  *                  user IS reachable).
@@ -229,26 +287,11 @@ export type PushFn = typeof sendPushTrigger;
  */
 export type DeliveryOutcome = 'in_app' | 'pushed' | 'deduped' | 'no_channel' | 'failed';
 
-/** Whether a delivery outcome means the user can actually be notified (epic
- *  #603 Phase 1). `in_app` / `pushed` reach the user. `deduped` is deliberately
- *  NOT treated as confirmed: PushDedup suppresses a second identical push
- *  WITHOUT tracking whether the push it deduped against actually succeeded, so a
- *  held hook must not keep blocking on it — fail open (always safe) instead.
- *  (Phase 3 makes held escalations bypass dedup, so a held push is never deduped
- *  in the first place.) `no_channel` / `failed` obviously do not reach anyone. */
-export function isDelivered(outcome: DeliveryOutcome): boolean {
-  return outcome === 'in_app' || outcome === 'pushed';
-}
-
 /** Transient push failures retried with backoff (epic #603 Phase 1). */
 const MAX_PUSH_RETRIES = 2;
-/** Backoff base; attempt N waits BASE * 2^N (400ms, 800ms). Kept short so the
- *  per-token result settles well within the gate's delivery_confirm_timeout. */
+/** Backoff base; attempt N waits BASE * 2^N (400ms, 800ms). Kept short so a
+ *  lock-screen card is not delayed by a transient failure. */
 const PUSH_RETRY_BASE_MS = 400;
-/** How long a recorded delivery outcome stays probeable before cleanup. The
- *  gate probes within ~ms of the push; this is a generous upper bound so the
- *  map never grows unbounded across a long-lived session. */
-const DELIVERY_OUTCOME_TTL_MS = 60_000;
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => {
@@ -336,16 +379,13 @@ export interface NotificationDispatcherDeps {
 
 export class NotificationDispatcher {
   private readonly pushDedup = new PushDedup();
+  /** A `turn_failed` push went out and no later turn has cleared it (#1153).
+   *  In memory only: after a daemon restart a stale notice stays until the
+   *  user clears it, which is the safe direction. */
+  private turnFailedOutstanding = false;
   /** Resolved once at construction: the real sendPushTrigger unless a test
    *  injected an override. Fixed for the instance lifetime. */
   private readonly pushFn: PushFn;
-
-  /**
-   * Delivery outcome per question id (epic #603 Phase 1), recorded by every
-   * `maybePush` so the gate can `awaitDelivery` to decide a held hook's fate.
-   * Entries self-evict after `DELIVERY_OUTCOME_TTL_MS` so the map stays bounded.
-   */
-  private readonly deliveryOutcomes = new Map<UUID, Promise<DeliveryOutcome>>();
 
   constructor(
     private readonly deps: NotificationDispatcherDeps,
@@ -367,20 +407,15 @@ export class NotificationDispatcher {
    * attached (they see it in-app) or the dedup gate suppresses it.
    * `questionSessionId` is the primary id the client knows (from hello_ack).
    *
-   * Returns the resolved DELIVERY OUTCOME (epic #603 Phase 1) and records it
-   * keyed by `question.id` so a held hook can `awaitDelivery` to decide whether
-   * to keep blocking Claude or fail open fast. Callers that do not care about
-   * delivery (the regular PTY-prompt path) can ignore the returned promise; the
-   * recording still happens.
+   * Returns the resolved DELIVERY OUTCOME (epic #603 Phase 1). The question
+   * path does not await it.
    */
   maybePush(
     questionSessionId: UUID,
     question: Question,
     opts: { held?: boolean } = {},
   ): Promise<DeliveryOutcome> {
-    const outcome = this.computeDelivery(questionSessionId, question, opts.held ?? false);
-    this.recordDelivery(question.id, outcome);
-    return outcome;
+    return this.computeDelivery(questionSessionId, question, opts.held ?? false);
   }
 
   /** Resolve the delivery outcome for one question (fanning out the per-token
@@ -413,10 +448,8 @@ export class NotificationDispatcher {
     // as unreachable for this question as one that never registered, so it is
     // filtered HERE — above the no-channel check — and not at the fan-out.
     //
-    // That placement is load-bearing for a HELD escalation: `awaitDelivery`
-    // decides whether to keep Claude blocked, and reporting `pushed` for a fan-
-    // out of zero would block the hook on a card that will never appear on any
-    // lock screen. Reporting `no_channel` instead fails the hold open fast.
+    // Reporting `pushed` for a fan-out of zero would claim a card reached a
+    // lock screen it never appears on; `no_channel` is the honest outcome.
     const wanting = tokensWanting(deviceTokens.values(), 'question');
     // No reachable device: nobody can be pushed. If a client is attached the
     // user is still reachable in-app (held case); otherwise there is no channel.
@@ -441,15 +474,14 @@ export class NotificationDispatcher {
     const sessionName = session?.name || 'Agent';
     const cfg = pushConfig();
     const pushSessionId = this.deps.getPrimarySessionId() ?? this.sessionId;
-    // #626: an AskUserQuestion (kind === 'multi_question') gets no category at
-    // all. `selectPushCategory` would already refuse it REMI_YN/YNA (their
-    // hardcoded "Yes / Yes, always / No" titles would MISLABEL picks such as
-    // "PostgreSQL / MySQL / MongoDB"), but a multi-question form cannot be
-    // answered by one positional tap either. With no category the lock screen
-    // shows the summary and opens the app, where the structured card renders the
-    // real options + descriptions. (One-tap AUQ answering arrives in #627.)
-    const pushCategory =
-      question.kind === 'multi_question' ? undefined : selectPushCategory(question.options);
+    // #626, #1127: an AskUserQuestion with several questions or a
+    // multi-select, and a plan approval, get no category at all: none can be
+    // answered by one positional tap (and a plan is never approved from the
+    // lock screen). With no category the lock screen shows the summary and
+    // opens the app, where the card renders the real options. A
+    // one-question, single-select AskUserQuestion gets REMI_MULTI: its tap
+    // names one option, which the held hook answers (`pushCategoryFor`).
+    const pushCategory = pushCategoryFor(question);
     // Send the human-readable LABELS for DISPLAY (#574, issue 4); answer
     // routing in input-events resolves an incoming label OR value back to the
     // option, then submits the option's index when a PTY submit is required, so
@@ -523,8 +555,9 @@ export class NotificationDispatcher {
           continue;
         }
         // Loud: a real push attempt failed (permanent token rejection, network
-        // error, or exhausted retries). This is the root cause behind a held
-        // hook's fail-open, so it must be visible at error level, not buried.
+        // error, or exhausted retries). This is the root cause behind a card
+        // that never reached the phone, so it must be visible at error level,
+        // not buried.
         logError(`${logCtx.failed}: ${err}`);
         // Self-heal (epic #603 Phase 6): a PERMANENTLY invalid token (dead /
         // unregistered / wrong-app) is pruned so it is never retried again. A
@@ -538,66 +571,65 @@ export class NotificationDispatcher {
     }
   }
 
-  /** Record (and schedule cleanup of) a question's delivery outcome so the gate
-   *  can `awaitDelivery` it (epic #603 Phase 1). */
-  private recordDelivery(questionId: UUID, outcome: Promise<DeliveryOutcome>): void {
-    this.deliveryOutcomes.set(questionId, outcome);
-    // Evict after a fixed TTL regardless of whether `outcome` ever settles: a
-    // push whose fetch hangs (unreachable Worker, no AbortSignal yet) must not
-    // leak a map entry until the OS TCP timeout. The gate probes within ms of
-    // recording, so a 60s TTL is a generous upper bound.
-    const t = setTimeout(() => this.deliveryOutcomes.delete(questionId), DELIVERY_OUTCOME_TTL_MS);
-    t.unref?.();
-  }
-
   /**
-   * The delivery outcome recorded for `questionId` by `maybePush` (epic #603
-   * Phase 1). The gate races this against `delivery_confirm_timeout` to decide a
-   * held hook's fate. `undefined` when no push was attempted for the id (e.g. the
-   * held push found no pending hook record) — the gate then keeps its legacy
-   * behavior (hold to hold_timeout) rather than failing open on a missing signal.
-   */
-  awaitDelivery(questionId: UUID): Promise<DeliveryOutcome> | undefined {
-    return this.deliveryOutcomes.get(questionId);
-  }
-
-  /**
-   * Alert push telling the user a held escalation TIMED OUT and its prompt has
-   * moved to the terminal (#733). Fired by the gate's `onHoldTimeout` cue just
-   * before the hold fails open, while the question is still registered — so the
-   * body can carry the actual ask. Without this, a timeout is silent on the
-   * phone: the card's dismissal collapses it away and nothing says the agent is
-   * now blocked on a native terminal prompt.
+   * Alert push telling the user a prompt must be answered in the terminal
+   * (#1126), never a card: no category, no options, nothing to answer from
+   * the lock screen, and nothing registered in-app. Its reasons:
+   *   - `hold_deadline`: a held prompt waited `[prompts] hold_seconds` with no
+   *     answer (or reached Claude's hook timeout), so remi released its hold;
+   *     Claude's dialog is still up (the #733 handoff, restored for held
+   *     hooks).
+   *   - `released`: remi released a live hold early, with no answer (an
+   *     ambiguous signal that the hold may be stale, or `remi unstick`).
+   *   - `hold_deadline_no_terminal`, `released_no_terminal`: the same in a
+   *     daemon or hub session, which has no terminal of its own: the dialog
+   *     is reached with `remi attach`, and the notice says so.
+   *   - `subagent`: a background subagent's dialog rendered in a session with
+   *     a local terminal; its hook was answered 'passthrough' so it could
+   *     render at all, so only the terminal can answer it.
+   * Called while the question is still registered, so the body names the
+   * actual ask.
    *
    * Deliberate differences from `maybePush`:
-   *  - always pushes (no attached-client skip, no dedup): this is a one-shot
-   *    state-change notice, and an attached client only sees the card VANISH;
-   *  - no category/options/dynOptions: there is nothing to answer from the
-   *    lock screen anymore — tapping opens the app;
-   *  - collapse key is `handoff-<questionId>`, NOT the question id, so the
-   *    original card's quiet dismissal (collapse-id = question id) cannot
-   *    collapse this notice away.
+   *  - always pushes (no attached-client skip, no dedup): an attached client
+   *    only sees its card vanish, and this is a one-shot state change;
+   *  - collapse key `notice-<questionId>`, never the question id, so the
+   *    card's own quiet dismissal cannot collapse this notice away;
+   *    `dismissTerminalNotice` clears it once the prompt is answered.
    *
-   * IS filtered by per-device push preferences (#968), unlike `dismiss`: this
-   * is a visible, buzzing card about a question, so a device that muted
-   * question pushes must not receive it. It clears nothing, so skipping it
-   * strands nothing.
+   * Filtered by per-device push preferences as a `question` push (#968): it
+   * buzzes, about a question, so a device that muted questions does not get
+   * it. It clears nothing, so skipping it strands nothing.
    */
-  pushHoldTimeoutHandoff(questionSessionId: UUID, questionId: UUID): void {
-    const { deviceTokens, pushConfig, sessionRegistry } = this.deps;
+  pushTerminalNotice(
+    questionSessionId: UUID,
+    question: Question,
+    reason: TerminalNoticeReason,
+  ): void {
+    const { deviceTokens, pushConfig } = this.deps;
+    this.deps.refreshDeviceTokens?.();
     const wanting = tokensWanting(deviceTokens.values(), 'question');
     if (wanting.length === 0) return;
-    const session = sessionRegistry.getSession(this.sessionId);
-    const question = session?.currentQuestions.get(questionId);
+    const session = this.deps.sessionRegistry.getSession(this.sessionId);
     const sessionName = session?.name || 'Agent';
-    const ask =
-      normalizeNotificationText(question?.summary || question?.text || '') ||
-      'a permission request';
-    const title = `${sessionName}: answer in the terminal`.slice(0, TITLE_MAX);
-    const body = `Timed out waiting for you — the prompt moved to the terminal: ${ask}`.slice(
-      0,
-      BODY_MAX,
-    );
+    const ask = normalizeNotificationText(question.text) || 'a permission request';
+    const noTerminal = reason === 'hold_deadline_no_terminal' || reason === 'released_no_terminal';
+    const title = (
+      noTerminal
+        ? `${sessionName}: answer with remi attach`
+        : `${sessionName}: answer in the terminal`
+    ).slice(0, TITLE_MAX);
+    // A release notice must not say the prompt is still waiting: a Yes
+    // answered in the terminal shows up only when its tool finishes, so the
+    // prompt may already be answered (#1126 lead decision).
+    const why =
+      reason === 'hold_deadline' || reason === 'hold_deadline_no_terminal'
+        ? 'No answer from the phone in time'
+        : 'This prompt was handed back to the terminal';
+    const how = noTerminal ? 'reach it with remi attach' : 'answer it in the terminal';
+    const body = (
+      reason === 'subagent' ? ask : `${why}; if it is still open, ${how}: ${ask}`
+    ).slice(0, BODY_MAX);
     const cfg = pushConfig();
     const pushSessionId = this.deps.getPrimarySessionId() ?? questionSessionId;
     for (const dt of wanting) {
@@ -609,15 +641,100 @@ export class NotificationDispatcher {
           body,
           ...(cfg.pushSecret !== undefined ? { pushSecret: cfg.pushSecret } : {}),
           sessionId: pushSessionId,
-          questionId: `handoff-${questionId}`,
+          questionId: terminalNoticeId(question.id),
           kind: 'question' as const,
         },
         {
-          sent: `Push timeout-handoff sent for question ${questionId}`,
-          failed: `Push timeout-handoff failed for question ${questionId}`,
+          sent: `Push terminal notice (${reason}) sent for question ${question.id}`,
+          failed: `Push terminal notice (${reason}) failed for question ${question.id}`,
         },
       );
     }
+  }
+
+  /**
+   * Notify every device that wants it that a turn ended on an API error
+   * (`StopFailure`, #1153): a usage or rate limit, authentication, and
+   * similar. Informational, never a card: no `category`, no `options`, and
+   * nothing is registered in-app (the card this replaced had Yes/No that no
+   * answer could reach). Its `questionId` is the session's collapse key
+   * (`turnFailedCollapseId`), so a repeat replaces the previous notification
+   * instead of stacking, and `sessionId` lets a tap open the session.
+   *
+   * Deliberate differences from `maybePush`:
+   *  - always pushes (no attached-client skip, no dedup): the app shows no
+   *    card for a failure, so an attached client would otherwise be told
+   *    nothing, and a backgrounded one is exactly who the push is for;
+   *  - filtered by `pushPrefs.turnFailed` ONLY. `notifications.on_turn_complete`
+   *    is not consulted: a failed turn is the one turn end a user must not
+   *    miss by default, and the machine-wide switch is about the "done"
+   *    notification, not about the agent being stuck.
+   *
+   * Resolves `no_channel` when no device wants it (none registered, or every
+   * one muted `turnFailed`): claiming `pushed` for a fan-out of zero would
+   * report a notification that reached nobody. Otherwise `pushed` when any
+   * device accepted it, `failed` when every push failed. Fire-and-forget for
+   * callers: the promise never rejects.
+   */
+  pushTurnFailed(input: TurnFailedInput): Promise<DeliveryOutcome> {
+    const { sessionRegistry, deviceTokens, pushConfig } = this.deps;
+    // #690: pick up a device a sibling daemon removed or muted since our last
+    // read, as every other push does.
+    this.deps.refreshDeviceTokens?.();
+    const wanting = tokensWanting(deviceTokens.values(), 'turn_failed');
+    if (wanting.length === 0) {
+      log(
+        deviceTokens.size === 0
+          ? `Turn-failed push skipped: no device tokens for session ${this.sessionId}`
+          : `Turn-failed push skipped: all ${deviceTokens.size} device token(s) muted turn_failed for session ${this.sessionId}`,
+      );
+      return Promise.resolve('no_channel');
+    }
+    this.turnFailedOutstanding = true;
+    const sessionName = sessionRegistry.getSession(this.sessionId)?.name || 'Agent';
+    const { title, body } = buildTurnFailedText(sessionName, input);
+    const cfg = pushConfig();
+    const pushSessionId = this.deps.getPrimarySessionId() ?? this.sessionId;
+    const perToken = wanting.map((dt) =>
+      this.pushOnceWithRetry(
+        cfg.signalingUrl,
+        dt.token,
+        {
+          title,
+          body,
+          ...(cfg.pushSecret !== undefined ? { pushSecret: cfg.pushSecret } : {}),
+          sessionId: pushSessionId,
+          questionId: turnFailedCollapseId(this.sessionId),
+          kind: 'turn_failed' as const,
+        },
+        {
+          sent: `Turn-failed push sent for session ${pushSessionId}`,
+          failed: `Turn-failed push failed for session ${pushSessionId}`,
+        },
+      ),
+    );
+    return Promise.all(perToken).then((rs) => (rs.some(Boolean) ? 'pushed' : 'failed'));
+  }
+
+  /**
+   * Clear the `turn_failed` notice this session pushed (#1153), once a later
+   * turn proves the failure is stale: the quiet `dismiss` sharing its
+   * collapse key (`turnFailedCollapseId`), never filtered by preferences, so
+   * even a device that muted failed turns after receiving one is cleared.
+   * Sends nothing when no `turn_failed` push is outstanding, so the hook
+   * wiring can call it on every main `Stop` and `UserPromptSubmit` without a
+   * silent push per turn.
+   */
+  dismissTurnFailed(): void {
+    if (!this.turnFailedOutstanding) return;
+    this.turnFailedOutstanding = false;
+    this.dismiss(this.sessionId, turnFailedCollapseId(this.sessionId) as UUID);
+  }
+
+  /** Clear a notice `pushTerminalNotice` sent, once its prompt is answered
+   *  (#1126). Same quiet, never-filtered dismissal as `dismiss`. */
+  dismissTerminalNotice(questionSessionId: UUID, questionId: UUID): void {
+    this.dismiss(questionSessionId, terminalNoticeId(questionId) as UUID);
   }
 
   /**

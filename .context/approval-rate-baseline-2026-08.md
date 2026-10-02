@@ -1,5 +1,8 @@
 # Approval-rate baseline (Phase 1, epic #1057 / #992)
 
+> **Historical (2026-10-01).** The evaluator, rule layer and report scripts this document measures were removed in #1125 ([ADR 0030](decisions/0030-defer-permission-judgment-to-the-harness.md)); the commands below no longer run on this tree.
+> The numbers stay as the evidence ADR 0030 cites.
+
 Baseline numbers for how much of a real corpus the deterministic layers
 (`allow`/`deny`/`approve_groups`/`deny_groups`, #1024's `evaluateDeterministic`)
 already decide with no LLM call, what shape the misses have, and how the live

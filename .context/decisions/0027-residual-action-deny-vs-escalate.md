@@ -1,6 +1,6 @@
 # ADR 0027: `residual_action` — deny-with-reason vs. escalate-to-human for a residual permission
 
-**Status:** accepted
+**Status:** Superseded by ADR 0030 (2026-10-01)
 **Date:** 2026-08-16
 **Owner:** Yahya
 

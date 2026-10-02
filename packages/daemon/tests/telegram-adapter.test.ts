@@ -706,3 +706,98 @@ describe('TelegramAdapter /interrupt outcome (#1140)', () => {
     ]);
   });
 });
+
+/**
+ * #1127 review S2: an answer button reports the daemon's verdict. The daemon
+ * is a controllable double (an `onAnswer` that stays pending until released,
+ * optionally sending an `error` first, as the real handler does for a refusal);
+ * the real handlers are covered in `cli/session-phases/structured-answers-e2e`.
+ * The adapter, its `error` rendering and the tap bookkeeping are the real ones.
+ */
+describe('TelegramAdapter answer button outcome (#1127)', () => {
+  function answerRig() {
+    const taps: Array<{ questionId: UUID; answer: string; release: () => void }> = [];
+    const events: Partial<AdapterEvents> = {
+      onAnswer: (_connectionId, _sessionId, questionId, answer) =>
+        new Promise<void>((resolve) => {
+          taps.push({ questionId, answer, release: resolve });
+        }),
+    };
+    const { adapter, connectionId, sendMessage } = withBoundSession(events);
+    const acks: string[] = [];
+    const markupEdits: number[] = [];
+    const tap = (questionId: string, value: string) =>
+      (
+        adapter as unknown as { handleAnswerCallback: (ctx: unknown) => Promise<void> }
+      ).handleAnswerCallback({
+        match: ['', questionId, value],
+        chat: { id: 100 },
+        callbackQuery: { message: { message_thread_id: 200 } },
+        answerCallbackQuery: async (text: string) => {
+          acks.push(text);
+        },
+        editMessageReplyMarkup: async () => {
+          markupEdits.push(1);
+        },
+      });
+    const chat = () => sendMessage.mock.calls.map((c) => c[1] as string);
+    return { adapter, connectionId, taps, acks, markupEdits, tap, chat };
+  }
+
+  test('an applied answer replies "Sent!" and removes the buttons', async () => {
+    const { taps, acks, markupEdits, tap } = answerRig();
+    const pending = tap('q-1', '2');
+    expect(taps.map((t) => [t.questionId, t.answer])).toEqual([['q-1', '2']]);
+    taps[0]?.release();
+    await pending;
+    expect(acks).toEqual(['Sent!']);
+    expect(markupEdits).toHaveLength(1);
+  });
+
+  test('a refused answer does not claim success and keeps the buttons', async () => {
+    const { adapter, connectionId, taps, acks, markupEdits, tap, chat } = answerRig();
+    const pending = tap('q-1', '1');
+    // The daemon refuses it (a held card's refusal names no question).
+    adapter.sendRaw(
+      connectionId,
+      createError('STALE_ANSWER', 'This prompt takes one of its own options', {}),
+    );
+    taps[0]?.release();
+    await pending;
+    expect(chat()).toEqual(['Error: This prompt takes one of its own options']);
+    expect(acks).toEqual(['Not applied (see the message)']);
+    expect(markupEdits).toHaveLength(0);
+  });
+
+  test('an answer handler that throws is reported in the chat, never as "Sent!"', async () => {
+    const events: Partial<AdapterEvents> = {
+      onAnswer: async () => {
+        throw new Error('pty closed');
+      },
+    };
+    const { adapter, sendMessage } = withBoundSession(events);
+    const acks: string[] = [];
+    await (
+      adapter as unknown as { handleAnswerCallback: (ctx: unknown) => Promise<void> }
+    ).handleAnswerCallback({
+      match: ['', 'q-1', '1'],
+      chat: { id: 100 },
+      callbackQuery: { message: { message_thread_id: 200 } },
+      answerCallbackQuery: async (text: string) => {
+        acks.push(text);
+      },
+      editMessageReplyMarkup: async () => {},
+    });
+    expect(sendMessage.mock.calls.map((c) => c[1])).toEqual(['Error: pty closed']);
+    expect(acks).toEqual(['Not applied (see the message)']);
+  });
+
+  test('an error naming another question does not refuse this tap', async () => {
+    const { adapter, connectionId, taps, acks, tap } = answerRig();
+    const pending = tap('q-1', '1');
+    adapter.sendRaw(connectionId, createError('STALE_ANSWER', 'gone', { questionId: 'q-2' }));
+    taps[0]?.release();
+    await pending;
+    expect(acks).toEqual(['Sent!']);
+  });
+});

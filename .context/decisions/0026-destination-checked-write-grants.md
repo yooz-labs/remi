@@ -1,6 +1,6 @@
 # ADR 0026: Write grants for decidable shell shapes, checked by destination
 
-**Status:** accepted
+**Status:** Superseded by ADR 0030 (2026-10-01)
 **Date:** 2026-08-15
 **Owner:** epic #1057 Phase 2 (#996, #1041, #1060)
 

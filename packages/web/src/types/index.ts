@@ -197,6 +197,11 @@ export interface UIQuestionOption {
   readonly description?: string;
   /** Public marker for an explicit, daemon-scoped session action. */
   readonly sessionGrant?: 'github-issue-planning';
+  /** What a standing option grants, by the daemon's meaning (#1126):
+   *  `'addRules'` allows a rule for this session, `'setMode'` switches the
+   *  session's permission mode. Absent for a one-time Yes, a No, and every
+   *  option read off the screen (a hook-less prompt). */
+  readonly standingGrant?: 'addRules' | 'setMode';
 }
 
 /** One sub-question of a multi-question (AskUserQuestion) prompt (#626). */
@@ -226,17 +231,24 @@ export interface UIQuestion {
   /** The Claude agent this prompt belongs to ('main' default). Keys the
    *  collection so a main + subagent prompt coexist rather than overwrite. */
   readonly agentId?: string;
-  /** #626: 'multi_question' for an AskUserQuestion with structured sub-questions. */
-  readonly kind?: 'permission' | 'multi_question';
+  /** #626: 'multi_question' for an AskUserQuestion with structured sub-questions;
+   *  #1127: 'plan_approval' for an ExitPlanMode (its plan in `detail`). */
+  readonly kind?: 'permission' | 'multi_question' | 'plan_approval';
+  /** #1127: the long text the prompt is about (an ExitPlanMode's plan), shown in full. */
+  readonly detail?: string;
+  /** #1127 review S7: no phone answer can be applied (an AskUserQuestion that
+   *  did not parse exactly); answer in the terminal, or Cancel. */
+  readonly terminalOnly?: boolean;
   /** #626: the full sub-question set (AskUserQuestion), rendered as an interactive
    *  form in #627. */
   readonly questions?: readonly UIQuestionStep[];
   /** #626: submit-button label for the multi-question form. */
   readonly submitLabel?: string;
-  /** #627: the answer was submitted and the daemon is driving the TUI ("auto-
-   *  answering…"). Set on submit, cleared when the question resolves or fails. */
+  /** #627: the answer was submitted and is being applied ("Answering…"). Set on
+   *  submit, cleared when the question resolves or fails. */
   readonly submitting?: boolean;
-  /** #627: the daemon could not auto-answer; the card invites Cancel / terminal. */
+  /** #627: a daemon older than #1127 could not auto-answer; the card invites
+   *  Cancel / terminal. */
   readonly autoAnswerFailed?: boolean;
   /** #718: mirrors `Question.optionsAreFallback` — true when `structuredOptions`
    *  is the daemon's honest Yes/No fallback rather than a real PTY/suggestion-
@@ -262,6 +274,11 @@ export interface AppSettings {
   readonly notifyQuestions: boolean;
   /** Push the last assistant message when a long turn ends (#914). */
   readonly notifyTurnComplete: boolean;
+  /** Push when Claude Code's auto mode blocks a tool call (#1126). */
+  readonly notifyHarnessDenied: boolean;
+  /** Push when a turn ends on an API error such as a usage or rate limit
+   *  (#1153). On by default; independent of "Turn complete". */
+  readonly notifyTurnFailed: boolean;
   readonly sound: boolean;
   readonly autoReconnect: boolean;
   readonly showTimestamps: boolean;
@@ -285,6 +302,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   fontSize: 'medium',
   notifyQuestions: true,
   notifyTurnComplete: true,
+  notifyHarnessDenied: true,
+  notifyTurnFailed: true,
   sound: true,
   autoReconnect: true,
   showTimestamps: true,

@@ -59,9 +59,9 @@ describe('buildPendingQuestionLabel (#786/#787)', () => {
     expect(buildPendingQuestionLabel(q)).toBe('Exit plan mode and start implementing?');
   });
 
-  test('a StopFailure question (no source) uses the text verbatim', () => {
-    const q = mkQuestion({ text: 'Session stop failed (timeout). Retry?' });
-    expect(buildPendingQuestionLabel(q)).toBe('Session stop failed (timeout). Retry?');
+  test('a source-less question uses the text verbatim', () => {
+    const q = mkQuestion({ text: 'Continue with the other approach?' });
+    expect(buildPendingQuestionLabel(q)).toBe('Continue with the other approach?');
   });
 
   test('a PTY-fallback question (source pty) uses the text verbatim', () => {
@@ -69,13 +69,13 @@ describe('buildPendingQuestionLabel (#786/#787)', () => {
     expect(buildPendingQuestionLabel(q)).toBe('Overwrite existing file?');
   });
 
-  test('a summary, when present, is preferred over text for non-permission questions', () => {
+  test('the deprecated summary is ignored: the label is the question text (#1125)', () => {
     const q = mkQuestion({
-      text: 'Allow Bash: git push --force origin main',
-      summary: 'Force-push to main?',
+      text: 'Overwrite existing file?',
+      summary: 'Overwrite?',
       source: 'pty',
     });
-    expect(buildPendingQuestionLabel(q)).toBe('Force-push to main?');
+    expect(buildPendingQuestionLabel(q)).toBe('Overwrite existing file?');
   });
 
   test('a multi_question AskUserQuestion joins sub-question headers', () => {

@@ -20,13 +20,10 @@
 
 import * as fs from 'node:fs';
 import { createRawPtyOutput, errorToString } from '@remi/shared';
-import type { ProtocolMessage, Question, UUID } from '@remi/shared';
+import type { ProtocolMessage, UUID } from '@remi/shared';
 
-import { isAuqRunActive } from '../../hooks/auq-active-runs.ts';
-import { normalizeLabel, parseAnsweredSummary } from '../../hooks/auq-answer.ts';
 import type { OutputProcessor } from '../../parser/output-processor.ts';
 import { PTYSession } from '../../pty/index.ts';
-import { appendPtyOutput, clearPtyOutput, readPtyOutput } from '../../pty/output-buffer.ts';
 import type { SessionRegistry, SessionRegistryFile, SessionStore } from '../../session/index.ts';
 import { log, logError } from '../logger.ts';
 import { childRows } from '../status-bar.ts';
@@ -65,22 +62,6 @@ export interface PtySessionSetupDeps {
    */
   exitProcess?: (code: number) => void;
   /**
-   * Cross-client question dismissal (#585, #661). Fired when `onData` detects
-   * that a pending structured AskUserQuestion closed IN THE TERMINAL (see
-   * `detectAuqTerminalAnswers` below) — the same broadcast the phone-answered
-   * path fires via `input-events.ts`'s `onQuestionResolved`. Absent => no
-   * dismissal broadcast (tests/old callers).
-   */
-  onQuestionResolved?: (sessionId: UUID, questionId: UUID) => void;
-  /**
-   * Cancel the auto-approve eval for a specific question (#617), mirroring
-   * `input-events.ts`'s `cancelAutoApproveForQuestion`. Fired alongside the
-   * terminal-answer cleanup so a GPU eval in flight for a question the user
-   * just answered by typing is freed the same way a phone answer would free
-   * it. Absent => no-op (tests/old callers, or auto-approve disabled).
-   */
-  cancelAutoApproveForQuestion?: (sessionId: UUID, questionId: UUID, reason: string) => void;
-  /**
    * #932 durable fix: observe every PTY chunk actually forwarded to the
    * wrapper's own local terminal fd -- the exact same fd the reserved-row
    * status bar draws into -- so a `PtyQuiescenceGate` can track whether a
@@ -100,81 +81,6 @@ export interface PtySessionSetupDeps {
    * pre-durable-fix behavior (always paintable).
    */
   observeLocalPtyOutput?: (data: Uint8Array) => void;
-}
-
-/** Normalized sub-question texts to match a summary answer line against. */
-function questionTexts(q: Question): string[] {
-  const steps = q.questions;
-  if (steps && steps.length > 0) return steps.map((s) => normalizeLabel(s.text));
-  return [normalizeLabel(q.text)];
-}
-
-/**
- * #538/#661: an AskUserQuestion the auq-runner ESCALATED (gave up auto-driving,
- * e.g. every multi-select before this fix) can still be answered by the user
- * typing directly in the terminal — Claude accepts it and prints the same
- * closure marker `parseAnsweredSummary` looks for. Nothing then watches for
- * that closure: the runner already returned, and the phone-side question card
- * is left registered forever (the card asks the user to "answer in the
- * terminal", they do, and the card never clears — compounding #538).
- *
- * Every PTY output chunk already flows through `onData` unconditionally (not
- * gated on a hook server being active), so it is the cheapest existing tap to
- * also watch for this closure against any still-pending `kind:
- * 'multi_question'` question for the session, and fire the same
- * removeQuestion + onQuestionResolved cleanup the phone-answered path uses
- * (`input-events.ts`'s `handleAuqAnswer`) so the card clears everywhere.
- *
- * Two safeguards against firing on the wrong question (#661 review):
- *   1. Skips any question `isAuqRunActive` — the auq-runner is CURRENTLY
- *      driving it. Without this, the detector races the runner's own success
- *      path on every remotely-answered multi-select (both read the same
- *      rolling buffer; this handler runs synchronously in the same `onData`
- *      tick the marker lands, strictly before the runner's own poll tick),
- *      producing a duplicate `question_resolved` broadcast and a misleading
- *      `'user-answered-auq-terminal'` cancel reason for a question the phone
- *      actually answered (the #652/#653 duplicate-resolution bug class).
- *   2. Uses `parseAnsweredSummary` (not a bare `isAuqClosed` substring check)
- *      and only resolves a question whose OWN sub-question text appears in a
- *      parsed answer line — see that function's docstring for why a bare
- *      marker match is a false-positive hazard here (this repo's own source
- *      contains the literal marker string).
- *
- * Cheap to call on every chunk: it only scans `currentQuestions` (bounded,
- * `MAX_PENDING_QUESTIONS`) and short-circuits before touching the buffer text
- * unless at least one non-actively-driven AUQ question is pending.
- */
-export function detectAuqTerminalAnswers(
-  sessionId: UUID,
-  sessionRegistry: SessionRegistry,
-  onQuestionResolved?: (sessionId: UUID, questionId: UUID) => void,
-  cancelAutoApproveForQuestion?: (sessionId: UUID, questionId: UUID, reason: string) => void,
-): void {
-  const session = sessionRegistry.getSession(sessionId);
-  if (!session || session.currentQuestions.size === 0) return;
-  const auqQuestions = [...session.currentQuestions.values()].filter(
-    (q) => q.kind === 'multi_question' && !isAuqRunActive(sessionId, q.id),
-  );
-  if (auqQuestions.length === 0) return;
-  const summary = parseAnsweredSummary(readPtyOutput(sessionId));
-  if (summary.length === 0) return;
-  const summaryTexts = new Set(summary.map((a) => normalizeLabel(a.question)));
-  for (const q of auqQuestions) {
-    if (!questionTexts(q).some((t) => summaryTexts.has(t))) continue;
-    // Guarded so a throwing eval-cancel can never skip removeQuestion below
-    // (the zombie-card pattern #661 fixed in input-events.ts's answer paths).
-    try {
-      cancelAutoApproveForQuestion?.(sessionId, q.id, 'user-answered-auq-terminal');
-    } catch (err) {
-      logError(`[AUQ] terminal-answer eval cancel failed: ${errorToString(err)}`);
-    }
-    sessionRegistry.removeQuestion(sessionId, q.id, 'terminal_auq_closed');
-    try {
-      onQuestionResolved?.(sessionId, q.id);
-    } catch (err) {
-      logError(`[AUQ] terminal-answer question_resolved broadcast failed: ${errorToString(err)}`);
-    }
-  }
 }
 
 export interface PtySessionSetupArgs {
@@ -218,6 +124,55 @@ export function computeTermSize(
   };
 }
 
+/**
+ * Env var that makes Claude Code use its classic inline renderer instead of
+ * the fullscreen alternate-screen one. Claude Code's docs
+ * (code.claude.com/docs/en/fullscreen) say fullscreen is the default for users
+ * who first used it on or after 2026-05-06; 2.1.287 gates it on first-start
+ * version and server flags unless `tui` is `default`. remi's status bar and PTY
+ * prompt parsing were built against the inline renderer, so remi sets this for
+ * the Claude child (#1124).
+ */
+export const CLAUDE_INLINE_RENDERER_ENV = 'CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN';
+
+/**
+ * Environment overrides remi adds on top of the incoming environment for the
+ * Claude child. `PTYSession.start()` spreads `process.env` first and these
+ * after, so anything returned here wins over the user's environment; that is
+ * why the inline-renderer variable is only emitted when the user has not set
+ * it to something non-empty.
+ *
+ * - `REMI_PORT`: lets Claude's hooks report back to this daemon.
+ * - `REMI_STATUS_BAR` (only when `reservedRows > 0`, #565): tells Claude's
+ *   statusLine script to drop the remi prefix and show only model/context,
+ *   because the reserved-row bar already renders the remi fields.
+ * - `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` (#1124): remi FORCES the inline
+ *   renderer. Claude checks this variable before `CLAUDE_CODE_NO_FLICKER=1`
+ *   and before the `tui` setting (read from the 2.1.287 binary), so setting it
+ *   overrides both, including a user's own fullscreen opt-in. It is skipped
+ *   only when `incoming` already has the variable with a non-empty value
+ *   (nothing is emitted, so the spread keeps the user's value): that makes
+ *   `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=0` the opt-out. An empty,
+ *   whitespace-only, or undefined value counts as unset and is forced to `1`.
+ *   Claude's in-session `/tui` switch relaunches with `dropEnv` removing this
+ *   variable, so a session can still end up on the alternate screen (#1135).
+ *   The sole spawn site always runs `claude`; if a non-Claude command is ever
+ *   spawned here, it must not get this variable.
+ */
+export function buildClaudeChildEnv(
+  wsPort: number,
+  reservedRows = 0,
+  incoming: Readonly<Record<string, string | undefined>> = process.env,
+): Record<string, string> {
+  const env: Record<string, string> = { REMI_PORT: String(wsPort) };
+  if (reservedRows > 0) env['REMI_STATUS_BAR'] = '1';
+  const userValue = incoming[CLAUDE_INLINE_RENDERER_ENV];
+  if (userValue === undefined || userValue.trim() === '') {
+    env[CLAUDE_INLINE_RENDERER_ENV] = '1';
+  }
+  return env;
+}
+
 export function createPtySessionForSession(
   deps: Readonly<PtySessionSetupDeps>,
   args: Readonly<PtySessionSetupArgs>,
@@ -231,8 +186,6 @@ export function createPtySessionForSession(
     sendMessage,
     cleanup,
     exitProcess = (code: number) => process.exit(code),
-    onQuestionResolved,
-    cancelAutoApproveForQuestion,
     observeLocalPtyOutput,
   } = deps;
   const { sessionId, workingDirectory, extraArgs, passThrough, reservedRows = 0 } = args;
@@ -243,12 +196,7 @@ export function createPtySessionForSession(
 
   const termSize = computeTermSize(passThrough, reservedRows);
 
-  // When the reserved-row status bar is active (#565), tell Claude's statusLine
-  // script via REMI_STATUS_BAR so it drops the remi prefix and shows only
-  // model/context — the bar already renders the remi fields, avoiding a
-  // duplicate line just above the bar.
-  const env: Record<string, string> = { REMI_PORT: String(wsPort) };
-  if (reservedRows > 0) env['REMI_STATUS_BAR'] = '1';
+  const env = buildClaudeChildEnv(wsPort, reservedRows);
 
   const ptySession: PTYSession = new PTYSession(
     {
@@ -319,23 +267,11 @@ export function createPtySessionForSession(
         }
       },
       onData: (output: string) => {
-        // #627: feed the rolling buffer the AskUserQuestion runner reads to detect
-        // the review screen + closure marker while driving the interactive TUI.
-        appendPtyOutput(sessionId, output);
         try {
           outputProcessor.process(output);
         } catch (err) {
           logError(`[OutputProcessor] process() failed for session ${sessionId}:`, err);
         }
-        // #538/#661: also catch an AUQ closing IN THE TERMINAL after the runner
-        // gave up (escalated) — see `detectAuqTerminalAnswers` for why this is
-        // the right tap.
-        detectAuqTerminalAnswers(
-          sessionId,
-          sessionRegistry,
-          onQuestionResolved,
-          cancelAutoApproveForQuestion,
-        );
       },
       onExit: (code: number | null) => {
         try {
@@ -344,7 +280,6 @@ export function createPtySessionForSession(
           logError(`[OutputProcessor] flush() failed for session ${sessionId}:`, err);
         }
         log(`PTY ${ptySession.id} exited with code ${code}`);
-        clearPtyOutput(sessionId); // #627: drop the rolling output buffer
         sessionRegistry.handlePTYExit(sessionId);
         try {
           sessionStore.markExited(sessionId, code);

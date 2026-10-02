@@ -1,6 +1,6 @@
 # ADR 0018: A write-approving group needs three independent vetoes, not one
 
-**Status:** accepted
+**Status:** Superseded by ADR 0030 (2026-10-01)
 **Date:** 2026-08-01
 **Owner:** Yahya
 

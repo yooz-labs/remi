@@ -61,8 +61,8 @@ evidence, not just its conclusion.
 ```bash
 bun install
 bun run dev          # web dev server
-bun run daemon       # start Remi daemon
-bun test             # tests (NO MOCKS)
+REMI_HOME=/tmp/remi-dev bun run daemon   # daemon from source; state under REMI_HOME, not ~/.remi
+bun test             # tests (NO MOCKS); a bunfig preload unsets REMI_HOME for them
 
 # Mobile
 bun run build && npx cap sync ios && npx cap open ios
@@ -96,6 +96,7 @@ remi/
 │   ├── daemon/          # Bun + TypeScript backend, CLI, PTY, sessions
 │   ├── shared/          # Protocol, crypto, identity, types
 │   ├── signaling/       # Cloudflare Workers signaling / relay service
+│   ├── macos/           # Native Mac app (Swift)
 │   └── web/             # React + Vite + Capacitor client
 ├── tests/
 │   ├── e2e/             # Playwright end-to-end tests
@@ -104,6 +105,9 @@ remi/
 ├── .context/            # Plan, research, ideas, scratch notes
 └── .rules/              # Repo-specific standards
 ```
+
+`packages/daemon` and `packages/shared` are the Apache-2.0 packages (see `LICENSE.md`); they must never import code from the PolyForm Shield packages (`packages/web`, `packages/signaling`, `packages/macos`).
+`packages/daemon/tests/license-boundary.test.ts` enforces it.
 
 Key directories to know:
 
@@ -143,6 +147,16 @@ registers itself in live-sessions.
 - `--install` generates a LaunchAgent running `<PATH-resolved remi> serve`
   with `KeepAlive.SuccessfulExit=false` (clean stop stays stopped; crash
   exit(1) restarts).
+- A `resume_session_request` that reaches the hub is **refused**
+  (`resume_session_response{success:false, errorCode:'UNSUPPORTED'}`,
+  `cli/handlers/resume-session-events.ts`, #1124), never run: before the guard
+  the shared handler called `createNewSession` inside the hub, and when that
+  Claude exited the hub exited 0 and the LaunchAgent did not restart it.
+  Resuming *through* the hub (spawn a child daemon) is not implemented: a
+  `remi --daemon` child silently drops Claude args (`cli.ts` passes no
+  `claudeArgs` to `createNewSession` in daemon mode) and the web resume flow
+  cannot follow a session on another port. Tracked as #1129. `remi --resume
+  <session>` from a terminal works.
 
 ## Transport Options
 
@@ -180,80 +194,248 @@ See `.context/notification-and-session-flow.md` for the full flow diagram.
 - `HookEventBridge` — emits questions from `PermissionRequest` hooks; suppresses redundant notifications.
 - `OutputProcessor` — PTY-output parsing (fallback when hooks are unavailable).
 
-**Unheld binary main-agent prompts push on render** (#1121). With auto-approve
-off (the default install) or `hold_timeout = 0`, the gate answers the hook
-`passthrough`, so the prompt shows in the terminal at once, and marks the
-question with `pushOnRender`. The card is pushed when the native prompt
-renders, and it takes the render-owned slot so the next render retires it.
-Before #1121 this combination pushed nothing at all. Two outstanding main
-prompts before a render are never paired by agent key; each render pushes the
-screen's own prompt.
+**remi relays permissions; Claude Code decides them** (#1125,
+[ADR 0030](.context/decisions/0030-defer-permission-judgment-to-the-harness.md)).
+There is no auto-approve evaluator and no rule layer: remi never answers a
+permission without a human choice. `AutoApproveGate` (a historical name; it is
+the relay) owns every `PermissionRequest` hook response.
 
-**A card answered by typing into the PTY carries the screen's numbering**
-(#1134). When a hook record merges onto a parsed prompt
+**A binary prompt is answered through its held hook while Claude's own dialog
+stays visible** (#1126, [ADR 0031](.context/decisions/0031-held-hook-answers-with-native-dialog-visible.md)).
+Verified on Claude Code 2.1.287: the dialog renders about 0.1 s after the hook
+POST, during the hold. The gate stashes the card, holds the hook, and pushes
+the card at once by id (`holdForAnswer` -> `onHeldEscalate` ->
+`pushHeldHook`). The first answer wins:
+
+- **Phone:** `answerHeld` maps the card option's MEANING to the hook response,
+  never a position on Claude's screen: `Yes` -> `allow`; `No` -> `deny` (an
+  optional `message` on the answer reaches Claude as the tool result; the
+  protocol carries it, no client sends it yet; Cancel on a held card is a
+  No); a standing option -> `allow` + `updatedPermissions`,
+  only for `setMode` and an allow `addRules` (labeled "for this session"),
+  BOTH echoed with `destination: "session"` so a phone tap never writes a
+  settings file; `standingGrantFor` in `hook-event-bridge.ts` is the one
+  place that decides, and it stamps the option's `standingGrant` kind.
+  The web card reads that kind, never the label's wording (#1155): its hint
+  says "This session" for a standing option and "Allow once" only for the
+  plain Yes. Telegram does not read it; it keeps every label whole instead:
+  a button is cut at 32 characters, so when any label is cut the message
+  lists every label in full and numbers the buttons (no buttons when the list
+  does not fit in one message).
+  `addDirectories` is never offered (its echo did not stop the repeat
+  prompt). An answer the card does not offer is refused and the hold stays.
+  The lock screen's static "Yes, always" (`REMI_YNA`) is chosen only for an
+  `addRules` grant (`selectPushCategory`); a `setMode` card gets no
+  actionable category.
+- **Terminal Yes:** Claude runs the tool and never closes the held request.
+  `PermissionRequest` has no `tool_use_id`, so it is paired on arrival with
+  the in-flight `PreToolUse` of the same agent, tool and input (about 10 ms
+  earlier); the `PostToolUse`/`PostToolUseFailure` with that id releases the
+  hold with an empty response and dismisses the card. It arrives only when
+  the tool finishes, so during a long command the card stays up and a phone
+  answer is accepted and ignored by Claude. Two identical calls in flight are
+  not paired; a name + input match then releases the hold to the terminal
+  (card dismissed, prompt kept open, a "handed back to the terminal" notice
+  pushed), never closes it. Every release of a live hold that is not an
+  answer pushes a notice (`onReleasedToTerminal`).
+- **Terminal No / Esc:** Claude closes the held request. `HookServer` hands the
+  resolver `req.signal`; its abort (also a session end) dismisses the card
+  (an abort at Claude's own hook timeout is handled like the deadline, see
+  below). No hook fires for it, so a new
+  `UserPromptSubmit` also closes main prompts left open.
+- **Deadline:** in wrapper mode at `[prompts] hold_seconds` (default 90, 5
+  to 110: under the 2:00 auto-deny of auto-mode fallback prompts, which
+  counts during a hold, and the 600 s registered hook timeout) remi releases
+  its own hold with an empty response, the dialog stays, the card is
+  dismissed and an "answer at the terminal" notice is pushed (#733). A daemon
+  or hub session has no terminal of its own, so it holds for
+  `[prompts] daemon_hold_seconds` (default 3540, 5 to 3540) and registers
+  the hook with a 3600 s timeout (`DAEMON_PERMISSION_REQUEST_HOOK_TIMEOUT`;
+  Claude honors it, measured: a 650 s hold answered at 653.6 s ran the
+  tool); its notice says `remi attach`, the only way left to answer. An
+  abort within 5 s of the registered timeout (`hookTimeoutMs`) is Claude's
+  timeout, not a terminal No: released to the terminal with the notice,
+  like the deadline (which normally comes first). An auto-mode
+  fallback prompt still auto-denies at 2:00 there; Claude fires
+  `PermissionDenied` for it (measured), which dismisses the card and pushes
+  a `harness_denied` notice. The notice never claims the
+  prompt is still waiting (a terminal Yes may already have answered it); it
+  is dismissed when the prompt resolves, and a late phone answer does not
+  resolve it.
+
+An empty response never decides anything; it is what every non-answer path
+sends.
+
+**AskUserQuestion and ExitPlanMode are held the same way** (#1127, ADR 0031
+amendment): their dialogs render during the hold, and a phone answer
+resolves the hook with a structured `updatedInput` built in
+`hooks/structured-answers.ts`, never typed. Verified on Claude Code 2.1.287:
+
+- **AskUserQuestion:** one card for the whole call (each question's text,
+  header, options with descriptions, `multiSelect`). The phone sends
+  `selections` (option indices per question, or `text` for a single-select
+  question); the gate validates them against the tool input and answers
+  `{behavior:"allow", updatedInput:{...tool_input, answers}}`, `answers`
+  keyed by the raw question text, a multi-select as its labels joined with
+  ", ". An answer that leaves a question unanswered, gives a single-select
+  question anything but one option or its own text, gives a multi-select
+  question no option or text, or names an option that does not exist is
+  refused and the hold stays (never completed with a guess); so is every
+  answer to an input that does not parse exactly, whose card is marked
+  `terminalOnly` (no lock-screen category, no Telegram keyboard, "This
+  question can only be answered in the terminal (or Cancel)."). A single option answers
+  only a one-question single-select call: the lock screen sends its label,
+  Telegram its value, and on any held card a string that is one option's
+  value and a DIFFERENT option's label (numeric labels) is ambiguous and
+  refused, the hold kept. Cancel denies with "The user dismissed the
+  question."
+- **ExitPlanMode:** a `plan_approval` card with the plan as `detail` and
+  three options by meaning: "Approve, auto-accept edits" / "Approve, approve
+  edits manually" (`allow` + the tool input echoed as `updatedInput` + a
+  `setMode` `acceptEdits` / `default` with `destination: "session"`) and
+  "Keep planning" (`deny` with the phone's message or "Keep planning.";
+  Claude revises and asks again). `auto` is not offered (not knowable from
+  the payload); the terminal still offers it. Cancel keeps planning. A
+  subagent's plan (held in daemon or hub mode) offers "Approve" (`allow` +
+  `updatedInput`, no `setMode`: a mode would apply to the whole session)
+  and "Keep planning".
+- A terminal answer fires `PostToolUse` with the paired `tool_use_id` but a
+  different `tool_input` (`{questions, answers}`, or `{}` for a plan), so
+  the gate matches a paired id whatever the input. If the request was not
+  paired, a finished call of that tool that matches nothing releases the
+  one open hold of that tool and agent to the terminal (notice pushed);
+  with two or more, nothing is released. Deadlines, abort,
+  subagent routing and the chat guard are the binary prompt's.
+
+A **multi-choice string-label permission**, or a question-shaped tool that is
+not AskUserQuestion, is still answered `passthrough` and pushed by id at once
+(no structured hook answer was verified for either). The permission's answer
+is typed behind the #1134 guard. The question-shaped tool's card is
+`terminalOnly` (its dialog is Claude's permission prompt, not its questions):
+no Telegram buttons, no lock-screen category, and every phone answer is
+refused with the terminal wording, never typed. A structured `selections`
+answer for a card no hold stands behind is refused, never typed. An open card is also resolved by a matching `PreToolUse`/`PostToolUse`/
+`PermissionDenied`, a lead `Stop` or new user prompt (main), `SubagentStop`
+(that agent), `SessionEnd`, a transcript rotation, or `remi unstick`; a
+dismissal is broadcast only for a card that was actually pushed. `remi
+unstick` does not close a LIVE hold: its dialog is on screen, so it is
+released to the terminal with a "handed back" notice (suppression kept),
+and a second unstick clears it.
+
+**No card answer is typed into the PTY for a hook-backed binary prompt**
+(raw input from `remi attach` and the phone's Escape button still reach the
+dialog by design: they are a person at the terminal). While a
+MAIN-agent hook is held, or a prompt waits in the terminal (`terminalPrompts`:
+a hold released at its deadline or early, or a rendered wrapper-mode subagent
+dialog) for less than the session's hold length, the tracker treats a PTY
+render as that dialog (`setHookPromptProbe` -> `hasOpenHookPrompt`), never as
+an orphan, so no typed card is rebuilt from it; for a wrapper-mode subagent
+prompt the phone keeps exactly one artifact, its notice. The probe is bounded
+on purpose (#1126 lead decision), since everything it counts suppresses a
+hook-less prompt's card (sandbox network, trust, an agent-team dialog). Only
+what does not render is excluded: a subagent HOLD (daemon mode) never counts,
+since its dialog does not render while held, neither in this probe nor in the
+tracker's other suppression input, the live-question check
+(`hasLiveQuestionOnScreen`, which skips a held subagent card; every other
+registered card still counts). A `terminalPrompts` entry stops
+counting after the hold length, and a subagent's entry is also cleared by
+that agent's next `PreToolUse` (`noteAgentToolCall`), `SubagentStop` or
+`SessionEnd`; past that a redraw takes the guarded hook-less path (#1134,
+fail closed). `handleAnswer` asks
+the gate first (`gateAnswerDeps`): a held card is answered through the hook,
+and a binary card whose hold has ended is refused (`closed`: answer at the
+terminal), never typed. While a main-agent hold is open its dialog is on
+screen, so `onUserInput` refuses chat text with `PROMPT_WAITING` even before
+the screen parse sees the menu (#1140; `promptUp`, below). Its message is
+`PROMPT_WAITING_HELD_MESSAGE`, which does not claim a dialog is up: after a
+terminal Yes the hold lasts until `PostToolUse`, so the refusal also covers
+the approved command's run (#1144).
+
+**A typed answer carries the screen's numbering** (#1134). This applies only
+where no held hook stands behind the card: hook-less prompts (sandbox network,
+trust, agent-team dialogs; not all of them reach the phone, the daemon's
+startup folder-trust dialog does not, #1147) and multi-choice cards
+(AskUserQuestion and ExitPlanMode are held since #1127). When a hook record merges onto a parsed prompt
 (`QuestionPresenceTracker.consumeAndMerge`), the card's options are the
 parse's options, labels and values unchanged; the hook contributes id, text,
-agent, source, summary and tool metadata (including `allowsFreeText`: a
-permission dialog takes a pick, not text), never options. The parse carries
-no yes/no flags, so the merge sets `isYes`/`isNo` from labels that start with
-the exact word "Yes" or "No". Until #1134 the hook's options won unless they
-were the Yes/No fallback, and they are not the screen's: live,
-`addDirectories` + `setMode` suggestions built a 4-option card over a
-3-option dialog, the phone's "No" typed `4`, Claude ignored it, and the Enter
-that follows every typed answer confirmed "1. Yes".
+agent, source and tool metadata (including `allowsFreeText`: a permission
+dialog takes a pick, not text), never options. The parse carries no yes/no
+flags, so the merge sets `isYes`/`isNo` from labels that start with the exact
+word "Yes" or "No". Live, before #1134, `addDirectories` + `setMode`
+suggestions built a 4-option card over a 3-option dialog, the phone's "No"
+typed `4`, Claude ignored it, and the Enter that follows every typed answer
+confirmed "1. Yes".
 
-Which cards push on render: an unheld binary prompt (#1121) only. Every
-passthrough escalation (AskUserQuestion, ExitPlanMode, multi-choice
-permissions) and every held card is pushed by id at once, so the notification
-arrives even when its dialog never parses (some ExitPlanMode renders do not),
-and keeps the hook's numbering. A held card is answered through the hook
-response; a passthrough card's digit must pass the exact-label guard below,
-which refuses it wherever the hook's list differs from Claude's (ExitPlanMode's
-list is hardcoded, Claude builds its own).
-
-Guards in `handleAnswer` before anything is typed (all refuse like a stale
-answer: STALE_ANSWER, card consumed, trace reason in parentheses):
+**Every typed phone answer is checked against the screen first.** Guards
+in `handleAnswer` before anything is typed (all refuse like a stale answer:
+STALE_ANSWER, card consumed, trace reason in parentheses). A refusal means
+"answer at the terminal": Claude's own dialog is still there.
+- a prompt must be on screen: the card's own prompt for a `source: 'pty'`
+  card (`prompt-not-current`, #920), any prompt for a hook card
+  (`no-prompt-on-screen`, #1002).
 - an option value must be on the menu the tracker last observed
   (`observedPromptOptions`, wired by `trackerScreenDeps`) (`option-not-on-screen`),
   and that screen option's label must EQUAL the card option's after
   normalization (lowercase, all whitespace and box characters removed), or,
-  for an AskUserQuestion pick, equal it with the description appended
-  (`option-mismatch`). Nothing looser: this is a stopgap until hook-backed
-  prompts stop being answered by typing (epic #1123 Phase 3), so it fails
-  closed. A refusal means "answer at the terminal"; the accepted cost is
-  false refusals on short, partial-frame or reworded labels. Applies unless
-  this answer just released a hold.
+  for a pick with a description (a card built from a tool's `questions`; a
+  `terminalOnly` card is refused before this check), equal it with
+  the description appended (`option-mismatch`). Nothing looser: it fails
+  closed; the accepted cost is false refusals on short, partial-frame or
+  reworded labels. A pushed-by-id card keeps the hook's numbering, so this
+  refuses its digit wherever the hook's list differs from Claude's.
 - free text is refused when the card has options and takes no text and a
-  numbered menu is on screen (`free-text-into-menu`), and on a HELD card before
-  its hold is released (`free-text-on-held-card`; the hold is then released
-  with nothing typed). Free-form `user_input` (including a Telegram text
-  reply) is a separate path with its own guard, next.
+  numbered menu is on screen (`free-text-into-menu`), and always on a
+  pushed-by-id (`held`-stamped) card that has options and takes no text
+  (`free-text-on-held-card`). A structured `selections` answer on a card
+  no hold stands behind is refused before anything is typed
+  (`selections-not-held`, #1127). Free-form `user_input` (including a Telegram
+  text reply) is a separate path with its own guard, next.
 - a question is claimed while its answer is applied: a duplicate delivery of
   the same choice (the lock screen sends every tap on two channels) reports
   delivered and types nothing; a different concurrent answer is refused.
 
-**Chat text is refused while a numbered prompt menu is on screen** (#1140).
-`onUserInput` types structured input (web chat, a Telegram text reply or custom
-text) followed by Enter, and Claude's numbered menu ignores the letters while
-the Enter confirms the highlighted option, usually "1. Yes", so a message sent
-from the phone while a prompt waits would approve it. When the session's
-tracker observes a numbered selection box (`observedPromptOptions`, wired by
-`trackerScreenDeps`, the same signal the guards above read; `isNumberedMenu`:
-every option value is numeric) nothing is typed and the sender gets an `error`
-with code `PROMPT_WAITING` ("Claude is waiting on a prompt. Answer it from its
-card or in the terminal (Esc dismisses it)."; `PROMPT_WAITING_ERROR_CODE` and
-`createPromptWaitingError` in `@remi/shared`), plus a trace record
-(`input_refused`, reason `chat-into-menu`). Telegram renders it as "Error:
-..."; the web client marks the refused bubble failed from `details.messageId`.
-A Stop (`onKillSessionRequest`) reads the same view and, with a numbered menu
-up, types no `/exit` and force-closes the session instead.
+**Chat text and Stop's `/exit` are refused while a prompt is up** (#1140,
+#1155). `onUserInput` types structured input (web chat, a Telegram text reply
+or custom text) followed by Enter, and a Stop (`onKillSessionRequest`) types
+`/exit` + Enter; into a Claude dialog the letters are ignored and the Enter
+confirms the highlighted option, usually "1. Yes", so a message or a Stop sent
+from the phone while a prompt waits would approve it. Both read ONE signal,
+`promptUp` (`cli/handlers/prompt-up.ts`, built once in `cli.ts` by
+`promptUpDeps` and spread into both handler factories; a source-level test pins
+that wiring), which says a prompt is up when any of three sources does:
+
+- `held`: a main-agent hook is held (`hasMainHold`; its dialog renders during
+  the hold);
+- `terminal`: a hook-backed prompt waits in the terminal (`hasOpenHookPrompt`
+  beyond a main hold: a hold released at its deadline or handed back early,
+  or a rendered wrapper-mode subagent dialog, each for at most the session's
+  hold length);
+- `menu`: the tracker observes a numbered selection box
+  (`observedPromptOptions`; `isNumberedMenu`: every option value is numeric),
+  which covers hook-less prompts.
+
+Before #1155 Stop read only the screen parse and the chat guard only the parse
+and a main hold, so a dialog the parse missed (or that a text status had
+cleared) got the typed Enter. While a prompt is up the chat guard types nothing
+and the sender gets an `error` with code `PROMPT_WAITING`, its message by
+source (`PROMPT_WAITING_HELD_MESSAGE`; `PROMPT_WAITING_TERMINAL_MESSAGE`,
+"Claude is waiting on a prompt in the terminal. Answer it there, press Esc from
+the app, or run remi unstick.", since the card is gone; or
+`PROMPT_WAITING_MESSAGE`:
+"Claude is waiting on a prompt. Answer it from its card or in the terminal (Esc
+dismisses it)."; all in `@remi/shared` with `createPromptWaitingError`), plus a
+trace record (`input_refused`, reason `chat-into-held-prompt`,
+`chat-into-terminal-prompt` or `chat-into-menu`). Telegram renders it as
+"Error: ..."; the web client marks the refused bubble failed from
+`details.messageId`. Stop types no `/exit` and force-closes the session
+instead.
 
 Deliberately typeable: raw input (`raw: true`, an attach client's keystrokes,
 the web client's Escape button and Telegram's `/interrupt`, which is how a menu
 gets answered or dismissed; its Escape is written exactly, no Enter); a
 subprocess `(y/n)` prompt, or Claude prose ending in "(y/n)", which observes
 options "y"/"n" and takes text; a free-text prompt (an empty option list); and
-anything when nothing is observed. A raw write that fails is answered with
+anything when nothing is up. A raw write that fails is answered with
 `INPUT_NOT_DELIVERED`, and `/interrupt` then shows that error instead of
 "Interrupt sent". The parser returns `allowsFreeText: false` (and
 `optionsAreFallback: false`) for a Claude selection box, so a hook-less card is
@@ -280,69 +462,94 @@ card and the terminal still answer). (2) `submitInput` writes the text, waits
 50 ms, then writes the Enter; the observation is checked once, before the
 text, so a menu that renders inside that window still gets the Enter. Chat has
 no atomic "no prompt now" check to wait on. (3) A PTY-parsed status is a text
-guess and can clear the observation while the menu is still up. (4) The
+guess and can clear the observation while the menu is still up; for a
+hook-backed prompt the gate's half of `promptUp` still refuses then. (4) The
 no-tracker branch is effectively dead in production: `cli.ts` builds a tracker
 for every session, hook server or not. It exists for a caller that does not
-wire `observedPromptOptions` (tests, a future entry point) and it fails open
-(types the text), the opposite of the answer guards above.
+wire `promptUp` (tests, a future entry point) and it fails open (types the
+text), the opposite of the answer guards above. (5) A `terminal` entry counts
+for the session's hold length from when it is MARKED (the deadline release,
+the early hand-back, or the subagent dialog's render), not from the prompt's
+start: in wrapper mode up to `hold_seconds` (90 s) after a deadline release,
+about twice the hold from the start; in daemon or hub mode up to
+`daemon_hold_seconds` (about 59 minutes). A No answered at the terminal fires
+no hook, so the entry can outlive its dialog; in that window Stop
+force-closes instead of typing `/exit` (kept by lead decision: a forced close
+is always safe) and chat is refused. Ways out: an answer a hook sees (the tool
+runs, `Stop`, a new prompt; a subagent's next tool call or `SubagentStop`), a
+bare Esc sent through remi (web Esc button, Telegram `/interrupt`, an attach
+Esc key), which clears the MAIN agent's entries (`noteTerminalEscape`,
+#1155), and `remi unstick`. An Esc typed at a wrapper session's own terminal
+does not pass through remi and is not seen. The opposite direction: once an
+entry ages out, a dialog still on screen whose parse a text status cleared is
+no longer guarded (chat would be typed into it, Stop would type `/exit`).
 
 The parser joins a label's wrapped rows (and an AskUserQuestion description
 row) onto the option above, at most two rows, never across footer rows
 ("Esc to cancel · ..."), dropping divider rows; it used to end the option list
 at the first such row and drop every later option, "No" included.
 
-**Subagent permissions: the PTY is the arbiter** (#756 policy, #807 + #814;
-amended #1024 2026-08-08, see [ADR 0004](.context/decisions/0004-pty-as-arbiter-subagent-questions.md)):
 
-- An `agent_id`-tagged `PermissionRequest` NEVER reaches the LLM at hook time — that part of
-  the original policy is unchanged. `AutoApproveGate` first asks ONLY the deterministic
-  pre-LLM layers (`AutoApproveService.evaluateDeterministic`: deny — list + groups — checked
-  first, then user `allow`, then the level's `approve_groups`; the exact matcher calls
-  `evaluate()` itself runs, shared so the two can never drift). A deterministic **approve**
-  (no deny match) answers the hook `{behavior:'allow'}` immediately — no park, no render, no
-  LLM, no GPU queue. Everything else — no deterministic verdict, or a **deny** match — parks
-  it (`parkForPTY` → `QuestionPresenceTracker.parkAwaitingPTY`) and answers the hook
-  `passthrough`, exactly as before #1024. A subagent's config-level deny is never turned into
-  a hook-time deny: it has no human-visible channel until a render happens, so it stays on the
-  render-time path below. Claude blocks on the hook response, so for anything that parks,
-  nothing can know whether the prompt will ever render — and most never do (16 hooks → 2
-  renders in a live 0.6.22 session).
-- If the prompt DOES render, `arbitrateParkedRender` evaluates it then (LLM included): `approve`/
-  `deny`/`pick` are typed into the prompt on screen (never a persisting "always" option), and
-  only an `escalate` verdict pushes a card. Every failure direction escalates; nothing is ever
-  auto-answered by guess.
-- An allowlist-covered subagent command — whether answered at hook time (#1024) or absorbed
-  silently after parking — never surfaces to a human by itself; the `subagent_alert`
-  informational push (`auto-approve/subagent-alert.ts`) is the visibility path for both cases,
-  fired via the same `onSubagentPassthrough` cue regardless of which path answered the hook,
-  deliberately alerting rather than blocking.
-- A bare tool-name `allow` entry (`allow = ["Write"]`, `["Edit"]`) carries no destination veto
-  by design (ADR 0010) and, since #1024, now grants a subagent silent hook-time write access to
-  sensitive destinations a curated `approve_groups` write group would block. Already true for
-  main-context requests; #1024 is the first time it applies with zero chance of a human ever
-  seeing the prompt. Tracked as #1032 (not yet decided).
-- **Permissions can be scoped per `agent_type`**
-  ([ADR 0025](.context/decisions/0025-agent-scoped-permissions.md)). Because the deterministic
-  layers are the ONLY ones a subagent reaches at hook time, they are also the only place a
-  per-role grant can live: `[auto_approve.agents.Explore]` with
-  `approve_groups = [..., "net-read"]` lets research agents read the web while nothing else
-  does. `deny`/`deny_groups` UNION with the base (a section can never weaken a machine-wide
-  prohibition — pinned by test); `allow`/`approve_groups` REPLACE it (the motivating case is
-  giving a role LESS). An unmatched agent type falls through to the base, so a typo in a
-  section name silently does nothing — there is no registry to validate against.
-- **`net-read` (WebFetch + WebSearch) is in no preset and no default.** It exists because
-  those tools previously matched *nothing*, so every web call from every subagent parked,
-  rendered and entered the serial eval queue; a measured fan-out of five `general-purpose`
-  agents saturated it and the waiters escalated on `queue_timeout` **without the LLM ever
-  running**. Not added to `trusted`: that level is chosen for git mutation, and quietly
-  attaching outbound egress to it is the same widening ADR 0023 fixed in `matchGroups`.
-  A wrongly-escalated fetch is a nuisance; a wrongly-approved one is an exfil channel.
+**Subagent permissions follow the terminal**
+([ADR 0004](.context/decisions/0004-pty-as-arbiter-subagent-questions.md), amended
+by ADR 0030 and ADR 0031). A background subagent's dialog does NOT render while
+its hook is held (verified live), so the gate takes a required
+`hasLocalTerminal` (wrapper mode, fixed at session setup):
+
+- **Wrapper mode (a local terminal):** an `agent_id`-tagged `PermissionRequest`
+  is answered `passthrough` so its dialog renders, and parked
+  (`passSubagentToTerminal` → `QuestionPresenceTracker.parkAwaitingPTY` with
+  `onRender`). When the dialog renders, the phone gets an informational
+  "answer at the terminal" notice, never an answerable card; the notice is
+  dismissed when the prompt resolves. With no park path the notice is pushed
+  at once.
+- **Daemon or hub mode (no local terminal):** nobody could answer a rendered
+  dialog, so the request is escalated exactly like a main-agent prompt: held,
+  with an answerable card. A lead `Stop` spares it; that agent's
+  `SubagentStop` releases it. Claude does not fire `PermissionRequest` for a
+  call its own allow rules permit (measured on 2.1.287 for background,
+  foreground and main calls), so these holds are only for real prompts.
+
+**`subagent_alert` covers what never prompts** (#807, #1155;
+`auto-approve/subagent-alert.ts`, patterns in `[notifications]
+subagent_alert`). It is for any subagent, foreground or background (any
+`agent_id`-tagged call), never the main agent. Because a call the allow rules
+permit fires no
+`PermissionRequest`, the alert is fed from the tool hooks, in both modes: an
+agent-tagged `PreToolUse` whose call matches a pattern is remembered, a
+`PermissionRequest` or `PermissionDenied` for that call forgets it, and its
+`PostToolUse` or `PostToolUseFailure` delivers the alert (rate-limited,
+daemon-wide); `SubagentStop` forgets the agent's unfinished calls. One call
+therefore produces at most one phone artifact: a call that prompts gets its
+"answer at the terminal" notice (wrapper mode) or its held card (daemon or
+hub mode), the actionable one, and never an alert as well; a call that ran
+without asking gets the alert. The alert arrives when the call finishes (the
+first moment remi knows it ran unasked), so a long command's alert comes at
+its end. Before #1155 it was fed from the subagent `PermissionRequest`
+passthrough, the one event the allowlisted case never fires.
+
+**Old auto-approve settings.** An old `config.toml` with an `[auto_approve]`
+table still loads; the daemon warns once at boot (daemon, `remi serve`,
+`remi config`; not again in a hub-spawned session daemon, and `remi start`
+reports only removed flags) naming the ignored keys, and `--auto-approve*`
+flags are accepted and ignored so old LaunchAgent plists keep starting.
+`auto_approve.subagent_alert` is honored as a deprecated fallback when
+`[notifications] subagent_alert` is unset, and gets its own "move it" line
+instead of being listed as ignored. `remi migrate-permissions` prints the old
+`allow`/`deny` lists as a Claude Code `permissions` block for the user to
+paste into `~/.claude/settings.json`; it never writes a file. It never emits a
+rule broader than the old entry (a bare `Bash` allow, which remi never
+applied, is not carried over), and deny entries change meaning: remi matched
+them as substrings anywhere in a command, Claude Code matches from the start
+of each subcommand, so a migrated deny is narrower and mid-command patterns
+(`push --force`) are not carried over. Everything not carried over is listed
+on stderr with its reason.
 
 **Notification channel — APNS push only** (no local notifications for questions):
 
 - Daemon sends WebSocket `question` (in-app display) AND APNS push (lock screen).
 - Signaling server (Cloudflare Worker) relays push payloads to APNS.
-- iOS categories `REMI_YN`, `REMI_YNA`, `REMI_MULTI` registered in `AppDelegate.swift`. Their actions are positional (`OPT_i` sends option i) and the first two have hardcoded titles, so `selectPushCategory` picks by meaning, not count (#1134): `REMI_YN` only for exactly [one-time Yes, No]; `REMI_YNA` only for exactly [one-time Yes, any Yes, No] (its "Yes, always" button is the only static action that requires an unlocked device). A one-time Yes is an option labeled exactly "Yes"; any other Yes is a standing grant, as is any Yes after the first option and a session-grant action. A card with a standing option in any other layout gets NO category (a plain notification, answered in the app), because `REMI_MULTI`'s buttons do not require an unlocked device. No card with a standing option gets the `dynOptions` hint, `REMI_YNA` included: the extension builds its dynamic buttons without `.authenticationRequired`, so a standing grant behind one could be tapped while locked. Every other 2-4 option card gets `REMI_MULTI`. When the Notification Service Extension does not run, `REMI_MULTI` shows all four static "Option N" buttons whatever the option count; a button with no option behind it sends no answer (`RemiAnswerRelay` finds no `opt_n` and defers to the app), and any answer that does arrive still passes the `handleAnswer` guards (an iOS follow-up will add 2- and 3-button categories).
+- iOS categories `REMI_YN`, `REMI_YNA`, `REMI_MULTI` registered in `AppDelegate.swift`. Their actions are positional (`OPT_i` sends option i) and the first two have hardcoded titles, so `selectPushCategory` picks by meaning, not count (#1134): `REMI_YN` only for exactly [one-time Yes, No]; `REMI_YNA` only for exactly [one-time Yes, an always-allow rule, No], the middle option marked `standingGrant: 'addRules'` (#1126: only there is its static "Yes, always" title true; a `setMode` or unmarked standing option gets no category; its "Yes, always" button is the only static action that requires an unlocked device). A one-time Yes is an option labeled exactly "Yes"; any other Yes is a standing grant, as is any Yes after the first option and a session-grant action. A card with a standing option in any other layout gets NO category (a plain notification, answered in the app), because `REMI_MULTI`'s buttons do not require an unlocked device. No card with a standing option gets the `dynOptions` hint, `REMI_YNA` included: the extension builds its dynamic buttons without `.authenticationRequired`, so a standing grant behind one could be tapped while locked. Every other 2-4 option card gets `REMI_MULTI`, except by kind (`pushCategoryFor`, #1127): an AskUserQuestion card gets `REMI_MULTI` (with `dynOptions`) only when it is one single-select question, whose tap (the option's label) answers that option through the held hook, and none otherwise; a plan approval never gets a category (approving a plan is not a lock-screen tap). When the Notification Service Extension does not run, `REMI_MULTI` shows all four static "Option N" buttons whatever the option count; a button with no option behind it sends no answer (`RemiAnswerRelay` finds no `opt_n` and defers to the app), and any answer that does arrive still passes the `handleAnswer` guards (an iOS follow-up will add 2- and 3-button categories).
 
 **Push classes and who can mute them** (#968):
 
@@ -353,9 +560,11 @@ those two are both exactly `{token, title, body}`.
 
 | `kind` | Fires on | Mutable per device |
 |---|---|---|
-| `question` | permission prompt, escalation, hold-timeout handoff | yes, `pushPrefs.questions` |
+| `question` | permission prompt, AskUserQuestion, plan approval; an "answer at the terminal" notice (hold deadline, wrapper-mode subagent dialog; no actions, own collapse key) | yes, `pushPrefs.questions` |
 | `turn_complete` | `Stop` after a turn ≥ `turn_complete_min_seconds` (#914) | yes, `pushPrefs.turnComplete` |
-| `subagent_alert` | a background agent matched `auto_approve.subagent_alert` | no — the pattern list IS the control |
+| `subagent_alert` | a subagent's (foreground or background) call matching `[notifications] subagent_alert` finished without ever prompting (#1155) | no — the pattern list IS the control |
+| `harness_denied` | `PermissionDenied`: Claude Code's auto-mode classifier blocked a call, or auto-denied an unanswered fallback prompt at 2:00 (#1126); informational, never a card; one collapse key per session (`harness-denied-<sessionId>`), so a blocked loop replaces its notice | yes, `pushPrefs.harnessDenied` |
+| `turn_failed` | `StopFailure`: a turn ended on an API error (usage or rate limit, authentication, and similar; #1153); informational, never a card (nothing in Claude waits, so there is nothing to answer); readable reason from `error`, an excerpt of `last_assistant_message`; one collapse key per session (`turn-failed-<sessionId>`), so a repeat replaces the previous notice | yes, `pushPrefs.turnFailed`, default on; **not** muted by `notifications.on_turn_complete = false` |
 | `dismiss` | quiet `content-available` clearing a resolved card | **no, deliberately** |
 
 - **A client cannot mute APNS on its own.** The path is daemon → Worker → APNS
@@ -366,75 +575,46 @@ those two are both exactly `{token, title, body}`.
   filters its per-token fan-out in `notifications/push-preferences.ts`.
 - **Never filter `dismiss`.** A muted device can still hold a card delivered
   before the mute; dropping its dismissal strands that card on the lock screen
-  of the device that asked for less noise.
-- **A muted fan-out must report `no_channel`, not `pushed`.** `awaitDelivery`
-  decides whether a held hook keeps Claude blocked; claiming delivery for a
-  fan-out of zero blocks the hook on a card nobody will ever see.
+  of the device that asked for less noise. The next main-agent `Stop` or
+  `UserPromptSubmit` after a `turn_failed` push sends one (same collapse key,
+  only while a `turn_failed` push is outstanding), so a stale "Claude stopped"
+  does not outlive a turn that succeeded.
+- **Push text is plaintext to the Worker and APNS.** `turn_failed` carries up
+  to 140 characters of `last_assistant_message` (or a string `error_details`)
+  in its body, the same posture as `turn_complete` (the end of Claude's last
+  message) and a question's text: the daemon POSTs it to the signaling
+  Worker's `/push`, which forwards it to APNS, outside the relay data channel
+  and its encryption. Tracked by the relay and push privacy work
+  (`.context/strategy-2026-10.md` section 9); the relay channel has its own
+  state (#543, #881).
+- **A muted fan-out reports `no_channel`, not `pushed`.** Claiming delivery
+  for a fan-out of zero says a card reached a lock screen it never appears on.
 - Malformed preferences fail toward DELIVERING (`sanitizePushPreferences`). A
   wrongly-delivered notification is a nuisance; a wrongly-dropped one is the
   product failing at its only job.
 - `notifications.on_turn_complete = false` in `config.toml` stays the
-  machine-wide master switch and wins over any per-device preference.
+  machine-wide master switch for `turn_complete` and wins over any per-device
+  preference for it. It does NOT silence `turn_failed` (#1153): a failed turn
+  is the one turn end a user must not miss by default, and only the per-device
+  `turnFailed` preference mutes it.
 
 **Constraints from real logs (2026-04-12 analysis, updated #718 2026-07-06):**
 
 - Bash `PermissionRequest` may have `permission_suggestions=undefined` (no suggestions), a legacy plain-string label array (e.g. Edit's `["Yes","Always","No"]`), or — since ~Claude Code 2.0.54 — a STRUCTURED array of typed "permission update entries" (`addRules`, `addDirectories`, `setMode`, `removeRules`, `replaceRules`, `removeDirectories`, each carrying `behavior`/`destination`; ground truth: code.claude.com/docs/en/hooks).
 - Notification message is plain text ("Claude needs your permission to use Bash"), no numbered options, and never carries `permission_suggestions` at all.
-- Claude Code does NOT always offer a fixed option count. `optionsFromSuggestions` (hook-event-bridge.ts) builds a VARIABLE-count option set: [Yes] + one option per USABLE structured suggestion + [No], capped at 4 total. With no usable suggestions of either shape, the daemon falls back to the honest Yes/No 2-set (`optionsAreFallback: true` on the `Question`) instead of fabricating a 3rd option. This is the hook's view, not the screen's: Claude's dialog does not render one option per suggestion (two structured suggestions built 4 options over a 3-option dialog, #1134). So a card pushed when its prompt renders takes the parsed screen's options instead (it keeps these only if the parse found none); these options reach the phone on cards pushed by id before a render (held, or passthrough multi-choice), and `handleAnswer` types a digit from one only if the screen's option at that value has the same label.
+- Claude Code does NOT always offer a fixed option count. `optionsFromSuggestions` (hook-event-bridge.ts) builds a binary card by MEANING (#1126): [Yes] + one standing option per offerable suggestion (`setMode`, allow `addRules`; never `addDirectories`) + [No], capped at 4 total; with nothing offerable, the honest Yes/No 2-set (`optionsAreFallback: true`). A multi-choice string-label set maps label by label to picks. This is the hook's view, not the screen's (Claude's dialog does not render one option per suggestion, #1134), which is why a held card is answered through the hook and never typed.
 - Numbered option text appears only in the terminal UI, not in hook events.
-- `HookEventBridge` emits the option set immediately; no parsing or merge timer needed.
-- A "Yes, always allow: ..." option answered on a HELD hook resolves it with `{behavior:"allow", updatedPermissions:[<the original permission_suggestions entry>]}` — echoing a received suggestion back is, per the hooks docs, "equivalent to the user selecting that 'always allow' option in the dialog." `QuestionOption.suggestionIndex` carries which original entry to echo.
+- `HookEventBridge` builds the option set at hook time; a binary card is held and pushed at once, and its answer is the hook response (#1126).
+- A standing option is answered by echoing its `permission_suggestions` entry (`QuestionOption.suggestionIndex`) as `{behavior:"allow", updatedPermissions:[...]}` on the held hook. Verified live on Claude Code 2.1.287 (#1126 spike F4) for `setMode` and `addRules`; every echo is sent with `destination: "session"` (lead decision), and an echoed `addDirectories` did not stop the repeat prompt, so it is never offered.
 - Redeploy the signaling server after any `packages/signaling/` change.
 
-### Local LLM backend is chosen by platform (#822)
+### No local model
 
-`detectLocalLLMPlatform()` decides what answers on remi's reserved port
-**19924**, and both `auto_approve.provider` and `auto_approve.model` default
-from it. One hardcoded default is wrong on one of the two supported targets.
-
-| Target | `provider` | `model` default | Who runs it |
-|---|---|---|---|
-| macOS Apple Silicon | `yooz` | `YoozLabs/Qwen3.5-4B-qat-lean-4bit-mlx` | remi fetches + supervises the helper (#834) |
-| Linux (any arch) | `llamacpp` | `YoozLabs/Qwen3.5-4B-qat-GGUF:Q4_0` | **you** install `llama-server` once; remi spawns + supervises it (#822) |
-| macOS Intel, Windows | `yooz` (kept deliberately, so the boot warning fires) | (engine's, unused) | nothing; boot says so |
-
-Same trained weights, but **not the same artifact**: QAT was trained against
-the MLX 4-bit grid and the GGUF is those weights re-quantized to `Q4_0`. So
-#809 Phase D's 38/38 permission-grid result is evidence for the **MLX build
-only** — it has never been run against llama.cpp, and `SWEEP_PROVIDER=llamacpp`
-in `run-model-sweep.ts` exists precisely to close that. Owed by #822. What else
-differs is everything *around* the weights, and three things bite:
-
-- **Name the quant explicitly.** `-hf` with no tag prefers `Q4_K_M`/`Q8_0` then
-  falls back to the first `.gguf` in the repo, so a bare id works today but is
-  order-dependent if a second quant is ever published.
-- **`llama-server` ignores the request's `model` field** in single-model mode.
-  So `auto_approve.model` is cosmetic there — and a configured `escalate_model`
-  would be answered by the *primary* model, reported as if a heavier model had
-  agreed. The daemon warns; deciding the real story is #822's open question.
-- **`remi model *` has no meaning on single-model llamacpp.** The engine
-  control plane (`/v1/llm/*`, `/v1/touchup/*`, `/v1/modules`) does not exist
-  there; `GET /v1/models` does, but remi's llamacpp base URL already ends in
-  `/v1`, so it would be requested at `/v1/v1/models`. Every verb but `use`
-  refuses with the restart command instead of emitting a 404. Router mode
-  (`--models-dir`) is out of scope for all of remi's engine shapes.
-
-**remi supervises `llama-server` but never installs it** (#822 slice 1). It
-spawns it on demand through the same `EngineHost` the engine uses — attach
-first, claim the pidfile before spawning, health-probe `/health` (NOT
-`/v1/llm/status`, which llama.cpp has never served), stop what it started — and
-reports an actionable "install it" reason when the binary is absent. The line is
-drawn there deliberately: the macOS path fetches a **pinned artifact remi
-controls** (#834), while `llama-server` is a third-party binary across an arch
-matrix, so supervising one the user installed is a different trust proposition
-from downloading and executing one. The GGUF is not remi's job either — `-hf`
-makes llama.cpp pull it — which narrows what #822 originally assumed
-("Download is remi's job"). Still open on that issue: acquiring the binary,
-`keep_alive`/idle-stop, and the `escalate_model` design question.
-
-`warmModel()` is engine-only for the same reason, and the `llamacpp` base URL
-already carries `/v1` — calling it there requests `/v1/v1/llm/preload`. Its one
-caller guards on `providerIsYooz`; keep it that way.
+remi runs no local model any more (#1125): no Yooz engine or `llama-server`,
+no first-run model download, and no reserved model port. The old model
+command prints a one-line removal notice and exits 2. The old engine install under
+`~/.remi/engine` is left on disk; the boot notice says it can be deleted by
+hand.
 
 ### PTY-fallback question patterns
 

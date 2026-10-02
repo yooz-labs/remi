@@ -138,9 +138,12 @@ export function createMessageApiForSession(
       const questionSessionId = getPrimarySessionId() ?? sessionId;
       const claudeSessionId = getClaudeSessionId?.() ?? undefined;
       // #753: stamp held-ness onto the question itself so every downstream
-      // copy (live message, registry entry, attach-time re-send) carries it —
-      // the terminal attach client banners ONLY held questions, the one class
-      // that never renders on the PTY.
+      // copy (live message, registry entry, attach-time re-send) carries it.
+      // A `held` push is a card pushed by id at hook time: a held binary
+      // permission prompt (#1126) or an AskUserQuestion / ExitPlanMode /
+      // multi-choice card. The stamp keys `handleAnswer`'s refusal of free
+      // text on a card that takes options (#1134, `free-text-on-held-card`)
+      // and the terminal attach client's banner.
       const stamped: Question = opts?.held === true ? { ...question, held: true } : question;
       const msg: ProtocolMessage = {
         type: 'question',
@@ -158,10 +161,10 @@ export function createMessageApiForSession(
       sessionRegistry.addQuestion(questionSessionId, stamped, stamped.source ?? 'unknown');
 
       // Push: a non-held question only pushes when no client is attached (the
-      // client sees it in-app). A HELD escalation (#603 Phase 3) always also
-      // pushes to the lock screen — the attached client may be backgrounded.
-      // maybePush records the delivery outcome (#603 Phase 1) for the gate to
-      // probe; the regular question path does not await it. Fire-and-forget
+      // client sees it in-app). A `held` push (`pushHeldHook`, #603 Phase 3)
+      // always also pushes to the lock screen — the attached client may be
+      // backgrounded. The question path does not await the delivery outcome
+      // maybePush returns. Fire-and-forget
       // from this synchronous hook callback, so guard against a future
       // pushConfig/refreshDeviceTokens contract change surfacing as an
       // unhandled rejection (matches the escalator's #672 push guard).

@@ -8,6 +8,7 @@ import {
   INPUT_NOT_DELIVERED_MESSAGE,
   MessageIdTracker,
   PROMPT_WAITING_ERROR_CODE,
+  PROMPT_WAITING_HELD_MESSAGE,
   PROMPT_WAITING_MESSAGE,
   createAck,
   createAgentOutput,
@@ -463,7 +464,6 @@ describe('createRemiStatus() (#754)', () => {
       sessionId: null,
       repo: 'remi',
       branch: 'develop',
-      autoApprove: { inFlight: 0, sinceS: 0, lastVerdict: 'none' as const, lastVerdictAtS: 0 },
       attached: true,
       queuedCount: 1,
     };
@@ -479,7 +479,8 @@ describe('createRemiStatus() (#754)', () => {
     if (parsed?.type === 'remi_status') {
       expect(parsed.status.attached).toBe(true);
       expect(parsed.status.queuedCount).toBe(1);
-      expect(parsed.status.autoApprove.lastVerdict).toBe('none');
+      // #1125: a current daemon no longer emits the deprecated field.
+      expect('autoApprove' in parsed.status).toBe(false);
     }
   });
 
@@ -487,9 +488,17 @@ describe('createRemiStatus() (#754)', () => {
     const status = mkRemiStatus();
     const msg = createRemiStatus(generateId(), status);
     status.attached = false;
-    status.autoApprove.inFlight = 5;
     expect(msg.status.attached).toBe(true);
-    expect(msg.status.autoApprove.inFlight).toBe(0);
+  });
+
+  test('an older status that still carries autoApprove is copied one level deep', () => {
+    const status = {
+      ...mkRemiStatus(),
+      autoApprove: { inFlight: 0, sinceS: 0, lastVerdict: 'none' as const, lastVerdictAtS: 0 },
+    };
+    const msg = createRemiStatus(generateId(), status);
+    status.autoApprove.inFlight = 5;
+    expect(msg.status.autoApprove?.inFlight).toBe(0);
   });
 });
 
@@ -719,6 +728,16 @@ describe('Message factory functions', () => {
       );
       expect(msg.message).toBe(PROMPT_WAITING_MESSAGE);
       expect(msg.details).toEqual({ sessionId: 'session-1' });
+    });
+
+    test('while a hook is held it says the prompt may be finishing, never that a dialog is up (#1126)', () => {
+      const msg = createPromptWaitingError('session-1', 'message-1', PROMPT_WAITING_HELD_MESSAGE);
+
+      expect(msg.code).toBe(PROMPT_WAITING_ERROR_CODE);
+      expect(msg.message).toBe(
+        'Claude is waiting on a prompt or finishing an approved step; answer the card or use the terminal.',
+      );
+      expect(msg.details).toEqual({ sessionId: 'session-1', messageId: 'message-1' });
     });
 
     test('names the refused input message when the client sent an id', () => {
@@ -1104,6 +1123,29 @@ describe('Message factory functions', () => {
       const deserialized = deserialize(serialized);
       expect(deserialized).not.toBeNull();
       expect(deserialized?.type).toBe('resume_session_response');
+    });
+
+    test('carries an optional machine-readable errorCode on failure (#1124)', () => {
+      const requestId = generateId();
+      const msg = createResumeSessionResponse(
+        false,
+        requestId,
+        undefined,
+        'Hub cannot resume',
+        'UNSUPPORTED',
+      );
+      expect(msg.success).toBe(false);
+      expect(msg.error).toBe('Hub cannot resume');
+      expect(msg.errorCode).toBe('UNSUPPORTED');
+      const roundTrip = deserialize(serialize(msg));
+      expect((roundTrip as { errorCode?: string } | null)?.errorCode).toBe('UNSUPPORTED');
+    });
+
+    test('omits errorCode when none is given, so existing failures are unchanged (#1124)', () => {
+      const msg = createResumeSessionResponse(false, generateId(), undefined, 'Session not found');
+      expect('errorCode' in msg).toBe(false);
+      const ok = createResumeSessionResponse(true, generateId(), generateId());
+      expect('errorCode' in ok).toBe(false);
     });
   });
 

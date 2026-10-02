@@ -60,7 +60,7 @@ export function formatQuestionBanner(question: Question): string {
   const options = question.options.map((o, i) => `${i + 1}) ${o.label}`).join('  ');
   const lines = [`\r\x1b[2K\x1b[36m[remi] pending question: ${question.text}\x1b[0m\r\n`];
   if (options) lines.push(`\x1b[36m[remi] options: ${options}\x1b[0m\r\n`);
-  lines.push(`\x1b[2m[remi] answer on your phone, or run 'remi unstick' to answer here\x1b[0m\r\n`);
+  lines.push('\x1b[2m[remi] answer the prompt here or on your phone\x1b[0m\r\n');
   return lines.join('');
 }
 
@@ -284,16 +284,20 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
   const banneredQuestionIds = new Set<string>();
 
   /**
-   * #753: print a pending HELD question into the attached terminal. A held
-   * permission (Model B) blocks Claude inside the hook call, so no raw PTY
-   * bytes for the prompt exist and the resize-nudge redraw has nothing to
-   * repaint — without this banner an attach shows only "waiting". ONLY held
-   * questions banner (#760 review finding 1): every other question class
+   * #753: print a pending HELD question into the attached terminal. Built
+   * when a held permission was believed to block Claude before its dialog
+   * painted. Verified false for Claude Code 2.1.287 (#1126 spike): the dialog
+   * renders about 0.1 s after the hook POST, during the hold, so the banner
+   * repeats the question above the native dialog, which answers it like any
+   * other local answer (first answer wins). Cards stamped `held`: a held
+   * binary permission prompt, AskUserQuestion or ExitPlanMode (#1127), and
+   * a multi-choice card pushed by id.
+   * ONLY held questions banner (#760 review finding 1): every other question class
    * renders natively in the raw PTY stream, and the daemon emits multiple
    * `question` messages per visible prompt cycle (hook bridge + PTY parser,
    * different ids), so bannering those would double- or triple-print around
    * the native prompt — the exact noise the old blanket suppression avoided.
-   * #1026 correction: a held permission blocking Claude's hook call does NOT
+   * #1026 correction: a held permission blocking Claude's hook call did NOT
    * guarantee an idle PTY — the TUI spinner keeps animating on its own timer
    * while the hook is pending, and a live session showed the cue's old bare
    * `\r\n` lead interleaving with that spinner's redraw on the same row.

@@ -53,8 +53,13 @@ describe('selectPushCategory', () => {
   test('returns REMI_YN for [Yes, No]', () => {
     expect(selectPushCategory([yesOpt, noOpt])).toBe('REMI_YN');
   });
-  test('returns REMI_YNA for [Yes, Yes always, No]', () => {
-    const yesAlways: QuestionOption = { ...yesOpt, value: 'a', label: 'Yes, always' };
+  test('returns REMI_YNA for [Yes, an always-allow rule, No]', () => {
+    const yesAlways: QuestionOption = {
+      ...yesOpt,
+      value: 'a',
+      label: 'Yes, always',
+      standingGrant: 'addRules',
+    };
     expect(selectPushCategory([yesOpt, yesAlways, noOpt])).toBe('REMI_YNA');
   });
   test('returns no category for a standing option outside [Yes, Yes, No]', () => {
@@ -155,6 +160,28 @@ describe('createMessageApiForSession', () => {
     expect(questionMsgs).toHaveLength(1);
     const pending = [...(sessionRegistry.getSession(sessionId)?.currentQuestions.values() ?? [])];
     expect(pending[0]?.text).toBe('proceed?');
+  });
+
+  test('a held push is stamped held on the wire and in the registry', () => {
+    // Since #1125 a held push is a card pushed by id before its render; the
+    // stamp keys handleAnswer's free-text-on-held-card refusal (#1134).
+    const sessionId = sessionRegistry.createSessionId();
+    sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    const { messageApi } = build(sessionId);
+
+    expect(messageApi.handleQuestion(questionWith([yesOpt, noOpt]), { held: true })).toEqual({
+      status: 'held',
+    });
+
+    const sent = sendCalls.find((c) => c.message.type === 'question')?.message;
+    expect(sent?.type === 'question' ? sent.question.held : 'missing').toBe(true);
+    const pending = [...(sessionRegistry.getSession(sessionId)?.currentQuestions.values() ?? [])];
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.held).toBe(true);
   });
 
   test('onQuestion does NOT push when a client is attached', () => {

@@ -3,15 +3,17 @@ import type { Question, QuestionOption, UUID } from '@remi/shared';
 import type { DeviceTokenEntry } from '../../src/cli/handlers/trivial-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../src/cli/logger.ts';
 import { optionsFromSuggestions } from '../../src/hooks/hook-event-bridge.ts';
+import { exitPlanModeOptions } from '../../src/hooks/structured-answers.ts';
 import {
   NotificationDispatcher,
   type PushFn,
   buildPushText,
-  isDelivered,
   isRetriablePushError,
   isTokenInvalidError,
+  pushCategoryFor,
   selectDynOptions,
   selectPushCategory,
+  terminalNoticeId,
 } from '../../src/notifications/notification-dispatcher.ts';
 import type { PTYSession } from '../../src/pty/pty-session.ts';
 import { SessionRegistry } from '../../src/session/session-registry.ts';
@@ -41,6 +43,8 @@ const yesAlwaysOpt: QuestionOption = {
   isRecommended: false,
   isYes: true,
   isNo: false,
+  suggestionIndex: 0,
+  standingGrant: 'addRules',
 };
 const defaultThreeSet: QuestionOption[] = [
   { value: '1', label: 'Yes', isRecommended: true, isYes: true, isNo: false },
@@ -101,30 +105,46 @@ describe('selectPushCategory', () => {
     expect(selectPushCategory(dropped)).toBeUndefined();
   });
 
-  test('REMI_YNA for exactly [one-time Yes, any Yes, No]', () => {
+  test('REMI_YNA only for [one-time Yes, an always-allow rule, No] (#1126 lead decision)', () => {
     expect(selectPushCategory(defaultThreeSet)).toBe('REMI_YNA');
+    expect(
+      selectPushCategory([
+        yes('1', 'Yes'),
+        yes('2', 'Yes, allow git push for this session', {
+          suggestionIndex: 0,
+          standingGrant: 'addRules',
+        }),
+        no('3', 'No'),
+      ]),
+    ).toBe('REMI_YNA');
+  });
+
+  test('a setMode or unmarked standing option gets no category: the static "Yes, always" would be untrue (#1126)', () => {
+    expect(
+      selectPushCategory([
+        yes('1', 'Yes'),
+        yes('2', 'Yes, and switch to acceptEdits mode', {
+          suggestionIndex: 1,
+          standingGrant: 'setMode',
+        }),
+        no('3', 'No'),
+      ]),
+    ).toBeUndefined();
+    // A screen-parsed standing option says nothing about what it grants.
     expect(
       selectPushCategory([
         yes('1', 'Yes'),
         yes('2', "Yes, and don't ask again for this command"),
         no('3', 'No, and tell Claude what to do differently (esc)'),
       ]),
-    ).toBe('REMI_YNA');
+    ).toBeUndefined();
     expect(
       selectPushCategory([
         yes('1', 'Yes'),
         yes('2', 'Yes,andalwaysallowaccessto/w'),
         no('3', 'No'),
       ]),
-    ).toBe('REMI_YNA');
-    // Any Yes in the middle is the standing option, whatever its wording.
-    expect(
-      selectPushCategory([
-        yes('1', 'Yes'),
-        yes('2', 'Yes, allow reading from /w during this session', { suggestionIndex: 0 }),
-        no('3', 'No'),
-      ]),
-    ).toBe('REMI_YNA');
+    ).toBeUndefined();
   });
 
   test('#1134 review: the first option is a one-time Yes only when it reads exactly "Yes"', () => {
@@ -158,9 +178,19 @@ describe('selectPushCategory', () => {
     expect(selectPushCategory([yes('1', ' Yes '), no('2', 'No')])).toBe('REMI_YN');
   });
 
-  test('the legacy ["Yes","Always","No"] suggestion set is REMI_YNA', () => {
-    const { options } = optionsFromSuggestions(['Yes', 'Always', 'No']);
-    expect(selectPushCategory(options)).toBe('REMI_YNA');
+  test('held cards: Yes/No is REMI_YN, Yes + a rule is REMI_YNA, a mode switch or two grants get no category (#1126)', () => {
+    expect(selectPushCategory(optionsFromSuggestions(['Yes', 'Always', 'No']).options)).toBe(
+      'REMI_YN',
+    );
+    const setMode = { type: 'setMode', mode: 'acceptEdits', destination: 'session' };
+    const rule = {
+      type: 'addRules',
+      rules: [{ toolName: 'Bash', ruleContent: 'ls' }],
+      behavior: 'allow',
+    };
+    expect(selectPushCategory(optionsFromSuggestions([rule]).options)).toBe('REMI_YNA');
+    expect(selectPushCategory(optionsFromSuggestions([setMode]).options)).toBeUndefined();
+    expect(selectPushCategory(optionsFromSuggestions([rule, setMode]).options)).toBeUndefined();
   });
 
   test('a standing option outside the REMI_YNA layout gets no category', () => {
@@ -321,6 +351,83 @@ describe('selectDynOptions (#719)', () => {
   });
 });
 
+/**
+ * #1127 lead decision: an AskUserQuestion is a lock-screen tap only when it
+ * is one single-select question (the tap sends the option's label, which the
+ * held hook answers as that option's label in `answers`, or refuses when it is
+ * also another option's number); every other AskUserQuestion, and every plan
+ * approval, gets no actionable category.
+ */
+describe('pushCategoryFor (#1127)', () => {
+  const picks = ['Red', 'Green', 'Blue'].map((label, i) => ({
+    value: String(i + 1),
+    label,
+    isRecommended: i === 0,
+    isYes: false,
+    isNo: false,
+  }));
+  function ask(steps: Array<{ multiSelect: boolean }>): Question {
+    return {
+      ...question('q', picks, 'Color: Which color?'),
+      kind: 'multi_question',
+      questions: steps.map((s, i) => ({
+        text: `Q${i}`,
+        multiSelect: s.multiSelect,
+        options: picks,
+      })),
+    };
+  }
+  const plan: Question = {
+    ...question('p', exitPlanModeOptions(), 'Plan ready for review'),
+    kind: 'plan_approval',
+    detail: '# Plan\n\nWrite `hello.txt`.',
+  };
+
+  test('one single-select question: REMI_MULTI with dynamic labels', () => {
+    expect(pushCategoryFor(ask([{ multiSelect: false }]))).toBe('REMI_MULTI');
+    expect(selectDynOptions(ask([{ multiSelect: false }]))).toBe(true);
+  });
+
+  test('one multi-select question: no category, no dynamic buttons', () => {
+    expect(pushCategoryFor(ask([{ multiSelect: true }]))).toBeUndefined();
+    expect(selectDynOptions(ask([{ multiSelect: true }]))).toBe(false);
+  });
+
+  test('two questions: no category, no dynamic buttons', () => {
+    const two = ask([{ multiSelect: false }, { multiSelect: false }]);
+    expect(pushCategoryFor(two)).toBeUndefined();
+    expect(selectDynOptions(two)).toBe(false);
+  });
+
+  test('a plan approval is never a lock-screen tap, whatever its options say', () => {
+    expect(pushCategoryFor(plan)).toBeUndefined();
+    expect(selectDynOptions(plan)).toBe(false);
+    // Even unmarked, its approvals are not a one-time "Yes".
+    expect(selectPushCategory(exitPlanModeOptions())).toBeUndefined();
+    // Marked, three plain picks would still get nothing.
+    expect(pushCategoryFor({ ...plan, options: picks })).toBeUndefined();
+  });
+
+  test("a plan card's push body is the start of the plan", () => {
+    const { title, body } = buildPushText('proj', plan);
+    expect(title).toBe('proj: Plan ready for review');
+    expect(body).toBe('# Plan Write `hello.txt`.');
+    const long = buildPushText('proj', { ...plan, detail: 'x'.repeat(1000) });
+    expect(long.body).toHaveLength(200);
+  });
+
+  test('a card no phone answer can be applied to gets no category (review S7)', () => {
+    const loose = { ...ask([{ multiSelect: false }]), terminalOnly: true };
+    expect(pushCategoryFor(loose)).toBeUndefined();
+    expect(selectDynOptions(loose)).toBe(false);
+  });
+
+  test('every other card keeps its category by meaning', () => {
+    expect(pushCategoryFor(question('q', [yesOpt, noOpt]))).toBe('REMI_YN');
+    expect(pushCategoryFor(question('q', defaultThreeSet))).toBe('REMI_YNA');
+  });
+});
+
 describe('buildPushText (#574 issues 3+4)', () => {
   test('title carries session + clean hook ask; body lists the real option labels', () => {
     const { title, body } = buildPushText(
@@ -359,18 +466,19 @@ describe('buildPushText (#574 issues 3+4)', () => {
   });
 
   test('option prefix is the actual VALUE, not the positional index (FIX 3C)', () => {
-    // StopFailure-style y/n options carry non-index values; the prefix must
+    // y/n options carry non-index values; the prefix must
     // reflect the real value ("y. Yes  n. No") so it stays accurate.
     const ynOpts: QuestionOption[] = [
       { value: 'y', label: 'Yes', isRecommended: true, isYes: true, isNo: false },
       { value: 'n', label: 'No', isRecommended: false, isYes: false, isNo: true },
     ];
-    const { body } = buildPushText('agent', question('q', ynOpts, 'Retry?'));
-    expect(body).toBe('Retry?\ny. Yes  n. No');
+    const { body } = buildPushText('agent', question('q', ynOpts, 'Continue?'));
+    expect(body).toBe('Continue?\ny. Yes  n. No');
   });
 
-  // #628: prefer the auto-approve LLM's lock-screen summary over raw tool text.
-  test('prefers the summary over the raw tool text when present', () => {
+  // #628's summary came from the auto-approve LLM (removed, #1125). A question
+  // that still carries one (an older payload) is pushed with its own text.
+  test('ignores the deprecated summary and pushes the question text', () => {
     const q: Question = {
       id: 'q' as UUID,
       text: 'Allow Bash: git push --force origin main',
@@ -380,8 +488,8 @@ describe('buildPushText (#574 issues 3+4)', () => {
       summary: 'Force-push to main?',
     };
     const { title, body } = buildPushText('proj', q);
-    expect(title).toBe('proj: Force-push to main?');
-    expect(body.startsWith('Force-push to main?')).toBe(true);
+    expect(title).toBe('proj: Allow Bash: git push --force origin main');
+    expect(body).not.toContain('Force-push to main?');
     expect(body).toContain('1. Yes  2. Yes, always  3. No');
   });
 
@@ -616,6 +724,20 @@ describe('NotificationDispatcher.maybePush', () => {
     expect(pushed[0]?.opts['body']).toBe('1. Collab PI\n2. Software focus');
   });
 
+  test('a plan approval pushes with no category and no dynamic buttons (#1127)', () => {
+    register(false);
+    deviceTokens.set('a', { token: 'a', platform: 'ios', registeredAt: 1, connectionId: SID });
+    make().maybePush(SID, {
+      ...question('q-plan', exitPlanModeOptions(), 'Plan ready for review'),
+      kind: 'plan_approval',
+      detail: '# Plan',
+    });
+    expect(pushed).toHaveLength(1);
+    expect(pushed[0]?.opts['category']).toBeUndefined();
+    expect(pushed[0]?.opts['dynOptions']).toBeUndefined();
+    expect(pushed[0]?.opts['body']).toBe('# Plan');
+  });
+
   test('body shows the ask + real labels and is never the collapsed PTY garble (#574 issue 3)', () => {
     register(false);
     deviceTokens.set('a', { token: 'a', platform: 'ios', registeredAt: 1, connectionId: SID });
@@ -770,83 +892,6 @@ describe('NotificationDispatcher.dismiss (#585 P7)', () => {
   });
 });
 
-describe('NotificationDispatcher.pushHoldTimeoutHandoff (#733)', () => {
-  let registry: SessionRegistry;
-  let deviceTokens: Map<string, DeviceTokenEntry>;
-  let pushed: Array<{ token: string; opts: Record<string, unknown> }>;
-  const SID = 's0000000-0000-0000-0000-000000000000' as UUID;
-  const QID = 'q0000000-0000-0000-0000-000000000000' as UUID;
-
-  const pushFn: PushFn = async (_url, token, opts) => {
-    pushed.push({ token, opts: opts as unknown as Record<string, unknown> });
-  };
-
-  function make(): NotificationDispatcher {
-    return new NotificationDispatcher(
-      {
-        sessionRegistry: registry,
-        deviceTokens,
-        pushConfig: () => ({ signalingUrl: 'ws://x' }),
-        getPrimarySessionId: () => null,
-        pushFn,
-      },
-      SID,
-    );
-  }
-
-  beforeEach(() => {
-    registry = new SessionRegistry({ orphanTimeoutMs: 60000 });
-    deviceTokens = new Map();
-    pushed = [];
-    configureLogger({ writeLog: () => {} });
-    registry.registerSession(SID, '/d', fakePTY(), {
-      handleMessage: () => {},
-      handleQuestion: () => {},
-      handleStatusChange: () => {},
-    } as never);
-  });
-
-  afterEach(async () => {
-    __resetLoggerForTests();
-    await registry.shutdown();
-  });
-
-  test('carries the ask, a handoff collapse key, and NO answer category', async () => {
-    deviceTokens.set('a', { token: 'a', platform: 'ios', registeredAt: 1, connectionId: SID });
-    registry.addQuestion(SID, question(QID, [yesOpt, noOpt], 'Allow Bash: rm -rf .venv?'));
-
-    make().pushHoldTimeoutHandoff(SID, QID);
-    // pushOnceWithRetry resolves on a microtask; flush it.
-    await new Promise((r) => setTimeout(r, 10));
-
-    expect(pushed).toHaveLength(1);
-    const opts = pushed[0]?.opts as Record<string, unknown>;
-    expect(String(opts['title'])).toContain('answer in the terminal');
-    expect(String(opts['body'])).toContain('Allow Bash: rm -rf .venv?');
-    // Distinct collapse key: the original card's quiet dismissal (collapse-id
-    // = the question id) must NOT collapse this handoff notice away.
-    expect(opts['questionId']).toBe(`handoff-${QID}`);
-    expect(opts['category']).toBeUndefined();
-    expect(opts['options']).toBeUndefined();
-    expect(opts['dynOptions']).toBeUndefined();
-  });
-
-  test('question already gone from the registry: still pushes with a generic ask', async () => {
-    deviceTokens.set('a', { token: 'a', platform: 'ios', registeredAt: 1, connectionId: SID });
-
-    make().pushHoldTimeoutHandoff(SID, QID);
-    await new Promise((r) => setTimeout(r, 10));
-
-    expect(pushed).toHaveLength(1);
-    expect(String(pushed[0]?.opts['body'])).toContain('a permission request');
-  });
-
-  test('no device tokens: no-op', () => {
-    make().pushHoldTimeoutHandoff(SID, QID);
-    expect(pushed).toHaveLength(0);
-  });
-});
-
 describe('NotificationDispatcher delivery outcome (#603 Phase 1)', () => {
   let registry: SessionRegistry;
   let deviceTokens: Map<string, DeviceTokenEntry>;
@@ -901,13 +946,12 @@ describe('NotificationDispatcher delivery outcome (#603 Phase 1)', () => {
     expect(await make(okPush).maybePush(SID, question('q1', [yesOpt, noOpt]))).toBe('no_channel');
   });
 
-  test('pushed when a device accepts; awaitDelivery returns the same outcome', async () => {
+  test('pushed when a device accepts', async () => {
     register(false);
     addToken('a');
     const d = make(okPush);
     const q = question('q1', [yesOpt, noOpt]);
     expect(await d.maybePush(SID, q)).toBe('pushed');
-    expect(await d.awaitDelivery(q.id)).toBe('pushed');
   });
 
   test('deduped when a second identical prompt is suppressed', async () => {
@@ -984,12 +1028,6 @@ describe('NotificationDispatcher delivery outcome (#603 Phase 1)', () => {
     };
     expect(await make(allFail).maybePush(SID, question('q1', [yesOpt, noOpt]))).toBe('failed');
   });
-
-  test('awaitDelivery is undefined for an unknown question id', () => {
-    expect(
-      make(okPush).awaitDelivery('zzzzzzzz-0000-0000-0000-000000000000' as UUID),
-    ).toBeUndefined();
-  });
 });
 
 describe('NotificationDispatcher held escalation (#603 Phase 3)', () => {
@@ -1065,7 +1103,8 @@ describe('NotificationDispatcher held escalation (#603 Phase 3)', () => {
       SID,
     );
     // The attached client may be backgrounded, so a dead token must NOT mask as
-    // in_app — it reports failed so the held hook fails open fast (#603 Phase 3).
+    // in_app — it reports failed (#603 Phase 3; the caller that held a hook on
+    // this outcome was removed in #1125, the outcome stays honest).
     expect(await d.maybePush(SID, question('q1', [yesOpt, noOpt]), { held: true })).toBe('failed');
   });
 
@@ -1094,7 +1133,7 @@ describe('NotificationDispatcher held escalation (#603 Phase 3)', () => {
   });
 });
 
-describe('isRetriablePushError / isDelivered (#603 Phase 1)', () => {
+describe('isRetriablePushError (#603 Phase 1)', () => {
   test('permanent APNS token rejections are NOT retriable (even wrapped as 502)', () => {
     expect(
       isRetriablePushError(
@@ -1130,15 +1169,6 @@ describe('isRetriablePushError / isDelivered (#603 Phase 1)', () => {
   test('a 4xx (non-token) is not retriable', () => {
     expect(isRetriablePushError(new Error('Push trigger failed: 401 unauthorized'))).toBe(false);
     expect(isRetriablePushError(new Error('Push trigger failed: 400 bad request'))).toBe(false);
-  });
-
-  test('isDelivered: in_app/pushed reach the user; deduped/no_channel/failed do not', () => {
-    expect(isDelivered('in_app')).toBe(true);
-    expect(isDelivered('pushed')).toBe(true);
-    // deduped is NOT treated as confirmed (the deduped-against push may have failed).
-    expect(isDelivered('deduped')).toBe(false);
-    expect(isDelivered('no_channel')).toBe(false);
-    expect(isDelivered('failed')).toBe(false);
   });
 });
 
@@ -1354,14 +1384,21 @@ describe('NotificationDispatcher per-device push preferences (#968)', () => {
 
   function token(
     name: string,
-    prefs?: { questions: boolean; turnComplete: boolean },
+    prefs?: {
+      questions: boolean;
+      turnComplete: boolean;
+      harnessDenied?: boolean;
+      turnFailed?: boolean;
+    },
   ): DeviceTokenEntry {
     return {
       token: name,
       platform: 'ios',
       registeredAt: 1,
       connectionId: SID,
-      ...(prefs !== undefined && { pushPrefs: prefs }),
+      ...(prefs !== undefined && {
+        pushPrefs: { harnessDenied: true, turnFailed: true, ...prefs },
+      }),
     };
   }
 
@@ -1399,10 +1436,8 @@ describe('NotificationDispatcher per-device push preferences (#968)', () => {
   });
 
   test('every device muted + no client attached reports no_channel, not pushed', async () => {
-    // The load-bearing case. `awaitDelivery` decides whether a HELD hook keeps
-    // Claude blocked; reporting `pushed` for a fan-out of zero would block the
-    // hook on a card that will never appear on any lock screen. `no_channel`
-    // fails the hold open fast instead.
+    // Reporting `pushed` for a fan-out of zero would claim a card reached a
+    // lock screen it never appears on; `no_channel` is the honest outcome.
     register(false);
     deviceTokens.set('a', token('a', { questions: false, turnComplete: true }));
     deviceTokens.set('b', token('b', { questions: false, turnComplete: false }));
@@ -1414,8 +1449,7 @@ describe('NotificationDispatcher per-device push preferences (#968)', () => {
   });
 
   test('every device muted WITH a client attached still reports in_app', async () => {
-    // The user is reachable over the socket, so the held hook may keep waiting;
-    // only the push channel is gone.
+    // The user is reachable over the socket; only the push channel is gone.
     register(true);
     deviceTokens.set('a', token('a', { questions: false, turnComplete: true }));
 
@@ -1447,16 +1481,57 @@ describe('NotificationDispatcher per-device push preferences (#968)', () => {
     expect(pushed[0]?.opts['kind']).toBe('dismiss');
   });
 
-  test('pushHoldTimeoutHandoff skips a device that muted questions', () => {
-    // Unlike dismiss, the handoff is a visible buzzing card about a question and
-    // clears nothing, so skipping it strands nothing.
-    register(false);
+  test('a terminal notice (#1126) is never a card: no category or options, its own collapse key, sent even when attached', async () => {
+    register(true);
     deviceTokens.set('muted', token('muted', { questions: false, turnComplete: true }));
-    deviceTokens.set('wants', token('wants', { questions: true, turnComplete: false }));
+    deviceTokens.set('wants', token('wants', { questions: true, turnComplete: true }));
 
-    make().pushHoldTimeoutHandoff(SID, QID);
+    make().pushTerminalNotice(SID, question(QID, [yesOpt, noOpt]), 'hold_deadline');
+    await new Promise((resolve) => setTimeout(resolve, 5));
 
+    // Filtered as a question push; delivered despite the attached client.
     expect(pushed.map((p) => p.token)).toEqual(['wants']);
-    expect(pushed[0]?.opts['kind']).toBe('question');
+    const opts = pushed[0]?.opts ?? {};
+    expect(opts['category']).toBeUndefined();
+    expect(opts['options']).toBeUndefined();
+    expect(opts['dynOptions']).toBeUndefined();
+    expect(opts['kind']).toBe('question');
+    expect(opts['questionId']).toBe(terminalNoticeId(QID));
+    expect(opts['questionId']).not.toBe(QID);
+    expect(String(opts['title'])).toContain('answer in the terminal');
+  });
+
+  test('a deadline notice in a session with no terminal names remi attach', async () => {
+    register(false);
+    deviceTokens.set('a', token('a'));
+    make().pushTerminalNotice(SID, question(QID, [yesOpt, noOpt]), 'hold_deadline_no_terminal');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(String(pushed[0]?.opts['title'])).toContain('remi attach');
+    expect(String(pushed[0]?.opts['body'])).toContain('remi attach');
+  });
+
+  test('a released-early notice says the prompt was handed back, never that the phone ran out of time', async () => {
+    register(false);
+    deviceTokens.set('a', token('a'));
+    make().pushTerminalNotice(SID, question(QID, [yesOpt, noOpt]), 'released');
+    make().pushTerminalNotice(SID, question(QID, [yesOpt, noOpt]), 'released_no_terminal');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(String(pushed[0]?.opts['title'])).toContain('answer in the terminal');
+    expect(String(pushed[0]?.opts['body'])).toStartWith(
+      'This prompt was handed back to the terminal; if it is still open, answer it in the terminal:',
+    );
+    expect(String(pushed[1]?.opts['title'])).toContain('remi attach');
+    expect(String(pushed[1]?.opts['body'])).toStartWith(
+      'This prompt was handed back to the terminal; if it is still open, reach it with remi attach:',
+    );
+    for (const p of pushed) expect(String(p.opts['body'])).not.toContain('in time');
+  });
+
+  test('dismissTerminalNotice clears the notice by its own key, never the card', () => {
+    register(false);
+    deviceTokens.set('a', token('a', { questions: false, turnComplete: false }));
+    make().dismissTerminalNotice(SID, QID);
+    expect(pushed[0]?.opts['questionId']).toBe(terminalNoticeId(QID));
+    expect(pushed[0]?.opts['dismiss']).toBe(true);
   });
 });

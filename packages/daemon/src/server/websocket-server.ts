@@ -446,7 +446,7 @@ export class WebSocketServer {
    * sign the canonical request string `sessionId|questionId|answer` with a key
    * already in the daemon's authorized-keys store (the exact gate the WS
    * handshake applies). The answer is then routed through the SAME core as the
-   * WebSocket `onAnswer`, so held-hook resolution / pick injection are identical.
+   * WebSocket `onAnswer`, so its handling is identical.
    */
   private async handleAnswerRelay(
     req: Request,

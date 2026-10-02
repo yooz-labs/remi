@@ -321,11 +321,11 @@ describe('HookServer', () => {
     const res = await fetch(makeUrl(port), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(makePayload({ hook_event_name: 'StopFailure', error_type: 'timeout' })),
+      body: JSON.stringify(makePayload({ hook_event_name: 'StopFailure', error: 'rate_limit' })),
     });
     expect(res.status).toBe(200);
     expect(received.length).toBe(1);
-    expect(received[0]?.error_type).toBe('timeout');
+    expect(received[0]?.error).toBe('rate_limit');
   });
 
   it('dispatches SessionEnd events', async () => {
@@ -551,6 +551,40 @@ describe('HookServer', () => {
   // Synchronous PermissionRequest resolver (#496)
   // -------------------------------------------------------------------------
   describe('synchronous PermissionRequest decision', () => {
+    it("hands the resolver the request's abort signal, which aborts when the client closes (#1126)", async () => {
+      server = new HookServer({ port });
+      let seen: AbortSignal | undefined;
+      // Resolved by the resolver itself, so the test waits for the request to
+      // arrive rather than for a fixed delay.
+      let markReached: () => void = () => {};
+      const reached = new Promise<void>((resolve) => {
+        markReached = resolve;
+      });
+      const aborted = new Promise<void>((resolve) => {
+        server.setPermissionResolver((_input, signal) => {
+          seen = signal;
+          signal.addEventListener('abort', () => resolve(), { once: true });
+          markReached();
+          return new Promise(() => {}); // held until the client goes away
+        });
+      });
+      server.start();
+      const client = new AbortController();
+      const req = fetch(makeUrl(port), {
+        method: 'POST',
+        body: JSON.stringify(
+          makePayload({ hook_event_name: 'PermissionRequest', tool_name: 'Bash' }),
+        ),
+        signal: client.signal,
+      }).catch((err: unknown) => err);
+      await reached;
+      expect(seen?.aborted).toBe(false);
+      client.abort();
+      await aborted;
+      expect(seen?.aborted).toBe(true);
+      expect(await req).toBeInstanceOf(Error);
+    });
+
     async function postPermission(p: number): Promise<Response> {
       return fetch(makeUrl(p), {
         method: 'POST',
