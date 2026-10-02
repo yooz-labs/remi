@@ -160,9 +160,13 @@ export class TelegramAdapter implements ConnectionAdapter {
   /** Rate limiter: last input timestamp per session key */
   private readonly lastInputTimestamp: Map<string, number> = new Map();
 
-  /** Connections with an `/interrupt` in flight, each called when the daemon
-   *  sends that connection an `error` (see `handleInterrupt`). */
-  private readonly errorObservers: Map<UUID, () => void> = new Map();
+  /** `/interrupt` requests waiting on the daemon (see `handleInterrupt`), keyed
+   *  by a per-request id that is also sent as the input's message id, so the
+   *  daemon's `error` can name the request it refuses. Per request, not per
+   *  connection: two concurrent `/interrupt`s on one topic must not clobber or
+   *  remove each other's entry. */
+  private readonly pendingInterrupts: Map<UUID, { connectionId: UUID; refused: boolean }> =
+    new Map();
 
   /** Minimum interval between inputs in milliseconds */
   private static readonly RATE_LIMIT_MS = 1000;
@@ -401,8 +405,7 @@ export class TelegramAdapter implements ConnectionAdapter {
 
       case 'error': {
         const err = message as ErrorMessage;
-        // An `/interrupt` waiting on the daemon learns its input was refused.
-        this.errorObservers.get(connectionId)?.();
+        this.noteErrorForInterrupts(connectionId, err);
         const errSession = this.getSession(connectionId);
         if (errSession && this.bot) {
           this.bot.api
@@ -822,22 +825,46 @@ export class TelegramAdapter implements ConnectionAdapter {
     // draws next) and never refuses it for a prompt menu on screen (#1140),
     // so `/interrupt` works with or without one.
     //
-    // The reply reports the outcome: when the daemon refuses the input it
+    // The reply reports the outcome: when the daemon cannot take the input it
     // sends this connection an `error` (rendered to the chat by `sendRaw`'s
-    // `error` case), which the observer sees before `onUserInput` settles, and
-    // "Interrupt sent" is then not claimed.
-    let refused = false;
-    this.errorObservers.set(session.connectionId, () => {
-      refused = true;
-    });
+    // `error` case) before `onUserInput` settles, and "Interrupt sent" is then
+    // not claimed. A raw terminal write that fails is reported the same way
+    // (INPUT_NOT_DELIVERED). The request id doubles as the input's message id,
+    // which the daemon echoes in the errors it names a message in.
+    const requestId = generateId();
+    const pending = { connectionId: session.connectionId, refused: false };
+    this.pendingInterrupts.set(requestId, pending);
     try {
-      await this.events.onUserInput?.(session.connectionId, session.sessionId, '\x1b', true);
+      await this.events.onUserInput?.(
+        session.connectionId,
+        session.sessionId,
+        '\x1b',
+        true,
+        undefined,
+        requestId,
+      );
     } finally {
-      this.errorObservers.delete(session.connectionId);
+      this.pendingInterrupts.delete(requestId);
     }
-    if (refused) return;
+    if (pending.refused) return;
 
     await ctx.reply('⏹️ Interrupt sent to Claude (Escape key)');
+  }
+
+  /**
+   * An `error` went to `connectionId`: mark the `/interrupt` requests it
+   * concerns as refused. An error that names a message id concerns only the
+   * request with that id (a concurrent interrupt's own error is not this
+   * one's); an error that names none (nothing to correlate) concerns every
+   * request in flight on the connection, which errs toward not claiming
+   * success.
+   */
+  private noteErrorForInterrupts(connectionId: UUID, err: ErrorMessage): void {
+    const named = err.details?.['messageId'];
+    for (const [requestId, pending] of this.pendingInterrupts) {
+      if (pending.connectionId !== connectionId) continue;
+      if (typeof named !== 'string' || named === requestId) pending.refused = true;
+    }
   }
 
   private async handlePause(ctx: Context): Promise<void> {
