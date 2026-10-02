@@ -109,12 +109,18 @@ function boundText(text: string): string {
 /**
  * Why a card gets no answer buttons on Telegram (#1127 review S2), or null
  * when its options can be tapped: an AskUserQuestion with several questions
- * or a multi-select (one button cannot answer it), and one no phone answer
- * can be applied to (`terminalOnly`).
+ * or a multi-select (one button cannot answer it), one no phone answer can
+ * be applied to (`terminalOnly`), and a plan with no text to read.
  */
 function noButtonsReason(question: Question): string | null {
   if (question.terminalOnly === true) {
     return 'Answer this question in the terminal (or cancel it in the app).';
+  }
+  // A plan whose text is missing or blank (reached only then: a plan with
+  // text takes the detail branch of `formatQuestionCard`) is never approved
+  // unread either.
+  if (question.kind === 'plan_approval') {
+    return 'Plan text unavailable; answer in the app or the terminal.';
   }
   const steps = question.questions;
   if (

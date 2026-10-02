@@ -15,6 +15,7 @@ import {
   isValidContent,
   stripTerminalCodes,
 } from '../src/adapters/telegram-ui.ts';
+import { extractToolQuestion } from '../src/hooks/tool-question.ts';
 import { parseQuestion } from '../src/parser/question-parser.ts';
 
 describe('stripTerminalCodes', () => {
@@ -219,6 +220,24 @@ describe('formatQuestionCard (#1127)', () => {
       `[Plan truncated: ${missing} more characters. Read it and answer in the app.]`,
     );
     expect(card.keyboard).toBeUndefined();
+  });
+
+  test('a plan with missing or blank text offers no approve buttons', () => {
+    // The cards the daemon builds for `{}` and `{plan: '  '}` (no detail),
+    // and a card whose detail is blank.
+    const built = [{}, { plan: '  ' }].map((input) => {
+      const tool = extractToolQuestion('ExitPlanMode', input);
+      if (tool === null) throw new Error('no plan card');
+      return { ...plan, options: tool.options, detail: tool.detail };
+    });
+    expect(built.map((q) => q.detail)).toEqual([undefined, undefined]);
+    for (const card0 of [...built, { ...plan, detail: '   ' }]) {
+      const card = formatQuestionCard(card0);
+      expect(card.text).toBe(
+        'Plan ready for review\n\nPlan text unavailable; answer in the app or the terminal.',
+      );
+      expect(card.keyboard).toBeUndefined();
+    }
   });
 
   test('several questions or a multi-select get no buttons, only "answer in the app" (review S2)', () => {
