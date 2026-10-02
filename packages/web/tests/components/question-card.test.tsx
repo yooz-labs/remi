@@ -1,5 +1,5 @@
 /**
- * Render smoke tests for the question card (#1127 review T2): the plan
+ * Render smoke tests for the question card (#1127 review T2, T3): the plan
  * card, the AskUserQuestion form's free-text field, and a terminal-only
  * card, rendered with the real component to static markup.
  */
@@ -47,6 +47,25 @@ describe('QuestionCard (#1127)', () => {
     expect(html).toContain('whitespace-pre-wrap');
   });
 
+  test('a plan card gives no "Allow once" or "Cancel" hints; its X says it keeps planning (T3)', () => {
+    const html = render(plan);
+    expect(html).not.toContain('Allow once');
+    expect(html).not.toContain('>Cancel<');
+    expect(html).toContain('aria-label="Keep planning"');
+  });
+
+  test('a binary card keeps its hints and its Cancel (Esc) label', () => {
+    const html = render({
+      ...plan,
+      kind: undefined,
+      detail: undefined,
+      prompt: 'Allow Bash: ls',
+      structuredOptions: [opt('Yes', '1', true), opt('No', '2', false, true)],
+    });
+    expect(html).toContain('Allow once');
+    expect(html).toContain('aria-label="Cancel (Esc)"');
+  });
+
   const form: UIQuestion = {
     id: 'auq' as UIQuestion['id'],
     sessionId: 's' as UIQuestion['sessionId'],
@@ -66,6 +85,7 @@ describe('QuestionCard (#1127)', () => {
     expect(inputs).toHaveLength(1);
     expect(inputs[0]).toContain('maxLength="2000"');
     expect(inputs[0]).toContain('aria-label="Your own answer to: Which color?"');
+    expect(html).toContain('aria-label="Dismiss question"');
   });
 
   test('a terminal-only card says so and offers no Submit (S7)', () => {

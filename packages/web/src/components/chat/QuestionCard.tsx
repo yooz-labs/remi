@@ -88,8 +88,12 @@ interface RenderOption {
   readonly description?: string;
 }
 
-/** Hint text shown to the right of permission-style options. */
-function optionHint(option: UIQuestionOption): string | undefined {
+/** Hint text shown to the right of permission-style options. A plan
+ *  approval's options say what they do in their labels; its approvals set a
+ *  mode (not "Allow once") and keeping planning is not "Cancel" (#1127
+ *  review T3), so they get no hint. */
+function optionHint(option: UIQuestionOption, kind: UIQuestion['kind']): string | undefined {
+  if (kind === 'plan_approval') return undefined;
   if (option.sessionGrant === 'github-issue-planning') {
     return 'Allow planning actions for this session';
   }
@@ -105,6 +109,18 @@ function optionKind(option: UIQuestionOption): OptionKind {
   return 'default';
 }
 
+/**
+ * What the header's X does, as its label (#1127 review T3): on a held plan
+ * it keeps planning, on a held AskUserQuestion it dismisses the question
+ * (both through the hook); elsewhere it cancels the prompt (Esc where no
+ * hook stands behind it).
+ */
+function cancelLabel(question: UIQuestion): string {
+  if (question.kind === 'plan_approval') return 'Keep planning';
+  if (question.kind === 'multi_question') return 'Dismiss question';
+  return 'Cancel (Esc)';
+}
+
 /** Flatten a permission question into a uniform option list for rendering. */
 function buildOptions(question: UIQuestion): RenderOption[] {
   if (question.structuredOptions && question.structuredOptions.length > 0) {
@@ -112,7 +128,7 @@ function buildOptions(question: UIQuestion): RenderOption[] {
       key: o.value,
       badge: o.value.slice(0, 2).toUpperCase(),
       label: o.label,
-      hint: optionHint(o),
+      hint: optionHint(o, question.kind),
       kind: optionKind(o),
       ...(o.description ? { description: o.description } : {}),
     }));
@@ -408,7 +424,7 @@ function MultiQuestionForm({
                 : { background: 'transparent', color: 'var(--color-text)', border: '1px solid var(--color-border)' }
             }
           >
-            Cancel
+            {cancelLabel(question)}
           </button>
         )}
       </div>
@@ -514,8 +530,8 @@ export function QuestionCard({ question, onAnswer, onAuqAnswer, onCancel, classN
           <button
             type="button"
             onClick={onCancel}
-            aria-label="Cancel (Esc)"
-            title="Cancel (Esc)"
+            aria-label={cancelLabel(question)}
+            title={cancelLabel(question)}
             className="flex size-[26px] items-center justify-center rounded-md text-[var(--color-text-secondary)] transition-transform active:scale-90"
           >
             <X className="size-4" />
