@@ -734,6 +734,62 @@ describe('AskUserQuestion and ExitPlanMode through held hooks, end to end (#1127
       expect(ptyWrites).toEqual([]);
     });
 
+    describe('numeric labels (#1127 review S1)', () => {
+      // The card's picks: value "1" is labeled "4", "2" is "2", "3" is "1".
+      const NUMBERS = {
+        questions: [{ question: 'Pick a number', options: ['4', '2', '1'] }],
+      };
+
+      async function relay(port: number, questionId: string, answer: string) {
+        return fetch(`http://127.0.0.1:${port}/answer`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId: SID, questionId, answer }),
+        });
+      }
+
+      test('a lock-screen tap on "1" (another option\'s value) is refused, never answered as "4"', async () => {
+        const { handlers, gate } = build();
+        await lock();
+        const { card, response } = await ask('AskUserQuestion', NUMBERS);
+        expect(card.options.map((o) => [o.value, o.label])).toEqual([
+          ['1', '4'],
+          ['2', '2'],
+          ['3', '1'],
+        ]);
+        const port = await startRelay(handlers.relayAnswer);
+        const res = await relay(port, card.id, '1');
+        expect(res.status).toBe(409);
+        expect(gate.isHeld(card.id)).toBe(true);
+        expect(cards().map((q) => q.id)).toEqual([card.id]);
+        // The label "4" names one option only: it answers.
+        expect((await relay(port, card.id, '4')).status).toBe(200);
+        expect(await decisionOf(response)).toEqual({
+          behavior: 'allow',
+          updatedInput: { ...NUMBERS, answers: { 'Pick a number': '4' } },
+        });
+        expect(ptyWrites).toEqual([]);
+      });
+
+      test('a Telegram tap sending value "1" (another option\'s label) is refused; value "2" answers "2"', async () => {
+        const { handlers, gate } = build();
+        await lock();
+        const { card, response } = await ask('AskUserQuestion', NUMBERS);
+        await handlers.onAnswer(CONN, SID, card.id, '1');
+        const refusal = errors()[0];
+        expect(refusal?.code).toBe('STALE_ANSWER');
+        expect(refusal?.message).toContain('by its number and another by its label');
+        expect(gate.isHeld(card.id)).toBe(true);
+        expect(cards().map((q) => q.id)).toEqual([card.id]);
+        await handlers.onAnswer(CONN, SID, card.id, '2');
+        expect(await decisionOf(response)).toEqual({
+          behavior: 'allow',
+          updatedInput: { ...NUMBERS, answers: { 'Pick a number': '2' } },
+        });
+        expect(ptyWrites).toEqual([]);
+      });
+    });
+
     test('a plan is answered by label through the relay too, and never by a position', async () => {
       const { handlers } = build();
       await lock();

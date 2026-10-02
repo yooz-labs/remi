@@ -261,8 +261,10 @@ export function askUserQuestionDecision(
 
 /**
  * The option index a card pick names for a one-question AskUserQuestion
- * (the lock screen and Telegram send a single option, not `selections`), or
- * null when the pick is not exactly one of that question's options. Both the
+ * (the lock screen sends a single option's label and Telegram its value,
+ * not `selections`), or null when the pick is not exactly one of that
+ * question's options. The answer path has already refused a string that
+ * names one option by value and another by label (review S1); here both the
  * value (its 1-based index) and the displayed label must agree with the
  * parsed input, so a card that does not match the input answers nothing.
  */

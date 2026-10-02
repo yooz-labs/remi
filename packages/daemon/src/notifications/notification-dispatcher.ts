@@ -112,10 +112,13 @@ export function selectPushCategory(options: readonly QuestionOption[]): string |
 
 /**
  * Whether an AskUserQuestion card can be answered with one lock-screen tap
- * (#1127 lead decision): exactly one question, single-select. Its answer is
- * the option the tap names, resolved by index through the held hook, so a
- * positional button is safe. Any other AskUserQuestion (several questions, a
- * multi-select) is answered in the app.
+ * (#1127 lead decision): exactly one question, single-select. The tap sends
+ * its option's label, and the held answer path takes it only when it names
+ * exactly one option (a label that is another option's value is refused,
+ * review S1) that matches the parsed input by value and label, so a
+ * positional button answers that option or nothing. Any other
+ * AskUserQuestion (several questions, a multi-select) is answered in the
+ * app.
  */
 function isOneTapAskUserQuestion(question: Question): boolean {
   const steps = question.questions;
@@ -470,8 +473,8 @@ export class NotificationDispatcher {
     // answered by one positional tap (and a plan is never approved from the
     // lock screen). With no category the lock screen shows the summary and
     // opens the app, where the card renders the real options. A
-    // one-question, single-select AskUserQuestion gets REMI_MULTI: its tap is
-    // resolved by option index through the held hook (`pushCategoryFor`).
+    // one-question, single-select AskUserQuestion gets REMI_MULTI: its tap
+    // names one option, which the held hook answers (`pushCategoryFor`).
     const pushCategory = pushCategoryFor(question);
     // Send the human-readable LABELS for DISPLAY (#574, issue 4); answer
     // routing in input-events resolves an incoming label OR value back to the

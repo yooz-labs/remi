@@ -125,7 +125,11 @@ export type HeldAnswer =
    *  one-question, single-select AskUserQuestion takes it (as that
    *  question's answer, #1127); any other live hold refuses it. */
   | { readonly kind: 'text'; readonly text: string }
-  | { readonly kind: 'selections'; readonly selections: readonly AnswerSelection[] };
+  | { readonly kind: 'selections'; readonly selections: readonly AnswerSelection[] }
+  /** A plain answer that is one option's value and a different option's
+   *  label (#1127 review S1): never resolved to either, so a live hold
+   *  refuses it. */
+  | { readonly kind: 'ambiguous' };
 
 /**
  * What `answerHeld` did with a phone answer (#1126):
@@ -664,7 +668,7 @@ export class AutoApproveGate {
     if (hold.kind === 'ask') return askDecision(hold.toolInput, answer);
     if (hold.kind === 'plan') return planDecision(hold.toolInput, answer);
     if (answer.kind === 'cancel') return 'deny';
-    if (answer.kind === 'text' || answer.kind === 'selections') return null;
+    if (answer.kind !== 'option') return null;
     const { option } = answer;
     if (option.isNo && !option.isYes) {
       const message =
@@ -1317,6 +1321,7 @@ function askDecision(
   answer: HeldAnswer,
 ): PermissionDecision | null {
   if (answer.kind === 'cancel') return { behavior: 'deny', message: ASK_DISMISSED_MESSAGE };
+  if (answer.kind === 'ambiguous') return null;
   let selections: unknown;
   if (answer.kind === 'selections') {
     selections = answer.selections;

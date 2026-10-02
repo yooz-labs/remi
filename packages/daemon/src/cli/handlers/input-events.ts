@@ -284,6 +284,38 @@ function resolveOption(
   return options.find((o) => o.value === answer || o.label === answer);
 }
 
+/** What a plain answer string names among a card's options (#1127 review
+ *  S1): one option, none, or two different ones. */
+type NamedOption =
+  | { readonly kind: 'one'; readonly option: QuestionOption }
+  | { readonly kind: 'none' }
+  | { readonly kind: 'ambiguous' };
+
+/**
+ * The option a plain answer string names on a held card. The lock screen
+ * sends an option's LABEL and Telegram its VALUE, and `resolveOption` takes
+ * the first option matching either; with numeric labels ("4", "2", "1") a
+ * lock-screen tap on "1" would then answer the option whose value is "1",
+ * labeled "4" (reproduced in review). A string that is one option's value
+ * and a DIFFERENT option's label is therefore ambiguous: the held path
+ * refuses it and keeps the card and the hold. Typed (non-held) cards keep
+ * `resolveOption`.
+ */
+function namedOption(options: readonly QuestionOption[], answer: string): NamedOption {
+  const byValue = options.find((o) => o.value === answer);
+  const byLabel = options.find((o) => o.label === answer);
+  if (byValue !== undefined && byLabel !== undefined && byValue !== byLabel) {
+    return { kind: 'ambiguous' };
+  }
+  const option = byValue ?? byLabel;
+  return option === undefined ? { kind: 'none' } : { kind: 'one', option };
+}
+
+/** The refusal of an answer that names two different options (see
+ *  `namedOption`). */
+const AMBIGUOUS_ANSWER_MESSAGE =
+  'This answer matches one option by its number and another by its label; answer again from the card in the app';
+
 /** A PTY submit the #1134 screen-numbering guard refuses, and how. */
 interface ScreenRefusal {
   /** Trace `detail.reason`. */
@@ -435,6 +467,8 @@ function describeHeldAnswer(held: HeldAnswer): string {
       return `an answer to ${held.selections.length} question(s)`;
     case 'cancel':
       return 'Cancel';
+    case 'ambiguous':
+      return 'an answer naming one option by value and another by label';
   }
 }
 
@@ -727,16 +761,19 @@ export function createInputHandlers(deps: InputHandlerDeps) {
   ): AnswerOutcome | null {
     if (!answerHeld) return null;
     const selections = structuredSelections(extra);
-    const option = selections === undefined ? resolveOption(active.options, answer) : undefined;
+    const named = selections === undefined ? namedOption(active.options, answer) : undefined;
+    const option = named?.kind === 'one' ? named.option : undefined;
     // `message` crosses a trust boundary unvalidated (the protocol checks only
     // the message type), so anything but a string is dropped here.
     const message = typeof extra?.message === 'string' ? extra.message : undefined;
     const held: HeldAnswer =
       selections !== undefined
         ? { kind: 'selections', selections }
-        : option === undefined
-          ? { kind: 'text', text: answer }
-          : { kind: 'option', option, ...(message !== undefined ? { message } : {}) };
+        : named?.kind === 'ambiguous'
+          ? { kind: 'ambiguous' }
+          : option === undefined
+            ? { kind: 'text', text: answer }
+            : { kind: 'option', option, ...(message !== undefined ? { message } : {}) };
     const outcome = answerHeld(session.sessionId, questionId, held);
     if (outcome === 'unknown') return null;
     if (outcome === 'resolved') {
@@ -766,7 +803,14 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       promptId: active.promptId,
       signal: 'STALE_ANSWER',
       callSite: 'input-events.handleAnswer:heldPrompt',
-      detail: { reason: closed ? 'hold-closed' : 'not-a-held-option', source: active.source },
+      detail: {
+        reason: closed
+          ? 'hold-closed'
+          : held.kind === 'ambiguous'
+            ? 'ambiguous-option'
+            : 'not-a-held-option',
+        source: active.source,
+      },
     });
     if (closed) {
       sessionRegistry.removeQuestion(session.sessionId, questionId, 'user_answer:hold_closed');
@@ -783,9 +827,11 @@ export function createInputHandlers(deps: InputHandlerDeps) {
           'STALE_ANSWER',
           closed
             ? 'This prompt is no longer waiting for the phone; answer it in the terminal'
-            : selections !== undefined
-              ? 'Answer every question: one choice, or your own text of up to 2000 characters, for each single-choice question, and at least one choice for each multiple-choice question'
-              : 'This prompt takes one of its own options',
+            : held.kind === 'ambiguous'
+              ? AMBIGUOUS_ANSWER_MESSAGE
+              : selections !== undefined
+                ? 'Answer every question: one choice, or your own text of up to 2000 characters, for each single-choice question, and at least one choice for each multiple-choice question'
+                : 'This prompt takes one of its own options',
           {
             sessionId,
             // A refused answer leaves the card live, and a client drops the

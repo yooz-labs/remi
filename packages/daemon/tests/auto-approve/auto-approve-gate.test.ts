@@ -1156,6 +1156,25 @@ describe('AutoApproveGate held prompts (#1126)', () => {
       });
     });
 
+    test('an ambiguous answer is refused on every kind of hold (#1127 review S1)', async () => {
+      const g = gate();
+      const asked = g.resolvePermission(ask(ONE));
+      const binary = g.resolvePermission(pr({ tool_input: { command: 'ls' } }));
+      const plan = g.resolvePermission(
+        pr({ tool_name: 'ExitPlanMode', tool_input: { plan: '# P' }, permission_mode: 'plan' }),
+      );
+      for (const qid of ids) {
+        expect(g.answerHeld(qid, { kind: 'ambiguous' })).toBe('refused');
+        expect(g.isHeld(qid)).toBe(true);
+      }
+      g.forceRelease('test');
+      expect(await Promise.all([asked, binary, plan])).toEqual([
+        'passthrough',
+        'passthrough',
+        'passthrough',
+      ]);
+    });
+
     test('selections never answer a binary prompt', async () => {
       const g = gate();
       const hook = g.resolvePermission(pr());
