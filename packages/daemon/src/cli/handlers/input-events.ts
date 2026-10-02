@@ -11,6 +11,8 @@
 
 import {
   PROMPT_WAITING_ERROR_CODE,
+  PROMPT_WAITING_HELD_MESSAGE,
+  PROMPT_WAITING_MESSAGE,
   createBulletExpandResponse,
   createError,
   createInputNotDeliveredError,
@@ -1262,7 +1264,17 @@ export function createInputHandlers(deps: InputHandlerDeps) {
             screenValues,
           },
         });
-        send(connectionId, createPromptWaitingError(session.sessionId, messageId));
+        // While a hook is held the dialog may already be answered: a Yes in
+        // the terminal ends the hold only when its tool finishes, so the
+        // message must not claim a dialog is up (#1126, #1144).
+        send(
+          connectionId,
+          createPromptWaitingError(
+            session.sessionId,
+            messageId,
+            held ? PROMPT_WAITING_HELD_MESSAGE : PROMPT_WAITING_MESSAGE,
+          ),
+        );
         return;
       }
 

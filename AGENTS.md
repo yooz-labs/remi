@@ -287,7 +287,10 @@ the gate first (`gateAnswerDeps`): a held card is answered through the hook,
 and a binary card whose hold has ended is refused (`closed`: answer at the
 terminal), never typed. While a main-agent hold is open its dialog is on
 screen, so `onUserInput` refuses chat text with `PROMPT_WAITING`
-(`isMainPromptHeld`) even before the screen parse sees the menu (#1140).
+(`isMainPromptHeld`) even before the screen parse sees the menu (#1140). Its
+message is `PROMPT_WAITING_HELD_MESSAGE`, which does not claim a dialog is
+up: after a terminal Yes the hold lasts until `PostToolUse`, so the refusal
+also covers the approved command's run (#1144).
 
 **A typed answer carries the screen's numbering** (#1134). This applies only
 where no held hook stands behind the card: hook-less prompts (sandbox network,

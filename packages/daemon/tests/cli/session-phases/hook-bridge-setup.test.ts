@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ProtocolMessage, Question, QuestionOption, UUID } from '@remi/shared';
-import { generateId } from '@remi/shared';
+import { PROMPT_WAITING_HELD_MESSAGE, generateId } from '@remi/shared';
 import { MessageAPI } from '../../../src/api/message-api.ts';
 import { QuestionPresenceTracker } from '../../../src/api/question-presence-tracker.ts';
 import { SubagentViewRegistry } from '../../../src/api/subagent-view-registry.ts';
@@ -1688,8 +1688,13 @@ describe('setupHookBridge', () => {
       // No render observed yet: only the hold says a dialog is up.
       await handlers.onUserInput('conn-chat' as UUID, SID, 'please go ahead', false);
       expect(ptySubmits).toEqual([]);
-      const refusal = sent.find((m) => m.type === 'error') as { code?: string } | undefined;
+      const refusal = sent.find((m) => m.type === 'error') as
+        | { code?: string; message?: string }
+        | undefined;
       expect(refusal?.code).toBe('PROMPT_WAITING');
+      // A held prompt may already be answered in the terminal (its tool
+      // running), so the refusal does not claim a dialog is up.
+      expect(refusal?.message).toBe(PROMPT_WAITING_HELD_MESSAGE);
       // Answered from the phone: the dialog is gone, chat flows again.
       await handlers.relayAnswer(SID, card.id, 'Yes');
       expect(await hook).toBe('allow');

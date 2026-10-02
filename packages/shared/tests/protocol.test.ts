@@ -8,6 +8,7 @@ import {
   INPUT_NOT_DELIVERED_MESSAGE,
   MessageIdTracker,
   PROMPT_WAITING_ERROR_CODE,
+  PROMPT_WAITING_HELD_MESSAGE,
   PROMPT_WAITING_MESSAGE,
   createAck,
   createAgentOutput,
@@ -727,6 +728,16 @@ describe('Message factory functions', () => {
       );
       expect(msg.message).toBe(PROMPT_WAITING_MESSAGE);
       expect(msg.details).toEqual({ sessionId: 'session-1' });
+    });
+
+    test('while a hook is held it says the prompt may be finishing, never that a dialog is up (#1126)', () => {
+      const msg = createPromptWaitingError('session-1', 'message-1', PROMPT_WAITING_HELD_MESSAGE);
+
+      expect(msg.code).toBe(PROMPT_WAITING_ERROR_CODE);
+      expect(msg.message).toBe(
+        'Claude is waiting on a prompt or finishing an approved step; answer the card or use the terminal.',
+      );
+      expect(msg.details).toEqual({ sessionId: 'session-1', messageId: 'message-1' });
     });
 
     test('names the refused input message when the client sent an id', () => {

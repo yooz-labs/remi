@@ -619,6 +619,15 @@ export const PROMPT_WAITING_MESSAGE =
   'Claude is waiting on a prompt. Answer it from its card or in the terminal (Esc dismisses it).';
 
 /**
+ * The `message` of a `PROMPT_WAITING` error sent while a main-agent prompt's
+ * hook is held (#1126). It must not claim a dialog is on screen: a Yes
+ * answered in the terminal ends the hold only when its tool finishes, so the
+ * approved command may already be running (#1144).
+ */
+export const PROMPT_WAITING_HELD_MESSAGE =
+  'Claude is waiting on a prompt or finishing an approved step; answer the card or use the terminal.';
+
+/**
  * Details attached to a `PROMPT_WAITING` error. `messageId` is the refused
  * input's own message id (when the client sent one), so the client can flip
  * that one bubble to failed; the daemon acks `user_input` before it decides
@@ -1490,14 +1499,20 @@ export function createError(
 /**
  * Create the `PROMPT_WAITING` error (#1140): the refusal of a structured
  * `user_input` while Claude shows a numbered menu. `messageId` is the refused
- * input's id, when the client sent one.
+ * input's id, when the client sent one. `message` is what the user is told:
+ * `PROMPT_WAITING_MESSAGE` by default, `PROMPT_WAITING_HELD_MESSAGE` while a
+ * hook is held (#1126).
  */
-export function createPromptWaitingError(sessionId: UUID, messageId?: UUID): ErrorMessage {
+export function createPromptWaitingError(
+  sessionId: UUID,
+  messageId?: UUID,
+  message: string = PROMPT_WAITING_MESSAGE,
+): ErrorMessage {
   const details: PromptWaitingErrorDetails = {
     sessionId,
     ...(messageId !== undefined && { messageId }),
   };
-  return createError(PROMPT_WAITING_ERROR_CODE, PROMPT_WAITING_MESSAGE, { ...details });
+  return createError(PROMPT_WAITING_ERROR_CODE, message, { ...details });
 }
 
 /**
