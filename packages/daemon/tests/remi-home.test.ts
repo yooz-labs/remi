@@ -10,7 +10,12 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { isRemiHomeOverridden, remiHome, serviceCommandRefusal } from '../src/config/remi-home.ts';
+import {
+  configPathForDisplay,
+  isRemiHomeOverridden,
+  remiHome,
+  serviceCommandRefusal,
+} from '../src/config/remi-home.ts';
 import { CLI_TS, findTestPort, isolatedEnv, pollUntil } from './integration/hub-test-utils.ts';
 
 describe('remiHome()', () => {
@@ -31,6 +36,17 @@ describe('remiHome()', () => {
   test('a relative REMI_HOME is refused, never resolved against the cwd', () => {
     expect(() => remiHome({ REMI_HOME: 'state' }, '/u/me')).toThrow(/absolute path/);
     expect(() => remiHome({ REMI_HOME: './state' }, '/u/me')).toThrow(/absolute path/);
+  });
+
+  test('hints name the config file the daemon actually reads', () => {
+    expect(configPathForDisplay({}, '/u/me')).toBe(path.join('~', '.remi', 'config.toml'));
+    expect(configPathForDisplay({ REMI_HOME: '/tmp/state' }, '/u/me')).toBe(
+      path.join('/tmp/state', 'config.toml'),
+    );
+    // Under the home directory it is still shown with ~.
+    expect(configPathForDisplay({ REMI_HOME: '/u/me/scratch' }, '/u/me')).toBe(
+      path.join('~', 'scratch', 'config.toml'),
+    );
   });
 
   test('--install and --uninstall are refused under an override, in one line', () => {
@@ -149,8 +165,12 @@ describe('REMI_HOME moves the state a real cli.ts writes', () => {
       stderr: 'pipe',
     });
     const [err, code] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
-    expect(code).not.toBe(0);
-    expect(err).toContain('REMI_HOME must be an absolute path');
+    expect(code).toBe(1);
+    // One clear line, not a stack trace from a module that computed a state
+    // path at import time (#1126 review).
+    expect(err.trim()).toBe(
+      'REMI_HOME must be an absolute path, got "relative-state". Unset it to use ~/.remi.',
+    );
     expect(fs.existsSync(path.join(work, 'relative-state'))).toBe(false);
     expect(fs.existsSync(path.join(home, '.remi'))).toBe(false);
   });

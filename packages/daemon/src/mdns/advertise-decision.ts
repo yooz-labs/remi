@@ -21,6 +21,8 @@
  * is the only honest destination. Both are already passed in as `logFn`.
  */
 
+import { configPathForDisplay } from '../config/remi-home.ts';
+
 /** What is suppressing the advertisement, in the order the caller checks. */
 export type MdnsSuppression =
   /** `--no-mdns` on the command line. */
@@ -67,8 +69,8 @@ export function mdnsSuppressionMessage(suppression: MdnsSuppression): string {
     case 'cli-flag':
       return '[mDNS] Not advertising: --no-mdns was passed.';
     case 'config':
-      return '[mDNS] Not advertising: network.mdns = false in ~/.remi/config.toml.';
+      return `[mDNS] Not advertising: network.mdns = false in ${configPathForDisplay()}.`;
     case 'loopback':
-      return `[mDNS] Not advertising: bound to ${suppression.bindHost}, so there is nothing to discover off this machine (loopback is the default since #880). Set daemon.bind in ~/.remi/config.toml to advertise on your network — and set auth.enabled = true with it, because "auto" resolves to false on every bind.`;
+      return `[mDNS] Not advertising: bound to ${suppression.bindHost}, so there is nothing to discover off this machine (loopback is the default since #880). Set daemon.bind in ${configPathForDisplay()} to advertise on your network — and set auth.enabled = true with it, because "auto" resolves to false on every bind.`;
   }
 }

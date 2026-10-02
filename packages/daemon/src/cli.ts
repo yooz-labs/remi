@@ -195,7 +195,12 @@ import {
   loadConfigWithNotices,
 } from './config/index.ts';
 import type { LoadedConfig, RemiConfig } from './config/index.ts';
-import { isRemiHomeOverridden, remiHome, serviceCommandRefusal } from './config/remi-home.ts';
+import {
+  configPathForDisplay,
+  isRemiHomeOverridden,
+  remiHome,
+  serviceCommandRefusal,
+} from './config/remi-home.ts';
 import {
   DAEMON_PERMISSION_REQUEST_HOOK_TIMEOUT,
   ForeignSessionEscalator,
@@ -2209,7 +2214,7 @@ if (authEnabled) {
       `WARNING: bound to ${bindHost} with authentication disabled. Any host that can reach this port can approve permission prompts and type into your Claude session.`,
     );
     console.error(
-      `  Remedy: set daemon.bind = "${DEFAULT_CONFIG.daemon.bind}" in ~/.remi/config.toml (the default since #880), or pass --auth to require authentication on this bind.`,
+      `  Remedy: set daemon.bind = "${DEFAULT_CONFIG.daemon.bind}" in ${configPathForDisplay()} (the default since #880), or pass --auth to require authentication on this bind.`,
     );
   } else {
     console.log('Authentication disabled (localhost binding)');

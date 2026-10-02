@@ -13,7 +13,11 @@
  *
  * A relative `REMI_HOME` is refused rather than resolved: the hub and the
  * session daemons it spawns may run from different working directories, so a
- * relative path would split one remi's state across several places.
+ * relative path would split one remi's state across several places. A
+ * relative value in the process environment ends the process when this
+ * module loads, with one line on stderr and exit code 1 (#1126 review), so
+ * the modules that compute a state path at import time never throw a stack
+ * trace at the user.
  *
  * What it does not move: `remi --install` writes a LaunchAgent / systemd unit
  * whose log paths and process environment are the default `~/.remi`, because
@@ -31,6 +35,11 @@ import * as path from 'node:path';
 /** The environment variable that relocates the state directory. */
 export const REMI_HOME_ENV = 'REMI_HOME';
 
+/** The one line a relative `REMI_HOME` is refused with. */
+function relativeRemiHomeMessage(raw: string): string {
+  return `${REMI_HOME_ENV} must be an absolute path, got "${raw}". Unset it to use ~/.remi.`;
+}
+
 /**
  * The state directory: `REMI_HOME` when set (must be absolute), else
  * `<home>/.remi`. Throws on a relative `REMI_HOME`. `env` and `home` are
@@ -42,11 +51,7 @@ export function remiHome(
 ): string {
   const raw = env[REMI_HOME_ENV];
   if (raw === undefined || raw === '') return path.join(home, '.remi');
-  if (!path.isAbsolute(raw)) {
-    throw new Error(
-      `${REMI_HOME_ENV} must be an absolute path, got "${raw}". Unset it to use ~/.remi.`,
-    );
-  }
+  if (!path.isAbsolute(raw)) throw new Error(relativeRemiHomeMessage(raw));
   return path.normalize(raw);
 }
 
@@ -70,4 +75,30 @@ export function isRemiHomeOverridden(
 ): boolean {
   const raw = env[REMI_HOME_ENV];
   return raw !== undefined && raw !== '';
+}
+
+/**
+ * The config file path as a user should read it in a hint (#1126 review):
+ * `~/.remi/config.toml` by default, the real path under `REMI_HOME`. Hints
+ * that named `~/.remi/config.toml` literally pointed at the wrong file under
+ * an override.
+ */
+export function configPathForDisplay(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+  home: string = os.homedir(),
+): string {
+  const configPath = path.join(remiHome(env, home), 'config.toml');
+  return configPath.startsWith(`${home}${path.sep}`)
+    ? `~${configPath.slice(home.length)}`
+    : configPath;
+}
+
+// A relative REMI_HOME stops the process here, before any importer computes
+// a state path from it (see the module doc).
+{
+  const raw = process.env[REMI_HOME_ENV];
+  if (raw !== undefined && raw !== '' && !path.isAbsolute(raw)) {
+    process.stderr.write(`${relativeRemiHomeMessage(raw)}\n`);
+    process.exit(1);
+  }
 }
