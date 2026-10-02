@@ -11,6 +11,7 @@ import { createInputHandlers, trackerScreenDeps } from '../../../src/cli/handler
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import { createSessionPrecedentRecorder } from '../../../src/cli/precedent-recording.ts';
 import { AUQ_KEYS } from '../../../src/hooks/auq-answer.ts';
+import { optionsFromSuggestions } from '../../../src/hooks/hook-event-bridge.ts';
 import { appendPtyOutput, clearPtyOutput } from '../../../src/pty/output-buffer.ts';
 import type { PTYSession } from '../../../src/pty/pty-session.ts';
 import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
@@ -1053,13 +1054,66 @@ describe('createInputHandlers', () => {
           expect((await answerOver(card, screen, 'Green')).submits).toEqual(['2']);
         });
 
-        test('a prefix of 8 or more characters stands for the label', async () => {
-          const card = [opt('1', 'Option one for A'), opt('2', 'Other')];
-          const screen = [opt('1', 'Option one for A (recommended)'), opt('2', 'Other')];
-          expect((await answerOver(card, screen, '1')).submits).toEqual(['1']);
+        /**
+         * Round-4 review probes. Each pair shares a value and a Yes/No class
+         * or a long prefix, and means a different thing; the guard fails
+         * closed (labels must be equal), so every one is refused and the user
+         * answers at the terminal.
+         */
+        test.each([
+          ['"Yes" vs "Yes, and don\'t ask again"', 'Yes', "Yes, and don't ask again for: git *"],
+          ['"No" vs "No, refine with Ultraplan"', 'No', 'No, refine with Ultraplan in the cloud'],
+          [
+            'a long shared prefix: /tmp/x vs /etc/...',
+            'Yes, allow reading from /tmp/x',
+            'Yes, allow reading from /etc/ssh during this session',
+          ],
+          ['"Yes, use pnpm" vs "Yes, use npm"', 'Yes, use pnpm', 'Yes, use npm'],
+          [
+            'a prefix: "Option one for A" vs "... (recommended)"',
+            'Option one for A',
+            'Option one for A (recommended)',
+          ],
+        ])('refuses %s', async (_name, cardLabel, screenLabel) => {
+          const card = [opt('1', cardLabel), opt('2', 'Something else')];
+          const screen = [opt('1', screenLabel), opt('2', 'Something else')];
+          const { submits, logs } = await answerOver(card, screen, '1');
+          expect(submits).toEqual([]);
+          expect(logs.some((m) => m.includes('"1" means a different option on screen'))).toBe(true);
         });
 
-        test('a prefix shorter than 8 characters does not', async () => {
+        test("the e4-echo-classic held-card shape: the hook's mode switch is not the screen's", async () => {
+          // A Write prompt whose only suggestion was setMode acceptEdits; the
+          // card is the hook's, the screen is the live parse (collapsed
+          // spacing). Option 2 is a mode switch on both, worded differently,
+          // so typing it is refused; the identical "Yes" and "No" still type.
+          const { options: card } = optionsFromSuggestions([
+            { type: 'setMode', mode: 'acceptEdits', destination: 'session' },
+          ]);
+          const screen = [
+            opt('1', 'Yes'),
+            opt(
+              '2',
+              'Yes,andswitchtoacceptedits(auto-approvefileeditsandcommonfilecommands)forthissession(shift+tab)',
+            ),
+            opt('3', 'No'),
+          ];
+          expect((await answerOver(card, screen, '2')).submits).toEqual([]);
+        });
+
+        test('the e4-echo-classic shape: an identical "No" still types its digit', async () => {
+          const { options: card } = optionsFromSuggestions([
+            { type: 'setMode', mode: 'acceptEdits', destination: 'session' },
+          ]);
+          const screen = [
+            opt('1', 'Yes'),
+            opt('2', 'Yes,andswitchtoaccepteditsforthissession'),
+            opt('3', 'No'),
+          ];
+          expect((await answerOver(card, screen, 'No')).submits).toEqual(['3']);
+        });
+
+        test('a short label that differs is refused (the accepted cost of failing closed)', async () => {
           const card = [opt('1', 'Red'), opt('2', 'Blue')];
           const screen = [opt('1', 'Reddish brown'), opt('2', 'Blue')];
           expect((await answerOver(card, screen, 'Red')).submits).toEqual([]);

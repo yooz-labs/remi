@@ -213,9 +213,14 @@ Guards in `handleAnswer` before anything is typed (all refuse like a stale
 answer: STALE_ANSWER, card consumed, trace reason in parentheses):
 - an option value must be on the menu the tracker last observed
   (`observedPromptOptions`, wired by `trackerScreenDeps`) (`option-not-on-screen`),
-  and that screen option must be the same choice: same normalized label, or
-  the same Yes/No class, or a shared prefix of 8+ characters
-  (`option-mismatch`). Applies unless this answer just released a hold.
+  and that screen option's label must EQUAL the card option's after
+  normalization (lowercase, all whitespace and box characters removed), or,
+  for an AskUserQuestion pick, equal it with the description appended
+  (`option-mismatch`). Nothing looser: this is a stopgap until hook-backed
+  prompts stop being answered by typing (epic #1123 Phase 3), so it fails
+  closed. A refusal means "answer at the terminal"; the accepted cost is
+  false refusals on short, partial-frame or reworded labels. Applies unless
+  this answer just released a hold.
 - free text is refused when the card has options and takes no text and a
   numbered menu is on screen (`free-text-into-menu`), and on a HELD card before
   its hold is released (`free-text-on-held-card`; the hold is then released

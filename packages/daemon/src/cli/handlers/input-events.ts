@@ -331,14 +331,6 @@ const SCREEN_REFUSALS = {
   },
 } as const satisfies Record<string, ScreenRefusal>;
 
-/** "yes" / "no" when a label starts with that word, else null. */
-function yesNoClass(label: string): 'yes' | 'no' | null {
-  const t = label.trim();
-  if (/^yes\b/i.test(t)) return 'yes';
-  if (/^no\b/i.test(t)) return 'no';
-  return null;
-}
-
 /** A label reduced to what survives the PTY parse: lowercase, with ALL
  *  whitespace and box-drawing characters removed, so the parser's spacing
  *  loss (#1137) cannot make two spellings of one label disagree. */
@@ -346,42 +338,32 @@ function normalizeLabel(label: string): string {
   return label.toLowerCase().replace(/[\s\u2500-\u257F|]/g, '');
 }
 
-/** Shortest normalized prefix that may stand for a whole label. */
-const MIN_LABEL_PREFIX = 8;
-
-/** An option's yes/no class: from its label's first word, else from its
- *  isYes/isNo flags (a legacy "Always" or "Deny" carries only the flag). */
-function optionClass(option: QuestionOption): 'yes' | 'no' | null {
-  return yesNoClass(option.label) ?? (option.isNo ? 'no' : option.isYes ? 'yes' : null);
-}
-
 /**
  * Whether the card option the user picked and the screen option with the
  * same value are the same choice (#1134 review). The value check alone only
  * proves the digit EXISTS on screen: a card numbered by the hook ([Yes, No])
  * over Claude's [Yes, Yes always, No] sends "No" as 2, which the screen
- * numbers as the standing allow. Coarse on purpose:
- *   - identical labels (after `normalizeLabel`) agree;
- *   - otherwise, when either option is a Yes or a No (`optionClass`), both
- *     must be in the same class;
- *   - otherwise the shorter normalized label must be a prefix of the longer
- *     and at least `MIN_LABEL_PREFIX` characters long. An AskUserQuestion
- *     pick is also tried with its description appended, because the parser
- *     folds the description row into the screen label.
+ * numbers as the standing allow.
+ *
+ * Exact on purpose: the normalized labels (`normalizeLabel`) must be EQUAL,
+ * or, for an AskUserQuestion pick, equal once its description is appended
+ * (the parser folds the description row into the screen label). Nothing
+ * looser is safe. A Yes/No class lets "Yes" pass for "Yes, and don't ask
+ * again" and "Yes, use pnpm" for "Yes, use npm"; a shared prefix lets
+ * "Yes, allow reading from /tmp/x" pass for "/etc/...". This PR is a stopgap
+ * until hook-backed prompts stop being answered by typing (epic #1123 Phase
+ * 3), so it fails closed: a refusal means "answer at the terminal", a wrong
+ * answer is not acceptable. The cost is false refusals when a label is short,
+ * truncated by a partial frame, or reworded by Claude.
  */
 function sameChoice(card: QuestionOption, screen: QuestionOption): boolean {
   const onScreen = normalizeLabel(screen.label);
-  const candidates = [normalizeLabel(card.label)];
-  if (card.description) candidates.push(normalizeLabel(`${card.label}${card.description}`));
-  if (candidates.includes(onScreen)) return true;
-  const cardClass = optionClass(card);
-  const screenClass = optionClass(screen);
-  if (cardClass !== null || screenClass !== null) return cardClass === screenClass;
-  return candidates.some((onCard) => {
-    const [shorter, longer] =
-      onCard.length <= onScreen.length ? [onCard, onScreen] : [onScreen, onCard];
-    return shorter.length >= MIN_LABEL_PREFIX && longer.startsWith(shorter);
-  });
+  if (normalizeLabel(card.label) === onScreen) return true;
+  return (
+    card.description !== undefined &&
+    card.description.length > 0 &&
+    normalizeLabel(`${card.label}${card.description}`) === onScreen
+  );
 }
 
 /**
