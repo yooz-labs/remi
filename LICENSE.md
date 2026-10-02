@@ -42,7 +42,8 @@ Earlier tags and npm versions (0.7.15 and before, whose npm manifests declare UN
 Outside contributions to the Apache-2.0 parts (`packages/daemon`, `packages/shared`, and everything outside the package directories) are welcome and are licensed under Apache License 2.0.
 
 Outside contributions to the PolyForm Shield 1.0.0 parts (`packages/web`, `packages/signaling`, `packages/macos`) are not accepted without a prior written agreement with Yooz Labs.
-Those packages are published to be inspected, not to take outside changes; a pull request that touches one without such an agreement is closed.
+Those packages are published to be inspected, not to take outside changes;
+a pull request that touches one without such an agreement is closed.
 See [CONTRIBUTING.md](CONTRIBUTING.md) for how to reach an agreement first.
 
 ## Questions
