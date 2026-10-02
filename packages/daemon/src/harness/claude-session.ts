@@ -13,11 +13,13 @@
  * before the tracker, `sessionTrackers.set` before the hook bridge, and
  * `preAssign` before `setupHookBridge`.
  *
- * Three daemon-wide values change while the daemon runs, so they arrive as
- * getters and are read where the original read them, never captured:
- * `hookServer` (read at PTY-event time, and nulled by `cleanup`), `currentPort`
- * (`PORT` is reassigned by port probing) and `wsPort` (the `remi:<port>`
- * display name and the child's `REMI_PORT` are built at spawn time).
+ * Four daemon-wide values are read when a session launches, or later, and not
+ * when the harness is built, so they arrive as getters and are read where the
+ * original read the global: `hookServer` (read at PTY-event time, and nulled by
+ * `cleanup`), `currentPort` (`PORT` is reassigned by port probing), `wsPort`
+ * (the `remi:<port>` display name and the child's `REMI_PORT` are built at
+ * spawn time) and `prompts` (the `[prompts]` config, which picks the hold
+ * policy at each launch).
  */
 
 import { errorToString } from '@remi/shared';
@@ -75,8 +77,8 @@ export interface ClaudeLaunchDeps {
   onHarnessDenied: (input: PermissionDeniedHookInput) => void;
   pushTurnFailed: (sessionId: UUID, input: StopFailureHookInput) => void;
   dismissTurnFailed: (sessionId: UUID) => void;
-  /** `[prompts]` config, which picks the permission hold policy. */
-  prompts: Pick<PromptsConfig, 'hold_seconds' | 'daemon_hold_seconds'>;
+  /** `[prompts]` config, which picks the permission hold policy; read at each launch. */
+  prompts: () => Pick<PromptsConfig, 'hold_seconds' | 'daemon_hold_seconds'>;
   /** The daemon's hook server, or null: read at launch and again at every PTY event. */
   hookServer: () => HookServer | null;
   /** The daemon's current listening port (`PORT`, reassigned by port probing). */
@@ -113,7 +115,6 @@ export function createClaudeSession(
     onHarnessDenied,
     pushTurnFailed,
     dismissTurnFailed,
-    prompts,
     cleanup,
     observeLocalPtyOutput,
     sessionNotifiers,
@@ -263,7 +264,7 @@ export function createClaudeSession(
 
   const launchHookServer = deps.hookServer();
   if (launchHookServer) {
-    const holdPolicy = permissionHoldPolicy(passThrough, prompts);
+    const holdPolicy = permissionHoldPolicy(passThrough, deps.prompts());
     const hookBridgeHandle = setupHookBridge(
       {
         sessionRegistry,

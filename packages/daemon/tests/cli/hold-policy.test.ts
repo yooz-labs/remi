@@ -49,7 +49,7 @@ describe('cli.ts takes every per-mode value from the policy', () => {
 
   test('the session gate: hold, hook timeout and subagent routing', () => {
     expect(claudeSession).toContain(
-      'const holdPolicy = permissionHoldPolicy(passThrough, prompts);',
+      'const holdPolicy = permissionHoldPolicy(passThrough, deps.prompts());',
     );
     expect(claudeSession).toContain('holdMs: holdPolicy.holdMs,');
     expect(claudeSession).toContain('hookTimeoutMs: holdPolicy.hookTimeoutMs,');

@@ -1759,8 +1759,9 @@ const inputHandlers: InputHandlers = createInputHandlers({
 // once here and handed to the handler factories (epic #1161, phase 2). It is
 // built this late because launching a session (`createNewSession` ->
 // `harness.createSession`, phase 3) reads daemon-wide services declared above.
-// `hookServer`, `PORT` and the websocket port change while the daemon runs, so
-// they are passed as getters.
+// `hookServer`, `PORT`, the websocket port and `[prompts]` are read when a
+// session launches, not when the harness is built, so they are passed as
+// getters.
 const harness = new ClaudeHarness(transcriptDiscovery, {
   sessionRegistry,
   sessionStore,
@@ -1776,7 +1777,7 @@ const harness = new ClaudeHarness(transcriptDiscovery, {
   onHarnessDenied,
   pushTurnFailed: turnFailedRoutes.push,
   dismissTurnFailed: turnFailedRoutes.dismiss,
-  prompts: remiConfig.prompts,
+  prompts: () => remiConfig.prompts,
   hookServer: () => hookServer,
   currentPort: () => PORT,
   wsPort: () => remiStatus.wsPort,

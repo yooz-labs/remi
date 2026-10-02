@@ -104,7 +104,7 @@ describe('ClaudeHarness.createSession', () => {
       onHarnessDenied: () => {},
       pushTurnFailed: () => {},
       dismissTurnFailed: () => {},
-      prompts: { hold_seconds: 90, daemon_hold_seconds: 3540 },
+      prompts: () => ({ hold_seconds: 90, daemon_hold_seconds: 3540 }),
       hookServer: () => hookServer,
       currentPort: () => port,
       wsPort: () => 19999,
