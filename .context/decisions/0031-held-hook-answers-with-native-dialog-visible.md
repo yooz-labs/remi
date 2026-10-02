@@ -1,6 +1,6 @@
 # ADR 0031: Held-hook answers with the native dialog visible
 
-**Status:** accepted
+**Status:** accepted; amended by #1127 (AskUserQuestion and ExitPlanMode, below)
 **Date:** 2026-10-02
 **Owner:** Yahya
 
@@ -42,7 +42,7 @@ An empty response decides nothing: it is what every non-answer path sends, so no
 
 Subagent prompts (with `agent_id`) follow the terminal: with a local terminal (wrapper mode) the hook is answered `passthrough` so the dialog renders, and the phone gets an informational "answer at the terminal" notice when it does; with no local terminal (daemon or hub mode) the prompt is held and answerable like a main one.
 
-No card answer is typed into the PTY for a hook-backed binary prompt (raw keystrokes from `remi attach` and the phone's Escape button still reach the dialog, by design: they are a person at the terminal). A render while a hook-backed dialog may be on screen (a live main hold, or a prompt whose answer belongs to the terminal, for at most the session's hold length) is that dialog, not an orphan, so no typed card is rebuilt from the screen. A hold released by an ambiguous signal (a name + input match with no paired id, an identical re-request) stays open in the terminal for the same reason, and the phone is told so ("handed back to the terminal"), since its card is gone; no release of a live hold is silent. Guarded digit typing (#1134) remains only for prompts with no hook behind them (sandbox network, trust, agent-team dialogs) that reach the phone at all, and, until #1127, for AskUserQuestion, ExitPlanMode and multi-choice string-label permissions. Not every hook-less prompt reaches the phone: the startup folder-trust dialog of a daemon session produced no card in the live run (#1147).
+No card answer is typed into the PTY for a hook-backed binary prompt (raw keystrokes from `remi attach` and the phone's Escape button still reach the dialog, by design: they are a person at the terminal). A render while a hook-backed dialog may be on screen (a live main hold, or a prompt whose answer belongs to the terminal, for at most the session's hold length) is that dialog, not an orphan, so no typed card is rebuilt from the screen. A hold released by an ambiguous signal (a name + input match with no paired id, an identical re-request) stays open in the terminal for the same reason, and the phone is told so ("handed back to the terminal"), since its card is gone; no release of a live hold is silent. Guarded digit typing (#1134) remains only for prompts with no hook behind them (sandbox network, trust, agent-team dialogs) that reach the phone at all, and for multi-choice string-label permissions; AskUserQuestion and ExitPlanMode moved to the hook in #1127 (amendment below). Not every hook-less prompt reaches the phone: the startup folder-trust dialog of a daemon session produced no card in the live run (#1147).
 
 `PermissionDenied` becomes an informational push of a new kind, `harness_denied`, mutable per device and on by default; never a card.
 
@@ -72,3 +72,43 @@ No card answer is typed into the PTY for a hook-backed binary prompt (raw keystr
 - Issue #1126 (both spike comments), epic #1123, owner decision D3a in `.context/strategy-2026-10.md`.
 - #1134 / PR #1136 (the typed-digit failure and its guard), #733 (the hold-timeout handoff, restored here).
 - `packages/daemon/src/auto-approve/auto-approve-gate.ts` (`holdForAnswer`, `answerHeld`, `onHoldAborted`, `pairToolUse`, `passSubagentToTerminal`), `packages/daemon/src/hooks/hook-server.ts` (the resolver's abort signal), `packages/daemon/src/hooks/hook-event-bridge.ts` (`standingGrantFor`), `packages/daemon/src/notifications/harness-denied.ts`.
+
+## Amendment (#1127): AskUserQuestion and ExitPlanMode through held hooks
+
+**Date:** 2026-10-02
+
+### Context
+
+Until #1127 both tools were answered `passthrough` and pushed by id, and a phone answer was typed: AskUserQuestion by a keystroke runner that drove its tabbed dialog and verified the review screen, ExitPlanMode as a digit behind the #1134 label check, which refused every ExitPlanMode digit on Claude Code 2.1.287 because remi's hardcoded labels had drifted. The #1126 spike measured on 2.1.287 that both can be held like a binary prompt:
+
+| Finding | Experiment |
+|---|---|
+| AskUserQuestion fires `PreToolUse`, then `PermissionRequest` about 10 ms later with the same input (manual and auto mode); its dialog renders during the hold | E3 |
+| `{behavior: "allow", updatedInput: {questions: <echo>, answers: {"<question text>": "<label>"}}}` answers it; a multi-select answer is its labels joined with ", "; free text (not a label) is accepted; the transcript records `toolUseResult: {questions, answers}`; no `permission_suggestions` | E3 |
+| ExitPlanMode's input is `{plan, planFilePath}`, no `permission_suggestions`. `allow` with `updatedInput` (the input echoed) and an optional `setMode` (`destination: "session"`) approves it; a bare `allow` is silently ignored; `deny` with a message keeps Claude in plan mode, and it revises and calls ExitPlanMode again | E4 |
+| ExitPlanMode's dialog offers "Yes, and use auto mode" only when auto mode is available (model-dependent), then "Yes, auto-accept edits" (`acceptEdits`), "Yes, manually approve edits" (`default`), "Tell Claude what to change" | E4 |
+| A terminal answer to either fires `PostToolUse` with the `tool_use_id` of the paired `PreToolUse`, but its `tool_input` differs from the request's: `{questions, answers}` for AskUserQuestion, `{}` for ExitPlanMode; Esc or "Tell Claude what to change" closes the held request | F3, hook captures |
+
+### Decision (lead decisions, as implemented)
+
+1. **AskUserQuestion** is held and pushed as one card for the whole call: each question's text, header, options (label and description) and `multiSelect`. The phone answers with `selections` (option indices per question, or free text for a single-select question, `AnswerSelection.text`). remi maps them to `answers` keyed by the raw question text and resolves the hook with `allow` + `updatedInput` (the tool input echoed unchanged, plus `answers`). It validates first and refuses (the hold stays) any answer that leaves a question unanswered, gives a single-select question anything but one option or its own text, gives a multi-select question no option or free text, names an option or question that does not exist, or answers an input that does not parse exactly (a dropped entry would shift every option index after it). One option (the lock screen, Telegram) answers only a one-question, single-select AskUserQuestion, by value and label. Cancel from the phone denies with "The user dismissed the question." and types nothing.
+2. **ExitPlanMode** is held and pushed as a `plan_approval` card carrying the plan as `detail` (the push body shows its start, the app all of it, Telegram up to its message limit) and three options built by meaning: "Approve, auto-accept edits" (`setMode acceptEdits`), "Approve, approve edits manually" (`setMode default`), "Keep planning" (`deny` with the phone's message, or "Keep planning."). Approvals echo the tool input (`plan`, `planFilePath`) as `updatedInput` and force `destination: "session"`. `auto` is not offered (not knowable from the payload); the terminal dialog still offers it. Cancel keeps planning.
+3. **Lock screen.** An AskUserQuestion with exactly one single-select question gets REMI_MULTI with `dynOptions` (its tap resolves by option index through the hook, so a positional button is safe); every other AskUserQuestion and every plan approval gets no actionable category. Approving a plan is never a lock-screen tap.
+4. **The Phase 3 machinery is reused unchanged** for deadlines, pairing, abort detection, subagent routing (a wrapper-mode subagent's call passes to the terminal with a notice; a daemon-mode one is held and answerable), orphan suppression, the eviction guard and the chat guard. One fix: a `PostToolUse` whose `tool_use_id` equals the paired id now matches whatever its input (a `tool_use_id` names one call); before, the input also had to match, so a terminal answer to either tool would have left its hold up until the deadline.
+5. **Deleted:** the keystroke runner (`hooks/auq-answer.ts`, `hooks/auq-runner.ts`, `hooks/auq-active-runs.ts`), the rolling PTY buffer it read, the #661 screen detector for a terminal AskUserQuestion answer (the paired `PostToolUse` replaces it), the hardcoded ExitPlanMode labels, the `escalatePassthrough` path for both tools, and the tracker's parked-render card push (unused since #1126; `onRender` is required). A structured answer for a card no hold stands behind is refused, never typed.
+6. **Kept typed (guarded, #1134):** multi-choice string-label permissions, and question-shaped tools that are not AskUserQuestion (an MCP or custom tool with `questions`). No structured hook answer was verified for either, and the dialog of a question-shaped tool is Claude's permission prompt, not its questions; typing stays behind the exact-label screen check, which fails closed.
+7. **The `/answer` relay** (lock screen, Watch) reaches the same held path; its answer resolves structurally and no longer depends on the screen. The iOS-side Watch delivery issue (#665) is separate.
+
+### Consequences
+
+- Nothing is typed for an AskUserQuestion or a plan from the phone; a terminal answer and a phone answer race, first answer wins, exactly as for a binary prompt.
+- The chat guard covers both dialogs (`hasMainHold`), so a chat sent while either is held is refused.
+- The web form takes free text for a single-select question and enables Submit only for an answer the daemon accepts; a refused form answer stops showing "Answering" so it can be sent again.
+
+### Residuals
+
+- A plan cannot be approved into `auto` mode from the phone; the terminal can.
+- Free text on a multi-select question is refused (only labels were verified for it); the terminal dialog's "Type something" row still takes it.
+- A question-shaped MCP or custom tool still shows its questions on the card, and a pick is typed behind the label check, which normally refuses it because its dialog is a permission prompt; such a card with one single-select question now gets REMI_MULTI too (the category rule reads the card's shape, not the tool).
+- After a deadline release the card is dismissed and the terminal answers, as for a binary prompt; a long plan can easily outlast `hold_seconds` while being read.
+

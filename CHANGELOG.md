@@ -4,6 +4,55 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### AskUserQuestion and plan approval are answered through Claude's hook (#1127, [ADR 0031](.context/decisions/0031-held-hook-answers-with-native-dialog-visible.md) amendment)
+
+Claude's questions (AskUserQuestion) and plan approvals (ExitPlanMode) are
+now held like a permission prompt: the card is pushed at once, Claude's own
+dialog stays in the terminal, and the first answer wins. A phone answer is
+the hook's response, with the answers or the approved plan in it; nothing
+is typed into the terminal for either.
+
+#### Added
+
+- **Answers to every question at once.** The card carries all of an
+  AskUserQuestion's questions; the phone answers each one, a multi-select
+  with one or more choices, a single-choice question with a choice or your
+  own text (the app has a text field for it; `AnswerSelection.text` in the
+  protocol). An answer that leaves a question out, or gives a single-choice
+  question two answers, is refused and the question keeps waiting.
+- **Plan approval by meaning.** A plan card shows the plan (in full in the
+  app, its start in the push, up to Telegram's message limit there) with
+  three choices: approve with edits auto-accepted, approve with edits
+  approved manually, or keep planning (an optional note goes to Claude;
+  the app has no field for it yet). Auto mode is not offered from the
+  phone; the terminal's dialog still offers it.
+- `Question.kind: 'plan_approval'` and `Question.detail` (the plan) on the
+  wire.
+
+#### Changed
+
+- Cancel on a question card dismisses it through the hook ("The user
+  dismissed the question."); on a plan it keeps planning. Nothing is typed.
+- The lock screen answers an AskUserQuestion only when it is one
+  single-choice question; any other, and every plan, is answered in the app.
+- A question or plan answered in the terminal clears its card as soon as
+  Claude reports the answer (the tool's `PostToolUse`), and Esc there
+  clears it at once.
+
+#### Removed
+
+- The AskUserQuestion keystroke driver and the screen watcher for answers
+  typed in the terminal, and the hardcoded plan-approval labels that no
+  longer matched Claude's dialog.
+- A structured answer for a card that is not held (a multi-choice prompt,
+  a question-shaped tool other than AskUserQuestion) is refused instead of
+  being typed.
+
+#### Known limits
+
+- A long plan can take longer to read than `[prompts] hold_seconds`; the
+  card is then handed back to the terminal as for any prompt.
+
 ### Permission prompts are answered through Claude's hook (#1126, [ADR 0031](.context/decisions/0031-held-hook-answers-with-native-dialog-visible.md))
 
 A binary permission prompt is now held while its card is on the phone, and
@@ -61,8 +110,8 @@ prompts any more.
   on screen, so it is handed back to the terminal and the phone is told so
   ("answer in the terminal" / "answer with remi attach"); a second unstick
   clears it. Other stuck cards are resolved and dismissed as before.
-- AskUserQuestion and plan approval are unchanged: still typed into Claude's
-  dialog behind the exact-label screen check (#1134), until #1127.
+- AskUserQuestion and plan approval were left typed by #1126; #1127 (above)
+  moves them to the hook as well.
 
 #### Known limits
 

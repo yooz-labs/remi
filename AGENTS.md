@@ -258,10 +258,43 @@ the card at once by id (`holdForAnswer` -> `onHeldEscalate` ->
   resolve it.
 
 An empty response never decides anything; it is what every non-answer path
-sends. A **multi-choice or design prompt** (`AskUserQuestion`, `ExitPlanMode`,
-a multi-choice string-label permission) is still answered `passthrough` and
-pushed by id at once, and its answer is typed (Phase 4, #1127, moves it to the
-hook). An open card is also resolved by a matching `PreToolUse`/`PostToolUse`/
+sends.
+
+**AskUserQuestion and ExitPlanMode are held the same way** (#1127, ADR 0031
+amendment): their dialogs render during the hold, and a phone answer
+resolves the hook with a structured `updatedInput` built in
+`hooks/structured-answers.ts`, never typed. Verified on Claude Code 2.1.287:
+
+- **AskUserQuestion:** one card for the whole call (each question's text,
+  header, options with descriptions, `multiSelect`). The phone sends
+  `selections` (option indices per question, or `text` for a single-select
+  question); the gate validates them against the tool input and answers
+  `{behavior:"allow", updatedInput:{...tool_input, answers}}`, `answers`
+  keyed by the raw question text, a multi-select as its labels joined with
+  ", ". An answer that leaves a question unanswered, gives a single-select
+  question anything but one option or its own text, gives a multi-select
+  question no option or text, or names an option that does not exist is
+  refused and the hold stays (never completed with a guess); so is every
+  answer to an input that does not parse exactly. A single option (lock
+  screen, Telegram) answers only a one-question single-select call. Cancel
+  denies with "The user dismissed the question."
+- **ExitPlanMode:** a `plan_approval` card with the plan as `detail` and
+  three options by meaning: "Approve, auto-accept edits" / "Approve, approve
+  edits manually" (`allow` + the tool input echoed as `updatedInput` + a
+  `setMode` `acceptEdits` / `default` with `destination: "session"`) and
+  "Keep planning" (`deny` with the phone's message or "Keep planning.";
+  Claude revises and asks again). `auto` is not offered (not knowable from
+  the payload); the terminal still offers it. Cancel keeps planning.
+- A terminal answer fires `PostToolUse` with the paired `tool_use_id` but a
+  different `tool_input` (`{questions, answers}`, or `{}` for a plan), so
+  the gate matches a paired id whatever the input. Deadlines, abort,
+  subagent routing and the chat guard are the binary prompt's.
+
+A **multi-choice string-label permission**, or a question-shaped tool that is
+not AskUserQuestion, is still answered `passthrough` and pushed by id at once,
+and its answer is typed behind the #1134 guard (no structured hook answer was
+verified for either). A structured `selections` answer for such a card is
+refused, never typed. An open card is also resolved by a matching `PreToolUse`/`PostToolUse`/
 `PermissionDenied`, a lead `Stop` or new user prompt (main), `SubagentStop`
 (that agent), `SessionEnd`, a transcript rotation, or `remi unstick`; a
 dismissal is broadcast only for a card that was actually pushed. `remi
@@ -301,9 +334,8 @@ also covers the approved command's run (#1144).
 **A typed answer carries the screen's numbering** (#1134). This applies only
 where no held hook stands behind the card: hook-less prompts (sandbox network,
 trust, agent-team dialogs; not all of them reach the phone, the daemon's
-startup folder-trust dialog does not, #1147) and, until #1127,
-AskUserQuestion / ExitPlanMode /
-multi-choice cards. When a hook record merges onto a parsed prompt
+startup folder-trust dialog does not, #1147) and multi-choice cards
+(AskUserQuestion and ExitPlanMode are held since #1127). When a hook record merges onto a parsed prompt
 (`QuestionPresenceTracker.consumeAndMerge`), the card's options are the
 parse's options, labels and values unchanged; the hook contributes id, text,
 agent, source and tool metadata (including `allowsFreeText`: a permission
@@ -325,12 +357,11 @@ STALE_ANSWER, card consumed, trace reason in parentheses). A refusal means
   (`observedPromptOptions`, wired by `trackerScreenDeps`) (`option-not-on-screen`),
   and that screen option's label must EQUAL the card option's after
   normalization (lowercase, all whitespace and box characters removed), or,
-  for an AskUserQuestion pick, equal it with the description appended
-  (`option-mismatch`). Nothing looser: it fails closed; the accepted cost is
-  false refusals on short, partial-frame or reworded labels. A pushed-by-id
-  card keeps the hook's numbering, so this refuses its digit wherever the
-  hook's list differs from Claude's (ExitPlanMode's list is hardcoded, Claude
-  builds its own).
+  for a pick with a description (a question-shaped tool's), equal it with
+  the description appended (`option-mismatch`). Nothing looser: it fails
+  closed; the accepted cost is false refusals on short, partial-frame or
+  reworded labels. A pushed-by-id card keeps the hook's numbering, so this
+  refuses its digit wherever the hook's list differs from Claude's.
 - free text is refused when the card has options and takes no text and a
   numbered menu is on screen (`free-text-into-menu`), and always on a
   pushed-by-id (`held`-stamped) card that has options and takes no text
@@ -443,7 +474,7 @@ on stderr with its reason.
 
 - Daemon sends WebSocket `question` (in-app display) AND APNS push (lock screen).
 - Signaling server (Cloudflare Worker) relays push payloads to APNS.
-- iOS categories `REMI_YN`, `REMI_YNA`, `REMI_MULTI` registered in `AppDelegate.swift`. Their actions are positional (`OPT_i` sends option i) and the first two have hardcoded titles, so `selectPushCategory` picks by meaning, not count (#1134): `REMI_YN` only for exactly [one-time Yes, No]; `REMI_YNA` only for exactly [one-time Yes, an always-allow rule, No], the middle option marked `standingGrant: 'addRules'` (#1126: only there is its static "Yes, always" title true; a `setMode` or unmarked standing option gets no category; its "Yes, always" button is the only static action that requires an unlocked device). A one-time Yes is an option labeled exactly "Yes"; any other Yes is a standing grant, as is any Yes after the first option and a session-grant action. A card with a standing option in any other layout gets NO category (a plain notification, answered in the app), because `REMI_MULTI`'s buttons do not require an unlocked device. No card with a standing option gets the `dynOptions` hint, `REMI_YNA` included: the extension builds its dynamic buttons without `.authenticationRequired`, so a standing grant behind one could be tapped while locked. Every other 2-4 option card gets `REMI_MULTI`. When the Notification Service Extension does not run, `REMI_MULTI` shows all four static "Option N" buttons whatever the option count; a button with no option behind it sends no answer (`RemiAnswerRelay` finds no `opt_n` and defers to the app), and any answer that does arrive still passes the `handleAnswer` guards (an iOS follow-up will add 2- and 3-button categories).
+- iOS categories `REMI_YN`, `REMI_YNA`, `REMI_MULTI` registered in `AppDelegate.swift`. Their actions are positional (`OPT_i` sends option i) and the first two have hardcoded titles, so `selectPushCategory` picks by meaning, not count (#1134): `REMI_YN` only for exactly [one-time Yes, No]; `REMI_YNA` only for exactly [one-time Yes, an always-allow rule, No], the middle option marked `standingGrant: 'addRules'` (#1126: only there is its static "Yes, always" title true; a `setMode` or unmarked standing option gets no category; its "Yes, always" button is the only static action that requires an unlocked device). A one-time Yes is an option labeled exactly "Yes"; any other Yes is a standing grant, as is any Yes after the first option and a session-grant action. A card with a standing option in any other layout gets NO category (a plain notification, answered in the app), because `REMI_MULTI`'s buttons do not require an unlocked device. No card with a standing option gets the `dynOptions` hint, `REMI_YNA` included: the extension builds its dynamic buttons without `.authenticationRequired`, so a standing grant behind one could be tapped while locked. Every other 2-4 option card gets `REMI_MULTI`, except by kind (`pushCategoryFor`, #1127): an AskUserQuestion card gets `REMI_MULTI` (with `dynOptions`) only when it is one single-select question, whose tap resolves by option index through the held hook, and none otherwise; a plan approval never gets a category (approving a plan is not a lock-screen tap). When the Notification Service Extension does not run, `REMI_MULTI` shows all four static "Option N" buttons whatever the option count; a button with no option behind it sends no answer (`RemiAnswerRelay` finds no `opt_n` and defers to the app), and any answer that does arrive still passes the `handleAnswer` guards (an iOS follow-up will add 2- and 3-button categories).
 
 **Push classes and who can mute them** (#968):
 
