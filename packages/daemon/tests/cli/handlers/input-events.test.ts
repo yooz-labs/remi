@@ -2780,21 +2780,77 @@ describe('createInputHandlers', () => {
       expect(deps.isPromptCurrent?.('sid-x' as UUID, 'q', 't')).toBe(false);
     });
 
+    /** Strip comments, so a commented-out spread cannot satisfy the check. */
+    function stripComments(src: string): string {
+      return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:\\])\/\/[^\n]*/g, '$1');
+    }
+
+    /** 'ok', or why `src`'s `createInputHandlers({...})` call does not use the
+     *  helper for its screen deps. */
+    function wiringVerdict(src: string): string {
+      const start = src.indexOf('createInputHandlers({');
+      if (start < 0) return 'no createInputHandlers call';
+      const end = src.indexOf('\n});', start);
+      if (end < 0) return 'no end of the call';
+      const call = stripComments(src.slice(start, end));
+      // Its own line, nothing else on it.
+      const spread =
+        /^[ \t]*\.\.\.trackerScreenDeps\(\(sessionId\) => sessionTrackers\.get\(sessionId\)\),?[ \t]*$/m.exec(
+          call,
+        );
+      if (!spread) return 'spread missing';
+      // A later key of any shape (property, method shorthand, shorthand)
+      // would override the helper's dep.
+      const after = call.slice(spread.index + spread[0].length);
+      if (/\b(isPromptCurrent|isPromptObservedOnPTY|observedPromptOptions)\b/.test(after)) {
+        return 'overridden after the spread';
+      }
+      return 'ok';
+    }
+
+    const cliSource = fs.readFileSync(
+      path.join(import.meta.dir, '..', '..', '..', 'src', 'cli.ts'),
+      'utf8',
+    );
+    const SPREAD = '  ...trackerScreenDeps((sessionId) => sessionTrackers.get(sessionId)),';
+
     test('cli.ts wires it into the answer handlers', () => {
-      const cli = fs.readFileSync(
-        path.join(import.meta.dir, '..', '..', '..', 'src', 'cli.ts'),
-        'utf8',
-      );
-      const start = cli.indexOf('createInputHandlers({');
-      expect(start).toBeGreaterThan(-1);
-      const end = cli.indexOf('\n});', start);
-      const call = cli.slice(start, end);
-      expect(call).toContain('...trackerScreenDeps((sessionId) => sessionTrackers.get(sessionId))');
-      // And nothing overrides it afterwards with a hand-written dep.
-      const after = call.slice(call.indexOf('...trackerScreenDeps'));
-      expect(after).not.toMatch(
-        /\n\s*(isPromptCurrent|isPromptObservedOnPTY|observedPromptOptions)\s*:/,
-      );
+      expect(wiringVerdict(cliSource)).toBe('ok');
+    });
+
+    // Round-4 review: the first version of this check passed a commented-out
+    // spread and a method-shorthand override.
+    test.each([
+      ['deleted', (s: string) => s.replace(`${SPREAD}\n`, ''), 'spread missing'],
+      [
+        'line-commented',
+        (s: string) => s.replace(SPREAD, `  // ${SPREAD.trim()}`),
+        'spread missing',
+      ],
+      [
+        'block-commented',
+        (s: string) => s.replace(SPREAD, `  /* ${SPREAD.trim()} */`),
+        'spread missing',
+      ],
+      [
+        'overridden by a property',
+        (s: string) => s.replace(SPREAD, `${SPREAD}\n  isPromptCurrent: () => true,`),
+        'overridden after the spread',
+      ],
+      [
+        'overridden by a method shorthand',
+        (s: string) => s.replace(SPREAD, `${SPREAD}\n  isPromptCurrent() { return true; },`),
+        'overridden after the spread',
+      ],
+      [
+        'overridden by a shorthand property',
+        (s: string) => s.replace(SPREAD, `${SPREAD}\n  observedPromptOptions,`),
+        'overridden after the spread',
+      ],
+    ])('the check fails when the spread is %s', (_name, mutate, verdict) => {
+      const mutated = mutate(cliSource);
+      expect(mutated).not.toBe(cliSource);
+      expect(wiringVerdict(mutated)).toBe(verdict);
     });
   });
 
