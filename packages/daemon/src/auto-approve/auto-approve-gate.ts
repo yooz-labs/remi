@@ -361,15 +361,16 @@ export class AutoApproveGate {
 
   /**
    * Open prompts whose dialog is (or may still be) on screen and whose
-   * answer belongs to the terminal (#1126): a hold released at its deadline,
-   * a hold released early by an ambiguous signal (`releaseToTerminal`), and
-   * a wrapper-mode subagent prompt once its dialog rendered. A subset of
-   * `openQuestionSignatures`' keys, closed only by a hook signal (its tool
-   * run, Stop, a new prompt, SubagentStop, teardown), never by a late phone
-   * answer (`retireQuestion`). Together with `holds` it is what
-   * `hasOpenHookPrompt` reports.
+   * answer belongs to the terminal (#1126), each with the time it got there:
+   * a hold released at its deadline, a hold released early by an ambiguous
+   * signal (`releaseToTerminal`), and a wrapper-mode subagent prompt once
+   * its dialog rendered. A subset of `openQuestionSignatures`' keys, closed
+   * only by a hook signal (its tool run, Stop, a new prompt, the agent's
+   * next tool call or SubagentStop, teardown), never by a late phone answer
+   * (`retireQuestion`). A MAIN-agent entry younger than the session's hold
+   * length is what `hasOpenHookPrompt` reports besides a live main hold.
    */
-  private readonly terminalPrompts = new Set<UUID>();
+  private readonly terminalPrompts = new Map<UUID, number>();
 
   /** Unfinished tool calls by `tool_use_id`, oldest first (#1126), for
    *  pairing a PermissionRequest with its call. See `InFlightToolUse`. */
@@ -480,23 +481,60 @@ export class AutoApproveGate {
   }
 
   /**
-   * True while a hook-backed dialog this gate knows about is (or may be) on
-   * screen without a live card (#1126): a live hold (its dialog renders
-   * during the hold), or a prompt in `terminalPrompts`. The presence tracker
-   * asks this before treating a PTY render as an orphan: such a render is
-   * that dialog or a redraw of it, and must not be rebuilt into a card the
-   * phone would answer by typing. Read live per call.
+   * True while a MAIN-agent hook-backed dialog this gate knows about is (or
+   * may be) on screen (#1126): a live main hold (its dialog renders during
+   * the hold), or a main prompt in `terminalPrompts` younger than the
+   * session's hold length (`holdMs`). The presence tracker asks this before
+   * treating a PTY render as an orphan: such a render is that dialog or a
+   * redraw of it, and must not be rebuilt into a card the phone would answer
+   * by typing. Read live per call.
    *
-   * Deliberately narrower than "any open entry": a wrapper-mode subagent
-   * prompt that has not rendered does not count (its own render is matched
-   * first through its parked record), and a passthrough card
-   * (AskUserQuestion, ExitPlanMode) is registered, which the tracker's
-   * live-question check already covers. Each of those would otherwise
-   * suppress a genuinely hook-less prompt (sandbox network, trust, an
-   * agent-team dialog) for as long as it stayed open.
+   * Bounded on purpose (#1126 lead decision), because every entry this
+   * counts suppresses a genuinely hook-less prompt's card (sandbox network,
+   * trust, an agent-team dialog) while it lasts:
+   *   - subagent holds never count: their dialog does not render while held;
+   *   - subagent `terminalPrompts` entries never count either; they are
+   *     cleared by that agent's next tool call (`noteAgentToolCall`) or
+   *     `SubagentStop`;
+   *   - a main entry stops counting once it is older than `holdMs` (a No
+   *     answered in the terminal after the deadline fires no hook). A redraw
+   *     after that takes the guarded hook-less path (#1134: typed only on an
+   *     exact label match, fail closed).
+   * A passthrough card (AskUserQuestion, ExitPlanMode) is registered, which
+   * the tracker's live-question check already covers.
    */
   hasOpenHookPrompt(): boolean {
-    return this.holds.size > 0 || this.terminalPrompts.size > 0;
+    if (this.hasMainHold()) return true;
+    const cutoff = Date.now() - this.deps.holdMs;
+    for (const [qid, at] of this.terminalPrompts) {
+      if (at <= cutoff) continue;
+      if (this.openQuestionSignatures.get(qid)?.isSubagent === false) return true;
+    }
+    return false;
+  }
+
+  /**
+   * A subagent started a tool call (its `PreToolUse`, #1126): any of its own
+   * prompts waiting in the terminal was answered, since an agent does not
+   * move on while its dialog is up. A No answered there fires no hook, so
+   * without this the entry (and its "answer at the terminal" notice) would
+   * last until `SubagentStop`. Resolved like any external signal; the call's
+   * own prompt, if any, is not affected (it is asked after this). A no-op
+   * for the main agent, whose prompts are swept by `Stop` and a new prompt.
+   */
+  noteAgentToolCall(agentId: string | undefined, toolUseId: string | undefined): void {
+    if (agentId === undefined || this.terminalPrompts.size === 0) return;
+    for (const qid of [...this.terminalPrompts.keys()]) {
+      const sig = this.openQuestionSignatures.get(qid);
+      if (sig?.agentId !== agentId) continue;
+      if (toolUseId !== undefined && sig.toolUseId === toolUseId) continue;
+      this.resolveSupersededQuestion(qid, 'agent-next-tool-call', sig.toolName);
+    }
+  }
+
+  /** Mark a prompt as waiting in the terminal, keeping its first time. */
+  private markTerminalPrompt(questionId: UUID): void {
+    if (!this.terminalPrompts.has(questionId)) this.terminalPrompts.set(questionId, Date.now());
   }
 
   /**
@@ -655,7 +693,7 @@ export class AutoApproveGate {
    * keeps its redraws from becoming a typed orphan card.
    */
   private releaseToTerminal(questionId: UUID, reason: string): void {
-    this.terminalPrompts.add(questionId);
+    this.markTerminalPrompt(questionId);
     this.endHold(questionId, 'passthrough');
     this.removeAndDismiss(questionId, reason);
   }
@@ -933,7 +971,7 @@ export class AutoApproveGate {
       agentId: observed.agentId,
     });
     if (noticedNow) {
-      this.terminalPrompts.add(questionId);
+      this.markTerminalPrompt(questionId);
       this.terminalNotices.add(questionId);
     }
   }
@@ -946,7 +984,7 @@ export class AutoApproveGate {
    */
   noteTerminalNotice(questionId: UUID): void {
     if (!this.openQuestionSignatures.has(questionId)) return;
-    this.terminalPrompts.add(questionId);
+    this.markTerminalPrompt(questionId);
     this.terminalNotices.add(questionId);
   }
 

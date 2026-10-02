@@ -717,6 +717,22 @@ describe('AutoApproveGate held prompts (#1126)', () => {
     expect(noticesCleared).toEqual([qid]);
   });
 
+  test('a prompt waiting in the terminal stops suppressing orphans after the hold length (#1126)', async () => {
+    // A No answered in the terminal after the deadline fires no hook, so the
+    // entry cannot rely on a signal to end; it expires instead.
+    const g = gate({ holdMs: 25 });
+    const hook = g.resolvePermission(pr());
+    const qid = ids[0] as UUID;
+    expect(await hook).toBe('passthrough');
+    expect(g.hasOpenHookPrompt()).toBe(true);
+    await Bun.sleep(40);
+    expect(g.hasOpenHookPrompt()).toBe(false);
+    // Expiry only ends the suppression: the prompt is still tracked, so its
+    // notice still clears when a hook signal closes it.
+    g.cancelStale('UserPromptSubmit', { mainOnly: true });
+    expect(noticesCleared).toEqual([qid]);
+  });
+
   test('an answer before the deadline cancels it: no notice, no late release', async () => {
     const g = gate({ holdMs: 40 });
     const hook = g.resolvePermission(pr());
@@ -974,12 +990,12 @@ describe('AutoApproveGate subagent routing by local terminal (#1126)', () => {
     expect(pushedNow).toEqual([]);
     expect(alerts).toEqual([input]);
     expect(g.answerHeld(ids[0] as UUID, { kind: 'option', option: YES })).toBe('unknown');
-    // Not rendered yet: it must not suppress a hook-less prompt's card (its
-    // own render is matched through its parked record first).
+    // A subagent's prompt never suppresses a hook-less prompt's card, before
+    // or after it rendered (#1126 lead decision: only main-agent prompts
+    // count); its own render is matched through its parked record first.
     expect(g.hasOpenHookPrompt()).toBe(false);
-    // Rendered: now its redraws are echoes, not orphans.
     g.noteTerminalNotice(ids[0] as UUID);
-    expect(g.hasOpenHookPrompt()).toBe(true);
+    expect(g.hasOpenHookPrompt()).toBe(false);
   });
 
   test('a rendered notice is dismissed when the prompt resolves', async () => {
@@ -1027,11 +1043,48 @@ describe('AutoApproveGate subagent routing by local terminal (#1126)', () => {
 
   test("without a local terminal: that agent's SubagentStop releases its hold empty", async () => {
     const g = gate(false);
-    const hook = g.resolvePermission(sub());
+    let settled = false;
+    const hook = g.resolvePermission(sub()).then((d) => {
+      settled = true;
+      return d;
+    });
     g.cancelStaleForAgent('agent-other', 'SubagentStop');
-    expect(g.hasOpenHookPrompt()).toBe(true);
+    await Bun.sleep(1);
+    expect(settled).toBe(false);
     g.cancelStaleForAgent('agent-1', 'SubagentStop');
     expect(await hook).toBe('passthrough');
+  });
+
+  test('a held subagent prompt never suppresses orphans; a held main prompt does (#1126)', async () => {
+    const g = gate(false);
+    const subHook = g.resolvePermission(sub());
+    // Its dialog does not render while held, so a render is something else.
+    expect(g.hasOpenHookPrompt()).toBe(false);
+    expect(g.hasMainHold()).toBe(false);
+    const mainHook = g.resolvePermission(pr({ tool_input: { command: 'make deploy' } }));
+    expect(g.hasOpenHookPrompt()).toBe(true);
+    expect(g.hasMainHold()).toBe(true);
+    g.forceRelease('test');
+    await Promise.all([subHook, mainHook]);
+  });
+
+  test("a subagent's prompt waiting in the terminal is cleared by that agent's next tool call (#1126)", async () => {
+    // Daemon mode, deadline passed: the prompt is released to the terminal
+    // with its notice out. A No answered there fires no hook.
+    const g = gate(false, { holdMs: 5, onHoldDeadline: () => {} });
+    const hook = g.resolvePermission(sub());
+    const qid = ids[0] as UUID;
+    expect(await hook).toBe('passthrough');
+    // Another agent moving on, or this agent's call that has no id
+    // relation, does not touch it until it is this agent's next call.
+    g.noteAgentToolCall('agent-other', 'tu-x');
+    g.noteAgentToolCall(undefined, 'tu-main');
+    expect(noticesCleared).toEqual([]);
+    g.noteAgentToolCall('agent-1', 'tu-next');
+    expect(noticesCleared).toEqual([qid]);
+    // Gone from the gate: a matching tool event later finds nothing.
+    g.noteAgentToolCall('agent-1', 'tu-next-2');
+    expect(noticesCleared).toEqual([qid]);
   });
 });
 

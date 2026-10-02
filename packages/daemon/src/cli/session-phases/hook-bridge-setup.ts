@@ -715,6 +715,10 @@ export function setupHookBridge(
       // out-of-band) — expire its parked record so it cannot stale-merge
       // onto a later unrelated prompt.
       tracker.noteAgentAdvanced(input.agent_id);
+      // #1126: the agent moved on, so a prompt of its own still waiting in
+      // the terminal was answered there (a No fires no hook). Clears it and
+      // dismisses its notice.
+      autoApproveGate.noteAgentToolCall(input.agent_id, input.tool_use_id);
       // #799: mirrors the main-context external-resolution cancel below —
       // this agent's tool is now running, so any parked/pushed permission
       // question the gate is still tracking FOR THIS AGENT with a matching

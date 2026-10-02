@@ -105,6 +105,7 @@ function buildPipeline(submits: string[] = []): {
   gate: AutoApproveGate;
   pushed: Question[];
   noticed: Question[];
+  noticesCleared: UUID[];
 } {
   const SID = generateId() as UUID;
   const registry = new SessionRegistry({ orphanTimeoutMs: 60_000 });
@@ -116,6 +117,7 @@ function buildPipeline(submits: string[] = []): {
 
   const pushed: Question[] = [];
   const noticed: Question[] = [];
+  const noticesCleared: UUID[] = [];
   const tracker = new QuestionPresenceTracker(
     (q) => {
       pushed.push(q);
@@ -151,11 +153,14 @@ function buildPipeline(submits: string[] = []): {
         });
         return q.id;
       },
+      onTerminalNoticeResolved: (id) => {
+        noticesCleared.push(id);
+      },
     },
     SID,
   );
 
-  return { SID, registry, tracker, gate, pushed, noticed };
+  return { SID, registry, tracker, gate, pushed, noticed, noticesCleared };
 }
 
 describe('single question identity across hook -> PTY-render (#887)', () => {
@@ -199,19 +204,20 @@ describe('single question identity across hook -> PTY-render (#887)', () => {
     // Regression guard for the deleted `rekeySignatureToRendered`: the gate's
     // `openQuestionSignatures` entry, keyed at park time, is the same id the
     // render reports, with no intermediate step.
-    const { registry, tracker, gate, noticed } = buildPipeline();
+    const { registry, tracker, gate, noticed, noticesCleared } = buildPipeline();
     await gate.resolvePermission(pr('rm -rf build'));
     tracker.onOrphanPTYPrompt(ptyRender('reviewer · Bash: rm -rf build'));
     const noticedId = noticed[0]?.id as UUID;
     gate.noteTerminalNotice(noticedId);
-    expect(gate.hasOpenHookPrompt()).toBe(true);
+    expect(noticesCleared).toEqual([]);
 
-    // The subagent's tool now runs (approved in the terminal).
+    // The subagent's tool now runs (approved in the terminal): the gate
+    // resolves the noticed id itself, so that is the notice it clears.
     gate.cancelExternallyResolved(
       { toolName: 'Bash', toolInput: { command: 'rm -rf build' }, agentId: 'agent-1' },
       'PostToolUse-subagent',
     );
-    expect(gate.hasOpenHookPrompt()).toBe(false);
+    expect(noticesCleared).toEqual([noticedId]);
     expect(noticed.map((q) => q.id)).toEqual([noticedId]);
     await registry.shutdown();
   });

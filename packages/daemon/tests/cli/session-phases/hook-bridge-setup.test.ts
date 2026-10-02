@@ -1996,6 +1996,29 @@ describe('setupHookBridge', () => {
       expect(broadcastResolvedLog.map((r) => r.questionId)).toContain(card.id);
     });
 
+    test('a released main prompt stops suppressing after the hold length: a redraw takes the guarded hook-less path', async () => {
+      const { tracker, card, hook } = held(
+        'claude-held-expire',
+        {},
+        { holdMs: 25, orphanDebounceMs: 5 },
+      );
+      const dialog = parseQuestion(WRAPPED_DIRECTORY_DIALOG).question as Question;
+      tracker.onOrphanPTYPrompt(dialog);
+      expect(await hook).toBe('passthrough'); // released at the deadline
+      expect(cards()).toHaveLength(0);
+      // Past the hold length (a No in the terminal fires no hook, so nothing
+      // would ever end the suppression): a redraw is treated as hook-less.
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      tracker.onOrphanPTYPrompt({ ...dialog, id: generateId() });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      const orphan = cards();
+      expect(orphan).toHaveLength(1);
+      expect(orphan[0]?.id).not.toBe(card.id);
+      // A typed card, answered only on an exact label match (#1134); nothing
+      // is typed without an answer.
+      expect(ptySubmits).toEqual([]);
+    });
+
     test('closing the session releases a live hold', async () => {
       const { hook, handle } = held('claude-held-close');
       handle.closeBinder();
@@ -2005,10 +2028,12 @@ describe('setupHookBridge', () => {
 
     test("the dialog's render during the hold is an echo, and after the deadline a redraw still builds no typed card", async () => {
       const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
+      // The hold length also bounds how long the released prompt suppresses
+      // orphans, so it is long enough to cover the redraws below.
       const { tracker, card, hook, handlers } = held(
         'claude-held-deadline',
         {},
-        { holdMs: 40, orphanDebounceMs: 5, noticeLog },
+        { holdMs: 150, orphanDebounceMs: 5, noticeLog },
       );
       const dialog = parseQuestion(WRAPPED_DIRECTORY_DIALOG).question as Question;
       tracker.onOrphanPTYPrompt(dialog);
@@ -2091,16 +2116,55 @@ describe('setupHookBridge', () => {
       // Informational only: no card exists to answer, so nothing can be typed.
       expect(cards()).toHaveLength(0);
 
-      // A redraw is the same open prompt, never an orphan card.
-      tracker.onOrphanPTYPrompt({ ...dialog, id: generateId() });
-      await new Promise((resolve) => setTimeout(resolve, 30));
-      expect(cards()).toHaveLength(0);
       expect(ptySubmits).toEqual([]);
 
       // Answered Yes in the terminal: the tool runs, the notice clears.
       hookServer.fire('PostToolUse', { ...call, hook_event_name: 'PostToolUse' });
       expect(noticeLog.map((n) => n.reason)).toEqual(['subagent', 'dismissed']);
       expect(noticeLog[1]?.questionId).toBe(noticeLog[0]?.questionId as UUID);
+    });
+
+    test("wrapper mode: a teammate's prompt answered No in the terminal does not hide a hook-less prompt; its next call clears the notice", async () => {
+      const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
+      const { tracker } = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+        orphanDebounceMs: 5,
+        noticeLog,
+      });
+      lockSession('claude-sub-no');
+      const call = subCall('claude-sub-no');
+      expect(
+        await hookServer.firePermission({ ...call, hook_event_name: 'PermissionRequest' }),
+      ).toBe('passthrough');
+      tracker.onOrphanPTYPrompt(parseQuestion(WRAPPED_DIRECTORY_DIALOG).question as Question);
+      expect(noticeLog.map((n) => n.reason)).toEqual(['subagent']);
+      // The user answers No in the terminal: no hook fires. A hook-less
+      // prompt (a sandbox network dialog) renders next and gets its card.
+      tracker.onOrphanPTYPrompt({
+        id: generateId(),
+        text: 'Allow network access to example.com?',
+        options: [
+          { label: 'Yes', value: '1', isRecommended: true, isYes: false, isNo: false },
+          { label: 'No', value: '2', isRecommended: false, isYes: false, isNo: false },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+        source: 'pty',
+      });
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(cards().map((q) => q.text)).toEqual(['Allow network access to example.com?']);
+      // The teammate moves on: its next call proves the No, so the notice
+      // is dismissed without waiting for SubagentStop.
+      hookServer.fire('PreToolUse', {
+        ...call,
+        hook_event_name: 'PreToolUse',
+        tool_input: { command: 'ls' },
+        tool_use_id: 'tu-next',
+      });
+      expect(noticeLog.map((n) => n.reason)).toEqual(['subagent', 'dismissed']);
+      expect(ptySubmits).toEqual([]);
     });
 
     test('wrapper mode: a subagent prompt that has not rendered does not hide a hook-less prompt', async () => {

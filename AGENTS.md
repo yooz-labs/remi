@@ -260,12 +260,19 @@ hook). An open card is also resolved by a matching `PreToolUse`/`PostToolUse`/
 dismissal is broadcast only for a card that was actually pushed.
 
 **Nothing is typed into the PTY for a hook-backed binary prompt.** While a
-hook is held, or a prompt waits in the terminal (`terminalPrompts`: released
-at its deadline or early, or a rendered wrapper-mode subagent dialog), the
-tracker treats a PTY render as that dialog (`setHookPromptProbe`), never as an
-orphan, so no typed card is rebuilt from it. An unrendered subagent prompt and
-a registered passthrough card do not suppress orphans, so a hook-less prompt
-(sandbox network, trust, an agent-team dialog) still gets its card. `handleAnswer` asks
+MAIN-agent hook is held, or a main prompt waits in the terminal
+(`terminalPrompts`: released at its deadline or early) for less than the
+session's hold length, the tracker treats a PTY render as that dialog
+(`setHookPromptProbe` -> `hasOpenHookPrompt`), never as an orphan, so no typed
+card is rebuilt from it. The probe is bounded on purpose (#1126 lead
+decision), since everything it counts suppresses a hook-less prompt's card
+(sandbox network, trust, an agent-team dialog): subagent holds never count
+(their dialog does not render while held), subagent `terminalPrompts` entries
+never count (they are cleared by that agent's next `PreToolUse`,
+`noteAgentToolCall`, or `SubagentStop`), and a main entry stops counting after
+the hold length, after which a redraw takes the guarded hook-less path (#1134,
+fail closed). So a redraw of a rendered wrapper-mode subagent dialog can
+become a guarded typed card. `handleAnswer` asks
 the gate first (`gateAnswerDeps`): a held card is answered through the hook,
 and a binary card whose hold has ended is refused (`closed`: answer at the
 terminal), never typed. While a main-agent hold is open its dialog is on
