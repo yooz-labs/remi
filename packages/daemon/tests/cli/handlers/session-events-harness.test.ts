@@ -1,14 +1,15 @@
 /**
- * A Stop reads its graceful exit input from the harness (#1163).
+ * `createSessionHandlers` reads its Claude values from the harness (#1163).
  *
- * `session-events.test.ts` already pins that a Claude Stop types `/exit`, but
- * it cannot tell a handler that reads `harness.gracefulExitInput` from one
- * that still hardcodes `/exit`: both type the same bytes for Claude. These
- * tests give `createSessionHandlers` a harness with a different exit input and
- * with none, so only a handler that routes through the harness passes.
+ * `session-events.test.ts` already pins that a Claude Stop types `/exit` and
+ * that a listed session carries its transcript path, but it cannot tell a
+ * handler that asks the harness from one that still hardcodes Claude's value:
+ * both produce the same bytes for Claude. These tests give the handler a
+ * harness with a different exit input, with none, and with a different
+ * transcript path, so only a handler that routes through the harness passes.
  *
- * The harness here is a real `Harness` whose `resumeArgs` and `transcriptPath`
- * delegate to `ClaudeHarness`; only `gracefulExitInput` differs.
+ * Each harness here is a real `Harness` whose other members delegate to
+ * `ClaudeHarness`; only the member under test differs.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
@@ -31,7 +32,7 @@ import { TranscriptDiscovery } from '../../../src/transcript/transcript-discover
 const CID = 'conn0000-0000-0000-0000-000000000000' as UUID;
 const REQ = 'req00000-0000-0000-0000-000000000000' as UUID;
 
-describe('createSessionHandlers Stop, driven by the harness (#1163)', () => {
+describe('createSessionHandlers, driven by the harness (#1163)', () => {
   let tmpDir: string;
   let sessionRegistry: SessionRegistry;
   let handlersRef: { resolveStopOnClose: (sessionId: UUID) => void } | null;
@@ -64,6 +65,17 @@ describe('createSessionHandlers Stop, driven by the harness (#1163)', () => {
       gracefulExitInput,
       resumeArgs: (id) => claude.resumeArgs(id),
       transcriptPath: (projectPath, id) => claude.transcriptPath(projectPath, id),
+    };
+  }
+
+  /** A real harness; only the transcript path differs from Claude's. */
+  function harnessWithTranscriptPath(
+    transcriptPath: (projectPath: string, id: string) => string,
+  ): Harness {
+    return {
+      gracefulExitInput: claude.gracefulExitInput,
+      resumeArgs: (id) => claude.resumeArgs(id),
+      transcriptPath,
     };
   }
 
@@ -132,5 +144,58 @@ describe('createSessionHandlers Stop, driven by the harness (#1163)', () => {
     const { submitted } = stopSessionWith(claude);
 
     expect(submitted).toEqual(['/exit']);
+  });
+
+  test("a listed session's transcriptPath comes from the harness, not a hardcoded derivation", () => {
+    const claudeId = '66666666-6666-4666-8666-666666666666';
+    const sessionStore = new SessionStore(path.join(tmpDir, 'sessions.json'));
+    const sessionId = sessionRegistry.createSessionId();
+    sessionRegistry.registerSession(
+      sessionId,
+      '/test/dir',
+      {
+        id: generateId(),
+        write: () => {},
+        submitInput: async () => {},
+        close: async () => {},
+      } as unknown as PTYSession,
+      { getFullBulletContent: () => null } as unknown as MessageAPI,
+    );
+    sessionStore.save({
+      remiSessionId: sessionId,
+      claudeSessionId: claudeId,
+      projectPath: '/test/dir',
+      port: 8765,
+      pid: process.pid,
+      startedAt: new Date(0).toISOString(),
+      exitedAt: null,
+      exitCode: null,
+    });
+
+    createSessionHandlers({
+      sessionRegistry,
+      bindingStore: new SessionBindingStore(sessionStore),
+      transcriptDiscovery: new TranscriptDiscovery({
+        projectsDir: path.join(tmpDir, 'claude-projects'),
+      }),
+      harness: harnessWithTranscriptPath((projectPath, id) => `/stand-in/${projectPath}/${id}`),
+      liveSessionsRegistry: new SessionRegistryFile(tmpDir),
+      currentPort: () => 8765,
+      untrackConnection: () => {},
+      onConnectionRemoved: () => {},
+      send: (connectionId, message) => {
+        sendCalls.push({ connectionId, message });
+        return true;
+      },
+    }).onSessionListRequest(CID, REQ, false);
+
+    const response = sendCalls[0]?.message as unknown as {
+      type: string;
+      sessions: Array<{ claudeSessionId?: string; transcriptPath?: string }>;
+    };
+    expect(response.type).toBe('session_list_response');
+    expect(response.sessions).toHaveLength(1);
+    expect(response.sessions[0]?.claudeSessionId).toBe(claudeId);
+    expect(response.sessions[0]?.transcriptPath).toBe(`/stand-in//test/dir/${claudeId}`);
   });
 });
