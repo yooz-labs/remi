@@ -4,6 +4,64 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### AskUserQuestion and plan approval are answered through Claude's hook (#1127, [ADR 0031](.context/decisions/0031-held-hook-answers-with-native-dialog-visible.md) amendment)
+
+Claude's questions (AskUserQuestion) and plan approvals (ExitPlanMode) are
+now held like a permission prompt: the card is pushed at once, Claude's own
+dialog stays in the terminal, and the first answer wins. A phone answer is
+the hook's response, with the answers or the approved plan in it; nothing
+is typed into the terminal for either.
+
+#### Added
+
+- **Answers to every question at once.** The card carries all of an
+  AskUserQuestion's questions; the phone answers each one, a multi-select
+  with one or more choices, a single-choice question with a choice or your
+  own text (the app has a text field for it; `AnswerSelection.text` in the
+  protocol). An answer that leaves a question out, or gives a single-choice
+  question two answers, is refused and the question keeps waiting.
+- **Plan approval by meaning.** A plan card shows the plan (in full in the
+  app, its start in the push; on Telegram in full when it fits, otherwise
+  cut with a note and without buttons, and without buttons when the card
+  carries no plan text) with three choices: approve with edits auto-accepted, approve with edits
+  approved manually, or keep planning (an optional note goes to Claude;
+  the app has no field for it yet). Auto mode is not offered from the
+  phone; the terminal's dialog still offers it. A background agent's plan
+  (daemon or hub mode) is approved without changing the session's mode.
+- `Question.kind: 'plan_approval'` and `Question.detail` (the plan) on the
+  wire.
+
+#### Changed
+
+- Cancel on a question card dismisses it through the hook ("The user
+  dismissed the question."); on a plan it keeps planning. Nothing is typed.
+- The lock screen answers an AskUserQuestion only when it is one
+  single-choice question; any other, and every plan, is answered in the app.
+  Telegram offers no buttons for several questions or a multi-select, and
+  its reply to a button says "Sent!" only when the answer was applied; an
+  answer that fails is reported in the chat.
+- A question-shaped tool other than AskUserQuestion (an MCP tool with
+  `questions`, for example) is answered only in the terminal, where its
+  dialog is Claude's permission prompt: its card shows the questions and
+  says so, has no Telegram buttons or lock-screen actions, and an answer
+  from the app is refused, never typed.
+- A question or plan answered in the terminal clears its card as soon as
+  Claude reports the answer (the tool's `PostToolUse`), and Esc there
+  clears it at once.
+
+#### Removed
+
+- The AskUserQuestion keystroke driver and the screen watcher for answers
+  typed in the terminal, and the hardcoded plan-approval labels that no
+  longer matched Claude's dialog.
+- A structured answer for a card that is not held (a multi-choice
+  permission prompt) is refused instead of being typed.
+
+#### Known limits
+
+- A long plan can take longer to read than `[prompts] hold_seconds`; the
+  card is then handed back to the terminal as for any prompt.
+
 ### Permission prompts are answered through Claude's hook (#1126, [ADR 0031](.context/decisions/0031-held-hook-answers-with-native-dialog-visible.md))
 
 A binary permission prompt is now held while its card is on the phone, and
@@ -61,8 +119,8 @@ prompts any more.
   on screen, so it is handed back to the terminal and the phone is told so
   ("answer in the terminal" / "answer with remi attach"); a second unstick
   clears it. Other stuck cards are resolved and dismissed as before.
-- AskUserQuestion and plan approval are unchanged: still typed into Claude's
-  dialog behind the exact-label screen check (#1134), until #1127.
+- AskUserQuestion and plan approval were left typed by #1126; #1127 (above)
+  moves them to the hook as well.
 
 #### Known limits
 
@@ -139,8 +197,10 @@ source of several security bugs (#536, #1060, #1063).
   to the terminal instead, see above).
 - **Every phone answer is typed, and checked against the screen first**
   (#1134). (Since #1126 above, binary permission prompts are answered through
-  the held hook instead; typing remains only for hook-less prompts and for
-  AskUserQuestion, ExitPlanMode and multi-choice permissions.) With nothing held, an answer is typed into Claude's dialog only
+  the held hook instead, and since #1127 AskUserQuestion and plan approval
+  too; typing remains only for hook-less prompts and multi-choice
+  permissions, and a question-shaped tool other than AskUserQuestion is
+  answered only in the terminal.) With nothing held, an answer is typed into Claude's dialog only
   when a prompt is on screen and the chosen option's label exactly matches
   the screen's option at that number (whitespace and case aside); free text
   is refused on a card that takes a choice. A refusal consumes the card and

@@ -46,7 +46,7 @@ add a row below.
 | [0028](0028-narrow-remote-read-and-session-precedent-scope.md) | Narrow `gh api` reads and private working-directory scope for session precedent (superseded by 0030) |
 | [0029](0029-capability-proofs-are-finite-and-group-gated.md) | Capability proofs are finite, effect-registered, and gated by requested groups (superseded by 0030) |
 | [0030](0030-defer-permission-judgment-to-the-harness.md) | remi no longer judges permissions; the harness decides and remi relays what is still asked |
-| [0031](0031-held-hook-answers-with-native-dialog-visible.md) | A binary prompt is answered through its held hook while Claude's dialog stays visible; first answer wins, nothing is typed |
+| [0031](0031-held-hook-answers-with-native-dialog-visible.md) | A binary prompt is answered through its held hook while Claude's dialog stays visible; first answer wins, nothing is typed; amended by #1127: AskUserQuestion and ExitPlanMode too, with a structured `updatedInput` |
 
 ## By area
 

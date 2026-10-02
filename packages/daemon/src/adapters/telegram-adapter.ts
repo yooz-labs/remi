@@ -42,7 +42,7 @@ import type {
 import {
   formatHelpMessage,
   formatMessageForTelegram,
-  formatQuestionKeyboard,
+  formatQuestionCard,
   formatSessionList,
   isValidContent,
   stripTerminalCodes,
@@ -168,6 +168,17 @@ export class TelegramAdapter implements ConnectionAdapter {
   private readonly pendingInterrupts: Map<UUID, { connectionId: UUID; refused: boolean }> =
     new Map();
 
+  /** Answer-button taps waiting on the daemon (see `handleAnswerCallback`),
+   *  keyed per tap, so the reply can say whether the answer was applied
+   *  (#1127 review S2). A refusal is an `error` sent to the connection while
+   *  the tap is in flight: one naming a question concerns only that
+   *  question's taps; one naming none concerns every tap in flight on the
+   *  connection, which errs toward not claiming success. */
+  private readonly pendingAnswers: Map<
+    UUID,
+    { connectionId: UUID; questionId: UUID; refused: boolean }
+  > = new Map();
+
   /** Minimum interval between inputs in milliseconds */
   private static readonly RATE_LIMIT_MS = 1000;
 
@@ -287,13 +298,14 @@ export class TelegramAdapter implements ConnectionAdapter {
       return false;
     }
 
-    // Create inline keyboard for question
-    const keyboard = formatQuestionKeyboard(question);
+    // The message and its answer buttons; a card answered in the app or the
+    // terminal gets none (#1127 review S2).
+    const card = formatQuestionCard(question);
 
     this.bot.api
-      .sendMessage(session.chatId, question.text, {
+      .sendMessage(session.chatId, card.text, {
         message_thread_id: session.topicId,
-        reply_markup: keyboard,
+        ...(card.keyboard !== undefined ? { reply_markup: card.keyboard } : {}),
       })
       .catch((err) => {
         console.error('Failed to send Telegram question:', err);
@@ -407,6 +419,7 @@ export class TelegramAdapter implements ConnectionAdapter {
       case 'error': {
         const err = message as ErrorMessage;
         this.noteErrorForInterrupts(connectionId, err);
+        this.noteErrorForAnswers(connectionId, err);
         const errSession = this.getSession(connectionId);
         if (errSession && this.bot) {
           this.bot.api
@@ -868,6 +881,16 @@ export class TelegramAdapter implements ConnectionAdapter {
     }
   }
 
+  /** An `error` went to `connectionId`: mark the answer taps it concerns as
+   *  refused (see `pendingAnswers`). */
+  private noteErrorForAnswers(connectionId: UUID, err: ErrorMessage): void {
+    const named = err.details?.['questionId'];
+    for (const pending of this.pendingAnswers.values()) {
+      if (pending.connectionId !== connectionId) continue;
+      if (typeof named !== 'string' || named === pending.questionId) pending.refused = true;
+    }
+  }
+
   private async handlePause(ctx: Context): Promise<void> {
     const session = this.getSessionFromContext(ctx);
     if (!session) {
@@ -936,8 +959,35 @@ export class TelegramAdapter implements ConnectionAdapter {
       return;
     }
 
-    // Notify daemon of answer
-    this.events.onAnswer?.(session.connectionId, session.sessionId, questionId, answer);
+    // Notify the daemon and wait for its verdict (#1127 review S2): a
+    // refusal arrives as an `error` on this connection (rendered to the chat
+    // by `sendRaw`) before `onAnswer` settles, and "Sent!" is then not
+    // claimed and the buttons stay (a refused held card keeps its prompt).
+    const tapId = generateId();
+    const pending = { connectionId: session.connectionId, questionId, refused: false };
+    this.pendingAnswers.set(tapId, pending);
+    try {
+      await this.events.onAnswer?.(session.connectionId, session.sessionId, questionId, answer);
+    } catch (err) {
+      // The handler threw instead of answering with an `error`: say so in
+      // the chat, which the toast below points to (verification review 3).
+      console.error('Telegram answer failed:', err);
+      pending.refused = true;
+      const message = err instanceof Error ? err.message : String(err);
+      await this.bot?.api
+        .sendMessage(session.chatId, `Error: ${message}`, {
+          message_thread_id: session.topicId,
+        })
+        .catch(() => {
+          /* ignore send errors */
+        });
+    } finally {
+      this.pendingAnswers.delete(tapId);
+    }
+    if (pending.refused) {
+      await ctx.answerCallbackQuery('Not applied (see the message)');
+      return;
+    }
 
     // Acknowledge the callback
     await ctx.answerCallbackQuery('Sent!');

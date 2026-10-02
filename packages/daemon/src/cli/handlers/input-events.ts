@@ -22,10 +22,6 @@ import {
 import type { AnswerExtras, AnswerSelection, Question, QuestionOption, UUID } from '@remi/shared';
 
 import type { HeldAnswer, HeldAnswerOutcome } from '../../auto-approve/index.ts';
-import { clearAuqRunActive, markAuqRunActive } from '../../hooks/auq-active-runs.ts';
-import { AUQ_KEYS } from '../../hooks/auq-answer.ts';
-import { type AuqRunOutcome, runAuqAnswer } from '../../hooks/auq-runner.ts';
-import { readPtyOutput, resetPtyOutput } from '../../pty/output-buffer.ts';
 import type { ManagedSession, SessionBindingStore, SessionRegistry } from '../../session/index.ts';
 import { traceQuestionEvent } from '../../session/question-trace.ts';
 import { log, logError } from '../logger.ts';
@@ -209,19 +205,15 @@ function guardBinding(
  * Outcome of routing an answer to a pending Question. Returned by the shared
  * answer core so the connection-independent HTTP `/answer` relay (#575, P4a)
  * can map it to a clear JSON status without re-implementing the routing logic.
- *   - `delivered`     — the answer was submitted to the PTY (or drove the AskUserQuestion runner).
+ *   - `delivered`     — the answer reached Claude: through a held hook, or
+ *                       submitted to the PTY.
  *   - `session-not-found` — no session matched the sessionId/connectionId.
  *   - `stale-binding` — the Claude session this answer targeted has rotated.
- *   - `stale`         — the question is no longer active (already answered or resolved).
+ *   - `stale`         — the answer was not applied: the question is no
+ *                       longer active, or the answer was refused (not one the
+ *                       card takes, or a typed answer the screen refutes).
  */
-export type AnswerOutcome =
-  | 'delivered'
-  | 'session-not-found'
-  | 'stale-binding'
-  | 'stale'
-  /** #627: a structured AskUserQuestion answer could not be auto-driven safely;
-   *  the prompt is left up so the user can Cancel (Esc) or answer in the terminal. */
-  | 'escalated';
+export type AnswerOutcome = 'delivered' | 'session-not-found' | 'stale-binding' | 'stale';
 
 export type InputHandlers = ReturnType<typeof createInputHandlers>;
 
@@ -292,6 +284,42 @@ function resolveOption(
   return options.find((o) => o.value === answer || o.label === answer);
 }
 
+/** What a plain answer string names among a card's options (#1127 review
+ *  S1): one option, none, or two different ones. */
+type NamedOption =
+  | { readonly kind: 'one'; readonly option: QuestionOption }
+  | { readonly kind: 'none' }
+  | { readonly kind: 'ambiguous' };
+
+/**
+ * The option a plain answer string names on a held card. The lock screen
+ * sends an option's LABEL and Telegram its VALUE, and `resolveOption` takes
+ * the first option matching either; with numeric labels ("4", "2", "1") a
+ * lock-screen tap on "1" would then answer the option whose value is "1",
+ * labeled "4" (reproduced in review). A string that is one option's value
+ * and a DIFFERENT option's label is therefore ambiguous: the held path
+ * refuses it and keeps the card and the hold. Typed (non-held) cards keep
+ * `resolveOption`.
+ */
+function namedOption(options: readonly QuestionOption[], answer: string): NamedOption {
+  const byValue = options.find((o) => o.value === answer);
+  const byLabel = options.find((o) => o.label === answer);
+  if (byValue !== undefined && byLabel !== undefined && byValue !== byLabel) {
+    return { kind: 'ambiguous' };
+  }
+  const option = byValue ?? byLabel;
+  return option === undefined ? { kind: 'none' } : { kind: 'one', option };
+}
+
+/** The refusal of every answer to a card no phone answer can be applied to
+ *  (`Question.terminalOnly`, #1127 review S7). Cancel still works. */
+const TERMINAL_ONLY_MESSAGE = 'This question can only be answered in the terminal (or Cancel).';
+
+/** The refusal of an answer that names two different options (see
+ *  `namedOption`). */
+const AMBIGUOUS_ANSWER_MESSAGE =
+  'This answer matches one option by its number and another by its label; answer again from the card in the app';
+
 /** A PTY submit the #1134 screen-numbering guard refuses, and how. */
 interface ScreenRefusal {
   /** Trace `detail.reason`. */
@@ -299,7 +327,9 @@ interface ScreenRefusal {
     | 'option-not-on-screen'
     | 'option-mismatch'
     | 'free-text-into-menu'
-    | 'free-text-on-held-card';
+    | 'free-text-on-held-card'
+    | 'terminal-only'
+    | 'selections-not-held';
   /** `SessionRegistry.removeQuestion` signal for the refused card. */
   readonly removalReason: string;
   /** STALE_ANSWER message to the client. */
@@ -333,6 +363,26 @@ const SCREEN_REFUSALS = {
     message: 'The prompt on screen takes a choice, not text; refusing to submit',
     logLine: (input) => `free text (${input.length} chars) into the option menu on screen`,
   },
+  // #1127: a card no phone answer can be applied to (`Question.terminalOnly`:
+  // a question-shaped tool other than AskUserQuestion, whose dialog is
+  // Claude's permission prompt). Nothing is typed for it.
+  terminalOnly: {
+    reason: 'terminal-only',
+    removalReason: 'user_answer:terminal_only',
+    message: TERMINAL_ONLY_MESSAGE,
+    logLine: () => 'an answer to a card only the terminal can answer',
+  },
+  // #1127: a structured answer exists only as a hook response. With no hold
+  // behind the card (one built without the terminal-only mark; a
+  // question-shaped tool's card is refused as `terminalOnly` first) it
+  // cannot be expressed, and nothing is typed for it.
+  selectionsNotHeld: {
+    reason: 'selections-not-held',
+    removalReason: 'user_answer:selections_not_held',
+    message:
+      'This prompt cannot take a structured answer from the phone; answer it in the terminal',
+    logLine: () => 'a structured answer for a card no held hook stands behind',
+  },
 } as const satisfies Record<string, ScreenRefusal>;
 
 /** A label reduced to what survives the PTY parse: lowercase, with ALL
@@ -350,7 +400,9 @@ function normalizeLabel(label: string): string {
  * numbers as the standing allow.
  *
  * Exact on purpose: the normalized labels (`normalizeLabel`) must be EQUAL,
- * or, for an AskUserQuestion pick, equal once its description is appended
+ * or, for a pick with a description (a card built from a tool's `questions`;
+ * a `terminalOnly` card is refused before this check), equal once its
+ * description is appended
  * (the parser folds the description row into the screen label). Nothing
  * looser is safe. A Yes/No class lets "Yes" pass for "Yes, and don't ask
  * again" and "Yes, use pnpm" for "Yes, use npm"; a shared prefix lets
@@ -401,9 +453,43 @@ function answerKeys(
   answer: string,
   selections: readonly AnswerSelection[] | undefined,
 ): string[] {
-  const option = selections?.length ? undefined : resolveOption(active.options, answer);
+  const option =
+    Array.isArray(selections) && selections.length > 0
+      ? undefined
+      : resolveOption(active.options, answer);
   return [answerCacheKey(answer, selections), ...(option ? [option.value, option.label] : [])];
 }
+
+/** The answer's structured AskUserQuestion selections (#627), when it carries
+ *  a non-empty list of them. Their entries are not validated here: the gate
+ *  checks them against the tool input (#1127). */
+function structuredSelections(
+  extra: AnswerExtras | undefined,
+): readonly AnswerSelection[] | undefined {
+  const selections = extra?.selections;
+  return Array.isArray(selections) && selections.length > 0 ? selections : undefined;
+}
+
+/** A phone answer to a held card as one log fragment, without the user's
+ *  text (only its length). */
+function describeHeldAnswer(held: HeldAnswer): string {
+  switch (held.kind) {
+    case 'option':
+      return `"${held.option.label}"`;
+    case 'text':
+      return `free text (${held.text.length} chars)`;
+    case 'selections':
+      return `an answer to ${held.selections.length} question(s)`;
+    case 'cancel':
+      return 'Cancel';
+    case 'ambiguous':
+      return 'an answer naming one option by value and another by label';
+  }
+}
+
+/** The Escape key, written exactly (no Enter) by a Cancel on a card no held
+ *  hook stands behind. */
+const ESC = '\x1b';
 
 /**
  * No-op `send` for the connection-independent `/answer` relay (#575, P4a),
@@ -426,13 +512,6 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     observedPromptOptions,
   } = deps;
 
-  // #627: in-flight AskUserQuestion runs, keyed `${sessionId}:${questionId}`, so a
-  // cancel can ABORT the runner immediately — it stops before its next keystroke,
-  // so the cancel's Esc is never followed by a stray queued key landing on Claude's
-  // next state.
-  const auqRuns = new Map<string, AbortController>();
-  const auqRunKey = (sessionId: UUID, questionId: UUID): string => `${sessionId}:${questionId}`;
-
   // #752: same-value duplicate deliveries of a successful answer (native POST +
   // Capacitor JS path + signaling relay all fire per tap) report 'delivered'
   // instead of 'stale', so the losing channel stops showing a false "Answer
@@ -449,132 +528,16 @@ export function createInputHandlers(deps: InputHandlerDeps) {
   >();
 
   /**
-   * Answer a structured AskUserQuestion (#627) by driving its interactive TUI.
-   * The prompt is already on screen (Phase 1 escalates AUQ as passthrough), so the
-   * runner sends keystrokes from the per-sub-question `selections`, verifies the
-   * review screen against the chosen option LABELS, and only then submits. On
-   * success the question is consumed + dismissed everywhere. On escalate (mismatch
-   * / timeout / unexpected variant) the prompt is LEFT UP — never a wrong submit,
-   * never an auto-Esc — so the user can Cancel (Esc) or answer in the terminal.
-   */
-  async function handleAuqAnswer(
-    connectionId: UUID,
-    session: ManagedSession,
-    questionId: UUID,
-    active: Question,
-    selections: readonly AnswerSelection[],
-    viaRelay: boolean,
-  ): Promise<AnswerOutcome> {
-    const steps = active.questions;
-    if (!steps || steps.length === 0) {
-      log(`[AUQ] selections for a non-structured question ${questionId.slice(0, 8)}; escalating`);
-      if (!viaRelay) {
-        send(
-          connectionId,
-          createError('AUQ_NOT_STRUCTURED', 'This question is not a structured AskUserQuestion', {
-            sessionId: session.sessionId,
-            questionId,
-          }),
-        );
-      }
-      return 'escalated';
-    }
-
-    const byIndex = new Map(selections.map((s) => [s.questionIndex, s.optionIndices]));
-    const questions = steps.map((s) => ({
-      multiSelect: s.multiSelect,
-      optionCount: s.options.length,
-    }));
-    const targets: number[][] = [];
-    const expectedLabels: string[][] = [];
-    for (let k = 0; k < steps.length; k++) {
-      const picks = byIndex.get(k) ?? [];
-      targets.push([...picks]);
-      const opts = steps[k]?.options ?? [];
-      expectedLabels.push(picks.map((i) => opts[i]?.label ?? '').filter((l) => l.length > 0));
-    }
-
-    const runKey = auqRunKey(session.sessionId, questionId);
-    const controller = new AbortController();
-    auqRuns.set(runKey, controller);
-    // #661 review: mark this question as ACTIVELY driven before the first
-    // keystroke so pty-session-setup.ts's terminal-answer detector skips it —
-    // otherwise the detector races this same drive's own success path (both
-    // read the same rolling PTY buffer) and double-resolves the question.
-    markAuqRunActive(session.sessionId, questionId);
-    let outcome: AuqRunOutcome;
-    try {
-      outcome = await runAuqAnswer(
-        { questions, targets, expectedLabels },
-        {
-          write: (d) => session.pty.write(d),
-          readRecentOutput: () => readPtyOutput(session.sessionId),
-          resetOutput: () => resetPtyOutput(session.sessionId),
-          sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
-          nowMs: () => Date.now(),
-          signal: controller.signal,
-          log: (m) => log(m),
-        },
-      );
-    } finally {
-      auqRuns.delete(runKey);
-      clearAuqRunActive(session.sessionId, questionId);
-    }
-
-    if (outcome === 'closed' || outcome === 'submitted') {
-      // #752: the selections were applied; a duplicate delivery of this same
-      // tap must report 'delivered', not 'stale'.
-      resolvedAnswers.record(questionId, [answerCacheKey('', selections)]);
-      // Retire the gate's signature first, as the cancel path does: the
-      // AskUserQuestion PostToolUse that follows would otherwise resolve (and
-      // dismiss) this already-answered card a second time. Guarded so a throw
-      // never skips the removal below.
-      try {
-        retireQuestion?.(session.sessionId, questionId);
-      } catch (err) {
-        logError(`[AUQ] gate retirement failed: ${errorToString(err)}`);
-      }
-      sessionRegistry.removeQuestion(session.sessionId, questionId, 'user_answer:auq');
-      try {
-        onQuestionResolved?.(session.sessionId, questionId);
-      } catch (err) {
-        logError(`[AUQ] question_resolved broadcast failed: ${errorToString(err)}`);
-      }
-      log(`[AUQ] answered question ${questionId.slice(0, 8)} (${outcome})`);
-      return 'delivered';
-    }
-
-    // Escalated: leave the question up (the user can Cancel or use the terminal).
-    log(`[AUQ] could not auto-answer ${questionId.slice(0, 8)}; left for manual (Cancel/terminal)`);
-    if (!viaRelay) {
-      const delivered = send(
-        connectionId,
-        createError(
-          'AUQ_AUTOANSWER_FAILED',
-          'Could not auto-answer the question; cancel it or answer in the terminal',
-          { sessionId: session.sessionId, questionId },
-        ),
-      );
-      // The run can take seconds; the connection may have dropped meanwhile. The
-      // question stays registered, so a reconnect replay re-renders an answerable
-      // card — but log the undelivered signal so there is a trace (#631 review).
-      if (!delivered) {
-        logError(
-          `[AUQ] AUQ_AUTOANSWER_FAILED undelivered for ${questionId.slice(0, 8)} (connection ${connectionId.slice(0, 8)} gone); question left registered for reconnect replay`,
-        );
-      }
-    }
-    return 'escalated';
-  }
-
-  /**
    * Shared answer-routing core for both the WebSocket `onAnswer` event and the
-   * HTTP `/answer` relay (#575, P4a). Claims the question, checks the answer
-   * against the screen (#920, #1002, #1134), submits the answered option's
-   * digit (or free text) to the PTY, where Claude's native prompt is waiting,
-   * then removes the question. A refusal means "answer at the terminal". Returns the outcome; the WebSocket path additionally
-   * surfaces errors over the connection via `send` (suppressed when
-   * `viaRelay`).
+   * HTTP `/answer` relay (#575, P4a). Claims the question, then answers a held
+   * prompt through its hook (#1126; AskUserQuestion and ExitPlanMode too,
+   * #1127), or, for a prompt no held hook stands behind, checks the answer
+   * against the screen (#920, #1002, #1134) and submits the answered option's
+   * digit (or free text) to the PTY, where Claude's native prompt is waiting.
+   * The card is removed once answered. A refusal means "answer at the
+   * terminal" (or, for a held card, "answer again"). Returns the outcome; the
+   * WebSocket path additionally surfaces errors over the connection via
+   * `send` (suppressed when `viaRelay`).
    */
   async function handleAnswer(
     connectionId: UUID,
@@ -617,18 +580,18 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       return 'stale-binding';
     }
 
-    // #627 cancel/escape — the universal unstick. First ABORT any in-flight AUQ
-    // run so it stops before its next keystroke (otherwise a queued key could land
-    // after our Esc). Then send Esc to the PTY so the active interactive prompt
-    // cancels and Claude unblocks. The Esc is gated on the question still being
-    // active: a delayed cancel for an already-resolved question must NOT inject Esc
-    // into whatever Claude renders next (#631 review). Cleanup (gate retirement,
-    // removeQuestion, broadcast) is unconditional so the card always clears.
+    // #627 cancel/escape — the universal unstick. On a held card (#1126) it is
+    // answered through the hook: a "No" for a permission, a dismissal for an
+    // AskUserQuestion, "Keep planning" for a plan (#1127). On a card whose
+    // hold has ended it only clears the card. Neither types Esc: nothing is
+    // typed into a hook-backed prompt. On any other card still active (a
+    // hook-less prompt, a multi-choice card) it sends Esc to the PTY so the
+    // prompt cancels and Claude unblocks. The Esc is gated on the question
+    // still being active: a delayed cancel for an already-resolved question
+    // must NOT inject Esc into whatever Claude renders next (#631 review).
+    // Cleanup (gate retirement, removeQuestion, broadcast) is unconditional so
+    // the card always clears.
     if (extra?.cancel) {
-      auqRuns.get(auqRunKey(session.sessionId, questionId))?.abort();
-      // #1126: Cancel on a held permission card is a "No" through the hook;
-      // on a card whose hold has ended it only clears the card. Neither
-      // types Esc: nothing is typed into a hook-backed prompt.
       const held = answerHeld?.(session.sessionId, questionId, { kind: 'cancel' }) ?? 'unknown';
       const stillActive =
         held === 'unknown' && sessionRegistry.getQuestion(session.sessionId, questionId) !== null;
@@ -640,7 +603,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         );
       } else if (stillActive) {
         try {
-          await session.pty.write(AUQ_KEYS.ESC);
+          await session.pty.write(ESC);
           log(`[Answer] cancel: sent Esc to session ${session.sessionId.slice(0, 8)}`);
         } catch (err) {
           logError(`[Answer] cancel: Esc write failed: ${errorToString(err)}`);
@@ -793,10 +756,13 @@ export function createInputHandlers(deps: InputHandlerDeps) {
    * path applies (`unknown`). Synchronous: the hook response is settled
    * before anything else can run.
    *   - `resolved`: the hook answered; the card is consumed and dismissed.
-   *   - `refused`: not an option this card offers (free text, a stale
-   *     label); the card and the hold stay so the user can pick again.
+   *   - `refused`: not an answer this card offers (free text on a permission,
+   *     a stale label, an incomplete AskUserQuestion answer, #1127); the
+   *     card and the hold stay so the user can answer again.
    *   - `closed`: the hold ended (deadline, terminal answer, abort); refused
    *     like a stale answer and the card is cleared. Nothing is typed.
+   * A structured AskUserQuestion answer (`selections`, #1127) goes to the
+   * gate as it came; the gate validates it against the tool input.
    */
   function applyHeldAnswer(
     connectionId: UUID,
@@ -809,19 +775,25 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     active: Question,
   ): AnswerOutcome | null {
     if (!answerHeld) return null;
-    const option = resolveOption(active.options, answer);
+    const selections = structuredSelections(extra);
+    const named = selections === undefined ? namedOption(active.options, answer) : undefined;
+    const option = named?.kind === 'one' ? named.option : undefined;
     // `message` crosses a trust boundary unvalidated (the protocol checks only
     // the message type), so anything but a string is dropped here.
     const message = typeof extra?.message === 'string' ? extra.message : undefined;
     const held: HeldAnswer =
-      option === undefined
-        ? { kind: 'text' }
-        : { kind: 'option', option, ...(message !== undefined ? { message } : {}) };
+      selections !== undefined
+        ? { kind: 'selections', selections }
+        : named?.kind === 'ambiguous'
+          ? { kind: 'ambiguous' }
+          : option === undefined
+            ? { kind: 'text', text: answer }
+            : { kind: 'option', option, ...(message !== undefined ? { message } : {}) };
     const outcome = answerHeld(session.sessionId, questionId, held);
     if (outcome === 'unknown') return null;
     if (outcome === 'resolved') {
       resolvedAnswers.record(questionId, [
-        answerCacheKey(answer),
+        answerCacheKey(answer, selections),
         ...(option ? [option.value, option.label] : []),
       ]);
       sessionRegistry.removeQuestion(session.sessionId, questionId, 'user_answer:hook');
@@ -837,7 +809,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     log(
       closed
         ? `[Answer] refusing ${questionId.slice(0, 8)}: its hold has ended, answer at the terminal; nothing typed`
-        : `[Answer] refusing ${questionId.slice(0, 8)}: "${option === undefined ? `free text (${answer.length} chars)` : answer}" is not an answer this held card offers; card and hold kept`,
+        : `[Answer] refusing ${questionId.slice(0, 8)}: ${describeHeldAnswer(held)} is not an answer this held card offers; card and hold kept`,
     );
     traceQuestionEvent({
       action: 'stale_answer',
@@ -846,7 +818,16 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       promptId: active.promptId,
       signal: 'STALE_ANSWER',
       callSite: 'input-events.handleAnswer:heldPrompt',
-      detail: { reason: closed ? 'hold-closed' : 'not-a-held-option', source: active.source },
+      detail: {
+        reason: closed
+          ? 'hold-closed'
+          : active.terminalOnly === true
+            ? 'terminal-only'
+            : held.kind === 'ambiguous'
+              ? 'ambiguous-option'
+              : 'not-a-held-option',
+        source: active.source,
+      },
     });
     if (closed) {
       sessionRegistry.removeQuestion(session.sessionId, questionId, 'user_answer:hold_closed');
@@ -863,7 +844,13 @@ export function createInputHandlers(deps: InputHandlerDeps) {
           'STALE_ANSWER',
           closed
             ? 'This prompt is no longer waiting for the phone; answer it in the terminal'
-            : 'This prompt takes one of its own options',
+            : active.terminalOnly === true
+              ? TERMINAL_ONLY_MESSAGE
+              : held.kind === 'ambiguous'
+                ? AMBIGUOUS_ANSWER_MESSAGE
+                : selections !== undefined
+                  ? 'Answer every question: one choice, or your own text of up to 2000 characters, for each single-choice question, and at least one choice for each multiple-choice question'
+                  : 'This prompt takes one of its own options',
           {
             sessionId,
             // A refused answer leaves the card live, and a client drops the
@@ -881,9 +868,9 @@ export function createInputHandlers(deps: InputHandlerDeps) {
 
   /**
    * The part of `handleAnswer` that acts on a live, CLAIMED question (see the
-   * in-flight claim there): drive an AskUserQuestion, answer a held prompt
-   * through its hook, or type into the PTY (behind the screen guards), then
-   * consume the card.
+   * in-flight claim there): answer a held prompt through its hook (a
+   * binary permission, an AskUserQuestion, an ExitPlanMode), or type into the
+   * PTY (behind the screen guards), then consume the card.
    */
   async function applyAnswer(
     connectionId: UUID,
@@ -895,24 +882,10 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     session: ManagedSession,
     active: Question,
   ): Promise<AnswerOutcome> {
-    // #627 structured AskUserQuestion answer: drive the interactive TUI from the
-    // per-sub-question selections (the existing single-digit path can't express a
-    // tabbed multi-question form). The runner verifies the review before submitting
-    // and escalates (leaving the prompt for Cancel / terminal) on any mismatch.
-    if (extra?.selections && extra.selections.length > 0) {
-      return await handleAuqAnswer(
-        connectionId,
-        session,
-        questionId,
-        active,
-        extra.selections,
-        viaRelay,
-      );
-    }
-
-    // #1126: a held permission prompt is answered through its hook response,
-    // and a binary prompt whose hold has ended is answered only at the
-    // terminal. Both are decided here, before anything could be typed.
+    // #1126: a held prompt is answered through its hook response, and a
+    // prompt whose hold has ended is answered only at the terminal. Both are
+    // decided here, before anything could be typed. Since #1127 that covers
+    // AskUserQuestion (its `selections` included) and ExitPlanMode.
     const heldOutcome = applyHeldAnswer(
       connectionId,
       sessionId,
@@ -927,9 +900,11 @@ export function createInputHandlers(deps: InputHandlerDeps) {
 
     // Submit the answer to the PTY, where Claude's native prompt is waiting.
     // Only prompts no held hook stands behind reach this point: hook-less
-    // prompts (sandbox, trust, agent-team dialogs) and the AskUserQuestion /
-    // ExitPlanMode / multi-choice cards pushed by id (#1127 moves those to
-    // the hook as well).
+    // prompts (sandbox, trust, agent-team dialogs) and the cards pushed by id
+    // without a hold (a multi-choice string-label permission, typed below;
+    // a question-shaped tool that is not AskUserQuestion, `terminalOnly` and
+    // refused below). AskUserQuestion and ExitPlanMode are held and answered
+    // above (#1127).
     //
     // The submit + question removal are wrapped so the question is ALWAYS
     // consumed exactly once: if `submitInput` throws, the `finally` still
@@ -951,7 +926,9 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       const screenValues = (screenOptions ?? []).map((o) => o.value);
       const typedText =
         refusal === SCREEN_REFUSALS.freeTextIntoMenu ||
-        refusal === SCREEN_REFUSALS.freeTextOnHeldCard;
+        refusal === SCREEN_REFUSALS.freeTextOnHeldCard ||
+        refusal === SCREEN_REFUSALS.terminalOnly ||
+        refusal === SCREEN_REFUSALS.selectionsNotHeld;
       log(
         `[Answer] refusing PTY submit for ${questionId.slice(0, 8)}: ${refusal.logLine(input)} [${screenValues.join(', ') || 'none'}]`,
       );
@@ -992,11 +969,22 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       } catch (err) {
         logError(`[Answer] gate retirement failed: ${errorToString(err)}`);
       }
+      // A card only the terminal can answer (#1127): refused before anything
+      // could be typed, whatever the answer.
+      if (active.terminalOnly === true) {
+        return refuseSubmit(SCREEN_REFUSALS.terminalOnly, answer, null);
+      }
+      // A structured AskUserQuestion answer (`selections`) for a card no hold
+      // stands behind cannot be typed (#1127 deleted the keystroke runner):
+      // refused, the prompt is answered at the terminal.
+      if (structuredSelections(extra) !== undefined) {
+        return refuseSubmit(SCREEN_REFUSALS.selectionsNotHeld, answer, null);
+      }
       // Free text on a card pushed by id (`pushHeldHook`, stamped `held`) is
       // refused before anything is typed (#1134 review). A held binary card
       // never reaches this point: the gate answered it through its hook
-      // above (#1126). What arrives here stamped `held` is a passthrough
-      // card (AskUserQuestion, ExitPlanMode, a multi-choice permission).
+      // above (#1126), as it does AskUserQuestion and ExitPlanMode (#1127).
+      // What arrives here stamped `held` is a passthrough multi-choice card.
       // Only an option of this card can be expressed; text typed into the
       // dialog is ignored and the Enter after it confirms the highlighted
       // option, so free text is refused whether or not a menu has been
@@ -1319,20 +1307,13 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       questionId: UUID,
       answer: string,
       claudeSessionId?: UUID,
-    ): Promise<Exclude<AnswerOutcome, 'escalated'>> => {
+    ): Promise<AnswerOutcome> => {
       // The relay has no connection; use the sessionId as the synthetic id so
       // logging stays meaningful and the registry's sessionId-first lookup wins.
-      const outcome = await handleAnswer(
-        sessionId as UUID,
-        sessionId,
-        questionId,
-        answer,
-        claudeSessionId,
-        true,
-      );
-      // The relay path never carries AskUserQuestion selections, so 'escalated' is
-      // unreachable; coerce defensively so the HTTP outcome stays in the legacy set.
-      return outcome === 'escalated' ? 'stale' : outcome;
+      // It carries one answer string (the tapped option's label), never
+      // `selections`: a held one-question AskUserQuestion takes it as that
+      // question's answer (#1127), anything else refuses it.
+      return handleAnswer(sessionId as UUID, sessionId, questionId, answer, claudeSessionId, true);
     },
 
     onBulletExpandRequest: (

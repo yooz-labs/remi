@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test';
+import { beforeEach, describe, expect, it } from 'bun:test';
 import type { Question, QuestionOption } from '@remi/shared';
 import { generateId } from '@remi/shared';
 import { QuestionPresenceTracker } from '../../src/api/question-presence-tracker.ts';
@@ -1037,8 +1037,17 @@ describe('QuestionPresenceTracker', () => {
   describe('awaiting-PTY parking (#751)', () => {
     const DEBOUNCE_MS = 20;
     const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    // What a parked render hands over (#1126): its notice, never a card
+    // (the card push without `onRender` was deleted in #1127).
+    let rendered: Question[] = [];
+    const onRender = (q: Question): void => {
+      rendered.push(q);
+    };
+    beforeEach(() => {
+      rendered = [];
+    });
 
-    it('a parked record + rendered prompt pushes IMMEDIATELY, merged, no debounce', () => {
+    it('a parked record + rendered prompt is handed over IMMEDIATELY, merged, no debounce; no card', () => {
       const pushes: Question[] = [];
       const tracker = new QuestionPresenceTracker(
         (q) => {
@@ -1050,14 +1059,15 @@ describe('QuestionPresenceTracker', () => {
           orphanDebounceMs: DEBOUNCE_MS,
         },
       );
-      tracker.parkAwaitingPTY(makePermissionRequestHook('reviewer · Bash: git push'));
+      tracker.parkAwaitingPTY(makePermissionRequestHook('reviewer · Bash: git push'), { onRender });
       expect(tracker.awaitingPTYCountForTest()).toBe(1);
 
       tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
 
       // Hook + render is positive double-confirmation: no orphan debounce.
-      expect(pushes.length).toBe(1);
-      expect(pushes[0]?.text).toBe('reviewer · Bash: git push'); // merged rich label
+      expect(rendered.length).toBe(1);
+      expect(rendered[0]?.text).toBe('reviewer · Bash: git push'); // merged rich label
+      expect(pushes.length).toBe(0); // its notice, never a card (#1127)
       expect(tracker.hasPendingForTest()).toBe(false); // record consumed
       expect(tracker.awaitingPTYCountForTest()).toBe(0);
     });
@@ -1074,16 +1084,20 @@ describe('QuestionPresenceTracker', () => {
           orphanDebounceMs: DEBOUNCE_MS,
         },
       );
-      tracker.parkAwaitingPTY({
-        ...makePermissionRequestHook('agent · Edit: config.toml'),
-        agentId: 'agent-1',
-      });
+      tracker.parkAwaitingPTY(
+        {
+          ...makePermissionRequestHook('agent · Edit: config.toml'),
+          agentId: 'agent-1',
+        },
+        { onRender },
+      );
 
       // The PTY prompt does not name the agent: sole-candidate pairing applies.
       tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to make this edit?'));
 
-      expect(pushes.length).toBe(1);
-      expect(pushes[0]?.text).toBe('agent · Edit: config.toml');
+      expect(rendered.length).toBe(1);
+      expect(rendered[0]?.text).toBe('agent · Edit: config.toml');
+      expect(pushes.length).toBe(0);
     });
 
     it("#763: a fresh parked record SURVIVES another agent's status churn and still merges on render", () => {
@@ -1098,10 +1112,13 @@ describe('QuestionPresenceTracker', () => {
           orphanDebounceMs: DEBOUNCE_MS,
         },
       );
-      tracker.parkAwaitingPTY({
-        ...makePermissionRequestHook('agent · Bash: ls'),
-        agentId: 'agent-A',
-      });
+      tracker.parkAwaitingPTY(
+        {
+          ...makePermissionRequestHook('agent · Bash: ls'),
+          agentId: 'agent-A',
+        },
+        { onRender },
+      );
 
       // Main / teammate hook activity flips status constantly in team runs;
       // that must NOT wipe A's still-live parked record.
@@ -1110,8 +1127,8 @@ describe('QuestionPresenceTracker', () => {
       expect(tracker.awaitingPTYCountForTest()).toBe(1);
 
       tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
-      expect(pushes.length).toBe(1);
-      expect(pushes[0]?.text).toBe('agent · Bash: ls'); // merged, not bare
+      expect(rendered.length).toBe(1);
+      expect(rendered[0]?.text).toBe('agent · Bash: ls'); // merged, not bare
     });
 
     it("#763: noteAgentAdvanced expires exactly that agent's parked record (allowlist absorbed)", async () => {
@@ -1126,14 +1143,20 @@ describe('QuestionPresenceTracker', () => {
           orphanDebounceMs: DEBOUNCE_MS,
         },
       );
-      tracker.parkAwaitingPTY({
-        ...makePermissionRequestHook('A · Bash: ls'),
-        agentId: 'agent-A',
-      });
-      tracker.parkAwaitingPTY({
-        ...makePermissionRequestHook('B · Edit: x.md'),
-        agentId: 'agent-B',
-      });
+      tracker.parkAwaitingPTY(
+        {
+          ...makePermissionRequestHook('A · Bash: ls'),
+          agentId: 'agent-A',
+        },
+        { onRender },
+      );
+      tracker.parkAwaitingPTY(
+        {
+          ...makePermissionRequestHook('B · Edit: x.md'),
+          agentId: 'agent-B',
+        },
+        { onRender },
+      );
 
       tracker.noteAgentAdvanced('agent-A'); // A's PreToolUse: permission resolved silently
       tracker.noteAgentAdvanced(undefined); // main-tagged: no-op
@@ -1141,14 +1164,14 @@ describe('QuestionPresenceTracker', () => {
 
       // B's prompt renders and still pairs by exact key.
       tracker.onOrphanPTYPrompt({ ...makePTYQuestion('proceed?'), agentId: 'agent-B' });
-      expect(pushes.length).toBe(1);
-      expect(pushes[0]?.text).toBe('B · Edit: x.md');
+      expect(rendered.length).toBe(1);
+      expect(rendered[0]?.text).toBe('B · Edit: x.md');
       // A later unnamed prompt is a plain orphan again (A's record is gone).
       tracker.onOrphanPTYPrompt(makePTYQuestion('unrelated later prompt'));
-      expect(pushes.length).toBe(1);
+      expect(pushes.length).toBe(0);
       await wait(DEBOUNCE_MS * 2);
-      expect(pushes.length).toBe(2);
-      expect(pushes[1]?.text).toBe('unrelated later prompt');
+      expect(pushes.length).toBe(1);
+      expect(pushes[0]?.text).toBe('unrelated later prompt');
     });
 
     it('#763: a parked record past the TTL is dropped by the next status change', () => {
@@ -1165,7 +1188,7 @@ describe('QuestionPresenceTracker', () => {
           nowMs: () => now,
         },
       );
-      tracker.parkAwaitingPTY(makePermissionRequestHook('agent · Bash: ls'));
+      tracker.parkAwaitingPTY(makePermissionRequestHook('agent · Bash: ls'), { onRender });
 
       now += 119_000;
       tracker.onStatusChange('executing');
@@ -1183,10 +1206,13 @@ describe('QuestionPresenceTracker', () => {
         orphanDebounceMs: DEBOUNCE_MS,
       });
       tracker.recordPendingHook(makeHookQuestion('Allow Bash?')); // not parked
-      tracker.parkAwaitingPTY({
-        ...makePermissionRequestHook('agent · Bash: ls'),
-        agentId: 'agent-A',
-      });
+      tracker.parkAwaitingPTY(
+        {
+          ...makePermissionRequestHook('agent · Bash: ls'),
+          agentId: 'agent-A',
+        },
+        { onRender },
+      );
 
       tracker.onStatusChange('executing');
 
@@ -1199,7 +1225,7 @@ describe('QuestionPresenceTracker', () => {
         hasLiveQuestions: () => false,
         orphanDebounceMs: DEBOUNCE_MS,
       });
-      tracker.parkAwaitingPTY(makePermissionRequestHook('agent · Bash: ls'));
+      tracker.parkAwaitingPTY(makePermissionRequestHook('agent · Bash: ls'), { onRender });
       tracker.clearPending();
       expect(tracker.awaitingPTYCountForTest()).toBe(0);
       expect(tracker.hasPendingForTest()).toBe(false);
@@ -1221,15 +1247,19 @@ describe('QuestionPresenceTracker', () => {
       // exists for a different agent. The unnamed PTY prompt matches main's
       // normal record -> gate-owned -> suppressed (not stolen by the parked one).
       tracker.recordPendingHook(makeHookQuestion('Allow Bash?'));
-      tracker.parkAwaitingPTY({
-        ...makePermissionRequestHook('agent · Write: notes.md'),
-        agentId: 'agent-1',
-      });
+      tracker.parkAwaitingPTY(
+        {
+          ...makePermissionRequestHook('agent · Write: notes.md'),
+          agentId: 'agent-1',
+        },
+        { onRender },
+      );
 
       tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
       await wait(DEBOUNCE_MS * 2);
 
       expect(pushes.length).toBe(0);
+      expect(rendered.length).toBe(0);
     });
 
     it('a normal recordPendingHook for the same agent clears the parked flag', async () => {
@@ -1244,7 +1274,7 @@ describe('QuestionPresenceTracker', () => {
           orphanDebounceMs: DEBOUNCE_MS,
         },
       );
-      tracker.parkAwaitingPTY(makePermissionRequestHook('agent · Bash: ls'));
+      tracker.parkAwaitingPTY(makePermissionRequestHook('agent · Bash: ls'), { onRender });
       // A real gate escalation for the same agent takes over the prompt cycle.
       tracker.recordPendingHook(makePermissionRequestHook('Allow Bash: ls'));
       expect(tracker.awaitingPTYCountForTest()).toBe(0);
@@ -1253,17 +1283,23 @@ describe('QuestionPresenceTracker', () => {
       tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
       await wait(DEBOUNCE_MS * 2);
       expect(pushes.length).toBe(0);
+      expect(rendered.length).toBe(0);
     });
   });
 });
 
 // #1125: the parked-render arbiter (#814) was deleted with the auto-approve
-// evaluator, so a parked render always pushes straight through.
-describe('parked render push', () => {
+// evaluator; #1127 deleted the parked render's card push (unused since #1126):
+// a parked render only hands its merged question to `onRender`.
+describe('parked render hand-over', () => {
   const DEBOUNCE_MS = 20;
 
-  it('a parked subagent render pushes SYNCHRONOUSLY, merged with its hook record', () => {
+  it('a parked subagent render is handed over SYNCHRONOUSLY, merged with its hook record, and pushes nothing', () => {
     const pushes: Question[] = [];
+    const rendered: Question[] = [];
+    const onRender = (q: Question): void => {
+      rendered.push(q);
+    };
     const tracker = new QuestionPresenceTracker(
       (q) => {
         pushes.push(q);
@@ -1274,12 +1310,13 @@ describe('parked render push', () => {
         orphanDebounceMs: DEBOUNCE_MS,
       },
     );
-    tracker.parkAwaitingPTY(makePermissionRequestHook('reviewer · Bash: git push'));
+    tracker.parkAwaitingPTY(makePermissionRequestHook('reviewer · Bash: git push'), { onRender });
 
     tracker.onOrphanPTYPrompt(makePTYQuestion('Do you want to proceed?'));
 
-    expect(pushes).toHaveLength(1);
-    expect(pushes[0]?.text).toBe('reviewer · Bash: git push');
+    expect(rendered).toHaveLength(1);
+    expect(rendered[0]?.text).toBe('reviewer · Bash: git push');
+    expect(pushes).toHaveLength(0);
   });
 });
 

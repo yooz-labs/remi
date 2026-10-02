@@ -231,6 +231,20 @@ describe('daemon inbound dispatch: RelayAdapter transport-seam conformance (#899
     });
   });
 
+  test('a free-text AskUserQuestion answer (AnswerSelection.text) is forwarded verbatim over relay (#1127)', () => {
+    const fixture = loadFixture('answer');
+    if (fixture.type !== 'answer') throw new Error('unreachable');
+    const selections = [
+      { questionIndex: 0, optionIndices: [], text: 'Teal with a hint of gold' },
+      { questionIndex: 1, optionIndices: [0, 2] },
+    ];
+    transport.emitRelay({ ...fixture, answer: '', selections });
+
+    expect(eventCalls).toHaveLength(1);
+    expect(eventCalls[0]?.event).toBe('onAnswer');
+    expect(eventCalls[0]?.args[5]).toEqual({ selections, cancel: undefined });
+  });
+
   test("a held card's deny message is forwarded as extra.message over relay (#1126)", () => {
     const fixture = loadFixture('answer');
     if (fixture.type !== 'answer') throw new Error('unreachable');

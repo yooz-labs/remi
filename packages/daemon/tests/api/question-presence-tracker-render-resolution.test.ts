@@ -440,61 +440,28 @@ describe('#1002 prompt-on-screen signals are not interchangeable', () => {
 });
 
 /**
- * #1005 Change B. A parked-render push (the "45 born live" cohort) used to go
- * through `pushMerged` directly, bypassing the render-owned bookkeeping
- * entirely, so those cards were tracked by nothing and could only ever leave
- * the store via LRU eviction. (The parked-render arbiter these cards first
- * went through was deleted in #1125; the push itself is unchanged.)
+ * #1005 Change B gave a parked-render push (the "45 born live" cohort) the
+ * render-owned slot. Since #1126 a parked render sends an "answer at the
+ * terminal" notice through `onRender` instead of a card, and #1127 deleted
+ * the card push: a parked render now takes no card and no slot.
  */
-describe('#1005 a parked-render push takes the render-owned slot', () => {
-  function parkingTracker(
-    pushes: Question[],
-    gone: Array<{ id: string; reason: string }>,
-    deliver: () => boolean = () => true,
-  ): QuestionPresenceTracker {
-    return new QuestionPresenceTracker(
-      (q) => {
-        pushes.push(q);
-        return deliver() ? { status: 'registered' as const } : { status: 'deduped' as const };
-      },
-      { onHooklessQuestionGone: (id, reason) => gone.push({ id, reason }) },
-    );
-  }
-
-  test('an escalated parked render is superseded by the next confirmed render', async () => {
-    const pushes: Question[] = [];
-    const gone: Array<{ id: string; reason: string }> = [];
-    const tracker = parkingTracker(pushes, gone);
+describe('#1127 a parked render takes no card and no render-owned slot', () => {
+  test('the render is handed to onRender; nothing is pushed, tracked or later resolved', async () => {
+    const { tracker, pushed, gone } = buildTracker();
+    const rendered: Question[] = [];
 
     const hook = makeHookRecord('reviewer · Bash: git push');
     tracker.recordPendingHook(hook);
-    tracker.parkAwaitingPTY(hook);
+    tracker.parkAwaitingPTY(hook, { onRender: (q) => rendered.push(q) });
     tracker.onOrphanPTYPrompt(makeHooklessPTYQuestion('Do you want to proceed?'));
     await new Promise((r) => setTimeout(r, 5));
 
-    expect(pushes).toHaveLength(1);
-    expect(tracker.observedRenderOwnedQuestionForTest()).toBe(hook.id);
-
-    // A different prompt takes the screen: the escalated card's prompt is
-    // provably gone, so the card is resolved instead of lingering.
-    tracker.onPTYPromptVisible(makeHooklessPTYQuestion('A different prompt'));
-    expect(gone).toEqual([{ id: hook.id, reason: 'pty_render_superseded' }]);
-  });
-
-  test('an UNCONFIRMED parked-render push does not claim the slot (ADR 0021)', async () => {
-    const pushes: Question[] = [];
-    const gone: Array<{ id: string; reason: string }> = [];
-    const tracker = parkingTracker(pushes, gone, () => false);
-
-    const hook = makeHookRecord('reviewer · Bash: git push');
-    tracker.recordPendingHook(hook);
-    tracker.parkAwaitingPTY(hook);
-    tracker.onOrphanPTYPrompt(makeHooklessPTYQuestion('Do you want to proceed?'));
-    await new Promise((r) => setTimeout(r, 5));
-
-    // Deduped: nothing is known to have changed, so nothing is tracked and
-    // nothing is resolved on its strength.
+    expect(rendered.map((q) => q.id)).toEqual([hook.id]);
+    expect(pushed).toHaveLength(0);
     expect(tracker.observedRenderOwnedQuestionForTest()).toBeNull();
+
+    // A different prompt takes the screen: there is no card to resolve.
+    tracker.onPTYPromptVisible(makeHooklessPTYQuestion('A different prompt'));
     expect(gone).toHaveLength(0);
   });
 });
@@ -513,13 +480,21 @@ describe('#1005 a parked-render push takes the render-owned slot', () => {
  *
  * These drive the REAL path: a hook record carries the `agentId`, the PTY render
  * carries NONE (the parser never sets one — grep `question-parser.ts`), and
- * pairing happens through `parkAwaitingPTY` + `onOrphanPTYPrompt`. An earlier
+ * pairing happens through `onOrphanPTYPrompt` (through `parkAwaitingPTY` until
+ * #1127 deleted the parked render's card push). An earlier
  * version of these tests hand-set `agentId` on the raw PTY question and used
  * `onPTYPromptVisible`, which is only reached when the hook server is OFF — so
  * they exercised a shape that cannot occur in production and passed while the
  * scoping was broken. Caught in review.
  */
+/** The orphan debounce, shortened so the orphan path fires within a test. */
+const FAST_ORPHAN = { extraDeps: { orphanDebounceMs: 1 } };
+
 describe('#1008 a different agent never supersedes, driven through the real path', () => {
+  /** A subagent's hook record, then an agentless render: the orphan path
+   *  pairs them by the sole-candidate rule (#483) and pushes a render-born
+   *  card under the hook's agent. (Until #1127 the parked render push drove
+   *  this; that push was deleted, and the orphan path is the one left.) */
   function parkAndRender(
     tracker: ReturnType<typeof buildTracker>['tracker'],
     agentId: string,
@@ -528,33 +503,32 @@ describe('#1008 a different agent never supersedes, driven through the real path
     const hook = makeHookRecord(text);
     (hook as { agentId?: string }).agentId = agentId;
     tracker.recordPendingHook(hook);
-    tracker.parkAwaitingPTY(hook);
     // The raw render carries NO agentId, exactly as the parser produces it.
     tracker.onOrphanPTYPrompt(makeHooklessPTYQuestion('Do you want to proceed?'));
     return hook;
   }
 
   test('subagent B rendering does NOT resolve subagent A card', async () => {
-    const { tracker, gone } = buildTracker();
+    const { tracker, gone } = buildTracker(FAST_ORPHAN);
 
     const a = parkAndRender(tracker, 'agent-a', 'reviewer · Bash: git push');
-    await new Promise((r) => setTimeout(r, 5));
+    await new Promise((r) => setTimeout(r, 30));
     expect(tracker.observedRenderOwnedQuestionForTest()).toBe(a.id);
 
     parkAndRender(tracker, 'agent-b', 'builder · Bash: rm -rf build');
-    await new Promise((r) => setTimeout(r, 5));
+    await new Promise((r) => setTimeout(r, 30));
 
     // Nobody answered A. No tool ran. No SubagentStop fired.
     expect(gone).toHaveLength(0);
   });
 
   test('the SAME agent rendering something different does supersede', async () => {
-    const { tracker, gone } = buildTracker();
+    const { tracker, gone } = buildTracker(FAST_ORPHAN);
 
     const first = parkAndRender(tracker, 'agent-a', 'reviewer · Bash: git push');
-    await new Promise((r) => setTimeout(r, 5));
+    await new Promise((r) => setTimeout(r, 30));
     parkAndRender(tracker, 'agent-a', 'reviewer · Bash: something else');
-    await new Promise((r) => setTimeout(r, 5));
+    await new Promise((r) => setTimeout(r, 30));
 
     expect(gone).toEqual([{ id: first.id, reason: 'pty_render_superseded' }]);
   });
@@ -583,18 +557,17 @@ describe('#1008 a different agent never supersedes, driven through the real path
   });
 });
 
-describe('#1008 a parked subagent card is scoped by its HOOK agent, not the PTY parse', () => {
-  test('a main-agent prompt does not resolve a parked subagent card', async () => {
-    const { tracker, gone } = buildTracker();
+describe('#1008 a subagent card is scoped by its HOOK agent, not the PTY parse', () => {
+  test('a main-agent prompt does not resolve a subagent card', async () => {
+    const { tracker, gone } = buildTracker(FAST_ORPHAN);
 
     const hook = makeHookRecord('reviewer · Bash: git push');
     (hook as { agentId?: string }).agentId = 'agent-1';
     tracker.recordPendingHook(hook);
-    tracker.parkAwaitingPTY(hook);
 
     // The render itself carries NO agentId -- this is the normal case.
     tracker.onOrphanPTYPrompt(makeHooklessPTYQuestion('Do you want to proceed?'));
-    await new Promise((r) => setTimeout(r, 5));
+    await new Promise((r) => setTimeout(r, 30));
     expect(tracker.observedRenderOwnedQuestionForTest()).toBe(hook.id);
 
     // A genuinely different, main-agent prompt takes the screen.

@@ -7,44 +7,49 @@
  * (#597) — the user sees a generic prompt and the wrong choices on both the
  * in-app card and the lock-screen notification.
  *
- * The options are PICKS: `value` is the 1-based index and `isYes`/`isNo` are
- * always false. That routes a user's answer through the daemon's typed-digit
- * path (a binary allow/deny response cannot express "pick option 2"), so the
- * ORDER here MUST match the order the tool passes, which is the order Claude
- * renders in its native numbered prompt. Since #1134 the answer path also
- * checks the chosen option against the screen and refuses a mismatch.
+ * Since #1127 both tools' prompts are held and answered through the hook
+ * (`structured-answers.ts`), never typed: an AskUserQuestion card's picks are
+ * numbered by the index an answer names them by (1-based `value`), and an
+ * ExitPlanMode card's options are built by meaning. A shape-compatible tool
+ * that is not AskUserQuestion (an MCP or custom tool carrying `questions`)
+ * keeps the lenient card below, is not held, and is marked `terminalOnly`:
+ * its dialog is Claude's permission prompt, so the card's questions cannot
+ * be answered from the phone (only cancelled), and it is answered in the
+ * terminal.
  */
 
 import type { QuestionOption, QuestionStep } from '@remi/shared';
+
+import {
+  askQuestionSteps,
+  cleanText,
+  exitPlanModeOptions,
+  parseAskUserQuestion,
+} from './structured-answers.ts';
 
 export interface ToolQuestion {
   readonly text: string;
   readonly options: QuestionOption[];
   /** #626: 'multi_question' for an AskUserQuestion-shaped tool (structured
-   *  sub-questions in `questions`). Absent for a plain single prompt. */
-  readonly kind?: 'multi_question';
+   *  sub-questions in `questions`); #1127: 'plan_approval' for ExitPlanMode.
+   *  Absent for a plain single prompt. */
+  readonly kind?: 'multi_question' | 'plan_approval';
   /** #626: the full sub-question set (header / text / multiSelect / options with
    *  descriptions). `text`/`options` above mirror `questions[0]` for back-compat. */
   readonly questions?: QuestionStep[];
   /** #626: submit-button label for the multi-question form. */
   readonly submitLabel?: string;
+  /** #1127: the plan an ExitPlanMode asks to approve, verbatim. */
+  readonly detail?: string;
+  /** #1127 review S7: an AskUserQuestion that did not parse exactly; no
+   *  phone answer can be applied to it (see `Question.terminalOnly`). */
+  readonly terminalOnly?: boolean;
 }
 
 /**
- * Collapse runs of whitespace (newlines, the column padding a PTY leaves behind)
- * to single spaces and trim — WITHOUT removing the single spaces between words.
- * tool_input text is already clean, but normalising here keeps a multi-line
- * `question` from rendering as separate lines in the notification body.
- */
-function cleanText(s: string): string {
-  return s.replace(/\s+/g, ' ').trim();
-}
-
-/**
- * A pick option: 1-based value, never yes/no-shaped so the answer path submits
- * the digit rather than resolving a binary allow/deny.
+ * A pick option: 1-based value, never yes/no-shaped.
  * Index 0 is marked recommended only to match the existing option convention
- * (display-only; it does not change which digit is submitted).
+ * (display-only).
  */
 function pickOption(label: string, index: number, description?: string): QuestionOption {
   const desc = description ? cleanText(description) : '';
@@ -59,21 +64,20 @@ function pickOption(label: string, index: number, description?: string): Questio
 }
 
 /**
- * ExitPlanMode's choices are NOT in tool_input (only the `plan` markdown is) —
- * they are Claude Code's built-in plan-approval options, and a pick's
- * submitted digit lands on whatever Claude has at that position. These labels
- * came from a live observation on 2026-06-19 and are STALE: the #1126 spike
- * (2026-09) saw "Yes, and use auto mode" (only when auto mode is available),
- * "Yes, auto-accept edits", "Yes, manually approve edits" and "Tell Claude
- * what to change". Do not trust this list to match the screen; the #1134
- * screen check refuses a pick whose option does not match what is rendered.
- * Replacing it is #1126 Phase 4 (structured `updatedInput`), tracked with #598.
+ * The longest plan a card carries (#1127 review S6). The card is broadcast
+ * to every client, stored for replays, relayed and pushed, so its size is
+ * bounded; a longer plan is cut with a visible marker saying how much is
+ * missing (the hook's own input, which the answer echoes, is never cut).
  */
-const EXIT_PLAN_MODE_OPTIONS: readonly string[] = [
-  'Yes, and auto-accept edits',
-  'Yes, and manually approve edits',
-  'No, keep planning',
-];
+export const PLAN_DETAIL_MAX = 20_000;
+
+/** A plan as a card's `detail`: verbatim up to `PLAN_DETAIL_MAX`, otherwise
+ *  cut there with a marker. */
+export function planDetail(plan: string): string {
+  if (plan.length <= PLAN_DETAIL_MAX) return plan;
+  const missing = plan.length - PLAN_DETAIL_MAX;
+  return `${plan.slice(0, PLAN_DETAIL_MAX)}\n\n[Plan truncated: ${missing} more characters. Read the full plan in the terminal.]`;
+}
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -122,33 +126,71 @@ function buildStep(raw: unknown): QuestionStep | null {
 export function extractToolQuestion(
   toolName: string,
   toolInput: Record<string, unknown> | null | undefined,
+  opts: { readonly subagent?: boolean } = {},
 ): ToolQuestion | null {
   if (toolName === 'ExitPlanMode') {
+    // #1127: the options are remi's own, by meaning (Claude's dialog list is
+    // model-dependent); the plan itself rides as `detail`. A subagent's plan
+    // offers an approval that sets no session mode (review S5).
+    const plan = isRecord(toolInput) ? toolInput['plan'] : undefined;
     return {
-      text: 'Plan ready for review. How do you want to proceed?',
-      options: EXIT_PLAN_MODE_OPTIONS.map((label, i) => pickOption(label, i)),
+      text: 'Plan ready for review',
+      options: exitPlanModeOptions(opts.subagent === true),
+      kind: 'plan_approval',
+      ...(typeof plan === 'string' && plan.trim().length > 0 ? { detail: planDetail(plan) } : {}),
     };
   }
 
-  // AskUserQuestion AND shape-compatible tools (intentional, not name-gated): any
-  // tool whose tool_input carries `questions: [{ question, options }]`. This
-  // mirrors the auto-approve `isDesignQuestion` detector (multichoice.ts), which
-  // routes the SAME shape to always-escalate — so an MCP/custom tool that mimics
-  // AskUserQuestion gets its real options surfaced here too, consistently. The
-  // shape guards (record with a `question` string + a non-empty `options` array)
-  // are tight, so a tool with an unrelated `questions` field returns null and
-  // falls through to permission_suggestions.
-  //
-  // #626: surface the FULL set of sub-questions (header / text / multiSelect /
-  // options with descriptions) as `questions`, not just the first. `text`/
-  // `options` mirror questions[0] for back-compat: the lock-screen summary and
-  // the first-question answer path (digit submit) still read the flat fields.
+  // #1127: an AskUserQuestion whose input parses exactly is numbered from
+  // that parse, so a card option's index is the index the answer names. One
+  // that does not parse exactly gets the lenient card, marked `terminalOnly`
+  // (review S7): the gate refuses every phone answer to it.
+  if (toolName === 'AskUserQuestion') {
+    const parsed = parseAskUserQuestion(toolInput);
+    if (parsed !== null) return multiQuestion(askQuestionSteps(parsed));
+    const lenient = lenientQuestion(toolInput);
+    return lenient === null ? null : { ...lenient, terminalOnly: true };
+  }
+  // A question-shaped tool that is not AskUserQuestion is not held (no
+  // structured hook answer was verified for it) and its dialog is Claude's
+  // permission prompt, not these questions: no phone answer can be applied
+  // to its card, so it is terminal-only too (verification review item 2).
+  const lenient = lenientQuestion(toolInput);
+  return lenient === null ? null : { ...lenient, terminalOnly: true };
+}
+
+/**
+ * The lenient card for a `questions`-shaped input, or null: an
+ * AskUserQuestion that did not parse exactly, and shape-compatible
+ * tools (intentional, not name-gated; the caller marks both `terminalOnly`,
+ * since no phone answer can be applied to either): any tool whose
+ * tool_input carries `questions: [{ question, options }]`. This mirrors the
+ * `isDesignQuestion` detector (multichoice.ts), which routes the SAME shape
+ * to a pushed card, so an MCP/custom tool that mimics AskUserQuestion gets
+ * its real options surfaced here too. Malformed entries are dropped, so its
+ * option numbers need not match the input's. The shape guards (record with
+ * a `question` string + a non-empty `options` array) are tight, so a tool
+ * with an unrelated `questions` field returns null and falls through to
+ * permission_suggestions.
+ *
+ * #626: surface the FULL set of sub-questions (header / text / multiSelect /
+ * options with descriptions) as `questions`, not just the first. `text`/
+ * `options` mirror questions[0] for back-compat (the lock-screen summary).
+ */
+function lenientQuestion(
+  toolInput: Record<string, unknown> | null | undefined,
+): ToolQuestion | null {
   if (!isRecord(toolInput)) return null;
   const rawQuestions = toolInput['questions'];
   if (!Array.isArray(rawQuestions) || rawQuestions.length === 0) return null;
   const steps = rawQuestions.map(buildStep).filter((s): s is QuestionStep => s !== null);
-  const first = steps[0];
-  if (!first) return null;
+  return steps.length > 0 ? multiQuestion(steps) : null;
+}
+
+/** The multi-question card for `steps` (at least one); `text`/`options`
+ *  mirror the first step for back-compat. */
+function multiQuestion(steps: QuestionStep[]): ToolQuestion {
+  const first = steps[0] as QuestionStep;
   return {
     text: first.header ? `${first.header}: ${first.text}` : first.text,
     options: [...first.options],

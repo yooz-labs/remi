@@ -77,9 +77,9 @@ export interface PushOptions {
    * The gate decided this card must reach the user NOW (`pushHeldHook`), so it
    * is LOAD-BEARING, not a cosmetic PTY/hook echo: it BYPASSES the
    * content-dedup and delivers to the lock screen even when a client is
-   * attached (it may be backgrounded). #603 Phase 3. Callers: a held binary
-   * permission prompt (Model B, #573, restored by #1126) and a multi-choice /
-   * design escalation.
+   * attached (it may be backgrounded). #603 Phase 3. Callers: a held prompt
+   * (a binary permission, Model B, #573, restored by #1126; an
+   * AskUserQuestion or ExitPlanMode, #1127) and a multi-choice escalation.
    */
   held?: boolean;
 }
@@ -228,10 +228,10 @@ export class QuestionPresenceTracker {
    *  binary main prompts instead.) Unlike a normal pending
    *  record (an in-flight gate escalation whose own push is imminent), a
    *  parked record must NOT count as gate-owned in the #712 orphan check —
-   *  the PTY render IS its push trigger — and it must SURVIVE the unscoped
+   *  the PTY render IS its notice trigger — and it must SURVIVE the unscoped
    *  status-change clear (#763): in an agent-team session every other
    *  agent's hook activity flips status constantly, and wiping a still-live
-   *  parked record loses the merged push (or the whole prompt, when an
+   *  parked record loses the merged notice (or the whole prompt, when an
    *  unrelated live question makes `hasLiveQuestions` suppress the orphan).
    *  A parked entry expires when its OWN agent advances
    *  (`noteAgentAdvanced` — Claude's own rules allowed the call, or it was
@@ -239,7 +239,7 @@ export class QuestionPresenceTracker {
    *  (restart/rotation), or after `PARKED_RECORD_TTL_MS`. Always a subset of
    *  `pending`'s keys; every `pending` delete/clear site mirrors onto this
    *  map. */
-  private awaitingPTY = new Map<string, { at: number; onRender?: (merged: Question) => void }>();
+  private awaitingPTY = new Map<string, { at: number; onRender: (merged: Question) => void }>();
 
   /** True while a prompt this tracker pushed is on the main PTY. Set when a
    *  render is paired and pushed; reset by `onStatusChange` out of
@@ -406,20 +406,20 @@ export class QuestionPresenceTracker {
    * debounce: hook + render is positive double-confirmation). The PTY is the
    * arbiter of whether the user is told.
    *
-   * With `opts.onRender` (#1126, every production park) the render calls it
-   * with the merged question INSTEAD of pushing an answerable card: the
-   * hook was answered 'passthrough', so only the terminal can answer, and
-   * the phone gets an "answer at the terminal" notice. Without it the render
-   * pushes a card, as before #1126.
+   * The render calls `opts.onRender` with the merged question (#1126), never
+   * pushes an answerable card: the hook was answered 'passthrough', so only
+   * the terminal can answer, and the phone gets an "answer at the terminal"
+   * notice. Required since #1127: the render push without it, unused in
+   * production since #1126, was deleted.
    */
-  parkAwaitingPTY(question: Question, opts: { onRender?: (merged: Question) => void } = {}): void {
+  parkAwaitingPTY(question: Question, opts: { onRender: (merged: Question) => void }): void {
     this.recordPendingHook(question);
     // recordPendingHook may have kept a richer existing record instead of
     // this one; the parked flag applies to whatever record now owns the key
     // (both are hook-derived for the same agent's prompt cycle).
     this.awaitingPTY.set(agentKey(question), {
       at: this.deps.nowMs?.() ?? Date.now(),
-      ...(opts.onRender ? { onRender: opts.onRender } : {}),
+      onRender: opts.onRender,
     });
     console.debug(
       `[QuestionPresenceTracker] Parked question awaiting PTY render (agent "${agentKey(question)}"): "${question.text.slice(0, 60)}"`,
@@ -446,11 +446,11 @@ export class QuestionPresenceTracker {
 
   /**
    * Push an escalation's question IMMEDIATELY, without waiting for a PTY
-   * render. Callers: a binary prompt whose PermissionRequest hook is held for
-   * the phone's answer (Model B, #573; `AutoApproveGate.holdForAnswer`,
-   * #1126), and a multi-choice / design escalation
-   * (`AutoApproveGate.escalatePassthrough`, #625). Neither waits for a
-   * render. Pushes under the stashed question's own id.
+   * render. Callers: a prompt whose PermissionRequest hook is held for the
+   * phone's answer (Model B, #573; `AutoApproveGate.holdForAnswer`, #1126; an
+   * AskUserQuestion or ExitPlanMode since #1127), and a multi-choice
+   * escalation (`AutoApproveGate.escalatePassthrough`, #625). Neither waits
+   * for a render. Pushes under the stashed question's own id.
    *
    * Locates the stashed hook record by id (the `pending` map is agent-keyed, so
    * we scan its values for the matching `Question.id`), routes it through the
@@ -592,9 +592,9 @@ export class QuestionPresenceTracker {
   /**
    * Push a render-born card and, on a CONFIRMED registration, give it the
    * render-owned slot (#1005 Change B), so the next render on this screen
-   * resolves it. Used by every render-born push site: `pairAndPush`, and the
-   * marked branch of `onOrphanPTYPrompt` (a parked subagent with no
-   * `onRender`). Without
+   * resolves it. Used by the render-born push site, `pairAndPush` (the
+   * marked branch of `onOrphanPTYPrompt` used it too until #1127 deleted its
+   * push: a parked render only sends its notice now). Without
    * the slot, a card whose prompt was denied in the terminal (no tool run, so
    * no `cancelExternallyResolved`) stayed live until the `Stop` sweep, and a
    * phone tap on it while a later prompt was on screen passed the
@@ -642,7 +642,9 @@ export class QuestionPresenceTracker {
    * a terminal DENY fires no tool call, the lead-`Stop` sweep skips subagent
    * entries (#711), and an agent-team teammate can run for days without
    * `SubagentStop`. So those cards had no working exit and accumulated until
-   * LRU eviction.
+   * LRU eviction. (Historical: since #1126 a parked render sends an "answer
+   * at the terminal" notice instead of a card, and #1127 deleted that card
+   * push; the agent scoping below still guards render-born cards.)
    *
    * Cards pushed at hook time (`pushHeldHook`) never reach here: that
    * trigger consumes the hook record, so the native render that follows is
@@ -817,12 +819,14 @@ export class QuestionPresenceTracker {
             optionsAreFallback: useHookOptions ? hookRecord.optionsAreFallback : false,
             // #626: the PTY base carries none of the structured fields, so a
             // merge must preserve the hook record's AskUserQuestion structure —
-            // else a merged card loses questions[].
+            // else a merged card loses questions[] — and its plan (#1127).
             // (Dormant while PTY emission is gated off for hooked sessions (#625),
             // but correct for the no-hook fallback + any future re-enable.)
             ...(hookRecord.kind ? { kind: hookRecord.kind } : {}),
             ...(hookRecord.questions ? { questions: hookRecord.questions } : {}),
             ...(hookRecord.submitLabel ? { submitLabel: hookRecord.submitLabel } : {}),
+            ...(hookRecord.detail !== undefined ? { detail: hookRecord.detail } : {}),
+            ...(hookRecord.terminalOnly === true ? { terminalOnly: true } : {}),
           }
         : // NOTE (#887 review): identity adoption above is gated on
           // `options.length > 0`, so an optionless hook record falls here and
@@ -920,20 +924,15 @@ export class QuestionPresenceTracker {
       );
       const onRender = this.awaitingPTY.get(markedKey)?.onRender;
       const { merged } = this.consumeAndMerge(ptyQuestion);
-      if (onRender) {
-        // #1126: a prompt only the terminal can answer. Its notice, never a
-        // card; the gate keeps the prompt open, so its redraws are echoes.
-        try {
-          onRender(merged);
-        } catch (err) {
-          console.error(
-            `[QuestionPresenceTracker] parked render callback threw: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
-        return;
+      // #1126: a prompt only the terminal can answer. Its notice, never a
+      // card; the gate keeps the prompt open, so its redraws are echoes.
+      try {
+        onRender?.(merged);
+      } catch (err) {
+        console.error(
+          `[QuestionPresenceTracker] parked render callback threw: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
-      this.ptyShowingQuestion = true;
-      this.pushRenderBorn(merged, ptyQuestion.text);
       return;
     }
     if (this.isGateOwnedCycle(ptyQuestion)) {
@@ -959,8 +958,8 @@ export class QuestionPresenceTracker {
    *  as "no live questions" (fail-open: a possibly-redundant push is far
    *  better than crashing the daemon or silently swallowing a real orphan). */
   private isGateOwnedCycle(ptyQuestion: Question): boolean {
-    // A parked record (#751) never claims ownership: its push TRIGGER is the
-    // PTY render this check would otherwise suppress.
+    // A parked record (#751) never claims ownership: its notice TRIGGER is
+    // the PTY render this check would otherwise suppress.
     const key = agentKey(ptyQuestion);
     if (this.pending.has(key) && !this.awaitingPTY.has(key)) return true;
     try {

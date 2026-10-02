@@ -21,6 +21,9 @@ import {
   statusClearsMainQuestion,
 } from '../../src/lib/question-collection';
 import type { UIQuestion } from '../../src/types';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { QuestionCard } from '../../src/components/chat/QuestionCard';
 
 const BASE_TS = '2026-05-29T00:00:00.000Z';
 const BASE_MS = Date.parse(BASE_TS);
@@ -194,6 +197,39 @@ describe('restoreRefusedAnswer (#1126: a held card keeps its card)', () => {
     expect(restoreRefusedAnswer(map, 's1', 'gone', ['plain', 'other'])).toBe(map);
     expect(restoreRefusedAnswer(map, 's1', 'other', ['other'])).toBe(map);
     expect(restoreRefusedAnswer(map, 's1', 'plain', ['plain'])).toBe(map);
+  });
+
+  test('a refused AskUserQuestion form submitted here stops "Answering…" and can be submitted again (#1127)', () => {
+    const step = {
+      text: 'Which color?',
+      multiSelect: false,
+      options: [{ label: 'Red', value: '1', isRecommended: true, isYes: false, isNo: false }],
+    };
+    const form = qWith(q('s1', undefined, 'form'), {
+      type: 'numbered',
+      kind: 'multi_question',
+      questions: [step],
+      submitting: true,
+    });
+    // `isQuestionPending` ignores `submitting`, so the rendered form is the
+    // evidence: while submitting, Submit reads "Answering…" and the inputs
+    // are disabled; restored, both are live again.
+    const render = (card: UIQuestion) =>
+      renderToStaticMarkup(
+        createElement(QuestionCard, { question: card, onAnswer: () => {}, onAuqAnswer: () => {} }),
+      );
+    const before = render(form);
+    expect(before).toContain('Answering…');
+    expect(before).toMatch(/<input[^>]* disabled=""/);
+
+    const map = build(form);
+    const restored = restoreRefusedAnswer(map, 's1', 'form', ['form']);
+    const card = getSessionQuestions(restored, 's1')[0];
+    if (!card) throw new Error('the form card is gone');
+    const after = render(card);
+    expect(after).not.toContain('Answering…');
+    expect(after).toContain('>Submit<');
+    expect(after).not.toMatch(/<input[^>]* disabled=""/);
   });
 });
 

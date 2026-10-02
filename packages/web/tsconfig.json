@@ -1,4 +1,13 @@
 {
   "files": [],
+  "compilerOptions": {
+    // Read by `bun test` (it resolves imports with the nearest tsconfig.json),
+    // so a test can render a component that imports through `@/` (#1127
+    // review T2). The compiler projects below declare the same alias.
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
   "references": [{ "path": "./tsconfig.app.json" }, { "path": "./tsconfig.node.json" }]
 }

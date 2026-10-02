@@ -2502,12 +2502,12 @@ describe('setupHookBridge', () => {
 
   describe('multi-choice / design escalations push at once (#625)', () => {
     test('an AskUserQuestion pushes exactly one held card, once, and it reaches the registry', async () => {
-      // The immediate-push path end to end: gate -> escalatePassthrough ->
+      // The immediate-push path end to end: gate -> holdForAnswer (#1127) ->
       // onHeldEscalate -> tracker.pushHeldHook -> MessageAPI -> registry,
       // with the real tracker and message API and the gate's default
       // ALWAYS_ESCALATE_TOOLS (no alwaysEscalateTools passed).
       const pushLog: Array<{ question: Question; held: boolean }> = [];
-      const { tracker } = build({ realTracker: true, realMessageApi: true, pushLog });
+      const { tracker, handle } = build({ realTracker: true, realMessageApi: true, pushLog });
       hookServer.fire('Notification', {
         session_id: 'claude-auq-push',
         hook_event_name: 'Notification',
@@ -2516,7 +2516,8 @@ describe('setupHookBridge', () => {
         message: '',
       });
 
-      const decision = await hookServer.firePermission({
+      // Held (#1127): the decision waits for an answer, the card does not.
+      const decision = hookServer.firePermission({
         session_id: 'claude-auq-push',
         hook_event_name: 'PermissionRequest',
         tool_name: 'AskUserQuestion',
@@ -2535,7 +2536,6 @@ describe('setupHookBridge', () => {
         },
       });
 
-      expect(decision).toBe('passthrough');
       expect(pushLog).toHaveLength(1);
       expect(pushLog[0]?.held).toBe(true);
       const qid = pushLog[0]?.question.id;
@@ -2550,6 +2550,8 @@ describe('setupHookBridge', () => {
           (q) => q.id === qid,
         ),
       ).toHaveLength(1);
+      handle.gate.forceRelease('test');
+      expect(await decision).toBe('passthrough');
     });
   });
 
@@ -2557,11 +2559,12 @@ describe('setupHookBridge', () => {
    * #1134: a card answered by typing carries the screen's numbering, and a
    * typed digit is refused unless the screen's option at that value is the
    * same choice. Since #1126 only cards pushed by id before their render are
-   * typed (multi-choice permissions, ExitPlanMode, AskUserQuestion; #1127
-   * moves those to the hook too); a binary prompt is held instead, see the
-   * held-prompt tests above. Driven through the real bridge, gate, tracker,
-   * MessageAPI and answer handler, with the live dialog parsed by the real
-   * parser.
+   * typed (multi-choice string-label permissions); a binary prompt, an
+   * AskUserQuestion and an ExitPlanMode are held instead (#1126, #1127), and
+   * the tests below pin that their answers never reach the PTY even with
+   * Claude's own list on screen. Driven through the real bridge, gate,
+   * tracker, MessageAPI and answer handler, with the live dialog parsed by
+   * the real parser.
    */
   describe("phone answers use the screen's numbering (#1134)", () => {
     function lockSession(id: string): void {
@@ -2675,14 +2678,15 @@ describe('setupHookBridge', () => {
     });
 
     /**
-     * ExitPlanMode pushes by id at once with the hook's hardcoded list, so the
-     * notification always arrives (some plan renders never parse). Claude
-     * 2.1.287 builds its own list; the screen below is the e4-bare-classic
-     * capture's layout, re-spaced and fed through the real parser. No card
-     * label equals the screen's at its value, so every digit is refused and
-     * the plan is answered at the terminal.
+     * ExitPlanMode is held and answered through its hook by meaning (#1127),
+     * never typed. Claude 2.1.287 builds its own list; the screen below is
+     * the e4-bare-classic capture's layout, re-spaced and fed through the
+     * real parser, and it numbers "Keep planning" nowhere: the answer must
+     * not depend on it.
      */
-    describe("ExitPlanMode answered over Claude's own list", () => {
+    describe("ExitPlanMode answered over Claude's own list (#1127)", () => {
+      const PLAN = { plan: '# Plan\n1. Do the thing', planFilePath: '/p/plan.md' };
+
       async function planCard(sessionTag: string) {
         const { tracker } = build({
           realTracker: true,
@@ -2690,13 +2694,12 @@ describe('setupHookBridge', () => {
           liveQuestionDeps: true,
         });
         lockSession(sessionTag);
-        const decision = await hookServer.firePermission({
+        const decision = hookServer.firePermission({
           session_id: sessionTag,
           hook_event_name: 'PermissionRequest',
           tool_name: 'ExitPlanMode',
-          tool_input: { plan: '# Plan\n1. Do the thing' },
+          tool_input: PLAN,
         });
-        expect(decision).toBe('passthrough');
         const card = cards()[0];
         if (!card) throw new Error('ExitPlanMode pushed no card before its render');
         const parsed = parseQuestion(
@@ -2711,61 +2714,92 @@ describe('setupHookBridge', () => {
         );
         if (!parsed.question) throw new Error('the plan dialog did not parse');
         tracker.onOrphanPTYPrompt(parsed.question);
-        return { tracker, card };
+        return { tracker, card, decision };
       }
 
-      test('"No, keep planning" (3) is refused: the screen\'s 3 is "Tell Claude what to change"', async () => {
-        const { tracker, card } = await planCard('claude-plan-no');
+      test('"Keep planning" denies through the hook with "Keep planning."; nothing typed', async () => {
+        const { tracker, card, decision } = await planCard('claude-plan-no');
+        expect(card.kind).toBe('plan_approval');
+        expect(card.detail).toBe(PLAN.plan);
         await answerHandlers(tracker, []).onAnswer(
           'conn-plan' as UUID,
           SID,
           card.id,
-          'No, keep planning',
+          'Keep planning',
         );
+        expect(await decision).toEqual({ behavior: 'deny', message: 'Keep planning.' });
         expect(ptySubmits).toEqual([]);
       });
 
-      test('"Yes, and auto-accept edits" (1) is refused: worded differently on screen', async () => {
-        const { tracker, card } = await planCard('claude-plan-yes');
+      test('"Approve, auto-accept edits" echoes the plan with a session setMode; nothing typed', async () => {
+        const { tracker, card, decision } = await planCard('claude-plan-yes');
         await answerHandlers(tracker, []).onAnswer(
           'conn-plan' as UUID,
           SID,
           card.id,
-          'Yes, and auto-accept edits',
+          'Approve, auto-accept edits',
         );
+        expect(await decision).toEqual({
+          behavior: 'allow',
+          updatedInput: PLAN,
+          updatedPermissions: [{ type: 'setMode', mode: 'acceptEdits', destination: 'session' }],
+        });
         expect(ptySubmits).toEqual([]);
+      });
+
+      test("Claude's own wording is not a plan answer: refused, the hold stays", async () => {
+        const { tracker, card, decision } = await planCard('claude-plan-screen');
+        const sent: ProtocolMessage[] = [];
+        expect(
+          await answerHandlers(tracker, sent).onAnswer(
+            'conn-plan' as UUID,
+            SID,
+            card.id,
+            'Yes, auto-accept edits',
+          ),
+        ).toBeUndefined();
+        expect((sent.find((m) => m.type === 'error') as { code?: string })?.code).toBe(
+          'STALE_ANSWER',
+        );
+        expect(cards().map((q) => q.id)).toEqual([card.id]);
+        expect(ptySubmits).toEqual([]);
+        bridgeHandles[bridgeHandles.length - 1]?.gate.forceRelease('test');
+        expect(await decision).toBe('passthrough');
       });
     });
 
-    test('AskUserQuestion pushes at once, and a plain pick types its screen digit', async () => {
-      // Its runner answers from the structured questions; a plain pick, as
-      // the extension's buttons send, goes through the guard: "SQLite"
-      // equals the screen row once its description is appended, and types 2.
+    test('AskUserQuestion: a lock-screen pick answers through the hook, even with the menu on screen', async () => {
+      // A plain pick, as the extension's buttons and the HTTP relay send it
+      // (an option's label or number), is matched to one option and answered
+      // through the hook with that option's label in `answers` (#1127). The
+      // menu below is
+      // on screen and "SQLite" would match its row 2, which is exactly when
+      // a typed digit used to go through; nothing may be typed now.
       const { tracker } = build({
         realTracker: true,
         realMessageApi: true,
         liveQuestionDeps: true,
       });
       lockSession('claude-auq');
-      const decision = await hookServer.firePermission({
+      const input = {
+        questions: [
+          {
+            question: 'Which database?',
+            header: 'DB',
+            multiSelect: false,
+            options: [
+              { label: 'Postgres', description: 'Relational' },
+              { label: 'SQLite', description: 'Embedded' },
+            ],
+          },
+        ],
+      };
+      const decision = hookServer.firePermission({
         session_id: 'claude-auq',
         hook_event_name: 'PermissionRequest',
         tool_name: 'AskUserQuestion',
-        tool_input: {
-          questions: [
-            {
-              question: 'Which database?',
-              header: 'DB',
-              multiSelect: false,
-              options: [
-                { label: 'Postgres', description: 'Relational' },
-                { label: 'SQLite', description: 'Embedded' },
-              ],
-            },
-          ],
-        },
+        tool_input: input,
       });
-      expect(decision).toBe('passthrough');
       const card = cards()[0];
       if (!card) throw new Error('AskUserQuestion pushed no card before its render');
       expect(card.kind).toBe('multi_question');
@@ -2787,7 +2821,12 @@ describe('setupHookBridge', () => {
 
       const outcome = await answerHandlers(tracker, []).relayAnswer(SID, card.id, 'SQLite');
       expect(outcome).toBe('delivered');
-      expect(ptySubmits).toEqual(['2']);
+      expect(await decision).toEqual({
+        behavior: 'allow',
+        updatedInput: { ...input, answers: { 'Which database?': 'SQLite' } },
+      });
+      expect(ptySubmits).toEqual([]);
+      expect(cards()).toHaveLength(0);
     });
   });
 

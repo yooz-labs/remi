@@ -217,9 +217,29 @@ export interface Question {
    * single prompt described by `text` + `options`. `'multi_question'` is a
    * structured `AskUserQuestion` tool call: the full set of sub-questions is in
    * `questions`, while `text`/`options` mirror `questions[0]` for back-compat
-   * (lock-screen summary + the first-question answer path).
+   * (the lock-screen summary). `'plan_approval'` (#1127) is an `ExitPlanMode`
+   * call: the plan is in `detail`, and `options` are the approval choices.
+   * A client that does not know a kind renders `text` + `options`.
    */
-  readonly kind?: 'permission' | 'multi_question' | undefined;
+  readonly kind?: 'permission' | 'multi_question' | 'plan_approval' | undefined;
+
+  /**
+   * True when no phone answer can be applied to this card (#1127 review S7):
+   * an AskUserQuestion whose input does not parse exactly, so its option
+   * numbers cannot be trusted to name the input's options. Every answer to
+   * it is refused; it is answered in the terminal, or cancelled from the
+   * phone. Clients show no answer controls but Cancel, and the push gets no
+   * actionable category.
+   */
+  readonly terminalOnly?: boolean | undefined;
+
+  /**
+   * Long-form text the prompt is about (#1127): the plan of a
+   * `'plan_approval'` card, verbatim (markdown). The app shows it in full;
+   * the push shows its start; a text-only surface may shorten it. `text`
+   * stays a short ask.
+   */
+  readonly detail?: string | undefined;
 
   /**
    * The sub-questions for `kind === 'multi_question'` (#626): each carries its

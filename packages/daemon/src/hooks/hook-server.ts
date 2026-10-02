@@ -95,6 +95,10 @@ type Listener<T> = (input: T) => void;
  *     persists the echoed `permission_suggestions` entry, exactly as if the
  *     user had picked that "always allow" option in its own dialog (ground
  *     truth: code.claude.com/docs/en/hooks).
+ *   - `{behavior:'allow', updatedInput, updatedPermissions?}` (#1127) =>
+ *     Claude runs the tool with `updatedInput` in place of its own input: an
+ *     AskUserQuestion's input echoed with the user's `answers`, or an
+ *     ExitPlanMode's input echoed with a `setMode` (`structured-answers.ts`).
  *
  * Since #1126 (ADR 0031) every non-passthrough shape is a human's answer from
  * the phone to a held prompt; remi never produces one on its own. A
@@ -106,6 +110,11 @@ export type PermissionDecision =
   | 'deny'
   | 'passthrough'
   | { readonly behavior: 'allow'; readonly updatedPermissions: readonly unknown[] }
+  | {
+      readonly behavior: 'allow';
+      readonly updatedInput: Readonly<Record<string, unknown>>;
+      readonly updatedPermissions?: readonly unknown[];
+    }
   /**
    * A deny that tells Claude WHY (#976). Per the official hooks reference's
    * PermissionRequest decision-control table:
@@ -366,9 +375,10 @@ export class HookServer {
   /**
    * Serialise a PermissionDecision into the Claude Code hook response. allow/
    * deny use the verified `hookSpecificOutput.decision.behavior` shape;
-   * passthrough is the bare `{}` that lets Claude render the prompt; the
-   * object variant (#718) passes its `{behavior:'allow', updatedPermissions}`
-   * through verbatim, so Claude persists the echoed suggestion.
+   * passthrough is the bare `{}` that lets Claude render the prompt; an
+   * object variant passes through verbatim: `updatedPermissions` (#718) so
+   * Claude applies the echoed suggestion, `updatedInput` (#1127) so it runs
+   * the tool with the answered input.
    */
   private permissionDecisionResponse(decision: PermissionDecision): Response {
     const headers = { 'Content-Type': 'application/json' };

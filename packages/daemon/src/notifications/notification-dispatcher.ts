@@ -111,11 +111,43 @@ export function selectPushCategory(options: readonly QuestionOption[]): string |
 }
 
 /**
+ * Whether an AskUserQuestion card can be answered with one lock-screen tap
+ * (#1127 lead decision): exactly one question, single-select. The tap sends
+ * its option's label, and the held answer path takes it only when it names
+ * exactly one option (a label that is another option's value is refused,
+ * review S1) that matches the parsed input by value and label, so a
+ * positional button answers that option or nothing. Any other
+ * AskUserQuestion (several questions, a multi-select) is answered in the
+ * app.
+ */
+function isOneTapAskUserQuestion(question: Question): boolean {
+  const steps = question.questions;
+  return steps !== undefined && steps.length === 1 && steps[0]?.multiSelect === false;
+}
+
+/**
+ * The APNS category for a question card. A plan approval (#1127) never gets
+ * one: approving a plan is not a lock-screen tap; nor does a card no phone
+ * answer can be applied to (`terminalOnly`, review S7). An AskUserQuestion card
+ * gets REMI_MULTI only when it is one single-select question
+ * (`isOneTapAskUserQuestion`), and none otherwise. Every other card is
+ * chosen by what its options mean (`selectPushCategory`).
+ */
+export function pushCategoryFor(question: Question): string | undefined {
+  if (question.kind === 'plan_approval' || question.terminalOnly === true) return undefined;
+  if (question.kind === 'multi_question') {
+    return isOneTapAskUserQuestion(question) ? selectPushCategory(question.options) : undefined;
+  }
+  return selectPushCategory(question.options);
+}
+
+/**
  * Whether a question qualifies for the NSE's per-notification dynamic
- * category (#719): a single-question prompt (never a multi-sub-question
- * AskUserQuestion form, which stays app-routed via its topic-list summary)
- * with 2-4 options, each carrying a REAL label (not just a fallback value —
- * the entire point of the dynamic category is showing the true option text).
+ * category (#719): a single-question prompt (never a multi-sub-question or
+ * multi-select AskUserQuestion form, which stays app-routed via its summary,
+ * #1127, and never a plan approval) with 2-4 options, each carrying a REAL
+ * label (not just a fallback value — the entire point of the dynamic
+ * category is showing the true option text).
  *
  * This is an ADDITIVE hint alongside `selectPushCategory`'s STATIC category,
  * which is always sent unconditionally as the fallback. A client without the
@@ -132,9 +164,8 @@ export function selectPushCategory(options: readonly QuestionOption[]): string |
  * NotificationService.swift (`buildDynamicCategory`'s `0...5` loop).
  */
 export function selectDynOptions(question: Question): boolean {
-  if (question.kind === 'multi_question' && question.questions && question.questions.length > 1) {
-    return false;
-  }
+  if (question.kind === 'plan_approval' || question.terminalOnly === true) return false;
+  if (question.kind === 'multi_question' && !isOneTapAskUserQuestion(question)) return false;
   const { options } = question;
   if (options.length < 2 || options.length > 4) return false;
   // #1134 review: the extension builds its dynamic buttons without
@@ -209,6 +240,10 @@ export function buildPushText(
   // auto-approve LLM, removed in #1125; the push reads the question text.
   const ask = normalizeNotificationText(question.text) || 'Allow this action?';
   const title = `${sessionName}: ${ask}`.slice(0, TITLE_MAX);
+  // #1127: a card about a long text (a plan) shows the start of that text;
+  // the app shows all of it, and the options are chosen there.
+  const detail = question.detail !== undefined ? normalizeNotificationText(question.detail) : '';
+  if (detail.length > 0) return { title, body: detail.slice(0, BODY_MAX) };
   const optionList = formatOptionList(question.options);
   const body = (optionList ? `${ask}\n${optionList}` : ask).slice(0, BODY_MAX);
   return { title, body };
@@ -434,15 +469,14 @@ export class NotificationDispatcher {
     const sessionName = session?.name || 'Agent';
     const cfg = pushConfig();
     const pushSessionId = this.deps.getPrimarySessionId() ?? this.sessionId;
-    // #626: an AskUserQuestion (kind === 'multi_question') gets no category at
-    // all. `selectPushCategory` would already refuse it REMI_YN/YNA (their
-    // hardcoded "Yes / Yes, always / No" titles would MISLABEL picks such as
-    // "PostgreSQL / MySQL / MongoDB"), but a multi-question form cannot be
-    // answered by one positional tap either. With no category the lock screen
-    // shows the summary and opens the app, where the structured card renders the
-    // real options + descriptions. (One-tap AUQ answering arrives in #627.)
-    const pushCategory =
-      question.kind === 'multi_question' ? undefined : selectPushCategory(question.options);
+    // #626, #1127: an AskUserQuestion with several questions or a
+    // multi-select, and a plan approval, get no category at all: none can be
+    // answered by one positional tap (and a plan is never approved from the
+    // lock screen). With no category the lock screen shows the summary and
+    // opens the app, where the card renders the real options. A
+    // one-question, single-select AskUserQuestion gets REMI_MULTI: its tap
+    // names one option, which the held hook answers (`pushCategoryFor`).
+    const pushCategory = pushCategoryFor(question);
     // Send the human-readable LABELS for DISPLAY (#574, issue 4); answer
     // routing in input-events resolves an incoming label OR value back to the
     // option, then submits the option's index when a PTY submit is required, so

@@ -3,9 +3,11 @@
  * decides nothing on its own. A binary main-agent prompt holds its hook and
  * pushes its card at once; only a human answer (the phone's, through
  * `answerHeld`, or the terminal's) settles it, and every non-answer path
- * releases the hook with the empty response. A multi-choice / design prompt is
- * pushed at once and answered 'passthrough'; a subagent prompt parks for its
- * PTY render. What is pinned here: the routing, the push triggers, the
+ * releases the hook with the empty response. An AskUserQuestion or an
+ * ExitPlanMode is held the same way and answered with a structured
+ * `updatedInput` (#1127). A multi-choice string-label prompt is pushed at
+ * once and answered 'passthrough'; a subagent prompt parks for its PTY
+ * render. What is pinned here: the routing, the push triggers, the
  * answer-to-decision mapping, the deadline, and the external-resolution
  * bookkeeping that clears cards nobody will answer through remi.
  *
@@ -21,6 +23,7 @@ import { AutoApproveGate } from '../../src/auto-approve/auto-approve-gate.ts';
 import type { AutoApproveGateDeps } from '../../src/auto-approve/auto-approve-gate.ts';
 import { __resetLoggerForTests, configureLogger } from '../../src/cli/logger.ts';
 import type { PermissionRequestHookInput } from '../../src/hooks/index.ts';
+import { exitPlanModeOptions } from '../../src/hooks/structured-answers.ts';
 import type { PTYSession } from '../../src/pty/pty-session.ts';
 import { SessionRegistry } from '../../src/session/session-registry.ts';
 
@@ -142,18 +145,43 @@ describe('AutoApproveGate routing (#1125: nothing is decided, everything is rela
     expect(g.hasOpenHookPrompt()).toBe(true);
   });
 
-  test('a design prompt (AskUserQuestion) escalates and is pushed immediately (#625)', async () => {
-    const d = await gate().resolvePermission(
-      pr({ tool_name: 'AskUserQuestion', tool_input: { question: 'Which approach?' } }),
+  test('an AskUserQuestion holds its hook and pushes its card at once (#1127)', async () => {
+    const g = gate();
+    const hook = g.resolvePermission(
+      pr({
+        tool_name: 'AskUserQuestion',
+        tool_input: { questions: [{ question: 'Which approach?', options: ['A', 'B'] }] },
+      }),
     );
-    expect(d).toBe('passthrough');
     expect(pushNowIds).toEqual(escalatedIds);
     expect(pushNowIds).toHaveLength(1);
+    expect(g.isHeld(escalatedIds[0] as UUID)).toBe(true);
+    // Its dialog renders during the hold, like a binary prompt's.
+    expect(g.hasMainHold()).toBe(true);
+    expect(submits).toEqual([]);
+    g.forceRelease('test');
+    expect(await hook).toBe('passthrough');
   });
 
-  test('a multi-choice prompt (ExitPlanMode) is pushed immediately, even with no configured tools', async () => {
-    const d = await gate({ alwaysEscalateTools: new Set() }).resolvePermission(
-      pr({ tool_name: 'ExitPlanMode', tool_input: {}, permission_mode: 'plan' }),
+  test('an ExitPlanMode is held by name, even with no configured tools (#1127)', async () => {
+    const g = gate({ alwaysEscalateTools: new Set() });
+    const hook = g.resolvePermission(
+      pr({ tool_name: 'ExitPlanMode', tool_input: { plan: '# P' }, permission_mode: 'plan' }),
+    );
+    expect(pushNowIds).toEqual(escalatedIds);
+    expect(g.isHeld(escalatedIds[0] as UUID)).toBe(true);
+    g.forceRelease('test');
+    expect(await hook).toBe('passthrough');
+  });
+
+  test('a question-shaped tool that is not AskUserQuestion is not held (#1127)', async () => {
+    // Its structured answer was never verified, and its dialog is Claude's
+    // permission prompt: pushed at once, answered passthrough.
+    const d = await gate().resolvePermission(
+      pr({
+        tool_name: 'mcp__custom__ask',
+        tool_input: { questions: [{ question: 'Proceed?', options: ['A', 'B'] }] },
+      }),
     );
     expect(d).toBe('passthrough');
     expect(pushNowIds).toEqual(escalatedIds);
@@ -207,7 +235,7 @@ describe('AutoApproveGate routing (#1125: nothing is decided, everything is rela
     expect(await hook).toBe('passthrough');
     expect(
       await g.resolvePermission(
-        pr({ tool_name: 'AskUserQuestion', tool_input: { question: 'q' } }),
+        pr({ permission_suggestions: ['Option A', 'Option B', 'Option C'] }),
       ),
     ).toBe('passthrough');
   });
@@ -700,7 +728,7 @@ describe('AutoApproveGate held prompts (#1126)', () => {
         option: { ...YES, label: 'Yes, and always allow' },
       }),
     ).toBe('refused');
-    expect(g.answerHeld(qid, { kind: 'text' })).toBe('refused');
+    expect(g.answerHeld(qid, { kind: 'text', text: 'go ahead' })).toBe('refused');
     await Bun.sleep(5);
     expect(settled).toBe(false);
     expect(registry.getQuestion(SID, qid)).not.toBeNull();
@@ -712,7 +740,7 @@ describe('AutoApproveGate held prompts (#1126)', () => {
   test('an id this gate never held is unknown (hook-less and passthrough cards use their own path)', async () => {
     const g = gate();
     expect(g.answerHeld(generateId() as UUID, { kind: 'option', option: YES })).toBe('unknown');
-    await g.resolvePermission(pr({ tool_name: 'AskUserQuestion', tool_input: { question: 'q' } }));
+    await g.resolvePermission(pr({ permission_suggestions: ['Option A', 'Option B', 'Option C'] }));
     expect(g.answerHeld(ids[0] as UUID, { kind: 'option', option: YES })).toBe('unknown');
   });
 
@@ -867,6 +895,109 @@ describe('AutoApproveGate held prompts (#1126)', () => {
       expect(g.hasOpenHookPrompt()).toBe(false);
     });
 
+    test('the paired PostToolUse closes the prompt even when its input differs (#1127)', async () => {
+      // Measured on Claude Code 2.1.287: an AskUserQuestion answered in the
+      // terminal posts PostToolUse with `{questions, answers}`, and an
+      // ExitPlanMode with `{}`, while the PreToolUse and PermissionRequest
+      // carried the call's own input. The id is the same call.
+      const g = gate();
+      const plan = { plan: '# Plan', planFilePath: '/p.md' };
+      g.notePreToolUse({ toolName: 'Bash', toolInput: plan, toolUseId: 'tu-plan' });
+      const hook = g.resolvePermission(pr({ tool_input: plan }));
+      const qid = ids[0] as UUID;
+      // Another call's id never matches, whatever its input.
+      g.cancelExternallyResolved(
+        { toolName: 'Bash', toolInput: {}, toolUseId: 'tu-other' },
+        'PostToolUse',
+      );
+      expect(registry.getQuestion(SID, qid)).not.toBeNull();
+      g.cancelExternallyResolved(
+        { toolName: 'Bash', toolInput: {}, toolUseId: 'tu-plan' },
+        'PostToolUse',
+      );
+      expect(await hook).toBe('passthrough');
+      expect(registry.getQuestion(SID, qid)).toBeNull();
+      // Matched by id: closed, not released with a notice.
+      expect(deadlines).toEqual([]);
+      expect(resolved).toEqual([qid]);
+      expect(g.hasOpenHookPrompt()).toBe(false);
+    });
+
+    describe('an unpaired AskUserQuestion / ExitPlanMode that finished (#1127 review S4)', () => {
+      const AUQ = { questions: [{ question: 'Which?', options: ['A', 'B'] }] };
+      const answered = { ...AUQ, answers: { 'Which?': 'A' } };
+      const auq = (over: Partial<PermissionRequestHookInput> = {}) =>
+        pr({ tool_name: 'AskUserQuestion', tool_input: AUQ, ...over });
+
+      test('the one open hold of that tool and agent is released to the terminal', async () => {
+        const g = gate();
+        // No PreToolUse noted: the request is unpaired.
+        const hook = g.resolvePermission(auq());
+        const qid = ids[0] as UUID;
+        g.cancelExternallyResolved(
+          { toolName: 'AskUserQuestion', toolInput: answered, toolUseId: 'tu-x' },
+          'PostToolUse',
+          { toolFinished: true },
+        );
+        expect(await hook).toBe('passthrough');
+        expect(registry.getQuestion(SID, qid)).toBeNull();
+        expect(deadlines).toEqual([{ qid, registered: true, cause: 'released' }]);
+        // Kept open for orphan suppression until a hook signal closes it.
+        expect(g.hasOpenHookPrompt()).toBe(true);
+      });
+
+      test('the same for a plan, whose finished input is {}', async () => {
+        const g = gate();
+        const hook = g.resolvePermission(
+          pr({ tool_name: 'ExitPlanMode', tool_input: { plan: '# P' }, permission_mode: 'plan' }),
+        );
+        g.cancelExternallyResolved({ toolName: 'ExitPlanMode', toolInput: {} }, 'PostToolUse', {
+          toolFinished: true,
+        });
+        expect(await hook).toBe('passthrough');
+        expect(deadlines.map((d) => d.cause)).toEqual(['released']);
+      });
+
+      test('nothing is released on a PreToolUse, for two open holds, for a hold paired to another call, or for another agent', async () => {
+        const g = gate();
+        const unpaired = g.resolvePermission(auq());
+        const finished = { toolName: 'AskUserQuestion', toolInput: answered, toolUseId: 'tu-x' };
+        // A PreToolUse is not a finished tool.
+        g.cancelExternallyResolved(finished, 'PreToolUse');
+        // Another agent's finished call.
+        g.cancelExternallyResolved({ ...finished, agentId: 'agent-9' }, 'PostToolUse-subagent', {
+          toolFinished: true,
+        });
+        expect(g.isHeld(ids[0] as UUID)).toBe(true);
+        // Two open holds: no guess between them.
+        const second = g.resolvePermission(
+          auq({ tool_input: { questions: [{ question: 'Other?', options: ['C', 'D'] }] } }),
+        );
+        g.cancelExternallyResolved(finished, 'PostToolUse', { toolFinished: true });
+        expect(g.isHeld(ids[0] as UUID)).toBe(true);
+        expect(g.isHeld(ids[1] as UUID)).toBe(true);
+        expect(deadlines).toEqual([]);
+        g.forceRelease('test');
+        await Promise.all([unpaired, second]);
+      });
+
+      test("a hold paired with its own PreToolUse is not released by another call's finish", async () => {
+        const g = gate();
+        g.notePreToolUse({ toolName: 'AskUserQuestion', toolInput: AUQ, toolUseId: 'tu-own' });
+        const paired = g.resolvePermission(auq());
+        const finished = { toolName: 'AskUserQuestion', toolInput: answered, toolUseId: 'tu-x' };
+        g.cancelExternallyResolved(finished, 'PostToolUse', { toolFinished: true });
+        expect(g.isHeld(ids[0] as UUID)).toBe(true);
+        expect(deadlines).toEqual([]);
+        // Its own finish closes it exactly (by id), no notice.
+        g.cancelExternallyResolved({ ...finished, toolUseId: 'tu-own' }, 'PostToolUse', {
+          toolFinished: true,
+        });
+        expect(await paired).toBe('passthrough');
+        expect(deadlines).toEqual([]);
+      });
+    });
+
     test("pairing respects the agent: a request never takes another agent's identical call", async () => {
       const g = gate();
       // A subagent and the main agent run the identical command.
@@ -980,6 +1111,225 @@ describe('AutoApproveGate held prompts (#1126)', () => {
       g.cancelExternallyResolved({ ...call, toolUseId: 'tu-sub', agentId: 'agent-1' }, 'x');
       expect(g.hasOpenHookPrompt()).toBe(true);
       g.cancelExternallyResolved(call, 'PostToolUse');
+      expect(await hook).toBe('passthrough');
+    });
+  });
+
+  describe('a held AskUserQuestion (#1127)', () => {
+    const ONE = {
+      questions: [{ question: 'Which color?', options: [{ label: 'Red' }, { label: 'Green' }] }],
+    };
+    const TWO = {
+      questions: [
+        ONE.questions[0],
+        { question: 'Which fruits?', multiSelect: true, options: ['Apple', 'Cherry'] },
+      ],
+    };
+    const ask = (toolInput: Record<string, unknown>) =>
+      pr({ tool_name: 'AskUserQuestion', tool_input: toolInput });
+    const GREEN: QuestionOption = {
+      label: 'Green',
+      value: '2',
+      isRecommended: false,
+      isYes: false,
+      isNo: false,
+    };
+
+    test('selections answer every question: allow with the input echoed and the answers', async () => {
+      const g = gate();
+      const hook = g.resolvePermission(ask(TWO));
+      const qid = ids[0] as UUID;
+      expect(
+        g.answerHeld(qid, {
+          kind: 'selections',
+          selections: [
+            { questionIndex: 1, optionIndices: [1, 0] },
+            { questionIndex: 0, optionIndices: [1] },
+          ],
+        }),
+      ).toBe('resolved');
+      expect(await hook).toEqual({
+        behavior: 'allow',
+        updatedInput: {
+          ...TWO,
+          answers: { 'Which color?': 'Green', 'Which fruits?': 'Apple, Cherry' },
+        },
+      });
+      expect(g.hasOpenHookPrompt()).toBe(false);
+    });
+
+    test('an incomplete answer is refused and the hold stays; a complete one then resolves it', async () => {
+      const g = gate();
+      let settled = false;
+      const hook = g.resolvePermission(ask(TWO)).then((d) => {
+        settled = true;
+        return d;
+      });
+      const qid = ids[0] as UUID;
+      expect(
+        g.answerHeld(qid, {
+          kind: 'selections',
+          selections: [{ questionIndex: 0, optionIndices: [0] }],
+        }),
+      ).toBe('refused');
+      // A single pick or free text cannot answer two questions.
+      expect(g.answerHeld(qid, { kind: 'option', option: GREEN })).toBe('refused');
+      expect(g.answerHeld(qid, { kind: 'text', text: 'Teal' })).toBe('refused');
+      await Bun.sleep(5);
+      expect(settled).toBe(false);
+      expect(registry.getQuestion(SID, qid)).not.toBeNull();
+      expect(g.isHeld(qid)).toBe(true);
+      expect(
+        g.answerHeld(qid, {
+          kind: 'selections',
+          selections: [
+            { questionIndex: 0, optionIndices: [0] },
+            { questionIndex: 1, optionIndices: [0] },
+          ],
+        }),
+      ).toBe('resolved');
+      expect(await hook).toMatchObject({ behavior: 'allow' });
+    });
+
+    test('one single-select question takes a single pick or free text', async () => {
+      const g = gate();
+      const picked = g.resolvePermission(ask(ONE));
+      expect(g.answerHeld(ids[0] as UUID, { kind: 'option', option: GREEN })).toBe('resolved');
+      expect(await picked).toEqual({
+        behavior: 'allow',
+        updatedInput: { ...ONE, answers: { 'Which color?': 'Green' } },
+      });
+      const typed = g.resolvePermission(ask(ONE));
+      expect(g.answerHeld(ids[1] as UUID, { kind: 'text', text: 'Teal' })).toBe('resolved');
+      expect(await typed).toEqual({
+        behavior: 'allow',
+        updatedInput: { ...ONE, answers: { 'Which color?': 'Teal' } },
+      });
+    });
+
+    test('a pick that is not the question own option is refused', async () => {
+      const g = gate();
+      const hook = g.resolvePermission(ask(ONE));
+      const qid = ids[0] as UUID;
+      expect(g.answerHeld(qid, { kind: 'option', option: { ...GREEN, value: '1' } })).toBe(
+        'refused',
+      );
+      expect(g.answerHeld(qid, { kind: 'option', option: { ...GREEN, label: 'Blue' } })).toBe(
+        'refused',
+      );
+      g.forceRelease('test');
+      expect(await hook).toBe('passthrough');
+    });
+
+    test('Cancel denies with the dismissal message; nothing is typed', async () => {
+      const g = gate();
+      const hook = g.resolvePermission(ask(TWO));
+      expect(g.answerHeld(ids[0] as UUID, { kind: 'cancel' })).toBe('resolved');
+      expect(await hook).toEqual({
+        behavior: 'deny',
+        message: 'The user dismissed the question.',
+      });
+    });
+
+    test('an ambiguous answer is refused on every kind of hold (#1127 review S1)', async () => {
+      const g = gate();
+      const asked = g.resolvePermission(ask(ONE));
+      const binary = g.resolvePermission(pr({ tool_input: { command: 'ls' } }));
+      const plan = g.resolvePermission(
+        pr({ tool_name: 'ExitPlanMode', tool_input: { plan: '# P' }, permission_mode: 'plan' }),
+      );
+      for (const qid of ids) {
+        expect(g.answerHeld(qid, { kind: 'ambiguous' })).toBe('refused');
+        expect(g.isHeld(qid)).toBe(true);
+      }
+      g.forceRelease('test');
+      expect(await Promise.all([asked, binary, plan])).toEqual([
+        'passthrough',
+        'passthrough',
+        'passthrough',
+      ]);
+    });
+
+    test('selections never answer a binary prompt', async () => {
+      const g = gate();
+      const hook = g.resolvePermission(pr());
+      expect(
+        g.answerHeld(ids[0] as UUID, {
+          kind: 'selections',
+          selections: [{ questionIndex: 0, optionIndices: [0] }],
+        }),
+      ).toBe('refused');
+      g.forceRelease('test');
+      expect(await hook).toBe('passthrough');
+    });
+  });
+
+  describe('a held ExitPlanMode (#1127)', () => {
+    const PLAN = { plan: '# Plan', planFilePath: '/p/plan.md' };
+    const plan = () => pr({ tool_name: 'ExitPlanMode', tool_input: PLAN, permission_mode: 'plan' });
+    const [ACCEPT_EDITS, MANUAL, KEEP] = exitPlanModeOptions() as [
+      QuestionOption,
+      QuestionOption,
+      QuestionOption,
+    ];
+
+    test('each approval echoes the plan and sets its mode for the session', async () => {
+      const g = gate();
+      const a = g.resolvePermission(plan());
+      expect(g.answerHeld(ids[0] as UUID, { kind: 'option', option: ACCEPT_EDITS })).toBe(
+        'resolved',
+      );
+      expect(await a).toEqual({
+        behavior: 'allow',
+        updatedInput: PLAN,
+        updatedPermissions: [{ type: 'setMode', mode: 'acceptEdits', destination: 'session' }],
+      });
+      const b = g.resolvePermission(plan());
+      expect(g.answerHeld(ids[1] as UUID, { kind: 'option', option: MANUAL })).toBe('resolved');
+      expect(await b).toEqual({
+        behavior: 'allow',
+        updatedInput: PLAN,
+        updatedPermissions: [{ type: 'setMode', mode: 'default', destination: 'session' }],
+      });
+    });
+
+    test("a subagent's plan (daemon mode) approves without changing the session mode (review S5)", async () => {
+      const g = gate({ hasLocalTerminal: false });
+      const sub = { agent_id: 'agent-1', agent_type: 'Plan' };
+      const [approve] = exitPlanModeOptions(true) as [QuestionOption];
+      const a = g.resolvePermission({ ...plan(), ...sub });
+      const qid = ids[0] as UUID;
+      // The main agent's mode-setting approvals are not this card's.
+      expect(g.answerHeld(qid, { kind: 'option', option: ACCEPT_EDITS })).toBe('refused');
+      expect(g.answerHeld(qid, { kind: 'option', option: MANUAL })).toBe('refused');
+      expect(g.answerHeld(qid, { kind: 'option', option: approve })).toBe('resolved');
+      expect(await a).toEqual({ behavior: 'allow', updatedInput: PLAN });
+    });
+
+    test('Keep planning denies with the message; Cancel keeps planning too', async () => {
+      const g = gate();
+      const a = g.resolvePermission(plan());
+      g.answerHeld(ids[0] as UUID, { kind: 'option', option: KEEP, message: 'Add tests.' });
+      expect(await a).toEqual({ behavior: 'deny', message: 'Add tests.' });
+      const b = g.resolvePermission(plan());
+      g.answerHeld(ids[1] as UUID, { kind: 'cancel' });
+      expect(await b).toEqual({ behavior: 'deny', message: 'Keep planning.' });
+    });
+
+    test('a binary Yes, free text or selections are not plan answers', async () => {
+      const g = gate();
+      const hook = g.resolvePermission(plan());
+      const qid = ids[0] as UUID;
+      expect(g.answerHeld(qid, { kind: 'option', option: YES })).toBe('refused');
+      expect(g.answerHeld(qid, { kind: 'text', text: 'ship it' })).toBe('refused');
+      expect(
+        g.answerHeld(qid, {
+          kind: 'selections',
+          selections: [{ questionIndex: 0, optionIndices: [0] }],
+        }),
+      ).toBe('refused');
+      expect(g.isHeld(qid)).toBe(true);
+      g.forceRelease('test');
       expect(await hook).toBe('passthrough');
     });
   });
@@ -1447,18 +1797,20 @@ describe('AutoApproveGate Stop resolves a still-open MAIN passthrough question (
     );
   }
 
-  /** ExitPlanMode is ALWAYS multi-choice (`ALWAYS_MULTI_CHOICE_TOOLS`), so
-   *  this escalates as a PASSTHROUGH -- never held -- exactly the
-   *  "No, keep planning" shape #799 targets. */
-  function planModePr(): PermissionRequestHookInput {
+  /** A multi-choice string-label permission escalates as a PASSTHROUGH,
+   *  never held: the shape #799 targets (an answer given in the terminal
+   *  fires nothing remi can pair). ExitPlanMode, the original example, is
+   *  held since #1127. */
+  function passthroughPr(): PermissionRequestHookInput {
     return {
       session_id: 'claude-test',
       transcript_path: '/tmp/t.jsonl',
       cwd: '/d',
-      permission_mode: 'plan',
+      permission_mode: 'default',
       hook_event_name: 'PermissionRequest',
-      tool_name: 'ExitPlanMode',
+      tool_name: 'mcp__custom__choose',
       tool_input: {},
+      permission_suggestions: ['Option A', 'Option B', 'Option C'],
     };
   }
 
@@ -1474,10 +1826,10 @@ describe('AutoApproveGate Stop resolves a still-open MAIN passthrough question (
     await registry.shutdown();
   });
 
-  test('fires: Stop(mainOnly) resolves a still-open MAIN passthrough question ("keep planning" answered in the terminal)', async () => {
+  test('fires: Stop(mainOnly) resolves a still-open MAIN passthrough question (answered in the terminal)', async () => {
     const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
     const g = gate({ onResolved: (qid, reason) => resolvedLog.push({ qid, reason }) });
-    expect(await g.resolvePermission(planModePr())).toBe('passthrough');
+    expect(await g.resolvePermission(passthroughPr())).toBe('passthrough');
     const qid = lastQuestionId as UUID;
     registry.addQuestion(SID, {
       id: qid,
@@ -1523,7 +1875,7 @@ describe('AutoApproveGate Stop resolves a still-open MAIN passthrough question (
 
     // A genuinely open MAIN question too, so the test proves Stop(mainOnly)
     // resolves ITS OWN kind while sparing the subagent's.
-    expect(await g.resolvePermission(planModePr())).toBe('passthrough');
+    expect(await g.resolvePermission(passthroughPr())).toBe('passthrough');
     const mainQid = lastQuestionId as UUID;
     registry.addQuestion(SID, {
       id: mainQid,
@@ -1591,17 +1943,19 @@ describe('AutoApproveGate full teardown resolves ALL survivors (#948)', () => {
     );
   }
 
-  /** AskUserQuestion is in `alwaysEscalateTools` -> design -> escalates as a
-   *  PASSTHROUGH, never held -- the exact #948 repro shape. */
-  function askUserQuestionPr(): PermissionRequestHookInput {
+  /** A multi-choice string-label permission escalates as a PASSTHROUGH,
+   *  never held: the #948 repro shape. (#948 was found with AskUserQuestion,
+   *  which is held since #1127; a hold is released by the same sweeps.) */
+  function passthroughPr(): PermissionRequestHookInput {
     return {
       session_id: 'claude-test',
       transcript_path: '/tmp/t.jsonl',
       cwd: '/d',
       permission_mode: 'default',
       hook_event_name: 'PermissionRequest',
-      tool_name: 'AskUserQuestion',
+      tool_name: 'mcp__custom__choose',
       tool_input: { question: 'Which approach?' },
+      permission_suggestions: ['Option A', 'Option B', 'Option C'],
     };
   }
 
@@ -1631,10 +1985,10 @@ describe('AutoApproveGate full teardown resolves ALL survivors (#948)', () => {
     await registry.shutdown();
   });
 
-  test('the exact #948 repro: SessionEnd with NO Stop in between resolves a still-open MAIN AskUserQuestion card', async () => {
+  test('the #948 repro: SessionEnd with NO Stop in between resolves a still-open MAIN passthrough card', async () => {
     const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
     const g = gate({ onResolved: (qid, reason) => resolvedLog.push({ qid, reason }) });
-    expect(await g.resolvePermission(askUserQuestionPr())).toBe('passthrough');
+    expect(await g.resolvePermission(passthroughPr())).toBe('passthrough');
     const qid = lastQuestionId as UUID;
     registry.addQuestion(SID, {
       id: qid,
@@ -1689,7 +2043,7 @@ describe('AutoApproveGate full teardown resolves ALL survivors (#948)', () => {
       agentId: 'agent-1',
     });
 
-    expect(await g.resolvePermission(askUserQuestionPr())).toBe('passthrough');
+    expect(await g.resolvePermission(passthroughPr())).toBe('passthrough');
     const mainQid = lastQuestionId as UUID;
     registry.addQuestion(SID, {
       id: mainQid,
@@ -1717,7 +2071,7 @@ describe('AutoApproveGate full teardown resolves ALL survivors (#948)', () => {
     const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
     const g = gate({ onResolved: (qid, reason) => resolvedLog.push({ qid, reason }) });
 
-    expect(await g.resolvePermission(askUserQuestionPr())).toBe('passthrough');
+    expect(await g.resolvePermission(passthroughPr())).toBe('passthrough');
     const mainQid = lastQuestionId as UUID;
     registry.addQuestion(SID, {
       id: mainQid,
@@ -1765,7 +2119,7 @@ describe('AutoApproveGate full teardown resolves ALL survivors (#948)', () => {
   test('forceRelease (remi unstick) also resolves a still-open passthrough survivor, mirroring the teardown branch', async () => {
     const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
     const g = gate({ onResolved: (qid, reason) => resolvedLog.push({ qid, reason }) });
-    expect(await g.resolvePermission(askUserQuestionPr())).toBe('passthrough');
+    expect(await g.resolvePermission(passthroughPr())).toBe('passthrough');
     const qid = lastQuestionId as UUID;
     registry.addQuestion(SID, {
       id: qid,

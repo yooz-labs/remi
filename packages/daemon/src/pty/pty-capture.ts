@@ -10,9 +10,10 @@
  *   OUT 1719500000001 live "[2K❯ 1. Yes ..."
  *
  * Off unless the env var is set (a single boolean check on the hot path when
- * disabled). Its purpose is to capture the `AskUserQuestion` keystroke model from
- * a real session so the answer driver is built from observed bytes — and can be
- * re-verified when Claude Code's renderer drifts (cf. ExitPlanMode order, #598).
+ * disabled). It was built to capture the `AskUserQuestion` keystroke model from
+ * a real session for the keystroke answer driver (#627), which #1127 deleted
+ * (AskUserQuestion is answered through its held hook); it remains a general
+ * capture of terminal-UI bytes, for example for the screen parser.
  *
  * Capture is best-effort: a write error disables it and logs ONCE, so a full disk
  * or a bad path can never disturb the live PTY.

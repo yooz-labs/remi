@@ -1,5 +1,13 @@
 # AskUserQuestion terminal-UI interaction model (#627 spike)
 
+> **Historical (#1127, 2026-10-02):** the keystroke answer driver this model
+> was built for (`hooks/auq-answer.ts`, `hooks/auq-runner.ts`) and the
+> terminal-answer detector (#661) are deleted. AskUserQuestion is held and
+> answered through its `PermissionRequest` hook with a structured
+> `updatedInput` (ADR 0031, #1127 amendment); a terminal answer is seen
+> through its paired `PostToolUse`. The captures below stay as the screen
+> parser's fixtures (`packages/daemon/tests/fixtures/auq/`).
+
 Captured 2026-06-27 from live Claude Code sessions (Opus 4.8) via `REMI_PTY_CAPTURE`
 (see `packages/daemon/src/pty/pty-capture.ts`). Four captures, preserved as fixtures
 in `packages/daemon/tests/fixtures/auq/`. This is the ground truth the answer driver

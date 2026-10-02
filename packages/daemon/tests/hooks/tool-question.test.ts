@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { optionsFromSuggestions } from '../../src/hooks/hook-event-bridge.ts';
-import { extractToolQuestion } from '../../src/hooks/tool-question.ts';
+import { PLAN_DETAIL_MAX, extractToolQuestion } from '../../src/hooks/tool-question.ts';
 
 describe('extractToolQuestion', () => {
   it('extracts the real AskUserQuestion question + option labels as picks', () => {
@@ -45,17 +45,70 @@ describe('extractToolQuestion', () => {
     expect(q?.text).toBe('Do you want to proceed with the migration?');
   });
 
-  it('returns the standard ExitPlanMode choices in render order', () => {
+  it('builds ExitPlanMode options by meaning and carries the plan (#1127)', () => {
     const q = extractToolQuestion('ExitPlanMode', { plan: '# Plan\n- step 1\n- step 2' });
     expect(q).not.toBeNull();
     if (!q) return;
-    expect(q.options.map((o) => o.label)).toEqual([
-      'Yes, and auto-accept edits',
-      'Yes, and manually approve edits',
-      'No, keep planning',
+    // remi's own options, never Claude's model-dependent list; no auto mode.
+    expect(q.options.map((o) => [o.label, o.value, o.isYes, o.isNo])).toEqual([
+      ['Approve, auto-accept edits', '1', true, false],
+      ['Approve, approve edits manually', '2', true, false],
+      ['Keep planning', '3', false, true],
     ]);
-    expect(q.options.map((o) => o.value)).toEqual(['1', '2', '3']);
-    expect(q.options.every((o) => o.isYes === false && o.isNo === false)).toBe(true);
+    expect(q.kind).toBe('plan_approval');
+    expect(q.text).toBe('Plan ready for review');
+    expect(q.detail).toBe('# Plan\n- step 1\n- step 2');
+    // No plan, no detail; the card still asks.
+    expect(extractToolQuestion('ExitPlanMode', {})?.detail).toBeUndefined();
+    // A plan longer than the card's bound is cut with a visible marker; the
+    // hook's input (what an approval echoes) is untouched (review S6).
+    const long = `${'p'.repeat(PLAN_DETAIL_MAX)}TAIL`;
+    const capped = extractToolQuestion('ExitPlanMode', { plan: long })?.detail ?? '';
+    expect(capped.startsWith('p'.repeat(PLAN_DETAIL_MAX))).toBe(true);
+    expect(capped).not.toContain('TAIL');
+    expect(capped).toEndWith(
+      '[Plan truncated: 4 more characters. Read the full plan in the terminal.]',
+    );
+    expect(extractToolQuestion('ExitPlanMode', { plan: 'p'.repeat(PLAN_DETAIL_MAX) })?.detail).toBe(
+      'p'.repeat(PLAN_DETAIL_MAX),
+    );
+    // A subagent's plan: an approval that sets no session mode (review S5).
+    expect(
+      extractToolQuestion('ExitPlanMode', { plan: '# P' }, { subagent: true })?.options.map(
+        (o) => o.label,
+      ),
+    ).toEqual(['Approve', 'Keep planning']);
+  });
+
+  it('numbers an exactly parsed AskUserQuestion from its input; a malformed one keeps the lenient card (#1127)', () => {
+    const exact = extractToolQuestion('AskUserQuestion', {
+      questions: [{ question: 'Pick', options: ['A', 'B', 'C'] }],
+    });
+    expect(exact?.questions?.[0]?.options.map((o) => [o.value, o.label])).toEqual([
+      ['1', 'A'],
+      ['2', 'B'],
+      ['3', 'C'],
+    ]);
+    // A dropped option would shift the numbering, so the gate refuses every
+    // answer to such a card; the card itself still shows what it can.
+    const lenient = extractToolQuestion('AskUserQuestion', {
+      questions: [{ question: 'Pick', options: [{ label: '' }, 'B'] }],
+    });
+    expect(lenient?.questions?.[0]?.options.map((o) => [o.value, o.label])).toEqual([['1', 'B']]);
+    // ...and it is marked so no phone answer is offered (review S7), as is
+    // any question-shaped tool other than AskUserQuestion (verification
+    // review item 2); an exact parse is not.
+    expect(lenient?.terminalOnly).toBe(true);
+    expect(exact?.terminalOnly).toBeUndefined();
+    for (const options of [
+      ['A', 'B'],
+      [{ label: '' }, 'B'],
+    ]) {
+      expect(
+        extractToolQuestion('mcp__custom__ask', { questions: [{ question: 'Pick', options }] })
+          ?.terminalOnly,
+      ).toBe(true);
+    }
   });
 
   it('returns null for tools that carry no question (so the caller falls back)', () => {

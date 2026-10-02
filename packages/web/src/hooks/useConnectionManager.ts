@@ -156,7 +156,7 @@ export interface UseConnectionManagerReturn {
     selections: readonly AnswerSelection[],
     claudeSessionId?: UUID,
   ) => boolean;
-  /** #627: cancel/escape the active prompt (sends Esc to the TUI). */
+  /** #627: cancel the active prompt (through its held hook, #1127, or Esc). */
   sendCancelQuestion: (
     connectionId: ConnectionId,
     sessionId: UUID,
@@ -748,8 +748,9 @@ export function useConnectionManager(
     [sendToConnection],
   );
 
-  // #627: a structured AskUserQuestion answer (per-sub-question selections); the
-  // daemon drives the interactive TUI and verifies the review before submitting.
+  // #627: a structured AskUserQuestion answer (per-sub-question selections).
+  // Since #1127 the daemon validates it and answers through the held hook;
+  // an older daemon drove the interactive TUI instead.
   const sendAuqAnswer = useCallback(
     (
       connectionId: ConnectionId,
@@ -766,8 +767,8 @@ export function useConnectionManager(
     [sendToConnection],
   );
 
-  // #627: cancel/escape the active prompt — the daemon sends Esc to the TUI. The
-  // universal unstick, available even when a prompt can't be auto-answered.
+  // #627: cancel the active prompt, the universal unstick. A held card is
+  // cancelled through its hook (#1127); any other prompt gets Esc.
   const sendCancelQuestion = useCallback(
     (
       connectionId: ConnectionId,

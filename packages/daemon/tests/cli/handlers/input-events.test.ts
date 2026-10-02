@@ -8,9 +8,7 @@ import type { MessageAPI } from '../../../src/api/message-api.ts';
 import { QuestionPresenceTracker } from '../../../src/api/question-presence-tracker.ts';
 import { createInputHandlers, trackerScreenDeps } from '../../../src/cli/handlers/input-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
-import { AUQ_KEYS } from '../../../src/hooks/auq-answer.ts';
 import { optionsFromSuggestions } from '../../../src/hooks/hook-event-bridge.ts';
-import { appendPtyOutput, clearPtyOutput } from '../../../src/pty/output-buffer.ts';
 import type { PTYSession } from '../../../src/pty/pty-session.ts';
 import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
 import { SessionRegistry } from '../../../src/session/session-registry.ts';
@@ -1044,13 +1042,17 @@ describe('createInputHandlers', () => {
           expect(submits).toEqual(['1']);
         });
 
+        // A typed multi-choice card whose numbering the screen shifts (probe
+        // A was first found on ExitPlanMode, which is held and answered
+        // through its hook since #1127; the typed path is the same for any
+        // multi-choice card).
         const exitPlanCard = [
           opt('1', 'Yes, and auto-accept edits'),
           opt('2', 'Yes, and manually approve edits'),
           opt('3', 'No, keep planning'),
         ];
 
-        test('probe A: ExitPlanMode "No, keep planning" (3) over a screen with a clear-context row is refused', async () => {
+        test('probe A: a typed pick (3) over a screen whose extra row shifts the numbering is refused', async () => {
           const screen = [
             opt('1', 'Yes, clear context and auto-accept edits'),
             opt('2', 'Yes, auto-accept edits'),
@@ -1062,7 +1064,7 @@ describe('createInputHandlers', () => {
           expect(logs.some((m) => m.includes('"3" means a different option on screen'))).toBe(true);
         });
 
-        test('probe A, matching numbering: "No, keep planning" types 3', async () => {
+        test('probe A, matching numbering: the same typed pick types 3', async () => {
           const screen = [
             opt('1', 'Yes,andauto-acceptedits'),
             opt('2', 'Yes,andmanuallyapproveedits'),
@@ -1203,7 +1205,8 @@ describe('createInputHandlers', () => {
     });
 
     // #627: cancel/escape sends Esc to the PTY and clears the question — the
-    // universal unstick, regardless of whether the prompt was understood.
+    // universal unstick for a card no held hook stands behind (a held card's
+    // Cancel is answered through its hook, #1126/#1127).
     test('cancel sends Esc to the PTY and clears the question', async () => {
       const ptyCapture = { writes: [] as string[], submits: [] as string[] };
       const sessionId = sessionRegistry.createSessionId();
@@ -1229,193 +1232,69 @@ describe('createInputHandlers', () => {
       });
       await handlers.onAnswer(CID, sessionId, QID, '', undefined, { cancel: true });
 
-      expect(ptyCapture.writes).toEqual([AUQ_KEYS.ESC]);
+      expect(ptyCapture.writes).toEqual(['\x1b']);
       expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
     });
 
-    // #627: selections for a question that carries no structured `questions[]`
-    // escalates (the user falls back to Cancel / terminal) WITHOUT removing it.
-    test('selections on a non-structured question escalate, keeping the question', async () => {
-      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
-      const sessionId = sessionRegistry.createSessionId();
-      sessionRegistry.registerSession(
-        sessionId,
-        '/test/dir',
-        fakePTY(ptyCapture),
-        fakeMessageAPI(new Map()),
-      );
-      sessionRegistry.addQuestion(sessionId, {
-        id: QID,
-        text: 'Allow Bash?',
-        options: [{ value: '1', label: 'Yes', isRecommended: true, isYes: true, isNo: false }],
-        allowsFreeText: false,
-        isAnswered: false,
-      });
-
-      const handlers = createInputHandlers({
-        sessionRegistry,
-        bindingStore,
-        send,
-        ...PROMPT_ON_SCREEN,
-      });
-      await handlers.onAnswer(CID, sessionId, QID, '', undefined, {
-        selections: [{ questionIndex: 0, optionIndices: [0] }],
-      });
-
-      expect(sendCalls.some((c) => c.message.type === 'error')).toBe(true);
-      // The question stays so the user can still Cancel or answer in the terminal.
-      expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(1);
-    });
-
-    // #627: a structured single-select AUQ is driven via keystrokes; feeding the
-    // closure marker into the output buffer (as a real Claude would) closes it.
-    test('structured AskUserQuestion: drives keystrokes and closes on the marker', async () => {
-      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
-      const sessionId = sessionRegistry.createSessionId();
-      // PTY whose ENTER write makes "Claude" accept the answer (closure marker).
-      const pty = {
-        id: generateId(),
-        write: (content: string) => {
-          ptyCapture.writes.push(content);
-          if (content === AUQ_KEYS.ENTER) {
-            appendPtyOutput(sessionId, "⏺ User answered Claude's questions:  ⎿ · Color → Green");
-          }
-        },
-        submitInput: async () => {},
-        close: async () => {},
-      } as unknown as PTYSession;
-      sessionRegistry.registerSession(sessionId, '/test/dir', pty, fakeMessageAPI(new Map()));
-      sessionRegistry.addQuestion(sessionId, {
-        id: QID,
-        text: 'Color: What is your favorite color?',
-        options: [
+    // #1127: a structured answer exists only as a hook response. For a card
+    // no hold stands behind (a question-shaped tool that is not
+    // AskUserQuestion, whose dialog is Claude's permission prompt) it cannot
+    // be expressed: refused, nothing typed, the card consumed like the other
+    // typed-path refusals. The keystroke runner that used to drive the
+    // AskUserQuestion dialog is gone.
+    test.each([
+      ['a plain card', undefined],
+      ['a multi-question card', 'multi_question' as const],
+    ])(
+      'selections on %s no hold stands behind are refused and nothing is typed',
+      async (_name, kind) => {
+        const ptyCapture = { writes: [] as string[], submits: [] as string[] };
+        const sessionId = sessionRegistry.createSessionId();
+        sessionRegistry.registerSession(
+          sessionId,
+          '/test/dir',
+          fakePTY(ptyCapture),
+          fakeMessageAPI(new Map()),
+        );
+        const options = [
           { value: '1', label: 'Red', isRecommended: true, isYes: false, isNo: false },
           { value: '2', label: 'Green', isRecommended: false, isYes: false, isNo: false },
-          { value: '3', label: 'Blue', isRecommended: false, isYes: false, isNo: false },
-        ],
-        allowsFreeText: false,
-        isAnswered: false,
-        kind: 'multi_question',
-        questions: [
-          {
-            header: 'Color',
-            text: 'What is your favorite color?',
-            multiSelect: false,
-            options: [
-              { value: '1', label: 'Red', isRecommended: true, isYes: false, isNo: false },
-              { value: '2', label: 'Green', isRecommended: false, isYes: false, isNo: false },
-              { value: '3', label: 'Blue', isRecommended: false, isYes: false, isNo: false },
-            ],
-          },
-        ],
-      });
+        ];
+        sessionRegistry.addQuestion(sessionId, {
+          id: QID,
+          text: 'Color: pick one',
+          options,
+          allowsFreeText: false,
+          isAnswered: false,
+          held: true,
+          ...(kind
+            ? {
+                kind,
+                questions: [{ header: 'Color', text: 'pick one', multiSelect: false, options }],
+              }
+            : {}),
+        });
 
-      const retired: UUID[] = [];
-      const handlers = createInputHandlers({
-        sessionRegistry,
-        bindingStore,
-        send,
-        ...PROMPT_ON_SCREEN,
-        retireQuestion: (_sid, qid) => {
-          retired.push(qid);
-        },
-      });
-      // Pick Green (index 1): expect DOWN then ENTER, then closure -> question gone.
-      await handlers.onAnswer(CID, sessionId, QID, '', undefined, {
-        selections: [{ questionIndex: 0, optionIndices: [1] }],
-      });
+        const handlers = createInputHandlers({
+          sessionRegistry,
+          bindingStore,
+          send,
+          ...PROMPT_ON_SCREEN,
+        });
+        await handlers.onAnswer(CID, sessionId, QID, '', undefined, {
+          selections: [{ questionIndex: 0, optionIndices: [1] }],
+        });
 
-      expect(ptyCapture.writes).toEqual([AUQ_KEYS.DOWN, AUQ_KEYS.ENTER]);
-      expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
-      // #1125: the gate stops tracking it, so the AskUserQuestion PostToolUse
-      // that follows does not dismiss the answered card a second time.
-      expect(retired).toEqual([QID]);
-    });
-
-    // #627: a TWO-question AUQ exercises the byIndex label assembly + the review
-    // verification + submit, end-to-end through handleAnswer.
-    test('structured two-question AUQ: drives, verifies the review, submits, closes', async () => {
-      const ptyCapture = { writes: [] as string[], submits: [] as string[] };
-      const sessionId = sessionRegistry.createSessionId();
-      const REVIEW =
-        'Review your answers● Q1? → Green● Q2? → Apple, CherryReady to submit your answers?❯ 1. Submit answers 2. Cancel';
-      const CLOSED = "⏺ User answered Claude's questions:  ⎿ ·…";
-      let writes = 0;
-      // After the 9 planned keys (DOWN,ENTER | SPACE,DOWN,DOWN,SPACE,DOWN,DOWN,ENTER
-      // — Q2 has optionCount=3, so "Submit" sits at row 4) the review appears; the
-      // runner verifies it then sends ENTER, which closes the tool.
-      const pty = {
-        id: generateId(),
-        write: (content: string) => {
-          ptyCapture.writes.push(content);
-          writes += 1;
-          if (writes === 9) appendPtyOutput(sessionId, REVIEW);
-          else if (writes >= 10 && content === AUQ_KEYS.ENTER) appendPtyOutput(sessionId, CLOSED);
-        },
-        submitInput: async () => {},
-        close: async () => {},
-      } as unknown as PTYSession;
-      sessionRegistry.registerSession(sessionId, '/test/dir', pty, fakeMessageAPI(new Map()));
-      const opt = (value: string, label: string) => ({
-        value,
-        label,
-        isRecommended: false,
-        isYes: false,
-        isNo: false,
-      });
-      sessionRegistry.addQuestion(sessionId, {
-        id: QID,
-        text: 'Q1: Q1?',
-        options: [opt('1', 'Red'), opt('2', 'Green'), opt('3', 'Blue')],
-        allowsFreeText: false,
-        isAnswered: false,
-        kind: 'multi_question',
-        questions: [
-          {
-            header: 'Q1',
-            text: 'Q1?',
-            multiSelect: false,
-            options: [opt('1', 'Red'), opt('2', 'Green'), opt('3', 'Blue')],
-          },
-          {
-            header: 'Q2',
-            text: 'Q2?',
-            multiSelect: true,
-            options: [opt('1', 'Apple'), opt('2', 'Banana'), opt('3', 'Cherry')],
-          },
-        ],
-      });
-
-      const handlers = createInputHandlers({
-        sessionRegistry,
-        bindingStore,
-        send,
-        ...PROMPT_ON_SCREEN,
-      });
-      // Q1 -> Green (index 1); Q2 -> Apple + Cherry (indices 0, 2).
-      await handlers.onAnswer(CID, sessionId, QID, '', undefined, {
-        selections: [
-          { questionIndex: 0, optionIndices: [1] },
-          { questionIndex: 1, optionIndices: [0, 2] },
-        ],
-      });
-
-      // Planned keys then the verified submit ENTER.
-      expect(ptyCapture.writes).toEqual([
-        AUQ_KEYS.DOWN,
-        AUQ_KEYS.ENTER, // Q1 -> Green
-        AUQ_KEYS.SPACE, // toggle Apple
-        AUQ_KEYS.DOWN,
-        AUQ_KEYS.DOWN,
-        AUQ_KEYS.SPACE, // toggle Cherry (cursor now at row 2, optionCount=3)
-        AUQ_KEYS.DOWN,
-        AUQ_KEYS.DOWN, // past "Type something" to "Submit" (row optionCount+1=4)
-        AUQ_KEYS.ENTER, // leave Q2 (-> review)
-        AUQ_KEYS.ENTER, // submit (after review verified)
-      ]);
-      expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
-      clearPtyOutput(sessionId);
-    });
+        expect(ptyCapture.writes).toEqual([]);
+        expect(ptyCapture.submits).toEqual([]);
+        const error = sendCalls.find((c) => c.message.type === 'error')?.message as
+          | { code?: string; message?: string }
+          | undefined;
+        expect(error?.code).toBe('STALE_ANSWER');
+        expect(error?.message).toContain('answer it in the terminal');
+        expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
+      },
+    );
 
     test('a throwing submitInput still consumes the question (no zombie) and propagates the error', async () => {
       // Defense against double-submit on retry: even if the PTY submit throws,
@@ -2452,28 +2331,9 @@ describe('createInputHandlers', () => {
       expect(secondOutcome).toBe('stale');
     });
 
-    test('the claim is released when the answer settles, even when the card survives it', async () => {
-      // Selections for a non-structured question escalate and KEEP the card,
-      // so a second identical attempt reaches the claim check: a leaked claim
-      // would report it 'delivered' silently instead of escalating again.
-      const { sessionId } = slowSession();
-      const handlers = createInputHandlers({
-        ...PROMPT_ON_SCREEN,
-        sessionRegistry,
-        bindingStore,
-        send,
-      });
-      const selections = [{ questionIndex: 0, optionIndices: [0] }];
-
-      await handlers.onAnswer(CID, sessionId, QID, '', undefined, { selections });
-      await handlers.onAnswer(CID, sessionId, QID, '', undefined, { selections });
-
-      const codes = sendCalls
-        .filter((c) => c.message.type === 'error')
-        .map((c) => (c.message as { code?: string }).code);
-      expect(codes).toEqual(['AUQ_NOT_STRUCTURED', 'AUQ_NOT_STRUCTURED']);
-      expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(1);
-    });
+    // The claim release when a refused answer leaves its card live is pinned
+    // end to end with a held AskUserQuestion (#1127, structured-answers-e2e):
+    // the selections path that used to keep a card here was the runner's.
   });
 
   describe('duplicate answer deliveries (#752)', () => {
@@ -2625,56 +2485,8 @@ describe('createInputHandlers', () => {
       expect(await handlers.relayAnswer(sessionId, QID, 'No')).toBe('stale'); // conflict stays loud
     });
 
-    test('a duplicate AUQ selections delivery reports delivered', async () => {
-      // Mirror the structured-AUQ harness: the PTY echoes the closure marker
-      // on ENTER so the runner treats the answer as accepted.
-      const sessionId = sessionRegistry.createSessionId();
-      const writes: string[] = [];
-      const pty = {
-        id: generateId(),
-        write: (content: string) => {
-          writes.push(content);
-          if (content === AUQ_KEYS.ENTER) {
-            appendPtyOutput(sessionId, "⏺ User answered Claude's questions:  ⎿ · Color → Red");
-          }
-        },
-        submitInput: async () => {},
-        close: async () => {},
-      } as unknown as PTYSession;
-      sessionRegistry.registerSession(sessionId, '/test/dir', pty, fakeMessageAPI(new Map()));
-      sessionRegistry.addQuestion(sessionId, {
-        id: QID,
-        text: 'Color: pick one',
-        options: [{ value: '1', label: 'Red', isRecommended: true, isYes: false, isNo: false }],
-        allowsFreeText: false,
-        isAnswered: false,
-        kind: 'multi_question',
-        questions: [
-          {
-            header: 'Color',
-            text: 'pick one',
-            multiSelect: false,
-            options: [{ value: '1', label: 'Red', isRecommended: true, isYes: false, isNo: false }],
-          },
-        ],
-      });
-      const handlers = createInputHandlers({
-        sessionRegistry,
-        bindingStore,
-        send,
-        ...PROMPT_ON_SCREEN,
-      });
-      const selections = [{ questionIndex: 0, optionIndices: [0] }];
-
-      await handlers.onAnswer(CID, sessionId, QID, '', undefined, { selections });
-      expect(sessionRegistry.getSession(sessionId)?.currentQuestions.size).toBe(0);
-
-      // The losing channel re-delivers the same selections (WS path; the HTTP
-      // relay never carries selections). A duplicate of an applied AUQ answer
-      // must not produce a STALE_ANSWER / AUQ error frame.
-      await handlers.onAnswer(CID, sessionId, QID, '', undefined, { selections });
-      expect(sendCalls.filter((c) => c.message.type === 'error')).toHaveLength(0);
-    });
+    // A duplicate AskUserQuestion `selections` delivery is pinned end to end
+    // with a held prompt (#1127, structured-answers-e2e).
   });
 
   describe('onQuestionResolved cross-client dismissal (#585 P7)', () => {

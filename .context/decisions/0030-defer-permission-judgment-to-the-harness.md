@@ -1,12 +1,13 @@
 # ADR 0030: Defer permission judgment to the harness; remi only relays
 
-**Status:** accepted; its relay description amended by ADR 0031 (2026-10-02)
+**Status:** accepted; its relay description amended by ADR 0031 (2026-10-02) and its #1127 amendment
 **Date:** 2026-10-01
 **Owner:** Yahya
 
 > **Amended 2026-10-02 by [ADR 0031](0031-held-hook-answers-with-native-dialog-visible.md)** (#1126).
 > The decision stands: remi judges nothing.
 > What changed is the relay: a binary prompt is now held and answered through its hook response while Claude's dialog stays visible, subagent prompts depend on whether the session has a local terminal, and nothing is typed into a hook-backed binary prompt.
+> Its #1127 amendment holds AskUserQuestion and ExitPlanMode the same way and answers them with a structured `updatedInput`; only hook-less prompts and multi-choice string-label permissions are still typed, and a question-shaped tool other than AskUserQuestion (an MCP tool with `questions`, for example) is answered only in the terminal.
 > The "Relay" and "Subagent prompts" bullets below describe the state right after #1125.
 
 ## Context
@@ -38,7 +39,7 @@ What remains, and is what ships after #1125:
 
 - **Relay.** `PermissionRequest` reaches `AutoApproveGate` (name kept until Phase 3, #1126), which escalates every main-agent prompt.
   A binary prompt is answered `passthrough` so Claude renders its native dialog in the terminal at once, and the card is pushed when that render pairs with the hook record (push on render, #1121).
-  A multi-choice or design prompt (AskUserQuestion, ExitPlanMode) is answered `passthrough` and pushed immediately.
+  A multi-choice or design prompt (AskUserQuestion, ExitPlanMode) is answered `passthrough` and pushed immediately (held and answered through the hook since #1127, ADR 0031 amendment).
   A phone answer is typed into the rendered prompt using the screen's numbering, only when the chosen option's label exactly matches the screen's option at that number (#1134, PR #1136); otherwise it is refused, which means answer at the terminal, where Claude's dialog is still showing.
 - **Subagent prompts.** An `agent_id`-tagged request is parked and answered `passthrough`; its card pushes only if its prompt renders on the main PTY (ADR 0004, minus the render-time evaluation).
 - **Subagent alerts.** The informational `subagent_alert` push still fires for parked subagent requests matching the user's patterns, now configured under `[notifications] subagent_alert`.

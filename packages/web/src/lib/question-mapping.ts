@@ -84,6 +84,8 @@ export function mapQuestionToUIQuestion(
     timestamp,
     agentId: q.agentId,
     ...(q.kind ? { kind: q.kind } : {}),
+    ...(q.detail ? { detail: q.detail } : {}),
+    ...(q.terminalOnly === true ? { terminalOnly: true } : {}),
     ...(uiQuestions && uiQuestions.length > 0 ? { questions: uiQuestions } : {}),
     ...(q.submitLabel ? { submitLabel: q.submitLabel } : {}),
     // #718 review: carry an explicit `false` too, not just `true` — a naive

@@ -6,10 +6,22 @@
  * structured AskUserQuestion (#627) it renders an interactive multi-question form
  * — radio per single-select, checkbox per multi-select, with the authored option
  * descriptions — and a single Submit. Every card also exposes a Cancel/Esc
- * control: the universal unstick that tells the daemon to Esc the prompt so the
- * user is never stuck on something the app can't drive.
+ * control: the universal unstick, so the user is never stuck. Since #1127 a
+ * daemon answers an AskUserQuestion through its held hook and cancels a held
+ * card through it too (a dismissal, or "keep planning" for a plan); for a
+ * card no hook stands behind it sends Esc to the prompt.
  */
 
+import {
+  AUQ_FREE_TEXT_MAX,
+  type AuqFormState,
+  type AuqSelection,
+  EMPTY_AUQ_FORM,
+  auqFormComplete,
+  auqFormSelections,
+  pickAuqOption,
+  typeAuqText,
+} from '@/lib/auq-form';
 import { formatRelativeTime } from '@/lib/format-time';
 import type {
   UIQuestion,
@@ -21,19 +33,16 @@ import { clsx } from 'clsx';
 import { Check, Send, X } from 'lucide-react';
 import { type KeyboardEvent, useCallback, useMemo, useState } from 'react';
 
-/** One sub-question's chosen option indices (0-based), the shape sent to the
- *  daemon as a structured AskUserQuestion answer (#627). */
-export interface AuqSelection {
-  readonly questionIndex: number;
-  readonly optionIndices: number[];
-}
+export type { AuqSelection };
 
 interface QuestionCardProps {
   readonly question: UIQuestion;
   readonly onAnswer: (answer: string) => void;
-  /** #627: submit a structured AskUserQuestion answer (the daemon drives the TUI). */
+  /** #627: submit a structured AskUserQuestion answer (since #1127 the daemon
+   *  answers it through the held hook). */
   readonly onAuqAnswer?: (selections: AuqSelection[]) => void;
-  /** #627: cancel/escape the prompt (the daemon sends Esc). The never-stuck floor. */
+  /** #627: cancel the prompt (through its held hook, or Esc where no hook
+   *  stands behind it). The never-stuck floor. */
   readonly onCancel?: () => void;
   readonly className?: string;
 }
@@ -79,8 +88,12 @@ interface RenderOption {
   readonly description?: string;
 }
 
-/** Hint text shown to the right of permission-style options. */
-function optionHint(option: UIQuestionOption): string | undefined {
+/** Hint text shown to the right of permission-style options. A plan
+ *  approval's options say what they do in their labels; its approvals set a
+ *  mode (not "Allow once") and keeping planning is not "Cancel" (#1127
+ *  review T3), so they get no hint. */
+function optionHint(option: UIQuestionOption, kind: UIQuestion['kind']): string | undefined {
+  if (kind === 'plan_approval') return undefined;
   if (option.sessionGrant === 'github-issue-planning') {
     return 'Allow planning actions for this session';
   }
@@ -96,6 +109,18 @@ function optionKind(option: UIQuestionOption): OptionKind {
   return 'default';
 }
 
+/**
+ * What the header's X does, as its label (#1127 review T3): on a held plan
+ * it keeps planning, on a held AskUserQuestion it dismisses the question
+ * (both through the hook); elsewhere it cancels the prompt (Esc where no
+ * hook stands behind it).
+ */
+function cancelLabel(question: UIQuestion): string {
+  if (question.kind === 'plan_approval') return 'Keep planning';
+  if (question.kind === 'multi_question') return 'Dismiss question';
+  return 'Cancel (Esc)';
+}
+
 /** Flatten a permission question into a uniform option list for rendering. */
 function buildOptions(question: UIQuestion): RenderOption[] {
   if (question.structuredOptions && question.structuredOptions.length > 0) {
@@ -103,7 +128,7 @@ function buildOptions(question: UIQuestion): RenderOption[] {
       key: o.value,
       badge: o.value.slice(0, 2).toUpperCase(),
       label: o.label,
-      hint: optionHint(o),
+      hint: optionHint(o, question.kind),
       kind: optionKind(o),
       ...(o.description ? { description: o.description } : {}),
     }));
@@ -276,7 +301,8 @@ function FormOption({
 }
 
 /** The interactive AskUserQuestion form (#627): one group per sub-question, a
- *  single Submit, and the never-stuck Cancel. */
+ *  single Submit, and the never-stuck Cancel. A single-select question also
+ *  takes the user's own text instead of an option (#1127). */
 function MultiQuestionForm({
   question,
   steps,
@@ -288,39 +314,32 @@ function MultiQuestionForm({
   readonly onAuqAnswer?: (selections: AuqSelection[]) => void;
   readonly onCancel?: () => void;
 }) {
-  const [selected, setSelected] = useState<Map<number, Set<number>>>(new Map());
+  const [form, setForm] = useState<AuqFormState>(EMPTY_AUQ_FORM);
+  const { selected, typed } = form;
   const submitting = question.submitting ?? false;
-  const failed = question.autoAnswerFailed ?? false;
+  // #1127 review S7: no phone answer can be applied to this card; it is
+  // answered in the terminal, or cancelled. Shown like a failed one.
+  const terminalOnly = question.terminalOnly ?? false;
+  const failed = (question.autoAnswerFailed ?? false) || terminalOnly;
 
+  // A pick replaces typed text and typed text replaces a pick on a
+  // single-select question (`pickAuqOption`, `typeAuqText`).
   const toggle = useCallback((qi: number, oi: number, multi: boolean) => {
-    setSelected((prev) => {
-      const next = new Map(prev);
-      const set = new Set(next.get(qi) ?? []);
-      if (multi) {
-        if (set.has(oi)) set.delete(oi);
-        else set.add(oi);
-      } else {
-        set.clear();
-        set.add(oi);
-      }
-      next.set(qi, set);
-      return next;
-    });
+    setForm((prev) => pickAuqOption(prev, qi, oi, multi));
+  }, []);
+  const type = useCallback((qi: number, text: string) => {
+    setForm((prev) => typeAuqText(prev, qi, text));
   }, []);
 
   const allAnswered = useMemo(
-    () => steps.every((_, qi) => (selected.get(qi)?.size ?? 0) > 0),
-    [steps, selected],
+    () => auqFormComplete(steps, selected, typed),
+    [steps, selected, typed],
   );
 
   const submit = useCallback(() => {
     if (!onAuqAnswer) return;
-    const selections: AuqSelection[] = steps.map((_, qi) => ({
-      questionIndex: qi,
-      optionIndices: [...(selected.get(qi) ?? [])].sort((a, b) => a - b),
-    }));
-    onAuqAnswer(selections);
-  }, [onAuqAnswer, steps, selected]);
+    onAuqAnswer(auqFormSelections(steps, selected, typed));
+  }, [onAuqAnswer, steps, selected, typed]);
 
   return (
     <div className="flex flex-col gap-3 px-3 pb-3 pt-1">
@@ -349,6 +368,18 @@ function MultiQuestionForm({
               onToggle={() => toggle(qi, oi, step.multiSelect)}
             />
           ))}
+          {!step.multiSelect && (
+            <input
+              type="text"
+              value={typed.get(qi) ?? ''}
+              onChange={(e) => type(qi, e.target.value)}
+              disabled={submitting || failed}
+              maxLength={AUQ_FREE_TEXT_MAX}
+              placeholder="Or type your own answer"
+              aria-label={`Your own answer to: ${step.text}`}
+              className="min-h-[44px] rounded-[10px] border border-[var(--color-border)] bg-[var(--color-surface)] px-3.5 py-2.5 text-sm text-[var(--color-text)] outline-none placeholder:text-[var(--color-text-muted)] focus:ring-2 focus:ring-[var(--color-primary)]/40 disabled:opacity-60"
+            />
+          )}
         </div>
       ))}
 
@@ -357,7 +388,9 @@ function MultiQuestionForm({
           className="rounded-[10px] px-3 py-2 text-[12px]"
           style={{ background: 'var(--color-surface-elevated)', color: 'var(--color-text)' }}
         >
-          Couldn't auto-answer this on your device. Cancel it, or answer it in the terminal.
+          {terminalOnly
+            ? 'This question can only be answered in the terminal (or Cancel).'
+            : "Couldn't auto-answer this on your device. Cancel it, or answer it in the terminal."}
         </p>
       )}
 
@@ -391,7 +424,7 @@ function MultiQuestionForm({
                 : { background: 'transparent', color: 'var(--color-text)', border: '1px solid var(--color-border)' }
             }
           >
-            Cancel
+            {cancelLabel(question)}
           </button>
         )}
       </div>
@@ -408,9 +441,11 @@ export function QuestionCard({ question, onAnswer, onAuqAnswer, onCancel, classN
   const isForm = !!steps && steps.length > 0;
   const headerLabel = isForm
     ? `Question${steps.length > 1 ? `s · ${steps.length}` : ''}`
-    : isPermission
-      ? 'Permission request'
-      : 'Question';
+    : question.kind === 'plan_approval'
+      ? 'Plan review'
+      : isPermission
+        ? 'Permission request'
+        : 'Question';
 
   const resolvedReason = question.resolvedReason;
   if (isAnswered || resolvedReason != null) {
@@ -495,8 +530,8 @@ export function QuestionCard({ question, onAnswer, onAuqAnswer, onCancel, classN
           <button
             type="button"
             onClick={onCancel}
-            aria-label="Cancel (Esc)"
-            title="Cancel (Esc)"
+            aria-label={cancelLabel(question)}
+            title={cancelLabel(question)}
             className="flex size-[26px] items-center justify-center rounded-md text-[var(--color-text-secondary)] transition-transform active:scale-90"
           >
             <X className="size-4" />
@@ -518,6 +553,12 @@ export function QuestionCard({ question, onAnswer, onAuqAnswer, onCancel, classN
             <p className="break-anywhere text-[15px] font-medium leading-snug text-[var(--color-text)]">
               {question.prompt}
             </p>
+            {/* #1127: the text the prompt is about (a plan), in full. */}
+            {question.detail && (
+              <pre className="break-anywhere mt-2 max-h-[50vh] overflow-y-auto whitespace-pre-wrap rounded-[10px] bg-[var(--color-surface)] px-3 py-2.5 font-sans text-[13px] leading-snug text-[var(--color-text)]">
+                {question.detail}
+              </pre>
+            )}
           </div>
           {/* Options / free text */}
           <div className="flex flex-col gap-1.5 px-3 pb-3 pt-2.5">
