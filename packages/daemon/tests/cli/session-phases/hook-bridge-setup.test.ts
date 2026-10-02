@@ -5,7 +5,10 @@ import * as path from 'node:path';
 import type { Question, UUID } from '@remi/shared';
 import { generateId } from '@remi/shared';
 import { MessageAPI } from '../../../src/api/message-api.ts';
-import { QuestionPresenceTracker } from '../../../src/api/question-presence-tracker.ts';
+import {
+  type PushQuestion,
+  QuestionPresenceTracker,
+} from '../../../src/api/question-presence-tracker.ts';
 import { SubagentViewRegistry } from '../../../src/api/subagent-view-registry.ts';
 import { createInputHandlers } from '../../../src/cli/handlers/input-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
@@ -124,6 +127,23 @@ function makePassthroughTracker(api: MessageAPI): PassthroughTracker {
   return new PassthroughTracker((q) => api.handleQuestion(q));
 }
 
+/**
+ * PassthroughTracker whose parked subagent prompts RENDER at once: the card is
+ * pushed under the parked question's id, as the real render pairing does when
+ * it adopts the hook record's identity. Lets an external-resolution test drive
+ * a parked card that actually reached the registry (#1125: the gate only
+ * broadcasts a dismissal for a card that was registered).
+ */
+class RenderedParkTracker extends PassthroughTracker {
+  constructor(private readonly pushNow: PushQuestion) {
+    super(pushNow);
+  }
+
+  override parkAwaitingPTY(question: Question): void {
+    this.pushNow(question);
+  }
+}
+
 const SID = 'a1b2c3d4-e5f6-7890-abcd-ef0123456789' as UUID;
 
 describe('setupHookBridge', () => {
@@ -205,6 +225,9 @@ describe('setupHookBridge', () => {
        *  contract through the bridge wiring. Defaults to the passthrough
        *  tracker used by the legacy assertion-style tests. */
       realTracker?: boolean;
+      /** Parked subagent prompts render (and push) at once; see
+       *  `RenderedParkTracker`. Ignored with `realTracker`. */
+      parkedRenders?: boolean;
       /** Shorten `QuestionPresenceTracker`'s orphan-PTY debounce (default
        *  1.5s) so a test can drive the real hooked-session orphan path without
        *  a long wait. Only meaningful with `realTracker`. */
@@ -301,7 +324,9 @@ describe('setupHookBridge', () => {
               }
             : undefined,
         )
-      : makePassthroughTracker(localMessageApi);
+      : opts.parkedRenders
+        ? new RenderedParkTracker((q) => localMessageApi.handleQuestion(q))
+        : makePassthroughTracker(localMessageApi);
     sessionRegistry.registerSession(
       SID,
       sessionWorkingDirectory,
@@ -1802,7 +1827,7 @@ describe('setupHookBridge', () => {
 
     test('a matching subagent PreToolUse resolves a parked permission (question_resolved fires)', async () => {
       const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
-      build({ broadcastResolvedLog });
+      build({ broadcastResolvedLog, realMessageApi: true, parkedRenders: true });
       lock('claude-799-pre');
 
       const decision = await hookServer.firePermission({
@@ -1832,7 +1857,7 @@ describe('setupHookBridge', () => {
 
     test('a matching subagent PostToolUse also resolves it', async () => {
       const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
-      build({ broadcastResolvedLog });
+      build({ broadcastResolvedLog, realMessageApi: true, parkedRenders: true });
       lock('claude-799-post');
 
       const decision = await hookServer.firePermission({
@@ -1862,7 +1887,7 @@ describe('setupHookBridge', () => {
 
     test('(b) a non-matching subagent PreToolUse leaves the parked permission open', async () => {
       const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
-      build({ broadcastResolvedLog });
+      build({ broadcastResolvedLog, realMessageApi: true, parkedRenders: true });
       lock('claude-799-nomatch');
 
       await hookServer.firePermission({
@@ -1911,8 +1936,10 @@ describe('setupHookBridge', () => {
         agent_type: 'general-purpose',
       });
 
-      expect(broadcastResolvedLog).toHaveLength(1);
-      expect(broadcastResolvedLog[0]?.reason).toBe('cancelled');
+      // Never rendered, so never pushed: nothing to dismiss (#1125), but the
+      // gate no longer tracks it either.
+      expect(broadcastResolvedLog).toHaveLength(0);
+      expect(bridgeHandles.at(-1)?.gate.forceRelease('probe')).toEqual({ resolved: 0 });
       // #799 review fix: SubagentStop must ALSO expire the tracker's parked
       // record (mirrors the PreToolUse-subagent branch's noteAgentAdvanced
       // pairing) -- otherwise it survives up to PARKED_RECORD_TTL_MS and can
@@ -1923,7 +1950,7 @@ describe('setupHookBridge', () => {
 
     test("never fires ambiguously: SubagentStop for one agent does not resolve a DIFFERENT agent's still-open permission", async () => {
       const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
-      build({ broadcastResolvedLog });
+      build({ broadcastResolvedLog, realMessageApi: true, parkedRenders: true });
       lock('claude-799-ambig');
 
       await hookServer.firePermission({
@@ -1958,7 +1985,7 @@ describe('setupHookBridge', () => {
 
     test('a matching subagent PostToolUseFailure resolves it (a failed tool still proves the permission was granted)', async () => {
       const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
-      build({ broadcastResolvedLog });
+      build({ broadcastResolvedLog, realMessageApi: true, parkedRenders: true });
       lock('claude-799-failure');
 
       await hookServer.firePermission({
@@ -1987,7 +2014,7 @@ describe('setupHookBridge', () => {
 
     test('a non-matching subagent PostToolUseFailure leaves the parked permission open', async () => {
       const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
-      build({ broadcastResolvedLog });
+      build({ broadcastResolvedLog, realMessageApi: true, parkedRenders: true });
       lock('claude-799-failure-nomatch');
 
       await hookServer.firePermission({
@@ -2051,7 +2078,7 @@ describe('setupHookBridge', () => {
 
     test('a matching MAIN PermissionDenied resolves the open (parked/passthrough) escalation', async () => {
       const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
-      build({ broadcastResolvedLog });
+      build({ broadcastResolvedLog, realMessageApi: true, parkedRenders: true });
       lock('claude-889-denied-main');
 
       const decision = await hookServer.firePermission({
@@ -2102,8 +2129,10 @@ describe('setupHookBridge', () => {
         tool_use_id: 'tu-2',
       });
 
-      expect(broadcastResolvedLog).toHaveLength(1);
-      expect(broadcastResolvedLog[0]?.reason).toBe('cancelled');
+      // Never rendered, so never pushed: nothing to dismiss (#1125), but the
+      // gate no longer tracks it either.
+      expect(broadcastResolvedLog).toHaveLength(0);
+      expect(bridgeHandles.at(-1)?.gate.forceRelease('probe')).toEqual({ resolved: 0 });
     });
 
     test('with two escalations open on the SAME signature, PermissionDenied resolves only its own agent', async () => {
@@ -2116,7 +2145,7 @@ describe('setupHookBridge', () => {
       // swallow class #925 was. Same tool + same tool_input on purpose, so
       // agent identity is the ONLY thing that can disambiguate.
       const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
-      build({ broadcastResolvedLog });
+      build({ broadcastResolvedLog, realMessageApi: true, parkedRenders: true });
       lock('claude-889-denied-2agents');
 
       await hookServer.firePermission({
@@ -2163,7 +2192,7 @@ describe('setupHookBridge', () => {
 
     test('a non-matching PermissionDenied (different tool_input) leaves the open escalation untouched', async () => {
       const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
-      build({ broadcastResolvedLog });
+      build({ broadcastResolvedLog, realMessageApi: true, parkedRenders: true });
       lock('claude-889-denied-nomatch');
 
       await hookServer.firePermission({
@@ -2185,7 +2214,7 @@ describe('setupHookBridge', () => {
 
     test('PermissionDenied for a FOREIGN session_id is dropped by the admit gate (no cross-session resolution)', async () => {
       const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
-      build({ broadcastResolvedLog });
+      build({ broadcastResolvedLog, realMessageApi: true, parkedRenders: true });
       lock('claude-889-denied-foreign');
 
       await hookServer.firePermission({

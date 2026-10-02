@@ -608,12 +608,30 @@ describe('AutoApproveGate subagent external-resolution (#799)', () => {
     const g = gate({ onResolved: (qid, reason) => resolvedLog.push({ qid, reason }) });
     expect(await g.resolvePermission(pr())).toBe('passthrough');
     const firstQid = parkedIds[0] as UUID;
+    stashQuestion(firstQid, 'agent-1'); // its prompt rendered and was pushed
     // Claude re-issues the IDENTICAL PermissionRequest for the same agent.
     expect(await g.resolvePermission(pr())).toBe('passthrough');
     const secondQid = parkedIds[1] as UUID;
     expect(secondQid).not.toBe(firstQid);
 
     expect(resolvedLog).toEqual([{ qid: firstQid, reason: 'cancelled' }]);
+  });
+
+  test('a prompt that never rendered dismisses nothing when resolved, and is still untracked (#1125)', async () => {
+    // Parked, never rendered, so never pushed: there is no card on any client
+    // and nothing to dismiss. The signature must still go, or a later
+    // matching tool event would find it again.
+    const resolvedLog: Array<{ qid: UUID; reason: string }> = [];
+    const g = gate({ onResolved: (qid, reason) => resolvedLog.push({ qid, reason }) });
+    expect(await g.resolvePermission(pr())).toBe('passthrough');
+
+    g.cancelExternallyResolved(
+      { toolName: 'Bash', toolInput: { command: 'git push' }, agentId: 'agent-1' },
+      'PreToolUse-subagent',
+    );
+
+    expect(resolvedLog).toEqual([]);
+    expect(g.forceRelease('probe')).toEqual({ resolved: 0 });
   });
 });
 

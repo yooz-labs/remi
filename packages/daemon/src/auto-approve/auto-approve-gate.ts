@@ -581,6 +581,11 @@ export class AutoApproveGate {
    * particular `removeQuestion` must run even if something before it throws,
    * or the pushed card lingers.
    *
+   * The broadcast (question_resolved + APNS dismissal) fires only when the
+   * question was actually registered: a parked subagent prompt that never
+   * rendered, or a binary prompt resolved before its render, was never pushed,
+   * so there is no card anywhere to dismiss.
+   *
    * `toolName` (#808), when the caller knows it, is carried onto the
    * question-lifecycle trace record for this removal.
    */
@@ -589,6 +594,17 @@ export class AutoApproveGate {
       `[AutoApprove ${this.sessionTag}] Externally resolved ${qid.slice(0, 8)} (${reason}); clearing stale escalation`,
     );
     this.openQuestionSignatures.delete(qid);
+    // Fails toward broadcasting: a dismissal for an unknown id is a no-op on
+    // every client, a missed one strands a card.
+    let wasRegistered = true;
+    try {
+      wasRegistered = this.deps.sessionRegistry.getQuestion(this.sessionId, qid) !== null;
+    } catch (err) {
+      logError(
+        `[AutoApprove ${this.sessionTag}] getQuestion during external-resolve cleanup threw:`,
+        err,
+      );
+    }
     try {
       this.deps.sessionRegistry.removeQuestion(
         this.sessionId,
@@ -603,6 +619,6 @@ export class AutoApproveGate {
         err,
       );
     }
-    this.notifyResolved(qid);
+    if (wasRegistered) this.notifyResolved(qid);
   }
 }
