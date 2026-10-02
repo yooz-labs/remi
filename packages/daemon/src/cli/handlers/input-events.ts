@@ -781,14 +781,13 @@ export function createInputHandlers(deps: InputHandlerDeps) {
   ): AnswerOutcome | null {
     if (!answerHeld) return null;
     const option = resolveOption(active.options, answer);
+    // `message` crosses a trust boundary unvalidated (the protocol checks only
+    // the message type), so anything but a string is dropped here.
+    const message = typeof extra?.message === 'string' ? extra.message : undefined;
     const held: HeldAnswer =
       option === undefined
         ? { kind: 'text' }
-        : {
-            kind: 'option',
-            option,
-            ...(extra?.message !== undefined ? { message: extra.message } : {}),
-          };
+        : { kind: 'option', option, ...(message !== undefined ? { message } : {}) };
     const outcome = answerHeld(session.sessionId, questionId, held);
     if (outcome === 'unknown') return null;
     if (outcome === 'resolved') {
@@ -838,7 +837,11 @@ export function createInputHandlers(deps: InputHandlerDeps) {
             : 'This prompt takes one of its own options',
           {
             sessionId,
-            questionId,
+            // A refused answer leaves the card live, and a client drops the
+            // card a STALE_ANSWER names; only a closed one is named. The
+            // pending list still carries the refused card, so a client's
+            // reconciliation keeps it.
+            ...(closed ? { questionId } : {}),
             pendingQuestionIds: [...session.currentQuestions.keys()],
           },
         ),

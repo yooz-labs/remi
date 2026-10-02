@@ -575,7 +575,12 @@ export function setupHookBridge(
       // names the actual ask.
       onHoldDeadline: (questionId) => {
         const question = sessionRegistry.getQuestion(sessionId, questionId);
-        if (question !== null) deps.pushTerminalNotice?.(sessionId, question, 'hold_deadline');
+        if (question === null) return;
+        deps.pushTerminalNotice?.(
+          sessionId,
+          question,
+          hasLocalTerminal ? 'hold_deadline' : 'hold_deadline_no_terminal',
+        );
       },
       onTerminalNoticeResolved: (questionId) => deps.dismissTerminalNotice?.(sessionId, questionId),
       // #585: an open escalation that resolves without a user answer tells

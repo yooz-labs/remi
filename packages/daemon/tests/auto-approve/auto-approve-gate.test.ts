@@ -761,15 +761,74 @@ describe('AutoApproveGate held prompts (#1126)', () => {
       expect(g.hasOpenHookPrompt()).toBe(false);
     });
 
-    test('two identical calls in flight: no pairing, the name + input fallback still closes it', async () => {
+    test('two identical calls in flight: no pairing; a name + input match releases the hold to the terminal, never closes it', async () => {
       const g = gate();
       g.notePreToolUse({ ...call, toolUseId: 'tu-a' });
       g.notePreToolUse({ ...call, toolUseId: 'tu-b' });
       const hook = g.resolvePermission(pr());
+      const qid = ids[0] as UUID;
       // Unpaired: either call's PostToolUse ends the hold. The worst case is
-      // an early empty release, never a decision.
+      // an early empty release, never a decision...
       g.cancelExternallyResolved({ ...call, toolUseId: 'tu-b' }, 'PostToolUse');
       expect(await hook).toBe('passthrough');
+      expect(registry.getQuestion(SID, qid)).toBeNull();
+      // ...and its dialog may still be up (the other call ran), so the prompt
+      // stays open for the probe and is not retired by a late phone answer.
+      expect(g.hasOpenHookPrompt()).toBe(true);
+      g.retireQuestion(qid);
+      expect(g.hasOpenHookPrompt()).toBe(true);
+      // The next matching run closes it.
+      g.cancelExternallyResolved({ ...call, toolUseId: 'tu-a' }, 'PostToolUse');
+      expect(g.hasOpenHookPrompt()).toBe(false);
+    });
+
+    test('an identical unpaired re-request releases the earlier hold to the terminal', async () => {
+      const g = gate();
+      const first = g.resolvePermission(pr());
+      const second = g.resolvePermission(pr());
+      expect(await first).toBe('passthrough');
+      expect(registry.getQuestion(SID, ids[0] as UUID)).toBeNull();
+      // Both prompts stay open: the first in the terminal, the second held.
+      expect(g.answerHeld(ids[1] as UUID, { kind: 'option', option: YES })).toBe('resolved');
+      expect(await second).toBe('allow');
+      expect(g.hasOpenHookPrompt()).toBe(true);
+      g.cancelStale('Stop', { mainOnly: true });
+      expect(g.hasOpenHookPrompt()).toBe(false);
+    });
+
+    test('closed-hold memory and in-flight calls are bounded', async () => {
+      const g = gate();
+      for (let i = 0; i < 260; i++) {
+        const hook = g.resolvePermission(pr({ tool_input: { command: `c${i}` } }));
+        g.answerHeld(ids[i] as UUID, { kind: 'option', option: YES });
+        await hook;
+      }
+      // The oldest ended hold has been forgotten; recent ones are remembered.
+      expect(g.answerHeld(ids[0] as UUID, { kind: 'cancel' })).toBe('unknown');
+      expect(g.answerHeld(ids[259] as UUID, { kind: 'cancel' })).toBe('closed');
+      // Only the newest 64 unfinished calls stay pairable.
+      for (let i = 0; i < 70; i++) {
+        g.notePreToolUse({
+          toolName: 'Bash',
+          toolInput: { command: `p${i}` },
+          toolUseId: `tu-${i}`,
+        });
+      }
+      const oldest = g.resolvePermission(pr({ tool_input: { command: 'p0' } }));
+      const newest = g.resolvePermission(pr({ tool_input: { command: 'p69' } }));
+      g.cancelExternallyResolved(
+        { toolName: 'Bash', toolInput: { command: 'p69' }, toolUseId: 'tu-69' },
+        'PostToolUse',
+      );
+      expect(await newest).toBe('passthrough');
+      // p0 was evicted, so it is unpaired: an id-carrying event for it can
+      // only release it to the terminal by name and input.
+      g.cancelExternallyResolved(
+        { toolName: 'Bash', toolInput: { command: 'p0' }, toolUseId: 'tu-0' },
+        'PostToolUse',
+      );
+      expect(await oldest).toBe('passthrough');
+      expect(g.hasOpenHookPrompt()).toBe(true);
     });
 
     test('two requests each paired with its own call stay separate holds', async () => {
@@ -905,7 +964,11 @@ describe('AutoApproveGate subagent routing by local terminal (#1126)', () => {
     expect(pushedNow).toEqual([]);
     expect(alerts).toEqual([input]);
     expect(g.answerHeld(ids[0] as UUID, { kind: 'option', option: YES })).toBe('unknown');
-    // Open (its dialog will be on screen), so redraws are not orphans.
+    // Not rendered yet: it must not suppress a hook-less prompt's card (its
+    // own render is matched through its parked record first).
+    expect(g.hasOpenHookPrompt()).toBe(false);
+    // Rendered: now its redraws are echoes, not orphans.
+    g.noteTerminalNotice(ids[0] as UUID);
     expect(g.hasOpenHookPrompt()).toBe(true);
   });
 

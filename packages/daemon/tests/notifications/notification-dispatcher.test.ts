@@ -1382,6 +1382,15 @@ describe('NotificationDispatcher per-device push preferences (#968)', () => {
     expect(String(opts['title'])).toContain('answer in the terminal');
   });
 
+  test('a deadline notice in a session with no terminal names remi attach', async () => {
+    register(false);
+    deviceTokens.set('a', token('a'));
+    make().pushTerminalNotice(SID, question(QID, [yesOpt, noOpt]), 'hold_deadline_no_terminal');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(String(pushed[0]?.opts['title'])).toContain('remi attach');
+    expect(String(pushed[0]?.opts['body'])).toContain('remi attach');
+  });
+
   test('dismissTerminalNotice clears the notice by its own key, never the card', () => {
     register(false);
     deviceTokens.set('a', token('a', { questions: false, turnComplete: false }));

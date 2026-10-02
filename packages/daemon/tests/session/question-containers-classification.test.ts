@@ -170,9 +170,15 @@ const REGISTRY: readonly Entry[] = [
   },
   {
     file: 'auto-approve/auto-approve-gate.ts',
+    field: 'terminalPrompts',
+    cls: 'post-card-metadata',
+    note: 'NEW (#1126). Open prompts whose dialog may be on screen and whose answer belongs to the terminal (released at the deadline or early, or a rendered wrapper-mode subagent dialog). A subset of openQuestionSignatures keys; its card, if any, is already dismissed, and it is closed only by a hook signal. Read by the tracker probe so the dialog is not rebuilt into a typed card.',
+  },
+  {
+    file: 'auto-approve/auto-approve-gate.ts',
     field: 'terminalNotices',
     cls: 'post-card-metadata',
-    note: 'NEW (#1126). Open prompts whose "answer at the terminal" notice was pushed, so resolving them also dismisses the notice. A subset of openQuestionSignatures keys.',
+    note: 'NEW (#1126). Open prompts whose "answer at the terminal" notice was pushed, so resolving them also dismisses the notice. A subset of terminalPrompts.',
   },
   {
     file: 'cli/session-phases/hook-bridge-setup.ts',

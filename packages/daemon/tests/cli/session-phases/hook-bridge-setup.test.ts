@@ -1921,6 +1921,71 @@ describe('setupHookBridge', () => {
       expect(noticeLog.map((n) => n.reason)).toEqual(['hold_deadline', 'dismissed']);
     });
 
+    test('an early release by a name + input match keeps the dialog open: its redraw builds no typed card', async () => {
+      const { tracker, card, hook } = held('claude-held-early', {}, { orphanDebounceMs: 5 });
+      const dialog = parseQuestion(WRAPPED_DIRECTORY_DIALOG).question as Question;
+      tracker.onOrphanPTYPrompt(dialog);
+      // Unpaired (no PreToolUse seen): an identical call's PostToolUse can
+      // only release the hold to the terminal.
+      hookServer.fire('PostToolUse', {
+        session_id: 'claude-held-early',
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'touch e5-marker.txt' },
+        tool_use_id: 'tu-other',
+      });
+      expect(await hook).toBe('passthrough');
+      expect(cards().map((q) => q.id)).not.toContain(card.id);
+      tracker.onOrphanPTYPrompt({ ...dialog, id: generateId() });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(cards()).toHaveLength(0);
+      expect(ptySubmits).toEqual([]);
+    });
+
+    test('a non-string message is dropped, not thrown on: the No still denies', async () => {
+      const { card, hook, handlers } = held('claude-held-badmsg');
+      await handlers.onAnswer('conn-1' as UUID, SID, card.id, 'No', undefined, {
+        message: 42 as unknown as string,
+      });
+      expect(await hook).toBe('deny');
+    });
+
+    test('a transcript rotation releases a live hold and clears its card', async () => {
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+        broadcastResolvedLog,
+      });
+      lockSession('claude-rot-A');
+      const hook = hookServer.firePermission({
+        session_id: 'claude-rot-A',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+      });
+      const card = cards()[0] as Question;
+      // The way a rotation actually arrives post-#930: SessionEnd for the old
+      // id, then any event for the new one.
+      hookServer.fire('SessionEnd', {
+        session_id: 'claude-rot-A',
+        hook_event_name: 'SessionEnd',
+        reason: 'clear',
+      });
+      lockSession('claude-rot-B');
+      expect(await hook).toBe('passthrough');
+      expect(cards()).toHaveLength(0);
+      expect(broadcastResolvedLog.map((r) => r.questionId)).toContain(card.id);
+    });
+
+    test('closing the session releases a live hold', async () => {
+      const { hook, handle } = held('claude-held-close');
+      handle.closeBinder();
+      expect(await hook).toBe('passthrough');
+      expect(cards()).toHaveLength(0);
+    });
+
     test("the dialog's render during the hold is an echo, and after the deadline a redraw still builds no typed card", async () => {
       const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
       const { tracker, card, hook, handlers } = held(
@@ -2019,6 +2084,63 @@ describe('setupHookBridge', () => {
       hookServer.fire('PostToolUse', { ...call, hook_event_name: 'PostToolUse' });
       expect(noticeLog.map((n) => n.reason)).toEqual(['subagent', 'dismissed']);
       expect(noticeLog[1]?.questionId).toBe(noticeLog[0]?.questionId as UUID);
+    });
+
+    test('wrapper mode: a subagent prompt that has not rendered does not hide a hook-less prompt', async () => {
+      const { tracker } = build({
+        realTracker: true,
+        realMessageApi: true,
+        liveQuestionDeps: true,
+        orphanDebounceMs: 5,
+      });
+      lockSession('claude-sub-quiet');
+      // A main-agent hook already took the parked record's place, so the
+      // next render cannot be the subagent's own (it would pair first).
+      expect(
+        await hookServer.firePermission({
+          ...subCall('claude-sub-quiet'),
+          hook_event_name: 'PermissionRequest',
+        }),
+      ).toBe('passthrough');
+      hookServer.fire('PreToolUse', {
+        ...subCall('claude-sub-quiet'),
+        hook_event_name: 'PreToolUse',
+        tool_input: { command: 'something else' },
+      });
+      // A hook-less prompt (here a sandbox network dialog) renders.
+      tracker.onOrphanPTYPrompt({
+        id: generateId(),
+        text: 'Allow network access to example.com?',
+        options: [
+          { label: 'Yes', value: '1', isRecommended: true, isYes: false, isNo: false },
+          { label: 'No', value: '2', isRecommended: false, isYes: false, isNo: false },
+        ],
+        allowsFreeText: false,
+        isAnswered: false,
+        source: 'pty',
+      });
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(cards().map((q) => q.text)).toEqual(['Allow network access to example.com?']);
+    });
+
+    test('daemon mode: the deadline notice says remi attach, the only way left to answer', async () => {
+      const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
+      build({
+        realTracker: true,
+        realMessageApi: true,
+        hasLocalTerminal: false,
+        holdMs: 20,
+        noticeLog,
+      });
+      lockSession('claude-daemon-deadline');
+      const hook = hookServer.firePermission({
+        session_id: 'claude-daemon-deadline',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+      });
+      expect(await hook).toBe('passthrough');
+      expect(noticeLog.map((n) => n.reason)).toEqual(['hold_deadline_no_terminal']);
     });
 
     test('daemon mode: held, an answerable card at once, the phone answer is the hook response', async () => {

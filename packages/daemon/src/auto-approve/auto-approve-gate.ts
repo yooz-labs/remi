@@ -356,8 +356,20 @@ export class AutoApproveGate {
 
   /** Open prompts whose "answer at the terminal" notice was pushed (#1126),
    *  so their resolution also dismisses the notice. A subset of
-   *  `openQuestionSignatures`' keys, deleted with them. */
+   *  `terminalPrompts`, deleted with it. */
   private readonly terminalNotices = new Set<UUID>();
+
+  /**
+   * Open prompts whose dialog is (or may still be) on screen and whose
+   * answer belongs to the terminal (#1126): a hold released at its deadline,
+   * a hold released early by an ambiguous signal (`releaseToTerminal`), and
+   * a wrapper-mode subagent prompt once its dialog rendered. A subset of
+   * `openQuestionSignatures`' keys, closed only by a hook signal (its tool
+   * run, Stop, a new prompt, SubagentStop, teardown), never by a late phone
+   * answer (`retireQuestion`). Together with `holds` it is what
+   * `hasOpenHookPrompt` reports.
+   */
+  private readonly terminalPrompts = new Set<UUID>();
 
   /** Unfinished tool calls by `tool_use_id`, oldest first (#1126), for
    *  pairing a PermissionRequest with its call. See `InFlightToolUse`. */
@@ -444,17 +456,17 @@ export class AutoApproveGate {
    * (and dismiss) it a second time. Idempotent; a no-op for an id this gate
    * never tracked.
    *
-   * Except a prompt whose answer now belongs to the terminal (#1126): one
-   * released at its hold deadline (its card already dismissed by this gate,
-   * its "answer at the terminal" notice out) is still on screen, and only a
-   * hook signal (its tool run, Stop, a new prompt, SubagentStop) proves it
-   * answered. A late phone answer for the dismissed card reaches here
+   * Except a prompt whose answer now belongs to the terminal
+   * (`terminalPrompts`, #1126), for example one released at its hold
+   * deadline (its card already dismissed by this gate, its "answer at the
+   * terminal" notice out): it is still on screen, and only a hook signal
+   * (its tool run, Stop, a new prompt, SubagentStop) proves it answered. A late phone answer for the dismissed card reaches here
    * through the stale-answer path; retiring then would clear the notice and
    * let the dialog's redraws be read as hook-less orphans. Live-observed on
    * the #1126 verification run before this guard.
    */
   retireQuestion(questionId: UUID): void {
-    if (this.terminalNotices.has(questionId) && !this.holds.has(questionId)) {
+    if (this.terminalPrompts.has(questionId)) {
       log(
         `[AutoApprove ${this.sessionTag}] Not retiring ${questionId.slice(0, 8)}: its prompt is waiting in the terminal`,
       );
@@ -468,15 +480,23 @@ export class AutoApproveGate {
   }
 
   /**
-   * True while any hook-backed prompt this gate escalated is still open:
-   * held, released to the terminal at its deadline, or relayed and not yet
-   * resolved (#1126). The presence tracker asks this before treating a PTY
-   * render as an orphan: a hook-backed dialog on screen is never a hook-less
-   * prompt, and its card must not be rebuilt from the screen and answered by
-   * typing. Read live per call.
+   * True while a hook-backed dialog this gate knows about is (or may be) on
+   * screen without a live card (#1126): a live hold (its dialog renders
+   * during the hold), or a prompt in `terminalPrompts`. The presence tracker
+   * asks this before treating a PTY render as an orphan: such a render is
+   * that dialog or a redraw of it, and must not be rebuilt into a card the
+   * phone would answer by typing. Read live per call.
+   *
+   * Deliberately narrower than "any open entry": a wrapper-mode subagent
+   * prompt that has not rendered does not count (its own render is matched
+   * first through its parked record), and a passthrough card
+   * (AskUserQuestion, ExitPlanMode) is registered, which the tracker's
+   * live-question check already covers. Each of those would otherwise
+   * suppress a genuinely hook-less prompt (sandbox network, trust, an
+   * agent-team dialog) for as long as it stayed open.
    */
   hasOpenHookPrompt(): boolean {
-    return this.openQuestionSignatures.size > 0;
+    return this.holds.size > 0 || this.terminalPrompts.size > 0;
   }
 
   /**
@@ -518,7 +538,8 @@ export class AutoApproveGate {
     if (answer.kind === 'text') return null;
     const { option } = answer;
     if (option.isNo && !option.isYes) {
-      const message = answer.message?.trim().slice(0, DENY_MESSAGE_MAX) ?? '';
+      const message =
+        typeof answer.message === 'string' ? answer.message.trim().slice(0, DENY_MESSAGE_MAX) : '';
       return message.length > 0 ? { behavior: 'deny', message } : 'deny';
     }
     if (!option.isYes || option.isNo) return null;
@@ -551,7 +572,8 @@ export class AutoApproveGate {
    * an answer can never arrive for a hold that does not exist yet. The
    * returned promise is what the hook server is blocked on; it settles
    * through `endHold`, exactly once. No question id means no card: answer
-   * 'passthrough' at once, and the terminal dialog is the only way to answer.
+   * 'passthrough' at once and let Claude's dialog take it (with no gate
+   * entry, its render may reach the phone only as a hook-less card).
    *
    * `signal` is the hook request's own abort signal: Claude closes the held
    * request when the user answers No or presses Esc in the terminal (no hook
@@ -604,9 +626,23 @@ export class AutoApproveGate {
       `[AutoApprove ${this.sessionTag}] Held ${questionId.slice(0, 8)} reached its deadline; released to the terminal`,
     );
     this.safeCueWithArg('onHoldDeadline', this.deps.onHoldDeadline, questionId);
-    this.terminalNotices.add(questionId);
+    if (this.deps.onHoldDeadline) this.terminalNotices.add(questionId);
+    this.releaseToTerminal(questionId, 'hold_deadline');
+  }
+
+  /**
+   * End a live hold with the empty response, dismiss its card, and keep the
+   * prompt open in `terminalPrompts` (#1126): its dialog is still on screen
+   * and the terminal answers it. Used at the deadline, and when an
+   * ambiguous signal (a name + input match with no paired id, or an
+   * identical re-request) suggests the hold may be stale: releasing early
+   * costs the phone its card, never a decision, and keeping the prompt open
+   * keeps its redraws from becoming a typed orphan card.
+   */
+  private releaseToTerminal(questionId: UUID, reason: string): void {
+    this.terminalPrompts.add(questionId);
     this.endHold(questionId, 'passthrough');
-    this.removeAndDismiss(questionId, 'hold_deadline');
+    this.removeAndDismiss(questionId, reason);
   }
 
   /**
@@ -637,6 +673,7 @@ export class AutoApproveGate {
       `[AutoApprove ${this.sessionTag}] Held ${questionId.slice(0, 8)} was closed by Claude (answered in the terminal, or the session ended); dismissing its card`,
     );
     this.openQuestionSignatures.delete(questionId);
+    this.terminalPrompts.delete(questionId);
     this.endHold(questionId, 'passthrough');
     this.removeAndDismiss(questionId, 'hold_aborted');
   }
@@ -766,9 +803,10 @@ export class AutoApproveGate {
   }
 
   /**
-   * Whether an escalated permission is BINARY (a plain allow/deny prompt).
-   * Multi-choice prompts and design / plan-mode / long-form questions are
-   * not, so they push immediately instead of on their render.
+   * Whether an escalated permission is BINARY (a plain allow/deny prompt),
+   * which is held for the phone's answer (#1126). Multi-choice prompts and
+   * design / plan-mode / long-form questions are not: they are answered
+   * 'passthrough' and pushed immediately.
    */
   private isBinaryEscalation(input: PermissionRequestHookInput): boolean {
     const suggestions = input.permission_suggestions as readonly unknown[] | undefined;
@@ -879,16 +917,22 @@ export class AutoApproveGate {
       isSubagent: true,
       agentId: observed.agentId,
     });
-    if (noticedNow) this.terminalNotices.add(questionId);
+    if (noticedNow) {
+      this.terminalPrompts.add(questionId);
+      this.terminalNotices.add(questionId);
+    }
   }
 
   /**
-   * The "answer at the terminal" notice for an open prompt was pushed (a
-   * parked subagent prompt rendered, #1126), so resolving the prompt also
-   * dismisses the notice. A no-op for a prompt no longer open.
+   * A parked subagent prompt's dialog rendered and its "answer at the
+   * terminal" notice was pushed (#1126): the prompt is now on screen
+   * (`terminalPrompts`), and resolving it also dismisses the notice. A no-op
+   * for a prompt no longer open.
    */
   noteTerminalNotice(questionId: UUID): void {
-    if (this.openQuestionSignatures.has(questionId)) this.terminalNotices.add(questionId);
+    if (!this.openQuestionSignatures.has(questionId)) return;
+    this.terminalPrompts.add(questionId);
+    this.terminalNotices.add(questionId);
   }
 
   /**
@@ -987,15 +1031,28 @@ export class AutoApproveGate {
    * when no open escalation matches.
    */
   cancelExternallyResolved(observed: ObservedToolCall, reason: string): void {
-    const qid = this.findOpenQuestionMatching(observed);
-    if (!qid) return;
-    this.resolveSupersededQuestion(qid, reason, observed.toolName);
+    const match = this.findOpenQuestionMatching(observed);
+    if (!match) return;
+    if (!match.byId && this.holds.has(match.qid)) {
+      // #1126: a name + input match with no paired id may belong to another,
+      // identical call, so this live hold's dialog may still be up. Release
+      // it to the terminal rather than closing it.
+      log(
+        `[AutoApprove ${this.sessionTag}] Held ${match.qid.slice(0, 8)} matched ${reason} by name and input only; released to the terminal`,
+      );
+      this.releaseToTerminal(match.qid, reason);
+      return;
+    }
+    this.resolveSupersededQuestion(match.qid, reason, observed.toolName);
   }
 
   /** Find an open escalation matching `observed`, preferring an exact
    *  tool_use_id match (the id paired from the request's PreToolUse, #1126)
-   *  over the tool_name + tool_input signature fallback. */
-  private findOpenQuestionMatching(observed: ObservedToolCall): UUID | undefined {
+   *  over the tool_name + tool_input signature fallback. `byId` says which
+   *  one matched. */
+  private findOpenQuestionMatching(
+    observed: ObservedToolCall,
+  ): { qid: UUID; byId: boolean } | undefined {
     // Fast path: called on EVERY admitted PreToolUse/PostToolUse, so the
     // near-universal "no open escalation at all" case must not pay for a
     // stableToolInputKey stringify it can never use.
@@ -1012,10 +1069,10 @@ export class AutoApproveGate {
       // carry a tool_use_id, it must ALSO agree. When at least one side has
       // no id, the signature alone is the best available proof.
       if (observed.toolUseId !== undefined && sig.toolUseId !== undefined) {
-        if (observed.toolUseId === sig.toolUseId) return qid;
+        if (observed.toolUseId === sig.toolUseId) return { qid, byId: true };
         continue;
       }
-      return qid;
+      return { qid, byId: false };
     }
     return undefined;
   }
@@ -1040,6 +1097,7 @@ export class AutoApproveGate {
       `[AutoApprove ${this.sessionTag}] Externally resolved ${qid.slice(0, 8)} (${reason}); clearing stale escalation`,
     );
     this.openQuestionSignatures.delete(qid);
+    this.terminalPrompts.delete(qid);
     this.endHold(qid, 'passthrough');
     this.removeAndDismiss(qid, reason, toolName);
     if (this.terminalNotices.delete(qid)) {

@@ -212,7 +212,7 @@ export function buildPushText(
 
 /** Why the phone is told to answer at the terminal (#1126); see
  *  `NotificationDispatcher.pushTerminalNotice`. */
-export type TerminalNoticeReason = 'hold_deadline' | 'subagent';
+export type TerminalNoticeReason = 'hold_deadline' | 'hold_deadline_no_terminal' | 'subagent';
 
 /** The collapse key (`questionId` on the wire) of a terminal notice for a
  *  question (#1126): distinct from the card's, so dismissing the card leaves
@@ -530,6 +530,9 @@ export class NotificationDispatcher {
    *   - `hold_deadline`: a held prompt waited `[prompts] hold_seconds` with no
    *     answer, so remi released its hold; Claude's dialog is still up (the
    *     #733 handoff, restored for held hooks).
+   *   - `hold_deadline_no_terminal`: the same in a daemon or hub session,
+   *     which has no terminal of its own: the dialog is reached with
+   *     `remi attach`, and the notice says so.
    *   - `subagent`: a background subagent's dialog rendered in a session with
    *     a local terminal; its hook was answered 'passthrough' so it could
    *     render at all, so only the terminal can answer it.
@@ -559,11 +562,17 @@ export class NotificationDispatcher {
     const session = this.deps.sessionRegistry.getSession(this.sessionId);
     const sessionName = session?.name || 'Agent';
     const ask = normalizeNotificationText(question.text) || 'a permission request';
-    const title = `${sessionName}: answer in the terminal`.slice(0, TITLE_MAX);
+    const title = (
+      reason === 'hold_deadline_no_terminal'
+        ? `${sessionName}: answer with remi attach`
+        : `${sessionName}: answer in the terminal`
+    ).slice(0, TITLE_MAX);
     const body = (
       reason === 'hold_deadline'
         ? `No answer in time; the prompt is waiting in the terminal: ${ask}`
-        : ask
+        : reason === 'hold_deadline_no_terminal'
+          ? `No answer in time; the prompt is waiting in the session (remi attach): ${ask}`
+          : ask
     ).slice(0, BODY_MAX);
     const cfg = pushConfig();
     const pushSessionId = this.deps.getPrimarySessionId() ?? questionSessionId;
