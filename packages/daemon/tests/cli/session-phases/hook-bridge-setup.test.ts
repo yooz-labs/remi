@@ -1681,7 +1681,9 @@ describe('setupHookBridge', () => {
         ['Yes, and switch to acceptEdits mode', true, false, 1],
         ['No', false, true, undefined],
       ]);
-      expect(selectPushCategory(card.options)).toBe('REMI_YNA');
+      // A mode switch is not what the lock screen's static "Yes, always"
+      // says, so this card is answered in the app (#1126 lead decision).
+      expect(selectPushCategory(card.options)).toBeUndefined();
       expect(card.text).toBe('Allow Bash: touch e5-marker.txt');
       handle.gate.forceRelease('test');
       expect(await hook).toBe('passthrough');

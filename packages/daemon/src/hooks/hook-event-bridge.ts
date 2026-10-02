@@ -153,13 +153,13 @@ function disambiguateLabels(labels: readonly string[]): string[] {
  * suggestion's index says nothing about the screen.
  *
  * Only two kinds are offered, both verified live (Claude Code 2.1.287, #1126
- * spike F4):
- *   - `setMode`: echoed verbatim; the mode change takes effect.
- *   - `addRules` with `behavior: "allow"`: echoed with `destination:
- *     "session"`. Claude suggests `localSettings`, which would write the rule
- *     into the project's settings file from a phone tap; a session grant is
- *     the narrower thing a one-tap answer should be able to do, and the label
- *     says so.
+ * spike F4), and every echo is forced to `destination: "session"` (lead
+ * decision): a phone tap must never write a settings file.
+ *   - `setMode`: the mode change takes effect for this session (Claude
+ *     suggests it with `destination: "session"` already).
+ *   - `addRules` with `behavior: "allow"`: Claude suggests `localSettings`,
+ *     which would write the rule into the project's settings file; the echo
+ *     grants it for this session, and the label says so.
  * Never `addDirectories` (its echo did not stop the repeat prompt in F4), a
  * deny or ask `addRules`, the narrowing types (`removeRules`,
  * `replaceRules`, `removeDirectories`), or a type Claude Code has not
@@ -167,6 +167,7 @@ function disambiguateLabels(labels: readonly string[]): string[] {
  */
 export function standingGrantFor(entry: unknown): {
   readonly label: string;
+  readonly kind: 'addRules' | 'setMode';
   readonly echo: Record<string, unknown>;
 } | null {
   if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return null;
@@ -174,7 +175,11 @@ export function standingGrantFor(entry: unknown): {
   if (e['type'] === 'setMode') {
     const mode = e['mode'];
     if (typeof mode !== 'string' || mode.length === 0) return null;
-    return { label: truncateLabel(`Yes, and switch to ${mode} mode`), echo: { ...e } };
+    return {
+      label: truncateLabel(`Yes, and switch to ${mode} mode`),
+      kind: 'setMode',
+      echo: { ...e, destination: 'session' },
+    };
   }
   if (e['type'] === 'addRules') {
     if (e['behavior'] !== 'allow') return null;
@@ -197,7 +202,11 @@ export function standingGrantFor(entry: unknown): {
     const room = SUGGESTION_LABEL_MAX - prefix.length - suffix.length - 4;
     const joined = parts.join(', ');
     const shown = joined.length > room ? `${joined.slice(0, room - 3)}...` : joined;
-    return { label: `${prefix}${shown}${suffix}`, echo: { ...e, destination: 'session' } };
+    return {
+      label: `${prefix}${shown}${suffix}`,
+      kind: 'addRules',
+      echo: { ...e, destination: 'session' },
+    };
   }
   return null;
 }
@@ -248,7 +257,7 @@ export function optionsFromSuggestions(suggestions: unknown): PermissionOptionsR
     return { options, isFallback: false };
   }
 
-  const standing: { label: string; suggestionIndex: number }[] = [];
+  const standing: { label: string; suggestionIndex: number; kind: 'addRules' | 'setMode' }[] = [];
   entries.forEach((entry, idx) => {
     if (typeof entry !== 'object' || entry === null) return;
     const grant = standingGrantFor(entry);
@@ -258,7 +267,7 @@ export function optionsFromSuggestions(suggestions: unknown): PermissionOptionsR
       );
       return;
     }
-    standing.push({ label: grant.label, suggestionIndex: idx });
+    standing.push({ label: grant.label, suggestionIndex: idx, kind: grant.kind });
   });
 
   if (standing.length === 0) {
@@ -286,6 +295,7 @@ export function optionsFromSuggestions(suggestions: unknown): PermissionOptionsR
       isYes: true,
       isNo: false,
       suggestionIndex: k.suggestionIndex,
+      standingGrant: k.kind,
     })),
     { label: 'No', value: String(value++), isRecommended: false, isYes: false, isNo: true },
   ];

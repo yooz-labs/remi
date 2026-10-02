@@ -53,8 +53,13 @@ describe('selectPushCategory', () => {
   test('returns REMI_YN for [Yes, No]', () => {
     expect(selectPushCategory([yesOpt, noOpt])).toBe('REMI_YN');
   });
-  test('returns REMI_YNA for [Yes, Yes always, No]', () => {
-    const yesAlways: QuestionOption = { ...yesOpt, value: 'a', label: 'Yes, always' };
+  test('returns REMI_YNA for [Yes, an always-allow rule, No]', () => {
+    const yesAlways: QuestionOption = {
+      ...yesOpt,
+      value: 'a',
+      label: 'Yes, always',
+      standingGrant: 'addRules',
+    };
     expect(selectPushCategory([yesOpt, yesAlways, noOpt])).toBe('REMI_YNA');
   });
   test('returns no category for a standing option outside [Yes, Yes, No]', () => {

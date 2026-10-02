@@ -452,9 +452,16 @@ describe('HookEventBridge', () => {
   });
 
   describe('standingGrantFor (#1126)', () => {
-    it('echoes setMode verbatim and addRules with destination "session"', () => {
+    it('echoes every grant scoped to this session, setMode included: a phone tap never writes a settings file', () => {
       const mode = { type: 'setMode', mode: 'acceptEdits', destination: 'session' };
       expect(standingGrantFor(mode)?.echo).toEqual(mode);
+      expect(standingGrantFor(mode)?.kind).toBe('setMode');
+      const persistentMode = { type: 'setMode', mode: 'acceptEdits', destination: 'userSettings' };
+      expect(standingGrantFor(persistentMode)?.echo).toEqual({
+        ...persistentMode,
+        destination: 'session',
+      });
+      expect(persistentMode.destination).toBe('userSettings');
       const rule = {
         type: 'addRules',
         rules: [{ toolName: 'Bash', ruleContent: 'ls' }],
@@ -462,6 +469,7 @@ describe('HookEventBridge', () => {
         destination: 'localSettings',
       };
       expect(standingGrantFor(rule)?.echo).toEqual({ ...rule, destination: 'session' });
+      expect(standingGrantFor(rule)?.kind).toBe('addRules');
       // The caller's entry is not mutated.
       expect(rule.destination).toBe('localSettings');
     });

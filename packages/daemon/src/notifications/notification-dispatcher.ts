@@ -73,10 +73,13 @@ function isStanding(option: QuestionOption, index: number): boolean {
  * categories have hardcoded titles, so they are chosen only when those titles
  * are true:
  *   - REMI_YN ("Yes" / "No"): exactly [one-time Yes, No].
- *   - REMI_YNA ("Yes" / "Yes, always" / "No"): exactly [one-time Yes, Yes,
- *     No]. Its middle "Yes, always" button is the only static action that
- *     requires an unlocked device, so a standing grant is offered on the lock
- *     screen ONLY in this layout, and only through this static category: no
+ *   - REMI_YNA ("Yes" / "Yes, always" / "No"): exactly [one-time Yes, an
+ *     always-allow rule, No], the middle option marked `standingGrant:
+ *     'addRules'` (#1126 lead decision: only there is the static "Yes, always"
+ *     title true; a `setMode` or an unmarked standing option gets no
+ *     category). Its middle button is the only static action that requires
+ *     an unlocked device, so a standing grant is offered on the lock screen
+ *     ONLY in this layout, and only through this static category: no
  *     standing card gets the `dynOptions` hint (`selectDynOptions`).
  * A one-time Yes is an option labeled exactly "Yes" (`isOneTimeYes`).
  * A card with any other standing option (`isStanding`) gets NO category: a
@@ -99,6 +102,7 @@ export function selectPushCategory(options: readonly QuestionOption[]): string |
     isOneTimeYes(first) &&
     second.isYes &&
     !second.isNo &&
+    second.standingGrant === 'addRules' &&
     isPlainNo(third)
   ) {
     return 'REMI_YNA';

@@ -41,6 +41,8 @@ const yesAlwaysOpt: QuestionOption = {
   isRecommended: false,
   isYes: true,
   isNo: false,
+  suggestionIndex: 0,
+  standingGrant: 'addRules',
 };
 const defaultThreeSet: QuestionOption[] = [
   { value: '1', label: 'Yes', isRecommended: true, isYes: true, isNo: false },
@@ -101,30 +103,46 @@ describe('selectPushCategory', () => {
     expect(selectPushCategory(dropped)).toBeUndefined();
   });
 
-  test('REMI_YNA for exactly [one-time Yes, any Yes, No]', () => {
+  test('REMI_YNA only for [one-time Yes, an always-allow rule, No] (#1126 lead decision)', () => {
     expect(selectPushCategory(defaultThreeSet)).toBe('REMI_YNA');
+    expect(
+      selectPushCategory([
+        yes('1', 'Yes'),
+        yes('2', 'Yes, allow git push for this session', {
+          suggestionIndex: 0,
+          standingGrant: 'addRules',
+        }),
+        no('3', 'No'),
+      ]),
+    ).toBe('REMI_YNA');
+  });
+
+  test('a setMode or unmarked standing option gets no category: the static "Yes, always" would be untrue (#1126)', () => {
+    expect(
+      selectPushCategory([
+        yes('1', 'Yes'),
+        yes('2', 'Yes, and switch to acceptEdits mode', {
+          suggestionIndex: 1,
+          standingGrant: 'setMode',
+        }),
+        no('3', 'No'),
+      ]),
+    ).toBeUndefined();
+    // A screen-parsed standing option says nothing about what it grants.
     expect(
       selectPushCategory([
         yes('1', 'Yes'),
         yes('2', "Yes, and don't ask again for this command"),
         no('3', 'No, and tell Claude what to do differently (esc)'),
       ]),
-    ).toBe('REMI_YNA');
+    ).toBeUndefined();
     expect(
       selectPushCategory([
         yes('1', 'Yes'),
         yes('2', 'Yes,andalwaysallowaccessto/w'),
         no('3', 'No'),
       ]),
-    ).toBe('REMI_YNA');
-    // Any Yes in the middle is the standing option, whatever its wording.
-    expect(
-      selectPushCategory([
-        yes('1', 'Yes'),
-        yes('2', 'Yes, allow reading from /w during this session', { suggestionIndex: 0 }),
-        no('3', 'No'),
-      ]),
-    ).toBe('REMI_YNA');
+    ).toBeUndefined();
   });
 
   test('#1134 review: the first option is a one-time Yes only when it reads exactly "Yes"', () => {
@@ -158,7 +176,7 @@ describe('selectPushCategory', () => {
     expect(selectPushCategory([yes('1', ' Yes '), no('2', 'No')])).toBe('REMI_YN');
   });
 
-  test('held cards: Yes/No is REMI_YN, Yes + one standing grant is REMI_YNA, two get no category (#1126)', () => {
+  test('held cards: Yes/No is REMI_YN, Yes + a rule is REMI_YNA, a mode switch or two grants get no category (#1126)', () => {
     expect(selectPushCategory(optionsFromSuggestions(['Yes', 'Always', 'No']).options)).toBe(
       'REMI_YN',
     );
@@ -168,7 +186,8 @@ describe('selectPushCategory', () => {
       rules: [{ toolName: 'Bash', ruleContent: 'ls' }],
       behavior: 'allow',
     };
-    expect(selectPushCategory(optionsFromSuggestions([setMode]).options)).toBe('REMI_YNA');
+    expect(selectPushCategory(optionsFromSuggestions([rule]).options)).toBe('REMI_YNA');
+    expect(selectPushCategory(optionsFromSuggestions([setMode]).options)).toBeUndefined();
     expect(selectPushCategory(optionsFromSuggestions([rule, setMode]).options)).toBeUndefined();
   });
 

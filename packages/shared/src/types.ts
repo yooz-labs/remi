@@ -356,6 +356,16 @@ export interface QuestionOption {
   readonly suggestionIndex?: number | undefined;
 
   /**
+   * What a standing option grants (#1126), set with `suggestionIndex`:
+   * `'addRules'` allows a rule for this session, `'setMode'` switches the
+   * session's permission mode. The lock screen's static "Yes, always" button
+   * (REMI_YNA) is offered only for `'addRules'`, where its title is true; a
+   * card whose standing option is a `'setMode'` gets no actionable category
+   * and is answered in the app. Ignored on the wire otherwise.
+   */
+  readonly standingGrant?: 'addRules' | 'setMode' | undefined;
+
+  /**
    * Public marker for an explicit, scoped session action. The grant's
    * repository, working directory, expiry, and lineage remain daemon-private;
    * this marker only tells the client which deliberate action it is selecting.

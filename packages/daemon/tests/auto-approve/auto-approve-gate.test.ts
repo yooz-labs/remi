@@ -610,11 +610,21 @@ describe('AutoApproveGate held prompts (#1126)', () => {
     expect(await hook).toBe('deny');
   });
 
-  test('a setMode standing option echoes the suggestion verbatim', async () => {
+  test('a setMode standing option echoes the suggestion scoped to this session', async () => {
     const g = gate();
     const hook = g.resolvePermission(pr({ permission_suggestions: [ADD_DIRS, SET_MODE] }));
     expect(g.answerHeld(ids[0] as UUID, { kind: 'option', option: standing(1) })).toBe('resolved');
     expect(await hook).toEqual({ behavior: 'allow', updatedPermissions: [SET_MODE] });
+    // Even a mode change Claude suggested for a settings file stays in the
+    // session: a phone tap never writes one (#1126 lead decision).
+    const hook2 = g.resolvePermission(
+      pr({
+        tool_input: { command: 'other' },
+        permission_suggestions: [{ ...SET_MODE, destination: 'localSettings' }],
+      }),
+    );
+    g.answerHeld(ids[1] as UUID, { kind: 'option', option: standing(0) });
+    expect(await hook2).toEqual({ behavior: 'allow', updatedPermissions: [SET_MODE] });
   });
 
   test('an addRules standing option echoes the rule scoped to this session', async () => {
