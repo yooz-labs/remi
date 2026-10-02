@@ -203,7 +203,7 @@ describe('createResumeSessionHandlers', () => {
       sessionStore,
       bindingStore: ambiguousBindingStore,
       transcriptDiscovery: noFallbackDiscovery,
-      harness: new ClaudeHarness(transcriptDiscovery),
+      harness: new ClaudeHarness(noFallbackDiscovery),
       createNewSession: async () => undefined,
       send,
     });

@@ -4700,7 +4700,9 @@ describe('setupHookBridge', () => {
         transcriptDiscovery: new TranscriptDiscovery({
           projectsDir: path.join(tmpDir, 'claude-projects'),
         }),
-        harness: new ClaudeHarness(new TranscriptDiscovery()),
+        harness: new ClaudeHarness(
+          new TranscriptDiscovery({ projectsDir: path.join(tmpDir, 'claude-projects') }),
+        ),
         liveSessionsRegistry,
         currentPort: () => 8765,
         untrackConnection: () => {},
