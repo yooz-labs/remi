@@ -106,7 +106,7 @@ describe('chat text while a prompt menu is on screen (#1140)', () => {
     expect(errors[0]?.code).toBe(PROMPT_WAITING_ERROR_CODE);
     expect(errors[0]?.code).toBe('PROMPT_WAITING');
     expect(errors[0]?.message).toBe(
-      'Claude is waiting on a prompt. Answer it first, from its card or in the terminal.',
+      'Claude is waiting on a prompt. Answer it from its card or in the terminal (Esc dismisses it).',
     );
     expect(errors[0]?.message).toBe(PROMPT_WAITING_MESSAGE);
     // The refused bubble can be named, so the client can flip it to failed.
@@ -286,7 +286,7 @@ describe('chat text while a prompt menu is on screen (#1140)', () => {
       expect(chatMessages).toEqual([
         {
           chatId: CHAT_ID,
-          text: 'Error: Claude is waiting on a prompt. Answer it first, from its card or in the terminal.',
+          text: 'Error: Claude is waiting on a prompt. Answer it from its card or in the terminal (Esc dismisses it).',
         },
       ]);
     });

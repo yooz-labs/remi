@@ -1511,7 +1511,7 @@ function App() {
         // highlighted option). The daemon acked the input before deciding, so
         // flip that one bubble to 'failed' like SESSION_NOT_FOUND above, then
         // fall through so the daemon's message ("Claude is waiting on a
-        // prompt. Answer it first, ...") shows in the chat.
+        // prompt. Answer it from its card ...") shows in the chat.
         const promptWaitingRefusedId = promptWaitingRefusedMessageId(
           message as { code?: string; details?: Record<string, unknown> },
         );

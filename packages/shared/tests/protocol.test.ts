@@ -712,7 +712,7 @@ describe('Message factory functions', () => {
       expect(msg.code).toBe('PROMPT_WAITING');
       expect(msg.code).toBe(PROMPT_WAITING_ERROR_CODE);
       expect(msg.message).toBe(
-        'Claude is waiting on a prompt. Answer it first, from its card or in the terminal.',
+        'Claude is waiting on a prompt. Answer it from its card or in the terminal (Esc dismisses it).',
       );
       expect(msg.message).toBe(PROMPT_WAITING_MESSAGE);
       expect(msg.details).toEqual({ sessionId: 'session-1' });

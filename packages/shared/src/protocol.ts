@@ -598,7 +598,7 @@ export const PROMPT_WAITING_ERROR_CODE = 'PROMPT_WAITING';
 
 /** The `message` of a `PROMPT_WAITING` error: what the user is told. */
 export const PROMPT_WAITING_MESSAGE =
-  'Claude is waiting on a prompt. Answer it first, from its card or in the terminal.';
+  'Claude is waiting on a prompt. Answer it from its card or in the terminal (Esc dismisses it).';
 
 /**
  * Details attached to a `PROMPT_WAITING` error. `messageId` is the refused
