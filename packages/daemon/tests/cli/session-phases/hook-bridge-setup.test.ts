@@ -44,6 +44,7 @@ import {
   WRAPPED_DIRECTORY,
   WRAPPED_DIRECTORY_DIALOG,
 } from '../../parser/fixtures/claude-dialogs.ts';
+import { reserveRange } from '../../session/port-test-helpers.ts';
 
 /**
  * Recording HookServer that captures `.on()` registrations AND lets tests
@@ -683,7 +684,7 @@ describe('setupHookBridge', () => {
         // the issue quotes, delivered the way Claude Code delivers it: an HTTP
         // POST to the hook server. The transport is real end to end; only the
         // APNS call is a recording sink.
-        const port = 21000 + Math.floor(Math.random() * 2000);
+        const port = await reserveRange(1, 50, '127.0.0.1');
         const server = new HookServer({ port });
         const { sent, outcomes } = wire(new Map([['tok-a', TOKEN_ENTRY('tok-a')]]), server);
         server.start();
