@@ -70,7 +70,9 @@ export class SessionBindingStore {
    * stored `harnessSessionId` is never read. A record naming another known
    * harness reports its stored `harnessSessionId`, or null when it has none
    * yet. An unrecognized `harness` string is null rather than a guess, so a
-   * caller never treats a newer daemon's record as Claude.
+   * caller never treats a newer daemon's record that names its harness as a
+   * string as Claude. A non-string `harness` never reaches here: the parser
+   * treats it as absent, so it reads as Claude (ADR 0032, decision 5).
    */
   getIdentity(remiSessionId: UUID): SessionIdentity | null {
     const stored = this.store.findByRemiSessionId(remiSessionId);

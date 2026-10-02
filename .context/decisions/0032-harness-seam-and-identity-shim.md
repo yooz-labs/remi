@@ -35,10 +35,12 @@ Add the vocabulary and make the store tolerate it, without changing what any dae
    `update()` writes only that column, so a rotation cannot leave two copies apart.
 4. **Tolerant parse.**
    `parseStoredSession` copies `harness` (a string) and `harnessSessionId` (a string or null) when well-typed and ignores them otherwise.
-   It never throws on them and never validates `harness` against `HARNESS_IDS`, so a record naming a harness this build does not know is kept verbatim across a rewrite instead of bricking the file.
+   It never throws on them and never validates `harness` against `HARNESS_IDS`, so a record naming a harness this build does not know, as a string, is kept verbatim across a rewrite instead of bricking the file.
+   A `harness` that is not a string at all (a number, an object, an array, a boolean or `null`) is ignored like an absent one: it reads as Claude and is dropped on the next rewrite.
    A key is set only when present, which is what keeps a legacy record at eight keys in memory as well as on disk.
 5. **Unknown means null, not Claude.**
-   `getIdentity` returns `null` for an absent record and for an unrecognized `harness` string, so a caller never mistakes a newer daemon's record for a Claude one.
+   `getIdentity` returns `null` for an absent record and for an unrecognized `harness` string, so a caller never mistakes a newer daemon's record that names its harness as a string for a Claude one.
+   That guarantee covers strings only: a non-string `harness` is treated as absent by the parser (decision 4), so `getIdentity` reports it as Claude.
    `get()` is not widened; it still returns exactly `{ claudeSessionId }`.
 6. **Wire fields are typed, not emitted.**
    `harness?` and `harnessSessionId?` exist on `DiscoverableSession`, `HelloAckMessage` and `QuestionMessage` (written `?: T | undefined` for `exactOptionalPropertyTypes`), each documented as typed only.
@@ -58,7 +60,7 @@ Add the vocabulary and make the store tolerate it, without changing what any dae
   The Codex epic must close that before it writes the first non-Claude record (for example by refusing to create one while an older daemon is registered).
   This phase makes the current build tolerant; it does not retrofit the builds already installed.
 - `getIdentity` has no production caller yet, and no code sets `harness` or `harnessSessionId` on a record or a message (checked below), so the behavior of every shipped path is unchanged.
-- A record whose harness this build does not know still resumes by `claudeSessionId` through the existing methods; only `getIdentity` withholds it.
+- A record whose harness string this build does not know still resumes by `claudeSessionId` through the existing methods; only `getIdentity` withholds it.
 - `Decision` being an alias means there is no separate object to validate: the strategy's `kind` values `sandbox` and `trust` have no `Question.kind` today (they are hook-less PTY prompts, `source: 'pty'`), and `answerPath` cannot be read from `Question.held`, which marks every card pushed by id.
   The mapping comment records both so nobody rediscovers them.
 

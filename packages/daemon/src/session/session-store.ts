@@ -31,10 +31,12 @@ export interface StoredSession {
    * The harness this record belongs to (#1162, ADR 0032). ABSENT on every
    * Claude record: nothing writes it today, and absence means Claude, so an
    * older daemon that rewrites this file loses nothing. Kept as a plain string,
-   * not `HarnessId`, so a record written by a newer daemon naming a harness
-   * this build does not know still round-trips through a rewrite instead of
-   * being dropped or rejected. Read it through
-   * `SessionBindingStore.getIdentity`, which interprets it.
+   * not `HarnessId`, so a record naming a harness STRING this build does not
+   * know still round-trips through a rewrite instead of being dropped or
+   * rejected. A value that is not a string at all (number, object, array,
+   * boolean, null) is treated as absent: it reads as Claude and is dropped on
+   * the next rewrite. Read it through `SessionBindingStore.getIdentity`, which
+   * interprets it.
    */
   harness?: string | undefined;
   /**

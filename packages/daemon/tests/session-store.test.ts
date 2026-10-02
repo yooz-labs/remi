@@ -4,6 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { UUID } from '@remi/shared';
 import { normalizeProjectPath } from '../src/cli/path-resolver.ts';
+import { SessionBindingStore } from '../src/session/session-binding-store.ts';
 import {
   AmbiguousSessionIdentityError,
   MalformedSessionStoreError,
@@ -680,6 +681,14 @@ describe('SessionStore', () => {
       expect(Object.keys(found ?? {})).not.toContain('harness');
       expect(Object.keys(found ?? {})).not.toContain('harnessSessionId');
 
+      // Treated as absent, so the identity is Claude's (the guarantee that an
+      // unrecognized harness reads as null covers strings only, ADR 0032).
+      const binding = new SessionBindingStore(store);
+      expect(binding.getIdentity(row['remiSessionId'] as UUID)).toEqual({
+        harness: 'claude',
+        harnessSessionId: 'claude-ill',
+      });
+
       store.markExited(row['remiSessionId'] as UUID, 0);
       expect(Object.keys(diskFile().sessions[0] ?? {}).sort()).toEqual([
         'claudeSessionId',
@@ -691,6 +700,28 @@ describe('SessionStore', () => {
         'remiSessionId',
         'startedAt',
       ]);
+    });
+
+    test('every non-string harness is treated as absent: reads as Claude and is dropped on rewrite', () => {
+      const illTyped: unknown[] = [5, null, true, ['codex'], { name: 'codex' }];
+      const rows = illTyped.map((harness, i) =>
+        legacyRow({ claudeSessionId: `claude-nonstring-${i}`, harness, harnessSessionId: 'x' }),
+      );
+      writeFile(rows);
+      const binding = new SessionBindingStore(store);
+
+      rows.forEach((row, i) => {
+        expect(binding.getIdentity(row['remiSessionId'] as UUID)).toEqual({
+          harness: 'claude',
+          harnessSessionId: `claude-nonstring-${i}`,
+        });
+      });
+
+      // Any write by this build rewrites every record; the ill-typed harness is gone.
+      store.markExited(rows[0]?.['remiSessionId'] as UUID, 0);
+      for (const record of diskFile().sessions) {
+        expect(Object.keys(record)).not.toContain('harness');
+      }
     });
 
     test('a record with the harness fields still needs a valid base record', () => {
