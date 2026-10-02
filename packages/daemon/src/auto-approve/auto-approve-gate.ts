@@ -312,12 +312,6 @@ export interface AutoApproveGateDeps {
    * screen (#1126). Throw-safe.
    */
   onTerminalNoticeResolved?: (questionId: UUID) => void;
-  /** Push trigger for a BINARY main-context escalation: the hook is answered
-   *  'passthrough', Claude renders its native prompt at once, and the stashed
-   *  question pushes when that render pairs with it, carrying the parsed
-   *  screen's options (#1121, #1134). Absent => the render is never pushed
-   *  (tests). Throw-safe. */
-  pushOnRender?: (questionId: UUID) => void;
   /**
    * Called when an open escalation resolved WITHOUT the user answering it
    * through remi's answer path (an external-resolution signal, a Stop /
@@ -328,8 +322,8 @@ export interface AutoApproveGateDeps {
    */
   onResolved?: (questionId: UUID, reason: 'cancelled') => void;
   /** Tools whose prompt is always a design question, never binary (#572):
-   *  used to classify an escalation as binary (pushed on render) vs design
-   *  (pushed immediately). Absent => `ALWAYS_ESCALATE_TOOLS`. */
+   *  used to classify an escalation as binary (held, #1126) vs design
+   *  (passthrough, pushed immediately). Absent => `ALWAYS_ESCALATE_TOOLS`. */
   alwaysEscalateTools?: ReadonlySet<string>;
 }
 
@@ -741,28 +735,6 @@ export class AutoApproveGate {
       logError(`[AutoApprove ${this.sessionTag}] removeQuestion during card cleanup threw:`, err);
     }
     if (wasRegistered) this.notifyResolved(questionId);
-  }
-
-  /**
-   * Escalate a BINARY main-context permission. The hook is answered
-   * 'passthrough', so Claude renders its native prompt in the terminal
-   * immediately, and the stashed question is marked to push when that render
-   * pairs with it (`pushOnRender`). Pushing on the render rather than now
-   * keeps two properties: the card only reaches the phone for a prompt that
-   * actually rendered, and its options are the parsed screen's (#1134), so a
-   * phone answer is typed with the screen's numbering; `handleAnswer` still
-   * refuses one whose label does not match the screen.
-   */
-  private escalateForRender(input: PermissionRequestHookInput): PermissionDecision {
-    const qid = this.escalateToUser(input);
-    if (qid) {
-      this.safeCueWithArg('pushOnRender', this.deps.pushOnRender, qid);
-    } else {
-      logError(
-        `[AutoApprove ${this.sessionTag}] binary escalation produced no question id; no push will follow (terminal prompt still answerable locally)`,
-      );
-    }
-    return 'passthrough';
   }
 
   /**

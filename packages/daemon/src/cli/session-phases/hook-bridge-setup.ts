@@ -16,14 +16,15 @@
  *      — NOT /compact, which keeps the same session id) as a single atomic
  *      `session_rotated` event.
  *
- * A third concern, the **permission gate** (`AutoApproveGate`, name kept until
- * #1126), used to be inlined here (#453 phase 1). The bridge does the session
+ * A third concern, the **permission gate** (`AutoApproveGate`, a historical
+ * name), used to be inlined here (#453 phase 1). The bridge does the session
  * filtering, then routes PermissionRequest to the gate, which since #1125
- * (ADR 0030) never decides anything: it escalates every main-agent prompt
- * (pushed on its render, or at once for a multi-choice / design prompt) and
- * parks every subagent prompt for its PTY render, answering the hook
- * 'passthrough' either way. Stop / SessionEnd call `gate.cancelStale()` to
- * resolve escalations Claude no longer waits on. Stop passes
+ * (ADR 0030) decides nothing on its own: since #1126 (ADR 0031) it holds a
+ * binary prompt's hook for the phone's answer while Claude's dialog is on
+ * screen, pushes a multi-choice / design prompt at once and answers it
+ * 'passthrough', and passes a subagent prompt to the local terminal (wrapper
+ * mode) or holds it like a main one (daemon mode). Stop / SessionEnd call
+ * `gate.cancelStale()` to resolve escalations Claude no longer waits on. Stop passes
  * `{ mainOnly: true }` (#711): it fires whenever the LEAD idles even while
  * agent-team teammates keep working, so it resolves only MAIN-context
  * escalations, sparing a teammate's still-open one. SessionEnd is real
@@ -157,8 +158,8 @@ export interface HookBridgeDeps {
   subagentViews?: SubagentViewRegistry;
   /**
    * Tools whose prompt is always a design question (#572). Passed to the gate
-   * so it classifies an escalation as binary (pushed on render, #1121) vs
-   * design/plan-mode (pushed immediately). Absent => `ALWAYS_ESCALATE_TOOLS`.
+   * so it classifies an escalation as binary (held, #1126) vs design/plan-mode
+   * (passthrough, pushed immediately). Absent => `ALWAYS_ESCALATE_TOOLS`.
    */
   alwaysEscalateTools?: ReadonlySet<string>;
   /**
@@ -488,9 +489,10 @@ export function setupHookBridge(
     },
     onQuestion: (question) => {
       // #625 single gate: a PERMISSION question is coordinated by the permission
-      // gate — it is stashed here and the gate drives its push on escalate (binary
-      // on its render via pushOnRender, multi-choice / design at once via
-      // onHeldEscalate). recordPendingHook only stashes; it never emits on its own.
+      // gate — it is stashed here and the gate drives its push on escalate (a
+      // held binary prompt and a multi-choice / design one at once via
+      // onHeldEscalate, #1126). recordPendingHook only stashes; it never emits
+      // on its own.
       //   - 'permission_request' (rich: tool + command + options) is the one the gate
       //     escalates and pushes by id. This is the ONLY source stashed here now:
       //     `HookEventBridge` used to also synthesize a redundant generic
@@ -576,17 +578,11 @@ export function setupHookBridge(
         if (question !== null) deps.pushTerminalNotice?.(sessionId, question, 'hold_deadline');
       },
       onTerminalNoticeResolved: (questionId) => deps.dismissTerminalNotice?.(sessionId, questionId),
-      // #1121: a binary main escalation pushes when its native prompt
-      // renders, carrying the parsed screen's options (#1134); the answer is
-      // typed with the screen's numbering and refused on a label mismatch.
-      pushOnRender: (questionId) => {
-        tracker.pushOnRender(questionId);
-      },
       // #585: an open escalation that resolves without a user answer tells
       // the daemon to dismiss the pushed card on every client.
       onResolved: (questionId, reason) =>
         deps.broadcastQuestionResolved?.(sessionId, questionId, reason),
-      // #573: classify an escalation as binary (pushed on render, #1121) vs
+      // #573: classify an escalation as binary (held, #1126) vs
       // design/multi-choice (pushed immediately). Absent => the gate's
       // `ALWAYS_ESCALATE_TOOLS` default.
       ...(deps.alwaysEscalateTools ? { alwaysEscalateTools: deps.alwaysEscalateTools } : {}),

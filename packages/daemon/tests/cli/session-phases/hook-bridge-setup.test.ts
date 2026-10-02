@@ -1696,6 +1696,18 @@ describe('setupHookBridge', () => {
       expect(cards()).toHaveLength(0);
     });
 
+    test("with Claude's dialog on screen, a phone answer still goes through the hook and nothing is typed", async () => {
+      // The no-typing invariant at its sharpest: the dialog is rendered and
+      // observed, its "1. Yes" matches the card's "Yes", so the screen guard
+      // would let a digit through. The held path must answer first.
+      const { tracker, card, hook, handlers } = held('claude-held-onscreen');
+      tracker.onOrphanPTYPrompt(parseQuestion(WRAPPED_DIRECTORY_DIALOG).question as Question);
+      expect(tracker.observedPromptOptions()?.[0]?.label).toBe('Yes');
+      expect(await handlers.relayAnswer(SID, card.id, 'Yes')).toBe('delivered');
+      expect(await hook).toBe('allow');
+      expect(ptySubmits).toEqual([]);
+    });
+
     test('phone No with a message denies with that message as the reason', async () => {
       const { card, hook, handlers } = held('claude-held-no');
       await handlers.onAnswer('conn-1' as UUID, SID, card.id, 'No', undefined, {

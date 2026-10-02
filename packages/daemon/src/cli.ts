@@ -1598,8 +1598,8 @@ async function createNewSession(
       onQuestion: (question) => {
         // #625 single gate: when a hook server is active the permission gate is
         // the primary authority for permission questions and drives their
-        // pushes itself (binary on render via pushOnRender, multi-choice at once
-        // via onHeldEscalate). The PTY parser echoes EVERY on-screen prompt, so
+        // pushes itself (held binary and multi-choice prompts at once via
+        // onHeldEscalate, #1126). The PTY parser echoes EVERY on-screen prompt, so
         // routing those through unconditionally was the phantom-notification
         // source (>1,100 confirmed pushes, measured while auto-approve still
         // existed). But #624/#712 review found real prompts that reach ONLY

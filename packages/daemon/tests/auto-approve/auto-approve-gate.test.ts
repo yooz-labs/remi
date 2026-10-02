@@ -58,7 +58,6 @@ describe('AutoApproveGate routing (#1125: nothing is decided, everything is rela
   let escalated: PermissionRequestHookInput[];
   let escalatedIds: UUID[];
   let parks: PermissionRequestHookInput[];
-  let pushOnRenderIds: UUID[];
   let pushNowIds: UUID[];
   let subagentAlerts: PermissionRequestHookInput[];
   let resets: number;
@@ -89,9 +88,6 @@ describe('AutoApproveGate routing (#1125: nothing is decided, everything is rela
           parks.push(i);
           return generateId() as UUID;
         },
-        pushOnRender: (id) => {
-          pushOnRenderIds.push(id);
-        },
         onHeldEscalate: (id) => {
           pushNowIds.push(id);
         },
@@ -111,7 +107,6 @@ describe('AutoApproveGate routing (#1125: nothing is decided, everything is rela
     escalated = [];
     escalatedIds = [];
     parks = [];
-    pushOnRenderIds = [];
     pushNowIds = [];
     subagentAlerts = [];
     resets = 0;
@@ -136,7 +131,6 @@ describe('AutoApproveGate routing (#1125: nothing is decided, everything is rela
     // Pushed now, by id: the dialog renders during the hold, the card does
     // not wait for it.
     expect(pushNowIds).toEqual(escalatedIds);
-    expect(pushOnRenderIds).toEqual([]);
     expect(parks).toEqual([]);
     expect(submits).toEqual([]);
     expect(settled).toBe(false);
@@ -154,7 +148,6 @@ describe('AutoApproveGate routing (#1125: nothing is decided, everything is rela
     expect(d).toBe('passthrough');
     expect(pushNowIds).toEqual(escalatedIds);
     expect(pushNowIds).toHaveLength(1);
-    expect(pushOnRenderIds).toEqual([]);
   });
 
   test('a multi-choice prompt (ExitPlanMode) is pushed immediately, even with no configured tools', async () => {
@@ -163,7 +156,6 @@ describe('AutoApproveGate routing (#1125: nothing is decided, everything is rela
     );
     expect(d).toBe('passthrough');
     expect(pushNowIds).toEqual(escalatedIds);
-    expect(pushOnRenderIds).toEqual([]);
   });
 
   test('a string-label multi-choice permission_suggestions set is pushed immediately', async () => {
@@ -172,7 +164,6 @@ describe('AutoApproveGate routing (#1125: nothing is decided, everything is rela
     );
     expect(d).toBe('passthrough');
     expect(pushNowIds).toEqual(escalatedIds);
-    expect(pushOnRenderIds).toEqual([]);
   });
 
   test('an escalate that throws still answers passthrough and pushes nothing', async () => {
@@ -187,7 +178,6 @@ describe('AutoApproveGate routing (#1125: nothing is decided, everything is rela
         pr({ tool_name: 'AskUserQuestion', tool_input: { question: 'q' } }),
       ),
     ).toBe('passthrough');
-    expect(pushOnRenderIds).toEqual([]);
     expect(pushNowIds).toEqual([]);
   });
 
@@ -199,7 +189,6 @@ describe('AutoApproveGate routing (#1125: nothing is decided, everything is rela
         pr({ tool_name: 'AskUserQuestion', tool_input: { question: 'q' } }),
       ),
     ).toBe('passthrough');
-    expect(pushOnRenderIds).toEqual([]);
     expect(pushNowIds).toEqual([]);
   });
 
@@ -227,7 +216,6 @@ describe('AutoApproveGate routing (#1125: nothing is decided, everything is rela
     expect(await gate().resolvePermission(input)).toBe('passthrough');
     expect(parks).toEqual([input]);
     expect(escalated).toEqual([]);
-    expect(pushOnRenderIds).toEqual([]);
     expect(pushNowIds).toEqual([]);
     expect(submits).toEqual([]);
     expect(resets).toBe(0);

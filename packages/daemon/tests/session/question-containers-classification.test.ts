@@ -100,13 +100,7 @@ const REGISTRY: readonly Entry[] = [
     file: 'api/question-presence-tracker.ts',
     field: 'awaitingPTY',
     cls: 'pre-card',
-    note: 'Subset of pending that pushes on its PTY render: a subagent parked for PTY arbitration (#751, ADR 0004 surface) or a main-agent push-on-render mark (#1121).',
-  },
-  {
-    file: 'api/question-presence-tracker.ts',
-    field: 'ambiguousRenderKeys',
-    cls: 'pre-card',
-    note: "NEW (#1121 review). Agent keys whose unrendered push-on-render record was replaced by a newer hook; the next pushOnRender for that key declines to pair, so each render pushes the screen's own prompt. Cleared on consume, on leaving waiting, and on clearPending.",
+    note: 'Subset of pending parked for its PTY render: a subagent passed to the local terminal (#751, ADR 0004 surface), whose render pushes an answer-at-the-terminal notice (#1126). The main-agent push-on-render mark (#1121) was removed when #1126 held binary main prompts.',
   },
   {
     file: 'api/question-presence-tracker.ts',
@@ -160,7 +154,7 @@ const REGISTRY: readonly Entry[] = [
     file: 'auto-approve/auto-approve-gate.ts',
     field: 'openQuestionSignatures',
     cls: 'mixed',
-    note: 'Every OPEN escalation this gate created, keyed by Question.id (#673/#799). A held (#1126) or passthrough escalation pushed at once is post-card metadata (the card is registered); a push-on-render (#1121) or parked (#751) entry is pre-card until its render pushes it, and a held prompt released at its deadline stays open after its card is dismissed (its dialog is still on screen). Per the #888 rescope comment.',
+    note: 'Every OPEN escalation this gate created, keyed by Question.id (#673/#799). A held (#1126) or passthrough escalation pushed at once is post-card metadata (the card is registered); a parked subagent entry (#751) never gets a card (its render pushes a notice, #1126), and a held prompt released at its deadline stays open after its card is dismissed (its dialog is still on screen). Per the #888 rescope comment.',
   },
   {
     file: 'auto-approve/auto-approve-gate.ts',
