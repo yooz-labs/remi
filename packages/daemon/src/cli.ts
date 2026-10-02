@@ -205,6 +205,7 @@ import {
   remiHome,
   serviceCommandRefusal,
 } from './config/remi-home.ts';
+import { ClaudeHarness } from './harness/index.ts';
 import { ForeignSessionEscalator, HookConfigManager, HookServer } from './hooks/index.ts';
 import type { HookInput, PermissionDeniedHookInput, StopHookInput } from './hooks/index.ts';
 // Static, unlike the publisher below it: this is a pure decision with no
@@ -954,6 +955,9 @@ if (cliDaemonMode) {
 // ---------------------------------------------------------------------------
 const _ptyManager = new PTYManager();
 const transcriptDiscovery = new TranscriptDiscovery();
+// One daemon hosts one session, so the harness is a per-daemon singleton, built
+// once here and handed to the handler factories (epic #1161, phase 2).
+const harness = new ClaudeHarness(transcriptDiscovery);
 const transcriptWatchers: Map<UUID, TranscriptWatcher> = new Map();
 const transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>> = new Map();
 // Per-session TranscriptBinder teardown hooks (#453 phase 3, commit 5). The
@@ -1953,6 +1957,7 @@ const sessionHandlers: SessionHandlers = createSessionHandlers({
   sessionRegistry,
   bindingStore,
   transcriptDiscovery,
+  harness,
   liveSessionsRegistry,
   currentPort: () => PORT,
   untrackConnection: (id) => registry.untrackConnection(id),
@@ -1973,11 +1978,12 @@ resolveStopOnClose = sessionHandlers.resolveStopOnClose;
 const currentOwnedSession = makeCurrentSessionResolver({
   getPrimarySessionId,
   sessionStore,
-  transcriptDiscovery,
+  harness,
 });
 
 const transcriptHandlers: TranscriptHandlers = createTranscriptHandlers({
   transcriptDiscovery,
+  harness,
   transcriptWatchers,
   bindingStore,
   transcriptIndex,

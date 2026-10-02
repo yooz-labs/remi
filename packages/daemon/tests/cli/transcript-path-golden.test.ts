@@ -28,6 +28,7 @@ import { createSessionHandlers } from '../../src/cli/handlers/session-events.ts'
 import { createTranscriptHandlers } from '../../src/cli/handlers/transcript-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../src/cli/logger.ts';
 import { expectedTranscriptPath } from '../../src/cli/transcript-fallback.ts';
+import { ClaudeHarness } from '../../src/harness/index.ts';
 import type { PTYSession } from '../../src/pty/pty-session.ts';
 import { SessionBindingStore } from '../../src/session/session-binding-store.ts';
 import { SessionRegistryFile } from '../../src/session/session-registry-file.ts';
@@ -97,7 +98,7 @@ describe('Claude transcript path golden (#1163)', () => {
     const current = makeCurrentSessionResolver({
       getPrimarySessionId: () => REMI_ID,
       sessionStore,
-      transcriptDiscovery: discovery,
+      harness: new ClaudeHarness(discovery),
     })();
 
     expect(current?.transcriptPath).toBe(expectedPath);
@@ -120,6 +121,7 @@ describe('Claude transcript path golden (#1163)', () => {
       sessionRegistry,
       bindingStore,
       transcriptDiscovery: discovery,
+      harness: new ClaudeHarness(discovery),
       liveSessionsRegistry: new SessionRegistryFile(tmpDir),
       currentPort: () => 18765,
       untrackConnection: () => {},
@@ -162,6 +164,7 @@ describe('Claude transcript path golden (#1163)', () => {
     const sent: ProtocolMessage[] = [];
     createTranscriptHandlers({
       transcriptDiscovery: discovery,
+      harness: new ClaudeHarness(discovery),
       transcriptWatchers: new Map<UUID, TranscriptWatcher>(),
       bindingStore,
       transcriptIndex,

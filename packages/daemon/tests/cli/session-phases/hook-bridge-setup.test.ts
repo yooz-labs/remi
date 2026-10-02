@@ -31,6 +31,7 @@ import {
   setupHookBridge,
   terminalNoticeReason,
 } from '../../../src/cli/session-phases/hook-bridge-setup.ts';
+import { ClaudeHarness } from '../../../src/harness/index.ts';
 import { HookServer } from '../../../src/hooks/hook-server.ts';
 import { REMI_REGISTERED_HOOK_EVENTS } from '../../../src/hooks/hook-types.ts';
 import type { PermissionDecision, StopFailureHookInput } from '../../../src/hooks/index.ts';
@@ -4699,6 +4700,7 @@ describe('setupHookBridge', () => {
         transcriptDiscovery: new TranscriptDiscovery({
           projectsDir: path.join(tmpDir, 'claude-projects'),
         }),
+        harness: new ClaudeHarness(new TranscriptDiscovery()),
         liveSessionsRegistry,
         currentPort: () => 8765,
         untrackConnection: () => {},

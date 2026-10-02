@@ -4,6 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { UUID } from '@remi/shared';
 import { makeCurrentSessionResolver } from '../../src/cli/current-session.ts';
+import { ClaudeHarness } from '../../src/harness/index.ts';
 import { SessionStore } from '../../src/session/session-store.ts';
 import { TranscriptDiscovery } from '../../src/transcript/transcript-discovery.ts';
 
@@ -32,7 +33,7 @@ function resolver(primary: UUID | null) {
   return makeCurrentSessionResolver({
     getPrimarySessionId: () => primary,
     sessionStore,
-    transcriptDiscovery,
+    harness: new ClaudeHarness(transcriptDiscovery),
   });
 }
 

@@ -9,8 +9,8 @@
  */
 
 import type { UUID } from '@remi/shared';
+import type { Harness } from '../harness/index.ts';
 import type { SessionStore } from '../session/session-store.ts';
-import type { TranscriptDiscovery } from '../transcript/index.ts';
 
 /** The daemon's current owned session, resolved on demand. */
 export interface CurrentOwnedSession {
@@ -26,19 +26,20 @@ export interface CurrentSessionResolverDeps {
   /** Reads the primary Remi session id (the per-process global). */
   getPrimarySessionId: () => UUID | null;
   sessionStore: Pick<SessionStore, 'findByRemiSessionId'>;
-  transcriptDiscovery: Pick<TranscriptDiscovery, 'getProjectTranscriptDir'>;
+  /** Derives the transcript path from the stored project path and harness session id. */
+  harness: Pick<Harness, 'transcriptPath'>;
 }
 
 /**
  * Build the resolver. Returns null when the daemon has no primary session.
- * Mirrors the transcript-path derivation used by the connection promote path
- * (`<projectTranscriptDir>/<claudeSessionId>.jsonl`) so all hello_ack bindings
- * agree on one path scheme.
+ * The transcript path comes from `harness.transcriptPath` (Claude:
+ * `<projectTranscriptDir>/<claudeSessionId>.jsonl`), the one derivation every
+ * transcript-path site shares, so all hello_ack bindings agree on one scheme.
  */
 export function makeCurrentSessionResolver(
   deps: CurrentSessionResolverDeps,
 ): () => CurrentOwnedSession | null {
-  const { getPrimarySessionId, sessionStore, transcriptDiscovery } = deps;
+  const { getPrimarySessionId, sessionStore, harness } = deps;
   return () => {
     // Must never throw: this runs in the void transcript-load handler's
     // NOT_FOUND path, which is not wrapped — a disk hiccup on the store read
@@ -51,7 +52,7 @@ export function makeCurrentSessionResolver(
       const projectPath = stored?.projectPath ?? null;
       const transcriptPath =
         claudeSessionId && projectPath
-          ? `${transcriptDiscovery.getProjectTranscriptDir(projectPath)}/${claudeSessionId}.jsonl`
+          ? harness.transcriptPath(projectPath, claudeSessionId)
           : null;
       return { sessionId, claudeSessionId, transcriptPath };
     } catch {
