@@ -46,10 +46,14 @@ export interface QuestionTraceRecord {
    *   - 'snapshot_broadcast' — the daemon broadcast a `question_snapshot`
    *     (the authoritative live-id set for a session); this is the signal
    *     that SHOULD drive client-side reconciliation (#798 parts 2/3).
+   *   - 'input_refused' — free-form `user_input` was refused instead of typed
+   *     (#1140: a numbered menu is on screen, `detail.reason` 'chat-into-menu').
+   *     Session-scoped: no question is involved and nothing is removed.
    */
-  action: 'add' | 'remove' | 'stale_answer' | 'snapshot_broadcast';
+  action: 'add' | 'remove' | 'stale_answer' | 'snapshot_broadcast' | 'input_refused';
   sessionId: string;
-  /** Absent only for a 'snapshot_broadcast' (session-scoped, not per-question). */
+  /** Absent for a 'snapshot_broadcast' and an 'input_refused' (session-scoped,
+   *  not per-question). */
   questionId?: string | undefined;
   /**
    * Claude Code's `prompt_id` (#887): the turn-scoped correlation key the

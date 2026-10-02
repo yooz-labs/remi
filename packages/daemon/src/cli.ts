@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.7.16-dev.2'; // REMI_COMPILED_VERSION
+      return '0.7.16-dev.4'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.7.16-dev.2'; // REMI_COMPILED_VERSION
+    return '0.7.16-dev.4'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -1931,6 +1931,10 @@ const sessionHandlers: SessionHandlers = createSessionHandlers({
   onConnectionRemoved: () =>
     updateRemiStatus({ connections: Math.max(0, remiStatus.connections - 1) }),
   send: sendToConnection,
+  // #1140: a Stop does not type "/exit" + Enter into a menu on screen (the Enter
+  // would confirm the highlighted option); it reads the same tracker view the
+  // answer and chat guards do.
+  ...trackerScreenDeps((sessionId) => sessionTrackers.get(sessionId)),
 });
 // Wire the deferred-Stop resolver now that the handlers exist (#641); the
 // registry's onSessionClosed reaches it through this holder.

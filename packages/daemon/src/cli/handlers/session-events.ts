@@ -21,7 +21,7 @@ import {
   createSessionListResponse,
   errorToString,
 } from '@remi/shared';
-import type { UUID } from '@remi/shared';
+import type { QuestionOption, UUID } from '@remi/shared';
 
 import type {
   SessionBindingStore,
@@ -30,6 +30,7 @@ import type {
 } from '../../session/index.ts';
 import type { TranscriptDiscovery } from '../../transcript/index.ts';
 import { log, logError } from '../logger.ts';
+import { isNumberedMenu } from './screen-menu.ts';
 import type { SendToConnection } from './trivial-events.ts';
 
 export interface SessionHandlerDeps {
@@ -44,6 +45,15 @@ export interface SessionHandlerDeps {
   /** Decrement the statusWriter connection count (third-party detach only). */
   onConnectionRemoved: () => void;
   send: SendToConnection;
+  /**
+   * The options of the prompt observed on a session's screen (#1140), the
+   * same read the chat guard uses (`trackerScreenDeps`, spread in by
+   * `cli.ts`). A Stop types `/exit` + Enter, and into a numbered selection
+   * menu that Enter confirms the highlighted option, usually "1. Yes", so a
+   * Stop while a menu is up does not type and force-closes instead. Absent,
+   * or null (nothing observed): `/exit` is typed as before.
+   */
+  observedPromptOptions?: (sessionId: UUID) => readonly QuestionOption[] | null;
   /** Force-close delay after a graceful /exit; injectable for tests. */
   exitFallbackMs?: number;
 }
@@ -66,6 +76,7 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
     untrackConnection,
     onConnectionRemoved,
     send,
+    observedPromptOptions,
     exitFallbackMs = EXIT_FALLBACK_MS,
   } = deps;
 
@@ -195,12 +206,24 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
       // tears the session down and frees the daemon. Writing to our own PTY avoids
       // the write-lock requirement a client-side input would have. A force-close
       // fallback covers a Claude that ignores /exit (e.g. stuck mid-task).
-      session.pty.submitInput('/exit').catch((err) => {
-        logError(
-          `[Stop] /exit write failed for ${sessionName}; forcing close: ${errorToString(err)}`,
+      //
+      // #1140: not while a numbered selection menu is on screen. The Enter
+      // after "/exit" would confirm the highlighted option (usually "1. Yes"),
+      // approving whatever the prompt asks. Nothing is typed then; the session
+      // is force-closed below, the same path a failed /exit write takes.
+      const menuUp = isNumberedMenu(observedPromptOptions?.(sessionId) ?? null);
+      if (menuUp) {
+        log(
+          `[Stop] a prompt menu is on screen for ${sessionName}; not typing /exit into it, forcing close`,
         );
-        sessionRegistry.closeSession(sessionId, 'forced');
-      });
+      } else {
+        session.pty.submitInput('/exit').catch((err) => {
+          logError(
+            `[Stop] /exit write failed for ${sessionName}; forcing close: ${errorToString(err)}`,
+          );
+          sessionRegistry.closeSession(sessionId, 'forced');
+        });
+      }
       const fallbackTimer = setTimeout(() => {
         if (sessionRegistry.getSession(sessionId)) {
           log(`Session ${sessionName} did not exit on /exit within ${exitFallbackMs}ms; forcing`);
@@ -224,6 +247,11 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
         fallbackTimer,
       });
       log(`Session stop initiated: ${sessionName}`);
+
+      // After the pending stop is registered, so the close resolves it: the
+      // registry's onSessionClosed drives `resolveStopOnClose`, which acks the
+      // requester and notifies the other attached clients.
+      if (menuUp) sessionRegistry.closeSession(sessionId, 'forced');
     },
 
     onDetachSession: (connectionId: UUID, sessionId: UUID, _requestId: UUID): void => {

@@ -98,6 +98,13 @@ export interface PushOptions {
  * returns the real outcome because `cli.ts` wires this straight to
  * `messageApi.handleQuestion`.
  */
+/** Where a status change came from (#1140): `agentId` is the hook event's
+ *  `agent_id` for a background subagent or teammate, absent for the main agent
+ *  and for a PTY-parsed status. See `onStatusChange`. */
+export interface StatusOrigin {
+  readonly agentId?: string | undefined;
+}
+
 export type PushQuestion = (
   question: Question,
   opts?: PushOptions,
@@ -776,11 +783,14 @@ export class QuestionPresenceTracker {
             promptId: hookRecord.promptId ?? ptyQuestion.promptId,
             // #1134 review: whether the prompt takes free text is the TOOL's
             // property, which the hook knows (a permission dialog takes a
-            // pick, so false). The parser marks every Claude selection box as
-            // free-text capable, and the `...ptyQuestion` spread carried that
-            // onto the card, which made `handleAnswer` type free text into
-            // the menu, where Claude ignores it and Enter confirms the
-            // highlighted option.
+            // pick, so false). The parser used to mark every Claude selection
+            // box as free-text capable, and the `...ptyQuestion` spread
+            // carried that onto the card, which made `handleAnswer` type free
+            // text into the menu, where Claude ignores it and Enter confirms
+            // the highlighted option. The parser now marks a selection box as
+            // taking no text (#1140), so a hook-less card agrees with this
+            // line; the hook's value still wins here because it is the tool's
+            // own statement.
             allowsFreeText: hookRecord.allowsFreeText,
             // #888 review finding: the `...ptyQuestion` spread above silently
             // carried `ptyQuestion.source` ('pty', once question-parser sets
@@ -1003,8 +1013,21 @@ export class QuestionPresenceTracker {
    * advanced past whatever prompts were up: drop all pending hook records
    * so they cannot push later (Claude is busy executing, the prompts are
    * gone from screen, the iOS cards would be stale).
+   *
+   * `origin.agentId` (#1140) is the hook event's `agent_id`: set when the
+   * status came from a background subagent or teammate, absent for a
+   * main-agent hook event and for a PTY-parsed status (which names no agent).
+   * An agent's activity says nothing about the MAIN dialog on screen, but the
+   * status pipeline maps every PreToolUse/PostToolUse/SubagentStart to a
+   * status, so such a change must not forget what the screen shows: it leaves
+   * `observedPTYQuestionId`/`observedPTYText`/the observed options and
+   * `ptyShowingQuestion` alone. The chat guard reads the observation, and a
+   * subagent's tool call used to wipe it while the dialog was still up, so
+   * chat text was typed into the menu. Everything else here (the pending
+   * records and their #763 parked-record rules, the eval windows, the timers)
+   * is unchanged by the origin.
    */
-  onStatusChange(status: AgentStatus): void {
+  onStatusChange(status: AgentStatus, origin?: StatusOrigin): void {
     if (status !== 'waiting') {
       // #763: spare still-fresh PARKED records — the main status pipeline
       // flips on every agent's hook activity, and a teammate's routine
@@ -1024,9 +1047,12 @@ export class QuestionPresenceTracker {
         this.pending.delete(key);
         this.awaitingPTY.delete(key);
       }
-      this.ptyShowingQuestion = false;
-      // #814: nothing is on screen now.
-      this.clearObservedPTYQuestion();
+      // #814: nothing is on screen now. Not for an agent's status (#1140): that
+      // agent moved on, the main dialog did not.
+      if (origin?.agentId === undefined) {
+        this.ptyShowingQuestion = false;
+        this.clearObservedPTYQuestion();
+      }
       // #888/#920 review fix: deliberately NOT a hook-less resolution trigger.
       // `status` here can come from a PTY-TEXT-parsed guess
       // (`output-processor.ts`, confidence >= 0.5, not certainty) as well as

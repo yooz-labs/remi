@@ -7,6 +7,8 @@
 import { describe, expect, test } from 'bun:test';
 import type { Question, QuestionOption } from '@remi/shared';
 import { QuestionDedup, looksLikeDefaultPermissionQuestion } from '../../src/api/question-dedup.ts';
+import { parseQuestion } from '../../src/parser/question-parser.ts';
+import { WRAPPED_DIRECTORY_DIALOG } from '../parser/fixtures/claude-dialogs.ts';
 
 function opt(label: string, value: string): QuestionOption {
   return { label, value, isRecommended: false, isYes: false, isNo: false };
@@ -286,5 +288,84 @@ describe('looksLikeDefaultPermissionQuestion', () => {
       allowsFreeText: true,
     };
     expect(looksLikeDefaultPermissionQuestion(question)).toBe(false);
+  });
+});
+
+/**
+ * #1140: the parser no longer marks a Claude selection box as taking free
+ * text. QuestionDedup read that flag as an upgrade ("gains allowsFreeText"),
+ * and these tests run the real parse of the real captured dialog through it.
+ */
+describe('QuestionDedup with a parsed Claude menu (#1140)', () => {
+  const dialog = () => {
+    const parsed = parseQuestion(WRAPPED_DIRECTORY_DIALOG).question;
+    if (!parsed) throw new Error('the captured dialog did not parse as a prompt');
+    return parsed;
+  };
+
+  test('a re-parse of the same menu within the window is still suppressed', () => {
+    let t = 1000;
+    const dedup = new QuestionDedup(5000, () => t);
+    expect(dedup.shouldEmit(dialog())).toBe(true);
+    t += 100;
+    // A redraw mints a fresh id and the same text and options.
+    expect(dedup.shouldEmit(dialog())).toBe(false);
+  });
+
+  test('the parse is no longer a free-text upgrade over a hook card with the same text and options', () => {
+    let t = 1000;
+    const dedup = new QuestionDedup(5000, () => t);
+    const parsed = dialog();
+    // The hook's card for the same prompt: same text, same option count, no
+    // free text (a permission takes a pick). The parse used to arrive with
+    // allowsFreeText true and pass as an "upgrade", which put a text-capable
+    // duplicate card over a menu.
+    const hookCard: Question = {
+      id: 'hook-card',
+      text: parsed.text,
+      options: parsed.options.map((o) => ({ ...o })),
+      allowsFreeText: false,
+      isAnswered: false,
+    };
+    expect(dedup.shouldEmit(hookCard)).toBe(true);
+    t += 150;
+    expect(dedup.shouldEmit(parsed)).toBe(false);
+  });
+
+  test('the parse still upgrades a hook card that had fewer options (the count rule is unchanged)', () => {
+    let t = 1000;
+    const dedup = new QuestionDedup(5000, () => t);
+    const parsed = dialog();
+    const poorHookCard: Question = {
+      id: 'hook-card',
+      text: parsed.text,
+      options: parsed.options.slice(0, 2).map((o) => ({ ...o })),
+      allowsFreeText: false,
+      isAnswered: false,
+    };
+    expect(dedup.shouldEmit(poorHookCard)).toBe(true);
+    t += 150;
+    expect(dedup.shouldEmit(parsed)).toBe(true);
+  });
+
+  test('a genuine free-text prompt still upgrades (the free-text rule is unchanged)', () => {
+    let t = 1000;
+    const dedup = new QuestionDedup(5000, () => t);
+    const waiting = parseQuestion('Please enter your response:').question;
+    if (!waiting) throw new Error('the free-text prompt did not parse');
+    expect(waiting.allowsFreeText).toBe(true);
+    expect(dedup.shouldEmit({ ...waiting, id: 'earlier', allowsFreeText: false })).toBe(true);
+    t += 100;
+    expect(dedup.shouldEmit(waiting)).toBe(true);
+  });
+
+  test('the parse is not the default permission shape, so a parsed Yes/No menu keeps its own rank', () => {
+    const parsed = parseQuestion('Quick check\n❯ 1. Yes\n  2. No').question;
+    if (!parsed) throw new Error('the menu did not parse');
+    expect(parsed.allowsFreeText).toBe(false);
+    expect(parsed.options.map((o) => o.label)).toEqual(['Yes', 'No']);
+    // Before #1140 the free-text flag made this "not default"; with the flag
+    // false the parse's own optionsAreFallback: false must carry that.
+    expect(looksLikeDefaultPermissionQuestion(parsed)).toBe(false);
   });
 });
