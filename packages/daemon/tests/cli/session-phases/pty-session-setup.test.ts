@@ -6,6 +6,8 @@ import type { ProtocolMessage, Question, UUID } from '@remi/shared';
 import type { MessageAPI } from '../../../src/api/message-api.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import {
+  CLAUDE_INLINE_RENDERER_ENV,
+  buildClaudeChildEnv,
   computeTermSize,
   createPtySessionForSession,
   detectAuqTerminalAnswers,
@@ -730,5 +732,153 @@ describe('detectAuqTerminalAnswers', () => {
       }
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('buildClaudeChildEnv inline renderer policy (#1124)', () => {
+  test('forces the inline renderer when the incoming env does not define it', () => {
+    const env = buildClaudeChildEnv(9999, 0, {});
+    expect(env[CLAUDE_INLINE_RENDERER_ENV]).toBe('1');
+    expect(CLAUDE_INLINE_RENDERER_ENV).toBe('CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN');
+  });
+
+  test('"0", the documented opt-out, and any other non-empty value are preserved', () => {
+    // Nothing is emitted for the key, so PTYSession's `{...process.env, ...env}`
+    // spread keeps the user's value and `=0` reaches Claude untouched.
+    for (const value of ['0', '1', 'false']) {
+      const env = buildClaudeChildEnv(9999, 0, { [CLAUDE_INLINE_RENDERER_ENV]: value });
+      expect(CLAUDE_INLINE_RENDERER_ENV in env).toBe(false);
+    }
+  });
+
+  test('an empty value counts as unset and is forced to 1', () => {
+    const env = buildClaudeChildEnv(9999, 0, { [CLAUDE_INLINE_RENDERER_ENV]: '' });
+    expect(env[CLAUDE_INLINE_RENDERER_ENV]).toBe('1');
+  });
+
+  test('a whitespace-only value counts as unset and is forced to 1', () => {
+    const env = buildClaudeChildEnv(9999, 0, { [CLAUDE_INLINE_RENDERER_ENV]: '  ' });
+    expect(env[CLAUDE_INLINE_RENDERER_ENV]).toBe('1');
+  });
+
+  test('a key present with an undefined value counts as unset and is forced to 1', () => {
+    const env = buildClaudeChildEnv(9999, 0, { [CLAUDE_INLINE_RENDERER_ENV]: undefined });
+    expect(env[CLAUDE_INLINE_RENDERER_ENV]).toBe('1');
+  });
+
+  test('keeps REMI_PORT and the reserved-row REMI_STATUS_BAR flag unchanged', () => {
+    expect(buildClaudeChildEnv(1234, 0, {})).toEqual({
+      REMI_PORT: '1234',
+      [CLAUDE_INLINE_RENDERER_ENV]: '1',
+    });
+    expect(buildClaudeChildEnv(1234, 1, {})).toEqual({
+      REMI_PORT: '1234',
+      REMI_STATUS_BAR: '1',
+      [CLAUDE_INLINE_RENDERER_ENV]: '1',
+    });
+  });
+
+  test('defaults the incoming env to process.env', () => {
+    const saved = process.env[CLAUDE_INLINE_RENDERER_ENV];
+    try {
+      delete process.env[CLAUDE_INLINE_RENDERER_ENV];
+      expect(buildClaudeChildEnv(9999)[CLAUDE_INLINE_RENDERER_ENV]).toBe('1');
+      process.env[CLAUDE_INLINE_RENDERER_ENV] = '0';
+      expect(CLAUDE_INLINE_RENDERER_ENV in buildClaudeChildEnv(9999)).toBe(false);
+    } finally {
+      if (saved === undefined) delete process.env[CLAUDE_INLINE_RENDERER_ENV];
+      else process.env[CLAUDE_INLINE_RENDERER_ENV] = saved;
+    }
+  });
+});
+
+// End-to-end through the real spawn path: a genuine PTY child (a fake `claude`
+// script on PATH, same pattern as the onExit test above) reports the value of
+// CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN it actually received, merged exactly
+// the way PTYSession.start() merges process.env with the factory's env.
+describe('createPtySessionForSession spawned child env (#1124)', () => {
+  let tmpDir: string;
+  let sessionRegistry: SessionRegistry;
+  let savedPath: string | undefined;
+  let savedVar: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-child-env-'));
+    sessionRegistry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    savedPath = process.env['PATH'];
+    savedVar = process.env[CLAUDE_INLINE_RENDERER_ENV];
+    configureLogger({ writeLog: () => {} });
+  });
+
+  afterEach(async () => {
+    process.env['PATH'] = savedPath ?? '';
+    if (savedVar === undefined) delete process.env[CLAUDE_INLINE_RENDERER_ENV];
+    else process.env[CLAUDE_INLINE_RENDERER_ENV] = savedVar;
+    __resetLoggerForTests();
+    await sessionRegistry.shutdown();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  /** Spawn the fake claude and return what it saw ('UNSET' when absent). */
+  async function spawnedValue(): Promise<string> {
+    const fakeBin = path.join(tmpDir, 'bin');
+    fs.mkdirSync(fakeBin, { recursive: true });
+    const outFile = path.join(tmpDir, 'seen.txt');
+    const fakeClaude = path.join(fakeBin, 'claude');
+    fs.writeFileSync(
+      fakeClaude,
+      `#!/bin/sh\nprintf '%s' "\${${CLAUDE_INLINE_RENDERER_ENV}-UNSET}" > "${outFile}.tmp"\nmv "${outFile}.tmp" "${outFile}"\n`,
+    );
+    fs.chmodSync(fakeClaude, 0o755);
+
+    const pty = createPtySessionForSession(
+      {
+        sessionRegistry,
+        sessionStore: new SessionStore(path.join(tmpDir, 'sessions.json')),
+        liveSessionsRegistry: new SessionRegistryFile(path.join(tmpDir, 'live-sessions')),
+        outputProcessor: new OutputProcessor(
+          { sessionId: SID, streamStatusOnly: true },
+          { onMessage: () => {}, onQuestion: () => {}, onStatusChange: () => {} },
+        ),
+        wsPort: 9999,
+        sendMessage: () => {},
+        cleanup: async () => {},
+        exitProcess: () => {},
+      },
+      { sessionId: SID, workingDirectory: tmpDir, extraArgs: [], passThrough: false },
+    );
+    sessionRegistry.registerSession(SID, tmpDir, pty, fakeMessageAPI);
+
+    process.env['PATH'] = `${fakeBin}:${savedPath ?? ''}`;
+    try {
+      await pty.start();
+      const deadline = Date.now() + 4000;
+      while (Date.now() < deadline && !fs.existsSync(outFile)) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(fs.existsSync(outFile)).toBe(true);
+      return fs.readFileSync(outFile, 'utf8');
+    } finally {
+      try {
+        await pty.close();
+      } catch {
+        /* already exited */
+      }
+    }
+  }
+
+  test('the child receives CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 when the user set nothing', async () => {
+    delete process.env[CLAUDE_INLINE_RENDERER_ENV];
+    expect(await spawnedValue()).toBe('1');
+  });
+
+  test('the child receives the user value when one was set explicitly', async () => {
+    process.env[CLAUDE_INLINE_RENDERER_ENV] = '0';
+    expect(await spawnedValue()).toBe('0');
+  });
+
+  test('the child receives 1 when the user set the variable to empty', async () => {
+    process.env[CLAUDE_INLINE_RENDERER_ENV] = '';
+    expect(await spawnedValue()).toBe('1');
   });
 });

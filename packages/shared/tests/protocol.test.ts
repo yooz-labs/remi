@@ -1048,6 +1048,29 @@ describe('Message factory functions', () => {
       expect(deserialized).not.toBeNull();
       expect(deserialized?.type).toBe('resume_session_response');
     });
+
+    test('carries an optional machine-readable errorCode on failure (#1124)', () => {
+      const requestId = generateId();
+      const msg = createResumeSessionResponse(
+        false,
+        requestId,
+        undefined,
+        'Hub cannot resume',
+        'UNSUPPORTED',
+      );
+      expect(msg.success).toBe(false);
+      expect(msg.error).toBe('Hub cannot resume');
+      expect(msg.errorCode).toBe('UNSUPPORTED');
+      const roundTrip = deserialize(serialize(msg));
+      expect((roundTrip as { errorCode?: string } | null)?.errorCode).toBe('UNSUPPORTED');
+    });
+
+    test('omits errorCode when none is given, so existing failures are unchanged (#1124)', () => {
+      const msg = createResumeSessionResponse(false, generateId(), undefined, 'Session not found');
+      expect('errorCode' in msg).toBe(false);
+      const ok = createResumeSessionResponse(true, generateId(), generateId());
+      expect('errorCode' in ok).toBe(false);
+    });
   });
 
   describe('createDetachSession()', () => {
