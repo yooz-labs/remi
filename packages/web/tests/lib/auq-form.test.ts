@@ -5,7 +5,14 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { AUQ_FREE_TEXT_MAX, auqFormComplete, auqFormSelections } from '../../src/lib/auq-form';
+import {
+  AUQ_FREE_TEXT_MAX,
+  EMPTY_AUQ_FORM,
+  auqFormComplete,
+  auqFormSelections,
+  pickAuqOption,
+  typeAuqText,
+} from '../../src/lib/auq-form';
 import type { UIQuestionStep } from '../../src/types';
 
 const opt = (label: string, i: number) => ({
@@ -75,5 +82,51 @@ describe('auqFormSelections', () => {
       { questionIndex: 0, optionIndices: [1] },
       { questionIndex: 1, optionIndices: [1] },
     ]);
+  });
+});
+
+describe('pickAuqOption and typeAuqText (#1127 review T2)', () => {
+  test('a single-select pick replaces the previous pick and clears typed text', () => {
+    let form = typeAuqText(EMPTY_AUQ_FORM, 0, 'Teal');
+    form = pickAuqOption(form, 0, 1, false);
+    expect([...(form.selected.get(0) ?? [])]).toEqual([1]);
+    expect(form.typed.has(0)).toBe(false);
+    form = pickAuqOption(form, 0, 0, false);
+    expect([...(form.selected.get(0) ?? [])]).toEqual([0]);
+  });
+
+  test('typed text clears a single-select pick; blank text does not', () => {
+    let form = pickAuqOption(EMPTY_AUQ_FORM, 0, 1, false);
+    form = typeAuqText(form, 0, '   ');
+    expect([...(form.selected.get(0) ?? [])]).toEqual([1]);
+    form = typeAuqText(form, 0, 'Teal');
+    expect(form.selected.has(0)).toBe(false);
+    expect(form.typed.get(0)).toBe('Teal');
+  });
+
+  test('a multi-select toggles its picks and leaves other questions alone', () => {
+    let form = typeAuqText(EMPTY_AUQ_FORM, 0, 'Teal');
+    form = pickAuqOption(form, 1, 0, true);
+    form = pickAuqOption(form, 1, 2, true);
+    form = pickAuqOption(form, 1, 0, true);
+    expect([...(form.selected.get(1) ?? [])]).toEqual([2]);
+    expect(form.typed.get(0)).toBe('Teal');
+  });
+
+  test('the form never holds a pick and text together for a single-select question', () => {
+    let form = EMPTY_AUQ_FORM;
+    const moves: Array<(f: typeof form) => typeof form> = [
+      (f) => pickAuqOption(f, 0, 0, false),
+      (f) => typeAuqText(f, 0, 'x'),
+      (f) => pickAuqOption(f, 0, 2, false),
+      (f) => typeAuqText(f, 0, ''),
+      (f) => typeAuqText(f, 0, 'y'),
+    ];
+    for (const move of moves) {
+      form = move(form);
+      const picks = form.selected.get(0)?.size ?? 0;
+      const text = (form.typed.get(0) ?? '').trim();
+      expect(picks > 0 && text.length > 0).toBe(false);
+    }
   });
 });

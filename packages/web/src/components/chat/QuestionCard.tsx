@@ -14,9 +14,13 @@
 
 import {
   AUQ_FREE_TEXT_MAX,
+  type AuqFormState,
   type AuqSelection,
+  EMPTY_AUQ_FORM,
   auqFormComplete,
   auqFormSelections,
+  pickAuqOption,
+  typeAuqText,
 } from '@/lib/auq-form';
 import { formatRelativeTime } from '@/lib/format-time';
 import type {
@@ -294,50 +298,21 @@ function MultiQuestionForm({
   readonly onAuqAnswer?: (selections: AuqSelection[]) => void;
   readonly onCancel?: () => void;
 }) {
-  const [selected, setSelected] = useState<Map<number, Set<number>>>(new Map());
-  const [typed, setTyped] = useState<Map<number, string>>(new Map());
+  const [form, setForm] = useState<AuqFormState>(EMPTY_AUQ_FORM);
+  const { selected, typed } = form;
   const submitting = question.submitting ?? false;
   // #1127 review S7: no phone answer can be applied to this card; it is
   // answered in the terminal, or cancelled. Shown like a failed one.
   const terminalOnly = question.terminalOnly ?? false;
   const failed = (question.autoAnswerFailed ?? false) || terminalOnly;
 
+  // A pick replaces typed text and typed text replaces a pick on a
+  // single-select question (`pickAuqOption`, `typeAuqText`).
   const toggle = useCallback((qi: number, oi: number, multi: boolean) => {
-    setSelected((prev) => {
-      const next = new Map(prev);
-      const set = new Set(next.get(qi) ?? []);
-      if (multi) {
-        if (set.has(oi)) set.delete(oi);
-        else set.add(oi);
-      } else {
-        set.clear();
-        set.add(oi);
-      }
-      next.set(qi, set);
-      return next;
-    });
-    // A pick replaces typed text: a single-select question takes one answer.
-    if (!multi) {
-      setTyped((prev) => {
-        if (!prev.has(qi)) return prev;
-        const next = new Map(prev);
-        next.delete(qi);
-        return next;
-      });
-    }
+    setForm((prev) => pickAuqOption(prev, qi, oi, multi));
   }, []);
-
-  /** Typed text replaces a pick on a single-select question. */
   const type = useCallback((qi: number, text: string) => {
-    setTyped((prev) => new Map(prev).set(qi, text));
-    if (text.trim().length > 0) {
-      setSelected((prev) => {
-        if (!prev.has(qi)) return prev;
-        const next = new Map(prev);
-        next.delete(qi);
-        return next;
-      });
-    }
+    setForm((prev) => typeAuqText(prev, qi, text));
   }, []);
 
   const allAnswered = useMemo(

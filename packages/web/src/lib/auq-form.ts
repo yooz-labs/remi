@@ -52,9 +52,12 @@ export function auqFormComplete(
 }
 
 /**
- * The selections to send, one per question in order: typed text (with no
- * option) where a single-select question has text, its picked options
- * (ascending) otherwise.
+ * The selections to send, one per question in order: exactly what the form
+ * holds, its picked options (ascending) and, for a single-select question,
+ * its typed text when not blank. Nothing is dropped to make an answer fit:
+ * the form never holds a pick and text together (`pickAuqOption`,
+ * `typeAuqText`), and if it did the daemon would refuse both, as
+ * `auqFormComplete` does (pinned two-sided in `auq-form-conformance`).
  */
 export function auqFormSelections(
   steps: readonly UIQuestionStep[],
@@ -63,10 +66,59 @@ export function auqFormSelections(
 ): AuqSelection[] {
   return steps.map((step, qi) => {
     const text = typedFor(step, qi, typed);
-    if (text.length > 0) return { questionIndex: qi, optionIndices: [], text };
-    return {
-      questionIndex: qi,
-      optionIndices: [...(selected.get(qi) ?? [])].sort((a, b) => a - b),
-    };
+    const optionIndices = [...(selected.get(qi) ?? [])].sort((a, b) => a - b);
+    return text.length > 0
+      ? { questionIndex: qi, optionIndices, text }
+      : { questionIndex: qi, optionIndices };
   });
+}
+
+/** The form's state: picked options and typed text, per question index. */
+export interface AuqFormState {
+  readonly selected: ReadonlyMap<number, ReadonlySet<number>>;
+  readonly typed: ReadonlyMap<number, string>;
+}
+
+/** An empty form. */
+export const EMPTY_AUQ_FORM: AuqFormState = { selected: new Map(), typed: new Map() };
+
+/**
+ * Tap option `oi` of question `qi`: a multi-select toggles it; a
+ * single-select picks it alone and clears any typed text, since a
+ * single-select question takes one answer.
+ */
+export function pickAuqOption(
+  state: AuqFormState,
+  qi: number,
+  oi: number,
+  multi: boolean,
+): AuqFormState {
+  const selected = new Map(state.selected);
+  const set = new Set(selected.get(qi) ?? []);
+  if (multi) {
+    if (set.has(oi)) set.delete(oi);
+    else set.add(oi);
+  } else {
+    set.clear();
+    set.add(oi);
+  }
+  selected.set(qi, set);
+  if (multi || !state.typed.has(qi)) return { selected, typed: state.typed };
+  const typed = new Map(state.typed);
+  typed.delete(qi);
+  return { selected, typed };
+}
+
+/**
+ * Type `text` for question `qi` (a single-select): non-blank text clears the
+ * question's pick, since text answers it instead.
+ */
+export function typeAuqText(state: AuqFormState, qi: number, text: string): AuqFormState {
+  const typed = new Map(state.typed).set(qi, text);
+  if (text.trim().length === 0 || !state.selected.has(qi)) {
+    return { selected: state.selected, typed };
+  }
+  const selected = new Map(state.selected);
+  selected.delete(qi);
+  return { selected, typed };
 }
