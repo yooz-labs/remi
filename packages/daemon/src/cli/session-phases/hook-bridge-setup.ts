@@ -441,9 +441,11 @@ export function setupHookBridge(
   // ---- Bridge + hook handler registration ---------------------------------
 
   const hookBridge = new HookEventBridge(sessionId, {
-    onStatusChange: (status: AgentStatus, context?: string) => {
+    onStatusChange: (status: AgentStatus, context?: string, agentId?: string) => {
       messageApi.handleStatusChange(status, context);
-      tracker.onStatusChange(status);
+      // #1140: the event's agent_id rides along, so a subagent's or
+      // teammate's tool call does not clear the menu the main dialog shows.
+      tracker.onStatusChange(status, { agentId });
     },
     onQuestion: (question) => {
       // #625 single gate: a PERMISSION question is coordinated by the permission

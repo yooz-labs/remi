@@ -1453,3 +1453,73 @@ describe('observed prompt options (#1134)', () => {
     expect(t.isPromptObservedOnPTY()).toBe(false);
   });
 });
+
+/**
+ * #1140: a status change that carries an `agentId` is a background subagent's
+ * or teammate's activity (the hook event's own `agent_id`), and says nothing
+ * about the MAIN dialog on screen. The status pipeline maps every
+ * PreToolUse/PostToolUse/SubagentStart to a status, so such a change used to
+ * wipe the observation the chat guard reads while the dialog was still up. A
+ * status with no agent (a main-agent hook event, or a PTY-parsed status) clears
+ * exactly as before.
+ */
+describe('observation across agent-originated status changes (#1140)', () => {
+  const dialog = () => {
+    const parsed = parseQuestion('Do you want to proceed?\n❯ 1. Yes\n  2. No');
+    if (!parsed.question) throw new Error('the dialog did not parse as a prompt');
+    return parsed.question;
+  };
+
+  it.each(['executing', 'thinking', 'idle'] as const)(
+    'a subagent %s status leaves the whole observation alone',
+    (status) => {
+      const t = new QuestionPresenceTracker(() => undefined);
+      const screen = dialog();
+      t.onPTYPromptVisible(screen);
+
+      t.onStatusChange(status, { agentId: 'sub-1' });
+
+      expect(t.observedPromptOptions()?.map((o) => o.value)).toEqual(['1', '2']);
+      expect(t.isPromptObservedOnPTY()).toBe(true);
+      // The identity and text half of the observation survive too.
+      expect(t.isPromptCurrent(screen.id, screen.text)).toBe(true);
+    },
+  );
+
+  it.each([
+    ['a main-agent hook event (no agent_id)', { agentId: undefined }],
+    ['a PTY-parsed status (no origin at all)', undefined],
+    ['an empty origin', {}],
+  ] as const)('%s clears it as before', (_name, origin) => {
+    const t = new QuestionPresenceTracker(() => undefined);
+    const screen = dialog();
+    t.onPTYPromptVisible(screen);
+
+    t.onStatusChange('executing', origin);
+
+    expect(t.observedPromptOptions()).toBeNull();
+    expect(t.isPromptObservedOnPTY()).toBe(false);
+    expect(t.isPromptCurrent(screen.id, screen.text)).toBe(false);
+  });
+
+  it("a subagent's status still clears pending hook records (the pending-record rules are unchanged)", () => {
+    const t = new QuestionPresenceTracker(() => undefined);
+    t.recordPendingHook(makePermissionRequestHook('Allow Bash: ls'));
+    expect(t.hasPendingForTest()).toBe(true);
+
+    t.onStatusChange('executing', { agentId: 'sub-1' });
+
+    expect(t.hasPendingForTest()).toBe(false);
+  });
+
+  it('a main-agent status after the subagent one then clears the observation', () => {
+    const t = new QuestionPresenceTracker(() => undefined);
+    t.onPTYPromptVisible(dialog());
+    t.onStatusChange('executing', { agentId: 'sub-1' });
+    expect(t.observedPromptOptions()).not.toBeNull();
+
+    t.onStatusChange('executing');
+
+    expect(t.observedPromptOptions()).toBeNull();
+  });
+});

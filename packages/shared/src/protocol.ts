@@ -590,6 +590,57 @@ export interface StaleSessionErrorDetails {
   readonly currentTranscriptPath: string | null;
 }
 
+/**
+ * Wire `code` of the `error` the daemon sends when it refuses a structured
+ * `user_input` (web chat, Telegram text) because Claude is showing a numbered
+ * selection menu (#1140). Typed into that menu, the text is ignored and the
+ * Enter that follows confirms the highlighted option, usually "1. Yes", so
+ * the daemon types nothing and sends this instead. Raw terminal keystrokes
+ * (`raw: true`) are never refused: they are how a person answers the menu.
+ *
+ * Both ends read this constant: the daemon builds the error with
+ * `createPromptWaitingError`, and the web client matches on it to mark the
+ * refused bubble failed. The Telegram adapter needs nothing special; it
+ * renders every `error` as "Error: <message>".
+ */
+export const PROMPT_WAITING_ERROR_CODE = 'PROMPT_WAITING';
+
+/** The `message` of a `PROMPT_WAITING` error: what the user is told. */
+export const PROMPT_WAITING_MESSAGE =
+  'Claude is waiting on a prompt. Answer it from its card or in the terminal (Esc dismisses it).';
+
+/**
+ * Details attached to a `PROMPT_WAITING` error. `messageId` is the refused
+ * input's own message id (when the client sent one), so the client can flip
+ * that one bubble to failed; the daemon acks `user_input` before it decides
+ * whether to type it, exactly as for `SESSION_NOT_FOUND` (#681).
+ */
+export interface PromptWaitingErrorDetails {
+  readonly sessionId: UUID;
+  readonly messageId?: UUID | undefined;
+}
+
+/**
+ * Wire `code` of the `error` the daemon sends when it could not write a raw
+ * `user_input` to the terminal (the PTY is not running, or the write failed).
+ * Raw input is a person's keystrokes (an attach client, the web client's Escape
+ * button, Telegram's `/interrupt`), which the daemon used to drop with a log
+ * line only, so the sender could not tell that its Escape never arrived and a
+ * client that reports success (Telegram's "Interrupt sent") reported it falsely.
+ */
+export const INPUT_NOT_DELIVERED_ERROR_CODE = 'INPUT_NOT_DELIVERED';
+
+/** The `message` of an `INPUT_NOT_DELIVERED` error: what the user is told. */
+export const INPUT_NOT_DELIVERED_MESSAGE =
+  'Input was not delivered: the terminal is not accepting input.';
+
+/** Details attached to an `INPUT_NOT_DELIVERED` error; `messageId` is the
+ *  failed input's own message id, when the client sent one. */
+export interface InputNotDeliveredErrorDetails {
+  readonly sessionId: UUID;
+  readonly messageId?: UUID | undefined;
+}
+
 /** Batch of messages to replay on session resume */
 export interface ReplayBatchMessage {
   readonly type: 'replay_batch';
@@ -1422,6 +1473,32 @@ export function createError(
     message,
     details,
   };
+}
+
+/**
+ * Create the `PROMPT_WAITING` error (#1140): the refusal of a structured
+ * `user_input` while Claude shows a numbered menu. `messageId` is the refused
+ * input's id, when the client sent one.
+ */
+export function createPromptWaitingError(sessionId: UUID, messageId?: UUID): ErrorMessage {
+  const details: PromptWaitingErrorDetails = {
+    sessionId,
+    ...(messageId !== undefined && { messageId }),
+  };
+  return createError(PROMPT_WAITING_ERROR_CODE, PROMPT_WAITING_MESSAGE, { ...details });
+}
+
+/**
+ * Create the `INPUT_NOT_DELIVERED` error: a raw `user_input` that could not be
+ * written to the terminal. `messageId` is the failed input's id, when the
+ * client sent one.
+ */
+export function createInputNotDeliveredError(sessionId: UUID, messageId?: UUID): ErrorMessage {
+  const details: InputNotDeliveredErrorDetails = {
+    sessionId,
+    ...(messageId !== undefined && { messageId }),
+  };
+  return createError(INPUT_NOT_DELIVERED_ERROR_CODE, INPUT_NOT_DELIVERED_MESSAGE, { ...details });
 }
 
 /**

@@ -1187,4 +1187,95 @@ describe('HookEventBridge', () => {
       expect(bridge.isInSubagentContext()).toBe(false);
     });
   });
+  /**
+   * #1140: every status the bridge emits names the hook event's `agent_id`
+   * (set for a subagent or teammate, absent for the main agent), so the tracker
+   * can tell an agent's activity from the main agent moving on.
+   */
+  describe('status changes carry the event agent_id (#1140)', () => {
+    function agentBridge() {
+      const calls: Array<{ status: AgentStatus; context?: string; agentId?: string }> = [];
+      const bridge = new HookEventBridge('session-1' as import('@remi/shared').UUID, {
+        onStatusChange: (status, context, agentId) => {
+          calls.push({
+            status,
+            ...(context !== undefined && { context }),
+            ...(agentId !== undefined && { agentId }),
+          });
+        },
+        onQuestion: () => undefined,
+      });
+      return { bridge, calls };
+    }
+    const sub = { agent_id: 'sub-1', agent_type: 'general-purpose' };
+
+    it('a subagent event reports its agent_id; a main-agent event reports none', () => {
+      const { bridge, calls } = agentBridge();
+      const tool = { ...makeCommon(), tool_name: 'Bash', tool_input: {}, tool_response: 'ok' };
+
+      bridge.handlePreToolUse({
+        ...tool,
+        hook_event_name: 'PreToolUse',
+        ...sub,
+      } as PreToolUseHookInput);
+      bridge.handlePreToolUse({ ...tool, hook_event_name: 'PreToolUse' } as PreToolUseHookInput);
+      bridge.handlePostToolUse({
+        ...tool,
+        hook_event_name: 'PostToolUse',
+        ...sub,
+      } as PostToolUseHookInput);
+      bridge.handlePostToolUse({ ...tool, hook_event_name: 'PostToolUse' } as PostToolUseHookInput);
+
+      expect(calls).toEqual([
+        { status: 'executing', context: 'Bash', agentId: 'sub-1' },
+        { status: 'executing', context: 'Bash' },
+        { status: 'thinking', agentId: 'sub-1' },
+        { status: 'thinking' },
+      ]);
+    });
+
+    it('subagent lifecycle, failure, notification and stop events report their agent_id', () => {
+      const { bridge, calls } = agentBridge();
+
+      bridge.handleSubagentStart({
+        ...makeCommon(),
+        hook_event_name: 'SubagentStart',
+        ...sub,
+      } as SubagentStartHookInput);
+      bridge.handleSubagentStop({
+        ...makeCommon(),
+        hook_event_name: 'SubagentStop',
+        ...sub,
+      } as SubagentStopHookInput);
+      bridge.handlePostToolUseFailure({
+        ...makeCommon(),
+        hook_event_name: 'PostToolUseFailure',
+        tool_name: 'Bash',
+        tool_input: {},
+        error: 'boom',
+        ...sub,
+      } as PostToolUseFailureHookInput);
+      bridge.handleNotification({
+        ...makeCommon(),
+        hook_event_name: 'Notification',
+        notification_type: 'idle_prompt',
+        message: '',
+        ...sub,
+      } as NotificationHookInput);
+      bridge.handleStop({
+        ...makeCommon(),
+        hook_event_name: 'Stop',
+        stop_hook_active: false,
+        ...sub,
+      } as StopHookInput);
+
+      expect(calls.map((c) => [c.status, c.agentId])).toEqual([
+        ['executing', 'sub-1'],
+        ['thinking', 'sub-1'],
+        ['executing', 'sub-1'],
+        ['idle', 'sub-1'],
+        ['idle', 'sub-1'],
+      ]);
+    });
+  });
 });

@@ -287,6 +287,54 @@ describe('AskUserQuestion captures parse with their own numbering (#1134)', () =
   });
 });
 
+/**
+ * #1140: a Claude selection box takes a pick, not text. Typed letters are
+ * ignored at the menu and the Enter that follows confirms the highlighted
+ * option, usually "1. Yes", so the parse must not offer free text for it. The
+ * flag is read by `handleAnswer` (free-text-into-menu), by the Telegram card
+ * ("reply with custom text") and by `QuestionDedup`'s upgrade rule.
+ */
+describe('parseQuestion() - a selection box takes a pick, not text (#1140)', () => {
+  test('the real captured permission dialog', () => {
+    const question = parseQuestion(WRAPPED_DIRECTORY_DIALOG).question;
+    expect(question?.options.map((o) => o.value)).toEqual(['1', '2', '3']);
+    expect(question?.allowsFreeText).toBe(false);
+  });
+
+  test('the real captured trust dialog (collapsed spacing)', () => {
+    const question = parseQuestion(fixture('prompt-selection-box.clean.txt')).question;
+    expect(question?.options.length).toBeGreaterThanOrEqual(2);
+    expect(question?.allowsFreeText).toBe(false);
+  });
+
+  test('a synthetic permission box and an N) box', () => {
+    expect(
+      parseQuestion("Do you want to proceed?\n❯ 1. Yes\n  2. Yes, and don't ask again\n  3. No")
+        .question?.allowsFreeText,
+    ).toBe(false);
+    expect(parseQuestion('Pick:\n❯ 1) Alpha\n  2) Beta').question?.allowsFreeText).toBe(false);
+  });
+
+  test('it is read off the screen, so never the synthetic Yes/No fallback', () => {
+    // `looksLikeDefaultPermissionQuestion` used to learn this from the free-text
+    // flag; the parse now says it outright (see PushDedup's test for why).
+    const question = parseQuestion(WRAPPED_DIRECTORY_DIALOG).question;
+    expect(question?.optionsAreFallback).toBe(false);
+  });
+
+  test('a genuine free-text prompt still takes text', () => {
+    const question = parseQuestion('Please enter your response:').question;
+    expect(question?.options).toHaveLength(0);
+    expect(question?.allowsFreeText).toBe(true);
+  });
+
+  test('a subprocess (y/n) prompt is unchanged: options, no free text', () => {
+    const question = parseQuestion('Continue? (y/n)').question;
+    expect(question?.options.map((o) => o.value)).toEqual(['y', 'n']);
+    expect(question?.allowsFreeText).toBe(false);
+  });
+});
+
 describe('parseQuestion() - literal yes/no (subprocess prompts)', () => {
   test('detects (y/n) pattern', () => {
     const result = parseQuestion('Do you want to continue? (y/n)');
