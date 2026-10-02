@@ -15,7 +15,7 @@ Abbreviations: RC = Claude Code Remote Control; E2E = end-to-end encrypted; APNS
 
 | Product | Harnesses | Runs where | Data through vendor? E2E? | Mobile | Start session from phone (machine + folder) | Multi-machine | Background sessions | Approval push + answer | Local models | Price / license |
 |---|---|---|---|---|---|---|---|---|---|---|
-| **remi (today)** | Claude Code (Codex, OpenCode planned) | Your machines | Direct: no vendor. Relay: Cloudflare Worker, E2E not working by default (#881). Push title and body (tool + command) cross the Worker and APNS in plaintext | iOS (Capacitor), web; Android build in repo, store status unchecked | Yes | Yes, weakly (no machine object, socket-per-session) | Hub + LaunchAgent, survives reboot | Yes; lock-screen Yes/No/Always/Multi actions | remi is not in the model path; untested with API-key, Bedrock or gateway auth | Free; PolyForm Shield (source-available, not OSI) |
+| **remi (today)** | Claude Code (Codex, OpenCode planned) | Your machines | Direct: no vendor. Relay: Cloudflare Worker, E2E not working by default (#881). Push title and body (tool + command) cross the Worker and APNS in plaintext | iOS (Capacitor), web; Android build in repo, store status unchecked | Yes | Yes, weakly (no machine object, socket-per-session) | Hub + LaunchAgent, survives reboot | Yes; lock-screen Yes/No/Always/Multi actions | remi is not in the model path; untested with API-key, Bedrock or gateway auth | Free; Apache-2.0 core (daemon, CLI, protocol); PolyForm Shield apps and relay (from the release containing #1128) |
 | **Claude RC + Claude app** | Claude Code | Your machine | Everything via the Anthropic API over TLS; transcripts stored at Anthropic; not E2E | iOS, Android, web | Partial: only folders where `claude remote-control` runs or folders registered in Desktop; general request open (#96867, 2026-09-24) | Yes | `claude` process must keep running | Push when action is required; answer in app; lock-screen actions not documented | No: refuses API keys, Bedrock/Vertex/Foundry, custom `ANTHROPIC_BASE_URL` | Pro and Max; Team/Enterprise if admin enables; ZDR and HIPAA orgs excluded |
 | Claude agent view (`--bg`, `claude agents`) | Claude Code | Your machine | Model API only | None | n/a | No | Survives terminal close, not shutdown | Terminal notifications only | Works through gateways | Included; research preview |
 | Claude cloud sessions | Claude Code | Anthropic cloud | Yes | iOS, Android, web | Repo + branch, not a machine | n/a | Yes | In app | No | Subscription |
@@ -65,7 +65,7 @@ No mobile or remote features: Claude Squad, Sculptor, Gemini CLI (mobile relay r
 - Harness breadth: Claude only, while Paseo, Happy, T3, HAPI and Moshi ship Codex and OpenCode.
 - Off-network reach: no working relay; peers ship E2E relays and first-party tools work off-network out of the box.
 - Push privacy: command text crosses the Worker and APNS in plaintext (parity with Paseo and Moshi at best).
-- License: PolyForm Shield is not open source; most peers are MIT, Apache or AGPL.
+- License: the apps and relay stay PolyForm Shield (source-available, not open source) while most peers are MIT, Apache or AGPL end to end; the core (daemon, CLI, protocol) is Apache-2.0 from the release containing #1128.
 - Android store presence, voice, traction (19-24k stars for peers), first-party polish (diffs, attachments, model switching).
 - Reliability: answers from the notification and the Watch have dropped in practice (#665), and the default install did not push binary prompts until `fix/no-service-binary-push`.
 
@@ -82,7 +82,7 @@ Candidate statements, each grounded in a verified difference:
 5. "No Claude or ChatGPT subscription tier required."
 6. "Claude Code and Codex, every Mac and Linux box you own, answered from the lock screen." (only once Codex ships)
 
-Claims to avoid until true: "end-to-end encrypted" (#881), "peer-to-peer", "private notifications", "no cloud" while the Worker carries relay or push traffic, "open source" (PolyForm Shield is not), "harness-agnostic" until a second harness ships, and anything implying remi judges permissions.
+Claims to avoid until true: "end-to-end encrypted" (#881), "peer-to-peer", "private notifications", "no cloud" while the Worker carries relay or push traffic, "open source" about the apps or the relay (PolyForm Shield is not open source; say it only of the daemon, CLI and protocol, and only from the release containing #1128), "harness-agnostic" until a second harness ships, and anything implying remi judges permissions.
 
 ## Unconfirmed (do not use in marketing)
 

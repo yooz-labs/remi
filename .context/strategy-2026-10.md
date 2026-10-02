@@ -1,7 +1,7 @@
 # Strategy: retire the local judge, become a reliable multi-harness control plane
 
 Date: 2026-10-01 (revision 2, same day).
-Status: owner decisions D1, D2, D3a, D5 made; D8 (license) decided in direction, exact split to confirm; phase-0 hotfix is PR #1122.
+Status: owner decisions D1, D2, D3a, D5 made; D8 (license) decided 2026-10-01 and implemented in #1128 (Apache-2.0 core, PolyForm Shield apps and relay); phase-0 hotfix is PR #1122.
 Companion documents: [competitive-review-2026-10.md](competitive-review-2026-10.md) (feature matrix and positioning).
 Sources: `develop` at `3a5e8b27`; installed Claude Code 2.1.287 and Codex 0.159.1; Codex source at tag `rust-v0.159.1`; OpenCode source at v1.18.34; vendor docs; an independent second opinion (Fable advisor) that spot-checked the load-bearing claims.
 Claims not verified live are marked "(unverified)".
@@ -25,7 +25,7 @@ Claims not verified live are marked "(unverified)".
 | D6 | Keep and improve multi-choice cards (AskUserQuestion) in notifications; fix answers dropped from notifications and the Watch | Decided |
 | D7 | Later: native SwiftUI Mac and iOS apps built in Xcode, UX on par with OpenAI's apps and Conductor | Decided, sequenced after protocol freeze |
 | D3a | Claude prompts: remi-drawn prompt (hold the hook, draw remi's prompt on the status row, resolve from a local key or the phone) | Decided 2026-10-01 |
-| D8 | Open core: open-source the daemon, CLI and shared protocol (like OpenCode); keep the native Mac app, mobile app and hosted relay under PolyForm Shield as the first-class products | Direction decided; confirm the split and Apache-2.0 vs MIT |
+| D8 | Open core: open-source the daemon, CLI and shared protocol (like OpenCode); keep the native Mac app, mobile app and hosted relay under PolyForm Shield as the first-class products | Decided 2026-10-01: Apache-2.0 core (`packages/daemon`, `packages/shared`), PolyForm Shield for `packages/web`, `packages/signaling` and `packages/macos`; implemented in #1128 |
 
 ### D3a (decided: remi-drawn prompt)
 
@@ -166,7 +166,7 @@ Measure weekly on the owner's own use: hook-to-card p50/p95; cards shown vs prom
 Positioning statements and claims to avoid are in the competitive review.
 
 License (D8): open core.
-The daemon, CLI and shared protocol become OSI open source (Apache-2.0 recommended: patent grant, same as Paseo; OpenCode uses MIT); the native Mac app, mobile app and hosted relay stay PolyForm Shield.
+The daemon, CLI and shared protocol become OSI open source under Apache-2.0 (decided: patent grant, same as Paseo; OpenCode uses MIT); the native Mac app, mobile app and hosted relay stay PolyForm Shield.
 Consequences to handle:
 
 - The open protocol means anyone can self-host a relay or write a client; that is a selling point, not a leak, as long as the first-class apps and the hosted relay are better.
