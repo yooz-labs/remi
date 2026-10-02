@@ -303,14 +303,14 @@ export function optionsFromSuggestions(suggestions: unknown): PermissionOptionsR
 }
 
 export class HookEventBridge {
-  private readonly sessionId: UUID;
   private readonly events: HookBridgeEvents;
   /** Tracks active Task tool_use_ids — secondary safety net for subagent
    *  filtering (primary is agent_id check in cli.ts hook listeners). */
   private readonly subagentContext = new SubagentContextTracker();
 
-  constructor(sessionId: UUID, events: HookBridgeEvents) {
-    this.sessionId = sessionId;
+  /** `_sessionId` is unused since #1139 removed the precedent scope; the
+   *  parameter is kept so the callers' signature does not change. */
+  constructor(_sessionId: UUID, events: HookBridgeEvents) {
     this.events = events;
   }
 
