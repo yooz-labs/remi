@@ -25,6 +25,7 @@
 import { describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { stripComments } from '../helpers/strip-comments.ts';
 
 const SRC = path.join(import.meta.dir, '..', '..', 'src');
 
@@ -33,11 +34,6 @@ const ALLOWED = [
   'transcript/transcript-binder.ts',
   'transcript/transcript-discovery.ts',
 ];
-
-/** Strip comments, so a commented-out call cannot trip the check. */
-function stripComments(src: string): string {
-  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:\\])\/\/[^\n]*/g, '$1');
-}
 
 /** Every `.ts` file under `dir`, as a path relative to `SRC` mapped to its source. */
 function readSources(dir: string): Record<string, string> {

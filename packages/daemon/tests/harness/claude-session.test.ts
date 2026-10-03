@@ -43,13 +43,9 @@ import { SessionRegistry } from '../../src/session/session-registry.ts';
 import { SessionStore } from '../../src/session/session-store.ts';
 import { TranscriptDiscovery } from '../../src/transcript/index.ts';
 import type { TranscriptWatcher } from '../../src/transcript/index.ts';
+import { stripComments } from '../helpers/strip-comments.ts';
 
 const SRC = path.resolve(import.meta.dir, '..', '..', 'src');
-
-/** Strip comments, so a commented-out line cannot satisfy a source pin. */
-function stripComments(src: string): string {
-  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:\\])\/\/[^\n]*/g, '$1');
-}
 
 /** The source of `file` under `src`, comments removed. */
 function source(...file: string[]): string {

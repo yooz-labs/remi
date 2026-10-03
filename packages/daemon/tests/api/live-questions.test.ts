@@ -10,11 +10,7 @@ import { describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { hasLiveQuestionOnScreen } from '../../src/api/live-questions.ts';
-
-/** Strip comments, so a commented-out call cannot satisfy the source pin below. */
-function stripComments(src: string): string {
-  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:\\])\/\/[^\n]*/g, '$1');
-}
+import { stripComments } from '../helpers/strip-comments.ts';
 
 const held = new Set(['sub-held', 'main-held']);
 const isHeld = (id: string) => held.has(id);
