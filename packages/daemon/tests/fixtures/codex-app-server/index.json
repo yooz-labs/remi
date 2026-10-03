@@ -1,0 +1,58 @@
+{
+  "extractorVersion": 1,
+  "cliVersion": "0.160.0",
+  "files": [
+    {
+      "file": "expA-accept.jsonl",
+      "label": "real",
+      "source": "expA-accept.jsonl",
+      "sourceSha256": "fc3a692fa6b87c21418f69d8f706a7ad0cc6a116f00d34712c97e5fd4d4388b2",
+      "frames": 35
+    },
+    {
+      "file": "expA-decline.jsonl",
+      "label": "real",
+      "source": "expA-decline.jsonl",
+      "sourceSha256": "7a6479770bda742a9fc10a5fc9e92e2f46ff505a88dd89ee6db3f3d333b1d1d8",
+      "frames": 39
+    },
+    {
+      "file": "expB.jsonl",
+      "label": "real",
+      "source": "expB.jsonl",
+      "sourceSha256": "91e0d48c7f0f3e0a2a68bea3abbdfea31f76cc25e07e521413bf72c7d86bf375",
+      "frames": 17
+    },
+    {
+      "file": "expB3.jsonl",
+      "label": "real",
+      "source": "expB3.jsonl",
+      "sourceSha256": "8747931511d7b513c5b23e9c4eb3bd551db7bad7cc244e15a0963b7827f379b6",
+      "frames": 42
+    },
+    {
+      "file": "expC.jsonl",
+      "label": "real",
+      "source": "expC.jsonl",
+      "sourceSha256": "e0e36b3b73f6bda8180c26ff8f35f2c779e8731e1d4e741097626559c3353e05",
+      "frames": 20
+    },
+    {
+      "file": "expFlags.jsonl",
+      "label": "real",
+      "source": "expFlags.jsonl",
+      "sourceSha256": "9501fc79362f2952a1e57232a7269fc2bbdd4932750dcfef460eb90a2c84915f",
+      "frames": 1
+    },
+    {
+      "file": "report-derived.jsonl",
+      "label": "report-derived",
+      "frames": 1
+    },
+    {
+      "file": "synthetic-from-schema.jsonl",
+      "label": "synthetic-from-schema",
+      "frames": 3
+    }
+  ]
+}

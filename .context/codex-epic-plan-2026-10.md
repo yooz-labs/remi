@@ -19,7 +19,7 @@ Scope: `remi codex` with a Codex approval reaching the phone, the phone's allow 
 | 3 | Request id treated as per-thread | The accept run's request is `id:1` (`expA-accept.jsonl:47`); the decline run's is `id:2` (`expA-decline.jsonl:63`); expB3's is `id:5`; expC's is `id:6`. Ids are a daemon-global counter. | Correlation key is `(threadId, requestId)`, never the id alone. |
 | 4 | Any TUI thread with matching cwd is "the thread" | `expB.jsonl:7` is the TUI thread (`ephemeral:false`, `threadSource:"user"`, `path` set). `expB.jsonl:12` is a second `thread/started` about 7 s later, for the same cwd, with `ephemeral:true`, `threadSource:"thread_title"`, `environments:[]`, `path:null`. | Identity discovery must reject ephemeral and non-`user` threads (Phase 3). A cwd-only rule would bind to the title helper after a resume. |
 | 5 | "Chat view: rollout JSONL" (strategy:96) | `ts/v2/ThreadReadParams.ts` doc: "prefer a metadata-only read and page with `thread/turns/list` and `thread/items/list`". `thread/resume` results carry `path`, `historyMode:"paginated"` and backwards cursors (`expA-accept.jsonl:38`). | Primary chat source is the app-server's paged items. Rollout JSONL is the documented fallback. Schema-level evidence only, so Phase 6 has a live check. |
-| 6 | Ordinary Bun WebSocket | Bun's native `ws+unix://` client landed in PR #29203 (merged 2026-04-12), first released in bun v1.3.13 (2026-04-20). CI pins 1.3.11 (`.github/workflows/ci.yml:12`) and `release.yml:16` pins the same. `bun-types@1.4.2` `WebSocketOptions` has no `unix` option. Third-party Codex adapter happier-dev found that the `ws` npm package under Bun ignores `createConnection` and opens TCP (their PR #401). | Native `ws+unix` cannot be the transport. The `ws` package cannot either. Phase 1 hand-rolls a small RFC 6455 client over `node:net`. Swap to native when the pin moves to >= 1.3.13 and passes the compile smoke test. |
+| 6 | Ordinary Bun WebSocket | Bun's native `ws+unix://` client landed in PR #29203 (merged 2026-04-12), first released in bun v1.3.13 (2026-04-20). CI pins 1.3.11 (`.github/workflows/ci.yml:15`; corrected in Phase 1: an earlier draft said line 12, which is a comment) and `release.yml:16` pins the same. `bun-types@1.4.2` `WebSocketOptions` has no `unix` option. The `ws` npm package is no way around it: by reviewer B's Phase 1 measurement it resolves to Bun's own native client under Bun, so on 1.3.11 the error `Wrong url scheme for WebSocket ws+unix` is Bun's, `ws+unix` works only on 1.4.2, and the `createConnection` and `socketPath` options fail on both (corrected in Phase 1; an earlier draft cited a third-party adapter's report that `ws` opens TCP under Bun, not re-verified). The pin is set in five workflow files (`ci.yml:15`, `release.yml:16`, `auto-bump-dev.yml:22`, `close-on-develop.yml:37`, `macos-app.yml:27`). | Native `ws+unix` cannot be the transport. The `ws` package cannot either. Phase 1 hand-rolls a small RFC 6455 client over `node:net`. Swap to native when the pin moves to >= 1.3.13 and passes the compile smoke test. |
 | 7 | `availableDecisions` list; TUI "No" | Spike: under `untrusted` the list is `[accept, acceptWithExecpolicyAmendment, cancel]`; `decline` (unlisted) was honored and the model continued (`expA-decline.jsonl:65-76`). The TUI's "No (esc)" maps to the listed `cancel`. | Phone "No" sends `cancel` when it is listed. See P4 policy. |
 | 8 | Strategy's flag list | Spike adds `--search`, `--approve-for-me`, `--no-daemon`; `-a`, `-s`, `-m`, `-C`, `--add-dir` stay shared. `--enable`/`--disable` are NOT in that list: each feature toggle is documented as equivalent to `-c features.<name>=...`, and `-c` forces an embedded server, so `--disable daemon_auto_start` is not known to stay shared. | Denylist in `codex-args.ts` follows the spike list (Phase 2 review of PR #1182 made local mode a default-deny allowlist; the denylist now only picks the refusal message). |
 | 9 | First TUI launch | 0.159.1 blocks on "Trust this folder" in an untrusted dir; 0.160.0 showed no prompt; the "Update available" modal ran an installer when a digit was typed. | remi never types into a Codex PTY, and live-verification steps must clear modals by screen-scrape first. |
@@ -42,15 +42,17 @@ Spike files live in `<scratchpad>/codex-spike/`, called `$SPIKE` below.
 
 **Transport**
 - WebSocket over the unix socket, text frames, `jsonrpc` optional (`$SPIKE/rpc.py:44-49`, `unix_connect(SOCK, "ws://localhost/", max_size=None)`). The python client offered the library's default extensions; nothing shows what Codex's server requires.
-- `~/.codex/app-server-control/` is mode 0700, owned by the user. The socket resolves into `/private/tmp/codex-daemon-501/<hash>`, also 0700. I stat-checked both. Only the same OS user can connect.
-- The socket path under `~/.codex` is a symlink to a short /tmp path, so connect to the realpath (macOS `sun_path` is 104 bytes).
+- `~/.codex/app-server-control/` is mode 0700, owned by the user. The socket resolves into `/private/tmp/codex-daemon-<uid>/<hash>`, also 0700. I stat-checked both. Only the same OS user can connect.
+- The socket path under `~/.codex` is a symlink to a short /tmp path, so connect to the resolved target, not the link (macOS `sun_path` is 104 bytes).
+  **Correction (Phase 1, #1181):** `fs.realpathSync`, `realpathSync.native` and `fs.promises.realpath` throw `EOPNOTSUPP` on a unix socket file and on a symlink to one on macOS, checked on Bun 1.3.11 and 1.4.2; `readlinkSync` and `lstatSync` work, and `realpath` of the parent directory works.
+  Phase 3 must `readlink` the link, or `realpath` the parent directory and `readlink` the file; wherever this plan says "realpath the socket", read that.
 
 **Handshake**
 - `initialize {clientInfo, capabilities:{experimentalApi:true, requestAttestation:false}}` returns `{userAgent, codexHome, platformFamily, platformOs}` (`expA-accept.jsonl:1-2`), then notification `initialized` (`:4`).
 - `capabilities.optOutNotificationMethods?: string[]` exists in the schema (`ts/InitializeCapabilities.ts`). Using it is unverified live.
 
 **Server-request frames**
-- Real command-approval frame: `expA-accept.jsonl:47`. `params` has `kind:"command"`, `threadId`, `turnId`, `itemId`, `startedAtMs`, `environmentId`, `command`, `cwd`, `commandActions`, `proposedExecpolicyAmendment`, `availableDecisions`. `approvalId` is null.
+- Real command-approval frame: `expA-accept.jsonl:47`. `params` has `kind:"command"`, `threadId`, `turnId`, `itemId`, `startedAtMs`, `environmentId`, `command`, `cwd`, `commandActions`, `proposedExecpolicyAmendment`, `availableDecisions`. The real frame has no `approvalId` key at all (corrected in Phase 1; an earlier draft said it is null, and the schema marks it optional), so test it with `== null`, never `=== null`.
 - `RequestId = string | number` (`ts/RequestId.ts`).
 - Order on every subscriber: `thread/status/changed {active, [waitingOnApproval]}`, then `item/started(commandExecution)`, then the request (`expA-accept.jsonl:45-47`).
 - `ServerRequest` also covers `item/tool/call`, `account/chatgptAuthTokens/refresh`, `attestation/generate`, `currentTime/read` and the legacy `applyPatchApproval` and `execCommandApproval` (`ts/ServerRequest.ts`).
@@ -152,6 +154,9 @@ export async function connectUnixWebSocket(
   socketPath: string, handlers: WsHandlers,
   opts?: { host?: string /*'localhost'*/; path?: string /*'/'*/; connectTimeoutMs?: number; handshakeTimeoutMs?: number },
 ): Promise<WsConnection>;   // sends no Origin and no Sec-WebSocket-Extensions
+// As built in Phase 1 (ADR 0033): connectTimeoutMs is gone (one deadline, handshakeTimeoutMs, from the start of the
+// attempt); opts also take signal?: AbortSignal, maxPayloadBytes, closeTimeoutMs and log; WsHandlers gains onPong?;
+// WsConnection gains ping(). AppServerClientOptions gains keepalive and backoff.stableMs.
 
 // app-server-protocol.ts
 export type RequestId = string | number;
@@ -171,7 +176,7 @@ export type AppServerEvent =
   | { type: 'serverRequest'; id: RequestId; method: string; params: unknown }
   | { type: 'notification'; method: string; params: unknown };
 export interface AppServerClientOptions {
-  socketPath: () => string;                         // resolved on every attempt (realpath, trust-checked in Phase 3)
+  socketPath: () => string;                         // resolved on every attempt (by `readlink`, trust-checked in Phase 3; see the realpath correction in section 1)
   clientInfo: { name: string; title: string | null; version: string };
   optOutNotificationMethods?: readonly string[];    // default none until live-verified
   connect?: typeof connectUnixWebSocket;
@@ -246,7 +251,7 @@ Launch order inside `createCodexSession` (state-changing steps in this order):
 - If a call returns `-32601`, mark that capability unavailable, log, and carry on.
 - Fallbacks if R2 fails live are in §6.2 item 8.
 
-**Socket trust (Phase 3).** Before connecting, `realpath` the socket and refuse if its parent directory is not owned by the current uid or has any group/other bits (`UntrustedSocketError`, logged, no connect). Socket path is `${CODEX_HOME ?? ~/.codex}/app-server-control/app-server-control.sock`, so profiles that relocate `CODEX_HOME` (#1157) are not precluded.
+**Socket trust (Phase 3).** Before connecting, resolve the socket with `readlink` (`realpath` throws `EOPNOTSUPP` on a socket; see the correction in section 1) and refuse if its parent directory is not owned by the current uid or has any group/other bits (`UntrustedSocketError`, logged, no connect). Socket path is `${CODEX_HOME ?? ~/.codex}/app-server-control/app-server-control.sock`, so profiles that relocate `CODEX_HOME` (#1157) are not precluded.
 
 **Identity after spawn (`ThreadTracker`).**
 
@@ -361,7 +366,7 @@ export class CodexDecisions implements DecisionChannel {
 
 | Method | `Question` | Actionable in v1? |
 |---|---|---|
-| `item/commandExecution/requestApproval` with `kind:'command'`, `approvalId==null`, no `additionalPermissions`, no `networkApprovalContext`, no `proposedNetworkPolicyAmendments` | `kind:'permission'`, `text:"Allow Codex to run: <command>"` (reason appended), `held` stamped by `handleQuestion` | Yes, verified live |
+| `item/commandExecution/requestApproval` with `kind:'command'`, `approvalId==null` (loose equality: the real frame omits the key, section 1), no `additionalPermissions`, no `networkApprovalContext`, no `proposedNetworkPolicyAmendments` | `kind:'permission'`, `text:"Allow Codex to run: <command>"` (reason appended), `held` stamped by `handleQuestion` | Yes, verified live |
 | Same method with `kind:'writeStdin'`, a non-null `approvalId`, or extra permissions or network context | Same shape, `terminalOnly:true` | No (unexercised, grants more than the command) |
 | `item/fileChange/requestApproval` | text with `reason`/`grantRoot`, `terminalOnly:true` | No (schema only). Phase-4 live step may flip it. |
 | `item/permissions/requestApproval` | text with `reason`, permission names, `terminalOnly:true` | No |
@@ -495,7 +500,7 @@ export interface HarnessChat {
 
 ### 3.2 Fake app-server (`tests/helpers/fake-app-server.ts`, a protocol-speaking replay)
 
-- `Bun.serve({unix, fetch: upgrade, websocket})` in a temp dir, behind a symlink from a fake `CODEX_HOME/app-server-control/app-server-control.sock` to a short path (this also exercises realpath).
+- `Bun.serve({unix, fetch: upgrade, websocket})` in a temp dir, behind a symlink from a fake `CODEX_HOME/app-server-control/app-server-control.sock` to a short path (this exercises resolving the link with `readlink`; `realpath` cannot be used on a socket, see section 1).
 - Frames come from redacted spike fixtures. Behavior is modeled only where a spike claim backs it:
   - `initialize` returns the fixture result.
   - `thread/resume` returns the fixture result and subscribes the client. It errors `-32600 no rollout found for thread id X` until `createRollout(threadId)`.
@@ -532,9 +537,9 @@ export interface HarnessChat {
 **Redaction scan (`fixtures-redaction.test.ts`)** is an allowlist, not a denylist.
 - Every absolute path must start with `/work/`.
 - Every UUID must be in the placeholder set.
-- Fail on `/Users/`, the username, `/private/`, `/var/folders`, `<hostname>`, `ghostty`, `installationId`, `planType`, `eyJ`, `Bearer`, `sk-`, `auth`, `token`, `@`, and on opaque `rs_`/`msg_` ids.
+- Fail on `/Users/`, the username, `/private/`, `/var/folders`, `<hostname>`, the terminal emulator's name, `installationId`, `planType`, `eyJ`, `Bearer`, `sk-`, `auth`, `token`, `@`, and on opaque `rs_`/`msg_` ids.
 - Mutation check: a seeded fixture copy containing each of those must fail.
-- Spike frames the scan must catch (I saw them): `/Users/<user>/.codex/AGENTS.md`, the rollout `path`, `installationId` (a UUID), `serverName`, `userAgent` with `ghostty/1.3.1` and `Mac OS 27.0.0`, `planType`, rate-limit percentages, MCP server names (puppeteer, node_repl, ...), `gpt-6-luna`.
+- Spike frames the scan must catch (I saw them): `/Users/<user>/.codex/AGENTS.md`, the rollout `path`, `installationId` (a UUID), `serverName`, `userAgent` (it carries the client, the OS version, the CPU architecture and the terminal emulator with its version), `planType`, rate-limit percentages, MCP server names (puppeteer, node_repl, ...), model names (`gpt-...`).
 
 ### 3.4 What stays unverified without a real Codex
 

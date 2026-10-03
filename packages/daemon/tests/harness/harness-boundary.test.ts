@@ -44,7 +44,7 @@
  * (the re-exporting file is itself scanned, so the first hop is).
  */
 import { describe, expect, test } from 'bun:test';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { moduleSpecifiers } from '../helpers/module-specifiers.ts';
 
@@ -318,6 +318,341 @@ describe('only cli.ts reaches the harness runtime modules at runtime', () => {
       }
     }
     expect(offences).toEqual([]);
+  });
+});
+
+/**
+ * Codex's side of the seam (epic #1175, phase 1 #1181), as two ALLOWLISTS. A denylist only stops
+ * the imports someone thought of; these stop every import nobody listed.
+ *
+ * 1. Who may import `harness/codex/`: only `harness/codex/` itself and `cli.ts`, which from phase
+ *    3 on wires the two sides together. No other file under `src` may (tests are out of scope).
+ * 2. What `harness/codex/` may import: its own files, `node:*`, `@remi/shared`, and the named
+ *    entries of `CODEX_MAY_IMPORT`. Anything else is a violation, which includes every
+ *    Claude-specific module and every neutral one nobody has listed. That Codex never reaches a
+ *    Claude module is a consequence of the list, not a separate rule.
+ */
+const CODEX_DIR = 'harness/codex';
+const CODEX_IMPORTERS = ['cli.ts'] as const;
+
+/**
+ * The modules (resolved, relative to `src`, without extension) a file under `harness/codex/` may
+ * import besides its own siblings, `node:*` and `@remi/shared`. Each says which phase needs it.
+ */
+const CODEX_MAY_IMPORT: ReadonlyArray<{ readonly target: string; readonly why: string }> = [
+  {
+    target: 'harness/types',
+    why: 'the harness contract: HarnessLaunchContext, HarnessSession, DecisionChannel (phases 3 to 6)',
+  },
+  {
+    target: 'harness/decision',
+    why: 'HeldAnswer and HeldAnswerOutcome for the decision channel (phase 4)',
+  },
+  {
+    target: 'cli/session-phases/pty-session-setup',
+    why: 'createPtySessionForSession, the one Claude-free PTY spawn, with a launch of {command, childEnv} (phase 3); nothing else under cli/session-phases/ is allowed',
+  },
+  { target: 'session/session-store', why: 'SessionStore reads and the identity record (phase 3)' },
+  {
+    target: 'session/session-binding-store',
+    why: 'SessionBindingStore.getIdentity and preAssign (phase 3)',
+  },
+  {
+    target: 'session/session-registry',
+    why: 'SessionRegistry question registration and eviction guards (phase 4)',
+  },
+];
+
+/** Every `.ts` file under `harness/codex/`, as an absolute path. */
+function codexFiles(): string[] {
+  return (readdirSync(join(SRC, CODEX_DIR), { recursive: true }) as string[])
+    .filter((entry) => /\.ts$/.test(entry))
+    .map((entry) => join(SRC, CODEX_DIR, entry));
+}
+
+const isCodexTarget = (bare: string): boolean =>
+  bare === CODEX_DIR || bare.startsWith(`${CODEX_DIR}/`);
+
+/** The distinct `harness/codex/` modules `source` imports, in any form, type-only included. */
+function codexImports(fileName: string, source: string): string[] {
+  const out = new Set<string>();
+  for (const { text } of moduleSpecifiers(fileName, source)) {
+    const target = daemonTarget(text, fileName);
+    if (target === null) continue;
+    const bare = stripExtension(target);
+    if (bare === CODEX_DIR) out.add(`${bare}/index.ts`);
+    else if (isCodexTarget(bare)) out.add(target);
+  }
+  return [...out];
+}
+
+/** The specifiers of `source`, a file under `harness/codex/`, that are not on the allowlist. */
+function codexViolations(fileName: string, source: string): string[] {
+  const out = new Set<string>();
+  for (const { text } of moduleSpecifiers(fileName, source)) {
+    if (text.startsWith('node:') || text === '@remi/shared' || text.startsWith('@remi/shared/'))
+      continue;
+    const target = daemonTarget(text, fileName);
+    if (target === null) {
+      out.add(text); // a package nothing has approved
+      continue;
+    }
+    const bare = stripExtension(target);
+    if (isCodexTarget(bare)) continue;
+    if (CODEX_MAY_IMPORT.some((entry) => entry.target === bare)) continue;
+    out.add(target);
+  }
+  return [...out];
+}
+
+describe('the Codex import allowlists, detector', () => {
+  const FROM_CODEX = join(SRC, CODEX_DIR, 'some-module.ts');
+
+  test('a Codex module importing anything off the list is flagged, whatever the form', () => {
+    // Claude-specific, as the denylist knew them, and the neutral or Claude-adjacent modules it did not.
+    const offLimits = [
+      '../claude.ts',
+      '../claude-session.ts',
+      '../claude-transcript-path.ts',
+      '../index.ts',
+      '../../hooks/index.ts',
+      '../../hooks/hook-server.ts',
+      '../../auto-approve/index.ts',
+      '../../transcript/index.ts',
+      '../../cli/session-phases/hook-bridge-setup.ts',
+      '../../cli/session-phases/message-api-setup.ts',
+      '../../cli/session-phases/transcript-binder-drive.ts',
+      '../../parser/output-processor.ts',
+      '../../parser/question-parser.ts',
+      '../../parser/status-parser.ts',
+      '../../parser/index.ts',
+      '../../cli/claude-binding.ts',
+      '../../index.ts',
+      '../../cli/transcript-watcher-setup.ts',
+      '../../cli/transcript-fallback.ts',
+      '../../cli/statusline-installer.ts',
+      '../../api/question-presence-tracker.ts',
+      '../../cli.ts',
+      '../../parser/bullet-engine.ts',
+      '../../cli/hold-policy.ts',
+      '../../cli/handlers/prompt-up.ts',
+      '../../pty/index.ts',
+      '../../notifications/notification-dispatcher.ts',
+      '../../config/index.ts',
+    ];
+    for (const spec of offLimits) {
+      for (const [form, source] of [
+        ['import', `import { x } from '${spec}';`],
+        ['type import', `import type { X } from '${spec}';`],
+        ['re-export', `export * from '${spec}';`],
+        ['dynamic import', `const m = await import('${spec}');`],
+        ['require', `const m = require('${spec}');`],
+      ] as const) {
+        expect(codexViolations(FROM_CODEX, source), `${form} of ${spec}`).toHaveLength(1);
+      }
+    }
+  });
+
+  test('daemon package specifiers are resolved, so the package name is no way around the list', () => {
+    expect(codexViolations(FROM_CODEX, `import { x } from '@remi/daemon';`)).toEqual(['index.ts']);
+    expect(codexViolations(FROM_CODEX, `import { x } from '@remi/daemon/pty';`)).toEqual([
+      'pty/index.ts',
+    ]);
+    expect(codexViolations(FROM_CODEX, `import { x } from '@remi/daemon/parser';`)).toEqual([
+      'parser/index.ts',
+    ]);
+  });
+
+  test('a package nobody approved is flagged by name', () => {
+    expect(codexViolations(FROM_CODEX, `import ws from 'ws';`)).toEqual(['ws']);
+    // Names that begin like a node: specifier but are not one.
+    expect(codexViolations(FROM_CODEX, `import f from 'node-fetch';`)).toEqual(['node-fetch']);
+    expect(codexViolations(FROM_CODEX, `import f from 'nodemailer';`)).toEqual(['nodemailer']);
+    expect(codexViolations(FROM_CODEX, `import { x } from 'smol-toml';`)).toEqual(['smol-toml']);
+  });
+
+  test('what the list allows passes: siblings, node, the shared package, and the named entries', () => {
+    const allowed = [
+      `import { WsFrameParser } from './ws-frames.ts';`,
+      `import { x } from './nested/deeper.ts';`,
+      `import { randomBytes } from 'node:crypto';`,
+      `import { Socket } from 'node:net';`,
+      `import type { Question } from '@remi/shared';`,
+      `import { x } from '@remi/shared/harness';`,
+      `import type { Harness } from '../types.ts';`,
+      `import type { HeldAnswer } from '../decision.ts';`,
+      `import { createPtySessionForSession } from '../../cli/session-phases/pty-session-setup.ts';`,
+      `import { SessionStore } from '../../session/session-store.ts';`,
+      `import { SessionBindingStore } from '../../session/session-binding-store.ts';`,
+      `import type { SessionRegistry } from '../../session/session-registry.ts';`,
+      `import { x } from '../types';`,
+    ];
+    expect(codexViolations(FROM_CODEX, allowed.join('\n'))).toEqual([]);
+  });
+
+  test('nothing but pty-session-setup is allowed under cli/session-phases/', () => {
+    for (const sibling of [
+      'hook-bridge-setup',
+      'message-api-setup',
+      'transcript-binder-drive',
+      'pty-session-setup-extras',
+    ]) {
+      expect(
+        codexViolations(FROM_CODEX, `import { x } from '../../cli/session-phases/${sibling}.ts';`),
+        sibling,
+      ).toHaveLength(1);
+    }
+  });
+
+  test('comments and strings that only look like imports are not read', () => {
+    const source = [
+      `// import { x } from '../claude.ts';`,
+      `const note = "import x from '../../hooks/index.ts'";`,
+      'const tpl = `await import("../../parser/index.ts")`;',
+    ].join('\n');
+    expect(codexViolations(FROM_CODEX, source)).toEqual([]);
+  });
+
+  test('every allowlist entry names a real module and says which phase needs it', () => {
+    for (const { target, why } of CODEX_MAY_IMPORT) {
+      expect(existsSync(join(SRC, `${target}.ts`)), target).toBe(true);
+      expect(why, target).toMatch(/phase/);
+    }
+  });
+});
+
+/** `<file> -> <module>` for each file that may not import `harness/codex/` and does; `files` are `[path under src, source]`. */
+function importerOffences(files: ReadonlyArray<readonly [string, string]>): string[] {
+  const offences: string[] = [];
+  for (const [file, source] of files) {
+    if (
+      isCodexTarget(stripExtension(file)) ||
+      (CODEX_IMPORTERS as readonly string[]).includes(file)
+    ) {
+      continue;
+    }
+    for (const target of codexImports(join(SRC, file), source))
+      offences.push(`${file} -> ${target}`);
+  }
+  return offences;
+}
+
+describe('the Codex importer allowlist, detector', () => {
+  /** A module that must not import `harness/codex/`, as the file it would live in. */
+  const importers = [
+    'hooks/hook-server.ts',
+    'api/message-api.ts',
+    'cli/handlers/session-events.ts',
+    'cli/current-session.ts',
+    'session/session-store.ts',
+    'server/websocket-server.ts',
+    'remote/relay-adapter.ts',
+    'parser/output-processor.ts',
+    'notifications/notification-dispatcher.ts',
+    'pty/index.ts',
+    'auth/authenticator.ts',
+    'config/index.ts',
+    'mdns/index.ts',
+    'adapters/index.ts',
+    'transcript/index.ts',
+    'auto-approve/index.ts',
+    'harness/claude.ts',
+    'harness/types.ts',
+    'harness/index.ts',
+    'index.ts',
+  ];
+
+  test('every non-codex module except cli.ts is flagged for importing harness/codex, in any form', () => {
+    for (const file of importers) {
+      const from = join(SRC, file);
+      const depth = file.split('/').length - 1;
+      const up = depth === 0 ? './' : '../'.repeat(depth);
+      const spec = `${up}harness/codex/app-server-client.ts`;
+      for (const [form, source] of [
+        ['import', `import { AppServerClient } from '${spec}';`],
+        ['type import', `import type { AppServerEvent } from '${spec}';`],
+        ['extensionless', `import { x } from '${spec.replace(/\.ts$/, '')}';`],
+        ['re-export', `export * from '${spec}';`],
+        ['dynamic import', `const m = await import('${spec}');`],
+        ['require', `const m = require('${spec}');`],
+        ['type position', `type T = import('${spec}').AppServerEvent;`],
+      ] as const) {
+        expect(codexImports(from, source), `${file}: ${form}`).toHaveLength(1);
+      }
+    }
+  });
+
+  test('the directory form and the package specifiers name what they resolve to', () => {
+    const from = join(SRC, 'cli', 'handlers', 'x.ts');
+    expect(codexImports(from, `import { x } from '../../harness/codex';`)).toEqual([
+      'harness/codex/index.ts',
+    ]);
+  });
+
+  test('does not flag comments, strings or look-alike paths', () => {
+    const from = join(SRC, 'session', 'x.ts');
+    const source = [
+      `// import { x } from '../harness/codex/ws-frames.ts';`,
+      `const note = "import x from '../harness/codex/ws-frames.ts'";`,
+      `import { a } from '../harness/types.ts';`,
+      `import { b } from '../harness/codex-adjacent/index.ts';`,
+      `import { c } from '../harness/codexed.ts';`,
+    ].join('\n');
+    expect(codexImports(from, source)).toEqual([]);
+  });
+
+  test('cli.ts and files under harness/codex/ are the permitted importers, and nobody else is', () => {
+    expect(CODEX_IMPORTERS).toEqual(['cli.ts']);
+    const asCli = `import { x } from './harness/codex/codex.ts';`;
+    const asCodex = `import { x } from './sibling.ts';`;
+    expect(
+      importerOffences([
+        ['cli.ts', asCli],
+        ['harness/codex/codex.ts', asCodex],
+        ['harness/codex/nested/deep.ts', `import { x } from '../codex.ts';`],
+      ]),
+    ).toEqual([]);
+    // The same import anywhere else, including a file that merely has a similar name, is an offence.
+    expect(
+      importerOffences([
+        ['cli/cli.ts', `import { x } from '../harness/codex/codex.ts';`],
+        ['cli-extra.ts', asCli],
+        ['harness/codex-adapter/x.ts', `import { x } from '../codex/codex.ts';`],
+        ['session/x.ts', `import { x } from '../harness/codex/codex.ts';`],
+      ]),
+    ).toEqual([
+      'cli/cli.ts -> harness/codex/codex.ts',
+      'cli-extra.ts -> harness/codex/codex.ts',
+      'harness/codex-adapter/x.ts -> harness/codex/codex.ts',
+      'session/x.ts -> harness/codex/codex.ts',
+    ]);
+  });
+});
+
+describe('Codex modules and everything else stay apart', () => {
+  test('the scan covers real Codex files, so it is guarding something', () => {
+    const names = codexFiles().map((f) => relative(SRC, f));
+    for (const expected of ['ws-frames', 'unix-ws', 'app-server-protocol', 'app-server-client']) {
+      expect(names, expected).toContain(`${CODEX_DIR}/${expected}.ts`);
+    }
+  });
+
+  test('no module under harness/codex/ imports anything off the allowlist', () => {
+    const offences: string[] = [];
+    for (const file of codexFiles()) {
+      for (const target of codexViolations(file, readFileSync(file, 'utf8'))) {
+        offences.push(`${relative(SRC, file)} -> ${target}`);
+      }
+    }
+    expect(offences).toEqual([]);
+  });
+
+  test('no module outside harness/codex/ and cli.ts imports harness/codex/', () => {
+    const files = allSourceFiles();
+    expect(files.length).toBeGreaterThan(150);
+    expect(
+      importerOffences(files.map((file) => [file, readFileSync(join(SRC, file), 'utf8')] as const)),
+    ).toEqual([]);
   });
 });
 
