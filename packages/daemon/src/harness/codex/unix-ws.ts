@@ -102,9 +102,10 @@ export function connectUnixWebSocket(
   const decoder = new TextDecoder('utf-8', { fatal: true });
 
   return new Promise<WsConnection>((resolve, reject) => {
-    // Every listener is attached before `connect`: on Bun 1.3.11 a connect failure (a missing
-    // socket file) emits 'error' synchronously, and with no listener yet that is an uncaught
-    // exception that would take the daemon down. Bun 1.4.2 defers it, which hid the bug.
+    // Every listener is attached before `connect`. Under `bun test` on Bun 1.3.11 a connect failure
+    // (a missing socket file) can emit 'error' synchronously inside the connect call, before a
+    // listener attached afterwards exists, and the error is then lost as an uncaught exception.
+    // Not reproduced in a plain `bun script` process, so this is hardening, not a known crash.
     const socket = new Socket();
     const parser = new WsFrameParser({ maxPayloadBytes: maxPayload });
     let phase: 'connecting' | 'handshake' | 'open' | 'closing' | 'closed' = 'connecting';

@@ -6,7 +6,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { readlinkSync } from 'node:fs';
 import { Socket } from 'node:net';
-import { join } from 'node:path';
 import {
   type UnixWsOptions,
   type WsCloseInfo,
@@ -74,7 +73,6 @@ function clientFrames(bytes: Uint8Array): Array<{ opcode: number; payload: Buffe
   return out;
 }
 
-const CHILD = join(import.meta.dir, '..', '..', 'helpers', 'connect-missing-socket-child.ts');
 const closeCode = (payload: Buffer): number => payload.readUInt16BE(0);
 
 describe('against a real WebSocket server (Bun.serve over a unix socket)', () => {
@@ -161,20 +159,11 @@ describe('against a real WebSocket server (Bun.serve over a unix socket)', () =>
     expect(conn.isOpen).toBe(false);
   });
 
-  test('a socket nothing listens on rejects cleanly as the first connection of a fresh process', () => {
-    // Bun 1.3.11 emits this connect error synchronously early in a process's life, which is an
-    // uncaught exception unless the listeners are attached before connect. Only a fresh process
-    // reproduces it, so run one with the same Bun that runs the tests.
-    const child = Bun.spawnSync([process.execPath, CHILD, `${server.socketPath}.never`], {
-      stdout: 'pipe',
-      stderr: 'pipe',
-    });
-    expect(child.stdout.toString().trim(), child.stderr.toString()).toBe('REJECTED ENOENT');
-    expect(child.exitCode).toBe(0);
-  });
-
   test('every listener is attached before the socket connects', async () => {
-    // Observes `Socket.prototype.connect` and delegates to it; nothing is replaced.
+    // Under `bun test` on Bun 1.3.11 a connect failure can emit 'error' synchronously inside
+    // `connect`, before a listener attached afterwards could see it. Whether that happens depends on
+    // runner state, so assert the ordering itself. This observes `Socket.prototype.connect` and
+    // delegates to the original; nothing is replaced.
     const seen: Array<{ error: number; close: number; data: number }> = [];
     const original = Socket.prototype.connect;
     Socket.prototype.connect = function (this: Socket, ...args: unknown[]) {
