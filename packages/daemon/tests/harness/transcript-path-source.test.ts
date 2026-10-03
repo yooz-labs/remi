@@ -1,7 +1,8 @@
 /**
  * Source-level guard for the Claude transcript path (#1163).
  *
- * `ClaudeHarness.transcriptPath` is the one place the session transcript path
+ * `claudeTranscriptPath` (`harness/claude-transcript-path.ts`, called by
+ * `ClaudeHarness.transcriptPath`) is the one place the session transcript path
  * `<dir>/<id>.jsonl` is composed. The handlers still receive a
  * `TranscriptDiscovery` for other reasons, so reverting one site to
  * `${transcriptDiscovery.getProjectTranscriptDir(...)}/${id}.jsonl` compiles

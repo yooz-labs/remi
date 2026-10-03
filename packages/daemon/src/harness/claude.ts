@@ -27,6 +27,8 @@ export class ClaudeHarness implements Harness {
    * @param launchDeps The daemon-wide services `createSession` reads. Only the
    *   daemon (`cli.ts`) launches sessions, so a harness built just to resolve
    *   paths or arguments omits them and `createSession` refuses.
+   *   `launchDeps.transcriptDiscovery` must be the same instance as
+   *   `transcriptDiscovery`.
    */
   constructor(
     private readonly transcriptDiscovery: Pick<TranscriptDiscovery, 'getProjectTranscriptDir'>,

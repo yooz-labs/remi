@@ -28,6 +28,11 @@ import type { SessionStore, StoredSession } from './session-store.ts';
 import type { TranscriptIndex } from './transcript-index.ts';
 
 export interface SessionBinding {
+  /**
+   * For a Claude record this column is the single source of the harness
+   * identity (ADR 0032); `harness` and `harnessSessionId` are never consulted
+   * for Claude.
+   */
   claudeSessionId: string | null;
 }
 
@@ -74,7 +79,7 @@ export class SessionBindingStore {
    * string as Claude. A non-string `harness` never reaches here: the parser
    * treats it as absent, so it reads as Claude (ADR 0032, decision 5).
    *
-   * No production caller yet (Phase 2+); see ADR 0032.
+   * No production caller; the Codex epic (#1165) adds the first (ADR 0032).
    */
   getIdentity(remiSessionId: UUID): SessionIdentity | null {
     const stored = this.store.findByRemiSessionId(remiSessionId);

@@ -20,6 +20,11 @@ import { isProcessAlive } from './process-alive.ts';
 
 export interface StoredSession {
   remiSessionId: UUID;
+  /**
+   * For a Claude record this column is the single source of the harness
+   * identity (ADR 0032); `harness` and `harnessSessionId` are never consulted
+   * for Claude.
+   */
   claudeSessionId: string | null;
   projectPath: string;
   port: number;

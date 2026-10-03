@@ -263,11 +263,12 @@ export interface ScreenObserver {
 /**
  * The three screen deps (`isPromptCurrent`, `isPromptObservedOnPTY`,
  * `observedPromptOptions`) backed by each session's tracker. The ONE wiring
- * for them: `cli.ts` passes its per-session tracker map and the tests pass
- * their tracker, so a test exercising the guards exercises the production
- * wiring (#1134 review: a hand-copied line could be deleted from `cli.ts`
- * with every test still green). No tracker for the session reads as nothing
- * observed, which refuses a PTY submit.
+ * for them: `cli.ts` passes a lookup of each session's `decisions.screen` (the
+ * tracker) in `harnessSessions` and the tests pass their tracker, so a test
+ * exercising the guards exercises the production wiring (#1134 review: a
+ * hand-copied line could be deleted from `cli.ts` with every test still
+ * green). No tracker for the session reads as nothing observed, which refuses
+ * a PTY submit.
  */
 export function trackerScreenDeps(
   trackerFor: (sessionId: UUID) => ScreenObserver | undefined,

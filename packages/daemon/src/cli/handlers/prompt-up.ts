@@ -92,8 +92,9 @@ export interface PromptUpDeps {
 }
 
 /**
- * `promptUp` backed by each session's gate and tracker (`cli.ts` passes its
- * per-session maps, the tests their gate and tracker).
+ * `promptUp` backed by each session's gate and tracker (`cli.ts` passes
+ * lookups into `harnessSessions`, each session's `decisions` and
+ * `decisions.screen`, the tests their gate and tracker).
  */
 export function promptUpDeps(
   gateFor: (sessionId: UUID) => PromptUpGate | undefined,
