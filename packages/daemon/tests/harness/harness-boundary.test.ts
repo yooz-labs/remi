@@ -342,6 +342,12 @@ function sessionPhaseImports(fileName: string, source: string): string[] {
   return [...out];
 }
 
+/** The session phases `source` imports other than the allowed neutral PTY spawn. */
+function disallowedSessionPhases(fileName: string, source: string): string[] {
+  const allowed: readonly string[] = CODEX_ALLOWED_SESSION_PHASES;
+  return sessionPhaseImports(fileName, source).filter((target) => !allowed.includes(target));
+}
+
 describe('Codex files reach only the neutral PTY spawn under cli/session-phases', () => {
   const FROM = join(SRC, 'harness', 'codex', 'some-codex-file.ts');
 
@@ -382,18 +388,44 @@ describe('Codex files reach only the neutral PTY spawn under cli/session-phases'
     expect(sessionPhaseImports(FROM, source)).toEqual([]);
   });
 
+  test('the allowlist lets the PTY spawn through and flags every other session phase', () => {
+    // The scan below finds nothing today, so it cannot tell a rule that
+    // allows the right module from one that allows the wrong one; this can.
+    expect(
+      disallowedSessionPhases(
+        FROM,
+        `import { s } from '../../cli/session-phases/pty-session-setup.ts';`,
+      ),
+    ).toEqual([]);
+    expect(
+      disallowedSessionPhases(
+        FROM,
+        [
+          `import { s } from '../../cli/session-phases/pty-session-setup.ts';`,
+          `import { h } from '../../cli/session-phases/hook-bridge-setup.ts';`,
+          `import { m } from '../../cli/session-phases/message-api-setup.ts';`,
+        ].join('\n'),
+      ),
+    ).toEqual([
+      'cli/session-phases/hook-bridge-setup.ts',
+      'cli/session-phases/message-api-setup.ts',
+    ]);
+    expect(disallowedSessionPhases(FROM, `import { x } from '../../cli/session-phases';`)).toEqual([
+      'cli/session-phases/index.ts',
+    ]);
+  });
+
   test('no file under harness/codex imports a session phase other than the allowed one', () => {
     const files = allSourceFiles().filter((file) => file.startsWith('harness/codex/'));
     // Not vacuous: there is at least one Codex file to hold to the rule.
     expect(files.length).toBeGreaterThan(0);
-    const allowed: readonly string[] = CODEX_ALLOWED_SESSION_PHASES;
     const offences: string[] = [];
     for (const file of files) {
-      for (const target of sessionPhaseImports(
+      for (const target of disallowedSessionPhases(
         join(SRC, file),
         readFileSync(join(SRC, file), 'utf8'),
       )) {
-        if (!allowed.includes(target)) offences.push(`${file} -> ${target}`);
+        offences.push(`${file} -> ${target}`);
       }
     }
     expect(offences).toEqual([]);
