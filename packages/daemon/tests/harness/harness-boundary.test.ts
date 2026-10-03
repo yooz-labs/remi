@@ -317,3 +317,124 @@ describe('only cli.ts reaches the harness runtime modules at runtime', () => {
     expect(offences).toEqual([]);
   });
 });
+
+/**
+ * Codex's side of the seam (epic #1175, phase 1 #1181). `harness/codex/` is
+ * neither neutral nor Claude's, and the two must never meet: a Codex module may
+ * not import a Claude-specific module (the same list the neutral modules are
+ * held to), and no neutral module may import `harness/codex/`. Only `cli.ts`,
+ * from phase 3 on, wires the two sides together.
+ */
+const CODEX_DIR = 'harness/codex';
+
+/** Every `.ts` file under `harness/codex/`, as an absolute path. */
+function codexFiles(): string[] {
+  return (readdirSync(join(SRC, CODEX_DIR), { recursive: true }) as string[])
+    .filter((entry) => /\.ts$/.test(entry))
+    .map((entry) => join(SRC, CODEX_DIR, entry));
+}
+
+/** The distinct `harness/codex/` modules `source` imports, in any form, type-only included. */
+function codexImports(fileName: string, source: string): string[] {
+  const out = new Set<string>();
+  for (const { text } of moduleSpecifiers(fileName, source)) {
+    const target = daemonTarget(text, fileName);
+    if (target === null) continue;
+    const bare = stripExtension(target);
+    if (bare === CODEX_DIR) out.add(`${bare}/index.ts`);
+    else if (bare.startsWith(`${CODEX_DIR}/`)) out.add(target);
+  }
+  return [...out];
+}
+
+describe('Codex boundary detectors', () => {
+  const FROM_CODEX = join(SRC, CODEX_DIR, 'some-module.ts');
+  const FROM_NEUTRAL = join(SRC, 'cli', 'handlers', 'some-handler.ts');
+
+  test('a Codex module importing a Claude-specific one is flagged, whatever the form', () => {
+    const cases: Record<string, string> = {
+      'the Claude harness': `import { ClaudeHarness } from '../claude.ts';`,
+      'the Claude launch': `import { createClaudeSession } from '../claude-session.ts';`,
+      'the harness barrel': `import { Harness } from '../index.ts';`,
+      'the Claude transcript path': `import { claudeTranscriptPath } from '../claude-transcript-path.ts';`,
+      hooks: `import { HookServer } from '../../hooks/index.ts';`,
+      transcript: `import type { TranscriptDiscovery } from '../../transcript/index.ts';`,
+      'auto-approve': `export * from '../../auto-approve/index.ts';`,
+      'a Claude screen parser': `import { parseQuestion } from '../../parser/question-parser.ts';`,
+      'a dynamic import': `const m = await import('../claude.ts');`,
+      'the daemon package root': `import { x } from '@remi/daemon';`,
+    };
+    for (const [name, source] of Object.entries(cases)) {
+      expect(offendersIn(FROM_CODEX, source), name).toHaveLength(1);
+    }
+  });
+
+  test('a Codex module may import its own files and the neutral contract', () => {
+    const source = [
+      `import { WsFrameParser } from './ws-frames.ts';`,
+      `import type { Harness } from '../types.ts';`,
+      `import type { HeldAnswer } from '../decision.ts';`,
+      `import { randomBytes } from 'node:crypto';`,
+      `import type { Question } from '@remi/shared';`,
+    ].join('\n');
+    expect(offendersIn(FROM_CODEX, source)).toEqual([]);
+  });
+
+  test('a neutral module importing harness/codex/ is flagged, in any import form', () => {
+    const cases: Record<string, string> = {
+      'a static import': `import { AppServerClient } from '../../harness/codex/app-server-client.ts';`,
+      'a type-only import': `import type { AppServerEvent } from '../../harness/codex/app-server-client.ts';`,
+      'an extensionless specifier': `import { x } from '../../harness/codex/ws-frames';`,
+      'a re-export': `export * from '../../harness/codex/unix-ws.ts';`,
+      'a dynamic import': `const m = await import('../../harness/codex/ws-frames.ts');`,
+      'a require call': `const m = require('../../harness/codex/ws-frames.ts');`,
+      'a type-position import': `type T = import('../../harness/codex/ws-frames.ts').WsFrame;`,
+    };
+    for (const [name, source] of Object.entries(cases)) {
+      expect(codexImports(FROM_NEUTRAL, source), name).toHaveLength(1);
+    }
+    expect(codexImports(FROM_NEUTRAL, `import { x } from '../../harness/codex';`)).toEqual([
+      'harness/codex/index.ts',
+    ]);
+  });
+
+  test('does not flag comments, strings, or imports that merely look similar', () => {
+    const source = [
+      `// import { x } from '../../harness/codex/ws-frames.ts';`,
+      `const note = "import x from '../../harness/codex/ws-frames.ts'";`,
+      `import { a } from '../../harness/types.ts';`,
+      `import { b } from '../../harness/codex-adjacent/index.ts';`,
+      `import { c } from '../../harness/codexed.ts';`,
+    ].join('\n');
+    expect(codexImports(FROM_NEUTRAL, source)).toEqual([]);
+  });
+});
+
+describe('Codex modules and the Claude side stay apart', () => {
+  test('the scan covers real Codex files, so it is guarding something', () => {
+    const names = codexFiles().map((f) => relative(SRC, f));
+    for (const expected of ['ws-frames', 'unix-ws', 'app-server-protocol', 'app-server-client']) {
+      expect(names, expected).toContain(`${CODEX_DIR}/${expected}.ts`);
+    }
+  });
+
+  test('no module under harness/codex/ imports a Claude-specific module', () => {
+    const offences: string[] = [];
+    for (const file of codexFiles()) {
+      for (const target of offendersIn(file, readFileSync(file, 'utf8'))) {
+        offences.push(`${relative(SRC, file)} -> ${target}`);
+      }
+    }
+    expect(offences).toEqual([]);
+  });
+
+  test('no neutral module imports harness/codex/', () => {
+    const offences: string[] = [];
+    for (const file of neutralFiles()) {
+      for (const target of codexImports(file, readFileSync(file, 'utf8'))) {
+        offences.push(`${relative(SRC, file)} -> ${target}`);
+      }
+    }
+    expect(offences).toEqual([]);
+  });
+});
