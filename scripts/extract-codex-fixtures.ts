@@ -10,7 +10,8 @@
  * read here and never copied: only frames on the method allowlist survive, each
  * rewritten to placeholders (`/work/project`, `/work/codex-home`, sequential
  * UUID-shaped ids, `test-model`). The result is checked with the same
- * `scanForLeaks` the test suite runs, and nothing is written when it finds a
+ * `scanForLeaks` the test suite runs (fields checked by key, free text only from the reviewed
+ * `approved-free-text.json`), and nothing is written when it finds a
  * leak. Output is deterministic for the same inputs, and `index.json` records
  * each source file's sha256 so a later run can tell whether its inputs changed.
  *
@@ -21,13 +22,15 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import {
+  APPROVED_FREE_TEXT_FILE,
   FIXTURE_DIR,
   type FixtureFrame,
   type FixtureIndex,
   type FixtureIndexFile,
   placeholderUuid,
-  scanForLeaks,
+  readApprovedFreeText,
 } from '../packages/daemon/tests/helpers/codex-fixtures.ts';
+import { freeTextOf, scanForLeaks } from '../packages/daemon/tests/helpers/fixture-scan.ts';
 
 const EXTRACTOR_VERSION = 1;
 const CLI_VERSION = '0.160.0';
@@ -140,7 +143,8 @@ function keep(rec: RawRecord, c: Correlator): boolean {
       return typeof item?.['type'] === 'string' && KEEP_ITEM_TYPES.has(item['type']);
     }
     if (method) return KEEP_IN_METHODS.has(method);
-    if (hasKey(f, 'result')) {
+    // An error response to a kept request is kept too (the `-32600` the spike report describes).
+    if (hasKey(f, 'result') || hasKey(f, 'error')) {
       const answered = c.answeredMethod(rec.client, f['id']);
       return answered !== undefined && KEEP_RESPONSE_TO.has(answered);
     }
@@ -335,26 +339,36 @@ function syntheticFromSchema(r: Redactor): FixtureFrame[] {
 const toLine = (f: FixtureFrame): string => `${JSON.stringify(f)}\n`;
 
 /** `<raw-log-dir>` (or CODEX_SPIKE_DIR) and an optional `--out <dir>` (default: the committed fixture directory). */
-function parseArgs(argv: string[]): { rawDir: string; outDir: string } {
+function parseArgs(argv: string[]): {
+  rawDir: string;
+  outDir: string;
+  approvedFile: string;
+  showUnapproved: boolean;
+} {
   const args = [...argv];
-  let outDir = FIXTURE_DIR;
-  const flag = args.indexOf('--out');
-  if (flag >= 0) {
-    outDir = resolve(args[flag + 1] ?? '');
+  const take = (name: string): string | undefined => {
+    const flag = args.indexOf(name);
+    if (flag < 0) return undefined;
+    const value = args[flag + 1];
     args.splice(flag, 2);
-  }
+    return value;
+  };
+  const outDir = resolve(take('--out') ?? FIXTURE_DIR);
+  const approvedFile = resolve(take('--approved') ?? APPROVED_FREE_TEXT_FILE);
+  const showFlag = args.indexOf('--show-unapproved');
+  if (showFlag >= 0) args.splice(showFlag, 1);
   const raw = args[0] ?? process.env['CODEX_SPIKE_DIR'];
   if (!raw) {
     console.error(
-      'usage: bun scripts/extract-codex-fixtures.ts <raw-log-dir> [--out <dir>] (or CODEX_SPIKE_DIR)',
+      'usage: bun scripts/extract-codex-fixtures.ts <raw-log-dir> [--out <dir>] [--approved <file>] [--show-unapproved] (or CODEX_SPIKE_DIR)',
     );
     process.exit(2);
   }
-  return { rawDir: resolve(raw), outDir };
+  return { rawDir: resolve(raw), outDir, approvedFile, showUnapproved: showFlag >= 0 };
 }
 
 function main(): void {
-  const { rawDir, outDir } = parseArgs(process.argv.slice(2));
+  const { rawDir, outDir, approvedFile, showUnapproved } = parseArgs(process.argv.slice(2));
   const redactor = new Redactor();
   const files: FixtureIndexFile[] = [];
   const outputs = new Map<string, string>();
@@ -411,16 +425,30 @@ function main(): void {
   };
   outputs.set('index.json', `${JSON.stringify(index, null, 2)}\n`);
 
-  // Gate: never write a leak.
+  // Gate: never write a leak. Free text fails closed: only strings in the reviewed approved set pass,
+  // so a real session's prose cannot ride through. Findings print the rule and file, never the value.
+  const approvedFreeText = readApprovedFreeText(approvedFile);
   let leaks = 0;
   for (const [file, text] of outputs) {
-    for (const finding of scanForLeaks(text)) {
+    for (const finding of scanForLeaks(text, { approvedFreeText })) {
       leaks += 1;
       console.error(`LEAK ${file}: ${finding.rule}`);
     }
+    if (showUnapproved && file.endsWith('.jsonl')) {
+      const frames = text
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => (JSON.parse(l) as { frame: unknown }).frame);
+      // Only on request: this prints text that came from a real session, for a person to review.
+      for (const s of freeTextOf(frames).filter((t) => !approvedFreeText.has(t))) {
+        console.error(`UNAPPROVED ${file}: ${JSON.stringify(s)}`);
+      }
+    }
   }
   if (leaks > 0) {
-    console.error(`${leaks} finding(s); nothing written. Extend the redaction rules and rerun.`);
+    console.error(
+      `${leaks} finding(s); nothing written. Extend the redaction rules, or review the free text and add it to the approved set.`,
+    );
     process.exit(1);
   }
 
