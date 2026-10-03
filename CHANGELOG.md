@@ -4,6 +4,24 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### Harness seam: Claude Code is one implementation of an interface (#1161, [ADR 0032](.context/decisions/0032-harness-seam-and-identity-shim.md))
+
+The first step toward a second agent CLI: the daemon asks a `Harness` for what is specific to the CLI it wraps, and Claude Code is the only implementation.
+Nothing a client or a Claude session can see changes, apart from the two items under Changed.
+
+#### Changed
+
+- **Internal:** Claude's launch (the question tracker, the PTY output parser, the pre-spawn session binding, the hook bridge and the PTY) moved out of `createNewSession` into `ClaudeHarness.createSession`, and three per-session maps in `cli.ts` became one `harnessSessions` map.
+  The statements and their order are unchanged, and a new test runs the real daemon against a fake `claude` to pin the launch.
+- `remi unstick` logs `Force-released N session(s)` with N counting every session, including one whose hook server failed to start (0 cards resolved there; it was not counted before).
+- `sessions.json` now carries optional `harness` and `harnessSessionId` fields through a rewrite instead of dropping them, and ignores one of the wrong type.
+  Nothing writes either field yet, a Claude record keeps its eight keys, and the file stays `version` 1, so a daemon from before this change reads it as before.
+
+#### Known limits
+
+- `harness` and `harnessSessionId` are declared on the session list, `hello_ack` and question messages but sent by nothing.
+  A non-Claude record is not protected from a daemon older than this change (it drops `harness` on its next rewrite); the Codex epic (#1165) closes both.
+
 ### Contributions: PolyForm Shield packages closed to outside changes (#1132)
 
 - Outside contributions to `packages/web`, `packages/signaling` and `packages/macos` are not accepted without a prior written agreement with Yooz Labs; a pull request that touches them without one is closed.
