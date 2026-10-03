@@ -154,6 +154,9 @@ export async function connectUnixWebSocket(
   socketPath: string, handlers: WsHandlers,
   opts?: { host?: string /*'localhost'*/; path?: string /*'/'*/; connectTimeoutMs?: number; handshakeTimeoutMs?: number },
 ): Promise<WsConnection>;   // sends no Origin and no Sec-WebSocket-Extensions
+// As built in Phase 1 (ADR 0033): connectTimeoutMs is gone (one deadline, handshakeTimeoutMs, from the start of the
+// attempt); opts also take signal?: AbortSignal, maxPayloadBytes, closeTimeoutMs and log; WsHandlers gains onPong?;
+// WsConnection gains ping(). AppServerClientOptions gains keepalive and backoff.stableMs.
 
 // app-server-protocol.ts
 export type RequestId = string | number;
