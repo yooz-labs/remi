@@ -1,6 +1,6 @@
 /**
  * Wire the Claude Code hook event stream into our PTY's MessageAPI during
- * createNewSession.
+ * the launch (`createClaudeSession`, called from `createNewSession`).
  *
  * Two concerns live here, both depending on the same `TranscriptBinder`
  * (session binding/watcher/rotation control plane, `src/transcript/transcript-binder.ts`):

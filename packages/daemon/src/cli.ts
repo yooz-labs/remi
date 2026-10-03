@@ -968,7 +968,8 @@ const harnessSessions: Map<UUID, HarnessSession> = new Map();
  * get me out" lever when cards are stuck. Each gate resolves and dismisses every
  * open escalation it tracks, except that a live hold is released to the terminal
  * with a notice (#1126; its dialog is on screen). Idempotent and safe with zero
- * sessions.
+ * sessions. Every harness session counts in the logged total, including one
+ * with no hook server (nothing to release there).
  */
 function forceReleaseAllSessions(): void {
   let resolved = 0;
@@ -2152,8 +2153,10 @@ async function cleanup(): Promise<void> {
   }
 
   // Binders own a rotation dir-poll interval the shared maps below do not
-  // reach; dispose() tears down its watcher + fallback timer + dir-poll. The
-  // sessions stay in the map: only the binder is closed here, as before.
+  // reach; dispose() tears down its watcher + fallback timer + dir-poll, and
+  // drops the session's turn filter (the hook server was stopped above, so no
+  // Stop can arrive to read it). The sessions stay in the map, as the binder
+  // closers did before.
   for (const session of harnessSessions.values()) {
     session.dispose();
   }
