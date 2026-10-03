@@ -2,7 +2,7 @@
  * Construct the PTYSession and wire its
  * four callbacks (onRawData, onData, onExit, onError).
  *
- * The harness's CLI (Claude Code unless `command` says otherwise, #1176) is
+ * The harness's CLI (Claude Code unless `launch` says otherwise, #1176) is
  * spawned in a PTY so output fidelity matches a real terminal. Callbacks fan
  * out to:
  *   - onRawData: wrapper-mode local terminal (if pass-through is active AND
@@ -65,7 +65,7 @@ export interface PtySessionSetupDeps {
   /**
    * The port validated at entry; also the REMI_PORT value of the default
    * Claude child environment so hooks can report back (not used when
-   * `childEnv` is given).
+   * `launch` is given).
    */
   wsPort: number;
   /** Forward outgoing messages to the connection layer (raw PTY bytes). */
@@ -118,16 +118,25 @@ export interface PtySessionSetupArgs {
    * row(s). 0 (default) gives Claude the full terminal height.
    */
   reservedRows?: number;
-  /** The command to spawn (#1176). Defaults to `claude`, the Claude launch. */
-  command?: string;
   /**
-   * Environment overrides added on top of `process.env` for the child (#1176).
-   * Defaults to `buildClaudeChildEnv(wsPort, reservedRows)`, so a launch that
-   * passes neither `command` nor this is the Claude launch, byte for byte.
+   * A launch of something other than Claude (#1176). Absent, the spawn is the
+   * Claude launch, byte for byte: `claude` with `buildClaudeChildEnv`. Given,
+   * both of its members are required, so a non-Claude command can never
+   * inherit Claude's environment (`REMI_PORT`, `REMI_STATUS_BAR`,
+   * `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN`) by leaving `childEnv` out.
+   */
+  launch?: PtyLaunch;
+}
+
+/** What to spawn instead of `claude`, and the environment it gets. */
+export interface PtyLaunch {
+  readonly command: string;
+  /**
+   * Environment overrides added on top of `process.env` for the child.
    * `{}` adds nothing: the child sees the incoming environment only, with no
    * `REMI_PORT` and none of Claude's variables.
    */
-  childEnv?: Record<string, string>;
+  readonly childEnv: Readonly<Record<string, string>>;
 }
 
 /**
@@ -189,8 +198,8 @@ export const CLAUDE_INLINE_RENDERER_ENV = 'CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN'
  *   whitespace-only, or undefined value counts as unset and is forced to `1`.
  *   Claude's in-session `/tui` switch relaunches with `dropEnv` removing this
  *   variable, so a session can still end up on the alternate screen (#1135).
- *   The sole spawn site always runs `claude`; if a non-Claude command is ever
- *   spawned here, it must not get this variable.
+ *   `createPtySessionForSession` uses this only for the default Claude launch;
+ *   a non-Claude `launch` supplies its own `childEnv` and never receives it.
  */
 export function buildClaudeChildEnv(
   wsPort: number,
@@ -221,15 +230,19 @@ export function createPtySessionForSession(
     exitProcess = (code: number) => process.exit(code),
     observeLocalPtyOutput,
   } = deps;
-  const {
-    sessionId,
-    workingDirectory,
-    extraArgs,
-    passThrough,
-    reservedRows = 0,
-    command = 'claude',
-    childEnv,
-  } = args;
+  const { sessionId, workingDirectory, extraArgs, passThrough, reservedRows = 0, launch } = args;
+
+  // The type already requires both; a caller without types (or a cast) that
+  // leaves `childEnv` out must not get Claude's environment for its command.
+  if (
+    launch !== undefined &&
+    (typeof launch.command !== 'string' ||
+      launch.command === '' ||
+      typeof launch.childEnv !== 'object' ||
+      launch.childEnv === null)
+  ) {
+    throw new Error('launch needs both a command and a childEnv');
+  }
 
   if (!Number.isInteger(wsPort) || wsPort <= 0) {
     throw new Error(`Invalid wsPort: ${wsPort}. Must be a positive integer.`);
@@ -237,7 +250,8 @@ export function createPtySessionForSession(
 
   const termSize = computeTermSize(passThrough, reservedRows);
 
-  const env = childEnv ?? buildClaudeChildEnv(wsPort, reservedRows);
+  const command = launch?.command ?? 'claude';
+  const env = launch?.childEnv ?? buildClaudeChildEnv(wsPort, reservedRows);
 
   const ptySession: PTYSession = new PTYSession(
     {

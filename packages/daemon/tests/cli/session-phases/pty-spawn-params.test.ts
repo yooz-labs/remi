@@ -1,5 +1,5 @@
 /**
- * The neutral PTY spawn parameters (#1176 item 5): `command`, `childEnv` and
+ * The neutral PTY spawn parameters (#1176 item 5): `launch` (`command` and `childEnv`) and
  * `outputSink` on `createPtySessionForSession`.
  *
  * Every case drives a genuine PTY child (a small executable script on PATH,
@@ -20,6 +20,7 @@ import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.
 import {
   CLAUDE_INLINE_RENDERER_ENV,
   NOOP_OUTPUT_SINK,
+  type PtyLaunch,
   type PtyOutputSink,
   type PtySessionSetupArgs,
   createPtySessionForSession,
@@ -38,7 +39,10 @@ const fakeMessageAPI = {
 
 /**
  * A command that records its name, argv, `REMI_PORT`, the inline-renderer
- * variable and `PROBE` into `$OUT/<name>.*`, prints `child-output`, and exits.
+ * variable and `PROBE` into `$OUT/<name>.*`, prints `child-output`, then waits
+ * a second before it exits. The wait is not decoration: a child that exits at
+ * once, with output nobody has read yet, can deadlock Bun's terminal teardown
+ * under concurrent test processes, and `bun test` then never returns.
  */
 function fakeCommand(name: string, outDir: string): string {
   return `#!/bin/sh
@@ -49,10 +53,11 @@ printf '%s' "\${${CLAUDE_INLINE_RENDERER_ENV}-UNSET}" > "$d/${name}.renderer"
 printf '%s' "\${PROBE-UNSET}" > "$d/${name}.probe"
 echo "child-output"
 : > "$d/${name}.done"
+sleep 1
 `;
 }
 
-describe('createPtySessionForSession: command, childEnv and outputSink', () => {
+describe('createPtySessionForSession: launch (command, childEnv) and outputSink', () => {
   let tmpDir: string;
   let outDir: string;
   let sessionRegistry: SessionRegistry;
@@ -159,15 +164,23 @@ describe('createPtySessionForSession: command, childEnv and outputSink', () => {
     expect(fs.existsSync(path.join(outDir, 'fakecodex.done'))).toBe(false);
   });
 
-  test('command spawns that command instead of claude', async () => {
-    await run(NOOP_OUTPUT_SINK, { command: 'fakecodex', childEnv: {} }, 'fakecodex.done');
+  test('a launch spawns its command instead of claude', async () => {
+    await run(
+      NOOP_OUTPUT_SINK,
+      { launch: { command: 'fakecodex', childEnv: {} } },
+      'fakecodex.done',
+    );
 
     expect(seen('fakecodex.argv')).toBe('--flag value');
     expect(fs.existsSync(path.join(outDir, 'claude.done'))).toBe(false);
   });
 
   test('an empty childEnv adds nothing: no REMI_PORT, no inline-renderer variable', async () => {
-    await run(NOOP_OUTPUT_SINK, { command: 'fakecodex', childEnv: {} }, 'fakecodex.done');
+    await run(
+      NOOP_OUTPUT_SINK,
+      { launch: { command: 'fakecodex', childEnv: {} } },
+      'fakecodex.done',
+    );
 
     expect(seen('fakecodex.remi_port')).toBe('UNSET');
     expect(seen('fakecodex.renderer')).toBe('UNSET');
@@ -176,7 +189,7 @@ describe('createPtySessionForSession: command, childEnv and outputSink', () => {
   test('childEnv reaches the child verbatim, and replaces the Claude defaults', async () => {
     await run(
       NOOP_OUTPUT_SINK,
-      { command: 'fakecodex', childEnv: { PROBE: 'from-child-env' } },
+      { launch: { command: 'fakecodex', childEnv: { PROBE: 'from-child-env' } } },
       'fakecodex.done',
     );
 
@@ -188,7 +201,7 @@ describe('createPtySessionForSession: command, childEnv and outputSink', () => {
   test('the child output sink gets the child data, then one flush when it exits', async () => {
     const sink = recordingSink();
 
-    await run(sink, { command: 'fakecodex', childEnv: {} }, 'fakecodex.done');
+    await run(sink, { launch: { command: 'fakecodex', childEnv: {} } }, 'fakecodex.done');
 
     expect(sink.calls.some((c) => c === 'process:child-output')).toBe(true);
     expect(sink.calls.filter((c) => c === 'flush')).toHaveLength(1);
@@ -199,9 +212,66 @@ describe('createPtySessionForSession: command, childEnv and outputSink', () => {
     expect(NOOP_OUTPUT_SINK.process('anything')).toBeUndefined();
     expect(NOOP_OUTPUT_SINK.flush()).toBeUndefined();
 
-    await run(NOOP_OUTPUT_SINK, { command: 'fakecodex', childEnv: {} }, 'fakecodex.done');
+    await run(
+      NOOP_OUTPUT_SINK,
+      { launch: { command: 'fakecodex', childEnv: {} } },
+      'fakecodex.done',
+    );
 
     // run() asserts the exit handler reached exitProcess; the session is closed.
     expect(sessionRegistry.getSession(SID)).toBeUndefined();
+  });
+  describe('a launch must carry its own environment', () => {
+    function build(launch: unknown): ReturnType<typeof createPtySessionForSession> {
+      return createPtySessionForSession(
+        {
+          sessionRegistry,
+          sessionStore: new SessionStore(path.join(tmpDir, 'sessions.json')),
+          liveSessionsRegistry: new SessionRegistryFile(path.join(tmpDir, 'live-sessions')),
+          outputSink: NOOP_OUTPUT_SINK,
+          wsPort: 9999,
+          sendMessage: () => {},
+          cleanup: async () => {},
+          exitProcess: () => {},
+        },
+        {
+          sessionId: SID,
+          workingDirectory: tmpDir,
+          extraArgs: [],
+          passThrough: false,
+          launch: launch as PtyLaunch,
+        },
+      );
+    }
+
+    test('a command with no childEnv is a type error', () => {
+      const args: PtySessionSetupArgs = {
+        sessionId: SID,
+        workingDirectory: tmpDir,
+        extraArgs: [],
+        passThrough: false,
+        // @ts-expect-error `childEnv` is required whenever `command` is given
+        launch: { command: 'fakecodex' },
+      };
+      expect(args.launch?.command).toBe('fakecodex');
+    });
+
+    test("and, for a caller the types do not reach, a thrown error, never Claude's environment", () => {
+      expect(() => build({ command: 'fakecodex' })).toThrow(
+        'launch needs both a command and a childEnv',
+      );
+      expect(() => build({ command: 'fakecodex', childEnv: undefined })).toThrow(
+        'launch needs both',
+      );
+      expect(() => build({ command: 'fakecodex', childEnv: null })).toThrow('launch needs both');
+      expect(() => build({ childEnv: {} })).toThrow('launch needs both');
+      expect(() => build({ command: '', childEnv: {} })).toThrow('launch needs both');
+      expect(() => build({ command: 5, childEnv: {} })).toThrow('launch needs both');
+    });
+
+    test('a complete launch, and no launch at all, are both accepted', () => {
+      expect(() => build({ command: 'fakecodex', childEnv: {} })).not.toThrow();
+      expect(() => build(undefined)).not.toThrow();
+    });
   });
 });
