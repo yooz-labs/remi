@@ -8,6 +8,8 @@
  * - All timestamps are ISO 8601 strings for serialization
  */
 
+import type { HarnessId } from './harness.ts';
+
 /** Unique identifier for messages, sessions, etc. */
 export type UUID = string;
 
@@ -524,6 +526,20 @@ export interface DiscoverableSession {
    * lookup-miss case described above.
    */
   readonly transcriptPath?: string | undefined;
+
+  /**
+   * The harness this session runs under (#1162, ADR 0032). Typed only: no
+   * daemon code sets it, so every entry omits it, and a reader should
+   * treat absence as the default harness (`claude`); none reads it yet. Declared
+   * now so the Codex epic adds a producer, not a protocol change.
+   */
+  readonly harness?: HarnessId | undefined;
+
+  /**
+   * The harness's own id for this session (#1162, ADR 0032). Typed only and
+   * never set today; for a Claude entry the id is {@link claudeSessionId}.
+   */
+  readonly harnessSessionId?: string | undefined;
 
   /** WebSocket port of the daemon hosting this session (for auto-connect) */
   readonly wsPort?: number;

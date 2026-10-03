@@ -46,6 +46,22 @@ export {
 // Daemon loopback port range — single source of truth for daemon + client (#435)
 export { DAEMON_BASE_PORT, DAEMON_PORT_RANGE } from './daemon-ports.ts';
 
+// Harness identity and the cross-harness decision vocabulary (#1162, ADR 0032)
+export type {
+  HarnessId,
+  SessionIdentity,
+  AnswerPath,
+  LocalRender,
+  ResolvedBy,
+  Decision,
+} from './harness.ts';
+export {
+  HARNESS_IDS,
+  DEFAULT_HARNESS,
+  isHarnessId,
+  identityFromClaudeId,
+} from './harness.ts';
+
 // Protocol
 export type {
   ProtocolMessage,

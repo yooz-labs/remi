@@ -49,8 +49,9 @@ export interface PtySessionSetupDeps {
   /** Forward outgoing messages to the connection layer (raw PTY bytes). */
   sendMessage: (sessionId: UUID, message: ProtocolMessage) => void;
   /**
-   * Process-level cleanup invoked on PTY exit. `createNewSession` in cli.ts
-   * passes the main-flow cleanup function (uninstall hooks, stop mDNS, etc.).
+   * Process-level cleanup invoked on PTY exit. `createClaudeSession` passes
+   * the daemon's main-flow cleanup function (`deps.cleanup`, from cli.ts:
+   * uninstall hooks, stop mDNS, etc.).
    */
   cleanup: () => Promise<void>;
   /**

@@ -1,6 +1,6 @@
 /**
  * Wire the Claude Code hook event stream into our PTY's MessageAPI during
- * createNewSession.
+ * the launch (`createClaudeSession`, called from `createNewSession`).
  *
  * Two concerns live here, both depending on the same `TranscriptBinder`
  * (session binding/watcher/rotation control plane, `src/transcript/transcript-binder.ts`):
@@ -285,9 +285,10 @@ export interface HookBridgeArgs {
 }
 
 /**
- * Per-session control surface for the permission gate (#573). Registered by
- * cli.ts keyed by `sessionId` so the answer handler and `remi unstick` reach
- * the RIGHT session's gate.
+ * Per-session control surface for the permission gate (#573). Attached to the
+ * session's `decisions` (`harness/claude-session.ts`), which cli.ts stores in
+ * `harnessSessions` keyed by `sessionId`, so the answer handler and
+ * `remi unstick` reach the RIGHT session's gate.
  */
 export interface SessionGateHandle {
   /** Another path already removed and dismissed `questionId` (a user answer,
@@ -776,11 +777,12 @@ export function setupHookBridge(
   );
 
   // Arm the fallback poll + #452 dir-watch on the pre-assigned id (the binding
-  // cli.ts wrote to the store before Bun.spawn). On a fresh store read this is
-  // the deterministic claude id Claude will write under. Wrapped so an EMFILE /
-  // permissions flake on the store's backing file (SessionStore.read) cannot
-  // escape setup and crash createNewSession — the binder's own per-event reads
-  // guard the same way (TranscriptBinder.adoptLockFromStore).
+  // `createClaudeSession` wrote to the store before spawning). On a fresh
+  // store read this is the deterministic claude id Claude will write under.
+  // Wrapped so an EMFILE / permissions flake on the store's backing file
+  // (SessionStore.read) cannot escape setup and crash createNewSession — the
+  // binder's own per-event reads guard the same way
+  // (TranscriptBinder.adoptLockFromStore).
   const preAssignedClaudeId = (() => {
     try {
       return bindingStore.get(sessionId)?.claudeSessionId ?? null;

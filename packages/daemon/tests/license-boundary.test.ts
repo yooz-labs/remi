@@ -26,7 +26,7 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
-import ts from 'typescript';
+import { moduleSpecifiers } from './helpers/module-specifiers.ts';
 
 const REPO_ROOT = resolve(import.meta.dir, '..', '..', '..');
 const PACKAGES_DIR = join(REPO_ROOT, 'packages');
@@ -63,49 +63,10 @@ function boundaryViolation(specifier: string, fromFile: string): string | null {
   return hit ? `resolves into ${relative(REPO_ROOT, hit)}: ${specifier}` : null;
 }
 
-function literalText(node: ts.Node | undefined): string | null {
-  if (node && (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))) {
-    return node.text;
-  }
-  return null;
-}
-
-/** Every statically known module specifier in `source`, from real syntax only. */
-function moduleSpecifiers(fileName: string, source: string): string[] {
-  const sf = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
-  const found: string[] = [];
-  const add = (node: ts.Node | undefined) => {
-    const text = literalText(node);
-    if (text !== null) found.push(text);
-  };
-  const visit = (node: ts.Node): void => {
-    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
-      add(node.moduleSpecifier);
-    } else if (ts.isImportEqualsDeclaration(node)) {
-      if (ts.isExternalModuleReference(node.moduleReference)) add(node.moduleReference.expression);
-    } else if (ts.isImportTypeNode(node)) {
-      if (ts.isLiteralTypeNode(node.argument)) add(node.argument.literal);
-    } else if (ts.isCallExpression(node)) {
-      const callee = node.expression;
-      const isDynamicImport = callee.kind === ts.SyntaxKind.ImportKeyword;
-      const isRequire = ts.isIdentifier(callee) && callee.text === 'require';
-      const isRequireResolve =
-        ts.isPropertyAccessExpression(callee) &&
-        ts.isIdentifier(callee.expression) &&
-        callee.expression.text === 'require' &&
-        callee.name.text === 'resolve';
-      if (isDynamicImport || isRequire || isRequireResolve) add(node.arguments[0]);
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(sf);
-  return found;
-}
-
 function violationsIn(fileName: string, source: string): string[] {
   const out: string[] = [];
-  for (const specifier of moduleSpecifiers(fileName, source)) {
-    const why = boundaryViolation(specifier, fileName);
+  for (const { text } of moduleSpecifiers(fileName, source, { requireResolve: true })) {
+    const why = boundaryViolation(text, fileName);
     if (why) out.push(why);
   }
   return out;

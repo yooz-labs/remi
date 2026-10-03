@@ -47,6 +47,7 @@ add a row below.
 | [0029](0029-capability-proofs-are-finite-and-group-gated.md) | Capability proofs are finite, effect-registered, and gated by requested groups (superseded by 0030) |
 | [0030](0030-defer-permission-judgment-to-the-harness.md) | remi no longer judges permissions; the harness decides and remi relays what is still asked |
 | [0031](0031-held-hook-answers-with-native-dialog-visible.md) | A binary prompt is answered through its held hook while Claude's dialog stays visible; first answer wins, nothing is typed; amended by #1127: AskUserQuestion and ExitPlanMode too, with a structured `updatedInput`; amended by #1155: chat and Stop read one prompt-up signal, subagent alerts come from the tool hooks, foreground-subagent holds recorded as unmeasured |
+| [0032](0032-harness-seam-and-identity-shim.md) | Harness seam with Claude as the only implementation: `harness` and `harnessSessionId` are typed on the wire but emitted by nothing, persisted Claude records store neither (absence means Claude, `version` stays 1), and `getIdentity` derives a Claude identity from `claudeSessionId` and returns null for an unknown harness; phase 2 adds the `Harness` descriptor (`gracefulExitInput`, `resumeArgs`, `transcriptPath`, no registry yet) behind the daemon's transcript-path, Stop and resume call sites; phase 3 moves Claude's launch out of `createNewSession` into `HarnessSession` (`createSession`), replaces the per-session gate, tracker and binder maps with one `harnessSessions` map (a `DecisionChannel` and `dispose()`), and adds the harness boundary ratchet test |
 
 ## By area
 
@@ -57,5 +58,5 @@ another one closed.
 - **Permission decisions:** 0030 (current), 0031, 0003; historical, superseded by 0030: 0010, 0015, 0016, 0017, 0018, 0023, 0025, 0026, 0027, 0028, 0029
 - **Questions + notifications:** 0031 (current), 0002, 0004, 0019, 0020, 0021, 0022
 - **Protocol + contracts:** 0012, 0013, 0014, 0006
-- **Sessions + transport:** 0001, 0005, 0009, 0024
+- **Sessions + transport:** 0001, 0005, 0009, 0024, 0032
 - **Process:** 0007, 0008, 0011

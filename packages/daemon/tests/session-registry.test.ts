@@ -754,6 +754,25 @@ describe('SessionRegistry', () => {
       expect(sessions[0]?.canAttach).toBe(true);
     });
 
+    test('listSessions entries carry no harness identity (#1162)', () => {
+      // `harness` and `harnessSessionId` are typed on DiscoverableSession but no
+      // producer sets them yet (ADR 0032).
+      const sessionId = generateId();
+      registry.registerSession(
+        sessionId,
+        '/test/dir',
+        createMockPTY(),
+        createMockMessageAPI(),
+        true,
+      );
+
+      const sessions = registry.listSessions();
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0]?.sessionId).toBe(sessionId);
+      expect(Object.keys(sessions[0] ?? {})).not.toContain('harness');
+      expect(Object.keys(sessions[0] ?? {})).not.toContain('harnessSessionId');
+    });
+
     test('orphanedCount excludes locally-owned sessions', () => {
       const localSessionId = generateId();
       registry.registerSession(

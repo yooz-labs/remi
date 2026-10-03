@@ -1,14 +1,16 @@
 /**
  * #1126 review (T2): the per-mode hold policy. Swapping the two modes' hold
  * length, routing or hook registration used to pass the whole suite; the
- * pure function pins each value, and the source checks pin that `cli.ts`
- * reads all of them from it (a precedent: advertise-decision.test.ts).
+ * pure function pins each value, and the source checks pin that `cli.ts` (the
+ * hook registration) and `harness/claude-session.ts` (the session gate, since
+ * #1164) read all of them from it (a precedent: advertise-decision.test.ts).
  */
 
 import { describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { permissionHoldPolicy } from '../../src/cli/hold-policy.ts';
+import { stripComments } from '../helpers/strip-comments.ts';
 
 const PROMPTS = { hold_seconds: 90, daemon_hold_seconds: 3540 };
 
@@ -39,16 +41,22 @@ describe('permissionHoldPolicy (#1126)', () => {
   });
 });
 
-describe('cli.ts takes every per-mode value from the policy', () => {
+describe('cli.ts and harness/claude-session.ts take every per-mode value from the policy', () => {
   const cli = fs.readFileSync(path.resolve(import.meta.dir, '../../src/cli.ts'), 'utf8');
+  // The session gate's wiring moved behind the harness seam in #1164. Read
+  // with comments removed, so a commented-out line cannot satisfy a pin.
+  // `cli.ts` is read raw: its second test splits the file at a comment marker.
+  const claudeSession = stripComments(
+    fs.readFileSync(path.resolve(import.meta.dir, '../../src/harness/claude-session.ts'), 'utf8'),
+  );
 
   test('the session gate: hold, hook timeout and subagent routing', () => {
-    expect(cli).toContain(
-      'const holdPolicy = permissionHoldPolicy(passThrough, remiConfig.prompts);',
+    expect(claudeSession).toContain(
+      'const holdPolicy = permissionHoldPolicy(passThrough, deps.prompts());',
     );
-    expect(cli).toContain('holdMs: holdPolicy.holdMs,');
-    expect(cli).toContain('hookTimeoutMs: holdPolicy.hookTimeoutMs,');
-    expect(cli).toContain('hasLocalTerminal: holdPolicy.hasLocalTerminal,');
+    expect(claudeSession).toContain('holdMs: holdPolicy.holdMs,');
+    expect(claudeSession).toContain('hookTimeoutMs: holdPolicy.hookTimeoutMs,');
+    expect(claudeSession).toContain('hasLocalTerminal: holdPolicy.hasLocalTerminal,');
   });
 
   test('the hook registration: 3600 s for the daemon branch, 600 s for the wrapper branch', () => {

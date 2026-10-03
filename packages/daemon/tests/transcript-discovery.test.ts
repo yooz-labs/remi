@@ -75,6 +75,24 @@ describe('TranscriptDiscovery', () => {
     expect(sessions[0]?.canAttach).toBe(false);
   });
 
+  test('discovered entries carry no harness identity (#1162)', () => {
+    // `harness` and `harnessSessionId` are typed on DiscoverableSession but no
+    // producer sets them yet (ADR 0032); a transcript entry's Claude id stays
+    // in claudeSessionId.
+    const projectDir = makeProjectDir('/Users/test/project');
+    writeTranscript(projectDir, 'session-h1', [makeUserEntry('one')]);
+    writeTranscript(projectDir, 'session-h2', [makeUserEntry('two'), makeAssistantEntry('ok')]);
+
+    const sessions = new TranscriptDiscovery({ projectsDir: TEMP_DIR }).discoverSessions();
+
+    expect(sessions).toHaveLength(2);
+    for (const session of sessions) {
+      expect(session.claudeSessionId).toBe(session.sessionId);
+      expect(Object.keys(session)).not.toContain('harness');
+      expect(Object.keys(session)).not.toContain('harnessSessionId');
+    }
+  });
+
   test('discovers multiple sessions across projects', () => {
     const dir1 = makeProjectDir('/Users/test/project-a');
     const dir2 = makeProjectDir('/Users/test/project-b');

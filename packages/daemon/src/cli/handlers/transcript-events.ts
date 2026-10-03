@@ -17,6 +17,7 @@ import type { StaleSessionErrorDetails, UUID } from '@remi/shared';
 
 import { MessageAPI } from '../../api/message-api.ts';
 import type { SubagentViewRegistry } from '../../api/subagent-view-registry.ts';
+import type { Harness } from '../../harness/types.ts';
 import type { SessionBindingStore, TranscriptIndex } from '../../session/index.ts';
 import type {
   TranscriptDiscovery,
@@ -30,6 +31,8 @@ import type { SendToConnection } from './trivial-events.ts';
 
 export interface TranscriptHandlerDeps {
   transcriptDiscovery: TranscriptDiscovery;
+  /** Rebuilds a transcript path from the durable index's project path and id. */
+  harness: Pick<Harness, 'transcriptPath'>;
   /** Live watchers keyed by Remi session ID (for Remi-UUID fallback resolution). */
   transcriptWatchers: Map<UUID, TranscriptWatcherType>;
   /** Authoritative Remi-UUID -> claudeSessionId binding, used as a last-resort
@@ -53,6 +56,7 @@ export type TranscriptHandlers = ReturnType<typeof createTranscriptHandlers>;
 export function createTranscriptHandlers(deps: TranscriptHandlerDeps) {
   const {
     transcriptDiscovery,
+    harness,
     transcriptWatchers,
     bindingStore,
     transcriptIndex,
@@ -114,7 +118,7 @@ export function createTranscriptHandlers(deps: TranscriptHandlerDeps) {
         try {
           const indexed = transcriptIndex.get(sessionId as UUID);
           if (indexed) {
-            const candidate = `${transcriptDiscovery.getProjectTranscriptDir(indexed.projectPath)}/${indexed.claudeSessionId}.jsonl`;
+            const candidate = harness.transcriptPath(indexed.projectPath, indexed.claudeSessionId);
             if (fs.existsSync(candidate)) {
               filePath = candidate;
               log(

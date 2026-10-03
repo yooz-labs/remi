@@ -101,9 +101,10 @@
  * removes and dismisses the card itself.
  */
 
-import type { AnswerSelection, QuestionOption, UUID } from '@remi/shared';
+import type { UUID } from '@remi/shared';
 
 import { log, logError } from '../cli/logger.ts';
+import type { HeldAnswer, HeldAnswerOutcome } from '../harness/decision.ts';
 import { standingGrantFor } from '../hooks/hook-event-bridge.ts';
 import type { PermissionDecision, PermissionRequestHookInput } from '../hooks/index.ts';
 import {
@@ -117,41 +118,6 @@ import {
 import type { SessionRegistry } from '../session/index.ts';
 import { ALWAYS_ESCALATE_TOOLS, isDesignQuestion, isMultiChoicePermission } from './multichoice.ts';
 import { stableToolInputKey } from './tool-input-key.ts';
-
-/**
- * A phone answer to a held prompt (#1126), as the answer path received it.
- * `option` is one of the card's own options; `message` is the optional text
- * a "No" (or "Keep planning") carries, which Claude receives as the denied
- * tool's result. `cancel` is the card's universal Cancel (Esc) action, which
- * on a held card is a "No". `selections` is a structured AskUserQuestion
- * answer (#1127), not yet validated.
- */
-export type HeldAnswer =
-  | { readonly kind: 'option'; readonly option: QuestionOption; readonly message?: string }
-  | { readonly kind: 'cancel' }
-  /** Free text, or an answer matching none of the card's options. Only a
-   *  one-question, single-select AskUserQuestion takes it (as that
-   *  question's answer, #1127); any other live hold refuses it. */
-  | { readonly kind: 'text'; readonly text: string }
-  | { readonly kind: 'selections'; readonly selections: readonly AnswerSelection[] }
-  /** A plain answer that is one option's value and a different option's
-   *  label (#1127 review S1): never resolved to either, so a live hold
-   *  refuses it. */
-  | { readonly kind: 'ambiguous' };
-
-/**
- * What `answerHeld` did with a phone answer (#1126):
- *   - `resolved`: the hook answered with the user's choice.
- *   - `refused`: the hold is live but the answer is not one its card offers
- *     (an unknown option, a standing grant whose suggestion is gone); nothing
- *     changed, the card and the hold stay.
- *   - `closed`: a binary prompt this gate held whose hold has ended (answered
- *     in the terminal, released at the deadline, aborted). Its answer belongs
- *     to the terminal now; nothing may be typed for it.
- *   - `unknown`: not a prompt this gate held (a hook-less prompt, a
- *     multi-choice permission); the caller's own path applies.
- */
-export type HeldAnswerOutcome = 'resolved' | 'refused' | 'closed' | 'unknown';
 
 /** How many ended binary-prompt ids `answerHeld` remembers as `closed`.
  *  The registry keeps at most 8 pending cards beyond the held ones (a held

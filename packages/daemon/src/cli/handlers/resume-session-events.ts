@@ -37,6 +37,7 @@ import {
 } from '@remi/shared';
 import type { ProtocolMessage, UUID } from '@remi/shared';
 
+import type { Harness } from '../../harness/types.ts';
 import type { SessionBindingStore, SessionRegistry, SessionStore } from '../../session/index.ts';
 import type { TranscriptDiscovery } from '../../transcript/index.ts';
 import { log, logError } from '../logger.ts';
@@ -94,6 +95,8 @@ export interface ResumeSessionHandlerDeps {
    *  the accessor so it cannot diverge from the other resume resolver. */
   bindingStore: SessionBindingStore;
   transcriptDiscovery: TranscriptDiscovery;
+  /** Builds the launch arguments that resume a stored session (`resumeArgs`). */
+  harness: Pick<Harness, 'resumeArgs'>;
   createNewSession: CreateNewSessionFn;
   send: SendToConnection;
 }
@@ -107,6 +110,7 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
     sessionStore,
     bindingStore,
     transcriptDiscovery,
+    harness,
     createNewSession,
     send,
   } = deps;
@@ -289,7 +293,7 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
               send(connId, msg);
             }
           },
-          ['--resume', claudeSessionId],
+          harness.resumeArgs(claudeSessionId),
         );
 
         const result = sessionRegistry.attachConnection(newSessionId, connectionId);
