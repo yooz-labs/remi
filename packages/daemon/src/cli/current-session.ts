@@ -9,7 +9,7 @@
  */
 
 import type { UUID } from '@remi/shared';
-import type { Harness } from '../harness/index.ts';
+import type { Harness } from '../harness/types.ts';
 import type { SessionStore } from '../session/session-store.ts';
 
 /** The daemon's current owned session, resolved on demand. */
