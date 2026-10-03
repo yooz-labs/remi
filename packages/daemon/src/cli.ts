@@ -709,9 +709,17 @@ if (cliShowSessions) {
     for (const s of sessions) {
       const status = s.exitedAt ? `exited (${s.exitCode})` : 'running';
       // The harness's own id, labeled with its harness: `claude:<8>` for a
-      // Claude record, `codex:<8>` for a Codex one (#1176).
-      const harnessId = isClaudeRecord(s) ? s.claudeSessionId : (s.harnessSessionId ?? null);
-      const idLabel = harnessId ? ` ${storedHarness(s)}:${harnessId.slice(0, 8)}` : '';
+      // Claude record, `codex:<8>` for a Codex one (#1176). A Claude record
+      // with no id yet prints no label, as it always did; a record of another
+      // harness with none prints `<harness>:-`, so it never reads as an
+      // id-less Claude one.
+      const claude = isClaudeRecord(s);
+      const harnessId = claude ? s.claudeSessionId : (s.harnessSessionId ?? null);
+      const idLabel = harnessId
+        ? ` ${storedHarness(s)}:${harnessId.slice(0, 8)}`
+        : claude
+          ? ''
+          : ` ${storedHarness(s)}:-`;
       console.log(
         `  ${s.remiSessionId.slice(0, 8)}  ${status}  ${s.projectPath}${idLabel}  ${s.startedAt}`,
       );

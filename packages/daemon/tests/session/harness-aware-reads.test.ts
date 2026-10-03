@@ -123,7 +123,7 @@ describe('getMostRecent(harness)', () => {
 });
 
 describe('resolveStoredSession(sessions, query, { harness })', () => {
-  test('a codex record found by exact remi id is a mismatch for claude, naming the resume command', () => {
+  test('a codex record found by exact remi id is a mismatch for claude, and the message points at no command', () => {
     let error: unknown;
     try {
       resolveStoredSession([codexRecord], CODEX_REMI_ID, { harness: 'claude' });
@@ -133,10 +133,9 @@ describe('resolveStoredSession(sessions, query, { harness })', () => {
 
     expect(error).toBeInstanceOf(SessionHarnessMismatchError);
     expect((error as SessionHarnessMismatchError).message).toBe(
-      `this session ran under codex: use \`remi codex resume ${THREAD_ID}\``,
+      'this session ran under codex; this build cannot resume it',
     );
-    expect((error as SessionHarnessMismatchError).recordHarness).toBe('codex');
-    expect((error as SessionHarnessMismatchError).requestedHarness).toBe('claude');
+    expect((error as SessionHarnessMismatchError).message).not.toContain('remi codex resume');
   });
 
   test('the same by a unique remi id prefix', () => {
@@ -147,17 +146,10 @@ describe('resolveStoredSession(sessions, query, { harness })', () => {
     ).toThrow(SessionHarnessMismatchError);
   });
 
-  test('a codex record with no thread id yet says <id> where the id would go', () => {
-    const noThread = record({ ...codexRecord, harnessSessionId: null });
-    expect(() => resolveStoredSession([noThread], CODEX_REMI_ID, { harness: 'claude' })).toThrow(
-      'use `remi codex resume <id>`',
-    );
-  });
-
-  test('a record of a harness this build does not know is a mismatch that offers no resume command', () => {
+  test('a record of a harness this build does not know gets the same message, naming that harness', () => {
     expect(() =>
       resolveStoredSession([futureRecord], FUTURE_REMI_ID, { harness: 'claude' }),
-    ).toThrow('this session ran under from-a-newer-daemon, which this remi cannot resume');
+    ).toThrow('this session ran under from-a-newer-daemon; this build cannot resume it');
   });
 
   test('a claude record by remi id or by claude id still resolves for claude', () => {
@@ -191,7 +183,7 @@ describe('resolveStoredSession(sessions, query, { harness })', () => {
     // A claude record found by remi id is a mismatch for codex.
     expect(() =>
       resolveStoredSession([claudeRecord], CLAUDE_REMI_ID, { harness: 'codex' }),
-    ).toThrow('this session ran under claude, which this remi cannot resume');
+    ).toThrow('this session ran under claude; this build cannot resume it');
   });
 
   test('without a harness a remi id resolves whatever its record ran under', () => {
@@ -265,13 +257,15 @@ describe('the real CLI over a store that holds a codex record', () => {
     return { code, stderr, stdout };
   }
 
-  test('--resume of the codex record by remi id exits 1 and names the codex resume command', async () => {
+  /** A stderr with its colors removed, as the exact text a user reads. */
+  const plain = (stderr: string) => stderr.replace(/\x1b\[[0-9;]*m/g, '').trim();
+
+  test('--resume of the codex record by remi id exits 1 with exactly the mismatch message', async () => {
     const result = await runCli([codexRecord], ['--resume', CODEX_REMI_ID.slice(0, 8)]);
     expect(result.code).toBe(1);
-    expect(result.stderr).toContain(
-      `this session ran under codex: use \`remi codex resume ${THREAD_ID}\``,
-    );
-    expect(result.stderr).not.toContain('no Claude session ID');
+    // Exact, so a CLI that drops the mismatch arm (and says "Could not read
+    // stored sessions: ...") cannot pass on a substring.
+    expect(plain(result.stderr)).toBe('this session ran under codex; this build cannot resume it');
   }, 30000);
 
   test('bare --resume does not pick a codex record: with only one in the store there is nothing to resume', async () => {
@@ -298,7 +292,15 @@ describe('the real CLI over a store that holds a codex record', () => {
     expect(line(CODEX_REMI_ID)).toContain(` codex:${THREAD_ID.slice(0, 8)} `);
     expect(line(CODEX_REMI_ID)).not.toContain('claude:');
     expect(line(FUTURE_REMI_ID)).toContain(' from-a-newer-daemon:x-1 ');
-    // A codex record with no thread id yet carries no label, like a Claude one.
-    expect(line(unnamed.remiSessionId)).not.toMatch(/ (claude|codex):/);
+    // A codex record with no thread id yet says so, and never reads as an
+    // id-less Claude record, which has no label at all.
+    expect(line(unnamed.remiSessionId)).toContain(' codex:- ');
+  }, 30000);
+
+  test('a Claude record with no Claude id yet prints no label, as before', async () => {
+    const noId = record({ remiSessionId: crypto.randomUUID() as UUID });
+    const result = await runCli([noId], ['--sessions', 'all']);
+    const line = result.stdout.split('\n').find((l) => l.includes(noId.remiSessionId.slice(0, 8)));
+    expect(line).not.toMatch(/ (claude|codex):/);
   }, 30000);
 });

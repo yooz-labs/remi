@@ -280,23 +280,14 @@ function selectClaudeSessionMatch(
 
 /**
  * A resume query named a session that ran under another harness (#1176).
- * `message` is what the CLI prints before exiting 1: it says where the session
- * can be resumed instead.
+ * `message` is what the CLI prints before exiting 1. It points at no command
+ * that does not exist yet: `remi codex resume` arrives with the Codex launch
+ * (phase 3), which restores the pointer.
  */
 export class SessionHarnessMismatchError extends Error {
-  readonly recordHarness: string;
-  readonly requestedHarness: string;
-
-  constructor(session: StoredSession, requestedHarness: string) {
-    const recordHarness = storedHarness(session);
-    super(
-      recordHarness === 'codex'
-        ? `this session ran under codex: use \`remi codex resume ${session.harnessSessionId ?? '<id>'}\``
-        : `this session ran under ${recordHarness}, which this remi cannot resume`,
-    );
+  constructor(session: StoredSession) {
+    super(`this session ran under ${storedHarness(session)}; this build cannot resume it`);
     this.name = 'SessionHarnessMismatchError';
-    this.recordHarness = recordHarness;
-    this.requestedHarness = requestedHarness;
   }
 }
 
@@ -320,7 +311,7 @@ export function resolveStoredSession(
   const { harness } = opts;
   const checked = (session: StoredSession | null): StoredSession | null => {
     if (session && harness !== undefined && storedHarness(session) !== harness) {
-      throw new SessionHarnessMismatchError(session, harness);
+      throw new SessionHarnessMismatchError(session);
     }
     return session;
   };
