@@ -776,11 +776,12 @@ export function setupHookBridge(
   );
 
   // Arm the fallback poll + #452 dir-watch on the pre-assigned id (the binding
-  // cli.ts wrote to the store before Bun.spawn). On a fresh store read this is
-  // the deterministic claude id Claude will write under. Wrapped so an EMFILE /
-  // permissions flake on the store's backing file (SessionStore.read) cannot
-  // escape setup and crash createNewSession — the binder's own per-event reads
-  // guard the same way (TranscriptBinder.adoptLockFromStore).
+  // `createClaudeSession` wrote to the store before spawning). On a fresh
+  // store read this is the deterministic claude id Claude will write under.
+  // Wrapped so an EMFILE / permissions flake on the store's backing file
+  // (SessionStore.read) cannot escape setup and crash createNewSession — the
+  // binder's own per-event reads guard the same way
+  // (TranscriptBinder.adoptLockFromStore).
   const preAssignedClaudeId = (() => {
     try {
       return bindingStore.get(sessionId)?.claudeSessionId ?? null;

@@ -12,6 +12,7 @@ import { createHello, deserialize, serialize } from '@remi/shared/protocol.ts';
 import type { ProtocolMessage } from '@remi/shared/protocol.ts';
 import { DEFAULT_CONFIG } from '../../src/config/config.ts';
 import { findAvailableTcpPort } from '../../src/session/port-utils.ts';
+import { reserveRange } from '../session/port-test-helpers.ts';
 
 export const CLI_TS = path.resolve(import.meta.dir, '../../src/cli.ts');
 
@@ -98,6 +99,49 @@ export function spawnServeRaw(
     ],
     { cwd: work, env: isolatedEnv(home, envOverrides), stdout: 'pipe', stderr: 'pipe' },
   );
+}
+
+/**
+ * Spawn a session daemon (`cli.ts --daemon`, not a hub) without waiting for
+ * readiness, and report the port it was given. A daemon starts Claude itself
+ * (`createNewSession`), so tests that need to observe the launch put a fake
+ * `claude` first on PATH through `envOverrides` (the launch characterization
+ * test, #1164).
+ *
+ * The port comes from `reserveRange` (random, 45000-49999), not
+ * `findTestPort`, which hands the lowest free port from 19200 to every caller
+ * and so gives concurrent test processes the same one. The child's
+ * `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN` defaults to empty, which remi treats
+ * as unset, so a developer shell that exports `=0` cannot change what the
+ * daemon passes to Claude. It runs under `process.execPath`, so an override of
+ * PATH that omits `bun` still starts it.
+ */
+export async function spawnDaemon(
+  home: string,
+  work: string,
+  envOverrides: Record<string, string> = {},
+): Promise<{ proc: Bun.Subprocess<'ignore', 'pipe', 'pipe'>; port: number }> {
+  const port = await reserveRange(1, 50, DEFAULT_CONFIG.daemon.bind);
+  const proc = Bun.spawn(
+    [
+      process.execPath,
+      CLI_TS,
+      '--daemon',
+      '--port',
+      String(port),
+      '--no-relay',
+      '--no-telegram',
+      '--no-mdns',
+      '--no-auth',
+    ],
+    {
+      cwd: work,
+      env: isolatedEnv(home, { CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: '', ...envOverrides }),
+      stdout: 'pipe',
+      stderr: 'pipe',
+    },
+  );
+  return { proc, port };
 }
 
 /**

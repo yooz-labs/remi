@@ -9,9 +9,10 @@
  *   prompt for the phone for `[prompts] daemon_hold_seconds` and registers
  *   the hook at 3600 s, which Claude honors (measured).
  *
- * One function so the four values cannot drift apart: `cli.ts` reads the
- * gate's hold and hook timeout, the subagent routing, and the hook
- * registration from here, and a test pins each mode.
+ * One function so the four values cannot drift apart:
+ * `harness/claude-session.ts` reads the gate's hold and hook timeout and the
+ * subagent routing from here, `cli.ts` reads the hook registration (one call
+ * in the daemon branch, one in the wrapper branch), and a test pins each mode.
  */
 
 import type { PromptsConfig } from '../config/index.ts';

@@ -8,8 +8,9 @@
  * harness with a different exit input, with none, and with a different
  * transcript path, so only a handler that routes through the harness passes.
  *
- * Each harness here is a real `Harness` whose other members delegate to
- * `ClaudeHarness`; only the member under test differs.
+ * Each harness here is the handler's own dependency type (`Pick<Harness,
+ * 'gracefulExitInput' | 'transcriptPath'>`); the member that is not under test
+ * delegates to `ClaudeHarness`.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
@@ -19,9 +20,12 @@ import * as path from 'node:path';
 import type { ProtocolMessage, UUID } from '@remi/shared';
 import { generateId } from '@remi/shared';
 import type { MessageAPI } from '../../../src/api/message-api.ts';
-import { createSessionHandlers } from '../../../src/cli/handlers/session-events.ts';
+import {
+  type SessionHandlerDeps,
+  createSessionHandlers,
+} from '../../../src/cli/handlers/session-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
-import { ClaudeHarness, type Harness } from '../../../src/harness/index.ts';
+import { ClaudeHarness } from '../../../src/harness/index.ts';
 import type { PTYSession } from '../../../src/pty/pty-session.ts';
 import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
 import { SessionRegistryFile } from '../../../src/session/session-registry-file.ts';
@@ -60,10 +64,9 @@ describe('createSessionHandlers, driven by the harness (#1163)', () => {
   });
 
   /** A real harness; only the exit input differs from Claude's. */
-  function harnessWithExitInput(gracefulExitInput: string | null): Harness {
+  function harnessWithExitInput(gracefulExitInput: string | null): SessionHandlerDeps['harness'] {
     return {
       gracefulExitInput,
-      resumeArgs: (id) => claude.resumeArgs(id),
       transcriptPath: (projectPath, id) => claude.transcriptPath(projectPath, id),
     };
   }
@@ -71,15 +74,14 @@ describe('createSessionHandlers, driven by the harness (#1163)', () => {
   /** A real harness; only the transcript path differs from Claude's. */
   function harnessWithTranscriptPath(
     transcriptPath: (projectPath: string, id: string) => string,
-  ): Harness {
+  ): SessionHandlerDeps['harness'] {
     return {
       gracefulExitInput: claude.gracefulExitInput,
-      resumeArgs: (id) => claude.resumeArgs(id),
       transcriptPath,
     };
   }
 
-  function stopSessionWith(harness: Harness) {
+  function stopSessionWith(harness: SessionHandlerDeps['harness']) {
     const submitted: string[] = [];
     const pty = {
       id: generateId(),

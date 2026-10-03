@@ -22,7 +22,7 @@ import {
 } from '@remi/shared';
 import type { AnswerExtras, AnswerSelection, Question, QuestionOption, UUID } from '@remi/shared';
 
-import type { HeldAnswer, HeldAnswerOutcome } from '../../auto-approve/index.ts';
+import type { HeldAnswer, HeldAnswerOutcome } from '../../harness/decision.ts';
 import type { ManagedSession, SessionBindingStore, SessionRegistry } from '../../session/index.ts';
 import { traceQuestionEvent } from '../../session/question-trace.ts';
 import { log, logError } from '../logger.ts';

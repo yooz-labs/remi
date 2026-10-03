@@ -37,7 +37,7 @@ import {
 } from '@remi/shared';
 import type { ProtocolMessage, UUID } from '@remi/shared';
 
-import type { Harness } from '../../harness/index.ts';
+import type { Harness } from '../../harness/types.ts';
 import type { SessionBindingStore, SessionRegistry, SessionStore } from '../../session/index.ts';
 import type { TranscriptDiscovery } from '../../transcript/index.ts';
 import { log, logError } from '../logger.ts';

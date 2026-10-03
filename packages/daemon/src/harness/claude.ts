@@ -5,7 +5,9 @@
  */
 
 import type { TranscriptDiscovery } from '../transcript/index.ts';
-import type { Harness } from './types.ts';
+import { type ClaudeLaunchDeps, createClaudeSession } from './claude-session.ts';
+import { claudeTranscriptPath } from './claude-transcript-path.ts';
+import type { Harness, HarnessLaunchContext, HarnessSession } from './types.ts';
 
 export class ClaudeHarness implements Harness {
   readonly gracefulExitInput = '/exit';
@@ -14,9 +16,13 @@ export class ClaudeHarness implements Harness {
    * @param transcriptDiscovery Owns the encoding of a project path into
    *   Claude's projects directory (only `/` is replaced; see
    *   `TranscriptDiscovery.getProjectTranscriptDir`).
+   * @param launchDeps The daemon-wide services `createSession` reads. Only the
+   *   daemon (`cli.ts`) launches sessions, so a harness built just to resolve
+   *   paths or arguments omits them and `createSession` refuses.
    */
   constructor(
     private readonly transcriptDiscovery: Pick<TranscriptDiscovery, 'getProjectTranscriptDir'>,
+    private readonly launchDeps?: ClaudeLaunchDeps,
   ) {}
 
   /**
@@ -29,6 +35,15 @@ export class ClaudeHarness implements Harness {
   }
 
   transcriptPath(projectPath: string, harnessSessionId: string): string {
-    return `${this.transcriptDiscovery.getProjectTranscriptDir(projectPath)}/${harnessSessionId}.jsonl`;
+    return claudeTranscriptPath(this.transcriptDiscovery, projectPath, harnessSessionId);
+  }
+
+  createSession(ctx: HarnessLaunchContext): HarnessSession {
+    if (!this.launchDeps) {
+      throw new Error(
+        'ClaudeHarness was built without launch dependencies; it cannot create a session',
+      );
+    }
+    return createClaudeSession(this.launchDeps, ctx);
   }
 }

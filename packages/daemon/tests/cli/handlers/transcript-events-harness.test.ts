@@ -8,8 +8,8 @@
  * transcript exists ONLY at the path a stand-in harness derives, so only a
  * handler that asks the harness finds it.
  *
- * The harness is a real `Harness` whose `gracefulExitInput` and `resumeArgs`
- * delegate to `ClaudeHarness`; only `transcriptPath` differs.
+ * The harness is the handler's own dependency type (`Pick<Harness,
+ * 'transcriptPath'>`), so a stand-in carries only what the handler can ask.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
@@ -18,9 +18,11 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ProtocolMessage, UUID } from '@remi/shared';
 import { SubagentViewRegistry } from '../../../src/api/subagent-view-registry.ts';
-import { createTranscriptHandlers } from '../../../src/cli/handlers/transcript-events.ts';
+import {
+  type TranscriptHandlerDeps,
+  createTranscriptHandlers,
+} from '../../../src/cli/handlers/transcript-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
-import { ClaudeHarness, type Harness } from '../../../src/harness/index.ts';
 import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
 import { SessionStore } from '../../../src/session/session-store.ts';
 import { TranscriptIndex } from '../../../src/session/transcript-index.ts';
@@ -62,20 +64,17 @@ describe('createTranscriptHandlers durable-index load, driven by the harness (#1
   });
 
   /** A real harness; only the transcript path differs from Claude's. */
-  function standInHarness(): { harness: Harness; transcriptFile: string } {
-    const claude = new ClaudeHarness(discovery);
+  function standInHarness(): { harness: TranscriptHandlerDeps['harness']; transcriptFile: string } {
     const transcriptFile = path.join(standInDir, `${CLAUDE_ID}.jsonl`);
     return {
       transcriptFile,
       harness: {
-        gracefulExitInput: claude.gracefulExitInput,
-        resumeArgs: (id) => claude.resumeArgs(id),
         transcriptPath: (_projectPath, id) => path.join(standInDir, `${id}.jsonl`),
       },
     };
   }
 
-  function loadFromIndex(harness: Harness): void {
+  function loadFromIndex(harness: TranscriptHandlerDeps['harness']): void {
     createTranscriptHandlers({
       transcriptDiscovery: discovery,
       harness,
