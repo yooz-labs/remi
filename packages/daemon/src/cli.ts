@@ -2155,8 +2155,10 @@ async function cleanup(): Promise<void> {
   // Binders own a rotation dir-poll interval the shared maps below do not
   // reach; dispose() tears down its watcher + fallback timer + dir-poll, and
   // drops the session's turn filter (the hook server was stopped above, so no
-  // Stop can arrive to read it). The sessions stay in the map, as the binder
-  // closers did before.
+  // Stop can arrive to read it). The sessions stay in the map; onSessionClosed
+  // disposes them again when the PTY exits, which dispose()'s guard makes a
+  // no-op. Before, cleanup cleared binderClosers and left the gate, tracker
+  // and turn-filter maps.
   for (const session of harnessSessions.values()) {
     session.dispose();
   }

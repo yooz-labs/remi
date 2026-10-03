@@ -285,9 +285,10 @@ export interface HookBridgeArgs {
 }
 
 /**
- * Per-session control surface for the permission gate (#573). Registered by
- * cli.ts keyed by `sessionId` so the answer handler and `remi unstick` reach
- * the RIGHT session's gate.
+ * Per-session control surface for the permission gate (#573). Attached to the
+ * session's `decisions` (`harness/claude-session.ts`), which cli.ts stores in
+ * `harnessSessions` keyed by `sessionId`, so the answer handler and
+ * `remi unstick` reach the RIGHT session's gate.
  */
 export interface SessionGateHandle {
   /** Another path already removed and dismissed `questionId` (a user answer,
