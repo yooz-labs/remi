@@ -224,12 +224,15 @@ import {
   DEFAULT_PORT_RANGE,
   PendingQuestionCreatedAtTracker,
   SessionBindingStore,
+  SessionHarnessMismatchError,
   SessionRegistry,
   SessionRegistryFile,
   SessionStore,
   type StoredSession,
   TranscriptIndex,
+  isClaudeRecord,
   resolveStoredSession,
+  storedHarness,
 } from './session/index.ts';
 import { findAvailableTcpPort } from './session/port-utils.ts';
 import { traceQuestionEvent } from './session/question-trace.ts';
@@ -705,9 +708,12 @@ if (cliShowSessions) {
   } else {
     for (const s of sessions) {
       const status = s.exitedAt ? `exited (${s.exitCode})` : 'running';
-      const claudeId = s.claudeSessionId ? ` claude:${s.claudeSessionId.slice(0, 8)}` : '';
+      // The harness's own id, labeled with its harness: `claude:<8>` for a
+      // Claude record, `codex:<8>` for a Codex one (#1176).
+      const harnessId = isClaudeRecord(s) ? s.claudeSessionId : (s.harnessSessionId ?? null);
+      const idLabel = harnessId ? ` ${storedHarness(s)}:${harnessId.slice(0, 8)}` : '';
       console.log(
-        `  ${s.remiSessionId.slice(0, 8)}  ${status}  ${s.projectPath}${claudeId}  ${s.startedAt}`,
+        `  ${s.remiSessionId.slice(0, 8)}  ${status}  ${s.projectPath}${idLabel}  ${s.startedAt}`,
       );
     }
     if (filter === 'running') {
@@ -727,19 +733,20 @@ if (cliResume !== undefined) {
 
   try {
     if (cliResume === true) {
-      session = store.getMostRecent();
+      session = store.getMostRecent('claude');
       if (!session) {
         console.error('No sessions to resume. Run `remi --sessions` to see stored sessions.');
         process.exit(1);
       }
     } else {
       // Resolve exact Remi, unique Remi prefix, then Claude identity without
-      // ever selecting the first row when the store is ambiguous.
-      session = resolveStoredSession(store.list(), cliResume as string);
+      // ever selecting the first row when the store is ambiguous. A session
+      // that ran under another harness is refused, not resumed as Claude.
+      session = resolveStoredSession(store.list(), cliResume as string, { harness: 'claude' });
     }
   } catch (err) {
     const reason =
-      err instanceof AmbiguousSessionIdentityError
+      err instanceof AmbiguousSessionIdentityError || err instanceof SessionHarnessMismatchError
         ? err.message
         : `Could not read stored sessions: ${errorToString(err)}`;
     console.error(reason);

@@ -278,25 +278,74 @@ function selectClaudeSessionMatch(
   return selectSessionMatch(matches, 'Claude', claudeSessionId);
 }
 
-/** Resolve a CLI resume query without ever choosing the first ambiguous row. */
+/**
+ * A resume query named a session that ran under another harness (#1176).
+ * `message` is what the CLI prints before exiting 1: it says where the session
+ * can be resumed instead.
+ */
+export class SessionHarnessMismatchError extends Error {
+  readonly recordHarness: string;
+  readonly requestedHarness: string;
+
+  constructor(session: StoredSession, requestedHarness: string) {
+    const recordHarness = storedHarness(session);
+    super(
+      recordHarness === 'codex'
+        ? `this session ran under codex: use \`remi codex resume ${session.harnessSessionId ?? '<id>'}\``
+        : `this session ran under ${recordHarness}, which this remi cannot resume`,
+    );
+    this.name = 'SessionHarnessMismatchError';
+    this.recordHarness = recordHarness;
+    this.requestedHarness = requestedHarness;
+  }
+}
+
+/**
+ * Resolve a CLI resume query without ever choosing the first ambiguous row.
+ *
+ * `opts.harness` is the harness the caller resumes (`claude` for `--resume`).
+ * An exact or prefix Remi id that names a record of another harness throws
+ * `SessionHarnessMismatchError`, so a Codex session is never resumed as a
+ * Claude one. The fallback on the harness's own session id matches only among
+ * that harness's records: for Claude, `claudeSessionId` of Claude records, so a
+ * non-Claude record can never be found by a Claude id. Without `opts.harness`
+ * a Remi id resolves whatever the record's harness and the fallback is
+ * Claude's.
+ */
 export function resolveStoredSession(
   sessions: readonly StoredSession[],
   query: string,
+  opts: { readonly harness?: HarnessId } = {},
 ): StoredSession | null {
+  const { harness } = opts;
+  const checked = (session: StoredSession | null): StoredSession | null => {
+    if (session && harness !== undefined && storedHarness(session) !== harness) {
+      throw new SessionHarnessMismatchError(session, harness);
+    }
+    return session;
+  };
+
   const exactRemi = sessions.filter((session) => session.remiSessionId === query);
   if (exactRemi.length > 1) {
     throw new AmbiguousSessionIdentityError('Remi', query, exactRemi.length);
   }
-  if (exactRemi.length === 1) return exactRemi[0] ?? null;
+  if (exactRemi.length === 1) return checked(exactRemi[0] ?? null);
 
   const prefixRemi = sessions.filter((session) => session.remiSessionId.startsWith(query));
   if (prefixRemi.length > 1) {
     throw new AmbiguousSessionIdentityError('Remi', query, prefixRemi.length);
   }
-  if (prefixRemi.length === 1) return prefixRemi[0] ?? null;
+  if (prefixRemi.length === 1) return checked(prefixRemi[0] ?? null);
 
-  return selectClaudeSessionMatch(
-    sessions.filter((session) => session.claudeSessionId === query),
+  if (harness === undefined || harness === DEFAULT_HARNESS) {
+    return selectClaudeSessionMatch(
+      sessions.filter((session) => isClaudeRecord(session) && session.claudeSessionId === query),
+      query,
+    );
+  }
+  return selectSessionMatch(
+    sessions.filter((session) => session.harness === harness && session.harnessSessionId === query),
+    harness,
     query,
   );
 }
@@ -787,10 +836,16 @@ export class SessionStore {
     return matches[0] ?? null;
   }
 
-  /** Get the most recent session (by startedAt). */
-  getMostRecent(): StoredSession | null {
+  /**
+   * Get the most recent session (by startedAt). With `harness`, the most
+   * recent record of that harness (#1176): `remi --resume` asks for `claude`,
+   * so a newer Codex session is not picked as the one to resume. Without it,
+   * the newest record of any harness.
+   */
+  getMostRecent(harness?: HarnessId): StoredSession | null {
     const sessions = this.list();
-    return sessions[0] ?? null;
+    if (harness === undefined) return sessions[0] ?? null;
+    return sessions.find((s) => storedHarness(s) === harness) ?? null;
   }
 
   /** Mark a session as exited. */

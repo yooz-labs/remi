@@ -14,9 +14,12 @@ export {
 export {
   AmbiguousSessionIdentityError,
   InterprocessFileLockError,
+  isClaudeRecord,
   MalformedSessionStoreError,
   resolveStoredSession,
+  SessionHarnessMismatchError,
   SessionStore,
+  storedHarness,
   type StoredSession,
 } from './session-store.ts';
 
