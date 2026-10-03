@@ -1,8 +1,9 @@
 /**
  * `remi codex` argument validation (epic #1175, phase 2 #1176): the local
- * denylist, the subcommand refusal, the remote allowlist and the working
- * directory rule. Each denylist entry and each refused subcommand has its own
- * test, so deleting one entry from the source fails exactly that test.
+ * allowlist, the inserted `--`, the refusal messages, the remote allowlist and
+ * the working directory rule. Each allowlisted flag, each denylisted flag (it
+ * only picks the message) and each subcommand name has its own test, so
+ * deleting one entry from the source fails exactly that test.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
@@ -10,6 +11,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
+  type WorkingDirectoryFs,
   resolveCodexWorkingDirectory,
   validateCodexArgs,
   validateCodexRemoteArgs,
@@ -27,58 +29,197 @@ function refusal(result: ReturnType<typeof validateCodexArgs>): string {
   return result.error;
 }
 
-describe('validateCodexArgs: what is accepted', () => {
-  test('no arguments is a fresh session', () => {
+describe('validateCodexArgs: what is accepted, and the shape it returns', () => {
+  test('no arguments is a fresh session with nothing added', () => {
     expect(validateCodexArgs([])).toEqual({ ok: true, args: [], resumeThreadId: null });
   });
 
-  test('a bare prompt is passed through', () => {
+  test('a bare prompt gets an inserted -- so Codex can never read it as a subcommand', () => {
     expect(accepted(validateCodexArgs(['fix the failing test'])).args).toEqual([
+      '--',
       'fix the failing test',
     ]);
   });
 
-  test('shared options are passed through as written, with their values', () => {
-    const args = ['-m', 'a-model', '-a', 'untrusted', '--sandbox', 'read-only', '--add-dir', '/x'];
-    expect(accepted(validateCodexArgs(args)).args).toEqual(args);
-    expect(accepted(validateCodexArgs(['--model=a-model', '-mother'])).args).toEqual([
-      '--model=a-model',
-      '-mother',
+  test('flags come first, then the inserted --, then the prompt words', () => {
+    expect(accepted(validateCodexArgs(['do it', '-m', 'a-model', 'now', '--yolo'])).args).toEqual([
+      '-m',
+      'a-model',
+      '--yolo',
+      '--',
+      'do it',
+      'now',
     ]);
   });
 
+  test('a prompt that looks like a subcommand is safe after the inserted --', () => {
+    expect(accepted(validateCodexArgs(['x', 'exec'])).args).toEqual(['--', 'x', 'exec']);
+  });
+
   test('--no-alt-screen is accepted and removed, so the launch adds it exactly once', () => {
-    expect(accepted(validateCodexArgs([])).args).not.toContain('--no-alt-screen');
     expect(accepted(validateCodexArgs(['--no-alt-screen'])).args).toEqual([]);
     expect(
       accepted(validateCodexArgs(['--no-alt-screen', '-m', 'x', '--no-alt-screen', 'p'])).args,
-    ).toEqual(['-m', 'x', 'p']);
+    ).toEqual(['-m', 'x', '--', 'p']);
   });
 
-  test('a flag-shaped token after -- is prompt text: nothing after the separator is a flag', () => {
-    const args = ['--', '-c', 'x=y', '--profile', 'p'];
-    expect(accepted(validateCodexArgs(args)).args).toEqual(args);
+  test('a user-typed -- ends the flags: what follows is prompt text, flag-shaped or not', () => {
+    expect(accepted(validateCodexArgs(['--', '-c', 'x=y', '--profile', 'p'])).args).toEqual([
+      '--',
+      '-c',
+      'x=y',
+      '--profile',
+      'p',
+    ]);
     expect(accepted(validateCodexArgs(['-m', 'x', '--', '--oss'])).args).toEqual([
       '-m',
       'x',
       '--',
       '--oss',
     ]);
+    expect(accepted(validateCodexArgs(['--', 'fork'])).args).toEqual(['--', 'fork']);
+    expect(accepted(validateCodexArgs(['--', 'resume', UUID])).args).toEqual([
+      '--',
+      'resume',
+      UUID,
+    ]);
   });
 
-  test('an attached value that merely contains a denied letter is not a denied flag', () => {
-    // `-mcfoo` is -m with the value `cfoo`, and `-ac` is -a with the value `c`.
-    expect(accepted(validateCodexArgs(['-mcfoo', '-ac'])).args).toEqual(['-mcfoo', '-ac']);
+  test('only the first -- ends the flags: a second one is prompt text too', () => {
+    expect(accepted(validateCodexArgs(['-m', 'x', '--', 'a', '--', '-c'])).args).toEqual([
+      '-m',
+      'x',
+      '--',
+      'a',
+      '--',
+      '-c',
+    ]);
   });
 
-  test('help and version are passed through (Codex prints and exits)', () => {
-    expect(accepted(validateCodexArgs(['--help'])).args).toEqual(['--help']);
-    expect(accepted(validateCodexArgs(['-V'])).args).toEqual(['-V']);
+  test('a user -- with nothing after it adds nothing', () => {
+    expect(accepted(validateCodexArgs(['-m', 'x', '--'])).args).toEqual(['-m', 'x']);
+  });
+
+  test('a lone - is a positional, not a flag', () => {
+    expect(accepted(validateCodexArgs(['-'])).args).toEqual(['--', '-']);
+    expect(accepted(validateCodexArgs(['-m', '-'])).args).toEqual(['-m', '-']);
+  });
+});
+
+describe('validateCodexArgs: the allowlist, one test per flag', () => {
+  test.each([
+    ['-m', 'a-model'],
+    ['--model', 'a-model'],
+    ['-a', 'untrusted'],
+    ['--ask-for-approval', 'on-request'],
+    ['-s', 'read-only'],
+    ['--sandbox', 'workspace-write'],
+    ['--add-dir', '/some/dir'],
+    ['-i', 'a.png'],
+    ['--image', 'a.png'],
+  ])('%s takes a value as the next token', (flag, value) => {
+    expect(accepted(validateCodexArgs([flag, value])).args).toEqual([flag, value]);
+  });
+
+  test.each(['--model', '--ask-for-approval', '--sandbox', '--add-dir', '--image'])(
+    '%s accepts the --flag=value spelling',
+    (flag) => {
+      expect(accepted(validateCodexArgs([`${flag}=value`])).args).toEqual([`${flag}=value`]);
+    },
+  );
+
+  test.each(['-m', '-a', '-s', '-i'])('%s accepts an attached value', (flag) => {
+    expect(accepted(validateCodexArgs([`${flag}value`])).args).toEqual([`${flag}value`]);
+    expect(accepted(validateCodexArgs([`${flag}=value`])).args).toEqual([`${flag}=value`]);
+  });
+
+  test.each([
+    '--dangerously-bypass-approvals-and-sandbox',
+    '--yolo',
+    '--help',
+    '--version',
+    '-h',
+    '-V',
+  ])('%s is a flag with no value', (flag) => {
+    expect(accepted(validateCodexArgs([flag])).args).toEqual([flag]);
+    // A prompt after it is a prompt, not its value.
+    expect(accepted(validateCodexArgs([flag, 'a prompt'])).args).toEqual([flag, '--', 'a prompt']);
+  });
+
+  test.each(['--yolo', '--help', '--version', '--dangerously-bypass-approvals-and-sandbox'])(
+    '%s refuses a joined value',
+    (flag) => {
+      expect(refusal(validateCodexArgs([`${flag}=1`]))).toContain(`${flag} takes no value`);
+    },
+  );
+
+  test('a flag that only starts like an allowed one is not allowed', () => {
+    expect(refusal(validateCodexArgs(['--modelx', 'a']))).toContain('--modelx');
+    expect(refusal(validateCodexArgs(['--yoloo']))).toContain('--yoloo');
+    expect(refusal(validateCodexArgs(['--sandboxes', 'a']))).toContain('--sandboxes');
+  });
+
+  test('a cluster of short flags is not allowed, even of allowed letters', () => {
+    expect(refusal(validateCodexArgs(['-hV']))).toContain('-h');
+    expect(refusal(validateCodexArgs(['-Vh']))).toContain('-V');
+  });
+
+  test('every other flag is refused with a message naming it', () => {
+    for (const flag of ['--full-auto', '--fancy', '--sandbox-mode', '-Z', '-5']) {
+      const error = refusal(validateCodexArgs([flag]));
+      expect(error, flag).toContain(`remi codex does not support ${flag} yet`);
+      expect(error, flag).toContain('run codex directly');
+    }
+    expect(refusal(validateCodexArgs(['--fancy=value']))).toContain('--fancy yet');
+    expect(refusal(validateCodexArgs(['-vc']))).toContain('-v yet');
+  });
+});
+
+describe('validateCodexArgs: a valued flag never takes a flag-shaped token as its value', () => {
+  const COUNTEREXAMPLES: string[][] = [
+    ['-m', '-c', 'x=y'],
+    ['-a', '--remote=unix:///x'],
+    ['--add-dir', '--profile', 'p'],
+    ['-s', '-C', '/tmp'],
+    ['--sandbox', '--oss'],
+    ['-s', '--no-alt-screen'],
+    ['-m', '--model'],
+    ['--image', '-m', 'x'],
+  ];
+
+  test.each(COUNTEREXAMPLES.map((args) => [args.join(' '), args] as const))(
+    '%s is a refusal that says the first flag needs a value',
+    (_name, args) => {
+      expect(refusal(validateCodexArgs(args))).toMatch(/needs a value/);
+    },
+  );
+
+  test.each([['--model'], ['-m'], ['--ask-for-approval'], ['-a'], ['--sandbox'], ['-s'], ['-i']])(
+    'a trailing %s with no value is a refusal',
+    (flag) => {
+      expect(refusal(validateCodexArgs([flag]))).toContain(`${flag.replace(/^--?/, '')}`);
+      expect(refusal(validateCodexArgs([flag]))).toMatch(/needs a value/);
+      expect(refusal(validateCodexArgs(['x', flag]))).toMatch(/needs a value/);
+    },
+  );
+
+  test('a value that merely contains a hyphen is still a value', () => {
+    expect(accepted(validateCodexArgs(['-m', 'gpt-5-codex'])).args).toEqual(['-m', 'gpt-5-codex']);
+    expect(accepted(validateCodexArgs(['-m', 'x-'])).args).toEqual(['-m', 'x-']);
+  });
+
+  test('a flag value that looks like a subcommand is a value, not a subcommand', () => {
+    expect(accepted(validateCodexArgs(['-m', 'exec', 'a prompt'])).args).toEqual([
+      '-m',
+      'exec',
+      '--',
+      'a prompt',
+    ]);
   });
 });
 
 describe('validateCodexArgs: resume <uuid>', () => {
-  test('is the one subcommand allowed, and reports the thread id', () => {
+  test('is the one subcommand run, and reports the thread id', () => {
     expect(validateCodexArgs(['resume', UUID])).toEqual({
       ok: true,
       args: ['resume', UUID],
@@ -86,15 +227,25 @@ describe('validateCodexArgs: resume <uuid>', () => {
     });
   });
 
-  test('options may come before or after it', () => {
-    expect(accepted(validateCodexArgs(['-m', 'x', 'resume', UUID]))).toMatchObject({
-      args: ['-m', 'x', 'resume', UUID],
-      resumeThreadId: UUID,
-    });
-    expect(accepted(validateCodexArgs(['resume', UUID, '-m', 'x']))).toMatchObject({
-      args: ['resume', UUID, '-m', 'x'],
-      resumeThreadId: UUID,
-    });
+  test('flags are returned first and resume <uuid> last, whichever side the user put them', () => {
+    expect(accepted(validateCodexArgs(['-m', 'x', 'resume', UUID])).args).toEqual([
+      '-m',
+      'x',
+      'resume',
+      UUID,
+    ]);
+    expect(accepted(validateCodexArgs(['resume', UUID, '-m', 'x'])).args).toEqual([
+      '-m',
+      'x',
+      'resume',
+      UUID,
+    ]);
+    expect(accepted(validateCodexArgs(['resume', '-m', 'x', UUID])).args).toEqual([
+      '-m',
+      'x',
+      'resume',
+      UUID,
+    ]);
   });
 
   test('the thread id is reported lowercased and the argument is kept as written', () => {
@@ -112,27 +263,36 @@ describe('validateCodexArgs: resume <uuid>', () => {
     ]);
   });
 
-  test('resume after a prompt is told to come first', () => {
-    expect(refusal(validateCodexArgs(['a prompt', 'resume', UUID]))).toContain('before any prompt');
+  test('resume after other positionals is prompt text, behind the inserted --', () => {
+    expect(accepted(validateCodexArgs(['a prompt', 'resume', UUID])).args).toEqual([
+      '--',
+      'a prompt',
+      'resume',
+      UUID,
+    ]);
+  });
+
+  test('--last is not a supported flag, so resume --last is refused by name', () => {
+    expect(refusal(validateCodexArgs(['resume', '--last']))).toContain('--last');
+    expect(refusal(validateCodexArgs(['resume', UUID, '--last']))).toContain('--last');
   });
 
   test.each([
     ['no id', ['resume']],
-    ['--last', ['resume', '--last']],
     ['the picker with options only', ['resume', '-m', 'x']],
     ['an id that is not a UUID', ['resume', 'not-a-uuid']],
     ['a short id prefix', ['resume', UUID.slice(0, 8)]],
+    ['text before the UUID', ['resume', `x${UUID}`]],
+    ['text after the UUID', ['resume', `${UUID}x`]],
     ['a prompt after the id', ['resume', UUID, 'continue please']],
     ['a prompt after -- ', ['resume', UUID, '--', 'continue']],
-    ['resume after a prompt', ['a prompt', 'resume', UUID]],
     ['a second resume', ['resume', UUID, 'resume', UUID]],
-    ['resume as the first token after --', ['--', 'resume', UUID]],
   ])('is refused with %s', (_name, args) => {
     expect(refusal(validateCodexArgs(args))).toMatch(/resume/);
   });
 });
 
-describe('validateCodexArgs: subcommands other than resume are refused', () => {
+describe('validateCodexArgs: a Codex subcommand name as the first positional is refused clearly', () => {
   const SUBCOMMANDS = [
     'fork',
     'exec',
@@ -148,43 +308,58 @@ describe('validateCodexArgs: subcommands other than resume are refused', () => {
     'cloud',
     'sandbox',
     'review',
+    'agents',
+    'queue',
+    'archive',
+    'unarchive',
+    'delete',
+    'migrate-rollouts',
+    'plugin',
+    'doctor',
+    'features',
+    'execpolicy',
+    'exec-server',
+    'responses-api-proxy',
+    'stdio-to-uds',
+    'cloud-tasks',
+    'update',
+    'app',
+    'remote-control',
+    'a',
   ];
 
   test.each(SUBCOMMANDS)('%s', (subcommand) => {
     const error = refusal(validateCodexArgs([subcommand]));
     expect(error).toContain('interactive TUI only');
-    expect(error).toContain(subcommand);
+    expect(error).toContain(`${subcommand} is a Codex subcommand`);
+    expect(error).toContain('after --');
   });
 
-  test('also after a flag with a value, after other options and after --', () => {
-    expect(refusal(validateCodexArgs(['-m', 'x', 'exec']))).toContain('exec');
+  test('also after allowed flags and their values, and with a prompt behind it', () => {
+    expect(refusal(validateCodexArgs(['-m', 'x', 'exec']))).toContain('exec is a Codex');
     expect(refusal(validateCodexArgs(['--model', 'x', '-a', 'untrusted', 'login']))).toContain(
-      'login',
+      'login is a Codex',
     );
-    expect(refusal(validateCodexArgs(['--', 'fork']))).toContain('fork');
-    expect(refusal(validateCodexArgs(['exec', 'ls']))).toContain('exec');
+    expect(refusal(validateCodexArgs(['exec', 'ls']))).toContain('exec is a Codex');
   });
 
-  test.each(['--model', '--ask-for-approval', '--sandbox', '--add-dir', '-m', '-a', '-s'])(
-    'a value of %s that looks like a subcommand is a value, not a subcommand',
-    (flag) => {
-      expect(accepted(validateCodexArgs([flag, 'exec', 'a prompt'])).args).toEqual([
-        flag,
-        'exec',
-        'a prompt',
-      ]);
-    },
-  );
+  test('the same word is plain prompt text after the user typed --, or after another word', () => {
+    expect(accepted(validateCodexArgs(['--', 'exec', 'ls'])).args).toEqual(['--', 'exec', 'ls']);
+    expect(accepted(validateCodexArgs(['run', 'exec'])).args).toEqual(['--', 'run', 'exec']);
+  });
 
-  test('a short flag with its value attached takes no next token, so a subcommand after it is seen', () => {
-    expect(refusal(validateCodexArgs(['-mother', 'exec']))).toContain('exec');
-    expect(refusal(validateCodexArgs(['-aon-request', 'review']))).toContain('review');
-    expect(refusal(validateCodexArgs(['--model=x', 'fork']))).toContain('fork');
+  test('the list is only a message: a name it does not know is still safe behind the --', () => {
+    expect(accepted(validateCodexArgs(['a-new-subcommand', 'x'])).args).toEqual([
+      '--',
+      'a-new-subcommand',
+      'x',
+    ]);
   });
 });
 
-describe('validateCodexArgs: denylisted flags, one case per entry', () => {
-  const LONG_FLAGS = [
+describe('validateCodexArgs: flags remi knows it must not pass, with the reason', () => {
+  const CWD_FLAGS = ['--cd', '--worktree'];
+  const SERVER_FLAGS = [
     '--config',
     '--enable',
     '--disable',
@@ -192,60 +367,94 @@ describe('validateCodexArgs: denylisted flags, one case per entry', () => {
     '--strict-config',
     '--dangerously-bypass-hook-trust',
     '--no-daemon',
-    '--search',
-    '--approve-for-me',
     '--remote',
     '--remote-auth-token-env',
-    '--oss',
-    '--local-provider',
-    '--cd',
   ];
+  const APPROVAL_FLAGS = ['--approve-for-me', '--not-so-yolo'];
+  const SETUP_FLAGS = ['--search', '--oss', '--local-provider'];
 
-  test.each(LONG_FLAGS)('%s, bare, joined with =, and after a valued flag', (flag) => {
-    expect(refusal(validateCodexArgs([flag]))).toContain(flag);
-    expect(refusal(validateCodexArgs([`${flag}=value`]))).toContain(flag);
-    expect(refusal(validateCodexArgs([flag, 'value']))).toContain(flag);
-    expect(refusal(validateCodexArgs(['-m', 'x', flag, 'v', 'prompt']))).toContain(flag);
+  function reasonedRefusal(args: string[], flag: string, reason: string): void {
+    const error = refusal(validateCodexArgs(args));
+    expect(error, JSON.stringify(args)).toContain(`remi codex refuses ${flag} on purpose`);
+    expect(error, JSON.stringify(args)).toContain(reason);
+  }
+
+  const cwdReason = 'working directory';
+  const serverReason = 'app-server';
+  const approvalReason = 'approval requests';
+  const setupReason = 'does not model yet';
+
+  test.each(CWD_FLAGS)('%s: bare, joined, with a value, and after a valued flag', (flag) => {
+    reasonedRefusal([flag], flag, cwdReason);
+    reasonedRefusal([`${flag}=value`], flag, cwdReason);
+    reasonedRefusal([flag, 'value'], flag, cwdReason);
+    reasonedRefusal(['-m', 'x', flag, 'v', 'prompt'], flag, cwdReason);
   });
 
-  test.each(['c', 'p', 'C'])('-%s, bare and in every attached form', (letter) => {
+  test.each(SERVER_FLAGS)('%s: bare, joined, with a value, and after a valued flag', (flag) => {
+    reasonedRefusal([flag], flag, serverReason);
+    reasonedRefusal([`${flag}=value`], flag, serverReason);
+    reasonedRefusal([flag, 'value'], flag, serverReason);
+    reasonedRefusal(['-m', 'x', flag, 'v', 'prompt'], flag, serverReason);
+  });
+
+  test.each(APPROVAL_FLAGS)('%s: bare, joined, with a value, and after a valued flag', (flag) => {
+    reasonedRefusal([flag], flag, approvalReason);
+    reasonedRefusal([`${flag}=value`], flag, approvalReason);
+    reasonedRefusal([flag, 'value'], flag, approvalReason);
+    reasonedRefusal(['-m', 'x', flag, 'v', 'prompt'], flag, approvalReason);
+  });
+
+  test.each(SETUP_FLAGS)('%s: bare, joined, with a value, and after a valued flag', (flag) => {
+    reasonedRefusal([flag], flag, setupReason);
+    reasonedRefusal([`${flag}=value`], flag, setupReason);
+    reasonedRefusal([flag, 'value'], flag, setupReason);
+    reasonedRefusal(['-m', 'x', flag, 'v', 'prompt'], flag, setupReason);
+  });
+
+  test.each([
+    ['c', serverReason],
+    ['p', serverReason],
+    ['C', cwdReason],
+  ])('-%s: bare and in every attached form', (letter, reason) => {
     const flag = `-${letter}`;
-    expect(refusal(validateCodexArgs([flag]))).toContain(flag);
-    expect(refusal(validateCodexArgs([flag, 'key=value']))).toContain(flag);
-    expect(refusal(validateCodexArgs([`${flag}key=value`]))).toContain(flag);
-    expect(refusal(validateCodexArgs([`${flag}=value`]))).toContain(flag);
+    reasonedRefusal([flag], flag, reason);
+    reasonedRefusal([flag, 'key=value'], flag, reason);
+    reasonedRefusal([`${flag}key=value`], flag, reason);
+    reasonedRefusal([`${flag}=value`], flag, reason);
   });
 
-  test('a denied short letter cannot hide in a cluster after another flag', () => {
-    for (const letter of ['c', 'p', 'C']) {
-      expect(refusal(validateCodexArgs([`-v${letter}`, 'x']))).toContain(`-${letter}`);
+  test('-C, --cd and --worktree say why: the session is identified by its working directory', () => {
+    for (const flag of ['-C', '--cd', '--worktree']) {
+      expect(refusal(validateCodexArgs([flag, '/x']))).toContain('change directory first');
     }
   });
 
-  test('-C and --cd say why: the session is identified by its working directory', () => {
-    expect(refusal(validateCodexArgs(['-C', '/x']))).toContain('working directory');
-    expect(refusal(validateCodexArgs(['--cd', '/x']))).toContain('working directory');
+  test('a flag-shaped token after a valued flag is refused as a missing value, naming the valued flag', () => {
+    expect(refusal(validateCodexArgs(['-m', '--profile', 'p']))).toContain('-m needs a value');
   });
 
   test('a denied flag is refused before a later valid resume or prompt is considered', () => {
     expect(refusal(validateCodexArgs(['resume', UUID, '--profile', 'p']))).toContain('--profile');
+    expect(refusal(validateCodexArgs(['a prompt', '--worktree']))).toContain('--worktree');
   });
 
-  test('a flag that only starts like a denied one is not denied', () => {
-    expect(accepted(validateCodexArgs(['--configuration-note'])).args).toEqual([
-      '--configuration-note',
+  test('a flag after the user typed -- is prompt text, not a denied flag', () => {
+    expect(accepted(validateCodexArgs(['--', '--worktree', 'x'])).args).toEqual([
+      '--',
+      '--worktree',
+      'x',
     ]);
-    expect(accepted(validateCodexArgs(['--cdrom'])).args).toEqual(['--cdrom']);
   });
 });
 
 describe('validateCodexRemoteArgs: the default-deny allowlist', () => {
-  function remoteOk(args: readonly unknown[]) {
+  function remoteOk(args: unknown) {
     const result = validateCodexRemoteArgs(args);
     if (!result.ok) throw new Error(`expected ok, got: ${result.error}`);
     return result;
   }
-  function remoteRefused(args: readonly unknown[]): string {
+  function remoteRefused(args: unknown): string {
     const result = validateCodexRemoteArgs(args);
     if (result.ok) throw new Error(`expected a refusal, got ${JSON.stringify(result.args)}`);
     return result.error;
@@ -255,7 +464,7 @@ describe('validateCodexRemoteArgs: the default-deny allowlist', () => {
     expect(validateCodexRemoteArgs([])).toEqual({ ok: true, args: [], resumeThreadId: null });
   });
 
-  test('accepts a model, an approval policy, a sandbox mode and resume, in any order', () => {
+  test('accepts a model, an approval policy, a sandbox mode and resume; resume <uuid> is returned last', () => {
     const args = [
       '-s',
       'workspace-write',
@@ -266,11 +475,16 @@ describe('validateCodexRemoteArgs: the default-deny allowlist', () => {
       '-a',
       'on-request',
     ];
-    expect(remoteOk(args)).toEqual({ ok: true, args, resumeThreadId: UUID });
+    expect(remoteOk(args)).toEqual({
+      ok: true,
+      args: ['-s', 'workspace-write', '--model', 'gpt-5.1', '-a', 'on-request', 'resume', UUID],
+      resumeThreadId: UUID,
+    });
   });
 
   test('both model spellings and the allowed value sets', () => {
     expect(remoteOk(['-m', 'a.b_c:d[1]-2']).args).toEqual(['-m', 'a.b_c:d[1]-2']);
+    expect(remoteOk(['--model', 'x']).args).toEqual(['--model', 'x']);
     expect(remoteOk(['-a', 'untrusted']).args).toEqual(['-a', 'untrusted']);
     expect(remoteOk(['-s', 'read-only']).args).toEqual(['-s', 'read-only']);
   });
@@ -299,6 +513,8 @@ describe('validateCodexRemoteArgs: the default-deny allowlist', () => {
     expect(remoteRefused(['resume'])).toContain('resume');
     expect(remoteRefused(['resume', 'last'])).toContain('resume');
     expect(remoteRefused(['resume', UUID.slice(0, 8)])).toContain('resume');
+    expect(remoteRefused(['resume', `x${UUID}`])).toContain('resume');
+    expect(remoteRefused(['resume', `${UUID}x`])).toContain('resume');
     expect(remoteOk(['resume', UUID.toUpperCase()]).resumeThreadId).toBe(UUID);
   });
 
@@ -309,7 +525,7 @@ describe('validateCodexRemoteArgs: the default-deny allowlist', () => {
     expect(remoteRefused(['resume', UUID, 'resume', UUID])).toContain('twice');
   });
 
-  test('everything else is refused: a prompt, --, remi-owned flags, the = spelling, every local denylist entry', () => {
+  test('everything else is refused: a prompt, --, remi-owned flags, the = spelling, every local flag not on the list', () => {
     const others = [
       'a prompt',
       '--',
@@ -319,8 +535,11 @@ describe('validateCodexRemoteArgs: the default-deny allowlist', () => {
       '--ask-for-approval',
       '--sandbox',
       '--dangerously-bypass-approvals-and-sandbox',
+      '--yolo',
       '--full-auto',
       '--add-dir',
+      '-i',
+      '--image',
       'exec',
       'fork',
       '-c',
@@ -335,11 +554,13 @@ describe('validateCodexRemoteArgs: the default-deny allowlist', () => {
       '--no-daemon',
       '--search',
       '--approve-for-me',
+      '--not-so-yolo',
       '--remote',
       '--remote-auth-token-env',
       '--oss',
       '--local-provider',
       '--cd',
+      '--worktree',
     ];
     for (const arg of others) {
       expect(remoteRefused([arg]), arg).toContain('not allowed');
@@ -349,10 +570,9 @@ describe('validateCodexRemoteArgs: the default-deny allowlist', () => {
   });
 
   test('at most 16 arguments, 256 characters each, no NUL, only strings', () => {
-    // Sixteen arguments is the most: four options with values, resume, and so on.
-    const sixteen = ['-m', 'x', '-a', 'untrusted', '-s', 'read-only', 'resume', UUID];
-    expect(remoteOk(sixteen).args).toHaveLength(8);
-    expect(remoteRefused([...sixteen, ...sixteen, 'extra'])).toContain('at most 16');
+    const eight = ['-m', 'x', '-a', 'untrusted', '-s', 'read-only', 'resume', UUID];
+    expect(remoteOk(eight).args).toHaveLength(8);
+    expect(remoteRefused([...eight, ...eight, 'extra'])).toContain('at most 16');
     expect(remoteRefused(new Array(17).fill('x'))).toContain('at most 16');
     expect(remoteRefused(['-m', 'x'.repeat(257)])).toContain('256');
     expect(remoteRefused(['-m', 'a\0b'])).toContain('NUL');
@@ -362,9 +582,34 @@ describe('validateCodexRemoteArgs: the default-deny allowlist', () => {
   });
 
   test('exactly 16 arguments pass the count and fail only on their content', () => {
-    // 16 valid-length tokens that are all `-m`: the count check passes, the grammar refuses.
     expect(remoteRefused(new Array(16).fill('-m'))).not.toContain('at most 16');
     expect(remoteRefused(new Array(16).fill('x'.repeat(256)))).not.toContain('256');
+  });
+
+  test('it is total: anything that is not an array of strings is a refusal, never a throw', () => {
+    for (const bad of [
+      undefined,
+      null,
+      5,
+      true,
+      'resume',
+      {},
+      { length: 0 },
+      { length: 1, 0: '-m' },
+      new Set(['-m']),
+      () => [],
+      Symbol('x'),
+      10n,
+    ]) {
+      expect(() => validateCodexRemoteArgs(bad), String(typeof bad)).not.toThrow();
+      expect(remoteRefused(bad), String(typeof bad)).toContain('must be an array');
+    }
+  });
+
+  test('a sparse array or one with a hole is a refusal', () => {
+    expect(remoteRefused(new Array(2))).toContain('strings');
+    // biome-ignore lint/suspicious/noSparseArray: a hole is the case under test
+    expect(remoteRefused(['-m', , 'x'])).toContain('strings');
   });
 
   test('the returned arguments are a copy', () => {
@@ -383,8 +628,22 @@ describe('resolveCodexWorkingDirectory', () => {
   });
 
   afterEach(() => {
+    // A test below makes directories unreadable; restore before removing.
+    for (const entry of fs.readdirSync(dir)) {
+      try {
+        fs.chmodSync(path.join(dir, entry), 0o755);
+      } catch {
+        // already gone or a dangling link
+      }
+    }
     fs.rmSync(dir, { recursive: true, force: true });
   });
+
+  function failure(directory: string, ops?: WorkingDirectoryFs): string {
+    const result = resolveCodexWorkingDirectory(directory, ops);
+    if (result.ok) throw new Error(`expected a refusal, got ${result.directory}`);
+    return result.error;
+  }
 
   test('an existing directory resolves to its realpath', () => {
     const real = fs.realpathSync(dir);
@@ -403,28 +662,59 @@ describe('resolveCodexWorkingDirectory', () => {
     });
   });
 
-  test('a path that does not exist is refused', () => {
-    const result = resolveCodexWorkingDirectory(path.join(dir, 'absent'));
-    expect(result.ok).toBe(false);
-    expect(result.ok ? '' : result.error).toContain('does not exist');
+  test('the empty string is refused, not resolved to the process cwd', () => {
+    expect(failure('')).toContain('empty');
+    expect(failure(undefined as unknown as string)).toContain('empty');
+  });
+
+  test('a path that does not exist is refused as ENOENT', () => {
+    expect(failure(path.join(dir, 'absent'))).toContain('does not exist');
   });
 
   test('a dangling symlink is refused as not existing', () => {
     const link = path.join(dir, 'dangling');
     fs.symlinkSync(path.join(dir, 'gone'), link);
 
-    const result = resolveCodexWorkingDirectory(link);
-    expect(result.ok).toBe(false);
-    expect(result.ok ? '' : result.error).toContain('does not exist');
+    expect(failure(link)).toContain('does not exist');
+  });
+
+  test('a symlink loop is refused as ELOOP', () => {
+    const a = path.join(dir, 'a');
+    const b = path.join(dir, 'b');
+    fs.symlinkSync(b, a);
+    fs.symlinkSync(a, b);
+
+    expect(failure(a)).toContain('symlink loop');
+  });
+
+  test('a path through a file is refused as ENOTDIR', () => {
+    const file = path.join(dir, 'file.txt');
+    fs.writeFileSync(file, 'x');
+
+    expect(failure(path.join(file, 'child'))).toContain('path component that is not a directory');
+  });
+
+  test('a directory behind an unreadable parent is refused as a permission error', () => {
+    const parent = path.join(dir, 'locked');
+    fs.mkdirSync(path.join(parent, 'inner'), { recursive: true });
+    fs.chmodSync(parent, 0o000);
+
+    expect(failure(path.join(parent, 'inner'))).toContain('permission denied');
+  });
+
+  test('a directory this process cannot search is refused, though it resolves and is a directory', () => {
+    const closed = path.join(dir, 'closed');
+    fs.mkdirSync(closed);
+    fs.chmodSync(closed, 0o600);
+
+    expect(failure(closed)).toContain('permission denied');
   });
 
   test('a file is refused as not a directory', () => {
     const file = path.join(dir, 'file.txt');
     fs.writeFileSync(file, 'x');
 
-    const result = resolveCodexWorkingDirectory(file);
-    expect(result.ok).toBe(false);
-    expect(result.ok ? '' : result.error).toContain('not a directory');
+    expect(failure(file)).toContain('not a directory');
   });
 
   test('a symlink to a file is refused as not a directory', () => {
@@ -433,8 +723,42 @@ describe('resolveCodexWorkingDirectory', () => {
     fs.writeFileSync(file, 'x');
     fs.symlinkSync(file, link);
 
-    const result = resolveCodexWorkingDirectory(link);
-    expect(result.ok).toBe(false);
-    expect(result.ok ? '' : result.error).toContain('not a directory');
+    expect(failure(link)).toContain('not a directory');
+  });
+
+  test('a directory that vanishes between the checks is a refusal, not a throw', () => {
+    const vanishing: WorkingDirectoryFs = {
+      realpathSync: (p) => fs.realpathSync(p),
+      statSync: () => {
+        throw Object.assign(new Error('gone'), { code: 'ENOENT' });
+      },
+      accessSync: () => {},
+    };
+
+    expect(failure(dir, vanishing)).toContain('does not exist');
+  });
+
+  test('an access failure after a successful stat is a refusal naming its errno', () => {
+    const denied: WorkingDirectoryFs = {
+      realpathSync: (p) => fs.realpathSync(p),
+      statSync: (p) => fs.statSync(p),
+      accessSync: () => {
+        throw Object.assign(new Error('denied'), { code: 'EACCES' });
+      },
+    };
+
+    expect(failure(dir, denied)).toContain('permission denied');
+  });
+
+  test('an unexpected errno is a refusal that names it', () => {
+    const odd: WorkingDirectoryFs = {
+      realpathSync: () => {
+        throw Object.assign(new Error('odd'), { code: 'EMFILE' });
+      },
+      statSync: (p) => fs.statSync(p),
+      accessSync: () => {},
+    };
+
+    expect(failure(dir, odd)).toContain('EMFILE');
   });
 });
