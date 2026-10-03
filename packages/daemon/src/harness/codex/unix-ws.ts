@@ -54,10 +54,10 @@ export interface UnixWsOptions {
   host?: string;
   /** The request path; the default is `/`. */
   path?: string;
-  /** Time to reach the socket: 5000 ms by default. */
-  connectTimeoutMs?: number;
-  /** Time from connecting to the `101` response: 5000 ms by default. */
+  /** Time from the start of the attempt (connecting included) to the `101` response: 5000 ms by default. */
   handshakeTimeoutMs?: number;
+  /** Aborts an attempt that has not reached the `101` yet. It does nothing to an open connection. */
+  signal?: AbortSignal;
   maxPayloadBytes?: number;
   /** How long to wait for the peer's close frame before dropping the socket: 1000 ms by default. */
   closeTimeoutMs?: number;
@@ -68,11 +68,46 @@ const MAX_HEADER_BYTES = 16 * 1024;
 const NORMAL_CLOSURE = 1000;
 const PROTOCOL_ERROR = 1002;
 const INVALID_PAYLOAD = 1007;
+/** A close reason is at most 123 bytes: a control frame carries 125, less the 2-byte code. */
+const MAX_REASON_BYTES = 123;
+
+/**
+ * Whether `code` may appear in a close frame (RFC 6455 section 7.4.1, with the IANA registrations
+ * 1012 to 1014): 1000 to 1003, 1007 to 1014 and 3000 to 4999. 1004 is reserved, 1005, 1006 and
+ * 1015 must never be sent, and 0 to 999 and 1016 to 2999 are unassigned.
+ */
+export function isValidCloseCode(code: number): boolean {
+  return (
+    Number.isInteger(code) &&
+    ((code >= 1000 && code <= 1003) ||
+      (code >= 1007 && code <= 1014) ||
+      (code >= 3000 && code <= 4999))
+  );
+}
+
+/**
+ * Text from the peer (or built from it) in a log line: control characters would let it forge lines
+ * or move the cursor, so it is cut to `max` characters and quoted with JSON escapes.
+ */
+export function quoteForLog(text: string, max = 120): string {
+  return JSON.stringify(text.length > max ? `${text.slice(0, max)}...` : text);
+}
+
+/** `reason` as UTF-8, cut at a code point boundary so it fits a close frame. */
+export function encodeCloseReason(reason: string): Uint8Array {
+  const bytes = new TextEncoder().encode(reason);
+  if (bytes.length <= MAX_REASON_BYTES) return bytes;
+  let end = MAX_REASON_BYTES;
+  // A continuation byte is 10xxxxxx; step back to the start of the character that was cut.
+  while (end > 0 && ((bytes[end] as number) & 0xc0) === 0x80) end--;
+  return bytes.subarray(0, end);
+}
 
 /** The status line and headers of the upgrade response, if complete and acceptable; else an error. */
 function checkUpgradeResponse(head: string, expectedAccept: string): string | null {
   const [statusLine = '', ...lines] = head.split('\r\n');
-  if (!/^HTTP\/1\.1 101\b/.test(statusLine)) return `upgrade refused: ${statusLine.slice(0, 80)}`;
+  if (!/^HTTP\/1\.1 101(?: |$)/.test(statusLine))
+    return `upgrade refused: ${quoteForLog(statusLine, 80)}`;
   const headers = new Map<string, string>();
   for (const line of lines) {
     const colon = line.indexOf(':');
@@ -99,11 +134,36 @@ export function connectUnixWebSocket(
   handlers: WsHandlers,
   opts: UnixWsOptions = {},
 ): Promise<WsConnection> {
-  const log = opts.log ?? (() => {});
+  if (typeof socketPath !== 'string' || socketPath === '' || !socketPath.startsWith('/')) {
+    return Promise.reject(new TypeError('socketPath must be an absolute path'));
+  }
+  if (socketPath.includes('\0')) return Promise.reject(new TypeError('socketPath has a NUL byte'));
+  const requestPath = opts.path ?? '/';
+  const requestHost = opts.host ?? 'localhost';
+  // These go into the request line and the Host header: anything outside these sets could end the
+  // line early and inject headers.
+  if (!/^\/[\x21-\x7e]*$/.test(requestPath)) {
+    return Promise.reject(
+      new TypeError('path must be an absolute request path of printable ASCII'),
+    );
+  }
+  if (!/^[A-Za-z0-9.:-]+$/.test(requestHost)) {
+    return Promise.reject(new TypeError('host must be a host name or address'));
+  }
+  if (opts.signal?.aborted) return Promise.reject(new Error('connect aborted'));
+  // A throwing log callback must not break the read loop or the connect loop that owns it.
+  const log = (message: string): void => {
+    try {
+      opts.log?.(message);
+    } catch {
+      // Dropped on purpose.
+    }
+  };
   const maxPayload = opts.maxPayloadBytes ?? WS_MAX_PAYLOAD_BYTES;
   const key = randomBytes(16).toString('base64');
   const expectedAccept = computeAcceptKey(key);
-  const decoder = new TextDecoder('utf-8', { fatal: true });
+  // `ignoreBOM: true` keeps a leading U+FEFF: it is part of the message, not a byte order mark.
+  const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 
   return new Promise<WsConnection>((resolve, reject) => {
     // Every listener is attached before `connect`. Under `bun test` on Bun 1.3.11 a connect failure
@@ -122,9 +182,11 @@ export function connectUnixWebSocket(
     // A message in progress: the first frame's opcode and the payload pieces so far.
     let fragments: { opcode: number; pieces: Uint8Array[]; size: number } | null = null;
     let timer: ReturnType<typeof setTimeout> | undefined = setTimeout(
-      () => failBeforeOpen(new Error('connect timed out')),
-      opts.connectTimeoutMs ?? 5000,
+      () => failBeforeOpen(new Error('timed out before the upgrade finished')),
+      opts.handshakeTimeoutMs ?? 5000,
     );
+    const onAbort = (): void => failBeforeOpen(new Error('connect aborted'));
+    opts.signal?.addEventListener('abort', onAbort, { once: true });
 
     const clearTimer = (): void => {
       if (timer) clearTimeout(timer);
@@ -135,6 +197,7 @@ export function connectUnixWebSocket(
       if (phase === 'open' || phase === 'closing' || phase === 'closed') return;
       phase = 'closed';
       clearTimer();
+      opts.signal?.removeEventListener('abort', onAbort);
       socket.destroy();
       reject(error);
     }
@@ -143,18 +206,17 @@ export function connectUnixWebSocket(
       if (socket.writable) socket.write(encodeClientFrame(opcode, payload));
     }
 
-    function closePayload(code: number, reason = ''): Uint8Array {
-      const text = new TextEncoder().encode(reason);
-      const out = new Uint8Array(2 + text.length);
+    function closePayload(code: number, reason: Uint8Array): Uint8Array {
+      const out = new Uint8Array(2 + reason.length);
       new DataView(out.buffer).setUint16(0, code);
-      out.set(text, 2);
-      return out.subarray(0, Math.min(out.length, 125));
+      out.set(reason, 2);
+      return out;
     }
 
     /** Send our close frame once, then give the peer `closeTimeoutMs` to answer. */
-    function startClose(code: number, reason: string): void {
+    function startClose(code: number, reason: Uint8Array, reasonText: string): void {
       if (phase === 'closed') return;
-      localClose ??= { code, reason };
+      localClose ??= { code, reason: reasonText };
       if (!sentClose) {
         sentClose = true;
         writeFrame(WS_OPCODE.close, closePayload(code, reason));
@@ -175,8 +237,8 @@ export function connectUnixWebSocket(
       violated = true;
       fragments = null;
       parser = new WsFrameParser({ maxPayloadBytes: maxPayload });
-      log(`closing the connection: ${reason}`);
-      startClose(code, reason);
+      log(`closing the connection: ${quoteForLog(reason)}`);
+      startClose(code, encodeCloseReason(reason), reason);
       socket.end();
     }
 
@@ -212,14 +274,26 @@ export function connectUnixWebSocket(
           }
           return;
         case WS_OPCODE.close: {
-          const code =
-            frame.payload.length >= 2
-              ? new DataView(frame.payload.buffer, frame.payload.byteOffset).getUint16(0)
-              : undefined;
-          const reason = new TextDecoder().decode(frame.payload.subarray(2));
+          // RFC 6455 5.5.1: no payload, or a 2-byte code and an optional UTF-8 reason.
+          if (frame.payload.length === 1) {
+            throw new WsProtocolError('close frame with a 1-byte payload');
+          }
+          const view = new DataView(frame.payload.buffer, frame.payload.byteOffset);
+          const code = frame.payload.length >= 2 ? view.getUint16(0) : undefined;
+          if (code !== undefined && !isValidCloseCode(code)) {
+            throw new WsProtocolError(`close frame with the invalid status code ${code}`);
+          }
+          const reasonBytes = frame.payload.subarray(2);
+          let reason: string;
+          try {
+            reason = decoder.decode(reasonBytes);
+          } catch {
+            violate(INVALID_PAYLOAD, 'close reason is not valid UTF-8');
+            return;
+          }
           received = { code, reason };
-          // Answer a close we did not start (an echo of its code), then let the socket end.
-          if (!sentClose) startClose(code ?? NORMAL_CLOSURE, reason);
+          // Answer a close we did not start: the same code and the original reason bytes.
+          if (!sentClose) startClose(code ?? NORMAL_CLOSURE, reasonBytes, reason);
           socket.end();
           return;
         }
@@ -271,7 +345,9 @@ export function connectUnixWebSocket(
         socket.write(encodeClientFrame(WS_OPCODE.ping, new TextEncoder().encode(data)));
       },
       close(code = NORMAL_CLOSURE) {
-        if (phase === 'open') startClose(code, '');
+        // 1005, 1006 and 1015 are for reporting only and must never go on the wire.
+        if (!isValidCloseCode(code)) throw new RangeError(`${code} is not a status code to send`);
+        if (phase === 'open') startClose(code, new Uint8Array(0), '');
       },
       get isOpen() {
         return phase === 'open';
@@ -281,15 +357,10 @@ export function connectUnixWebSocket(
     socket.on('connect', () => {
       if (phase !== 'connecting') return;
       phase = 'handshake';
-      clearTimer();
-      timer = setTimeout(
-        () => failBeforeOpen(new Error('upgrade timed out')),
-        opts.handshakeTimeoutMs ?? 5000,
-      );
       socket.write(
         [
-          `GET ${opts.path ?? '/'} HTTP/1.1`,
-          `Host: ${opts.host ?? 'localhost'}`,
+          `GET ${requestPath} HTTP/1.1`,
+          `Host: ${requestHost}`,
           'Upgrade: websocket',
           'Connection: Upgrade',
           `Sec-WebSocket-Key: ${key}`,
@@ -304,11 +375,12 @@ export function connectUnixWebSocket(
       if (phase === 'handshake') {
         head = Buffer.concat([head, chunk]);
         const end = head.indexOf('\r\n\r\n');
-        if (end < 0) {
-          if (head.length > MAX_HEADER_BYTES)
-            failBeforeOpen(new Error('upgrade response is too large'));
+        // The cap holds for a header block that arrives whole as well as one that dribbles in.
+        if (end > MAX_HEADER_BYTES || (end < 0 && head.length > MAX_HEADER_BYTES)) {
+          failBeforeOpen(new Error('upgrade response is too large'));
           return;
         }
+        if (end < 0) return;
         const problem = checkUpgradeResponse(
           head.subarray(0, end).toString('latin1'),
           expectedAccept,
@@ -318,6 +390,7 @@ export function connectUnixWebSocket(
           return;
         }
         clearTimer();
+        opts.signal?.removeEventListener('abort', onAbort);
         phase = 'open';
         const leftover = head.subarray(end + 4);
         head = Buffer.alloc(0);

@@ -11,6 +11,9 @@ import {
   type WsCloseInfo,
   type WsConnection,
   connectUnixWebSocket,
+  encodeCloseReason,
+  isValidCloseCode,
+  quoteForLog,
 } from '../../../src/harness/codex/unix-ws.ts';
 import { WS_OPCODE, WsFrameParser } from '../../../src/harness/codex/ws-frames.ts';
 import {
@@ -19,6 +22,7 @@ import {
   RawUnixPeer,
   rejection,
 } from '../../helpers/fake-app-server.ts';
+import { spyTimers } from '../../helpers/timer-spy.ts';
 
 interface Probe {
   messages: string[];
@@ -292,7 +296,7 @@ describe('against a byte-level peer', () => {
       handshakeTimeoutMs: 50,
     });
     await peer.next();
-    expect(((await rejection(silent)) as Error).message).toMatch(/upgrade timed out/);
+    expect(((await rejection(silent)) as Error).message).toMatch(/timed out before the upgrade/);
   });
 
   test('frames in the same chunk as the 101 are delivered', async () => {
@@ -552,5 +556,335 @@ describe('against a byte-level peer', () => {
     expect(seen).toEqual(['boom', 'next']);
     expect(logs.some((l) => /handler failure/.test(l))).toBe(true);
     expect(closes).toEqual([]);
+  });
+});
+
+describe('input validation, log safety and the close-frame rules', () => {
+  let peer: RawUnixPeer;
+  beforeEach(async () => {
+    peer = await RawUnixPeer.start();
+  });
+  afterEach(async () => {
+    await peer.stop();
+  });
+
+  async function open(
+    opts?: UnixWsOptions,
+    handlers?: Partial<ReturnType<typeof probe>['handlers']>,
+  ) {
+    const p = probe();
+    const pending = connectUnixWebSocket(
+      peer.socketPath,
+      { ...p.handlers, ...handlers },
+      { log: (m) => p.logs.push(m), ...opts },
+    );
+    const raw = await peer.next();
+    raw.upgrade();
+    return { ...p, raw, conn: await pending };
+  }
+
+  const message = async (promise: Promise<unknown>): Promise<string> =>
+    ((await rejection(promise)) as Error).message;
+
+  describe('the request and the socket path', () => {
+    test('a path or host that could end the request line or inject a header is refused before any connect', async () => {
+      const bad: Array<[string, UnixWsOptions]> = [
+        ['CR LF in the path', { path: '/a\r\nX-Injected: 1' }],
+        ['a space in the path', { path: '/a b' }],
+        ['a path that is not absolute', { path: 'rpc' }],
+        ['a non-ASCII path', { path: '/\u4e2d\u6587' }],
+        ['CR LF in the host', { host: 'localhost\r\nX-Injected: 1' }],
+        ['a space in the host', { host: 'local host' }],
+        ['an empty host', { host: '' }],
+      ];
+      for (const [name, opts] of bad) {
+        const error = await rejection(
+          connectUnixWebSocket(peer.socketPath, probe().handlers, opts),
+        );
+        expect(error, name).toBeInstanceOf(TypeError);
+      }
+      expect(peer.connections, 'nothing was connected').toHaveLength(0);
+    });
+
+    test('a path with a query and a host with a port are fine', async () => {
+      const { raw, conn } = await open({ path: '/rpc?x=1&y=2', host: 'localhost:8765' });
+      expect(raw.requestHead.split('\r\n').slice(0, 2)).toEqual([
+        'GET /rpc?x=1&y=2 HTTP/1.1',
+        'Host: localhost:8765',
+      ]);
+      conn.close();
+    });
+
+    test('a socket path that is not a non-empty absolute string never touches net', async () => {
+      for (const bad of ['', 'relative.sock', './s.sock', 'a\0b', '/tmp/a\0b']) {
+        const error = await rejection(connectUnixWebSocket(bad, probe().handlers));
+        expect(error, JSON.stringify(bad)).toBeInstanceOf(TypeError);
+      }
+      // An empty path made Bun 1.3.11 try TCP and throw an uncaught TypeError about 250 ms later.
+      await new Promise((r) => setTimeout(r, 400));
+      expect(peer.connections).toHaveLength(0);
+    });
+  });
+
+  describe('the upgrade response', () => {
+    test('only a 101 is an upgrade: other 1xx statuses and an HTTP/1.0 101 are refused', async () => {
+      for (const status of [
+        'HTTP/1.1 100 Continue',
+        'HTTP/1.1 102 Processing',
+        'HTTP/1.1 1010',
+        'HTTP/1.0 101 Switching Protocols',
+      ]) {
+        const pending = connectUnixWebSocket(peer.socketPath, probe().handlers);
+        const raw = await peer.next();
+        raw.upgrade({ status });
+        expect(await message(pending), status).toMatch(/upgrade refused/);
+      }
+    });
+
+    test('a 20 KiB header block that arrives in one write is refused, as is one that never ends', async () => {
+      const whole = connectUnixWebSocket(peer.socketPath, probe().handlers);
+      const first = await peer.next();
+      first.upgrade({ headers: [`X-Pad: ${'a'.repeat(20 * 1024)}`] });
+      expect(await message(whole)).toMatch(/too large/);
+
+      const endless = connectUnixWebSocket(peer.socketPath, probe().handlers);
+      const second = await peer.next();
+      second.write(
+        Buffer.from(`HTTP/1.1 101 Switching Protocols\r\nX-Pad: ${'a'.repeat(17 * 1024)}`),
+      );
+      expect(await message(endless)).toMatch(/too large/);
+    });
+
+    test('a header block just under the cap is accepted', async () => {
+      const pending = connectUnixWebSocket(peer.socketPath, probe().handlers);
+      const raw = await peer.next();
+      raw.upgrade({ headers: [`X-Pad: ${'a'.repeat(12 * 1024)}`] });
+      const conn = await pending;
+      expect(conn.isOpen).toBe(true);
+      conn.close();
+    });
+
+    test('server text in the refusal is quoted: no raw control character reaches the message', async () => {
+      const pending = connectUnixWebSocket(peer.socketPath, probe().handlers);
+      const raw = await peer.next();
+      raw.upgrade({ status: 'HTTP/1.1 500 \u001b[2Jforged' });
+      const text = await message(pending);
+      expect(text).toMatch(/upgrade refused/);
+      expect(text).not.toContain('\u001b');
+      expect(text).toContain('\\u001b');
+    });
+  });
+
+  describe('the default deadlines', () => {
+    test('the upgrade has 5 s and the peer 1 s to answer a close, and the upgrade timer is cleared once open', async () => {
+      const spy = spyTimers();
+      try {
+        const pending = connectUnixWebSocket(peer.socketPath, probe().handlers);
+        const raw = await peer.next();
+        const [upgradeTimer] = spy.withDelay(5000);
+        expect(upgradeTimer, 'a 5000 ms upgrade deadline').toBeDefined();
+        raw.upgrade();
+        const conn = await pending;
+        expect(upgradeTimer?.cleared, 'cleared once the upgrade finished').toBe(true);
+        conn.close();
+        expect(spy.withDelay(1000), 'a 1000 ms close deadline').toHaveLength(1);
+        raw.destroy();
+      } finally {
+        spy.restore();
+      }
+    });
+  });
+
+  describe('an attempt that is aborted', () => {
+    test('a signal aborts an attempt stuck waiting for the upgrade, and the socket is dropped', async () => {
+      const controller = new AbortController();
+      const pending = connectUnixWebSocket(peer.socketPath, probe().handlers, {
+        signal: controller.signal,
+        handshakeTimeoutMs: 10_000,
+      });
+      const raw = await peer.next();
+      const started = Date.now();
+      controller.abort();
+      expect(await message(pending)).toMatch(/aborted/);
+      expect(Date.now() - started).toBeLessThan(1000);
+      await raw.waitForEnd();
+    });
+
+    test('an already aborted signal rejects without connecting', async () => {
+      const controller = new AbortController();
+      controller.abort();
+      const error = await rejection(
+        connectUnixWebSocket(peer.socketPath, probe().handlers, { signal: controller.signal }),
+      );
+      expect(error).toBeInstanceOf(Error);
+      expect(peer.connections).toHaveLength(0);
+    });
+
+    test('aborting after the connection is open does nothing to it', async () => {
+      const controller = new AbortController();
+      const { conn } = await open({ signal: controller.signal });
+      controller.abort();
+      await new Promise((r) => setTimeout(r, 50));
+      expect(conn.isOpen).toBe(true);
+      conn.close();
+    });
+  });
+
+  describe('a log callback that throws', () => {
+    test('does not break the connection: the next message still arrives', async () => {
+      const messages: string[] = [];
+      const pending = connectUnixWebSocket(
+        peer.socketPath,
+        { onMessage: (t) => messages.push(t), onClose() {} },
+        {
+          log: () => {
+            throw new Error('log failure');
+          },
+        },
+      );
+      const raw = await peer.next();
+      raw.upgrade();
+      await pending;
+      // A binary message is dropped with a log line, which throws here.
+      raw.write(RawConnection.frame(WS_OPCODE.binary, Buffer.from([1])));
+      raw.write(RawConnection.frame(WS_OPCODE.text, 'still-here'));
+      await waitFor(() => messages.length === 1, 'the text message');
+      expect(messages).toEqual(['still-here']);
+    });
+  });
+
+  describe('quoteForLog', () => {
+    test('escapes control characters, cuts at the limit and keeps ordinary text readable', () => {
+      expect(quoteForLog('plain text')).toBe('"plain text"');
+      const forged = quoteForLog('ok\r\n[error] forged\u001b[2J');
+      expect(forged).not.toMatch(/[\u0000-\u001f]/);
+      expect(forged).toContain('\\r\\n');
+      expect(quoteForLog('x'.repeat(500), 10)).toBe(`"${'x'.repeat(10)}..."`);
+    });
+  });
+
+  describe('text is delivered as sent', () => {
+    test('a leading byte order mark is part of the message, not stripped', async () => {
+      const { raw, messages } = await open();
+      raw.write(RawConnection.frame(WS_OPCODE.text, '\ufeff{"a":1}'));
+      await waitFor(() => messages.length === 1, 'the message');
+      expect(messages[0]).toBe('\ufeff{"a":1}');
+    });
+  });
+
+  describe('the close-frame rules (RFC 6455 5.5.1 and 7.4.1)', () => {
+    const closeFrame = (code: number | null, reason: Uint8Array | string = ''): Buffer => {
+      const bytes = Buffer.from(reason);
+      const body =
+        code === null
+          ? Buffer.alloc(0)
+          : Buffer.concat([Buffer.from([code >> 8, code & 0xff]), bytes]);
+      return RawConnection.frame(WS_OPCODE.close, body);
+    };
+    const sentClose = async (raw: RawConnection): Promise<Buffer> => {
+      await waitFor(
+        () => clientFrames(raw.received).some((f) => f.opcode === WS_OPCODE.close),
+        "the client's close frame",
+      );
+      return (
+        clientFrames(raw.received).find((f) => f.opcode === WS_OPCODE.close) as { payload: Buffer }
+      ).payload;
+    };
+
+    test('every code outside the registered ranges closes the connection with 1002', async () => {
+      for (const code of [0, 999, 1004, 1005, 1006, 1015, 1016, 2999, 5000, 65535]) {
+        const { raw, closes } = await open();
+        raw.write(closeFrame(code));
+        await waitFor(() => closes.length === 1, `onClose for ${code}`);
+        expect(closes[0], `code ${code}`).toMatchObject({ code: 1002, clean: false });
+        expect(closeCode(await sentClose(raw)), `code ${code}`).toBe(1002);
+        raw.destroy();
+      }
+    });
+
+    test('a one-byte payload closes with 1002', async () => {
+      const { raw, closes } = await open();
+      raw.write(RawConnection.frame(WS_OPCODE.close, Buffer.from([0x03])));
+      await waitFor(() => closes.length === 1, 'onClose');
+      expect(closes[0]).toMatchObject({ code: 1002, clean: false });
+      expect(closeCode(await sentClose(raw))).toBe(1002);
+    });
+
+    test('a reason that is not UTF-8 closes with 1007', async () => {
+      const { raw, closes } = await open();
+      raw.write(closeFrame(1000, Buffer.from([0xff, 0xfe])));
+      await waitFor(() => closes.length === 1, 'onClose');
+      expect(closes[0]).toMatchObject({ code: 1007, clean: false });
+      expect(closeCode(await sentClose(raw))).toBe(1007);
+    });
+
+    test('every registered code is accepted, reported, and echoed with the original reason bytes', async () => {
+      for (const code of [
+        1000, 1001, 1002, 1003, 1007, 1008, 1009, 1010, 1011, 1012, 1013, 1014, 3000, 4000, 4999,
+      ]) {
+        const { raw, closes } = await open();
+        // A leading BOM and multi-byte text must come back byte for byte.
+        const reason = Buffer.from('\ufeffr\u00e9sum\u00e9 \u2603');
+        raw.write(closeFrame(code, reason));
+        await waitFor(() => closes.length === 1, `onClose for ${code}`);
+        expect(closes[0], `code ${code}`).toEqual({
+          code,
+          reason: '\ufeffr\u00e9sum\u00e9 \u2603',
+          clean: true,
+        });
+        const echoed = await sentClose(raw);
+        expect(closeCode(echoed), `code ${code}`).toBe(code);
+        expect(echoed.subarray(2).equals(reason), `reason bytes for ${code}`).toBe(true);
+        raw.destroy();
+      }
+    });
+
+    test('a close frame with no payload is a clean close with no code, answered with 1000', async () => {
+      const { raw, closes } = await open();
+      raw.write(closeFrame(null));
+      await waitFor(() => closes.length === 1, 'onClose');
+      expect(closes[0]).toEqual({ code: undefined, reason: '', clean: true });
+      expect(closeCode(await sentClose(raw))).toBe(1000);
+    });
+
+    test('close(code) sends a registered code and refuses 1005, 1006, 1015 and the unassigned', async () => {
+      for (const code of [0, 999, 1004, 1005, 1006, 1015, 1016, 2999, 5000, 1.5, Number.NaN]) {
+        const { raw, conn } = await open();
+        expect(() => conn.close(code), `code ${code}`).toThrow(RangeError);
+        expect(conn.isOpen, `code ${code}`).toBe(true);
+        raw.destroy();
+      }
+      const { raw, conn } = await open();
+      conn.close(4001);
+      expect(closeCode(await sentClose(raw))).toBe(4001);
+    });
+
+    test('send and ping are refused as soon as close() starts, not only when it ends', async () => {
+      const { conn } = await open({ closeTimeoutMs: 5000 });
+      conn.close();
+      expect(conn.isOpen).toBe(false);
+      expect(() => conn.send('x')).toThrow(/not open/);
+      expect(() => conn.ping()).toThrow(/not open/);
+    });
+
+    test('isValidCloseCode is the registered set', () => {
+      const valid = [1000, 1001, 1002, 1003, 1007, 1011, 1012, 1013, 1014, 3000, 4999];
+      const invalid = [0, 999, 1004, 1005, 1006, 1015, 1016, 2999, 5000, 65535, -1, 1000.5];
+      for (const code of valid) expect(isValidCloseCode(code), String(code)).toBe(true);
+      for (const code of invalid) expect(isValidCloseCode(code), String(code)).toBe(false);
+    });
+
+    test('a reason is cut on a code point boundary at 123 bytes', () => {
+      expect(encodeCloseReason('short')).toEqual(new TextEncoder().encode('short'));
+      const long = encodeCloseReason('a'.repeat(200));
+      expect(long.length).toBe(123);
+      // 61 two-byte characters is 122 bytes; the 62nd would straddle byte 123, so it is dropped whole.
+      const twoByte = encodeCloseReason('\u00e9'.repeat(100));
+      expect(twoByte.length).toBe(122);
+      expect(new TextDecoder('utf-8', { fatal: true }).decode(twoByte)).toBe('\u00e9'.repeat(61));
+      // A 4-byte character cut at the boundary is dropped whole too.
+      const emoji = encodeCloseReason(`${'a'.repeat(121)}\u{1f600}`);
+      expect(new TextDecoder('utf-8', { fatal: true }).decode(emoji)).toBe('a'.repeat(121));
+    });
   });
 });
