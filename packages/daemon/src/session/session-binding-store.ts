@@ -21,9 +21,10 @@
  */
 
 import { identityFromClaudeId, isHarnessId } from '@remi/shared';
-import type { SessionIdentity, UUID } from '@remi/shared';
+import type { HarnessId, SessionIdentity, UUID } from '@remi/shared';
 
 import { log } from '../cli/logger.ts';
+import { isClaudeRecord } from './session-store.ts';
 import type { SessionStore, StoredSession } from './session-store.ts';
 import type { TranscriptIndex } from './transcript-index.ts';
 
@@ -111,7 +112,8 @@ export class SessionBindingStore {
   /**
    * Update the durable binding on rotation / first discovery. Delegates to
    * SessionStore.updateClaudeSessionId (a no-op when the record is absent, matching
-   * today). Together with preAssign, the ONLY claudeSessionId writer.
+   * today). Together with preAssign, the ONLY claudeSessionId writer. Throws for
+   * a record of another harness (#1176), before the transcript index is touched.
    */
   update(remiSessionId: UUID, claudeSessionId: string): void {
     const updated = this.store.updateClaudeSessionId(remiSessionId, claudeSessionId);
@@ -123,6 +125,24 @@ export class SessionBindingStore {
     if (updated) {
       this.transcriptIndex?.record(remiSessionId, claudeSessionId, updated.projectPath);
     }
+  }
+
+  /**
+   * Record a non-Claude harness's own session id (#1176): first discovery, or
+   * a rotation. The counterpart of `update()` for a record that names its
+   * harness. A no-op when the record is absent, like `update()`. It does not
+   * touch the transcript index, which maps a Claude id to a Claude transcript;
+   * a non-Claude harness has no entry there.
+   *
+   * No production caller yet: the Codex launch (phase 3) records the thread id
+   * with it, once the app-server names one.
+   */
+  updateHarnessIdentity(
+    remiSessionId: UUID,
+    harness: Exclude<HarnessId, 'claude'>,
+    harnessSessionId: string,
+  ): void {
+    this.store.updateHarnessIdentity(remiSessionId, harness, harnessSessionId);
   }
 
   /**
@@ -141,9 +161,11 @@ export class SessionBindingStore {
     // session never rotates and is later purged from sessions.json (#577).
     if (saved.claudeSessionId) {
       this.transcriptIndex?.record(saved.remiSessionId, saved.claudeSessionId, saved.projectPath);
-    } else if (this.transcriptIndex) {
+    } else if (this.transcriptIndex && isClaudeRecord(saved)) {
       // No claude id yet (deferred to the first update() on hook adopt/rotation).
       // Log so the deferred index seed is traceable rather than silently skipped.
+      // A non-Claude record never seeds this index, so there is nothing deferred
+      // to trace for it (#1176).
       log(
         `[transcript-index] preAssign for ${saved.remiSessionId} has no claudeSessionId yet; index seed deferred to update()`,
       );

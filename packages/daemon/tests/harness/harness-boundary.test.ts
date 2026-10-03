@@ -57,6 +57,9 @@ const NEUTRAL_FILES = [
   'harness/types.ts',
   'harness/decision.ts',
   'cli/current-session.ts',
+  // The PTY spawn takes its command, environment and output sink as
+  // parameters (#1176), so a second harness can use it without Claude's parser.
+  'cli/session-phases/pty-session-setup.ts',
 ] as const;
 
 /** Claude-specific directories, as paths relative to `src`. */
@@ -308,6 +311,117 @@ describe('only cli.ts reaches the harness runtime modules at runtime', () => {
         continue;
       }
       for (const target of harnessRuntimeImports(
+        join(SRC, file),
+        readFileSync(join(SRC, file), 'utf8'),
+      )) {
+        offences.push(`${file} -> ${target}`);
+      }
+    }
+    expect(offences).toEqual([]);
+  });
+});
+
+/**
+ * The one session phase a Codex file may reach (#1176): the neutral PTY spawn.
+ * Everything else under `cli/session-phases/` (the hook bridge, the message-API
+ * wiring) is Claude's or the shell's.
+ */
+const CODEX_ALLOWED_SESSION_PHASES = ['cli/session-phases/pty-session-setup.ts'] as const;
+
+/** The modules under `cli/session-phases/` that `source` imports, as paths relative to `src`. */
+function sessionPhaseImports(fileName: string, source: string): string[] {
+  const out = new Set<string>();
+  for (const { text } of moduleSpecifiers(fileName, source)) {
+    const target = daemonTarget(text, fileName);
+    if (target === null) continue;
+    const bare = stripExtension(target);
+    if (bare === 'cli/session-phases' || bare.startsWith('cli/session-phases/')) {
+      out.add(bare === 'cli/session-phases' ? 'cli/session-phases/index.ts' : target);
+    }
+  }
+  return [...out];
+}
+
+/** The session phases `source` imports other than the allowed neutral PTY spawn. */
+function disallowedSessionPhases(fileName: string, source: string): string[] {
+  const allowed: readonly string[] = CODEX_ALLOWED_SESSION_PHASES;
+  return sessionPhaseImports(fileName, source).filter((target) => !allowed.includes(target));
+}
+
+describe('Codex files reach only the neutral PTY spawn under cli/session-phases', () => {
+  const FROM = join(SRC, 'harness', 'codex', 'some-codex-file.ts');
+
+  test('the detector names every session phase a file imports, in any import form', () => {
+    expect(
+      sessionPhaseImports(
+        FROM,
+        `import { s } from '../../cli/session-phases/pty-session-setup.ts';`,
+      ),
+    ).toEqual(['cli/session-phases/pty-session-setup.ts']);
+    expect(
+      sessionPhaseImports(
+        FROM,
+        `import { h } from '../../cli/session-phases/hook-bridge-setup.ts';`,
+      ),
+    ).toEqual(['cli/session-phases/hook-bridge-setup.ts']);
+    expect(
+      sessionPhaseImports(FROM, `import { m } from '../../cli/session-phases/message-api-setup';`),
+    ).toEqual(['cli/session-phases/message-api-setup']);
+    expect(sessionPhaseImports(FROM, `import { x } from '../../cli/session-phases';`)).toEqual([
+      'cli/session-phases/index.ts',
+    ]);
+    expect(
+      sessionPhaseImports(
+        FROM,
+        `const m = await import('../../cli/session-phases/hook-bridge-setup.ts');`,
+      ),
+    ).toEqual(['cli/session-phases/hook-bridge-setup.ts']);
+  });
+
+  test('the detector ignores everything that is not a session phase', () => {
+    const source = [
+      `// import { h } from '../../cli/session-phases/hook-bridge-setup.ts';`,
+      `import { a } from '../../cli/logger.ts';`,
+      `import { b } from '../../cli/session-phases-extra/x.ts';`,
+      `import { c } from '@remi/shared';`,
+    ].join('\n');
+    expect(sessionPhaseImports(FROM, source)).toEqual([]);
+  });
+
+  test('the allowlist lets the PTY spawn through and flags every other session phase', () => {
+    // The scan below finds nothing today, so it cannot tell a rule that
+    // allows the right module from one that allows the wrong one; this can.
+    expect(
+      disallowedSessionPhases(
+        FROM,
+        `import { s } from '../../cli/session-phases/pty-session-setup.ts';`,
+      ),
+    ).toEqual([]);
+    expect(
+      disallowedSessionPhases(
+        FROM,
+        [
+          `import { s } from '../../cli/session-phases/pty-session-setup.ts';`,
+          `import { h } from '../../cli/session-phases/hook-bridge-setup.ts';`,
+          `import { m } from '../../cli/session-phases/message-api-setup.ts';`,
+        ].join('\n'),
+      ),
+    ).toEqual([
+      'cli/session-phases/hook-bridge-setup.ts',
+      'cli/session-phases/message-api-setup.ts',
+    ]);
+    expect(disallowedSessionPhases(FROM, `import { x } from '../../cli/session-phases';`)).toEqual([
+      'cli/session-phases/index.ts',
+    ]);
+  });
+
+  test('no file under harness/codex imports a session phase other than the allowed one', () => {
+    const files = allSourceFiles().filter((file) => file.startsWith('harness/codex/'));
+    // Not vacuous: there is at least one Codex file to hold to the rule.
+    expect(files.length).toBeGreaterThan(0);
+    const offences: string[] = [];
+    for (const file of files) {
+      for (const target of disallowedSessionPhases(
         join(SRC, file),
         readFileSync(join(SRC, file), 'utf8'),
       )) {

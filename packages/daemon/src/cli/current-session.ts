@@ -18,7 +18,10 @@ export interface CurrentOwnedSession {
   readonly sessionId: UUID;
   /** The current Claude session id (rotates on /clear); null if unbound. */
   readonly claudeSessionId: UUID | null;
-  /** The current transcript file path; null if the Claude id/project is unknown. */
+  /**
+   * The current transcript file path; null when the Claude id or project is
+   * unknown, or the harness has no transcript file to name.
+   */
   readonly transcriptPath: string | null;
 }
 
@@ -50,6 +53,8 @@ export function makeCurrentSessionResolver(
       const stored = sessionStore.findByRemiSessionId(sessionId);
       const claudeSessionId = (stored?.claudeSessionId ?? null) as UUID | null;
       const projectPath = stored?.projectPath ?? null;
+      // `harness.transcriptPath` may itself be null (a harness with no file),
+      // which reads as "no file", the same as an unknown id or project.
       const transcriptPath =
         claudeSessionId && projectPath
           ? harness.transcriptPath(projectPath, claudeSessionId)

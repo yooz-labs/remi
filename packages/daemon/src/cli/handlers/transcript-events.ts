@@ -119,7 +119,12 @@ export function createTranscriptHandlers(deps: TranscriptHandlerDeps) {
           const indexed = transcriptIndex.get(sessionId as UUID);
           if (indexed) {
             const candidate = harness.transcriptPath(indexed.projectPath, indexed.claudeSessionId);
-            if (fs.existsSync(candidate)) {
+            if (candidate === null) {
+              // The harness names no file for this binding, so there is nothing to load.
+              log(
+                `[TranscriptLoad] Durable index hit for ${sessionId} (claude=${indexed.claudeSessionId.slice(0, 8)}) but the harness has no transcript file`,
+              );
+            } else if (fs.existsSync(candidate)) {
               filePath = candidate;
               log(
                 `[TranscriptLoad] Resolved Remi UUID ${sessionId} to path via durable index ${indexed.claudeSessionId.slice(0, 8)}`,

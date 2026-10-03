@@ -224,12 +224,15 @@ import {
   DEFAULT_PORT_RANGE,
   PendingQuestionCreatedAtTracker,
   SessionBindingStore,
+  SessionHarnessMismatchError,
   SessionRegistry,
   SessionRegistryFile,
   SessionStore,
   type StoredSession,
   TranscriptIndex,
+  isClaudeRecord,
   resolveStoredSession,
+  storedHarness,
 } from './session/index.ts';
 import { findAvailableTcpPort } from './session/port-utils.ts';
 import { traceQuestionEvent } from './session/question-trace.ts';
@@ -705,9 +708,20 @@ if (cliShowSessions) {
   } else {
     for (const s of sessions) {
       const status = s.exitedAt ? `exited (${s.exitCode})` : 'running';
-      const claudeId = s.claudeSessionId ? ` claude:${s.claudeSessionId.slice(0, 8)}` : '';
+      // The harness's own id, labeled with its harness: `claude:<8>` for a
+      // Claude record, `codex:<8>` for a Codex one (#1176). A Claude record
+      // with no id yet prints no label, as it always did; a record of another
+      // harness with none prints `<harness>:-`, so it never reads as an
+      // id-less Claude one.
+      const claude = isClaudeRecord(s);
+      const harnessId = claude ? s.claudeSessionId : (s.harnessSessionId ?? null);
+      const idLabel = harnessId
+        ? ` ${storedHarness(s)}:${harnessId.slice(0, 8)}`
+        : claude
+          ? ''
+          : ` ${storedHarness(s)}:-`;
       console.log(
-        `  ${s.remiSessionId.slice(0, 8)}  ${status}  ${s.projectPath}${claudeId}  ${s.startedAt}`,
+        `  ${s.remiSessionId.slice(0, 8)}  ${status}  ${s.projectPath}${idLabel}  ${s.startedAt}`,
       );
     }
     if (filter === 'running') {
@@ -727,19 +741,20 @@ if (cliResume !== undefined) {
 
   try {
     if (cliResume === true) {
-      session = store.getMostRecent();
+      session = store.getMostRecent('claude');
       if (!session) {
         console.error('No sessions to resume. Run `remi --sessions` to see stored sessions.');
         process.exit(1);
       }
     } else {
       // Resolve exact Remi, unique Remi prefix, then Claude identity without
-      // ever selecting the first row when the store is ambiguous.
-      session = resolveStoredSession(store.list(), cliResume as string);
+      // ever selecting the first row when the store is ambiguous. A session
+      // that ran under another harness is refused, not resumed as Claude.
+      session = resolveStoredSession(store.list(), cliResume as string, { harness: 'claude' });
     }
   } catch (err) {
     const reason =
-      err instanceof AmbiguousSessionIdentityError
+      err instanceof AmbiguousSessionIdentityError || err instanceof SessionHarnessMismatchError
         ? err.message
         : `Could not read stored sessions: ${errorToString(err)}`;
     console.error(reason);
@@ -986,8 +1001,9 @@ function forceReleaseAllSessions(): void {
 }
 // Per-session APNS dispatchers (#585, P7), keyed by sessionId, so the
 // question-resolved path can fire a quiet lock-screen dismissal through the same
-// device-token fan-out that pushed the card. Populated by createClaudeSession
-// (called from createNewSession); removed on session close.
+// device-token fan-out that pushed the card. Populated by createNewSession,
+// before it asks the harness to build the session (#1165 E); removed on session
+// close.
 const sessionNotifiers: Map<UUID, NotificationDispatcher> = new Map();
 // `StopFailure` -> the session's `turn_failed` push, and its later dismissal
 // (#1153); no config involved, see `createTurnFailedRoutes`.
@@ -1505,6 +1521,13 @@ async function createNewSession(
     },
     sessionId,
   );
+  // Register this session's APNS dispatcher before the harness builds
+  // anything that can fire a decision: the question-resolved path and the
+  // harness's terminal-notice closures read `sessionNotifiers.get(sid)` to
+  // dismiss or push through the same device-token fan-out (#585, P7, #1165 E).
+  // It is neutral work (a per-session dispatcher, nothing Claude's), so the
+  // shell does it once for every harness.
+  sessionNotifiers.set(sessionId, notifications);
   // Everything Claude-specific (the question tracker, the PTY output parser,
   // the pre-spawn session binding, the hook bridge and the unstarted PTY) is
   // built behind the harness seam, in `harness/claude-session.ts`.
@@ -1517,7 +1540,6 @@ async function createNewSession(
     messageApi,
     sendAndRecord,
     sendMessage,
-    notifications,
   });
   harnessSessions.set(sessionId, session);
   const ptySession = session.pty;

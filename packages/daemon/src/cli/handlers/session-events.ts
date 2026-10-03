@@ -147,6 +147,8 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
           const binding = bindingStore.get(s.sessionId as UUID);
           if (!binding?.claudeSessionId) return s;
           const transcriptPath = harness.transcriptPath(s.projectPath, binding.claudeSessionId);
+          // No file to name (a harness without a transcript): decorate the id only.
+          if (transcriptPath === null) return { ...s, claudeSessionId: binding.claudeSessionId };
           return { ...s, claudeSessionId: binding.claudeSessionId, transcriptPath };
         } catch (err) {
           logError(
