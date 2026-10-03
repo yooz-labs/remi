@@ -1,9 +1,9 @@
 /**
  * Black-box characterization of how a session daemon launches Claude (#1164).
  *
- * `createNewSession` in `cli.ts` is about to be moved behind the harness seam
- * with zero behavior change, and no existing test drives it end to end: the
- * unit tests build its parts one at a time. This spawns the REAL `cli.ts
+ * `createNewSession` in `cli.ts` was moved behind the harness seam (#1164) with
+ * zero behavior change, and no existing test drove it end to end: the unit
+ * tests build its parts one at a time. This spawns the REAL `cli.ts
  * --daemon` in an isolated $HOME (`isolatedEnv` also drops `REMI_HOME`), with
  * a real executable fake `claude` first on PATH (a real process, nothing
  * mocked) that records its argv, selected environment, working directory and
