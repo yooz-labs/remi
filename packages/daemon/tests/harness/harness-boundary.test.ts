@@ -46,7 +46,7 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
-import ts from 'typescript';
+import { moduleSpecifiers } from '../helpers/module-specifiers.ts';
 
 const SRC = resolve(import.meta.dir, '..', '..', 'src');
 
@@ -124,48 +124,6 @@ function forbiddenTarget(specifier: string, fromFile: string): string | null {
   if (!hit) return null;
   // `../hooks` means the directory's index; name what it resolves to.
   return FORBIDDEN_DIRS.some((dir) => bare === dir) ? `${bare}/index.ts` : target;
-}
-
-function literalText(node: ts.Node | undefined): string | null {
-  if (node && (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))) {
-    return node.text;
-  }
-  return null;
-}
-
-interface Specifier {
-  readonly text: string;
-  /** `import type` / `export type` / a type-position `import()`: erased at build time. */
-  readonly typeOnly: boolean;
-}
-
-/** Every statically known module specifier in `source`, from real syntax only. */
-function moduleSpecifiers(fileName: string, source: string): Specifier[] {
-  const sf = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
-  const found: Specifier[] = [];
-  const add = (node: ts.Node | undefined, typeOnly = false) => {
-    const text = literalText(node);
-    if (text !== null) found.push({ text, typeOnly });
-  };
-  const visit = (node: ts.Node): void => {
-    if (ts.isImportDeclaration(node)) {
-      add(node.moduleSpecifier, node.importClause?.isTypeOnly === true);
-    } else if (ts.isExportDeclaration(node)) {
-      add(node.moduleSpecifier, node.isTypeOnly);
-    } else if (ts.isImportEqualsDeclaration(node)) {
-      if (ts.isExternalModuleReference(node.moduleReference)) add(node.moduleReference.expression);
-    } else if (ts.isImportTypeNode(node)) {
-      if (ts.isLiteralTypeNode(node.argument)) add(node.argument.literal, true);
-    } else if (ts.isCallExpression(node)) {
-      const callee = node.expression;
-      const isDynamicImport = callee.kind === ts.SyntaxKind.ImportKeyword;
-      const isRequire = ts.isIdentifier(callee) && callee.text === 'require';
-      if (isDynamicImport || isRequire) add(node.arguments[0]);
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(sf);
-  return found;
 }
 
 /** The distinct Claude-specific modules `source` imports. */
