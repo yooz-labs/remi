@@ -4,7 +4,6 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type WsConnection, connectUnixWebSocket } from '../../src/harness/codex/unix-ws.ts';
 import { placeholderUuid } from './codex-fixtures.ts';
@@ -20,7 +19,7 @@ describe('socketDir', () => {
   });
 
   test('uses the temp directory when the socket path fits', () => {
-    const base = mkdtempSync(join(tmpdir(), 'sd-'));
+    const base = mkdtempSync('/tmp/sd-');
     made.push(base);
     process.env['TMPDIR'] = base;
     const dir = socketDir('sock-', 's.sock');
@@ -29,7 +28,7 @@ describe('socketDir', () => {
   });
 
   test('falls back to /tmp when a long TMPDIR would overflow sun_path', () => {
-    const base = join(mkdtempSync(join(tmpdir(), 'sd-')), 'x'.repeat(120));
+    const base = join(mkdtempSync('/tmp/sd-'), 'x'.repeat(120));
     mkdirSync(base);
     made.push(base);
     process.env['TMPDIR'] = base;
