@@ -412,7 +412,7 @@ export function createClaudeSession(
       sessionRegistry,
       sessionStore,
       liveSessionsRegistry,
-      outputProcessor,
+      outputSink: outputProcessor,
       wsPort: deps.wsPort(),
       sendMessage,
       cleanup,

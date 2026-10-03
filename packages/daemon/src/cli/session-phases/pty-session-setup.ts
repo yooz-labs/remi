@@ -2,13 +2,15 @@
  * Construct the PTYSession and wire its
  * four callbacks (onRawData, onData, onExit, onError).
  *
- * The Claude Code CLI is spawned in a PTY so output fidelity matches a real
- * terminal. Callbacks fan out to:
+ * The harness's CLI (Claude Code unless `command` says otherwise, #1176) is
+ * spawned in a PTY so output fidelity matches a real terminal. Callbacks fan
+ * out to:
  *   - onRawData: wrapper-mode local terminal (if pass-through is active AND
  *     the terminal hasn't detached) plus the actively attached CLI client
- *   - onData:    the OutputProcessor which parses tool-output errors and,
- *     when hooks are unavailable, status and question detection
- *   - onExit:    flush the processor, unregister the session, persist the
+ *   - onData:    the output sink (Claude: the OutputProcessor, which parses
+ *     tool-output errors and, when hooks are unavailable, status and question
+ *     detection; a harness that reads no PTY output passes `NOOP_OUTPUT_SINK`)
+ *   - onExit:    flush the sink, unregister the session, persist the
  *     exit code, and (pass-through only) trigger process-level cleanup
  *   - onError:   log only; PTYs rarely fail in ways the caller can recover
  *     from without a full restart
@@ -22,7 +24,6 @@ import * as fs from 'node:fs';
 import { createRawPtyOutput, errorToString } from '@remi/shared';
 import type { ProtocolMessage, UUID } from '@remi/shared';
 
-import type { OutputProcessor } from '../../parser/output-processor.ts';
 import { PTYSession } from '../../pty/index.ts';
 import type { SessionRegistry, SessionRegistryFile, SessionStore } from '../../session/index.ts';
 import { log, logError } from '../logger.ts';
@@ -34,6 +35,22 @@ import {
   setWrapperDetached,
 } from '../wrapper-state.ts';
 
+/**
+ * What the PTY's data callbacks feed. Claude passes its `OutputProcessor`,
+ * which satisfies this structurally; the spawn code knows nothing else about
+ * the parser, so it imports none of Claude's.
+ */
+export interface PtyOutputSink {
+  process(text: string): void;
+  flush(): void;
+}
+
+/**
+ * The sink of a harness that parses no PTY output (Codex: its state comes from
+ * the app-server, never from the screen). Both calls do nothing.
+ */
+export const NOOP_OUTPUT_SINK: PtyOutputSink = { process: () => {}, flush: () => {} };
+
 export interface PtySessionSetupDeps {
   sessionRegistry: SessionRegistry;
   sessionStore: SessionStore;
@@ -43,8 +60,13 @@ export interface PtySessionSetupDeps {
    * entry; co-located daemons then stop treating us as a live sibling (#451).
    */
   liveSessionsRegistry: SessionRegistryFile;
-  outputProcessor: OutputProcessor;
-  /** Value passed to PTYSession.env as REMI_PORT so hooks can report back. */
+  /** Receives every PTY data chunk and the final flush on exit. */
+  outputSink: PtyOutputSink;
+  /**
+   * The port validated at entry; also the REMI_PORT value of the default
+   * Claude child environment so hooks can report back (not used when
+   * `childEnv` is given).
+   */
   wsPort: number;
   /** Forward outgoing messages to the connection layer (raw PTY bytes). */
   sendMessage: (sessionId: UUID, message: ProtocolMessage) => void;
@@ -96,6 +118,16 @@ export interface PtySessionSetupArgs {
    * row(s). 0 (default) gives Claude the full terminal height.
    */
   reservedRows?: number;
+  /** The command to spawn (#1176). Defaults to `claude`, the Claude launch. */
+  command?: string;
+  /**
+   * Environment overrides added on top of `process.env` for the child (#1176).
+   * Defaults to `buildClaudeChildEnv(wsPort, reservedRows)`, so a launch that
+   * passes neither `command` nor this is the Claude launch, byte for byte.
+   * `{}` adds nothing: the child sees the incoming environment only, with no
+   * `REMI_PORT` and none of Claude's variables.
+   */
+  childEnv?: Record<string, string>;
 }
 
 /**
@@ -182,14 +214,22 @@ export function createPtySessionForSession(
     sessionRegistry,
     sessionStore,
     liveSessionsRegistry,
-    outputProcessor,
+    outputSink,
     wsPort,
     sendMessage,
     cleanup,
     exitProcess = (code: number) => process.exit(code),
     observeLocalPtyOutput,
   } = deps;
-  const { sessionId, workingDirectory, extraArgs, passThrough, reservedRows = 0 } = args;
+  const {
+    sessionId,
+    workingDirectory,
+    extraArgs,
+    passThrough,
+    reservedRows = 0,
+    command = 'claude',
+    childEnv,
+  } = args;
 
   if (!Number.isInteger(wsPort) || wsPort <= 0) {
     throw new Error(`Invalid wsPort: ${wsPort}. Must be a positive integer.`);
@@ -197,11 +237,11 @@ export function createPtySessionForSession(
 
   const termSize = computeTermSize(passThrough, reservedRows);
 
-  const env = buildClaudeChildEnv(wsPort, reservedRows);
+  const env = childEnv ?? buildClaudeChildEnv(wsPort, reservedRows);
 
   const ptySession: PTYSession = new PTYSession(
     {
-      command: 'claude',
+      command,
       args: [...extraArgs],
       cwd: workingDirectory,
       size: termSize,
@@ -269,14 +309,14 @@ export function createPtySessionForSession(
       },
       onData: (output: string) => {
         try {
-          outputProcessor.process(output);
+          outputSink.process(output);
         } catch (err) {
           logError(`[OutputProcessor] process() failed for session ${sessionId}:`, err);
         }
       },
       onExit: (code: number | null) => {
         try {
-          outputProcessor.flush();
+          outputSink.flush();
         } catch (err) {
           logError(`[OutputProcessor] flush() failed for session ${sessionId}:`, err);
         }
@@ -292,6 +332,9 @@ export function createPtySessionForSession(
         // The daemon process can outlive its Claude child (daemon mode). Record
         // the child as dead so co-located daemons stop counting us as a live
         // sibling and their rotation handling is not wedged (#451). Best-effort.
+        // The `claudeChild*` fields name the harness's child, whichever
+        // command it is (`createNewSession` records the pid of any harness's
+        // child), so this is neutral in effect (#1176).
         try {
           liveSessionsRegistry.markClaudeChildExited(sessionId);
         } catch (err) {
