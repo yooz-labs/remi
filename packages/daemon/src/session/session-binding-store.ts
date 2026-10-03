@@ -112,7 +112,8 @@ export class SessionBindingStore {
   /**
    * Update the durable binding on rotation / first discovery. Delegates to
    * SessionStore.updateClaudeSessionId (a no-op when the record is absent, matching
-   * today). Together with preAssign, the ONLY claudeSessionId writer.
+   * today). Together with preAssign, the ONLY claudeSessionId writer. Throws for
+   * a record of another harness (#1176), before the transcript index is touched.
    */
   update(remiSessionId: UUID, claudeSessionId: string): void {
     const updated = this.store.updateClaudeSessionId(remiSessionId, claudeSessionId);

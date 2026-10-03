@@ -144,6 +144,92 @@ describe('harness identity in the session store (#1176)', () => {
     });
   });
 
+  describe('a non-Claude record is closed to the Claude id paths', () => {
+    function writeRaw(sessions: Array<Record<string, unknown>>): void {
+      fs.writeFileSync(filePath, JSON.stringify({ version: 1, sessions }));
+    }
+
+    function row(overrides: Record<string, unknown>): Record<string, unknown> {
+      return {
+        remiSessionId: crypto.randomUUID(),
+        claudeSessionId: null,
+        projectPath: '/tmp/project',
+        port: 18765,
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        exitedAt: null,
+        exitCode: null,
+        ...overrides,
+      };
+    }
+
+    test('updateClaudeSessionId refuses a codex record and writes nothing', () => {
+      const session = codexRecord({ harnessSessionId: THREAD_A });
+      store.save(session);
+      const before = fs.readFileSync(filePath, 'utf-8');
+
+      expect(() => store.updateClaudeSessionId(session.remiSessionId, 'claude-x')).toThrow(
+        'belongs to harness codex, not claude',
+      );
+
+      expect(fs.readFileSync(filePath, 'utf-8')).toBe(before);
+      expect(store.findByRemiSessionId(session.remiSessionId)?.claudeSessionId).toBeNull();
+    });
+
+    test('updateClaudeSessionId refuses a record of a harness this build does not know', () => {
+      const session = makeSession({ harness: 'from-a-newer-daemon', harnessSessionId: 'x-1' });
+      store.save(session);
+
+      expect(() => store.updateClaudeSessionId(session.remiSessionId, 'claude-x')).toThrow(
+        'belongs to harness from-a-newer-daemon',
+      );
+    });
+
+    test('updateClaudeSessionId still works for a Claude record, with or without harness: claude', () => {
+      const plain = makeSession();
+      const named = makeSession({ harness: 'claude' });
+      store.save(plain);
+      store.save(named);
+
+      expect(store.updateClaudeSessionId(plain.remiSessionId, 'claude-p')?.claudeSessionId).toBe(
+        'claude-p',
+      );
+      expect(store.updateClaudeSessionId(named.remiSessionId, 'claude-n')?.claudeSessionId).toBe(
+        'claude-n',
+      );
+      expect(store.updateClaudeSessionId(crypto.randomUUID() as UUID, 'x')).toBeNull();
+    });
+
+    test('findByClaudeSessionId never returns a non-Claude record that carries the id', () => {
+      writeRaw([
+        row({ harness: 'codex', harnessSessionId: THREAD_A, claudeSessionId: 'claude-y' }),
+      ]);
+
+      expect(store.findByClaudeSessionId('claude-y')).toBeNull();
+    });
+
+    test('a non-Claude record carrying a Claude id is no ambiguity for the Claude record that owns it', () => {
+      const claude = row({ claudeSessionId: 'claude-z' });
+      writeRaw([
+        claude,
+        row({ harness: 'codex', harnessSessionId: THREAD_A, claudeSessionId: 'claude-z' }),
+      ]);
+
+      expect(store.findByClaudeSessionId('claude-z')?.remiSessionId).toBe(
+        claude['remiSessionId'] as string,
+      );
+    });
+
+    test('two Claude records for one Claude id are still an ambiguity', () => {
+      writeRaw([
+        row({ claudeSessionId: 'claude-w', exitedAt: '2026-10-01T00:00:00.000Z', exitCode: 0 }),
+        row({ claudeSessionId: 'claude-w', exitedAt: '2026-10-02T00:00:00.000Z', exitCode: 0 }),
+      ]);
+
+      expect(() => store.findByClaudeSessionId('claude-w')).toThrow(AmbiguousSessionIdentityError);
+    });
+  });
+
   describe('findByHarnessSessionId', () => {
     test('matches the harness and the id together', () => {
       const codex = codexRecord({ harnessSessionId: THREAD_A });
@@ -293,6 +379,32 @@ describe('SessionBindingStore harness identity (#1176)', () => {
     });
     // The Claude column is untouched: `get()` still reads exactly the old shape.
     expect(binding.get(session.remiSessionId)).toEqual({ claudeSessionId: null });
+  });
+
+  test('update (the Claude id writer) refuses a codex record and never seeds the transcript index', () => {
+    const index = new TranscriptIndex(path.join(dir, 'transcript-index.json'));
+    const binding = new SessionBindingStore(store, index);
+    const session = codexRecord();
+    binding.preAssign(session);
+
+    expect(() => binding.update(session.remiSessionId, 'claude-x')).toThrow(
+      'belongs to harness codex, not claude',
+    );
+
+    expect(binding.get(session.remiSessionId)).toEqual({ claudeSessionId: null });
+    expect(index.get(session.remiSessionId)).toBeNull();
+  });
+
+  test('update still rotates a Claude record and refreshes the index', () => {
+    const index = new TranscriptIndex(path.join(dir, 'transcript-index.json'));
+    const binding = new SessionBindingStore(store, index);
+    const session = makeSession({ claudeSessionId: 'claude-old' });
+    binding.preAssign(session);
+
+    binding.update(session.remiSessionId, 'claude-new');
+
+    expect(binding.get(session.remiSessionId)).toEqual({ claudeSessionId: 'claude-new' });
+    expect(index.get(session.remiSessionId)?.claudeSessionId).toBe('claude-new');
   });
 
   test('updateHarnessIdentity on an absent record is a no-op', () => {

@@ -798,7 +798,11 @@ export class SessionStore {
   /** Find a session by its Claude session ID. */
   findByClaudeSessionId(claudeSessionId: string): StoredSession | null {
     const sessions = this.read();
-    const matches = sessions.filter((s) => s.claudeSessionId === claudeSessionId);
+    // Claude records only: a record of another harness never answers to a
+    // Claude id, whatever its `claudeSessionId` column holds (#1176).
+    const matches = sessions.filter(
+      (s) => isClaudeRecord(s) && s.claudeSessionId === claudeSessionId,
+    );
     return selectClaudeSessionMatch(matches, claudeSessionId);
   }
 
@@ -860,12 +864,21 @@ export class SessionStore {
    * callers that mirror the binding elsewhere don't need a second disk read — a
    * separate read could race a concurrent purgeStale() and observe a null record
    * mid-rotation (#577). Returns null when no record exists (a no-op, as before).
+   * Throws for a record of another harness: its identity is not a Claude id.
    */
   updateClaudeSessionId(remiSessionId: UUID, claudeSessionId: string): StoredSession | null {
     return this.withWriteLock(() => {
       const sessions = this.read();
       assertUniqueSessionIdentities(sessions);
       const session = sessions.find((s) => s.remiSessionId === remiSessionId);
+      if (session && !isClaudeRecord(session)) {
+        // A non-Claude record keeps its own identity in `harnessSessionId`
+        // (`updateHarnessIdentity`); a Claude id written onto it would make
+        // it answer to both (#1176).
+        throw new Error(
+          `updateClaudeSessionId: session ${remiSessionId} belongs to harness ${storedHarness(session)}, not claude`,
+        );
+      }
       if (session) {
         session.claudeSessionId = claudeSessionId;
         assertUniqueSessionIdentities(sessions);
