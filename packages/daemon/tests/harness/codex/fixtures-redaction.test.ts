@@ -308,23 +308,46 @@ describe('the extractor', () => {
     );
   }
 
-  function run(rawDir: string, outDir: string) {
-    const proc = Bun.spawnSync([process.execPath, EXTRACTOR, rawDir, '--out', outDir], {
+  /**
+   * Run the extractor in a child process of the same Bun that runs the tests. Asynchronous with a hard
+   * kill, so a child that never finishes fails this test instead of blocking the whole runner.
+   */
+  async function spawnExtractor(args: string[], env?: Record<string, string | undefined>) {
+    const proc = Bun.spawn([process.execPath, EXTRACTOR, ...args], {
+      stdin: 'ignore',
       stdout: 'pipe',
       stderr: 'pipe',
+      ...(env ? { env } : {}),
     });
-    return { code: proc.exitCode, out: proc.stdout.toString(), err: proc.stderr.toString() };
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      proc.kill();
+    }, 30_000);
+    try {
+      const [out, err, code] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
+      if (timedOut) throw new Error('the extractor did not finish within 30 s');
+      return { code, out, err };
+    } finally {
+      clearTimeout(timer);
+    }
   }
+
+  const run = (rawDir: string, outDir: string) => spawnExtractor([rawDir, '--out', outDir]);
 
   function scratch(): string {
     return mkdtempSync(join(tmpdir(), 'remi-extractor-'));
   }
 
-  test('redacts a raw log it was never tuned on, and the result passes the scan', () => {
+  test('redacts a raw log it was never tuned on, and the result passes the scan', async () => {
     const base = scratch();
     try {
       writeRawDir(join(base, 'raw'));
-      const result = run(join(base, 'raw'), join(base, 'out'));
+      const result = await run(join(base, 'raw'), join(base, 'out'));
       expect(result.code, result.err).toBe(0);
       const files = readdirSync(join(base, 'out'));
       expect(files).toContain('index.json');
@@ -378,11 +401,11 @@ describe('the extractor', () => {
     }
   });
 
-  test('records the sha256 of each source it read', () => {
+  test('records the sha256 of each source it read', async () => {
     const base = scratch();
     try {
       writeRawDir(join(base, 'raw'));
-      expect(run(join(base, 'raw'), join(base, 'out')).code).toBe(0);
+      expect((await run(join(base, 'raw'), join(base, 'out'))).code).toBe(0);
       const index = JSON.parse(readFileSync(join(base, 'out', 'index.json'), 'utf8')) as {
         files: Array<{ file: string; sourceSha256?: string }>;
       };
@@ -396,12 +419,12 @@ describe('the extractor', () => {
     }
   });
 
-  test('the same inputs give byte-identical output', () => {
+  test('the same inputs give byte-identical output', async () => {
     const base = scratch();
     try {
       writeRawDir(join(base, 'raw'));
-      expect(run(join(base, 'raw'), join(base, 'one')).code).toBe(0);
-      expect(run(join(base, 'raw'), join(base, 'two')).code).toBe(0);
+      expect((await run(join(base, 'raw'), join(base, 'one'))).code).toBe(0);
+      expect((await run(join(base, 'raw'), join(base, 'two'))).code).toBe(0);
       expect(readdirSync(join(base, 'one')).sort()).toEqual(readdirSync(join(base, 'two')).sort());
       for (const file of readdirSync(join(base, 'one'))) {
         expect(readFileSync(join(base, 'two', file), 'utf8'), file).toBe(
@@ -413,7 +436,7 @@ describe('the extractor', () => {
     }
   });
 
-  test('refuses to write when a leak survives its rules (free text naming a home path)', () => {
+  test('refuses to write when a leak survives its rules (free text naming a home path)', async () => {
     const base = scratch();
     try {
       writeRawDir(join(base, 'raw'), [
@@ -430,7 +453,7 @@ describe('the extractor', () => {
           },
         },
       ]);
-      const result = run(join(base, 'raw'), join(base, 'out'));
+      const result = await run(join(base, 'raw'), join(base, 'out'));
       expect(result.code).toBe(1);
       expect(result.err).toContain('LEAK');
       expect(result.err).toContain('nothing written');
@@ -440,18 +463,14 @@ describe('the extractor', () => {
     }
   });
 
-  test('exits 2 with a usage line when given no input directory, and on a missing source file', () => {
+  test('exits 2 with a usage line when given no input directory, and on a missing source file', async () => {
     const base = scratch();
     try {
-      const none = Bun.spawnSync([process.execPath, EXTRACTOR], {
-        stdout: 'pipe',
-        stderr: 'pipe',
-        env: { ...process.env, CODEX_SPIKE_DIR: '' },
-      });
-      expect(none.exitCode).toBe(2);
-      expect(none.stderr.toString()).toContain('usage');
+      const none = await spawnExtractor([], { ...process.env, CODEX_SPIKE_DIR: '' });
+      expect(none.code).toBe(2);
+      expect(none.err).toContain('usage');
       mkdirSync(join(base, 'empty'));
-      const missing = run(join(base, 'empty'), join(base, 'out'));
+      const missing = await run(join(base, 'empty'), join(base, 'out'));
       expect(missing.code).toBe(2);
       expect(missing.err).toContain('extraction failed');
     } finally {
