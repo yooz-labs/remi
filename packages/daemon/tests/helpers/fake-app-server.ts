@@ -59,9 +59,14 @@ export class FakeAppServer {
   private readonly subscriptions = new Map<number, Set<string>>();
   private readonly rollouts = new Set<string>();
   private readonly pending = new Map<string, Pending>();
-  private readonly handlers = new Map<string, (params: unknown, client: number) => unknown>();
+  private readonly handlers = new Map<
+    string,
+    (params: unknown, client: number) => unknown | Promise<unknown>
+  >();
   private readonly silent = new Set<string>();
   private readonly pongs: Uint8Array[] = [];
+  /** Frames sent to a client right after its `initialize` result, as Codex sends `configWarning`. */
+  initializeFrames: Json[] = [];
   private nextClient = 1;
   private nextRequest = 1;
 
@@ -121,8 +126,14 @@ export class FakeAppServer {
     this.rollouts.add(threadId);
   }
 
-  /** Answer a client request: `reply` returns the JSON-RPC `result` (or throws `{code, message}` as an error). */
-  onRequest(method: string, reply: (params: unknown, client: number) => unknown): void {
+  /**
+   * Answer a client request: `reply` returns the JSON-RPC `result`, or a promise of it, and a throw or
+   * rejection of `{code, message}` becomes an error response.
+   */
+  onRequest(
+    method: string,
+    reply: (params: unknown, client: number) => unknown | Promise<unknown>,
+  ): void {
     this.handlers.set(method, reply);
   }
 
@@ -142,6 +153,11 @@ export class FakeAppServer {
         ws.send(text);
       }
     }
+  }
+
+  /** Send raw text, valid JSON or not, to one client. */
+  emitRaw(client: number, text: string): void {
+    this.clients.get(client)?.send(text);
   }
 
   /** Send one frame to one client, whatever it subscribed to. */
@@ -212,14 +228,18 @@ export class FakeAppServer {
       this.emitTo(client, { id: frame['id'], error: { code, message } });
     const custom = this.handlers.get(method);
     if (custom) {
-      try {
-        reply(custom(frame['params'], client));
-      } catch (error) {
+      const failWith = (error: unknown): void => {
         const e = error as { code?: number; message?: string };
         fail(e.code ?? -32603, e.message ?? 'internal error');
+      };
+      try {
+        Promise.resolve(custom(frame['params'], client)).then(reply, failWith);
+      } catch (error) {
+        failWith(error);
       }
     } else if (method === 'initialize') {
       reply(this.fixtureResult('expA-accept.jsonl', 2));
+      for (const extra of this.initializeFrames) this.emitTo(client, extra);
     } else if (method === 'thread/resume') {
       this.resume(client, frame, reply, fail);
     } else if (method === 'thread/unsubscribe') {
