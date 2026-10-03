@@ -18,12 +18,12 @@ Two things decide this phase.
    The evidence is under "Receipts" below.
    A second client can therefore answer an approval without touching the TUI.
 2. **The transport is a WebSocket over a unix socket, and Bun 1.3.11 cannot speak it natively.**
-   CI and the release build pin Bun 1.3.11 (`.github/workflows/ci.yml:15`, `.github/workflows/release.yml:16`; the comment above the CI pin explains that 1.3.12 ships broken compiled binaries).
+   CI and the release build pin Bun 1.3.11, in five workflow files (`ci.yml:15`, `release.yml:16`, `auto-bump-dev.yml:22`, `close-on-develop.yml:37`, `macos-app.yml:27`); the comment above the CI pin explains that 1.3.12 ships broken compiled binaries.
    Bun's WebSocket client gained `ws+unix://` in oven-sh/bun PR #29203, merged 2026-04-12 (title "WebSocket client: support ws+unix:// and wss+unix://").
    Bun 1.3.12 was published 2026-04-10 and 1.3.13 on 2026-04-20, so 1.3.13 is the first release that has it.
    On the local Bun 1.4.2, `new WebSocket("ws+unix://<socket path>")` reached a `Bun.serve({ unix })` echo server and returned the echo; the options form `new WebSocket("ws://localhost/", { unix: path })` fails.
    The repository's installed `bun-types` is 1.3.5 and has no `unix` option on the WebSocket client either.
-   The `ws` npm package was not evaluated here.
+   The `ws` npm package is no way around it either, by reviewer B's measurement (reported, not repeated here): under Bun it resolves to Bun's own native client, so the 1.3.11 error `Wrong url scheme for WebSocket ws+unix` is Bun's, `ws+unix` works only on 1.4.2, and the `createConnection` and `socketPath` options fail on both versions.
 
 ## Decision
 
@@ -37,31 +37,47 @@ Phase 1 adds the transport and the client, and changes no daemon behavior.
    No extension is offered and none is accepted, no `Origin` is sent, `Host: localhost`, path `/`.
    Text frames only: a binary message is dropped with a log.
    A payload over 32 MiB, in one frame or reassembled, an RSV bit, a masked server frame, an unknown opcode, a fragmented or oversized control frame, or a continuation error closes the connection with 1002; invalid UTF-8 closes with 1007.
-   A frame that does not parse as JSON, or is not a JSON-RPC shape, is dropped and logged by length only.
-   The read loop never throws.
+   An oversize frame and an over-limit reassembly close with 1002 by decided policy, although RFC 6455 section 7.4.1 would say 1009 (message too big); the decision was to have one code for every framing violation.
+   A close frame must have no payload or a 2-byte code with an optional UTF-8 reason: a 1-byte payload and any code outside 1000 to 1003, 1007 to 1014 and 3000 to 4999 close with 1002, a reason that is not UTF-8 closes with 1007, the echo carries the original reason bytes, and `close(code)` refuses 1005, 1006, 1015 and the unassigned codes.
+   The request path and host are validated before any connect (they go into the request line and the `Host` header), a socket path must be a non-empty absolute string, only `HTTP/1.1 101` is an upgrade, the response header block is capped at 16 KiB however it arrives, and a leading byte order mark stays in a text message.
+   A frame that does not parse as JSON, or is not a JSON-RPC shape, is dropped and logged by length only; peer-controlled text that reaches a log (a close reason, an initialize error, a refused status line) is quoted with JSON escapes and cut.
+   After the first violation nothing the peer sends is read, parsed or logged.
+   The read loop never throws, and the peer closing or ending its socket is reported as a close whichever of 'end' or 'close' arrives first.
 3. **Handshake and ids.**
    `initialize` carries `clientInfo.name = "remi"` (plan risk R8: the daemon's originator may follow whoever initializes first), `capabilities {experimentalApi: true, requestAttestation: false}` and no opt-out list until LV-1 shows Codex accepts one; then `initialized`.
    Request ids are numeric from 1, with timeouts of 5 s for `initialize` and 15 s otherwise.
-   `ready` is emitted after `initialized` is sent and before any later frame is dispatched, so frames that arrive earlier are queued behind it.
+   `ready` is emitted after `initialized` is sent and before any later frame is dispatched, so frames that arrive earlier are queued behind it (at most 256 frames or 4 MiB; beyond that the session fails).
+   Only a response received after `initialize` was sent can be its reply, so a forged reply delivered in the same chunk as the `101` is held back and later ignored.
 4. **The client answers only with a result.**
    `AppServerClient` has no way to send an error response; it exposes `respond(id, result)` only.
    An unknown server request (`item/tool/call`, `account/chatgptAuthTokens/refresh`, `attestation/generate`, `currentTime/read`, anything else) is delivered to the caller and nothing is sent back.
    The reason is the arbitration above: the first answer wins, and what a JSON-RPC error from a second client does to a pending request is unverified (plan risk R5 covers only `cancel`), so remi never sends one.
-5. **Reconnect.**
-   Backoff 250 ms doubling to 5 s, forever, until `stop()`; the socket path is resolved on every attempt; the first failure is logged and then every tenth; a drop rejects every in-flight request and reports `disconnected`; a success resets both the delay and the failure count.
+5. **Liveness and reconnect.**
+   A WebSocket ping every 30 s with a 10 s pong deadline; a missed pong ends the session like a drop.
+   It is the backstop for Bun 1.3.11 leaving a connection looking open after the peer is gone.
+   Backoff 250 ms doubling to 5 s, forever, until `stop()`; the socket path is resolved on every attempt; the first failure is logged and then every tenth; a drop rejects every in-flight request and reports `disconnected`.
+   A connection resets the delay and the failure count only after it stayed up for 5 s, so a server that is ready and then closes cannot hold the delay at its minimum.
+   `stop()` aborts an attempt still waiting for the upgrade (an `AbortSignal` replaces the old connect timeout, which no test could reach) and wakes the backoff wait.
+   `request()` rejects params that cannot be serialized with `AppServerSerializationError` before using an id, and `respond()` throws it for such a result, so a caller's bug is distinguishable from a down link (`false`).
 6. **Never log a body.**
    The client logs method names, truncated ids and lengths, never params or results (plan section 5: frames can carry other threads' metadata).
    A test sends a marker through every drop path and asserts it never appears in a log line.
-7. **Fixtures are redacted by an allowlist.**
+7. **Fixtures are redacted structurally, and free text fails closed.**
    `scripts/extract-codex-fixtures.ts` reads the spike's raw logs (a directory given as an argument or `CODEX_SPIKE_DIR`; never copied into the repository), keeps frames on a method allowlist, and rewrites paths, ids, the model and the user agent to placeholders.
    It runs the same `scanForLeaks` as the test suite and writes nothing when it finds a leak.
+   The scan decides per field, from the parsed frame: single-valued fields hold one value, place fields are null or `/work` paths without `..`, ids are placeholders, timestamps sit at a fictional epoch, and every other string is a plain token.
+   Prose and commands (message text, previews, titles, commands, question and option text) must be in the reviewed `approved-free-text.json`, so extracting a real session cannot carry anything personal through; the extractor refuses, and echoes the refused text only under `--show-unapproved`.
+   A pattern list then covers every string and key (home paths, URLs, percent-encoding, Windows and UNC paths, long hex, base64, cloud tokens, IPs, MAC addresses, phone numbers, remote URLs, model names, rate-limit fields, OS and CPU strings).
+   The machine's user, home and host name come from the process and generic ones (`unknown` under `env -i`) are skipped.
    `tests/fixtures/codex-app-server/index.json` records each source file, its sha256 and the extractor version, and labels two files as not captured: `report-derived.jsonl` (the `-32600 no rollout found` error, from the spike report) and `synthetic-from-schema.jsonl` (file-change, permissions and elicitation server requests, built from the generated TypeScript schema).
-8. **Boundary.**
-   `harness-boundary.test.ts` gains two rules: nothing under `harness/codex/` imports a Claude-specific module, and no neutral module imports `harness/codex/`.
+8. **Boundary, as allowlists.**
+   `harness-boundary.test.ts` gains two: only `harness/codex/` and `cli.ts` may import `harness/codex/` (checked over every file under `src`), and a file under `harness/codex/` may import only its own files, `node:*`, `@remi/shared` and the named entries of `CODEX_MAY_IMPORT` (the harness contract, `cli/session-phases/pty-session-setup` and nothing else under `cli/session-phases/`, and the session stores), each with the phase that needs it.
+   That Codex never reaches a Claude module is a consequence of the list.
 
 ## Consequences
 
-- A phone, a lock screen or Telegram can answer a Codex approval in a later phase with no typed bytes, and a reconnect is safe because Codex replays pending requests to a late subscriber (receipts).
+- A phone, a lock screen or Telegram can answer a Codex approval in a later phase with no typed bytes, and a late subscriber is replayed a pending request (receipts).
+  Whether a reconnect is safe depends on plan risk R1, what happens to a pending request when its subscriber disconnects, which live step LV-3(d) checks; the spike's replay happened while another subscriber stayed attached.
 - remi carries its own WebSocket client until the pin moves (about 400 lines of code in `ws-frames.ts` and `unix-ws.ts`, comments and blank lines excluded), and the first proof that it interoperates with Codex's server is the live step LV-1 (plan risk R3).
   Until LV-1 passes, what is verified is the client against a real `Bun.serve` WebSocket server and a byte-level peer, not against Codex.
 - **Every export has no production caller in this PR, and that is intended.**
@@ -84,7 +100,7 @@ Phase 1 adds the transport and the client, and changes no daemon behavior.
 ## Alternatives considered
 
 - **The `ws` package.**
-  Not evaluated: a hand-rolled client avoids a new runtime dependency in a package that ships as a compiled binary.
+  Rejected: by reviewer B's measurement it resolves to Bun's native client under Bun (so it cannot reach a unix socket on 1.3.11), and it would be a new runtime dependency in a package that ships as a compiled binary.
 - **Native `ws+unix://` now, by raising the pin.**
   Rejected for this phase: CI and release share one pin on purpose, because 1.3.12 shipped broken `bun build --compile` binaries (the comment at `ci.yml:9`).
   Moving the pin needs a compiled-binary smoke test, which is its own change; the client sits behind a `connect` option so the swap is small.
@@ -179,3 +195,29 @@ Everything below was measured with `bun test` on both versions; none of it is a 
    Not fixed here: it is outside this PR.
 
 The new tests, run as a group (`tests/harness/codex` and `harness-boundary.test.ts`): 10 of 10 clean runs on each of 1.3.11 and 1.4.2, plus one run of each under CPU load, and each file alone 3 of 3 on 1.3.11.
+
+## Phase 1 amendment: the review round
+
+Two reviewers read PR #1183 at `3d7aa5d2` (transport and client correctness; fixtures, redaction, privacy, docs and test hygiene).
+What they found, and what changed, in the order the reviewers ranked it:
+
+1. **A write racing the peer's close left the link looking open for ever on 1.3.11.**
+   With the peer destroying or ending its socket in the same timer tick as a client write, bare `node:net` emitted only `connect` and `end`.
+   `connectUnixWebSocket` never called `onClose`, `AppServerClient` stayed `ready`, `request()` rejected only after its 15 s timeout, and `respond()` returned `true` for an answer that was lost (an approval answered into a dead socket).
+   Fixed twice: the transport reports the close from whichever of `end` or `close` arrives first, and the client pings every 30 s and drops a link that misses a pong.
+   Tests reproduce both peers' behavior (`end` and `destroy`, in one tick) and a peer that stops answering pings; the transport test fails on 1.3.11 without the `end` handler (it passes on 1.4.2, which reports EPIPE and `close`).
+2. **`bun run typecheck` failed on a clean frozen install.**
+   The typings bun-types brings in give `net.Server` no `once`, so `RawUnixPeer.start` did not compile.
+   An older `node_modules` in a parent directory of the development checkout hid it; it reproduced in a copy outside any ancestor `node_modules`, which is how the gates now run.
+3. **A forged reply could make the client ready without `initialized`**, and a hostile peer could grow a buffer and flood the log after a framing violation (the parser kept being fed).
+   Both fixed (see decisions 2 and 3); the flood test counts what reaches a parser instead of measuring process memory.
+4. **Mutants that survived with real consequence are now pinned**: the initialize timer cleared on the reply, a connection that resolves after `stop()` being closed, the backoff reset after a stable connection (and not after a flap), `stop()` waking the backoff wait, a string id never answering a numeric request, only `101` accepted, the header cap, the request and response timers cleared, the defaults (5 s, 15 s, 30 s, 10 s, 1 s), `send` refused while closing, an event handler that throws not breaking `stop()`.
+   Judged equivalent, with the reason: the `if (done) return` at the top of the client's `onMessage` (the transport already ignores data frames once the client has called `close()`), the second `violated` check inside `violate()` and in the frame loop (the data handler and the closing phase already stop reading and delivering), and removing `finalize()` from the `end` handler (`destroy()` then raises `close`, which reports it).
+5. **The fixture scan was a denylist in the allowlist's clothing, and the redaction test carried real spike values**, calling them invented (a thread id, the creation time it encodes, a command id, timestamps, the user agent with its OS, architecture and terminal emulator).
+   The scan is now structural (decision 7), the tests use only values invented at run time, and the plan's redaction notes no longer name any.
+   A mechanical check of the branch diff and commit messages against the raw spike logs (UUIDs and their prefixes, epoch values, opaque ids, model names, user agents, home user names, terminal and OS strings, server names, installation ids, rollout stamps) finds no hit.
+   The earlier values stay reachable in the branch's pushed history; they are not secrets but they identify a session, so the owner was told.
+6. **The fake server modeled behavior nothing backed or tested**; it is now labeled and pinned (`tests/helpers/fake-app-server.test.ts`).
+
+Not reproduced, so not acted on: an extractor child process that exited 133 once while the reviewers ran many fuzzers at the same time.
+It did not recur in the full-suite runs on either Bun version, and nothing in the extractor produces that code, so it is most likely a signal from the reviewers' load rather than the extractor.
