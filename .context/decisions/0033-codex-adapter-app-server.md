@@ -23,7 +23,7 @@ Two things decide this phase.
    Bun 1.3.12 was published 2026-04-10 and 1.3.13 on 2026-04-20, so 1.3.13 is the first release that has it.
    On the local Bun 1.4.2, `new WebSocket("ws+unix://<socket path>")` reached a `Bun.serve({ unix })` echo server and returned the echo; the options form `new WebSocket("ws://localhost/", { unix: path })` fails.
    The repository's installed `bun-types` is 1.3.5 and has no `unix` option on the WebSocket client either.
-   The `ws` npm package is no way around it: a third-party Codex adapter reported that under Bun it ignores `createConnection` and opens TCP (its PR #401; not re-verified here).
+   The `ws` npm package was not evaluated here.
 
 ## Decision
 
@@ -46,7 +46,7 @@ Phase 1 adds the transport and the client, and changes no daemon behavior.
 4. **The client answers only with a result.**
    `AppServerClient` has no way to send an error response; it exposes `respond(id, result)` only.
    An unknown server request (`item/tool/call`, `account/chatgptAuthTokens/refresh`, `attestation/generate`, `currentTime/read`, anything else) is delivered to the caller and nothing is sent back.
-   The reason is the arbitration above: an error from remi could resolve a request that the TUI user is still looking at.
+   The reason is the arbitration above: the first answer wins, and what a JSON-RPC error from a second client does to a pending request is unverified (plan risk R5 covers only `cancel`), so remi never sends one.
 5. **Reconnect.**
    Backoff 250 ms doubling to 5 s, forever, until `stop()`; the socket path is resolved on every attempt; the first failure is logged and then every tenth; a drop rejects every in-flight request and reports `disconnected`; a success resets both the delay and the failure count.
 6. **Never log a body.**
@@ -70,9 +70,11 @@ Phase 1 adds the transport and the client, and changes no daemon behavior.
   Delete any of them that Phase 3 does not use.
 - **Phase 3 cannot use `fs.realpathSync` on the socket.**
   On Bun 1.4.2 on macOS, `realpathSync`, `realpathSync.native` and `fs.promises.realpath` throw `EOPNOTSUPP` on a unix socket file and on a symlink to one, while `readlinkSync` and `lstatSync` work.
-  The plan says to "connect to the realpath" because Codex's control socket sits under a long home path and macOS `sun_path` is 104 bytes; the tests therefore resolve the symlink with `readlinkSync`.
+  The plan says to "connect to the realpath"; it records, from the spike, that Codex's control socket under `~/.codex` is a symlink to a short path, and macOS `sun_path` is 104 bytes.
+  The tests therefore resolve the symlink with `readlinkSync`.
   Phase 3 must do the same (or `realpath` the parent directory and `readlink` the file).
-  Not checked on Bun 1.3.11.
+  Checked on both Bun 1.3.11 and 1.4.2: identical.
+  The plan carries the same correction inline.
 - **The tests found a test-runner hazard.**
   `expect(promise).rejects` blocks the whole `bun test` process at 100 percent CPU when a broken implementation leaves the promise pending.
   The new tests use `rejection()` from `tests/helpers/fake-app-server.ts`, which fails after 3 s instead.
@@ -82,16 +84,17 @@ Phase 1 adds the transport and the client, and changes no daemon behavior.
 ## Alternatives considered
 
 - **The `ws` package.**
-  Rejected: reported to open TCP under Bun and ignore `createConnection`, and it is a new runtime dependency in a package that ships as a compiled binary.
+  Not evaluated: a hand-rolled client avoids a new runtime dependency in a package that ships as a compiled binary.
 - **Native `ws+unix://` now, by raising the pin.**
   Rejected for this phase: CI and release share one pin on purpose, because 1.3.12 shipped broken `bun build --compile` binaries (the comment at `ci.yml:9`).
   Moving the pin needs a compiled-binary smoke test, which is its own change; the client sits behind a `connect` option so the swap is small.
 - **Drive Codex through the TUI (type the answer).**
-  Rejected by the epic: the spike observed a typed digit answer an "Update available" modal and run an installer, and ADR 0031 keeps remi from typing an answer into a prompt it can answer through a hook.
+  Rejected by the epic: the spike agent reported, and the lead confirmed (the installed Codex moved from 0.159.1 to 0.160.0 and the release symlink was repointed during the spike run), that a digit typed into the TUI while an "Update available" modal had focus ran Codex's installer.
+  ADR 0031 also keeps remi from typing an answer into a prompt it can answer through a hook.
 - **Spawn a private `codex app-server` per session.**
-  Rejected: the approvals the user sees in their TUI belong to the shared daemon's thread; a private server would never see them.
+  Rejected by the plan (section 1), not tried: the approval to answer belongs to a thread on the shared daemon, which a private app-server does not hold.
 - **Answer unknown server requests with a JSON-RPC error so Codex does not wait.**
-  Rejected (decision 4): the first answer wins, so an error could close an approval another client is about to answer.
+  Rejected (decision 4): the first answer wins, and the effect of an error answer on a pending request is unverified.
 
 ## Receipts
 
@@ -124,7 +127,55 @@ Phase 1 adds the transport and the client, and changes no daemon behavior.
   Not in any fixture, and still unverified without a real Codex: `cancel` from a second client, what a mid-approval subscriber disconnect does to a pending request (plan risk R1), `/new` rotation, `optOutNotificationMethods`, a failed-turn `turn/completed`, and keepalive on an idle connection.
 - **What the Phase 1 tests prove, by mutation.**
   Each of these fails a named test when applied: a flipped mask bit, a dropped pong, a skipped accept-key check, no request timeout, correlating a response by the wrong id, the client sending an error frame to an unknown server request.
-  The full list is in the PR description.
+  A summary of the roughly 100 mutants is in the PR description.
 - **APIs used.**
   `node:net` (`createConnection`, `createServer` on a unix path), `node:crypto`, `Bun.serve` with `unix` and `websocket` handlers (`open`, `message`, `close`, `pong`) and `ServerWebSocket.ping`, `close`, `terminate`, all present in `bun-types` 1.3.5 and therefore before 1.3.11.
-  Run on Bun 1.4.2 here; the tests have not been run on 1.3.11.
+  Run on Bun 1.4.2 and, after the Bun 1.3.11 findings below, on 1.3.11 (the CI pin).
+
+## Phase 1 amendment: what the CI-pinned Bun 1.3.11 showed
+
+The first run of the new tests on the CI pin, Bun 1.3.11 (official release binary), gave 131 pass and 6 fail; on 1.4.2 all passed.
+The six failures had two causes, and a third finding turned up while running the whole suite.
+Everything below was measured with `bun test` on both versions; none of it is a claim about Codex.
+
+1. **Four hook timeouts: `Bun.serve`'s `stop()` never resolves on 1.3.11 after the server itself closes a WebSocket.**
+   A probe stopped a `Bun.serve({ unix })` server in each state.
+   With the client still open, `stop(true)` resolved.
+   After a client-initiated close, it resolved.
+   After the server called `ws.close()` or `ws.terminate()` on the connection, `stop(true)` and `stop()` both hung on 1.3.11 and resolved at once on 1.4.2.
+   The listener was shut in every case (a later connect was refused).
+   `FakeAppServer.stop()` awaited it, so every `afterEach` after a `closeClient` or `dropClient` test timed out after 5 s: two tests in `unix-ws.test.ts` and two in `app-server-client.test.ts`.
+   The helper now starts the stop and removes its temp directory without waiting (commit "Do not await Bun.serve stop in the fake server").
+   Undoing that change alone brings back exactly those four failures on 1.3.11.
+   This is a test-peer teardown difference, not a transport bug.
+2. **Two ENOENT failures: a failing connect can emit `'error'` synchronously under `bun test` on 1.3.11.**
+   `net.createConnection({ path })` to a socket file that does not exist emitted `'error'` synchronously, before the call returned.
+   A listener attached afterwards never saw it, and the runner reported it as an uncaught `connect ENOENT` against the running test.
+   Bun 1.4.2 defers the event.
+   Whether 1.3.11 emits it synchronously depends on runner state: in a probe file the first failing connects in the process did, and so did the next failing connect after a timed-out hook (which is how the original run hit it, right after cause 1); a failing connect after a successful one did not.
+   It did not reproduce in a plain `bun script` child process: the pre-fix code, run as a fresh process, rejected cleanly with ENOENT.
+   So there is no evidence of a daemon crash, and the original commit message for the fix, which said there was, overstated it (corrected in the follow-up commit).
+   `connectUnixWebSocket` now builds a bare `Socket`, attaches every listener, and then calls `connect`, which is correct whichever way the event arrives.
+   The guard is a test that observes `Socket.prototype.connect` (delegating to it, replacing nothing) and asserts the error, close and data listeners exist when it runs; it fails on the pre-fix code on both 1.3.11 and 1.4.2.
+   A test that runs the connection in a fresh child process was tried and removed, because it could not fail on either version.
+3. **`fs.realpath` on a socket fails on 1.3.11 too.**
+   `realpathSync`, `realpathSync.native` and `fs.promises.realpath` throw `EOPNOTSUPP` on a unix socket file and on a symlink to one, identically on 1.3.11 and 1.4.2; `readlinkSync`, `lstatSync` and `realpath` of the parent directory work.
+4. **The extractor tests now spawn asynchronously with a 30 s kill.**
+   They used `Bun.spawnSync`, which blocks the runner while the child runs.
+   This was changed while chasing finding 5 and is kept as hygiene: a child that never finishes now fails one test instead of stalling the runner.
+   It is not the cause of finding 5.
+5. **A full `bun test` on 1.3.11 intermittently stalls at 100 percent CPU in an existing test, not in this PR's files.**
+   Three of 27 full runs on 1.3.11 hung with no output and no test timeout firing; 24 completed, 23 with 4838 pass and 0 fail and one with the single failure of finding 6.
+   A run with a per-test trace (a preload printing a dot per test, so the runner prints each file header) stalled inside `packages/daemon/tests/hooks/corpus-replay.test.ts`, on its fourth test, at file 186 of 256.
+   None of the five new `harness/codex` test files had run by then (the only file of this PR that had is `harness-boundary.test.ts`, a static scan), and this PR does not touch `corpus-replay.test.ts` or anything under `tests/hooks/`.
+   The earlier two stalls ended after the same last file that had printed output, `cli/session-phases/structured-answers-e2e.test.ts`, which is consistent with the same place.
+   `corpus-replay.test.ts` run alone passes (900 of 900 with `--rerun-each 60`), and every one of the 254 test files passes when run on its own on 1.3.11, so the stall needs the state left by earlier files in one process.
+   A macOS `sample` of the stalled process shows the main thread in nested JavaScript-to-native frames polling `kevent64`, with the binary's symbols stripped.
+   Not fixed here: it is outside this PR.
+6. **One load-sensitive existing test fails on 1.3.11 about one run in five.**
+   `ClaudeHarness.createSession > a wrapper session runs claude on the reduced terminal and feeds the local-terminal observer` (`tests/harness/claude-session.test.ts:315`) failed 5 of 25 runs of `packages/daemon/tests/harness` on 1.3.11 and 0 of 25 on 1.4.2, with `Expected: "39 120"` and `Received: ""` in the one failure whose text was captured.
+   The test waits for the fake `claude` to create a `size` file and then reads it at once, so it can read the file before the child has written it.
+   It is most likely the one-off `168 pass / 1 fail` seen earlier on 1.4.2 in the same directory, which was not captured by name: it is the only failing test seen in 50 runs of the directory and about 27 full runs.
+   Not fixed here: it is outside this PR.
+
+The new tests, run as a group (`tests/harness/codex` and `harness-boundary.test.ts`): 10 of 10 clean runs on each of 1.3.11 and 1.4.2, plus one run of each under CPU load, and each file alone 3 of 3 on 1.3.11.
