@@ -1,0 +1,567 @@
+/**
+ * Black-box characterization of `remi codex`: launch, identity and status
+ * (#1177, Phase 3 of the Codex epic #1175). Written against the plan's Phase 3
+ * section before any implementation, in the shape of
+ * `launch-characterization.test.ts` (Claude).
+ *
+ * It spawns the REAL `cli.ts` in an isolated `$HOME` (`isolatedEnv` also drops
+ * `REMI_HOME`), with an executable fake `codex` first on a PATH of fakes plus
+ * `/usr/bin:/bin` only, so no real `claude` or `codex` can ever resolve (a
+ * stand-in login shell reports that same PATH). The fake `codex` is a real
+ * process: it records its argv, cwd, selected environment and pid, and counts
+ * every byte that reaches its stdin. `CODEX_HOME` points at a `FakeAppServer`
+ * (a real WebSocket server on a unix socket, behind a symlink, replaying
+ * redacted spike frames), and the test plays the Codex TUI by emitting the
+ * real `thread/started` and `thread/status/changed` frames with its own thread
+ * ids, the session's cwd and a fresh creation time.
+ *
+ * Everything asserted is read off what that process, the daemon or the fake
+ * server saw on disk or on the wire, so it holds for any implementation of the
+ * launch. The live check against the owner's Codex (LV-2) is NOT part of this
+ * file.
+ */
+
+import { afterEach, describe, expect, test } from 'bun:test';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import type {
+  HelloAckMessage,
+  ProtocolMessage,
+  SessionUpdateMessage,
+} from '@remi/shared/protocol.ts';
+import { IDENTITY_SHIM_MIN_VERSION } from '../../src/session/legacy-writers.ts';
+import { fixtureFrameAt } from '../helpers/codex-fixtures.ts';
+import { FakeAppServer } from '../helpers/fake-app-server.ts';
+import { reserveRange } from '../session/port-test-helpers.ts';
+import {
+  CLI_TS,
+  cleanupHub,
+  connectAndHello,
+  isolatedEnv,
+  makeIsolatedDirs,
+  pollUntil,
+  spawnDaemon,
+} from './hub-test-utils.ts';
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+type Json = Record<string, unknown>;
+
+interface Running {
+  proc: Bun.Subprocess<'ignore', 'pipe', 'pipe'>;
+  home: string;
+  work: string;
+  port: number;
+  /** Where the fake `codex` records what it saw; `release` ends it. */
+  fakeDir: string;
+  server: FakeAppServer;
+  /** Everything the process has written to stdout and stderr so far. */
+  output: { text: string };
+}
+
+const running: Running[] = [];
+const sleepers: Array<Bun.Subprocess> = [];
+
+afterEach(async () => {
+  for (const r of running.splice(0)) {
+    await cleanupHub({ proc: r.proc, home: r.home, work: r.work, port: r.port });
+    await r.server.stop();
+  }
+  for (const s of sleepers.splice(0)) s.kill('SIGKILL');
+});
+
+/**
+ * A fake `codex`: records one argument per line, its cwd, the environment
+ * variables the launch must or must not set, and its pid; counts every byte on
+ * its stdin (raw mode, no echo, so a lone byte is seen at once) into `stdin`;
+ * then waits until `release` exists (60 s at most, so a failed run cannot leave
+ * it looping) and exits 0.
+ */
+const FAKE_CODEX = `#!/bin/sh
+d="$FAKE_CODEX_DIR"
+for a in "$@"; do printf '%s\\n' "$a"; done > "$d/argv"
+printf '%s' "$REMI_PORT" > "$d/remi_port"
+printf '%s' "$CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN" > "$d/alt_screen"
+printf '%s' "$CODEX_HOME" > "$d/codex_home"
+pwd -P > "$d/cwd"
+echo $$ > "$d/pid"
+exec 3<&0
+stty raw -echo <&3 2>/dev/null
+: > "$d/stdin"
+cat <&3 >> "$d/stdin" &
+reader=$!
+i=0
+while [ ! -e "$d/release" ] && [ $i -lt 600 ]; do
+  sleep 0.1
+  i=$((i + 1))
+done
+kill $reader 2>/dev/null
+`;
+
+/** A login shell that reports the PATH it is given, so `resolveShellPath` adds nothing. */
+const FAKE_SHELL = '#!/bin/sh\necho "$PATH"\n';
+
+function read(file: string): string {
+  return fs.readFileSync(file, 'utf-8');
+}
+
+/** Collect a process stream into `sink` as it is written. */
+function collect(stream: ReadableStream<Uint8Array>, sink: { text: string }): void {
+  const decoder = new TextDecoder();
+  void (async () => {
+    for await (const chunk of stream) sink.text += decoder.decode(chunk, { stream: true });
+  })().catch(() => {});
+}
+
+function makeFakes(home: string): { fakeDir: string; env: Record<string, string> } {
+  const fakeDir = path.join(home, 'fake-codex');
+  const fakeBin = path.join(home, 'fake-bin');
+  fs.mkdirSync(fakeDir, { recursive: true });
+  fs.mkdirSync(fakeBin, { recursive: true });
+  fs.writeFileSync(path.join(fakeBin, 'codex'), FAKE_CODEX);
+  fs.chmodSync(path.join(fakeBin, 'codex'), 0o755);
+  const shell = path.join(fakeBin, 'sh-path');
+  fs.writeFileSync(shell, FAKE_SHELL);
+  fs.chmodSync(shell, 0o755);
+  return {
+    fakeDir,
+    env: { PATH: `${fakeBin}:/usr/bin:/bin`, SHELL: shell, FAKE_CODEX_DIR: fakeDir },
+  };
+}
+
+/** `cli.ts --daemon --harness codex`, with the fake `codex` and a fake app-server. */
+async function startDaemon(): Promise<Running> {
+  const { home, work } = makeIsolatedDirs();
+  const { fakeDir, env } = makeFakes(home);
+  const server = FakeAppServer.start();
+  const spawned = await spawnDaemon(home, work, { ...env, CODEX_HOME: server.codexHome }, [
+    '--harness',
+    'codex',
+  ]);
+  const output = { text: '' };
+  collect(spawned.proc.stdout, output);
+  collect(spawned.proc.stderr, output);
+  const r: Running = { ...spawned, home, work, fakeDir, server, output };
+  running.push(r);
+  return r;
+}
+
+/** `cli.ts codex <args>` as a wrapper (no terminal: stdin is closed and stdout is a pipe). */
+async function startWrapper(args: readonly string[]): Promise<Running> {
+  const { home, work } = makeIsolatedDirs();
+  const { fakeDir, env } = makeFakes(home);
+  const server = FakeAppServer.start();
+  const port = await reserveRange(1, 50, '127.0.0.1');
+  const proc = Bun.spawn(
+    [
+      process.execPath,
+      CLI_TS,
+      'codex',
+      '--port',
+      String(port),
+      '--no-relay',
+      '--no-telegram',
+      '--no-mdns',
+      '--no-auth',
+      ...args,
+    ],
+    {
+      cwd: work,
+      env: isolatedEnv(home, { ...env, CODEX_HOME: server.codexHome }),
+      stdin: 'ignore',
+      stdout: 'pipe',
+      stderr: 'pipe',
+    },
+  );
+  const output = { text: '' };
+  collect(proc.stdout, output);
+  collect(proc.stderr, output);
+  const r: Running = { proc, home, work, port, fakeDir, server, output };
+  running.push(r);
+  return r;
+}
+
+function fileExists(r: Running, name: string): boolean {
+  return fs.existsSync(path.join(r.fakeDir, name));
+}
+
+async function waitForFakeCodex(r: Running): Promise<void> {
+  await pollUntil(
+    () => {
+      if (r.proc.exitCode !== null) throw new Error(`Process exited early (${r.proc.exitCode})`);
+      return fileExists(r, 'pid') && fileExists(r, 'stdin');
+    },
+    20000,
+    'the fake codex to start',
+  );
+}
+
+/** The one client of the fake app-server, once it has finished its handshake. */
+async function waitForAppServerClient(r: Running): Promise<number> {
+  await pollUntil(
+    () => {
+      const id = r.server.clientIds()[0];
+      return id !== undefined && r.server.framesFrom(id).some((f) => f['method'] === 'initialized');
+    },
+    20000,
+    'the daemon to initialize against the fake app-server',
+  );
+  return r.server.clientIds()[0] as number;
+}
+
+interface StoredRecord {
+  remiSessionId: string;
+  claudeSessionId: string | null;
+  harness?: string;
+  harnessSessionId?: string | null;
+  projectPath: string;
+  port: number;
+  pid: number | null;
+  exitedAt: string | null;
+  exitCode: number | null;
+}
+
+function storedSessions(r: Running): StoredRecord[] {
+  const file = path.join(r.home, '.remi', 'sessions.json');
+  if (!fs.existsSync(file)) return [];
+  return (JSON.parse(read(file)) as { sessions: StoredRecord[] }).sessions;
+}
+
+function onlyRecord(r: Running): StoredRecord {
+  const sessions = storedSessions(r);
+  expect(sessions).toHaveLength(1);
+  return sessions[0] as StoredRecord;
+}
+
+/** A thread frame from the spike (`expB.jsonl:7` the TUI thread, `:12` the title helper), re-addressed. */
+function threadStarted(
+  source: 7 | 12,
+  patch: { id: string; cwd: string; createdAtSec: number },
+): Json {
+  const frame = JSON.parse(JSON.stringify(fixtureFrameAt('expB.jsonl', source).frame)) as Json;
+  const thread = (frame['params'] as { thread: Json }).thread;
+  thread['id'] = patch.id;
+  thread['sessionId'] = patch.id;
+  thread['cwd'] = patch.cwd;
+  for (const env of thread['environments'] as Array<Json>) env['cwd'] = patch.cwd;
+  thread['createdAt'] = patch.createdAtSec;
+  thread['updatedAt'] = patch.createdAtSec;
+  thread['recencyAt'] = patch.createdAtSec;
+  return frame;
+}
+
+function statusChanged(threadId: string, status: Json): Json {
+  return { method: 'thread/status/changed', params: { threadId, status } };
+}
+
+function statusesSeen(received: ProtocolMessage[]): string[] {
+  return received
+    .filter((m): m is SessionUpdateMessage => m.type === 'session_update')
+    .map((m) => m.session.status);
+}
+
+function resumeFrames(r: Running, client: number): Json[] {
+  return r.server.framesFrom(client).filter((f) => f['method'] === 'thread/resume');
+}
+
+describe('remi codex launch (daemon, black-box characterization, #1177)', () => {
+  test('spawns codex --no-alt-screen, records an identity-less codex record, and writes nothing for Claude', async () => {
+    const r = await startDaemon();
+    await waitForFakeCodex(r);
+
+    // argv is exactly `--no-alt-screen`; no override flag, no session id.
+    expect(read(path.join(r.fakeDir, 'argv'))).toBe('--no-alt-screen\n');
+    // The child's environment is the daemon's: CODEX_HOME passes through, and nothing of
+    // Claude's (REMI_PORT, the inline-renderer variable) is added.
+    expect(read(path.join(r.fakeDir, 'codex_home')).trim()).toBe(r.server.codexHome);
+    expect(read(path.join(r.fakeDir, 'remi_port'))).toBe('');
+    expect(read(path.join(r.fakeDir, 'alt_screen'))).toBe('');
+    expect(read(path.join(r.fakeDir, 'cwd')).trim()).toBe(fs.realpathSync(r.work));
+
+    // sessions.json: one record that names its harness and has no Claude id.
+    await pollUntil(() => storedSessions(r).length === 1, 5000, 'the stored record');
+    const record = onlyRecord(r);
+    expect(record.harness).toBe('codex');
+    expect(record.claudeSessionId).toBeNull();
+    expect(record.harnessSessionId ?? null).toBeNull();
+    expect(record.exitedAt).toBeNull();
+    expect(record.port).toBe(r.port);
+    expect(record.pid).toBe(r.proc.pid);
+    expect(record.projectPath).toBe(fs.realpathSync(r.work));
+
+    // live-sessions: this daemon, with the spawned child's pid.
+    const liveDir = path.join(r.home, '.remi', 'live-sessions');
+    await pollUntil(
+      () =>
+        fs.existsSync(liveDir) &&
+        fs
+          .readdirSync(liveDir)
+          .some((f) => read(path.join(liveDir, f)).includes('"claudeChildPid"')),
+      10000,
+      'live-sessions claudeChildPid',
+    );
+    const entry = JSON.parse(read(path.join(liveDir, fs.readdirSync(liveDir)[0] as string))) as {
+      pid: number;
+      claudeChildPid: number;
+    };
+    expect(entry.pid).toBe(r.proc.pid);
+    expect(entry.claudeChildPid).toBe(Number(read(path.join(r.fakeDir, 'pid')).trim()));
+
+    // Nothing Claude-specific was installed: no hook registration in the working
+    // directory, no status line script, no change to the user's Claude settings.
+    expect(fs.existsSync(path.join(r.work, '.claude', 'settings.local.json'))).toBe(false);
+    expect(fs.existsSync(path.join(r.home, '.claude', 'settings.json'))).toBe(false);
+    expect(fs.existsSync(path.join(r.home, '.remi', 'statusline.sh'))).toBe(false);
+    expect(r.output.text).not.toContain('Hook server');
+
+    // hello_ack: a session with no Claude id.
+    const { ws, received } = await connectAndHello(r.port);
+    try {
+      const ack = received.find((m): m is HelloAckMessage => m.type === 'hello_ack');
+      expect(ack?.sessionId).toMatch(UUID_RE);
+      expect(ack?.claudeSessionId ?? null).toBeNull();
+    } finally {
+      ws.close();
+    }
+  }, 40000);
+
+  test('identity: the TUI thread binds; the title helper and another directory do not; the attach frame is exact and retried; the status maps', async () => {
+    const r = await startDaemon();
+    await waitForFakeCodex(r);
+    const client = await waitForAppServerClient(r);
+    const { ws, received } = await connectAndHello(r.port);
+    try {
+      const cwd = fs.realpathSync(r.work);
+      const nowSec = () => Math.floor(Date.now() / 1000);
+      const tuiId = crypto.randomUUID();
+      const helperId = crypto.randomUUID();
+      const strayId = crypto.randomUUID();
+
+      // A user thread in a different directory (another Codex window on this machine) is not ours.
+      r.server.emit(
+        threadStarted(7, { id: strayId, cwd: fs.realpathSync(r.home), createdAtSec: nowSec() }),
+        { broadcast: true },
+      );
+      // The TUI's own thread: a user thread in this directory, created just now.
+      r.server.emit(threadStarted(7, { id: tuiId, cwd, createdAtSec: nowSec() }), {
+        broadcast: true,
+      });
+
+      await pollUntil(
+        () => onlyRecord(r).harnessSessionId === tuiId,
+        10000,
+        'sessions.json to gain the TUI thread id',
+      );
+      expect(onlyRecord(r).harness).toBe('codex');
+      expect(onlyRecord(r).claudeSessionId).toBeNull();
+
+      // The first attach is exactly `thread/resume {threadId, excludeTurns: true}`, no overrides.
+      await pollUntil(() => resumeFrames(r, client).length >= 1, 10000, 'the first thread/resume');
+      expect((resumeFrames(r, client)[0] as Json)['params']).toStrictEqual({
+        threadId: tuiId,
+        excludeTurns: true,
+      });
+
+      // The title helper (ephemeral, `thread_title`, no environments) appears in the same
+      // directory a moment later: it must not rotate the binding.
+      r.server.emit(threadStarted(12, { id: helperId, cwd, createdAtSec: nowSec() }), {
+        broadcast: true,
+      });
+      r.server.emit(statusChanged(helperId, { type: 'active', activeFlags: [] }), {
+        broadcast: true,
+      });
+
+      // The app-server has no rollout yet (-32600): the attach is retried, always with
+      // the same exact frame, until the rollout exists.
+      await pollUntil(() => resumeFrames(r, client).length >= 2, 10000, 'a retried thread/resume');
+      r.server.createRollout(tuiId);
+      await pollUntil(
+        () => r.output.text.includes(`attached to thread ${tuiId.slice(0, 8)}`),
+        10000,
+        'the attach to succeed after the rollout exists',
+      );
+      for (const frame of resumeFrames(r, client)) {
+        expect(frame['params']).toStrictEqual({ threadId: tuiId, excludeTurns: true });
+      }
+      // Attached: no more retries.
+      const attachedCount = resumeFrames(r, client).length;
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      expect(resumeFrames(r, client)).toHaveLength(attachedCount);
+
+      // Status is the tracked thread's: waiting on approval is `waiting`, active is `thinking`,
+      // idle is `idle`; the helper's `active` above changed nothing.
+      r.server.emit(statusChanged(tuiId, { type: 'active', activeFlags: ['waitingOnApproval'] }), {
+        broadcast: true,
+      });
+      await pollUntil(() => statusesSeen(received).includes('waiting'), 5000, 'status waiting');
+      r.server.emit(statusChanged(tuiId, { type: 'active', activeFlags: [] }), {
+        broadcast: true,
+      });
+      await pollUntil(
+        () =>
+          statusesSeen(received).lastIndexOf('thinking') >
+          statusesSeen(received).indexOf('waiting'),
+        5000,
+        'status thinking after waiting',
+      );
+      r.server.emit(statusChanged(tuiId, { type: 'idle' }), { broadcast: true });
+      await pollUntil(
+        () =>
+          statusesSeen(received).lastIndexOf('idle') > statusesSeen(received).indexOf('waiting'),
+        5000,
+        'status idle after waiting',
+      );
+      // The helper's active frame never made the session `thinking` before the first
+      // frame of the tracked thread did.
+      expect(statusesSeen(received).indexOf('waiting')).toBeLessThan(
+        statusesSeen(received).indexOf('thinking'),
+      );
+
+      // Identity never moved off the TUI thread.
+      expect(onlyRecord(r).harnessSessionId).toBe(tuiId);
+
+      // Thread ids are logged truncated, and other threads' frames are never logged.
+      expect(r.output.text).not.toContain(tuiId);
+      expect(r.output.text).not.toContain(helperId.slice(0, 8));
+      expect(r.output.text).not.toContain(strayId.slice(0, 8));
+    } finally {
+      ws.close();
+    }
+  }, 60000);
+
+  test('codex never receives a byte on stdin, and the daemon exits when codex exits (#641)', async () => {
+    const r = await startDaemon();
+    await waitForFakeCodex(r);
+    const client = await waitForAppServerClient(r);
+    const cwd = fs.realpathSync(r.work);
+    const tuiId = crypto.randomUUID();
+    r.server.emit(
+      threadStarted(7, { id: tuiId, cwd, createdAtSec: Math.floor(Date.now() / 1000) }),
+      { broadcast: true },
+    );
+    r.server.createRollout(tuiId);
+    await pollUntil(
+      () => r.output.text.includes(`attached to thread ${tuiId.slice(0, 8)}`),
+      10000,
+      'the attach',
+    );
+    r.server.emit(statusChanged(tuiId, { type: 'active', activeFlags: ['waitingOnApproval'] }), {
+      broadcast: true,
+    });
+    await pollUntil(() => resumeFrames(r, client).length >= 1, 5000, 'an attach frame');
+    // Give the daemon the time it would need to type something, were it going to.
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    expect(fs.statSync(path.join(r.fakeDir, 'stdin')).size).toBe(0);
+
+    fs.writeFileSync(path.join(r.fakeDir, 'release'), '');
+    const code = await Promise.race([
+      r.proc.exited,
+      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 15000)),
+    ]);
+    expect(code).toBe(0);
+
+    // The exited record keeps its thread id, so `remi codex resume <id>` can find it again.
+    const record = onlyRecord(r);
+    expect(record.harness).toBe('codex');
+    expect(record.harnessSessionId).toBe(tuiId);
+    expect(record.exitedAt).not.toBeNull();
+    expect(record.exitCode).toBe(0);
+    expect(fs.statSync(path.join(r.fakeDir, 'stdin')).size).toBe(0);
+  }, 60000);
+
+  test('an older live remi makes it refuse with exit 1 before any record is written', async () => {
+    const { home, work } = makeIsolatedDirs();
+    const { fakeDir, env } = makeFakes(home);
+    const server = FakeAppServer.start();
+
+    // A live process that recorded no version, as a daemon from before the identity shim did.
+    const sleeper = Bun.spawn(['/bin/sleep', '60'], { stdout: 'ignore', stderr: 'ignore' });
+    sleepers.push(sleeper);
+    const liveDir = path.join(home, '.remi', 'live-sessions');
+    fs.mkdirSync(liveDir, { recursive: true });
+    const legacyFile = path.join(liveDir, `${crypto.randomUUID()}.json`);
+    fs.writeFileSync(
+      legacyFile,
+      JSON.stringify({
+        sessionId: path.basename(legacyFile, '.json'),
+        pid: sleeper.pid,
+        wsPort: 18765,
+        hookPort: 0,
+        projectPath: work,
+        name: 'legacy',
+        startedAt: new Date().toISOString(),
+      }),
+    );
+
+    const spawned = await spawnDaemon(home, work, { ...env, CODEX_HOME: server.codexHome }, [
+      '--harness',
+      'codex',
+    ]);
+    const output = { text: '' };
+    collect(spawned.proc.stdout, output);
+    collect(spawned.proc.stderr, output);
+    const r: Running = { ...spawned, home, work, fakeDir, server, output };
+    running.push(r);
+
+    const code = await Promise.race([
+      r.proc.exited,
+      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 20000)),
+    ]);
+    expect(code).toBe(1);
+    // The refusal names the writer's file and the version that has the shim, and what to run.
+    expect(output.text).toContain(legacyFile);
+    expect(output.text).toContain(IDENTITY_SHIM_MIN_VERSION);
+    expect(output.text).toContain('remi stop --all');
+    // No record, no child, no app-server connection.
+    expect(storedSessions(r)).toEqual([]);
+    expect(fileExists(r, 'pid')).toBe(false);
+    expect(server.clientIds()).toEqual([]);
+  }, 40000);
+});
+
+describe('remi codex launch (wrapper and refusals, #1177)', () => {
+  test('remi codex resume <uuid> runs codex --no-alt-screen resume <uuid> and attaches on ready', async () => {
+    const threadId = crypto.randomUUID();
+    const r = await startWrapper(['resume', threadId]);
+    await waitForFakeCodex(r);
+
+    expect(read(path.join(r.fakeDir, 'argv'))).toBe(`--no-alt-screen\nresume\n${threadId}\n`);
+    // The record names the thread from the start; no thread/started is needed.
+    await pollUntil(() => storedSessions(r).length === 1, 5000, 'the stored record');
+    const record = onlyRecord(r);
+    expect(record.harness).toBe('codex');
+    expect(record.claudeSessionId).toBeNull();
+    expect(record.harnessSessionId).toBe(threadId);
+
+    const client = await waitForAppServerClient(r);
+    r.server.createRollout(threadId);
+    await pollUntil(() => resumeFrames(r, client).length >= 1, 10000, 'thread/resume on ready');
+    expect((resumeFrames(r, client)[0] as Json)['params']).toStrictEqual({
+      threadId,
+      excludeTurns: true,
+    });
+    expect(fs.existsSync(path.join(r.work, '.claude', 'settings.local.json'))).toBe(false);
+
+    fs.writeFileSync(path.join(r.fakeDir, 'release'), '');
+    expect(await Promise.race([r.proc.exited, Bun.sleep(15000).then(() => 'timeout')])).toBe(0);
+    expect(fs.statSync(path.join(r.fakeDir, 'stdin')).size).toBe(0);
+  }, 60000);
+
+  test('a flag remi codex does not allow exits 2 before anything starts', async () => {
+    const r = await startWrapper(['-c', 'model=x']);
+    const code = await Promise.race([r.proc.exited, Bun.sleep(20000).then(() => 'timeout')]);
+    expect(code).toBe(2);
+    expect(r.output.text).toContain('-c');
+    expect(storedSessions(r)).toEqual([]);
+    expect(fileExists(r, 'pid')).toBe(false);
+  }, 40000);
+
+  test('remi codex --host is refused until the wire carries a harness', async () => {
+    const r = await startWrapper(['--host', '127.0.0.1']);
+    const code = await Promise.race([r.proc.exited, Bun.sleep(20000).then(() => 'timeout')]);
+    expect(code).toBe(2);
+    expect(r.output.text).toContain('--host');
+    expect(storedSessions(r)).toEqual([]);
+    expect(fileExists(r, 'pid')).toBe(false);
+  }, 40000);
+});

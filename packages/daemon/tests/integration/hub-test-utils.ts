@@ -115,11 +115,15 @@ export function spawnServeRaw(
  * as unset, so a developer shell that exports `=0` cannot change what the
  * daemon passes to Claude. It runs under `process.execPath`, so an override of
  * PATH that omits `bun` still starts it.
+ *
+ * `extraArgs` go after the fixed flags (the Codex launch test passes
+ * `--harness codex`, #1177).
  */
 export async function spawnDaemon(
   home: string,
   work: string,
   envOverrides: Record<string, string> = {},
+  extraArgs: readonly string[] = [],
 ): Promise<{ proc: Bun.Subprocess<'ignore', 'pipe', 'pipe'>; port: number }> {
   const port = await reserveRange(1, 50, DEFAULT_CONFIG.daemon.bind);
   const proc = Bun.spawn(
@@ -133,6 +137,7 @@ export async function spawnDaemon(
       '--no-telegram',
       '--no-mdns',
       '--no-auth',
+      ...extraArgs,
     ],
     {
       cwd: work,

@@ -18,7 +18,7 @@
  *   with `node:crypto` directly, never with the module under test.
  */
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { type Server as NetServer, type Socket, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -115,6 +115,9 @@ export class FakeAppServer {
     this.socketPath = join(this.dir, 's.sock');
     this.codexHome = join(this.dir, 'codex-home');
     mkdirSync(join(this.codexHome, 'app-server-control'), { recursive: true });
+    // Codex's own control directory is 0700 and the launch refuses a socket whose directories
+    // are not (#1177); `mkdirSync` leaves this one at the umask's 0755.
+    chmodSync(join(this.codexHome, 'app-server-control'), 0o700);
     this.linkPath = join(this.codexHome, 'app-server-control', 'app-server-control.sock');
     this.server = Bun.serve<ClientData>({
       unix: this.socketPath,
