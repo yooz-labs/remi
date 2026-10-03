@@ -122,10 +122,12 @@ export interface Harness {
   /**
    * Where the harness writes the transcript of one of its sessions, derived
    * from the project path and the harness's own session id. It is the path a
-   * session WILL have (or has), not proof the file exists. Claude:
-   * `<projectsDir>/<project path with every "/" replaced by "-">/<id>.jsonl`.
+   * session WILL have (or has), not proof the file exists. `null` when the
+   * harness has no transcript file remi can name (#1176: Codex's history comes
+   * from its app-server, not a file), which every caller reads as "no file".
+   * Claude: `<projectsDir>/<project path with every "/" replaced by "-">/<id>.jsonl`.
    */
-  transcriptPath(projectPath: string, harnessSessionId: string): string;
+  transcriptPath(projectPath: string, harnessSessionId: string): string | null;
 
   /**
    * Build the session's detection, binding and PTY, in the order the harness
