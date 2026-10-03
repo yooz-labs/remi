@@ -660,18 +660,19 @@ export function findLegacyWriters(deps: {
 4. `Harness.transcriptPath` becomes `string | null` (`types.ts:128`). Claude is unchanged. Adapt `current-session.ts:56-58`, `session-events.ts:149` and the `transcript-events.ts` durable-index load to treat null as "no file". `claude-session.ts` untouched.
 5. `createPtySessionForSession` takes `command?: string` (default `'claude'`), `childEnv?: Record<string,string>` (default `buildClaudeChildEnv(wsPort, reservedRows)`), and `outputSink: PtyOutputSink` (`{process(text:string):void; flush():void}`) in place of `outputProcessor` (`:46`); export `NOOP_OUTPUT_SINK`. `claude-session.ts` passes its `OutputProcessor`. `onExit`'s `markClaudeChildExited` is neutral in effect. Boundary-test allowlist: `harness/codex/*` may import `cli/session-phases/pty-session-setup.ts` and nothing else under `cli/session-phases/`. Alternative: `git mv` the file to `pty/`, which renames imports in three tests.
 6. #1165 E: move `sessionNotifiers.set(sessionId, notifications)` from `claude-session.ts:217` into `createNewSession` just before `harness.createSession` (`cli.ts:1511`). `ClaudeLaunchDeps.sessionNotifiers` stays as a read-only reference for the lazy `pushTerminalNotice` closures.
-7. `validateCodexArgs(args): {ok:true; args; resumeThreadId: string | null} | {ok:false; error}` (pure):
-   - **Denylist** (names matched also as `--flag=value`, and any attached short form `-cX`, `-pX`, `-CX`): `-c`, `--config`, `--enable`, `--disable`, `-p`, `--profile`, `--strict-config`, `--dangerously-bypass-hook-trust`, `--no-daemon`, `--search`, `--approve-for-me`, `--remote`, `--remote-auth-token-env`, `--oss`, `--local-provider`, `-C`, `--cd`. `--no-alt-screen` is accepted and deduplicated.
-   - **Subcommands:** only `resume <uuid>` is allowed, and it requires an explicit uuid. `fork`, `exec`, `login`, `logout`, `mcp`, `mcp-server`, `app-server`, `proxy`, `completion`, `debug`, `apply`, `cloud`, `sandbox` and `review` are refused ("remi codex runs the interactive TUI only"). Refresh this list from `codex --help` on the owner's installed version at implementation time (I could not run it).
-   - **Remote (default-deny, used by Phase 5):** `-m/--model <[A-Za-z0-9._:\[\]-]{1,64}>`, `resume <uuid>`, `-a untrusted|on-request`, `-s read-only|workspace-write`; at most 16 args, at most 256 chars each, no NUL.
-   - The working directory is `realpath`-normalized and must exist and be a directory.
+7. `validateCodexArgs(args): {ok:true; args; resumeThreadId: string | null} | {ok:false; error}` (pure).
+   As shipped in PR #1182; the denylist this plan first described here is superseded by the review's default-deny allowlist:
+   - **Local: a default-deny flag allowlist.** `-m/--model`, `-a/--ask-for-approval`, `-s/--sandbox`, `--add-dir`, `-i/--image`, `--dangerously-bypass-approvals-and-sandbox`/`--yolo`, `-h/--help` and `-V/--version` pass (also as `--flag=value` and, for the short ones, attached as `-mX`); `--no-alt-screen` is accepted and removed, because the launch adds its own. Every other flag is refused by name. A denylist (`-c/--config`, `--enable`, `--disable`, `-p/--profile`, `--strict-config`, `--dangerously-bypass-hook-trust`, `--no-daemon`, `--search`, `--approve-for-me`, `--not-so-yolo`, `--remote*`, `--oss`, `--local-provider`, `-C/--cd`, `--worktree`) only chooses the refusal message. A valued flag never takes a flag-shaped token as its value.
+   - **Prompt and subcommands.** The returned args are `[...flags, 'resume', uuid]` or `[...flags, '--', ...promptWords]`: a prompt always follows an inserted `--`, so Codex cannot read it as a subcommand, and a `--` the user typed makes the rest prompt text. Only `resume <uuid>` runs a subcommand, and it needs an explicit UUID (`--last` and the picker are refused). The list of Codex subcommand names (32, from 0.160.0) only gives a clear refusal when the first positional is one; safety does not depend on it.
+   - **Remote (default-deny, used by Phase 5):** `validateCodexRemoteArgs(args: unknown)` allows `-m/--model <[A-Za-z0-9._:\[\]-]{1,64}>` with no leading hyphen, `-a untrusted|on-request`, `-s read-only|workspace-write` and `resume <uuid>` (returned last), each at most once, at most 16 arguments of at most 256 characters, no NUL, and is total over any input.
+   - The working directory is `realpath`-normalized and must exist and be a directory (`resolveCodexWorkingDirectory`).
 8. ADR 0033 amendment.
 
 DECIDED POLICY:
-- A refusal, not a second store file, closes the older-daemon hazard.
-- `-C/--cd` is denied because identity matching uses the session cwd.
-- Local `remi codex` uses a denylist (the user is the principal); remote uses the allowlist.
-- A bare prompt positional is passed through.
+- A refusal, not a second store file, narrows the older-daemon hazard; it does not close it. An older binary started after the launch can still rewrite the store, and one registered nowhere is never seen (R12). No sidecar identity file is planned.
+- `-C/--cd` and `--worktree` are refused because identity matching uses the session cwd.
+- Both local and remote arguments are default-deny allowlists (item 7). The user is the principal locally, but a flag remi does not model fails silently (an approval path that never reaches the phone), so it is refused by name.
+- A bare prompt positional is passed through, after an inserted `--`.
 
 Pin tests first (before any change):
 - Characterize the current mixed-store behavior: a record with `harness:'codex'` and null `claudeSessionId` is returned by `getMostRecent()` today, and `--resume` of it errors "no Claude session ID".
