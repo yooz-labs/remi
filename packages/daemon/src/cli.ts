@@ -119,7 +119,6 @@ import type { ProtocolMessage, UUID, UnlockedIdentity } from '@remi/shared';
 import { isEncrypted, unlockIdentity } from '@remi/shared';
 import type { AnswerKeyPair } from '@remi/shared';
 import { AdapterRegistry, TelegramAdapter, WebSocketAdapter } from './adapters/index.ts';
-import type { QuestionPresenceTracker } from './api/question-presence-tracker.ts';
 import { loadOrCreateAnswerKey } from './auth/answer-key.ts';
 import { Authenticator } from './auth/authenticator.ts';
 import { loadOrCreateCapabilityToken } from './auth/capability-token.ts';
@@ -181,7 +180,6 @@ import {
 } from './cli/log-file.ts';
 import { installProcessGuards } from './cli/process-guards.ts';
 import { PtyQuiescenceGate } from './cli/pty-quiescence-gate.ts';
-import type { SessionGateHandle } from './cli/session-phases/hook-bridge-setup.ts';
 import { createMessageApiForSession } from './cli/session-phases/message-api-setup.ts';
 import { StatusBar, childRows } from './cli/status-bar.ts';
 import { installStatusLine } from './cli/statusline-installer.ts';
@@ -201,8 +199,9 @@ import {
   serviceCommandRefusal,
 } from './config/remi-home.ts';
 import { ClaudeHarness } from './harness/index.ts';
+import type { HarnessSession } from './harness/index.ts';
 import { ForeignSessionEscalator, HookConfigManager, HookServer } from './hooks/index.ts';
-import type { HookInput, PermissionDeniedHookInput, StopHookInput } from './hooks/index.ts';
+import type { PermissionDeniedHookInput, StopHookInput } from './hooks/index.ts';
 // Static, unlike the publisher below it: this is a pure decision with no
 // side effects and nothing to load, so there is nothing for a dynamic import
 // to defer -- and it is needed on the path where mDNS never starts at all.
@@ -954,58 +953,36 @@ const _ptyManager = new PTYManager();
 const transcriptDiscovery = new TranscriptDiscovery();
 const transcriptWatchers: Map<UUID, TranscriptWatcher> = new Map();
 const transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>> = new Map();
-// Per-session TranscriptBinder teardown hooks (#453 phase 3, commit 5). The
-// shared transcriptWatchers/transcriptFallbackTimers cleanup below stops the
-// binder's watcher + fallback timer, but NOT its #452 rotation dir-poll
-// interval (it lives inside the binder); close() reaches all three.
-const binderClosers: Map<UUID, () => void> = new Map();
-// Per-session permission gate handles (#573): retireQuestion + forceRelease,
-// keyed by sessionId, so the answer handler and `remi unstick` reach the RIGHT
-// session's gate (multi-session daemons). Populated by createClaudeSession
-// (called from createNewSession) after setupHookBridge; removed on session
-// close. Empty when no hookServer is configured.
-const sessionGateHandles: Map<UUID, SessionGateHandle> = new Map();
-// Per-session QuestionPresenceTracker (#920): the answer handler needs
-// `isPromptCurrent` to refuse a PTY submit for a `source: 'pty'` card whose
-// on-screen prompt is already gone (input-events.ts's prompt-currency
-// guard). Unlike `sessionGateHandles`, a tracker is constructed for EVERY
-// session by `createClaudeSession` regardless of whether a hook server is
-// active, so this map is populated unconditionally there; removed on
-// session close, same lifecycle as the other per-session maps below.
-const sessionTrackers: Map<UUID, QuestionPresenceTracker> = new Map();
-/**
- * Per-session "does this binder claim the event?" filters (#914).
- *
- * Listeners registered INSIDE `setupHookBridge` all consult `binder.admits()`.
- * `onTurnStop` is registered out here, so it needs the same filter: two daemons
- * in the SAME project directory each append their own matcher to the shared
- * `.claude/settings.local.json` hooks array, and Claude Code POSTs every event
- * to both. Unfiltered, this daemon would push "turn complete" for a sibling's
- * turn, labelled with THIS session's name and carrying the sibling's output --
- * a false "done" for a session that may still be working.
- */
-const sessionAdmitsHandles: Map<UUID, (input: HookInput) => boolean> = new Map();
+// Per-session harness sessions, keyed by sessionId (#1164): the answer, chat
+// and Stop handlers reach the RIGHT session's decisions (gate handle and
+// screen reads, #573, #920) through it, `remi unstick` force-releases each
+// one, and session close disposes it (which tears down the Claude
+// TranscriptBinder's rotation dir-poll that the shared transcriptWatchers and
+// transcriptFallbackTimers cleanup below cannot reach, #453). It replaced the
+// `sessionGateHandles`, `sessionTrackers` and `binderClosers` maps, which the
+// launch filled in separately; every session has an entry, a session with no
+// hook server just has nothing held.
+const harnessSessions: Map<UUID, HarnessSession> = new Map();
 /**
  * Force-release every session's gate (#617, `remi unstick` -> SIGUSR2): the "just
  * get me out" lever when cards are stuck. Each gate resolves and dismisses every
  * open escalation it tracks, except that a live hold is released to the terminal
  * with a notice (#1126; its dialog is on screen). Idempotent and safe with zero
- * sessions.
+ * sessions. Every harness session counts in the logged total, including one
+ * with no hook server (nothing to release there).
  */
 function forceReleaseAllSessions(): void {
   let resolved = 0;
   // Per-session try/catch: a throw in one gate's release must not abort the loop
   // and leave the remaining sessions stuck (the whole point is "get me out").
-  for (const [sessionId, handle] of sessionGateHandles.entries()) {
+  for (const [sessionId, session] of harnessSessions.entries()) {
     try {
-      resolved += handle.forceRelease('force-release (remi unstick)').resolved;
+      resolved += session.decisions.forceRelease('force-release (remi unstick)').resolved;
     } catch (err) {
       logError(`[unstick] Failed to force-release session ${sessionId.slice(0, 8)}:`, err);
     }
   }
-  log(
-    `[unstick] Force-released ${sessionGateHandles.size} session(s): ${resolved} card(s) resolved`,
-  );
+  log(`[unstick] Force-released ${harnessSessions.size} session(s): ${resolved} card(s) resolved`);
 }
 // Per-session APNS dispatchers (#585, P7), keyed by sessionId, so the
 // question-resolved path can fire a quiet lock-screen dismissal through the same
@@ -1059,18 +1036,15 @@ const sessionRegistry = new SessionRegistry(
       // Tear down the drive-mode binder (rotation dir-poll + fallback timer) at
       // session close, not just at process cleanup — else the poll interval leaks
       // for the rest of the daemon's life across resumes (#463 phase 3 review).
-      binderClosers.get(sessionId)?.();
-      binderClosers.delete(sessionId);
-      // Drop the per-session gate handle (#573); its open escalations were
-      // already resolved by the gate's cancelStale on teardown.
-      sessionGateHandles.delete(sessionId);
-      // Drop the per-session QuestionPresenceTracker (#920): a stale entry
-      // here would make `isPromptCurrent` resolve against a dead session's
-      // last-observed PTY state instead of falling back to "no tracker".
-      sessionTrackers.delete(sessionId);
-      // #914: drop the admits filter with the session, so a closed session's
-      // binder can never keep admitting turns on its behalf.
-      sessionAdmitsHandles.delete(sessionId);
+      // The session's dispose() also drops its #914 admits filter, so a closed
+      // session's binder can never keep admitting turns on its behalf.
+      harnessSessions.get(sessionId)?.dispose();
+      // Drop the session with its gate handle (#573; its open escalations were
+      // already resolved by the gate's cancelStale on teardown) and its
+      // QuestionPresenceTracker (#920): a stale entry would make
+      // `isPromptCurrent` resolve against a dead session's last-observed PTY
+      // state instead of falling back to "no tracker".
+      harnessSessions.delete(sessionId);
       // Drop the per-session APNS dispatcher (#585, P7).
       sessionNotifiers.delete(sessionId);
       const watcher = transcriptWatchers.get(sessionId);
@@ -1286,18 +1260,7 @@ function onTurnStop(input: StopHookInput): void {
   // likely a sibling's. Note the timer cannot save us: `onAnyEvent` observes
   // sibling events too, so `elapsedMs` comes back populated and plausible.
   // Fail closed -- no admitting session means we do not claim this turn.
-  let admitted = false;
-  for (const admits of sessionAdmitsHandles.values()) {
-    try {
-      if (admits(input)) {
-        admitted = true;
-        break;
-      }
-    } catch {
-      // A binder that throws must not break the hook path; treat as not ours.
-    }
-  }
-  if (!admitted) return;
+  if (!harness.admitsAnySession(input)) return;
 
   const elapsedMs = turnTimer.elapsedMs(input.prompt_id);
   // A stop-hook re-entry means the turn is still going, not finished -- do
@@ -1556,6 +1519,7 @@ async function createNewSession(
     sendMessage,
     notifications,
   });
+  harnessSessions.set(sessionId, session);
   const ptySession = session.pty;
 
   const locallyOwned = passThrough; // wrapper-mode sessions are locally owned
@@ -1726,19 +1690,20 @@ const trivialHandlers: TrivialHandlers = createTrivialHandlers({
 // and spread into both handler factories below, so the chat guard and Stop
 // cannot disagree. Backed by the RIGHT session's gate and tracker.
 const promptUpWiring = promptUpDeps(
-  (sessionId) => sessionGateHandles.get(sessionId),
-  (sessionId) => sessionTrackers.get(sessionId),
+  (sessionId) => harnessSessions.get(sessionId)?.decisions,
+  (sessionId) => harnessSessions.get(sessionId)?.decisions.screen,
 );
 
 const inputHandlers: InputHandlers = createInputHandlers({
   sessionRegistry,
   bindingStore,
   send: sendToConnection,
-  // #573/#1126: the RIGHT session's gate (the map is populated per session by
-  // createClaudeSession) retires an answered question and answers a held
+  // #573/#1126: the RIGHT session's decisions (`harnessSessions`, filled per
+  // session by createNewSession from `harness.createSession`) retire an
+  // answered question and answer a held
   // prompt through its hook. One helper, shared with the tests, like
   // trackerScreenDeps below.
-  ...gateAnswerDeps((sessionId) => sessionGateHandles.get(sessionId)),
+  ...gateAnswerDeps((sessionId) => harnessSessions.get(sessionId)?.decisions),
   // #1155: the chat guard reads the one "a prompt is up" signal Stop reads.
   ...promptUpWiring,
   // #585: a locally answered question dismisses its card + lock-screen push on
@@ -1747,12 +1712,12 @@ const inputHandlers: InputHandlers = createInputHandlers({
     onQuestionResolved(sessionId, questionId, 'answered'),
   // The screen reads the answer guards need (#920 prompt currency, #1002 any
   // prompt on screen, #1134 the on-screen menu), backed by the RIGHT session's
-  // tracker (populated per session by createClaudeSession, same map-per-sessionId
-  // shape as sessionGateHandles above). One helper, shared with the tests, so
+  // tracker (each session's `decisions.screen`, from the same per-sessionId
+  // map as the gate above). One helper, shared with the tests, so
   // the wiring they exercise is this wiring. No tracker for this sessionId
   // (session already closed, or never wired one) => nothing observed, which
   // fails toward refusing the injection.
-  ...trackerScreenDeps((sessionId) => sessionTrackers.get(sessionId)),
+  ...trackerScreenDeps((sessionId) => harnessSessions.get(sessionId)?.decisions.screen),
 });
 
 // One daemon hosts one session, so the harness is a per-daemon singleton, built
@@ -1788,10 +1753,6 @@ const harness = new ClaudeHarness(transcriptDiscovery, {
     if (wrapperPtyGate.observe(data)) statusBar?.notifyScrollRegionReset();
   },
   sessionNotifiers,
-  sessionGateHandles,
-  sessionTrackers,
-  binderClosers,
-  sessionAdmitsHandles,
 });
 
 const sessionHandlers: SessionHandlers = createSessionHandlers({
@@ -2192,11 +2153,15 @@ async function cleanup(): Promise<void> {
   }
 
   // Binders own a rotation dir-poll interval the shared maps below do not
-  // reach; close() tears down its watcher + fallback timer + dir-poll.
-  for (const closeBinder of binderClosers.values()) {
-    closeBinder();
+  // reach; dispose() tears down its watcher + fallback timer + dir-poll, and
+  // drops the session's turn filter (the hook server was stopped above, so no
+  // Stop can arrive to read it). The sessions stay in the map; onSessionClosed
+  // disposes them again when the PTY exits, which dispose()'s guard makes a
+  // no-op. Before, cleanup cleared binderClosers and left the gate, tracker
+  // and turn-filter maps.
+  for (const session of harnessSessions.values()) {
+    session.dispose();
   }
-  binderClosers.clear();
   for (const watcher of transcriptWatchers.values()) {
     watcher.stop();
   }

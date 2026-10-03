@@ -267,11 +267,65 @@ describe('daemon launch of Claude (black-box characterization, #1164)', () => {
     );
     expect(d.output.text).not.toContain('fallback poll + dir-watch not armed');
 
+    // `remi unstick` sends SIGUSR2: the daemon force-releases its one session
+    // (nothing is held, so no card resolves) and keeps running.
+    process.kill(d.proc.pid, 'SIGUSR2');
+    await pollUntil(
+      () => d.output.text.includes('[unstick] Force-released 1 session(s): 0 card(s) resolved'),
+      5000,
+      'the unstick log line',
+    );
+    expect(d.proc.exitCode).toBeNull();
+
     // SIGTERM: the daemon shuts down and takes its hook registration with it.
     d.proc.kill('SIGTERM');
     await d.proc.exited;
     const after = fs.existsSync(settingsPath) ? fs.readFileSync(settingsPath, 'utf-8') : '';
     expect(after).not.toContain(`http://127.0.0.1:${entry.hookPort}`);
+  }, 40000);
+
+  test('remi unstick releases a held prompt: the log counts the card and the hook gets an empty response', async () => {
+    const d = await startDaemon();
+    const entry = liveEntry(d);
+    if (!entry) throw new Error('no live-sessions entry');
+    const claudeSessionId = (storedSessions(d)[0] as StoredRecord).claudeSessionId;
+
+    // A client is attached, so the held prompt reaches it as a question card.
+    const { ws, received } = await connectAndHello(d.port);
+    try {
+      // Claude Code POSTs a PermissionRequest to the hook port and waits.
+      const response = fetch(`http://127.0.0.1:${entry.hookPort}/hooks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          hook_event_name: 'PermissionRequest',
+          session_id: claudeSessionId,
+          cwd: fs.realpathSync(d.work),
+          permission_mode: 'default',
+          tool_name: 'Bash',
+          tool_input: { command: 'ls' },
+          permission_suggestions: [],
+        }),
+      }).then((r) => r.text());
+      await pollUntil(
+        () => received.some((m) => m.type === 'question'),
+        8000,
+        'the held prompt to reach the client as a question',
+      );
+
+      // `remi unstick` (SIGUSR2): the session's one open card is released to
+      // the terminal, which the log counts, and the hook gets no decision.
+      process.kill(d.proc.pid, 'SIGUSR2');
+      await pollUntil(
+        () => d.output.text.includes('[unstick] Force-released 1 session(s): 1 card(s) resolved'),
+        8000,
+        'the unstick log line for the held card',
+      );
+      expect(JSON.parse(await response)).toEqual({});
+      expect(d.proc.exitCode).toBeNull();
+    } finally {
+      ws.close();
+    }
   }, 40000);
 
   test('the daemon exits once claude exits, and the session is marked exited (#641)', async () => {

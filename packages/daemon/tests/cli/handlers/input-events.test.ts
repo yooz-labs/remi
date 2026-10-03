@@ -2147,7 +2147,7 @@ describe('createInputHandlers', () => {
       const call = stripComments(src.slice(start, end));
       // Its own line, nothing else on it.
       const spread =
-        /^[ \t]*\.\.\.trackerScreenDeps\(\(sessionId\) => sessionTrackers\.get\(sessionId\)\),?[ \t]*$/m.exec(
+        /^[ \t]*\.\.\.trackerScreenDeps\(\(sessionId\) => harnessSessions\.get\(sessionId\)\?\.decisions\.screen\),?[ \t]*$/m.exec(
           call,
         );
       if (!spread) return 'spread missing';
@@ -2164,7 +2164,8 @@ describe('createInputHandlers', () => {
       path.join(import.meta.dir, '..', '..', '..', 'src', 'cli.ts'),
       'utf8',
     );
-    const SPREAD = '  ...trackerScreenDeps((sessionId) => sessionTrackers.get(sessionId)),';
+    const SPREAD =
+      '  ...trackerScreenDeps((sessionId) => harnessSessions.get(sessionId)?.decisions.screen),';
 
     test('cli.ts wires it into the answer handlers', () => {
       expect(wiringVerdict(cliSource)).toBe('ok');
@@ -2277,7 +2278,7 @@ describe('createInputHandlers', () => {
     }
 
     const DEFINITION =
-      'const promptUpWiring = promptUpDeps((sessionId) => sessionGateHandles.get(sessionId), (sessionId) => sessionTrackers.get(sessionId),);';
+      'const promptUpWiring = promptUpDeps((sessionId) => harnessSessions.get(sessionId)?.decisions, (sessionId) => harnessSessions.get(sessionId)?.decisions.screen,);';
 
     /** 'ok', or why `src` does not build the signal once from both maps and
      *  spread it into both `createInputHandlers` and `createSessionHandlers`. */
@@ -2350,8 +2351,8 @@ describe('createInputHandlers', () => {
         'the gate read dropped from the definition',
         (s: string) =>
           s.replace(
-            '(sessionId) => sessionGateHandles.get(sessionId),\n  (sessionId) => sessionTrackers',
-            '() => undefined,\n  (sessionId) => sessionTrackers',
+            '(sessionId) => harnessSessions.get(sessionId)?.decisions,\n  (sessionId) => harnessSessions',
+            '() => undefined,\n  (sessionId) => harnessSessions',
           ),
         'definition changed',
       ],

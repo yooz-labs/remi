@@ -1,6 +1,6 @@
 /**
  * Wire the Claude Code hook event stream into our PTY's MessageAPI during
- * createNewSession.
+ * the launch (`createClaudeSession`, called from `createNewSession`).
  *
  * Two concerns live here, both depending on the same `TranscriptBinder`
  * (session binding/watcher/rotation control plane, `src/transcript/transcript-binder.ts`):
@@ -285,9 +285,10 @@ export interface HookBridgeArgs {
 }
 
 /**
- * Per-session control surface for the permission gate (#573). Registered by
- * cli.ts keyed by `sessionId` so the answer handler and `remi unstick` reach
- * the RIGHT session's gate.
+ * Per-session control surface for the permission gate (#573). Attached to the
+ * session's `decisions` (`harness/claude-session.ts`), which cli.ts stores in
+ * `harnessSessions` keyed by `sessionId`, so the answer handler and
+ * `remi unstick` reach the RIGHT session's gate.
  */
 export interface SessionGateHandle {
   /** Another path already removed and dismissed `questionId` (a user answer,

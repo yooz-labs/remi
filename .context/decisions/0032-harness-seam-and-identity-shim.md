@@ -132,9 +132,9 @@ It changes no behavior: the same bytes are typed, the same arguments are spawned
 
 ## Phase 3 amendment: `HarnessSession` and the launch extraction (#1164)
 
-Phase 3 moves the Claude-specific middle of `createNewSession` behind the seam.
-Nothing a client, a file or a process can see changes.
-Deliverable 5 of #1164 (one `harnessSessions` map in place of the per-session maps, with a `DecisionChannel` and `dispose()`) is split into a follow-up PR for size; items 2 and 5 say what that leaves out here.
+Phase 3 moves the Claude-specific middle of `createNewSession` behind the seam, in two steps: the launch extraction (#1171), then one `harnessSessions` map with a `DecisionChannel` and `dispose()` in place of the per-session maps.
+Nothing a client, a file or a process can see changes, apart from one log line (item 5).
+The items below describe the end state.
 
 1. **What moved.**
    The 207 lines of base `cli.ts` 1554-1760, which start at the comment two lines above `sessionNotifiers.set` and end with the `createPtySessionForSession(...)` call (the `QuestionPresenceTracker`, the `OutputProcessor`, `resolveClaudeBinding` and `bindingStore.preAssign`, the hook bridge, the PTY), are now `createClaudeSession` in `packages/daemon/src/harness/claude-session.ts`, reached through `Harness.createSession(ctx: HarnessLaunchContext): HarnessSession`.
@@ -142,12 +142,16 @@ Deliverable 5 of #1164 (one `harnessSessions` map in place of the per-session ma
    `createNewSession` keeps the neutral shell: the message API, `createSession`, `registerSession`, the `starting` status, `start()` with `markExited` on failure, and the child pid.
    Statement order inside the moved block is unchanged, and only one of its constraints is observable: `preAssign` before `setupHookBridge`, because `setupHookBridge` reads the binding synchronously (`hook-bridge-setup.ts` 784-800) and arms the transcript binder only when one exists.
    Moving `preAssign` after the bridge fails `launch-characterization.test.ts` (the daemon logs that the fallback poll is not armed and never binds the transcript) and `claude-session.test.ts` (no fallback timer).
-   `sessionNotifiers.set` before the tracker and `sessionTrackers.set` before the hook bridge are kept for fidelity only: the statements between them are synchronous and the maps are read only inside later callbacks, so reordering either survives every test, and that is expected.
+   `sessionNotifiers.set` before the tracker and the tracker before the hook bridge are kept for fidelity only: the statements between them are synchronous and the maps are read only inside later callbacks, so reordering either survives every test, and that is expected.
+   One order is relaxed on purpose: the daemon-side registration of the tracker and gate (formerly the `sessionTrackers` and `sessionGateHandles` maps, filled mid-launch) is now `createNewSession` storing the returned `HarnessSession` in `harnessSessions` after `createSession` returns and before it registers the PTY.
+   That is unobservable: the tracker's closures read the session's own `decisions`, which has no gate until the bridge exists, and the handlers that read `harnessSessions` run only on client messages, after the launch has returned; a pin in `claude-session.test.ts` holds the store between `createSession` and `registerSession`.
 2. **Members, each with a production caller.**
    `HarnessLaunchContext` carries what the shell hands over (session id, working directory, extra arguments, pass-through, reserved rows, the message API, `sendAndRecord`, `sendMessage`, the notifier), and `createClaudeSession` reads every field.
-   `HarnessSession` is `{pty, start()}`: `cli.ts` registers `pty` with the session registry, reads its child pid and calls `start()`.
-   `decisions`, `dispose()`, `DecisionChannel` and `DecisionScreen` are not declared yet.
-   Nothing would call them before the maps are consolidated, so they arrive with that follow-up, as the epic rule requires.
+   `HarnessSession` is `{pty, decisions, start(), dispose()}`: `cli.ts` registers `pty` with the session registry, reads its child pid, calls `start()`, and calls `dispose()` from `onSessionClosed` and `cleanup`.
+   `DecisionChannel` carries the member names of the permission gate's `SessionGateHandle`, so `gateAnswerDeps` (`retireQuestion`, `answerHeld`, `noteTerminalEscape`), `promptUpDeps` (`hasMainHold`, `hasOpenHookPrompt`, `screen`) and `trackerScreenDeps` (`screen`) take it with no edit, `forceReleaseAllSessions` calls `forceRelease`, and the tracker's own closure calls `isHeld` through the same channel.
+   `screen` is typed optional because a harness may have no screen to read; Claude always has one.
+   `DecisionScreen` repeats the three tracker reads that `ScreenObserver` (`input-events.ts`) and `PromptUpScreen` (`prompt-up.ts`) declare; they are structurally equal and `cli.ts` passes one where the other is expected, so a drift is a type error.
+   A session with no hook server has a channel that reads as nothing held (`answerHeld` is `unknown`, `forceRelease` resolves 0).
    `HeldAnswer` and `HeldAnswerOutcome` moved verbatim from `auto-approve/auto-approve-gate.ts` to `harness/decision.ts` (re-exported from `auto-approve/index.ts`), so `input-events.ts` no longer imports `auto-approve/`.
 3. **Four values arrive as getters.**
    `hookServer` is read at PTY-event time and nulled by `cleanup`; `PORT` is reassigned by port probing after the harness is built; the websocket port feeds the `remi:<port>` name and `REMI_PORT` at spawn time; `[prompts]` picks the hold policy at each launch, where the original read the config global.
@@ -156,13 +160,26 @@ Deliverable 5 of #1164 (one `harnessSessions` map in place of the per-session ma
    This supersedes Phase 2 items 2 and 5, which both expected it here.
    It was not added because nothing neutral asks for it: `command: 'claude'` stays at `pty-session-setup.ts` 203, inside `createPtySessionForSession`, which only `createClaudeSession` calls.
    It arrives with the first caller that spawns a command other than `claude`, which is the Codex epic.
-5. **The per-session maps stay in `cli.ts`.**
-   `sessionGateHandles`, `sessionTrackers`, `binderClosers`, `sessionAdmitsHandles` and `sessionNotifiers` are passed to the launch whole (`ClaudeLaunchDeps`), so the moved statements fill them exactly as before and the handlers that read them are untouched.
-   Folding them into one `harnessSessions` map, moving `sessionAdmitsHandles` into `ClaudeHarness` as `admitsAnySession`, and `dispose()` replacing `binderClosers` are the follow-up.
-   Registering a notifier is neutral work a second harness will repeat, so `sessionNotifiers.set` is a candidate to move into the shell then.
+5. **One map replaces three, and the turn filter moved.**
+   `harnessSessions: Map<UUID, HarnessSession>` replaces `sessionGateHandles`, `sessionTrackers` and `binderClosers` in `cli.ts`; every session that launched has an entry.
+   `sessionAdmitsHandles` became `ClaudeHarness.admitsAnySession(input)`, which `onTurnStop` calls; it is a Claude hook filter, so it is on the class and not on `Harness`.
+   `sessionNotifiers` stays in `cli.ts` and `createClaudeSession` still fills it, as the issue specifies; registering a notifier is neutral work a second harness will repeat, so it is a candidate to move into the shell.
+   Three differences from the inline code, none visible on the wire or on disk:
+   - `remi unstick` logs `Force-released N session(s)` with N counting every session, so a daemon whose hook server failed to start now counts its session with 0 cards resolved (before, N was 0 there). This log text is the one visible change.
+   - `cleanup` calls `dispose()` on each session after `hookServer.stop()` and leaves the sessions in the map.
+     `onSessionClosed` disposes them again when the PTY exits (`cleanup` runs, `sessionRegistry.shutdown()` closes the PTY, `onSessionClosed` fires), which the `disposed` guard makes a no-op; a test pins the guard with a sentinel timer that a second `binder.close()` would delete.
+     Before, `cleanup` called every binder closer and cleared `binderClosers`, so `onSessionClosed` found no closer and did nothing, and the gate, tracker and turn-filter maps stayed.
+     The turn filter is now dropped at `cleanup` (it was kept before), which is harmless because the hook server is already stopped (`HookServer.stop()` calls `server.stop(true)`), so no Stop can arrive to read it.
+     A pin holds the stop-before-dispose order.
+   - A launch that throws after the hook bridge exists is not cleaned up, and head differs from base in what it leaves behind.
+     The only throw after the bridge is `createPtySessionForSession`'s `Invalid wsPort`, which the daemon cannot trigger because the websocket port is positive by then; a test can (`wsPort = 0` with a hook server): head ends with one entry in `transcriptFallbackTimers` and `admitsAnySession` true for the dead launch's claude id.
+     Base leaked the same way for the turn filter and, because its maps were populated mid-launch, also left binder-closer and gate entries that `cleanup` could still close; head leaves a timer nobody references.
+     This phase does not wrap the launch segment in a try/catch.
+     One related case is better than before: if `setupHookBridge` itself throws, no tracker is left in `harnessSessions` for a session that never registered, where `sessionTrackers` kept one.
 6. **The harness is constructed later in `cli.ts`.**
    Launching reads services declared after the Phase 2 construction site, so `new ClaudeHarness(transcriptDiscovery, launchDeps)` now sits just before its first consumer, `createSessionHandlers`.
    `launchDeps` is optional and `createSession` refuses without it, because `expectedTranscriptPath` and the Phase 2 tests build a harness only to resolve paths.
+   Phase 2 said the harness holds no state beyond the discovery it is given; it now also holds each live session's turn filter.
 7. **The transcript fallback no longer imports the harness.**
    `expectedTranscriptPath` used to build a `ClaudeHarness`, which closed a runtime import cycle: `claude-session.ts` -> `hook-bridge-setup.ts` -> `transcript/index.ts` -> `transcript-binder.ts` -> `transcript-fallback.ts` -> `harness/index.ts` -> `harness/claude.ts` -> `claude-session.ts`.
    It was benign (the PR review imported every daemon module as an entry point and built a compiled binary at the base and head commits, all fine), but it would break on any top-level `class extends` or construction in the loop.
@@ -176,7 +193,7 @@ Deliverable 5 of #1164 (one `harnessSessions` map in place of the per-session ma
    A new offender fails, and so does a debt entry whose import is gone, so the list can only shrink.
    What stays outside by design: a specifier computed at runtime, a path built by hand for `fs` or `new URL`, and a second hop through another neutral file's re-export.
 9. **Still outside the seam.**
-   The two hook-server start blocks in `cli.ts` (they have different failure semantics), the turn-complete, denial and failure events, `command: 'claude'` and `buildClaudeChildEnv`, the `--resume` rewrite at the top of `cli.ts`, the per-session maps above, and the three handlers in item 8.
+   The two hook-server start blocks in `cli.ts` (they have different failure semantics), the turn-complete, denial and failure events, `command: 'claude'` and `buildClaudeChildEnv`, the `--resume` rewrite at the top of `cli.ts`, `sessionNotifiers` (item 5), and the three handlers in item 8.
 
 ### Receipts
 
@@ -189,6 +206,11 @@ Deliverable 5 of #1164 (one `harnessSessions` map in place of the per-session ma
 - `git diff -M --stat` cannot show this as a move: `cli.ts` is modified, not renamed, so rename detection has nothing to pair `claude-session.ts` with.
   The evidence is the line comparison in item 1.
 - A runtime import-graph walk (non-type imports under `packages/daemon/src`) finds the cycle in item 7 at `8545a1d0` and none through `harness/claude-session.ts`, `harness/claude.ts`, `harness/index.ts` or the new leaf afterwards.
+- The consolidation is pinned by `claude-session.test.ts` (a real hook server holds a prompt that `decisions.answerHeld` answers; `retireQuestion`, `forceRelease` and `noteTerminalEscape` each reach the gate; two sessions each claim only their own events and `dispose()` releases one; `cli.ts` is read with comments stripped for the store-before-register order, the dispose-before-drop order in `onSessionClosed`, the stop-before-dispose order in `cleanup`, and the `harnessSessions` iteration and count in `forceReleaseAllSessions`), by the SIGUSR2 case in `launch-characterization.test.ts` (the unstick log line for the one session), and by the retargeted wiring pins in `input-events.test.ts`.
+  Mutation checks, each reverted, kill every `ClaudeDecisions` delegation (`isHeld` is also asked about an id nothing holds, because a delegation to `hasMainHold` agrees with it on the held card), the gate attach, the screen, the turn-filter registration and release, the binder close in `dispose()`, `admitsAnySession` always true or ignoring the map, each `cli.ts` ordering, and a commented-out `onTurnStop` filter or `isHeld` read.
+  `dispose()` removes the turn filter in a `finally`, and a test makes the binder's close throw to pin it; the `disposed` guard is pinned by the sentinel timer in the dispose test.
+  `launch-characterization.test.ts` sends SIGUSR2 twice over: with nothing held (`Force-released 1 session(s): 0 card(s) resolved`) and with a real held PermissionRequest (`1 card(s) resolved` and an empty hook response), which kills a loop that iterates nothing, a dropped `resolved +=`, a `forceRelease` that is never called and a session count fixed at 0.
+- `grep -rn "sessionGateHandles\|sessionTrackers\|binderClosers\|sessionAdmitsHandles" packages/daemon/src AGENTS.md` hits only comments that say what the old maps were.
 - Source-text tests that pinned the moved lines in `cli.ts` were retargeted, not weakened: `hold-policy.test.ts` and `live-questions.test.ts` read `claude-session.ts`, and `transcript-path-source.test.ts` names the leaf.
   The stand-ins in the session, resume and transcript harness tests are typed with each handler's own dependency type (`SessionHandlerDeps['harness']` and the like), so they carry no `createSession` and no member the handler cannot ask for.
 

@@ -11,6 +11,11 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { hasLiveQuestionOnScreen } from '../../src/api/live-questions.ts';
 
+/** Strip comments, so a commented-out call cannot satisfy the source pin below. */
+function stripComments(src: string): string {
+  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:\\])\/\/[^\n]*/g, '$1');
+}
+
 const held = new Set(['sub-held', 'main-held']);
 const isHeld = (id: string) => held.has(id);
 
@@ -40,15 +45,14 @@ describe('hasLiveQuestionOnScreen (#1126)', () => {
 
   test("the Claude session wires the tracker's live-question check through it", () => {
     // The tracker's construction moved from cli.ts to the harness (#1164).
-    const source = fs.readFileSync(
-      path.resolve(import.meta.dir, '../../src/harness/claude-session.ts'),
-      'utf8',
+    const source = stripComments(
+      fs.readFileSync(path.resolve(import.meta.dir, '../../src/harness/claude-session.ts'), 'utf8'),
     );
     const start = source.indexOf('const tracker = new QuestionPresenceTracker(');
     expect(start).toBeGreaterThan(0);
     const trackerBlock = source.slice(start, start + 1200);
     expect(trackerBlock).toContain('hasLiveQuestions: () =>');
     expect(trackerBlock).toContain('hasLiveQuestionOnScreen(');
-    expect(trackerBlock).toContain('sessionGateHandles.get(sessionId)?.isHeld(');
+    expect(trackerBlock).toContain('decisions.isHeld(');
   });
 });

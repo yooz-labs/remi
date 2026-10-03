@@ -21,11 +21,9 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { UUID } from '@remi/shared';
 import { generateId } from '@remi/shared';
-import type { QuestionPresenceTracker } from '../../src/api/question-presence-tracker.ts';
 import { SubagentViewRegistry } from '../../src/api/subagent-view-registry.ts';
 import { SubagentAlerter } from '../../src/auto-approve/index.ts';
 import { __resetLoggerForTests, configureLogger } from '../../src/cli/logger.ts';
-import type { SessionGateHandle } from '../../src/cli/session-phases/hook-bridge-setup.ts';
 import { createMessageApiForSession } from '../../src/cli/session-phases/message-api-setup.ts';
 import { childRows } from '../../src/cli/status-bar.ts';
 import {
@@ -86,10 +84,6 @@ describe('ClaudeHarness.createSession', () => {
   let transcriptWatchers: Map<UUID, TranscriptWatcher>;
   let transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>>;
   let sessionNotifiers: Map<UUID, NotificationDispatcher>;
-  let sessionGateHandles: Map<UUID, SessionGateHandle>;
-  let sessionTrackers: Map<UUID, QuestionPresenceTracker>;
-  let binderClosers: Map<UUID, () => void>;
-  let sessionAdmitsHandles: Map<UUID, (input: HookInput) => boolean>;
   let hookServer: HookServer | null;
   let port: number;
   let wsPort: number;
@@ -109,10 +103,6 @@ describe('ClaudeHarness.createSession', () => {
     transcriptWatchers = new Map();
     transcriptFallbackTimers = new Map();
     sessionNotifiers = new Map();
-    sessionGateHandles = new Map();
-    sessionTrackers = new Map();
-    binderClosers = new Map();
-    sessionAdmitsHandles = new Map();
     hookServer = null;
     port = 0;
     wsPort = 19999;
@@ -130,7 +120,7 @@ describe('ClaudeHarness.createSession', () => {
     }
     for (const restore of restoreEnv) restore();
     __resetWrapperStateForTests();
-    for (const close of binderClosers.values()) close();
+    for (const session of launched) session.dispose();
     for (const timer of transcriptFallbackTimers.values()) clearInterval(timer);
     for (const server of servers) server.stop();
     __resetLoggerForTests();
@@ -172,10 +162,6 @@ describe('ClaudeHarness.createSession', () => {
         observed.push(Buffer.from(data).toString('utf8'));
       },
       sessionNotifiers,
-      sessionGateHandles,
-      sessionTrackers,
-      binderClosers,
-      sessionAdmitsHandles,
     };
   }
 
@@ -238,6 +224,15 @@ describe('ClaudeHarness.createSession', () => {
     return id;
   }
 
+  /** The Stop event Claude Code would send for `sessionId`'s own Claude session. */
+  function stopEventFor(sessionId: UUID): HookInput {
+    return {
+      session_id: claudeSessionIdOf(sessionId),
+      cwd: tmpDir,
+      hook_event_name: 'Stop',
+    } as HookInput;
+  }
+
   /** POST a PermissionRequest the way Claude Code does; the response waits on the hold. */
   function postPermissionRequest(server: HookServer, claudeSessionId: string): Promise<Response> {
     return fetch(`http://127.0.0.1:${server.port}/hooks`, {
@@ -255,12 +250,29 @@ describe('ClaudeHarness.createSession', () => {
     }).catch(() => new Response(null, { status: 499 }));
   }
 
+  /**
+   * Launch a session on a fresh registry and hook server, POST a
+   * PermissionRequest, and wait until the session holds it. Returns the held
+   * card and the pending hook response.
+   */
+  async function holdPrompt(passThrough: boolean) {
+    hookServer = newHookServer();
+    hookServer.start();
+    freshRegistry();
+    const { session, sessionId } = launch(newHarness(), { passThrough, register: true });
+    const response = postPermissionRequest(hookServer, claudeSessionIdOf(sessionId));
+    await until(() => session.decisions.hasMainHold(), 'the prompt to be held');
+    const card = [...(sessionRegistry.getSession(sessionId)?.currentQuestions.values() ?? [])][0];
+    if (!card) throw new Error('the held prompt did not reach the registry as a card');
+    return { decisions: session.decisions, card, response };
+  }
+
   test('a harness built without launch dependencies refuses to create a session', () => {
     const harness = new ClaudeHarness(new TranscriptDiscovery({ projectsDir: tmpDir }));
     expect(() => launch(harness)).toThrow('without launch dependencies');
   });
 
-  test('returns an unstarted session, registers its notifier and tracker, and binds the port read at launch', () => {
+  test('returns an unstarted session, registers its notifier and exposes its screen, and binds the port read at launch', () => {
     const harness = newHarness();
     // PORT is reassigned by port probing after the harness exists; the launch
     // must read it when it runs, not when the harness was built.
@@ -271,19 +283,17 @@ describe('ClaudeHarness.createSession', () => {
     expect(session.pty.isRunning).toBe(false);
     expect(session.pty.childPid).toBeNull();
     expect(sessionNotifiers.get(sessionId)).toBe(notifications);
-    expect(sessionTrackers.has(sessionId)).toBe(true);
+    expect(session.decisions.screen).toBeDefined();
     const stored = sessionStore.findByRemiSessionId(sessionId);
     expect(stored?.port).toBe(19123);
     expect(stored?.pid).toBe(process.pid);
     expect(stored?.exitedAt).toBeNull();
     expect(stored?.claudeSessionId).toMatch(/^[0-9a-f-]{36}$/);
-    // No hook server: the bridge is never built, so nothing else registers.
-    expect(sessionGateHandles.has(sessionId)).toBe(false);
-    expect(binderClosers.has(sessionId)).toBe(false);
-    expect(sessionAdmitsHandles.has(sessionId)).toBe(false);
+    // No hook server: the bridge is never built, so no turn filter registers.
+    expect(harness.admitsAnySession(stopEventFor(sessionId))).toBe(false);
   });
 
-  test('reads the hook server and the websocket port when it launches, and with a server registers the gate, the binder and the turn filter', () => {
+  test('reads the hook server and the websocket port when it launches, and with a server arms the binder and the turn filter', () => {
     // The daemon builds the harness before the hook server or the websocket
     // port exist; both are read per launch.
     hookServer = null;
@@ -292,24 +302,17 @@ describe('ClaudeHarness.createSession', () => {
     wsPort = 19999;
 
     const before = launch(harness);
-    expect(sessionGateHandles.has(before.sessionId)).toBe(false);
+    expect(harness.admitsAnySession(stopEventFor(before.sessionId))).toBe(false);
 
     hookServer = newHookServer();
     const { sessionId } = launch(harness);
 
-    expect(sessionGateHandles.has(sessionId)).toBe(true);
-    expect(binderClosers.has(sessionId)).toBe(true);
     // preAssign ran before the bridge read the binding: the binder armed its
     // fallback poll for the pre-assigned id.
     expect(transcriptFallbackTimers.has(sessionId)).toBe(true);
-    const own = {
-      session_id: claudeSessionIdOf(sessionId),
-      cwd: tmpDir,
-      hook_event_name: 'Stop',
-    } as HookInput;
-    const admits = sessionAdmitsHandles.get(sessionId);
-    expect(admits?.(own)).toBe(true);
-    expect(admits?.({ ...own, session_id: generateId() } as HookInput)).toBe(false);
+    const own = stopEventFor(sessionId);
+    expect(harness.admitsAnySession(own)).toBe(true);
+    expect(harness.admitsAnySession({ ...own, session_id: generateId() } as HookInput)).toBe(false);
   });
 
   test('a wrapper session runs claude on the reduced terminal and feeds the local-terminal observer', async () => {
@@ -360,22 +363,121 @@ describe('ClaudeHarness.createSession', () => {
   test('the hold deadline follows passThrough: a wrapper session hands a prompt back after hold_seconds, a daemon session keeps it', async () => {
     prompts = { hold_seconds: 1, daemon_hold_seconds: 3540 };
 
-    /** Whether the session still holds a main prompt 1.5 s after it was held. */
-    async function holdsAfterDeadline(passThrough: boolean): Promise<boolean> {
-      hookServer = newHookServer();
-      hookServer.start();
-      freshRegistry();
-      const { sessionId } = launch(newHarness(), { passThrough, register: true });
-      const gate = sessionGateHandles.get(sessionId);
-      if (!gate) throw new Error('no gate was registered');
-      void postPermissionRequest(hookServer, claudeSessionIdOf(sessionId));
-      await until(() => gate.hasMainHold(), 'the prompt to be held');
+    /** What a session still reports 1.5 s after it was held. */
+    async function afterDeadline(passThrough: boolean) {
+      const { decisions } = await holdPrompt(passThrough);
       await new Promise((resolve) => setTimeout(resolve, 1500));
-      return gate.hasMainHold();
+      return { held: decisions.hasMainHold(), open: decisions.hasOpenHookPrompt() };
     }
 
-    expect(await holdsAfterDeadline(true)).toBe(false);
-    expect(await holdsAfterDeadline(false)).toBe(true);
+    // The wrapper's dialog is on its own terminal: no longer held, still open.
+    expect(await afterDeadline(true)).toEqual({ held: false, open: true });
+    expect(await afterDeadline(false)).toEqual({ held: true, open: true });
+  });
+
+  test('with a hook server its decisions answer the prompt that server holds', async () => {
+    const { decisions, card, response } = await holdPrompt(false);
+    const yes = card.options.find((option) => option.isYes);
+    if (!yes) throw new Error('the held card has no Yes option');
+
+    expect(decisions.isHeld(card.id as UUID)).toBe(true);
+    expect(decisions.isHeld(generateId())).toBe(false);
+    expect(decisions.answerHeld(card.id as UUID, { kind: 'option', option: yes })).toBe('resolved');
+
+    expect(JSON.stringify(await (await response).json())).toContain('"allow"');
+    expect(decisions.hasMainHold()).toBe(false);
+    expect(decisions.isHeld(card.id as UUID)).toBe(false);
+  });
+
+  test('retire, force release and a terminal Escape reach the gate through the decisions', async () => {
+    // A retired live hold ends with the empty response, never a decision.
+    const retired = await holdPrompt(false);
+    retired.decisions.retireQuestion(retired.card.id as UUID);
+    expect(retired.decisions.hasMainHold()).toBe(false);
+    expect(await (await retired.response).text()).not.toMatch(/allow|deny/);
+
+    // `remi unstick` hands a live hold to the terminal.
+    const forced = await holdPrompt(false);
+    expect(typeof forced.decisions.forceRelease('test').resolved).toBe('number');
+    expect(forced.decisions.hasMainHold()).toBe(false);
+    expect(await (await forced.response).text()).not.toMatch(/allow|deny/);
+
+    // A prompt released at the wrapper's deadline stays open until an Escape
+    // sent through remi resolves it.
+    prompts = { hold_seconds: 1, daemon_hold_seconds: 3540 };
+    const wrapper = await holdPrompt(true);
+    await until(() => !wrapper.decisions.hasMainHold(), 'the wrapper hold to reach its deadline');
+    expect(wrapper.decisions.hasOpenHookPrompt()).toBe(true);
+    wrapper.decisions.noteTerminalEscape();
+    expect(wrapper.decisions.hasOpenHookPrompt()).toBe(false);
+  });
+
+  test('a session with no hook server reads as nothing held', () => {
+    const { session } = launch(newHarness());
+    const { decisions } = session;
+
+    expect(decisions.hasMainHold()).toBe(false);
+    expect(decisions.hasOpenHookPrompt()).toBe(false);
+    expect(decisions.isHeld(generateId())).toBe(false);
+    expect(decisions.answerHeld(generateId(), { kind: 'cancel' })).toBe('unknown');
+    expect(decisions.forceRelease('test')).toEqual({ resolved: 0 });
+    expect(() => decisions.retireQuestion(generateId())).not.toThrow();
+    expect(() => decisions.noteTerminalEscape()).not.toThrow();
+  });
+
+  test('each session claims only its own events, and dispose releases the binder and the filter (#914)', () => {
+    hookServer = newHookServer();
+    const harness = newHarness();
+    const a = launch(harness);
+    const b = launch(harness);
+    const eventA = stopEventFor(a.sessionId);
+    const eventB = stopEventFor(b.sessionId);
+
+    expect(transcriptFallbackTimers.has(a.sessionId)).toBe(true);
+    expect(harness.admitsAnySession(eventA)).toBe(true);
+    expect(harness.admitsAnySession(eventB)).toBe(true);
+    expect(harness.admitsAnySession({ ...eventA, session_id: generateId() } as HookInput)).toBe(
+      false,
+    );
+
+    a.session.dispose();
+    expect(transcriptFallbackTimers.has(a.sessionId)).toBe(false);
+    // A second dispose must not close the binder again: a sentinel timer
+    // registered under the id survives it (a second `binder.close()` would
+    // delete the entry).
+    const sentinel = setInterval(() => {}, 1e6);
+    transcriptFallbackTimers.set(a.sessionId, sentinel);
+    a.session.dispose();
+    expect(transcriptFallbackTimers.get(a.sessionId)).toBe(sentinel);
+    clearInterval(sentinel);
+    transcriptFallbackTimers.delete(a.sessionId);
+
+    expect(harness.admitsAnySession(eventA)).toBe(false);
+    expect(harness.admitsAnySession(eventB)).toBe(true);
+    expect(transcriptFallbackTimers.has(b.sessionId)).toBe(true);
+  });
+
+  test('a binder that fails to close still loses its turn filter', () => {
+    // The binder's close looks its fallback timer up first; make that throw.
+    let failLookup = false;
+    class FlakyTimers extends Map<UUID, ReturnType<typeof setInterval>> {
+      override get(key: UUID) {
+        if (failLookup) throw new Error('binder close failed');
+        return super.get(key);
+      }
+    }
+    transcriptFallbackTimers = new FlakyTimers();
+    hookServer = newHookServer();
+    const harness = newHarness();
+    const { session, sessionId } = launch(harness);
+    const own = stopEventFor(sessionId);
+    expect(harness.admitsAnySession(own)).toBe(true);
+
+    failLookup = true;
+    expect(() => session.dispose()).toThrow('binder close failed');
+    failLookup = false;
+
+    expect(harness.admitsAnySession(own)).toBe(false);
   });
 });
 
@@ -430,6 +532,60 @@ describe('what cli.ts hands the harness (#1164)', () => {
     const callbacks = claudeSession.slice(start, end);
     expect(callbacks).toContain('if (deps.hookServer()) {');
     expect(callbacks).toContain('if (!deps.hookServer()) {');
+  });
+
+  /** The text of the top-level function `name` in `cli.ts`, to its closing brace. */
+  function functionBody(name: string): string {
+    return slice(`function ${name}(`, '\n}\n');
+  }
+
+  test('createNewSession stores the session after createSession returns, before it registers it', () => {
+    const shell = slice('async function createNewSession(', '\n}\n');
+    const created = shell.indexOf('harness.createSession({');
+    const stored = shell.indexOf('harnessSessions.set(sessionId, session);');
+    const registered = shell.indexOf('sessionRegistry.registerSession(');
+    expect(created).toBeGreaterThan(0);
+    expect(stored).toBeGreaterThan(created);
+    expect(registered).toBeGreaterThan(stored);
+  });
+
+  test('remi unstick force-releases every harness session and logs the session count', () => {
+    const body = functionBody('forceReleaseAllSessions');
+    expect(body).toContain('harnessSessions.entries()');
+    expect(body).toContain("session.decisions.forceRelease('force-release (remi unstick)')");
+    // A session with no hook server counts too: it has 0 cards to resolve.
+    expect(body).toContain('${harnessSessions.size} session(s)');
+  });
+
+  test('session close disposes the harness session before it drops it', () => {
+    const closed = slice(
+      'onSessionClosed: (sessionId, reason) => {',
+      'sessionNotifiers.delete(sessionId);',
+    );
+    const disposed = closed.indexOf('harnessSessions.get(sessionId)?.dispose();');
+    const dropped = closed.indexOf('harnessSessions.delete(sessionId);');
+    expect(disposed).toBeGreaterThan(0);
+    expect(dropped).toBeGreaterThan(disposed);
+  });
+
+  test('cleanup stops the hook server before it disposes the sessions, and keeps them in the map', () => {
+    const body = functionBody('cleanup');
+    const stopped = body.indexOf('hookServer.stop();');
+    const disposed = body.indexOf('session.dispose();');
+    expect(stopped).toBeGreaterThan(0);
+    expect(disposed).toBeGreaterThan(stopped);
+    expect(body).not.toContain('harnessSessions.clear()');
+  });
+
+  test('the answer handlers and the turn-stop listener read the harness sessions', () => {
+    // The gate handlers (answer, retire, terminal Escape) read the session's decisions.
+    const handlers = slice('const inputHandlers: InputHandlers = createInputHandlers({', '\n});');
+    expect(handlers).toContain(
+      '...gateAnswerDeps((sessionId) => harnessSessions.get(sessionId)?.decisions),',
+    );
+    // onTurnStop applies the #914 session filter first and returns when no session claims the event.
+    const turnStop = functionBody('onTurnStop');
+    expect(turnStop).toContain('if (!harness.admitsAnySession(input)) return;');
   });
 
   test('a commented-out line does not satisfy a pin', () => {
