@@ -26,6 +26,21 @@ import { fixtureFrameAt, loadFixtureFrames } from './codex-fixtures.ts';
 
 type Json = Record<string, unknown>;
 
+/** `sun_path` is 104 bytes on macOS and 108 on Linux; stay under both with room to spare. */
+const MAX_SOCKET_PATH = 100;
+
+/**
+ * A fresh temp directory whose `<dir>/<fileName>` fits in a unix socket path. A long `TMPDIR` (a CI
+ * runner, a sandbox) otherwise fails every test that listens; fall back to `/tmp`, which is short
+ * on every platform the suite runs on.
+ */
+export function socketDir(prefix: string, fileName: string): string {
+  const preferred = mkdtempSync(join(tmpdir(), prefix));
+  if (join(preferred, fileName).length <= MAX_SOCKET_PATH) return preferred;
+  rmSync(preferred, { recursive: true, force: true });
+  return mkdtempSync(join('/tmp', prefix));
+}
+
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
@@ -96,7 +111,7 @@ export class FakeAppServer {
   private nextRequest = 1;
 
   private constructor() {
-    this.dir = mkdtempSync(join(tmpdir(), 'remi-fake-codex-'));
+    this.dir = socketDir('remi-fake-codex-', 's.sock');
     this.socketPath = join(this.dir, 's.sock');
     this.codexHome = join(this.dir, 'codex-home');
     mkdirSync(join(this.codexHome, 'app-server-control'), { recursive: true });
@@ -459,7 +474,7 @@ export class RawUnixPeer {
   private waiting: Array<(c: RawConnection) => void> = [];
 
   private constructor() {
-    this.dir = mkdtempSync(join(tmpdir(), 'remi-raw-peer-'));
+    this.dir = socketDir('remi-raw-peer-', 'r.sock');
     this.socketPath = join(this.dir, 'r.sock');
     this.server = createServer((socket) => {
       const connection = new RawConnection(socket);
@@ -468,12 +483,13 @@ export class RawUnixPeer {
       if (waiter) waiter(connection);
       else this.unclaimed.push(connection);
     });
-    this.server.listen(this.socketPath);
   }
 
   static async start(): Promise<RawUnixPeer> {
     const peer = new RawUnixPeer();
-    await new Promise<void>((resolve) => peer.server.once('listening', resolve));
+    // `listen` with a callback, not `server.once('listening')`: on a clean frozen install the
+    // typings resolve to a `net.Server` that has no `once`, which failed `bun run typecheck`.
+    await new Promise<void>((resolve) => peer.server.listen(peer.socketPath, resolve));
     return peer;
   }
 
