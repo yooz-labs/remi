@@ -267,6 +267,16 @@ describe('daemon launch of Claude (black-box characterization, #1164)', () => {
     );
     expect(d.output.text).not.toContain('fallback poll + dir-watch not armed');
 
+    // `remi unstick` sends SIGUSR2: the daemon force-releases its one session
+    // (nothing is held, so no card resolves) and keeps running.
+    process.kill(d.proc.pid, 'SIGUSR2');
+    await pollUntil(
+      () => d.output.text.includes('[unstick] Force-released 1 session(s): 0 card(s) resolved'),
+      5000,
+      'the unstick log line',
+    );
+    expect(d.proc.exitCode).toBeNull();
+
     // SIGTERM: the daemon shuts down and takes its hook registration with it.
     d.proc.kill('SIGTERM');
     await d.proc.exited;

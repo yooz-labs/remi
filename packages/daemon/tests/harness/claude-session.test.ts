@@ -250,6 +250,23 @@ describe('ClaudeHarness.createSession', () => {
     }).catch(() => new Response(null, { status: 499 }));
   }
 
+  /**
+   * Launch a session on a fresh registry and hook server, POST a
+   * PermissionRequest, and wait until the session holds it. Returns the held
+   * card and the pending hook response.
+   */
+  async function holdPrompt(passThrough: boolean) {
+    hookServer = newHookServer();
+    hookServer.start();
+    freshRegistry();
+    const { session, sessionId } = launch(newHarness(), { passThrough, register: true });
+    const response = postPermissionRequest(hookServer, claudeSessionIdOf(sessionId));
+    await until(() => session.decisions.hasMainHold(), 'the prompt to be held');
+    const card = [...(sessionRegistry.getSession(sessionId)?.currentQuestions.values() ?? [])][0];
+    if (!card) throw new Error('the held prompt did not reach the registry as a card');
+    return { decisions: session.decisions, card, response };
+  }
+
   test('a harness built without launch dependencies refuses to create a session', () => {
     const harness = new ClaudeHarness(new TranscriptDiscovery({ projectsDir: tmpDir }));
     expect(() => launch(harness)).toThrow('without launch dependencies');
@@ -346,21 +363,88 @@ describe('ClaudeHarness.createSession', () => {
   test('the hold deadline follows passThrough: a wrapper session hands a prompt back after hold_seconds, a daemon session keeps it', async () => {
     prompts = { hold_seconds: 1, daemon_hold_seconds: 3540 };
 
-    /** Whether the session still holds a main prompt 1.5 s after it was held. */
-    async function holdsAfterDeadline(passThrough: boolean): Promise<boolean> {
-      hookServer = newHookServer();
-      hookServer.start();
-      freshRegistry();
-      const { session, sessionId } = launch(newHarness(), { passThrough, register: true });
-      const gate = session.decisions;
-      void postPermissionRequest(hookServer, claudeSessionIdOf(sessionId));
-      await until(() => gate.hasMainHold(), 'the prompt to be held');
+    /** What a session still reports 1.5 s after it was held. */
+    async function afterDeadline(passThrough: boolean) {
+      const { decisions } = await holdPrompt(passThrough);
       await new Promise((resolve) => setTimeout(resolve, 1500));
-      return gate.hasMainHold();
+      return { held: decisions.hasMainHold(), open: decisions.hasOpenHookPrompt() };
     }
 
-    expect(await holdsAfterDeadline(true)).toBe(false);
-    expect(await holdsAfterDeadline(false)).toBe(true);
+    // The wrapper's dialog is on its own terminal: no longer held, still open.
+    expect(await afterDeadline(true)).toEqual({ held: false, open: true });
+    expect(await afterDeadline(false)).toEqual({ held: true, open: true });
+  });
+
+  test('with a hook server its decisions answer the prompt that server holds', async () => {
+    const { decisions, card, response } = await holdPrompt(false);
+    const yes = card.options.find((option) => option.isYes);
+    if (!yes) throw new Error('the held card has no Yes option');
+
+    expect(decisions.isHeld(card.id as UUID)).toBe(true);
+    expect(decisions.answerHeld(card.id as UUID, { kind: 'option', option: yes })).toBe('resolved');
+
+    expect(JSON.stringify(await (await response).json())).toContain('"allow"');
+    expect(decisions.hasMainHold()).toBe(false);
+    expect(decisions.isHeld(card.id as UUID)).toBe(false);
+  });
+
+  test('retire, force release and a terminal Escape reach the gate through the decisions', async () => {
+    // A retired live hold ends with the empty response, never a decision.
+    const retired = await holdPrompt(false);
+    retired.decisions.retireQuestion(retired.card.id as UUID);
+    expect(retired.decisions.hasMainHold()).toBe(false);
+    expect(await (await retired.response).text()).not.toMatch(/allow|deny/);
+
+    // `remi unstick` hands a live hold to the terminal.
+    const forced = await holdPrompt(false);
+    expect(typeof forced.decisions.forceRelease('test').resolved).toBe('number');
+    expect(forced.decisions.hasMainHold()).toBe(false);
+    expect(await (await forced.response).text()).not.toMatch(/allow|deny/);
+
+    // A prompt released at the wrapper's deadline stays open until an Escape
+    // sent through remi resolves it.
+    prompts = { hold_seconds: 1, daemon_hold_seconds: 3540 };
+    const wrapper = await holdPrompt(true);
+    await until(() => !wrapper.decisions.hasMainHold(), 'the wrapper hold to reach its deadline');
+    expect(wrapper.decisions.hasOpenHookPrompt()).toBe(true);
+    wrapper.decisions.noteTerminalEscape();
+    expect(wrapper.decisions.hasOpenHookPrompt()).toBe(false);
+  });
+
+  test('a session with no hook server reads as nothing held', () => {
+    const { session } = launch(newHarness());
+    const { decisions } = session;
+
+    expect(decisions.hasMainHold()).toBe(false);
+    expect(decisions.hasOpenHookPrompt()).toBe(false);
+    expect(decisions.isHeld(generateId())).toBe(false);
+    expect(decisions.answerHeld(generateId(), { kind: 'cancel' })).toBe('unknown');
+    expect(decisions.forceRelease('test')).toEqual({ resolved: 0 });
+    expect(() => decisions.retireQuestion(generateId())).not.toThrow();
+    expect(() => decisions.noteTerminalEscape()).not.toThrow();
+  });
+
+  test('each session claims only its own events, and dispose releases the binder and the filter (#914)', () => {
+    hookServer = newHookServer();
+    const harness = newHarness();
+    const a = launch(harness);
+    const b = launch(harness);
+    const eventA = stopEventFor(a.sessionId);
+    const eventB = stopEventFor(b.sessionId);
+
+    expect(transcriptFallbackTimers.has(a.sessionId)).toBe(true);
+    expect(harness.admitsAnySession(eventA)).toBe(true);
+    expect(harness.admitsAnySession(eventB)).toBe(true);
+    expect(harness.admitsAnySession({ ...eventA, session_id: generateId() } as HookInput)).toBe(
+      false,
+    );
+
+    a.session.dispose();
+    a.session.dispose();
+    expect(transcriptFallbackTimers.has(a.sessionId)).toBe(false);
+    expect(harness.admitsAnySession(eventA)).toBe(false);
+    expect(harness.admitsAnySession(eventB)).toBe(true);
+    expect(transcriptFallbackTimers.has(b.sessionId)).toBe(true);
   });
 });
 
@@ -415,6 +499,60 @@ describe('what cli.ts hands the harness (#1164)', () => {
     const callbacks = claudeSession.slice(start, end);
     expect(callbacks).toContain('if (deps.hookServer()) {');
     expect(callbacks).toContain('if (!deps.hookServer()) {');
+  });
+
+  /** The text of the top-level function `name` in `cli.ts`, to its closing brace. */
+  function functionBody(name: string): string {
+    return slice(`function ${name}(`, '\n}\n');
+  }
+
+  test('createNewSession stores the session after createSession returns, before it registers it', () => {
+    const shell = slice('async function createNewSession(', '\n}\n');
+    const created = shell.indexOf('harness.createSession({');
+    const stored = shell.indexOf('harnessSessions.set(sessionId, session);');
+    const registered = shell.indexOf('sessionRegistry.registerSession(');
+    expect(created).toBeGreaterThan(0);
+    expect(stored).toBeGreaterThan(created);
+    expect(registered).toBeGreaterThan(stored);
+  });
+
+  test('remi unstick force-releases every harness session and logs the session count', () => {
+    const body = functionBody('forceReleaseAllSessions');
+    expect(body).toContain('harnessSessions.entries()');
+    expect(body).toContain("session.decisions.forceRelease('force-release (remi unstick)')");
+    // A session with no hook server counts too: it has 0 cards to resolve.
+    expect(body).toContain('${harnessSessions.size} session(s)');
+  });
+
+  test('session close disposes the harness session before it drops it', () => {
+    const closed = slice(
+      'onSessionClosed: (sessionId, reason) => {',
+      'sessionNotifiers.delete(sessionId);',
+    );
+    const disposed = closed.indexOf('harnessSessions.get(sessionId)?.dispose();');
+    const dropped = closed.indexOf('harnessSessions.delete(sessionId);');
+    expect(disposed).toBeGreaterThan(0);
+    expect(dropped).toBeGreaterThan(disposed);
+  });
+
+  test('cleanup stops the hook server before it disposes the sessions, and keeps them in the map', () => {
+    const body = functionBody('cleanup');
+    const stopped = body.indexOf('hookServer.stop();');
+    const disposed = body.indexOf('session.dispose();');
+    expect(stopped).toBeGreaterThan(0);
+    expect(disposed).toBeGreaterThan(stopped);
+    expect(body).not.toContain('harnessSessions.clear()');
+  });
+
+  test('the answer handlers and the turn-stop listener read the harness sessions', () => {
+    // The gate handlers (answer, retire, terminal Escape) read the session's decisions.
+    const handlers = slice('const inputHandlers: InputHandlers = createInputHandlers({', '\n});');
+    expect(handlers).toContain(
+      '...gateAnswerDeps((sessionId) => harnessSessions.get(sessionId)?.decisions),',
+    );
+    // onTurnStop applies the #914 session filter first and returns when no session claims the event.
+    const turnStop = functionBody('onTurnStop');
+    expect(turnStop).toContain('if (!harness.admitsAnySession(input)) return;');
   });
 
   test('a commented-out line does not satisfy a pin', () => {
