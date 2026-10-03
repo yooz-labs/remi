@@ -42,7 +42,7 @@ Spike files live in `<scratchpad>/codex-spike/`, called `$SPIKE` below.
 
 **Transport**
 - WebSocket over the unix socket, text frames, `jsonrpc` optional (`$SPIKE/rpc.py:44-49`, `unix_connect(SOCK, "ws://localhost/", max_size=None)`). The python client offered the library's default extensions; nothing shows what Codex's server requires.
-- `~/.codex/app-server-control/` is mode 0700, owned by the user. The socket resolves into `/private/tmp/codex-daemon-501/<hash>`, also 0700. I stat-checked both. Only the same OS user can connect.
+- `~/.codex/app-server-control/` is mode 0700, owned by the user. The socket resolves into `/private/tmp/codex-daemon-<uid>/<hash>`, also 0700. I stat-checked both. Only the same OS user can connect.
 - The socket path under `~/.codex` is a symlink to a short /tmp path, so connect to the resolved target, not the link (macOS `sun_path` is 104 bytes).
   **Correction (Phase 1, #1181):** `fs.realpathSync`, `realpathSync.native` and `fs.promises.realpath` throw `EOPNOTSUPP` on a unix socket file and on a symlink to one on macOS, checked on Bun 1.3.11 and 1.4.2; `readlinkSync` and `lstatSync` work, and `realpath` of the parent directory works.
   Phase 3 must `readlink` the link, or `realpath` the parent directory and `readlink` the file; wherever this plan says "realpath the socket", read that.
@@ -534,9 +534,9 @@ export interface HarnessChat {
 **Redaction scan (`fixtures-redaction.test.ts`)** is an allowlist, not a denylist.
 - Every absolute path must start with `/work/`.
 - Every UUID must be in the placeholder set.
-- Fail on `/Users/`, the username, `/private/`, `/var/folders`, `<hostname>`, `ghostty`, `installationId`, `planType`, `eyJ`, `Bearer`, `sk-`, `auth`, `token`, `@`, and on opaque `rs_`/`msg_` ids.
+- Fail on `/Users/`, the username, `/private/`, `/var/folders`, `<hostname>`, the terminal emulator's name, `installationId`, `planType`, `eyJ`, `Bearer`, `sk-`, `auth`, `token`, `@`, and on opaque `rs_`/`msg_` ids.
 - Mutation check: a seeded fixture copy containing each of those must fail.
-- Spike frames the scan must catch (I saw them): `/Users/<user>/.codex/AGENTS.md`, the rollout `path`, `installationId` (a UUID), `serverName`, `userAgent` with `ghostty/1.3.1` and `Mac OS 27.0.0`, `planType`, rate-limit percentages, MCP server names (puppeteer, node_repl, ...), `gpt-6-luna`.
+- Spike frames the scan must catch (I saw them): `/Users/<user>/.codex/AGENTS.md`, the rollout `path`, `installationId` (a UUID), `serverName`, `userAgent` (it carries the client, the OS version, the CPU architecture and the terminal emulator with its version), `planType`, rate-limit percentages, MCP server names (puppeteer, node_repl, ...), model names (`gpt-...`).
 
 ### 3.4 What stays unverified without a real Codex
 
