@@ -15,11 +15,12 @@
  * the harness id) are added by the phase that first needs them, not before.
  */
 
-import type { ProtocolMessage, UUID } from '@remi/shared';
+import type { ProtocolMessage, QuestionOption, UUID } from '@remi/shared';
 
 import type { MessageAPI } from '../api/message-api.ts';
 import type { NotificationDispatcher } from '../notifications/notification-dispatcher.ts';
 import type { PTYSession } from '../pty/index.ts';
+import type { HeldAnswer, HeldAnswerOutcome } from './decision.ts';
 
 /**
  * Everything one session launch needs from the neutral shell in `cli.ts`
@@ -46,14 +47,61 @@ export interface HarnessLaunchContext {
 }
 
 /**
- * One launched session: the PTY (built, not yet started) and how to start
- * it. `cli.ts` registers the PTY with the session registry between the two,
- * which is why construction and `start()` are separate.
+ * What the daemon reads off a harness's rendered screen to guard an answer it
+ * is about to type (Claude: the `QuestionPresenceTracker`). The
+ * `ScreenObserver` and `PromptUpScreen` reads in `cli/handlers/` are the
+ * consumers; this declares the same three methods from the harness side.
+ */
+export interface DecisionScreen {
+  isPromptCurrent(questionId: string, ptyText?: string): boolean;
+  isPromptObservedOnPTY(): boolean;
+  observedPromptOptions(): readonly QuestionOption[] | null;
+}
+
+/**
+ * How a session's pending decisions (permission prompts, questions, plan
+ * approvals) are answered and watched. The member names are those of the
+ * Claude permission gate's handle (`SessionGateHandle`), so the answer, chat
+ * and Stop handlers that read them (`gateAnswerDeps`, `promptUpDeps`,
+ * `trackerScreenDeps`) take it unchanged. A harness with nothing held reads
+ * as: nothing held, nothing to retire, `unknown` for any answer.
+ */
+export interface DecisionChannel {
+  /** Apply a phone answer to a held prompt; `unknown` when none is held for it. */
+  answerHeld(questionId: UUID, answer: HeldAnswer): HeldAnswerOutcome;
+  /** Another path already removed and dismissed `questionId`; stop tracking it. */
+  retireQuestion(questionId: UUID): void;
+  /** Is `questionId`'s prompt held for the phone? */
+  isHeld(questionId: UUID): boolean;
+  /** Is a main-agent prompt held, with its dialog on screen? */
+  hasMainHold(): boolean;
+  /** Is a hook-backed dialog on screen, or possibly so (held or waiting in the terminal)? */
+  hasOpenHookPrompt(): boolean;
+  /** A bare Escape reached the terminal through remi: resolve the main agent's waiting prompts. */
+  noteTerminalEscape(): void;
+  /** The `remi unstick` escape: resolve and dismiss every open escalation. */
+  forceRelease(reason: string): { resolved: number };
+  /** The rendered-screen reads, when the harness has a screen to read. */
+  readonly screen?: DecisionScreen | undefined;
+}
+
+/**
+ * One launched session: the PTY (built, not yet started), how its pending
+ * decisions are answered, and how to start and end it. `cli.ts` registers the
+ * PTY with the session registry between construction and `start()`, which is
+ * why they are separate.
  */
 export interface HarnessSession {
   readonly pty: PTYSession;
+  readonly decisions: DecisionChannel;
   /** Spawn the PTY. Rejects when the spawn fails; the caller marks the stored session exited. */
   start(): Promise<void>;
+  /**
+   * Release what the session holds beyond the PTY itself (Claude: the
+   * transcript binder's watcher, fallback timer and rotation poll, and its
+   * turn-filter registration). Safe to call twice.
+   */
+  dispose(): void;
 }
 
 export interface Harness {

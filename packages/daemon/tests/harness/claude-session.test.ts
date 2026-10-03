@@ -21,11 +21,9 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { UUID } from '@remi/shared';
 import { generateId } from '@remi/shared';
-import type { QuestionPresenceTracker } from '../../src/api/question-presence-tracker.ts';
 import { SubagentViewRegistry } from '../../src/api/subagent-view-registry.ts';
 import { SubagentAlerter } from '../../src/auto-approve/index.ts';
 import { __resetLoggerForTests, configureLogger } from '../../src/cli/logger.ts';
-import type { SessionGateHandle } from '../../src/cli/session-phases/hook-bridge-setup.ts';
 import { createMessageApiForSession } from '../../src/cli/session-phases/message-api-setup.ts';
 import { childRows } from '../../src/cli/status-bar.ts';
 import {
@@ -86,10 +84,6 @@ describe('ClaudeHarness.createSession', () => {
   let transcriptWatchers: Map<UUID, TranscriptWatcher>;
   let transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>>;
   let sessionNotifiers: Map<UUID, NotificationDispatcher>;
-  let sessionGateHandles: Map<UUID, SessionGateHandle>;
-  let sessionTrackers: Map<UUID, QuestionPresenceTracker>;
-  let binderClosers: Map<UUID, () => void>;
-  let sessionAdmitsHandles: Map<UUID, (input: HookInput) => boolean>;
   let hookServer: HookServer | null;
   let port: number;
   let wsPort: number;
@@ -109,10 +103,6 @@ describe('ClaudeHarness.createSession', () => {
     transcriptWatchers = new Map();
     transcriptFallbackTimers = new Map();
     sessionNotifiers = new Map();
-    sessionGateHandles = new Map();
-    sessionTrackers = new Map();
-    binderClosers = new Map();
-    sessionAdmitsHandles = new Map();
     hookServer = null;
     port = 0;
     wsPort = 19999;
@@ -130,7 +120,7 @@ describe('ClaudeHarness.createSession', () => {
     }
     for (const restore of restoreEnv) restore();
     __resetWrapperStateForTests();
-    for (const close of binderClosers.values()) close();
+    for (const session of launched) session.dispose();
     for (const timer of transcriptFallbackTimers.values()) clearInterval(timer);
     for (const server of servers) server.stop();
     __resetLoggerForTests();
@@ -172,10 +162,6 @@ describe('ClaudeHarness.createSession', () => {
         observed.push(Buffer.from(data).toString('utf8'));
       },
       sessionNotifiers,
-      sessionGateHandles,
-      sessionTrackers,
-      binderClosers,
-      sessionAdmitsHandles,
     };
   }
 
@@ -238,6 +224,15 @@ describe('ClaudeHarness.createSession', () => {
     return id;
   }
 
+  /** The Stop event Claude Code would send for `sessionId`'s own Claude session. */
+  function stopEventFor(sessionId: UUID): HookInput {
+    return {
+      session_id: claudeSessionIdOf(sessionId),
+      cwd: tmpDir,
+      hook_event_name: 'Stop',
+    } as HookInput;
+  }
+
   /** POST a PermissionRequest the way Claude Code does; the response waits on the hold. */
   function postPermissionRequest(server: HookServer, claudeSessionId: string): Promise<Response> {
     return fetch(`http://127.0.0.1:${server.port}/hooks`, {
@@ -260,7 +255,7 @@ describe('ClaudeHarness.createSession', () => {
     expect(() => launch(harness)).toThrow('without launch dependencies');
   });
 
-  test('returns an unstarted session, registers its notifier and tracker, and binds the port read at launch', () => {
+  test('returns an unstarted session, registers its notifier and exposes its screen, and binds the port read at launch', () => {
     const harness = newHarness();
     // PORT is reassigned by port probing after the harness exists; the launch
     // must read it when it runs, not when the harness was built.
@@ -271,19 +266,17 @@ describe('ClaudeHarness.createSession', () => {
     expect(session.pty.isRunning).toBe(false);
     expect(session.pty.childPid).toBeNull();
     expect(sessionNotifiers.get(sessionId)).toBe(notifications);
-    expect(sessionTrackers.has(sessionId)).toBe(true);
+    expect(session.decisions.screen).toBeDefined();
     const stored = sessionStore.findByRemiSessionId(sessionId);
     expect(stored?.port).toBe(19123);
     expect(stored?.pid).toBe(process.pid);
     expect(stored?.exitedAt).toBeNull();
     expect(stored?.claudeSessionId).toMatch(/^[0-9a-f-]{36}$/);
-    // No hook server: the bridge is never built, so nothing else registers.
-    expect(sessionGateHandles.has(sessionId)).toBe(false);
-    expect(binderClosers.has(sessionId)).toBe(false);
-    expect(sessionAdmitsHandles.has(sessionId)).toBe(false);
+    // No hook server: the bridge is never built, so no turn filter registers.
+    expect(harness.admitsAnySession(stopEventFor(sessionId))).toBe(false);
   });
 
-  test('reads the hook server and the websocket port when it launches, and with a server registers the gate, the binder and the turn filter', () => {
+  test('reads the hook server and the websocket port when it launches, and with a server arms the binder and the turn filter', () => {
     // The daemon builds the harness before the hook server or the websocket
     // port exist; both are read per launch.
     hookServer = null;
@@ -292,24 +285,17 @@ describe('ClaudeHarness.createSession', () => {
     wsPort = 19999;
 
     const before = launch(harness);
-    expect(sessionGateHandles.has(before.sessionId)).toBe(false);
+    expect(harness.admitsAnySession(stopEventFor(before.sessionId))).toBe(false);
 
     hookServer = newHookServer();
     const { sessionId } = launch(harness);
 
-    expect(sessionGateHandles.has(sessionId)).toBe(true);
-    expect(binderClosers.has(sessionId)).toBe(true);
     // preAssign ran before the bridge read the binding: the binder armed its
     // fallback poll for the pre-assigned id.
     expect(transcriptFallbackTimers.has(sessionId)).toBe(true);
-    const own = {
-      session_id: claudeSessionIdOf(sessionId),
-      cwd: tmpDir,
-      hook_event_name: 'Stop',
-    } as HookInput;
-    const admits = sessionAdmitsHandles.get(sessionId);
-    expect(admits?.(own)).toBe(true);
-    expect(admits?.({ ...own, session_id: generateId() } as HookInput)).toBe(false);
+    const own = stopEventFor(sessionId);
+    expect(harness.admitsAnySession(own)).toBe(true);
+    expect(harness.admitsAnySession({ ...own, session_id: generateId() } as HookInput)).toBe(false);
   });
 
   test('a wrapper session runs claude on the reduced terminal and feeds the local-terminal observer', async () => {
@@ -365,9 +351,8 @@ describe('ClaudeHarness.createSession', () => {
       hookServer = newHookServer();
       hookServer.start();
       freshRegistry();
-      const { sessionId } = launch(newHarness(), { passThrough, register: true });
-      const gate = sessionGateHandles.get(sessionId);
-      if (!gate) throw new Error('no gate was registered');
+      const { session, sessionId } = launch(newHarness(), { passThrough, register: true });
+      const gate = session.decisions;
       void postPermissionRequest(hookServer, claudeSessionIdOf(sessionId));
       await until(() => gate.hasMainHold(), 'the prompt to be held');
       await new Promise((resolve) => setTimeout(resolve, 1500));

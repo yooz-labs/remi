@@ -9,14 +9,23 @@
  * session registration, the `starting` status, `start()` with its
  * `markExited` on failure, and the child pid.
  *
- * Statement order is unchanged. Only `preAssign` before `setupHookBridge` is
- * observably load-bearing: `setupHookBridge` reads the binding synchronously
- * (`hook-bridge-setup.ts`, the `preAssignedClaudeId` block) and arms the
- * transcript binder only when one exists, which the launch tests pin. The
- * other two orders, `sessionNotifiers.set` before the tracker and
- * `sessionTrackers.set` before the hook bridge, are kept for fidelity: the
+ * Statement order is unchanged inside this function. Only `preAssign` before
+ * `setupHookBridge` is observably load-bearing: `setupHookBridge` reads the
+ * binding synchronously (`hook-bridge-setup.ts`, the `preAssignedClaudeId`
+ * block) and arms the transcript binder only when one exists, which the launch
+ * tests pin. The other two orders, `sessionNotifiers.set` before the tracker
+ * and the tracker before the hook bridge, are kept for fidelity: the
  * statements between them are synchronous and the maps are read only inside
  * later callbacks, so moving them is unobservable, and no test can tell.
+ *
+ * One thing is relaxed on purpose: the daemon-side registration of the
+ * tracker, gate handle and binder closer (formerly the `sessionTrackers`,
+ * `sessionGateHandles` and `binderClosers` maps, filled mid-launch) is now
+ * `cli.ts` storing the returned `HarnessSession` in `harnessSessions` after
+ * this returns. Nothing reads those entries while a launch is running (the
+ * tracker's own closures read the session's `decisions`, which has no gate
+ * until the bridge exists, and the handlers that read the map run only on
+ * client messages), so that order is unobservable too.
  *
  * Four daemon-wide values are read when a session launches, or later, and not
  * when the harness is built, so they arrive as getters and are read where the
@@ -58,13 +67,18 @@ import type {
   SessionStore,
 } from '../session/index.ts';
 import type { TranscriptDiscovery, TranscriptWatcher } from '../transcript/index.ts';
-import type { HarnessLaunchContext, HarnessSession } from './types.ts';
+import type { HeldAnswer, HeldAnswerOutcome } from './decision.ts';
+import type {
+  DecisionChannel,
+  DecisionScreen,
+  HarnessLaunchContext,
+  HarnessSession,
+} from './types.ts';
 
 /**
  * The daemon-wide services a Claude launch reads, passed once when `cli.ts`
- * builds the harness. The five `Map`s are the daemon's per-session registries
- * that the launch fills in (and `onSessionClosed` / `cleanup` drain); they are
- * passed whole because the statements that fill them moved here unchanged.
+ * builds the harness. `sessionNotifiers` is the daemon's per-session APNS
+ * dispatcher registry, which the launch fills in and `onSessionClosed` drains.
  */
 export interface ClaudeLaunchDeps {
   sessionRegistry: SessionRegistry;
@@ -95,15 +109,77 @@ export interface ClaudeLaunchDeps {
   /** Fed every chunk forwarded to the wrapper's local terminal (#932). */
   observeLocalPtyOutput: (data: Uint8Array) => void;
   sessionNotifiers: Map<UUID, NotificationDispatcher>;
-  sessionGateHandles: Map<UUID, SessionGateHandle>;
-  sessionTrackers: Map<UUID, QuestionPresenceTracker>;
-  binderClosers: Map<UUID, () => void>;
-  sessionAdmitsHandles: Map<UUID, (input: HookInput) => boolean>;
 }
 
+/**
+ * What a session answers while it has no permission gate: nothing is held,
+ * nothing is waiting in the terminal, any answer is `unknown`. This is how the
+ * answer, chat and Stop handlers already read a session whose gate was never
+ * registered (the hook server failed to start).
+ */
+const NO_GATE: Omit<DecisionChannel, 'screen'> = {
+  answerHeld: () => 'unknown',
+  retireQuestion: () => {},
+  isHeld: () => false,
+  hasMainHold: () => false,
+  hasOpenHookPrompt: () => false,
+  noteTerminalEscape: () => {},
+  forceRelease: () => ({ resolved: 0 }),
+};
+
+/**
+ * A Claude session's `DecisionChannel`: the permission gate's handle once the
+ * hook bridge exists (`attach`), `NO_GATE` until then, plus the tracker's
+ * screen reads. It exists before the tracker so the tracker's own closures
+ * can read the gate through it, lazily, as they read the daemon's gate map
+ * before.
+ */
+class ClaudeDecisions implements DecisionChannel {
+  screen: DecisionScreen | undefined;
+  private gate: Omit<DecisionChannel, 'screen'> = NO_GATE;
+
+  attach(gate: SessionGateHandle): void {
+    this.gate = gate;
+  }
+
+  answerHeld(questionId: UUID, answer: HeldAnswer): HeldAnswerOutcome {
+    return this.gate.answerHeld(questionId, answer);
+  }
+
+  retireQuestion(questionId: UUID): void {
+    this.gate.retireQuestion(questionId);
+  }
+
+  isHeld(questionId: UUID): boolean {
+    return this.gate.isHeld(questionId);
+  }
+
+  hasMainHold(): boolean {
+    return this.gate.hasMainHold();
+  }
+
+  hasOpenHookPrompt(): boolean {
+    return this.gate.hasOpenHookPrompt();
+  }
+
+  noteTerminalEscape(): void {
+    this.gate.noteTerminalEscape();
+  }
+
+  forceRelease(reason: string): { resolved: number } {
+    return this.gate.forceRelease(reason);
+  }
+}
+
+/**
+ * @param admitsBySession The harness's per-session "does this binder claim the
+ *   event?" filters (#914): filled here when a hook bridge exists, emptied by
+ *   `dispose()`. `ClaudeHarness.admitsAnySession` reads it.
+ */
 export function createClaudeSession(
   deps: ClaudeLaunchDeps,
   ctx: HarnessLaunchContext,
+  admitsBySession: Map<UUID, (input: HookInput) => boolean>,
 ): HarnessSession {
   const {
     sessionRegistry,
@@ -123,10 +199,6 @@ export function createClaudeSession(
     cleanup,
     observeLocalPtyOutput,
     sessionNotifiers,
-    sessionGateHandles,
-    sessionTrackers,
-    binderClosers,
-    sessionAdmitsHandles,
   } = deps;
   const {
     sessionId,
@@ -143,6 +215,12 @@ export function createClaudeSession(
   // Register this session's APNS dispatcher so the question-resolved path can
   // dismiss a pushed card through the same device-token fan-out (#585, P7).
   sessionNotifiers.set(sessionId, notifications);
+
+  // The gate attaches once the hook bridge exists (below); the tracker's
+  // closures read it through `decisions` lazily, so until then nothing is held
+  // and nothing needs retiring.
+  const decisions = new ClaudeDecisions();
+  let closeBinder: (() => void) | null = null;
 
   // PTY output parser: streamStatusOnly suppresses regular agent content (comes
   // from transcript). Tool-output errors (e.g. "OAuth token revoked") bypass the
@@ -168,7 +246,7 @@ export function createClaudeSession(
     hasLiveQuestions: () =>
       hasLiveQuestionOnScreen(
         sessionRegistry.getSession(sessionId)?.currentQuestions.values() ?? [],
-        (questionId) => sessionGateHandles.get(sessionId)?.isHeld(questionId as UUID) ?? false,
+        (questionId) => decisions.isHeld(questionId as UUID),
       ),
     // #888/#920 hard requirement: a hook-less pending question (no
     // PermissionRequest/Notification ever fired for it) has no tool
@@ -194,7 +272,7 @@ export function createClaudeSession(
       // tool event does not resolve and dismiss the card a second time. A
       // no-op when the gate has nothing for this id.
       try {
-        sessionGateHandles.get(sessionId)?.retireQuestion(questionId as UUID);
+        decisions.retireQuestion(questionId as UUID);
       } catch (err) {
         logError(
           `[QuestionPresenceTracker] gate cleanup for superseded ${questionId.slice(0, 8)} threw: ${errorToString(err)}`,
@@ -202,9 +280,9 @@ export function createClaudeSession(
       }
     },
   });
-  // #920: register this session's tracker so the answer handler's
-  // prompt-currency guard (input-events.ts) can reach it by sessionId.
-  sessionTrackers.set(sessionId, tracker);
+  // #920: the tracker is this session's `decisions.screen`, which the answer
+  // handler's prompt-currency guard (input-events.ts) reaches by sessionId.
+  decisions.screen = tracker;
 
   const outputProcessor = new OutputProcessor(
     { sessionId, streamStatusOnly: true },
@@ -317,16 +395,16 @@ export function createClaudeSession(
       },
     );
     // The binder owns the fallback poll + #452 dir-watch (armed by its start()
-    // inside setupHookBridge); record its teardown so cleanup() reaches the
+    // inside setupHookBridge); record its teardown so dispose() reaches the
     // rotation dir-poll interval that the shared transcriptWatchers and
     // transcriptFallbackTimers cleanup in cli.ts cannot.
-    binderClosers.set(sessionId, hookBridgeHandle.closeBinder);
-    // Register the per-session gate handle (#573) so the answer path and
-    // `remi unstick` reach this exact session's gate.
-    sessionGateHandles.set(sessionId, hookBridgeHandle.gate);
+    closeBinder = hookBridgeHandle.closeBinder;
+    // Keep the per-session gate handle (#573) so the answer path and
+    // `remi unstick` reach this exact session's gate (`decisions`).
+    decisions.attach(hookBridgeHandle.gate);
     // #914: lets the out-of-bridge turn-complete listener apply the same
     // session filter every in-bridge listener already uses.
-    sessionAdmitsHandles.set(sessionId, hookBridgeHandle.admits);
+    admitsBySession.set(sessionId, hookBridgeHandle.admits);
   }
 
   const ptySession = createPtySessionForSession(
@@ -348,5 +426,17 @@ export function createClaudeSession(
     { sessionId, workingDirectory, extraArgs: binding.args, passThrough, reservedRows },
   );
 
-  return { pty: ptySession, start: () => ptySession.start() };
+  let disposed = false;
+  return {
+    pty: ptySession,
+    decisions,
+    start: () => ptySession.start(),
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      closeBinder?.();
+      // #914: a closed session's binder must never keep admitting turns.
+      admitsBySession.delete(sessionId);
+    },
+  };
 }
