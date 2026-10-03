@@ -30,7 +30,7 @@ import type {
   SessionUpdateMessage,
 } from '@remi/shared/protocol.ts';
 import { IDENTITY_SHIM_MIN_VERSION } from '../../src/session/legacy-writers.ts';
-import { fixtureFrameAt } from '../helpers/codex-fixtures.ts';
+import { type Json, threadStartedFrame, threadStatusFrame } from '../helpers/codex-threads.ts';
 import { FakeAppServer } from '../helpers/fake-app-server.ts';
 import { reserveRange } from '../session/port-test-helpers.ts';
 import {
@@ -44,8 +44,6 @@ import {
 } from './hub-test-utils.ts';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-
-type Json = Record<string, unknown>;
 
 interface Running {
   proc: Bun.Subprocess<'ignore', 'pipe', 'pipe'>;
@@ -233,27 +231,6 @@ function onlyRecord(r: Running): StoredRecord {
   return sessions[0] as StoredRecord;
 }
 
-/** A thread frame from the spike (`expB.jsonl:7` the TUI thread, `:12` the title helper), re-addressed. */
-function threadStarted(
-  source: 7 | 12,
-  patch: { id: string; cwd: string; createdAtSec: number },
-): Json {
-  const frame = JSON.parse(JSON.stringify(fixtureFrameAt('expB.jsonl', source).frame)) as Json;
-  const thread = (frame['params'] as { thread: Json }).thread;
-  thread['id'] = patch.id;
-  thread['sessionId'] = patch.id;
-  thread['cwd'] = patch.cwd;
-  for (const env of thread['environments'] as Array<Json>) env['cwd'] = patch.cwd;
-  thread['createdAt'] = patch.createdAtSec;
-  thread['updatedAt'] = patch.createdAtSec;
-  thread['recencyAt'] = patch.createdAtSec;
-  return frame;
-}
-
-function statusChanged(threadId: string, status: Json): Json {
-  return { method: 'thread/status/changed', params: { threadId, status } };
-}
-
 function statusesSeen(received: ProtocolMessage[]): string[] {
   return received
     .filter((m): m is SessionUpdateMessage => m.type === 'session_update')
@@ -339,11 +316,15 @@ describe('remi codex launch (daemon, black-box characterization, #1177)', () => 
 
       // A user thread in a different directory (another Codex window on this machine) is not ours.
       r.server.emit(
-        threadStarted(7, { id: strayId, cwd: fs.realpathSync(r.home), createdAtSec: nowSec() }),
+        threadStartedFrame('tui', {
+          id: strayId,
+          cwd: fs.realpathSync(r.home),
+          createdAtSec: nowSec(),
+        }),
         { broadcast: true },
       );
       // The TUI's own thread: a user thread in this directory, created just now.
-      r.server.emit(threadStarted(7, { id: tuiId, cwd, createdAtSec: nowSec() }), {
+      r.server.emit(threadStartedFrame('tui', { id: tuiId, cwd, createdAtSec: nowSec() }), {
         broadcast: true,
       });
 
@@ -364,10 +345,10 @@ describe('remi codex launch (daemon, black-box characterization, #1177)', () => 
 
       // The title helper (ephemeral, `thread_title`, no environments) appears in the same
       // directory a moment later: it must not rotate the binding.
-      r.server.emit(threadStarted(12, { id: helperId, cwd, createdAtSec: nowSec() }), {
+      r.server.emit(threadStartedFrame('title', { id: helperId, cwd, createdAtSec: nowSec() }), {
         broadcast: true,
       });
-      r.server.emit(statusChanged(helperId, { type: 'active', activeFlags: [] }), {
+      r.server.emit(threadStatusFrame(helperId, { type: 'active', activeFlags: [] }), {
         broadcast: true,
       });
 
@@ -390,11 +371,14 @@ describe('remi codex launch (daemon, black-box characterization, #1177)', () => 
 
       // Status is the tracked thread's: waiting on approval is `waiting`, active is `thinking`,
       // idle is `idle`; the helper's `active` above changed nothing.
-      r.server.emit(statusChanged(tuiId, { type: 'active', activeFlags: ['waitingOnApproval'] }), {
-        broadcast: true,
-      });
+      r.server.emit(
+        threadStatusFrame(tuiId, { type: 'active', activeFlags: ['waitingOnApproval'] }),
+        {
+          broadcast: true,
+        },
+      );
       await pollUntil(() => statusesSeen(received).includes('waiting'), 5000, 'status waiting');
-      r.server.emit(statusChanged(tuiId, { type: 'active', activeFlags: [] }), {
+      r.server.emit(threadStatusFrame(tuiId, { type: 'active', activeFlags: [] }), {
         broadcast: true,
       });
       await pollUntil(
@@ -404,7 +388,7 @@ describe('remi codex launch (daemon, black-box characterization, #1177)', () => 
         5000,
         'status thinking after waiting',
       );
-      r.server.emit(statusChanged(tuiId, { type: 'idle' }), { broadcast: true });
+      r.server.emit(threadStatusFrame(tuiId, { type: 'idle' }), { broadcast: true });
       await pollUntil(
         () =>
           statusesSeen(received).lastIndexOf('idle') > statusesSeen(received).indexOf('waiting'),
@@ -436,7 +420,7 @@ describe('remi codex launch (daemon, black-box characterization, #1177)', () => 
     const cwd = fs.realpathSync(r.work);
     const tuiId = crypto.randomUUID();
     r.server.emit(
-      threadStarted(7, { id: tuiId, cwd, createdAtSec: Math.floor(Date.now() / 1000) }),
+      threadStartedFrame('tui', { id: tuiId, cwd, createdAtSec: Math.floor(Date.now() / 1000) }),
       { broadcast: true },
     );
     r.server.createRollout(tuiId);
@@ -445,9 +429,12 @@ describe('remi codex launch (daemon, black-box characterization, #1177)', () => 
       10000,
       'the attach',
     );
-    r.server.emit(statusChanged(tuiId, { type: 'active', activeFlags: ['waitingOnApproval'] }), {
-      broadcast: true,
-    });
+    r.server.emit(
+      threadStatusFrame(tuiId, { type: 'active', activeFlags: ['waitingOnApproval'] }),
+      {
+        broadcast: true,
+      },
+    );
     await pollUntil(() => resumeFrames(r, client).length >= 1, 5000, 'an attach frame');
     // Give the daemon the time it would need to type something, were it going to.
     await new Promise((resolve) => setTimeout(resolve, 1500));
