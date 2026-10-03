@@ -10,6 +10,7 @@ import { describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { permissionHoldPolicy } from '../../src/cli/hold-policy.ts';
+import { stripComments } from '../helpers/strip-comments.ts';
 
 const PROMPTS = { hold_seconds: 90, daemon_hold_seconds: 3540 };
 
@@ -42,10 +43,11 @@ describe('permissionHoldPolicy (#1126)', () => {
 
 describe('cli.ts and harness/claude-session.ts take every per-mode value from the policy', () => {
   const cli = fs.readFileSync(path.resolve(import.meta.dir, '../../src/cli.ts'), 'utf8');
-  // The session gate's wiring moved behind the harness seam in #1164.
-  const claudeSession = fs.readFileSync(
-    path.resolve(import.meta.dir, '../../src/harness/claude-session.ts'),
-    'utf8',
+  // The session gate's wiring moved behind the harness seam in #1164. Read
+  // with comments removed, so a commented-out line cannot satisfy a pin.
+  // `cli.ts` is read raw: its second test splits the file at a comment marker.
+  const claudeSession = stripComments(
+    fs.readFileSync(path.resolve(import.meta.dir, '../../src/harness/claude-session.ts'), 'utf8'),
   );
 
   test('the session gate: hold, hook timeout and subagent routing', () => {
