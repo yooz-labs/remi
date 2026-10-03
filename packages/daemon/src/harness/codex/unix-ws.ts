@@ -14,7 +14,7 @@
  * must not assume it already holds the connection.
  */
 import { randomBytes } from 'node:crypto';
-import { type Socket, createConnection } from 'node:net';
+import { Socket } from 'node:net';
 import {
   WS_MAX_PAYLOAD_BYTES,
   WS_OPCODE,
@@ -102,7 +102,10 @@ export function connectUnixWebSocket(
   const decoder = new TextDecoder('utf-8', { fatal: true });
 
   return new Promise<WsConnection>((resolve, reject) => {
-    const socket: Socket = createConnection({ path: socketPath });
+    // Every listener is attached before `connect`: on Bun 1.3.11 a connect failure (a missing
+    // socket file) emits 'error' synchronously, and with no listener yet that is an uncaught
+    // exception that would take the daemon down. Bun 1.4.2 defers it, which hid the bug.
+    const socket = new Socket();
     const parser = new WsFrameParser({ maxPayloadBytes: maxPayload });
     let phase: 'connecting' | 'handshake' | 'open' | 'closing' | 'closed' = 'connecting';
     let head = Buffer.alloc(0);
@@ -328,5 +331,11 @@ export function connectUnixWebSocket(
         log(`close handler threw: ${error instanceof Error ? error.message : String(error)}`);
       }
     });
+
+    try {
+      socket.connect({ path: socketPath });
+    } catch (error) {
+      failBeforeOpen(error instanceof Error ? error : new Error(String(error)));
+    }
   });
 }
