@@ -5,6 +5,8 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { readlinkSync } from 'node:fs';
+import { Socket } from 'node:net';
+import { join } from 'node:path';
 import {
   type UnixWsOptions,
   type WsCloseInfo,
@@ -72,6 +74,7 @@ function clientFrames(bytes: Uint8Array): Array<{ opcode: number; payload: Buffe
   return out;
 }
 
+const CHILD = join(import.meta.dir, '..', '..', 'helpers', 'connect-missing-socket-child.ts');
 const closeCode = (payload: Buffer): number => payload.readUInt16BE(0);
 
 describe('against a real WebSocket server (Bun.serve over a unix socket)', () => {
@@ -156,6 +159,41 @@ describe('against a real WebSocket server (Bun.serve over a unix socket)', () =>
     expect(closes[0]?.clean).toBe(false);
     expect(closes[0]?.code).toBeUndefined();
     expect(conn.isOpen).toBe(false);
+  });
+
+  test('a socket nothing listens on rejects cleanly as the first connection of a fresh process', () => {
+    // Bun 1.3.11 emits this connect error synchronously early in a process's life, which is an
+    // uncaught exception unless the listeners are attached before connect. Only a fresh process
+    // reproduces it, so run one with the same Bun that runs the tests.
+    const child = Bun.spawnSync([process.execPath, CHILD, `${server.socketPath}.never`], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    expect(child.stdout.toString().trim(), child.stderr.toString()).toBe('REJECTED ENOENT');
+    expect(child.exitCode).toBe(0);
+  });
+
+  test('every listener is attached before the socket connects', async () => {
+    // Observes `Socket.prototype.connect` and delegates to it; nothing is replaced.
+    const seen: Array<{ error: number; close: number; data: number }> = [];
+    const original = Socket.prototype.connect;
+    Socket.prototype.connect = function (this: Socket, ...args: unknown[]) {
+      seen.push({
+        error: this.listenerCount('error'),
+        close: this.listenerCount('close'),
+        data: this.listenerCount('data'),
+      });
+      return (original as (...a: unknown[]) => Socket).apply(this, args);
+    } as typeof Socket.prototype.connect;
+    try {
+      await rejection(connectUnixWebSocket(`${server.socketPath}.never`, probe().handlers));
+    } finally {
+      Socket.prototype.connect = original;
+    }
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.error).toBeGreaterThan(0);
+    expect(seen[0]?.close).toBeGreaterThan(0);
+    expect(seen[0]?.data).toBeGreaterThan(0);
   });
 
   test('rejects when nothing listens on the path', async () => {
