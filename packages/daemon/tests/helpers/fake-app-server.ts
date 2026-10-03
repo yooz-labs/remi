@@ -266,7 +266,7 @@ export class FakeAppServer {
     this.received.push({ client, frame });
     const method = typeof frame['method'] === 'string' ? frame['method'] : undefined;
     if (!method) {
-      this.onAnswer(frame);
+      this.onAnswer(client, frame);
       return;
     }
     if (frame['id'] === undefined || this.silent.has(method)) return;
@@ -275,6 +275,7 @@ export class FakeAppServer {
       this.emitTo(client, { id: frame['id'], error: { code, message } });
     const custom = this.handlers.get(method);
     if (custom) {
+      // -32603 is the generic JSON-RPC internal error: not a Codex frame, only what a handler that throws gets.
       const failWith = (error: unknown): void => {
         const e = error as { code?: number; message?: string };
         fail(e.code ?? -32603, e.message ?? 'internal error');
@@ -290,18 +291,28 @@ export class FakeAppServer {
     } else if (method === 'thread/resume') {
       this.resume(client, frame, reply, fail);
     } else if (method === 'thread/unsubscribe') {
+      // The `{status: 'unsubscribed'}` result is a spike frame (expB3.jsonl:11). That it ends the
+      // subscription (no more requests or thread notifications) is the plain reading, and what LV-3(e) checks.
       const threadId = (frame['params'] as Json | undefined)?.['threadId'];
       if (typeof threadId === 'string') this.subscriptions.get(client)?.delete(threadId);
       reply({ status: 'unsubscribed' });
     } else {
+      // -32601 is the generic JSON-RPC "method not found": not a Codex frame, there so a request
+      // the model does not know gets an answer instead of silence (`ignore()` is the silence).
       fail(-32601, `method not found: ${method}`);
     }
   }
 
-  /** A client's answer to a server request: the first one wins, the rest are dropped silently. */
-  private onAnswer(frame: Json): void {
+  /**
+   * A subscriber's answer to a server request: the first one wins and the rest are dropped
+   * silently (spike: expA-accept.jsonl:51 to :62). An answer from a client that is not subscribed to
+   * the request's thread decides nothing; no spike frame shows one, so this is the model's choice,
+   * the conservative one, and it is pinned in fake-app-server.test.ts.
+   */
+  private onAnswer(client: number, frame: Json): void {
     for (const [key, { threadId, frame: request }] of this.pending) {
       if (request['id'] !== frame['id']) continue;
+      if (!this.subscriptions.get(client)?.has(threadId)) continue;
       this.pending.delete(key);
       this.emit(
         { method: 'serverRequest/resolved', params: { threadId, requestId: frame['id'] } },

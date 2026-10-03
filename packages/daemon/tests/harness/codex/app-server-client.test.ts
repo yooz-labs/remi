@@ -211,7 +211,7 @@ describe('AppServerClient', () => {
       expect(error).toMatchObject({ code: -32001, message: 'it broke' });
     });
 
-    test('the real "no rollout found" error from the spike is an AppServerRpcError(-32600)', async () => {
+    test('the report-derived "no rollout found" error (not in the spike logs) is an AppServerRpcError(-32600)', async () => {
       const h = make();
       await ready(h);
       const threadId = placeholderUuid(40);
@@ -334,8 +334,14 @@ describe('AppServerClient', () => {
         'serverRequest/resolved on both',
       );
       // A's late answer is accepted by the socket and ignored by the server: no error comes back.
+      const eventsBefore = [a.events.length, b.events.length];
       expect(a.client.respond(id, { decision: 'accept' })).toBe(true);
       await new Promise((r) => setTimeout(r, 80));
+      // Nothing came back to either client: no frame logged as unknown, no extra event.
+      expect([a.events.length, b.events.length]).toEqual(eventsBefore);
+      for (const h of [a, b]) {
+        expect(h.logs.filter((l) => /unknown request/.test(l))).toEqual([]);
+      }
       const answered = server.received.filter((r) => r.frame['id'] === id && 'result' in r.frame);
       expect(answered).toHaveLength(2);
       expect(answered[0]?.frame).toEqual({ jsonrpc: '2.0', id, result: { decision: 'accept' } });
