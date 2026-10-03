@@ -204,7 +204,6 @@ describe('ClaudeHarness.createSession', () => {
       messageApi,
       sendAndRecord,
       sendMessage: () => {},
-      notifications,
     });
     launched.push(session);
     // The shell registers the PTY between createSession and start(); a held
@@ -269,17 +268,19 @@ describe('ClaudeHarness.createSession', () => {
     expect(() => launch(harness)).toThrow('without launch dependencies');
   });
 
-  test('returns an unstarted session, registers its notifier and exposes its screen, and binds the port read at launch', () => {
+  test('returns an unstarted session, leaves the notifier to the shell and exposes its screen, and binds the port read at launch', () => {
     const harness = newHarness();
     // PORT is reassigned by port probing after the harness exists; the launch
     // must read it when it runs, not when the harness was built.
     port = 19123;
 
-    const { session, sessionId, notifications } = launch(harness);
+    const { session, sessionId } = launch(harness);
 
     expect(session.pty.isRunning).toBe(false);
     expect(session.pty.childPid).toBeNull();
-    expect(sessionNotifiers.get(sessionId)).toBe(notifications);
+    // The shell (`createNewSession`) registers the dispatcher before it calls
+    // `createSession` (#1165 E); the launch no longer does.
+    expect(sessionNotifiers.has(sessionId)).toBe(false);
     expect(session.decisions.screen).toBeDefined();
     const stored = sessionStore.findByRemiSessionId(sessionId);
     expect(stored?.port).toBe(19123);

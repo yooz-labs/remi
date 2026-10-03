@@ -993,8 +993,9 @@ function forceReleaseAllSessions(): void {
 }
 // Per-session APNS dispatchers (#585, P7), keyed by sessionId, so the
 // question-resolved path can fire a quiet lock-screen dismissal through the same
-// device-token fan-out that pushed the card. Populated by createClaudeSession
-// (called from createNewSession); removed on session close.
+// device-token fan-out that pushed the card. Populated by createNewSession,
+// before it asks the harness to build the session (#1165 E); removed on session
+// close.
 const sessionNotifiers: Map<UUID, NotificationDispatcher> = new Map();
 // `StopFailure` -> the session's `turn_failed` push, and its later dismissal
 // (#1153); no config involved, see `createTurnFailedRoutes`.
@@ -1512,6 +1513,13 @@ async function createNewSession(
     },
     sessionId,
   );
+  // Register this session's APNS dispatcher before the harness builds
+  // anything that can fire a decision: the question-resolved path and the
+  // harness's terminal-notice closures read `sessionNotifiers.get(sid)` to
+  // dismiss or push through the same device-token fan-out (#585, P7, #1165 E).
+  // It is neutral work (a per-session dispatcher, nothing Claude's), so the
+  // shell does it once for every harness.
+  sessionNotifiers.set(sessionId, notifications);
   // Everything Claude-specific (the question tracker, the PTY output parser,
   // the pre-spawn session binding, the hook bridge and the unstarted PTY) is
   // built behind the harness seam, in `harness/claude-session.ts`.
@@ -1524,7 +1532,6 @@ async function createNewSession(
     messageApi,
     sendAndRecord,
     sendMessage,
-    notifications,
   });
   harnessSessions.set(sessionId, session);
   const ptySession = session.pty;

@@ -18,7 +18,6 @@
 import type { ProtocolMessage, QuestionOption, UUID } from '@remi/shared';
 
 import type { MessageAPI } from '../api/message-api.ts';
-import type { NotificationDispatcher } from '../notifications/notification-dispatcher.ts';
 import type { PTYSession } from '../pty/index.ts';
 import type { HeldAnswer, HeldAnswerOutcome } from './decision.ts';
 
@@ -42,8 +41,6 @@ export interface HarnessLaunchContext {
   readonly sendAndRecord: (message: ProtocolMessage) => void;
   /** Forward an outgoing message to the connection layer. */
   readonly sendMessage: (sessionId: UUID, message: ProtocolMessage) => void;
-  /** This session's APNS dispatcher, registered by the harness in `sessionNotifiers`. */
-  readonly notifications: NotificationDispatcher;
 }
 
 /**

@@ -11,6 +11,9 @@
  * Source-text pins: the files are read through `stripComments`, so a
  * commented-out copy of the statement cannot satisfy them. The behavioral
  * counterpart is `tests/integration/session-notifier-registration.test.ts`.
+ * Before the move this file pinned the same order wherever the registration
+ * lived (it was in the Claude launch, before the tracker and the hook bridge);
+ * the move tightened it to the shell.
  */
 
 import { describe, expect, test } from 'bun:test';
@@ -29,27 +32,30 @@ const cli = source('cli.ts');
 const claudeSession = source('harness', 'claude-session.ts');
 
 describe('the session notifier registration', () => {
-  test('exactly one place registers it', () => {
+  test('exactly one place registers it, and it is the shell', () => {
     const count = (text: string) => text.split(REGISTRATION).length - 1;
-    expect(count(cli) + count(claudeSession)).toBe(1);
+    expect(count(cli)).toBe(1);
+    expect(count(claudeSession)).toBe(0);
   });
 
-  test('it precedes everything in the launch that can fire a decision', () => {
-    // In the shell: before the harness is asked to build the session.
+  test('the shell registers it before it asks the harness to build the session', () => {
     const shellStart = cli.indexOf('async function createNewSession(');
     const shellEnd = cli.indexOf('\n}\n', shellStart);
     expect(shellStart).toBeGreaterThan(0);
     const shell = cli.slice(shellStart, shellEnd);
-    const inShell = shell.indexOf(REGISTRATION);
-    if (inShell >= 0) {
-      expect(inShell).toBeLessThan(shell.indexOf('harness.createSession({'));
-      return;
-    }
-    // Still in the Claude launch: before the tracker and the hook bridge.
-    const registered = claudeSession.indexOf(REGISTRATION);
+    const registered = shell.indexOf(REGISTRATION);
+    const created = shell.indexOf('harness.createSession({');
     expect(registered).toBeGreaterThan(0);
-    expect(registered).toBeLessThan(claudeSession.indexOf('new QuestionPresenceTracker('));
-    expect(registered).toBeLessThan(claudeSession.indexOf('setupHookBridge('));
+    expect(created).toBeGreaterThan(registered);
+  });
+
+  test('the Claude launch still reads the registry lazily, for its terminal-notice closures', () => {
+    expect(claudeSession).toContain(
+      'sessionNotifiers.get(sid)?.pushTerminalNotice(sid, question, reason)',
+    );
+    expect(claudeSession).toContain(
+      'sessionNotifiers.get(sid)?.dismissTerminalNotice(sid, questionId)',
+    );
   });
 
   test('a commented-out registration does not satisfy the pin', () => {

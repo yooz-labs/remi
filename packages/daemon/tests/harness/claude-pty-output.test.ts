@@ -107,7 +107,7 @@ describe('the Claude launch feeds PTY output to its OutputProcessor (#1176)', ()
     );
 
     const sessionId: UUID = generateId();
-    const { messageApi, sendAndRecord, notifications } = createMessageApiForSession(
+    const { messageApi, sendAndRecord } = createMessageApiForSession(
       {
         sessionRegistry,
         transcriptWatchers: new Map(),
@@ -128,7 +128,6 @@ describe('the Claude launch feeds PTY output to its OutputProcessor (#1176)', ()
       messageApi,
       sendAndRecord,
       sendMessage: () => {},
-      notifications,
     });
     sessionRegistry.registerSession(sessionId, tmpDir, session.pty, messageApi, false, false);
     try {
