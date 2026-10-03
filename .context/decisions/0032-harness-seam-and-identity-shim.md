@@ -200,7 +200,7 @@ The items below describe the end state.
 
 ### Receipts
 
-- Pin test, passing on the unmodified source (`7b3d1843` plus the test only) before any refactor: `packages/daemon/tests/integration/launch-characterization.test.ts`, 5 of 5 runs; the final file (Phase 3 and 3b added the unstick cases) passes 5 of 5 on the final tree and 3 of 3 against `7b3d1843`.
+- Pin test, passing on the unmodified source (`7b3d1843` plus the test only) before any refactor: `packages/daemon/tests/integration/launch-characterization.test.ts`, 5 of 5 runs; the final file (Phase 3 and 3b added the unstick cases) passes 5 of 5 on the final tree and 3 of 3 against `7b3d1843` (with the final `hub-test-utils.ts` copied in, which the final file needs).
   It runs the real `cli.ts --daemon` with a real executable fake `claude` on PATH and reads the argv (`--session-id <uuid> -n remi:<port>`), the child environment and working directory, `sessions.json`, the live-sessions `claudeChildPid`, the hook URL in `settings.local.json`, `hello_ack.claudeSessionId`, the `starting` status in the connect replay, the binder binding the transcript the fake wrote (so `preAssign` ran before the bridge), the daemon exiting when Claude exits (#641) and the hooks being removed on SIGTERM.
   A further case runs the daemon with no `claude` on PATH and a stand-in login shell, and asserts exit 1, the stored record marked exited, live-sessions unregistered and the hooks removed.
   Its daemon takes a random port from `reserveRange` and an empty `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN`, so concurrent test processes and a developer shell that exports `=0` cannot change the result.
