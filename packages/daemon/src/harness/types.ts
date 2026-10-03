@@ -18,7 +18,6 @@
 import type { ProtocolMessage, QuestionOption, UUID } from '@remi/shared';
 
 import type { MessageAPI } from '../api/message-api.ts';
-import type { NotificationDispatcher } from '../notifications/notification-dispatcher.ts';
 import type { PTYSession } from '../pty/index.ts';
 import type { HeldAnswer, HeldAnswerOutcome } from './decision.ts';
 
@@ -42,8 +41,6 @@ export interface HarnessLaunchContext {
   readonly sendAndRecord: (message: ProtocolMessage) => void;
   /** Forward an outgoing message to the connection layer. */
   readonly sendMessage: (sessionId: UUID, message: ProtocolMessage) => void;
-  /** This session's APNS dispatcher, registered by the harness in `sessionNotifiers`. */
-  readonly notifications: NotificationDispatcher;
 }
 
 /**
@@ -122,10 +119,12 @@ export interface Harness {
   /**
    * Where the harness writes the transcript of one of its sessions, derived
    * from the project path and the harness's own session id. It is the path a
-   * session WILL have (or has), not proof the file exists. Claude:
-   * `<projectsDir>/<project path with every "/" replaced by "-">/<id>.jsonl`.
+   * session WILL have (or has), not proof the file exists. `null` when the
+   * harness has no transcript file remi can name (#1176: Codex's history comes
+   * from its app-server, not a file), which every caller reads as "no file".
+   * Claude: `<projectsDir>/<project path with every "/" replaced by "-">/<id>.jsonl`.
    */
-  transcriptPath(projectPath: string, harnessSessionId: string): string;
+  transcriptPath(projectPath: string, harnessSessionId: string): string | null;
 
   /**
    * Build the session's detection, binding and PTY, in the order the harness
