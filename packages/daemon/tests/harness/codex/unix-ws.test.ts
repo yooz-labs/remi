@@ -12,7 +12,12 @@ import {
   connectUnixWebSocket,
 } from '../../../src/harness/codex/unix-ws.ts';
 import { WS_OPCODE } from '../../../src/harness/codex/ws-frames.ts';
-import { FakeAppServer, RawConnection, RawUnixPeer } from '../../helpers/fake-app-server.ts';
+import {
+  FakeAppServer,
+  RawConnection,
+  RawUnixPeer,
+  rejection,
+} from '../../helpers/fake-app-server.ts';
 
 interface Probe {
   messages: string[];
@@ -154,9 +159,10 @@ describe('against a real WebSocket server (Bun.serve over a unix socket)', () =>
   });
 
   test('rejects when nothing listens on the path', async () => {
-    await expect(
+    const error = await rejection(
       connectUnixWebSocket(`${server.socketPath}.missing`, probe().handlers),
-    ).rejects.toThrow();
+    );
+    expect(error).toBeInstanceOf(Error);
   });
 });
 
@@ -218,7 +224,7 @@ describe('against a byte-level peer', () => {
     const pending = connectUnixWebSocket(peer.socketPath, p.handlers);
     const raw = await peer.next();
     raw.upgrade({ accept: 's3pPLMBiTxaQ9kYGzzhZRbK+xOo=' });
-    await expect(pending).rejects.toThrow(/Sec-WebSocket-Accept/);
+    expect(((await rejection(pending)) as Error).message).toMatch(/Sec-WebSocket-Accept/);
   });
 
   test('refuses a response that is not 101, lacks an upgrade header, or selects an extension or subprotocol', async () => {
@@ -233,20 +239,20 @@ describe('against a byte-level peer', () => {
       const pending = connectUnixWebSocket(peer.socketPath, probe().handlers);
       const raw = await peer.next();
       raw.upgrade(response);
-      await expect(pending, name).rejects.toThrow(reason);
+      expect(((await rejection(pending)) as Error).message, name).toMatch(reason);
     }
   });
 
   test('rejects when the peer closes before the upgrade, and when it never answers', async () => {
     const early = connectUnixWebSocket(peer.socketPath, probe().handlers);
     (await peer.next()).destroy();
-    await expect(early).rejects.toThrow(/closed before the upgrade/);
+    expect(((await rejection(early)) as Error).message).toMatch(/closed before the upgrade/);
 
     const silent = connectUnixWebSocket(peer.socketPath, probe().handlers, {
       handshakeTimeoutMs: 50,
     });
     await peer.next();
-    await expect(silent).rejects.toThrow(/upgrade timed out/);
+    expect(((await rejection(silent)) as Error).message).toMatch(/upgrade timed out/);
   });
 
   test('frames in the same chunk as the 101 are delivered', async () => {

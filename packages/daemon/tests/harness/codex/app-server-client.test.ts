@@ -14,7 +14,7 @@ import {
   AppServerTimeoutError,
 } from '../../../src/harness/codex/app-server-client.ts';
 import { placeholderUuid } from '../../helpers/codex-fixtures.ts';
-import { FakeAppServer } from '../../helpers/fake-app-server.ts';
+import { FakeAppServer, rejection } from '../../helpers/fake-app-server.ts';
 
 const CLIENT_INFO = { name: 'remi', title: null, version: '9.9.9' };
 const FAST = { initialMs: 5, maxMs: 20 };
@@ -237,7 +237,7 @@ describe('AppServerClient', () => {
       server.ignore('never');
       const h = make({ requestTimeoutMs: 40 });
       await ready(h);
-      await expect(h.client.request('never')).rejects.toBeInstanceOf(AppServerTimeoutError);
+      expect(await rejection(h.client.request('never'))).toBeInstanceOf(AppServerTimeoutError);
     });
 
     test('a response that arrives after its request timed out is ignored without noise', async () => {
@@ -254,7 +254,9 @@ describe('AppServerClient', () => {
 
     test('a request before the client is connected rejects with AppServerDisconnectedError', async () => {
       const h = make();
-      await expect(h.client.request('anything')).rejects.toBeInstanceOf(AppServerDisconnectedError);
+      expect(await rejection(h.client.request('anything'))).toBeInstanceOf(
+        AppServerDisconnectedError,
+      );
       expect(h.client.respond(1, {})).toBe(false);
     });
   });
@@ -347,6 +349,30 @@ describe('AppServerClient', () => {
       }
     });
 
+    test('server request ids are one daemon-global counter, not per thread', async () => {
+      const [t1, t2] = [placeholderUuid(43), placeholderUuid(44)];
+      server.createRollout(t1);
+      server.createRollout(t2);
+      const h = make();
+      await ready(h);
+      await h.client.request('thread/resume', { threadId: t1 });
+      await h.client.request('thread/resume', { threadId: t2 });
+      const params = { command: 'true' };
+      const ids = [
+        server.request({ method: 'item/commandExecution/requestApproval', params }, t1),
+        server.request({ method: 'item/commandExecution/requestApproval', params }, t2),
+        server.request({ method: 'item/commandExecution/requestApproval', params }, t1),
+      ];
+      expect(ids).toEqual([1, 2, 3]);
+      await server.waitFor(
+        () => h.events.filter((e) => e.type === 'serverRequest').length === 3,
+        'three server requests',
+      );
+      expect(h.events.flatMap((e) => (e.type === 'serverRequest' ? [e.id] : []))).toEqual([
+        1, 2, 3,
+      ]);
+    });
+
     test('a client that subscribes late is replayed the pending request with the same id', async () => {
       const threadId = placeholderUuid(42);
       server.createRollout(threadId);
@@ -418,7 +444,7 @@ describe('AppServerClient', () => {
         'the request',
       );
       server.dropClient(1);
-      await expect(inFlight).rejects.toBeInstanceOf(AppServerDisconnectedError);
+      expect(await rejection(inFlight)).toBeInstanceOf(AppServerDisconnectedError);
       await server.waitFor(
         () => h.events.filter((e) => e.type === 'ready').length === 2,
         'the reconnect',
@@ -535,8 +561,8 @@ describe('AppServerClient', () => {
       );
       h.client.stop();
       expect(h.client.state).toBe('closed');
-      await expect(inFlight).rejects.toBeInstanceOf(AppServerDisconnectedError);
-      await expect(h.client.request('x')).rejects.toBeInstanceOf(AppServerDisconnectedError);
+      expect(await rejection(inFlight)).toBeInstanceOf(AppServerDisconnectedError);
+      expect(await rejection(h.client.request('x'))).toBeInstanceOf(AppServerDisconnectedError);
       expect(h.client.respond(1, {})).toBe(false);
       await new Promise((r) => setTimeout(r, 150));
       expect(h.client.state).toBe('closed');

@@ -29,6 +29,31 @@ type Json = Record<string, unknown>;
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
+/**
+ * What `promise` rejects with, failing if it resolves or is still pending after `timeoutMs`.
+ * Used instead of `expect(promise).rejects`, which blocks the whole runner when a broken
+ * implementation leaves the promise pending.
+ */
+export async function rejection(promise: Promise<unknown>, timeoutMs = 3000): Promise<unknown> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const pending = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`still pending after ${timeoutMs} ms`)), timeoutMs);
+  });
+  try {
+    return await Promise.race([
+      promise.then(
+        () => {
+          throw new Error('resolved, expected a rejection');
+        },
+        (error: unknown) => error,
+      ),
+      pending,
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** A frame the server received, with the id of the connection that sent it. */
 export interface ReceivedFrame {
   client: number;
