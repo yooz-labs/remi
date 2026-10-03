@@ -132,7 +132,7 @@ describe('AppServerClient', () => {
       const h = make();
       await ready(h);
       expect(calls).toBe(2);
-      expect(h.logs.some((l) => /initialize failed: not yet/.test(l))).toBe(true);
+      expect(h.logs.some((l) => /initialize failed: "not yet"/.test(l))).toBe(true);
     });
 
     test('an initialize result with no userAgent is refused and the client keeps trying', async () => {
@@ -429,7 +429,9 @@ describe('AppServerClient', () => {
       server.emitTo(1, { method: 'after', params: {} });
       await server.waitFor(() => events.length === 2, 'the next event');
       expect(client.state).toBe('ready');
-      expect(logs.some((l) => /handler failure/.test(l))).toBe(true);
+      expect(logs.some((l) => /event handler threw on ready: Error/.test(l))).toBe(true);
+      // Only the error's name is logged: whatever a consumer's handler throws may carry data.
+      expect(logs.join('\n')).not.toContain('handler failure');
     });
   });
 
@@ -529,7 +531,7 @@ describe('AppServerClient', () => {
       let up = false;
       let attempts = 0;
       const h = make({
-        backoff: { initialMs: 2, maxMs: 2 },
+        backoff: { initialMs: 2, maxMs: 2, stableMs: 30 },
         socketPath: () => {
           attempts += 1;
           return up ? readlinkSync(server.linkPath) : `${server.socketPath}.absent`;
@@ -539,6 +541,8 @@ describe('AppServerClient', () => {
       await server.waitFor(() => attempts >= 3, 'three failed attempts');
       up = true;
       await server.waitFor(() => h.events.length === 1, 'ready');
+      // Up for longer than stableMs, so this success counts.
+      await new Promise((r) => setTimeout(r, 60));
       up = false;
       const before = attempts;
       server.dropClient(1);

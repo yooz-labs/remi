@@ -20,6 +20,7 @@ import {
   FakeAppServer,
   RawConnection,
   RawUnixPeer,
+  decodeClientFrames as clientFrames,
   rejection,
 } from '../../helpers/fake-app-server.ts';
 import { spyTimers } from '../../helpers/timer-spy.ts';
@@ -54,34 +55,6 @@ async function waitFor(predicate: () => boolean, what: string, timeoutMs = 3000)
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
     await new Promise((r) => setTimeout(r, 5));
   }
-}
-
-/** Decode the masked client frames in `bytes`, independently of the codec under test. */
-function clientFrames(bytes: Uint8Array): Array<{ opcode: number; payload: Buffer }> {
-  const out: Array<{ opcode: number; payload: Buffer }> = [];
-  let i = 0;
-  while (i < bytes.length) {
-    const opcode = (bytes[i] as number) & 0x0f;
-    expect((bytes[i + 1] as number) & 0x80, 'client frame is masked').toBe(0x80);
-    let length = (bytes[i + 1] as number) & 0x7f;
-    let offset = i + 2;
-    if (length === 126) {
-      length = ((bytes[offset] as number) << 8) | (bytes[offset + 1] as number);
-      offset += 2;
-    } else if (length === 127) {
-      length = Number(Buffer.from(bytes.subarray(offset, offset + 8)).readBigUInt64BE());
-      offset += 8;
-    }
-    const mask = bytes.subarray(offset, offset + 4);
-    const payload = Buffer.from(
-      Buffer.from(bytes.subarray(offset + 4, offset + 4 + length)).map(
-        (b, k) => b ^ (mask[k % 4] as number),
-      ),
-    );
-    out.push({ opcode, payload });
-    i = offset + 4 + length;
-  }
-  return out;
 }
 
 const closeCode = (payload: Buffer): number => payload.readUInt16BE(0);

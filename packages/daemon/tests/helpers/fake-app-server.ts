@@ -340,6 +340,36 @@ export class FakeAppServer {
   }
 }
 
+/** Decode the masked client frames in `bytes`, independently of the codec under test. */
+export function decodeClientFrames(bytes: Uint8Array): Array<{ opcode: number; payload: Buffer }> {
+  const out: Array<{ opcode: number; payload: Buffer }> = [];
+  let i = 0;
+  while (i < bytes.length) {
+    const opcode = (bytes[i] as number) & 0x0f;
+    if (((bytes[i + 1] as number) & 0x80) !== 0x80)
+      throw new Error('a client frame was not masked');
+    let length = (bytes[i + 1] as number) & 0x7f;
+    let offset = i + 2;
+    if (length === 126) {
+      length = ((bytes[offset] as number) << 8) | (bytes[offset + 1] as number);
+      offset += 2;
+    } else if (length === 127) {
+      length = Number(Buffer.from(bytes.subarray(offset, offset + 8)).readBigUInt64BE());
+      offset += 8;
+    }
+    if (offset + 4 + length > bytes.length) break; // an incomplete frame is still arriving
+    const mask = bytes.subarray(offset, offset + 4);
+    const payload = Buffer.from(
+      Buffer.from(bytes.subarray(offset + 4, offset + 4 + length)).map(
+        (b, k) => b ^ (mask[k % 4] as number),
+      ),
+    );
+    out.push({ opcode, payload });
+    i = offset + 4 + length;
+  }
+  return out;
+}
+
 /** One accepted connection of a {@link RawUnixPeer}. */
 export class RawConnection {
   /** Bytes the client sent after its upgrade request, in arrival order. */
@@ -428,6 +458,42 @@ export class RawConnection {
 
   write(bytes: Uint8Array): void {
     this.socket.write(bytes);
+  }
+
+  /** The complete frames the client has sent so far, decoded. */
+  clientFrames(): Array<{ opcode: number; payload: Buffer }> {
+    return decodeClientFrames(this.received);
+  }
+
+  /** The JSON-RPC messages the client has sent so far (text frames), parsed. */
+  clientMessages(): Json[] {
+    return this.clientFrames()
+      .filter((f) => f.opcode === 1)
+      .map((f) => JSON.parse(f.payload.toString('utf8')) as Json);
+  }
+
+  /** Send one JSON message to the client as a text frame. */
+  sendJson(message: unknown): void {
+    this.write(RawConnection.frame(1, JSON.stringify(message)));
+  }
+
+  /**
+   * Upgrade, wait for the client's `initialize`, and answer it with `userAgent`: a raw peer that
+   * has finished the handshake. Resolves with the id the client used.
+   */
+  async handshake(userAgent = 'test-agent/1.0', extraBeforeReply: unknown[] = []): Promise<number> {
+    this.upgrade();
+    const deadline = Date.now() + 3000;
+    for (;;) {
+      const init = this.clientMessages().find((m) => m['method'] === 'initialize');
+      if (init) {
+        for (const extra of extraBeforeReply) this.sendJson(extra);
+        this.sendJson({ id: init['id'], result: { userAgent, codexHome: '/work/codex-home' } });
+        return init['id'] as number;
+      }
+      if (Date.now() > deadline) throw new Error('timed out waiting for the client initialize');
+      await new Promise((r) => setTimeout(r, 5));
+    }
   }
 
   /** Wait until the client has sent at least `n` bytes after its upgrade request. */
