@@ -381,6 +381,7 @@ describe('ClaudeHarness.createSession', () => {
     if (!yes) throw new Error('the held card has no Yes option');
 
     expect(decisions.isHeld(card.id as UUID)).toBe(true);
+    expect(decisions.isHeld(generateId())).toBe(false);
     expect(decisions.answerHeld(card.id as UUID, { kind: 'option', option: yes })).toBe('resolved');
 
     expect(JSON.stringify(await (await response).json())).toContain('"allow"');
@@ -440,11 +441,43 @@ describe('ClaudeHarness.createSession', () => {
     );
 
     a.session.dispose();
-    a.session.dispose();
     expect(transcriptFallbackTimers.has(a.sessionId)).toBe(false);
+    // A second dispose must not close the binder again: a sentinel timer
+    // registered under the id survives it (a second `binder.close()` would
+    // delete the entry).
+    const sentinel = setInterval(() => {}, 1e6);
+    transcriptFallbackTimers.set(a.sessionId, sentinel);
+    a.session.dispose();
+    expect(transcriptFallbackTimers.get(a.sessionId)).toBe(sentinel);
+    clearInterval(sentinel);
+    transcriptFallbackTimers.delete(a.sessionId);
+
     expect(harness.admitsAnySession(eventA)).toBe(false);
     expect(harness.admitsAnySession(eventB)).toBe(true);
     expect(transcriptFallbackTimers.has(b.sessionId)).toBe(true);
+  });
+
+  test('a binder that fails to close still loses its turn filter', () => {
+    // The binder's close looks its fallback timer up first; make that throw.
+    let failLookup = false;
+    class FlakyTimers extends Map<UUID, ReturnType<typeof setInterval>> {
+      override get(key: UUID) {
+        if (failLookup) throw new Error('binder close failed');
+        return super.get(key);
+      }
+    }
+    transcriptFallbackTimers = new FlakyTimers();
+    hookServer = newHookServer();
+    const harness = newHarness();
+    const { session, sessionId } = launch(harness);
+    const own = stopEventFor(sessionId);
+    expect(harness.admitsAnySession(own)).toBe(true);
+
+    failLookup = true;
+    expect(() => session.dispose()).toThrow('binder close failed');
+    failLookup = false;
+
+    expect(harness.admitsAnySession(own)).toBe(false);
   });
 });
 

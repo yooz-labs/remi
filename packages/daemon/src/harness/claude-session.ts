@@ -434,9 +434,13 @@ export function createClaudeSession(
     dispose: () => {
       if (disposed) return;
       disposed = true;
-      closeBinder?.();
-      // #914: a closed session's binder must never keep admitting turns.
-      admitsBySession.delete(sessionId);
+      try {
+        closeBinder?.();
+      } finally {
+        // #914: a closed session's binder must never keep admitting turns,
+        // even when closing it threw.
+        admitsBySession.delete(sessionId);
+      }
     },
   };
 }
