@@ -263,9 +263,13 @@ describe('the real CLI over a store that holds a codex record', () => {
   test('--resume of the codex record by remi id exits 1 with exactly the mismatch message', async () => {
     const result = await runCli([codexRecord], ['--resume', CODEX_REMI_ID.slice(0, 8)]);
     expect(result.code).toBe(1);
-    // Exact, so a CLI that drops the mismatch arm (and says "Could not read
-    // stored sessions: ...") cannot pass on a substring.
-    expect(plain(result.stderr)).toBe('this session ran under codex; this build cannot resume it');
+    // The message itself, whole and last, and not the "Could not read stored
+    // sessions: ..." a CLI that dropped the mismatch arm would print. (Not the
+    // whole of stderr: a developer's own REMI_* variables add warning lines
+    // above it.)
+    const lines = plain(result.stderr).split('\n');
+    expect(lines.at(-1)).toBe('this session ran under codex; this build cannot resume it');
+    expect(plain(result.stderr)).not.toContain('Could not read stored sessions');
   }, 30000);
 
   test('bare --resume does not pick a codex record: with only one in the store there is nothing to resume', async () => {
