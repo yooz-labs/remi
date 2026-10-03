@@ -464,6 +464,7 @@ describe('the extractor', () => {
             account: {
               planType: 'plus',
               serverName: 'jdoe-laptop',
+              installationId: randomUUID(),
               rateLimits: { usedPercent: 3 },
             },
             collaborationMode: { settings: { developer_instructions: 'a long system prompt' } },
