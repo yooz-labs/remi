@@ -80,6 +80,9 @@ describe('a held prompt reaches the dispatcher registered for its session (#1176
     fs.mkdirSync(fakeBin, { recursive: true });
     fs.writeFileSync(path.join(fakeBin, 'claude'), FAKE_CLAUDE);
     fs.chmodSync(path.join(fakeBin, 'claude'), 0o755);
+    const fakeShell = path.join(fakeBin, 'sh-path');
+    fs.writeFileSync(fakeShell, '#!/bin/sh\necho "$PATH"\n');
+    fs.chmodSync(fakeShell, 0o755);
 
     const port = await reserveRange(1, 50, DEFAULT_CONFIG.daemon.bind);
     const proc = Bun.spawn(
@@ -100,7 +103,11 @@ describe('a held prompt reaches the dispatcher registered for its session (#1176
         cwd: work,
         env: isolatedEnv(home, {
           CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: '',
-          PATH: `${fakeBin}:${process.env['PATH'] ?? ''}`,
+          // Only the fake and the system directories, and a login shell that
+          // reports exactly that PATH (the daemon merges its login shell's
+          // PATH into its own): a test never starts a real `claude`.
+          PATH: `${fakeBin}:/usr/bin:/bin`,
+          SHELL: fakeShell,
           FAKE_CLAUDE_DIR: fakeDir,
         }),
         stdout: 'pipe',

@@ -183,7 +183,7 @@ describe('ClaudeHarness.createSession', () => {
     opts: { passThrough?: boolean; reservedRows?: number; register?: boolean } = {},
   ) {
     const sessionId: UUID = generateId();
-    const { messageApi, sendAndRecord, notifications } = createMessageApiForSession(
+    const { messageApi, sendAndRecord } = createMessageApiForSession(
       {
         sessionRegistry,
         transcriptWatchers,
@@ -211,7 +211,7 @@ describe('ClaudeHarness.createSession', () => {
     if (opts.register) {
       sessionRegistry.registerSession(sessionId, tmpDir, session.pty, messageApi, false, false);
     }
-    return { session, sessionId, notifications };
+    return { session, sessionId };
   }
 
   function claudeSessionIdOf(sessionId: UUID): string {
@@ -321,7 +321,8 @@ describe('ClaudeHarness.createSession', () => {
     fs.writeFileSync(path.join(fakeBin, 'claude'), FAKE_CLAUDE);
     fs.chmodSync(path.join(fakeBin, 'claude'), 0o755);
     for (const [name, value] of [
-      ['PATH', `${fakeBin}:${process.env['PATH'] ?? ''}`],
+      // Only the fake and the system directories: a test never starts a real `claude`.
+      ['PATH', `${fakeBin}:/usr/bin:/bin`],
       ['FAKE_CLAUDE_DIR', fakeDir],
     ] as const) {
       const previous = process.env[name];
@@ -342,7 +343,15 @@ describe('ClaudeHarness.createSession', () => {
     const { session } = launch(newHarness(), { passThrough: true, reservedRows: 2 });
     await session.start();
 
-    await until(() => fs.existsSync(path.join(fakeDir, 'size')), 'the fake claude to start');
+    // The fake creates `size` when its shell opens the redirect and fills it a
+    // moment later (`stty` writes it), so the file existing is not the file
+    // having its content (#1185): wait for the content.
+    await until(
+      () =>
+        fs.existsSync(path.join(fakeDir, 'size')) &&
+        fs.readFileSync(path.join(fakeDir, 'size'), 'utf8').trim() !== '',
+      'the fake claude to report its terminal size',
+    );
     // reservedRows > 0 makes the child's statusLine drop the remi prefix, and
     // passThrough sizes the child from the wrapper's own terminal minus the bar.
     expect(fs.readFileSync(path.join(fakeDir, 'status_bar'), 'utf8')).toBe('1');
