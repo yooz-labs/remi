@@ -473,10 +473,10 @@ export class RawUnixPeer {
   private unclaimed: RawConnection[] = [];
   private waiting: Array<(c: RawConnection) => void> = [];
 
-  private constructor() {
+  private constructor(allowHalfOpen: boolean) {
     this.dir = socketDir('remi-raw-peer-', 'r.sock');
     this.socketPath = join(this.dir, 'r.sock');
-    this.server = createServer((socket) => {
+    this.server = createServer({ allowHalfOpen }, (socket) => {
       const connection = new RawConnection(socket);
       this.connections.push(connection);
       const waiter = this.waiting.shift();
@@ -485,8 +485,9 @@ export class RawUnixPeer {
     });
   }
 
-  static async start(): Promise<RawUnixPeer> {
-    const peer = new RawUnixPeer();
+  /** `allowHalfOpen` keeps a connection writable after the client ends its side (a hostile server does). */
+  static async start(opts: { allowHalfOpen?: boolean } = {}): Promise<RawUnixPeer> {
+    const peer = new RawUnixPeer(opts.allowHalfOpen ?? false);
     // `listen` with a callback, not `server.once('listening')`: on a clean frozen install the
     // typings resolve to a `net.Server` that has no `once`, which failed `bun run typecheck`.
     await new Promise<void>((resolve) => peer.server.listen(peer.socketPath, resolve));

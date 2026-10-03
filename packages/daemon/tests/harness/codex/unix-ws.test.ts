@@ -24,16 +24,23 @@ interface Probe {
   messages: string[];
   closes: WsCloseInfo[];
   logs: string[];
+  pongs: number[];
 }
 
 function probe(): Probe & { handlers: Parameters<typeof connectUnixWebSocket>[1] } {
   const messages: string[] = [];
   const closes: WsCloseInfo[] = [];
+  const pongs: number[] = [];
   return {
     messages,
     closes,
     logs: [],
-    handlers: { onMessage: (t) => messages.push(t), onClose: (i) => closes.push(i) },
+    pongs,
+    handlers: {
+      onMessage: (t) => messages.push(t),
+      onClose: (i) => closes.push(i),
+      onPong: () => pongs.push(Date.now()),
+    },
   };
 }
 
@@ -202,6 +209,12 @@ describe('against a byte-level peer', () => {
     await peer.stop();
   });
 
+  /** Replace the peer for one test, for a peer built differently. */
+  async function restartPeer(opts: { allowHalfOpen?: boolean }): Promise<RawUnixPeer> {
+    await peer.stop();
+    return RawUnixPeer.start(opts);
+  }
+
   async function connect(opts?: UnixWsOptions, accept = true) {
     const p = probe();
     const pending = connectUnixWebSocket(peer.socketPath, p.handlers, {
@@ -302,6 +315,22 @@ describe('against a byte-level peer', () => {
     expect(frame?.payload.toString('utf8')).toBe('héllo');
   });
 
+  test('ping() sends a masked ping with its payload, a pong reaches onPong, and ping() refuses when closed', async () => {
+    const { raw, pending, pongs } = await connect();
+    const conn = await pending;
+    conn.ping('are-you-there');
+    await raw.waitForBytes(1);
+    await waitFor(() => clientFrames(raw.received).length === 1, 'the ping frame');
+    const [frame] = clientFrames(raw.received);
+    expect(frame?.opcode).toBe(WS_OPCODE.ping);
+    expect(frame?.payload.toString()).toBe('are-you-there');
+    raw.write(RawConnection.frame(WS_OPCODE.pong, 'are-you-there'));
+    await waitFor(() => pongs.length === 1, 'onPong');
+    expect(() => conn.ping('x'.repeat(126))).toThrow();
+    conn.close();
+    expect(() => conn.ping('late')).toThrow(/not open/);
+  });
+
   test('every client frame draws a fresh mask', async () => {
     const { raw, pending } = await connect();
     const conn = await pending;
@@ -381,7 +410,7 @@ describe('against a byte-level peer', () => {
     });
   });
 
-  describe('a framing violation closes with 1002 and stops reading', () => {
+  describe('a framing violation closes with 1002 and nothing after it is delivered', () => {
     const violations: Array<[string, (raw: RawConnection) => void, UnixWsOptions?]> = [
       ['an RSV bit', (raw) => raw.write(RawConnection.frame(WS_OPCODE.text, 'x', true, 0x40))],
       ['a masked server frame', (raw) => raw.write(Buffer.from([0x81, 0x81, 0, 0, 0, 0, 0x61]))],
@@ -425,6 +454,51 @@ describe('against a byte-level peer', () => {
         const frame = clientFrames(raw.received).find((f) => f.opcode === WS_OPCODE.close);
         expect(closeCode(frame?.payload as Buffer)).toBe(1002);
       });
+    }
+  });
+
+  test('after a violation a hostile peer that keeps writing is neither buffered nor logged', async () => {
+    peer = await restartPeer({ allowHalfOpen: true });
+    const { raw, pending, closes, messages, logs } = await connect({ closeTimeoutMs: 400 });
+    await pending;
+    raw.write(RawConnection.frame(WS_OPCODE.text, 'x', true, 0x40));
+    // The garbage would be a violation again, and a log line again, if it were read.
+    const garbage = Buffer.alloc(64 * 1024, 0xff);
+    for (let i = 0; i < 64 && !raw.socket.destroyed; i++) {
+      raw.write(garbage);
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    await waitFor(() => closes.length === 1, 'onClose');
+    expect(closes[0]).toMatchObject({ code: 1002, clean: false });
+    expect(messages).toEqual([]);
+    expect(logs.filter((l) => /closing the connection/.test(l))).toHaveLength(1);
+    expect(logs.length).toBeLessThanOrEqual(2);
+  });
+
+  test('a peer that ends or destroys its socket as the client writes is still reported closed', async () => {
+    for (const how of ['end', 'destroy'] as const) {
+      const { raw, pending, closes } = await connect();
+      const conn = await pending;
+      await new Promise((r) => setTimeout(r, 30));
+      // The same timer tick: the peer goes away and the client sends. On Bun 1.3.11 the 'close'
+      // event of a socket whose write raced the peer's close never arrived, so the connection
+      // looked open for ever; only 'end' did.
+      await new Promise<void>((resolve) => {
+        setTimeout(() => (how === 'end' ? raw.socket.end() : raw.socket.destroy()), 20);
+        setTimeout(() => {
+          try {
+            conn.send('{"id":1}');
+          } catch {
+            // A close that was already noticed makes the send throw, which is also fine.
+          }
+          resolve();
+        }, 20);
+      });
+      await waitFor(() => closes.length === 1, `onClose after the peer's ${how}`);
+      expect(closes[0]?.clean).toBe(false);
+      expect(conn.isOpen).toBe(false);
+      await new Promise((r) => setTimeout(r, 50));
+      expect(closes, 'onClose fires once').toHaveLength(1);
     }
   });
 

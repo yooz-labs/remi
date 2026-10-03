@@ -27,6 +27,8 @@ import {
 export interface WsConnection {
   /** Send one text message. Throws when the connection is not open. */
   send(text: string): void;
+  /** Send a ping (at most 125 bytes). Throws when the connection is not open. */
+  ping(data?: string): void;
   /** Start the close handshake with `code` (1000 by default); `onClose` fires when it ends. */
   close(code?: number): void;
   readonly isOpen: boolean;
@@ -42,6 +44,8 @@ export interface WsCloseInfo {
 
 export interface WsHandlers {
   onMessage(text: string): void;
+  /** A pong arrived (the answer to a ping, or unsolicited). */
+  onPong?(): void;
   onClose(info: WsCloseInfo): void;
 }
 
@@ -107,10 +111,12 @@ export function connectUnixWebSocket(
     // listener attached afterwards exists, and the error is then lost as an uncaught exception.
     // Not reproduced in a plain `bun script` process, so this is hardening, not a known crash.
     const socket = new Socket();
-    const parser = new WsFrameParser({ maxPayloadBytes: maxPayload });
+    let parser = new WsFrameParser({ maxPayloadBytes: maxPayload });
     let phase: 'connecting' | 'handshake' | 'open' | 'closing' | 'closed' = 'connecting';
     let head = Buffer.alloc(0);
     let sentClose = false;
+    // Set by the first framing violation: from then on nothing the peer sends is read or logged.
+    let violated = false;
     let received: { code: number | undefined; reason: string } | null = null;
     let localClose: { code: number; reason: string } | null = null;
     // A message in progress: the first frame's opcode and the payload pieces so far.
@@ -159,8 +165,16 @@ export function connectUnixWebSocket(
       }
     }
 
-    /** A violation: close with `code`; data frames still in flight are then ignored (see `onFrame`). */
+    /**
+     * A violation: close with `code` and stop reading. Whatever the peer sends next (a hostile one
+     * can keep writing into the half-open socket until the close timeout) is dropped unread, so it
+     * neither grows a buffer nor floods the log.
+     */
     function violate(code: number, reason: string): void {
+      if (violated) return;
+      violated = true;
+      fragments = null;
+      parser = new WsFrameParser({ maxPayloadBytes: maxPayload });
       log(`closing the connection: ${reason}`);
       startClose(code, reason);
       socket.end();
@@ -191,6 +205,11 @@ export function connectUnixWebSocket(
           writeFrame(WS_OPCODE.pong, frame.payload);
           return;
         case WS_OPCODE.pong:
+          try {
+            handlers.onPong?.();
+          } catch (error) {
+            log(`pong handler threw: ${error instanceof Error ? error.message : String(error)}`);
+          }
           return;
         case WS_OPCODE.close: {
           const code =
@@ -233,7 +252,7 @@ export function connectUnixWebSocket(
     function feed(chunk: Uint8Array): void {
       try {
         for (const frame of parser.push(chunk)) {
-          if (phase === 'closed') return;
+          if (phase === 'closed' || violated) return;
           onFrame(frame);
         }
       } catch (error) {
@@ -246,6 +265,10 @@ export function connectUnixWebSocket(
       send(text) {
         if (phase !== 'open') throw new Error('websocket is not open');
         socket.write(encodeClientFrame(WS_OPCODE.text, new TextEncoder().encode(text)));
+      },
+      ping(data = '') {
+        if (phase !== 'open') throw new Error('websocket is not open');
+        socket.write(encodeClientFrame(WS_OPCODE.ping, new TextEncoder().encode(data)));
       },
       close(code = NORMAL_CLOSURE) {
         if (phase === 'open') startClose(code, '');
@@ -302,7 +325,7 @@ export function connectUnixWebSocket(
         if (leftover.length > 0) feed(leftover);
         return;
       }
-      if (phase === 'open' || phase === 'closing') feed(chunk);
+      if ((phase === 'open' || phase === 'closing') && !violated) feed(chunk);
     });
 
     // A socket error is followed by 'close'; before the upgrade it is the connect failure.
@@ -311,11 +334,8 @@ export function connectUnixWebSocket(
       else log(`socket error: ${error.message}`);
     });
 
-    socket.on('close', () => {
-      if (phase === 'connecting' || phase === 'handshake') {
-        failBeforeOpen(new Error('socket closed before the upgrade finished'));
-        return;
-      }
+    /** The connection is over: report it once, whichever of 'end' or 'close' arrives first. */
+    function finalize(): void {
       if (phase === 'closed') return;
       phase = 'closed';
       clearTimer();
@@ -331,6 +351,27 @@ export function connectUnixWebSocket(
       } catch (error) {
         log(`close handler threw: ${error instanceof Error ? error.message : String(error)}`);
       }
+    }
+
+    // The peer's end of the stream. On Bun 1.3.11 a write that races the peer closing or destroying
+    // its end can lose the 'close' event altogether (bare node:net saw only 'connect' and 'end', with
+    // `destroyed` still false), which left the connection looking open forever. So EOF is the end of
+    // the connection: report it, then drop the socket ourselves.
+    socket.on('end', () => {
+      if (phase === 'connecting' || phase === 'handshake') {
+        failBeforeOpen(new Error('socket closed before the upgrade finished'));
+        return;
+      }
+      finalize();
+      socket.destroy();
+    });
+
+    socket.on('close', () => {
+      if (phase === 'connecting' || phase === 'handshake') {
+        failBeforeOpen(new Error('socket closed before the upgrade finished'));
+        return;
+      }
+      finalize();
     });
 
     try {
