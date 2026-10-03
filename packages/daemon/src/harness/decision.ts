@@ -2,9 +2,12 @@
  * The vocabulary of answering a prompt a harness is holding open (epic #1161,
  * phase 3 #1164): what an answer from the phone looks like when it reaches the
  * harness (`HeldAnswer`), and what the harness did with it
- * (`HeldAnswerOutcome`). Harness-neutral: it names no Claude hook, only the
- * card's own options and the answer path's three outcomes. Moved verbatim from
- * `auto-approve/auto-approve-gate.ts`, which still produces and consumes it
+ * (`HeldAnswerOutcome`: `resolved`, `refused`, `closed` or `unknown`). Both are
+ * shaped by the card's own options and the answer path, not by a Claude type,
+ * so the chat handlers can import them without importing `auto-approve/`; the
+ * moved doc comments below still speak of Claude's hook and gate, which is
+ * what produces them today. Moved verbatim from
+ * `auto-approve/auto-approve-gate.ts`, which still produces and consumes them
  * for Claude's permission gate.
  */
 

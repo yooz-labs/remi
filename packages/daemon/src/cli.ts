@@ -961,15 +961,15 @@ const transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>> = new 
 const binderClosers: Map<UUID, () => void> = new Map();
 // Per-session permission gate handles (#573): retireQuestion + forceRelease,
 // keyed by sessionId, so the answer handler and `remi unstick` reach the RIGHT
-// session's gate (multi-session daemons). Populated in createNewSession after
-// setupHookBridge; removed on session close. Empty when no hookServer is
-// configured.
+// session's gate (multi-session daemons). Populated by createClaudeSession
+// (called from createNewSession) after setupHookBridge; removed on session
+// close. Empty when no hookServer is configured.
 const sessionGateHandles: Map<UUID, SessionGateHandle> = new Map();
 // Per-session QuestionPresenceTracker (#920): the answer handler needs
 // `isPromptCurrent` to refuse a PTY submit for a `source: 'pty'` card whose
 // on-screen prompt is already gone (input-events.ts's prompt-currency
 // guard). Unlike `sessionGateHandles`, a tracker is constructed for EVERY
-// session in `createNewSession` regardless of whether a hook server is
+// session by `createClaudeSession` regardless of whether a hook server is
 // active, so this map is populated unconditionally there; removed on
 // session close, same lifecycle as the other per-session maps below.
 const sessionTrackers: Map<UUID, QuestionPresenceTracker> = new Map();
@@ -1009,8 +1009,8 @@ function forceReleaseAllSessions(): void {
 }
 // Per-session APNS dispatchers (#585, P7), keyed by sessionId, so the
 // question-resolved path can fire a quiet lock-screen dismissal through the same
-// device-token fan-out that pushed the card. Populated in createNewSession;
-// removed on session close.
+// device-token fan-out that pushed the card. Populated by createClaudeSession
+// (called from createNewSession); removed on session close.
 const sessionNotifiers: Map<UUID, NotificationDispatcher> = new Map();
 // `StopFailure` -> the session's `turn_failed` push, and its later dismissal
 // (#1153); no config involved, see `createTurnFailedRoutes`.
@@ -1452,7 +1452,7 @@ let statusBar: StatusBar | null = null;
 
 // #932 durable fix: the quiescence + clean-boundary gate for the wrapper's
 // own local terminal fd -- the same fd `statusBar` draws into. Module-level
-// (like `statusBar`) so `createNewSession`'s `observeLocalPtyOutput` wiring
+// (like `statusBar`) so the harness's `observeLocalPtyOutput` wiring
 // (constructed once, before the bar itself exists) and the bar's own
 // `isBoundaryClean`/`isQuiescent` deps (wired after, in the wrapper block
 // below) share one instance regardless of call order. Harmless to construct
@@ -1734,8 +1734,8 @@ const inputHandlers: InputHandlers = createInputHandlers({
   sessionRegistry,
   bindingStore,
   send: sendToConnection,
-  // #573/#1126: the RIGHT session's gate (the map is populated per session in
-  // createNewSession) retires an answered question and answers a held
+  // #573/#1126: the RIGHT session's gate (the map is populated per session by
+  // createClaudeSession) retires an answered question and answers a held
   // prompt through its hook. One helper, shared with the tests, like
   // trackerScreenDeps below.
   ...gateAnswerDeps((sessionId) => sessionGateHandles.get(sessionId)),
@@ -1747,7 +1747,7 @@ const inputHandlers: InputHandlers = createInputHandlers({
     onQuestionResolved(sessionId, questionId, 'answered'),
   // The screen reads the answer guards need (#920 prompt currency, #1002 any
   // prompt on screen, #1134 the on-screen menu), backed by the RIGHT session's
-  // tracker (populated per session in createNewSession, same map-per-sessionId
+  // tracker (populated per session by createClaudeSession, same map-per-sessionId
   // shape as sessionGateHandles above). One helper, shared with the tests, so
   // the wiring they exercise is this wiring. No tracker for this sessionId
   // (session already closed, or never wired one) => nothing observed, which

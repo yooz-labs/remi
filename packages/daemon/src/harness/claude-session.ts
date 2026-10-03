@@ -9,9 +9,14 @@
  * session registration, the `starting` status, `start()` with its
  * `markExited` on failure, and the child pid.
  *
- * Statement order is load-bearing and unchanged: `sessionNotifiers.set`
- * before the tracker, `sessionTrackers.set` before the hook bridge, and
- * `preAssign` before `setupHookBridge`.
+ * Statement order is unchanged. Only `preAssign` before `setupHookBridge` is
+ * observably load-bearing: `setupHookBridge` reads the binding synchronously
+ * (`hook-bridge-setup.ts`, the `preAssignedClaudeId` block) and arms the
+ * transcript binder only when one exists, which the launch tests pin. The
+ * other two orders, `sessionNotifiers.set` before the tracker and
+ * `sessionTrackers.set` before the hook bridge, are kept for fidelity: the
+ * statements between them are synchronous and the maps are read only inside
+ * later callbacks, so moving them is unobservable, and no test can tell.
  *
  * Four daemon-wide values are read when a session launches, or later, and not
  * when the harness is built, so they arrive as getters and are read where the
@@ -172,7 +177,7 @@ export function createClaudeSession(
     // module doc. Remove it from the single pendingness owner (which
     // broadcasts question_snapshot via onQuestionsChanged, #798) and fire the
     // SAME question_resolved + APNS-dismiss path every other cancellation
-    // route uses (`onQuestionResolved`, defined below in this file) so a
+    // route uses (`onQuestionResolved`, the daemon's own, via `deps`) so a
     // client sees the card clear immediately, not only on the next snapshot.
     onHooklessQuestionGone: (questionId, reason) => {
       sessionRegistry.removeQuestion(
@@ -313,7 +318,8 @@ export function createClaudeSession(
     );
     // The binder owns the fallback poll + #452 dir-watch (armed by its start()
     // inside setupHookBridge); record its teardown so cleanup() reaches the
-    // rotation dir-poll interval the shared maps below cannot.
+    // rotation dir-poll interval that the shared transcriptWatchers and
+    // transcriptFallbackTimers cleanup in cli.ts cannot.
     binderClosers.set(sessionId, hookBridgeHandle.closeBinder);
     // Register the per-session gate handle (#573) so the answer path and
     // `remi unstick` reach this exact session's gate.
