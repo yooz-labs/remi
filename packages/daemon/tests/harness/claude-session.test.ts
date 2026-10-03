@@ -31,8 +31,9 @@ import {
   setPtyStdoutFd,
   setWrapperDetached,
 } from '../../src/cli/wrapper-state.ts';
+import type { ClaudeLaunchDeps } from '../../src/harness/claude-session.ts';
 import { ClaudeHarness } from '../../src/harness/index.ts';
-import type { ClaudeLaunchDeps, HarnessSession } from '../../src/harness/index.ts';
+import type { HarnessSession } from '../../src/harness/index.ts';
 import { ForeignSessionEscalator, HookServer } from '../../src/hooks/index.ts';
 import type { HookInput } from '../../src/hooks/index.ts';
 import type { NotificationDispatcher } from '../../src/notifications/notification-dispatcher.ts';
