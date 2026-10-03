@@ -238,6 +238,15 @@ describe('WsFrameParser', () => {
     }
   });
 
+  test('a violation discards the frames the same chunk already completed, by design', () => {
+    const chunk = Uint8Array.from([...serverFrame(WS_OPCODE.text, bytes('ok')), 0xc1, 0x00]);
+    const parser = new WsFrameParser();
+    expect(() => parser.push(chunk)).toThrow(/RSV/);
+    // Nothing was returned for the good frame that preceded the bad one.
+    const fresh = new WsFrameParser();
+    expect(fresh.push(chunk.subarray(0, 4)).map((f) => text(f.payload))).toEqual(['ok']);
+  });
+
   test('a control frame of exactly 125 bytes is fine', () => {
     const [frame] = new WsFrameParser().push(serverFrame(WS_OPCODE.ping, new Uint8Array(125)));
     expect(frame).toMatchObject({ opcode: WS_OPCODE.ping });

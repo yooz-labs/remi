@@ -95,6 +95,13 @@ const KNOWN_OPCODES = new Set<number>(Object.values(WS_OPCODE));
  * WsProtocolError} on an RSV bit, a masked frame, an unknown opcode, a control
  * frame over 125 bytes or fragmented, or a payload over the limit (checked from
  * the header, before the payload is buffered).
+ *
+ * A violation discards the frames the same chunk had already completed: `push`
+ * throws instead of returning them. That is deliberate and tested: the caller
+ * closes the connection with 1002 on the throw, a frame that came before a
+ * violation on a connection that is being failed has no consumer worth
+ * serving, and the alternative (return the frames and throw on the next call)
+ * would leave a violation undetected until the peer sent something more.
  */
 export class WsFrameParser {
   private readonly maxPayloadBytes: number;
