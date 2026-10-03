@@ -7,7 +7,8 @@
  * `license-boundary.test.ts`), and fails when one imports a Claude-specific
  * module: anything under `hooks/`, `auto-approve/`, `transcript/` or
  * `cli/session-phases/`, the Claude side of the harness (`harness/index`,
- * `harness/claude`, `harness/claude-session`), the Claude session binding
+ * `harness/claude`, `harness/claude-session`,
+ * `harness/claude-transcript-path`), the Claude session binding
  * (`cli/claude-binding`), the three Claude screen parsers
  * (`parser/output-processor`, `parser/question-parser`,
  * `parser/status-parser`), or a barrel that re-exports them (`parser/index`,
@@ -23,9 +24,12 @@
  *
  * Neutral modules: the harness contract (`harness/types.ts`,
  * `harness/decision.ts`), the client-message handlers (`cli/handlers/`), the
- * message API (`api/`) and the session store and registry (`session/`).
- * `harness/claude.ts`, `harness/claude-session.ts` and `harness/index.ts` are
- * deliberately not neutral: they are Claude's side of the seam.
+ * current-session resolver (`cli/current-session.ts`, which asks the harness for
+ * a transcript path), the message API (`api/`) and the session store and
+ * registry (`session/`).
+ * `harness/claude.ts`, `harness/claude-session.ts`,
+ * `harness/claude-transcript-path.ts` and `harness/index.ts` are deliberately
+ * not neutral: they are Claude's side of the seam.
  *
  * It is a ratchet, not a clean bill. `DEBT` lists the imports that exist
  * today and are documented as chat-seam debt: three handlers still take
@@ -49,7 +53,11 @@ const SRC = resolve(import.meta.dir, '..', '..', 'src');
 /** Directories whose every `.ts` file is harness-neutral. */
 const NEUTRAL_DIRS = ['cli/handlers', 'api', 'session'] as const;
 /** Individual harness-neutral files. */
-const NEUTRAL_FILES = ['harness/types.ts', 'harness/decision.ts'] as const;
+const NEUTRAL_FILES = [
+  'harness/types.ts',
+  'harness/decision.ts',
+  'cli/current-session.ts',
+] as const;
 
 /** Claude-specific directories, as paths relative to `src`. */
 const FORBIDDEN_DIRS = ['hooks', 'auto-approve', 'transcript', 'cli/session-phases'] as const;
@@ -58,6 +66,7 @@ const FORBIDDEN_FILES = [
   'harness/index',
   'harness/claude',
   'harness/claude-session',
+  'harness/claude-transcript-path',
   'parser/output-processor',
   'parser/question-parser',
   'parser/status-parser',
@@ -228,6 +237,7 @@ describe('harness boundary detector (parses real import syntax only)', () => {
       'the harness barrel': `import { Harness } from '../../harness/index.ts';`,
       ClaudeHarness: `import { ClaudeHarness } from '../../harness/claude.ts';`,
       'the Claude launch': `import { createClaudeSession } from '../../harness/claude-session.ts';`,
+      'the Claude transcript path leaf': `import { claudeTranscriptPath } from '../../harness/claude-transcript-path.ts';`,
       'the parser barrel': `import { parseQuestion } from '../../parser/index.ts';`,
       'the Claude session binding': `import { resolveClaudeBinding } from '../claude-binding.ts';`,
       'a session phase': `import { setupHookBridge } from '../session-phases/hook-bridge-setup.ts';`,
