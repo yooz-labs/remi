@@ -48,7 +48,7 @@ Add the vocabulary and make the store tolerate it, without changing what any dae
 7. **`Decision` is `type Decision = Question`.**
    `localRender`, `answerPath` and `resolvedBy` are typed (`LocalRender`, `AnswerPath`, `ResolvedBy`) and attached to no message.
    The strategy section 8 field mapping is the doc comment on `Decision`.
-8. **No physical move** of Claude modules into a `harness/claude/` directory in this series; a boundary ratchet test (phase 3) guards the line.
+8. **No physical move** of the existing Claude modules (`hooks/`, `transcript/`, `auto-approve/`, `parser/`) into a `harness/claude/` directory; Phase 3 adds three flat files under `harness/` (`claude.ts`, `claude-session.ts`, `claude-transcript-path.ts`) and moves only the launch out of `cli.ts`; a boundary ratchet test (phase 3) guards the line.
 9. **No web or iOS changes** in this series.
 
 ## Consequences
@@ -60,6 +60,8 @@ Add the vocabulary and make the store tolerate it, without changing what any dae
   The Codex epic must close that before it writes the first non-Claude record (for example by refusing to create one while an older daemon is registered).
   This phase makes the current build tolerant; it does not retrofit the builds already installed.
 - `getIdentity` has no production caller yet, and no code sets `harness` or `harnessSessionId` on a record or a message (checked below), so the behavior of every shipped path is unchanged.
+- Besides `getIdentity`, these exports have no production caller: `identityFromClaudeId`, `isHarnessId`, `HARNESS_IDS` and `SessionIdentity` (reached only through `getIdentity`), and `DEFAULT_HARNESS`, `Decision`, `AnswerPath`, `LocalRender` and `ResolvedBy` (tests and doc comments only).
+  They are vocabulary for the Codex epic (#1165); delete any it does not use.
 - A record whose harness string this build does not know still resumes by `claudeSessionId` through the existing methods; only `getIdentity` withholds it.
 - `Decision` being an alias means there is no separate object to validate: the strategy's `kind` values `sandbox` and `trust` have no `Question.kind` today (they are hook-less PTY prompts, `source: 'pty'`), and `answerPath` cannot be read from `Question.held`, which marks every card pushed by id.
   The mapping comment records both so nobody rediscovers them.
@@ -86,7 +88,7 @@ Add the vocabulary and make the store tolerate it, without changing what any dae
 - Pin tests that passed on the unmodified source before any change: `packages/daemon/tests/session-store.test.ts`, "legacy record shape (#1162)"; and `session-binding-store.test.ts` lines 53 and 79, unmodified.
   The preservation tests under "harness identity fields (#1162)" fail on the unmodified parser.
 - Checks that nothing populates the new fields, run on the finished branch:
-  - `grep -rn "harnessSessionId" packages/*/src` hits only declarations (`types.ts`, `protocol.ts`, `StoredSession`), the parser copy in `parseStoredSession`, `getIdentity`, and `harness.ts`.
+  - `grep -rn "harnessSessionId" packages/*/src` hits only declarations (`shared/src/types.ts`, `protocol.ts`, `StoredSession`), the parser copy in `parseStoredSession`, `getIdentity`, `shared/src/harness.ts`, and, since Phase 2, the parameter name of `Harness.resumeArgs` and `Harness.transcriptPath` (`harness/types.ts`, `harness/claude.ts`), which carries the id a caller passes in and sets it on no record or message.
   - `grep -rn "getIdentity" packages/*/src` hits only its definition and comments.
   - `packages/shared/tests/harness.test.ts` asserts the `hello_ack`, `question` and `session_list_response` factories emit neither key.
 - ADR 0011 (verify before you describe) is why each wire field says "typed only" instead of describing intent; ADR 0012 (protocol registry) is untouched because no message type is added.
@@ -96,26 +98,27 @@ Add the vocabulary and make the store tolerate it, without changing what any dae
 Phase 2 adds the descriptor the daemon asks instead of spelling Claude's values at each call site.
 It changes no behavior: the same bytes are typed, the same arguments are spawned, the same paths are built.
 
-1. **Three members, each with a production caller.**
-   `packages/daemon/src/harness/types.ts` declares `gracefulExitInput: string | null` (Stop types it; `null` takes the existing force-close path), `resumeArgs(harnessSessionId)` (the resume handler's launch arguments) and `transcriptPath(projectPath, harnessSessionId)` (four call sites).
+1. **Three members, each with a production caller.** Phase 3 adds a fourth member, `createSession` (its item 2).
+   `packages/daemon/src/harness/types.ts` declares `gracefulExitInput: string | null` (Stop types it; `null` takes the existing force-close path), `resumeArgs(harnessSessionId)` (the resume handler's launch arguments) and `transcriptPath(projectPath, harnessSessionId)` (three call sites: `current-session.ts`, the session-list decoration and the durable-index load; `expectedTranscriptPath` calls the leaf, item 4).
    `ClaudeHarness` returns `'/exit'`, `['--resume', id]` and `<projectsDir>/<project path with every "/" replaced by "-">/<id>.jsonl`.
 2. **`id` and `command` are not declared, which departs from the issue text.**
    Issue #1163 listed both, but also said the interface carries only members with a caller in this PR.
-   Nothing calls either: the one `command: 'claude'` site is `pty-session-setup.ts` 203, which the same issue says to leave alone, and nothing branches on a harness id while one harness exists.
-   Phase 3 was to add `command` with `createSession`, which is the first thing that spawns through the harness (it did not, Phase 3 item 4), and the id with the first consumer that has more than one harness to tell apart.
+   Nothing calls either: the one `command: 'claude'` site is in `createPtySessionForSession` (`pty-session-setup.ts`), which the same issue says to leave alone, and nothing branches on a harness id while one harness exists.
+   Phase 3 expected to add `command` with `createSession` and did not (Phase 3 item 4); the id arrives with the first consumer that has more than one harness to tell apart.
 3. **No registry.**
    The epic title says "descriptor and registry", but no code looks a harness up by id: a daemon hosts one session, so `cli.ts` builds one `ClaudeHarness` and passes it to the handler factories (`createSessionHandlers`, `createTranscriptHandlers`, `createResumeSessionHandlers`, `makeCurrentSessionResolver`).
    An id-keyed registry arrives with the first caller that needs one, the `harness` field on `create_session_request` (#1165 section B).
    The phrase "The registry (phase 2) holds only Claude" in decision 1 above is superseded by this item.
 4. **One transcript path rule.**
-   `current-session.ts`, the session-list decoration, the durable-index load in `transcript-events.ts` and `expectedTranscriptPath` all go through `transcriptPath`, so the `<dir>/<id>.jsonl` composition lives in `ClaudeHarness` alone.
-   The directory encoding stays in `TranscriptDiscovery.getProjectTranscriptDir`, which `ClaudeHarness` calls and which `transcript-binder.ts` 995 also calls.
-   `expectedTranscriptPath` keeps its `(discovery, projectPath, id)` signature because `same-cwd-no-cross-binding.test.ts` calls it, and built a `ClaudeHarness` per call (Phase 3 item 7: it now calls `claudeTranscriptPath` instead); the harness held no state beyond the discovery it is given.
+   `current-session.ts`, the session-list decoration and the durable-index load in `transcript-events.ts` go through `Harness.transcriptPath`; `expectedTranscriptPath` goes through `claudeTranscriptPath`, the leaf that `ClaudeHarness.transcriptPath` also calls (Phase 3 item 7), so the `<dir>/<id>.jsonl` composition lives in `harness/claude-transcript-path.ts` alone.
+   The directory encoding stays in `TranscriptDiscovery.getProjectTranscriptDir`, which `claudeTranscriptPath` calls and which `transcript-binder.ts` 995 also calls.
+   `expectedTranscriptPath` keeps its `(discovery, projectPath, id)` signature because `same-cwd-no-cross-binding.test.ts` calls it.
+   It built a `ClaudeHarness` per call until Phase 3 item 7, which was cheap because the harness held no state beyond the discovery it is given.
 5. **Claude layout knowledge still outside the harness, by scope.**
    Two sites spell a Claude value and are untouched.
    The `claudeArgs.unshift('--resume', ...)` in `cli.ts` (for `remi --resume <id>`) cannot use the harness: it runs at module top level, before `const harness` is constructed further down the file, so calling it there would be a temporal dead zone error.
    Comments in `cli.ts` and on `ClaudeHarness.resumeArgs` name each other, so a change to Claude's resume flag touches both.
-   `command: 'claude'` at `pty-session-setup.ts` 203 is left alone, as the issue says; Phase 3 was to add `command` with `createSession` and did not (Phase 3 item 4).
+   `command: 'claude'` in `createPtySessionForSession` (`pty-session-setup.ts`) is left alone, as the issue says; Phase 3 expected to add `command` with `createSession` and did not (Phase 3 item 4); the id arrives with the first consumer that has more than one harness to tell apart.
    The remaining sites read or derive from an existing path, directory or directory entry, rather than building a session's transcript path from `(projectPath, id)`, so `transcriptPath` does not cover them and a second harness will have to:
    - `transcript-binder.ts` 995 asks the discovery for the project directory (the rotation poll), and 1085 builds a candidate path from a directory entry (`path.join(rotationPollDir, name)`).
    - `transcript-binder.ts` 590 and 1074-1075, and `transcript-discovery.ts` 174, recover an id from a filename (`path.basename(resolved, '.jsonl')` or a stripped `.jsonl` suffix).
@@ -127,8 +130,8 @@ It changes no behavior: the same bytes are typed, the same arguments are spawned
 - Pin test, passing on the unmodified source before any change: `packages/daemon/tests/cli/transcript-path-golden.test.ts` (a hand-built literal for `/Users/x/my.proj`, which pins that only `/` is replaced, at all four sites).
   `session-events.test.ts` (`/exit`) and `resume-session-events.test.ts` (`['--resume', id]`) are the other pins; their assertions are unmodified.
 - `session-events-harness.test.ts` and `resume-session-events-harness.test.ts` give the handlers a harness whose exit input or resume arguments differ (and one with no exit input), because the pins above cannot tell a handler that asks the harness from one that still hardcodes Claude's value.
-- `grep -rn 'getProjectTranscriptDir(.*)}/\${' packages/daemon/src` hits only `ClaudeHarness.transcriptPath`.
-- Both handler sites that take a `TranscriptDiscovery` for other reasons are held to the harness by tests, because reverting either to the inline expression compiled and passed every Claude-valued test: `session-events-harness.test.ts` (the listed session's `transcriptPath` from a stand-in harness), `transcript-events-harness.test.ts` (a durable-index transcript that exists only at the stand-in path), and `tests/harness/transcript-path-source.test.ts` (`getProjectTranscriptDir(` may appear only in `transcript-discovery.ts`, `transcript-binder.ts` and `harness/claude.ts`).
+- `grep -rn 'getProjectTranscriptDir(.*)}/\${' packages/daemon/src` hits only `claudeTranscriptPath` in `harness/claude-transcript-path.ts` (at Phase 2 it was `ClaudeHarness.transcriptPath`).
+- Both handler sites that take a `TranscriptDiscovery` for other reasons are held to the harness by tests, because reverting either to the inline expression compiled and passed every Claude-valued test: `session-events-harness.test.ts` (the listed session's `transcriptPath` from a stand-in harness), `transcript-events-harness.test.ts` (a durable-index transcript that exists only at the stand-in path), and `tests/harness/transcript-path-source.test.ts` (`getProjectTranscriptDir(` may appear only in `transcript-discovery.ts`, `transcript-binder.ts` and `harness/claude-transcript-path.ts` (Phase 2 named `harness/claude.ts`; Phase 3 item 7 moved it)).
 
 ## Phase 3 amendment: `HarnessSession` and the launch extraction (#1164)
 
@@ -137,10 +140,10 @@ Nothing a client, a file or a process can see changes, apart from one log line (
 The items below describe the end state.
 
 1. **What moved.**
-   The 207 lines of base `cli.ts` 1554-1760, which start at the comment two lines above `sessionNotifiers.set` and end with the `createPtySessionForSession(...)` call (the `QuestionPresenceTracker`, the `OutputProcessor`, `resolveClaudeBinding` and `bindingStore.preAssign`, the hook bridge, the PTY), are now `createClaudeSession` in `packages/daemon/src/harness/claude-session.ts`, reached through `Harness.createSession(ctx: HarnessLaunchContext): HarnessSession`.
-   In the move commit (`aec82ea5`) 192 of those 207 lines are byte-identical; the other 15 only swap a daemon global for a dependency (`hookServer` for `deps.hookServer()`, `PORT` for `deps.currentPort()`, and so on).
+   The 207 lines of base `cli.ts` at `7b3d1843`, lines 1554-1760, which start at the comment two lines above `sessionNotifiers.set` and end with the `createPtySessionForSession(...)` call (the `QuestionPresenceTracker`, the `OutputProcessor`, `resolveClaudeBinding` and `bindingStore.preAssign`, the hook bridge, the PTY), are now `createClaudeSession` in `packages/daemon/src/harness/claude-session.ts`, reached through `Harness.createSession(ctx: HarnessLaunchContext): HarnessSession`.
+   In the move commit (`aec82ea5`; PR #1171 head history, `refs/pull/1171/head`; not in the squashed epic branch) 192 of those 207 lines are byte-identical; the other 15 only swap a daemon global for a dependency (`hookServer` for `deps.hookServer()`, `PORT` for `deps.currentPort()`, and so on).
    `createNewSession` keeps the neutral shell: the message API, `createSession`, `registerSession`, the `starting` status, `start()` with `markExited` on failure, and the child pid.
-   Statement order inside the moved block is unchanged, and only one of its constraints is observable: `preAssign` before `setupHookBridge`, because `setupHookBridge` reads the binding synchronously (`hook-bridge-setup.ts` 784-800) and arms the transcript binder only when one exists.
+   Statement order inside the moved block is unchanged, and only one of its constraints is observable: `preAssign` before `setupHookBridge`, because `setupHookBridge` reads the binding synchronously (the `preAssignedClaudeId` block of `setupHookBridge`, `hook-bridge-setup.ts`) and arms the transcript binder only when one exists.
    Moving `preAssign` after the bridge fails `launch-characterization.test.ts` (the daemon logs that the fallback poll is not armed and never binds the transcript) and `claude-session.test.ts` (no fallback timer).
    `sessionNotifiers.set` before the tracker and the tracker before the hook bridge are kept for fidelity only: the statements between them are synchronous and the maps are read only inside later callbacks, so reordering either survives every test, and that is expected.
    One order is relaxed on purpose: the daemon-side registration of the tracker and gate (formerly the `sessionTrackers` and `sessionGateHandles` maps, filled mid-launch) is now `createNewSession` storing the returned `HarnessSession` in `harnessSessions` after `createSession` returns and before it registers the PTY.
@@ -158,7 +161,7 @@ The items below describe the end state.
    `ClaudeLaunchDeps` takes `hookServer: () => HookServer | null`, `currentPort: () => number`, `wsPort: () => number` and `prompts: () => ...`, and `tests/harness/claude-session.test.ts` pins both ends: one harness built before the hook server and the websocket port exist launches twice and must see them (a harness that snapshots any of them fails), and `cli.ts` is pinned to pass getters while the PTY callbacks are pinned to call `deps.hookServer()` when they fire.
 4. **`command` is still not on `Harness`.**
    This supersedes Phase 2 items 2 and 5, which both expected it here.
-   It was not added because nothing neutral asks for it: `command: 'claude'` stays at `pty-session-setup.ts` 203, inside `createPtySessionForSession`, which only `createClaudeSession` calls.
+   It was not added because nothing neutral asks for it: `command: 'claude'` stays in `createPtySessionForSession` (`pty-session-setup.ts`), which only `createClaudeSession` calls.
    It arrives with the first caller that spawns a command other than `claude`, which is the Codex epic.
 5. **One map replaces three, and the turn filter moved.**
    `harnessSessions: Map<UUID, HarnessSession>` replaces `sessionGateHandles`, `sessionTrackers` and `binderClosers` in `cli.ts`; every session that launched has an entry.
@@ -197,15 +200,15 @@ The items below describe the end state.
 
 ### Receipts
 
-- Pin test, passing on the unmodified source (`7b3d1843` plus the test only) before any refactor: `packages/daemon/tests/integration/launch-characterization.test.ts`, 5 of 5 runs, and unchanged on the final tree.
+- Pin test, passing on the unmodified source (`7b3d1843` plus the test only) before any refactor: `packages/daemon/tests/integration/launch-characterization.test.ts`, 5 of 5 runs; the final file (Phase 3 and 3b added the unstick cases) passes 5 of 5 on the final tree and 3 of 3 against `7b3d1843`.
   It runs the real `cli.ts --daemon` with a real executable fake `claude` on PATH and reads the argv (`--session-id <uuid> -n remi:<port>`), the child environment and working directory, `sessions.json`, the live-sessions `claudeChildPid`, the hook URL in `settings.local.json`, `hello_ack.claudeSessionId`, the `starting` status in the connect replay, the binder binding the transcript the fake wrote (so `preAssign` ran before the bridge), the daemon exiting when Claude exits (#641) and the hooks being removed on SIGTERM.
-  A third case runs the daemon with no `claude` on PATH and a stand-in login shell, and asserts exit 1, the stored record marked exited, live-sessions unregistered and the hooks removed.
+  A further case runs the daemon with no `claude` on PATH and a stand-in login shell, and asserts exit 1, the stored record marked exited, live-sessions unregistered and the hooks removed.
   Its daemon takes a random port from `reserveRange` and an empty `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN`, so concurrent test processes and a developer shell that exports `=0` cannot change the result.
 - Mutation checks of that test, each reverted: the `-n` display name, `setClaudeChildPid`, `preAssign` (also moved after the bridge), the `REMI_PORT` value, the inline-renderer variable, `markExited` (both paths), the hook install, the hook uninstall, the whole cleanup-and-exit on PTY exit, `hello_ack`'s `claudeSessionId`, the `starting` status, and a `start()` that swallows its error each fail it.
   One survivor: replacing only the `exitProcess(...)` call in the PTY exit handler passes, because `cleanup()` lets the event loop drain and the daemon exits anyway.
 - `git diff -M --stat` cannot show this as a move: `cli.ts` is modified, not renamed, so rename detection has nothing to pair `claude-session.ts` with.
   The evidence is the line comparison in item 1.
-- A runtime import-graph walk (non-type imports under `packages/daemon/src`) finds the cycle in item 7 at `8545a1d0` and none through `harness/claude-session.ts`, `harness/claude.ts`, `harness/index.ts` or the new leaf afterwards.
+- A runtime import-graph walk (non-type imports under `packages/daemon/src`) finds the cycle in item 7 at `8545a1d0` (PR #1171 head history, `refs/pull/1171/head`; not in the squashed epic branch) and none through `harness/claude-session.ts`, `harness/claude.ts`, `harness/index.ts` or the new leaf afterwards.
 - The consolidation is pinned by `claude-session.test.ts` (a real hook server holds a prompt that `decisions.answerHeld` answers; `retireQuestion`, `forceRelease` and `noteTerminalEscape` each reach the gate; two sessions each claim only their own events and `dispose()` releases one; `cli.ts` is read with comments stripped for the store-before-register order, the dispose-before-drop order in `onSessionClosed`, the stop-before-dispose order in `cleanup`, and the `harnessSessions` iteration and count in `forceReleaseAllSessions`), by the SIGUSR2 case in `launch-characterization.test.ts` (the unstick log line for the one session), and by the retargeted wiring pins in `input-events.test.ts`.
   Mutation checks, each reverted, kill every `ClaudeDecisions` delegation (`isHeld` is also asked about an id nothing holds, because a delegation to `hasMainHold` agrees with it on the held card), the gate attach, the screen, the turn-filter registration and release, the binder close in `dispose()`, `admitsAnySession` always true or ignoring the map, each `cli.ts` ordering, and a commented-out `onTurnStop` filter or `isHeld` read.
   `dispose()` removes the turn filter in a `finally`, and a test makes the binder's close throw to pin it; the `disposed` guard is pinned by the sentinel timer in the dispose test.
