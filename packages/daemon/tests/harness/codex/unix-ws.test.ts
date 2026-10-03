@@ -12,7 +12,7 @@ import {
   type WsConnection,
   connectUnixWebSocket,
 } from '../../../src/harness/codex/unix-ws.ts';
-import { WS_OPCODE } from '../../../src/harness/codex/ws-frames.ts';
+import { WS_OPCODE, WsFrameParser } from '../../../src/harness/codex/ws-frames.ts';
 import {
   FakeAppServer,
   RawConnection,
@@ -457,22 +457,38 @@ describe('against a byte-level peer', () => {
     }
   });
 
-  test('after a violation a hostile peer that keeps writing is neither buffered nor logged', async () => {
+  test('after a violation a hostile peer that keeps writing is not parsed, buffered or logged', async () => {
     peer = await restartPeer({ allowHalfOpen: true });
-    const { raw, pending, closes, messages, logs } = await connect({ closeTimeoutMs: 400 });
+    const { raw, pending, closes, messages, logs } = await connect({ closeTimeoutMs: 10_000 });
     await pending;
-    raw.write(RawConnection.frame(WS_OPCODE.text, 'x', true, 0x40));
-    // The garbage would be a violation again, and a log line again, if it were read.
-    const garbage = Buffer.alloc(64 * 1024, 0xff);
-    for (let i = 0; i < 64 && !raw.socket.destroyed; i++) {
-      raw.write(garbage);
-      await new Promise((r) => setTimeout(r, 1));
+    // Count what reaches a parser (delegating to the real one). Garbage read as frames is a
+    // violation and a log line per chunk, and a parser that is fed it keeps every byte, because a
+    // header that throws is never consumed (64 MiB of garbage grew the process by 64 MiB).
+    const pushes: number[] = [];
+    const original = WsFrameParser.prototype.push;
+    WsFrameParser.prototype.push = function (this: WsFrameParser, chunk: Uint8Array) {
+      pushes.push(chunk.length);
+      return original.call(this, chunk);
+    };
+    try {
+      raw.write(RawConnection.frame(WS_OPCODE.text, 'x', true, 0x40));
+      await new Promise((r) => setTimeout(r, 20));
+      const garbage = Buffer.alloc(64 * 1024, 0xff);
+      for (let i = 0; i < 8 && !raw.socket.destroyed; i++) {
+        raw.socket.write(garbage);
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      await new Promise((r) => setTimeout(r, 50));
+    } finally {
+      WsFrameParser.prototype.push = original;
     }
-    await waitFor(() => closes.length === 1, 'onClose');
-    expect(closes[0]).toMatchObject({ code: 1002, clean: false });
+    expect(pushes, 'only the chunk with the violation reached a parser').toHaveLength(1);
     expect(messages).toEqual([]);
     expect(logs.filter((l) => /closing the connection/.test(l))).toHaveLength(1);
     expect(logs.length).toBeLessThanOrEqual(2);
+    raw.destroy();
+    await waitFor(() => closes.length === 1, 'onClose');
+    expect(closes[0]).toMatchObject({ code: 1002, clean: false });
   });
 
   test('a peer that ends or destroys its socket as the client writes is still reported closed', async () => {
