@@ -1867,15 +1867,15 @@ function liveEntryHarness(): { harness?: HarnessId } {
 
 // The older-daemon gate (#1165 D): the live remi processes that would erase a Codex identity.
 // The Codex launch reads it before it writes a record, and the hub before it spawns a Codex child.
-// A hub-spawned child (`REMI_SPAWNED_CHILD`) does not count its parent hub: the hub started it
-// from its own command, so it is the same build, and a version that does not parse (a PR-stamped
-// build) would otherwise make the hub refuse its own child.
+// A record of exactly this build's version is the same build and has the same shim, so it is not
+// an older remi even when the version does not parse (a PR-stamped build's sessions, wrappers and
+// hub would otherwise each count as one, #1204 round 2).
 const legacyWriters = () =>
   findLegacyWriters({
     liveSessions: liveSessionsRegistry,
     statusFiles: () => readStatusFiles(REMI_DIR),
     selfPid: process.pid,
-    excludePids: process.env['REMI_SPAWNED_CHILD'] === '1' ? [process.ppid] : [],
+    ownVersion: REMI_VERSION,
   });
 
 // `remi codex` hosts a Codex session instead (#1177). Its launch reads these services when a

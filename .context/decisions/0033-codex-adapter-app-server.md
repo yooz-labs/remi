@@ -598,6 +598,10 @@ The launch injects `--session-id` for a session with none of its own (`claude-bi
 `-r/--resume <uuid>` and `--model` stay, and `--resume` through a hub is UNVERIFIED: whether a resumed session keeps a permissive permission mode from its earlier life is unknown and is on the LV-4 checklist (item 13 (g)).
 - **H5, the older-daemon gate in a hub-spawned child excludes its parent hub.**
 With `REMI_SPAWNED_CHILD=1` the gate also excludes `process.ppid`: the hub started the child from its own command, so it is the same build, but a version that does not parse (a PR-stamped build, which AGENTS.md recommends for test builds) read as older and the hub refused its own child.
+(Superseded in round 2 of the PR review, P1: any SIBLING of the same PR-stamped build tripped the gate too, so a Claude session created from the phone made the next Codex create fail with a false "an older remi is running", which blocks LV-4.
+The gate now takes `ownVersion` and skips a record whose version string is exactly the daemon's own, since the same build has the same shim; the one assumption is that a version string identifies a build, which fails only for two different builds stamped with the same string.
+H5's pid rule is dropped as redundant: the parent hub is of the same build, so it is covered, and a pid rule would also have skipped a parent hub of a genuinely older version.
+A record with no version, another version that does not parse, or a lower parsable version is still a writer.)
 
 What the review changed, one line each (the commit of each is in the PR):
 
