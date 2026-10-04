@@ -145,7 +145,7 @@ describe('a real session through the Worker', () => {
 
 describe('what the Worker sees', () => {
   const contains = (haystack: Uint8Array, needle: Uint8Array): boolean =>
-    Buffer.from(haystack).includes(needle);
+    Buffer.from(haystack).includes(Buffer.from(needle));
 
   test('only ciphertext: no device name, no payload, no pairing secret reaches the object', async () => {
     const { machine, host, state, offer, ticket } = await openPairing(worker);
