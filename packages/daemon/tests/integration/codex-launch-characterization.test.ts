@@ -29,6 +29,7 @@ import type {
   ProtocolMessage,
   SessionUpdateMessage,
 } from '@remi/shared/protocol.ts';
+import { olderRemiNotice } from '../../src/harness/codex/codex-session.ts';
 import { IDENTITY_SHIM_MIN_VERSION } from '../../src/session/legacy-writers.ts';
 import { type Json, threadStartedFrame, threadStatusFrame } from '../helpers/codex-threads.ts';
 import { FakeAppServer } from '../helpers/fake-app-server.ts';
@@ -294,6 +295,8 @@ describe('remi codex launch (daemon, black-box characterization, #1177)', () => 
     expect(fs.existsSync(path.join(r.home, '.claude', 'settings.json'))).toBe(false);
     expect(fs.existsSync(path.join(r.home, '.remi', 'statusline.sh'))).toBe(false);
     expect(r.output.text).not.toContain('Hook server');
+    // The launch says once what it cannot protect: an older remi writing sessions.json later.
+    expect(r.output.text).toContain(olderRemiNotice());
 
     // hello_ack: a session with no Claude id.
     const { ws, received } = await connectAndHello(r.port);
@@ -327,6 +330,30 @@ describe('remi codex launch (daemon, black-box characterization, #1177)', () => 
         }),
         { broadcast: true },
       );
+      // Threads in this very directory that each break one rule of being the TUI's own: an
+      // ephemeral one, one from another source, one with no environment.
+      const oneRuleBroken: Array<(thread: Json) => void> = [
+        (thread) => {
+          thread['ephemeral'] = true;
+        },
+        (thread) => {
+          thread['threadSource'] = 'thread_title';
+        },
+        (thread) => {
+          thread['environments'] = [];
+        },
+      ];
+      const brokenIds = oneRuleBroken.map(() => crypto.randomUUID());
+      oneRuleBroken.forEach((tweak, i) => {
+        r.server.emit(
+          threadStartedFrame(
+            'tui',
+            { id: brokenIds[i] as string, cwd, createdAtSec: nowSec() },
+            tweak,
+          ),
+          { broadcast: true },
+        );
+      });
       // The TUI's own thread: a user thread in this directory, created just now.
       r.server.emit(threadStartedFrame('tui', { id: tuiId, cwd, createdAtSec: nowSec() }), {
         broadcast: true,
@@ -409,6 +436,7 @@ describe('remi codex launch (daemon, black-box characterization, #1177)', () => 
       expect(r.output.text).not.toContain(tuiId);
       expect(r.output.text).not.toContain(helperId.slice(0, 8));
       expect(r.output.text).not.toContain(strayId.slice(0, 8));
+      for (const id of brokenIds) expect(r.output.text).not.toContain(id.slice(0, 8));
     } finally {
       ws.close();
     }
