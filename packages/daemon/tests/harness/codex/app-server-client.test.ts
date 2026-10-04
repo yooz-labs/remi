@@ -73,6 +73,8 @@ describe('AppServerClient', () => {
         codexHome: '/work/codex-home',
         reconnect: false,
       });
+      // `initialized` is written before `ready` is emitted but reaches the server a moment later.
+      await server.waitFor(() => server.framesFrom(1).length >= 2, 'the initialized notification');
       const [first, second] = server.framesFrom(1);
       expect(first).toEqual({
         jsonrpc: '2.0',

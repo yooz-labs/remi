@@ -225,6 +225,13 @@ describe('against a byte-level peer', () => {
       raw.sendJson({ id: init?.['id'], result: { userAgent: 'real' } });
       await waitFor(() => types(h).includes('ready'), 'ready');
       expect(h.events[0]).toMatchObject({ type: 'ready', userAgent: 'real' });
+      // The client writes `initialized` before it emits `ready`, but the bytes reach the peer's
+      // socket a moment later: wait for the peer to have recorded it (a bounded wait that fails
+      // loudly) before comparing what the peer saw.
+      await waitFor(
+        () => raw.clientMessages().some((m) => m['method'] === 'initialized'),
+        'the initialized notification at the peer',
+      );
       expect(raw.clientMessages().map((m) => m['method'])).toEqual(['initialize', 'initialized']);
     });
 
