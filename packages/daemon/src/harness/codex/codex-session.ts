@@ -218,6 +218,8 @@ const LINK_UNAVAILABLE_MESSAGE =
 /** Said instead when the socket was found but refused: the cause is a fixable permission. */
 const LINK_UNTRUSTED_MESSAGE =
   'remi will not connect to the shared Codex app-server: its control directory is not private (the remi log says which); the session still works in the terminal.';
+/** How long after its start a session with no thread may still be the one a new thread is for. */
+const FIRST_THREAD_WINDOW_MS = 60_000;
 const DEFAULT_LINK_WATCHDOG_MS = 30_000;
 /** A link counts as up, and the watchdog is cancelled, once it has stayed up this long (the client's own `stableMs`). */
 const DEFAULT_LINK_STABLE_MS = 5_000;
@@ -395,14 +397,19 @@ export function createCodexSession(
           )
           .map((s) => s.harnessSessionId as string),
       ),
-    // Another ACTIVE codex session in this directory that has no thread yet may own the next new
-    // thread there; the store's purge (in `list()`) has already dropped the dead.
-    siblingSeekingIdentity: () =>
+    // A new thread in this directory may be another live session's. A first bind is in the way of
+    // a sibling that has no thread yet and is still inside its first-thread window; a rotation
+    // is in the way of any sibling, bound or not, because a `/new` frame cannot be attributed.
+    // The store's purge (in `list()`) has already dropped the dead.
+    siblingInDirectory: (rotating) =>
       deps.sessionStore.list().some((s) => {
         if (isClaudeRecord(s) || s.exitedAt !== null || s.remiSessionId === sessionId) return false;
-        if (s.harnessSessionId !== undefined && s.harnessSessionId !== null) return false;
         const there = resolveCodexWorkingDirectory(s.projectPath);
-        return there.ok && there.directory === cwd.directory;
+        if (!(there.ok && there.directory === cwd.directory)) return false;
+        if (rotating) return true;
+        if (s.harnessSessionId !== undefined && s.harnessSessionId !== null) return false;
+        // Fails closed: a start time that cannot be read counts as a start a moment ago.
+        return !(Date.now() - Date.parse(s.startedAt) >= FIRST_THREAD_WINDOW_MS);
       }),
     notice: sendSystemMessage,
     onIdentity: (threadId) => {

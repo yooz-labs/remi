@@ -70,11 +70,13 @@ export interface ThreadTrackerDeps {
   onIdentity(threadId: string): void;
   onStatus(threadId: string, status: ThreadStatus): void;
   /**
-   * Is another active remi codex session in this directory still waiting for its own
-   * thread id? Then a new thread in the directory may be its, so this tracker neither
-   * binds it nor rotates onto it. Read when a candidate is about to be committed.
+   * Is another live remi codex session in this directory in the way of binding a new thread
+   * here? A `thread/started` carries nothing that says which session it is for, so while one is,
+   * this tracker binds nothing (the candidate is dropped, not kept). `rotating` is false for a
+   * first bind, where only a sibling still looking for its own first thread is in the way, and
+   * true for a rotation, where any sibling is. Read when a candidate is about to be committed.
    */
-  siblingSeekingIdentity?: () => boolean;
+  siblingInDirectory?: (rotating: boolean) => boolean;
   /** Tell the user something as a system message; the tracker sends each kind at most once. */
   notice?: (message: string) => void;
   log: (message: string) => void;
@@ -106,6 +108,13 @@ const AMBIGUITY_WINDOW_MS = 300;
 const NO_IDENTITY_NOTICE_MS = 30_000;
 const MAX_PENDING_LINKS = 512;
 const MAX_DESCENDANTS = 256;
+
+/** What a rotation blocked by another session in the directory tells the user and the log. */
+const ROTATION_BLOCKED =
+  'a new thread appeared; another remi codex session shares this directory; not following it';
+/** What a first bind blocked by a sibling that has no thread yet tells the user. */
+const FIRST_BIND_BLOCKED =
+  'another remi codex session in this directory is starting or has no thread yet; this session did not bind. Restart one of them if this persists.';
 
 /** JSON-RPC "method not found". */
 const METHOD_NOT_FOUND = -32601;
@@ -300,9 +309,9 @@ export class ThreadTracker {
     }
   }
 
-  private isSiblingSeeking(): boolean {
+  private isSiblingInDirectory(rotating: boolean): boolean {
     try {
-      return this.deps.siblingSeekingIdentity?.() ?? false;
+      return this.deps.siblingInDirectory?.(rotating) ?? false;
     } catch (error) {
       this.deps.log(`could not read the sibling sessions (${describeError(error)})`);
       return true;
@@ -355,14 +364,17 @@ export class ThreadTracker {
       this.deps.log(`thread ${short(id)} is held by another session; not binding`);
       return;
     }
-    if (this.isSiblingSeeking()) {
-      this.deps.log(
-        'another remi codex session in this directory has no thread yet; not binding a new thread',
-      );
-      this.tell(
-        'sibling',
-        'another remi codex session in this directory is starting; identity not bound',
-      );
+    const rotating = this.current !== null;
+    if (this.isSiblingInDirectory(rotating)) {
+      if (rotating) {
+        this.deps.log(ROTATION_BLOCKED);
+        this.tell('sibling-rotation', ROTATION_BLOCKED);
+      } else {
+        this.deps.log(
+          'another remi codex session in this directory is starting or has no thread yet; not binding',
+        );
+        this.tell('sibling-first', FIRST_BIND_BLOCKED);
+      }
       return;
     }
     try {

@@ -821,6 +821,10 @@ describe('CodexHarness', () => {
     const startFrame = (id: string, dir = workDir) =>
       threadStartedFrame('tui', { id, cwd: dir, createdAtSec: nowSec() });
     const holder = (sessionId: UUID) => bindingStore.getIdentity(sessionId)?.harnessSessionId;
+    const FIRST_BIND_NOTICE =
+      'another remi codex session in this directory is starting or has no thread yet; this session did not bind. Restart one of them if this persists.';
+    const ROTATION_NOTICE =
+      'a new thread appeared; another remi codex session shares this directory; not following it';
 
     /** A is bound to T1 and idle; B has just started in the same directory with no thread. */
     async function boundAndFresh(windows: { a: number; b: number }) {
@@ -880,10 +884,102 @@ describe('CodexHarness', () => {
         expect(holder(b.sessionId)).toBeNull();
         for (const s of [a, b]) {
           const notices = s.messages.filter((m) => m.sender === 'system');
-          expect(notices.map((m) => m.content)).toEqual([
-            'another remi codex session in this directory is starting; identity not bound',
-          ]);
+          expect(notices.map((m) => m.content)).toEqual([FIRST_BIND_NOTICE]);
         }
+      },
+    );
+
+    slow(
+      '/new in one of two bound idle sessions in a directory is followed by neither: the thread cannot be attributed (R1, E1)',
+      async () => {
+        const { server, a, b, t1 } = await boundAndFresh({ a: 150, b: 150 });
+        const t2 = crypto.randomUUID();
+        server.emit(startFrame(t2), { broadcast: true });
+        await until(() => holder(b.sessionId) === t2, 'B to bind T2', 8000);
+        server.emit(threadStatusFrame(t2, { type: 'idle' }), { broadcast: true });
+        await sleep(200);
+        const before = JSON.stringify(sessionStore.list());
+
+        // The user types /new in B: Codex announces the new thread to every connection.
+        // (A already declined T2 above, when B's first thread appeared, and told its user once.)
+        logs.length = 0;
+        const t3 = crypto.randomUUID();
+        server.emit(startFrame(t3), { broadcast: true });
+        await sleep(1200);
+        expect(holder(a.sessionId)).toBe(t1);
+        expect(holder(b.sessionId)).toBe(t2);
+        // The store, which is what every consumer reads, is untouched.
+        expect(JSON.stringify(sessionStore.list())).toBe(before);
+        expect(logs.some((l) => l.includes('rotated from'))).toBe(false);
+        // One log line from each session, and one notice each over the whole run.
+        expect(logs.filter((l) => l.includes(ROTATION_NOTICE))).toHaveLength(2);
+        for (const s of [a, b]) {
+          expect(
+            s.messages.filter((m) => m.sender === 'system').map((m) => m.content),
+            'one notice each',
+          ).toEqual([ROTATION_NOTICE]);
+        }
+      },
+    );
+
+    slow(
+      'a sibling that has no thread and started long ago no longer blocks a first bind (R2, E2)',
+      async () => {
+        const server = startServer();
+        // Alive, in this directory, with no thread, but started two minutes ago: its first-thread
+        // window is long over, so it is not who the new thread is for.
+        sessionStore.save(
+          record({
+            harnessSessionId: null,
+            startedAt: new Date(Date.now() - 120_000).toISOString(),
+          }),
+        );
+        const a = create(buildDeps(server, { tracker: { ambiguityMs: 100 } }));
+        await a.session.start();
+        await handshakes(server, 1);
+        const t1 = crypto.randomUUID();
+        server.emit(startFrame(t1), { broadcast: true });
+        await until(
+          () => holder(a.sessionId) === t1,
+          'A to bind T1 despite the old unbound sibling',
+        );
+        expect(a.messages.filter((m) => m.sender === 'system')).toEqual([]);
+      },
+    );
+
+    slow(
+      'a sibling that has no thread and started a moment ago does block it, and the notice says what to do (R2, E2)',
+      async () => {
+        const server = startServer();
+        sessionStore.save(
+          record({
+            harnessSessionId: null,
+            startedAt: new Date(Date.now() - 50_000).toISOString(),
+          }),
+        );
+        const a = create(buildDeps(server, { tracker: { ambiguityMs: 100 } }));
+        await a.session.start();
+        await handshakes(server, 1);
+        server.emit(startFrame(crypto.randomUUID()), { broadcast: true });
+        await sleep(900);
+        expect(holder(a.sessionId)).toBeNull();
+        expect(a.messages.filter((m) => m.sender === 'system').map((m) => m.content)).toEqual([
+          FIRST_BIND_NOTICE,
+        ]);
+      },
+    );
+
+    slow(
+      'a sibling whose start time cannot be read counts as young: it fails closed (R2)',
+      async () => {
+        const server = startServer();
+        sessionStore.save(record({ harnessSessionId: null, startedAt: 'not a time' }));
+        const a = create(buildDeps(server, { tracker: { ambiguityMs: 100 } }));
+        await a.session.start();
+        await handshakes(server, 1);
+        server.emit(startFrame(crypto.randomUUID()), { broadcast: true });
+        await sleep(900);
+        expect(holder(a.sessionId)).toBeNull();
       },
     );
 

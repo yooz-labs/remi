@@ -45,6 +45,8 @@ interface Ctx {
   logs: string[];
   /** What the tracker asked to tell the user (system messages). */
   notices: string[];
+  /** The `rotating` argument of each sibling question the tracker asked. */
+  siblingAsked: boolean[];
   claimed: Set<string>;
   /** The frames the tracker's client sent for `thread/resume`, across connections. */
   resumeFrames(): Json[];
@@ -66,8 +68,8 @@ interface Options {
   /** `onIdentity` throws this instead (a thread the store says another session holds). */
   identityError?: Error;
   claimedThrows?: boolean;
-  /** Another remi codex session in this directory is still waiting for its thread. */
-  siblingSeeking?: () => boolean;
+  /** Answers "is another remi codex session in this directory in the way?", for a rotation or a first bind. */
+  siblingInDirectory?: (rotating: boolean) => boolean;
   /** How long after ready a session with no thread waits before saying so. */
   noIdentityMs?: number;
   /** The ambiguity window; 'default' leaves it to the tracker's own (300 ms). */
@@ -92,6 +94,7 @@ async function setup(opts: Options = {}): Promise<Ctx> {
   const statuses: Ctx['statuses'] = [];
   const logs: string[] = [];
   const notices: string[] = [];
+  const siblingAsked: boolean[] = [];
   const claimed = new Set<string>();
   let ready!: () => void;
   const isReady = new Promise<void>((resolve) => {
@@ -131,7 +134,10 @@ async function setup(opts: Options = {}): Promise<Ctx> {
       identities.push(id);
       identityAt.push(Date.now());
     },
-    siblingSeekingIdentity: opts.siblingSeeking ?? (() => false),
+    siblingInDirectory: (rotating) => {
+      siblingAsked.push(rotating);
+      return (opts.siblingInDirectory ?? (() => false))(rotating);
+    },
     notice: (m) => {
       if (opts.noticeThrows) throw new Error('the message cannot be sent');
       notices.push(m);
@@ -157,6 +163,7 @@ async function setup(opts: Options = {}): Promise<Ctx> {
     statuses,
     logs,
     notices,
+    siblingAsked,
     claimed,
     resumeFrames: () =>
       server.received.filter((r) => r.frame['method'] === 'thread/resume').map((r) => r.frame),
@@ -1022,7 +1029,7 @@ describe('binding re-checks the claims, and a sibling session keeps us from taki
 
   test('when the sibling sessions cannot be read, nothing binds, and it says so (W2)', async () => {
     const ctx = await setup({
-      siblingSeeking: () => {
+      siblingInDirectory: () => {
         throw new Error('the store is unavailable');
       },
     });
@@ -1033,42 +1040,57 @@ describe('binding re-checks the claims, and a sibling session keeps us from taki
     expect(ctx.logs.some((l) => l.includes('could not read the sibling sessions'))).toBe(true);
   });
 
-  test('a sibling session still waiting for its thread blocks a first binding, with one notice', async () => {
-    const ctx = await setup({ siblingSeeking: () => true });
+  const FIRST_NOTICE =
+    'another remi codex session in this directory is starting or has no thread yet; this session did not bind. Restart one of them if this persists.';
+  const ROTATION_NOTICE =
+    'a new thread appeared; another remi codex session shares this directory; not following it';
+
+  test('a sibling session in the way blocks a first binding, drops the thread, and says what to do, once (R1, R2)', async () => {
+    const ctx = await setup({ siblingInDirectory: () => true });
     ctx.started('tui', crypto.randomUUID());
     await settle(500);
     expect(ctx.identities).toEqual([]);
     expect(ctx.resumeFrames()).toEqual([]);
+    expect(ctx.siblingAsked).toEqual([false]);
     expect(ctx.logs.some((l) => l.includes('another remi codex session in this directory'))).toBe(
       true,
     );
-    expect(ctx.notices).toEqual([
-      'another remi codex session in this directory is starting; identity not bound',
-    ]);
+    expect(ctx.notices).toEqual([FIRST_NOTICE]);
 
-    // Once per session, however many threads come.
+    // Once per session, however many threads come; and the dropped thread is not kept: when the
+    // sibling is out of the way a repeat of it is a new candidate, not a retained one.
     ctx.started('tui', crypto.randomUUID());
     await settle(500);
     expect(ctx.notices).toHaveLength(1);
+    expect(ctx.identities).toEqual([]);
   });
 
-  test('a sibling still waiting also blocks a rotation of an idle session', async () => {
-    let seeking = false;
-    const ctx = await setup({ siblingSeeking: () => seeking });
+  test('a sibling in the directory, bound or not, blocks a rotation of an idle session; a first bind is asked about separately (R1)', async () => {
+    let inTheWay = false;
+    const ctx = await setup({ siblingInDirectory: (rotating) => rotating && inTheWay });
     const a = crypto.randomUUID();
     ctx.started('tui', a);
     await waitUntil(ctx, () => ctx.identities.length === 1, 'the identity');
+    expect(ctx.siblingAsked).toEqual([false]);
     ctx.status(a, { type: 'idle' });
     await settle(100);
 
-    seeking = true;
+    inTheWay = true;
     ctx.started('tui', crypto.randomUUID());
     await settle(500);
     expect(ctx.identities).toEqual([a]);
+    expect(ctx.siblingAsked).toEqual([false, true]);
+    expect(ctx.notices).toEqual([ROTATION_NOTICE]);
+    expect(ctx.logs).toContain(ROTATION_NOTICE);
+    expect(ctx.logs.some((l) => l.startsWith('rotated from'))).toBe(false);
+
+    // Once per session, and the dropped thread is gone: the next one is a candidate of its own.
+    ctx.started('tui', crypto.randomUUID());
+    await settle(500);
     expect(ctx.notices).toHaveLength(1);
 
-    // The sibling has its thread now: a later new thread is an ordinary rotation again.
-    seeking = false;
+    // The sibling has gone: a later new thread is an ordinary rotation again.
+    inTheWay = false;
     const c = crypto.randomUUID();
     ctx.started('tui', c);
     await waitUntil(ctx, () => ctx.identities.length === 2, 'the rotation');
