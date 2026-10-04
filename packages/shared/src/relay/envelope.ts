@@ -51,11 +51,11 @@ function encodeControl(t: ControlType, values: readonly (string | Uint8Array)[])
 function decodeControl(frame: unknown, t: ControlType): (string | Bytes)[] {
   if (typeof frame !== 'string') throw new RelayError('TYPE');
   if (frame.length > MAX_CONTROL_TEXT) throw new RelayError('OVERSIZE');
-  let parsed: unknown;
+  let parsed: unknown = null;
   try {
     parsed = JSON.parse(frame);
   } catch {
-    throw new RelayError('MALFORMED');
+    // Not JSON: falls to the shape check below, which refuses it.
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     throw new RelayError('MALFORMED');
@@ -67,10 +67,6 @@ function decodeControl(frame: unknown, t: ControlType): (string | Bytes)[] {
   if (t === 'hello' && o['m'] !== 'pair' && o['m'] !== 'resume') throw new RelayError('MODE');
 
   const spec = FIELDS[t];
-  const keys = Object.keys(o);
-  if (keys.length !== spec.length + 2 || !spec.every(([key]) => key in o)) {
-    throw new RelayError('MALFORMED');
-  }
   const values = spec.map(([key, size]): string | Bytes => {
     const raw = o[key];
     if (typeof raw !== 'string') throw new RelayError('MALFORMED');

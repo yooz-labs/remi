@@ -7,18 +7,7 @@
  * and the clients import so both ends sign and verify the same bytes.
  */
 
-import {
-  type Bytes,
-  b64u,
-  be64,
-  concat,
-  ctEqual,
-  fromB64u,
-  fromUtf8,
-  lps,
-  readBe64,
-  utf8,
-} from './bytes.ts';
+import { type Bytes, b64u, be64, concat, ctEqual, fromB64u, lps, readBe64, utf8 } from './bytes.ts';
 import {
   LABEL,
   MAX_PAIRING_OFFERS,
@@ -76,6 +65,7 @@ export function encodePairingToken(t: PairingToken): string {
   const url = utf8(t.relayUrl);
   if (t.machinePublicKey.length !== 32 || t.secret.length !== 32) throw new RelayError('TOKEN');
   if (t.sealPublicKey && t.sealPublicKey.length !== 65) throw new RelayError('TOKEN');
+  if (!Number.isSafeInteger(t.expiresAtSec) || t.expiresAtSec < 0) throw new RelayError('TOKEN');
   if (url.length < 1 || url.length > 512 || !URL_PATTERN.test(t.relayUrl)) {
     throw new RelayError('TOKEN');
   }
@@ -109,15 +99,11 @@ export async function decodePairingToken(text: string, nowSec: number): Promise<
   const hasSeal = (b[1] ?? 0) === 1;
   const urlStart = 74 + (hasSeal ? 65 : 0);
   const expiresAtSec = readBe64(b, 2);
-  if (expiresAtSec === null || b.length < urlStart + 1 || b.length - urlStart > 512) {
+  if (expiresAtSec === null || b.length - urlStart > 512) {
     throw new RelayError('TOKEN');
   }
-  let relayUrl: string;
-  try {
-    relayUrl = fromUtf8(b.subarray(urlStart));
-  } catch {
-    throw new RelayError('TOKEN');
-  }
+  // Invalid UTF-8 decodes to U+FFFD, which the pattern below refuses.
+  const relayUrl = new TextDecoder().decode(b.subarray(urlStart));
   if (!URL_PATTERN.test(relayUrl)) throw new RelayError('TOKEN');
   if (expiresAtSec <= nowSec) throw new RelayError('EXPIRED');
   if (expiresAtSec > nowSec + PAIRING_TTL_SECONDS + PAIRING_SKEW_SECONDS) {

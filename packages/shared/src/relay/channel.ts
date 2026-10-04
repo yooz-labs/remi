@@ -86,7 +86,6 @@ export class Channel {
 
   /** Queue one message. Resolves once its frame has been emitted. */
   send(plaintext: Uint8Array): Promise<void> {
-    if (this.dead) return Promise.reject(new RelayError('CLOSED'));
     if (plaintext.length === 0) return Promise.reject(new RelayError('MALFORMED'));
     if (plaintext.length > MAX_PLAINTEXT) return Promise.reject(new RelayError('OVERSIZE'));
     if (this.pending >= MAX_PENDING_SENDS) return Promise.reject(new RelayError('QUEUE_FULL'));
@@ -95,17 +94,13 @@ export class Channel {
       return Promise.reject(new RelayError('COUNTER_LIMIT'));
     }
     const counter = this.nextSend++;
+    // The caller may reuse its buffer before the queued encryption runs.
+    const data = plaintext.slice();
     this.pending++;
     const job = this.sendTail.then(async () => {
       try {
-        if (this.dead || this.sendKey === null) throw new RelayError('CLOSED');
-        const ciphertext = await this.seal(
-          this.sendKey,
-          TYPE_DATA,
-          this.direction,
-          counter,
-          plaintext,
-        );
+        if (this.sendKey === null) throw new RelayError('CLOSED');
+        const ciphertext = await this.seal(this.sendKey, TYPE_DATA, this.direction, counter, data);
         await this.io.emit(encodeDataFrame(counter, ciphertext));
       } catch (e) {
         this.fail();
@@ -123,7 +118,8 @@ export class Channel {
 
   /** Verify and open one incoming frame. Frames are processed in arrival order. */
   receive(frame: Uint8Array | string): Promise<Uint8Array> {
-    const job = this.recvTail.then(() => this.openOne(frame));
+    const copy = typeof frame === 'string' ? frame : frame.slice();
+    const job = this.recvTail.then(() => this.openOne(copy));
     this.recvTail = job.then(
       () => undefined,
       () => undefined,
@@ -140,7 +136,7 @@ export class Channel {
 
   private async openOne(frame: Uint8Array | string): Promise<Uint8Array> {
     try {
-      if (this.dead || this.recvKey === null) throw new RelayError('CLOSED');
+      if (this.recvKey === null) throw new RelayError('CLOSED');
       const { counter, ciphertext } = decodeDataFrame(frame);
       if (counter !== this.nextRecv) throw new RelayError('COUNTER');
       const peer = this.direction === DIR_C2H ? DIR_H2C : DIR_C2H;

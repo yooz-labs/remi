@@ -85,6 +85,12 @@ describe('P-256 keys', () => {
     expect(pair.publicKey.length).toBe(65);
   });
 
+  test('an ECDH the engine refuses is MALFORMED and never an all-zero secret', async () => {
+    const notAnEcKey = await aeadKey(seed('not an ec key'));
+    const peer = (await ecGenerate(seededRandom('refused peer'))).publicKey;
+    expect(await codeOf(ecdh(notAnEcKey, peer))).toBe('MALFORMED');
+  });
+
   test('both sides of ECDH agree, and the secret is the 32-byte X coordinate', async () => {
     const a = await ecGenerate(seededRandom('ecdh a'));
     const b = await ecGenerate(seededRandom('ecdh b'));

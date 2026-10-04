@@ -163,6 +163,14 @@ describe('pairing token', () => {
       expect(await codeOf(r.decodePairingToken(wrap(v), NOW_SEC))).toBe('TOKEN');
   });
 
+  test('a token too short to hold its fixed part is TOKEN, not a crash', async () => {
+    for (const len of [0, 1, 5, 9, 10, 74]) {
+      expect(await codeOf(r.decodePairingToken(wrap(new Uint8Array(len).fill(2)), NOW_SEC))).toBe(
+        'TOKEN',
+      );
+    }
+  });
+
   test('an url of 513 bytes, invalid UTF-8, or unlisted characters is TOKEN', async () => {
     const head = unwrap(r.encodePairingToken(token())).slice(0, 74);
     const withUrl = (url: Uint8Array): string => wrap(new Uint8Array([...head, ...url]));
@@ -276,6 +284,26 @@ describe('Worker admission formats', () => {
     const victimRid = await r.ridOf((await r.signerFromSeed(MACHINE)).publicKey);
     const sig = await r.signAdmission(attacker, 'host', victimRid, nonce);
     expect(await r.verifyAdmission('host', attacker.publicKey, victimRid, nonce, sig)).toBe(false);
+  });
+
+  test('a client proof is refused for another room, and for a nonce or room id of the wrong length', async () => {
+    const device = await r.signerFromSeed(seed('admission device two'));
+    const rid = seed('room a').slice(0, 16);
+    const sig = await r.signAdmission(device, 'client', rid, nonce);
+    expect(await r.verifyAdmission('client', device.publicKey, rid, nonce, sig)).toBe(true);
+    expect(
+      await r.verifyAdmission('client', device.publicKey, seed('room b').slice(0, 16), nonce, sig),
+    ).toBe(false);
+    const shortNonce = nonce.slice(0, 31);
+    const shortSig = await r.signAdmission(device, 'client', rid, shortNonce);
+    expect(await r.verifyAdmission('client', device.publicKey, rid, shortNonce, shortSig)).toBe(
+      false,
+    );
+    const shortRid = rid.slice(0, 15);
+    const ridSig = await r.signAdmission(device, 'client', shortRid, nonce);
+    expect(await r.verifyAdmission('client', device.publicKey, shortRid, nonce, ridSig)).toBe(
+      false,
+    );
   });
 
   test('the role is part of what is signed: a client proof is not a host proof and the reverse', async () => {

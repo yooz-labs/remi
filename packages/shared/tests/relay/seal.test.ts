@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { createDecipheriv, createECDH, hkdfSync } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createECDH, hkdfSync } from 'node:crypto';
 import { relayV2 as r } from '../../src/index.ts';
 import { lps } from '../../src/relay/bytes.ts';
 import { codeOf, codeOfSync, hex, seed, seededRandom, text } from './helpers.ts';
@@ -37,6 +37,28 @@ function nodeOpen(
   ]).toString('utf8');
 }
 
+/** Seal with Node's crypto, written independently, with no bound on the plaintext. */
+function nodeSeal(
+  recipientPublic: Uint8Array,
+  aad: Uint8Array,
+  plaintext: Uint8Array,
+  label: string,
+): Uint8Array {
+  const rng = seededRandom(label);
+  const ephemeral = createECDH('prime256v1');
+  ephemeral.setPrivateKey(Buffer.from(seed(`${label} ephemeral`)));
+  const e = ephemeral.getPublicKey();
+  const shared = ephemeral.computeSecret(Buffer.from(recipientPublic));
+  const key = Buffer.from(
+    hkdfSync('sha256', shared, e, Buffer.from(lps('remi-relay-v2 seal', recipientPublic)), 32),
+  );
+  const nonce = Buffer.from(rng(12));
+  const cipher = createCipheriv('aes-256-gcm', key, nonce);
+  cipher.setAAD(Buffer.from(aad));
+  const body = Buffer.concat([cipher.update(Buffer.from(plaintext)), cipher.final()]);
+  return new Uint8Array(Buffer.concat([e, nonce, body, cipher.getAuthTag()]));
+}
+
 describe('push sealing', () => {
   test('a sealed body opens for the recipient and has the documented layout', async () => {
     const { pair } = await recipient();
@@ -62,6 +84,29 @@ describe('push sealing', () => {
     expect(nodeOpen(scalar, pair.publicKey, AAD, sealed)).toBe('independent check');
     // Without the recipient key in the HKDF info the same bytes do not open: the term is real.
     expect(() => nodeOpen(scalar, pair.publicKey, AAD, sealed, false)).toThrow();
+  });
+
+  test('a value sealed by an independent implementation opens, and its length bounds are enforced', async () => {
+    const { pair } = await recipient();
+    const ok = nodeSeal(pair.publicKey, AAD, text('sealed elsewhere'), 'seal node ok');
+    expect(hex(await r.openSeal(pair, AAD, ok))).toBe(hex(text('sealed elsewhere')));
+    // Valid ciphertexts that the format forbids: an empty body and a body over the limit.
+    const empty = nodeSeal(pair.publicKey, AAD, new Uint8Array(0), 'seal node empty');
+    const big = nodeSeal(
+      pair.publicKey,
+      AAD,
+      new Uint8Array(r.MAX_PUSH_PLAINTEXT + 1).fill(1),
+      'seal node big',
+    );
+    const edge = nodeSeal(
+      pair.publicKey,
+      AAD,
+      new Uint8Array(r.MAX_PUSH_PLAINTEXT).fill(1),
+      'seal node edge',
+    );
+    expect(await codeOf(r.openSeal(pair, AAD, empty))).toBe('DECRYPT');
+    expect(await codeOf(r.openSeal(pair, AAD, big))).toBe('DECRYPT');
+    expect((await r.openSeal(pair, AAD, edge)).length).toBe(r.MAX_PUSH_PLAINTEXT);
   });
 
   test('the ephemeral key and the nonce come from the injected source, in that order', async () => {

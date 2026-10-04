@@ -61,6 +61,18 @@ describe('data channel', () => {
     expect(hex(await client.receive(toClient as Uint8Array))).toBe(hex(text('to client')));
   });
 
+  test('a caller that reuses its buffer after send cannot change what is sent or received', async () => {
+    const { client, host, clientIo } = await pair();
+    const buffer = text('original message');
+    const sent = client.send(buffer);
+    buffer.fill(0x58);
+    await sent;
+    const frame = (clientIo.frames[0] as Uint8Array).slice();
+    const opening = host.receive(frame);
+    frame.fill(0);
+    expect(hex(await opening)).toBe(hex(text('original message')));
+  });
+
   test('counters start at 1 and rise by one per frame, per direction', async () => {
     const { client, host, clientIo, hostIo } = await pair();
     await sendMany(client, clientIo, 3);
