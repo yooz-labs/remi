@@ -26,6 +26,7 @@ export type RelayErrorCode =
   | 'TOKEN'
   | 'QUEUE_FULL'
   | 'CLOSED'
+  | 'ENDED'
   | 'IO';
 
 /** The one close every failure uses. */

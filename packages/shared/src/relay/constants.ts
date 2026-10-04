@@ -18,12 +18,16 @@ export type Direction = typeof DIR_C2H | typeof DIR_H2C;
 export const TYPE_AUTH = 1;
 export const TYPE_READY = 2;
 export const TYPE_DATA = 3;
+/** The authenticated end of a stream: a counter-checked frame with no plaintext. */
+export const TYPE_BYE = 4;
 
 export const MAX_COUNTER = 2 ** 40;
 export const MAX_PLAINTEXT = 524288;
 /** Type byte, counter, tag. */
 export const FRAME_OVERHEAD = 1 + 8 + 16;
 export const MIN_FRAME = FRAME_OVERHEAD + 1;
+/** A BYE is exactly the header and the tag. */
+export const BYE_FRAME = FRAME_OVERHEAD;
 export const MAX_FRAME = FRAME_OVERHEAD + MAX_PLAINTEXT;
 export const MAX_CONTROL_TEXT = 512;
 export const MAX_DEVICE_NAME = 64;

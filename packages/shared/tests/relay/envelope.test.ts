@@ -210,6 +210,39 @@ describe('data frames', () => {
     expect(hex(d.ciphertext)).toBe(hex(ct));
   });
 
+  test('a BYE frame is the type byte 4, a counter and a bare tag: exactly 25 bytes', () => {
+    const tag = new Uint8Array(16).fill(6);
+    const frame = encodeDataFrame(7, tag, r.TYPE_BYE);
+    expect(hex(frame.slice(0, 9))).toBe('040000000000000007');
+    expect(frame.length).toBe(r.BYE_FRAME);
+    const d = decodeDataFrame(frame);
+    expect([d.type, d.counter, hex(d.ciphertext)]).toEqual([r.TYPE_BYE, 7, hex(tag)]);
+    expect(decodeDataFrame(encodeDataFrame(7, ct)).type).toBe(r.TYPE_DATA);
+  });
+
+  test('a BYE of any other length is MALFORMED, and a 25-byte data frame is too', () => {
+    const bye = (len: number): Uint8Array => {
+      const f = new Uint8Array(len);
+      f[0] = r.TYPE_BYE;
+      f[8] = 1;
+      return f;
+    };
+    expect(codeOfSync(() => decodeDataFrame(bye(24)))).toBe('MALFORMED');
+    expect(codeOfSync(() => decodeDataFrame(bye(26)))).toBe('MALFORMED');
+    expect(codeOfSync(() => decodeDataFrame(bye(r.MAX_FRAME)))).toBe('MALFORMED');
+    const data25 = bye(25);
+    data25[0] = r.TYPE_DATA;
+    expect(codeOfSync(() => decodeDataFrame(data25))).toBe('MALFORMED');
+  });
+
+  test('a counter above the maximum is refused on a BYE as on data', () => {
+    expect(
+      codeOfSync(() =>
+        decodeDataFrame(encodeDataFrame(r.MAX_COUNTER + 1, new Uint8Array(16), r.TYPE_BYE)),
+      ),
+    ).toBe('COUNTER_LIMIT');
+  });
+
   test('a text frame is TYPE: there is no plaintext after the handshake', () => {
     expect(codeOfSync(() => decodeDataFrame(r.encodeHello('pair', E, N)))).toBe('TYPE');
     expect(codeOfSync(() => decodeDataFrame('hello'))).toBe('TYPE');
@@ -231,7 +264,7 @@ describe('data frames', () => {
   });
 
   test('any first byte other than the data type is TYPE, including the handshake types', () => {
-    for (const type of [0, r.TYPE_AUTH, r.TYPE_READY, 4, 255]) {
+    for (const type of [0, r.TYPE_AUTH, r.TYPE_READY, 5, 255]) {
       const frame = encodeDataFrame(1, ct);
       frame[0] = type;
       expect(codeOfSync(() => decodeDataFrame(frame))).toBe('TYPE');

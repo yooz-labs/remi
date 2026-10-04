@@ -20,7 +20,7 @@ import {
 } from '../../src/relay/primitives.ts';
 import { NOW } from './flow.ts';
 import { VECTORS_PATH, generateVectors, render } from './generate-vectors.ts';
-import { detFrom, hex, unhex } from './helpers.ts';
+import { data, detFrom, hex, unhex } from './helpers.ts';
 import { recorder } from './recorder.ts';
 
 // biome-ignore lint/suspicious/noExplicitAny: the file is plain JSON read by shape
@@ -183,8 +183,12 @@ for (const name of ['pair', 'resume'] as const) {
       for (const f of s.data.c2h) {
         await client.send(unhex(f.plaintext));
         expect(hex(clientIo.frames[f.counter - 1] as Uint8Array)).toBe(f.frame);
-        expect(hex(await host.receive(unhex(f.frame)))).toBe(f.plaintext);
+        expect(hex(data(await host.receive(unhex(f.frame))))).toBe(f.plaintext);
       }
+      await client.bye();
+      expect(hex(clientIo.frames[10] as Uint8Array)).toBe(s.bye.c2h.frame);
+      expect(await host.receive(unhex(s.bye.c2h.frame))).toBeNull();
+      expect(host.transportClosed()).toBe('clean');
     });
 
     test('the handshake frames are sealed exactly as documented', async () => {
@@ -227,8 +231,15 @@ for (const name of ['pair', 'resume'] as const) {
         for (const f of frames) {
           expect(f.nonce).toBe(hex(frameNonce(f.counter)));
           expect(f.aad).toBe(hex(frameAad(r.TYPE_DATA, dir, f.counter)));
-          expect(hex(await receiver.receive(unhex(f.frame)))).toBe(f.plaintext);
+          expect(hex(data(await receiver.receive(unhex(f.frame))))).toBe(f.plaintext);
         }
+        const bye = dir === r.DIR_C2H ? s.bye.c2h : s.bye.h2c;
+        expect(bye.counter).toBe(11);
+        expect(bye.nonce).toBe(hex(frameNonce(11)));
+        expect(bye.aad).toBe(hex(frameAad(r.TYPE_BYE, dir, 11)));
+        expect(unhex(bye.frame).length).toBe(r.BYE_FRAME);
+        expect(await receiver.receive(unhex(bye.frame))).toBeNull();
+        expect(receiver.peerEnded).toBe(true);
       }
     });
   });
@@ -346,7 +357,7 @@ async function runNegative(n: J): Promise<Outcome> {
     case 'frame_length':
       return run(async () => {
         const frame = new Uint8Array(n.length);
-        frame[0] = r.TYPE_DATA;
+        frame[0] = n.type;
         frame[8] = 1;
         return r.decodeDataFrame(frame);
       });

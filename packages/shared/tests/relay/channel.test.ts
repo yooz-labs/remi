@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { encodeDataFrame } from '../../src/relay/envelope.ts';
 import * as r from '../../src/relay/internal.ts';
 import { type SealFn, aeadKey, aeadSeal } from '../../src/relay/primitives.ts';
-import { codeOf, hex, seed, seededRandom, text } from './helpers.ts';
+import { codeOf, data, hex, seed, seededRandom, text } from './helpers.ts';
 import { type Recorder, recorder } from './recorder.ts';
 
 const K_C2H = seed('channel key c2h');
@@ -57,8 +57,8 @@ describe('data channel', () => {
     expect(toHost?.[0]).toBe(r.TYPE_DATA);
     expect(counterOf(toHost as Uint8Array)).toBe(1);
     expect((toHost as Uint8Array).length).toBe(9 + 'to host'.length + 16);
-    expect(hex(await host.receive(toHost as Uint8Array))).toBe(hex(text('to host')));
-    expect(hex(await client.receive(toClient as Uint8Array))).toBe(hex(text('to client')));
+    expect(hex(data(await host.receive(toHost as Uint8Array)))).toBe(hex(text('to host')));
+    expect(hex(data(await client.receive(toClient as Uint8Array)))).toBe(hex(text('to client')));
   });
 
   test('a caller that reuses its buffer after send cannot change what is sent or received', async () => {
@@ -70,7 +70,7 @@ describe('data channel', () => {
     const frame = (clientIo.frames[0] as Uint8Array).slice();
     const opening = host.receive(frame);
     frame.fill(0);
-    expect(hex(await opening)).toBe(hex(text('original message')));
+    expect(hex(data(await opening))).toBe(hex(text('original message')));
   });
 
   test('counters start at 1 and rise by one per frame, per direction', async () => {
@@ -265,7 +265,7 @@ describe('counter and size limits', () => {
     });
     await client.send(text('last'));
     expect(counterOf(clientIo.frames[0] as Uint8Array)).toBe(r.MAX_COUNTER);
-    expect(hex(await host.receive(clientIo.frames[0] as Uint8Array))).toBe(hex(text('last')));
+    expect(hex(data(await host.receive(clientIo.frames[0] as Uint8Array)))).toBe(hex(text('last')));
     expect(await codeOf(client.send(text('one too many')))).toBe('COUNTER_LIMIT');
     expect(clientIo.closes).toEqual([FAILURE]);
     expect(clientIo.frames.length).toBe(1);
@@ -275,7 +275,9 @@ describe('counter and size limits', () => {
     const { host } = await pair({ host: { nextRecv: r.MAX_COUNTER } });
     const key = await aeadKey(K_C2H);
     const last = await aeadSeal(key, r.TYPE_DATA, r.DIR_C2H, r.MAX_COUNTER, text('last'));
-    expect(hex(await host.receive(encodeDataFrame(r.MAX_COUNTER, last)))).toBe(hex(text('last')));
+    expect(hex(data(await host.receive(encodeDataFrame(r.MAX_COUNTER, last))))).toBe(
+      hex(text('last')),
+    );
     const beyond = await aeadSeal(key, r.TYPE_DATA, r.DIR_C2H, r.MAX_COUNTER + 1, text('beyond'));
     expect(await codeOf(host.receive(encodeDataFrame(r.MAX_COUNTER + 1, beyond)))).toBe(
       'COUNTER_LIMIT',
@@ -292,7 +294,7 @@ describe('counter and size limits', () => {
     expect(clientIo.frames.length).toBe(1);
     expect((clientIo.frames[0] as Uint8Array).length).toBe(r.MAX_FRAME);
     expect(counterOf(clientIo.frames[0] as Uint8Array)).toBe(1);
-    expect((await host.receive(clientIo.frames[0] as Uint8Array)).length).toBe(r.MAX_PLAINTEXT);
+    expect(data(await host.receive(clientIo.frames[0] as Uint8Array)).length).toBe(r.MAX_PLAINTEXT);
   });
 
   test('an empty message is refused without consuming a counter', async () => {
@@ -312,27 +314,27 @@ describe('counter and size limits', () => {
   });
 });
 
-describe('ordered sending', () => {
-  /** A seal that really encrypts but holds frame 1 until released. */
-  function gated(): { seal: SealFn; release: () => void; started: number[] } {
-    let release: () => void = () => undefined;
-    const gate = new Promise<void>((res) => {
-      release = res;
-    });
-    const started: number[] = [];
-    return {
-      release,
-      started,
-      seal: async (key, type, dir, counter, plaintext) => {
-        started.push(counter);
-        if (counter === 1) await gate;
-        return aeadSeal(key, type, dir, counter, plaintext);
-      },
-    };
-  }
+/** A seal that really encrypts but holds frame 1 until released. */
+function gatedSeal(): { seal: SealFn; release: () => void; started: number[] } {
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((res) => {
+    release = res;
+  });
+  const started: number[] = [];
+  return {
+    release,
+    started,
+    seal: async (key, type, dir, counter, plaintext) => {
+      started.push(counter);
+      if (counter === 1) await gate;
+      return aeadSeal(key, type, dir, counter, plaintext);
+    },
+  };
+}
 
+describe('ordered sending', () => {
   test('a slow encryption of frame 1 cannot let frame 2 leave first', async () => {
-    const g = gated();
+    const g = gatedSeal();
     const { client, clientIo } = await pair({ client: { seal: g.seal } });
     const first = client.send(text('first, slow'));
     const second = client.send(text('second, fast'));
@@ -351,12 +353,14 @@ describe('ordered sending', () => {
     await Promise.all(Array.from({ length: 20 }, (_, i) => client.send(text(`m${i}`))));
     expect(clientIo.frames.map(counterOf)).toEqual(Array.from({ length: 20 }, (_, i) => i + 1));
     for (let i = 0; i < 20; i++) {
-      expect(hex(await host.receive(clientIo.frames[i] as Uint8Array))).toBe(hex(text(`m${i}`)));
+      expect(hex(data(await host.receive(clientIo.frames[i] as Uint8Array)))).toBe(
+        hex(text(`m${i}`)),
+      );
     }
   });
 
   test('a full queue refuses the next message without consuming a counter', async () => {
-    const g = gated();
+    const g = gatedSeal();
     const { client, clientIo } = await pair({ client: { seal: g.seal } });
     const pending = Array.from({ length: r.MAX_PENDING_SENDS }, (_, i) =>
       client.send(text(`m${i}`)),
@@ -444,16 +448,247 @@ describe('closing', () => {
   });
 });
 
-describe('limits of the channel, stated by tests so they cannot be forgotten', () => {
-  test('a dropped tail is NOT detected: the receiver sees a clean stream that simply ends', async () => {
-    // Frames 1 and 2 arrive, frame 3 is dropped, then the socket closes. Nothing here
-    // can tell that from a sender that had nothing more to say. ADR 0034 section 15.2.
+describe('authenticated end of stream (BYE)', () => {
+  const typeOf = (frame: Uint8Array): number => frame[0] as number;
+
+  test('bye is the next counter, type 4, an empty plaintext: 25 bytes, after the data it follows', async () => {
+    const { client, clientIo } = await pair();
+    await client.send(text('one'));
+    await client.send(text('two'));
+    await client.bye();
+    expect(clientIo.frames.map(counterOf)).toEqual([1, 2, 3]);
+    expect(clientIo.frames.map(typeOf)).toEqual([r.TYPE_DATA, r.TYPE_DATA, r.TYPE_BYE]);
+    expect((clientIo.frames[2] as Uint8Array).length).toBe(r.BYE_FRAME);
+    expect(r.BYE_FRAME).toBe(25);
+  });
+
+  test('the receiver gets the marker, not data, and the transport close that follows is clean', async () => {
+    const { client, host, clientIo } = await pair();
+    await client.send(text('last words'));
+    await client.bye();
+    expect(hex(data(await host.receive(clientIo.frames[0] as Uint8Array)))).toBe(
+      hex(text('last words')),
+    );
+    expect(host.peerEnded).toBe(false);
+    expect(await host.receive(clientIo.frames[1] as Uint8Array)).toBeNull();
+    expect(host.peerEnded).toBe(true);
+    expect(host.closed).toBe(false);
+    expect(host.transportClosed()).toBe('clean');
+  });
+
+  test('a close with no BYE is unclean: the tail may be truncated', async () => {
+    const { client, host, clientIo } = await pair();
+    await sendMany(client, clientIo, 2);
+    await host.receive(clientIo.frames[0] as Uint8Array);
+    expect(host.transportClosed()).toBe('unclean');
+    expect(host.closed).toBe(true);
+  });
+
+  test('a tail dropped together with its BYE is an unclean close, never a clean one', async () => {
+    const { client, host, clientIo } = await pair();
+    await client.send(text('1'));
+    await client.send(text('2'));
+    await client.send(text('3'));
+    await client.bye();
+    await host.receive(clientIo.frames[0] as Uint8Array); // frames 2, 3 and the BYE are dropped
+    expect(host.transportClosed()).toBe('unclean');
+  });
+
+  test('a dropped frame before a delivered BYE is a counter gap, caught as before', async () => {
+    const { client, host, clientIo } = await pair();
+    await client.send(text('1'));
+    await client.send(text('2'));
+    await client.bye();
+    await host.receive(clientIo.frames[0] as Uint8Array);
+    expect(await codeOf(host.receive(clientIo.frames[2] as Uint8Array))).toBe('COUNTER');
+    expect(host.transportClosed()).toBe('failed');
+  });
+
+  test('after bye the sender sends nothing: send and a second bye are ENDED, and the channel still reads', async () => {
     const { client, host, clientIo, hostIo } = await pair();
-    await sendMany(client, clientIo, 3);
+    await client.bye();
+    expect(await codeOf(client.send(text('late')))).toBe('ENDED');
+    expect(await codeOf(client.bye())).toBe('ENDED');
+    expect(clientIo.frames.length).toBe(1);
+    expect(client.closed).toBe(false);
+    expect(clientIo.closes).toEqual([]);
+    await host.send(text('reply after the peer said bye'));
+    expect(hex(data(await client.receive(hostIo.frames[0] as Uint8Array)))).toBe(
+      hex(text('reply after the peer said bye')),
+    );
+  });
+
+  test('sends queued before bye leave before it, in order', async () => {
+    const { client, clientIo } = await pair();
+    const sends = [client.send(text('a')), client.send(text('b')), client.bye()];
+    await Promise.all(sends);
+    expect(clientIo.frames.map((f) => [typeOf(f), counterOf(f)])).toEqual([
+      [r.TYPE_DATA, 1],
+      [r.TYPE_DATA, 2],
+      [r.TYPE_BYE, 3],
+    ]);
+  });
+
+  test("a frame after the peer's BYE is refused, a data frame or a second BYE alike", async () => {
+    for (const second of ['data', 'bye'] as const) {
+      const { client, host, clientIo, hostIo } = await pair();
+      await client.bye();
+      expect(await host.receive(clientIo.frames[0] as Uint8Array)).toBeNull();
+      const key = await aeadKey(K_C2H);
+      const frame =
+        second === 'data'
+          ? encodeDataFrame(2, await aeadSeal(key, r.TYPE_DATA, r.DIR_C2H, 2, text('after bye')))
+          : encodeDataFrame(
+              2,
+              await aeadSeal(key, r.TYPE_BYE, r.DIR_C2H, 2, new Uint8Array(0)),
+              r.TYPE_BYE,
+            );
+      expect([second, await codeOf(host.receive(frame))]).toEqual([second, 'ENDED']);
+      expect(hostIo.closes).toEqual([FAILURE]);
+    }
+  });
+
+  test('a replayed BYE is a counter failure, not a second end', async () => {
+    const { client, host, clientIo } = await pair();
+    await client.bye();
+    await host.receive(clientIo.frames[0] as Uint8Array);
+    expect(await codeOf(host.receive(clientIo.frames[0] as Uint8Array))).toBe('ENDED');
+    const second = await pair();
+    await second.client.send(text('x'));
+    await second.client.bye();
+    await second.host.receive(second.clientIo.frames[0] as Uint8Array);
+    // The replay arrives before the BYE it copies has been consumed: a repeated counter.
+    expect(await codeOf(second.host.receive(second.clientIo.frames[0] as Uint8Array))).toBe(
+      'COUNTER',
+    );
+  });
+
+  test('a BYE cannot be forged: another key, another direction and a data frame dressed as BYE all fail', async () => {
+    const wrongKey = await aeadKey(seed('forger key'));
+    const rightKey = await aeadKey(K_C2H);
+    const empty = new Uint8Array(0);
+    const forged: [string, Uint8Array][] = [
+      [
+        'another key',
+        encodeDataFrame(1, await aeadSeal(wrongKey, r.TYPE_BYE, r.DIR_C2H, 1, empty), r.TYPE_BYE),
+      ],
+      [
+        'the other direction',
+        encodeDataFrame(1, await aeadSeal(rightKey, r.TYPE_BYE, r.DIR_H2C, 1, empty), r.TYPE_BYE),
+      ],
+      [
+        'sealed as data',
+        encodeDataFrame(1, await aeadSeal(rightKey, r.TYPE_DATA, r.DIR_C2H, 1, empty), r.TYPE_BYE),
+      ],
+      [
+        'counter 0',
+        encodeDataFrame(0, await aeadSeal(rightKey, r.TYPE_BYE, r.DIR_C2H, 0, empty), r.TYPE_BYE),
+      ],
+    ];
+    for (const [name, frame] of forged) {
+      const { host, hostIo } = await pair();
+      const code = await codeOf(host.receive(frame));
+      expect([name, code]).toEqual([name, name === 'counter 0' ? 'COUNTER' : 'DECRYPT']);
+      expect(host.peerEnded).toBe(false);
+      expect(hostIo.closes).toEqual([FAILURE]);
+    }
+  });
+
+  test('a data frame sealed as BYE (type byte 3, BYE header) does not open as data either', async () => {
+    const { host } = await pair();
+    const key = await aeadKey(K_C2H);
+    const frame = encodeDataFrame(1, await aeadSeal(key, r.TYPE_BYE, r.DIR_C2H, 1, text('x')));
+    expect(await codeOf(host.receive(frame))).toBe('DECRYPT');
+  });
+
+  test('a BYE that carries a payload or is cut short is refused by length', async () => {
+    const key = await aeadKey(K_C2H);
+    const withPayload = encodeDataFrame(
+      1,
+      await aeadSeal(key, r.TYPE_BYE, r.DIR_C2H, 1, text('x')),
+      r.TYPE_BYE,
+    );
+    expect(withPayload.length).toBe(26);
+    expect(await codeOf((await pair()).host.receive(withPayload))).toBe('MALFORMED');
+    const real = encodeDataFrame(
+      1,
+      await aeadSeal(key, r.TYPE_BYE, r.DIR_C2H, 1, new Uint8Array(0)),
+      r.TYPE_BYE,
+    );
+    expect(await codeOf((await pair()).host.receive(real.slice(0, 24)))).toBe('MALFORMED');
+    expect(await (await pair()).host.receive(real)).toBeNull();
+  });
+
+  test('both directions end independently, each clean on its own BYE', async () => {
+    const { client, host, clientIo, hostIo } = await pair();
+    await client.bye();
+    await host.bye();
+    expect(await host.receive(clientIo.frames[0] as Uint8Array)).toBeNull();
+    expect(await client.receive(hostIo.frames[0] as Uint8Array)).toBeNull();
+    expect(host.transportClosed()).toBe('clean');
+    expect(client.transportClosed()).toBe('clean');
+  });
+
+  test('bye takes a counter, so it respects the counter limit and the queue limit', async () => {
+    const a = await pair({ client: { nextSend: r.MAX_COUNTER } });
+    await a.client.bye();
+    expect(counterOf(a.clientIo.frames[0] as Uint8Array)).toBe(r.MAX_COUNTER);
+    const b = await pair({ client: { nextSend: r.MAX_COUNTER + 1 } });
+    expect(await codeOf(b.client.bye())).toBe('COUNTER_LIMIT');
+    expect(b.clientIo.closes).toEqual([FAILURE]);
+  });
+
+  test('a refused bye does not end the sending side', async () => {
+    const g = gatedSeal();
+    const { client, clientIo } = await pair({ client: { seal: g.seal } });
+    const pending = Array.from({ length: r.MAX_PENDING_SENDS }, (_, i) =>
+      client.send(text(`m${i}`)),
+    );
+    expect(await codeOf(client.bye())).toBe('QUEUE_FULL');
+    g.release();
+    await Promise.all(pending);
+    await client.send(text('still open for sending'));
+    await client.bye();
+    expect(clientIo.frames.map(typeOf).at(-1)).toBe(r.TYPE_BYE);
+  });
+
+  test('transportClosed is idempotent, and a local close with no peer BYE is unclean too', async () => {
+    const { host } = await pair();
+    host.close();
+    expect(host.transportClosed()).toBe('unclean');
+    expect(host.transportClosed()).toBe('unclean');
+  });
+
+  test('a failed channel reports failed, whatever else happened', async () => {
+    const { host } = await pair();
+    await codeOf(host.receive(new Uint8Array(40)));
+    expect(host.transportClosed()).toBe('failed');
+  });
+});
+
+describe('limits of the channel, stated by tests so they cannot be forgotten', () => {
+  test('a tail dropped WITHOUT a close is invisible to the library: only the application can notice silence', async () => {
+    // Frames 1 and 2 arrive, frame 3 and the BYE are withheld, and the socket stays open.
+    // Counters cannot see an absent frame and no BYE has arrived: the channel is simply open.
+    // Detecting that is a liveness question for the application (acks, deadlines), ADR 0034 section 15.2.
+    const { client, host, clientIo, hostIo } = await pair();
+    await client.send(text('1'));
+    await client.send(text('2'));
+    await client.send(text('3'));
+    await client.bye();
     await host.receive(clientIo.frames[0] as Uint8Array);
     await host.receive(clientIo.frames[1] as Uint8Array);
     expect(host.closed).toBe(false);
+    expect(host.peerEnded).toBe(false);
     expect(hostIo.closes).toEqual([]);
+  });
+
+  test('BYE proves nothing about delivery in the other direction: the sender learns nothing from sending it', async () => {
+    const { client, clientIo } = await pair();
+    await client.bye();
+    // The sender's promise resolves when the frame is emitted, not when it is received.
+    expect(clientIo.frames.length).toBe(1);
+    expect(client.peerEnded).toBe(false);
   });
 });
 

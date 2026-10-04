@@ -10,11 +10,13 @@
 
 import { type Bytes, b64u, be64, concat, fromB64u, own, readBe64, utf8 } from './bytes.ts';
 import {
+  BYE_FRAME,
   MAX_CONTROL_TEXT,
   MAX_COUNTER,
   MAX_FRAME,
   MIN_FRAME,
   type Mode,
+  TYPE_BYE,
   TYPE_DATA,
   V,
 } from './constants.ts';
@@ -112,16 +114,27 @@ export const encodeSealedControl = (t: 'auth' | 'ready', ciphertext: Uint8Array)
 export const decodeSealedControl = (frame: unknown, t: 'auth' | 'ready'): Bytes =>
   decodeControl(frame, t)[0] as Bytes;
 
-export const encodeDataFrame = (counter: number, ciphertext: Uint8Array): Bytes =>
-  concat(Uint8Array.of(TYPE_DATA), be64(counter), ciphertext);
+export const encodeDataFrame = (
+  counter: number,
+  ciphertext: Uint8Array,
+  type: number = TYPE_DATA,
+): Bytes => concat(Uint8Array.of(type), be64(counter), ciphertext);
 
-/** Steps 1 to 5 of the receiver (ADR 0034 section 7); the caller checks order and the tag. */
-export function decodeDataFrame(frame: unknown): { counter: number; ciphertext: Bytes } {
+/** Steps 1 to 6 of the receiver (ADR 0034 section 7); the caller checks order and the tag. */
+export function decodeDataFrame(frame: unknown): {
+  type: number;
+  counter: number;
+  ciphertext: Bytes;
+} {
   if (!(frame instanceof Uint8Array)) throw new RelayError('TYPE');
-  if (frame.length < MIN_FRAME) throw new RelayError('MALFORMED');
+  if (frame.length < BYE_FRAME) throw new RelayError('MALFORMED');
   if (frame.length > MAX_FRAME) throw new RelayError('OVERSIZE');
-  if (frame[0] !== TYPE_DATA) throw new RelayError('TYPE');
+  const type = frame[0] as number;
+  if (type !== TYPE_DATA && type !== TYPE_BYE) throw new RelayError('TYPE');
+  if (type === TYPE_BYE ? frame.length !== BYE_FRAME : frame.length < MIN_FRAME) {
+    throw new RelayError('MALFORMED');
+  }
   const counter = readBe64(frame, 1);
   if (counter === null || counter > MAX_COUNTER) throw new RelayError('COUNTER_LIMIT');
-  return { counter, ciphertext: own(frame.subarray(9)) };
+  return { type, counter, ciphertext: own(frame.subarray(9)) };
 }

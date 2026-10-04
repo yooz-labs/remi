@@ -218,6 +218,20 @@
             "frame": "03000000000000000a1f01d64767a9b9cad15a74a9765751004d5415317fefc5ad0d9e39ed2c4491e27ec891c8b7aa"
           }
         ]
+      },
+      "bye": {
+        "c2h": {
+          "counter": 11,
+          "nonce": "00000000000000000000000b",
+          "aad": "72656d692d72656c61792d7632020401000000000000000b",
+          "frame": "04000000000000000b787e4ef910f225ca3e4b02522b24011a"
+        },
+        "h2c": {
+          "counter": 11,
+          "nonce": "00000000000000000000000b",
+          "aad": "72656d692d72656c61792d7632020402000000000000000b",
+          "frame": "04000000000000000b363c6fbc2168f84489a225f9d1f14991"
+        }
       }
     },
     "resume": {
@@ -403,6 +417,20 @@
             "frame": "03000000000000000a5ea454d76104a099d83cca83bebb94ab8bc9d48aa5f73bcadc13487130328b506198e23bd39d"
           }
         ]
+      },
+      "bye": {
+        "c2h": {
+          "counter": 11,
+          "nonce": "00000000000000000000000b",
+          "aad": "72656d692d72656c61792d7632020401000000000000000b",
+          "frame": "04000000000000000be3d31dcdaca27dce930e1409cf295709"
+        },
+        "h2c": {
+          "counter": 11,
+          "nonce": "00000000000000000000000b",
+          "aad": "72656d692d72656c61792d7632020402000000000000000b",
+          "frame": "04000000000000000bb7d63f1217a7ee2a5fdab90705d1400a"
+        }
       }
     }
   },
@@ -1633,30 +1661,359 @@
       "code": "COUNTER_LIMIT"
     },
     {
+      "kind": "data_sequence",
+      "name": "control: ten data frames then BYE",
+      "key": "2b0123497f2e1ca241b4c1bf87c44aaf82c1075e3bc2fba0fcbe2d0d2e0f3fb4",
+      "direction": 1,
+      "startRecv": 1,
+      "frames": [
+        "0300000000000000011a92c5850b576e6a147a5969b207894b82ae7fd9781caaa1701bf5d02a261e82e902d73c95",
+        "030000000000000002b8b9ee582cd0fa51f00b17a3ad2e49417a7184c60bbbc08603bbad4c0500615aa32d4f26c4",
+        "030000000000000003cec66020e3a7fd6309e5e129e57d3b48a09c23be03de12f0949862f994ddca8e2ba3cd4a81",
+        "03000000000000000405b188ae9142c56cf4127487f679bfb582cbc2b944fcddcf8081034694c7cc8e3ed537e755",
+        "0300000000000000051b98c8bb690cdc9b74e6327ca8677b8937421e0b10f3f443ca192720568b82b8297586241b",
+        "0300000000000000069ede3d5e1d51b9d89c0311dd4493c84550c98df7dd873f5701309f440d1630e8b3126b551e",
+        "0300000000000000078277e054c3403f1b03662937382352d12445332b344735e60fadf89106c571c76bf13f9f3b",
+        "03000000000000000860c2b6de61279ebcfade017ff30169f0baa04fffb6a3214810ce2a596cf972ca29ec3956f1",
+        "030000000000000009d129112801e899223f98d1521c2b163bbf86b888493e1123e31541b579dcafeb5eeacb3782",
+        "03000000000000000afaec91f08a2aa7a5413db71f66f382c45cf8933c2de27ac11f7ed7dd43390044aad47e474681",
+        "04000000000000000b787e4ef910f225ca3e4b02522b24011a"
+      ],
+      "expect": "accept",
+      "accepted": 11
+    },
+    {
+      "kind": "data_sequence",
+      "name": "control: BYE after only one data frame",
+      "key": "2b0123497f2e1ca241b4c1bf87c44aaf82c1075e3bc2fba0fcbe2d0d2e0f3fb4",
+      "direction": 1,
+      "startRecv": 1,
+      "frames": [
+        "0300000000000000011a92c5850b576e6a147a5969b207894b82ae7fd9781caaa1701bf5d02a261e82e902d73c95",
+        "040000000000000002c1a12d724dd816e58276cef38e0f60ca"
+      ],
+      "expect": "accept",
+      "accepted": 2
+    },
+    {
+      "kind": "data_sequence",
+      "name": "control: BYE as the very first frame",
+      "key": "2b0123497f2e1ca241b4c1bf87c44aaf82c1075e3bc2fba0fcbe2d0d2e0f3fb4",
+      "direction": 1,
+      "startRecv": 1,
+      "frames": [
+        "0400000000000000010653a5d8c51a46720322fd93808011c2"
+      ],
+      "expect": "accept",
+      "accepted": 1
+    },
+    {
+      "kind": "data_sequence",
+      "name": "a data frame after the BYE",
+      "key": "2b0123497f2e1ca241b4c1bf87c44aaf82c1075e3bc2fba0fcbe2d0d2e0f3fb4",
+      "direction": 1,
+      "startRecv": 1,
+      "frames": [
+        "0300000000000000011a92c5850b576e6a147a5969b207894b82ae7fd9781caaa1701bf5d02a261e82e902d73c95",
+        "030000000000000002b8b9ee582cd0fa51f00b17a3ad2e49417a7184c60bbbc08603bbad4c0500615aa32d4f26c4",
+        "030000000000000003cec66020e3a7fd6309e5e129e57d3b48a09c23be03de12f0949862f994ddca8e2ba3cd4a81",
+        "03000000000000000405b188ae9142c56cf4127487f679bfb582cbc2b944fcddcf8081034694c7cc8e3ed537e755",
+        "0300000000000000051b98c8bb690cdc9b74e6327ca8677b8937421e0b10f3f443ca192720568b82b8297586241b",
+        "0300000000000000069ede3d5e1d51b9d89c0311dd4493c84550c98df7dd873f5701309f440d1630e8b3126b551e",
+        "0300000000000000078277e054c3403f1b03662937382352d12445332b344735e60fadf89106c571c76bf13f9f3b",
+        "03000000000000000860c2b6de61279ebcfade017ff30169f0baa04fffb6a3214810ce2a596cf972ca29ec3956f1",
+        "030000000000000009d129112801e899223f98d1521c2b163bbf86b888493e1123e31541b579dcafeb5eeacb3782",
+        "03000000000000000afaec91f08a2aa7a5413db71f66f382c45cf8933c2de27ac11f7ed7dd43390044aad47e474681",
+        "04000000000000000b787e4ef910f225ca3e4b02522b24011a",
+        "03000000000000000cbb7f6777cdc002397dbc3fe9bad5f76c26437ca23d9918f5c3"
+      ],
+      "expect": "reject",
+      "accepted": 11,
+      "code": "ENDED"
+    },
+    {
+      "kind": "data_sequence",
+      "name": "a second BYE after the BYE",
+      "key": "2b0123497f2e1ca241b4c1bf87c44aaf82c1075e3bc2fba0fcbe2d0d2e0f3fb4",
+      "direction": 1,
+      "startRecv": 1,
+      "frames": [
+        "0300000000000000011a92c5850b576e6a147a5969b207894b82ae7fd9781caaa1701bf5d02a261e82e902d73c95",
+        "030000000000000002b8b9ee582cd0fa51f00b17a3ad2e49417a7184c60bbbc08603bbad4c0500615aa32d4f26c4",
+        "030000000000000003cec66020e3a7fd6309e5e129e57d3b48a09c23be03de12f0949862f994ddca8e2ba3cd4a81",
+        "03000000000000000405b188ae9142c56cf4127487f679bfb582cbc2b944fcddcf8081034694c7cc8e3ed537e755",
+        "0300000000000000051b98c8bb690cdc9b74e6327ca8677b8937421e0b10f3f443ca192720568b82b8297586241b",
+        "0300000000000000069ede3d5e1d51b9d89c0311dd4493c84550c98df7dd873f5701309f440d1630e8b3126b551e",
+        "0300000000000000078277e054c3403f1b03662937382352d12445332b344735e60fadf89106c571c76bf13f9f3b",
+        "03000000000000000860c2b6de61279ebcfade017ff30169f0baa04fffb6a3214810ce2a596cf972ca29ec3956f1",
+        "030000000000000009d129112801e899223f98d1521c2b163bbf86b888493e1123e31541b579dcafeb5eeacb3782",
+        "03000000000000000afaec91f08a2aa7a5413db71f66f382c45cf8933c2de27ac11f7ed7dd43390044aad47e474681",
+        "04000000000000000b787e4ef910f225ca3e4b02522b24011a",
+        "04000000000000000cba02dff2f12cd142c09115988419786b"
+      ],
+      "expect": "reject",
+      "accepted": 11,
+      "code": "ENDED"
+    },
+    {
+      "kind": "data_sequence",
+      "name": "the BYE replayed",
+      "key": "2b0123497f2e1ca241b4c1bf87c44aaf82c1075e3bc2fba0fcbe2d0d2e0f3fb4",
+      "direction": 1,
+      "startRecv": 1,
+      "frames": [
+        "0300000000000000011a92c5850b576e6a147a5969b207894b82ae7fd9781caaa1701bf5d02a261e82e902d73c95",
+        "030000000000000002b8b9ee582cd0fa51f00b17a3ad2e49417a7184c60bbbc08603bbad4c0500615aa32d4f26c4",
+        "030000000000000003cec66020e3a7fd6309e5e129e57d3b48a09c23be03de12f0949862f994ddca8e2ba3cd4a81",
+        "03000000000000000405b188ae9142c56cf4127487f679bfb582cbc2b944fcddcf8081034694c7cc8e3ed537e755",
+        "0300000000000000051b98c8bb690cdc9b74e6327ca8677b8937421e0b10f3f443ca192720568b82b8297586241b",
+        "0300000000000000069ede3d5e1d51b9d89c0311dd4493c84550c98df7dd873f5701309f440d1630e8b3126b551e",
+        "0300000000000000078277e054c3403f1b03662937382352d12445332b344735e60fadf89106c571c76bf13f9f3b",
+        "03000000000000000860c2b6de61279ebcfade017ff30169f0baa04fffb6a3214810ce2a596cf972ca29ec3956f1",
+        "030000000000000009d129112801e899223f98d1521c2b163bbf86b888493e1123e31541b579dcafeb5eeacb3782",
+        "03000000000000000afaec91f08a2aa7a5413db71f66f382c45cf8933c2de27ac11f7ed7dd43390044aad47e474681",
+        "04000000000000000b787e4ef910f225ca3e4b02522b24011a",
+        "04000000000000000b787e4ef910f225ca3e4b02522b24011a"
+      ],
+      "expect": "reject",
+      "accepted": 11,
+      "code": "ENDED"
+    },
+    {
+      "kind": "data_sequence",
+      "name": "a BYE that skips a counter",
+      "key": "2b0123497f2e1ca241b4c1bf87c44aaf82c1075e3bc2fba0fcbe2d0d2e0f3fb4",
+      "direction": 1,
+      "startRecv": 1,
+      "frames": [
+        "0300000000000000011a92c5850b576e6a147a5969b207894b82ae7fd9781caaa1701bf5d02a261e82e902d73c95",
+        "040000000000000003b90ef996bbaaa2f294236cd020933c46"
+      ],
+      "expect": "reject",
+      "accepted": 1,
+      "code": "COUNTER"
+    },
+    {
+      "kind": "data_sequence",
+      "name": "a BYE with counter 0",
+      "key": "2b0123497f2e1ca241b4c1bf87c44aaf82c1075e3bc2fba0fcbe2d0d2e0f3fb4",
+      "direction": 1,
+      "startRecv": 1,
+      "frames": [
+        "0400000000000000006a7538446ff55afb2429dab2e134f4b4"
+      ],
+      "expect": "reject",
+      "accepted": 0,
+      "code": "COUNTER"
+    },
+    {
+      "kind": "data_sequence",
+      "name": "a BYE sealed under the data type",
+      "key": "2b0123497f2e1ca241b4c1bf87c44aaf82c1075e3bc2fba0fcbe2d0d2e0f3fb4",
+      "direction": 1,
+      "startRecv": 1,
+      "frames": [
+        "04000000000000000196c16c56868c22366ae06291bce6f560"
+      ],
+      "expect": "reject",
+      "accepted": 0,
+      "code": "DECRYPT"
+    },
+    {
+      "kind": "data_sequence",
+      "name": "a one-byte data frame sealed under the BYE type",
+      "key": "2b0123497f2e1ca241b4c1bf87c44aaf82c1075e3bc2fba0fcbe2d0d2e0f3fb4",
+      "direction": 1,
+      "startRecv": 1,
+      "frames": [
+        "030000000000000001193ffb65ff0bb2005eab978ef8afb3eebb"
+      ],
+      "expect": "reject",
+      "accepted": 0,
+      "code": "DECRYPT"
+    },
+    {
+      "kind": "data_sequence",
+      "name": "a BYE with a one-byte payload",
+      "key": "2b0123497f2e1ca241b4c1bf87c44aaf82c1075e3bc2fba0fcbe2d0d2e0f3fb4",
+      "direction": 1,
+      "startRecv": 1,
+      "frames": [
+        "040000000000000001193ffb65ff0bb2005eab978ef8afb3eebb"
+      ],
+      "expect": "reject",
+      "accepted": 0,
+      "code": "MALFORMED"
+    },
+    {
+      "kind": "data_sequence",
+      "name": "a BYE cut short by one byte",
+      "key": "2b0123497f2e1ca241b4c1bf87c44aaf82c1075e3bc2fba0fcbe2d0d2e0f3fb4",
+      "direction": 1,
+      "startRecv": 1,
+      "frames": [
+        "0400000000000000010653a5d8c51a46720322fd93808011"
+      ],
+      "expect": "reject",
+      "accepted": 0,
+      "code": "MALFORMED"
+    },
+    {
+      "kind": "data_sequence",
+      "name": "a BYE reflected: opened under the other direction",
+      "key": "2b0123497f2e1ca241b4c1bf87c44aaf82c1075e3bc2fba0fcbe2d0d2e0f3fb4",
+      "direction": 2,
+      "startRecv": 1,
+      "frames": [
+        "0400000000000000010653a5d8c51a46720322fd93808011c2"
+      ],
+      "expect": "reject",
+      "accepted": 0,
+      "code": "DECRYPT"
+    },
+    {
+      "kind": "data_sequence",
+      "name": "a BYE under another key",
+      "key": "2b0123497f2e1ca241b4c1bf87c44aaf82c1075e3bc2fba0fcbe2d0d2e0f3fb4",
+      "direction": 1,
+      "startRecv": 1,
+      "frames": [
+        "0400000000000000018cb78f62679ab687d8a17a8c75b1abab"
+      ],
+      "expect": "reject",
+      "accepted": 0,
+      "code": "DECRYPT"
+    },
+    {
+      "kind": "data_sequence",
+      "name": "a BYE with one tag bit flipped",
+      "key": "2b0123497f2e1ca241b4c1bf87c44aaf82c1075e3bc2fba0fcbe2d0d2e0f3fb4",
+      "direction": 1,
+      "startRecv": 1,
+      "frames": [
+        "0400000000000000010653a5d8c51a46720322fd93808011c3"
+      ],
+      "expect": "reject",
+      "accepted": 0,
+      "code": "DECRYPT"
+    },
+    {
+      "kind": "data_sequence",
+      "name": "a BYE at the maximum counter is accepted",
+      "key": "2b0123497f2e1ca241b4c1bf87c44aaf82c1075e3bc2fba0fcbe2d0d2e0f3fb4",
+      "direction": 1,
+      "startRecv": 1099511627776,
+      "frames": [
+        "04000001000000000079fa1ad09560beb0cefb5ea3789842fc"
+      ],
+      "expect": "accept",
+      "accepted": 1
+    },
+    {
+      "kind": "data_sequence",
+      "name": "a BYE above the limit",
+      "key": "2b0123497f2e1ca241b4c1bf87c44aaf82c1075e3bc2fba0fcbe2d0d2e0f3fb4",
+      "direction": 1,
+      "startRecv": 1099511627776,
+      "frames": [
+        "040000010000000001c1d90d1f1ad3e9e7cce498e35419c40a"
+      ],
+      "expect": "reject",
+      "accepted": 0,
+      "code": "COUNTER_LIMIT"
+    },
+    {
       "kind": "frame_length",
-      "name": "a data frame of 25 bytes",
+      "name": "a frame of type 3 and 24 bytes",
+      "type": 3,
+      "length": 24,
+      "expect": "reject",
+      "code": "MALFORMED"
+    },
+    {
+      "kind": "frame_length",
+      "name": "a frame of type 3 and 25 bytes",
+      "type": 3,
       "length": 25,
       "expect": "reject",
       "code": "MALFORMED"
     },
     {
       "kind": "frame_length",
-      "name": "a data frame of 26 bytes",
+      "name": "a frame of type 3 and 26 bytes",
+      "type": 3,
       "length": 26,
       "expect": "accept"
     },
     {
       "kind": "frame_length",
-      "name": "a data frame of 524313 bytes",
+      "name": "a frame of type 3 and 524313 bytes",
+      "type": 3,
       "length": 524313,
       "expect": "accept"
     },
     {
       "kind": "frame_length",
-      "name": "a data frame of 524314 bytes",
+      "name": "a frame of type 3 and 524314 bytes",
+      "type": 3,
       "length": 524314,
       "expect": "reject",
       "code": "OVERSIZE"
+    },
+    {
+      "kind": "frame_length",
+      "name": "a frame of type 4 and 24 bytes",
+      "type": 4,
+      "length": 24,
+      "expect": "reject",
+      "code": "MALFORMED"
+    },
+    {
+      "kind": "frame_length",
+      "name": "a frame of type 4 and 25 bytes",
+      "type": 4,
+      "length": 25,
+      "expect": "accept"
+    },
+    {
+      "kind": "frame_length",
+      "name": "a frame of type 4 and 26 bytes",
+      "type": 4,
+      "length": 26,
+      "expect": "reject",
+      "code": "MALFORMED"
+    },
+    {
+      "kind": "frame_length",
+      "name": "a frame of type 4 and 524313 bytes",
+      "type": 4,
+      "length": 524313,
+      "expect": "reject",
+      "code": "MALFORMED"
+    },
+    {
+      "kind": "frame_length",
+      "name": "a frame of type 4 and 524314 bytes",
+      "type": 4,
+      "length": 524314,
+      "expect": "reject",
+      "code": "OVERSIZE"
+    },
+    {
+      "kind": "frame_length",
+      "name": "a frame of type 5 and 25 bytes",
+      "type": 5,
+      "length": 25,
+      "expect": "reject",
+      "code": "TYPE"
+    },
+    {
+      "kind": "frame_length",
+      "name": "a frame of type 0 and 26 bytes",
+      "type": 0,
+      "length": 26,
+      "expect": "reject",
+      "code": "TYPE"
     },
     {
       "kind": "token_decode",

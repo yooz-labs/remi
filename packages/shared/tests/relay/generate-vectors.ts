@@ -88,6 +88,8 @@ export async function generateVectors(): Promise<Obj> {
       await clientCh.send(text(JSON.stringify({ type: 'ping', n: i })));
       await hostCh.send(text(JSON.stringify({ type: 'pong', n: i })));
     }
+    await clientCh.bye();
+    await hostCh.bye();
 
     // Independent recomputation of every value from the raw draws, then a check that the
     // real flow produced exactly those bytes.
@@ -145,7 +147,7 @@ export async function generateVectors(): Promise<Obj> {
     ): Promise<Json[]> => {
       const aesKey = await aeadKey(key);
       const out: Json[] = [];
-      for (let i = 0; i < frames.length; i++) {
+      for (let i = 0; i < 10; i++) {
         const counter = i + 1;
         const plaintext = text(JSON.stringify({ type: ping ? 'ping' : 'pong', n: counter }));
         const ct = await aeadSeal(aesKey, r.TYPE_DATA, dir, counter, plaintext);
@@ -160,6 +162,24 @@ export async function generateVectors(): Promise<Obj> {
         });
       }
       return out;
+    };
+
+    const byeEntry = async (
+      frames: Uint8Array[],
+      key: Uint8Array,
+      dir: r.Direction,
+    ): Promise<Json> => {
+      const counter = 11;
+      const ct = await aeadSeal(await aeadKey(key), r.TYPE_BYE, dir, counter, new Uint8Array(0));
+      const frame = concat(Uint8Array.of(r.TYPE_BYE), be64(counter), ct);
+      expect(`bye ${dir}`, hex(frame), hex(frames[10] as Uint8Array));
+      if (frames.length !== 11) throw new Error('unexpected frame count');
+      return {
+        counter,
+        nonce: bytesHex(frameNonce(counter)),
+        aad: bytesHex(frameAad(r.TYPE_BYE, dir, counter)),
+        frame: bytesHex(frame),
+      };
     };
 
     const json: Obj = {
@@ -194,6 +214,10 @@ export async function generateVectors(): Promise<Obj> {
       data: {
         c2h: await data(clientIo.frames, keys.c2h, r.DIR_C2H, 'c2h', true),
         h2c: await data(hostIo.frames, keys.h2c, r.DIR_H2C, 'h2c', false),
+      },
+      bye: {
+        c2h: await byeEntry(clientIo.frames, keys.c2h, r.DIR_C2H),
+        h2c: await byeEntry(hostIo.frames, keys.h2c, r.DIR_H2C),
       },
     };
     return {
@@ -864,15 +888,132 @@ export async function generateVectors(): Promise<Obj> {
       0,
       'COUNTER_LIMIT',
     );
-    for (const [len, expectation, code] of [
-      [25, 'reject', 'MALFORMED'],
-      [26, 'accept', null],
-      [r.MAX_FRAME, 'accept', null],
-      [r.MAX_FRAME + 1, 'reject', 'OVERSIZE'],
+    // ---- BYE, the authenticated end of stream
+    const bye = Buffer.from((pair.json['bye'] as { c2h: { frame: string } }).c2h.frame, 'hex');
+    const sealAs = async (
+      type: number,
+      counter: number,
+      plaintext: Uint8Array,
+      opts: { key?: Uint8Array; direction?: r.Direction; frameType?: number } = {},
+    ): Promise<Uint8Array> =>
+      concat(
+        Uint8Array.of(opts.frameType ?? type),
+        be64(counter),
+        await aeadSeal(
+          await aeadKey(opts.key ?? key),
+          type,
+          opts.direction ?? r.DIR_C2H,
+          counter,
+          plaintext,
+        ),
+      );
+    const empty = new Uint8Array(0);
+    const ten = f.slice();
+    seq('control: ten data frames then BYE', [...ten, bye], 11, null);
+    seq(
+      'control: BYE after only one data frame',
+      [f[0] as Uint8Array, await sealAs(r.TYPE_BYE, 2, empty)],
+      2,
+      null,
+    );
+    seq('control: BYE as the very first frame', [await sealAs(r.TYPE_BYE, 1, empty)], 1, null);
+    seq(
+      'a data frame after the BYE',
+      [...ten, bye, await sealAs(r.TYPE_DATA, 12, text('after bye'))],
+      11,
+      'ENDED',
+    );
+    seq(
+      'a second BYE after the BYE',
+      [...ten, bye, await sealAs(r.TYPE_BYE, 12, empty)],
+      11,
+      'ENDED',
+    );
+    seq('the BYE replayed', [...ten, bye, bye], 11, 'ENDED');
+    seq(
+      'a BYE that skips a counter',
+      [f[0] as Uint8Array, await sealAs(r.TYPE_BYE, 3, empty)],
+      1,
+      'COUNTER',
+    );
+    seq('a BYE with counter 0', [await sealAs(r.TYPE_BYE, 0, empty)], 0, 'COUNTER');
+    seq(
+      'a BYE sealed under the data type',
+      [await sealAs(r.TYPE_DATA, 1, empty, { frameType: r.TYPE_BYE })],
+      0,
+      'DECRYPT',
+    );
+    seq(
+      'a one-byte data frame sealed under the BYE type',
+      [await sealAs(r.TYPE_BYE, 1, text('x'), { frameType: r.TYPE_DATA })],
+      0,
+      'DECRYPT',
+    );
+    seq('a BYE with a one-byte payload', [await sealAs(r.TYPE_BYE, 1, text('x'))], 0, 'MALFORMED');
+    seq(
+      'a BYE cut short by one byte',
+      [(await sealAs(r.TYPE_BYE, 1, empty)).slice(0, 24)],
+      0,
+      'MALFORMED',
+    );
+    seq(
+      'a BYE reflected: opened under the other direction',
+      [await sealAs(r.TYPE_BYE, 1, empty)],
+      0,
+      'DECRYPT',
+      {
+        direction: r.DIR_H2C,
+      },
+    );
+    seq(
+      'a BYE under another key',
+      [await sealAs(r.TYPE_BYE, 1, empty, { key: pair.keys.h2c })],
+      0,
+      'DECRYPT',
+    );
+    seq(
+      'a BYE with one tag bit flipped',
+      [flip(await sealAs(r.TYPE_BYE, 1, empty), r.BYE_FRAME - 1)],
+      0,
+      'DECRYPT',
+    );
+    seq(
+      'a BYE at the maximum counter is accepted',
+      [await sealAs(r.TYPE_BYE, r.MAX_COUNTER, empty)],
+      1,
+      null,
+      {
+        startRecv: r.MAX_COUNTER,
+      },
+    );
+    seq(
+      'a BYE above the limit',
+      [await sealAs(r.TYPE_BYE, r.MAX_COUNTER + 1, empty)],
+      0,
+      'COUNTER_LIMIT',
+      {
+        startRecv: r.MAX_COUNTER,
+      },
+    );
+    // Frame length rules, with the type byte spelled out.
+    for (const [type, len, expectation, code] of [
+      [r.TYPE_DATA, 24, 'reject', 'MALFORMED'],
+      [r.TYPE_DATA, 25, 'reject', 'MALFORMED'],
+      [r.TYPE_DATA, 26, 'accept', null],
+      [r.TYPE_DATA, r.MAX_FRAME, 'accept', null],
+      [r.TYPE_DATA, r.MAX_FRAME + 1, 'reject', 'OVERSIZE'],
+      [r.TYPE_BYE, 24, 'reject', 'MALFORMED'],
+      [r.TYPE_BYE, 25, 'accept', null],
+      [r.TYPE_BYE, 26, 'reject', 'MALFORMED'],
+      [r.TYPE_BYE, r.MAX_FRAME, 'reject', 'MALFORMED'],
+      [r.TYPE_BYE, r.MAX_FRAME + 1, 'reject', 'OVERSIZE'],
+      [5, 25, 'reject', 'TYPE'],
+      [0, 26, 'reject', 'TYPE'],
     ] as const) {
       negative.push({
         kind: 'frame_length',
-        name: `a data frame of ${len} bytes`,
+        name: `a frame of type ${type} and ${len} bytes`,
+        type,
         length: len,
         expect: expectation,
         ...(code ? { code } : {}),

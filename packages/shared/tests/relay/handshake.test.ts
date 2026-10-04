@@ -5,7 +5,7 @@ import * as r from '../../src/relay/internal.ts';
 import { aeadKey, aeadSeal } from '../../src/relay/primitives.ts';
 import { manualClient, manualHost, refHash } from './builders.ts';
 import { NOW, countingSigner, makeParts, runFlow } from './flow.ts';
-import { codeOf, det, hex, seed, seededRandom, text } from './helpers.ts';
+import { codeOf, data, det, hex, seed, seededRandom, text } from './helpers.ts';
 import { recorder } from './recorder.ts';
 
 /** Drive both sides by hand up to `hello_ack`, returning the pieces tests want to tamper with. */
@@ -42,10 +42,10 @@ describe('handshake, happy paths', () => {
     for (let i = 1; i <= 10; i++) {
       await f.client.send(text(`from client ${i}`));
       await f.host.send(text(`from host ${i}`));
-      expect(hex(await f.host.receive(f.clientIo.frames[i - 1] as Uint8Array))).toBe(
+      expect(hex(data(await f.host.receive(f.clientIo.frames[i - 1] as Uint8Array)))).toBe(
         hex(text(`from client ${i}`)),
       );
-      expect(hex(await f.client.receive(f.hostIo.frames[i - 1] as Uint8Array))).toBe(
+      expect(hex(data(await f.client.receive(f.hostIo.frames[i - 1] as Uint8Array)))).toBe(
         hex(text(`from host ${i}`)),
       );
     }
@@ -54,7 +54,7 @@ describe('handshake, happy paths', () => {
   test('a resume handshake opens a working channel with an enrolled device', async () => {
     const f = await runFlow({ mode: 'resume' });
     await f.client.send(text('resumed'));
-    expect(hex(await f.host.receive(f.clientIo.frames[0] as Uint8Array))).toBe(
+    expect(hex(data(await f.host.receive(f.clientIo.frames[0] as Uint8Array)))).toBe(
       hex(text('resumed')),
     );
   });
@@ -886,7 +886,7 @@ describe('handshake, secrets and the key hook', () => {
     expect(f.hello).not.toBe(g.hello);
     expect(f.draws).toEqual({ client: [32], host: [32] });
     await f.client.send(text('engine-keyed'));
-    expect(hex(await f.host.receive(f.clientIo.frames[0] as Uint8Array))).toBe(
+    expect(hex(data(await f.host.receive(f.clientIo.frames[0] as Uint8Array)))).toBe(
       hex(text('engine-keyed')),
     );
     expect(await codeOf(g.host.receive(f.clientIo.frames[0] as Uint8Array))).toBe('DECRYPT');
@@ -901,7 +901,7 @@ describe('handshake, secrets and the key hook', () => {
       device: signer,
     });
     await f.host.send(text('hello device'));
-    expect(hex(await f.client.receive(f.hostIo.frames[0] as Uint8Array))).toBe(
+    expect(hex(data(await f.client.receive(f.hostIo.frames[0] as Uint8Array)))).toBe(
       hex(text('hello device')),
     );
   });

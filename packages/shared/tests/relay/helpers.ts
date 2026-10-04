@@ -65,3 +65,9 @@ export function detFrom(random: r.Rng): { random: r.Rng; ephemeral: () => Promis
 
 export const det = (label: string): { random: r.Rng; ephemeral: () => Promise<r.EcPair> } =>
   detFrom(seededRandom(label));
+
+/** The data of a received message; fails the test if the peer's end-of-stream arrived instead. */
+export function data(received: Uint8Array | null): Uint8Array {
+  if (received === null) throw new Error('expected data, got the end-of-stream marker');
+  return received;
+}

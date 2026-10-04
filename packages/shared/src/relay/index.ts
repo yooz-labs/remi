@@ -34,7 +34,7 @@ export {
   clientStart,
   hostOnHello,
 } from './handshake.ts';
-export type { Channel, ChannelIO } from './channel.ts';
+export type { Channel, ChannelIO, StreamEnd } from './channel.ts';
 export {
   type AdmissionRole,
   type PairingOffer,
