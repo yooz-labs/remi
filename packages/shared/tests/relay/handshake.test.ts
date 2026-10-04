@@ -928,6 +928,93 @@ describe('handshake, secrets and the key hook', () => {
   });
 });
 
+describe('handshake, a step only ever throws a RelayError', () => {
+  const engineFailure = (): Error => new DOMException('The operation failed', 'OperationError');
+
+  test('a device signer that throws (a keychain, an engine) is IO, never the raw error', async () => {
+    const real = (await makeParts('raw signer')).device;
+    const failing: r.Signer = {
+      publicKey: real.publicKey,
+      sign: async () => {
+        throw engineFailure();
+      },
+    };
+    const { c1, h1 } = await toAck('pair', 'raw signer', { device: failing });
+    expect(await codeOf(c1.onHelloAck(h1.helloAck, NOW + 1))).toBe('IO');
+  });
+
+  test('a machine signer that throws makes hostOnHello IO', async () => {
+    const p = await makeParts('raw host signer');
+    const failing: r.Signer = {
+      publicKey: p.machine.publicKey,
+      sign: async () => {
+        throw engineFailure();
+      },
+    };
+    const c1 = await r.clientStart(
+      { machinePublicKey: p.machine.publicKey, device: p.device, mode: 'resume', ...det('rhs c') },
+      NOW,
+    );
+    expect(
+      await codeOf(r.hostOnHello({ machine: failing, ...det('rhs h') }, c1.hello, p.policy, NOW)),
+    ).toBe('IO');
+  });
+
+  test('an engine that refuses to generate the ephemeral key is IO on both sides', async () => {
+    const p = await makeParts('raw engine');
+    const refusing = async (): Promise<r.EcPair> => {
+      throw engineFailure();
+    };
+    expect(
+      await codeOf(
+        r.clientStart(
+          {
+            machinePublicKey: p.machine.publicKey,
+            device: p.device,
+            mode: 'resume',
+            random: seededRandom('re c'),
+            ephemeral: refusing,
+          },
+          NOW,
+        ),
+      ),
+    ).toBe('IO');
+    const c1 = await r.clientStart(
+      { machinePublicKey: p.machine.publicKey, device: p.device, mode: 'resume', ...det('re c') },
+      NOW,
+    );
+    expect(
+      await codeOf(
+        r.hostOnHello(
+          { machine: p.machine, random: seededRandom('re h'), ephemeral: refusing },
+          c1.hello,
+          p.policy,
+          NOW,
+        ),
+      ),
+    ).toBe('IO');
+  });
+
+  test('a policy callback that throws is IO at the host step', async () => {
+    const f = await toAck('resume', 'raw policy');
+    const c2 = await f.c1.onHelloAck(f.h1.helloAck, NOW + 1);
+    const throwing: r.HostPolicy = {
+      offers: [],
+      isEnrolled: () => {
+        throw new TypeError('the store is unavailable');
+      },
+    };
+    expect(await codeOf(f.h1.onAuth(c2.auth, throwing, NOW + 2))).toBe('IO');
+  });
+
+  test('a RelayError is passed through unchanged, not rewrapped', async () => {
+    const f = await toAck('pair', 'passthrough');
+    expect(await codeOf(f.c1.onHelloAck(f.h1.helloAck.replace('"v":2', '"v":3'), NOW + 1))).toBe(
+      'VERSION',
+    );
+  });
+});
+
 describe('handshake, random mutation of any frame in transit never yields a channel', () => {
   test('120 single-character mutations of hello, hello_ack, auth and ready all end in a refusal', async () => {
     const rng = seededRandom('handshake mutations');

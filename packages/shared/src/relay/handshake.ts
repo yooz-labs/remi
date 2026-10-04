@@ -34,7 +34,7 @@ import {
   encodeHelloAck,
   encodeSealedControl,
 } from './envelope.ts';
-import { RelayError } from './errors.ts';
+import { RelayError, asRelayError } from './errors.ts';
 import { type PairingOffer, fingerprintOf, liveOffers } from './pairing.ts';
 import {
   type EcPair,
@@ -106,6 +106,15 @@ export async function deriveSessionKeys(
 
 // -- Single-use steps --
 
+/** Whatever a step does, the caller sees a RelayError: an engine or keychain failure is `IO`. */
+async function relayOnly<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (e) {
+    throw asRelayError(e);
+  }
+}
+
 /** A step runs once (a second call is `STATE`); a throw or `abort` overwrites its secrets. */
 function step<A extends unknown[], R>(secrets: Uint8Array[], fn: (...args: A) => Promise<R>) {
   let used = false;
@@ -114,7 +123,7 @@ function step<A extends unknown[], R>(secrets: Uint8Array[], fn: (...args: A) =>
       if (used) throw new RelayError('STATE');
       used = true;
       try {
-        return await fn(...args);
+        return await relayOnly(() => fn(...args));
       } catch (e) {
         zero(...secrets);
         throw e;
@@ -174,7 +183,10 @@ export interface ClientStep2 {
   abort(): void;
 }
 
-export async function clientStart(cfg: ClientConfig, startedAt: number): Promise<ClientStep1> {
+export const clientStart = (cfg: ClientConfig, startedAt: number): Promise<ClientStep1> =>
+  relayOnly(() => startClient(cfg, startedAt));
+
+async function startClient(cfg: ClientConfig, startedAt: number): Promise<ClientStep1> {
   const name = utf8(cfg.deviceName ?? '');
   checkName(name);
   const psk = cfg.pairingSecret;
@@ -276,7 +288,14 @@ export interface HostStep2 {
   abort(): void;
 }
 
-export async function hostOnHello(
+export const hostOnHello = (
+  cfg: HostConfig,
+  frame: string,
+  policy: HostPolicy,
+  startedAt: number,
+): Promise<HostStep1> => relayOnly(() => helloHost(cfg, frame, policy, startedAt));
+
+async function helloHost(
   cfg: HostConfig,
   frame: string,
   policy: HostPolicy,
