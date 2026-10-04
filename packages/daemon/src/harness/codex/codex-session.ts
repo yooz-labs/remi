@@ -98,7 +98,7 @@ export interface CodexLaunchDeps {
   linkWatchdogMs?: number;
   linkStableMs?: number;
   tracker?: Pick<ThreadTrackerDeps, 'retryMs' | 'ambiguityMs' | 'noIdentityMs'>;
-  decisions?: Pick<CodexDecisionsDeps, 'replayWindowMs' | 'disconnectGraceMs'>;
+  decisions?: Pick<CodexDecisionsDeps, 'replayWindowMs' | 'disconnectGraceMs' | 'confirmMs'>;
 }
 
 /** A launch remi refuses, with the exit code `cli.ts` ends with (2 for arguments, 1 otherwise). */
@@ -393,6 +393,7 @@ export function createCodexSession(
     onQuestionResolved: deps.onQuestionResolved,
     threadRole: (threadId) => link.tracker?.role(threadId) ?? null,
     log,
+    notice: sendSystemMessage,
     ...deps.decisions,
   });
   // A card whose request is pending is not evicted by the pending-question cap.

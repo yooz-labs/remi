@@ -98,9 +98,12 @@ export interface CodexDecisionsDeps {
   /** The tracker's `role`: is this thread the session's, or a subagent's, or neither? */
   threadRole: (threadId: string) => ThreadRole | null;
   log: (message: string) => void;
-  /** Test seams: how long after a re-attach a request that was not replayed is dismissed (3000 ms) and how long a link may stay down before its retired cards are (30 000 ms), and the clock. */
+  /** Tell the person something as a system message (an answer Codex never confirmed, one that could not be sent). */
+  notice: (message: string) => void;
+  /** Test seams: how long after a re-attach a request that was not replayed is dismissed (3000 ms) and how long a link may stay down before its retired cards are (30 000 ms), how long a delivered answer waits for Codex to confirm it (10 000 ms), and the clock. */
   replayWindowMs?: number;
   disconnectGraceMs?: number;
+  confirmMs?: number;
   scheduler?: Scheduler;
 }
 
@@ -109,6 +112,8 @@ type EntryState = 'live' | 'answered' | 'retired';
 interface Entry {
   spec: PendingRequestSpec;
   state: EntryState;
+  /** Set while an `answered` entry waits for Codex's `serverRequest/resolved`. */
+  confirmTimer?: unknown;
 }
 
 /**
@@ -118,6 +123,15 @@ interface Entry {
  */
 const REPLAY_WINDOW_MS = 3000;
 const DISCONNECT_GRACE_MS = 30_000;
+/**
+ * A delivered answer is a frame written to a socket, not Codex's decision: if Codex rejects it or
+ * never reports `serverRequest/resolved`, the phone has said "answered", the card is gone and the
+ * overlay is still up. This long after the answer, the person is told to check the terminal.
+ */
+const CONFIRM_MS = 10_000;
+const UNCONFIRMED_NOTICE = 'Codex has not confirmed the answer; check the terminal';
+const UNSENT_NOTICE =
+  'remi could not deliver that answer to Codex; try again from the new card if one appears, or answer in the terminal';
 /** More requests than this at once is not Codex asking: the oldest are dismissed, never answered. */
 const MAX_TRACKED = 64;
 
@@ -241,19 +255,29 @@ export class CodexDecisions implements DecisionChannel {
     const mapped = responseFor(spec, answer);
     if (!mapped.ok) return 'refused';
     let sent = false;
+    let encoded = true;
     try {
       sent = this.deps.client.respond(spec.requestId, mapped.result);
     } catch (error) {
+      encoded = false;
       this.deps.log(
-        `could not send the answer (${error instanceof Error ? error.name : typeof error})`,
+        `answer to ${logId(spec.requestId)} could not be encoded (${error instanceof Error ? error.name : typeof error})`,
       );
     }
     if (!sent) {
-      this.deps.log(`not answered ${logId(spec.requestId)}: the link is not ready`);
+      // Two causes with one remedy for the person: a result that could not be encoded (a bug in
+      // remi), or a link that did not take the frame (a socket that is not ready, or not yet seen
+      // to be dead). The request may still be pending, and a replay may bring it back as a card.
+      if (encoded) this.deps.log(`not answered ${logId(spec.requestId)}: the link did not take it`);
       this.forget(entry, false, 'closed');
+      this.tell(UNSENT_NOTICE);
       return 'closed';
     }
     entry.state = 'answered';
+    entry.confirmTimer = this.clock.set(
+      () => this.unconfirmed(entry),
+      this.deps.confirmMs ?? CONFIRM_MS,
+    );
     this.deps.log(`answered ${logId(spec.requestId)} on ${short(spec.threadId)}`);
     return 'resolved';
   }
@@ -307,6 +331,10 @@ export class CodexDecisions implements DecisionChannel {
 
   /** Stop tracking `entry`, and dismiss its card from every client when `dismiss` (else the caller already did, or there is none). */
   private forget(entry: Entry, dismiss: boolean, signal: string): void {
+    if (entry.confirmTimer !== undefined) {
+      this.clock.clear(entry.confirmTimer);
+      entry.confirmTimer = undefined;
+    }
     if (this.byKey.get(entry.spec.key) === entry) this.byKey.delete(entry.spec.key);
     if (this.byId.get(entry.spec.question.id) === entry) this.byId.delete(entry.spec.question.id);
     if (!dismiss) return;
@@ -330,6 +358,26 @@ export class CodexDecisions implements DecisionChannel {
 
   private get clock(): Scheduler {
     return this.deps.scheduler ?? realScheduler;
+  }
+
+  /** Say something to the person; a failure to say it is logged, never thrown into the answer path. */
+  private tell(message: string): void {
+    try {
+      this.deps.notice(message);
+    } catch (error) {
+      this.deps.log(
+        `could not send a notice (${error instanceof Error ? error.name : typeof error})`,
+      );
+    }
+  }
+
+  /** The answer was delivered and Codex never said it was resolved. */
+  private unconfirmed(entry: Entry): void {
+    entry.confirmTimer = undefined;
+    if (entry.state !== 'answered' || this.byId.get(entry.spec.question.id) !== entry) return;
+    this.deps.log(`no confirmation for the answer to ${logId(entry.spec.requestId)}`);
+    this.forget(entry, false, 'unconfirmed');
+    this.tell(UNCONFIRMED_NOTICE);
   }
 
   private armSweep(ms: number): void {

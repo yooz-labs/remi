@@ -240,6 +240,12 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
   /** The answers the daemon's client sent to the app-server, with the connection that carried each. */
   const answersSent = (r: Rig): Array<{ client: number; frame: Json }> =>
     r.server.received.filter((f) => f.frame['method'] === undefined && 'id' in f.frame);
+  /** The system messages the daemon sent the clients, as text (a notice is a structured message). */
+  const systemNotices = (r: Rig): string[] =>
+    r.sent
+      .filter((m) => m.type === 'structured_agent_output')
+      .map((m) => JSON.stringify((m as { message: unknown }).message))
+      .filter((text) => text.includes('"sender":"system"'));
   const stdinBytes = (): number => fs.statSync(path.join(fakeDir, 'stdin')).size;
   /**
    * Nothing was typed so far, and the counter can move: a person's raw keystroke does reach the
@@ -276,6 +282,41 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
     expect(resolved(r).map((m) => [m.questionId, m.reason])).toEqual([[card.id, 'answered']]);
     expect(r.errors).toEqual([]);
     await expectNothingTyped(r);
+  });
+
+  test('an answer Codex never confirms tells the person to check the terminal, and the card is already gone', async () => {
+    const r = await attached({
+      decisions: { replayWindowMs: 200, disconnectGraceMs: 800, confirmMs: 300 },
+    });
+    const id = r.server.request(commandApprovalRequest(r.tuiId, 'touch never-confirmed'), r.tuiId);
+    await until(() => pending(r).length === 1, 'the card');
+    const card = pending(r)[0] as Question;
+    r.server.ignoreAnswers();
+
+    await answer(r, card, 'Yes');
+    // Delivered: the phone reads "answered" and the card is gone, as it must for a real answer.
+    await until(() => answersSent(r).length === 1, 'the answer to reach the server');
+    expect(pending(r)).toEqual([]);
+    expect(systemNotices(r)).toEqual([]);
+    await until(() => systemNotices(r).length === 1, 'the notice that Codex has not confirmed');
+    expect(systemNotices(r)[0]).toContain('Codex has not confirmed the answer; check the terminal');
+    // Codex never resolved it: the request is still waiting, and remi did not claim otherwise twice.
+    expect(r.server.isPending(r.tuiId, id)).toBe(true);
+    await expectNothingTyped(r);
+    expect(systemNotices(r)).toHaveLength(1);
+  });
+
+  test('a confirmed answer sends no notice', async () => {
+    const r = await attached({
+      decisions: { replayWindowMs: 200, disconnectGraceMs: 800, confirmMs: 300 },
+    });
+    const id = r.server.request(commandApprovalRequest(r.tuiId, 'touch confirmed'), r.tuiId);
+    await until(() => pending(r).length === 1, 'the card');
+    await answer(r, pending(r)[0] as Question, 'Yes');
+    await until(() => !r.server.isPending(r.tuiId, id), 'the request to be resolved');
+    // Longer than the confirmation delay: a timer that survived the resolved would have fired.
+    await sleep(900);
+    expect(systemNotices(r)).toEqual([]);
   });
 
   test('the TUI answers first: the card clears with question_resolved, and a late phone answer is STALE_ANSWER and sends nothing', async () => {

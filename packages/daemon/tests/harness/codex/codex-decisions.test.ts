@@ -107,6 +107,8 @@ describe('CodexDecisions', () => {
   let roles: Map<string, ThreadRole>;
   let pty: PtyCapture;
   let sched: ReturnType<typeof recordingScheduler>;
+  /** What the channel asked to tell the person as a system message. */
+  let notices: string[];
   let presented: Question[];
   const toDispose: CodexDecisions[] = [];
 
@@ -127,6 +129,7 @@ describe('CodexDecisions', () => {
     ]);
     pty = { writes: [], submits: [] };
     sched = recordingScheduler();
+    notices = [];
     configureLogger({ writeLog: () => {} });
     const { messageApi } = createMessageApiForSession(
       {
@@ -178,6 +181,7 @@ describe('CodexDecisions', () => {
       threadRole: (id) => roles.get(id) ?? null,
       log: (m) => logs.push(m),
       scheduler: sched.scheduler,
+      notice: (m) => notices.push(m),
       ...over,
     });
   }
@@ -430,7 +434,7 @@ describe('CodexDecisions', () => {
       expect(decisions.answerHeld(q.id, optionNamed(q, 'Yes'))).toBe('closed');
       expect(responses).toEqual([]);
       expect(decisions.isHeld(q.id)).toBe(false);
-      expect(logs.some((l) => l.includes('the link is not ready'))).toBe(true);
+      expect(logs.some((l) => l.includes('the link did not take it'))).toBe(true);
       // The link comes back: the old card is still not answerable.
       linkUp = true;
       expect(decisions.answerHeld(q.id, optionNamed(q, 'Yes'))).toBe('closed');
@@ -443,7 +447,7 @@ describe('CodexDecisions', () => {
       respondThrows = true;
       expect(decisions.answerHeld(q.id, optionNamed(q, 'Yes'))).toBe('closed');
       expect(responses).toEqual([]);
-      expect(logs.some((l) => l.includes('could not send the answer (Error)'))).toBe(true);
+      expect(logs.some((l) => l.includes('could not be encoded (Error)'))).toBe(true);
       expect(logs.join('\n')).not.toContain('cannot serialize');
     });
 
@@ -523,6 +527,90 @@ describe('CodexDecisions', () => {
       expect(logs.some((l) => l.includes('could not tell the clients (Error)'))).toBe(true);
       expect(logs.join('\n')).not.toContain('registry down');
       expect(failing.forceRelease('probe')).toEqual({ resolved: 0 });
+    });
+  });
+
+  describe('an answer Codex never confirms', () => {
+    test('a delivered answer waits for serverRequest/resolved: ten seconds on, the person is told to check the terminal, once', () => {
+      request(5);
+      const q = only();
+      expect(decisions.answerHeld(q.id, optionNamed(q, 'Yes'))).toBe('resolved');
+      expect(sched.live().map((t) => t.ms)).toEqual([10_000]);
+      expect(notices).toEqual([]);
+      sched.fire(sched.live()[0]);
+      expect(notices).toEqual(['Codex has not confirmed the answer; check the terminal']);
+      expect(logs.some((l) => l.includes('no confirmation'))).toBe(true);
+      // The entry is forgotten: a replay of the still pending request makes a new card.
+      request(5);
+      expect(cards()).toHaveLength(2);
+      expect(sched.live()).toEqual([]);
+    });
+
+    test('the confirmation, a drop, an unstick, a rotation and the session ending each clear the timer, so no notice follows', () => {
+      const answerOne = (id: number, then: () => void): void => {
+        request(id, `touch c${id}`);
+        const q = pending().find((p) => p.text.endsWith(`touch c${id}`)) as Question;
+        decisions.answerHeld(q.id, optionNamed(q, 'Yes'));
+        const timer = sched.live().at(-1) as RecordedTimer;
+        then();
+        expect(timer.cleared, `a timer after ${id}`).toBe(true);
+        registry.removeQuestion(sessionId, q.id);
+      };
+      answerOne(1, () => decisions.handleResolved({ threadId: MAIN, requestId: 1 }));
+      answerOne(2, () => decisions.handleDisconnected());
+      answerOne(3, () => decisions.forceRelease('remi unstick'));
+      answerOne(4, () => decisions.dispose());
+      expect(sched.live()).toEqual([]);
+      expect(notices).toEqual([]);
+    });
+
+    test('an answer that was not delivered starts no confirmation timer', () => {
+      request(5);
+      const q = only();
+      linkUp = false;
+      decisions.answerHeld(q.id, optionNamed(q, 'Yes'));
+      expect(sched.timers).toEqual([]);
+    });
+
+    test('a refused answer starts none either', () => {
+      request(5);
+      const q = only();
+      decisions.answerHeld(q.id, { kind: 'text', text: 'accept' });
+      expect(sched.timers).toEqual([]);
+    });
+  });
+
+  describe('an answer that could not be sent', () => {
+    test('a link that did not take it is logged as that, the person is told to try the new card or the terminal, and nothing is sent', () => {
+      request(5);
+      const q = only();
+      linkUp = false;
+      expect(decisions.answerHeld(q.id, optionNamed(q, 'Yes'))).toBe('closed');
+      expect(responses).toEqual([]);
+      expect(logs.some((l) => l.includes('the link did not take it'))).toBe(true);
+      expect(logs.some((l) => l.includes('could not be encoded'))).toBe(false);
+      expect(notices).toHaveLength(1);
+      expect(notices[0]).toContain('try again from the new card');
+      expect(notices[0]).toContain('answer in the terminal');
+    });
+
+    test('an answer that could not be encoded is logged as that, with the same words to the person', () => {
+      request(5);
+      const q = only();
+      respondThrows = true;
+      expect(decisions.answerHeld(q.id, optionNamed(q, 'Yes'))).toBe('closed');
+      expect(logs.some((l) => l.includes('could not be encoded (Error)'))).toBe(true);
+      expect(logs.some((l) => l.includes('the link did not take it'))).toBe(false);
+      expect(logs.join('\n')).not.toContain('cannot serialize');
+      expect(notices).toHaveLength(1);
+      expect(notices[0]).toContain('try again from the new card');
+    });
+
+    test('a delivered answer says nothing to the person', () => {
+      request(5);
+      const q = only();
+      decisions.answerHeld(q.id, optionNamed(q, 'Yes'));
+      expect(notices).toEqual([]);
     });
   });
 
@@ -620,7 +708,8 @@ describe('CodexDecisions', () => {
       registry.removeQuestion(sessionId, q.id);
       decisions.handleDisconnected();
       decisions.handleReattached();
-      expect(sched.timers).toEqual([]);
+      // The only timer ever set is the answer's confirmation, cleared at the drop: no sweep timer.
+      expect(sched.timers.map((t) => [t.ms, t.cleared])).toEqual([[10_000, true]]);
       expect(resolvedMessages()).toEqual([]);
       // Nothing is tracked for it any more.
       expect(decisions.forceRelease('probe')).toEqual({ resolved: 0 });

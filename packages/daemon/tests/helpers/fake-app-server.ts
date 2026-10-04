@@ -109,6 +109,7 @@ export class FakeAppServer {
   initializeFrames: Json[] = [];
   private nextClient = 1;
   private nextRequest = 1;
+  private answersIgnored = false;
 
   private constructor() {
     this.dir = socketDir('remi-fake-codex-', 's.sock');
@@ -228,6 +229,15 @@ export class FakeAppServer {
   }
 
   /**
+   * From now on an answer from a client decides nothing and draws no `serverRequest/resolved`: the
+   * request stays pending, as when Codex rejects an answer or never reports it. A model of the
+   * failure, not a Codex frame (no spike frame shows a rejected answer).
+   */
+  ignoreAnswers(): void {
+    this.answersIgnored = true;
+  }
+
+  /**
    * Another subscriber (the TUI) answered first: the request is resolved and every subscriber of
    * its thread is told, as when a client answers (spike: expA-accept.jsonl:51 to :53). It throws
    * for a request that is not pending, so a test cannot resolve one by mistake.
@@ -330,6 +340,7 @@ export class FakeAppServer {
    * the conservative one, and it is pinned in fake-app-server.test.ts.
    */
   private onAnswer(client: number, frame: Json): void {
+    if (this.answersIgnored) return;
     for (const [key, { threadId, frame: request }] of this.pending) {
       if (request['id'] !== frame['id']) continue;
       if (!this.subscriptions.get(client)?.has(threadId)) continue;

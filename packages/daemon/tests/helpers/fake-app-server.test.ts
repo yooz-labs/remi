@@ -257,6 +257,20 @@ describe('FakeAppServer: the modeled behavior, one claim per test', () => {
     expect(() => server.resolve(t, id)).toThrow('no pending request');
   });
 
+  test('ignoreAnswers() models an answer Codex never confirms: nothing resolves, and the request stays pending', async () => {
+    const t = placeholderUuid(71);
+    server.createRollout(t);
+    const a = await connect();
+    await resume(a, t, 1);
+    const id = server.request(requestFrame, t);
+    await server.waitFor(() => requests(a).length === 1, 'the request');
+    server.ignoreAnswers();
+    a.send({ jsonrpc: '2.0', id, result: { decision: 'accept' } });
+    await settle();
+    expect(resolved(a)).toHaveLength(0);
+    expect(server.isPending(t, id)).toBe(true);
+  });
+
   test('ids come from one counter shared by every thread', () => {
     const t = placeholderUuid(68);
     const ids = [
