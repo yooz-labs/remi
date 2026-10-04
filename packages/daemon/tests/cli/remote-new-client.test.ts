@@ -22,6 +22,7 @@ import { createCreateSessionResponse, createError, createHelloAck } from '@remi/
 import { WebSocketAdapter } from '../../src/adapters/websocket-adapter.ts';
 import { createRemoteSession, runRemoteNew } from '../../src/cli/remote-new-client.ts';
 import type { CreateSessionExtra } from '../../src/server/client-message-events.ts';
+import { CLI_TS } from '../integration/hub-test-utils.ts';
 import { reserveRange } from '../session/port-test-helpers.ts';
 
 const SESSION = '55555555-5555-4555-8555-555555555555' as UUID;
@@ -43,6 +44,10 @@ describe('createRemoteSession sends a harness only to a daemon that offers it (#
   let rawAnswer: Record<string, unknown> | undefined;
   /** When set the daemon answers the request with a protocol `error` message of this text instead. */
   let protocolError: string | undefined;
+  /** When set, fields that overwrite the daemon's hello_ack as it goes on the wire. */
+  let rawAck: Record<string, unknown> | undefined;
+  /** When set, what the daemon sends in answer to the request, whatever it is (a daemon may send anything). */
+  let rawFrame: (() => unknown) | undefined;
   let requests: Array<{ directory: string | undefined; extra: CreateSessionExtra | undefined }>;
 
   beforeAll(async () => {
@@ -51,13 +56,17 @@ describe('createRemoteSession sends a harness only to a daemon that offers it (#
       { port },
       {
         onConnect: (connectionId) => {
-          adapter.sendRaw(
-            connectionId,
-            createHelloAck('1.0.0', null, offered === undefined ? {} : { harnesses: offered }),
-          );
+          adapter.sendRaw(connectionId, {
+            ...createHelloAck('1.0.0', null, offered === undefined ? {} : { harnesses: offered }),
+            ...rawAck,
+          } as ProtocolMessage);
         },
         onCreateSessionRequest: (connectionId, directory, requestId, extra) => {
           requests.push({ directory, extra });
+          if (rawFrame !== undefined) {
+            adapter.sendRaw(connectionId, rawFrame() as ProtocolMessage);
+            return;
+          }
           if (protocolError !== undefined) {
             adapter.sendRaw(connectionId, createError('SOME_CODE', protocolError));
             return;
@@ -100,6 +109,8 @@ describe('createRemoteSession sends a harness only to a daemon that offers it (#
     protocolError = undefined;
     spawnedPort = undefined;
     rawAnswer = undefined;
+    rawAck = undefined;
+    rawFrame = undefined;
     stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-remote-new-'));
     savedHome = process.env['REMI_HOME'];
     process.env['REMI_HOME'] = stateDir;
@@ -216,6 +227,120 @@ describe('createRemoteSession sends a harness only to a daemon that offers it (#
     expect(await create('codex')).toEqual({ sessionId: SESSION, port });
     rawAnswer = { port: undefined };
     expect(await create('codex')).toEqual({ sessionId: SESSION, port });
+  });
+
+  describe('a daemon may send any JSON: the sender reads it without throwing (#1204 round 2, P2)', () => {
+    const errorFrame = (fields: Record<string, unknown>) => ({
+      ...createError('SOME_CODE', 'x'),
+      ...fields,
+    });
+    const failureFrame = (fields: Record<string, unknown>) => ({
+      ...createCreateSessionResponse(false, 'req00000-0000-0000-0000-000000000000' as UUID),
+      ...fields,
+    });
+
+    test.each([
+      ['no message', { message: undefined }],
+      ['a null message', { message: null }],
+      ['an array for a message', { message: ['a'] }],
+      ['an object with a length for a message', { message: { length: 3 } }],
+      ['a number for a message', { message: 7 }],
+    ])('an error frame with %s is a clean error, not a TypeError', async (_name, fields) => {
+      offered = ['codex'];
+      rawFrame = () => errorFrame(fields);
+      const message = await create('codex').catch((error: Error) => error.message);
+      expect(message).toBe('Daemon error: no message');
+    });
+
+    test.each([
+      ['no error', { error: undefined }],
+      ['a null error', { error: null }],
+      ['an array for an error', { error: ['a'] }],
+      ['an object with a length for an error', { error: { length: 3 } }],
+    ])('a failure with %s is a clean error', async (_name, fields) => {
+      offered = ['codex'];
+      rawFrame = () => failureFrame(fields);
+      const message = await create('codex').catch((error: Error) => error.message);
+      expect(message).toBe('Failed to create session: unknown error');
+    });
+
+    test.each([
+      ['null', null],
+      ['a number', 5],
+      ['an array', ['x']],
+      ['an object with a length', { length: 3 }],
+    ])('a success whose notice is %s succeeds with no notice', async (_name, value) => {
+      offered = ['codex'];
+      rawAnswer = { notice: value };
+      expect(await create('codex')).toEqual({ sessionId: SESSION, port });
+    });
+
+    test.each([
+      ['an object with no includes', { length: 3 }],
+      ['null', null],
+      ['a string that contains the name', 'claude,codex'],
+      ['an array with no usable entries', [5, null, {}]],
+    ])(
+      'a hello_ack whose harnesses is %s is a daemon that does not offer the harness',
+      async (_name, value) => {
+        rawAck = { harnesses: value };
+        const message = await create('codex').catch((error: Error) => error.message);
+        expect(message).toContain('does not offer codex');
+        expect(requests).toEqual([]);
+      },
+    );
+
+    // The CLI is the thing a person runs: it must print the clean message and exit with a defined
+    // code, where an exception inside the socket's handler would print a stack trace.
+    test.each([
+      [
+        'an error frame with no message',
+        () => errorFrame({ message: undefined }),
+        'Daemon error: no message',
+      ],
+      [
+        'a failure whose error is an array',
+        () => failureFrame({ error: ['a'] }),
+        'Failed to create session: unknown error',
+      ],
+    ])(
+      'the CLI, given %s, exits 1 with the clean message and no stack trace',
+      async (_name, frame, expected) => {
+        offered = ['codex'];
+        rawFrame = frame;
+        const proc = Bun.spawn(
+          [process.execPath, CLI_TS, 'codex', '--host', 'localhost', '--port', String(port)],
+          {
+            env: { ...process.env, HOME: stateDir, REMI_HOME: stateDir },
+            stdin: 'ignore',
+            stdout: 'pipe',
+            stderr: 'pipe',
+          },
+        );
+        const [stderr, exit] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
+        expect(exit).toBe(1);
+        expect(stderr).toContain(expected);
+        expect(stderr).not.toContain('TypeError');
+      },
+      60000,
+    );
+
+    test('the CLI, given a hello_ack whose harnesses is an object, says the daemon does not offer codex', async () => {
+      rawAck = { harnesses: { length: 3 } };
+      const proc = Bun.spawn(
+        [process.execPath, CLI_TS, 'codex', '--host', 'localhost', '--port', String(port)],
+        {
+          env: { ...process.env, HOME: stateDir, REMI_HOME: stateDir },
+          stdin: 'ignore',
+          stdout: 'pipe',
+          stderr: 'pipe',
+        },
+      );
+      const [stderr, exit] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
+      expect(exit).toBe(1);
+      expect(stderr).toContain('does not offer codex');
+      expect(stderr).not.toContain('TypeError');
+    }, 60000);
   });
 
   describe('runRemoteNew prints what the hub said, then attaches (G11)', () => {
