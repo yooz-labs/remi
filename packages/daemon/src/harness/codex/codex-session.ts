@@ -112,6 +112,21 @@ export function codexLaunchRefusal(error: unknown): { message: string; exitCode:
   return null;
 }
 
+/** `text` as one shell word: unchanged when it is plain, else in single quotes. */
+function shellQuote(text: string): string {
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(text) ? text : `'${text.replaceAll("'", "'\\''")}'`;
+}
+
+/**
+ * The command that resumes a Codex session from `remi --sessions`. `remi codex resume` runs
+ * Codex in the current directory and the new record takes that directory as its project path,
+ * so the line changes into the session's own first; the path is quoted so pasting the line
+ * cannot run anything else.
+ */
+export function codexResumeCommand(projectPath: string, threadId: string): string {
+  return `cd ${shellQuote(projectPath)} && remi codex resume ${threadId}`;
+}
+
 /** What the launch prints so nobody learns the hazard from a lost session id (see the file header). */
 export function olderRemiNotice(): string {
   return `remi codex: the Codex thread id is saved in sessions.json, and a remi older than ${IDENTITY_SHIM_MIN_VERSION} that writes that file later (remi --sessions, remi --resume, a restarted hub on an old binary) erases it, so \`remi codex resume\` could no longer find this session.`;

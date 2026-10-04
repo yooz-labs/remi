@@ -24,6 +24,7 @@ import {
   CodexLaunchRefusal,
   checkCodexLaunch,
   codexLaunchRefusal,
+  codexResumeCommand,
   legacyWriterRefusal,
   olderRemiNotice,
 } from '../../../src/harness/codex/codex-session.ts';
@@ -352,6 +353,27 @@ describe('CodexHarness', () => {
       expect(codexLaunchRefusal(ambiguous)).toEqual({ message: ambiguous.message, exitCode: 1 });
       expect(codexLaunchRefusal(new Error('boom'))).toBeNull();
       expect(codexLaunchRefusal('text')).toBeNull();
+    });
+
+    test('the resume command changes into the directory first, quoting it as one shell word (W20)', () => {
+      const id = '00000000-0000-7000-8000-0000000000ee';
+      expect(codexResumeCommand('/work/project', id)).toBe(
+        `cd /work/project && remi codex resume ${id}`,
+      );
+      const quoted: Array<[string, string]> = [
+        ['/work/my project', "'/work/my project'"],
+        ["/work/it's", "'/work/it'\\''s'"],
+        ['/work/$HOME', "'/work/$HOME'"],
+        ['/work/`id`', "'/work/`id`'"],
+        ['/work/a;b', "'/work/a;b'"],
+        ['/work/a\nb', "'/work/a\nb'"],
+        ['', "''"],
+      ];
+      for (const [dir, word] of quoted) {
+        expect(codexResumeCommand(dir, id), JSON.stringify(dir)).toBe(
+          `cd ${word} && remi codex resume ${id}`,
+        );
+      }
     });
 
     test('the notice for the user names the minimum version and what is lost', () => {

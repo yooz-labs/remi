@@ -198,7 +198,12 @@ import {
   remiHome,
   serviceCommandRefusal,
 } from './config/remi-home.ts';
-import { codexLaunchRefusal, olderRemiNotice } from './harness/codex/codex-session.ts';
+import { validateCodexArgs } from './harness/codex/codex-args.ts';
+import {
+  codexLaunchRefusal,
+  codexResumeCommand,
+  olderRemiNotice,
+} from './harness/codex/codex-session.ts';
 import { CodexHarness } from './harness/codex/codex.ts';
 import { ClaudeHarness } from './harness/index.ts';
 import type { Harness, HarnessSession } from './harness/index.ts';
@@ -746,9 +751,10 @@ if (cliShowSessions) {
       console.log(
         `  ${s.remiSessionId.slice(0, 8)}  ${status}  ${s.projectPath}${idLabel}  ${s.startedAt}`,
       );
-      // `remi codex resume` takes the whole thread id, which the label above cuts.
+      // `remi codex resume` takes the whole thread id, which the label above cuts, and runs in
+      // the current directory, so the line changes into the session's own.
       if (s.harness === 'codex' && s.exitedAt !== null && recordedId) {
-        console.log(`      resume: remi codex resume ${recordedId}`);
+        console.log(`      resume: ${codexResumeCommand(s.projectPath, recordedId)}`);
       }
     }
     if (filter === 'running') {
@@ -876,6 +882,14 @@ if (
   cliRecent &&
   !cliHost
 ) {
+  // A refused Codex argument is refused before the interactive picker, not after it.
+  if (harnessId === 'codex') {
+    const args = validateCodexArgs(parsedArgs.passthroughArgs);
+    if (!args.ok) {
+      console.error(args.error);
+      process.exit(2);
+    }
+  }
   const store = new SessionStore();
   const directories = getRecentDirectories(store, 20);
   if (directories.length === 0) {

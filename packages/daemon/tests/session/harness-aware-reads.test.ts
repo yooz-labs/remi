@@ -330,11 +330,26 @@ describe('the real CLI over a store that holds a codex record', () => {
     );
     const lines = result.stdout.split('\n');
     const resume = lines.filter((l) => l.includes('remi codex resume'));
-    expect(resume).toEqual([`      resume: remi codex resume ${THREAD_ID}`]);
+    // `remi codex resume` runs Codex in the current directory and the new record takes that
+    // directory as its project path, so the line changes into the session's own first (W20).
+    expect(resume).toEqual([`      resume: cd /tmp && remi codex resume ${THREAD_ID}`]);
     // It follows its own record's line, and neither a Claude record, a running codex one,
     // nor one with no thread id gets one.
     const at = lines.findIndex((l) => l.includes(CODEX_REMI_ID.slice(0, 8)));
     expect(lines[at + 1]).toBe(resume[0]);
+  }, 30000);
+
+  test('the directory in that line is shell-quoted, so pasting it cannot run anything else (W20)', async () => {
+    const odd = record({
+      ...codexRecord,
+      remiSessionId: crypto.randomUUID() as UUID,
+      projectPath: "/tmp/my project's $(touch pwned)",
+    });
+    const result = await runCli([odd], ['--sessions', 'all']);
+    const line = result.stdout.split('\n').find((l) => l.includes('remi codex resume'));
+    expect(line).toBe(
+      `      resume: cd '/tmp/my project'\\''s $(touch pwned)' && remi codex resume ${THREAD_ID}`,
+    );
   }, 30000);
 
   test('a Claude record with no Claude id yet prints no label, as before', async () => {

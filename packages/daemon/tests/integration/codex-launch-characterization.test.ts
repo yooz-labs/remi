@@ -734,4 +734,36 @@ describe('remi codex launch (wrapper and refusals, #1177)', () => {
     expect(r.output.text).toContain(`Ambiguous codex session ID ${thread.slice(0, 8)}`);
     expect(fileExists(r, 'pid')).toBe(false);
   }, 40000);
+
+  test('a refused argument is refused before the interactive directory picker, with exit 2 (W20)', async () => {
+    // A store with one recent directory, so --recent would reach the picker (which reads a
+    // terminal this test does not have).
+    const r = await startWrapper(['--recent', '-c', 'model=x'], 'codex', {
+      seed: (home) => {
+        fs.mkdirSync(path.join(home, '.remi'), { recursive: true });
+        fs.writeFileSync(
+          path.join(home, '.remi', 'sessions.json'),
+          JSON.stringify({
+            version: 1,
+            sessions: [
+              {
+                remiSessionId: crypto.randomUUID(),
+                claudeSessionId: crypto.randomUUID(),
+                projectPath: home,
+                port: 19000,
+                pid: null,
+                startedAt: new Date().toISOString(),
+                exitedAt: new Date().toISOString(),
+                exitCode: 0,
+              },
+            ],
+          }),
+        );
+      },
+    });
+    const code = await Promise.race([r.proc.exited, Bun.sleep(20000).then(() => 'timeout')]);
+    expect(code).toBe(2);
+    expect(r.output.text).toContain('-c');
+    expect(fileExists(r, 'pid')).toBe(false);
+  }, 40000);
 });
