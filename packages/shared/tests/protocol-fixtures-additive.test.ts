@@ -1,6 +1,6 @@
 /**
  * The Phase 5 wire change is additive (#1179, #1165 A and B): the golden
- * fixtures of the four messages it touches gain fields and lose nothing.
+ * fixtures of the five messages it touches gain fields and lose nothing.
  *
  * Each `LEGACY` literal below is the golden as it stood before Phase 5, minus
  * its random `id` and `timestamp`. The test holds the CURRENT fixture to two
@@ -125,6 +125,16 @@ const LEGACY: Record<string, { value: { [key: string]: Json }; added: string[] }
     value: { type: 'create_session_request', directory: '/Users/fixture/project' },
     added: ['harness', 'args'],
   },
+  create_session_response: {
+    value: {
+      type: 'create_session_response',
+      success: true,
+      requestId: 'fixture-request-id',
+      sessionId: 'fixture-session-id',
+      port: 19924,
+    },
+    added: ['notice'],
+  },
 };
 
 describe('the Phase 5 golden fixtures only add fields (#1179)', () => {
@@ -157,6 +167,12 @@ describe('the Phase 5 golden fixtures only add fields (#1179)', () => {
     const request = load('create_session_request');
     expect(request['harness']).toBe('codex');
     expect(request['args']).toEqual(['-m', 'fixture-model']);
+  });
+
+  test('the create_session_response fixture carries a notice, which says nothing of readiness being known', () => {
+    const notice = load('create_session_response')['notice'];
+    expect(typeof notice).toBe('string');
+    expect((notice as string).length).toBeGreaterThan(0);
   });
 
   test('the diff helper reports a lost or changed legacy field, so this test can fail', () => {

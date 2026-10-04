@@ -117,6 +117,11 @@ async function ask(
   }
 }
 
+/** The hub's note on what a success does not say (#1179); read as data, whatever the type says. */
+function noticeOf(response: object): unknown {
+  return (response as { notice?: unknown }).notice;
+}
+
 function childEntries(r: Running): Array<{ pid: number; sessionId: string }> {
   const liveDir = path.join(r.hub.home, '.remi', 'live-sessions');
   if (!fs.existsSync(liveDir)) return [];
@@ -154,6 +159,9 @@ describe('a hub creating a session for a harness (#1179)', () => {
     expect(response.success).toBe(true);
     expect(response.sessionId).toMatch(UUID_RE);
     expect(response.port).toBeGreaterThan(0);
+    // The hub cannot know that Codex reached its prompt: it says so, and what to do.
+    expect(noticeOf(response)).toContain('remi attach');
+    expect(noticeOf(response)).toContain('Update or Trust');
 
     // The child daemon launched `codex --no-alt-screen <the validated arguments>`.
     expect(await waitForArgv(r.agents.codexDir)).toEqual([
@@ -181,6 +189,7 @@ describe('a hub creating a session for a harness (#1179)', () => {
     const r = await startHub({ claude: true });
     const { response } = await ask(r, { harness: 'claude', args: ['--model', 'opus'] });
     expect(response.success).toBe(true);
+    expect('notice' in response).toBe(false);
     const argv = await waitForArgv(r.agents.claudeDir);
     // The model the request named, and remi's own `--session-id <uuid> -n remi:<port>`.
     expect(argv.slice(0, 2)).toEqual(['--model', 'opus']);
@@ -194,6 +203,7 @@ describe('a hub creating a session for a harness (#1179)', () => {
     const r = await startHub({ claude: true, codex: true });
     const { response } = await ask(r);
     expect(response.success).toBe(true);
+    expect('notice' in response).toBe(false);
     const argv = await waitForArgv(r.agents.claudeDir);
     expect(argv).toHaveLength(4);
     expect(argv[0]).toBe('--session-id');
@@ -207,6 +217,7 @@ describe('a hub creating a session for a harness (#1179)', () => {
     expect(response.success).toBe(false);
     expect(response.error).toContain('codex');
     expect(response.sessionId).toBeUndefined();
+    expect('notice' in response).toBe(false);
     // No child daemon registered, no agent started.
     await new Promise((resolve) => setTimeout(resolve, 1500));
     expect(childEntries(r)).toEqual([]);
@@ -297,7 +308,7 @@ function runCli(r: Running, args: readonly string[]) {
 describe('the CLI creating a session on a hub (#1179)', () => {
   test('remi codex --host starts a Codex session there with the arguments after --', async () => {
     const r = await startHub({ codex: true });
-    runCli(r, [
+    const { output } = runCli(r, [
       'codex',
       '--host',
       'localhost',
@@ -310,6 +321,8 @@ describe('the CLI creating a session on a hub (#1179)', () => {
       'some-model',
     ]);
     expect(await waitForArgv(r.agents.codexDir)).toEqual(['--no-alt-screen', '-m', 'some-model']);
+    // What the hub said about readiness reaches the person at the CLI.
+    await pollUntil(() => output.text.includes('remi attach'), 10000, 'the notice on stderr');
   }, 90000);
 
   test('remi new --host --harness codex is the same request', async () => {
