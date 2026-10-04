@@ -100,12 +100,22 @@ describe('a session that does not take typed chat (#1177)', () => {
     expect(errorsOf(sent)).toHaveLength(0);
   });
 
-  test('the refusal logs the length of the text, never the text itself', async () => {
+  test('nothing in the log carries the text, only its length (R6)', async () => {
+    // The line that logs every user input runs before the refusal, so it is part of the claim.
     await handlers(() => false).onUserInput(CID, sessionId, 'sk-do-not-log-this', false);
+    await handlers(() => false).onUserInput(CID, sessionId, 'sk-raw-do-not-log', true);
+    const everything = logged.join('\n');
+    expect(everything).not.toContain('sk-do-not-log-this');
+    expect(everything).not.toContain('sk-raw-do-not-log');
     const refusal = logged.filter((l) => l.includes('refusing') && l.includes('chat'));
     expect(refusal).toHaveLength(1);
     expect(refusal[0]).toContain(`${'sk-do-not-log-this'.length} chars`);
-    expect(refusal[0]).not.toContain('sk-do-not-log-this');
+    expect(logged.some((l) => l.includes(`${'sk-raw-do-not-log'.length} chars`))).toBe(true);
+  });
+
+  test('a session that does take chat still has its text in the log, as before', async () => {
+    await handlers(() => true).onUserInput(CID, sessionId, 'plain chat text', false);
+    expect(logged.some((l) => l.includes('plain chat text'))).toBe(true);
   });
 
   test('the dep is asked about this session, and true, undefined or no dep type as before', async () => {

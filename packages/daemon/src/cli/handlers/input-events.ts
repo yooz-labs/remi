@@ -1210,9 +1210,14 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       claudeSessionId?: UUID,
       messageId?: UUID,
     ): Promise<void> => {
-      log(`User input from ${connectionId}${raw ? ' (raw)' : ''}: ${content}`);
-
       const session = sessionRegistry.getSessionForConnection(connectionId);
+      // #1177: a session that takes no typed chat (Codex) keeps what was sent out of the log
+      // altogether, this line included: only the length is logged. Asked once, and used again
+      // below for the refusal.
+      const chatOff = session !== undefined && acceptsTypedChat?.(session.sessionId) === false;
+      log(
+        `User input from ${connectionId}${raw ? ' (raw)' : ''}: ${chatOff ? `${content.length} chars` : content}`,
+      );
       if (!session) {
         // #795: there is no more exclusive write lock, so every attached
         // (non-query) connection already finds its session above. Landing
@@ -1286,7 +1291,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       // read) is refused before anything is asked of the screen: the text and
       // its Enter would land on whatever the TUI has focused. Only the length
       // is logged and traced, never the text.
-      if (acceptsTypedChat?.(session.sessionId) === false) {
+      if (chatOff) {
         log(
           `[Input] refusing ${content.length} chars of chat text for session ${session.sessionId.slice(0, 8)}: this session takes no typed chat`,
         );
