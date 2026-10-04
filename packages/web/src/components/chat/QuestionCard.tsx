@@ -411,7 +411,10 @@ function MultiQuestionForm({
           style={{ background: 'var(--color-surface-elevated)', color: 'var(--color-text)' }}
         >
           {terminalOnly
-            ? 'This question can only be answered in the terminal (or Cancel).'
+            ? question.cancelDismissesOnly === true
+              ? // Cancel answers nothing here, so it is not offered as a way to answer (Codex, #1178).
+                'This question can only be answered in the terminal; Cancel only clears it from here.'
+              : 'This question can only be answered in the terminal (or Cancel).'
             : "Couldn't auto-answer this on your device. Cancel it, or answer it in the terminal."}
         </p>
       )}

@@ -64,6 +64,11 @@ describe('a terminal-only card whose Cancel only dismisses (#1178)', () => {
     expect(html).toContain('>Dismiss (answer in the terminal)</button>');
     expect(html).toContain('aria-label="Dismiss (answer in the terminal)"');
     expect(html).not.toContain('Decline tool call');
+    // The sentence under the form does not offer a Cancel that answers: here Cancel only clears it.
+    expect(html).toContain(
+      'This question can only be answered in the terminal; Cancel only clears it from here.',
+    );
+    expect(html).not.toContain('(or Cancel)');
   });
 
   test("Claude's terminal-only card is untouched: it still says Decline tool call, and a plain free-text card still has its input", () => {
