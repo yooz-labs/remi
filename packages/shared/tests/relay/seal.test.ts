@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { createDecipheriv, createECDH, hkdfSync } from 'node:crypto';
-import { relayV2 as r } from '../../src/index.ts';
 import { lps } from '../../src/relay/bytes.ts';
+import * as r from '../../src/relay/internal.ts';
 import { nodeSeal } from './builders.ts';
 import { codeOf, codeOfSync, hex, seed, seededRandom, text } from './helpers.ts';
 

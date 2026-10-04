@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { relayV2 as r } from '../../src/index.ts';
+import * as r from '../../src/relay/internal.ts';
 import {
   aeadKey,
   aeadOpen,

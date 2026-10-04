@@ -7,7 +7,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { relayV2 as r } from '../../src/index.ts';
+import * as r from '../../src/relay/internal.ts';
 
 export const hex = (b: Uint8Array): string => Buffer.from(b).toString('hex');
 export const unhex = (h: string): Uint8Array<ArrayBuffer> => new Uint8Array(Buffer.from(h, 'hex'));

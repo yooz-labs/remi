@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { relayV2 as r } from '../../src/index.ts';
 import { encodeDataFrame } from '../../src/relay/envelope.ts';
+import * as r from '../../src/relay/internal.ts';
 import { type SealFn, aeadKey, aeadSeal } from '../../src/relay/primitives.ts';
 import { codeOf, hex, seed, seededRandom, text } from './helpers.ts';
 import { type Recorder, recorder } from './recorder.ts';

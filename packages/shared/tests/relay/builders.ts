@@ -6,8 +6,8 @@
  */
 
 import { createCipheriv, createECDH, createHash, hkdfSync } from 'node:crypto';
-import { relayV2 as r } from '../../src/index.ts';
 import { lps } from '../../src/relay/bytes.ts';
+import * as r from '../../src/relay/internal.ts';
 import { aeadKey, aeadSeal, ecGenerate, ecdh } from '../../src/relay/primitives.ts';
 import { seed, seededRandom } from './helpers.ts';
 

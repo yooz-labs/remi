@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { relayV2 as r } from '../../src/index.ts';
 import { b64u, concat } from '../../src/relay/bytes.ts';
+import * as r from '../../src/relay/internal.ts';
 import { aeadKey, aeadSeal, ecGenerate } from '../../src/relay/primitives.ts';
 import { manualClient, manualHost, refHash } from './builders.ts';
 import { NOW, countingSigner, makeParts, runFlow } from './flow.ts';

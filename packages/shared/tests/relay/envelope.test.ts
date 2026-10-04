@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
-import { relayV2 as r } from '../../src/index.ts';
 import { b64u } from '../../src/relay/bytes.ts';
 import { decodeDataFrame, encodeDataFrame } from '../../src/relay/envelope.ts';
+import * as r from '../../src/relay/internal.ts';
 import { codeOfSync, hex, seed, text } from './helpers.ts';
 
 const E = new Uint8Array(65).fill(7);

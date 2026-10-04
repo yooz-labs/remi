@@ -10,7 +10,7 @@
 import { describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { relayV2 as r } from '../../src/index.ts';
+import * as r from '../../src/relay/internal.ts';
 import {
   aeadKey,
   aeadSeal,

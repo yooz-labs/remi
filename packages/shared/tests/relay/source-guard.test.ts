@@ -10,7 +10,6 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import * as shared from '../../src/index.ts';
 
 const DIR = join(import.meta.dir, '..', '..', 'src', 'relay');
 const FILES = readdirSync(DIR).filter((f) => f.endsWith('.ts'));
@@ -76,16 +75,5 @@ describe('relay v2 source guards', () => {
       }
     }
     expect(seen).toBeGreaterThan(20);
-  });
-
-  test('the package exports v2 under one namespace and leaves the v1 exports where they were', () => {
-    expect(typeof shared.relayV2.hostOnHello).toBe('function');
-    expect(typeof shared.relayV2.clientStart).toBe('function');
-    expect(typeof shared.relayV2.Channel).toBe('function');
-    expect(typeof shared.encryptRelayPayload).toBe('function');
-    expect(typeof shared.deriveRelaySessionKeys).toBe('function');
-    for (const name of ['hostOnHello', 'clientStart', 'Channel', 'RelayError', 'seal', 'V']) {
-      expect(name in shared).toBe(false);
-    }
   });
 });

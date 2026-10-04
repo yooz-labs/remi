@@ -13,8 +13,8 @@
 import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { relayV2 as r } from '../../src/index.ts';
 import { b64u, be64, concat } from '../../src/relay/bytes.ts';
+import * as r from '../../src/relay/internal.ts';
 import {
   aeadKey,
   aeadSeal,

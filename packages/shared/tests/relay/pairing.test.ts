@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { createHash, createHmac } from 'node:crypto';
-import { relayV2 as r } from '../../src/index.ts';
 import { b64u, fromB64u } from '../../src/relay/bytes.ts';
+import * as r from '../../src/relay/internal.ts';
 import { ecGenerate } from '../../src/relay/primitives.ts';
 import { codeOf, hex, seed, seededRandom, text, unhex } from './helpers.ts';
 

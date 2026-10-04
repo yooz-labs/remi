@@ -1,6 +1,6 @@
 /** A complete real handshake for the tests, built only from the shipping step functions. */
 
-import { relayV2 as r } from '../../src/index.ts';
+import * as r from '../../src/relay/internal.ts';
 import { hex, seed, seededRandom } from './helpers.ts';
 import { type Recorder, recorder } from './recorder.ts';
 

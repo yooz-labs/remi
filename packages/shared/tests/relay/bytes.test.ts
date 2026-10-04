@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { relayV2 as r } from '../../src/index.ts';
 import { be64, concat, readBe64, utf8, zero } from '../../src/relay/bytes.ts';
+import * as r from '../../src/relay/internal.ts';
 import { codeOfSync, hex, unhex } from './helpers.ts';
 
 describe('relay v2 byte helpers', () => {
