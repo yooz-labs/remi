@@ -2043,6 +2043,9 @@ const transcriptHandlers: TranscriptHandlers = createTranscriptHandlers({
   transcriptIndex,
   currentOwnedSession,
   subagentViews,
+  // A harness that reads its own history (Codex's app-server, #1180) answers a transcript load
+  // itself; Claude's sessions have no chat and take the transcript-file path.
+  chatFor: (sessionId) => harnessSessions.get(sessionId)?.chat,
   send: sendToConnection,
 });
 
