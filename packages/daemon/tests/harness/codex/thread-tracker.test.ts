@@ -52,6 +52,8 @@ interface Ctx {
     createdAtSec?: number,
   ): void;
   status(id: string, status: Json): void;
+  /** How many times the tracker logged a successful attach. */
+  attachCount(): number;
 }
 
 interface Options {
@@ -140,7 +142,25 @@ async function setup(opts: Options = {}): Promise<Ctx> {
         },
       ),
     status: (id, status) => server.emit(threadStatusFrame(id, status), { broadcast: true }),
+    attachCount: () => logs.filter((l) => l.startsWith('attached to thread')).length,
   };
+}
+
+/**
+ * Which of `ids` the tracker treats as this session's threads: a status for each is sent, and
+ * the ones that reach `onStatus` are ours. Asked this way so the tests need no accessor that
+ * only they would call.
+ */
+async function oursOf(ctx: Ctx, ids: string[]): Promise<Set<string>> {
+  const before = ctx.statuses.length;
+  for (const id of ids) ctx.status(id, { type: 'active', activeFlags: ['probe'] });
+  await settle(350);
+  return new Set(
+    ctx.statuses
+      .slice(before)
+      .filter((s) => s.status.type === 'active' && s.status.activeFlags.includes('probe'))
+      .map((s) => s.id),
+  );
 }
 
 const waitUntil = (ctx: Ctx, predicate: () => boolean, what: string, timeoutMs = 4000) =>
@@ -157,7 +177,6 @@ describe('identity discovery', () => {
     expect(ctx.identities).toEqual([]);
     await waitUntil(ctx, () => ctx.identities.length === 1, 'the identity');
     expect(ctx.identities).toEqual([id]);
-    expect(ctx.tracker.threadId).toBe(id);
     await waitUntil(ctx, () => ctx.resumeFrames().length >= 1, 'the first thread/resume');
     expect(ctx.resumeFrames()[0]?.['params']).toStrictEqual({ threadId: id, excludeTurns: true });
   });
@@ -206,7 +225,6 @@ describe('identity discovery', () => {
       await waitUntil(ctx, () => ctx.identities.length >= 1, 'an identity');
       await settle();
       expect(ctx.identities).toEqual([real]);
-      expect(ctx.tracker.threadId).toBe(real);
     });
   }
 
@@ -226,7 +244,6 @@ describe('identity discovery', () => {
     ctx.started('tui', crypto.randomUUID(), undefined, sec);
     await settle(420);
     expect(ctx.identities).toEqual([]);
-    expect(ctx.tracker.threadId).toBeNull();
     expect(ctx.resumeFrames()).toEqual([]);
     expect(ctx.logs.some((l) => l.includes('binding neither'))).toBe(true);
 
@@ -267,7 +284,6 @@ describe('identity discovery', () => {
     ctx.started('tui', crypto.randomUUID());
     await waitUntil(ctx, () => ctx.logs.some((l) => l.includes('could not record')), 'the log');
     await settle(200);
-    expect(ctx.tracker.threadId).toBeNull();
     expect(ctx.resumeFrames()).toEqual([]);
   });
 
@@ -289,13 +305,11 @@ describe('identity discovery', () => {
     await waitUntil(ctx, () => ctx.logs.some((l) => l.includes('claimed thread ids')), 'the log');
     await settle(500);
     expect(ctx.identities).toEqual([]);
-    expect(ctx.tracker.threadId).toBeNull();
   });
 
   test('a known thread (resume) needs no thread/started: it attaches on ready and records nothing', async () => {
     const known = crypto.randomUUID();
     const ctx = await setup({ expected: known });
-    expect(ctx.tracker.threadId).toBe(known);
     await waitUntil(ctx, () => ctx.resumeFrames().length >= 1, 'thread/resume on ready');
     expect(ctx.resumeFrames()[0]?.['params']).toStrictEqual({
       threadId: known,
@@ -306,7 +320,11 @@ describe('identity discovery', () => {
     // The title helper beside it changes nothing.
     ctx.started('title', crypto.randomUUID());
     await settle();
-    expect(ctx.tracker.threadId).toBe(known);
+    // Still the known thread, and only the known thread, that it keeps trying to attach to.
+    expect(ctx.identities).toEqual([]);
+    for (const frame of ctx.resumeFrames()) {
+      expect(frame['params']).toStrictEqual({ threadId: known, excludeTurns: true });
+    }
   });
 });
 
@@ -323,7 +341,6 @@ describe('rotation (/new in the TUI)', () => {
     ctx.started('tui', b);
     await waitUntil(ctx, () => ctx.identities.length === 2, 'the rotation');
     expect(ctx.identities).toEqual([a, b]);
-    expect(ctx.tracker.threadId).toBe(b);
     await waitUntil(
       ctx,
       () => ctx.resumeFrames().some((f) => (f['params'] as Json)['threadId'] === b),
@@ -342,7 +359,6 @@ describe('rotation (/new in the TUI)', () => {
     ctx.started('tui', crypto.randomUUID());
     await settle(420);
     expect(ctx.identities).toEqual([a]);
-    expect(ctx.tracker.threadId).toBe(a);
     expect(ctx.logs.some((l) => l.includes('while the tracked thread is active'))).toBe(true);
 
     ctx.status(a, { type: 'idle' });
@@ -394,10 +410,10 @@ describe('attach', () => {
     const id = crypto.randomUUID();
     ctx.started('tui', id);
     await waitUntil(ctx, () => ctx.resumeFrames().length >= 3, 'retried thread/resume frames');
-    expect(ctx.tracker.attached).toBe(false);
+    expect(ctx.attachCount()).toBe(0);
 
     ctx.server.createRollout(id);
-    await waitUntil(ctx, () => ctx.tracker.attached, 'the attach');
+    await waitUntil(ctx, () => ctx.attachCount() === 1, 'the attach');
     expect(ctx.logs.some((l) => l.includes(`attached to thread ${id.slice(0, 8)}`))).toBe(true);
     const count = ctx.resumeFrames().length;
     await settle(400);
@@ -443,12 +459,11 @@ describe('attach', () => {
     const id = crypto.randomUUID();
     ctx.server.createRollout(id);
     ctx.started('tui', id);
-    await waitUntil(ctx, () => ctx.tracker.attached, 'the first attach');
+    await waitUntil(ctx, () => ctx.attachCount() === 1, 'the first attach');
     const firstClient = ctx.server.clientIds()[0] as number;
 
     ctx.server.dropClient(firstClient);
-    await waitUntil(ctx, () => !ctx.tracker.attached, 'the tracker to notice the drop');
-    await waitUntil(ctx, () => ctx.tracker.attached, 'the attach on the new connection');
+    await waitUntil(ctx, () => ctx.attachCount() === 2, 'the attach on the new connection');
     const newClient = ctx.server.clientIds().find((c) => c !== firstClient);
     expect(newClient).toBeDefined();
     expect(
@@ -463,17 +478,16 @@ describe('attach', () => {
     const id = crypto.randomUUID();
     ctx.server.createRollout(id);
     ctx.started('tui', id);
-    await waitUntil(ctx, () => ctx.tracker.attached, 'the attach');
+    await waitUntil(ctx, () => ctx.attachCount() === 1, 'the attach');
     const frames = ctx.resumeFrames().length;
 
     ctx.tracker.handleDisconnected();
-    expect(ctx.tracker.attached).toBe(false);
     await settle(150);
     expect(ctx.resumeFrames()).toHaveLength(frames);
 
     ctx.tracker.handleReady();
     await waitUntil(ctx, () => ctx.resumeFrames().length === frames + 1, 'the new attach');
-    await waitUntil(ctx, () => ctx.tracker.attached, 'attached again');
+    await waitUntil(ctx, () => ctx.attachCount() === 2, 'attached again');
   });
 
   test('the status in the resume result is applied', async () => {
@@ -483,7 +497,7 @@ describe('attach', () => {
     ctx.started('tui', id, (t) => {
       t['status'] = null;
     });
-    await waitUntil(ctx, () => ctx.tracker.attached, 'the attach');
+    await waitUntil(ctx, () => ctx.attachCount() === 1, 'the attach');
     expect(ctx.statuses.some((s) => s.id === id)).toBe(true);
   });
 });
@@ -509,10 +523,6 @@ describe('status', () => {
     await waitUntil(ctx, () => ctx.statuses.length >= 3, 'three statuses');
     await settle(200);
     expect(ctx.statuses.map((s) => s.id).sort()).toEqual([a, child, grandchild].sort());
-    expect(ctx.tracker.isOurs(child)).toBe(true);
-    expect(ctx.tracker.isOurs(grandchild)).toBe(true);
-    expect(ctx.tracker.isOurs(unrelated)).toBe(false);
-    expect(ctx.tracker.isOurs(orphanChild)).toBe(false);
   });
 
   test('a chain of parents counts up to eight hops and no further', async () => {
@@ -525,10 +535,13 @@ describe('status', () => {
       ctx.started('tui', id, setKey('parentThreadId', i === 0 ? a : chain[i - 1]));
     });
     await settle(300);
-    expect(ctx.tracker.isOurs(chain[6] as string)).toBe(true);
-    expect(ctx.tracker.isOurs(chain[7] as string)).toBe(true);
-    expect(ctx.tracker.isOurs(chain[8] as string)).toBe(false);
-    expect(ctx.tracker.isOurs(chain[9] as string)).toBe(false);
+    const ours = await oursOf(ctx, chain);
+    expect([6, 7, 8, 9].map((i) => ours.has(chain[i] as string))).toEqual([
+      true,
+      true,
+      false,
+      false,
+    ]);
   });
 
   test('the memory of parent links is bounded: the oldest is forgotten first', async () => {
@@ -538,11 +551,20 @@ describe('status', () => {
     await waitUntil(ctx, () => ctx.identities.length === 1, 'the identity');
     const children = Array.from({ length: 520 }, () => crypto.randomUUID());
     for (const id of children) ctx.started('tui', id, setKey('parentThreadId', a));
-    await waitUntil(ctx, () => ctx.tracker.isOurs(children[519] as string), 'the last child');
+    await settle(400);
     // 520 links against a memory of 512: the first eight are gone, the ninth is not.
-    expect(ctx.tracker.isOurs(children[0] as string)).toBe(false);
-    expect(ctx.tracker.isOurs(children[7] as string)).toBe(false);
-    expect(ctx.tracker.isOurs(children[8] as string)).toBe(true);
+    const ours = await oursOf(ctx, [
+      children[0],
+      children[7],
+      children[8],
+      children[519],
+    ] as string[]);
+    expect([0, 7, 8, 519].map((i) => ours.has(children[i] as string))).toEqual([
+      false,
+      false,
+      true,
+      true,
+    ]);
   });
 
   test('a status that arrives during the window is delivered when the thread commits', async () => {
@@ -574,7 +596,7 @@ describe('what it logs, and after dispose', () => {
     ctx.started('tui', stray, setKey('cwd', ctx.otherDir));
     ctx.started('title', helper);
     ctx.started('tui', id);
-    await waitUntil(ctx, () => ctx.tracker.threadId === id, 'the identity');
+    await waitUntil(ctx, () => ctx.identities.includes(id), 'the identity');
     await waitUntil(ctx, () => ctx.resumeFrames().length >= 2, 'a retry, which logs');
     const log = ctx.logs.join('\n');
     expect(log).toContain(id.slice(0, 8));

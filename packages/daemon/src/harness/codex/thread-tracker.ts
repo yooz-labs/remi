@@ -107,16 +107,8 @@ export class ThreadTracker {
     this.current = deps.expectedThreadId;
   }
 
-  get threadId(): string | null {
-    return this.current;
-  }
-
-  get attached(): boolean {
-    return this.isAttached;
-  }
-
   /** The tracked thread, or a thread whose parent chain reaches it. */
-  isOurs(threadId: string): boolean {
+  private isOurs(threadId: string): boolean {
     if (this.current === null) return false;
     if (threadId === this.current) return true;
     let id = threadId;
