@@ -41,6 +41,28 @@ function fileRandom(...draws: string[]): r.Rng {
 const machine = await r.signerFromSeed(unhex(V.identities.machine.seed));
 const device = await r.signerFromSeed(unhex(V.identities.device.seed));
 const pairingSecret = unhex(V.admission.pairingSecret);
+
+/**
+ * RFC 8032 signing is deterministic on Bun, workerd and OpenSSL, but WebKit and CryptoKit sign
+ * with a random component. A recomputed signature is therefore checked by VERIFICATION, and
+ * byte for byte only on an engine observed to sign deterministically; the byte-exact replay
+ * and the regeneration pin need that determinism and are skipped (visibly) without it.
+ */
+const probe = new TextEncoder().encode('relay v2 signing determinism probe');
+const firstProbe = hex(await machine.sign(probe));
+const deterministicSigning = firstProbe === hex(await machine.sign(probe));
+
+async function sameSignature(
+  signer: r.Signer,
+  input: Uint8Array,
+  recorded: string,
+  publicKey: Uint8Array,
+): Promise<void> {
+  const fresh = await signer.sign(input);
+  expect(await r.verifySignature(publicKey, input, fresh)).toBe(true);
+  expect(await r.verifySignature(publicKey, input, unhex(recorded))).toBe(true);
+  if (deterministicSigning) expect(hex(fresh)).toBe(recorded);
+}
 const liveOffer: r.PairingOffer = {
   secret: pairingSecret,
   expiresAtMs: NOW + 600_000,
@@ -73,7 +95,7 @@ async function clientFor(name: 'pair' | 'resume', machinePublicKey = machine.pub
 }
 
 describe('relay v2 vectors: the committed file', () => {
-  test('regenerating the vectors produces no change', async () => {
+  test.skipIf(!deterministicSigning)('regenerating the vectors produces no change', async () => {
     expect(render(await generateVectors())).toBe(file);
   });
 
@@ -162,14 +184,14 @@ for (const name of ['pair', 'resume'] as const) {
       const h1 = await r.transcriptH1(t);
       expect(hex(h1)).toBe(s.h1);
       expect(hex(r.hostSigningInput(h1))).toBe(s.hostSigningInput);
-      expect(hex(await machine.sign(r.hostSigningInput(h1)))).toBe(s.hostSignature);
+      await sameSignature(machine, r.hostSigningInput(h1), s.hostSignature, machine.publicKey);
       const keys = await r.deriveSessionKeys(unhex(s.z), h1, psk);
       expect([hex(keys.c2h), hex(keys.h2c)]).toEqual([s.keys.c2h, s.keys.h2c]);
       const name2 = new TextEncoder().encode(s.deviceName);
       const h2 = await r.transcriptH2(h1, unhex(s.hostSignature), device.publicKey, name2);
       expect(hex(h2)).toBe(s.h2);
       expect(hex(r.clientSigningInput(h2))).toBe(s.clientSigningInput);
-      expect(hex(await device.sign(r.clientSigningInput(h2)))).toBe(s.clientSignature);
+      await sameSignature(device, r.clientSigningInput(h2), s.clientSignature, device.publicKey);
       expect(await r.fingerprintOf(device.publicKey, machine.publicKey)).toBe(s.fingerprint);
     });
 
@@ -180,33 +202,39 @@ for (const name of ['pair', 'resume'] as const) {
       }
     });
 
-    test('the step functions replayed with the file draws produce the file frames byte for byte', async () => {
-      const offers = name === 'pair' ? [liveOffer] : [];
-      const policy: r.HostPolicy = { offers, isEnrolled: (k) => hex(k) === hex(device.publicKey) };
-      const c1 = await clientFor(name);
-      const h1 = await hostFor(name, policy);
-      const c2 = await c1.onHelloAck(h1.helloAck, NOW + 10);
-      const h2 = await h1.onAuth(c2.auth, policy, NOW + 20);
-      const { ready, channel: host } = await h2.ready(NOW + 30, recorder().io);
-      const clientIo = recorder();
-      const client = await c2.onReady(ready, NOW + 40, clientIo.io);
-      expect([c1.hello, h1.helloAck, c2.auth, ready]).toEqual([
-        s.hello,
-        s.helloAck,
-        s.auth,
-        s.ready,
-      ]);
-      expect([c2.fingerprint, h2.fingerprint]).toEqual([s.fingerprint, s.fingerprint]);
-      for (const f of s.data.c2h) {
-        await client.send(unhex(f.plaintext));
-        expect(hex(clientIo.frames[f.counter - 1] as Uint8Array)).toBe(f.frame);
-        expect(hex(data(await host.receive(unhex(f.frame))))).toBe(f.plaintext);
-      }
-      await client.bye();
-      expect(hex(clientIo.frames[10] as Uint8Array)).toBe(s.bye.c2h.frame);
-      expect(await host.receive(unhex(s.bye.c2h.frame))).toBeNull();
-      expect(await host.transportClosed()).toBe('clean');
-    });
+    test.skipIf(!deterministicSigning)(
+      'the step functions replayed with the file draws produce the file frames byte for byte',
+      async () => {
+        const offers = name === 'pair' ? [liveOffer] : [];
+        const policy: r.HostPolicy = {
+          offers,
+          isEnrolled: (k) => hex(k) === hex(device.publicKey),
+        };
+        const c1 = await clientFor(name);
+        const h1 = await hostFor(name, policy);
+        const c2 = await c1.onHelloAck(h1.helloAck, NOW + 10);
+        const h2 = await h1.onAuth(c2.auth, policy, NOW + 20);
+        const { ready, channel: host } = await h2.ready(NOW + 30, recorder().io);
+        const clientIo = recorder();
+        const client = await c2.onReady(ready, NOW + 40, clientIo.io);
+        expect([c1.hello, h1.helloAck, c2.auth, ready]).toEqual([
+          s.hello,
+          s.helloAck,
+          s.auth,
+          s.ready,
+        ]);
+        expect([c2.fingerprint, h2.fingerprint]).toEqual([s.fingerprint, s.fingerprint]);
+        for (const f of s.data.c2h) {
+          await client.send(unhex(f.plaintext));
+          expect(hex(clientIo.frames[f.counter - 1] as Uint8Array)).toBe(f.frame);
+          expect(hex(data(await host.receive(unhex(f.frame))))).toBe(f.plaintext);
+        }
+        await client.bye();
+        expect(hex(clientIo.frames[10] as Uint8Array)).toBe(s.bye.c2h.frame);
+        expect(await host.receive(unhex(s.bye.c2h.frame))).toBeNull();
+        expect(await host.transportClosed()).toBe('clean');
+      },
+    );
 
     test('the handshake frames are sealed exactly as documented', async () => {
       const keys = { c2h: unhex(s.keys.c2h), h2c: unhex(s.keys.h2c) };
@@ -269,8 +297,18 @@ describe('relay v2 vectors: admission, token and sealing', () => {
     const nonce = unhex(a.nonce);
     expect(hex(r.admissionInput('host', rid, nonce))).toBe(a.hostInput);
     expect(hex(r.admissionInput('client', rid, nonce))).toBe(a.clientInput);
-    expect(hex(await r.signAdmission(machine, 'host', rid, nonce))).toBe(a.hostSignature);
-    expect(hex(await r.signAdmission(device, 'client', rid, nonce))).toBe(a.clientSignature);
+    await sameSignature(
+      machine,
+      r.admissionInput('host', rid, nonce),
+      a.hostSignature,
+      machine.publicKey,
+    );
+    await sameSignature(
+      device,
+      r.admissionInput('client', rid, nonce),
+      a.clientSignature,
+      device.publicKey,
+    );
     const ticket = await r.admitTag(unhex(a.pairingSecret));
     expect(hex(ticket)).toBe(a.ticket);
     expect(hex(await r.admitTagHash(ticket))).toBe(a.ticketHash);
