@@ -134,8 +134,11 @@ const commandHelp: Record<Subcommand, string[]> = {
       '  extra permissions, questions) show up as a notice to answer in the terminal. With Codex',
     ),
     dim("  'Approve for me' Codex approves commands itself and remi sees no request."),
-    dim('  Turn notifications do not reach the phone yet, and a message typed from the phone is'),
-    dim('  refused: type in the terminal.'),
+    dim(
+      '  A finished turn and a failed one are pushed to the phone, and the session history is shown',
+    ),
+    dim('  read-only (turn pushes and history: not run against a real Codex yet).'),
+    dim('  A message typed from the phone is refused: type in the terminal.'),
     dim(
       '  remi never starts or stops the shared Codex app-server; if it cannot be reached for 30 s',
     ),
