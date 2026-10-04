@@ -188,7 +188,10 @@ describe('createCreateSessionHandlers', () => {
     const msg = sendCalls[0]?.message as { type: string; success: boolean; error?: string };
     expect(msg.type).toBe('create_session_response');
     expect(msg.success).toBe(false);
-    expect(msg.error).toContain('daemon crashed during spawn');
+    // A client is told only that the session could not be started: the failure itself (a path, a
+    // pid, a log file) goes to the host's log (G8), so the text of the thrown error is not here.
+    expect(msg.error).toContain('could not be started');
+    expect(msg.error).not.toContain('daemon crashed during spawn');
     // Critical: the try/finally around spawningPorts.add/delete MUST run even
     // on throw, or concurrent create requests would skip this port forever.
     expect(spawningPorts.has(20007)).toBe(false);

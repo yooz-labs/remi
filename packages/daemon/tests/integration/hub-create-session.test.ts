@@ -25,6 +25,7 @@ import type {
   ProtocolMessage,
 } from '@remi/shared/protocol.ts';
 import { createCreateSessionRequest, serialize } from '@remi/shared/protocol.ts';
+import { SessionStore } from '../../src/session/session-store.ts';
 import {
   type FakeAgents,
   collect,
@@ -49,6 +50,8 @@ interface Running {
   hub: HubHandle;
   agents: FakeAgents;
   server: FakeAppServer;
+  /** What the hub wrote to stdout and stderr since it was ready: its log, in daemon mode. */
+  log: { text: string };
 }
 const running: Running[] = [];
 const sleepers: Array<Bun.Subprocess> = [];
@@ -83,7 +86,9 @@ async function startHub(which: { codex?: boolean; claude?: boolean }): Promise<R
   const agents = installFakeAgents(dirs.home, which);
   const server = FakeAppServer.start();
   const hub = await spawnHub(dirs, { ...agents.env, CODEX_HOME: server.codexHome });
-  const r = { hub, agents, server };
+  const r = { hub, agents, server, log: { text: '' } };
+  collect(hub.proc.stdout as ReadableStream<Uint8Array>, r.log);
+  collect(hub.proc.stderr as ReadableStream<Uint8Array>, r.log);
   running.push(r);
   return r;
 }
@@ -96,11 +101,12 @@ interface Asked {
 /** Connect, send one create request built by the shipping factory, and wait for its response. */
 async function ask(
   r: Running,
-  options: { harness?: unknown; args?: unknown } = {},
+  options: { harness?: unknown; args?: unknown; directory?: unknown } = {},
 ): Promise<Asked> {
   const { ws, received } = await connectAndHello(r.hub.port);
   try {
-    const request = createCreateSessionRequest(r.hub.work, {
+    const directory = 'directory' in options ? options.directory : r.hub.work;
+    const request = createCreateSessionRequest(directory as string | undefined, {
       harness: options.harness as HarnessId | undefined,
       args: options.args as readonly string[] | undefined,
     });
@@ -162,6 +168,21 @@ describe('a hub creating a session for a harness (#1179)', () => {
     // The hub cannot know that Codex reached its prompt: it says so, and what to do.
     expect(noticeOf(response)).toContain('remi attach');
     expect(noticeOf(response)).toContain('Update or Trust');
+    // The first line is the condition; the second the remedy, naming THIS session by the address
+    // `remi attach` accepts (a bare `remi attach` takes the newest session, which may be another).
+    const [headline, remedy, ...rest] = (noticeOf(response) as string).split('\n');
+    expect(rest).toEqual([]);
+    expect(headline).toContain('without a terminal');
+    expect(headline).toContain('Update or Trust prompt');
+    expect(headline).toContain('already exited');
+    expect(headline).not.toContain('remi attach');
+    expect(remedy).toContain(
+      `\`remi attach <host>:${response.port}/${(response.sessionId as string).slice(0, 8)}\``,
+    );
+    expect(remedy).toContain('not been checked against a real Codex');
+    // Nothing host-local: no home directory, no pid.
+    expect(noticeOf(response)).not.toContain(r.hub.home);
+    expect(noticeOf(response)).not.toContain(r.hub.work);
 
     // The child daemon launched `codex --no-alt-screen <the validated arguments>`.
     expect(await waitForArgv(r.agents.codexDir)).toEqual([
@@ -275,15 +296,83 @@ describe('a hub creating a session for a harness (#1179)', () => {
 
     const refused = await ask(r, { harness: 'codex' });
     expect(refused.response.success).toBe(false);
-    expect(refused.response.error).toContain('remi codex will not start');
-    expect(refused.response.error).toContain(`pid ${sleeper.pid}`);
-    expect(refused.response.error).toContain('remi stop --all');
+    const error = refused.response.error as string;
+    expect(error).toContain('older remi');
+    // The client is told what is refused and the next step, never a pid, a path, or a command
+    // that ends the host's sessions (G8): those are in the hub's log, which is the host's.
+    expect(error).not.toContain(String(sleeper.pid));
+    expect(error).not.toContain(r.hub.home);
+    expect(error).not.toContain('remi stop');
+    await pollUntil(
+      () => r.log.text.includes(`pid ${sleeper.pid}`) && r.log.text.includes('legacy-session.json'),
+      10000,
+      "the hub's log to name the older remi",
+    );
     expect(fs.existsSync(path.join(r.agents.codexDir, 'argv'))).toBe(false);
 
     // The gate is about Codex records: a Claude request is not held up by it.
     const claude = await ask(r, { harness: 'claude' });
     expect(claude.response.success).toBe(true);
   }, 90000);
+
+  test('a resume of a thread a live session holds is refused before anything is spawned, naming that session (H2)', async () => {
+    const r = await startHub({ claude: true, codex: true });
+    const THREAD = '01950000-0000-7000-8000-0000000000aa';
+    const holder = Bun.spawn(['sleep', '60']);
+    sleepers.push(holder);
+    const remiSessionId = crypto.randomUUID();
+    new SessionStore(path.join(r.hub.home, '.remi', 'sessions.json')).save({
+      remiSessionId,
+      claudeSessionId: null,
+      harness: 'codex',
+      harnessSessionId: THREAD,
+      projectPath: r.hub.work,
+      port: 19999,
+      pid: holder.pid,
+      startedAt: new Date().toISOString(),
+      exitedAt: null,
+      exitCode: null,
+    });
+
+    const { response } = await ask(r, { harness: 'codex', args: ['resume', THREAD.toUpperCase()] });
+
+    expect(response.success).toBe(false);
+    const id8 = remiSessionId.slice(0, 8);
+    const error = response.error as string;
+    expect(error).toContain(`already open in remi session ${id8} (port 19999)`);
+    expect(error).toContain(`\`remi attach <host>:19999/${id8}\``);
+    expect(error).toContain(THREAD);
+    expect(error).not.toContain(r.hub.home);
+    expect(error).not.toContain(String(holder.pid));
+    // The refusal precedes the spawn, so absence now is absence for good.
+    expect(childEntries(r)).toEqual([]);
+    expect(fs.existsSync(path.join(r.agents.codexDir, 'argv'))).toBe(false);
+    // The log carries the last eight characters of the thread, never the whole id.
+    expect(r.log.text).toContain(THREAD.slice(-8));
+    expect(r.log.text).not.toContain(THREAD);
+  }, 90000);
+
+  test.each([
+    ['a hyphen-led directory a child would re-parse as a remi flag', '--no-auth'],
+    ['a directory with a NUL byte', '/tmp/a\u0000b'],
+    ['a directory with a newline', '/tmp/a\nb'],
+    ['a directory that is not a string', 5],
+    ['a null directory', null],
+  ])(
+    '%s is refused for a plain and a Codex request, and nothing is spawned (G7)',
+    async (_name, directory) => {
+      const r = await startHub({ claude: true, codex: true });
+      for (const options of [{}, { harness: 'codex' }]) {
+        const { response } = await ask(r, { ...options, directory });
+        expect(response.success).toBe(false);
+        expect(response.error).toContain('Invalid directory');
+      }
+      expect(childEntries(r)).toEqual([]);
+      expect(fs.existsSync(path.join(r.agents.codexDir, 'argv'))).toBe(false);
+      expect(fs.existsSync(path.join(r.agents.claudeDir, 'argv'))).toBe(false);
+    },
+    90000,
+  );
 
   test('a hub whose own version does not parse still starts its Codex child: the child does not count its parent hub as an older remi (H5)', async () => {
     const r = await startHub({ codex: true });
