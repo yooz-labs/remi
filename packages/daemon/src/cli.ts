@@ -426,14 +426,26 @@ const claudeArgs = [...parsedArgs.claudeArgs];
 // gives a child daemon. This build has adapters for Claude and Codex only.
 const harnessId: HarnessId = parsedArgs.harness ?? (cliSubcommand === 'codex' ? 'codex' : 'claude');
 {
+  // `--host` sends only what follows `--`. `--resume` is remi's own flag, so `parseArgs` consumes it
+  // and it is not a loose word (G2): without this a Claude `remi new --host h --resume X` looked X
+  // up in the LOCAL store (Session not found, or a silently fresh remote session when a local one
+  // held the id), the silent-drop class of G2 (#1204 round 2, P5).
+  const resumeWithHost =
+    cliHost !== undefined &&
+    cliResume !== undefined &&
+    (cliSubcommand === 'new' || cliSubcommand === undefined || cliSubcommand === 'codex');
   const refusal =
-    harnessId !== 'claude' && harnessId !== 'codex'
-      ? `This build has no ${harnessId} adapter.`
-      : harnessId !== 'claude' && serveMode
-        ? 'The hub hosts no session of its own, so it takes no --harness.'
-        : harnessId === 'codex' && cliResume !== undefined
-          ? "--resume is remi's flag for Claude sessions; resume a Codex thread with `remi codex resume <thread id>` (`remi --sessions` lists the ids)."
-          : null;
+    resumeWithHost && harnessId === 'codex'
+      ? 'remi: --resume is not sent to a remote host; for Codex put the resume after --: remi codex --host <host> -- resume <thread id>'
+      : resumeWithHost
+        ? 'remi: --resume is not sent to a remote host; put it after --: -- --resume <uuid>'
+        : harnessId !== 'claude' && harnessId !== 'codex'
+          ? `This build has no ${harnessId} adapter.`
+          : harnessId !== 'claude' && serveMode
+            ? 'The hub hosts no session of its own, so it takes no --harness.'
+            : harnessId === 'codex' && cliResume !== undefined
+              ? "--resume is remi's flag for Claude sessions; resume a Codex thread with `remi codex resume <thread id>` (`remi --sessions` lists the ids)."
+              : null;
   if (refusal !== null) {
     console.error(refusal);
     process.exit(2);
