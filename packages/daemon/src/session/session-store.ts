@@ -316,21 +316,25 @@ export class SessionHarnessMismatchError extends Error {
 /**
  * Resolve a CLI resume query without ever choosing the first ambiguous row.
  *
- * `opts.harness` is the harness the caller resumes (`claude` for `--resume`).
- * An exact or prefix Remi id that names a record of another harness throws
- * `SessionHarnessMismatchError`, so a Codex session is never resumed as a
- * Claude one. The fallback on the harness's own session id matches only among
- * that harness's records: for Claude, `claudeSessionId` of Claude records, so a
- * non-Claude record can never be found by a Claude id. Without `opts.harness`
- * a Remi id resolves whatever the record's harness and the fallback is
- * Claude's.
+ * `opts.harness` is the harness the caller resumes; only `claude` (`remi --resume`) has a caller
+ * (#1179 removed the branch that matched another harness's own session id: `remi --sessions`
+ * prints the whole resume command, and `remi codex resume <thread id>` takes a whole thread id,
+ * so nothing resolves a Codex record by remi id or prefix). An exact or prefix Remi id that
+ * names a record of another harness throws `SessionHarnessMismatchError`, so a Codex session is
+ * never resumed as a Claude one. The fallback matches `claudeSessionId` of Claude records only,
+ * so a non-Claude record can never be found by a Claude id. Without `opts.harness` a Remi id
+ * resolves whatever the record's harness.
  */
 export function resolveStoredSession(
   sessions: readonly StoredSession[],
   query: string,
-  opts: { readonly harness?: HarnessId } = {},
+  opts: { readonly harness?: 'claude' } = {},
 ): StoredSession | null {
   const { harness } = opts;
+  // The type already refuses another harness; a cast around it must not get a Claude record back.
+  if (harness !== undefined && harness !== DEFAULT_HARNESS) {
+    throw new Error(`resolveStoredSession resolves ${DEFAULT_HARNESS} sessions only`);
+  }
   const checked = (session: StoredSession | null): StoredSession | null => {
     if (session && harness !== undefined && storedHarness(session) !== harness) {
       throw new SessionHarnessMismatchError(session);
@@ -350,15 +354,8 @@ export function resolveStoredSession(
   }
   if (prefixRemi.length === 1) return checked(prefixRemi[0] ?? null);
 
-  if (harness === undefined || harness === DEFAULT_HARNESS) {
-    return selectClaudeSessionMatch(
-      sessions.filter((session) => isClaudeRecord(session) && session.claudeSessionId === query),
-      query,
-    );
-  }
-  return selectSessionMatch(
-    sessions.filter((session) => session.harness === harness && session.harnessSessionId === query),
-    harness,
+  return selectClaudeSessionMatch(
+    sessions.filter((session) => isClaudeRecord(session) && session.claudeSessionId === query),
     query,
   );
 }
