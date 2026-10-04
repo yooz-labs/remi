@@ -277,16 +277,15 @@ export function createCodexSession(
     // Taken at construction: `start()` follows within milliseconds, and the tracker allows 5 s.
     spawnedAtMs: Date.now(),
     expectedThreadId: checked.resumeThreadId,
+    // This session's own record is no special case: a thread it holds is the tracker's own, and the
+    // tracker never takes a thread twice.
     claimedByOthers: () =>
       new Set(
         deps.sessionStore
           .list()
           .filter(
             (s) =>
-              !isClaudeRecord(s) &&
-              s.exitedAt === null &&
-              s.remiSessionId !== sessionId &&
-              typeof s.harnessSessionId === 'string',
+              !isClaudeRecord(s) && s.exitedAt === null && typeof s.harnessSessionId === 'string',
           )
           .map((s) => s.harnessSessionId as string),
       ),

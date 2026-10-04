@@ -340,17 +340,39 @@ describe('CodexHarness', () => {
     });
 
     test('a wrapper session gets the whole terminal: Codex reserves no status row', async () => {
-      // The shell asks for a reserved row (5 here); the Codex launch never takes one.
-      const a = create(buildDeps(startServer()), [], true);
-      await a.session.start();
-      await until(() => fs.existsSync(path.join(fakeDir, 'size')), 'the terminal size');
-      await until(
-        () => fs.readFileSync(path.join(fakeDir, 'size'), 'utf8').trim() !== '',
-        'a size',
-      );
-      expect(fs.readFileSync(path.join(fakeDir, 'size'), 'utf8').trim()).toBe(
-        `${process.stdout.rows || 40} ${process.stdout.columns || 120}`,
-      );
+      // A terminal of a size nothing else would give, so the default 120x40 cannot pass for it.
+      const original = {
+        rows: Object.getOwnPropertyDescriptor(process.stdout, 'rows'),
+        columns: Object.getOwnPropertyDescriptor(process.stdout, 'columns'),
+      };
+      Object.defineProperty(process.stdout, 'rows', {
+        value: 33,
+        configurable: true,
+        writable: true,
+      });
+      Object.defineProperty(process.stdout, 'columns', {
+        value: 77,
+        configurable: true,
+        writable: true,
+      });
+      try {
+        // The shell asks for a reserved row (5 here); the Codex launch never takes one.
+        const a = create(buildDeps(startServer()), [], true);
+        await a.session.start();
+        await until(
+          () =>
+            fs.existsSync(path.join(fakeDir, 'size')) &&
+            fs.readFileSync(path.join(fakeDir, 'size'), 'utf8').trim() !== '',
+          'the terminal size',
+        );
+        expect(fs.readFileSync(path.join(fakeDir, 'size'), 'utf8').trim()).toBe('33 77');
+      } finally {
+        for (const key of ['rows', 'columns'] as const) {
+          const descriptor = original[key];
+          if (descriptor) Object.defineProperty(process.stdout, key, descriptor);
+          else Reflect.deleteProperty(process.stdout, key);
+        }
+      }
     });
 
     test('a prompt is passed after --, and a resume as the subcommand last', async () => {
@@ -482,6 +504,34 @@ describe('CodexHarness', () => {
         'thinking again: the main thread is still active',
       );
       expect(statuses).toEqual(['thinking', 'waiting', 'thinking']);
+    });
+
+    test('a subagent that waits keeps the session waiting while the main thread reports active', async () => {
+      const { server, statuses, sessionId } = await startedSession();
+      const main = crypto.randomUUID();
+      const child = crypto.randomUUID();
+      server.emit(tui(main), { broadcast: true });
+      await until(
+        () => bindingStore.getIdentity(sessionId)?.harnessSessionId === main,
+        'the identity',
+      );
+      server.emit(
+        threadStartedFrame('tui', { id: child, cwd: workDir, createdAtSec: nowSec() }, (t) => {
+          t['parentThreadId'] = main;
+        }),
+        { broadcast: true },
+      );
+      // The subagent reports first, the main thread after it: the order must not matter.
+      server.emit(
+        threadStatusFrame(child, { type: 'active', activeFlags: ['waitingOnApproval'] }),
+        { broadcast: true },
+      );
+      await until(() => statuses.at(-1) === 'waiting', 'waiting from the subagent');
+      server.emit(threadStatusFrame(main, { type: 'active', activeFlags: [] }), {
+        broadcast: true,
+      });
+      await sleep(400);
+      expect(statuses.at(-1)).toBe('waiting');
     });
 
     test("a thread that is not the session's changes nothing: the session reports only its own thread's idle", async () => {
