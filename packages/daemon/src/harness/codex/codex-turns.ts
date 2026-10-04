@@ -20,9 +20,11 @@
  *   `on_turn_complete` (a failed turn is the one turn end a user must not miss),
  *   and it carries no `lastAssistantMessage`: a failed turn's earlier answer is
  *   not what went wrong.
- * - `interrupted`: `turnSucceeded` only. Someone stopped the turn (the phone's
- *   No ends it, ADR 0033 Phase 4 item 2, so does Esc); that is neither a "done"
- *   push nor a failure, and it proves a failure notice stale.
+ * - `interrupted`: `turnSucceeded` only. Someone stopped the turn; that is neither
+ *   a "done" push nor a failure, and it proves a failure notice stale. That a turn
+ *   ended by the phone's No (`cancel`), Esc or `turn/interrupt` reports this status
+ *   is an assumption: no recorded frame shows it (the spike's decline run answered
+ *   `decline`, not `cancel`, and reported `completed`), and live step LV-5 checks it.
  *
  * Only the session's own thread counts (`threadRole` is `main`): a subagent's
  * turn ends many times inside the main turn, and another window's thread is not

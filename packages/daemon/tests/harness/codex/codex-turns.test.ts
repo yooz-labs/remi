@@ -10,9 +10,11 @@
  * are the production ones. The only doubles are the network and the thread roles a test chooses.
  *
  * What no real frame shows, and live step LV-5 checks: a FAILED and an INTERRUPTED
- * `turn/completed` (the decline run's phone No ends the turn, yet the real frame says
- * `completed`). Those two are the real frame with `status` and `error` set to the shapes of the
- * generated schema (`helpers/codex-threads.ts`).
+ * `turn/completed`. The decline run answered `decline` (`expA-decline.jsonl:65`), not the
+ * `cancel` the phone's No sends, and its `turn/completed` says `completed`; no recorded frame
+ * shows the status of a turn that `cancel`, Esc or `turn/interrupt` ended. Those two are the
+ * real frame with `status` and `error` set to the shapes of the generated schema
+ * (`helpers/codex-threads.ts`).
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
@@ -124,7 +126,7 @@ describe('createCodexTurns: turn/completed to turn events', () => {
       ]);
     });
 
-    test("the real frame of the decline run (the phone's No): still a completed turn, with its own final answer", () => {
+    test('the real frame of the decline run (the answer was `decline`, not the phone’s `cancel`): a completed turn, with its own final answer', () => {
       const real = JSON.parse(JSON.stringify(fixtureFrameAt('expA-decline.jsonl', 141).frame)) as {
         params: { threadId: string; turn: { status: string; durationMs: number } };
       };
