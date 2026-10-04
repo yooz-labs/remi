@@ -223,6 +223,15 @@ for mode in ["pair", "resume"] {
             let swapped = frameAad(type: 3, direction: 3 - dir, counter: counter)
             check(gcmOpen(key: key, nonce: frameNonce(counter), aad: swapped, body: frame.subdata(in: 9..<frame.count)) == nil, "\(mode) \(dirName) \(counter) refuses the other direction", kind: "direction")
         }
+        // the BYE that follows the ten data frames: type 4, counter 11, no plaintext, 25 bytes
+        let bye = (s["bye"] as! Obj)[dirName] as! Obj
+        let byeFrame = data(bye, "frame")
+        let byeAad = frameAad(type: 4, direction: dir, counter: 11)
+        check(byeFrame.count == 25 && byeFrame[0] == 4 && byeFrame.subdata(in: 1..<9) == be64(11), "\(mode) \(dirName) BYE header and length")
+        check(hex(byeAad) == str(bye, "aad") && hex(frameNonce(11)) == str(bye, "nonce"), "\(mode) \(dirName) BYE nonce and AAD")
+        check(gcmOpen(key: key, nonce: frameNonce(11), aad: byeAad, body: byeFrame.subdata(in: 9..<25))?.isEmpty == true, "\(mode) \(dirName) BYE opens to an empty plaintext", kind: "bye")
+        check(gcmOpen(key: key, nonce: frameNonce(11), aad: frameAad(type: 3, direction: dir, counter: 11), body: byeFrame.subdata(in: 9..<25)) == nil, "\(mode) \(dirName) BYE does not open under the data type", kind: "bye")
+        check(gcmOpen(key: key, nonce: frameNonce(11), aad: frameAad(type: 4, direction: 3 - dir, counter: 11), body: byeFrame.subdata(in: 9..<25)) == nil, "\(mode) \(dirName) BYE does not open under the other direction", kind: "bye")
     }
 }
 
@@ -280,8 +289,10 @@ for n in V["negative"] as! [Obj] {
         check(ok == accept, "\(kind): \(name)", kind: kind)
 
     case "frame_length":
+        // section 7 checks 1 to 6 for a frame of this type and length (no tag, no counter order)
         let len = int(n, "length")
-        let ok = len >= minFrame && len <= maxFrame
+        let type = int(n, "type")
+        let ok = len >= 25 && len <= maxFrame && (type == 3 || type == 4) && (type == 4 ? len == 25 : len >= minFrame)
         check(ok == accept, "\(kind): \(name)", kind: kind)
 
     case "auth_open":
@@ -326,19 +337,24 @@ for n in V["negative"] as! [Obj] {
         let direction = UInt8(int(n, "direction"))
         var next = u64(n, "startRecv")
         var accepted = 0
+        var ended = false
         var code: String? = nil
         for f in n["frames"] as! [String] {
             let b = unhex(f)
-            if b.count < minFrame { code = "MALFORMED"; break }
+            if b.count < 25 { code = "MALFORMED"; break }
             if b.count > maxFrame { code = "OVERSIZE"; break }
-            if b[0] != 3 { code = "TYPE"; break }
+            let type = b[0]
+            if type != 3 && type != 4 { code = "TYPE"; break }
+            if type == 4 ? b.count != 25 : b.count < minFrame { code = "MALFORMED"; break }
             let counter = b.subdata(in: 1..<9).reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
             if counter > maxCounter { code = "COUNTER_LIMIT"; break }
+            if ended { code = "ENDED"; break }
             if counter != next { code = "COUNTER"; break }
-            let aad = frameAad(type: 3, direction: direction, counter: counter)
+            let aad = frameAad(type: type, direction: direction, counter: counter)
             if gcmOpen(key: key, nonce: frameNonce(counter), aad: aad, body: b.subdata(in: 9..<b.count)) == nil { code = "DECRYPT"; break }
             next = counter + 1
             accepted += 1
+            if type == 4 { ended = true }
         }
         let wantedCode = n["code"] as? String
         check(accepted == int(n, "accepted") && code == wantedCode, "\(kind): \(name) (accepted \(accepted), code \(code ?? "none"))", kind: kind)
