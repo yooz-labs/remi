@@ -18,6 +18,7 @@ The Worker is deployed by hand: there is no deploy workflow.
    ```
 
    The signaling suite starts the real Durable Object in workerd through Miniflare; it needs no account and no network after install.
+   `E2E_BUNDLER=esbuild bun test packages/signaling/tests/e2e` runs it against an esbuild bundle (the bundler `wrangler` uses) instead of `Bun.build`.
    Never kill a test run with `SIGKILL`: `workerd` survives it.
 
 2. Decide when.

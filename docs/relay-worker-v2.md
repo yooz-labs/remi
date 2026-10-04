@@ -212,5 +212,6 @@ Verified by tests that run the real Worker and Durable Object in workerd under `
 - The WebSocket message ceiling.
   Cloudflare documents **32 MiB** for a message received by a Worker or Durable Object since 2025-10-31 (1 MiB before), and closes a larger message with code 1009 ([limits](https://developers.cloudflare.com/durable-objects/platform/limits/), [WebSockets](https://developers.cloudflare.com/workers/runtime-apis/websockets/), [changelog](https://developers.cloudflare.com/changelog/post/2025-10-31-increased-websocket-message-size-limit/)).
   `MAX_FRAME` (524,313 bytes) is below even the old figure, so `MAX_PLAINTEXT` is unchanged; this was read from the documentation, not measured on the deployed runtime.
-- That the Bun-built test bundle behaves like wrangler's esbuild bundle, and that the migration `v4` applies on the first deploy (migrations are not exercised by the tests).
+- `wrangler deploy` itself and its bundle: the tests bundle with `Bun.build`, and `E2E_BUNDLER=esbuild bun test packages/signaling/tests/e2e` runs the suite against an esbuild 0.27.0 bundle (the bundler wrangler 4.58.0 uses, without wrangler's own steps), which passed; nothing was deployed or dry-run.
+- That the migration `v4` applies on the first deploy (migrations are not exercised by the tests).
 - The relay engine check on the deployed runtime (ADR 0034 section 19): a step in the runbook.

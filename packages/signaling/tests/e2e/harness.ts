@@ -17,7 +17,10 @@
  * process is cleaned up on a normal exit, SIGINT and SIGTERM only.
  */
 
+import { realpathSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { Miniflare } from 'miniflare';
 
 const PKG = resolve(import.meta.dir, '../..');
@@ -40,8 +43,35 @@ export interface TestWorker {
 
 let bundled: Promise<string> | undefined;
 
+/**
+ * Bundle with esbuild, the bundler wrangler uses, instead of `Bun.build`. Off by default: set
+ * `E2E_BUNDLER=esbuild` to run the whole suite against that bundle, which is the closest a test
+ * gets to what `wrangler deploy` ships without deploying. esbuild comes with wrangler.
+ */
+async function bundleWithEsbuild(): Promise<string> {
+  const wrangler = realpathSync(resolve(PKG, 'node_modules/wrangler/package.json'));
+  const esbuildPath = createRequire(wrangler).resolve('esbuild');
+  const esbuild = (await import(pathToFileURL(esbuildPath).href)) as {
+    build(options: object): Promise<{ outputFiles: { text: string }[] }>;
+  };
+  const built = await esbuild.build({
+    entryPoints: [`${PKG}/tests/e2e/test-entry.ts`],
+    bundle: true,
+    format: 'esm',
+    platform: 'neutral',
+    conditions: ['workerd', 'worker', 'browser'],
+    mainFields: ['browser', 'module', 'main'],
+    write: false,
+    logLevel: 'silent',
+  });
+  const output = built.outputFiles[0];
+  if (!output) throw new Error('esbuild produced no output');
+  return output.text;
+}
+
 /** Bundle the test entry (the real Worker plus the debug seams) once per test file. */
 function bundle(): Promise<string> {
+  if (process.env['E2E_BUNDLER'] === 'esbuild') return (bundled ??= bundleWithEsbuild());
   bundled ??= (async () => {
     const built = await Bun.build({
       entrypoints: [`${PKG}/tests/e2e/test-entry.ts`],
