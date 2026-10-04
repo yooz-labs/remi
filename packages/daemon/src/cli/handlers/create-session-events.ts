@@ -41,7 +41,8 @@ const INVALID_DIRECTORY_TEXT = 'Invalid directory; the request was not started.'
 /**
  * Why a requested directory is refused, or null (#1179 review, G7). The directory reaches the
  * child as the value of `--dir`: one that starts with a hyphen is left unconsumed by the child's
- * parser and read as a flag (`--no-auth`), and one with a NUL cannot be an argument at all. The
+ * parser and read as a flag (`--no-auth`), one with a NUL cannot be an argument at all, and one with
+ * a terminal escape sequence would reach the owner's terminal through the log. The
  * wire carries whatever JSON the peer sent, so a value that is not a string is refused too, not
  * left to throw. No directory, an empty one and white space all mean home. The refusal names no
  * part of the value. It covers every create request, Claude's included: no real client sends such
@@ -50,8 +51,13 @@ const INVALID_DIRECTORY_TEXT = 'Invalid directory; the request was not started.'
 export function directoryRefusal(directory: unknown): string | null {
   if (directory === undefined) return null;
   if (typeof directory !== 'string') return INVALID_DIRECTORY_TEXT;
-  if (directory.trim().startsWith('-') || /[\0\n\r]/.test(directory)) {
-    return INVALID_DIRECTORY_TEXT;
+  if (directory.trim().startsWith('-')) return INVALID_DIRECTORY_TEXT;
+  // Any C0 control (NUL, tab, newline, carriage return, escape) or C1 control (U+0080 to U+009F,
+  // which includes the single-character CSI) or DEL. Bidi and zero-width characters are allowed in
+  // a path, so they are written out wherever the directory is logged.
+  for (const ch of directory) {
+    const c = ch.codePointAt(0) as number;
+    if (c <= 0x1f || (c >= 0x7f && c <= 0x9f)) return INVALID_DIRECTORY_TEXT;
   }
   return null;
 }
@@ -220,7 +226,9 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
         // hub's own cwd (an accident of where `remi serve` was started) —
         // see resolveRequestedSessionDirectory for the full rationale.
         const resolvedDirectory = resolveRequestedSessionDirectory(directory);
-        log(`Spawning new daemon on port ${freePort} for directory ${resolvedDirectory}`);
+        log(
+          `Spawning new daemon on port ${freePort} for directory ${escapeUnsafeText(resolvedDirectory)}`,
+        );
         spawningPorts.add(freePort);
         try {
           const result = await spawnDaemon(freePort, resolvedDirectory, [
@@ -247,7 +255,7 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
       } catch (err) {
         // The failure is the host's business: it can hold a path, a pid or a log file name. The
         // requester is told only that the session did not start (G8).
-        logError(`Failed to spawn daemon: ${errorToString(err)}`);
+        logError(`Failed to spawn daemon: ${escapeUnsafeText(errorToString(err))}`);
         send(
           connectionId,
           createCreateSessionResponse(false, requestId, undefined, START_FAILED_TEXT),
