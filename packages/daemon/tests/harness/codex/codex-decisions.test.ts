@@ -59,6 +59,9 @@ import { SessionStore } from '../../../src/session/session-store.ts';
 import { CID, type PtyCapture, errorsOf, fakePTY } from '../../cli/handlers/menu-test-helpers.ts';
 import { commandApprovalRequest, fileChangeRequest } from '../../helpers/codex-threads.ts';
 
+/** What the person is told when an answer could not be sent, whatever the cause. */
+const UNSENT_NOTICE =
+  'remi could not deliver that answer to Codex; try again from the new card if one appears, or answer in the terminal';
 const MAIN = '00000000-0000-7000-8000-0000000000c1';
 const SUB = '00000000-0000-7000-8000-0000000000c2';
 const STRANGER = '00000000-0000-7000-8000-0000000000c3';
@@ -727,9 +730,9 @@ describe('CodexDecisions', () => {
       expect(responses).toEqual([]);
       expect(logs.some((l) => l.includes('the link did not take it'))).toBe(true);
       expect(logs.some((l) => l.includes('could not be encoded'))).toBe(false);
-      expect(notices).toHaveLength(1);
-      expect(notices[0]).toContain('try again from the new card');
-      expect(notices[0]).toContain('answer in the terminal');
+      // One message for both causes (an encode failure and a link that did not take the frame),
+      // because the person's remedy is the same; its words are pinned exactly.
+      expect(notices).toEqual([UNSENT_NOTICE]);
       // The channel forgets the request but leaves the card to the caller (the input handler
       // consumes and dismisses it once): it dismisses nothing itself.
       expect(resolvedMessages()).toEqual([]);
@@ -744,8 +747,7 @@ describe('CodexDecisions', () => {
       expect(logs.some((l) => l.includes('could not be encoded (Error)'))).toBe(true);
       expect(logs.some((l) => l.includes('the link did not take it'))).toBe(false);
       expect(logs.join('\n')).not.toContain('cannot serialize');
-      expect(notices).toHaveLength(1);
-      expect(notices[0]).toContain('try again from the new card');
+      expect(notices).toEqual([UNSENT_NOTICE]);
     });
 
     test('a delivered answer says nothing to the person', () => {
