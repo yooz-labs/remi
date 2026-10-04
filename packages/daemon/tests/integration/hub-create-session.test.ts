@@ -10,9 +10,9 @@
  * record the argv they were started with, so everything asserted is what the
  * CHILD's agent saw, or what came back over the socket.
  *
- * Not covered here, because it needs the owner (LV-4): that a Codex session
- * created this way reaches its prompt headless, with no one to dismiss an
- * Update or Trust modal, against a real Codex.
+ * Not covered here, because it needs a real Codex: what one does at an Update or Trust modal
+ * when nothing dismisses it. LV-4 (live, Codex 0.160.0) showed a session created this way
+ * reaching its prompt headless, but no modal appeared in any launch.
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
