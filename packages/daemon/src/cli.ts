@@ -1955,6 +1955,7 @@ const transcriptHandlers: TranscriptHandlers = createTranscriptHandlers({
 const resumeSessionHandlers: ResumeSessionHandlers = createResumeSessionHandlers({
   // `remi serve` is session-less and must never run Claude (#1124).
   hubMode: serveMode,
+  harnessId,
   harnesses: () => harnessRegistry.available(),
   sessionRegistry,
   sessionStore,

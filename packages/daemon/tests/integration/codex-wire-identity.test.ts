@@ -21,9 +21,15 @@ import type {
   HelloAckMessage,
   ProtocolMessage,
   QuestionMessage,
+  ResumeSessionResponseMessage,
   SessionListResponseMessage,
 } from '@remi/shared/protocol.ts';
-import { createAnswer, createSessionListRequest, serialize } from '@remi/shared/protocol.ts';
+import {
+  createAnswer,
+  createResumeSessionRequest,
+  createSessionListRequest,
+  serialize,
+} from '@remi/shared/protocol.ts';
 import { commandApprovalRequest, threadStartedFrame } from '../helpers/codex-threads.ts';
 import { collect, installFakeAgents } from '../helpers/fake-agent-clis.ts';
 import { FakeAppServer } from '../helpers/fake-app-server.ts';
@@ -188,6 +194,26 @@ describe('a Codex daemon on the wire (#1179)', () => {
     } finally {
       first.ws.close();
       second?.ws.close();
+    }
+  }, 60000);
+  test('a resume request is refused UNSUPPORTED, like the hub: nothing is attached and no second ack is sent', async () => {
+    const r = await startCodexDaemon();
+    const client = await connectAndHello(r.port);
+    try {
+      const sessionId = (client.received.find(isAck) as HelloAckMessage).sessionId as string;
+      const acksBefore = client.received.filter(isAck).length;
+      const request = createResumeSessionRequest(sessionId);
+      client.ws.send(serialize(request));
+      const isResponse = (m: ProtocolMessage): m is ResumeSessionResponseMessage =>
+        m.type === 'resume_session_response';
+      await pollUntil(() => client.received.some(isResponse), 8000, 'the resume response');
+      const response = client.received.find(isResponse) as ResumeSessionResponseMessage;
+      expect(response.success).toBe(false);
+      expect(response.errorCode).toBe('UNSUPPORTED');
+      expect(response.error).toContain('remi codex resume <thread id>');
+      expect(client.received.filter(isAck)).toHaveLength(acksBefore);
+    } finally {
+      client.ws.close();
     }
   }, 60000);
 });
