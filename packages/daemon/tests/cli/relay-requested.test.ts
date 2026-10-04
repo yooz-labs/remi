@@ -40,8 +40,13 @@ describe('cli.ts registration site (source-level wiring pin)', () => {
     'utf-8',
   );
 
-  test('registers the relay through relayRequested', () => {
-    expect(source).toMatch(/if \(\s*relayRequested\(remiConfig\.network\.relay,/);
+  test('registers the relay through relayRequested, passing both command-line flags', () => {
+    // The whole argument object, not only the call: dropping `noRelay` (or
+    // hard-coding it false) leaves every integration test that passes
+    // `--no-relay` green, since the default is off, and ignores the flag.
+    expect(source).toMatch(
+      /relayRequested\(\s*remiConfig\.network\.relay,\s*\{\s*noRelay: cliNoRelay,\s*permanentCode: cliPermanentCode,?\s*\}\s*\)/,
+    );
   });
 
   test('reads network.relay nowhere else', () => {
