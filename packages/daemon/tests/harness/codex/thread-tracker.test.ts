@@ -1242,7 +1242,8 @@ describe('a session that never learns its thread says so (W11)', () => {
 
 describe("role: which of the threads on the link are this session's (#1178)", () => {
   test('before an identity nothing has a role, a pending candidate included', async () => {
-    const ctx = await setup({ ambiguityMs: 400 });
+    // A window of ten minutes: the candidate cannot commit during the test, whatever the machine does.
+    const ctx = await setup({ ambiguityMs: 600_000 });
     const a = crypto.randomUUID();
     expect(ctx.tracker.role(a)).toBeNull();
     ctx.started('tui', a);
@@ -1250,6 +1251,12 @@ describe("role: which of the threads on the link are this session's (#1178)", ()
     // Seen, but still inside its window: not committed, so not ours.
     expect(ctx.identities).toEqual([]);
     expect(ctx.tracker.role(a)).toBeNull();
+  });
+
+  test('the tracked thread is main once it has committed', async () => {
+    const ctx = await setup();
+    const a = crypto.randomUUID();
+    ctx.started('tui', a);
     await waitUntil(ctx, () => ctx.identities.length === 1, 'the identity');
     expect(ctx.tracker.role(a)).toBe('main');
   });

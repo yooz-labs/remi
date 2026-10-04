@@ -846,6 +846,17 @@ describe('remi codex approvals (daemon, black-box characterization, #1178)', () 
     received.filter((m): m is QuestionResolvedMessage => m.type === 'question_resolved');
   const stdinBytes = (r: Running): number => fs.statSync(path.join(r.fakeDir, 'stdin')).size;
 
+  /**
+   * The positive control for every "typed nothing" claim: a person's raw keystroke does reach the
+   * child, so a count of zero before it means nothing was typed, not that the counter is stuck
+   * (and a late write would show up as more than the one byte).
+   */
+  async function rawControl(a: Attached): Promise<void> {
+    a.ws.send(serialize(createUserInput(a.sessionId, 'q', true)));
+    await pollUntil(() => stdinBytes(a.r) === 1, 8000, 'the raw control byte to reach codex');
+    expect(read(path.join(a.r.fakeDir, 'stdin'))).toBe('q');
+  }
+
   /** What the daemon's own connection answered to the app-server's server requests. */
   function answersSent(r: Running, client: number): Json[] {
     return r.server.framesFrom(client).filter((f) => f['method'] === undefined && 'id' in f);
@@ -924,10 +935,7 @@ describe('remi codex approvals (daemon, black-box characterization, #1178)', () 
       expect(a.r.output.text).not.toContain('e2e-marker');
       expect(a.r.output.text).not.toContain(a.tuiId);
 
-      // Positive control: a person's raw keystroke does reach the child.
-      a.ws.send(serialize(createUserInput(a.sessionId, 'q', true)));
-      await pollUntil(() => stdinBytes(a.r) === 1, 8000, 'the raw byte to reach codex');
-      expect(read(path.join(a.r.fakeDir, 'stdin'))).toBe('q');
+      await rawControl(a);
     } finally {
       a.ws.close();
     }
@@ -963,6 +971,7 @@ describe('remi codex approvals (daemon, black-box characterization, #1178)', () 
 
       expect(answersSent(a.r, a.client)).toEqual([]);
       expect(stdinBytes(a.r)).toBe(0);
+      await rawControl(a);
     } finally {
       a.ws.close();
     }
@@ -985,6 +994,7 @@ describe('remi codex approvals (daemon, black-box characterization, #1178)', () 
       expect(a.r.output.text).toContain('chars=');
       expect(a.r.output.text).not.toContain('e2e-flood');
       expect(stdinBytes(a.r)).toBe(0);
+      await rawControl(a);
     } finally {
       a.ws.close();
     }
@@ -1013,6 +1023,7 @@ describe('remi codex approvals (daemon, black-box characterization, #1178)', () 
       expect(a.r.server.isPending(a.tuiId, requestId)).toBe(true);
       expect(answersSent(a.r, a.client)).toEqual([]);
       expect(stdinBytes(a.r)).toBe(0);
+      await rawControl(a);
     } finally {
       a.ws.close();
     }
@@ -1060,8 +1071,7 @@ describe('remi codex approvals (daemon, black-box characterization, #1178)', () 
       expect(a.r.output.text).not.toContain('touch another-thread');
       expect(a.r.output.text).not.toContain('e2e file change');
 
-      a.ws.send(serialize(createUserInput(a.sessionId, 'q', true)));
-      await pollUntil(() => stdinBytes(a.r) === 1, 8000, 'the raw byte to reach codex');
+      await rawControl(a);
     } finally {
       a.ws.close();
     }

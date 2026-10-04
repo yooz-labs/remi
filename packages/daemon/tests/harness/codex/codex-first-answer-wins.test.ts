@@ -217,6 +217,8 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
       ...trackerScreenDeps(() => session.decisions.screen),
     });
     await session.start();
+    // The fake codex creates its stdin counter when it starts; wait for it so a count can be read.
+    await until(() => fs.existsSync(path.join(fakeDir, 'stdin')), 'the fake codex to start');
 
     const tuiId = crypto.randomUUID();
     await until(() => server.clientIds().length === 1, 'the client to connect');
@@ -239,6 +241,16 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
   const answersSent = (r: Rig): Array<{ client: number; frame: Json }> =>
     r.server.received.filter((f) => f.frame['method'] === undefined && 'id' in f.frame);
   const stdinBytes = (): number => fs.statSync(path.join(fakeDir, 'stdin')).size;
+  /**
+   * Nothing was typed so far, and the counter can move: a person's raw keystroke does reach the
+   * fake codex (a zero count alone would also read zero for a counter that is stuck, or checked
+   * before a late write).
+   */
+  async function expectNothingTyped(r: Rig): Promise<void> {
+    expect(stdinBytes()).toBe(0);
+    await r.handlers.onUserInput(CID, r.sessionId, 'q', true);
+    await until(() => stdinBytes() === 1, 'the raw control byte to reach the fake codex');
+  }
   const answer = (r: Rig, q: Question, text: string) =>
     r.handlers.onAnswer(CID, r.sessionId, q.id, text, undefined, undefined);
   const cancel = (r: Rig, q: Question) =>
@@ -263,7 +275,7 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
     expect(pending(r)).toEqual([]);
     expect(resolved(r).map((m) => [m.questionId, m.reason])).toEqual([[card.id, 'answered']]);
     expect(r.errors).toEqual([]);
-    expect(stdinBytes()).toBe(0);
+    await expectNothingTyped(r);
   });
 
   test('the TUI answers first: the card clears with question_resolved, and a late phone answer is STALE_ANSWER and sends nothing', async () => {
@@ -280,7 +292,7 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
     expect(r.errors.map((e) => e.code)).toEqual(['STALE_ANSWER']);
     expect(r.errors[0]?.details?.['questionId']).toBe(card.id);
     expect(answersSent(r)).toEqual([]);
-    expect(stdinBytes()).toBe(0);
+    await expectNothingTyped(r);
   });
 
   test('two requests in a row have two ids: each card answers its own request, and one resolved clears only its own card', async () => {
@@ -356,7 +368,7 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
     await cancel(r, card);
     expect(pending(r)).toEqual([]);
     expect(answersSent(r)).toEqual([]);
-    expect(stdinBytes()).toBe(0);
+    await expectNothingTyped(r);
   });
 
   test('a card only the terminal can answer refuses every answer, and Cancel clears it without an answer or an Esc', async () => {
@@ -379,7 +391,7 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
     // The request is still pending for the TUI: remi answered nothing.
     expect(r.server.isPending(r.tuiId, id)).toBe(true);
     expect(answersSent(r)).toEqual([]);
-    expect(stdinBytes()).toBe(0);
+    await expectNothingTyped(r);
   });
 
   describe('the link drops in the middle of an approval', () => {
@@ -421,7 +433,7 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
         result: { decision: 'accept' },
       });
       await until(() => !r.server.isPending(r.tuiId, id), 'the request to be resolved');
-      expect(stdinBytes()).toBe(0);
+      await expectNothingTyped(r);
     });
 
     test('a request resolved while the link was down is not replayed: its retired card is swept after the replay window', async () => {
@@ -529,9 +541,7 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
     await until(() => pending(r).length === 1, 'the card');
     await r.handlers.onUserInput(CID, r.sessionId, 'typed chat', false);
     expect(r.errors.map((e) => e.code)).toEqual(['PROMPT_WAITING']);
-    await sleep(300);
-    expect(stdinBytes()).toBe(0);
-    await r.handlers.onUserInput(CID, r.sessionId, 'q', true);
-    await until(() => stdinBytes() === 1, 'the raw byte');
+    // Nothing was typed, and the counter moves for exactly the one raw byte.
+    await expectNothingTyped(r);
   });
 });
