@@ -405,6 +405,14 @@ describe('CodexDecisions', () => {
       expect(all).toContain('a\\u001B[2Kb\\u202Ec');
       expect(all).toContain('bogus');
       expect(all).toContain('x\\u202Ey');
+      // A long id is cut at 24 characters before it reaches a log line.
+      decisions.handleServerRequest({
+        id: `${'i'.repeat(24)}TAIL-OF-A-LONG-ID`,
+        method,
+        params: { ...params, threadId: STRANGER },
+      });
+      expect(logs.join('\n')).toContain(`request ${'i'.repeat(24)}:`);
+      expect(logs.join('\n')).not.toContain('TAIL-OF-A-LONG-ID');
       for (const c of all) {
         const code = c.charCodeAt(0);
         expect(code >= 0x20 || code === 0x0a, `a raw control character ${code} in a log line`).toBe(

@@ -851,6 +851,24 @@ describe('a long command is never approvable from a surface that cuts it (S1)', 
       }
     });
 
+    test('an escape that starts exactly on a boundary is not moved: the head stops before it and the tail starts with it', () => {
+      for (const [esc, length] of [
+        [bidi, 6],
+        [tag, 9],
+      ] as const) {
+        const shown = escapeUnsafeText(esc);
+        const head = build(
+          accept,
+          {},
+          `${'a'.repeat(80)}${esc}${'m'.repeat(100)}${'y'.repeat(40)}`,
+        ).question;
+        expect(head.text.startsWith(`${PREFIX}${'a'.repeat(80)} … [`)).toBe(true);
+        const rest = 30 - length;
+        const tail = build(accept, {}, `${'m'.repeat(110)}${esc}${'y'.repeat(rest)}`).question;
+        expect(tail.text.endsWith(` … ${shown}${'y'.repeat(rest)}`)).toBe(true);
+      }
+    });
+
     test('whatever the command, the kept head and tail end and start on whole escapes, and head + hidden + tail is the escaped command', () => {
       const alphabet = ['a', 'b', 'z', ' ', '/', bidi, tag, '\x1b', String.fromCodePoint(0x200b)];
       let seed = 20260410;
