@@ -91,6 +91,16 @@ export interface DecisionChannel {
 export interface HarnessSession {
   readonly pty: PTYSession;
   readonly decisions: DecisionChannel;
+  /**
+   * Does this session take chat text typed from a client (web, Telegram, the
+   * relay)? Absent means yes. `false` makes the chat handler refuse the text
+   * (`PROMPT_WAITING`, naming the message) and type nothing; raw input, a
+   * person's keystrokes from an attach client, the Escape button or
+   * `/interrupt`, is never affected. Codex sets it (#1177): it has no screen
+   * reads, so nothing can tell remi that its TUI is showing an approval or a
+   * modal that a typed Enter would confirm.
+   */
+  readonly acceptsTypedChat?: boolean;
   /** Spawn the PTY. Rejects when the spawn fails; the caller marks the stored session exited. */
   start(): Promise<void>;
   /**

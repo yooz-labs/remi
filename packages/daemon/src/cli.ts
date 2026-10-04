@@ -1763,6 +1763,9 @@ const inputHandlers: InputHandlers = createInputHandlers({
   ...gateAnswerDeps((sessionId) => harnessSessions.get(sessionId)?.decisions),
   // #1155: the chat guard reads the one "a prompt is up" signal Stop reads.
   ...promptUpWiring,
+  // #1177: a Codex session takes no typed chat (its TUI cannot be read), whatever
+  // client sends it; raw keystrokes still reach it.
+  acceptsTypedChat: (sessionId) => harnessSessions.get(sessionId)?.acceptsTypedChat,
   // #585: a locally answered question dismisses its card + lock-screen push on
   // every other client.
   onQuestionResolved: (sessionId, questionId) =>

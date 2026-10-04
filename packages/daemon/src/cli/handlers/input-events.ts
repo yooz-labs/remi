@@ -71,6 +71,14 @@ export interface InputHandlerDeps {
    */
   promptUp?: (sessionId: UUID) => PromptUp | null;
   /**
+   * Does this session take chat text typed from a client? `false` refuses it
+   * before `promptUp` is asked (#1177): a harness with no screen reads, so no
+   * way to know a dialog is up, must not have text and an Enter typed into
+   * it. Raw input is never refused. `undefined` (or no dep) means yes, as
+   * before.
+   */
+  acceptsTypedChat?: (sessionId: UUID) => boolean | undefined;
+  /**
    * Cross-client question dismissal (#585, P7). Called after a question is
    * answered here so the daemon broadcasts `question_resolved` to every client and
    * fires the APNS dismissal — answering on one device clears the card (and the
@@ -238,6 +246,14 @@ const PROMPT_UP_MESSAGE: Readonly<Record<PromptUp, string>> = {
   terminal: PROMPT_WAITING_TERMINAL_MESSAGE,
   menu: PROMPT_WAITING_MESSAGE,
 };
+
+/**
+ * What a chat refusal tells the sender when the session takes no typed chat
+ * at all (#1177). It rides `PROMPT_WAITING`, the one code the web client turns
+ * into a failed bubble (`web/src/lib/prompt-waiting.ts`).
+ */
+const CHAT_NOT_ACCEPTED_MESSAGE =
+  'This session does not take typed messages from the app yet; type in the terminal.';
 
 /** The `input_refused` trace record's reason, by source. */
 const PROMPT_UP_TRACE_REASON: Readonly<Record<PromptUp, string>> = {
@@ -545,6 +561,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     answerHeld,
     onTerminalEscape,
     promptUp,
+    acceptsTypedChat,
     onQuestionResolved,
     isPromptCurrent,
     isPromptObservedOnPTY,
@@ -1262,6 +1279,28 @@ export function createInputHandlers(deps: InputHandlerDeps) {
             logError(`[Input] terminal escape bookkeeping failed: ${errorToString(err)}`);
           }
         }
+        return;
+      }
+
+      // #1177: a session that takes no typed chat (Codex, whose TUI remi cannot
+      // read) is refused before anything is asked of the screen: the text and
+      // its Enter would land on whatever the TUI has focused. Only the length
+      // is logged and traced, never the text.
+      if (acceptsTypedChat?.(session.sessionId) === false) {
+        log(
+          `[Input] refusing ${content.length} chars of chat text for session ${session.sessionId.slice(0, 8)}: this session takes no typed chat`,
+        );
+        traceQuestionEvent({
+          action: 'input_refused',
+          sessionId: session.sessionId,
+          signal: PROMPT_WAITING_ERROR_CODE,
+          callSite: 'input-events.onUserInput:chatNotAccepted',
+          detail: { reason: 'chat-not-accepted', textLength: content.length },
+        });
+        send(
+          connectionId,
+          createPromptWaitingError(session.sessionId, messageId, CHAT_NOT_ACCEPTED_MESSAGE),
+        );
         return;
       }
 

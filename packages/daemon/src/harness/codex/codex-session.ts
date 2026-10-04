@@ -329,6 +329,7 @@ export function createCodexSession(
   return {
     pty,
     decisions: NO_DECISIONS,
+    acceptsTypedChat: false,
     start: async () => {
       await pty.start();
       client.start();

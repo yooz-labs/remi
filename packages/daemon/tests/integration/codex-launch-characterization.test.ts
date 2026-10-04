@@ -25,10 +25,12 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type {
+  ErrorMessage,
   HelloAckMessage,
   ProtocolMessage,
   SessionUpdateMessage,
 } from '@remi/shared/protocol.ts';
+import { PROMPT_WAITING_ERROR_CODE, createUserInput, serialize } from '@remi/shared/protocol.ts';
 import { olderRemiNotice } from '../../src/harness/codex/codex-session.ts';
 import { IDENTITY_SHIM_MIN_VERSION } from '../../src/session/legacy-writers.ts';
 import { type Json, threadStartedFrame, threadStatusFrame } from '../helpers/codex-threads.ts';
@@ -437,6 +439,46 @@ describe('remi codex launch (daemon, black-box characterization, #1177)', () => 
       expect(r.output.text).not.toContain(helperId.slice(0, 8));
       expect(r.output.text).not.toContain(strayId.slice(0, 8));
       for (const id of brokenIds) expect(r.output.text).not.toContain(id.slice(0, 8));
+    } finally {
+      ws.close();
+    }
+  }, 60000);
+
+  test('phone chat is refused and typed nowhere, naming its bubble; raw input still reaches codex (#1177)', async () => {
+    const r = await startDaemon();
+    await waitForFakeCodex(r);
+    const { ws, received } = await connectAndHello(r.port);
+    try {
+      const sessionId = (
+        received.find((m): m is HelloAckMessage => m.type === 'hello_ack') as HelloAckMessage
+      ).sessionId;
+      const messageId = crypto.randomUUID();
+      ws.send(
+        serialize(createUserInput(sessionId, 'typed chat text', false, undefined, messageId)),
+      );
+      await pollUntil(
+        () =>
+          received.some(
+            (m): m is ErrorMessage =>
+              m.type === 'error' &&
+              m.code === PROMPT_WAITING_ERROR_CODE &&
+              m.details?.['messageId'] === messageId,
+          ),
+        8000,
+        'the PROMPT_WAITING refusal naming the bubble',
+      );
+      // Time for the daemon to type the text, the 50 ms pause and the Enter, were it going to.
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      expect(fs.statSync(path.join(r.fakeDir, 'stdin')).size).toBe(0);
+
+      // A person's keystrokes (an attach client, the Escape button, /interrupt) are raw, and arrive.
+      ws.send(serialize(createUserInput(sessionId, 'q', true)));
+      await pollUntil(
+        () => fs.statSync(path.join(r.fakeDir, 'stdin')).size === 1,
+        8000,
+        'the raw byte to reach codex',
+      );
+      expect(read(path.join(r.fakeDir, 'stdin'))).toBe('q');
     } finally {
       ws.close();
     }
