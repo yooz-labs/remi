@@ -483,18 +483,19 @@ export class ConnectionRoom {
     }
   }
 
-  /** Without a control socket, pending clients go back to waiting. */
+  /**
+   * Without a control socket, pending clients go back to waiting. Their deadline moves later, so
+   * no new alarm is armed: the alarm armed for the earlier deadline fires, finds the later one
+   * and arms it (`alarm()`).
+   */
   private hostLeft(closed: RoomSocket): void {
     if (this.socketsTagged('host').some((e) => e.ws !== closed && e.att.st === 'ctl')) return;
     const deadline = this.now() + limit(this.env, 'WAIT_TIMEOUT_MS');
-    let any = false;
     for (const e of this.socketsTagged('client')) {
       if (e.att.st !== 'pend') continue;
-      any = true;
       this.setAttachment(e.ws, { ...e.att, st: 'wait', dl: deadline });
       this.notice(e.ws, { t: 'host', up: false });
     }
-    if (any) void this.arm(deadline);
   }
 
   /** Close with the one generic failure close, and run what depended on the socket. */
