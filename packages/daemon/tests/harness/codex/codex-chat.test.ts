@@ -496,6 +496,17 @@ describe('createCodexChat', () => {
       expect(listCalls.map((c) => c['threadId'])).toEqual([MAIN, OTHER]);
     });
 
+    test('a page with no nextCursor at all is the last page (the field is null when there is no more, and absent reads the same)', async () => {
+      server.onRequest('thread/items/list', () => ({
+        data: [{ turnId: 'k', item: userMessageItem('u1', 'only page'), completedAtMs: 1 }],
+      }));
+
+      const { messages, count } = await history();
+
+      expect(messages.map((m) => m.entryUuid)).toEqual(['u1']);
+      expect(count).toBe(1);
+    });
+
     test('an empty thread is an empty history', async () => {
       servePages({ '': itemsListPage([], null) });
 
