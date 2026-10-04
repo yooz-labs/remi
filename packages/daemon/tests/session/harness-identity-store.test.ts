@@ -438,3 +438,105 @@ describe('SessionBindingStore harness identity (#1176)', () => {
     expect(index.get(session.remiSessionId)).toBeNull();
   });
 });
+
+describe('SessionBindingStore purges before it records a non-Claude identity (#1177)', () => {
+  /** A process id no live process has: its record is "running" until a purge says otherwise. */
+  const DEAD_PID = 2_147_483_000;
+  let dir: string;
+  let filePath: string;
+  let store: SessionStore;
+  let binding: SessionBindingStore;
+  let logged: string[];
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-binding-purge-'));
+    filePath = path.join(dir, 'sessions.json');
+    store = new SessionStore(filePath);
+    binding = new SessionBindingStore(store);
+    logged = [];
+    configureLogger({
+      writeLog: (line) => logged.push(line),
+      consoleLog: (...a) => logged.push(a.join(' ')),
+    });
+  });
+
+  afterEach(() => {
+    __resetLoggerForTests();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** A record that holds `thread` and whose process died without marking it exited. */
+  const staleHolder = (thread: string) =>
+    codexRecord({ harnessSessionId: thread, pid: DEAD_PID, exitedAt: null });
+
+  test('without the purge the store itself refuses a thread a dead process still "holds"', () => {
+    // The hazard the purge exists for: an unpurged record counts as an active holder.
+    store.save(staleHolder(THREAD_A));
+    const fresh = codexRecord();
+    store.save(fresh);
+    expect(() => store.updateHarnessIdentity(fresh.remiSessionId, 'codex', THREAD_A)).toThrow(
+      AmbiguousSessionIdentityError,
+    );
+  });
+
+  test('updateHarnessIdentity records a thread whose previous holder died without exiting', () => {
+    const stale = staleHolder(THREAD_A);
+    store.save(stale);
+    const fresh = codexRecord();
+    binding.preAssign(fresh);
+
+    binding.updateHarnessIdentity(fresh.remiSessionId, 'codex', THREAD_A);
+
+    expect(binding.getIdentity(fresh.remiSessionId)?.harnessSessionId).toBe(THREAD_A);
+    // The dead holder is history now, not an active owner.
+    expect(store.findByRemiSessionId(stale.remiSessionId)?.exitedAt).not.toBeNull();
+  });
+
+  test('preAssign of a resume names a thread a dead process held', () => {
+    const stale = staleHolder(THREAD_A);
+    store.save(stale);
+
+    const resumed = codexRecord({ harnessSessionId: THREAD_A });
+    binding.preAssign(resumed);
+
+    expect(store.findByRemiSessionId(resumed.remiSessionId)?.harnessSessionId).toBe(THREAD_A);
+    expect(store.findByRemiSessionId(stale.remiSessionId)?.exitedAt).not.toBeNull();
+  });
+
+  test('a holder that is alive is still refused: the purge only clears the dead', () => {
+    store.save(codexRecord({ harnessSessionId: THREAD_A, pid: process.pid }));
+    const fresh = codexRecord();
+    binding.preAssign(fresh);
+    expect(() => binding.updateHarnessIdentity(fresh.remiSessionId, 'codex', THREAD_A)).toThrow(
+      AmbiguousSessionIdentityError,
+    );
+    expect(() => binding.preAssign(codexRecord({ harnessSessionId: THREAD_A }))).toThrow(
+      AmbiguousSessionIdentityError,
+    );
+  });
+
+  test('a Claude record and a codex record with no id yet purge nothing', () => {
+    const stale = staleHolder(THREAD_A);
+    store.save(stale);
+
+    binding.preAssign(makeSession({ claudeSessionId: 'claude-x' }));
+    binding.preAssign(codexRecord());
+
+    expect(store.findByRemiSessionId(stale.remiSessionId)?.exitedAt).toBeNull();
+  });
+
+  test('a purge that fails is logged and the write that follows decides', () => {
+    // Two active owners of one pair make every purge and every write throw.
+    const a = staleHolder(THREAD_B);
+    const b = staleHolder(THREAD_B);
+    fs.writeFileSync(filePath, JSON.stringify({ version: 1, sessions: [a, b] }));
+    const fresh = codexRecord();
+
+    expect(() => binding.updateHarnessIdentity(fresh.remiSessionId, 'codex', THREAD_A)).toThrow(
+      AmbiguousSessionIdentityError,
+    );
+    expect(logged.some((l) => l.includes('purge before recording a harness identity failed'))).toBe(
+      true,
+    );
+  });
+});
