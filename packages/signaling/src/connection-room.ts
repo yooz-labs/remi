@@ -166,6 +166,13 @@ export class ConnectionRoom {
     return Date.now();
   }
 
+  /**
+   * Runs after a ticket matched and passed every check, just before its window is burned. A
+   * seam: a test holds several admissions here until all have matched, so the burn is raced for
+   * real instead of the admissions happening to run one after another.
+   */
+  protected async beforeBurn(): Promise<void> {}
+
   // -- Upgrade --
 
   async fetch(request: Request): Promise<Response> {
@@ -343,7 +350,10 @@ export class ConnectionRoom {
     }
     if (!(await clientProofHolds(rid, nonce, admit))) return false;
     if (!this.deviceAllowed(key)) return false;
-    if (window !== null && !(await this.burnWindow(window))) return false;
+    if (window !== null) {
+      await this.beforeBurn();
+      if (!(await this.burnWindow(window))) return false;
+    }
 
     // From here to `setAttachment` nothing is awaited, so two admissions of one key cannot both stay.
     for (const e of this.socketsTagged('client')) {

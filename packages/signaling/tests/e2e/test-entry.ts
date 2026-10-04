@@ -10,6 +10,9 @@
  *   attachment and a boot id (new when the object is rebuilt); `/__seed` writes keys;
  * - a tap: every message the object receives is recorded (role, stage and the
  *   raw bytes), which is how a test asserts what the Worker could see;
+ * - a barrier: `/__barrier` makes the next admissions that present a ticket wait,
+ *   just before the window is burned, until that many have arrived, then released
+ *   together, so a test races the burn on purpose;
  * - `/__legacy`: accepts a socket with the attachment the pre-R2 room kept, as a
  *   deploy over a live legacy room would leave one behind.
  *
@@ -41,9 +44,21 @@ export class ConnectionRoom extends RealRoom {
   private readonly boot = crypto.randomUUID();
   private skewMs = 0;
   private readonly seen: Seen[] = [];
+  private barrierSize = 0;
+  private readonly held: (() => void)[] = [];
 
   protected override now(): number {
     return Date.now() + this.skewMs;
+  }
+
+  protected override async beforeBurn(): Promise<void> {
+    if (this.barrierSize === 0) return;
+    if (this.held.length + 1 >= this.barrierSize) {
+      this.barrierSize = 0;
+      for (const release of this.held.splice(0)) release();
+      return;
+    }
+    await new Promise<void>((resolve) => this.held.push(resolve));
   }
 
   override async webSocketMessage(ws: RoomSocket, data: string | ArrayBuffer): Promise<void> {
@@ -86,6 +101,10 @@ export class ConnectionRoom extends RealRoom {
         await this.state.storage.put(k, v);
       }
       return new Response('seeded');
+    }
+    if (path.endsWith('/__barrier') && request.method === 'POST') {
+      this.barrierSize = ((await request.json()) as { size: number }).size;
+      return new Response('barrier set');
     }
     if (path.endsWith('/__clock') && request.method === 'POST') {
       this.skewMs += ((await request.json()) as { advanceMs: number }).advanceMs;

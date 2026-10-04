@@ -352,6 +352,15 @@ export async function advanceClock(worker: TestWorker, ridHex: string, ms: numbe
   } as RequestInit);
 }
 
+/** Hold the next `size` ticket admissions just before the burn, then release them together. */
+export async function holdBurns(worker: TestWorker, ridHex: string, size: number): Promise<void> {
+  await fetch(`${worker.url}/__room/${ridHex}/__barrier`, {
+    method: 'POST',
+    body: JSON.stringify({ size }),
+    keepalive: false,
+  } as RequestInit);
+}
+
 export async function runAlarm(worker: TestWorker, ridHex: string): Promise<void> {
   await fetch(`${worker.url}/__room/${ridHex}/__alarm`, {
     method: 'POST',

@@ -19,6 +19,7 @@ import {
   clientUrl,
   connectClient,
   hex,
+  holdBurns,
   newIdentity,
   newMachine,
   readNonce,
@@ -89,6 +90,23 @@ describe('who may enter', () => {
       admitText(device.publicKey, await signAdmission(device.signer, 'host', machine.rid, nonce)),
     );
     await refused(socket);
+  });
+
+  test('the machine key proving the host role is not a client proof, even when that key is enrolled', async () => {
+    // Enrolled, the machine key passes every check but the role: only the role binding of the
+    // signature separates a host proof from a client proof.
+    const machine = await newMachine();
+    const host = await FakeHost.start(worker, machine);
+    await host.enroll(machine.publicKey);
+    const socket = await Socket.open(clientUrl(worker, machine.ridHex));
+    const nonce = await readNonce(socket);
+    socket.sendText(
+      admitText(machine.publicKey, await signAdmission(machine.signer, 'host', machine.rid, nonce)),
+    );
+    await refused(socket);
+    // the same key with a client-role proof is admitted, so the refusal above was the role
+    const { socket: ok } = await connectClient(worker, machine, machine);
+    expect(ok.isClosed).toBe(false);
   });
 
   test('a client proof made for another room is refused', async () => {
@@ -272,10 +290,10 @@ describe('pairing windows and the admission ticket', () => {
     await refused(replay);
   });
 
-  test('two sockets presenting one ticket at the same moment admit exactly one', async () => {
-    const { machine, ticket } = await pairing();
+  /** Open `count` sockets and send every admission, each by its own device, in the same tick. */
+  async function presentTogether(machine: Machine, ticket: Uint8Array, count: number) {
     const sockets = await Promise.all(
-      Array.from({ length: 4 }, () => Socket.open(clientUrl(worker, machine.ridHex))),
+      Array.from({ length: count }, () => Socket.open(clientUrl(worker, machine.ridHex))),
     );
     const proofs = await Promise.all(
       sockets.map(async (socket) => {
@@ -288,9 +306,8 @@ describe('pairing windows and the admission ticket', () => {
         );
       }),
     );
-    // send every admission in the same tick, so the checks overlap inside the object
     sockets.forEach((socket, i) => socket.sendText(proofs[i] as string));
-    const outcomes = await Promise.all(
+    return Promise.all(
       sockets.map((socket) =>
         Promise.race([
           socket.text().then((t) => (JSON.parse(t) as { t: string }).t),
@@ -298,8 +315,24 @@ describe('pairing windows and the admission ticket', () => {
         ]),
       ),
     );
+  }
+
+  test('sockets presenting one ticket at the same moment admit exactly one', async () => {
+    const { machine, ticket } = await pairing();
+    const outcomes = await presentTogether(machine, ticket, 4);
     expect(outcomes.filter((o) => o === 'admitted')).toHaveLength(1);
     expect(outcomes.filter((o) => o === 'closed')).toHaveLength(3);
+  });
+
+  test('admissions held until every one has matched the window still burn it once', async () => {
+    // Locally the checks of different sockets may simply run one after another. Here the room
+    // holds three admissions after they matched and passed every check, then lets them burn
+    // together, so the single transaction is what decides.
+    const { machine, ticket } = await pairing();
+    await holdBurns(worker, machine.ridHex, 3);
+    const outcomes = await presentTogether(machine, ticket, 3);
+    expect(outcomes.filter((o) => o === 'admitted')).toHaveLength(1);
+    expect(outcomes.filter((o) => o === 'closed')).toHaveLength(2);
   });
 
   test('a ticket from another secret is refused', async () => {
@@ -459,5 +492,27 @@ describe('a client with no host, and a host that comes and goes', () => {
     const second = await FakeHost.start(worker, machine);
     expect(await second.nextConnection()).toBe(cid);
     expect(socket.isClosed).toBe(false);
+  });
+});
+
+describe('when one end of a pipe closes', () => {
+  async function openPipe() {
+    const { machine, host, device } = await enrolled();
+    const { socket } = await connectClient(worker, machine, device);
+    const pipe = await host.openPipe(await host.nextConnection());
+    await socket.json();
+    return { socket, pipe };
+  }
+
+  test('the close code and reason the peer chose are passed on to the other end', async () => {
+    const { socket, pipe } = await openPipe();
+    socket.ws.close(4001, 'ended by the phone');
+    expect(await pipe.closed).toEqual({ code: 4001, reason: 'ended by the phone' });
+  });
+
+  test('a socket that dies without a close frame ends the other with the generic close', async () => {
+    const { socket, pipe } = await openPipe();
+    (socket.ws as unknown as { terminate(): void }).terminate();
+    expect(await pipe.closed).toEqual(REFUSED);
   });
 });
