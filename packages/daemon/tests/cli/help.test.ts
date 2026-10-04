@@ -196,3 +196,56 @@ describe('help formatting', () => {
     expect(line).toMatch(/--label "name" \S/);
   });
 });
+
+// #1193: the help said the relay was something to "disable" and that the
+// connection code is for the web and mobile app. The relay is off unless
+// enabled, and no shipped client connects through it.
+describe('relay wording', () => {
+  const originalNoColor = process.env['NO_COLOR'];
+
+  afterEach(() => {
+    if (originalNoColor === undefined) {
+      Reflect.deleteProperty(process.env, 'NO_COLOR');
+    } else {
+      process.env['NO_COLOR'] = originalNoColor;
+    }
+  });
+
+  test('--no-relay says the relay is off unless enabled, in every place it appears', () => {
+    process.env['NO_COLOR'] = '1';
+    for (const text of [
+      formatHelp('0.0.0'),
+      formatCommandHelp('start'),
+      formatCommandHelp('serve'),
+    ]) {
+      expect(text).toContain('--no-relay');
+      expect(text).toContain('off unless network.relay = true');
+    }
+  });
+
+  test('--permanent-code says it needs auth, turns the relay on, and beats relay = false', () => {
+    process.env['NO_COLOR'] = '1';
+    const help = formatHelp('0.0.0');
+    expect(help).toContain('needs auth on; turns the relay on');
+    expect(help).toContain('even if network.relay = false');
+  });
+
+  test('`remi code` is described as the permanent relay code, in the help and in its own help', () => {
+    process.env['NO_COLOR'] = '1';
+    const main = formatHelp('0.0.0');
+    expect(main).toContain('Show the permanent relay code');
+    expect(main).toContain('Generate a new permanent relay code');
+    const code = formatCommandHelp('code');
+    expect(code).toContain('Show or refresh the permanent relay code');
+    expect(code).not.toContain('remote access connection code');
+    expect(code).not.toContain('Show current connection code');
+  });
+
+  test('`remi code` no longer claims the web or mobile app uses the code', () => {
+    process.env['NO_COLOR'] = '1';
+    expect(formatHelp('0.0.0')).not.toContain('phone/browser');
+    const code = formatCommandHelp('code');
+    expect(code).not.toContain('web/mobile app');
+    expect(code).toContain('No shipped client connects through the relay yet');
+  });
+});

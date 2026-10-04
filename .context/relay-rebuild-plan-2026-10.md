@@ -1,5 +1,10 @@
 # Relay rebuild plan (epic, proposed 2026-10-04)
 
+> **Update 2026-10-04 (lands with #1193, the R0 hotfix).**
+> Section 1 below describes the audit as it stood on develop at 2526fc67 and is not rewritten.
+> What changed: `network.relay` now defaults to `false`; the relay is off unless `network.relay = true` or `--permanent-code`; with it requested and no `--auth --permanent-code` the daemon prints a notice and creates no adapter; the adapter refuses every peer and drops every inbound frame without an authenticator, and acts only on the Worker role `client`.
+> So finding 2 (on by default and exposed) and the default-mode parts of findings 4 and 5 describe a state that no longer exists; the rest of the audit holds.
+
 Status: APPROVED DIRECTION, owner decisions recorded 2026-10-04 (section 8); nothing here is built yet except the R0 hotfix in flight (#1193).
 Scope: strategy section 9 (`.context/strategy-2026-10.md`), rewritten against a verified audit of what the code does today.
 Evidence: two read-only research passes on 2026-10-04: an audit of remi's own relay (every claim traced to a caller; items marked [EXEC] were reproduced against the real class with a scratch test) and a study of Paseo's relay (Apache-2.0).
