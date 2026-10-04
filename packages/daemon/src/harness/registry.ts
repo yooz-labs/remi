@@ -18,8 +18,35 @@ import { HARNESS_IDS } from '@remi/shared';
 import type { HarnessId } from '@remi/shared';
 
 export type RemoteArgsResult =
-  | { readonly ok: true; readonly args: readonly string[] }
+  | {
+      readonly ok: true;
+      readonly args: readonly string[];
+      /** The thread a `resume <id>` names, lowercased; null or absent when the request resumes none. */
+      readonly resumeThreadId?: string | null;
+    }
   | { readonly ok: false; readonly error: string };
+
+/** A request's arguments after the allowlist passed them: what the launch check looks at. */
+export interface CheckedRemoteArgs {
+  readonly args: readonly string[];
+  readonly resumeThreadId: string | null;
+}
+
+/**
+ * Why a launch cannot happen right now (#1179 review, G8). `client` is what the requester is
+ * told: what is refused and the next step, never a host path or a pid. `detail` is the whole
+ * reason, for the host's own log.
+ */
+export interface LaunchRefusal {
+  readonly client: string;
+  readonly detail: string;
+}
+
+/** The session a successful create started, as far as the hub knows it: what a notice may name. */
+export interface StartedSession {
+  readonly sessionId: string;
+  readonly port: number;
+}
 
 export interface HarnessSpec {
   /** The executable a session of this harness runs; availability is that it resolves on PATH. */
@@ -29,14 +56,19 @@ export interface HarnessSpec {
    * Total: any input that is not an array of allowed strings is a refusal, never a throw.
    */
   readonly validateRemoteArgs: (args: unknown) => RemoteArgsResult;
-  /** Why a session of this harness cannot start right now (the older-daemon gate), or null. */
-  readonly launchRefusal?: () => string | null;
+  /**
+   * Why a session of this harness cannot start right now (the older-daemon gate, a thread a live
+   * session already holds), or null. It sees the arguments the allowlist passed.
+   */
+  readonly launchRefusal?: (checked: CheckedRemoteArgs) => LaunchRefusal | null;
   /**
    * What a successful create does not tell the client (#1179): this harness is started with no
-   * terminal and may stop at a prompt only a terminal can answer, which the daemon cannot see. Sent
-   * as the response's `notice`; absent for a harness with no such prompt.
+   * terminal and may stop at a prompt only a terminal can answer, which the daemon cannot see. Built
+   * from the session the spawn returned, so it can name `remi attach` exactly (G11), and sent as the
+   * response's `notice`: the first line says the condition, any later line what to do about it. Absent
+   * for a harness with no such prompt.
    */
-  readonly headlessNotice?: string;
+  readonly headlessNotice?: (session: StartedSession) => string;
 }
 
 /**

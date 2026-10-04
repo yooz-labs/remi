@@ -199,10 +199,12 @@ import {
   serviceCommandRefusal,
 } from './config/remi-home.ts';
 import { validateClaudeRemoteArgs } from './harness/claude-args.ts';
+import { attachCommand } from './harness/codex/attach-hint.ts';
 import { validateCodexArgs, validateCodexRemoteArgs } from './harness/codex/codex-args.ts';
 import {
   codexLaunchRefusal,
   codexResumeCommand,
+  heldThreadRefusal,
   legacyWriterRefusal,
   olderRemiNotice,
 } from './harness/codex/codex-session.ts';
@@ -1888,6 +1890,10 @@ const codexHarness =
     : undefined;
 const harness: Harness = codexHarness ?? claudeHarness;
 
+/** What a remote requester is told when the older-daemon gate refuses a Codex session (G8): no pid, no file. */
+const LEGACY_WRITER_CLIENT_TEXT =
+  "An older remi is running on the host and would erase the Codex session id from its sessions file, so a Codex session was not started. Update or stop that remi on the host, then try again; the host's remi log names it.";
+
 // The harnesses a `create_session_request` may name (#1179), and what each allows: advertised on
 // every hello_ack (`harnesses`) and checked before anything is spawned. Built here because the
 // validators sit behind the import boundary that keeps Claude and Codex apart.
@@ -1897,12 +1903,29 @@ const harnessRegistry = new HarnessRegistry({
     command: 'codex',
     validateRemoteArgs: validateCodexRemoteArgs,
     // A session the hub starts has no terminal, and Codex may stop at an Update or Trust prompt
-    // that remi never answers (it types nothing into Codex); the hub cannot see that it did.
-    headlessNotice:
-      'Codex was started on the host without a terminal, so remi cannot tell whether it reached its prompt. It may be waiting at an Update or Trust prompt that only a terminal can answer: if it does not respond, run `remi attach` on the host and answer it there.',
-    launchRefusal: () => {
+    // that remi never answers (it types nothing into Codex); the hub cannot see that it did, or that
+    // it has already exited (the hub answers once the child has registered, before it launches
+    // Codex). Line one is the condition, line two the way out, naming this session: a bare
+    // `remi attach` takes the newest one. Nothing host-local (no path, no pid).
+    headlessNotice: ({ sessionId, port }) =>
+      [
+        'Codex was started on the host without a terminal, so remi cannot tell whether it reached its prompt: it may be waiting at an Update or Trust prompt, or may already have exited.',
+        `If it does not respond, \`${attachCommand(port, sessionId)}\` shows it (<host> is the address you reached this daemon at); that this lets you answer such a prompt has not been checked against a real Codex.`,
+      ].join('\n'),
+    // The requester gets a short text; the host's log gets the whole reason (pids, files). Then a
+    // resume of a thread a live session holds is refused here, before a child is spawned, with the
+    // text the child would have refused with.
+    launchRefusal: ({ resumeThreadId }) => {
       const writers = legacyWriters();
-      return writers.length > 0 ? legacyWriterRefusal(writers) : null;
+      if (writers.length > 0) {
+        return { client: LEGACY_WRITER_CLIENT_TEXT, detail: legacyWriterRefusal(writers) };
+      }
+      const held = resumeThreadId === null ? null : heldThreadRefusal(sessionStore, resumeThreadId);
+      if (resumeThreadId === null || held === null) return null;
+      return {
+        client: held,
+        detail: `a resume of the Codex thread ending ${shortThreadId(resumeThreadId)} was refused: a live remi session holds it`,
+      };
     },
   },
 });

@@ -174,7 +174,7 @@ describe('a hub creating a session for a harness (#1179)', () => {
     expect(rest).toEqual([]);
     expect(headline).toContain('without a terminal');
     expect(headline).toContain('Update or Trust prompt');
-    expect(headline).toContain('already exited');
+    expect(headline).toContain('already have exited');
     expect(headline).not.toContain('remi attach');
     expect(remedy).toContain(
       `\`remi attach <host>:${response.port}/${(response.sessionId as string).slice(0, 8)}\``,

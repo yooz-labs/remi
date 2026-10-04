@@ -63,6 +63,7 @@ import { shellQuote } from '../../session/shell-quote.ts';
 import type { HarnessLaunchContext, HarnessSession } from '../types.ts';
 import { AppServerClient, type AppServerClientOptions } from './app-server-client.ts';
 import { parseResolved } from './approval-cards.ts';
+import { attachCommand } from './attach-hint.ts';
 import { resolveCodexWorkingDirectory, validateCodexArgs } from './codex-args.ts';
 import { CodexDecisions, type CodexDecisionsDeps } from './codex-decisions.ts';
 import { UntrustedSocketError, resolveCodexSocketPath } from './codex-socket.ts';
@@ -165,6 +166,28 @@ export function legacyWriterRefusal(writers: readonly LegacyWriter[]): string {
 }
 
 /**
+ * The refusal for a resume of a thread a live remi session already holds, or null. Only an ACTIVE
+ * holder matters: the purge in `list()` has already turned a dead process's record into history, and
+ * the store refuses two active holders. Not `findByHarnessSessionId`: it reads several exited rows
+ * of one thread, which every second resume leaves, as an ambiguity and would refuse the third until
+ * the purge. Used by the launch (`checkCodexLaunch`) and by the hub before it spawns a child for a
+ * `resume` (#1179, H2), so the two say the same thing: the child's refusal reached a remote client
+ * only as "Daemon process exited unexpectedly".
+ */
+export function heldThreadRefusal(sessionStore: SessionStore, threadId: string): string | null {
+  try {
+    const owner = sessionStore
+      .list()
+      .find((s) => s.harness === 'codex' && s.harnessSessionId === threadId && s.exitedAt === null);
+    if (owner === undefined) return null;
+    return `Codex thread ${threadId} is already open in remi session ${owner.remiSessionId.slice(0, 8)} (port ${owner.port}); attach to it with \`${attachCommand(owner.port, owner.remiSessionId)}\` (<host> is the machine running it) or close it first.`;
+  } catch (error) {
+    if (!(error instanceof AmbiguousSessionIdentityError)) throw error;
+    return error.message;
+  }
+}
+
+/**
  * Steps 1 and 2 of the launch, the working directory, and for a resume a check
  * that no live remi session already holds the thread: arguments, then the
  * older-daemon gate, then the directory (which must exist and be searchable),
@@ -185,27 +208,8 @@ export function checkCodexLaunch(
   if (!cwd.ok) return { ok: false, exitCode: 1, message: cwd.error };
   const threadId = parsed.resumeThreadId;
   if (threadId !== null) {
-    try {
-      // Only an ACTIVE holder matters (the purge in `list()` has already turned a dead
-      // process's record into history, and the store refuses two active holders). Not
-      // `findByHarnessSessionId`: it reads several exited rows of one thread, which every
-      // second resume leaves, as an ambiguity and would refuse the third until the purge.
-      const owner = deps.sessionStore
-        .list()
-        .find(
-          (s) => s.harness === 'codex' && s.harnessSessionId === threadId && s.exitedAt === null,
-        );
-      if (owner !== undefined) {
-        return {
-          ok: false,
-          exitCode: 1,
-          message: `Codex thread ${threadId} is already open in remi session ${owner.remiSessionId.slice(0, 8)} (port ${owner.port}); attach to it with \`remi attach\` or close it first.`,
-        };
-      }
-    } catch (error) {
-      if (!(error instanceof AmbiguousSessionIdentityError)) throw error;
-      return { ok: false, exitCode: 1, message: error.message };
-    }
+    const held = heldThreadRefusal(deps.sessionStore, threadId);
+    if (held !== null) return { ok: false, exitCode: 1, message: held };
   }
   return { ok: true, args: parsed.args, resumeThreadId: threadId, directory: cwd.directory };
 }
