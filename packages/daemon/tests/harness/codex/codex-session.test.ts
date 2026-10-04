@@ -571,6 +571,71 @@ describe('CodexHarness', () => {
       expect(statuses.at(-1)).toBe('waiting');
     });
 
+    test("a rotation onto a thread that reports no status clears the old subagent's wait at once (W8)", async () => {
+      const { server, statuses, sessionId } = await startedSession();
+      const first = crypto.randomUUID();
+      const child = crypto.randomUUID();
+      const second = crypto.randomUUID();
+      server.emit(tui(first), { broadcast: true });
+      await until(
+        () => bindingStore.getIdentity(sessionId)?.harnessSessionId === first,
+        'the identity',
+      );
+      server.emit(
+        threadStartedFrame('tui', { id: child, cwd: workDir, createdAtSec: nowSec() }, (t) => {
+          t['parentThreadId'] = first;
+        }),
+        { broadcast: true },
+      );
+      server.emit(threadStatusFrame(first, { type: 'idle' }), { broadcast: true });
+      server.emit(
+        threadStatusFrame(child, { type: 'active', activeFlags: ['waitingOnApproval'] }),
+        { broadcast: true },
+      );
+      await until(() => statuses.at(-1) === 'waiting', 'waiting from the subagent');
+
+      // The new thread's frame carries no status, so nothing else would republish.
+      server.emit(
+        threadStartedFrame('tui', { id: second, cwd: workDir, createdAtSec: nowSec() }, (t) => {
+          t['status'] = null;
+        }),
+        { broadcast: true },
+      );
+      await until(
+        () => bindingStore.getIdentity(sessionId)?.harnessSessionId === second,
+        'the rotation',
+      );
+      await until(() => statuses.at(-1) === 'idle', 'idle once the old wait is forgotten');
+    });
+
+    test("a dropped link takes the subagents' statuses with it and keeps the tracked thread's (W8)", async () => {
+      const { server, statuses } = await startedSession();
+      const main = crypto.randomUUID();
+      const child = crypto.randomUUID();
+      server.emit(tui(main), { broadcast: true });
+      server.emit(
+        threadStartedFrame('tui', { id: child, cwd: workDir, createdAtSec: nowSec() }, (t) => {
+          t['parentThreadId'] = main;
+        }),
+        { broadcast: true },
+      );
+      server.emit(threadStatusFrame(main, { type: 'active', activeFlags: [] }), {
+        broadcast: true,
+      });
+      await until(() => statuses.at(-1) === 'thinking', 'thinking');
+      server.emit(
+        threadStatusFrame(child, { type: 'active', activeFlags: ['waitingOnApproval'] }),
+        { broadcast: true },
+      );
+      await until(() => statuses.at(-1) === 'waiting', 'waiting from the subagent');
+
+      // While the link is down nothing says the subagent is still waiting. The tracked thread's
+      // own status stays until the attach after the reconnect reports it again.
+      const client = server.clientIds()[0] as number;
+      server.dropClient(client);
+      await until(() => statuses.at(-1) === 'thinking', 'the subagent wait to be dropped', 6000);
+    });
+
     test("a thread that is not the session's changes nothing: the session reports only its own thread's idle", async () => {
       const { server, statuses } = await startedSession();
       const main = crypto.randomUUID();

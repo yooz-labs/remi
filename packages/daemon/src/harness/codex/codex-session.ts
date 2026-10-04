@@ -225,6 +225,18 @@ export function createCodexSession(
     }
   };
 
+  // The tracked thread's id, as far as this session knows it (a resume names it up front).
+  let trackedId: string | null = checked.resumeThreadId;
+  /** Forget what the subagents were doing: the link that told us is gone, or the thread is. */
+  const dropDescendantStatuses = (): void => {
+    let dropped = false;
+    for (const id of [...statuses.keys()]) {
+      if (id !== trackedId) dropped = statuses.delete(id) || dropped;
+    }
+    // Nothing dropped, nothing to say: a first `ready` must not turn "unknown" into "idle".
+    if (dropped) publish();
+  };
+
   // The tracker needs the client and the client's events need the tracker, so the events
   // reach it through this holder (nothing arrives before `client.start()`).
   const link: { tracker?: ThreadTracker } = {};
@@ -276,11 +288,13 @@ export function createCodexSession(
     (event) => {
       if (disposed) return;
       if (event.type === 'ready') {
+        dropDescendantStatuses();
         cancelWatchdog();
         const version = /^[^\s/]+\/(\d[^\s]*)/.exec(event.userAgent)?.[1];
         if (version !== undefined) log(`app-server ${version}`);
         link.tracker?.handleReady();
       } else if (event.type === 'disconnected') {
+        dropDescendantStatuses();
         link.tracker?.handleDisconnected();
         armWatchdog();
       } else if (event.type === 'notification') {
@@ -325,8 +339,13 @@ export function createCodexSession(
         if (error instanceof AmbiguousSessionIdentityError) throw new ThreadClaimedError(threadId);
         throw error;
       }
-      // What the old thread's descendants were doing says nothing about the new one.
+      // What the old thread's descendants were doing says nothing about the new one. On a
+      // rotation say so now, since a new thread whose frame carries no status would republish
+      // nothing; a first identity has nothing stale to clear, and "unknown" is not "idle".
+      const rotating = trackedId !== null;
+      trackedId = threadId;
       statuses.clear();
+      if (rotating) publish();
     },
     onStatus: (threadId, status) => {
       // Only an active thread counts, so only an active one is kept.
