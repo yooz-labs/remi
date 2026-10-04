@@ -7,6 +7,7 @@
  */
 
 import type { UISession } from '@/types';
+import { escapeUnsafeText } from '@remi/shared';
 import type { HarnessId } from '@remi/shared';
 
 /** Visual state for a session, derived from connection + agent status. */
@@ -84,11 +85,18 @@ export function splitSessionName(
   return { host, project, branch };
 }
 
+/** The longest name shown for a harness this build does not know. */
+const UNKNOWN_HARNESS_MAX = 16;
+
 /**
  * The label a session shows for its harness (#1179), or null for none. A Claude
  * session, and any session whose daemon names no harness (an older one), shows
  * nothing: it looks exactly as it did before harnesses existed. Another harness
- * is named, so a Codex session is not mistaken for Claude.
+ * is named, so a Codex session is not mistaken for Claude, and neither is a
+ * session of a harness this build has never heard of: the wire carries whatever
+ * string a newer daemon names, so one outside the union is shown as its own name,
+ * cut to 16 characters and with any control or bidi character written out
+ * (text only: React escapes the rest).
  */
 export function harnessLabel(harness: HarnessId | undefined): string | null {
   switch (harness) {
@@ -103,7 +111,15 @@ export function harnessLabel(harness: HarnessId | undefined): string | null {
       // A new HarnessId must be labeled above or this line fails to compile.
       const _exhaustive: never = harness;
       void _exhaustive;
-      return null;
+      return unknownHarnessLabel(harness as unknown);
     }
   }
+}
+
+function unknownHarnessLabel(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const name = value.trim();
+  if (name === '') return null;
+  // By code point, so a pair is never cut in the middle; escaped after the cut, not before.
+  return escapeUnsafeText(Array.from(name).slice(0, UNKNOWN_HARNESS_MAX).join(''));
 }
