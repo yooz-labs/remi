@@ -2090,7 +2090,8 @@ if (
       sharedEvents,
     );
   } else {
-    // Rotating code mode (default): ephemeral code, no Ed25519 auth
+    // Rotating code mode (only when the relay is enabled by hand): ephemeral
+    // code and no authenticator, so the adapter refuses every peer (#1193)
     const code = generateConnectionCode();
     relayAdapter = new RelayAdapter(
       { enabled: true, signalingUrl, code, rotateCode: true as const },
