@@ -290,6 +290,38 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
     await expectNothingTyped(r);
   });
 
+  test('a pending card keeps its id across many ping cycles when the server answers every ping with two pongs, and its answer still works (Q1)', async () => {
+    // Codex 0.160.0 answers every ping with two pongs (verified live, 2026-10-04). With the
+    // client's old keepalive the link dropped about every 70 s and a pending card was re-created
+    // with a new id each time.
+    const r = await attached({
+      appServer: {
+        backoff: { initialMs: 10, maxMs: 40 },
+        keepalive: { intervalMs: 40, timeoutMs: 160 },
+      },
+    });
+    r.server.doublePong();
+    const connections = r.server.clientIds();
+    expect(connections).toHaveLength(1);
+    const id = r.server.request(commandRequest(r, 'touch idle-marker'), r.tuiId);
+    await until(() => pending(r).length === 1, 'the card');
+    const card = pending(r)[0] as Question;
+    await until(() => r.server.pingsReceived() >= 8, 'eight ping cycles');
+    // Past the timeout of a leaked pong timer.
+    await sleep(350);
+    expect(r.server.clientIds(), 'the same connection, never a reconnect').toEqual(connections);
+    expect(r.logs.some((l) => l.includes('link lost') || l.includes('no pong'))).toBe(false);
+    expect(pending(r).map((q) => q.id)).toEqual([card.id]);
+    expect(cards(r)).toHaveLength(1);
+    expect(resolved(r)).toEqual([]);
+    expect(r.server.isPending(r.tuiId, id)).toBe(true);
+    await answer(r, card, 'Yes');
+    await until(() => !r.server.isPending(r.tuiId, id), 'the request to be resolved');
+    expect(answersSent(r).map((a) => a.frame)).toEqual([
+      { jsonrpc: '2.0', id, result: { decision: 'accept' } },
+    ]);
+  });
+
   test('an answer Codex never confirms tells the person to check the terminal, and the card is already gone', async () => {
     const r = await attached({
       decisions: { replayWindowMs: 200, disconnectGraceMs: 800, confirmMs: 300 },

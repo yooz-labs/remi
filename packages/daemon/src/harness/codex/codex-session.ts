@@ -90,11 +90,11 @@ export interface CodexLaunchDeps {
   onQuestionResolved: (sid: UUID, qid: UUID, reason: 'answered' | 'cancelled') => void;
   log: (message: string) => void;
   /**
-   * Test seams (production leaves them out): the client's reconnect backoff, the 30 s link
+   * Test seams (production leaves them out): the client's reconnect backoff and keepalive, the 30 s link
    * watchdog, the tracker's attach retry period and ambiguity window, and the approval cards'
    * replay window and link grace.
    */
-  appServer?: Pick<AppServerClientOptions, 'backoff'>;
+  appServer?: Pick<AppServerClientOptions, 'backoff' | 'keepalive'>;
   linkWatchdogMs?: number;
   linkStableMs?: number;
   tracker?: Pick<ThreadTrackerDeps, 'retryMs' | 'ambiguityMs' | 'noIdentityMs'>;

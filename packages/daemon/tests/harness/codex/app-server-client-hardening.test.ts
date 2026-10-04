@@ -91,8 +91,11 @@ describe('against a byte-level peer', () => {
     return { h, raw };
   }
 
-  /** Answer every ping on `raw` with a pong, until the returned function is called. */
-  function autoPong(raw: RawConnection): { pings: string[]; stop: () => void } {
+  /**
+   * Answer every ping on `raw` with `copies` identical pongs (the real Codex sends two), until the
+   * returned function is called.
+   */
+  function autoPong(raw: RawConnection, copies = 1): { pings: string[]; stop: () => void } {
     const pings: string[] = [];
     let seen = 0;
     const timer = setInterval(() => {
@@ -101,7 +104,9 @@ describe('against a byte-level peer', () => {
         const frame = frames[seen] as { opcode: number; payload: Buffer };
         if (frame.opcode === WS_OPCODE.ping) {
           pings.push(frame.payload.toString());
-          raw.write(RawConnection.frame(WS_OPCODE.pong, frame.payload));
+          for (let n = 0; n < copies; n++) {
+            raw.write(RawConnection.frame(WS_OPCODE.pong, frame.payload));
+          }
         }
       }
     }, 3);
@@ -169,6 +174,43 @@ describe('against a byte-level peer', () => {
       expect(pongs.pings.length).toBeGreaterThanOrEqual(5);
       // Each ping carries its own sequence number, so a pong cannot be mistaken for an older one.
       expect(new Set(pongs.pings).size).toBe(pongs.pings.length);
+    });
+
+    test('a peer that answers every ping with TWO pongs, as Codex does, keeps the link up and is pinged once per interval (Q1)', async () => {
+      // Verified live against Codex 0.160.0 (2026-10-04): the server sends two identical pongs for
+      // every ping. A client that re-armed its ping timer on each of them held two ping timers,
+      // then overwrote its pong timer with each ping and could not cancel the first: the link
+      // dropped with "no pong within 10000 ms" about every 70 s.
+      const { h, raw } = await ready({ keepalive: { intervalMs: 50, timeoutMs: 200 } });
+      const pongs = autoPong(raw, 2);
+      const started = Date.now();
+      await waitFor(() => pongs.pings.length >= 6, 'six ping cycles', 8000);
+      // A leaked pong timer fires one timeout after the ping that overwrote it: wait that out.
+      await sleep(300);
+      pongs.stop();
+      const elapsed = Date.now() - started;
+      expect(types(h), 'no disconnect across the cycles').toEqual(['ready']);
+      expect(h.client.state).toBe('ready');
+      // One ping per interval: never more than the interval allows, whatever number of pongs.
+      expect(pongs.pings.length).toBeLessThanOrEqual(Math.floor(elapsed / 50) + 1);
+      expect(new Set(pongs.pings).size).toBe(pongs.pings.length);
+    });
+
+    test('a pong with no ping outstanding is ignored: it neither re-arms the ping timer nor ends the link (Q1)', async () => {
+      const { h, raw } = await ready({ keepalive: { intervalMs: 60, timeoutMs: 300 } });
+      const pongs = autoPong(raw);
+      // An unsolicited pong (legal, RFC 6455) every 15 ms. If each one re-armed the ping timer,
+      // the 60 ms timer would be pushed back for ever and no ping would be sent.
+      const noise = setInterval(
+        () => raw.write(RawConnection.frame(WS_OPCODE.pong, new Uint8Array())),
+        15,
+      );
+      await sleep(600);
+      clearInterval(noise);
+      pongs.stop();
+      expect(pongs.pings.length, 'pings keep coming every interval').toBeGreaterThanOrEqual(4);
+      expect(types(h)).toEqual(['ready']);
+      expect(h.client.state).toBe('ready');
     });
 
     test('the keepalive defaults are 30 s between pings and 10 s for the pong, and both timers are cleared', async () => {

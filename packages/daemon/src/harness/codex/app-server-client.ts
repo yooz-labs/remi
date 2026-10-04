@@ -340,6 +340,8 @@ export class AppServerClient {
       // A ping every `intervalMs`, and the pong due within `timeoutMs`. Bun 1.3.11 can leave a
       // connection looking open after the peer is gone, so liveness is checked, not assumed.
       const armPing = (): void => {
+        // Never two ping timers: one that was overwritten could not be cancelled any more.
+        if (pingTimer) clearTimeout(pingTimer);
         pingTimer = setTimeout(() => {
           try {
             ws?.ping(String(++pingSeq));
@@ -424,7 +426,11 @@ export class AppServerClient {
         },
         onPong: () => {
           if (done || !ready) return;
-          if (pongTimer) clearTimeout(pongTimer);
+          // A pong with no ping outstanding is unsolicited, which RFC 6455 allows and ignores: the
+          // real Codex answers EVERY ping with two identical pongs (verified live, 0.160.0), and the
+          // second one must not start another ping cycle.
+          if (pongTimer === undefined) return;
+          clearTimeout(pongTimer);
           pongTimer = undefined;
           armPing();
         },
