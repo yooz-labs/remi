@@ -567,6 +567,6 @@ The header's binding button still reads `claudeSessionId`, so a Codex session ha
 (f) the web app's label on a real Codex session, and `remi codex --host` from a second machine.
 14. **Receipts.**
 Pins first, in their own commits, red where they pin new behavior: the additive-golden test (the four, later five, messages that gained fields keep every legacy field with its value, and the added fields are exactly the named ones), the black-box test of what a real Claude daemon sends (legacy keys unchanged, identity added), and the readiness-notice pins.
-The golden diff is additions only (the parsed diff, checked by `protocol-fixtures-additive.test.ts`); two pre-existing lines show as changed in the text diff only because the last field of an object gained a trailing comma.
+The golden diff is additions only (the parsed diff, checked by `protocol-fixtures-additive.test.ts`); three pre-existing lines show as changed in the text diff only because the last field of an object gained a trailing comma (`directory`, `daemonVersion`, `port`; the values are unchanged).
 `macos-fixture-conformance.test.ts` is green, and the real Swift decoders were checked directly: the real `HubProtocol.swift` was compiled with `swiftc` and decoded the regenerated `hello_ack` golden, a Codex-shaped ack (no `claudeSessionId`, null `harnessSessionId`, `harnesses`) and the other four frames HubClient decodes; a synthesized `Decodable` ignores unknown keys.
 Mutants, gates and the removed-line check are in the PR.
