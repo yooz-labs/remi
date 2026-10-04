@@ -20,4 +20,7 @@ extend-exclude = [
   # spell checker. See fixtures/build-hook-corpus.ts for how these are
   # generated.
   "packages/daemon/tests/hooks/fixtures/hook-corpus.jsonl",
+  # Relay v2 test vectors (R1): hex and base64url tokens, not prose; random-looking
+  # substrings such as "Iy" and "Ot" trip the checker by chance.
+  "packages/shared/tests/fixtures/relay-v2/vectors.json",
 ]

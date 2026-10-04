@@ -46,6 +46,7 @@
   "files": {
     "ignore": [
       "node_modules",
+      "packages/shared/tests/fixtures/relay-v2/vectors.json",
       "dist",
       ".git",
       "*.md",
