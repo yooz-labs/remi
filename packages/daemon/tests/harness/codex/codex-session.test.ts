@@ -1353,13 +1353,18 @@ describe('CodexHarness', () => {
     });
 
     test('dispose after the link was up leaves no timer and sends no notice (W6)', async () => {
-      // Dispose stops the client, which reports a drop; that must not re-arm the watchdog.
+      // Dispose stops the client, which reports a drop; that must not re-arm the watchdog. The
+      // watchdog is long against a slow connect, and the link has stayed up long enough (100 ms)
+      // to have cancelled it before dispose, so only the drop dispose causes could fire it.
       const server = startServer();
-      const { session, messages } = create(buildDeps(server, { linkWatchdogMs: 200 }));
+      const { session, messages } = create(
+        buildDeps(server, { linkWatchdogMs: 1500, linkStableMs: 100 }),
+      );
       await session.start();
       await until(() => logs.some((l) => l.includes('app-server ')), 'the client to be ready');
+      await sleep(300);
       session.dispose();
-      await sleep(700);
+      await sleep(2000);
       expect(noticeCount(messages)).toBe(0);
       expect(logs.some((l) => l.includes('not reachable'))).toBe(false);
     });

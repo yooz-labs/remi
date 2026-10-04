@@ -614,9 +614,11 @@ describe('attach', () => {
     // hold under load, and a backoff that starts one failure late fails gap(9).
     expect(gap(9)).toBeGreaterThanOrEqual(80);
     expect(gap(10)).toBeGreaterThanOrEqual(80);
-    // The first ten attempts ran at the plain period: nine gaps of 20 ms, where a backoff that
-    // starts at the first failure would take nine of 100 ms.
-    expect((at[9] as number) - (at[0] as number)).toBeLessThan(600);
+    // The first ten attempts ran at the plain period, so the first slowed gap is well above the
+    // typical earlier one. A ratio, not a wall-clock bound: a busy machine stretches both. A
+    // backoff that starts at the first failure makes eight of the nine earlier gaps 100 ms.
+    const earlier = Array.from({ length: 9 }, (_, i) => gap(i)).sort((x, y) => x - y);
+    expect(gap(9)).toBeGreaterThan(2 * (earlier[4] as number));
   });
 
   /** Every attempt fails with -32600; what the tests below read is when, and for which thread. */
