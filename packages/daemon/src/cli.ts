@@ -223,13 +223,9 @@ import { DeviceTokenStore } from './notifications/device-token-store.ts';
 import { pushHarnessDenied } from './notifications/harness-denied.ts';
 import type { NotificationDispatcher } from './notifications/notification-dispatcher.ts';
 import { sendPushTrigger } from './notifications/push-client.ts';
-import { tokensWanting } from './notifications/push-preferences.ts';
+import { createTurnEventSink } from './notifications/turn-events.ts';
 import { createTurnFailedRoutes } from './notifications/turn-failed.ts';
-import {
-  TurnTimer,
-  buildTurnCompleteText,
-  shouldNotifyTurnComplete,
-} from './notifications/turn-timer.ts';
+import { TurnTimer } from './notifications/turn-timer.ts';
 import { PTYManager, type PTYSession } from './pty/index.ts';
 import {
   AmbiguousSessionIdentityError,
@@ -1341,11 +1337,36 @@ function onHarnessDenied(input: PermissionDeniedHookInput): void {
 const turnTimer = new TurnTimer();
 
 /**
+ * The turn-event sink (#1180): the one place a finished turn becomes a push, for any harness.
+ * Everything it reads is read when a turn ends (the config, the devices, the endpoint), so a
+ * change while the daemon runs is seen. `onTurnStop` below is Claude's way in; the Codex harness
+ * is handed the same sink and calls it from its `turn/completed` frames.
+ */
+const turnEvents = createTurnEventSink({
+  config: () => ({
+    onTurnComplete: remiConfig.notifications.on_turn_complete,
+    turnCompleteMinSeconds: remiConfig.notifications.turn_complete_min_seconds,
+  }),
+  deviceTokens: () => deviceTokens.values(),
+  sessionName: (sessionId) => sessionRegistry.getSession(sessionId)?.name,
+  notifiers: sessionNotifiers,
+  signalingUrl: () => cliSignalingUrl ?? remiConfig.network.signaling_url,
+  pushSecret: () => cliPushSecret,
+  send: sendPushTrigger,
+  log,
+  onError: (err) => logError('[TurnComplete] push failed:', err),
+});
+
+/**
  * Push a "turn complete" notification when `Stop` reports a genuinely long,
  * non-reentrant turn (#914). Config-gated (default on, 60s) and fails toward
- * silence on any unknown signal -- see `shouldNotifyTurnComplete`. Fire-and-
- * forget, mirroring `deliverSubagentAlert` immediately above: a notification
- * bug must never delay or break the hook response Claude is blocking on.
+ * silence on any unknown signal -- see `shouldNotifyTurnComplete`, which the
+ * sink applies (`notifications/turn-events.ts`; #1180 moved the gate, the text
+ * and the fan-out there, so Codex shares them). Fire-and-forget, mirroring
+ * `deliverSubagentAlert` immediately above: a notification bug must never
+ * delay or break the hook response Claude is blocking on.
+ *
+ * What stays here is what is Claude's: the session filter and the timer.
  *
  * Deliberately does NOT check `hook-bridge-setup.ts`'s `binder.admits()` (the
  * transcript-binding validity gate its own Stop listener uses) -- that state
@@ -1369,55 +1390,18 @@ function onTurnStop(input: StopHookInput): void {
   // A stop-hook re-entry means the turn is still going, not finished -- do
   // NOT clear the mark for it: the eventual real Stop still needs the turn's
   // original first-seen time to measure the full duration.
-  // `shouldNotifyTurnComplete` below is the single source of truth for
-  // never notifying on a re-entry; this only gates the clear's timing.
+  // The sink never notifies on a re-entry; this only gates the clear's timing.
   if (!input.stop_hook_active) {
     turnTimer.clear(input.prompt_id);
   }
 
-  // Devices that want turn-complete pushes (#968). Resolved BEFORE the gate so
-  // `hasDeviceTokens` means "someone will actually receive this", not merely
-  // "a token exists": a machine whose every device muted turn-complete stops at
-  // the gate instead of building text and fanning out to nobody. The
-  // machine-wide `notifications.on_turn_complete` above still wins over any
-  // per-device preference — it is checked first, inside the gate.
-  const wanting = tokensWanting(deviceTokens.values(), 'turn_complete');
-
-  if (
-    !shouldNotifyTurnComplete({
-      onTurnComplete: remiConfig.notifications.on_turn_complete,
-      stopHookActive: input.stop_hook_active,
-      elapsedMs,
-      minSeconds: remiConfig.notifications.turn_complete_min_seconds,
-      lastAssistantMessage: input.last_assistant_message,
-      hasDeviceTokens: wanting.length > 0,
-    })
-  ) {
-    return;
-  }
-
-  const primarySessionId = getPrimarySessionId();
-  const session = primarySessionId ? sessionRegistry.getSession(primarySessionId) : undefined;
-  const sessionName = session?.name || 'Agent';
-  // Non-null: shouldNotifyTurnComplete already required a non-empty message.
-  const { title, body } = buildTurnCompleteText(sessionName, input.last_assistant_message ?? '');
-  log(`[TurnComplete] ${title}`);
-
-  const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
-  for (const dt of wanting) {
-    // Dismiss-only, same convention as deliverSubagentAlert above: no
-    // `category` / `questionId`, it answers nothing. `kind` is what makes it
-    // distinguishable from a subagent alert, which is otherwise identical on
-    // the wire (#968).
-    void sendPushTrigger(signalingUrl, dt.token, {
-      title,
-      body,
-      ...(cliPushSecret !== undefined ? { pushSecret: cliPushSecret } : {}),
-      kind: 'turn_complete',
-    }).catch((err) => {
-      logError('[TurnComplete] push failed:', err);
-    });
-  }
+  turnEvents.turnCompleted({
+    // 'unbound' names no session, so the push is titled "Agent", as it was before a primary id exists.
+    sessionId: getPrimarySessionId() ?? 'unbound',
+    elapsedMs,
+    lastAssistantMessage: input.last_assistant_message,
+    reentry: input.stop_hook_active,
+  });
 }
 
 // Hook infrastructure (initialized in wrapper mode when hooks are enabled)

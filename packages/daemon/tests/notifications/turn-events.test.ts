@@ -303,17 +303,28 @@ describe('createTurnEventSink', () => {
   });
 
   describe('turnFailed and turnSucceeded', () => {
+    /**
+     * A session with a dispatcher. A daemon hosts one session, so the registry takes one; a second
+     * id gets a dispatcher of its own and no registry entry (its notice is titled "Agent").
+     */
     function register(sessionId: UUID): void {
-      registry.registerSession(
-        sessionId,
-        '/d',
-        { id: 'pty', write: () => {}, submitInput: async () => {}, close: async () => {} } as never,
-        {
-          handleMessage: () => {},
-          handleQuestion: () => {},
-          handleStatusChange: () => {},
-        } as never,
-      );
+      if (registry.getSession(sessionId) === undefined && registry.getSession(SID) === undefined) {
+        registry.registerSession(
+          sessionId,
+          '/d',
+          {
+            id: 'pty',
+            write: () => {},
+            submitInput: async () => {},
+            close: async () => {},
+          } as never,
+          {
+            handleMessage: () => {},
+            handleQuestion: () => {},
+            handleStatusChange: () => {},
+          } as never,
+        );
+      }
       notifiers.set(sessionId, dispatcherFor(sessionId));
     }
 
