@@ -617,6 +617,86 @@
     },
     {
       "kind": "control_decode",
+      "name": "hello at the size limit is not oversize",
+      "frame": "hello",
+      "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "expect": "reject",
+      "code": "MALFORMED"
+    },
+    {
+      "kind": "control_decode",
+      "name": "hello of 300 two-byte characters (600 bytes)",
+      "frame": "hello",
+      "text": "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+      "expect": "reject",
+      "code": "OVERSIZE"
+    },
+    {
+      "kind": "control_decode",
+      "name": "hello version 3.0",
+      "frame": "hello",
+      "text": "{\"v\":3.0,\"t\":\"hello\",\"m\":\"pair\",\"e\":\"BKWz3rHD8PJMRL1bIyGdl2bhHM5fx_-x18y4rQsBfydPZPMUvBY22HykIx0vOjdKMVB2of3EZrlPMA_r6uJywkY\",\"n\":\"RsW7V1sNhAgEURiEu8emUb51M4cCZiFXZpAQJ-o7AxM\"}",
+      "expect": "reject",
+      "code": "VERSION"
+    },
+    {
+      "kind": "control_decode",
+      "name": "hello version true",
+      "frame": "hello",
+      "text": "{\"v\":true,\"t\":\"hello\",\"m\":\"pair\",\"e\":\"BKWz3rHD8PJMRL1bIyGdl2bhHM5fx_-x18y4rQsBfydPZPMUvBY22HykIx0vOjdKMVB2of3EZrlPMA_r6uJywkY\",\"n\":\"RsW7V1sNhAgEURiEu8emUb51M4cCZiFXZpAQJ-o7AxM\"}",
+      "expect": "reject",
+      "code": "MALFORMED"
+    },
+    {
+      "kind": "control_decode",
+      "name": "hello version NaN",
+      "frame": "hello",
+      "text": "{\"v\":NaN,\"t\":\"hello\",\"m\":\"pair\",\"e\":\"BKWz3rHD8PJMRL1bIyGdl2bhHM5fx_-x18y4rQsBfydPZPMUvBY22HykIx0vOjdKMVB2of3EZrlPMA_r6uJywkY\",\"n\":\"RsW7V1sNhAgEURiEu8emUb51M4cCZiFXZpAQJ-o7AxM\"}",
+      "expect": "reject",
+      "code": "MALFORMED"
+    },
+    {
+      "kind": "control_decode",
+      "name": "hello type is a number",
+      "frame": "hello",
+      "text": "{\"v\":2,\"t\":5,\"m\":\"pair\",\"e\":\"BKWz3rHD8PJMRL1bIyGdl2bhHM5fx_-x18y4rQsBfydPZPMUvBY22HykIx0vOjdKMVB2of3EZrlPMA_r6uJywkY\",\"n\":\"RsW7V1sNhAgEURiEu8emUb51M4cCZiFXZpAQJ-o7AxM\"}",
+      "expect": "reject",
+      "code": "TYPE"
+    },
+    {
+      "kind": "control_decode",
+      "name": "hello mode is a number",
+      "frame": "hello",
+      "text": "{\"v\":2,\"t\":\"hello\",\"m\":1,\"e\":\"BKWz3rHD8PJMRL1bIyGdl2bhHM5fx_-x18y4rQsBfydPZPMUvBY22HykIx0vOjdKMVB2of3EZrlPMA_r6uJywkY\",\"n\":\"RsW7V1sNhAgEURiEu8emUb51M4cCZiFXZpAQJ-o7AxM\"}",
+      "expect": "reject",
+      "code": "MODE"
+    },
+    {
+      "kind": "control_decode",
+      "name": "hello without a mode",
+      "frame": "hello",
+      "text": "{\"v\":2,\"t\":\"hello\",\"e\":\"BKWz3rHD8PJMRL1bIyGdl2bhHM5fx_-x18y4rQsBfydPZPMUvBY22HykIx0vOjdKMVB2of3EZrlPMA_r6uJywkY\",\"n\":\"RsW7V1sNhAgEURiEu8emUb51M4cCZiFXZpAQJ-o7AxM\"}",
+      "expect": "reject",
+      "code": "MODE"
+    },
+    {
+      "kind": "control_decode",
+      "name": "hello nonce with non-zero trailing bits",
+      "frame": "hello",
+      "text": "{\"v\":2,\"t\":\"hello\",\"m\":\"pair\",\"e\":\"BKWz3rHD8PJMRL1bIyGdl2bhHM5fx_-x18y4rQsBfydPZPMUvBY22HykIx0vOjdKMVB2of3EZrlPMA_r6uJywkY\",\"n\":\"RsW7V1sNhAgEURiEu8emUb51M4cCZiFXZpAQJ-o7AxN\"}",
+      "expect": "reject",
+      "code": "MALFORMED"
+    },
+    {
+      "kind": "control_decode",
+      "name": "hello nonce of 41 characters (1 modulo 4)",
+      "frame": "hello",
+      "text": "{\"v\":2,\"t\":\"hello\",\"m\":\"pair\",\"e\":\"BKWz3rHD8PJMRL1bIyGdl2bhHM5fx_-x18y4rQsBfydPZPMUvBY22HykIx0vOjdKMVB2of3EZrlPMA_r6uJywkY\",\"n\":\"RsW7V1sNhAgEURiEu8emUb51M4cCZiFXZpAQJ-o7A\"}",
+      "expect": "reject",
+      "code": "MALFORMED"
+    },
+    {
+      "kind": "control_decode",
       "name": "hello_ack version 1",
       "frame": "hello_ack",
       "text": "{\"v\":1,\"t\":\"hello_ack\",\"e\":\"BCoamjj2j44aXJO3JpOaourfd6h1p6XLdu8Nb5JxokVG17rdEFkXJDjxq1hVb-COWdf3EkKBG_C0g0p0Xnux6CQ\",\"n\":\"PeEn22azDWp7jj7wbqqVjpRXWEb2wUwh34r1kwxNz4M\",\"s\":\"AVCmnGuCkvcX9D3jZyktj4H2d1BgUHKsc-lKklmxvnEd3WXw_J9YC8bbjz-I_n93Xmcu5U4OvaEbZPD6vi0bDg\"}",
@@ -900,9 +980,7 @@
       "psk": "84e2ca41b9a6d89dc791c53ddbed6c31ece3ada496cc473b32ba0c56ee704512",
       "hostSignature": "0150a69c6b8292f717f43de367292d8f81f67750605072ac73e94a9259b1be711ddd65f0fc9f580bc6db8f3f88fe7f775e672ee54e0ebda11b64f0fabe2d1b0e",
       "auth": "{\"v\":2,\"t\":\"auth\",\"c\":\"oPwJvisVqilRjjTDsmw9IvXB4AzzAnd81mJR7LrPtck1lSZYxf0e98dUH1XCVBB3bHy_ZzT9PAFxvZfejl4Ib2HM0RtOnqBWkLqFQ6_e3e8SGzUMlNzqhxQVNbjVQMyw1NughyOQ9U1zGT12YzgaBSMukh6snvZdammEkg\"}",
-      "enrolled": [
-        "0df97d9e47ad7026ccddd1ff44afb3feb4dfa01ff2ff8ff4e4afe6de275ce918"
-      ],
+      "enrolled": [],
       "expect": "accept"
     },
     {
@@ -944,9 +1022,7 @@
       "psk": "84e2ca41b9a6d89dc791c53ddbed6c31ece3ada496cc473b32ba0c56ee704512",
       "hostSignature": "0150a69c6b8292f717f43de367292d8f81f67750605072ac73e94a9259b1be711ddd65f0fc9f580bc6db8f3f88fe7f775e672ee54e0ebda11b64f0fabe2d1b0e",
       "auth": "{\"v\":2,\"t\":\"auth\",\"c\":\"oPwJvisVqilRjjTDsmw9IvXB4AzzAnd81mJR7LrPtck1lSZYxfwe98dUH1XCVBB3bHy_ZzT9PAFxvZfejl4Ib2HM0RtOnqBWkLqFQ6_e3e8SGzUMlNzqhxQVNbjVQMyw1NughyOQ9U1zGT12Irrr5_CnorhZiq1NaVsD8g\"}",
-      "enrolled": [
-        "0df97d9e47ad7026ccddd1ff44afb3feb4dfa01ff2ff8ff4e4afe6de275ce918"
-      ],
+      "enrolled": [],
       "expect": "reject",
       "code": "BAD_SIGNATURE"
     },
@@ -960,9 +1036,7 @@
       "psk": "84e2ca41b9a6d89dc791c53ddbed6c31ece3ada496cc473b32ba0c56ee704512",
       "hostSignature": "0150a69c6b8292f717f43de367292d8f81f67750605072ac73e94a9259b1be711ddd65f0fc9f580bc6db8f3f88fe7f775e672ee54e0ebda11b64f0fabe2d1b0e",
       "auth": "{\"v\":2,\"t\":\"auth\",\"c\":\"oPwJvisVqilRjjTDsmw9IvXB4AzzAnd81mJR7LrPtcn0izqHvIv2KH_ie9Ywa5MD4Ldu-amxE4NzlQvncfVFeTx7BF6xOsoOgTMYfeEh_3rUIYQHyKleBGXje2rBooO01NughyOQ9U1zGT123cLp63UYf_wioZ16BnlUVA\"}",
-      "enrolled": [
-        "0df97d9e47ad7026ccddd1ff44afb3feb4dfa01ff2ff8ff4e4afe6de275ce918"
-      ],
+      "enrolled": [],
       "expect": "reject",
       "code": "BAD_SIGNATURE"
     },
@@ -976,9 +1050,7 @@
       "psk": "84e2ca41b9a6d89dc791c53ddbed6c31ece3ada496cc473b32ba0c56ee704512",
       "hostSignature": "0150a69c6b8292f717f43de367292d8f81f67750605072ac73e94a9259b1be711ddd65f0fc9f580bc6db8f3f88fe7f775e672ee54e0ebda11b64f0fabe2d1b0e",
       "auth": "{\"v\":2,\"t\":\"auth\",\"c\":\"oPwJvisVqilRjjTDsmw9IvXB4AzzAnd81mJR7LrPtcm2HYsZ-NWZLCGBNO1pkfBESaiZv5pXaGZeuSk6zaar7JAzlzbrKjPycbTV7y-al53HhsJBCsvuFAtPOwzMIxy_1NughyOQ9U1zGT12ubTDXg6W0YRycD_-ZJTZ8w\"}",
-      "enrolled": [
-        "0df97d9e47ad7026ccddd1ff44afb3feb4dfa01ff2ff8ff4e4afe6de275ce918"
-      ],
+      "enrolled": [],
       "expect": "reject",
       "code": "BAD_SIGNATURE"
     },
@@ -992,9 +1064,7 @@
       "psk": "84e2ca41b9a6d89dc791c53ddbed6c31ece3ada496cc473b32ba0c56ee704512",
       "hostSignature": "0150a69c6b8292f717f43de367292d8f81f67750605072ac73e94a9259b1be711ddd65f0fc9f580bc6db8f3f88fe7f775e672ee54e0ebda11b64f0fabe2d1b0e",
       "auth": "{\"v\":2,\"t\":\"auth\",\"c\":\"oPwJvisVqilRjjTDsmw9IvXB4AzzAnd81mJR7LrPtclDHG2i9qARud3bs5dJHAxviVIl1PPTzwm8SPwGEAI0rK0VbPkenCgp_5fKx-BU3g0UlCTa3f8V6ITL2Xc5Y0qy1NughyOQ9U1zGT12QjjsatX1dkiHAPvjrtUinQ\"}",
-      "enrolled": [
-        "0df97d9e47ad7026ccddd1ff44afb3feb4dfa01ff2ff8ff4e4afe6de275ce918"
-      ],
+      "enrolled": [],
       "expect": "reject",
       "code": "BAD_SIGNATURE"
     },
@@ -1008,9 +1078,7 @@
       "psk": "84e2ca41b9a6d89dc791c53ddbed6c31ece3ada496cc473b32ba0c56ee704512",
       "hostSignature": "0150a69c6b8292f717f43de367292d8f81f67750605072ac73e94a9259b1be711ddd65f0fc9f580bc6db8f3f88fe7f775e672ee54e0ebda11b64f0fabe2d1b0e",
       "auth": "{\"v\":2,\"t\":\"auth\",\"c\":\"oPwJvisVqilRjjTDsmw9IvXB4AzzAnd81mJR7LrPtclNTgijH99uNWhMsOg0XM4oqS5yuw0JCvnG0UAmJOZDz_c6O-re11R-4fgudXsmOiPU6eu9FA4tYPhiuLo4vqOx1NughyOQ9U1zGT126vw_PO2PJBmAcGXSpeFTJw\"}",
-      "enrolled": [
-        "0df97d9e47ad7026ccddd1ff44afb3feb4dfa01ff2ff8ff4e4afe6de275ce918"
-      ],
+      "enrolled": [],
       "expect": "reject",
       "code": "BAD_SIGNATURE"
     },
@@ -1024,9 +1092,7 @@
       "psk": "84e2ca41b9a6d89dc791c53ddbed6c31ece3ada496cc473b32ba0c56ee704512",
       "hostSignature": "0150a69c6b8292f717f43de367292d8f81f67750605072ac73e94a9259b1be711ddd65f0fc9f580bc6db8f3f88fe7f775e672ee54e0ebda11b64f0fabe2d1b0e",
       "auth": "{\"v\":2,\"t\":\"auth\",\"c\":\"oPwJvisVqilRjjTDsmw9IvXB4AzzAnd81mJR7LrPtcl4C-TWgiVBSudnyl3UULO9Mu0sPlyINII5i56kDEcZWrghmjyXizKf11LV6RnpbtVlE8T6Y69UBVU3TqVGAOy81NughyOQ9U1zGT12Vw5rS_owKCBeLdT2OyIZqQ\"}",
-      "enrolled": [
-        "0df97d9e47ad7026ccddd1ff44afb3feb4dfa01ff2ff8ff4e4afe6de275ce918"
-      ],
+      "enrolled": [],
       "expect": "reject",
       "code": "BAD_SIGNATURE"
     },
@@ -1040,9 +1106,7 @@
       "psk": "84e2ca41b9a6d89dc791c53ddbed6c31ece3ada496cc473b32ba0c56ee704512",
       "hostSignature": "0150a69c6b8292f717f43de367292d8f81f67750605072ac73e94a9259b1be711ddd65f0fc9f580bc6db8f3f88fe7f775e672ee54e0ebda11b64f0fabe2d1b0e",
       "auth": "{\"v\":2,\"t\":\"auth\",\"c\":\"oPwJvisVqilRjjTDsmw9IvXB4AzzAnd81mJR7LrPtckJMLexHahSwiXlMrwDDFAIje9dID5JCPixRmWzJwE-YpuMHUI-rGiVKMqCG6TGOcH3tpkaUqEo9R1j1wcQTFa21NughyOQ9U1zGT12LjZJbX33IDrGo7yNolLDUg\"}",
-      "enrolled": [
-        "0df97d9e47ad7026ccddd1ff44afb3feb4dfa01ff2ff8ff4e4afe6de275ce918"
-      ],
+      "enrolled": [],
       "expect": "reject",
       "code": "BAD_SIGNATURE"
     },
@@ -1056,9 +1120,7 @@
       "psk": "84e2ca41b9a6d89dc791c53ddbed6c31ece3ada496cc473b32ba0c56ee704512",
       "hostSignature": "0150a69c6b8292f717f43de367292d8f81f67750605072ac73e94a9259b1be711ddd65f0fc9f580bc6db8f3f88fe7f775e672ee54e0ebda11b64f0fabe2d1b0e",
       "auth": "{\"v\":2,\"t\":\"auth\",\"c\":\"oPwJvisVqilRjjTDsmw9IvXB4AzzAnd81mJR7LrPtcmc7qYkSSULCfN1mCE4UR2u4xSeeXmkk_x5r_KX_Vgc9mEnZU9y7LeEOLWxaeNpwoG_Bj41QcUQaelwLz29kNu_4N-n9CKDuFgO1WPuhBd8C2fIGcNy4aIN\"}",
-      "enrolled": [
-        "0df97d9e47ad7026ccddd1ff44afb3feb4dfa01ff2ff8ff4e4afe6de275ce918"
-      ],
+      "enrolled": [],
       "expect": "reject",
       "code": "NAME"
     },
@@ -1072,9 +1134,7 @@
       "psk": "84e2ca41b9a6d89dc791c53ddbed6c31ece3ada496cc473b32ba0c56ee704512",
       "hostSignature": "0150a69c6b8292f717f43de367292d8f81f67750605072ac73e94a9259b1be711ddd65f0fc9f580bc6db8f3f88fe7f775e672ee54e0ebda11b64f0fabe2d1b0e",
       "auth": "{\"v\":2,\"t\":\"auth\",\"c\":\"oPwJvisVqilRjjTDsmw9IvXB4AzzAnd81mJR7LrPtckwFHURVegTiSpwsK63G4okCUomJ3UfBNyKowag0HjcBnm59COetsCXOmpbfaCu7r99-HoVpoE6VsIPe79afsS_-sFi4n7Dr50enlW6kYoxGiqE\"}",
-      "enrolled": [
-        "0df97d9e47ad7026ccddd1ff44afb3feb4dfa01ff2ff8ff4e4afe6de275ce918"
-      ],
+      "enrolled": [],
       "expect": "reject",
       "code": "NAME"
     },
@@ -1088,9 +1148,7 @@
       "psk": "84e2ca41b9a6d89dc791c53ddbed6c31ece3ada496cc473b32ba0c56ee704512",
       "hostSignature": "0150a69c6b8292f717f43de367292d8f81f67750605072ac73e94a9259b1be711ddd65f0fc9f580bc6db8f3f88fe7f775e672ee54e0ebda11b64f0fabe2d1b0e",
       "auth": "{\"v\":2,\"t\":\"auth\",\"c\":\"oPwJvisVqilRjjTDsmw9IvXB4AzzAnd81mJR7LrPtcnQExra9AQ05vvoQggh-J97KKHc6AWbRQJCArthn2Rq5pgyas_XZd0o11tHBuZX5tpmbcj14QSB7WPhUqdSpK2-QZaVhrDngF7I8mpvJzOW0gbx\"}",
-      "enrolled": [
-        "0df97d9e47ad7026ccddd1ff44afb3feb4dfa01ff2ff8ff4e4afe6de275ce918"
-      ],
+      "enrolled": [],
       "expect": "reject",
       "code": "NAME"
     },
@@ -1104,10 +1162,102 @@
       "psk": "84e2ca41b9a6d89dc791c53ddbed6c31ece3ada496cc473b32ba0c56ee704512",
       "hostSignature": "0150a69c6b8292f717f43de367292d8f81f67750605072ac73e94a9259b1be711ddd65f0fc9f580bc6db8f3f88fe7f775e672ee54e0ebda11b64f0fabe2d1b0e",
       "auth": "{\"v\":2,\"t\":\"auth\",\"c\":\"oPwJvisVqilRjjTDsmw9IvXB4AzzAnd81mJR7LrPtckLjXtrVRgRmuzWCw77FlEKthy7x5wMzdvXMytiVGPhTg_Z0_O4TrP_KYgHn-EXIDzoWItS-GIJ9P-nOPDozyW-49-iki2DtFx6FzJy7Qc2_nENxVITOvhtT8djX8enGnwHji-aUFLt3xNdlP_EKjeQGaZHKuNCGvrzsEQ8d79il49kCihoyONLGESpL_HDvw0\"}",
-      "enrolled": [
-        "0df97d9e47ad7026ccddd1ff44afb3feb4dfa01ff2ff8ff4e4afe6de275ce918"
-      ],
+      "enrolled": [],
       "expect": "accept"
+    },
+    {
+      "kind": "auth_check",
+      "name": "control: an empty name (the 112-byte ciphertext)",
+      "session": "pair",
+      "mode": "pair",
+      "z": "6a3d8583a3f4943d33333164e4e7cf09af6c1a8b2573783fd0479ebf582836d7",
+      "h1": "5c9c7445bd7328d45b48029c5caedb9e893bfb968f4a0aebb4556b4550f5ebb9",
+      "psk": "84e2ca41b9a6d89dc791c53ddbed6c31ece3ada496cc473b32ba0c56ee704512",
+      "hostSignature": "0150a69c6b8292f717f43de367292d8f81f67750605072ac73e94a9259b1be711ddd65f0fc9f580bc6db8f3f88fe7f775e672ee54e0ebda11b64f0fabe2d1b0e",
+      "auth": "{\"v\":2,\"t\":\"auth\",\"c\":\"oPwJvisVqilRjjTDsmw9IvXB4AzzAnd81mJR7LrPtck1waUTFsU6hrywSgFlH3slmw7Eqt5U6qGRMKt1_C-11WCBJk1GWoTujkLm4IspSZNHhNFxm3lZMQnSKoy-w7GwsLVGTgWBwN2J71XvgKJC_g\"}",
+      "enrolled": [],
+      "expect": "accept"
+    },
+    {
+      "kind": "auth_check",
+      "name": "control: a name of one space (U+0020 is not a control character)",
+      "session": "pair",
+      "mode": "pair",
+      "z": "6a3d8583a3f4943d33333164e4e7cf09af6c1a8b2573783fd0479ebf582836d7",
+      "h1": "5c9c7445bd7328d45b48029c5caedb9e893bfb968f4a0aebb4556b4550f5ebb9",
+      "psk": "84e2ca41b9a6d89dc791c53ddbed6c31ece3ada496cc473b32ba0c56ee704512",
+      "hostSignature": "0150a69c6b8292f717f43de367292d8f81f67750605072ac73e94a9259b1be711ddd65f0fc9f580bc6db8f3f88fe7f775e672ee54e0ebda11b64f0fabe2d1b0e",
+      "auth": "{\"v\":2,\"t\":\"auth\",\"c\":\"oPwJvisVqilRjjTDsmw9IvXB4AzzAnd81mJR7LrPtcnwZR8R7qd4F2oxIv9P0JtVtCvq-A9vOZmd1nP287DFCWzlpBGy3IqB9l1ZkIvPOkiX8N-5ANrSIBNagkrMLgC-otMwbRxyDc-olhlJvIpXHcQ\"}",
+      "enrolled": [],
+      "expect": "accept"
+    },
+    {
+      "kind": "auth_check",
+      "name": "control: a name with a C1 control character (U+0085 is allowed)",
+      "session": "pair",
+      "mode": "pair",
+      "z": "6a3d8583a3f4943d33333164e4e7cf09af6c1a8b2573783fd0479ebf582836d7",
+      "h1": "5c9c7445bd7328d45b48029c5caedb9e893bfb968f4a0aebb4556b4550f5ebb9",
+      "psk": "84e2ca41b9a6d89dc791c53ddbed6c31ece3ada496cc473b32ba0c56ee704512",
+      "hostSignature": "0150a69c6b8292f717f43de367292d8f81f67750605072ac73e94a9259b1be711ddd65f0fc9f580bc6db8f3f88fe7f775e672ee54e0ebda11b64f0fabe2d1b0e",
+      "auth": "{\"v\":2,\"t\":\"auth\",\"c\":\"oPwJvisVqilRjjTDsmw9IvXB4AzzAnd81mJR7LrPtclBwYDW72kca7RMpqYSU-7lxZ76OTiRELipRLRa5AdRQ-SSvcHiDokQUhAePHgjr12KMGoX1tXzusrlPLbbQQe643xGkRkN3k7BqWaS-up-oCjKxiQ\"}",
+      "enrolled": [],
+      "expect": "accept"
+    },
+    {
+      "kind": "auth_check",
+      "name": "control: a name with a byte order mark (U+FEFF is a character)",
+      "session": "pair",
+      "mode": "pair",
+      "z": "6a3d8583a3f4943d33333164e4e7cf09af6c1a8b2573783fd0479ebf582836d7",
+      "h1": "5c9c7445bd7328d45b48029c5caedb9e893bfb968f4a0aebb4556b4550f5ebb9",
+      "psk": "84e2ca41b9a6d89dc791c53ddbed6c31ece3ada496cc473b32ba0c56ee704512",
+      "hostSignature": "0150a69c6b8292f717f43de367292d8f81f67750605072ac73e94a9259b1be711ddd65f0fc9f580bc6db8f3f88fe7f775e672ee54e0ebda11b64f0fabe2d1b0e",
+      "auth": "{\"v\":2,\"t\":\"auth\",\"c\":\"oPwJvisVqilRjjTDsmw9IvXB4AzzAnd81mJR7LrPtclSxMnEeSHIH7YDh1Ze-gtFrmxVz8Q53wJ3vOzPlzEEnL1FDHd7QjpmIcpG0XNxvGkSgdW7Lnbs7WyrQf6JEsizbQV8gySNu1hKhMxXBp5USKb7k8eRhbCV\"}",
+      "enrolled": [],
+      "expect": "accept"
+    },
+    {
+      "kind": "auth_check",
+      "name": "device name with U+001F",
+      "session": "pair",
+      "mode": "pair",
+      "z": "6a3d8583a3f4943d33333164e4e7cf09af6c1a8b2573783fd0479ebf582836d7",
+      "h1": "5c9c7445bd7328d45b48029c5caedb9e893bfb968f4a0aebb4556b4550f5ebb9",
+      "psk": "84e2ca41b9a6d89dc791c53ddbed6c31ece3ada496cc473b32ba0c56ee704512",
+      "hostSignature": "0150a69c6b8292f717f43de367292d8f81f67750605072ac73e94a9259b1be711ddd65f0fc9f580bc6db8f3f88fe7f775e672ee54e0ebda11b64f0fabe2d1b0e",
+      "auth": "{\"v\":2,\"t\":\"auth\",\"c\":\"oPwJvisVqilRjjTDsmw9IvXB4AzzAnd81mJR7LrPtcnGwZNyBW_ZdaGSnQqa-i1YjKVhu2lXOaGCaZqBm1TaJE2npcpjespZrk7WhC65CncNdxySjU7VEqRcMnZ64F6946GhbbWZDd2LmGwEowsrDJa6ig\"}",
+      "enrolled": [],
+      "expect": "reject",
+      "code": "NAME"
+    },
+    {
+      "kind": "auth_check",
+      "name": "a bad name and a bad signature report the name",
+      "session": "pair",
+      "mode": "pair",
+      "z": "6a3d8583a3f4943d33333164e4e7cf09af6c1a8b2573783fd0479ebf582836d7",
+      "h1": "5c9c7445bd7328d45b48029c5caedb9e893bfb968f4a0aebb4556b4550f5ebb9",
+      "psk": "84e2ca41b9a6d89dc791c53ddbed6c31ece3ada496cc473b32ba0c56ee704512",
+      "hostSignature": "0150a69c6b8292f717f43de367292d8f81f67750605072ac73e94a9259b1be711ddd65f0fc9f580bc6db8f3f88fe7f775e672ee54e0ebda11b64f0fabe2d1b0e",
+      "auth": "{\"v\":2,\"t\":\"auth\",\"c\":\"oPwJvisVqilRjjTDsmw9IvXB4AzzAnd81mJR7LrPtcmc7qYlSSULCfN1mCE4UR2u4xSeeXmkk_x5r_KX_Vgc9mEnZU9y7LeEOLWxaeNpwoG_Bj41QcUQaelwLz29kNu_4N-n9CKDuFgPN7BntLGJHzzYGvH1gc51\"}",
+      "enrolled": [],
+      "expect": "reject",
+      "code": "NAME"
+    },
+    {
+      "kind": "auth_check",
+      "name": "a bad signature and an unknown device report the signature",
+      "session": "resume",
+      "mode": "resume",
+      "z": "331a9dee5de95c7459bba1eae835fa943464d0b15736423529d9a6e41f9fbb73",
+      "h1": "793efd6e8b373847bda1680fcd0ad07d424bc05f10057dc435f101e33abb52a8",
+      "psk": null,
+      "hostSignature": "a613fd4bb0201e2a421a9cfa482982a480ce48d589d4180ceead24059213716c1eaffa41abf5e65c9b1ba952a80656fa63dec8c189701f52eb089b834829ce01",
+      "auth": "{\"v\":2,\"t\":\"auth\",\"c\":\"1ZTm92Mw0a3TOp0hcD6P0x0TU_Ot75vBKe0OE2LN0vxEttYZJHGIfMo7RkSxXh4wZKkGVwr_dTcHrBByPreUztEkA54GrvKMUVMLMXQFzUFBOk1Qhfp3a1cHaMl_qAKKvhUTuczrAOXM5fGE9CMenFK6i2hGBu7-6uvT3A\"}",
+      "enrolled": [],
+      "expect": "reject",
+      "code": "BAD_SIGNATURE"
     },
     {
       "kind": "ready_open",
@@ -1714,6 +1864,59 @@
     },
     {
       "kind": "token_decode",
+      "name": "control: relay url ws://localhost:8787",
+      "text": "remi-pair2:AgAAAAAAa0nUWBQvGtc6v295HgmKB4XbY546fsTb1kss3qgFm_pwHckUhOLKQbmm2J3HkcU92-1sMezjraSWzEc7MroMVu5wRRJ3czovL2xvY2FsaG9zdDo4Nzg3",
+      "nowSec": 1800000000,
+      "expect": "accept"
+    },
+    {
+      "kind": "token_decode",
+      "name": "control: relay url ws://127.0.0.1:8787/v2",
+      "text": "remi-pair2:AgAAAAAAa0nUWBQvGtc6v295HgmKB4XbY546fsTb1kss3qgFm_pwHckUhOLKQbmm2J3HkcU92-1sMezjraSWzEc7MroMVu5wRRJ3czovLzEyNy4wLjAuMTo4Nzg3L3Yy",
+      "nowSec": 1800000000,
+      "expect": "accept"
+    },
+    {
+      "kind": "token_decode",
+      "name": "control: relay url wss://relay.example.test:8443/a/b_c-d.e~f",
+      "text": "remi-pair2:AgAAAAAAa0nUWBQvGtc6v295HgmKB4XbY546fsTb1kss3qgFm_pwHckUhOLKQbmm2J3HkcU92-1sMezjraSWzEc7MroMVu5wRRJ3c3M6Ly9yZWxheS5leGFtcGxlLnRlc3Q6ODQ0My9hL2JfYy1kLmV-Zg",
+      "nowSec": 1800000000,
+      "expect": "accept"
+    },
+    {
+      "kind": "token_decode",
+      "name": "reserved flag bit 7 set",
+      "text": "remi-pair2:AoAAAAAAa0nUWBQvGtc6v295HgmKB4XbY546fsTb1kss3qgFm_pwHckUhOLKQbmm2J3HkcU92-1sMezjraSWzEc7MroMVu5wRRJ3c3M6Ly9yZWxheS5leGFtcGxlLnRlc3QvdjI",
+      "nowSec": 1800000000,
+      "expect": "reject",
+      "code": "TOKEN"
+    },
+    {
+      "kind": "token_decode",
+      "name": "reserved flag bit 2 set",
+      "text": "remi-pair2:AgQAAAAAa0nUWBQvGtc6v295HgmKB4XbY546fsTb1kss3qgFm_pwHckUhOLKQbmm2J3HkcU92-1sMezjraSWzEc7MroMVu5wRRJ3c3M6Ly9yZWxheS5leGFtcGxlLnRlc3QvdjI",
+      "nowSec": 1800000000,
+      "expect": "reject",
+      "code": "TOKEN"
+    },
+    {
+      "kind": "token_decode",
+      "name": "relay url with a trailing newline",
+      "text": "remi-pair2:AgAAAAAAa0nUWBQvGtc6v295HgmKB4XbY546fsTb1kss3qgFm_pwHckUhOLKQbmm2J3HkcU92-1sMezjraSWzEc7MroMVu5wRRJ3c3M6Ly9yZWxheS5leGFtcGxlLnRlc3QvdjIK",
+      "nowSec": 1800000000,
+      "expect": "reject",
+      "code": "TOKEN"
+    },
+    {
+      "kind": "token_decode",
+      "name": "an expired token with an invalid url reports the url (url first)",
+      "text": "remi-pair2:AgAAAAAAa0nUWBQvGtc6v295HgmKB4XbY546fsTb1kss3qgFm_pwHckUhOLKQbmm2J3HkcU92-1sMezjraSWzEc7MroMVu5wRRJodHRwOi8vZXhhbXBsZS5jb20",
+      "nowSec": 1800000700,
+      "expect": "reject",
+      "code": "TOKEN"
+    },
+    {
+      "kind": "token_decode",
       "name": "seal key not on the curve",
       "text": "remi-pair2:AgEAAAAAa0nUWBQvGtc6v295HgmKB4XbY546fsTb1kss3qgFm_pwHckUhOLKQbmm2J3HkcU92-1sMezjraSWzEc7MroMVu5wRRIEUhjo3s2Qk9vhzjUa5OXttdlrCm_DshkGTguMUBVFE1c8sl__ImBsJ4rc2dQmpeY8pP1yfEPTWFn1MVTPFwmWR3dzczovL3JlbGF5LmV4YW1wbGUudGVzdC92Mg",
       "nowSec": 1800000000,
@@ -1849,7 +2052,7 @@
     },
     {
       "kind": "admission_verify",
-      "name": "host proof for another room",
+      "name": "host proof for another room (fails the room-id hash check and the signature)",
       "role": "host",
       "publicKey": "142f1ad73abf6f791e098a0785db639e3a7ec4dbd64b2cdea8059bfa701dc914",
       "rid": "9b250c8edfdc5735d609c71b1cd6e4d7",
@@ -1895,6 +2098,16 @@
       "rid": "9b250c8edfdc5735d609c71b1cd6e4d7",
       "nonce": "f6e31e9de87be340381676007a5744251730092b625dafc198c60f1d95fa6e43",
       "signature": "6a98333633df9890c1706808ac8a9b82d5ebc1cc3fd84fcc3b2a060248dd3ca41df7bbeeaff009b1af20f9e07960dd90851b333d4234163228078a018316d108",
+      "expect": "reject"
+    },
+    {
+      "kind": "admission_verify",
+      "name": "client proof with a 15-byte room id",
+      "role": "client",
+      "publicKey": "0df97d9e47ad7026ccddd1ff44afb3feb4dfa01ff2ff8ff4e4afe6de275ce918",
+      "rid": "397e2eedccc2603b7f5e9cf484fd76",
+      "nonce": "f6e31e9de87be340381676007a5744251730092b625dafc198c60f1d95fa6e43",
+      "signature": "4a8b451678e1cee2cf06c9b3c7b12a7ed9a0988401ed5296bcdcda1cbc71915b3bd29e28fc1272ff9dbae06556bc245d4c13885e66d90c77b526402c7ed7ef05",
       "expect": "reject"
     },
     {

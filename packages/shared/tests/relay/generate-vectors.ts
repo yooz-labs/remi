@@ -290,6 +290,33 @@ export async function generateVectors(): Promise<Obj> {
     ctl('hello field is a number', 'hello', h({ n: 5 }), 'MALFORMED');
     ctl('hello not json', 'hello', 'not json', 'MALFORMED');
     ctl('hello over the size limit', 'hello', 'x'.repeat(513), 'OVERSIZE');
+    ctl('hello at the size limit is not oversize', 'hello', 'x'.repeat(512), 'MALFORMED');
+    ctl('hello of 300 two-byte characters (600 bytes)', 'hello', '\u00e9'.repeat(300), 'OVERSIZE');
+    ctl('hello version 3.0', 'hello', pair.hello.replace('"v":2', '"v":3.0'), 'VERSION');
+    ctl('hello version true', 'hello', pair.hello.replace('"v":2', '"v":true'), 'MALFORMED');
+    ctl('hello version NaN', 'hello', pair.hello.replace('"v":2', '"v":NaN'), 'MALFORMED');
+    ctl('hello type is a number', 'hello', h({ t: 5 }), 'TYPE');
+    ctl('hello mode is a number', 'hello', h({ m: 1 }), 'MODE');
+    ctl('hello without a mode', 'hello', pair.hello.replace(/"m":"pair",/, ''), 'MODE');
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+    const nonce = helloObj['n'] as string;
+    const lastIndex = alphabet.indexOf(nonce.slice(-1));
+    const trailing =
+      alphabet[(lastIndex & ~3) | 1] === nonce.slice(-1)
+        ? alphabet[(lastIndex & ~3) | 2]
+        : alphabet[(lastIndex & ~3) | 1];
+    ctl(
+      'hello nonce with non-zero trailing bits',
+      'hello',
+      h({ n: nonce.slice(0, -1) + trailing }),
+      'MALFORMED',
+    );
+    ctl(
+      'hello nonce of 41 characters (1 modulo 4)',
+      'hello',
+      h({ n: nonce.slice(0, 41) }),
+      'MALFORMED',
+    );
     ctl('hello_ack version 1', 'hello_ack', pair.helloAck.replace('"v":2', '"v":1'), 'VERSION');
     ctl(
       'hello_ack signature 63 bytes',
@@ -511,7 +538,8 @@ export async function generateVectors(): Promise<Obj> {
       plaintext: Uint8Array,
       expectation: 'accept' | 'reject',
       code?: string,
-      enrolled: Uint8Array[] = [device.publicKey],
+      // At pair time the device is not enrolled yet; on a resume it must be.
+      enrolled: Uint8Array[] = s.mode === 'resume' ? [device.publicKey] : [],
     ): Promise<void> => {
       negative.push({
         kind: 'auth_check',
@@ -602,6 +630,63 @@ export async function generateVectors(): Promise<Obj> {
       await check(`device name with ${what}`, pair, await real(pair, bad), 'reject', 'NAME');
     }
     await check('control: a 64-byte name', pair, await real(pair, text('a'.repeat(64))), 'accept');
+    await check(
+      'control: an empty name (the 112-byte ciphertext)',
+      pair,
+      await real(pair, new Uint8Array(0)),
+      'accept',
+    );
+    await check(
+      'control: a name of one space (U+0020 is not a control character)',
+      pair,
+      await real(pair, text(' ')),
+      'accept',
+    );
+    await check(
+      'control: a name with a C1 control character (U+0085 is allowed)',
+      pair,
+      await real(pair, text('a\u0085b')),
+      'accept',
+    );
+    await check(
+      'control: a name with a byte order mark (U+FEFF is a character)',
+      pair,
+      await real(pair, text('\ufeffphone')),
+      'accept',
+    );
+    await check(
+      'device name with U+001F',
+      pair,
+      await real(pair, text('a\u001fb')),
+      'reject',
+      'NAME',
+    );
+    // Two defects at once pin the order of the checks: name, then signature, then enrollment.
+    const badSigBadName = await real(pair, text('bad\u0007name'));
+    await check(
+      'a bad name and a bad signature report the name',
+      pair,
+      concat(
+        badSigBadName.slice(0, 32),
+        flip(badSigBadName.slice(32, 96), 3),
+        badSigBadName.slice(96),
+      ),
+      'reject',
+      'NAME',
+    );
+    const badSigResume = await real(resume, nameBytes);
+    await check(
+      'a bad signature and an unknown device report the signature',
+      resume,
+      concat(
+        badSigResume.slice(0, 32),
+        flip(badSigResume.slice(32, 96), 3),
+        badSigResume.slice(96),
+      ),
+      'reject',
+      'BAD_SIGNATURE',
+      [],
+    );
   }
 
   // ---- key confirmation (the client's check of ready)
@@ -903,6 +988,28 @@ export async function generateVectors(): Promise<Obj> {
       ),
     );
     tok('control: a token with a seal key', withSeal, 'accept');
+    for (const url of [
+      'ws://localhost:8787',
+      'ws://127.0.0.1:8787/v2',
+      'wss://relay.example.test:8443/a/b_c-d.e~f',
+    ]) {
+      tok(`control: relay url ${url}`, wrap(concat(raw.subarray(0, 74), text(url))), 'accept');
+    }
+    tok('reserved flag bit 7 set', mutateAt(1, 0x80), 'reject', 'TOKEN');
+    tok('reserved flag bit 2 set', mutateAt(1, 4), 'reject', 'TOKEN');
+    tok(
+      'relay url with a trailing newline',
+      wrap(concat(raw.subarray(0, 74), text('wss://relay.example.test/v2\n'))),
+      'reject',
+      'TOKEN',
+    );
+    tok(
+      'an expired token with an invalid url reports the url (url first)',
+      wrap(concat(raw.subarray(0, 74), text('http://example.com'))),
+      'reject',
+      'TOKEN',
+      NOW_SEC + 700,
+    );
     tok(
       'seal key not on the curve',
       wrap(
@@ -1042,7 +1149,7 @@ export async function generateVectors(): Promise<Obj> {
       'reject',
     );
     await entry(
-      'host proof for another room',
+      'host proof for another room (fails the room-id hash check and the signature)',
       'host',
       machine.publicKey,
       seed('other rid').slice(0, 16),
@@ -1084,6 +1191,15 @@ export async function generateVectors(): Promise<Obj> {
       seed('other rid').slice(0, 16),
       admissionNonce,
       clientAdmission,
+      'reject',
+    );
+    await entry(
+      'client proof with a 15-byte room id',
+      'client',
+      device.publicKey,
+      rid.slice(0, 15),
+      admissionNonce,
+      await r.signAdmission(device, 'client', rid.slice(0, 15), admissionNonce),
       'reject',
     );
     await entry(
