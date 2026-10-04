@@ -451,7 +451,7 @@ describe('remi codex launch (daemon, black-box characterization, #1177)', () => 
     try {
       const sessionId = (
         received.find((m): m is HelloAckMessage => m.type === 'hello_ack') as HelloAckMessage
-      ).sessionId;
+      ).sessionId as string;
       const messageId = crypto.randomUUID();
       ws.send(
         serialize(createUserInput(sessionId, 'typed chat text', false, undefined, messageId)),
