@@ -75,6 +75,16 @@ import {
   spawnDaemon,
 } from './hub-test-utils.ts';
 
+let turnCounter = 0;
+/** A `turn/completed` frame with a turn id of its own (Codex's are unique; a session drops a repeat of one). */
+function turnCompletedFrameWithId(
+  threadId: string,
+  over: Parameters<typeof turnCompletedFrame>[1] = {},
+): Json {
+  turnCounter += 1;
+  return turnCompletedFrame(threadId, { turnId: `e2e-turn-${turnCounter}`, ...over });
+}
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 interface Running {
@@ -1281,9 +1291,9 @@ describe('remi codex turns and chat (daemon, black-box characterization, #1180)'
     try {
       // A short turn first (the real frame's 5.5 seconds is under the 60-second default), then a
       // long one: frames reach the daemon in order, so the one push proves the short one was seen.
-      a.r.server.emit(turnCompletedFrame(a.tuiId), { threadId: a.tuiId });
+      a.r.server.emit(turnCompletedFrameWithId(a.tuiId), { threadId: a.tuiId });
       a.r.server.emit(
-        turnCompletedFrame(a.tuiId, {
+        turnCompletedFrameWithId(a.tuiId, {
           durationMs: 120_000,
           items: [agentMessageItem('m-long', 'E2E-ANSWER-TEXT', 'final_answer')],
         }),
@@ -1312,7 +1322,7 @@ describe('remi codex turns and chat (daemon, black-box characterization, #1180)'
 
       // A failed turn: "Codex stopped", the code, Codex's own words, one collapse key per session.
       a.r.server.emit(
-        turnCompletedFrame(a.tuiId, {
+        turnCompletedFrameWithId(a.tuiId, {
           status: 'failed',
           items: [],
           error: turnError('E2E-LIMIT-TEXT', 'usageLimitExceeded'),
@@ -1327,7 +1337,7 @@ describe('remi codex turns and chat (daemon, black-box characterization, #1180)'
       expect(failed.authorization).toBe('Bearer e2e-push-secret');
 
       // An interrupted turn clears the notice with a quiet dismissal on the same key, and pushes nothing else.
-      a.r.server.emit(turnCompletedFrame(a.tuiId, { status: 'interrupted', items: [] }), {
+      a.r.server.emit(turnCompletedFrameWithId(a.tuiId, { status: 'interrupted', items: [] }), {
         threadId: a.tuiId,
       });
       await pollUntil(() => pushed(a, 'dismiss').length >= 1, 10000, 'the dismissal');
@@ -1349,7 +1359,9 @@ describe('remi codex turns and chat (daemon, black-box characterization, #1180)'
     let refuse = true;
     const a = await attachedDaemon({ failPushes: () => refuse });
     try {
-      a.r.server.emit(turnCompletedFrame(a.tuiId, { durationMs: 120_000 }), { threadId: a.tuiId });
+      a.r.server.emit(turnCompletedFrameWithId(a.tuiId, { durationMs: 120_000 }), {
+        threadId: a.tuiId,
+      });
       await pollUntil(
         () => a.r.output.text.includes('[TurnComplete] push failed'),
         10000,
@@ -1357,7 +1369,9 @@ describe('remi codex turns and chat (daemon, black-box characterization, #1180)'
       );
 
       refuse = false;
-      a.r.server.emit(turnCompletedFrame(a.tuiId, { durationMs: 121_000 }), { threadId: a.tuiId });
+      a.r.server.emit(turnCompletedFrameWithId(a.tuiId, { durationMs: 121_000 }), {
+        threadId: a.tuiId,
+      });
       await pollUntil(() => a.pushes.length >= 2, 10000, 'the next push');
       expect(a.pushes.map((p) => p.kind)).toEqual(['turn_complete', 'turn_complete']);
     } finally {
@@ -1368,10 +1382,12 @@ describe('remi codex turns and chat (daemon, black-box characterization, #1180)'
   test('another window’s turn and a subagent’s are not this session’s: no push', async () => {
     const a = await attachedDaemon();
     try {
-      a.r.server.emit(turnCompletedFrame(crypto.randomUUID(), { durationMs: 120_000 }), {
+      a.r.server.emit(turnCompletedFrameWithId(crypto.randomUUID(), { durationMs: 120_000 }), {
         broadcast: true,
       });
-      a.r.server.emit(turnCompletedFrame(a.tuiId, { durationMs: 121_000 }), { threadId: a.tuiId });
+      a.r.server.emit(turnCompletedFrameWithId(a.tuiId, { durationMs: 121_000 }), {
+        threadId: a.tuiId,
+      });
       await pollUntil(() => a.pushes.length >= 1, 10000, 'the push of the session’s own turn');
 
       expect(a.pushes.map((p) => p.kind)).toEqual(['turn_complete']);

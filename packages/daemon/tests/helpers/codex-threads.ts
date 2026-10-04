@@ -157,6 +157,8 @@ export function itemCompletedFrame(
 }
 
 export interface TurnCompletedOptions {
+  /** `Turn.id`; the real frame's is the same for every call, which a session that de-duplicates by turn id would drop. */
+  turnId?: string;
   status?: string;
   /** `Turn.error`: the schema's `TurnError`, or null. */
   error?: Json | null;
@@ -174,6 +176,7 @@ export function turnCompletedFrame(threadId: string, over: TurnCompletedOptions 
   frame.params.threadId = threadId;
   const turn = frame.params.turn;
   // `in`, not `!== undefined`: a test may set a field to `undefined` to build a frame without it.
+  if ('turnId' in over) turn['id'] = over.turnId;
   if ('status' in over) turn['status'] = over.status;
   if ('error' in over) turn['error'] = over.error;
   if ('durationMs' in over) turn['durationMs'] = over.durationMs;
