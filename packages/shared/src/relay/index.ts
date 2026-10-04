@@ -16,3 +16,4 @@ export {
   systemRandom,
   verifySignature,
 } from './primitives.ts';
+export * from './envelope.ts';
