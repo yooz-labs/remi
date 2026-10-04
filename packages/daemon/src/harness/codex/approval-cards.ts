@@ -75,6 +75,22 @@ const REASON_MAX = 300;
 
 const GENERIC_ASK = 'Codex is asking for approval; answer it in the terminal';
 
+/**
+ * Bounds on what the server chooses. A frame may be 32 MiB, and a card goes to every client, into
+ * the replay history and through the relay, so a hostile MCP server's message must not become a
+ * multi-megabyte card. A cut says how much it hid, and is made before escaping so it never lands
+ * inside a `\uXXXX`. Worst case, a user-input card is under 120 thousand characters.
+ */
+const TEXT_MAX = 2000;
+const LABEL_MAX = 200;
+const DESCRIPTION_MAX = 500;
+const MAX_STEPS = 8;
+const MAX_STEP_OPTIONS = 12;
+const MAX_PERMISSION_NAMES = 20;
+
+const clip = (text: string, max: number): string =>
+  text.length > max ? `${text.slice(0, max)} [${text.length - max} characters hidden]` : text;
+
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 
@@ -88,9 +104,9 @@ const nonEmpty = (v: unknown): string | null => (typeof v === 'string' && v.leng
  * hostile command would otherwise act on each. Everything a card shows from the request goes
  * through here (the thread and request ids, which are matched and never shown, do not).
  */
-const display = (v: unknown): string | null => {
+const display = (v: unknown, max = TEXT_MAX): string | null => {
   const text = nonEmpty(v);
-  return text === null ? null : escapeUnsafeText(text);
+  return text === null ? null : escapeUnsafeText(clip(text, max));
 };
 
 export const requestKey = (threadId: string, requestId: RequestId): string =>
@@ -250,28 +266,42 @@ function commandCard(c: Context): PendingRequestSpec {
 }
 
 function userInputCard(c: Context): PendingRequestSpec {
-  const raw = Array.isArray(c.params['questions']) ? c.params['questions'] : [];
+  const asked = Array.isArray(c.params['questions']) ? c.params['questions'] : [];
+  const raw = asked.slice(0, MAX_STEPS);
   const steps: QuestionStep[] = [];
   for (const q of raw) {
     const text = isRecord(q) ? display(q['question']) : null;
     if (!isRecord(q) || text === null) return generic(c);
-    const header = display(q['header']);
+    const header = display(q['header'], LABEL_MAX);
     const choices = Array.isArray(q['options']) ? q['options'].filter(isRecord) : [];
+    const hiddenChoices = Math.max(0, choices.length - MAX_STEP_OPTIONS);
     steps.push({
       ...(header === null ? {} : { header }),
-      text,
+      text: hiddenChoices === 0 ? text : `${text} [${hiddenChoices} more options hidden]`,
       multiSelect: false,
-      options: choices.flatMap((o) => {
-        const label = display(o['label']);
-        const description = display(o['description']);
+      options: choices.slice(0, MAX_STEP_OPTIONS).flatMap((o) => {
+        const label = display(o['label'], LABEL_MAX);
+        const description = display(o['description'], DESCRIPTION_MAX);
         if (label === null) return [];
         return [{ ...option(label, label, {}), ...(description === null ? {} : { description }) }];
       }),
     });
   }
   const first = steps[0];
-  if (first === undefined) return generic(c);
-  return terminalOnly(c, first.text, { kind: 'multi_question', questions: steps }, false);
+  const last = steps.at(-1);
+  if (first === undefined || last === undefined) return generic(c);
+  if (asked.length > MAX_STEPS) {
+    steps[steps.length - 1] = {
+      ...last,
+      text: `${last.text} [${asked.length - MAX_STEPS} more questions hidden]`,
+    };
+  }
+  return terminalOnly(
+    c,
+    (steps[0] as QuestionStep).text,
+    { kind: 'multi_question', questions: steps },
+    false,
+  );
 }
 
 const reasonSuffix = (reason: string | null): string => (reason === null ? '' : `: ${reason}`);
@@ -285,14 +315,19 @@ function fileChangeCard(c: Context): PendingRequestSpec {
 }
 
 function permissionsCard(c: Context): PendingRequestSpec {
-  const asked = isRecord(c.params['permissions'])
+  const names = isRecord(c.params['permissions'])
     ? Object.entries(c.params['permissions'])
         .filter(([, v]) => v !== null && v !== undefined)
-        .map(([name]) => escapeUnsafeText(name))
+        .map(([name]) => name)
     : [];
+  const shown = names
+    .slice(0, MAX_PERMISSION_NAMES)
+    .map((name) => escapeUnsafeText(clip(name, LABEL_MAX)));
+  const hidden = names.length - shown.length;
+  const list = hidden > 0 ? [...shown, `[${hidden} more hidden]`] : shown;
   return terminalOnly(
     c,
-    `Codex asks for extra permissions${asked.length === 0 ? '' : ` (${asked.join(', ')})`}${reasonSuffix(display(c.params['reason']))}`,
+    `Codex asks for extra permissions${list.length === 0 ? '' : ` (${list.join(', ')})`}${reasonSuffix(display(c.params['reason']))}`,
   );
 }
 
@@ -306,7 +341,7 @@ function hostOf(url: unknown): string | null {
 }
 
 function elicitationCard(c: Context): PendingRequestSpec {
-  const server = display(c.params['serverName']);
+  const server = display(c.params['serverName'], LABEL_MAX);
   const message = display(c.params['message']);
   if (server === null || message === null) return generic(c);
   const host = c.params['mode'] === 'url' ? hostOf(c.params['url']) : null;

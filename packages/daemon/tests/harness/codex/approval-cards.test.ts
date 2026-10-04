@@ -944,3 +944,120 @@ describe('text a hostile server controls is escaped before any client sees it (S
     );
   });
 });
+
+describe('what a hostile or buggy server sends is bounded before a card is built (S7)', () => {
+  const frame = (method: string, params: Record<string, unknown>) => ({ id: 3, method, params });
+  const card = (f: ReturnType<typeof frame>): Question => {
+    const spec = buildApprovalCard(f, mint, {});
+    if (spec === null) throw new Error('no card');
+    return spec.question;
+  };
+  /** About four megabytes of text: far past any field's bound, far below the frame limit. */
+  const huge = 'h'.repeat(4_000_000);
+  const textBound = 2000;
+  const marker = (hidden: number): string => `[${hidden} characters hidden]`;
+  /** The total characters of every string in a card. */
+  const weight = (value: unknown): number => {
+    if (typeof value === 'string') return value.length;
+    if (Array.isArray(value)) return value.reduce((n: number, v) => n + weight(v), 0);
+    if (typeof value === 'object' && value !== null) {
+      return Object.values(value).reduce((n: number, v) => n + weight(v), 0);
+    }
+    return 0;
+  };
+
+  test('a file change keeps its reason and grant root to 2000 characters each and says how much it cut', () => {
+    const q = card(
+      frame('item/fileChange/requestApproval', { threadId: THREAD, reason: huge, grantRoot: huge }),
+    );
+    expect(q.text).toBe(
+      `Codex asks to change files: ${'h'.repeat(textBound)} ${marker(huge.length - textBound)} (write access under ${'h'.repeat(textBound)} ${marker(huge.length - textBound)}). Answer it in the terminal.`,
+    );
+    expect(weight(q)).toBeLessThan(5000);
+  });
+
+  test('a field of exactly the bound is not cut, one character more is', () => {
+    const at = 'a'.repeat(textBound);
+    const over = 'a'.repeat(textBound + 1);
+    expect(
+      card(frame('item/fileChange/requestApproval', { threadId: THREAD, reason: at })).text,
+    ).toBe(`Codex asks to change files: ${at}. Answer it in the terminal.`);
+    expect(
+      card(frame('item/fileChange/requestApproval', { threadId: THREAD, reason: over })).text,
+    ).toBe(`Codex asks to change files: ${at} ${marker(1)}. Answer it in the terminal.`);
+  });
+
+  test('permissions: the reason is bounded, the list of names too, each name short', () => {
+    const permissions: Record<string, unknown> = {};
+    for (let i = 0; i < 100; i++) permissions[`${'n'.repeat(1000)}${i}`] = { enabled: true };
+    const q = card(
+      frame('item/permissions/requestApproval', { threadId: THREAD, reason: huge, permissions }),
+    );
+    expect(q.text).toContain(`${'h'.repeat(textBound)} ${marker(huge.length - textBound)}`);
+    expect(q.text).toContain('[80 more hidden]');
+    expect(weight(q)).toBeLessThan(10_000);
+  });
+
+  test('an MCP elicitation: the message and the server name are bounded', () => {
+    const q = card(
+      frame('mcpServer/elicitation/request', {
+        threadId: THREAD,
+        serverName: huge,
+        message: huge,
+      }),
+    );
+    expect(q.text).toContain(`${'h'.repeat(200)} ${marker(huge.length - 200)}`);
+    expect(q.text).toContain(`${'h'.repeat(textBound)} ${marker(huge.length - textBound)}`);
+    expect(weight(q)).toBeLessThan(5000);
+  });
+
+  test('a user-input request: every field of a step, the options of a step and the steps are bounded, and the cuts are marked', () => {
+    const questions = Array.from({ length: 50 }, (_, i) => ({
+      id: `q${i}`,
+      header: huge,
+      question: i === 0 ? huge : `question ${i}`,
+      options: Array.from({ length: 50 }, (_, k) => ({ label: huge, description: huge, k })),
+    }));
+    const q = card(frame('item/tool/requestUserInput', { threadId: THREAD, questions }));
+    expect(q.questions).toHaveLength(8);
+    // The card's text mirrors the first question, cuts and all.
+    expect(q.text).toBe(
+      `${'h'.repeat(textBound)} ${marker(huge.length - textBound)} [38 more options hidden]`,
+    );
+    const first = q.questions?.[0];
+    expect(first?.header).toBe(`${'h'.repeat(200)} ${marker(huge.length - 200)}`);
+    expect(first?.options).toHaveLength(12);
+    expect(first?.options[0]?.label).toBe(`${'h'.repeat(200)} ${marker(huge.length - 200)}`);
+    expect(first?.options[0]?.description).toBe(`${'h'.repeat(500)} ${marker(huge.length - 500)}`);
+    expect(first?.text).toBe(q.text);
+    // The cut steps are said once, on the last kept step.
+    expect(q.questions?.[7]?.text.endsWith('[42 more questions hidden]')).toBe(true);
+    // Whatever the server sends, the card stays well under a megabyte.
+    expect(weight(q)).toBeLessThan(120_000);
+  });
+
+  test('an ordinary user-input request is untouched by the bounds', () => {
+    const q = card(
+      frame('item/tool/requestUserInput', {
+        threadId: THREAD,
+        questions: [{ id: 'q1', header: 'Pick', question: 'First?', options: [{ label: 'A' }] }],
+      }),
+    );
+    expect(q.questions).toEqual([
+      {
+        header: 'Pick',
+        text: 'First?',
+        multiSelect: false,
+        options: [{ label: 'A', value: 'A', isRecommended: false, isYes: false, isNo: false }],
+      },
+    ]);
+  });
+
+  test('the command reason stays at 300, and the command itself is the 20000-character card or terminalOnly', () => {
+    const spec = build({ reason: huge }, {}, 'echo a');
+    expect(spec.question.text).toBe(
+      `Allow Codex to run: echo a\nCodex's stated reason: ${'h'.repeat(300)}...`,
+    );
+    expect(weight(spec.question)).toBeLessThan(500);
+  });
+});
