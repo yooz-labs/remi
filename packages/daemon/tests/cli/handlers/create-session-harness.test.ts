@@ -29,6 +29,7 @@ import { SessionRegistryFile } from '../../../src/session/session-registry-file.
 const CID = 'conn0000-0000-0000-0000-000000000000' as UUID;
 const REQ = 'req00000-0000-0000-0000-000000000000' as UUID;
 const THREAD = '01950000-0000-7000-8000-0000000000aa';
+const THREAD_FOR_CLAUDE = '3f9c2a1e-0000-4000-8000-000000000042';
 /** A launch refusal: what the client is told, and the host-local detail only the log gets (G8). */
 const GATE = {
   client: 'An older remi is running on the host (test client text)',
@@ -45,6 +46,8 @@ describe('create requests naming a harness (#1179)', () => {
   let gate: { client: string; detail: string } | null;
   let gateCalls: number;
   let gateSaw: unknown[];
+  let claudeGate: { client: string; detail: string } | null;
+  let claudeSaw: unknown[];
   let logged: string[];
   let sent: ProtocolMessage[];
   let probes: number;
@@ -61,6 +64,8 @@ describe('create requests naming a harness (#1179)', () => {
     gate = null;
     gateCalls = 0;
     gateSaw = [];
+    claudeGate = null;
+    claudeSaw = [];
     logged = [];
     sent = [];
     probes = 0;
@@ -76,7 +81,14 @@ describe('create requests naming a harness (#1179)', () => {
 
   const registry = () =>
     new HarnessRegistry({
-      claude: { command: 'claude', validateRemoteArgs: validateClaudeRemoteArgs },
+      claude: {
+        command: 'claude',
+        validateRemoteArgs: validateClaudeRemoteArgs,
+        launchRefusal: (checked) => {
+          claudeSaw.push(checked);
+          return claudeGate;
+        },
+      },
       codex: {
         command: 'codex',
         validateRemoteArgs: validateCodexRemoteArgs,
@@ -192,6 +204,35 @@ describe('create requests naming a harness (#1179)', () => {
         { args: ['-m', 'x', 'resume', THREAD], resumeThreadId: THREAD },
         { args: ['-m', 'x'], resumeThreadId: null },
       ]);
+    });
+
+    test("a Claude resume reaches Claude's launch check with the validated arguments and the session it names, lowercased, whether or not a harness is named (P10)", () => {
+      const UPPER = '3F9C2A1E-0000-4000-8000-000000000042';
+      const lower = UPPER.toLowerCase();
+      spawnArgs({ harness: 'claude', args: ['--resume', UPPER] });
+      spawnArgs({ args: ['-r', UPPER, '--model', 'opus'] });
+      spawnArgs({ harness: 'claude' });
+      expect(claudeSaw).toEqual([
+        { args: ['--resume', lower], resumeThreadId: lower },
+        { args: ['-r', lower, '--model', 'opus'], resumeThreadId: lower },
+        { args: [], resumeThreadId: null },
+      ]);
+      // A plain request, with no harness and no arguments, is the old spawn and is not checked.
+      spawnArgs(undefined);
+      expect(claudeSaw).toHaveLength(3);
+    });
+
+    test("Claude's launch refusal is the client's text, after the arguments pass, and carries its detail for the log (P10)", () => {
+      claudeGate = {
+        client: 'That Claude session is open (test text)',
+        detail: 'holder 12345678 (test detail)',
+      };
+      const refused = checkHarnessRequest(registry(), { args: ['--resume', THREAD_FOR_CLAUDE] });
+      expect(refused).toEqual({
+        ok: false,
+        error: 'That Claude session is open (test text)',
+        detail: 'holder 12345678 (test detail)',
+      });
     });
 
     test('a clear launch check lets the request through', () => {

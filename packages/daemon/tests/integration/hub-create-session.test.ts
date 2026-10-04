@@ -188,6 +188,9 @@ describe('a hub creating a session for a harness (#1179)', () => {
       `\`remi attach <host>:${response.port}/${(response.sessionId as string).slice(0, 8)}\``,
     );
     expect(remedy).toContain('not been checked against a real Codex');
+    // `remi attach <host>:<port>` reaches the daemon only from a machine that can reach that port: not
+    // through a single-port SSH tunnel or the relay (P9).
+    expect(remedy).toContain('from a machine that can reach that port');
     // Nothing host-local: no home directory, no pid.
     expect(noticeOf(response)).not.toContain(r.hub.home);
     expect(noticeOf(response)).not.toContain(r.hub.work);
@@ -323,7 +326,7 @@ describe('a hub creating a session for a harness (#1179)', () => {
     expect(claude.response.success).toBe(true);
   }, 90000);
 
-  test('a resume of a thread a live session holds is refused before anything is spawned, naming that session (H2)', async () => {
+  test('a resume of a thread a live session holds is refused before anything is spawned, with a generic client text (H2, P4)', async () => {
     const r = await startHub({ claude: true, codex: true });
     const THREAD = '01950000-0000-7000-8000-0000000000aa';
     const holder = Bun.spawn(['sleep', '60']);
@@ -346,19 +349,75 @@ describe('a hub creating a session for a harness (#1179)', () => {
 
     expect(response.success).toBe(false);
     const id8 = remiSessionId.slice(0, 8);
-    const error = response.error as string;
-    expect(error).toContain(`already open in remi session ${id8} (port 19999)`);
-    expect(error).toContain(`\`remi attach <host>:19999/${id8}\``);
-    expect(error).toContain(THREAD);
-    expect(error).not.toContain(r.hub.home);
-    expect(error).not.toContain(String(holder.pid));
+    // The client is told that the thread is open, and nothing about the session that holds it:
+    // not its id, not its port, not the thread it asked about (P4).
+    expect(response.error).toBe(
+      'That Codex thread is already open in a live remi session on the host.',
+    );
     // The refusal precedes the spawn, so absence now is absence for good.
     expect(childEntries(r)).toEqual([]);
     expect(fs.existsSync(path.join(r.agents.codexDir, 'argv'))).toBe(false);
-    // The log carries the last eight characters of the thread, never the whole id.
+    // The hub's log has the holder and its port, and the last eight characters of the thread, never the whole id.
+    await pollUntil(
+      () => r.log.text.includes(`remi session ${id8} (port 19999)`),
+      10000,
+      "the hub's log to name the holder",
+    );
     expect(r.log.text).toContain(THREAD.slice(-8));
     expect(r.log.text).not.toContain(THREAD);
   }, 90000);
+
+  describe('a resume of a Claude session a live session holds (P10)', () => {
+    const CLAUDE_ID = '3f9c2a1e-0000-4000-8000-000000000042';
+    const GENERIC = 'That Claude session is already open in a live remi session on the host.';
+
+    async function holdClaudeSession(r: Running, over: { exited?: boolean } = {}) {
+      const holder = Bun.spawn(['sleep', '60']);
+      sleepers.push(holder);
+      const remiSessionId = crypto.randomUUID();
+      new SessionStore(path.join(r.hub.home, '.remi', 'sessions.json')).save({
+        remiSessionId,
+        claudeSessionId: CLAUDE_ID,
+        projectPath: r.hub.work,
+        port: 19999,
+        pid: over.exited ? null : holder.pid,
+        startedAt: new Date().toISOString(),
+        exitedAt: over.exited ? new Date().toISOString() : null,
+        exitCode: over.exited ? 0 : null,
+      });
+      return remiSessionId;
+    }
+
+    test.each([
+      ['a named harness', { harness: 'claude', args: ['--resume', CLAUDE_ID.toUpperCase()] }],
+      ['no harness named', { args: ['-r', CLAUDE_ID, '--model', 'opus'] }],
+    ])(
+      'with %s is refused before anything is spawned, with a generic client text',
+      async (_name, options) => {
+        const r = await startHub({ claude: true, codex: true });
+        const remiSessionId = await holdClaudeSession(r);
+        const { response } = await ask(r, options);
+        expect(response.success).toBe(false);
+        expect(response.error).toBe(GENERIC);
+        expect(childEntries(r)).toEqual([]);
+        expect(fs.existsSync(path.join(r.agents.claudeDir, 'argv'))).toBe(false);
+        await pollUntil(
+          () => r.log.text.includes(`remi session ${remiSessionId.slice(0, 8)} (port 19999)`),
+          10000,
+          "the hub's log to name the holder",
+        );
+      },
+      90000,
+    );
+
+    test('a resume of a session nobody holds, or only history holds, is spawned', async () => {
+      const r = await startHub({ claude: true, codex: true });
+      await holdClaudeSession(r, { exited: true });
+      const { response } = await ask(r, { harness: 'claude', args: ['--resume', CLAUDE_ID] });
+      expect(response.success, response.error).toBe(true);
+      expect((await waitForArgv(r.agents.claudeDir)).slice(0, 2)).toEqual(['--resume', CLAUDE_ID]);
+    }, 90000);
+  });
 
   test.each([
     ['a hyphen-led directory a child would re-parse as a remi flag', '--no-auth'],

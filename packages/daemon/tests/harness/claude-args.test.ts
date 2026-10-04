@@ -46,6 +46,20 @@ describe('validateClaudeRemoteArgs: what is allowed', () => {
     expect(accepted(['--model', 'Claude-Opus-4.5'])).toEqual(['--model', 'Claude-Opus-4.5']);
   });
 
+  test('the session a resume names is returned, lowercased, for the hub to check; none is null (P10)', () => {
+    expect(validateClaudeRemoteArgs(['--model', 'opus', '-r', UUID.toUpperCase()])).toEqual({
+      ok: true,
+      args: ['--model', 'opus', '-r', UUID],
+      resumeThreadId: UUID,
+    });
+    expect(validateClaudeRemoteArgs(['--model', 'opus'])).toEqual({
+      ok: true,
+      args: ['--model', 'opus'],
+      resumeThreadId: null,
+    });
+    expect(validateClaudeRemoteArgs([])).toEqual({ ok: true, args: [], resumeThreadId: null });
+  });
+
   test('--fork-session beside --resume <uuid>, in either order', () => {
     expect(accepted(['--resume', UUID, '--fork-session'])).toEqual([
       '--resume',

@@ -409,7 +409,12 @@ describe('CodexHarness', () => {
       if (!checked.ok) {
         expect(checked.exitCode).toBe(1);
         expect(checked.message).toContain(open.remiSessionId.slice(0, 8));
-        expect(checked.message).toContain('remi attach');
+        // For the person at the machine: an address the local attach accepts, with a real host,
+        // that can be pasted into a shell (a `<host>` placeholder would be a redirect there, P9).
+        expect(checked.message).toContain(
+          `\`remi attach localhost:19998/${open.remiSessionId.slice(0, 8)}\``,
+        );
+        expect(checked.message).not.toContain('<host>');
       }
     });
 
