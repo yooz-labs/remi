@@ -168,6 +168,15 @@ function refusedFlagMessage(flag: string): string {
   return `remi codex does not support ${flag} yet: run codex directly`;
 }
 
+/** `-i`, an attached `-iPATH`, `--image` or `--image=PATH`. */
+function isImageFlag(flag: string): boolean {
+  return (
+    flag === '--image' ||
+    flag.startsWith('--image=') ||
+    (flag.startsWith('-i') && !flag.startsWith('--'))
+  );
+}
+
 /** A token that is a flag, not a value: it starts with `-` and is more than a lone `-`. */
 function looksLikeFlag(token: string): boolean {
   return token.length > 1 && token.startsWith('-');
@@ -257,6 +266,14 @@ export function validateCodexArgs(args: readonly string[]): CodexArgsResult {
     }
     if (positionals.length !== 2 || userPromptWords.length > 0) {
       return refuse('remi codex resume <uuid> takes no prompt');
+    }
+    // The output has no `--` before `resume`, so if `-i/--image` takes several values (not
+    // verified) Codex would read `resume` and the id as image paths and start a fresh session
+    // while remi expects the thread. Refused, not guessed.
+    if (flags.some(isImageFlag)) {
+      return refuse(
+        'remi codex: -i/--image cannot be combined with resume; Codex may read `resume` and the id as image paths and start a new session instead of resuming',
+      );
     }
     return {
       ok: true,

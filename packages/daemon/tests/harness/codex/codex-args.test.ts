@@ -218,6 +218,47 @@ describe('validateCodexArgs: a valued flag never takes a flag-shaped token as it
   });
 });
 
+describe('validateCodexArgs: -i/--image with resume (W16)', () => {
+  // `-i` may take several values; then clap would read `resume` and the id as image paths and
+  // start a fresh session while remi expects the thread. Unverified, so refused.
+  const spellings: string[][] = [
+    ['-i', 'shot.png'],
+    ['-ishot.png'],
+    ['--image', 'shot.png'],
+    ['--image=shot.png'],
+  ];
+  for (const image of spellings) {
+    test(`${image.join(' ')} together with resume is refused, whichever side it is on`, () => {
+      for (const args of [
+        [...image, 'resume', UUID],
+        ['resume', UUID, ...image],
+        ['resume', ...image, UUID],
+      ]) {
+        const message = refusal(validateCodexArgs(args));
+        expect(message).toContain('-i/--image');
+        expect(message).toContain('resume');
+        expect(message).toContain('image paths');
+      }
+    });
+  }
+
+  test('an image on a fresh session, and resume without an image, are accepted', () => {
+    expect(accepted(validateCodexArgs(['-i', 'shot.png', 'fix it'])).args).toEqual([
+      '-i',
+      'shot.png',
+      '--',
+      'fix it',
+    ]);
+    expect(accepted(validateCodexArgs(['-m', 'x', 'resume', UUID])).resumeThreadId).toBe(UUID);
+  });
+
+  test('a model or directory whose value merely looks like an image flag is not one', () => {
+    expect(accepted(validateCodexArgs(['--add-dir', '/work/images', 'resume', UUID])).args).toEqual(
+      ['--add-dir', '/work/images', 'resume', UUID],
+    );
+  });
+});
+
 describe('validateCodexArgs: resume <uuid>', () => {
   test('is the one subcommand run, and reports the thread id', () => {
     expect(validateCodexArgs(['resume', UUID])).toEqual({
