@@ -133,8 +133,10 @@ export interface PtyLaunch {
   readonly command: string;
   /**
    * Environment overrides added on top of `process.env` for the child.
-   * `{}` adds nothing: the child sees the incoming environment only, with no
-   * `REMI_PORT` and none of Claude's variables.
+   * `{}` adds nothing of this launch's own: no `REMI_PORT` and none of Claude's
+   * variables. The PTY layer still sets `FORCE_COLOR=1` and `TERM` (the
+   * daemon's own, or `xterm-256color`) for every launch, Claude's included
+   * (`pty/pty-session.ts`).
    */
   readonly childEnv: Readonly<Record<string, string>>;
 }

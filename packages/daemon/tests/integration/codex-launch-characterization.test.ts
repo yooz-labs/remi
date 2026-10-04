@@ -58,6 +58,8 @@ interface Running {
   server: FakeAppServer;
   /** Everything the process has written to stdout and stderr so far. */
   output: { text: string };
+  /** The overrides the daemon was started with, to rebuild its environment (`startDaemon` only). */
+  env?: Record<string, string>;
 }
 
 const running: Running[] = [];
@@ -84,6 +86,7 @@ for a in "$@"; do printf '%s\\n' "$a"; done > "$d/argv"
 printf '%s' "$REMI_PORT" > "$d/remi_port"
 printf '%s' "$CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN" > "$d/alt_screen"
 printf '%s' "$CODEX_HOME" > "$d/codex_home"
+env > "$d/env"
 pwd -P > "$d/cwd"
 echo $$ > "$d/pid"
 exec 3<&0
@@ -140,14 +143,12 @@ async function startDaemon(): Promise<Running> {
   const { home, work } = makeIsolatedDirs();
   const { fakeDir, env } = makeFakes(home);
   const server = FakeAppServer.start();
-  const spawned = await spawnDaemon(home, work, { ...env, CODEX_HOME: server.codexHome }, [
-    '--harness',
-    'codex',
-  ]);
+  const overrides = { ...env, CODEX_HOME: server.codexHome };
+  const spawned = await spawnDaemon(home, work, overrides, ['--harness', 'codex']);
   const output = { text: '' };
   collect(spawned.proc.stdout, output);
   collect(spawned.proc.stderr, output);
-  const r: Running = { ...spawned, home, work, fakeDir, server, output };
+  const r: Running = { ...spawned, home, work, fakeDir, server, output, env: overrides };
   running.push(r);
   return r;
 }
@@ -268,6 +269,33 @@ describe('remi codex launch (daemon, black-box characterization, #1177)', () => 
     expect(read(path.join(r.fakeDir, 'remi_port'))).toBe('');
     expect(read(path.join(r.fakeDir, 'alt_screen'))).toBe('');
     expect(read(path.join(r.fakeDir, 'cwd')).trim()).toBe(fs.realpathSync(r.work));
+
+    // The whole environment: the daemon's own, plus exactly what the PTY layer sets for every
+    // launch, Claude's too (FORCE_COLOR=1, and TERM, which keeps the daemon's own or defaults),
+    // and nothing else (W14).
+    const childEnv = new Map<string, string>();
+    for (const line of read(path.join(r.fakeDir, 'env')).split('\n')) {
+      const eq = line.indexOf('=');
+      if (eq > 0 && /^[A-Za-z_][A-Za-z0-9_]*$/.test(line.slice(0, eq))) {
+        childEnv.set(line.slice(0, eq), line.slice(eq + 1));
+      }
+    }
+    const parentEnv = isolatedEnv(r.home, {
+      CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: '',
+      ...(r.env as Record<string, string>),
+    });
+    // What `sh` itself sets for its script, not remi.
+    const shellOwn = new Set(['_', 'PWD', 'OLDPWD', 'SHLVL']);
+    const ptyLayer = ['FORCE_COLOR', 'TERM'];
+    const added = [...childEnv.keys()].filter((k) => !(k in parentEnv) && !shellOwn.has(k)).sort();
+    expect(added).toEqual(ptyLayer.filter((k) => !(k in parentEnv)).sort());
+    const changed = [...childEnv]
+      .filter(([k, v]) => k in parentEnv && parentEnv[k] !== v && !shellOwn.has(k))
+      .map(([k]) => k);
+    expect(changed.filter((k) => !ptyLayer.includes(k))).toEqual([]);
+    expect(childEnv.get('FORCE_COLOR')).toBe('1');
+    expect(childEnv.get('TERM')).toBe(parentEnv['TERM'] ?? 'xterm-256color');
+    expect(childEnv.get('CODEX_HOME')).toBe(r.server.codexHome);
 
     // sessions.json: one record that names its harness and has no Claude id.
     await pollUntil(() => storedSessions(r).length === 1, 5000, 'the stored record');
