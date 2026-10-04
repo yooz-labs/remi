@@ -468,6 +468,27 @@ describe('a Codex session: turn events and chat', () => {
       expect(idsOf(r)).toEqual(['first-prompt']);
     });
 
+    test('a live item held by a catch-up that ends after the session was disposed is not sent', async () => {
+      const r = await launch({
+        // Never answers: the catch-up is still reading when the session is disposed.
+        list: () => new Promise(() => {}),
+      });
+      await until(() => listCalls(r) === 1, 'the catch-up to ask');
+      r.server.emit(
+        itemCompletedFrame(r.tuiId, userMessageItem('held', 'arrived during the read')),
+        {
+          threadId: r.tuiId,
+        },
+      );
+      // Frames on one socket are handled in order; give the held one time to reach the chat.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      r.session.dispose();
+      await new Promise((resolve) => setTimeout(resolve, 150));
+
+      expect(idsOf(r)).toEqual([]);
+    });
+
     test('a session with no thread asks nothing at all', async () => {
       const r = await launch({ noThread: true, list: () => itemsListPage([], null) });
 
