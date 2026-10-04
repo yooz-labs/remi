@@ -4,9 +4,11 @@
  * thread, `:12` the title helper that appears about 7 s later), re-addressed to
  * a thread id, a working directory and a creation time a test chooses. The
  * redacted fixtures hold placeholder ids and `/work/project`, which no daemon
- * under test would recognize as its own.
+ * under test would recognize as its own. Phase 4 (#1178) adds the server
+ * requests: the real command approval of the spike's accept run, re-addressed,
+ * and a schema-derived file-change request.
  */
-import { fixtureFrameAt } from './codex-fixtures.ts';
+import { fixtureFrameAt, loadFixtureFrames } from './codex-fixtures.ts';
 
 export type Json = Record<string, unknown>;
 
@@ -43,4 +45,42 @@ export function threadStartedFrame(
 
 export function threadStatusFrame(threadId: string, status: Json): Json {
   return { method: 'thread/status/changed', params: { threadId, status } };
+}
+
+/**
+ * A command-approval server request: the real frame of the spike's accept run
+ * (`expA-accept.jsonl:47`), re-addressed to a thread and a command a test
+ * chooses. `over` replaces or adds `params` fields (`availableDecisions`, `reason`, ...),
+ * and a field set to `undefined` is removed. The id is not part of it: the fake
+ * server mints daemon-global ids (`FakeAppServer.request`).
+ */
+export function commandApprovalRequest(
+  threadId: string,
+  command: string,
+  over: Json = {},
+): { method: string; params: Json } {
+  const { method, params } = fixtureFrameAt('expA-accept.jsonl', 47).frame as {
+    method: string;
+    params: Json;
+  };
+  const copy = { ...(JSON.parse(JSON.stringify(params)) as Json), threadId, command, ...over };
+  for (const [key, value] of Object.entries(copy)) {
+    if (value === undefined) Reflect.deleteProperty(copy, key);
+  }
+  return { method, params: copy };
+}
+
+/**
+ * A file-change approval, built from the generated schema (no real frame of this
+ * request exists; `synthetic-from-schema.jsonl:1`), addressed to `threadId`.
+ */
+export function fileChangeRequest(
+  threadId: string,
+  reason = 'test file change',
+): { method: string; params: Json } {
+  const { method, params } = loadFixtureFrames('synthetic-from-schema.jsonl')[0]?.frame as {
+    method: string;
+    params: Json;
+  };
+  return { method, params: { ...(JSON.parse(JSON.stringify(params)) as Json), threadId, reason } };
 }
