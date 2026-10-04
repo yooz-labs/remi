@@ -113,14 +113,21 @@ const commandHelp: Record<Subcommand, string[]> = {
       '  Runs `codex --no-alt-screen` in a terminal session the phone can see: the session and its',
     ),
     dim(
-      '  status (working, waiting, idle) show up. Approvals, chat and turn pushes do not reach the',
+      '  status (working, waiting, idle) show up. Approvals and turn notifications do not reach the',
     ),
-    dim('  phone yet. remi never starts or stops the shared Codex app-server.'),
+    dim('  phone yet, and a message typed from the phone is refused: type in the terminal.'),
+    dim(
+      '  remi never starts or stops the shared Codex app-server; if it cannot be reached for 30 s',
+    ),
+    dim(
+      '  it logs that and sends a system message (some clients, the web client today, do not show it).',
+    ),
     '',
     bold('Usage:'),
     entry('remi codex', 'Start Codex in the current directory'),
     entry('remi codex "fix the tests"', 'Start Codex with a first prompt'),
     entry('remi codex -m <model>', 'Also allowed: -a, -s, --add-dir, -i, --yolo'),
+    entry('', '(-i/--image cannot be combined with resume)'),
     entry('remi codex resume <thread id>', 'Resume a Codex thread (the whole id)'),
     entry('remi --sessions', 'Lists Codex sessions, with the id to resume'),
     '',

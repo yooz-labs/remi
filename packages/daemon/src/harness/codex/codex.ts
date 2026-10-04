@@ -1,7 +1,8 @@
 /**
  * Codex as a {@link Harness} (epic #1175, phase 3 #1177): the values the daemon
  * asks of a harness, and the launch in `codex-session.ts`. Observe-only for
- * now (no cards, no answers, no chat); see that file.
+ * now (no cards, no answers, and no typed phone chat: `acceptsTypedChat` is
+ * false); see that file.
  *
  * `gracefulExitInput` is null, so a Stop force-closes the session and never
  * types `/quit` into the Codex TUI: remi types into a Codex PTY only on a

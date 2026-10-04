@@ -2,13 +2,17 @@
  * The Codex launch behind the harness seam (epic #1175, phase 3 #1177):
  * OBSERVE-ONLY. It spawns `codex --no-alt-screen <validated arguments>` in a PTY,
  * learns which thread of the shared app-server is the session's, and reports that
- * thread's status. No approval card, no answer, no chat, no turn push and no wire
- * field exists yet (phases 4 to 6); the session types nothing into the PTY on its
- * own, so the child's stdin sees only what a person types at the terminal or
- * sends as raw input.
+ * thread's status. No approval card, no answer, no turn push and no wire field
+ * exists yet (phases 4 to 6), and chat text typed from a client (the phone,
+ * Telegram, the relay) is refused with `PROMPT_WAITING` (`acceptsTypedChat:
+ * false`): the TUI cannot be read, so a typed message and its Enter could land on
+ * an approval overlay or a modal. The child's stdin sees only what a person types
+ * at the terminal or sends as raw input (an attach client, the Escape button,
+ * `/interrupt`).
  *
  * Order of the state-changing steps (`createCodexSession`):
- * 1. `validateCodexArgs`: a refusal exits 2.
+ * 1. `validateCodexArgs`: a refusal exits 2. (The working directory must also exist
+ *    and be searchable, after the gate: exit 1.)
  * 2. The older-daemon gate (`deps.legacyWriters`, `findLegacyWriters`): a live
  *    process older than the identity shim would erase `harness` and
  *    `harnessSessionId` the next time it writes `sessions.json`, so while one
@@ -27,9 +31,10 @@
  *
  * remi NEVER starts, stops, restarts or upgrades the shared Codex daemon: it is
  * shared with the user's other Codex windows. The client polls the socket with
- * backoff; if no connection is ready 30 s after the spawn (or after a drop), one
- * log line and one system message say so, and the session carries on as a plain
- * terminal session.
+ * backoff; if no connection is ready 30 s after the spawn (or after a drop that
+ * stays), one log line and one system message say so, and the session carries on
+ * as a plain terminal session. The message is a system-sender message that some
+ * clients, the web client today, do not show.
  */
 
 import { generateId, now } from '@remi/shared';
@@ -196,8 +201,10 @@ export function checkCodexLaunch(
 
 /**
  * Nothing is held and nothing is answerable (phase 3 shows no cards), which is
- * what the answer, chat and Stop handlers already read for a session with no
- * gate. Phase 4 replaces it with the real channel.
+ * what the answer and Stop handlers read for a session with no gate. It also says
+ * no prompt is up, so it cannot keep chat out: `acceptsTypedChat: false` does that
+ * (without it a typed message and its Enter would reach whatever the TUI shows).
+ * Phase 4 replaces it with the real channel.
  */
 const NO_DECISIONS: DecisionChannel = {
   answerHeld: () => 'unknown',

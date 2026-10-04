@@ -210,7 +210,13 @@ describe('the codex help (#1177)', () => {
     const output = plain(formatCommandHelp('codex'));
     expect(output).toContain('remi codex resume <thread id>');
     expect(output).toContain('status only');
-    expect(output).toContain('Approvals, chat and turn pushes do not reach the');
+    expect(output).toContain('Approvals and turn notifications do not reach the');
+    // Phone chat is refused for a Codex session (W1), and the 30 s notice is not promised (W18).
+    expect(output).toContain('a message typed from the phone is refused');
+    expect(output).toContain('type in the terminal');
+    expect(output).toContain('some clients, the web client today, do not show it');
+    expect(output).not.toMatch(/chat[^.]*reach the\s+phone yet/);
+    expect(output).toContain('-i/--image cannot be combined with resume');
     expect(output).toContain('never starts or stops the shared Codex app-server');
     // The `--` rule as shipped: the words after it are a prompt, never flags.
     expect(output).toContain('Everything after `--` is the first prompt, as text, never a flag');

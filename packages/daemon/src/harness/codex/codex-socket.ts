@@ -16,6 +16,17 @@
  * therefore be owned by the user running remi and carry no group or other
  * permission bit, or no connection is made (`UntrustedSocketError`). On
  * Codex's own layout both are 0700 (the spike stat-checked them).
+ *
+ * What this does not do, on purpose (decision D6):
+ * - The check and the connect are two steps. `unix-ws.ts` connects later, by
+ *   path, and the kernel resolves every component again then, so a directory
+ *   swapped in between is not caught: there is a window.
+ * - Only the two leaf directories are checked, not their ancestors. An ancestor
+ *   another user can write (a non-default `CODEX_HOME` under a shared directory)
+ *   could replace a leaf. A walk up every ancestor was left out: it would refuse
+ *   benign group-writable home directories, and the attack needs that unusual
+ *   `CODEX_HOME`; the spike stat-checked the leaves of Codex's own layout, not
+ *   their ancestors.
  */
 
 import * as fs from 'node:fs';
