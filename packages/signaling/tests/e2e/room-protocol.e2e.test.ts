@@ -230,6 +230,15 @@ describe('what a socket may say before it is admitted', () => {
   });
 });
 
+describe('a socket left behind by the previous Worker', () => {
+  test('is closed on its first message: its attachment is not one this room understands', async () => {
+    const machine = await newMachine();
+    const socket = await Socket.open(`${worker.wsUrl}/__room/${machine.ridHex}/__legacy`);
+    socket.sendText('{"type":"register"}');
+    await refused(socket);
+  });
+});
+
 describe('the edge ping', () => {
   test('the literal text ping is answered with pong without waking the object', async () => {
     const machine = await newMachine();

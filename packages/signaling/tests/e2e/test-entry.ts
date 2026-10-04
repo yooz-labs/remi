@@ -9,7 +9,9 @@
  * - storage: `/__state` dumps storage, the pending alarm, every socket's
  *   attachment and a boot id (new when the object is rebuilt); `/__seed` writes keys;
  * - a tap: every message the object receives is recorded (role, stage and the
- *   raw bytes), which is how a test asserts what the Worker could see.
+ *   raw bytes), which is how a test asserts what the Worker could see;
+ * - `/__legacy`: accepts a socket with the attachment the pre-R2 room kept, as a
+ *   deploy over a live legacy room would leave one behind.
  *
  * Routes are reached through `/__room/<rid>/__name`, which this entry forwards
  * to the room named `<rid>`.
@@ -69,6 +71,16 @@ export class ConnectionRoom extends RealRoom {
       });
     }
     if (path.endsWith('/__seen')) return Response.json(this.seen);
+    if (path.endsWith('/__legacy')) {
+      const Pair = (
+        globalThis as unknown as { WebSocketPair: new () => Record<number, RoomSocket> }
+      ).WebSocketPair;
+      const pair = new Pair();
+      const [clientSide, serverSide] = [pair[0] as RoomSocket, pair[1] as RoomSocket];
+      this.state.acceptWebSocket(serverSide, ['host']);
+      serverSide.serializeAttachment({ role: 'host', urlCode: 'ABCD-2345' });
+      return new Response(null, { status: 101, webSocket: clientSide } as ResponseInit);
+    }
     if (path.endsWith('/__seed') && request.method === 'POST') {
       for (const [k, v] of Object.entries((await request.json()) as Record<string, unknown>)) {
         await this.state.storage.put(k, v);
