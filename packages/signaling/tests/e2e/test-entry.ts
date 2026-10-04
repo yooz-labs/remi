@@ -1,37 +1,83 @@
 /**
  * Test-only Worker entry: the REAL worker and the REAL ConnectionRoom, plus a
- * subclass of the room that adds debug routes so a test can inspect and seed
- * Durable Object storage over HTTP and fire the alarm on demand. Nothing here
- * changes how the room behaves on any other route.
+ * subclass of the room with debug seams. Nothing here changes how the room
+ * behaves on any route a client can reach; the seams are:
  *
- * Routes (reached through `/__room/<name>/...`, which the entry forwards to the
- * room named `<name>`):
- * - GET  /__state  storage contents, pending alarm, socket count and a boot id
- * - POST /__seed   write the JSON body's keys into storage
- * - POST /__alarm  run the room's `alarm()` now
+ * - a clock: the room reads time through `now()`, and `/__clock` moves it, so a
+ *   test ages a session by minutes without waiting;
+ * - the alarm: `/__alarm` runs the room's `alarm()` now, at the room's clock;
+ * - storage: `/__state` dumps storage, the pending alarm, every socket's
+ *   attachment and a boot id (new when the object is rebuilt); `/__seed` writes keys;
+ * - a tap: every message the object receives is recorded (role, stage and the
+ *   raw bytes), which is how a test asserts what the Worker could see.
+ *
+ * Routes are reached through `/__room/<rid>/__name`, which this entry forwards
+ * to the room named `<rid>`.
  */
 
+import type { RoomSocket } from '../../src/connection-room.ts';
 import worker, { ConnectionRoom as RealRoom } from '../../src/index.ts';
+
+interface Seen {
+  readonly role: string;
+  readonly stage: string;
+  readonly kind: 'text' | 'binary';
+  /** base64 of the bytes the object received */
+  readonly bytes: string;
+}
+
+function base64(b: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < b.length; i += 8192) {
+    binary += String.fromCharCode(...b.subarray(i, i + 8192));
+  }
+  return btoa(binary);
+}
 
 export class ConnectionRoom extends RealRoom {
   /** New on every construction, so a test can see that the object was evicted and rebuilt. */
   private readonly boot = crypto.randomUUID();
+  private skewMs = 0;
+  private readonly seen: Seen[] = [];
+
+  protected override now(): number {
+    return Date.now() + this.skewMs;
+  }
+
+  override async webSocketMessage(ws: RoomSocket, data: string | ArrayBuffer): Promise<void> {
+    const att = ws.deserializeAttachment() as { r?: string; st?: string } | null;
+    this.seen.push({
+      role: att?.r ?? '?',
+      stage: att?.st ?? '?',
+      kind: typeof data === 'string' ? 'text' : 'binary',
+      bytes: base64(
+        typeof data === 'string' ? new TextEncoder().encode(data) : new Uint8Array(data),
+      ),
+    });
+    return super.webSocketMessage(ws, data);
+  }
 
   override async fetch(request: Request): Promise<Response> {
     const path = new URL(request.url).pathname;
-    // biome-ignore lint/suspicious/noExplicitAny: reach the Durable Object state for the debug routes
-    const state = (this as any).state;
     if (path.endsWith('/__state')) {
       return Response.json({
-        storage: Object.fromEntries(await state.storage.list()),
-        alarm: await state.storage.getAlarm(),
-        sockets: state.getWebSockets().length,
+        storage: Object.fromEntries(await this.state.storage.list({ prefix: '' })),
+        alarm: await this.state.storage.getAlarm(),
+        sockets: this.state.getWebSockets().map((ws) => ws.deserializeAttachment()),
         boot: this.boot,
+        skewMs: this.skewMs,
       });
     }
+    if (path.endsWith('/__seen')) return Response.json(this.seen);
     if (path.endsWith('/__seed') && request.method === 'POST') {
-      await state.storage.put((await request.json()) as Record<string, unknown>);
+      for (const [k, v] of Object.entries((await request.json()) as Record<string, unknown>)) {
+        await this.state.storage.put(k, v);
+      }
       return new Response('seeded');
+    }
+    if (path.endsWith('/__clock') && request.method === 'POST') {
+      this.skewMs += ((await request.json()) as { advanceMs: number }).advanceMs;
+      return new Response('advanced');
     }
     if (path.endsWith('/__alarm') && request.method === 'POST') {
       await this.alarm();
@@ -41,9 +87,11 @@ export class ConnectionRoom extends RealRoom {
   }
 }
 
+export { GlobalLimiter } from '../../src/index.ts';
+
 export default {
   fetch(request: Request, env: { CONNECTIONS: unknown }): Promise<Response> | Response {
-    const m = new URL(request.url).pathname.match(/^\/__room\/([A-Za-z0-9-]+)(\/__[a-z]+)$/);
+    const m = new URL(request.url).pathname.match(/^\/__room\/([0-9a-f]{32})(\/__[a-z]+)$/);
     if (m) {
       // biome-ignore lint/suspicious/noExplicitAny: Cloudflare namespace type
       const ns = env.CONNECTIONS as any;
