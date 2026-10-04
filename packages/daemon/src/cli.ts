@@ -205,6 +205,7 @@ import {
   olderRemiNotice,
 } from './harness/codex/codex-session.ts';
 import { CodexHarness } from './harness/codex/codex.ts';
+import { shortThreadId } from './harness/codex/thread-id.ts';
 import { ClaudeHarness } from './harness/index.ts';
 import type { Harness, HarnessSession } from './harness/index.ts';
 import { ForeignSessionEscalator, HookConfigManager, HookServer } from './hooks/index.ts';
@@ -744,7 +745,7 @@ if (cliShowSessions) {
       const claude = isClaudeRecord(s);
       const recordedId = claude ? s.claudeSessionId : (s.harnessSessionId ?? null);
       const idLabel = recordedId
-        ? ` ${storedHarness(s)}:${recordedId.slice(0, 8)}`
+        ? ` ${storedHarness(s)}:${claude ? recordedId.slice(0, 8) : shortThreadId(recordedId)}`
         : claude
           ? ''
           : ` ${storedHarness(s)}:-`;

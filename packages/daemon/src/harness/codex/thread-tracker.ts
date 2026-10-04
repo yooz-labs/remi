@@ -5,8 +5,8 @@
  * The app-server shows remi every thread of every Codex window of the user
  * (`thread/started` and `thread/status/changed` reach every connection), so
  * the tracker picks its own and ignores the rest. It never logs another
- * thread's frame, keeps only ids and parent links of others, and logs ids cut
- * to eight characters.
+ * thread's frame, keeps only ids and parent links of others, and logs an id as
+ * its last eight characters (`shortThreadId`: a UUIDv7 starts with a timestamp).
  *
  * A `thread/started` is a candidate for this session's TUI thread only when ALL
  * hold: its id is a UUID (`parseThread`: the id is stored and printed in a
@@ -41,7 +41,7 @@
  * A candidate after the first identity is a `/new` in the TUI and rotates the
  * binding, but not while the tracked thread is `active` and not past the sibling
  * guard (decided policy, unverified live); the old id is not kept, and every
- * rotation is logged as `rotated from <8> to <8>`. Residuals: a plain non-remi
+ * rotation is logged as `rotated from <last 8> to <last 8>`. Residuals: a plain non-remi
  * `codex` window opened in this directory while the session is idle looks exactly
  * like a `/new` and re-binds it, and a `/resume` inside the TUI emits no
  * `thread/started` (spike, `expB3.jsonl:12-13`), so the old thread is kept.
@@ -79,6 +79,7 @@
 import { realpathSync } from 'node:fs';
 
 import { type AppServerClient, AppServerRpcError } from './app-server-client.ts';
+import { shortThreadId } from './thread-id.ts';
 import {
   type ThreadInfo,
   type ThreadStatus,
@@ -129,7 +130,7 @@ export interface ThreadTrackerDeps {
 /** The store found another remi session holding the thread this one was about to take. */
 export class ThreadClaimedError extends Error {
   constructor(readonly threadId: string) {
-    super(`thread ${threadId.slice(0, 8)} is claimed by another session`);
+    super(`thread ${shortThreadId(threadId)} is claimed by another session`);
     this.name = 'ThreadClaimedError';
   }
 }
@@ -159,7 +160,7 @@ const METHOD_NOT_FOUND = -32601;
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 
-const short = (id: string): string => id.slice(0, 8);
+const short = shortThreadId;
 
 function resolveCwd(cwd: string): string | null {
   try {

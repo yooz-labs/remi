@@ -385,7 +385,7 @@ describe('CodexDecisions', () => {
         expect(all).not.toContain(marker);
       }
       expect(all).not.toContain(MAIN);
-      expect(all).toContain(MAIN.slice(0, 8));
+      expect(all).toContain(MAIN.slice(-8));
     });
 
     test('text a server chose reaches a log line escaped: a string request id and a method name with control and bidi characters', () => {

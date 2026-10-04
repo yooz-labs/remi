@@ -511,7 +511,7 @@ describe('attach', () => {
 
     ctx.server.createRollout(id);
     await waitUntil(ctx, () => ctx.attachCount() === 1, 'the attach');
-    expect(ctx.logs.some((l) => l.includes(`attached to thread ${id.slice(0, 8)}`))).toBe(true);
+    expect(ctx.logs.some((l) => l.includes(`attached to thread ${id.slice(-8)}`))).toBe(true);
     const count = ctx.resumeFrames().length;
     await settle(400);
     expect(ctx.resumeFrames()).toHaveLength(count);
@@ -965,10 +965,10 @@ describe('what it logs, and after dispose', () => {
     await waitUntil(ctx, () => ctx.identities.includes(id), 'the identity');
     await waitUntil(ctx, () => ctx.resumeFrames().length >= 2, 'a retry, which logs');
     const log = ctx.logs.join('\n');
-    expect(log).toContain(id.slice(0, 8));
+    expect(log).toContain(id.slice(-8));
     expect(log).not.toContain(id);
-    expect(log).not.toContain(helper.slice(0, 8));
-    expect(log).not.toContain(stray.slice(0, 8));
+    expect(log).not.toContain(helper.slice(-8));
+    expect(log).not.toContain(stray.slice(-8));
     expect(log).not.toContain(ctx.cwd);
   });
 
@@ -1130,7 +1130,26 @@ describe('binding re-checks the claims, and a sibling session keeps us from taki
     expect(ctx.identities).toEqual([a, c]);
   });
 
-  test('a rotation is logged with both ids cut to eight characters, the plain-window residual made visible', async () => {
+  test('a rotation between two UUIDv7 ids that share their first eight characters is logged so the two can be told apart (Q2)', async () => {
+    // Verified live (Codex 0.160.0, 2026-10-04): the log read `rotated from 01a106f2 to 01a106f2`,
+    // which looks like no rotation. A UUIDv7 starts with a millisecond timestamp; its random part
+    // is at the end.
+    const ctx = await setup();
+    const a = '01a106f2-2f1c-7a35-9d4e-8b6f1c2d3e4a';
+    const b = '01a106f2-40b8-7c91-a2f7-5d9e0b7a6c13';
+    expect(a.slice(0, 8)).toBe(b.slice(0, 8));
+    ctx.started('tui', a);
+    await waitUntil(ctx, () => ctx.identities.length === 1, 'the identity');
+    expect(ctx.logs).toContain('identity: thread 1c2d3e4a');
+    ctx.status(a, { type: 'idle' });
+    await settle(100);
+    ctx.started('tui', b);
+    await waitUntil(ctx, () => ctx.identities.length === 2, 'the rotation');
+    expect(ctx.logs).toContain('rotated from 1c2d3e4a to 0b7a6c13');
+    expect(ctx.logs.join('\n')).not.toContain('01a106f2');
+  });
+
+  test('a rotation is logged with the last eight characters of both ids, the plain-window residual made visible', async () => {
     const ctx = await setup();
     const a = crypto.randomUUID();
     const b = crypto.randomUUID();
@@ -1143,7 +1162,7 @@ describe('binding re-checks the claims, and a sibling session keeps us from taki
     // A plain codex window opened in this directory by hand looks exactly like a /new.
     ctx.started('tui', b);
     await waitUntil(ctx, () => ctx.identities.length === 2, 'the rotation');
-    expect(ctx.logs).toContain(`rotated from ${a.slice(0, 8)} to ${b.slice(0, 8)}`);
+    expect(ctx.logs).toContain(`rotated from ${a.slice(-8)} to ${b.slice(-8)}`);
     expect(ctx.logs.join('\n')).not.toContain(a);
     expect(ctx.logs.join('\n')).not.toContain(b);
   });

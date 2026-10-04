@@ -65,6 +65,7 @@ import {
   requestThreadId,
   responseFor,
 } from './approval-cards.ts';
+import { shortThreadId } from './thread-id.ts';
 
 export type ThreadRole = 'main' | 'subagent';
 
@@ -137,7 +138,7 @@ const UNSENT_NOTICE =
 /** More requests than this at once is not Codex asking: the oldest are dismissed, never answered. */
 const MAX_TRACKED = 64;
 
-const short = (id: string): string => id.slice(0, 8);
+const short = shortThreadId;
 /** A request id, for a log line: cut, and escaped, because a string id is chosen by the server. */
 const logId = (id: RequestId): string => escapeUnsafeText(String(id).slice(0, 24));
 

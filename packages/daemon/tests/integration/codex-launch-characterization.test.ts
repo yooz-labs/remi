@@ -445,7 +445,7 @@ describe('remi codex launch (daemon, black-box characterization, #1177)', () => 
       expect(statusesSeen(received)).toEqual(['idle']);
       r.server.createRollout(tuiId);
       await pollUntil(
-        () => r.output.text.includes(`attached to thread ${tuiId.slice(0, 8)}`),
+        () => r.output.text.includes(`attached to thread ${tuiId.slice(-8)}`),
         10000,
         'the attach to succeed after the rollout exists',
       );
@@ -488,9 +488,9 @@ describe('remi codex launch (daemon, black-box characterization, #1177)', () => 
 
       // Thread ids are logged truncated, and other threads' frames are never logged.
       expect(r.output.text).not.toContain(tuiId);
-      expect(r.output.text).not.toContain(helperId.slice(0, 8));
-      expect(r.output.text).not.toContain(strayId.slice(0, 8));
-      for (const id of brokenIds) expect(r.output.text).not.toContain(id.slice(0, 8));
+      expect(r.output.text).not.toContain(helperId.slice(-8));
+      expect(r.output.text).not.toContain(strayId.slice(-8));
+      for (const id of brokenIds) expect(r.output.text).not.toContain(id.slice(-8));
     } finally {
       ws.close();
     }
@@ -548,7 +548,7 @@ describe('remi codex launch (daemon, black-box characterization, #1177)', () => 
     );
     r.server.createRollout(tuiId);
     await pollUntil(
-      () => r.output.text.includes(`attached to thread ${tuiId.slice(0, 8)}`),
+      () => r.output.text.includes(`attached to thread ${tuiId.slice(-8)}`),
       10000,
       'the attach',
     );
@@ -757,7 +757,7 @@ describe('remi codex launch (wrapper and refusals, #1177)', () => {
     });
     const code = await Promise.race([r.proc.exited, Bun.sleep(20000).then(() => 'timeout')]);
     expect(code).toBe(1);
-    expect(r.output.text).toContain(`Ambiguous codex session ID ${thread.slice(0, 8)}`);
+    expect(r.output.text).toContain(`Ambiguous codex session ID ${thread.slice(-8)}`);
     expect(fileExists(r, 'pid')).toBe(false);
   }, 40000);
 
@@ -829,7 +829,7 @@ describe('remi codex approvals (daemon, black-box characterization, #1178)', () 
     );
     r.server.createRollout(tuiId);
     await pollUntil(
-      () => r.output.text.includes(`attached to thread ${tuiId.slice(0, 8)}`),
+      () => r.output.text.includes(`attached to thread ${tuiId.slice(-8)}`),
       10000,
       'the attach',
     );

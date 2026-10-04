@@ -1036,7 +1036,7 @@ describe('CodexHarness', () => {
         await sleep(100);
         server.emit(startFrame(t2), { broadcast: true });
         await until(() => holder(a.sessionId) === t2, 'A to rotate onto T2');
-        expect(logs).toContain(`[Codex] rotated from ${t1.slice(0, 8)} to ${t2.slice(0, 8)}`);
+        expect(logs).toContain(`[Codex] rotated from ${t1.slice(-8)} to ${t2.slice(-8)}`);
       },
     );
   });
@@ -1140,7 +1140,7 @@ describe('CodexHarness', () => {
       server.emit(frame, { broadcast: true });
       await until(() => logs.some((l) => l.includes('could not record the thread id')), 'the log');
       expect(logs.some((l) => l.includes('is claimed by another session'))).toBe(false);
-      expect(logs.some((l) => l.includes(other.slice(0, 8)))).toBe(true);
+      expect(logs.some((l) => l.includes(other.slice(-8)))).toBe(true);
 
       fs.writeFileSync(file, JSON.stringify({ ...rows, sessions: rows.sessions }));
       server.emit(frame, { broadcast: true });
