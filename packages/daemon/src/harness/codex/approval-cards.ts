@@ -141,11 +141,13 @@ const isRecord = (v: unknown): v is Record<string, unknown> =>
 const nonEmpty = (v: unknown): string | null => (typeof v === 'string' && v.length > 0 ? v : null);
 
 /**
- * A non-empty string a peer chose, made safe to show: a terminal escape sequence, a bidi control
- * or a zero-width character in it comes out as a visible `\uXXXX` (`escapeUnsafeText`), because a
- * card's text reaches the attach client's terminal, the web card, Telegram and a push, and a
- * hostile command would otherwise act on each. Everything a card shows from the request goes
- * through here (the thread and request ids, which are matched and never shown, do not).
+ * A non-empty string a peer chose, cut to `max` and then made safe to show: a character of the set
+ * `escapeUnsafeText` lists (terminal controls, bidi and invisible characters, the Tags block) comes
+ * out as visible text, because a card's text reaches the attach client's terminal, the web card,
+ * Telegram and a push, and a hostile command would otherwise act on each. The cut comes first, so
+ * it never lands inside an escape. Everything a card shows from the request goes through here or
+ * through `escapeUnsafeText` itself (the thread and request ids, which are matched and never
+ * shown, do not).
  */
 const display = (v: unknown, max = TEXT_MAX): string | null => {
   const text = nonEmpty(v);
