@@ -218,12 +218,16 @@ function normalizeNotificationText(text: string): string {
  * 3. No". Uses the real option LABELS (#574, issue 4) so the user sees what
  * they are actually choosing. The prefix is the option's actual `value`, not
  * its positional index, so it stays accurate for non-indexed values like a
- * y/n set ("y. Yes  n. No"). Empty when there are no options
- * (free-text prompt) so the body is just the ask.
+ * y/n set ("y. Yes  n. No"). A value longer than three characters is a word
+ * the person would not read as a choice (a Codex option's `accept`,
+ * `cancel`, `acceptForSession`), so that option shows its label alone. Empty
+ * when there are no options (free-text prompt) so the body is just the ask.
  */
 function formatOptionList(options: readonly QuestionOption[]): string {
   if (options.length === 0) return '';
-  return options.map((o) => `${o.value}. ${o.label || o.value}`).join('  ');
+  return options
+    .map((o) => (o.value.length <= 3 ? `${o.value}. ${o.label || o.value}` : o.label || o.value))
+    .join('  ');
 }
 
 /**

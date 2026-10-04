@@ -465,6 +465,56 @@ describe('buildPushText (#574 issues 3+4)', () => {
     expect(body.startsWith('Allow this action?')).toBe(true);
   });
 
+  test('a value that is a word, not an index, is not shown: Codex options read as labels (#1178)', () => {
+    const option = (
+      label: string,
+      value: string,
+      flags: Partial<QuestionOption>,
+    ): QuestionOption => ({
+      label,
+      value,
+      isRecommended: false,
+      isYes: false,
+      isNo: false,
+      ...flags,
+    });
+    const codex = [
+      option('Yes', 'accept', { isYes: true, isRecommended: true }),
+      option('No', 'cancel', { isNo: true }),
+    ];
+    expect(buildPushText('s', question('q', codex, 'Allow Codex to run: touch x')).body).toBe(
+      'Allow Codex to run: touch x\nYes  No',
+    );
+    const session = [
+      option('Yes', 'accept', { isYes: true }),
+      option("Yes, and don't ask again for this command this session", 'acceptForSession', {
+        isYes: true,
+      }),
+      option('No', 'cancel', { isNo: true }),
+    ];
+    expect(buildPushText('s', question('q', session, 'Allow Codex to run: touch x')).body).toBe(
+      "Allow Codex to run: touch x\nYes  Yes, and don't ask again for this command this session  No",
+    );
+  });
+
+  test("Claude's bodies are byte-identical: an index, a one-letter or a three-letter value keeps its prefix, a four-letter one does not", () => {
+    const opt = (label: string, value: string): QuestionOption => ({
+      label,
+      value,
+      isRecommended: false,
+      isYes: false,
+      isNo: false,
+    });
+    const body = (options: QuestionOption[]): string =>
+      buildPushText('s', question('q', options, 'Go?')).body;
+    expect(body([opt('Yes', '1'), opt('No', '2')])).toBe('Go?\n1. Yes  2. No');
+    expect(body([opt('Yes', 'y'), opt('No', 'n'), opt('All', 'a')])).toBe(
+      'Go?\ny. Yes  n. No  a. All',
+    );
+    expect(body([opt('Yes', '10'), opt('Yes', 'yes')])).toBe('Go?\n10. Yes  yes. Yes');
+    expect(body([opt('Yes', 'yeah'), opt('No', '2')])).toBe('Go?\nYes  2. No');
+  });
+
   test('option prefix is the actual VALUE, not the positional index (FIX 3C)', () => {
     // y/n options carry non-index values; the prefix must
     // reflect the real value ("y. Yes  n. No") so it stays accurate.
