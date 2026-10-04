@@ -384,12 +384,42 @@ The Worker does not see: any session id, any device name, any frame content, the
 An active Worker (or any network position between the peers) can drop, delay, duplicate, reorder or inject frames, refuse service, admit or refuse devices, and close either socket.
 Duplicates, reordering and injection are detected and close the channel; a delay is not detected; a drop followed by a later frame is detected as a gap; a drop of the tail followed by a close is not detected (see "Issues found while specifying").
 
-## 12. Claims, and what each test demonstrates
+## 12. Claims, and what demonstrates each
 
-This table is filled in when the tests exist (see the pull request for R1); it is part of the ADR so the claims stay checkable.
-The properties are claimed only to the extent the named evidence shows them.
+A claim appears here only with the evidence that shows it.
+Test files are under `packages/shared/tests/relay/`; "vectors" means `vectors.test.ts` running the committed file, "Python" and "Swift" the two verifiers of section 13.
+Every test was also checked by mutation: the mutated source was applied, the suite failed, the mutation was reverted (the results are in the pull request).
 
-(Filled in by the final commit of R1.)
+| Claim | Evidence |
+|---|---|
+| A replayed, reordered or dropped-then-continued frame, a truncated or extended frame, a flipped bit anywhere in a frame, a frame under another key, a reflected frame, counter 0 after the handshake, a counter above the limit with a valid tag, an oversized frame and a text frame after the handshake are each refused, and the channel then refuses everything | `channel.test.ts` (one test per case, a bit-by-bit test over a whole frame, 600 property cases); vectors `data_sequence` and `frame_length`; Python; Swift |
+| Every failure closes with one code and reason | `channel.test.ts` ("every failure closes with the same code and reason", "every RelayError code maps to the one wire close") |
+| A dropped tail is NOT detected | `channel.test.ts` ("a dropped tail is NOT detected"), recorded so it cannot be forgotten |
+| A slow encryption cannot let a later frame leave first; a failed frame is never skipped | `channel.test.ts` ("ordered sending") |
+| The device key is never used before the host is verified, and the device identity and name are not on the wire in clear | `handshake.test.ts` ("the host is authenticated first", "not readable on the wire") |
+| Every term of `H1` is bound: rid, mode, both ephemeral keys, both nonces | `handshake.test.ts` ("a host signature over a transcript that differs in any single term", "a relay that changes the hello in transit"); vectors `hello_ack_verify`; Python |
+| Every term of `H2` is bound | `handshake.test.ts` ("the client signature covers every term of H2"); vectors `auth_check`; Python |
+| The keys depend on the shared secret, the transcript, the pairing secret and the direction | `handshake.test.ts` ("key schedule"); vectors `auth_open`; Python; Swift |
+| A wrong, missing or extra pairing secret fails at the host; a used, expired or absent offer does not pair; an `auth` replayed on a second connection fails | `handshake.test.ts` ("pairing offers", "wrong pairing secret", "replayed on a second connection"); vectors `auth_open` |
+| The host checks the client signature, the device name, and in resume mode the enrollment | `handshake.test.ts` ("the host checks the client"); vectors `auth_check` |
+| Key confirmation: a `ready` that does not open, or echoes another mode, yields no channel | `handshake.test.ts` ("key confirmation"); vectors `ready_open`; Python; Swift |
+| Deadlines are enforced at their boundary, with the longer pairing window for `ready` | `handshake.test.ts` ("deadlines") |
+| Control frames are decoded strictly: version, type, mode, shape, lengths, canonical form | `envelope.test.ts`; vectors `control_decode`; Python |
+| Tokens, admission proofs and sealed pushes follow their formats and refuse every listed malformation | `pairing.test.ts`, `seal.test.ts` (including an independent Node implementation of the seal); vectors; Python; Swift (seal and admission) |
+| The wire bytes are the specified bytes | vectors (regeneration pin and conformance); Python; Swift: three implementations, TypeScript, Python and CryptoKit, agree |
+| No clock or platform random source is read inside the library, a run is a pure function of its inputs, and nothing outside the directory is imported | `source-guard.test.ts`; `handshake.test.ts` ("the same inputs always give byte-identical frames") |
+| Random single-character mutations of any handshake frame in transit never produce a channel | `handshake.test.ts` (120 seeded cases) |
+
+Not claimed, because no test shows it:
+
+- **Forward secrecy.**
+  The keys depend on the ephemeral shared secret (`handshake.test.ts`, key schedule), and the argument that this gives forward secrecy is the design's.
+- **Metadata hiding.** Section 11 says what the Worker sees.
+- **Constant-time behavior** of any comparison or of the platform's AEAD and signature code.
+- **Zeroization** beyond the two cases in section 8 (the ephemeral scalar and the raw channel keys).
+- **Detection of a delayed or tail-truncated stream** (section 15.2).
+- **Behavior on engines other than Bun 1.4.2 and 1.3.11, CryptoKit and `cryptography`.**
+  Safari, workerd and the Cloudflare runtime are unverified; R2 and R4 must run the vectors there.
 
 ## 13. Test vectors and independent verifiers
 
@@ -422,7 +452,8 @@ The web client (R4) adds a fourth consumer by importing the shared package.
 **The daemon (R3) must:**
 
 - Create the machine identity once and keep it; derive `rid` from it.
-- Keep a `PairingOffer` per live token; mark it used before calling `hostReady`, and call `hostReady` only after the enrollment is durably stored and the operator has confirmed the fingerprint.
+- Keep a `PairingOffer` per live token.
+  The step functions are `hostOnHello`, then `onAuth` on its result, then `ready` on that: mark the offer used and store the enrollment durably, and have the operator confirm the fingerprint, before calling `ready`, and call `abort` on every step a closing connection leaves unfinished.
 - Close with the constants `CLOSE_CODE` and `CLOSE_REASON` on every thrown `RelayError`, and on every WebSocket text frame after the handshake, whatever its content.
 - Bound concurrent half-open handshakes (each costs an ECDH and a signature before the peer has proved anything).
 - Define application-level acknowledgments and an authenticated end-of-stream message inside the data channel, because the channel alone cannot tell a clean close from a truncation.
@@ -542,7 +573,15 @@ Nothing in this protocol silently differs from the plan.
     The tests show only that the derivation depends on `Z` and on every other input (a changed `Z` changes the keys); the argument that this yields forward secrecy is the design's, and no test demonstrates it end to end.
 12. **The library cannot enforce the daemon's side of enrollment.**
     "Burn the offer and store the key before `ready`" is a contract in section 14, not something this package can check.
-13. **No version negotiation exists, by design.**
+13. **Every session key rests on the injected random source.**
+    Counters are the nonces, so two sessions that derived the same keys would reuse nonces.
+    The keys are fresh unless both peers draw the same ephemeral scalar and both nonces, which only a broken random source does.
+    `systemRandom` is `crypto.getRandomValues`, and the library never reads another source; the injected source of a test is deterministic by design and must never reach production.
+14. **An ephemeral key is built by importing its scalar as PKCS8 without the public half.**
+    The library does this so that a run is reproducible from an injected source and the private key stays non-extractable.
+    It works on Bun 1.4.2 and 1.3.11 (BoringSSL); it is unverified on WebKit (the iOS client) and on workerd.
+    If a platform refuses it, the fix is to compute the public point from the scalar (a few lines of BigInt scalar multiplication) and import a JWK instead; R4 must run the vectors in a real WKWebView before relying on this.
+15. **No version negotiation exists, by design.**
     A v1 frame fails as `TYPE` or `VERSION` and closes; a v2 endpoint never speaks v1.
     There is nothing to downgrade to.
 

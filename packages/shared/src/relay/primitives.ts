@@ -13,7 +13,10 @@ import { type Bytes, be64, concat, fromB64u, own, utf8, zero } from './bytes.ts'
 import { type Direction, LABEL, RID_LEN, V } from './constants.ts';
 import { RelayError } from './errors.ts';
 
-/** A source of random bytes. Injected everywhere so vectors are reproducible. */
+/**
+ * A source of random bytes. Injected everywhere so vectors are reproducible.
+ * It must return a fresh array on every call: the library overwrites secret draws.
+ */
 export type Rng = (length: number) => Uint8Array;
 export const systemRandom: Rng = (n) => crypto.getRandomValues(new Uint8Array(n));
 
