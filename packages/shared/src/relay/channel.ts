@@ -51,17 +51,29 @@ export class Channel {
   private pending = 0;
   private dead = false;
 
+  private readonly direction: Direction;
+  private readonly io: ChannelIO;
+  private readonly seal: SealFn;
+  private nextSend: number;
+  private nextRecv: number;
+
+  // No parameter properties: the web build compiles this file with `erasableSyntaxOnly`.
   private constructor(
     sendKey: CryptoKey,
     recvKey: CryptoKey,
-    private readonly direction: Direction,
-    private readonly io: ChannelIO,
-    private readonly seal: SealFn,
-    private nextSend: number,
-    private nextRecv: number,
+    direction: Direction,
+    io: ChannelIO,
+    seal: SealFn,
+    nextSend: number,
+    nextRecv: number,
   ) {
     this.sendKey = sendKey;
     this.recvKey = recvKey;
+    this.direction = direction;
+    this.io = io;
+    this.seal = seal;
+    this.nextSend = nextSend;
+    this.nextRecv = nextRecv;
   }
 
   static async create(init: ChannelInit): Promise<Channel> {
