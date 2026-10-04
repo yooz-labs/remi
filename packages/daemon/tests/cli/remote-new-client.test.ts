@@ -191,6 +191,8 @@ describe('createRemoteSession sends a harness only to a daemon that offers it (#
       { sessionId: '55\u001b[2K5555-5555-4555-8555-555555555555' },
     ],
     ['a session id that is not a UUID', { sessionId: 'fixture-session-id' }],
+    ['a session id with text before a UUID', { sessionId: `\u001b[2K${SESSION}` }],
+    ['a session id with text after a UUID', { sessionId: `${SESSION}\u001b[2K` }],
     ['a session id that is not a string', { sessionId: 5 }],
     ['a port that is a string', { port: '1234' }],
     ['a port with a terminal sequence', { port: '1\u001b[2K' }],
