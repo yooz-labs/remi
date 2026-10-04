@@ -89,21 +89,39 @@ export interface AuthenticatedRelayPeer {
   dispose(): Promise<void>;
 }
 
+/**
+ * A real `Authenticator` over a real `IdentityStore` in a temp directory.
+ * `remove()` deletes the directory; `dir` also holds the client identity the
+ * handshake helper below creates.
+ */
+export async function makeAuthenticator(
+  tofuMode: 'auto-accept' | 'reject' = 'auto-accept',
+): Promise<{
+  authenticator: Authenticator;
+  store: IdentityStore;
+  dir: string;
+  remove: () => void;
+}> {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-relay-peer-'));
+  const store = new IdentityStore(dir);
+  await store.generate('testpass');
+  const identity = await store.unlock('testpass');
+  const authenticator = new Authenticator({ identity, identityStore: store, tofuMode });
+  return {
+    authenticator,
+    store,
+    dir,
+    remove: () => fs.rmSync(dir, { recursive: true, force: true }),
+  };
+}
+
 export async function startAuthenticatedRelayPeer(
   events: Partial<AdapterEvents>,
 ): Promise<AuthenticatedRelayPeer> {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-relay-peer-'));
+  const { authenticator, dir } = await makeAuthenticator();
   const transport = new RecordingTransport();
   let adapter: RelayAdapter | null = null;
   try {
-    const store = new IdentityStore(dir);
-    await store.generate('testpass');
-    const identity = await store.unlock('testpass');
-    const authenticator = new Authenticator({
-      identity,
-      identityStore: store,
-      tofuMode: 'auto-accept',
-    });
     adapter = new RelayAdapter(
       {
         enabled: true,
@@ -117,7 +135,7 @@ export async function startAuthenticatedRelayPeer(
     );
     await adapter.start();
 
-    transport.emit('peer-connected');
+    transport.emit('peer-connected', 'client');
     await settle(() => transport.sent.length > 0);
     const challenge = JSON.parse(transport.sent.at(-1) ?? 'null') as AuthChallengeMessage | null;
     if (challenge?.type !== 'auth_challenge') throw new Error('the adapter sent no auth challenge');

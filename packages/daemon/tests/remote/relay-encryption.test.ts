@@ -120,7 +120,7 @@ describe('relay adapter encrypts what the Worker carries', () => {
     challenge: AuthChallengeMessage;
   }> {
     const offerKex = options.offerKex !== false;
-    transport.emit('peer-connected');
+    transport.emit('peer-connected', 'client');
     await settle();
 
     const challenge = transport.lastAsJson<AuthChallengeMessage>();
@@ -172,7 +172,7 @@ describe('relay adapter encrypts what the Worker carries', () => {
 
   test('the challenge carries a signed ephemeral key', async () => {
     await startAdapter();
-    transport.emit('peer-connected');
+    transport.emit('peer-connected', 'client');
     await settle();
 
     const challenge = transport.lastAsJson<AuthChallengeMessage>();
@@ -251,7 +251,7 @@ describe('relay adapter encrypts what the Worker carries', () => {
 
   test('nothing is relayed before the key exchange completes', async () => {
     await startAdapter();
-    transport.emit('peer-connected');
+    transport.emit('peer-connected', 'client');
     await settle();
 
     const before = transport.sent.length;

@@ -106,7 +106,7 @@ describe('relay adapter without an authenticator (the default shape)', () => {
   });
 
   test('a peer is refused: onConnect never fires and the peer is told why', async () => {
-    transport.emit('peer-connected');
+    transport.emit('peer-connected', 'client');
     await settle();
 
     expect(calls.connects).toBe(0);
@@ -124,8 +124,8 @@ describe('relay adapter without an authenticator (the default shape)', () => {
 
   test('every peer is refused, not only the first', async () => {
     for (let i = 0; i < 3; i++) {
-      transport.emit('peer-connected');
-      transport.emit('peer-disconnected');
+      transport.emit('peer-connected', 'client');
+      transport.emit('peer-disconnected', 'client');
     }
     await settle();
     expect(calls.connects).toBe(0);
@@ -134,7 +134,7 @@ describe('relay adapter without an authenticator (the default shape)', () => {
 
   test('the refusal is logged once per peer and carries no secret', async () => {
     const before = log.lines().length;
-    transport.emit('peer-connected');
+    transport.emit('peer-connected', 'client');
     await settle();
 
     const refusals = log.lines().slice(before);
@@ -155,7 +155,7 @@ describe('relay adapter without an authenticator (the default shape)', () => {
   });
 
   test('a keystroke payload after a refused peer never reaches the input handler', async () => {
-    transport.emit('peer-connected');
+    transport.emit('peer-connected', 'client');
     await settle();
     transport.emit('relay', JSON.stringify(KEYSTROKE));
     await settle();
@@ -199,7 +199,7 @@ describe('relay adapter without an authenticator (the default shape)', () => {
   });
 
   test('outbound stays refused: nothing but the refusal frame reaches the Worker', async () => {
-    transport.emit('peer-connected');
+    transport.emit('peer-connected', 'client');
     await settle();
     const frame = {
       type: 'agent_output',
