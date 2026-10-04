@@ -228,6 +228,17 @@ describe('relay wording', () => {
     expect(formatHelp('0.0.0')).toContain('needs auth on; turns the relay on');
   });
 
+  test('`remi code` is described as the permanent relay code, in the help and in its own help', () => {
+    process.env['NO_COLOR'] = '1';
+    const main = formatHelp('0.0.0');
+    expect(main).toContain('Show the permanent relay code');
+    expect(main).toContain('Generate a new permanent relay code');
+    const code = formatCommandHelp('code');
+    expect(code).toContain('Show or refresh the permanent relay code');
+    expect(code).not.toContain('remote access connection code');
+    expect(code).not.toContain('Show current connection code');
+  });
+
   test('`remi code` no longer claims the web or mobile app uses the code', () => {
     process.env['NO_COLOR'] = '1';
     expect(formatHelp('0.0.0')).not.toContain('phone/browser');
