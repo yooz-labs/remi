@@ -88,3 +88,52 @@ test('claude id present but no stored record -> null binding (sessionId still re
   expect(current?.claudeSessionId).toBeNull();
   expect(current?.transcriptPath).toBeNull();
 });
+
+// The identity every hello_ack carries (#1179): from the record when there is one this build
+// understands, otherwise the daemon's own harness with no session id, never a guess at Claude.
+function resolverFor(harnessId: 'claude' | 'codex') {
+  return makeCurrentSessionResolver({
+    getPrimarySessionId: () => REMI,
+    sessionStore,
+    harness: new ClaudeHarness(transcriptDiscovery),
+    harnessId,
+  });
+}
+
+const record = (over: Record<string, unknown>) => ({
+  remiSessionId: REMI,
+  claudeSessionId: null,
+  projectPath: PROJECT,
+  port: 18765,
+  pid: 1,
+  startedAt: new Date(0).toISOString(),
+  exitedAt: null,
+  exitCode: null,
+  ...over,
+});
+
+test('identity: a Claude record reports its Claude id as the harness session id', () => {
+  sessionStore.save(record({ claudeSessionId: CLAUDE }));
+  expect(resolverFor('claude')()?.identity).toEqual({
+    harness: 'claude',
+    harnessSessionId: CLAUDE,
+  });
+});
+
+test('identity: a Codex record reports its thread, and null before it is learned', () => {
+  const thread = '01950000-0000-7000-8000-0000000000aa';
+  sessionStore.save(record({ harness: 'codex', harnessSessionId: thread }));
+  expect(resolverFor('codex')()?.identity).toEqual({ harness: 'codex', harnessSessionId: thread });
+  sessionStore.save(record({ harness: 'codex', harnessSessionId: null }));
+  expect(resolverFor('codex')()?.identity).toEqual({ harness: 'codex', harnessSessionId: null });
+});
+
+test('identity: with no record the daemon names its own harness, with no id', () => {
+  expect(resolverFor('codex')()?.identity).toEqual({ harness: 'codex', harnessSessionId: null });
+  expect(resolverFor('claude')()?.identity).toEqual({ harness: 'claude', harnessSessionId: null });
+});
+
+test('identity: a record that names a harness this build does not know falls back to the daemon, not to Claude', () => {
+  sessionStore.save(record({ harness: 'from-a-newer-daemon', harnessSessionId: 'x' }));
+  expect(resolverFor('codex')()?.identity).toEqual({ harness: 'codex', harnessSessionId: null });
+});

@@ -122,6 +122,12 @@ async function startCodexWrapper(): Promise<Running> {
   return r;
 }
 
+/**
+ * A UUIDv7-shaped thread id: its first eight characters are a timestamp that any two threads
+ * created within about a minute share, so only the whole id tells threads apart.
+ */
+const THREAD_ID = '01950000-0000-7000-8000-00000000000a';
+
 const isAck = (m: ProtocolMessage): m is HelloAckMessage => m.type === 'hello_ack';
 const isQuestion = (m: ProtocolMessage): m is QuestionMessage => m.type === 'question';
 
@@ -141,7 +147,7 @@ describe('a Codex daemon on the wire (#1179)', () => {
     }
 
     // The TUI's own thread: a user thread in this directory, created just now.
-    const tuiId = crypto.randomUUID();
+    const tuiId = THREAD_ID;
     r.server.emit(
       threadStartedFrame('tui', {
         id: tuiId,
@@ -170,7 +176,7 @@ describe('a Codex daemon on the wire (#1179)', () => {
 
   test('the session list, a live approval and its re-send carry the thread id; the phone answers it by questionId alone', async () => {
     const r = await startCodexDaemon();
-    const tuiId = crypto.randomUUID();
+    const tuiId = THREAD_ID;
     r.server.emit(
       threadStartedFrame('tui', {
         id: tuiId,

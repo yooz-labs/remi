@@ -113,11 +113,15 @@ describe('validateClaudeRemoteArgs: what is refused', () => {
     refused(['--fork-session', '--fork-session']);
   });
 
-  test('more than 16 arguments, an argument over 256 characters, NUL', () => {
-    refused(Array.from({ length: 17 }, () => '--fork-session'));
-    refused(['--model', 'a'.repeat(257)]);
-    refused(['--model', 'a\0b']);
-    refused(['--cont\0inue']);
+  test('more than 16 arguments, an argument over 256 characters and NUL are refused by their own checks', () => {
+    // Each input would be refused by a later rule too (a repeated slot, the model pattern, the
+    // default deny), so only the message says which check fired: a removed bound must fail here.
+    expect(refused(Array.from({ length: 17 }, () => '--fork-session'))).toContain('at most 16');
+    expect(refused(['--model', 'a'.repeat(257)])).toContain('at most 256 characters');
+    expect(refused(['--model', 'a\0b'])).toContain('NUL');
+    expect(refused(['--cont\0inue'])).toContain('NUL');
+    // Sixteen is the limit, not fifteen: a list of exactly 16 gets past the count check.
+    expect(refused(Array.from({ length: 16 }, () => '--fork-session'))).toContain('given twice');
   });
 
   test('anything that is not an array of strings, without throwing', () => {

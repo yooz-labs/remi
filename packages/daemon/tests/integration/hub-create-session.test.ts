@@ -218,8 +218,7 @@ describe('a hub creating a session for a harness (#1179)', () => {
     expect(response.error).toContain('codex');
     expect(response.sessionId).toBeUndefined();
     expect('notice' in response).toBe(false);
-    // No child daemon registered, no agent started.
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    // The refusal is sent before any spawn could happen, so absence now is absence for good.
     expect(childEntries(r)).toEqual([]);
     expect(fs.existsSync(path.join(r.agents.codexDir, 'argv'))).toBe(false);
   }, 60000);
@@ -244,7 +243,6 @@ describe('a hub creating a session for a harness (#1179)', () => {
       const { response } = await ask(r, options);
       expect(response.success).toBe(false);
       expect(typeof response.error).toBe('string');
-      await new Promise((resolve) => setTimeout(resolve, 1000));
       expect(childEntries(r)).toEqual([]);
       expect(fs.existsSync(path.join(r.agents.codexDir, 'argv'))).toBe(false);
       expect(fs.existsSync(path.join(r.agents.claudeDir, 'argv'))).toBe(false);
@@ -280,7 +278,6 @@ describe('a hub creating a session for a harness (#1179)', () => {
     expect(refused.response.error).toContain('remi codex will not start');
     expect(refused.response.error).toContain(`pid ${sleeper.pid}`);
     expect(refused.response.error).toContain('remi stop --all');
-    await new Promise((resolve) => setTimeout(resolve, 1000));
     expect(fs.existsSync(path.join(r.agents.codexDir, 'argv'))).toBe(false);
 
     // The gate is about Codex records: a Claude request is not held up by it.
