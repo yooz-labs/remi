@@ -169,9 +169,9 @@ export function legacyWriterRefusal(writers: readonly LegacyWriter[]): string {
 /**
  * The refusal for a resume of a thread a live remi session already holds, or null. Only an ACTIVE
  * holder matters: the purge in `list()` has already turned a dead process's record into history, and
- * the store refuses two active holders. Not `findByHarnessSessionId`: it reads several exited rows
- * of one thread, which every second resume leaves, as an ambiguity and would refuse the third until
- * the purge. Used by the launch (`checkCodexLaunch`) and by the hub before it spawns a child for a
+ * the store refuses two active holders. A lookup that read the exited rows too would see the several
+ * rows of one thread that every second resume leaves as an ambiguity, and refuse the third resume
+ * until the purge. Used by the launch (`checkCodexLaunch`) and by the hub before it spawns a child for a
  * `resume` (#1179, H2), so the two say the same thing: the child's refusal reached a remote client
  * only as "Daemon process exited unexpectedly".
  */

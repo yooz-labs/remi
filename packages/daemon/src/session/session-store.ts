@@ -825,21 +825,6 @@ export class SessionStore {
     return selectClaudeSessionMatch(matches, claudeSessionId);
   }
 
-  /**
-   * Find a session by its harness's own session id (#1176). For `claude` this
-   * is `findByClaudeSessionId`; for any other harness it matches the stored
-   * `harness` and `harnessSessionId` together, and, like the Claude lookup,
-   * prefers the single active owner over exited history. Several active
-   * owners are an ambiguity, never resolved by picking one.
-   */
-  findByHarnessSessionId(harness: HarnessId, harnessSessionId: string): StoredSession | null {
-    if (harness === DEFAULT_HARNESS) return this.findByClaudeSessionId(harnessSessionId);
-    const matches = this.read().filter(
-      (s) => s.harness === harness && s.harnessSessionId === harnessSessionId,
-    );
-    return selectSessionMatch(matches, harness, harnessSessionId);
-  }
-
   /** Find a session by its Remi session ID. */
   findByRemiSessionId(remiSessionId: UUID): StoredSession | null {
     const sessions = this.read();
