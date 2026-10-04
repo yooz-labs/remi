@@ -26,7 +26,11 @@ import type {
   QuestionMessage,
   SessionListResponseMessage,
 } from '@remi/shared/protocol.ts';
-import { createSessionListRequest, serialize } from '@remi/shared/protocol.ts';
+import {
+  createResumeSessionRequest,
+  createSessionListRequest,
+  serialize,
+} from '@remi/shared/protocol.ts';
 import {
   cleanupHub,
   connectAndHello,
@@ -252,5 +256,28 @@ describe('a Claude daemon on the wire (#1179)', () => {
     const file = fs.readdirSync(liveDir).find((f) => f.endsWith('.json')) as string;
     const entry = JSON.parse(fs.readFileSync(path.join(liveDir, file), 'utf-8')) as object;
     expect('harness' in entry).toBe(false);
+  }, 40000);
+  test('the ack of a resume of its own session names the harnesses too, and no binding', async () => {
+    const d = await daemon();
+    const { ws, received } = await connectAndHello(d.port);
+    try {
+      const sessionId = (
+        received.find((m): m is HelloAckMessage => m.type === 'hello_ack') as HelloAckMessage
+      ).sessionId as string;
+      const acksBefore = received.filter((m) => m.type === 'hello_ack').length;
+      ws.send(serialize(createResumeSessionRequest(sessionId)));
+      await pollUntil(
+        () => received.filter((m) => m.type === 'hello_ack').length > acksBefore,
+        8000,
+        'the ack of the resume',
+      );
+      const ack = received.filter((m): m is HelloAckMessage => m.type === 'hello_ack').at(-1);
+      expect(ack?.harnesses).toEqual(['claude']);
+      // A resume ack has never named a binding; naming an identity there would be a guess.
+      expect(ack).not.toHaveProperty('claudeSessionId');
+      expect(ack).not.toHaveProperty('harness');
+    } finally {
+      ws.close();
+    }
   }, 40000);
 });
