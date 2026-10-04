@@ -646,14 +646,25 @@ describe('CodexHarness', () => {
     /** The log entries that carry what the child printed. */
     const printed = (): string[] => logs.filter((l) => l.includes('its first output'));
 
-    function fakeCodex(print: string, exit: number | null, exitAfterSec?: number): void {
+    function fakeCodex(
+      print: string,
+      exit: number | null,
+      exitAfterSec?: number,
+      later?: string,
+    ): void {
       process.env['FAKE_AGENT_PRINT'] = print;
+      if (later !== undefined) process.env['FAKE_AGENT_PRINT_LATER'] = later;
       if (exit !== null) process.env['FAKE_AGENT_EXIT'] = String(exit);
       if (exitAfterSec !== undefined) process.env['FAKE_AGENT_EXIT_AFTER'] = String(exitAfterSec);
     }
 
     afterEach(() => {
-      for (const key of ['FAKE_AGENT_PRINT', 'FAKE_AGENT_EXIT', 'FAKE_AGENT_EXIT_AFTER']) {
+      for (const key of [
+        'FAKE_AGENT_PRINT',
+        'FAKE_AGENT_PRINT_LATER',
+        'FAKE_AGENT_EXIT',
+        'FAKE_AGENT_EXIT_AFTER',
+      ]) {
         Reflect.deleteProperty(process.env, key);
       }
     });
@@ -723,13 +734,17 @@ describe('CodexHarness', () => {
     });
 
     test('at most the first 2 KB is kept, however much it printed', async () => {
-      fakeCodex(`${'x'.repeat(3000)} END-OF-OUTPUT`, 2);
+      // A short first chunk and a long second one, so the chunk that crosses the cap is not one that
+      // ends on it (the terminal hands output over in 1024-character pieces), and keeping the LAST
+      // 2 KB instead of the first would show.
+      fakeCodex('HEAD-OF-OUTPUT', 2, undefined, `${'x'.repeat(3000)} END-OF-OUTPUT`);
       const { session } = createSending(buildDeps(startServer()));
       await session.start();
       await exited(session);
       const [entry] = printed();
-      expect(entry).toContain('x'.repeat(2048));
-      expect(entry).not.toContain('x'.repeat(2049));
+      // The first 2048 characters: the 16 of the head and its line end, then 2032 of the rest.
+      expect(entry).toContain(`HEAD-OF-OUTPUT\\u000D\\n${'x'.repeat(2032)}`);
+      expect(entry).not.toContain('x'.repeat(2033));
       expect(entry).not.toContain('END-OF-OUTPUT');
       expect(entry?.length).toBeLessThan(2048 + 400);
     });
@@ -773,6 +788,10 @@ describe('CodexHarness', () => {
         'the identity',
       );
       expect(printed()).toEqual([]);
+      // Output after the thread is named is not kept either: the terminal echoes what is typed into
+      // it, which is output the fake never wrote.
+      await session.pty.write('LATE-ECHO');
+      await sleep(300);
       session.pty.signal('SIGKILL');
       await exited(session);
       expect(printed()).toEqual([]);

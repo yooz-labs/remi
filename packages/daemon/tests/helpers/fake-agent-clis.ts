@@ -47,11 +47,13 @@ done
 
 /**
  * A fake that dies the way a real Codex does when its flags are wrong (LV-4): `FAKE_AGENT_PRINT` is
- * written to the terminal, then, if `FAKE_AGENT_EXIT` is set, the fake ends with that code after
- * `FAKE_AGENT_EXIT_AFTER` seconds (default none). With neither set it does nothing, so the fakes
- * that wait for `release` behave as before.
+ * written to the terminal, `FAKE_AGENT_PRINT_LATER` 0.2 s after it (a second chunk of output, so a
+ * test can see how the terminal splits it), then, if `FAKE_AGENT_EXIT` is set, the fake ends with
+ * that code after `FAKE_AGENT_EXIT_AFTER` seconds (default none). With none of them set it does
+ * nothing, so the fakes that wait for `release` behave as before.
  */
 export const PRINT_AND_EXIT = `if [ -n "$FAKE_AGENT_PRINT" ]; then printf '%s\\n' "$FAKE_AGENT_PRINT"; fi
+if [ -n "$FAKE_AGENT_PRINT_LATER" ]; then sleep 0.2; printf '%s\\n' "$FAKE_AGENT_PRINT_LATER"; fi
 if [ -n "$FAKE_AGENT_EXIT" ]; then
   sleep "\${FAKE_AGENT_EXIT_AFTER:-0}"
   exit "$FAKE_AGENT_EXIT"

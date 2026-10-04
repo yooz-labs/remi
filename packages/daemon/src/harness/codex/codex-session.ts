@@ -334,11 +334,11 @@ export function createCodexSession(
       if (identified || startupOutput.length >= STARTUP_OUTPUT_CHARS) return;
       startupOutput += text.slice(0, STARTUP_OUTPUT_CHARS - startupOutput.length);
     },
-    // Runs when the PTY exits.
+    // Runs when the PTY exits. A named thread has already emptied the buffer and stopped the capture.
     flush: () => {
       const output = startupOutput;
       startupOutput = '';
-      if (identified || output === '' || spawnedAtMs === null) return;
+      if (output === '' || spawnedAtMs === null) return;
       const elapsedMs = Date.now() - spawnedAtMs;
       if (elapsedMs > (deps.startupFailureWindowMs ?? DEFAULT_STARTUP_FAILURE_WINDOW_MS)) return;
       log(

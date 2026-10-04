@@ -110,6 +110,18 @@ describe('a fake codex that dies at startup (LV-4)', () => {
     expect(await waitForRecordedArgv(codexDir)).toEqual(['--no-alt-screen']);
   });
 
+  test('a later print comes out after the first, 0.2 s on, as a second chunk', async () => {
+    const started = Date.now();
+    const proc = run({
+      FAKE_AGENT_PRINT: 'first',
+      FAKE_AGENT_PRINT_LATER: 'second',
+      FAKE_AGENT_EXIT: '0',
+    });
+    expect(await proc.exited).toBe(0);
+    expect(await new Response(proc.stdout).text()).toBe('first\nsecond\n');
+    expect(Date.now() - started).toBeGreaterThanOrEqual(180);
+  });
+
   test('with no exit code it prints and then waits for release, as before', async () => {
     const proc = run({ FAKE_AGENT_PRINT: 'still here' });
     await waitForRecordedArgv(codexDir);
