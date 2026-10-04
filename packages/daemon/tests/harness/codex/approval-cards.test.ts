@@ -825,6 +825,32 @@ describe('a long command is never approvable from a surface that cuts it (S1)', 
       );
     });
 
+    test('an escape that starts 1 to length-1 characters before a boundary is snapped, whichever form it has and whichever boundary it is', () => {
+      for (const [esc, length] of [
+        [bidi, 6],
+        [tag, 9],
+      ] as const) {
+        for (let k = 1; k < length; k++) {
+          // Head: the escape starts k characters before the 80th.
+          const head = build(
+            accept,
+            {},
+            `${'a'.repeat(80 - k)}${esc}${'m'.repeat(100)}${'y'.repeat(40)}`,
+          ).question;
+          expect(
+            head.text.startsWith(`${PREFIX}${'a'.repeat(80 - k)}${escapeUnsafeText(esc)} … [`),
+          ).toBe(true);
+          // Tail: the escape starts k characters before the 30th from the end.
+          const rest = 30 - length + k;
+          const tail = build(accept, {}, `${'m'.repeat(110)}${esc}${'y'.repeat(rest)}`).question;
+          expect(
+            tail.text.endsWith(` … ${'y'.repeat(rest)}`),
+            `tail, escape of ${length}, k=${k}`,
+          ).toBe(true);
+        }
+      }
+    });
+
     test('whatever the command, the kept head and tail end and start on whole escapes, and head + hidden + tail is the escaped command', () => {
       const alphabet = ['a', 'b', 'z', ' ', '/', bidi, tag, '\x1b', String.fromCodePoint(0x200b)];
       let seed = 20260410;

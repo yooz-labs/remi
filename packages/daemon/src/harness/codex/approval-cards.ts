@@ -103,12 +103,12 @@ const DIRECTORY_MAX = 500;
 
 /** An escape `escapeUnsafeText` writes: `\\uXXXX`, or `\\u{XXXXX}` above the Basic Multilingual Plane. */
 const ESCAPE = /\\u(?:[0-9A-F]{4}|\{[0-9A-F]{1,6}\})/g;
-/** The longest escape, `\\u{E007F}`: nine characters. */
+/** The longest escape, `\\u{E007F}`: nine characters, so one that straddles an index starts at most 8 before it. */
 const ESCAPE_MAX = 9;
 
 /** `index`, or the end of the escape it falls inside (an escape is never cut in the middle). */
 function outOfEscape(text: string, index: number): number {
-  ESCAPE.lastIndex = Math.max(0, index - ESCAPE_MAX);
+  ESCAPE.lastIndex = Math.max(0, index - (ESCAPE_MAX - 1));
   for (let m = ESCAPE.exec(text); m !== null && m.index < index; m = ESCAPE.exec(text)) {
     const end = m.index + m[0].length;
     if (end > index) return end;
