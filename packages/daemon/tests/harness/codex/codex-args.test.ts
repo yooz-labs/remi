@@ -506,19 +506,10 @@ describe('validateCodexRemoteArgs: the default-deny allowlist', () => {
   });
 
   test('accepts a model, an approval policy, a sandbox mode and resume; resume <uuid> is returned last', () => {
-    const args = [
-      '-s',
-      'workspace-write',
-      'resume',
-      UUID,
-      '--model',
-      'gpt-5.1',
-      '-a',
-      'on-request',
-    ];
+    const args = ['-s', 'read-only', 'resume', UUID, '--model', 'gpt-5.1', '-a', 'untrusted'];
     expect(remoteOk(args)).toEqual({
       ok: true,
-      args: ['-s', 'workspace-write', '--model', 'gpt-5.1', '-a', 'on-request', 'resume', UUID],
+      args: ['-s', 'read-only', '--model', 'gpt-5.1', '-a', 'untrusted', 'resume', UUID],
       resumeThreadId: UUID,
     });
   });
@@ -539,15 +530,32 @@ describe('validateCodexRemoteArgs: the default-deny allowlist', () => {
     expect(remoteRefused(['-m'])).toContain('model');
   });
 
-  test('approval policies and sandbox modes are the two allowed values each, nothing else', () => {
-    for (const bad of ['never', 'on-failure', 'on_request', 'UNTRUSTED', '']) {
-      expect(remoteRefused(['-a', bad]), bad).toContain('-a');
+  test('a remote request may only tighten the host posture: -a untrusted and -s read-only, nothing looser (H3)', () => {
+    // `on-request` and `workspace-write` were allowed until the Phase 5 review: a remote client
+    // must not loosen what the host chose (widening needs a person at the terminal).
+    for (const bad of [
+      'on-request',
+      'never',
+      'on-failure',
+      'on_request',
+      'UNTRUSTED',
+      'untrusted ',
+      '',
+    ]) {
+      expect(remoteRefused(['-a', bad]), bad).toContain('-a may only be untrusted');
     }
-    for (const bad of ['danger-full-access', 'workspace_write', 'READ-ONLY', '']) {
-      expect(remoteRefused(['-s', bad]), bad).toContain('-s');
+    for (const bad of [
+      'workspace-write',
+      'danger-full-access',
+      'workspace_write',
+      'READ-ONLY',
+      'read-only ',
+      '',
+    ]) {
+      expect(remoteRefused(['-s', bad]), bad).toContain('-s may only be read-only');
     }
-    expect(remoteRefused(['-a'])).toContain('-a');
-    expect(remoteRefused(['-s'])).toContain('-s');
+    expect(remoteRefused(['-a'])).toContain('-a may only be untrusted');
+    expect(remoteRefused(['-s'])).toContain('-s may only be read-only');
   });
 
   test('resume needs a UUID', () => {
@@ -559,10 +567,20 @@ describe('validateCodexRemoteArgs: the default-deny allowlist', () => {
     expect(remoteOk(['resume', UUID.toUpperCase()]).resumeThreadId).toBe(UUID);
   });
 
+  test('an accepted resume UUID comes out lowercase in the arguments too, whatever case it came in (G5)', () => {
+    expect(remoteOk(['resume', UUID.toUpperCase()]).args).toEqual(['resume', UUID]);
+    expect(remoteOk(['-m', 'x', 'resume', UUID.toUpperCase()]).args).toEqual([
+      '-m',
+      'x',
+      'resume',
+      UUID,
+    ]);
+  });
+
   test('each option at most once', () => {
     expect(remoteRefused(['-m', 'a', '--model', 'b'])).toContain('twice');
-    expect(remoteRefused(['-a', 'untrusted', '-a', 'on-request'])).toContain('twice');
-    expect(remoteRefused(['-s', 'read-only', '-s', 'workspace-write'])).toContain('twice');
+    expect(remoteRefused(['-a', 'untrusted', '-a', 'untrusted'])).toContain('twice');
+    expect(remoteRefused(['-s', 'read-only', '-s', 'read-only'])).toContain('twice');
     expect(remoteRefused(['resume', UUID, 'resume', UUID])).toContain('twice');
   });
 

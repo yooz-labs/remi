@@ -114,7 +114,7 @@ describe('create requests naming a harness (#1179)', () => {
     });
 
     test("arguments with no harness are Claude's, behind a --, with no --harness", () => {
-      expect(spawnArgs({ args: ['--continue'] })).toEqual(['--', '--continue']);
+      expect(spawnArgs({ args: ['--model', 'opus'] })).toEqual(['--', '--model', 'opus']);
       expect(spawnArgs({ args: [] })).toEqual([]);
     });
 
@@ -137,7 +137,7 @@ describe('create requests naming a harness (#1179)', () => {
       expect(spawnArgs({ harness: 'claude' })).toEqual(['--harness', 'claude']);
       fs.rmSync(path.join(dir, 'claude'));
       expect(refusal({ harness: 'claude' })).toContain('claude is not available');
-      expect(spawnArgs({ args: ['--continue'] })).toEqual(['--', '--continue']);
+      expect(spawnArgs({ args: ['--model', 'opus'] })).toEqual(['--', '--model', 'opus']);
     });
 
     test('each harness is held to its own allowlist, and a remi flag is on neither', () => {

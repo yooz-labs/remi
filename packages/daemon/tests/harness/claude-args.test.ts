@@ -1,7 +1,10 @@
 /**
- * The remote argument allowlist for Claude (#1179, #1165 B). Default deny: each
- * allowed form has a case that accepts it (so removing an allowlist entry
- * fails), and every flag the issue names as dangerous has a case that refuses it.
+ * The remote argument allowlist for Claude (#1179, #1165 B, amended by the Phase 5
+ * review, ADR 0033). Default deny: each allowed form has a case that accepts it (so
+ * removing an allowlist entry fails), and every flag the issue names as dangerous has
+ * a case that refuses it. `--continue` is not allowed at all (the launch injects
+ * `--session-id`, which Claude very likely rejects beside it) and `--fork-session`
+ * only beside `--resume <uuid>`.
  */
 
 import { describe, expect, test } from 'bun:test';
@@ -28,16 +31,24 @@ describe('validateClaudeRemoteArgs: what is allowed', () => {
   test('--resume <uuid> and -r <uuid>', () => {
     expect(accepted(['--resume', UUID])).toEqual(['--resume', UUID]);
     expect(accepted(['-r', UUID])).toEqual(['-r', UUID]);
-    expect(accepted(['--resume', UUID.toUpperCase()])).toEqual(['--resume', UUID.toUpperCase()]);
   });
 
-  test('--continue and -c', () => {
-    expect(accepted(['--continue'])).toEqual(['--continue']);
-    expect(accepted(['-c'])).toEqual(['-c']);
+  test('an accepted UUID comes out lowercase, whatever case it came in', () => {
+    expect(accepted(['--resume', UUID.toUpperCase()])).toEqual(['--resume', UUID]);
+    expect(accepted(['-r', UUID.toUpperCase(), '--fork-session'])).toEqual([
+      '-r',
+      UUID,
+      '--fork-session',
+    ]);
   });
 
-  test('--fork-session', () => {
-    expect(accepted(['--fork-session'])).toEqual(['--fork-session']);
+  test('--fork-session beside --resume <uuid>, in either order', () => {
+    expect(accepted(['--resume', UUID, '--fork-session'])).toEqual([
+      '--resume',
+      UUID,
+      '--fork-session',
+    ]);
+    expect(accepted(['--fork-session', '-r', UUID])).toEqual(['--fork-session', '-r', UUID]);
   });
 
   test('--model with a plain model name, bounded to 64 characters', () => {
@@ -79,7 +90,7 @@ describe('validateClaudeRemoteArgs: what is refused', () => {
   ])('%j', (token) => {
     expect(refused([token])).toContain('is not allowed');
     // A refused flag is refused after an allowed one too, and with a value after it.
-    refused(['--continue', token]);
+    refused(['--model', 'opus', token]);
     refused([token, 'value']);
   });
 
@@ -98,19 +109,54 @@ describe('validateClaudeRemoteArgs: what is refused', () => {
     refused(['--model', '../path']);
   });
 
-  test('--resume needs a UUID', () => {
+  test('--resume needs a UUID, and the whole value must be one (both ends are anchored)', () => {
     refused(['--resume']);
     refused(['--resume', 'not-a-uuid']);
     refused(['--resume', `${UUID}-extra`]);
+    refused(['--resume', `${UUID}x`]);
+    refused(['--resume', `x${UUID}`]);
+    refused(['--resume', `-${UUID}`]);
+    refused(['--resume', `${UUID}\n`]);
     refused(['--resume', '--continue']);
     refused(['-r']);
   });
 
+  test('--continue and -c are refused on their own, by name, whatever follows', () => {
+    // Claude's launch injects --session-id, which Claude very likely rejects beside --continue;
+    // unverified, so refused. The message points at what is allowed.
+    for (const flag of ['--continue', '-c']) {
+      expect(refused([flag]), flag).toContain('--resume <uuid>');
+      expect(refused([flag, '--resume', UUID]), flag).toContain('--resume <uuid>');
+      expect(refused(['--resume', UUID, flag]), flag).toContain('--resume <uuid>');
+      expect(refused(['--model', 'opus', flag]), flag).toContain('--resume <uuid>');
+      expect(refused([flag, '--fork-session']), flag).toContain('--resume <uuid>');
+    }
+  });
+
+  test('--fork-session without --resume <uuid> is refused, alone or with other flags, in either order', () => {
+    expect(refused(['--fork-session'])).toContain('--fork-session needs --resume');
+    expect(refused(['--model', 'opus', '--fork-session'])).toContain(
+      '--fork-session needs --resume',
+    );
+    expect(refused(['--fork-session', '--model', 'opus'])).toContain(
+      '--fork-session needs --resume',
+    );
+  });
+
+  test('flag names are matched exactly, never case-folded', () => {
+    for (const flag of ['--RESUME', '--Resume', '-R', '--MODEL', '--Model', '--CONTINUE', '-C']) {
+      expect(refused([flag, UUID]), flag).toContain('is not allowed');
+    }
+    expect(refused(['--resume', UUID, '--FORK-SESSION'])).toContain('is not allowed');
+    expect(refused(['--resume', UUID, '--Fork-Session'])).toContain('is not allowed');
+  });
+
   test('an allowed slot given twice, by either spelling', () => {
-    refused(['--continue', '-c']);
-    refused(['--resume', UUID, '-r', UUID]);
-    refused(['--model', 'a', '--model', 'b']);
-    refused(['--fork-session', '--fork-session']);
+    expect(refused(['--resume', UUID, '-r', UUID])).toContain('given twice');
+    expect(refused(['--model', 'a', '--model', 'b'])).toContain('given twice');
+    expect(refused(['--resume', UUID, '--fork-session', '--fork-session'])).toContain(
+      'given twice',
+    );
   });
 
   test('more than 16 arguments, an argument over 256 characters and NUL are refused by their own checks', () => {
@@ -125,7 +171,7 @@ describe('validateClaudeRemoteArgs: what is refused', () => {
   });
 
   test('anything that is not an array of strings, without throwing', () => {
-    for (const bad of [undefined, null, 'x', 7, {}, { length: 0 }, [1], [null], [['--continue']]]) {
+    for (const bad of [undefined, null, 'x', 7, {}, { length: 0 }, [1], [null], [['--model']]]) {
       expect(() => validateClaudeRemoteArgs(bad)).not.toThrow();
       refused(bad);
     }
