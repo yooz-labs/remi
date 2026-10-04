@@ -31,7 +31,7 @@ bun remove -g remi
 # Start Claude Code with Remi (session persists if terminal closes)
 remi -- claude
 
-# Start Codex with Remi (status only for now, see below)
+# Start Codex with Remi (status and command approvals, see below)
 remi codex
 
 # Detach: Ctrl+B d
@@ -54,13 +54,18 @@ remi attach --host 192.168.1.5 macbook/remi/main
 2. Connect via local network, connection code, or direct address
 3. Monitor and respond to all your agent sessions
 
-### Codex (status only, not yet checked against a real Codex)
+### Codex (status and command approvals, not yet checked against a real Codex)
 
-`remi codex` runs `codex --no-alt-screen` the way `remi` runs Claude Code, and shows the session and what it is doing (working, waiting on an approval, idle) on your phone.
-This is the first step.
-Approvals and turn notifications do not reach the phone yet, so keep answering in the terminal.
+`remi codex` runs `codex --no-alt-screen` the way `remi` runs Claude Code, and shows the session, what it is doing (working, waiting on an approval, idle) and the commands it asks to run on your phone.
+A command approval is a card with the command and Yes, No, and "Yes, for this session" when Codex offers it.
+The phone's answer goes to Codex's app-server, never into the terminal, and Codex decides what it means: remi relays the question, it does not judge the command.
+The first answer wins: answer in the terminal and the card clears on your phone, and a card answered a moment too late is refused.
+Every other kind of request (a file change, extra permissions, a question for you, an MCP prompt, a command that asks for more than itself, anything a subagent asks) shows up as a notice with no answer buttons, so answer it in the terminal.
+Turn notifications do not reach the phone yet.
 A message typed in the app to a Codex session is refused (the app shows it as failed, "type in the terminal") instead of being typed into Codex, because remi cannot see what Codex has on screen.
+The command is in the card and in the push notification (up to 120 characters in the title and 200 in the body), which goes through the signaling Worker and Apple's push service in plaintext, as every card does; a command can contain a secret.
 It has only been tested against a stand-in for Codex's app-server, not against a real Codex install.
+So these are not verified yet: that an answer from the phone closes Codex's own prompt, that the phone's No behaves like Codex's No, and that a dropped connection leaves Codex's prompt answerable in the terminal.
 
 - **Arguments.**
   `-m/--model`, `-a/--ask-for-approval`, `-s/--sandbox`, `--add-dir`, `-i/--image` (not together with `resume`) and `--yolo` pass through; every other Codex flag and every Codex subcommand but `resume` is refused, so run `codex` directly for those.

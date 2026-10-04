@@ -107,15 +107,20 @@ const commandHelp: Record<Subcommand, string[]> = {
     entry('--port PORT', 'Remote daemon port'),
   ],
   codex: [
-    'Start a Codex session with monitoring (status only for now).',
+    'Start a Codex session with monitoring (not yet checked against a real Codex).',
     '',
     dim(
       '  Runs `codex --no-alt-screen` in a terminal session the phone can see: the session and its',
     ),
     dim(
-      '  status (working, waiting, idle) show up. Approvals and turn notifications do not reach the',
+      '  status (working, waiting, idle) show up, and so does a command Codex asks to run: answer',
     ),
-    dim('  phone yet, and a message typed from the phone is refused: type in the terminal.'),
+    dim(
+      '  it from the phone or in the terminal, the first answer wins. Other requests (file changes,',
+    ),
+    dim('  extra permissions, questions) show up as a notice to answer in the terminal.'),
+    dim('  Turn notifications do not reach the phone yet, and a message typed from the phone is'),
+    dim('  refused: type in the terminal.'),
     dim(
       '  remi never starts or stops the shared Codex app-server; if it cannot be reached for 30 s',
     ),
@@ -350,7 +355,7 @@ export function formatHelp(version: string): string {
     '',
     bold('Quick Start:'),
     entry('remi', 'Start Claude with monitoring'),
-    entry('remi codex', 'Start Codex with monitoring (status only for now)'),
+    entry('remi codex', 'Start Codex with monitoring (command approvals reach the phone)'),
     entry('remi ls', 'List running sessions'),
     entry('remi attach [name]', 'Attach to a session (Ctrl+B d to detach)'),
     '',

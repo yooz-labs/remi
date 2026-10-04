@@ -206,13 +206,20 @@ describe('the codex help (#1177)', () => {
     expect(output).toContain('remi codex resume <id>');
   });
 
-  test('remi codex --help says what ships: status only, and what is refused', () => {
+  test('remi codex --help says what ships: status and command approvals, and what is refused', () => {
     const output = plain(formatCommandHelp('codex'));
     expect(output).toContain('remi codex resume <thread id>');
-    expect(output).toContain('status only');
-    expect(output).toContain('Approvals and turn notifications do not reach the');
+    // What ships (#1178) and what is not checked: approvals reach the phone, the first answer wins,
+    // nothing else is answerable from it, and it has not met a real Codex.
+    expect(output).toContain('not yet checked against a real Codex');
+    expect(output).toContain('a command Codex asks to run');
+    expect(output).toContain('the first answer wins');
+    expect(output).toContain('show up as a notice to answer in the terminal');
+    expect(output).toContain('Turn notifications do not reach the phone yet');
+    expect(output).not.toContain('status only');
     // Phone chat is refused for a Codex session (W1), and the 30 s notice is not promised (W18).
-    expect(output).toContain('a message typed from the phone is refused');
+    expect(output).toContain('a message typed from the phone is');
+    expect(output).toContain('refused: type in the terminal');
     expect(output).toContain('type in the terminal');
     expect(output).toContain('some clients, the web client today, do not show it');
     expect(output).not.toMatch(/chat[^.]*reach the\s+phone yet/);
