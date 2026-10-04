@@ -8,7 +8,7 @@
  * alternative number or escape forms are all rejected by one comparison.
  */
 
-import { type Bytes, b64u, be64, concat, fromB64u, own, readBe64 } from './bytes.ts';
+import { type Bytes, b64u, be64, concat, fromB64u, own, readBe64, utf8 } from './bytes.ts';
 import {
   MAX_CONTROL_TEXT,
   MAX_COUNTER,
@@ -50,7 +50,7 @@ function encodeControl(t: ControlType, values: readonly (string | Uint8Array)[])
 
 function decodeControl(frame: unknown, t: ControlType): (string | Bytes)[] {
   if (typeof frame !== 'string') throw new RelayError('TYPE');
-  if (frame.length > MAX_CONTROL_TEXT) throw new RelayError('OVERSIZE');
+  if (utf8(frame).length > MAX_CONTROL_TEXT) throw new RelayError('OVERSIZE');
   let parsed: unknown = null;
   try {
     parsed = JSON.parse(frame);

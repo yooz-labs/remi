@@ -77,6 +77,11 @@ describe('strict control frame decoding', () => {
     expect(codeOfSync(() => r.decodeHello('x'.repeat(r.MAX_CONTROL_TEXT)))).toBe('MALFORMED');
   });
 
+  test('the control limit counts UTF-8 bytes, not characters', () => {
+    expect(codeOfSync(() => r.decodeHello('\u00e9'.repeat(300)))).toBe('OVERSIZE');
+    expect(codeOfSync(() => r.decodeHello('\u00e9'.repeat(256)))).toBe('MALFORMED');
+  });
+
   test('text that is not a JSON object is MALFORMED', () => {
     for (const bad of [
       '',

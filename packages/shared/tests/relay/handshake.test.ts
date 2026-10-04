@@ -551,6 +551,12 @@ describe('handshake, the host checks the client', () => {
     }
   });
 
+  test('a leading byte order mark is part of the name, not stripped', async () => {
+    const bom = text('\ufeffphone');
+    const { p, h1, auth } = await viaHost('pair', 'name bom', authWith(bom));
+    expect((await h1.onAuth(auth, p.policy, NOW + 1)).deviceName).toBe('\ufeffphone');
+  });
+
   test('the client refuses to start with an invalid device name', async () => {
     const p = await makeParts('client name');
     for (const deviceName of ['a'.repeat(65), 'tab\there', 'nul\u0000']) {

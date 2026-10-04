@@ -10,7 +10,8 @@ export const own = (u: Uint8Array): Bytes =>
   u.buffer instanceof ArrayBuffer ? (u as Bytes) : Uint8Array.from(u);
 
 const encoder = new TextEncoder();
-const strictDecoder = new TextDecoder('utf-8', { fatal: true });
+// `ignoreBOM` keeps a leading U+FEFF as the character it is, so decode(encode(x)) is x.
+const strictDecoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 
 export const utf8 = (s: string): Bytes => encoder.encode(s);
 
