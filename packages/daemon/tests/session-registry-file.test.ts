@@ -7,6 +7,7 @@ import {
   type LiveSessionEntry,
   SessionRegistryFile,
   claudeChildLooksAlive,
+  couldBeClaudeEntry,
 } from '../src/session/session-registry-file.ts';
 import { TEST_BIND_HOST, reserveRange } from './session/port-test-helpers.ts';
 
@@ -506,6 +507,46 @@ describe('SessionRegistryFile', () => {
       const b = live.find((e) => e.sessionId === 'b');
       expect(a!.pendingQuestions).toEqual([{ id: 'qa', label: 'A', createdAt: 't' }]);
       expect(b!.pendingQuestions).toBeUndefined();
+    });
+  });
+  describe('harness (#1179)', () => {
+    test('persists through register/listLive, survives a patch, and a Claude entry writes none', () => {
+      registry.register(makeEntry({ sessionId: 'codex-entry', harness: 'codex' }));
+      registry.register(makeEntry({ sessionId: 'claude-entry' }));
+      registry.setClaudeChildPid('codex-entry', process.pid);
+
+      const live = registry.listLive();
+      expect(live.find((e) => e.sessionId === 'codex-entry')?.harness).toBe('codex');
+      expect(live.find((e) => e.sessionId === 'claude-entry')?.harness).toBeUndefined();
+      // The file of a Claude entry has no `harness` key at all: byte-compatible with an older remi's.
+      const raw = JSON.parse(
+        fs.readFileSync(path.join(tmpDir, 'claude-entry.json'), 'utf-8'),
+      ) as Record<string, unknown>;
+      expect('harness' in raw).toBe(false);
+    });
+
+    test('an entry whose harness is not a string is invalid and removed, like any malformed entry', () => {
+      fs.writeFileSync(
+        path.join(tmpDir, 'bad-harness.json'),
+        JSON.stringify({ ...makeEntry({ sessionId: 'bad-harness' }), harness: 5 }),
+      );
+      expect(registry.listLive()).toHaveLength(0);
+      expect(fs.existsSync(path.join(tmpDir, 'bad-harness.json'))).toBe(false);
+    });
+
+    test('a harness this build does not know is a valid entry', () => {
+      registry.register(makeEntry({ sessionId: 'future', harness: 'future-harness' }));
+      expect(registry.listLive().map((e) => e.harness)).toEqual(['future-harness']);
+    });
+
+    test('couldBeClaudeEntry excludes only a known other harness', () => {
+      expect(couldBeClaudeEntry({})).toBe(true);
+      expect(couldBeClaudeEntry({ harness: 'claude' })).toBe(true);
+      expect(couldBeClaudeEntry({ harness: 'codex' })).toBe(false);
+      expect(couldBeClaudeEntry({ harness: 'opencode' })).toBe(false);
+      // The fail-safe the file already uses for a legacy entry: what cannot be disproved counts.
+      expect(couldBeClaudeEntry({ harness: 'future-harness' })).toBe(true);
+      expect(couldBeClaudeEntry({ harness: 'Codex' })).toBe(true);
     });
   });
 });

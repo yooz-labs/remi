@@ -17,6 +17,7 @@
 
 import { afterEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type {
   HelloAckMessage,
   ProtocolMessage,
@@ -33,9 +34,12 @@ import {
 import { commandApprovalRequest, threadStartedFrame } from '../helpers/codex-threads.ts';
 import { collect, installFakeAgents } from '../helpers/fake-agent-clis.ts';
 import { FakeAppServer } from '../helpers/fake-app-server.ts';
+import { reserveRange } from '../session/port-test-helpers.ts';
 import {
+  CLI_TS,
   cleanupHub,
   connectAndHello,
+  isolatedEnv,
   makeIsolatedDirs,
   pollUntil,
   spawnDaemon,
@@ -81,6 +85,40 @@ async function startCodexDaemon(): Promise<Running> {
     20000,
     'the daemon to initialize against the fake app-server',
   );
+  return r;
+}
+
+/** `cli.ts codex` as a wrapper: no terminal (stdin is closed and stdout is a pipe). */
+async function startCodexWrapper(): Promise<Running> {
+  const { home, work } = makeIsolatedDirs();
+  const agents = installFakeAgents(home, { codex: true });
+  const server = FakeAppServer.start();
+  const port = await reserveRange(1, 50, '127.0.0.1');
+  const proc = Bun.spawn(
+    [
+      process.execPath,
+      CLI_TS,
+      'codex',
+      '--port',
+      String(port),
+      '--no-relay',
+      '--no-telegram',
+      '--no-mdns',
+      '--no-auth',
+    ],
+    {
+      cwd: work,
+      env: isolatedEnv(home, { ...agents.env, CODEX_HOME: server.codexHome }),
+      stdin: 'ignore',
+      stdout: 'pipe',
+      stderr: 'pipe',
+    },
+  );
+  const output = { text: '' };
+  collect(proc.stdout, output);
+  collect(proc.stderr, output);
+  const r: Running = { proc, home, work, port, server, output };
+  running.push(r);
   return r;
 }
 
@@ -214,6 +252,25 @@ describe('a Codex daemon on the wire (#1179)', () => {
       expect(client.received.filter(isAck)).toHaveLength(acksBefore);
     } finally {
       client.ws.close();
+    }
+  }, 60000);
+  test('the live-sessions entry names the harness, for a daemon and for a wrapper (the two places cli.ts registers)', async () => {
+    const daemon = await startCodexDaemon();
+    const wrapper = await startCodexWrapper();
+    for (const r of [daemon, wrapper]) {
+      const liveDir = path.join(r.home, '.remi', 'live-sessions');
+      await pollUntil(
+        () => fs.existsSync(liveDir) && fs.readdirSync(liveDir).some((f) => f.endsWith('.json')),
+        20000,
+        'the live-sessions entry',
+      );
+      const file = fs.readdirSync(liveDir).find((f) => f.endsWith('.json')) as string;
+      const entry = JSON.parse(fs.readFileSync(path.join(liveDir, file), 'utf-8')) as {
+        harness?: string;
+        wsPort: number;
+      };
+      expect(entry.harness).toBe('codex');
+      expect(entry.wsPort).toBe(r.port);
     }
   }, 60000);
 });

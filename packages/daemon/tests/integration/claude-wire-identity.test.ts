@@ -246,4 +246,11 @@ describe('a Claude daemon on the wire (#1179)', () => {
       second?.ws.close();
     }
   }, 40000);
+  test("the daemon's live-sessions entry names no harness, as before (a Claude entry is byte-compatible with an older remi's)", async () => {
+    const d = await daemon();
+    const liveDir = path.join(d.home, '.remi', 'live-sessions');
+    const file = fs.readdirSync(liveDir).find((f) => f.endsWith('.json')) as string;
+    const entry = JSON.parse(fs.readFileSync(path.join(liveDir, file), 'utf-8')) as object;
+    expect('harness' in entry).toBe(false);
+  }, 40000);
 });

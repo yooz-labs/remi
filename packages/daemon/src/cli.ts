@@ -1844,6 +1844,14 @@ const claudeHarness = new ClaudeHarness(transcriptDiscovery, {
   sessionNotifiers,
 });
 
+/**
+ * The `harness` of this daemon's live-sessions entry (#1179): absent for Claude, so a Claude
+ * entry stays byte-identical to what an older remi wrote and reads (ADR 0032), named for any other.
+ */
+function liveEntryHarness(): { harness?: HarnessId } {
+  return harnessId === 'claude' ? {} : { harness: harnessId };
+}
+
 // The older-daemon gate (#1165 D): the live remi processes that would erase a Codex identity.
 // The Codex launch reads it before it writes a record, and the hub before it spawns a Codex child.
 const legacyWriters = () =>
@@ -2614,6 +2622,7 @@ if (cliDaemonMode) {
       name: path.basename(workingDirectory),
       startedAt: new Date().toISOString(),
       version: REMI_VERSION,
+      ...liveEntryHarness(),
     });
 
     // Create the PTY session. A hub's child gets its harness's arguments from after `--`
@@ -2840,6 +2849,7 @@ if (cliDaemonMode) {
       name: path.basename(workingDirectory),
       startedAt: new Date().toISOString(),
       version: REMI_VERSION,
+      ...liveEntryHarness(),
     });
 
     // Notify attached clients when a new dist/remi build replaces this binary

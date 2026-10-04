@@ -10,7 +10,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { DAEMON_BASE_PORT, DAEMON_PORT_RANGE, errorToString } from '@remi/shared';
+import { DAEMON_BASE_PORT, DAEMON_PORT_RANGE, errorToString, isHarnessId } from '@remi/shared';
 import { normalizeProjectPath } from '../cli/path-resolver.ts';
 import { remiHome } from '../config/remi-home.ts';
 import { findAvailableTcpPort } from './port-utils.ts';
@@ -41,6 +41,14 @@ export interface LiveSessionEntry {
   readonly projectPath: string;
   readonly name: string;
   readonly startedAt: string;
+  /**
+   * The harness this daemon hosts (#1179). Absent means Claude, exactly as in `sessions.json`
+   * (ADR 0032): a Claude daemon writes no `harness`, so its entry stays byte-identical to the one
+   * an older remi wrote and reads. A string, not `HarnessId`, so an entry that names a harness this
+   * build does not know still reads. The Claude-only readers go through
+   * {@link couldBeClaudeEntry}.
+   */
+  readonly harness?: string;
   /**
    * OS pid of the spawned `claude` child, recorded once the PTY starts.
    * Absent on legacy entries and during the pre-spawn registration window.
@@ -87,6 +95,20 @@ export function claudeChildLooksAlive(entry: LiveSessionEntry): boolean {
   return isProcessAlive(entry.claudeChildPid);
 }
 
+/**
+ * Whether a registry entry could be a Claude session (#1179). The Claude-only readers (the
+ * transcript binder's sibling and port checks, the foreign-session escalator) must not count a
+ * daemon that hosts Codex: it can own no Claude transcript, so counting it makes a Claude session
+ * sharing a directory with `remi codex` take the conservative path for nothing.
+ *
+ * Only an entry that names a KNOWN other harness is excluded. Absent, `claude`, and a harness this
+ * build does not know all count, the fail-safe the file already uses for a legacy entry
+ * (`claudeChildLooksAlive`): a guard that cannot be disproved stays up.
+ */
+export function couldBeClaudeEntry(entry: Pick<LiveSessionEntry, 'harness'>): boolean {
+  return !isHarnessId(entry.harness) || entry.harness === 'claude';
+}
+
 /** Default port range for auto-selection (single source of truth in @remi/shared). */
 export const DEFAULT_BASE_PORT = DAEMON_BASE_PORT;
 export const DEFAULT_PORT_RANGE = DAEMON_PORT_RANGE;
@@ -113,6 +135,8 @@ function isValidEntry(data: unknown): data is LiveSessionEntry {
     (typeof childPid === 'number' && Number.isInteger(childPid) && childPid > 0);
   const childExited = obj['claudeChildExited'];
   const childExitedOk = childExited === undefined || typeof childExited === 'boolean';
+  const harness = obj['harness'];
+  const harnessOk = harness === undefined || typeof harness === 'string';
   const pendingQuestions = obj['pendingQuestions'];
   const pendingQuestionsOk =
     pendingQuestions === undefined ||
@@ -127,6 +151,7 @@ function isValidEntry(data: unknown): data is LiveSessionEntry {
     obj['wsPort'] <= 65535 &&
     childPidOk &&
     childExitedOk &&
+    harnessOk &&
     pendingQuestionsOk
   );
 }
