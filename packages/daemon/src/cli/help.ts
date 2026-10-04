@@ -367,7 +367,7 @@ export function formatHelp(version: string): string {
     entry('--local', 'Localhost-only mode'),
     entry('--auth / --no-auth', 'Authentication control'),
     entry('--no-relay', 'Keep the relay off (off unless network.relay = true)'),
-    entry('--permanent-code', 'Fixed relay code (needs --auth; turns the relay on)'),
+    entry('--permanent-code', 'Fixed relay code (needs auth on; turns the relay on)'),
     '',
     entry('--no-mdns', 'Disable mDNS advertising'),
     entry('--no-tofu', 'Reject unknown clients'),

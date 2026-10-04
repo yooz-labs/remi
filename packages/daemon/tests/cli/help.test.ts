@@ -223,9 +223,9 @@ describe('relay wording', () => {
     }
   });
 
-  test('--permanent-code says it needs --auth and turns the relay on', () => {
+  test('--permanent-code says it needs auth and turns the relay on', () => {
     process.env['NO_COLOR'] = '1';
-    expect(formatHelp('0.0.0')).toContain('needs --auth; turns the relay on');
+    expect(formatHelp('0.0.0')).toContain('needs auth on; turns the relay on');
   });
 
   test('`remi code` no longer claims the web or mobile app uses the code', () => {
