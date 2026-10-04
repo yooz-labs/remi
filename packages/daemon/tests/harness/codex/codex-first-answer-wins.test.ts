@@ -509,20 +509,6 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
     expect(pending(r).every((q) => r.session.decisions.isHeld(q.id))).toBe(true);
   });
 
-  test("the main thread's waiting flag is a hold with no card, and clears with the flag", async () => {
-    const r = await attached();
-    expect(r.session.decisions.hasMainHold()).toBe(false);
-    r.server.emit(
-      threadStatusFrame(r.tuiId, { type: 'active', activeFlags: ['waitingOnApproval'] }),
-      { broadcast: true },
-    );
-    await until(() => r.session.decisions.hasMainHold(), 'the hold');
-    r.server.emit(threadStatusFrame(r.tuiId, { type: 'active', activeFlags: [] }), {
-      broadcast: true,
-    });
-    await until(() => !r.session.decisions.hasMainHold(), 'the hold to clear');
-  });
-
   test('disposing the session dismisses its cards, and nothing is answered afterwards', async () => {
     const r = await attached();
     r.server.request(commandApprovalRequest(r.tuiId, 'touch at-exit'), r.tuiId);

@@ -65,7 +65,6 @@ import {
   requestThreadId,
   responseFor,
 } from './approval-cards.ts';
-import type { ThreadStatus } from './thread-protocol.ts';
 
 export type ThreadRole = 'main' | 'subagent';
 
@@ -90,8 +89,6 @@ type EntryState = 'live' | 'answered' | 'retired';
 interface Entry {
   spec: PendingRequestSpec;
   state: EntryState;
-  /** A request of the main thread (a subagent's is never actionable). */
-  main: boolean;
 }
 
 const REPLAY_WINDOW_MS = 1500;
@@ -105,8 +102,6 @@ const logId = (id: RequestId): string => String(id).slice(0, 24);
 export class CodexDecisions implements DecisionChannel {
   private readonly byKey = new Map<string, Entry>();
   private readonly byId = new Map<UUID, Entry>();
-  /** The main thread's last status had a flag: Codex is waiting on someone, whether or not a card exists. */
-  private mainWaiting = false;
   private sweepTimer: ReturnType<typeof setTimeout> | undefined;
   private disposed = false;
 
@@ -140,7 +135,7 @@ export class CodexDecisions implements DecisionChannel {
     // A retired card is dismissed in favor of the replayed one; an answered one has no card left.
     if (existing !== undefined) this.forget(existing, existing.state === 'retired', 'replaced');
 
-    const entry: Entry = { spec, state: 'live', main: role === 'main' };
+    const entry: Entry = { spec, state: 'live' };
     this.track(entry);
     try {
       this.deps.present(spec.question);
@@ -163,12 +158,6 @@ export class CodexDecisions implements DecisionChannel {
     if (entry === undefined) return;
     // Our own answer already removed its card; anyone else's answer dismisses it, for every client.
     this.forget(entry, entry.state !== 'answered', 'codex:resolved');
-  }
-
-  /** A status of the tracked thread or a subagent; only the main thread's flags count. */
-  handleStatus(threadId: string, status: ThreadStatus): void {
-    if (this.deps.threadRole(threadId) !== 'main') return;
-    this.mainWaiting = status.type === 'active' && status.activeFlags.length > 0;
   }
 
   /** The link dropped: no card can be answered now, and none is dismissed until the replay says. */
@@ -254,14 +243,15 @@ export class CodexDecisions implements DecisionChannel {
     return entry?.state === 'live' && entry.spec.actionable;
   }
 
+  // The chat guard and Stop read these two, and neither can reach a Codex session: phone chat is
+  // refused earlier (`acceptsTypedChat`) and a Stop force-closes (`gracefulExitInput` is null). A
+  // typed chat path (phase 6) adds what it needs; nothing here pretends to know more.
   hasMainHold(): boolean {
-    return (
-      this.mainWaiting || [...this.byId.values()].some((e) => e.main && e.state !== 'answered')
-    );
+    return false;
   }
 
   hasOpenHookPrompt(): boolean {
-    return this.hasMainHold() || [...this.byId.values()].some((e) => e.state !== 'answered');
+    return false;
   }
 
   /** The app-server's `serverRequest/resolved` is authoritative; an Escape sent through remi needs nothing here. */
@@ -276,7 +266,6 @@ export class CodexDecisions implements DecisionChannel {
       this.forget(entry, shown, 'codex:released');
       if (shown) resolved += 1;
     }
-    this.mainWaiting = false;
     if (resolved > 0) this.deps.log(`released ${resolved} card(s): ${reason}`);
     return { resolved };
   }

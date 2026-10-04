@@ -39,7 +39,6 @@ import {
   type CodexDecisionsDeps,
   type ThreadRole,
 } from '../../../src/harness/codex/codex-decisions.ts';
-import type { ThreadStatus } from '../../../src/harness/codex/thread-protocol.ts';
 import type { HeldAnswer } from '../../../src/harness/decision.ts';
 import type { DecisionChannel } from '../../../src/harness/types.ts';
 import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
@@ -260,7 +259,8 @@ describe('CodexDecisions', () => {
       presentThrows = true;
       request(5);
       expect(pending()).toEqual([]);
-      expect(decisions.hasOpenHookPrompt()).toBe(false);
+      // Nothing is tracked: there is no card for a release to dismiss.
+      expect(decisions.forceRelease('probe')).toEqual({ resolved: 0 });
       expect(responses).toEqual([]);
       expect(logs.some((l) => l.includes('could not show the card'))).toBe(true);
     });
@@ -377,7 +377,7 @@ describe('CodexDecisions', () => {
       expect(decisions.answerHeld(q.id, { kind: 'cancel' })).toBe('closed');
       expect(responses).toEqual([]);
       // Forgotten: it is nothing any more, and a later answer is closed too.
-      expect(decisions.hasOpenHookPrompt()).toBe(false);
+      expect(decisions.forceRelease('probe')).toEqual({ resolved: 0 });
       expect(decisions.answerHeld(q.id, { kind: 'cancel' })).toBe('closed');
     });
 
@@ -493,7 +493,7 @@ describe('CodexDecisions', () => {
       expect(logs.some((l) => l.includes('could not remove a card (Error)'))).toBe(true);
       expect(logs.some((l) => l.includes('could not tell the clients (Error)'))).toBe(true);
       expect(logs.join('\n')).not.toContain('registry down');
-      expect(failing.hasOpenHookPrompt()).toBe(false);
+      expect(failing.forceRelease('probe')).toEqual({ resolved: 0 });
     });
   });
 
@@ -504,7 +504,6 @@ describe('CodexDecisions', () => {
       decisions.handleDisconnected();
       expect(decisions.isHeld(q.id)).toBe(false);
       expect(pending()).toHaveLength(1);
-      expect(decisions.hasOpenHookPrompt()).toBe(true);
       // Even if the link were up again, the old card is never answered.
       expect(decisions.answerHeld(q.id, optionNamed(q, 'Yes'))).toBe('closed');
       expect(decisions.answerHeld(q.id, { kind: 'cancel' })).toBe('closed');
@@ -599,7 +598,8 @@ describe('CodexDecisions', () => {
       decisions.handleReattached();
       await sleep(200);
       expect(resolvedMessages()).toEqual([]);
-      expect(decisions.hasOpenHookPrompt()).toBe(false);
+      // Nothing is tracked for it any more.
+      expect(decisions.forceRelease('probe')).toEqual({ resolved: 0 });
       // The request is still pending on a re-attach (our answer was lost): it is a new card.
       request(5);
       expect(cards()).toHaveLength(2);
@@ -627,40 +627,25 @@ describe('CodexDecisions', () => {
   });
 
   describe('what the session reads from it', () => {
-    test('isHeld is a live actionable card; hasMainHold is a main-thread request or a flag; hasOpenHookPrompt adds any other card', () => {
-      expect(decisions.hasMainHold()).toBe(false);
-      expect(decisions.hasOpenHookPrompt()).toBe(false);
+    test('isHeld is a live actionable card, and only that', () => {
+      expect(decisions.isHeld(crypto.randomUUID() as UUID)).toBe(false);
       request(5, 'touch sub', SUB);
       const sub = only();
       expect(decisions.isHeld(sub.id)).toBe(false);
-      expect(decisions.hasMainHold()).toBe(false);
-      expect(decisions.hasOpenHookPrompt()).toBe(true);
       request(6);
       const main = pending().find((q) => q.id !== sub.id) as Question;
       expect(decisions.isHeld(main.id)).toBe(true);
-      expect(decisions.hasMainHold()).toBe(true);
-      expect(decisions.isHeld(crypto.randomUUID() as UUID)).toBe(false);
       // Answered: nothing is waiting on the phone any more.
       decisions.answerHeld(main.id, optionNamed(main, 'Yes'));
       expect(decisions.isHeld(main.id)).toBe(false);
-      expect(decisions.hasMainHold()).toBe(false);
-      decisions.handleResolved({ threadId: SUB, requestId: 5 });
-      expect(decisions.hasOpenHookPrompt()).toBe(false);
     });
 
-    test("the main thread's waiting flags count as a hold with no card; a subagent's, another thread's and a cleared flag do not", () => {
-      const waiting: ThreadStatus = { type: 'active', activeFlags: ['waitingOnApproval'] };
-      decisions.handleStatus(SUB, waiting);
-      decisions.handleStatus(STRANGER, waiting);
+    test('the chat guard and Stop read nothing held, whatever is shown: phone chat is refused earlier and a Stop force-closes', () => {
+      request(5);
+      request(6, 'touch sub', SUB);
+      expect(pending()).toHaveLength(2);
       expect(decisions.hasMainHold()).toBe(false);
-      decisions.handleStatus(MAIN, waiting);
-      expect(decisions.hasMainHold()).toBe(true);
-      expect(decisions.hasOpenHookPrompt()).toBe(true);
-      decisions.handleStatus(MAIN, { type: 'active', activeFlags: [] });
-      expect(decisions.hasMainHold()).toBe(false);
-      decisions.handleStatus(MAIN, waiting);
-      decisions.handleStatus(MAIN, { type: 'idle' });
-      expect(decisions.hasMainHold()).toBe(false);
+      expect(decisions.hasOpenHookPrompt()).toBe(false);
     });
 
     test('an Escape sent through remi changes nothing: only the app-server says a request is over', () => {
@@ -691,14 +676,12 @@ describe('CodexDecisions', () => {
       expect(decisions.answerHeld(answered.id, optionNamed(answered, 'Yes'))).toBe('resolved');
       // The answer handler removes the card it answered.
       registry.removeQuestion(sessionId, answered.id);
-      decisions.handleStatus(MAIN, { type: 'active', activeFlags: ['waitingOnApproval'] });
       // Two retired (5, 6) and one live (8) are shown; the answered one (7) is not.
       expect(decisions.forceRelease('remi unstick')).toEqual({ resolved: 3 });
       expect(pending()).toEqual([]);
       expect(resolvedMessages().every((m) => m.reason === 'cancelled')).toBe(true);
       expect(resolvedMessages()).toHaveLength(3);
       expect(responses).toHaveLength(1);
-      expect(decisions.hasMainHold()).toBe(false);
       expect(decisions.forceRelease('again')).toEqual({ resolved: 0 });
     });
 

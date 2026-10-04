@@ -460,7 +460,6 @@ export function createCodexSession(
       // Only an active thread counts, so only an active one is kept.
       if (status.type === 'active') statuses.set(threadId, status);
       else statuses.delete(threadId);
-      decisions.handleStatus(threadId, status);
       publish();
     },
     onAttached: () => decisions.handleReattached(),
