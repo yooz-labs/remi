@@ -18,9 +18,9 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { HarnessId, UUID } from '@remi/shared';
-import { createCreateSessionResponse, createHelloAck } from '@remi/shared';
+import { createCreateSessionResponse, createError, createHelloAck } from '@remi/shared';
 import { WebSocketAdapter } from '../../src/adapters/websocket-adapter.ts';
-import { createRemoteSession } from '../../src/cli/remote-new-client.ts';
+import { createRemoteSession, runRemoteNew } from '../../src/cli/remote-new-client.ts';
 import type { CreateSessionExtra } from '../../src/server/client-message-events.ts';
 import { reserveRange } from '../session/port-test-helpers.ts';
 
@@ -35,6 +35,10 @@ describe('createRemoteSession sends a harness only to a daemon that offers it (#
   let offered: readonly HarnessId[] | undefined;
   /** What the daemon says its success does not (#1179); undefined sends none. */
   let notice: string | undefined;
+  /** When set the daemon refuses the request with this text, as a failed `create_session_response`. */
+  let failure: string | undefined;
+  /** When set the daemon answers the request with a protocol `error` message of this text instead. */
+  let protocolError: string | undefined;
   let requests: Array<{ directory: string | undefined; extra: CreateSessionExtra | undefined }>;
 
   beforeAll(async () => {
@@ -50,9 +54,15 @@ describe('createRemoteSession sends a harness only to a daemon that offers it (#
         },
         onCreateSessionRequest: (connectionId, directory, requestId, extra) => {
           requests.push({ directory, extra });
+          if (protocolError !== undefined) {
+            adapter.sendRaw(connectionId, createError('SOME_CODE', protocolError));
+            return;
+          }
           adapter.sendRaw(
             connectionId,
-            createCreateSessionResponse(true, requestId, SESSION, undefined, port, notice),
+            failure !== undefined
+              ? createCreateSessionResponse(false, requestId, undefined, failure)
+              : createCreateSessionResponse(true, requestId, SESSION, undefined, port, notice),
           );
         },
       },
@@ -68,6 +78,8 @@ describe('createRemoteSession sends a harness only to a daemon that offers it (#
     requests = [];
     offered = undefined;
     notice = undefined;
+    failure = undefined;
+    protocolError = undefined;
     stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-remote-new-'));
     savedHome = process.env['REMI_HOME'];
     process.env['REMI_HOME'] = stateDir;
@@ -131,5 +143,81 @@ describe('createRemoteSession sends a harness only to a daemon that offers it (#
     offered = undefined;
     await create();
     expect(requests).toEqual([{ directory: '/work/project', extra: undefined }]);
+  });
+
+  test('text the daemon supplies is shown escaped: a failure, a protocol error and a notice cannot act on the terminal (G10)', async () => {
+    offered = ['codex'];
+    // ESC (a terminal sequence) and U+202E (a right-to-left override) are what the daemon could send.
+    const hostile = 'x\u001b[2K\u001b]52;c;eA==\u0007y\u202ez';
+    const shown = 'x\\u001B[2K\\u001B]52;c;eA==\\u0007y\\u202Ez';
+
+    failure = hostile;
+    const refused = await create('codex').catch((error: Error) => error.message);
+    expect(refused).toBe(`Failed to create session: ${shown}`);
+
+    failure = undefined;
+    protocolError = hostile;
+    const errored = await create('codex').catch((error: Error) => error.message);
+    expect(errored).toBe(`Daemon error: ${shown}`);
+
+    protocolError = undefined;
+    notice = hostile;
+    expect((await create('codex')).notice).toBe(shown);
+  });
+
+  describe('runRemoteNew prints what the hub said, then attaches (G11)', () => {
+    const NOTICE_TEXT = [
+      'Codex was started without a terminal; it may be waiting at an Update or Trust prompt.',
+      'If it does not respond, `remi attach <host>:1234/55555555` shows it.',
+    ].join('\n');
+
+    async function run(harness: HarnessId | undefined) {
+      const lines: string[] = [];
+      const attached: unknown[] = [];
+      const result = await runRemoteNew(
+        { host: 'localhost', port, directory: '/work/project', timeout: 5000, harness },
+        {
+          attach: async (options) => {
+            attached.push(options);
+            return { exitCode: 7 };
+          },
+          err: (line) => lines.push(line),
+        },
+      );
+      return { lines, attached, result };
+    }
+
+    test('the CLI is the attach, so it prints the condition only, not the remedy it is already doing', async () => {
+      offered = ['codex'];
+      notice = NOTICE_TEXT;
+      const { lines, attached, result } = await run('codex');
+      expect(lines).toEqual([
+        `Creating session on localhost:${port}...`,
+        'Session created: 55555555',
+        'Codex was started without a terminal; it may be waiting at an Update or Trust prompt.',
+        'Attaching...',
+      ]);
+      expect(lines.join('\n')).not.toContain('remi attach');
+      expect(attached).toEqual([{ host: 'localhost', port, sessionId: SESSION }]);
+      expect(result).toEqual({ exitCode: 7 });
+    });
+
+    test('the printed condition is escaped too', async () => {
+      offered = ['codex'];
+      notice = 'bad\u001b[2Ktext\nsecond line';
+      const { lines } = await run('codex');
+      expect(lines).toContain('bad\\u001B[2Ktext');
+      expect(lines.join('\n')).not.toContain('\u001b');
+    });
+
+    test('no notice, nothing extra is printed', async () => {
+      offered = ['claude'];
+      const { lines } = await run('claude');
+      expect(lines).toEqual([
+        `Creating session on localhost:${port}...`,
+        'Session created: 55555555',
+        'Attaching...',
+      ]);
+    });
   });
 });

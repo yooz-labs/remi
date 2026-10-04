@@ -115,6 +115,24 @@ describe('a daemon starts its harness with the arguments after -- (#1179)', () =
     expect(fs.existsSync(path.join(r.home, '.remi', 'sessions.json'))).toBe(false);
   }, 60000);
 
+  test.each([
+    ['a loose Codex flag', ['--harness', 'codex', '-m', 'x']],
+    ['a loose word', ['--harness', 'codex', 'stray']],
+    ['a loose word before the arguments', ['--harness', 'codex', 'stray', '--', '-m', 'x']],
+  ])(
+    'a Codex daemon with %s ends with exit 2 and starts nothing (G3)',
+    async (_name, extraArgs) => {
+      // Until Phase 5 `remi codex --daemon` refused any argument; one that is not after `--` is
+      // still an error and not silently ignored, which would start Codex without what was asked.
+      const r = await startDaemon(extraArgs);
+      expect(await r.proc.exited).toBe(2);
+      expect(r.output.text).toContain('after `--`');
+      expect(fs.existsSync(path.join(r.agents.codexDir, 'argv'))).toBe(false);
+      expect(fs.existsSync(path.join(r.home, '.remi', 'sessions.json'))).toBe(false);
+    },
+    60000,
+  );
+
   test('a Codex daemon with no arguments after -- starts exactly as it did before', async () => {
     const r = await startDaemon(['--harness', 'codex']);
     expect(await argvOf(r.agents.codexDir, r)).toEqual(['--no-alt-screen']);

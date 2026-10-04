@@ -445,9 +445,46 @@ describe('the CLI creating a session on a hub (#1179)', () => {
       'some-model',
     ]);
     expect(await waitForArgv(r.agents.codexDir)).toEqual(['--no-alt-screen', '-m', 'some-model']);
-    // What the hub said about readiness reaches the person at the CLI.
-    await pollUntil(() => output.text.includes('remi attach'), 10000, 'the notice on stderr');
+    // What the hub said about readiness reaches the person at the CLI: the condition only. The CLI
+    // attaches itself, so the remedy (`remi attach`, which the notice's second line names) is
+    // already being done and is not repeated (G11).
+    await pollUntil(
+      () => output.text.includes('Update or Trust prompt'),
+      10000,
+      'the notice on stderr',
+    );
+    expect(output.text).not.toContain('remi attach');
   }, 90000);
+
+  test.each([
+    ['Codex flags with no -- before them', ['codex', '-s', 'read-only']],
+    ['a Codex resume with no --', ['codex', 'resume', '01950000-0000-7000-8000-0000000000aa']],
+    ['Claude flags with no -- before them', ['new', '--model', 'sonnet']],
+  ])(
+    '%s are refused by the CLI with exit 2, and nothing is sent (G2)',
+    async (_name, words) => {
+      const r = await startHub({ claude: true, codex: true });
+      const { proc, output } = runCli(r, [
+        ...words,
+        '--host',
+        'localhost',
+        '--port',
+        String(r.hub.port),
+        '--dir',
+        r.hub.work,
+      ]);
+      expect(await proc.exited).toBe(2);
+      expect(output.text).toContain('go after `--`');
+      // Each loose word is named, so the person sees what was not sent.
+      for (const word of words.slice(1)) expect(output.text).toContain(word);
+      expect(output.text).not.toContain('Creating session');
+      expect(r.log.text).not.toContain('Create session request');
+      expect(childEntries(r)).toEqual([]);
+      expect(fs.existsSync(path.join(r.agents.codexDir, 'argv'))).toBe(false);
+      expect(fs.existsSync(path.join(r.agents.claudeDir, 'argv'))).toBe(false);
+    },
+    60000,
+  );
 
   test('remi new --host --harness codex is the same request', async () => {
     const r = await startHub({ codex: true });

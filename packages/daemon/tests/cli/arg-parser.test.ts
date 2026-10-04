@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { parseArgs, parseHostPath } from '../../src/cli/arg-parser.ts';
+import { looseArgs, parseArgs, parseHostPath } from '../../src/cli/arg-parser.ts';
 
 describe('parseArgs', () => {
   // -------------------------------------------------------------------------
@@ -1029,5 +1029,40 @@ describe('parseArgs - remi codex and --harness (#1177)', () => {
       expect(r.harness).toBe('claude');
       expect(r.explicitArgs).toEqual(['--model', 'opus']);
     });
+  });
+});
+
+describe('looseArgs: the words that are neither remi flags nor after a -- (#1179 review, G2, G3)', () => {
+  test('a Codex flag with no -- before it is loose, in order, whatever the subcommand', () => {
+    expect(looseArgs(parseArgs(['codex', '--host', 'h', '-s', 'read-only']))).toEqual([
+      '-s',
+      'read-only',
+    ]);
+    expect(looseArgs(parseArgs(['--daemon', '--harness', 'codex', '-m', 'x']))).toEqual([
+      '-m',
+      'x',
+    ]);
+    expect(looseArgs(parseArgs(['new', '--host', 'h', '--model', 'sonnet']))).toEqual([
+      '--model',
+      'sonnet',
+    ]);
+  });
+
+  test('what follows a -- is not loose: it is the arguments, kept apart', () => {
+    expect(looseArgs(parseArgs(['codex', '--host', 'h', '--', '-s', 'read-only']))).toEqual([]);
+    expect(looseArgs(parseArgs(['--daemon', '--', '--model', 'opus']))).toEqual([]);
+  });
+
+  test('a loose word before a -- is still loose, and only that word', () => {
+    expect(looseArgs(parseArgs(['codex', 'stray', '--host', 'h', '--', '-m', 'x']))).toEqual([
+      'stray',
+    ]);
+  });
+
+  test('no words at all, and remi flags alone, are loose-free', () => {
+    expect(looseArgs(parseArgs(['codex', '--host', 'h', '--port', '9', '--dir', '/tmp']))).toEqual(
+      [],
+    );
+    expect(looseArgs(parseArgs([]))).toEqual([]);
   });
 });
