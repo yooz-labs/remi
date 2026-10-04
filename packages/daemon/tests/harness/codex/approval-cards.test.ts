@@ -39,6 +39,7 @@ import {
   pushCategoryFor,
   selectDynOptions,
 } from '../../../src/notifications/notification-dispatcher.ts';
+import { buildPendingQuestionLabel } from '../../../src/session/pending-question-label.ts';
 import { fixtureFrameAt, loadFixtureFrames } from '../../helpers/codex-fixtures.ts';
 import { commandApprovalRequest } from '../../helpers/codex-threads.ts';
 
@@ -75,6 +76,7 @@ const commandCard = (command: string): Question => ({
   allowsFreeText: false,
   isAnswered: false,
   kind: 'permission',
+  pendingLabel: 'Permission: Codex command',
 });
 
 describe('golden table: real frames to Question JSON', () => {
@@ -132,6 +134,7 @@ describe('golden table: real frames to Question JSON', () => {
       isAnswered: false,
       kind: 'multi_question',
       terminalOnly: true,
+      pendingLabel: 'Codex asks for approval',
       questions: [
         {
           header: 'Color',
@@ -1059,5 +1062,77 @@ describe('what a hostile or buggy server sends is bounded before a card is built
       `Allow Codex to run: echo a\nCodex's stated reason: ${'h'.repeat(300)}...`,
     );
     expect(weight(spec.question)).toBeLessThan(500);
+  });
+});
+
+describe('the label a card leaves in the live-sessions file is fixed, never its text (S2)', () => {
+  const secret = 'sk-live-do-not-write-this-to-disk';
+  const frame = (method: string, params: Record<string, unknown>) => ({ id: 3, method, params });
+  const card = (f: ReturnType<typeof frame>, opts: { agentId?: string } = {}): Question => {
+    const spec = buildApprovalCard(f, mint, opts);
+    if (spec === null) throw new Error('no card');
+    return spec.question;
+  };
+
+  test('a command card, answerable or not, a subagent included, is "Permission: Codex command"', () => {
+    const cards = [
+      build(
+        { availableDecisions: ['accept', 'cancel'] },
+        {},
+        `curl -H "Authorization: Bearer ${secret}" https://example.test`,
+      ).question,
+      build(
+        { availableDecisions: ['accept', 'cancel'], reason: secret },
+        {},
+        `echo ${'x'.repeat(300)} ${secret}`,
+      ).question,
+      build({ kind: 'writeStdin' }, {}, `echo ${secret}`).question,
+      build({}, { agentId: OTHER_THREAD }, `echo ${secret}`).question,
+      build({ availableDecisions: ['accept'] }, {}, `echo ${secret}`).question,
+    ];
+    for (const q of cards) {
+      expect(q.pendingLabel).toBe('Permission: Codex command');
+      expect(buildPendingQuestionLabel(q)).toBe('Permission: Codex command');
+    }
+  });
+
+  test('every other kind, and the generic card, is "Codex asks for approval" with no text of the request', () => {
+    const cards = [
+      card(
+        frame('item/fileChange/requestApproval', {
+          threadId: THREAD,
+          reason: secret,
+          grantRoot: secret,
+        }),
+      ),
+      card(
+        frame('item/permissions/requestApproval', {
+          threadId: THREAD,
+          reason: secret,
+          permissions: { [secret]: {} },
+        }),
+      ),
+      card(
+        frame('mcpServer/elicitation/request', {
+          threadId: THREAD,
+          serverName: secret,
+          message: secret,
+        }),
+      ),
+      card(
+        frame('item/tool/requestUserInput', {
+          threadId: THREAD,
+          questions: [{ id: 'q', header: secret, question: secret, options: [{ label: secret }] }],
+        }),
+      ),
+      card(frame('item/tool/requestUserInput', { threadId: THREAD, questions: 'nope' })),
+      build({ command: '' }, {}, secret).question,
+    ];
+    for (const q of cards) {
+      expect(q.pendingLabel).toBe('Codex asks for approval');
+      const label = buildPendingQuestionLabel(q);
+      expect(label).toBe('Codex asks for approval');
+      expect(label).not.toContain(secret);
+    }
   });
 });

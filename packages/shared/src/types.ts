@@ -292,6 +292,15 @@ export interface Question {
   readonly held?: boolean | undefined;
 
   /**
+   * A fixed label for the places that keep only a flat label of a pending question: the
+   * live-sessions registry file (`pendingQuestions`), the hub census and the macOS menu-bar
+   * notifications (#1178). Set by a harness whose card text must not leave memory: a Codex card's
+   * text is the command Codex asks to run, and it would otherwise be written to disk as the
+   * label. When set, `buildPendingQuestionLabel` returns it as it is. Daemon-side; clients ignore it.
+   */
+  readonly pendingLabel?: string | undefined;
+
+  /**
    * The untruncated signature a human answer was recorded under as session
    * precedent (#990, ADR 0015). Historical: precedent and the code that read
    * this field were removed with the auto-approve judgment.

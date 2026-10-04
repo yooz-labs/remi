@@ -1035,6 +1035,58 @@ describe('remi codex approvals (daemon, black-box characterization, #1178)', () 
     }
   }, 60000);
 
+  test('a pending card leaves a fixed label in the live-sessions file, never the command or the question text (S2)', async () => {
+    const a = await attachedDaemon();
+    try {
+      const secret = 'sk-live-do-not-write-this-to-disk';
+      a.r.server.request(
+        commandApprovalRequest(
+          a.tuiId,
+          `curl -H "Authorization: Bearer ${secret}" https://example.test`,
+        ),
+        a.tuiId,
+      );
+      a.r.server.request(
+        {
+          method: 'item/tool/requestUserInput',
+          params: {
+            threadId: a.tuiId,
+            questions: [
+              {
+                id: 'q1',
+                header: secret,
+                question: `Use ${secret}?`,
+                options: [{ label: secret }],
+              },
+            ],
+          },
+        },
+        a.tuiId,
+      );
+      await pollUntil(() => cards(a.received).length === 2, 10000, 'both cards');
+      const liveDir = path.join(a.r.home, '.remi', 'live-sessions');
+      const files = (): string[] =>
+        fs.existsSync(liveDir)
+          ? fs.readdirSync(liveDir).map((f) => read(path.join(liveDir, f)))
+          : [];
+      // The registry file mirrors the pending cards (their ids and labels) as they come and go.
+      await pollUntil(
+        () => files().some((text) => text.includes('Permission: Codex command')),
+        10000,
+        'the pending labels in the live-sessions file',
+      );
+      const text = files().join('\n');
+      expect(text).toContain('Codex asks for approval');
+      expect(text).not.toContain(secret);
+      expect(text).not.toContain('curl');
+      // The cards themselves, for the phone, do carry the text: the person must see it.
+      expect(JSON.stringify(cards(a.received).map((m) => m.question.text))).toContain(secret);
+      await rawControl(a);
+    } finally {
+      a.ws.close();
+    }
+  }, 60000);
+
   test('remi unstick (SIGUSR2) dismisses an open card on every client, answers nothing and types nothing', async () => {
     const a = await attachedDaemon();
     try {

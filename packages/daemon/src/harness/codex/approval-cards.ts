@@ -76,6 +76,14 @@ const REASON_MAX = 300;
 const GENERIC_ASK = 'Codex is asking for approval; answer it in the terminal';
 
 /**
+ * What the live-sessions file, the hub census and the menu-bar notifications show of a card
+ * (`Question.pendingLabel`): a fixed phrase, because the card's text is the command Codex asks to
+ * run, or text the server chose, and none of it belongs in a file on disk.
+ */
+const COMMAND_LABEL = 'Permission: Codex command';
+const OTHER_LABEL = 'Codex asks for approval';
+
+/**
  * Bounds on what the server chooses. A frame may be 32 MiB, and a card goes to every client, into
  * the replay history and through the relay, so a hostile MCP server's message must not become a
  * multi-megabyte card. A cut says how much it hid, and is made before escaping so it never lands
@@ -163,6 +171,7 @@ function terminalOnly(
   ask: string,
   extra: Partial<Question> = {},
   note = true,
+  pendingLabel = OTHER_LABEL,
 ): PendingRequestSpec {
   const who = c.agentId === undefined ? '' : 'Subagent · ';
   return {
@@ -178,6 +187,7 @@ function terminalOnly(
       isAnswered: false,
       kind: 'permission',
       terminalOnly: true,
+      pendingLabel,
       ...(c.agentId === undefined ? {} : { agentId: c.agentId }),
       ...extra,
     },
@@ -199,6 +209,9 @@ function commandCard(c: Context): PendingRequestSpec {
     return terminalOnly(
       c,
       `Codex asks to run a command too long to show (${asked.length} characters)`,
+      {},
+      true,
+      COMMAND_LABEL,
     );
   }
   const listed = listedDecisions(params['availableDecisions']);
@@ -219,7 +232,7 @@ function commandCard(c: Context): PendingRequestSpec {
       ? 'decline'
       : null;
   if (!(plain && yes && noDecision !== null) || c.agentId !== undefined) {
-    return terminalOnly(c, `Codex asks to run: ${command}`);
+    return terminalOnly(c, `Codex asks to run: ${command}`, {}, true, COMMAND_LABEL);
   }
 
   const options = [
@@ -257,6 +270,7 @@ function commandCard(c: Context): PendingRequestSpec {
       allowsFreeText: false,
       isAnswered: false,
       kind: 'permission',
+      pendingLabel: COMMAND_LABEL,
       ...(shown === command ? {} : { detail: command }),
     },
     responses: new Map(options.map((o) => [o.value, { decision: o.value }])),
