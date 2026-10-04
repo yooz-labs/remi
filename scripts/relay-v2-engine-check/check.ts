@@ -152,16 +152,17 @@ async function jwkPair(scalar: Uint8Array): Promise<r.EcPair> {
   return { publicKey: unhex(`04${pad32(x)}${pad32(y)}`), privateKey };
 }
 
-/** A signer that returns a recorded signature for a known signing input, verifying it first. */
+/**
+ * A signer that returns a recorded signature for a known signing input. It does not verify it:
+ * the peer's own verification does, and the check also verifies the file's host signature and
+ * the admission signatures directly.
+ */
 function recordedSigner(publicKey: Uint8Array, table: Map<string, string>): r.Signer {
   return {
     publicKey,
     sign: async (message) => {
       const recorded = table.get(hex(message));
       if (!recorded) throw new Error('a signing input that is not in the vector file');
-      if (!(await r.verifySignature(publicKey, message, unhex(recorded)))) {
-        throw new Error('a recorded signature that does not verify on this engine');
-      }
       return unhex(recorded);
     },
   };

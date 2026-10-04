@@ -162,27 +162,43 @@ describe('production keys come from the engine', () => {
 });
 
 describe('identity keys are checked and kept non-extractable', () => {
-  /** Record the calls to importKey and delegate to the real one. */
-  async function recordingImports<T>(
-    fn: () => Promise<T>,
-  ): Promise<{ value: T; imports: { format: string; extractable: boolean }[] }> {
+  /** Record importKey and Ed25519 sign calls, delegating to the real functions. */
+  async function recording<T>(fn: () => Promise<T>): Promise<{
+    value: T;
+    imports: { format: string; extractable: boolean }[];
+    signingKeysExtractable: boolean[];
+  }> {
     const imports: { format: string; extractable: boolean }[] = [];
-    const real = crypto.subtle.importKey.bind(crypto.subtle);
+    const signingKeysExtractable: boolean[] = [];
+    const realImport = crypto.subtle.importKey.bind(crypto.subtle);
+    const realSign = crypto.subtle.sign.bind(crypto.subtle);
     crypto.subtle.importKey = ((...args: unknown[]) => {
       imports.push({ format: args[0] as string, extractable: args[3] as boolean });
-      return (real as (...a: unknown[]) => Promise<CryptoKey>)(...args);
+      return (realImport as (...a: unknown[]) => Promise<CryptoKey>)(...args);
     }) as typeof crypto.subtle.importKey;
+    crypto.subtle.sign = ((...args: unknown[]) => {
+      if (args[0] === 'Ed25519') signingKeysExtractable.push((args[1] as CryptoKey).extractable);
+      return (realSign as (...a: unknown[]) => Promise<ArrayBuffer>)(...args);
+    }) as typeof crypto.subtle.sign;
     try {
-      return { value: await fn(), imports };
+      return { value: await fn(), imports, signingKeysExtractable };
     } finally {
-      crypto.subtle.importKey = real;
+      crypto.subtle.importKey = realImport;
+      crypto.subtle.sign = realSign;
     }
   }
 
-  test('generateIdentity keeps the in-memory signing key non-extractable: one non-extractable pkcs8 import', async () => {
-    const { value, imports } = await recordingImports(generateIdentity);
+  test('generateIdentity keeps the in-memory signing key non-extractable: one non-extractable pkcs8 import, and that key is the one that signs', async () => {
+    const { value, imports, signingKeysExtractable } = await recording(async () => {
+      const made = await generateIdentity();
+      await made.signer.sign(text('after construction'));
+      return made;
+    });
     const pkcs8Imports = imports.filter((i) => i.format === 'pkcs8');
     expect(pkcs8Imports).toEqual([{ format: 'pkcs8', extractable: false }]);
+    // The self-check and the later signature both used a non-extractable key.
+    expect(signingKeysExtractable.length).toBeGreaterThanOrEqual(2);
+    expect(signingKeysExtractable.every((extractable) => extractable === false)).toBe(true);
     // The returned bytes are what to persist: they import again and sign the same way.
     const key = await crypto.subtle.importKey('pkcs8', value.pkcs8, 'Ed25519', false, ['sign']);
     const message = text('persisted');
