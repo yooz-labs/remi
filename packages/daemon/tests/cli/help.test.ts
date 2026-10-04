@@ -232,12 +232,16 @@ describe('the codex help (#1177)', () => {
     expect(output).toContain('a command Codex asks to run');
     expect(output).toContain('the first answer wins');
     expect(output).toContain('show up as a notice to answer in the terminal');
-    expect(output).toContain('Turn notifications do not reach the phone yet');
+    // Turns are pushed and the history is shown read-only (#1180), both not yet run against a real Codex.
+    expect(output).not.toContain('Turn notifications do not reach the phone yet');
+    expect(output).toContain('A finished turn and a failed one are pushed to the phone');
+    expect(output).toContain('the session history is shown');
+    expect(output).toContain(
+      'read-only (turn pushes and history: not run against a real Codex yet)',
+    );
     expect(output).not.toContain('status only');
     // Phone chat is refused for a Codex session (W1), and the 30 s notice is not promised (W18).
-    expect(output).toContain('a message typed from the phone is');
-    expect(output).toContain('refused: type in the terminal');
-    expect(output).toContain('type in the terminal');
+    expect(output).toContain('A message typed from the phone is refused: type in the terminal');
     expect(output).toContain('some clients, the web client today, do not show it');
     expect(output).not.toMatch(/chat[^.]*reach the\s+phone yet/);
     expect(output).toContain('-i/--image cannot be combined with resume');
