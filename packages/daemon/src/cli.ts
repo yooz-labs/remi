@@ -737,8 +737,9 @@ if (cliShowSessions) {
   } else {
     for (const s of sessions) {
       const status = s.exitedAt ? `exited (${s.exitCode})` : 'running';
-      // The harness's own id, labeled with its harness: `claude:<8>` for a
-      // Claude record, `codex:<8>` for a Codex one (#1176). A Claude record
+      // The harness's own id, labeled with its harness: `claude:<first 8>` for a
+      // Claude record, `codex:<last 8>` for a Codex one (#1176; a Codex thread id
+      // is a UUIDv7, whose first eight characters are a timestamp). A Claude record
       // with no id yet prints no label, as it always did; a record of another
       // harness with none prints `<harness>:-`, so it never reads as an
       // id-less Claude one.

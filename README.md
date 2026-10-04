@@ -54,40 +54,50 @@ remi attach --host 192.168.1.5 macbook/remi/main
 2. Connect via local network, connection code, or direct address
 3. Monitor and respond to all your agent sessions
 
-### Codex (status and command approvals, not yet checked against a real Codex)
+### Codex (status and command approvals; checked live against Codex 0.160.0 on 2026-10-04, except subagents and the daemon's cold start)
 
 `remi codex` runs `codex --no-alt-screen` the way `remi` runs Claude Code, and shows the session, what it is doing (working, waiting on an approval, idle) and the commands it asks to run on your phone.
-A command approval is a card with the command, the directory it runs in when that is not the session's, and Yes, No, and "Yes, and don't ask again for this command this session" when Codex offers it.
+A command approval is a card with the command, the directory it runs in when that is not the session's, and Yes and No (Codex's own No), and "Yes, and don't ask again for this command this session" if Codex ever offers it.
+Codex shows the command as `/bin/zsh -lc '<command>'`, so the shell wrapper counts toward the cut below.
 A command longer than 120 characters is shown with its middle cut, the way Claude's cards show it, and the whole command is in the card's detail; a card with a detail (a cut command, or one that runs in another directory) has no lock-screen buttons, so Yes needs the app.
 A command for which Codex does not say where it runs gets a card with no answer buttons, so answer it in the terminal.
 The phone's answer goes to Codex's app-server, never into the terminal, and Codex decides what it means: remi relays the question, it does not judge the command.
+The phone's No is Codex's own No: Codex declines the command, does not run it and ends the turn ("Conversation interrupted").
 The first answer wins: answer in the terminal and the card clears on your phone, and a card answered a moment too late is refused.
 A card has no deadline: it stays answerable for as long as Codex keeps the request waiting, and if Codex has not confirmed an answer after 10 seconds you are told to check the terminal.
 Every other kind of request (a file change, extra permissions, a question for you, an MCP prompt, a command that asks for more than itself, anything a subagent asks) shows up as a notice with no answer buttons, so answer it in the terminal; its button reads "Dismiss (answer in the terminal)" and only clears the card from your phone.
+With Codex's "Approve for me" mode (the status line reads "Read Only (Approve for me)"), Codex's own reviewer approves a command automatically and sends no approval request to any client, so remi shows nothing and cannot answer for it.
 Text Codex chooses (a command, a reason, a question) is shown with control, invisible and bidirectional characters made visible (`\uXXXX`, or `\u{XXXXX}` for the Tags block; the list is in ADR 0033, phase 4 amendment) and long values cut with a note of how much is hidden.
 Turn notifications do not reach the phone yet.
 A message typed in the app to a Codex session is refused (the app shows it as failed, "type in the terminal") instead of being typed into Codex, because remi cannot see what Codex has on screen.
 The command is in the card and in the push notification (the ask, up to 120 characters in the title and 200 in the body), which goes through the signaling Worker and Apple's push service in plaintext, as every card does; a command can contain a secret.
 The relay and the Worker carry the whole card, so a command up to 20000 characters, in plaintext until the relay's end-to-end encryption engages by default (#881).
-The card's command and directory are kept in memory only: the live-sessions file, the hub's session list and the menu-bar app show a fixed label ("Permission: Codex command"), and the remi log carries lengths, never the command, the directory or a full thread id.
+The card's command and directory are kept in memory only: the live-sessions file, the hub's session list and the menu-bar app show a fixed label ("Permission: Codex command"), and the remi log carries lengths, never the command, the directory, or a thread id beyond its last eight characters (a thread id is a UUIDv7, whose first eight characters are a timestamp that two threads created within about a minute share).
 Whenever remi starts following a new Codex thread (a `/new` in the terminal, or another `codex` window in the same directory), the session says so, and approvals then come from the new thread.
-It has only been tested against a stand-in for Codex's app-server, not against a real Codex install.
-So these are not verified yet:
-(a) that an answer from the phone runs the command and closes Codex's own prompt;
-(b) that answering in the terminal first clears the phone's card;
-(c) that the phone's No behaves like Codex's No, and whether it also interrupts the turn;
-(d) that a dropped connection (even a killed remi) leaves Codex's prompt up and answerable in the terminal, and does not cancel the request;
-(e) that remi's clean-up at exit is harmless to Codex;
-(f) that Codex accepts "don't ask again for this command this session" and remembers it;
-(g) that an interrupt, an Esc in the terminal or a finished turn clears the card (Codex has to report the request resolved);
-(h) that a subagent's request reaches remi at all;
-(i) that Codex keeps a pending request across a dropped client and sends it again, as the stand-in does;
-(j) that a plain `codex` window in the same directory re-binds an idle session;
-(k) that Codex's directory for a command run in the session's directory equals its realpath (otherwise every card shows "In directory" and has no lock-screen buttons), and that Codex always sends one.
+A `kill -9` of remi also ends your Codex window (Codex gets a hangup when remi's terminal closes, as Claude does), while a pending approval stays pending in Codex's app-server.
+
+**Checked live** (against the real Codex 0.160.0, on 2026-10-04, by a spike agent):
+(a) a phone Yes ran the command and Codex's prompt closed, and both phone clients were told the card was answered;
+(b) answering in the terminal first told every phone client the card was canceled, and a late phone Yes was refused by remi itself (that Codex ignores a late answer was not re-tested; the spike covers it);
+(c) the phone's No sends `cancel`, which Codex lists among the decisions it offers: the item is declined, the turn is interrupted and the command does not run, exactly as for the terminal's No;
+(d) a dropped connection does not cancel or decline a pending approval: after a `kill -9` of a probe and of remi itself, Codex's prompt stayed up and the same request was sent again to the next connection, and answering it in the terminal produced the resolved notice;
+(g) an Esc in the terminal on an approval, `turn/interrupt` and an RPC `cancel` each make Codex report the request resolved, and the card is dismissed;
+(i) a pending request survives a dropped connection, even remi and the terminal together, and is sent again with the same id;
+(j) a plain `codex` window in the same directory re-binds an idle remi session, and the phone was told;
+(k) Codex reports the real path as a command's directory, even when it was started from a symlinked path, so a session's own directory shows no "In directory" line and keeps Yes and No;
+(e) remi sends no `thread/unsubscribe` anywhere (it only closes its socket at exit), so a normal exit leaves the thread loaded; a `thread/unsubscribe` sent by a probe was harmless;
+the handshake of remi's own client works against the real server (`initialize` answered in 2 ms, the 101 response carries `x-codex-websocket-max-unfragmented-message-bytes: 16777216`, `optOutNotificationMethods` is accepted and effective, `thread/loaded/list` and `server/diagnostics` are answered), and `thread/started` for the terminal's thread arrives within a second of the start.
+The first live run found that Codex answers every WebSocket ping with two pongs, which dropped remi's link about every 70 seconds; that is fixed and tested.
+
+**Not yet seen:**
+(h) whether a subagent's request is addressed to a connection that resumed only the main thread, and replayed;
+(f) what Codex does with "Yes, and don't ask again for this command this session": none of 7 real command approvals on 0.160.0 listed `acceptForSession` (they offered accept, one amendment object and cancel), so the option does not appear in practice;
+Codex's daemon starting itself on a cold start (remi never starts it), `remi codex -- exec x` and `-- login`, and a `/resume` in the terminal of a thread the daemon has not loaded.
+A plain window and a remi-spawned one are indistinguishable in `thread/started`, and `originator` is one value for the whole daemon, set by whichever client initialized first: after remi initialized first, later threads made in the terminal read the originator "remi".
 
 - **Arguments.**
-  `-m/--model`, `-a/--ask-for-approval`, `-s/--sandbox`, `--add-dir`, `-i/--image` (not together with `resume`) and `--yolo` pass through; every other Codex flag and every Codex subcommand but `resume` is refused, so run `codex` directly for those.
-  Everything after `--` is the first prompt, as text, never a flag.
+  `-m/--model`, `-a/--ask-for-approval`, `-s/--sandbox`, `--add-dir`, `-i/--image` (not together with `resume`: Codex's own parser then takes `resume` and the id as image paths and starts a fresh session, which was seen live) and `--yolo` pass through; every other Codex flag and every Codex subcommand but `resume` is refused, so run `codex` directly for those.
+  Everything after `--` is the first prompt, as text, never a flag (checked live with the words `help` and `completion bash`; `exec` and `login` after `--` were not run).
   Remi's own flags (`-h`, `--help`, `-v`, `--version`, `--dir`, `--port`, `--resume` and the rest) are remi's wherever they stand before `--`, so a Codex flag with the same name cannot be passed through remi.
 - **Resume.**
   `remi codex resume <thread id>` takes the whole thread id, which `remi --sessions` prints under each exited Codex session.
@@ -98,7 +108,7 @@ So these are not verified yet:
   Remi connects only to a control directory that only you can use (mode 700, owned by you), and checks that just before it connects, not along the whole path above it, so a directory someone else can swap in between the check and the connection is not covered.
 - **Which thread is yours.**
   Remi picks its session's Codex thread by directory and start time, and a new thread says nothing about which window it is for.
-  So with two or more Codex windows in one directory: two started together bind neither; a `/new` in one of two remi sessions there is followed by neither (each says so once); a remi session that has no thread yet and is under a minute old keeps another one in that directory from binding a new thread (the message says to restart one of them); and a plain `codex` window opened there while a remi session is idle looks the same as `/new` and may take the binding over (the remi log says "rotated").
+  So with two or more Codex windows in one directory: two started together bind neither; a `/new` in one of two remi sessions there is followed by neither (each says so once); a remi session that has no thread yet and is under a minute old keeps another one in that directory from binding a new thread (the message says to restart one of them); and a plain `codex` window opened there while a remi session is idle looks the same as `/new` and takes the binding over (seen live; the remi log says "rotated" and the session tells you).
   Switching threads with `/resume` inside Codex is not followed.
   One directory per Codex window avoids all of it.
 - **An older remi erases Codex session ids.**

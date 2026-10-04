@@ -132,7 +132,7 @@ describe('resolveStoredSession(sessions, query, { harness })', () => {
     }
 
     expect(error).toBeInstanceOf(SessionHarnessMismatchError);
-    // The whole thread id, which `remi codex resume` needs and `--sessions` cuts to eight characters.
+    // The whole thread id, which `remi codex resume` needs and `--sessions` shortens to its last eight characters.
     expect((error as SessionHarnessMismatchError).message).toBe(
       `this session ran under codex; resume it with \`remi codex resume ${THREAD_ID}\``,
     );

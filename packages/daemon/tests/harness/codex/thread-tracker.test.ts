@@ -954,7 +954,7 @@ describe('status', () => {
 });
 
 describe('what it logs, and after dispose', () => {
-  test('thread ids are logged cut to eight characters, and no other thread appears in a log', async () => {
+  test('thread ids are logged as their last eight characters, and no other thread appears in a log', async () => {
     const ctx = await setup();
     const id = crypto.randomUUID();
     const helper = crypto.randomUUID();
