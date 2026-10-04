@@ -998,6 +998,45 @@ describe('CodexHarness', () => {
       expect(logs.some((l) => l.includes('could not record the thread id'))).toBe(false);
     });
 
+    test('a store that refuses over a different duplicate is a failed write, not a claim, and the thread binds once it is fixed (R9)', async () => {
+      // The store refuses a write while ANY thread has two active holders. That is no reason to
+      // call the free thread claimed: it is logged as what it is and the thread stays bindable.
+      class BlindStore extends SessionStore {
+        override list(): StoredSession[] {
+          return [];
+        }
+      }
+      const server = startServer();
+      const created = create(
+        buildDeps(server, { sessionStore: new BlindStore(path.join(tmpDir, 'sessions.json')) }),
+      );
+      await created.session.start();
+      await until(() => server.clientIds().length === 1, 'the connection');
+      const file = path.join(tmpDir, 'sessions.json');
+      const rows = JSON.parse(fs.readFileSync(file, 'utf8')) as { sessions: StoredSession[] };
+      const other = crypto.randomUUID();
+      const withDuplicate = [
+        ...rows.sessions,
+        record({ harnessSessionId: other, projectPath: tmpDir }),
+        record({ harnessSessionId: other, projectPath: tmpDir }),
+      ];
+      fs.writeFileSync(file, JSON.stringify({ ...rows, sessions: withDuplicate }));
+
+      const free = crypto.randomUUID();
+      const frame = threadStartedFrame('tui', { id: free, cwd: workDir, createdAtSec: nowSec() });
+      server.emit(frame, { broadcast: true });
+      await until(() => logs.some((l) => l.includes('could not record the thread id')), 'the log');
+      expect(logs.some((l) => l.includes('is claimed by another session'))).toBe(false);
+      expect(logs.some((l) => l.includes(other.slice(0, 8)))).toBe(true);
+
+      fs.writeFileSync(file, JSON.stringify({ ...rows, sessions: rows.sessions }));
+      server.emit(frame, { broadcast: true });
+      await until(
+        () => bindingStore.getIdentity(created.sessionId)?.harnessSessionId === free,
+        'the thread to bind once the store is fixed',
+      );
+    });
+
     test('a Claude record, an exited record and a thread this very session holds do not claim', async () => {
       const { server, sessionId } = await startedSession();
       const id = crypto.randomUUID();

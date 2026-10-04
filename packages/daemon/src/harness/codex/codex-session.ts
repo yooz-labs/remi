@@ -409,8 +409,14 @@ export function createCodexSession(
       try {
         deps.bindingStore.updateHarnessIdentity(sessionId, 'codex', threadId);
       } catch (error) {
-        // Another session took the thread between the tracker's check and this write.
-        if (error instanceof AmbiguousSessionIdentityError) throw new ThreadClaimedError(threadId);
+        if (error instanceof AmbiguousSessionIdentityError) {
+          // Another session took THIS thread between the tracker's check and this write. A refusal
+          // over some other thread's two holders is the store's trouble, not a claim on this one.
+          if (error.identity === 'codex' && error.value === threadId) {
+            throw new ThreadClaimedError(threadId);
+          }
+          log(`the store refused the write over another record: ${error.message}`);
+        }
         throw error;
       }
       // What the old thread's descendants were doing says nothing about the new one. On a
