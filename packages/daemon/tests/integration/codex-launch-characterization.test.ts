@@ -704,6 +704,15 @@ describe('remi codex launch (wrapper and refusals, #1177)', () => {
     expect(r.output.text).toContain('codex');
   }, 40000);
 
+  test("a Claude launch that fails after boot keeps its own path: Codex's stderr message is not added to it (W7)", async () => {
+    // Same failure as above (no such command on the PATH), for `remi` itself. Before the W7 fix
+    // this exited 1 with nothing but the auth banner on stderr, and the fix is Codex's alone.
+    const r = await startWrapper([], null, { withCodex: false });
+    const code = await Promise.race([r.proc.exited, Bun.sleep(20000).then(() => 'timeout')]);
+    expect(code).toBe(1);
+    expect(r.output.text).not.toContain('Failed to create session');
+  }, 40000);
+
   test('a store that already holds one thread twice is refused on stderr with exit 1, after boot (W7)', async () => {
     const sleeper = Bun.spawn(['/bin/sleep', '60'], { stdout: 'ignore', stderr: 'ignore' });
     sleepers.push(sleeper);
