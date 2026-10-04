@@ -31,12 +31,16 @@ import type {
   QuestionMessage,
   QuestionResolvedMessage,
   SessionUpdateMessage,
+  TranscriptContentMessage,
+  TranscriptLoadCompleteMessage,
 } from '@remi/shared/protocol.ts';
 import {
   PROMPT_WAITING_ERROR_CODE,
   createAnswer,
   createAuqAnswer,
   createCancelQuestion,
+  createRegisterDeviceToken,
+  createTranscriptLoadRequest,
   createUserInput,
   serialize,
 } from '@remi/shared/protocol.ts';
@@ -45,10 +49,17 @@ import { olderRemiNotice } from '../../src/harness/codex/codex-session.ts';
 import { IDENTITY_SHIM_MIN_VERSION } from '../../src/session/legacy-writers.ts';
 import {
   type Json,
+  agentMessageItem,
   commandApprovalRequest,
   fileChangeRequest,
+  itemCompletedFrame,
+  itemsListPage,
+  realItem,
   threadStartedFrame,
   threadStatusFrame,
+  turnCompletedFrame,
+  turnError,
+  userMessageItem,
 } from '../helpers/codex-threads.ts';
 import { FakeAppServer } from '../helpers/fake-app-server.ts';
 import { hasUnsafeText } from '../helpers/unsafe-text.ts';
@@ -161,13 +172,13 @@ function makeFakes(
   };
 }
 
-/** `cli.ts --daemon --harness codex`, with the fake `codex` and a fake app-server. */
-async function startDaemon(): Promise<Running> {
+/** `cli.ts --daemon --harness codex`, with the fake `codex` and a fake app-server; `extraArgs` follow `--harness codex`. */
+async function startDaemon(extraArgs: readonly string[] = []): Promise<Running> {
   const { home, work } = makeIsolatedDirs();
   const { fakeDir, env } = makeFakes(home);
   const server = FakeAppServer.start();
   const overrides = { ...env, CODEX_HOME: server.codexHome };
-  const spawned = await spawnDaemon(home, work, overrides, ['--harness', 'codex']);
+  const spawned = await spawnDaemon(home, work, overrides, ['--harness', 'codex', ...extraArgs]);
   const output = { text: '' };
   collect(spawned.proc.stdout, output);
   collect(spawned.proc.stderr, output);
@@ -1158,6 +1169,278 @@ describe('remi codex approvals (daemon, black-box characterization, #1178)', () 
       expect(a.r.output.text).not.toContain('e2e file change');
 
       await rawControl(a);
+    } finally {
+      a.ws.close();
+    }
+  }, 90000);
+});
+
+describe('remi codex turns and chat (daemon, black-box characterization, #1180)', () => {
+  /** What the daemon POSTed to the push endpoint, in order. */
+  interface Push {
+    token?: string;
+    title?: string;
+    body?: string;
+    kind?: string;
+    questionId?: string;
+    dismiss?: boolean;
+    sessionId?: string;
+  }
+
+  interface Attached {
+    r: Running;
+    tuiId: string;
+    ws: WebSocket;
+    received: ProtocolMessage[];
+    sessionId: string;
+    pushes: Push[];
+  }
+
+  const stubs: Array<{ stop: (closeActiveConnections?: boolean) => Promise<void> }> = [];
+  afterEach(async () => {
+    for (const stub of stubs.splice(0)) await stub.stop(true);
+  });
+
+  /**
+   * A daemon whose session is attached to the TUI's thread, whose push endpoint is a local HTTP
+   * stand-in that records what it is sent, and a phone connected to it with a device registered.
+   */
+  async function attachedDaemon(): Promise<Attached> {
+    const pushes: Push[] = [];
+    const stub = Bun.serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      fetch: async (req) => {
+        if (new URL(req.url).pathname === '/push') pushes.push((await req.json()) as Push);
+        return new Response('{"ok":true}', { headers: { 'content-type': 'application/json' } });
+      },
+    });
+    stubs.push(stub);
+    const r = await startDaemon(['--signaling-url', `http://127.0.0.1:${stub.port}`]);
+    await waitForFakeCodex(r);
+    await waitForAppServerClient(r);
+    const tuiId = crypto.randomUUID();
+    r.server.emit(
+      threadStartedFrame('tui', {
+        id: tuiId,
+        cwd: fs.realpathSync(r.work),
+        createdAtSec: Math.floor(Date.now() / 1000),
+      }),
+      { broadcast: true },
+    );
+    r.server.createRollout(tuiId);
+    await pollUntil(
+      () => r.output.text.includes(`attached to thread ${tuiId.slice(-8)}`),
+      10000,
+      'the attach',
+    );
+    const { ws, received } = await connectAndHello(r.port);
+    const sessionId = (
+      received.find((m): m is HelloAckMessage => m.type === 'hello_ack') as HelloAckMessage
+    ).sessionId as string;
+    ws.send(serialize(createRegisterDeviceToken('e2e-device-token', 'ios')));
+    await pollUntil(
+      () => r.output.text.includes('Device token registered'),
+      10000,
+      'the device token to register',
+    );
+    return { r, tuiId, ws, received, sessionId, pushes };
+  }
+
+  const pushed = (a: Attached, kind: string): Push[] => a.pushes.filter((p) => p.kind === kind);
+  const transcripts = (received: ProtocolMessage[]): TranscriptContentMessage[] =>
+    received.filter((m): m is TranscriptContentMessage => m.type === 'transcript_content');
+
+  test('a finished turn becomes a push through the daemon’s sink: long ones push, short ones do not, a failure says Codex stopped, and an interrupted turn clears it', async () => {
+    const a = await attachedDaemon();
+    try {
+      // A short turn first (the real frame's 5.5 seconds is under the 60-second default), then a
+      // long one: frames reach the daemon in order, so the one push proves the short one was seen.
+      a.r.server.emit(turnCompletedFrame(a.tuiId), { threadId: a.tuiId });
+      a.r.server.emit(
+        turnCompletedFrame(a.tuiId, {
+          durationMs: 120_000,
+          items: [agentMessageItem('m-long', 'E2E-ANSWER-TEXT', 'final_answer')],
+        }),
+        { threadId: a.tuiId },
+      );
+      await pollUntil(
+        () => pushed(a, 'turn_complete').length >= 1,
+        10000,
+        'the turn_complete push',
+      );
+
+      expect(pushed(a, 'turn_complete')).toHaveLength(1);
+      const done = pushed(a, 'turn_complete')[0] as Push;
+      expect(done.token).toBe('e2e-device-token');
+      expect(done.title?.endsWith(': turn complete')).toBe(true);
+      expect(done.body).toBe('E2E-ANSWER-TEXT');
+      // Dismiss-only, like Claude's: nothing to answer, no card.
+      expect(done.questionId).toBeUndefined();
+
+      // A failed turn: "Codex stopped", the code, Codex's own words, one collapse key per session.
+      a.r.server.emit(
+        turnCompletedFrame(a.tuiId, {
+          status: 'failed',
+          items: [],
+          error: turnError('E2E-LIMIT-TEXT', 'usageLimitExceeded'),
+        }),
+        { threadId: a.tuiId },
+      );
+      await pollUntil(() => pushed(a, 'turn_failed').length >= 1, 10000, 'the turn_failed push');
+      const failed = pushed(a, 'turn_failed')[0] as Push;
+      expect(failed.title?.endsWith(': Codex stopped')).toBe(true);
+      expect(failed.body).toBe('usageLimitExceeded. E2E-LIMIT-TEXT');
+      expect(failed.questionId).toBe(`turn-failed-${a.sessionId}`);
+
+      // An interrupted turn clears the notice with a quiet dismissal on the same key, and pushes nothing else.
+      a.r.server.emit(turnCompletedFrame(a.tuiId, { status: 'interrupted', items: [] }), {
+        threadId: a.tuiId,
+      });
+      await pollUntil(() => pushed(a, 'dismiss').length >= 1, 10000, 'the dismissal');
+      const cleared = pushed(a, 'dismiss')[0] as Push;
+      expect(cleared.questionId).toBe(`turn-failed-${a.sessionId}`);
+      expect(cleared.dismiss).toBe(true);
+      expect(a.pushes.map((p) => p.kind)).toEqual(['turn_complete', 'turn_failed', 'dismiss']);
+
+      // What a turn said is in the push the person asked for, never in the daemon's log.
+      expect(a.r.output.text).not.toContain('E2E-ANSWER-TEXT');
+      expect(a.r.output.text).not.toContain('E2E-LIMIT-TEXT');
+      expect(a.r.output.text).not.toContain(a.tuiId);
+    } finally {
+      a.ws.close();
+    }
+  }, 90000);
+
+  test('another window’s turn and a subagent’s are not this session’s: no push', async () => {
+    const a = await attachedDaemon();
+    try {
+      a.r.server.emit(turnCompletedFrame(crypto.randomUUID(), { durationMs: 120_000 }), {
+        broadcast: true,
+      });
+      a.r.server.emit(turnCompletedFrame(a.tuiId, { durationMs: 121_000 }), { threadId: a.tuiId });
+      await pollUntil(() => a.pushes.length >= 1, 10000, 'the push of the session’s own turn');
+
+      expect(a.pushes.map((p) => p.kind)).toEqual(['turn_complete']);
+    } finally {
+      a.ws.close();
+    }
+  }, 90000);
+
+  test('a transcript load request is answered from the app-server: the history oldest first, a page at a time, then the load completes', async () => {
+    const a = await attachedDaemon();
+    try {
+      const requested: Json[] = [];
+      a.r.server.onRequest('thread/items/list', (params) => {
+        requested.push(params as Json);
+        const cursor = (params as { cursor?: string }).cursor;
+        return cursor === undefined
+          ? itemsListPage(
+              [
+                { item: userMessageItem('e2e-u1', 'E2E-FIRST-PROMPT') },
+                { item: realItem('commandExecution', { aggregatedOutput: 'E2E-OUTPUT' }) },
+              ],
+              'page-2',
+            )
+          : itemsListPage(
+              [
+                { item: agentMessageItem('e2e-a1', 'E2E-ANSWER', 'final_answer') },
+                { item: { type: 'reasoning', id: 'e2e-r1', summary: ['hmm'], content: [] } },
+              ],
+              null,
+            );
+      });
+      const before = a.received.length;
+
+      a.ws.send(serialize(createTranscriptLoadRequest(a.sessionId)));
+      await pollUntil(
+        () => a.received.some((m) => m.type === 'transcript_load_complete'),
+        10000,
+        'the load to complete',
+      );
+
+      const fresh = a.received.slice(before);
+      const entries = transcripts(fresh);
+      expect(entries.map((m) => [m.entryUuid, m.role])).toEqual([
+        ['e2e-u1', 'user'],
+        ['exec-00000000-0000-7000-8000-000000000004', 'assistant'],
+        ['e2e-a1', 'assistant'],
+      ]);
+      expect(entries[0]?.content).toBe('E2E-FIRST-PROMPT');
+      expect(entries[1]?.tools).toEqual(['shell']);
+      expect(entries[2]?.content).toBe('E2E-ANSWER');
+      // History goes to the one who asked and then completes with the count and the session id.
+      const complete = fresh.find(
+        (m): m is TranscriptLoadCompleteMessage => m.type === 'transcript_load_complete',
+      ) as TranscriptLoadCompleteMessage;
+      expect(complete.messageCount).toBe(3);
+      expect(complete.sessionId).toBe(a.sessionId);
+      expect(fresh.map((m) => m.type).slice(-1)).toEqual(['transcript_load_complete']);
+      expect(requested).toEqual([
+        { threadId: a.tuiId, sortDirection: 'asc', limit: 100 },
+        { threadId: a.tuiId, sortDirection: 'asc', limit: 100, cursor: 'page-2' },
+      ]);
+      expect(a.r.output.text).not.toContain('E2E-FIRST-PROMPT');
+      expect(a.r.output.text).not.toContain('E2E-OUTPUT');
+    } finally {
+      a.ws.close();
+    }
+  }, 90000);
+
+  test('a history that cannot be read is a LOAD_FAILED error, never a complete load', async () => {
+    const a = await attachedDaemon();
+    try {
+      a.r.server.onRequest('thread/items/list', () => {
+        throw { code: -32603, message: 'E2E-SERVER-TEXT' };
+      });
+      const before = a.received.length;
+
+      a.ws.send(serialize(createTranscriptLoadRequest(a.sessionId)));
+      await pollUntil(
+        () => a.received.slice(before).some((m) => m.type === 'error'),
+        10000,
+        'the error',
+      );
+
+      const failure = a.received.slice(before).find((m): m is ErrorMessage => m.type === 'error');
+      expect(failure?.code).toBe('LOAD_FAILED');
+      expect(failure?.message).not.toContain('E2E-SERVER-TEXT');
+      expect(a.received.slice(before).some((m) => m.type === 'transcript_load_complete')).toBe(
+        false,
+      );
+    } finally {
+      a.ws.close();
+    }
+  }, 90000);
+
+  test('an item that completes on the thread reaches the phone as transcript_content, and typed chat is still refused and typed nowhere', async () => {
+    const a = await attachedDaemon();
+    try {
+      a.r.server.emit(
+        itemCompletedFrame(a.tuiId, agentMessageItem('e2e-live', 'E2E-LIVE-TEXT', 'final_answer')),
+        { threadId: a.tuiId },
+      );
+      await pollUntil(() => transcripts(a.received).length >= 1, 10000, 'the live message');
+
+      const live = transcripts(a.received)[0] as TranscriptContentMessage;
+      expect(live.entryUuid).toBe('e2e-live');
+      expect(live.role).toBe('assistant');
+      expect(live.content).toBe('E2E-LIVE-TEXT');
+      expect(live.sessionId).toBe(a.sessionId);
+      expect(a.r.output.text).not.toContain('E2E-LIVE-TEXT');
+
+      // Phase 6 gives Codex a chat to READ; typing into it stays refused with the code the web
+      // client reads, and nothing reaches codex's stdin.
+      a.ws.send(serialize(createUserInput(a.sessionId, 'typed chat text', false)));
+      await pollUntil(
+        () =>
+          a.received.some(
+            (m) => m.type === 'error' && (m as ErrorMessage).code === PROMPT_WAITING_ERROR_CODE,
+          ),
+        10000,
+        'the PROMPT_WAITING refusal',
+      );
+      expect(fs.statSync(path.join(a.r.fakeDir, 'stdin')).size).toBe(0);
     } finally {
       a.ws.close();
     }
