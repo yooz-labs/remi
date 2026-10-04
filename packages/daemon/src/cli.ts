@@ -115,7 +115,7 @@ import {
   createRemiStatus,
   createSessionUpdate,
 } from '@remi/shared';
-import type { ProtocolMessage, UUID, UnlockedIdentity } from '@remi/shared';
+import type { HarnessId, ProtocolMessage, UUID, UnlockedIdentity } from '@remi/shared';
 import { isEncrypted, unlockIdentity } from '@remi/shared';
 import type { AnswerKeyPair } from '@remi/shared';
 import { AdapterRegistry, TelegramAdapter, WebSocketAdapter } from './adapters/index.ts';
@@ -198,8 +198,10 @@ import {
   remiHome,
   serviceCommandRefusal,
 } from './config/remi-home.ts';
+import { CodexLaunchRefusal, olderRemiNotice } from './harness/codex/codex-session.ts';
+import { CodexHarness } from './harness/codex/codex.ts';
 import { ClaudeHarness } from './harness/index.ts';
-import type { HarnessSession } from './harness/index.ts';
+import type { Harness, HarnessSession } from './harness/index.ts';
 import { ForeignSessionEscalator, HookConfigManager, HookServer } from './hooks/index.ts';
 import type { PermissionDeniedHookInput, StopHookInput } from './hooks/index.ts';
 // Static, unlike the publisher below it: this is a pure decision with no
@@ -234,6 +236,7 @@ import {
   resolveStoredSession,
   storedHarness,
 } from './session/index.ts';
+import { findLegacyWriters, readStatusFiles } from './session/legacy-writers.ts';
 import { findAvailableTcpPort } from './session/port-utils.ts';
 import { traceQuestionEvent } from './session/question-trace.ts';
 import { TranscriptDiscovery, type TranscriptWatcher } from './transcript/index.ts';
@@ -407,6 +410,26 @@ const cliRecent = parsedArgs.recent;
 const cliPushSecret = parsedArgs.pushSecret ?? process.env['REMI_PUSH_SECRET'];
 const cliOrphanTimeout = parsedArgs.orphanTimeout;
 const claudeArgs = [...parsedArgs.claudeArgs];
+
+// Which harness this process hosts (#1177): `remi codex`, or the hidden `--harness <id>` a hub
+// gives a child daemon. This build has adapters for Claude and Codex only.
+const harnessId: HarnessId = parsedArgs.harness ?? (cliSubcommand === 'codex' ? 'codex' : 'claude');
+{
+  const refusal =
+    harnessId !== 'claude' && harnessId !== 'codex'
+      ? `This build has no ${harnessId} adapter.`
+      : harnessId !== 'claude' && serveMode
+        ? 'The hub hosts no session of its own, so it takes no --harness.'
+        : harnessId !== 'claude' && cliHost !== undefined
+          ? `remi ${harnessId} --host is not supported yet: the wire does not carry a harness.`
+          : harnessId === 'codex' && cliResume !== undefined
+            ? "--resume is remi's flag for Claude sessions; resume a Codex thread with `remi codex resume <thread id>` (`remi --sessions` lists the ids)."
+            : null;
+  if (refusal !== null) {
+    console.error(refusal);
+    process.exit(2);
+  }
+}
 
 if (cliDaemonMode) {
   setWrapperMode(false);
@@ -714,15 +737,19 @@ if (cliShowSessions) {
       // harness with none prints `<harness>:-`, so it never reads as an
       // id-less Claude one.
       const claude = isClaudeRecord(s);
-      const harnessId = claude ? s.claudeSessionId : (s.harnessSessionId ?? null);
-      const idLabel = harnessId
-        ? ` ${storedHarness(s)}:${harnessId.slice(0, 8)}`
+      const recordedId = claude ? s.claudeSessionId : (s.harnessSessionId ?? null);
+      const idLabel = recordedId
+        ? ` ${storedHarness(s)}:${recordedId.slice(0, 8)}`
         : claude
           ? ''
           : ` ${storedHarness(s)}:-`;
       console.log(
         `  ${s.remiSessionId.slice(0, 8)}  ${status}  ${s.projectPath}${idLabel}  ${s.startedAt}`,
       );
+      // `remi codex resume` takes the whole thread id, which the label above cuts.
+      if (s.harness === 'codex' && s.exitedAt !== null && recordedId) {
+        console.log(`      resume: remi codex resume ${recordedId}`);
+      }
     }
     if (filter === 'running') {
       const exitedCount = allSessions.filter((s) => s.exitedAt !== null).length;
@@ -844,7 +871,11 @@ if ((cliSubcommand === 'new' || cliSubcommand === undefined) && cliHost) {
 }
 
 // remi new --recent (local): pick directory from recent, chdir, then fall through to wrapper
-if ((cliSubcommand === 'new' || cliSubcommand === undefined) && cliRecent && !cliHost) {
+if (
+  (cliSubcommand === 'new' || cliSubcommand === undefined || cliSubcommand === 'codex') &&
+  cliRecent &&
+  !cliHost
+) {
   const store = new SessionStore();
   const directories = getRecentDirectories(store, 20);
   if (directories.length === 0) {
@@ -865,7 +896,11 @@ if ((cliSubcommand === 'new' || cliSubcommand === undefined) && cliRecent && !cl
 }
 
 // remi new --dir (local): chdir to specified directory, then fall through to wrapper
-if ((cliSubcommand === 'new' || cliSubcommand === undefined) && cliDir && !cliHost) {
+if (
+  (cliSubcommand === 'new' || cliSubcommand === undefined || cliSubcommand === 'codex') &&
+  cliDir &&
+  !cliHost
+) {
   const dirResult = resolveDirectory(cliDir);
   if ('error' in dirResult) {
     console.error(dirResult.error);
@@ -1276,7 +1311,7 @@ function onTurnStop(input: StopHookInput): void {
   // likely a sibling's. Note the timer cannot save us: `onAnyEvent` observes
   // sibling events too, so `elapsedMs` comes back populated and plausible.
   // Fail closed -- no admitting session means we do not claim this turn.
-  if (!harness.admitsAnySession(input)) return;
+  if (!claudeHarness.admitsAnySession(input)) return;
 
   const elapsedMs = turnTimer.elapsedMs(input.prompt_id);
   // A stop-hook re-entry means the turn is still going, not finished -- do
@@ -1749,7 +1784,7 @@ const inputHandlers: InputHandlers = createInputHandlers({
 // `hookServer`, `PORT`, the websocket port and `[prompts]` are read when a
 // session launches, not when the harness is built, so they are passed as
 // getters.
-const harness = new ClaudeHarness(transcriptDiscovery, {
+const claudeHarness = new ClaudeHarness(transcriptDiscovery, {
   sessionRegistry,
   sessionStore,
   bindingStore,
@@ -1776,6 +1811,51 @@ const harness = new ClaudeHarness(transcriptDiscovery, {
   },
   sessionNotifiers,
 });
+
+// `remi codex` hosts a Codex session instead (#1177). Observe-only: its launch reads these
+// services when a session starts, and the older-daemon gate reads the live-sessions entries and
+// status files of other remi processes then.
+const codexHarness =
+  harnessId === 'codex'
+    ? new CodexHarness({
+        sessionRegistry,
+        sessionStore,
+        bindingStore,
+        liveSessionsRegistry,
+        currentPort: () => PORT,
+        wsPort: () => remiStatus.wsPort,
+        cleanup,
+        env: () => process.env,
+        legacyWriters: () =>
+          findLegacyWriters({
+            liveSessions: liveSessionsRegistry,
+            statusFiles: () => readStatusFiles(REMI_DIR),
+            selfPid: process.pid,
+          }),
+        remiVersion: REMI_VERSION,
+        log,
+      })
+    : undefined;
+const harness: Harness = codexHarness ?? claudeHarness;
+
+// A Codex launch that will be refused is refused HERE, before a daemon boots or a wrapper takes
+// over the terminal (where console output goes to the log): a refused argument exits 2, an older
+// live remi exits 1, and nothing has been written yet. `--daemon` takes no arguments until the
+// hub can pass them (a later phase). What the launch cannot protect against is said once.
+let codexLaunchArgs: string[] = [];
+if (codexHarness) {
+  if (cliDaemonMode && parsedArgs.passthroughArgs.length > 0) {
+    console.error('remi codex --daemon takes no arguments yet.');
+    process.exit(2);
+  }
+  const preflight = codexHarness.preflight(cliDaemonMode ? [] : parsedArgs.passthroughArgs);
+  if (!preflight.ok) {
+    console.error(preflight.message);
+    process.exit(preflight.exitCode);
+  }
+  codexLaunchArgs = preflight.args;
+  console.error(olderRemiNotice());
+}
 
 const sessionHandlers: SessionHandlers = createSessionHandlers({
   sessionRegistry,
@@ -2235,7 +2315,7 @@ installProcessGuards({ logError, onFatal: cleanup });
 // In wrapper mode the terminal provides the PATH, but resolveShellPath
 // merges (never drops existing entries) so it's safe to call, and ensures
 // remote session creation works even after the terminal is detached (SIGHUP).
-resolveShellPath({ log, error: logError });
+resolveShellPath({ log, error: logError }, harnessId === 'codex' ? 'codex' : 'claude');
 
 if (cliDaemonMode) {
   console.log(serveMode ? 'Starting Remi hub...' : 'Starting Remi daemon...');
@@ -2319,7 +2399,7 @@ if (cliDaemonMode) {
   // session-less hub never runs Claude, so it has no business touching it
   // (the first session child installs it anyway). Session daemons keep the
   // existing behavior.
-  if (!serveMode) {
+  if (!serveMode && harnessId === 'claude') {
     installStatusLine(REMI_DIR, undefined, !isRemiHomeOverridden());
   }
 
@@ -2416,42 +2496,46 @@ if (cliDaemonMode) {
 
     updateRemiStatus({ wsPort: PORT, sessionId, sessionStatus: 'starting', mode: 'session' });
 
-    // Start hook server for Claude Code event detection (port 0 = OS-assigned)
-    try {
-      hookServer = new HookServer(
-        { port: 0 },
-        {
-          onError: (err) => console.error(`[HookServer] ${err.message}`),
-          onAnyEvent: (input) => turnTimer.observe(input.prompt_id),
-        },
-      );
-      hookServer.start();
-      // Additive second Stop listener (#914) -- see onTurnStop's module doc
-      // for why this is deliberately separate from hook-bridge-setup.ts's own.
-      hookServer.on('Stop', onTurnStop);
-      HOOK_PORT = hookServer.port;
-      console.log(`  Hook server listening on port ${HOOK_PORT}`);
-    } catch (err) {
-      const msg = errorToString(err);
-      console.error(
-        `Hook server failed to start: ${msg}. Status detection and question forwarding disabled.`,
-      );
-      hookServer = null;
-    }
-
-    if (hookServer) {
+    // Hooks are Claude Code's; a Codex session has none (and writes nothing to the
+    // working directory's .claude).
+    if (harnessId === 'claude') {
+      // Start hook server for Claude Code event detection (port 0 = OS-assigned)
       try {
-        // #1126: a daemon or hub session holds prompts for up to
-        // daemon_hold_seconds, so its hook registration outlasts that.
-        hookConfigManager = new HookConfigManager(workingDirectory, hookServer.url, {
-          permissionRequestTimeout: permissionHoldPolicy(false, remiConfig.prompts)
-            .permissionRequestTimeoutSec,
-        });
-        await hookConfigManager.install();
+        hookServer = new HookServer(
+          { port: 0 },
+          {
+            onError: (err) => console.error(`[HookServer] ${err.message}`),
+            onAnyEvent: (input) => turnTimer.observe(input.prompt_id),
+          },
+        );
+        hookServer.start();
+        // Additive second Stop listener (#914) -- see onTurnStop's module doc
+        // for why this is deliberately separate from hook-bridge-setup.ts's own.
+        hookServer.on('Stop', onTurnStop);
+        HOOK_PORT = hookServer.port;
+        console.log(`  Hook server listening on port ${HOOK_PORT}`);
       } catch (err) {
         const msg = errorToString(err);
-        console.error(`Hook config install failed: ${msg}. Question forwarding may not work.`);
-        hookConfigManager = null;
+        console.error(
+          `Hook server failed to start: ${msg}. Status detection and question forwarding disabled.`,
+        );
+        hookServer = null;
+      }
+
+      if (hookServer) {
+        try {
+          // #1126: a daemon or hub session holds prompts for up to
+          // daemon_hold_seconds, so its hook registration outlasts that.
+          hookConfigManager = new HookConfigManager(workingDirectory, hookServer.url, {
+            permissionRequestTimeout: permissionHoldPolicy(false, remiConfig.prompts)
+              .permissionRequestTimeoutSec,
+          });
+          await hookConfigManager.install();
+        } catch (err) {
+          const msg = errorToString(err);
+          console.error(`Hook config install failed: ${msg}. Question forwarding may not work.`);
+          hookConfigManager = null;
+        }
       }
     }
 
@@ -2475,7 +2559,9 @@ if (cliDaemonMode) {
       console.error(`Failed to create session: ${msg}`);
       liveSessionsRegistry.unregister(sessionId);
       await registry.stopAll();
-      process.exit(1);
+      // A Codex launch the harness refuses after the preflight passed (an older remi that started
+      // in between) keeps its own exit code.
+      process.exit(err instanceof CodexLaunchRefusal ? err.exitCode : 1);
     }
 
     const managedSession = sessionRegistry.getSession(sessionId);
@@ -2561,7 +2647,7 @@ if (cliDaemonMode) {
 
   // Install status line script (<state dir>/statusline.sh) and auto-configure
   // Claude Code settings, except under a REMI_HOME override (see installStatusLine).
-  installStatusLine(REMI_DIR, undefined, !isRemiHomeOverridden());
+  if (harnessId === 'claude') installStatusLine(REMI_DIR, undefined, !isRemiHomeOverridden());
   const workingDirectory = process.cwd();
   const sessionId = sessionRegistry.createSessionId();
   setPrimarySessionId(sessionId);
@@ -2635,37 +2721,41 @@ if (cliDaemonMode) {
     updateRemiStatus({ wsPort: PORT });
   }
 
-  // Start hook server for Claude Code event detection (port 0 = OS-assigned)
-  try {
-    hookServer = new HookServer(
-      { port: 0 },
-      {
-        onError: (err) => logError(`[HookServer] ${err.message}`),
-        onAnyEvent: (input) => turnTimer.observe(input.prompt_id),
-      },
-    );
-    hookServer.start();
-    // Additive second Stop listener (#914) -- see onTurnStop's module doc for
-    // why this is deliberately separate from hook-bridge-setup.ts's own.
-    hookServer.on('Stop', onTurnStop);
-    HOOK_PORT = hookServer.port;
-    log(`Hook server listening on ${hookServer.url} (port ${HOOK_PORT})`);
+  // Hooks are Claude Code's; a Codex session has none (and writes nothing to the
+  // working directory's .claude).
+  if (harnessId === 'claude') {
+    // Start hook server for Claude Code event detection (port 0 = OS-assigned)
+    try {
+      hookServer = new HookServer(
+        { port: 0 },
+        {
+          onError: (err) => logError(`[HookServer] ${err.message}`),
+          onAnyEvent: (input) => turnTimer.observe(input.prompt_id),
+        },
+      );
+      hookServer.start();
+      // Additive second Stop listener (#914) -- see onTurnStop's module doc for
+      // why this is deliberately separate from hook-bridge-setup.ts's own.
+      hookServer.on('Stop', onTurnStop);
+      HOOK_PORT = hookServer.port;
+      log(`Hook server listening on ${hookServer.url} (port ${HOOK_PORT})`);
 
-    // Configure Claude Code hooks to POST to our server; a wrapper session
-    // has a local terminal (#1126, hold-policy.ts).
-    hookConfigManager = new HookConfigManager(workingDirectory, hookServer.url, {
-      permissionRequestTimeout: permissionHoldPolicy(true, remiConfig.prompts)
-        .permissionRequestTimeoutSec,
-    });
-    await hookConfigManager.install();
-    log('[Hooks] Claude Code hooks configured');
-  } catch (err) {
-    const msg = errorToString(err);
-    logError(
-      `Hook server failed to start: ${msg}. Status detection and question forwarding disabled.`,
-    );
-    hookServer = null;
-    hookConfigManager = null;
+      // Configure Claude Code hooks to POST to our server; a wrapper session
+      // has a local terminal (#1126, hold-policy.ts).
+      hookConfigManager = new HookConfigManager(workingDirectory, hookServer.url, {
+        permissionRequestTimeout: permissionHoldPolicy(true, remiConfig.prompts)
+          .permissionRequestTimeoutSec,
+      });
+      await hookConfigManager.install();
+      log('[Hooks] Claude Code hooks configured');
+    } catch (err) {
+      const msg = errorToString(err);
+      logError(
+        `Hook server failed to start: ${msg}. Status detection and question forwarding disabled.`,
+      );
+      hookServer = null;
+      hookConfigManager = null;
+    }
   }
 
   // Register in live-sessions AFTER hook server starts so hookPort has real value
@@ -2700,7 +2790,8 @@ if (cliDaemonMode) {
   // off-able via config. When active, Claude is reported `rows - 1` so it never
   // touches the bottom row, which remi draws into. A non-TTY stdout (piped) has
   // no row to reserve, so it fails safe to off.
-  const statusBarActive = remiConfig.terminal.status_bar && Boolean(process.stdout.isTTY);
+  const statusBarActive =
+    harnessId === 'claude' && remiConfig.terminal.status_bar && Boolean(process.stdout.isTTY);
   const reservedRows = statusBarActive ? 1 : 0;
 
   // Create and start the primary PTY session
@@ -2708,7 +2799,7 @@ if (cliDaemonMode) {
     sessionId,
     workingDirectory,
     ptyMessageFanout,
-    claudeArgs,
+    harnessId === 'codex' ? codexLaunchArgs : claudeArgs,
     true, // pass-through mode
     reservedRows,
   );

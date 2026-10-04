@@ -503,7 +503,7 @@ describe('what cli.ts hands the harness (#1164)', () => {
 
   // Scoped to the harness's own construction: `currentPort: () => PORT` is
   // also spelled by other dependencies elsewhere in the file.
-  const construction = () => slice('const harness = new ClaudeHarness(', '\n});');
+  const construction = () => slice('const claudeHarness = new ClaudeHarness(', '\n});');
 
   test('getters for hookServer, the port, the websocket port and [prompts]', () => {
     expect(construction()).toContain('hookServer: () => hookServer,');
@@ -592,7 +592,7 @@ describe('what cli.ts hands the harness (#1164)', () => {
     );
     // onTurnStop applies the #914 session filter first and returns when no session claims the event.
     const turnStop = functionBody('onTurnStop');
-    expect(turnStop).toContain('if (!harness.admitsAnySession(input)) return;');
+    expect(turnStop).toContain('if (!claudeHarness.admitsAnySession(input)) return;');
   });
 
   test('a commented-out line does not satisfy a pin', () => {

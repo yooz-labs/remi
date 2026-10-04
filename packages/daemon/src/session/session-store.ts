@@ -280,13 +280,19 @@ function selectClaudeSessionMatch(
 
 /**
  * A resume query named a session that ran under another harness (#1176).
- * `message` is what the CLI prints before exiting 1. It points at no command
- * that does not exist yet: `remi codex resume` arrives with the Codex launch
- * (phase 3), which restores the pointer.
+ * `message` is what the CLI prints before exiting 1. For a Codex record with a
+ * thread id it names the command that resumes it, `remi codex resume <thread
+ * id>` (#1177), with the whole id; every other record gets no pointer, because
+ * no other command exists in this build.
  */
 export class SessionHarnessMismatchError extends Error {
   constructor(session: StoredSession) {
-    super(`this session ran under ${storedHarness(session)}; this build cannot resume it`);
+    const harness = storedHarness(session);
+    super(
+      harness === 'codex' && session.harnessSessionId
+        ? `this session ran under codex; resume it with \`remi codex resume ${session.harnessSessionId}\``
+        : `this session ran under ${harness}; this build cannot resume it`,
+    );
     this.name = 'SessionHarnessMismatchError';
   }
 }

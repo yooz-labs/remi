@@ -145,7 +145,11 @@ async function startDaemon(): Promise<Running> {
 }
 
 /** `cli.ts codex <args>` as a wrapper (no terminal: stdin is closed and stdout is a pipe). */
-async function startWrapper(args: readonly string[]): Promise<Running> {
+/** `cli.ts <subcommand> <args>` as a wrapper; `subcommand` is `codex` unless a test needs another. */
+async function startWrapper(
+  args: readonly string[],
+  subcommand: string | null = 'codex',
+): Promise<Running> {
   const { home, work } = makeIsolatedDirs();
   const { fakeDir, env } = makeFakes(home);
   const server = FakeAppServer.start();
@@ -154,7 +158,7 @@ async function startWrapper(args: readonly string[]): Promise<Running> {
     [
       process.execPath,
       CLI_TS,
-      'codex',
+      ...(subcommand === null ? [] : [subcommand]),
       '--port',
       String(port),
       '--no-relay',
@@ -355,6 +359,9 @@ describe('remi codex launch (daemon, black-box characterization, #1177)', () => 
       // The app-server has no rollout yet (-32600): the attach is retried, always with
       // the same exact frame, until the rollout exists.
       await pollUntil(() => resumeFrames(r, client).length >= 2, 10000, 'a retried thread/resume');
+      // Before the attach the only status reported is the TUI thread's own `idle`, from its
+      // thread/started frame: the helper's `active` (and the stray thread's) changed nothing.
+      expect(statusesSeen(received)).toEqual(['idle']);
       r.server.createRollout(tuiId);
       await pollUntil(
         () => r.output.text.includes(`attached to thread ${tuiId.slice(0, 8)}`),
@@ -395,12 +402,6 @@ describe('remi codex launch (daemon, black-box characterization, #1177)', () => 
         5000,
         'status idle after waiting',
       );
-      // The helper's active frame never made the session `thinking` before the first
-      // frame of the tracked thread did.
-      expect(statusesSeen(received).indexOf('waiting')).toBeLessThan(
-        statusesSeen(received).indexOf('thinking'),
-      );
-
       // Identity never moved off the TUI thread.
       expect(onlyRecord(r).harnessSessionId).toBe(tuiId);
 
@@ -550,5 +551,34 @@ describe('remi codex launch (wrapper and refusals, #1177)', () => {
     expect(r.output.text).toContain('--host');
     expect(storedSessions(r)).toEqual([]);
     expect(fileExists(r, 'pid')).toBe(false);
+  }, 40000);
+
+  test("--resume is remi's Claude flag: remi codex --resume points at remi codex resume and exits 2", async () => {
+    const r = await startWrapper(['--resume']);
+    const code = await Promise.race([r.proc.exited, Bun.sleep(20000).then(() => 'timeout')]);
+    expect(code).toBe(2);
+    expect(r.output.text).toContain('remi codex resume <thread id>');
+    expect(storedSessions(r)).toEqual([]);
+    expect(fileExists(r, 'pid')).toBe(false);
+  }, 40000);
+
+  test('a harness this build has no adapter for, and the hub with a harness, exit 2 before anything starts', async () => {
+    const opencode = await startWrapper(['--harness', 'opencode'], null);
+    const hub = await startWrapper(['--harness', 'codex'], 'serve');
+    for (const r of [opencode, hub]) {
+      expect(await Promise.race([r.proc.exited, Bun.sleep(20000).then(() => 'timeout')])).toBe(2);
+      expect(storedSessions(r)).toEqual([]);
+      expect(fileExists(r, 'pid')).toBe(false);
+    }
+    expect(opencode.output.text).toContain('no opencode adapter');
+    expect(hub.output.text).toContain('hub hosts no session');
+  }, 60000);
+
+  test('a prompt word that names a remi subcommand is still a prompt: remi codex status', async () => {
+    const r = await startWrapper(['status']);
+    await waitForFakeCodex(r);
+    expect(read(path.join(r.fakeDir, 'argv'))).toBe('--no-alt-screen\n--\nstatus\n');
+    fs.writeFileSync(path.join(r.fakeDir, 'release'), '');
+    expect(await Promise.race([r.proc.exited, Bun.sleep(15000).then(() => 'timeout')])).toBe(0);
   }, 40000);
 });
