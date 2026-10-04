@@ -42,11 +42,11 @@
  * clients, the web client today, do not show.
  */
 
-import { generateId, now } from '@remi/shared';
+import { escapeUnsafeText, generateId, now } from '@remi/shared';
 import type { AgentStatus, Message, UUID } from '@remi/shared';
 
 import {
-  NOOP_OUTPUT_SINK,
+  type PtyOutputSink,
   createPtySessionForSession,
 } from '../../cli/session-phases/pty-session-setup.ts';
 import { IDENTITY_SHIM_MIN_VERSION } from '../../session/legacy-writers.ts';
@@ -99,6 +99,8 @@ export interface CodexLaunchDeps {
   appServer?: Pick<AppServerClientOptions, 'backoff' | 'keepalive'>;
   linkWatchdogMs?: number;
   linkStableMs?: number;
+  /** How soon after the spawn an exit still logs what Codex printed (default 10 s). */
+  startupFailureWindowMs?: number;
   tracker?: Pick<ThreadTrackerDeps, 'retryMs' | 'ambiguityMs' | 'noIdentityMs'>;
   decisions?: Pick<CodexDecisionsDeps, 'replayWindowMs' | 'disconnectGraceMs' | 'confirmMs'>;
 }
@@ -252,6 +254,9 @@ const FIRST_THREAD_WINDOW_MS = 60_000;
 const DEFAULT_LINK_WATCHDOG_MS = 30_000;
 /** A link counts as up, and the watchdog is canceled, once it has stayed up this long (the client's own `stableMs`). */
 const DEFAULT_LINK_STABLE_MS = 5_000;
+/** What Codex printed before the session named a thread: kept up to this many characters, and logged only if it exits within the window. */
+const STARTUP_OUTPUT_CHARS = 2048;
+const DEFAULT_STARTUP_FAILURE_WINDOW_MS = 10_000;
 
 /** The session's status from its thread and its descendants: waiting beats thinking beats idle. */
 function aggregateStatus(statuses: Iterable<ThreadStatus>): AgentStatus {
@@ -317,6 +322,30 @@ export function createCodexSession(
 
   // The tracked thread's id, as far as this session knows it (a resume names it up front).
   let trackedId: string | null = checked.resumeThreadId;
+  // What Codex printed before this session bound a thread, kept (bounded) for the one log line a
+  // startup failure gets: LV-4 saw Codex exit 2 on a flag error, and its message went nowhere. It
+  // is dropped when a thread is bound, logged only to the daemon log (escaped, on one line), and
+  // never sent to a client.
+  let startupOutput = '';
+  let identified = false;
+  let spawnedAtMs: number | null = null;
+  const startupSink: PtyOutputSink = {
+    process: (text) => {
+      if (identified || startupOutput.length >= STARTUP_OUTPUT_CHARS) return;
+      startupOutput += text.slice(0, STARTUP_OUTPUT_CHARS - startupOutput.length);
+    },
+    // Runs when the PTY exits.
+    flush: () => {
+      const output = startupOutput;
+      startupOutput = '';
+      if (identified || output === '' || spawnedAtMs === null) return;
+      const elapsedMs = Date.now() - spawnedAtMs;
+      if (elapsedMs > (deps.startupFailureWindowMs ?? DEFAULT_STARTUP_FAILURE_WINDOW_MS)) return;
+      log(
+        `exited with code ${pty.processExitCode} ${elapsedMs} ms after it started, before it named a thread; its first output (escaped, at most ${STARTUP_OUTPUT_CHARS} characters): ${escapeUnsafeText(output).replaceAll('\n', '\\n')}`,
+      );
+    },
+  };
   /** Forget what the subagents were doing: the link that told us is gone, or the thread is. */
   const dropDescendantStatuses = (): void => {
     let dropped = false;
@@ -490,6 +519,8 @@ export function createCodexSession(
       // nothing; a first identity has nothing stale to clear, and "unknown" is not "idle".
       const rotating = trackedId !== null;
       trackedId = threadId;
+      identified = true;
+      startupOutput = '';
       statuses.clear();
       if (rotating) {
         // The old thread's cards are not this session's any more, and must not be answered.
@@ -515,7 +546,7 @@ export function createCodexSession(
       sessionRegistry: deps.sessionRegistry,
       sessionStore: deps.sessionStore,
       liveSessionsRegistry: deps.liveSessionsRegistry,
-      outputSink: NOOP_OUTPUT_SINK,
+      outputSink: startupSink,
       wsPort: deps.wsPort(),
       sendMessage: ctx.sendMessage,
       cleanup: deps.cleanup,
@@ -536,6 +567,7 @@ export function createCodexSession(
     decisions,
     acceptsTypedChat: false,
     start: async () => {
+      spawnedAtMs = Date.now();
       await pty.start();
       client.start();
       armWatchdog();
