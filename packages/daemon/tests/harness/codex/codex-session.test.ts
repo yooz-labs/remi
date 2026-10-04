@@ -1000,6 +1000,14 @@ describe('CodexHarness', () => {
         const t1 = crypto.randomUUID();
         server.emit(startFrame(t1), { broadcast: true });
         await until(() => holder(a.sessionId) === t1, 'A to bind T1 despite them');
+
+        // Nor do they keep an idle session from following a /new (a rotation asks about any
+        // sibling, but only one in this directory).
+        server.emit(threadStatusFrame(t1, { type: 'idle' }), { broadcast: true });
+        await sleep(100);
+        const t2 = crypto.randomUUID();
+        server.emit(startFrame(t2), { broadcast: true });
+        await until(() => holder(a.sessionId) === t2, 'A to rotate onto T2 despite them');
       },
     );
 

@@ -1067,6 +1067,27 @@ describe('binding re-checks the claims, and a sibling session keeps us from taki
     expect(ctx.identities).toEqual([]);
   });
 
+  test('a blocked first bind and a blocked rotation are each told once, separately (R1, R2)', async () => {
+    let inTheWay = true;
+    const ctx = await setup({ siblingInDirectory: () => inTheWay });
+    ctx.started('tui', crypto.randomUUID());
+    await settle(500);
+    expect(ctx.notices).toEqual([FIRST_NOTICE]);
+
+    inTheWay = false;
+    const a = crypto.randomUUID();
+    ctx.started('tui', a);
+    await waitUntil(ctx, () => ctx.identities.length === 1, 'the identity');
+    ctx.status(a, { type: 'idle' });
+    await settle(100);
+
+    inTheWay = true;
+    ctx.started('tui', crypto.randomUUID());
+    await settle(500);
+    expect(ctx.identities).toEqual([a]);
+    expect(ctx.notices).toEqual([FIRST_NOTICE, ROTATION_NOTICE]);
+  });
+
   test('a sibling in the directory, bound or not, blocks a rotation of an idle session; a first bind is asked about separately (R1)', async () => {
     let inTheWay = false;
     const ctx = await setup({ siblingInDirectory: (rotating) => rotating && inTheWay });

@@ -53,6 +53,9 @@ describe('parseThread', () => {
       '00000000-0000-7000-8000-00000000000g',
       `${placeholderUuid(7)}\n`,
       `${placeholderUuid(7)} && id`,
+      `x; ${placeholderUuid(7)}`,
+      ` ${placeholderUuid(7)}`,
+      `$(id)${placeholderUuid(7)}`,
       placeholderUuid(7).slice(1),
     ];
     for (const id of hostile) {
