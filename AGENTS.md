@@ -191,7 +191,7 @@ safer-looking front. Recommend an SSH tunnel, or an explicit `bind` plus
 **The relay is off by default, and without an authenticator it accepts nothing (#1193).**
 `network.relay` defaults to `false`; `network.relay = true` or `--permanent-code` turns it on, and `--no-relay` wins over both.
 With it on and no `authenticator` (only `--auth --permanent-code` supplies one), `RelayAdapter` refuses every peer (`auth_result` with `RELAY_AUTH_REQUIRED`, `onConnect` never fires), drops every inbound frame before it is parsed, and prints a boot notice saying no relay client can connect.
-Dropping frames matters as much as refusing peers: the Worker forwards a `relay` frame from a socket that never sent `join` straight to the host (`connection-room.ts`, `getPeer` does not check the sender's role), so a frame can arrive with no peer at all.
+Dropping frames matters as much as refusing peers: the Worker can deliver a `relay` frame to the host with no peer ever having joined (`connection-room.ts`), so the frame drop is what closes that path.
 A `config.toml` that already holds `relay = true` (`remi config init` wrote it before #1193) keeps the adapter registered, and it now refuses too.
 No shipped client can use the relay: the web client has no code that joins a room or does the key exchange, and no native client holds a signaling URL.
 The rebuild is planned (`.context/strategy-2026-10.md` section 9); nothing remote ships through the relay today.

@@ -16,7 +16,7 @@ Nobody could use the relay, so nobody loses anything; one inbound door is shut.
   `network.relay = true` in `config.toml` or `--permanent-code` still enables it, and `--no-relay` still wins over both.
   A `config.toml` written by `remi config init` before this change holds `relay = true` and keeps the relay enabled, which is now harmless (next item).
 - The relay adapter refuses every peer and drops every inbound frame when it has no authenticator (only `--auth --permanent-code` supplies one), and prints a boot notice saying so.
-  That includes frames that arrive with no peer, and a lock-screen answer, which used to be accepted on the room code alone in that mode.
+  That includes frames that arrive with no peer, and lock-screen answers.
 - The room code is no longer printed to the log when no authenticator is configured, since nobody can use it.
 - With `--auth --permanent-code` nothing changes.
 - `remi --help`, the README and AGENTS.md no longer describe the relay as a way to connect from anywhere.
