@@ -67,7 +67,6 @@ export class Channel {
   private failed = false;
   private sendEnded = false;
   private ended = false;
-  private verdict: StreamEnd | null = null;
 
   private readonly direction: Direction;
   private readonly io: ChannelIO;
@@ -193,9 +192,9 @@ export class Channel {
    * Says whether the inbound stream ended cleanly, and ends the channel. Idempotent.
    */
   transportClosed(): StreamEnd {
-    this.verdict ??= this.failed ? 'failed' : this.ended ? 'clean' : 'unclean';
+    const verdict: StreamEnd = this.failed ? 'failed' : this.ended ? 'clean' : 'unclean';
     this.drop();
-    return this.verdict;
+    return verdict;
   }
 
   private async openOne(frame: Uint8Array | string): Promise<Uint8Array | null> {
