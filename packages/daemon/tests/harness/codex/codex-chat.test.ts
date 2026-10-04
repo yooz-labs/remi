@@ -425,6 +425,28 @@ describe('createCodexChat', () => {
       expect(fallback).toBeLessThanOrEqual(Date.now() + 5);
     });
 
+    test('a time that is not a date reads as now, never an error', async () => {
+      servePages({
+        '': itemsListPage(
+          [
+            { item: userMessageItem('u1', 'far future'), completedAtMs: 1e20 },
+            { item: userMessageItem('u2', 'far past'), completedAtMs: -1e20 },
+          ],
+          null,
+        ),
+      });
+
+      const before = Date.now();
+      const { messages } = await history();
+
+      expect(messages).toHaveLength(2);
+      for (const m of messages) {
+        const at = Date.parse(m.message.createdAt);
+        expect(at).toBeGreaterThanOrEqual(before - 5);
+        expect(at).toBeLessThanOrEqual(Date.now() + 5);
+      }
+    });
+
     test('an item that appears on two pages is emitted once', async () => {
       servePages({
         '': itemsListPage(

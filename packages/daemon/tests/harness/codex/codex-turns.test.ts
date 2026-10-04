@@ -442,6 +442,17 @@ describe('createCodexTurns: turn/completed to turn events', () => {
   });
 
   describe('robustness and privacy', () => {
+    test('a turn/completed that does not parse is logged once and says nothing of what it held', () => {
+      make().handleNotification('turn/completed', {
+        threadId: 'PRIVATE-THREAD',
+        turn: 'PRIVATE-TURN',
+      });
+
+      expect(logs).toHaveLength(1);
+      expect(logs[0]).not.toContain('PRIVATE');
+      expect(events).toEqual([]);
+    });
+
     test('a sink that throws never throws out of the handler, and the throw is logged by name only', () => {
       sinkOverride = {
         turnCompleted: () => {
