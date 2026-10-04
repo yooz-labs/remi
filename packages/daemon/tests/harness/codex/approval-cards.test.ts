@@ -42,6 +42,7 @@ import {
 import { buildPendingQuestionLabel } from '../../../src/session/pending-question-label.ts';
 import { fixtureFrameAt, loadFixtureFrames } from '../../helpers/codex-fixtures.ts';
 import { commandApprovalRequest } from '../../helpers/codex-threads.ts';
+import { hasUnsafeText } from '../../helpers/unsafe-text.ts';
 
 const MINTED = '00000000-0000-7000-8000-0000000000aa' as UUID;
 /** The session's own directory: the fixtures' `cwd`, so a card shows no directory line unless a test asks for one. */
@@ -851,19 +852,13 @@ describe('a long command is never approvable from a surface that cuts it (S1)', 
 describe('text a hostile server controls is escaped before any client sees it (S5)', () => {
   /** A clipboard write, a line overwrite with a carriage return, a bidi override and isolate, a zero-width space. */
   /** Built from code points, so this source never holds a raw bidi or zero-width character. */
-  const ch = (...codes: number[]): string => String.fromCharCode(...codes);
-  const hostile = `ok\x1b]52;c;QUJD\x07 \x1b[2K\r ${ch(0x202e)}fdp.exe${ch(0x2066)}${ch(0x200b)}`;
-  const escaped = 'ok\\u001B]52;c;QUJD\\u0007 \\u001B[2K\\u000D \\u202Efdp.exe\\u2066\\u200B';
-  const isUnsafeCode = (c: number): boolean =>
-    (c <= 0x1f && c !== 0x09 && c !== 0x0a) ||
-    (c >= 0x7f && c <= 0x9f) ||
-    (c >= 0x200b && c <= 0x200f) ||
-    c === 0x2028 ||
-    c === 0x2029 ||
-    (c >= 0x202a && c <= 0x202e) ||
-    (c >= 0x2066 && c <= 0x2069);
-  const hasUnsafe = (text: string): boolean =>
-    [...text].some((ch) => isUnsafeCode(ch.charCodeAt(0)));
+  const ch = (...codes: number[]): string => String.fromCodePoint(...codes);
+  // Terminal controls, bidi controls, and the invisible characters of review T2: the Arabic letter
+  // mark, the byte order mark and a Tags-block character (astral).
+  const hostile = `ok\x1b]52;c;QUJD\x07 \x1b[2K\r ${ch(0x202e)}fdp.exe${ch(0x2066)}${ch(0x200b)}${ch(0x61c)}${ch(0xfeff)}${ch(0xe0041)}`;
+  const escaped =
+    'ok\\u001B]52;c;QUJD\\u0007 \\u001B[2K\\u000D \\u202Efdp.exe\\u2066\\u200B\\u061C\\uFEFF\\u{E0041}';
+  const hasUnsafe = hasUnsafeText;
 
   /** Every string anywhere in a card: what a client could render. */
   function strings(value: unknown): string[] {

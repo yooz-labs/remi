@@ -51,6 +51,7 @@ import {
   threadStatusFrame,
 } from '../helpers/codex-threads.ts';
 import { FakeAppServer } from '../helpers/fake-app-server.ts';
+import { hasUnsafeText } from '../helpers/unsafe-text.ts';
 import { reserveRange } from '../session/port-test-helpers.ts';
 import {
   CLI_TS,
@@ -1001,25 +1002,17 @@ describe('remi codex approvals (daemon, black-box characterization, #1178)', () 
   test('a hostile command reaches every client escaped: no terminal sequence, no bidi control, and the attach banner shows it as text (S5)', async () => {
     const a = await attachedDaemon();
     try {
-      const code = (...codes: number[]): string => String.fromCharCode(...codes);
-      // A clipboard write, a line overwrite, a report query, a bidi override and a zero-width space.
-      const hostile = `echo ok${code(0x1b)}]52;c;QUJD${code(0x07)} ${code(0x1b)}[2K${code(0x0d)}${code(0x1b)}[6n ${code(0x202e)}fdp.exe${code(0x200b)}`;
+      const code = (...codes: number[]): string => String.fromCodePoint(...codes);
+      // A clipboard write, a line overwrite, a report query, a bidi override, a zero-width space
+      // and a Tags-block character.
+      const hostile = `echo ok${code(0x1b)}]52;c;QUJD${code(0x07)} ${code(0x1b)}[2K${code(0x0d)}${code(0x1b)}[6n ${code(0x202e)}fdp.exe${code(0x200b)}${code(0xe0041)}`;
       a.r.server.request(commandRequest(a, hostile), a.tuiId);
       await pollUntil(() => cards(a.received).length === 1, 10000, 'the hostile card');
       const card = (cards(a.received)[0] as QuestionMessage).question;
       const shown = [card.text, card.detail ?? ''].join('');
-      for (const ch of shown) {
-        const c = ch.charCodeAt(0);
-        const unsafe =
-          (c <= 0x1f && c !== 0x09 && c !== 0x0a) ||
-          (c >= 0x7f && c <= 0x9f) ||
-          (c >= 0x200b && c <= 0x200f) ||
-          (c >= 0x202a && c <= 0x202e) ||
-          (c >= 0x2066 && c <= 0x2069);
-        expect(unsafe, `U+${c.toString(16)} on the wire`).toBe(false);
-      }
+      expect(hasUnsafeText(shown), 'an unsafe character on the wire').toBe(false);
       expect(card.text).toContain(
-        '\\u001B]52;c;QUJD\\u0007 \\u001B[2K\\u000D\\u001B[6n \\u202Efdp.exe\\u200B',
+        '\\u001B]52;c;QUJD\\u0007 \\u001B[2K\\u000D\\u001B[6n \\u202Efdp.exe\\u200B\\u{E0041}',
       );
       // The attach client's banner of that very card writes only its own escape sequences.
       const banner = formatQuestionBanner(card);
