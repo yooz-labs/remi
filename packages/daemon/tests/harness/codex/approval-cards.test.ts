@@ -2,7 +2,8 @@
  * Codex server request -> `Question` card (epic #1175, phase 4 #1178), written
  * against plan section 2.4 before `approval-cards.ts` existed.
  *
- * The first two groups are the PINS:
+ * The first two groups are the PINS (the rest is the unit tests of the builder and of the
+ * answer mapping, and was added with it):
  *
  * 1. A golden table. Real frames of the spike (redacted fixtures, cited by
  *    source line) go through `buildApprovalCard`, and the whole `Question` is
@@ -20,12 +21,23 @@
 
 import { describe, expect, test } from 'bun:test';
 import type { Question, UUID } from '@remi/shared';
-import { buildApprovalCard } from '../../../src/harness/codex/approval-cards.ts';
+import {
+  COMMAND_TEXT_MAX,
+  type PendingRequestSpec,
+  buildApprovalCard,
+  isApprovalMethod,
+  parseResolved,
+  requestKey,
+  requestThreadId,
+  responseFor,
+} from '../../../src/harness/codex/approval-cards.ts';
+import type { HeldAnswer } from '../../../src/harness/decision.ts';
 import {
   pushCategoryFor,
   selectDynOptions,
 } from '../../../src/notifications/notification-dispatcher.ts';
 import { fixtureFrameAt, loadFixtureFrames } from '../../helpers/codex-fixtures.ts';
+import { commandApprovalRequest } from '../../helpers/codex-threads.ts';
 
 const MINTED = '00000000-0000-7000-8000-0000000000aa' as UUID;
 const mint = (): UUID => MINTED;
@@ -183,5 +195,483 @@ describe('lock-screen pin: the unchanged dispatcher reads the cards by meaning',
     expect(card.terminalOnly).toBe(true);
     expect(pushCategoryFor(card)).toBeUndefined();
     expect(selectDynOptions(card)).toBe(false);
+  });
+});
+
+const THREAD = '00000000-0000-7000-8000-0000000000b1';
+const OTHER_THREAD = '00000000-0000-7000-8000-0000000000b2';
+
+/** A command approval of `THREAD` built from the real frame, with `over` applied to its params. */
+function build(
+  over: Record<string, unknown> = {},
+  opts: { agentId?: string } = {},
+  command = 'touch unit-marker',
+  id = 7,
+): PendingRequestSpec {
+  const { method, params } = commandApprovalRequest(THREAD, command, over);
+  const spec = buildApprovalCard({ id, method, params }, mint, opts);
+  if (spec === null) throw new Error('no card');
+  return spec;
+}
+
+const optionsOf = (spec: PendingRequestSpec): string[][] =>
+  spec.question.options.map((o) => [o.label, o.value]);
+
+const yesAnswer = (spec: PendingRequestSpec): HeldAnswer => ({
+  kind: 'option',
+  option: spec.question.options[0] as Question['options'][number],
+});
+
+describe('options come only from what the request lists', () => {
+  const OBJECT_FORMS = [
+    { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['touch', 'x'] } },
+    { applyNetworkPolicyAmendment: { network_policy_amendment: { host: 'example.test' } } },
+  ];
+
+  const answerable: Array<{ listed: unknown; options: string[][] }> = [
+    {
+      listed: ['accept', 'cancel'],
+      options: [
+        ['Yes', 'accept'],
+        ['No', 'cancel'],
+      ],
+    },
+    {
+      listed: ['accept', 'decline'],
+      options: [
+        ['Yes', 'accept'],
+        ['No', 'decline'],
+      ],
+    },
+    // Both listed: the TUI's own No is `cancel`.
+    {
+      listed: ['accept', 'decline', 'cancel'],
+      options: [
+        ['Yes', 'accept'],
+        ['No', 'cancel'],
+      ],
+    },
+    {
+      listed: ['accept', 'acceptForSession', 'decline'],
+      options: [
+        ['Yes', 'accept'],
+        ['Yes, for this session', 'acceptForSession'],
+        ['No', 'decline'],
+      ],
+    },
+    // The object forms are ignored, wherever they sit in the list.
+    {
+      listed: [...OBJECT_FORMS, 'accept', 'cancel'],
+      options: [
+        ['Yes', 'accept'],
+        ['No', 'cancel'],
+      ],
+    },
+    // No list at all: accept and decline, the verified pair.
+    {
+      listed: undefined,
+      options: [
+        ['Yes', 'accept'],
+        ['No', 'decline'],
+      ],
+    },
+    {
+      listed: null,
+      options: [
+        ['Yes', 'accept'],
+        ['No', 'decline'],
+      ],
+    },
+  ];
+
+  for (const { listed, options } of answerable) {
+    test(`listed ${JSON.stringify(listed)} gives ${options.map((o) => o[1]).join(', ')}`, () => {
+      const spec = build({ availableDecisions: listed });
+      expect(spec.actionable).toBe(true);
+      expect(optionsOf(spec)).toEqual(options);
+      expect(spec.noResponse).toEqual({ decision: options.at(-1)?.[1] });
+    });
+  }
+
+  // No Yes, no No, an empty list, only object forms, or a list that is not a list: nothing to send.
+  for (const listed of [
+    ['accept'],
+    ['cancel'],
+    ['decline'],
+    [],
+    OBJECT_FORMS,
+    'accept',
+    { 0: 'accept' },
+  ]) {
+    test(`listed ${JSON.stringify(listed)} cannot be answered from the phone, and says so`, () => {
+      const spec = build({ availableDecisions: listed });
+      expect(spec.actionable).toBe(false);
+      expect(spec.question.terminalOnly).toBe(true);
+      expect(spec.question.options).toEqual([]);
+      expect(spec.question.text).toContain('touch unit-marker');
+      expect(spec.question.text).toContain('terminal');
+    });
+  }
+
+  test('whatever subset of decisions is listed, every result the card can send is one of them', () => {
+    const all = ['accept', 'acceptForSession', 'decline', 'cancel'];
+    let cards = 0;
+    for (let mask = 0; mask < 1 << all.length; mask++) {
+      const listed = all.filter((_, i) => (mask >> i) & 1);
+      const spec = build({ availableDecisions: [...OBJECT_FORMS, ...listed] });
+      if (!spec.actionable) continue;
+      cards += 1;
+      const answers: HeldAnswer[] = [
+        { kind: 'cancel' },
+        ...spec.question.options.map((o): HeldAnswer => ({ kind: 'option', option: o })),
+      ];
+      for (const answer of answers) {
+        const mapped = responseFor(spec, answer);
+        expect(mapped.ok).toBe(true);
+        const decision = (mapped as { result: { decision: string } }).result.decision;
+        expect(listed, `${decision} from ${JSON.stringify(listed)}`).toContain(decision);
+      }
+    }
+    expect(cards).toBeGreaterThan(0);
+  });
+});
+
+describe('what makes a command approval more than the command', () => {
+  const extras: Array<[string, Record<string, unknown>]> = [
+    ['a stdin write', { kind: 'writeStdin' }],
+    ['no kind', { kind: undefined }],
+    ['an approval id', { approvalId: 'approval-1' }],
+    ['extra permissions', { additionalPermissions: { network: { enabled: true } } }],
+    ['a network approval context', { networkApprovalContext: { host: 'example.test' } }],
+    [
+      'proposed network policy amendments',
+      { proposedNetworkPolicyAmendments: [{ host: 'example.test' }] },
+    ],
+  ];
+  for (const [what, over] of extras) {
+    test(`${what} makes it terminalOnly, with the command still shown`, () => {
+      const spec = build(over);
+      expect(spec.actionable).toBe(false);
+      expect(spec.question.terminalOnly).toBe(true);
+      expect(spec.question.text).toBe(
+        'Codex asks to run: touch unit-marker. Answer it in the terminal.',
+      );
+    });
+  }
+
+  test('the real frame omits approvalId: a null or a missing one is the plain command', () => {
+    expect(build({ approvalId: null }).actionable).toBe(true);
+    expect(build({ approvalId: undefined }).actionable).toBe(true);
+  });
+
+  test('a command that is not text, or is empty, is a generic terminalOnly card', () => {
+    for (const command of [undefined, '', 42, null]) {
+      const spec = build({ command }, {}, 'unused');
+      expect(spec.actionable).toBe(false);
+      expect(spec.question.text).toBe('Codex is asking for approval; answer it in the terminal');
+    }
+  });
+
+  test('a command that is too long to show in full is terminalOnly and is not shown cut', () => {
+    const long = `echo ${'x'.repeat(COMMAND_TEXT_MAX)}`;
+    const spec = build({}, {}, long);
+    expect(spec.actionable).toBe(false);
+    expect(spec.question.text).toBe(
+      `Codex asks to run a command too long to show (${long.length} characters). Answer it in the terminal.`,
+    );
+    // The longest one that fits is still a card, whole.
+    const fits = 'y'.repeat(COMMAND_TEXT_MAX);
+    const ok = build({}, {}, fits);
+    expect(ok.actionable).toBe(true);
+    expect(ok.question.text).toBe(`Allow Codex to run: ${fits}`);
+  });
+
+  test("Codex's stated reason follows the command, cut when long, and never replaces it", () => {
+    const spec = build({ reason: 'needs the network' });
+    expect(spec.question.text).toBe(
+      "Allow Codex to run: touch unit-marker\nCodex's stated reason: needs the network",
+    );
+    const longReason = build({ reason: 'r'.repeat(400) });
+    expect(longReason.question.text).toBe(
+      `Allow Codex to run: touch unit-marker\nCodex's stated reason: ${'r'.repeat(300)}...`,
+    );
+    expect(build({ reason: '' }).question.text).toBe('Allow Codex to run: touch unit-marker');
+  });
+
+  test("a subagent's request is always terminalOnly, carries the agent, and says so", () => {
+    const spec = build({}, { agentId: OTHER_THREAD });
+    expect(spec.actionable).toBe(false);
+    expect(spec.question.terminalOnly).toBe(true);
+    expect(spec.question.agentId).toBe(OTHER_THREAD);
+    expect(spec.question.text).toBe(
+      'Subagent · Codex asks to run: touch unit-marker. Answer it in the terminal.',
+    );
+    expect(spec.question.options).toEqual([]);
+  });
+});
+
+describe('the other kinds of request', () => {
+  const frame = (method: string, params: Record<string, unknown>) => ({ id: 3, method, params });
+
+  test('a method remi has no card for is null, however it is spelled', () => {
+    for (const method of [
+      'item/tool/call',
+      'account/chatgptAuthTokens/refresh',
+      'attestation/generate',
+      'currentTime/read',
+      'applyPatchApproval',
+      'execCommandApproval',
+      'item/commandExecution/requestApproval/',
+      'Item/commandExecution/requestApproval',
+      '',
+    ]) {
+      expect(buildApprovalCard(frame(method, { threadId: THREAD }), mint, {}), method).toBeNull();
+      expect(isApprovalMethod(method), method).toBe(false);
+    }
+    expect(isApprovalMethod('item/commandExecution/requestApproval')).toBe(true);
+  });
+
+  test('a request that does not say which thread it is about is null, even for a known method', () => {
+    for (const params of [
+      {},
+      { threadId: '' },
+      { threadId: 5 },
+      null,
+      'text',
+      [THREAD],
+      undefined,
+    ]) {
+      expect(
+        buildApprovalCard(
+          { id: 3, method: 'item/commandExecution/requestApproval', params },
+          mint,
+          {},
+        ),
+      ).toBeNull();
+    }
+  });
+
+  test('a known method whose fields do not parse is a generic terminalOnly card, not a dropped request', () => {
+    const generic = 'Codex is asking for approval; answer it in the terminal';
+    const cases = [
+      frame('item/tool/requestUserInput', { threadId: THREAD, questions: 'nope' }),
+      frame('item/tool/requestUserInput', { threadId: THREAD, questions: [] }),
+      frame('item/tool/requestUserInput', { threadId: THREAD, questions: [{ id: 'q1' }] }),
+      frame('mcpServer/elicitation/request', { threadId: THREAD }),
+      frame('item/commandExecution/requestApproval', { threadId: THREAD }),
+    ];
+    for (const c of cases) {
+      const spec = buildApprovalCard(c, mint, {});
+      expect(spec?.question.text, c.method).toBe(generic);
+      expect(spec?.actionable).toBe(false);
+      expect(spec?.question.terminalOnly).toBe(true);
+    }
+  });
+
+  test('a file change names its reason and its grant root; permissions name what they ask for', () => {
+    const fileChange = buildApprovalCard(
+      frame('item/fileChange/requestApproval', {
+        threadId: THREAD,
+        reason: 'edit the config',
+        grantRoot: '/work/project',
+      }),
+      mint,
+      {},
+    );
+    expect(fileChange?.question.text).toBe(
+      'Codex asks to change files: edit the config (write access under /work/project). Answer it in the terminal.',
+    );
+    const bare = buildApprovalCard(
+      frame('item/fileChange/requestApproval', { threadId: THREAD, grantRoot: null }),
+      mint,
+      {},
+    );
+    expect(bare?.question.text).toBe('Codex asks to change files. Answer it in the terminal.');
+    const permissions = buildApprovalCard(
+      frame('item/permissions/requestApproval', {
+        threadId: THREAD,
+        permissions: { network: { enabled: true }, fileSystem: null, other: {} },
+      }),
+      mint,
+      {},
+    );
+    expect(permissions?.question.text).toBe(
+      'Codex asks for extra permissions (network, other). Answer it in the terminal.',
+    );
+  });
+
+  test('an elicitation in url mode shows the host and nothing else of the url', () => {
+    const spec = buildApprovalCard(
+      frame('mcpServer/elicitation/request', {
+        threadId: THREAD,
+        serverName: 'srv',
+        message: 'sign in',
+        mode: 'url',
+        url: 'https://user:secret@auth.example.test/path?token=abc#frag',
+      }),
+      mint,
+      {},
+    );
+    expect(spec?.question.text).toBe(
+      'MCP server srv asks: sign in (auth.example.test). Answer it in the terminal.',
+    );
+    expect(JSON.stringify(spec)).not.toContain('secret');
+    expect(JSON.stringify(spec)).not.toContain('token');
+  });
+
+  test('a user-input request keeps every question and option, and skips an option with no label', () => {
+    const spec = buildApprovalCard(
+      frame('item/tool/requestUserInput', {
+        threadId: THREAD,
+        questions: [
+          {
+            id: 'q1',
+            header: 'Pick',
+            question: 'First?',
+            options: [
+              { label: 'A', description: 'the first' },
+              { description: 'no label' },
+              'junk',
+            ],
+          },
+          { id: 'q2', question: 'Second?', options: [] },
+        ],
+      }),
+      mint,
+      {},
+    );
+    expect(spec?.question.text).toBe('First?');
+    expect(spec?.question.questions).toEqual([
+      {
+        header: 'Pick',
+        text: 'First?',
+        multiSelect: false,
+        options: [
+          {
+            label: 'A',
+            value: 'A',
+            description: 'the first',
+            isRecommended: false,
+            isYes: false,
+            isNo: false,
+          },
+        ],
+      },
+      { text: 'Second?', multiSelect: false, options: [] },
+    ]);
+  });
+
+  test('building a card does not change the request it was built from', () => {
+    const { method, params } = commandApprovalRequest(THREAD, 'touch unit-marker');
+    const before = JSON.stringify(params);
+    buildApprovalCard({ id: 1, method, params }, mint, {});
+    expect(JSON.stringify(params)).toBe(before);
+  });
+});
+
+describe('the key names a request by thread and id', () => {
+  test('the same id on two threads is two requests', () => {
+    expect(requestKey(THREAD, 5)).not.toBe(requestKey(OTHER_THREAD, 5));
+    expect(build({}, {}, 'a', 5).key).toBe(`${THREAD}:5`);
+    expect(build({ threadId: OTHER_THREAD }, {}, 'a', 5).key).toBe(`${OTHER_THREAD}:5`);
+  });
+
+  test('requestThreadId and parseResolved read only well-formed params', () => {
+    expect(requestThreadId({ threadId: THREAD })).toBe(THREAD);
+    for (const bad of [null, undefined, 'x', [], {}, { threadId: '' }, { threadId: 1 }]) {
+      expect(requestThreadId(bad)).toBeNull();
+    }
+    expect(parseResolved({ threadId: THREAD, requestId: 5 })).toEqual({
+      threadId: THREAD,
+      requestId: 5,
+    });
+    expect(parseResolved({ threadId: THREAD, requestId: 'r-5' })).toEqual({
+      threadId: THREAD,
+      requestId: 'r-5',
+    });
+    for (const bad of [
+      null,
+      {},
+      { threadId: THREAD },
+      { requestId: 5 },
+      { threadId: THREAD, requestId: '' },
+      { threadId: THREAD, requestId: Number.NaN },
+      { threadId: THREAD, requestId: {} },
+      { threadId: '', requestId: 5 },
+    ]) {
+      expect(parseResolved(bad), JSON.stringify(bad)).toBeNull();
+    }
+  });
+});
+
+describe('responseFor: a phone answer to the result Codex expects, or a refusal', () => {
+  const session = () => build({ availableDecisions: ['accept', 'acceptForSession', 'cancel'] });
+
+  test('each option sends exactly its own decision; Cancel sends the No decision', () => {
+    const spec = session();
+    const [yes, forSession, no] = spec.question.options as Question['options'];
+    const option = (o: Question['options'][number]): HeldAnswer => ({ kind: 'option', option: o });
+    expect(responseFor(spec, option(yes as never))).toEqual({
+      ok: true,
+      result: { decision: 'accept' },
+    });
+    expect(responseFor(spec, option(forSession as never))).toEqual({
+      ok: true,
+      result: { decision: 'acceptForSession' },
+    });
+    expect(responseFor(spec, option(no as never))).toEqual({
+      ok: true,
+      result: { decision: 'cancel' },
+    });
+    expect(responseFor(spec, { kind: 'cancel' })).toEqual({
+      ok: true,
+      result: { decision: 'cancel' },
+    });
+  });
+
+  test('an option the card does not carry is refused: unknown value, a copy with another label, or a decision it never listed', () => {
+    const spec = build({ availableDecisions: ['accept', 'cancel'] });
+    const yes = spec.question.options[0] as Question['options'][number];
+    const refused = { ok: false, why: 'unknown-option' } as const;
+    expect(
+      responseFor(spec, { kind: 'option', option: { ...yes, value: 'acceptForSession' } }),
+    ).toEqual(refused);
+    expect(
+      responseFor(spec, { kind: 'option', option: { ...yes, value: 'decline', label: 'No' } }),
+    ).toEqual(refused);
+    expect(
+      responseFor(spec, { kind: 'option', option: { ...yes, label: 'Allow forever' } }),
+    ).toEqual(refused);
+    expect(
+      responseFor(spec, {
+        kind: 'option',
+        option: { ...yes, value: 'acceptWithExecpolicyAmendment' },
+      }),
+    ).toEqual(refused);
+  });
+
+  test('free text, a structured answer and an ambiguous one are refused as not an option', () => {
+    const spec = session();
+    for (const answer of [
+      { kind: 'text', text: 'accept' },
+      { kind: 'text', text: 'Yes' },
+      { kind: 'selections', selections: [{ questionIndex: 0, optionIndices: [0] }] },
+      { kind: 'ambiguous' },
+    ] satisfies HeldAnswer[]) {
+      expect(responseFor(spec, answer), answer.kind).toEqual({ ok: false, why: 'not-an-option' });
+    }
+  });
+
+  test('a terminalOnly card takes nothing, Cancel included', () => {
+    const spec = build({ kind: 'writeStdin' });
+    const yes = yesAnswer(session());
+    for (const answer of [
+      yes,
+      { kind: 'cancel' },
+      { kind: 'text', text: 'Yes' },
+      { kind: 'ambiguous' },
+    ] satisfies HeldAnswer[]) {
+      expect(responseFor(spec, answer), answer.kind).toEqual({ ok: false, why: 'terminal-only' });
+    }
   });
 });
