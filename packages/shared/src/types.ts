@@ -385,8 +385,13 @@ export interface QuestionOption {
    * (REMI_YNA) is offered only for `'addRules'`, where its title is true; a
    * card whose standing option is a `'setMode'` gets no actionable category
    * and is answered in the app. Ignored on the wire otherwise.
+   *
+   * `'session'` (#1178) is Codex's "Yes, for this session" (`acceptForSession`):
+   * Codex itself remembers the approval for the rest of the session, remi
+   * writes no rule or settings file. It carries no `suggestionIndex` (there is
+   * no suggestion to echo), and like `'setMode'` it gets no lock-screen category.
    */
-  readonly standingGrant?: 'addRules' | 'setMode' | undefined;
+  readonly standingGrant?: 'addRules' | 'setMode' | 'session' | undefined;
 
   /**
    * Public marker for an explicit, scoped session action. The grant's

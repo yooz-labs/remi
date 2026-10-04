@@ -175,6 +175,24 @@ describe('QuestionCard option hints (#1155)', () => {
     ]);
   });
 
+  test("Codex's \"Yes, for this session\" (standingGrant 'session', #1178) reads \"This session\", not \"Allow once\"", () => {
+    const html = render(
+      card([
+        wire('Yes', 'accept', { isYes: true }),
+        wire('Yes, for this session', 'acceptForSession', {
+          isYes: true,
+          standingGrant: 'session',
+        }),
+        wire('No', 'cancel', { isNo: true }),
+      ]),
+    );
+    expect(rows(html)).toEqual([
+      ['Yes', 'Allow once'],
+      ['Yes, for this session', 'This session'],
+      ['No', 'Cancel'],
+    ]);
+  });
+
   test('a Yes read off the screen with no standingGrant gets no hint, whatever its wording', () => {
     // A hook-less prompt's options come from the screen: the daemon does not
     // know what they grant (Claude may write a settings file), so neither
