@@ -108,7 +108,8 @@ export class FakeAppServer {
   /** Frames sent to a client right after its `initialize` result, as Codex sends `configWarning`. */
   initializeFrames: Json[] = [];
   private nextClient = 1;
-  private nextRequest = 1;
+  /** The real app-server counts its server requests from 0 (verified live, 0.160.0, 2026-10-04). */
+  private nextRequest = 0;
   private answersIgnored = false;
   private doublePongs = false;
   private pingCount = 0;

@@ -435,6 +435,17 @@ describe('CodexDecisions', () => {
       expect(responses).toHaveLength(1);
     });
 
+    test('a request with id 0, the first one the real app-server sends, is a card, and its answer carries id 0 (Q4)', () => {
+      request(0);
+      const q = only();
+      expect(decisions.answerHeld(q.id, optionNamed(q, 'Yes'))).toBe('resolved');
+      expect(responses).toEqual([{ id: 0, result: { decision: 'accept' } }]);
+      // Its resolved is matched by id 0 too, not lost to a falsy check.
+      decisions.handleResolved({ threadId: MAIN, requestId: 0 });
+      request(0);
+      expect(cards()).toHaveLength(2);
+    });
+
     test("No and the card's Cancel both send the No decision of the card", () => {
       request(5);
       request(6);

@@ -269,6 +269,8 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
     const r = await attached();
     await until(() => fs.existsSync(path.join(fakeDir, 'stdin')), 'the fake codex');
     const id = r.server.request(commandRequest(r, 'touch phone-first'), r.tuiId);
+    // The real app-server's first request id is 0 (verified live), and the card and its answer carry it.
+    expect(id).toBe(0);
     await until(() => pending(r).length === 1, 'the card');
     const card = pending(r)[0] as Question;
     expect(card.held).toBe(true);

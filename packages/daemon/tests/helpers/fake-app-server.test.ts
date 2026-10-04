@@ -303,7 +303,8 @@ describe('FakeAppServer: the modeled behavior, one claim per test', () => {
       server.request(requestFrame, placeholderUuid(69)),
       server.request(requestFrame, t),
     ];
-    expect(ids).toEqual([1, 2, 3]);
+    // The real app-server counts from 0 (verified live, 0.160.0).
+    expect(ids).toEqual([0, 1, 2]);
   });
 
   test('generic JSON-RPC behavior, not Codex frames: -32601 for an unknown method, -32603 for a handler that throws, silence for ignore()', async () => {

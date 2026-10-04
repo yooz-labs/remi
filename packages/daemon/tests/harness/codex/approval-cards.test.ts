@@ -624,6 +624,7 @@ describe('the key names a request by thread and id', () => {
     expect(requestKey(THREAD, 5)).not.toBe(requestKey(OTHER_THREAD, 5));
     expect(build({}, {}, 'a', 5).key).toBe(`${THREAD}:5`);
     expect(build({ threadId: OTHER_THREAD }, {}, 'a', 5).key).toBe(`${OTHER_THREAD}:5`);
+    expect(build({}, {}, 'a', 0).key).toBe(`${THREAD}:0`);
   });
 
   test('requestThreadId and parseResolved read only well-formed params', () => {
@@ -634,6 +635,11 @@ describe('the key names a request by thread and id', () => {
     expect(parseResolved({ threadId: THREAD, requestId: 5 })).toEqual({
       threadId: THREAD,
       requestId: 5,
+    });
+    // Id 0 is a real id (the first one the real app-server sends), not a missing one.
+    expect(parseResolved({ threadId: THREAD, requestId: 0 })).toEqual({
+      threadId: THREAD,
+      requestId: 0,
     });
     expect(parseResolved({ threadId: THREAD, requestId: 'r-5' })).toEqual({
       threadId: THREAD,
