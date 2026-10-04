@@ -89,7 +89,11 @@ export interface ConnectionConfig {
   /** Connection timeout in ms */
   readonly connectionTimeout?: number;
 
-  /** Skip sending HelloAck from Connection (let daemon handle it) */
+  /**
+   * Skip sending HelloAck from Connection (let daemon handle it). The production daemon always sets
+   * it: the ack Connection would send carries no `daemonVersion`, no `harnesses` and no harness
+   * identity (#1179), so it never reaches a client in production.
+   */
   readonly skipHelloAck?: boolean;
 
   /** Authenticator instance (if set, authentication is required) */
@@ -459,9 +463,10 @@ export class Connection {
 
     // Send hello ack (unless skipHelloAck is set, which lets daemon handle it)
     if (!this.config.skipHelloAck) {
-      // No daemonVersion here (#539): the production daemon always sets
-      // skipHelloAck and acks via connection-events.ts, which stamps it.
-      // This branch only serves library consumers of WebSocketServer.
+      // No daemonVersion here (#539) and no `harnesses` or harness identity (#1179): the
+      // production daemon always sets skipHelloAck and acks via connection-events.ts, which
+      // stamps all three, so this ack never reaches a client in production. This branch only
+      // serves library consumers of WebSocketServer.
       this.send(createHelloAck(this.config.serverVersion, this.sessionId));
     }
 

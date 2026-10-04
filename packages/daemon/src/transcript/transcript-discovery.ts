@@ -233,6 +233,10 @@ export class TranscriptDiscovery {
       canResume: status !== 'active', // Only offer resume for idle/completed sessions, not actively running ones
       // For external entries the filename UUID IS the Claude session id;
       // path comes from the same disk scan.
+      // No `harness` here, on purpose (#1179): absence means Claude by construction, because the only
+      // discovery is of Claude's transcript files under ~/.claude/projects, and a #1162 test pins
+      // that these entries name none. This rule must flip, so that a discovered entry names its
+      // harness, the day a non-Claude discovery exists.
       claudeSessionId: file.sessionId,
       transcriptPath: file.filePath,
     };
