@@ -48,6 +48,15 @@ interface RemoteSessionResult {
   readonly notice?: string;
 }
 
+/**
+ * Daemon text, shown escaped. The wire carries whatever JSON a daemon sent, so anything that is not
+ * a string (undefined, null, an array, an object with a `length`) is replaced by `fallback` rather
+ * than handed to `escapeUnsafeText`, which throws on it inside the socket's handler (#1204 round 2).
+ */
+function text(value: unknown, fallback: string): string {
+  return typeof value === 'string' ? escapeUnsafeText(value) : fallback;
+}
+
 const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
@@ -116,7 +125,9 @@ export async function createRemoteSession(
         // would silently drop, starting a plain Claude session, so it is sent only to a daemon
         // that says it offers the harness.
         const wanted = harness ?? (args.length > 0 ? 'claude' : undefined);
-        if (wanted !== undefined && msg.harnesses?.includes(wanted) !== true) {
+        // An array and nothing else: a string has `includes` too, and 'claude,codex' offers nothing.
+        const offered = Array.isArray(msg.harnesses) ? (msg.harnesses as unknown[]) : [];
+        if (wanted !== undefined && !offered.includes(wanted)) {
           done(
             undefined,
             new Error(
@@ -148,19 +159,17 @@ export async function createRemoteSession(
           done({
             sessionId: msg.sessionId,
             port: msg.port ?? port,
-            ...(msg.notice !== undefined && { notice: escapeUnsafeText(msg.notice) }),
+            ...(typeof msg.notice === 'string' && { notice: escapeUnsafeText(msg.notice) }),
           });
         } else {
           done(
             undefined,
-            new Error(
-              `Failed to create session: ${escapeUnsafeText(msg.error ?? 'unknown error')}`,
-            ),
+            new Error(`Failed to create session: ${text(msg.error, 'unknown error')}`),
           );
         }
       } else if (msg.type === 'error') {
         if (msg.code === 'AUTH_REQUIRED') return;
-        done(undefined, new Error(`Daemon error: ${escapeUnsafeText(msg.message)}`));
+        done(undefined, new Error(`Daemon error: ${text(msg.message, 'no message')}`));
       }
     }
 
