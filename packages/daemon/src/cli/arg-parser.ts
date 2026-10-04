@@ -7,6 +7,9 @@
  * Callers MUST check `error` before using any other field.
  */
 
+import { HARNESS_IDS, isHarnessId } from '@remi/shared';
+import type { HarnessId } from '@remi/shared';
+
 const SUBCOMMAND_LIST = [
   'ls',
   'attach',
@@ -30,6 +33,7 @@ const SUBCOMMAND_LIST = [
   'serve',
   'model',
   'migrate-permissions',
+  'codex',
 ] as const;
 
 export type Subcommand = (typeof SUBCOMMAND_LIST)[number];
@@ -130,6 +134,13 @@ export interface ParsedArgs {
    */
   readonly removedFlags: readonly string[];
   readonly claudeArgs: readonly string[];
+  /**
+   * The words `claudeArgs` holds, with the user's own `--` kept in place (#1177). `remi codex`
+   * validates the words after a `--` as prompt text, not as flags, so it must see where they begin.
+   */
+  readonly passthroughArgs: readonly string[];
+  /** The harness the hidden `--harness <id>` names (#1177): how a hub tells a child daemon its harness. */
+  readonly harness: HarnessId | undefined;
   readonly showVersion: boolean;
   readonly showHelp: boolean;
   /** Callers MUST check this before using any other field. */
@@ -175,6 +186,8 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
   let showHelp = false;
   let error: string | undefined;
   const claudeArgs: string[] = [];
+  const passthroughArgs: string[] = [];
+  let harness: HarnessId | undefined;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -182,9 +195,13 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
 
     // Standard Unix: everything after '--' is passthrough
     if (arg === '--') {
+      passthroughArgs.push('--');
       for (let j = i + 1; j < args.length; j++) {
         const a = args[j];
-        if (a) claudeArgs.push(a);
+        if (a) {
+          claudeArgs.push(a);
+          passthroughArgs.push(a);
+        }
       }
       break;
     }
@@ -343,6 +360,15 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
         host = nextArg;
         i++;
       }
+    } else if (arg === '--harness') {
+      if (!nextArg || nextArg.startsWith('-')) {
+        error = 'Error: --harness requires a value.';
+      } else if (!isHarnessId(nextArg)) {
+        error = `Error: unknown harness "${nextArg}". Known: ${HARNESS_IDS.join(', ')}.`;
+      } else {
+        harness = nextArg;
+        i++;
+      }
     } else if (arg !== undefined && REMOVED_SWITCH_FLAGS.has(arg)) {
       removedFlags.push(arg);
     } else if (arg !== undefined && REMOVED_VALUE_FLAGS.has(arg)) {
@@ -354,7 +380,9 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
       showVersion = true;
     } else if (arg === '--help' || arg === '-h') {
       showHelp = true;
-    } else if (isSubcommand(arg as string)) {
+    } else if (isSubcommand(arg as string) && subcommand !== 'codex') {
+      // Once `codex` is the subcommand, the words after it are Codex's (a prompt may say
+      // "status" or "config"), so a later subcommand name is not a subcommand.
       subcommand = arg as Subcommand;
       if (SUBCOMMANDS_WITH_ARG_LIST.has(subcommand)) {
         // Consume every following operand up to the first flag: the verb and
@@ -404,9 +432,19 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
       !arg.startsWith('-')
     ) {
       subcommandArg = arg;
-    } else {
-      if (arg) claudeArgs.push(arg);
+    } else if (arg) {
+      claudeArgs.push(arg);
+      passthroughArgs.push(arg);
     }
+  }
+
+  if (
+    error === undefined &&
+    subcommand === 'codex' &&
+    harness !== undefined &&
+    harness !== 'codex'
+  ) {
+    error = `Error: --harness ${harness} conflicts with the codex subcommand.`;
   }
 
   return {
@@ -445,6 +483,8 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
     removedFlags,
     orphanTimeout,
     claudeArgs,
+    passthroughArgs,
+    harness,
     showVersion,
     showHelp,
     error,
