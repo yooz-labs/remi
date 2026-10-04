@@ -190,6 +190,7 @@ import {
   DEFAULT_CONFIG,
   applyEnvOverrides,
   loadConfigWithNotices,
+  relayRequested,
 } from './config/index.ts';
 import type { LoadedConfig, RemiConfig } from './config/index.ts';
 import {
@@ -2063,7 +2064,10 @@ if (TELEGRAM_ENABLED && TELEGRAM_TOKEN) {
   registry.register(telegramAdapter);
 }
 
-if (!cliNoRelay && remiConfig.network.relay) {
+// Off unless enabled (#1193); `--permanent-code` is itself the opt-in.
+if (
+  relayRequested(remiConfig.network.relay, { noRelay: cliNoRelay, permanentCode: cliPermanentCode })
+) {
   const { RelayAdapter } = await import('./remote/relay-adapter.ts');
   const { generateConnectionCode } = await import('./remote/signaling-client.ts');
   const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
