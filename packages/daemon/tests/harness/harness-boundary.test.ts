@@ -381,6 +381,10 @@ const CODEX_MAY_IMPORT: ReadonlyArray<{ readonly target: string; readonly why: s
     why: 'LegacyWriter and IDENTITY_SHIM_MIN_VERSION, for the older-daemon refusal message (phase 3)',
   },
   {
+    target: 'api/message-api',
+    why: 'MessageAPI, the bullet structurer that gives a chat history message the structured form every transcript_content carries (phase 6); a history read builds one of its own, so the session stream is untouched',
+  },
+  {
     target: 'notifications/turn-events',
     why: 'TurnEventSink, the interface a finished Codex turn is reported through (phase 6); a type-only import, so a Codex file reaches no notification code, which a test pins',
   },

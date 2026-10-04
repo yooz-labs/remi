@@ -144,3 +144,61 @@ export function parseTurnCompleted(v: unknown): TurnCompletedInfo | null {
     errorCode: isRecord(error) ? nonBlank(error['codexErrorInfo']) : null,
   };
 }
+
+/**
+ * The items of a thread that are chat (`ThreadItem`, `item/completed` and the entries of
+ * `thread/items/list`), reduced to what the chat shows. Anything else (reasoning, plans, hook
+ * prompts, file changes, tool calls, an item type a newer Codex adds) is null: it is not a message.
+ */
+export type ThreadItemInfo =
+  | {
+      type: 'userMessage';
+      id: string;
+      /** The `text` parts of `content`, joined by a newline; images, mentions and skills are not text. */
+      text: string;
+    }
+  | { type: 'agentMessage'; id: string; text: string }
+  | {
+      type: 'commandExecution';
+      id: string;
+      command: string;
+      /** `aggregatedOutput`, when Codex captured it. */
+      output: string | null;
+      /** `CommandExecutionStatus`: `inProgress`, `completed`, `failed` or `declined`. */
+      status: string | null;
+      exitCode: number | null;
+    };
+
+/** A chat item, or null when `v` is not one (see {@link ThreadItemInfo}) or has no usable id. */
+export function parseThreadItem(v: unknown): ThreadItemInfo | null {
+  if (!isRecord(v) || typeof v['id'] !== 'string' || v['id'] === '') return null;
+  const id = v['id'];
+  switch (v['type']) {
+    case 'userMessage': {
+      const content = v['content'];
+      const parts = Array.isArray(content) ? content : [];
+      const text = parts
+        .filter((p): p is Record<string, unknown> => isRecord(p) && p['type'] === 'text')
+        .map((p) => p['text'])
+        .filter((t): t is string => typeof t === 'string')
+        .join('\n');
+      return { type: 'userMessage', id, text };
+    }
+    case 'agentMessage':
+      return typeof v['text'] === 'string' ? { type: 'agentMessage', id, text: v['text'] } : null;
+    case 'commandExecution': {
+      if (typeof v['command'] !== 'string') return null;
+      const exitCode = v['exitCode'];
+      return {
+        type: 'commandExecution',
+        id,
+        command: v['command'],
+        output: stringOrNull(v['aggregatedOutput']),
+        status: stringOrNull(v['status']),
+        exitCode: typeof exitCode === 'number' && Number.isFinite(exitCode) ? exitCode : null,
+      };
+    }
+    default:
+      return null;
+  }
+}

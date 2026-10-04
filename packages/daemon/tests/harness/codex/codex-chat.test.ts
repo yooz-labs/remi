@@ -195,8 +195,30 @@ describe('createCodexChat', () => {
       expect(first.message.sender).toBe('user');
       expect(first.message.content).toBe('Run the tests');
       expect(first.message.sessionId).toBe(SID);
-      expect(first.message.bullets.length).toBeGreaterThan(0);
+      expect(first.message.bullets).toEqual([]);
       expect((messages[1] as TranscriptContentMessage).message.sender).toBe('agent');
+    });
+
+    test('a message with bullets keeps them: the structure is the daemon’s own, with ids that continue within the read', async () => {
+      servePages({
+        '': itemsListPage(
+          [
+            { item: agentMessageItem('a1', '- first\n- second', 'final_answer') },
+            { item: agentMessageItem('a2', '- third', 'final_answer') },
+          ],
+          null,
+        ),
+      });
+
+      const { messages } = await history();
+
+      const bullets = (m: TranscriptContentMessage | undefined) =>
+        m?.message.bullets.map((b) => [b.bulletId, b.content]);
+      expect(bullets(messages[0])).toEqual([
+        [1, '- first'],
+        [2, '- second'],
+      ]);
+      expect(bullets(messages[1])).toEqual([[3, '- third']]);
     });
 
     test('a command is an assistant tool entry named shell, with its input and result as content blocks', async () => {
@@ -611,11 +633,15 @@ describe('createCodexChat', () => {
       server.onRequest('thread/items/list', () => {
         throw { code: -32603, message: 'PRIVATE-SERVER-TEXT' };
       });
-      await rejection(make().readHistory(() => {}));
+      const failure = await rejection(make().readHistory(() => {}));
 
       const log = logs.join('\n');
       expect(log).not.toContain('PRIVATE');
       expect(log).not.toContain(MAIN);
+      // The error a client and the handler's log read carries the code, not the server's words
+      // (which may name a thread or a path).
+      expect((failure as Error).message).not.toContain('PRIVATE');
+      expect((failure as Error).message).toContain('-32603');
     });
   });
 

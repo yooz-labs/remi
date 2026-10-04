@@ -69,6 +69,7 @@ import { AppServerClient, type AppServerClientOptions } from './app-server-clien
 import { parseResolved } from './approval-cards.ts';
 import { localAttachCommand } from './attach-hint.ts';
 import { resolveCodexWorkingDirectory, validateCodexArgs } from './codex-args.ts';
+import { createCodexChat } from './codex-chat.ts';
 import { CodexDecisions, type CodexDecisionsDeps } from './codex-decisions.ts';
 import { UntrustedSocketError, resolveCodexSocketPath } from './codex-socket.ts';
 import { createCodexTurns } from './codex-turns.ts';
@@ -421,6 +422,7 @@ export function createCodexSession(
       } else if (event.type === 'notification') {
         link.tracker?.handleNotification(event.method, event.params);
         turns?.handleNotification(event.method, event.params);
+        chat.handleNotification(event.method, event.params);
         if (event.method === 'serverRequest/resolved') {
           const resolved = parseResolved(event.params);
           if (resolved !== null) decisions.handleResolved(resolved);
@@ -448,6 +450,17 @@ export function createCodexSession(
   });
   // A card whose request is pending is not evicted by the pending-question cap.
   deps.sessionRegistry.setQuestionEvictionGuard(sessionId, (id) => decisions.isHeld(id));
+  // The session's chat: its history is read from the app-server on a client's request
+  // (`HarnessSession.chat`), and each item that completes on its thread goes to every client.
+  const chat = createCodexChat({
+    sessionId,
+    client,
+    threadId: () => trackedId,
+    threadRole: (threadId) => link.tracker?.role(threadId) ?? null,
+    messageApi,
+    sendAndRecord: ctx.sendAndRecord,
+    log,
+  });
   // How each turn of the session's own thread ended (`turn/completed`), reported to the daemon's sink.
   const turns =
     deps.turnEvents === undefined
@@ -555,6 +568,7 @@ export function createCodexSession(
   return {
     pty,
     decisions,
+    chat,
     acceptsTypedChat: false,
     start: async () => {
       await pty.start();
