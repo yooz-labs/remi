@@ -52,7 +52,7 @@ import {
 import type { DecisionChannel, HarnessLaunchContext, HarnessSession } from '../types.ts';
 import { AppServerClient, type AppServerClientOptions } from './app-server-client.ts';
 import { resolveCodexWorkingDirectory, validateCodexArgs } from './codex-args.ts';
-import { resolveCodexSocketPath } from './codex-socket.ts';
+import { UntrustedSocketError, resolveCodexSocketPath } from './codex-socket.ts';
 import type { ThreadStatus } from './thread-protocol.ts';
 import { ThreadClaimedError, ThreadTracker, type ThreadTrackerDeps } from './thread-tracker.ts';
 
@@ -173,6 +173,9 @@ const NO_DECISIONS: DecisionChannel = {
 
 const LINK_UNAVAILABLE_MESSAGE =
   'remi cannot reach the shared Codex app-server, so its status here is not updating; the session still works in the terminal.';
+/** Said instead when the socket was found but refused: the cause is a fixable permission. */
+const LINK_UNTRUSTED_MESSAGE =
+  'remi will not connect to the shared Codex app-server: its control directory is not private (the remi log says which); the session still works in the terminal.';
 const DEFAULT_LINK_WATCHDOG_MS = 30_000;
 
 /** The session's status from its thread and its descendants: waiting beats thinking beats idle. */
@@ -242,6 +245,8 @@ export function createCodexSession(
   const link: { tracker?: ThreadTracker } = {};
   // Set first by dispose(): stopping the client reports a drop, which must not re-arm the watchdog.
   let disposed = false;
+  /** Why the last attempt to find the socket failed, to word the watchdog's notice. */
+  let socketError: unknown;
   let watchdog: ReturnType<typeof setTimeout> | undefined;
   let warned = false;
   const cancelWatchdog = (): void => {
@@ -274,13 +279,26 @@ export function createCodexSession(
       log(
         'the shared app-server is not reachable; the session continues as a plain terminal session',
       );
-      sendSystemMessage(LINK_UNAVAILABLE_MESSAGE);
+      sendSystemMessage(
+        socketError instanceof UntrustedSocketError
+          ? LINK_UNTRUSTED_MESSAGE
+          : LINK_UNAVAILABLE_MESSAGE,
+      );
     }, deps.linkWatchdogMs ?? DEFAULT_LINK_WATCHDOG_MS);
   };
 
   const client = new AppServerClient(
     {
-      socketPath: () => resolveCodexSocketPath(deps.env()),
+      socketPath: () => {
+        try {
+          const found = resolveCodexSocketPath(deps.env());
+          socketError = undefined;
+          return found;
+        } catch (error) {
+          socketError = error;
+          throw error;
+        }
+      },
       clientInfo: { name: 'remi', title: null, version: deps.remiVersion },
       log,
       ...deps.appServer,

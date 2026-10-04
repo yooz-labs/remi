@@ -890,6 +890,32 @@ describe('CodexHarness', () => {
       expect(session.pty.isRunning).toBe(true);
     });
 
+    test('a control directory open to others is never connected through, and the notice says so (W12, W17b)', async () => {
+      // The socket trust check runs inside the client's socketPath(): without it the client
+      // connects to a socket anyone on the machine could answer approvals through.
+      const server = startServer();
+      fs.chmodSync(path.join(server.codexHome, 'app-server-control'), 0o755);
+      const { session, messages } = create(buildDeps(server, { linkWatchdogMs: 300 }));
+      await session.start();
+      await until(() => logs.some((l) => l.includes('open to group or others')), 'the refusal log');
+      await until(() => noticeCount(messages) === 1, 'the notice');
+      expect(server.clientIds()).toEqual([]);
+      const text = messages.find((m) => m.sender === 'system')?.content ?? '';
+      expect(text).toContain('its control directory is not private');
+      expect(text).not.toContain('cannot reach');
+      expect(session.pty.isRunning).toBe(true);
+    });
+
+    test('a private control directory connects (the control for the case above)', async () => {
+      const server = startServer();
+      fs.chmodSync(path.join(server.codexHome, 'app-server-control'), 0o700);
+      const { session, messages } = create(buildDeps(server, { linkWatchdogMs: 300 }));
+      await session.start();
+      await until(() => server.clientIds().length === 1, 'the connection');
+      expect(logs.some((l) => l.includes('open to group or others'))).toBe(false);
+      expect(noticeCount(messages)).toBe(0);
+    });
+
     test('a link that comes up in time sends nothing', async () => {
       const { session, messages } = create(buildDeps(startServer(), { linkWatchdogMs: 400 }));
       await session.start();
