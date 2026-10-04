@@ -19,7 +19,8 @@ import * as path from 'node:path';
 // sees a file sees all of it, and one that sees `argv` sees `cwd` and `pid` too. A shell redirect
 // creates its file empty and fills it as the loop runs, so waiting for `argv` to EXIST used to return a
 // partial list (#1204 round 2, P11). `FAKE_AGENT_RECORD_DELAY` (seconds) puts a pause after each
-// argument written, which is how the helper's own test makes the old race certain instead of rare.
+// argument written and between the renames, which is how the helper's own test makes the old race
+// (and a rename of argv before cwd and pid) certain instead of rare.
 const RECORD = `d="$FAKE_AGENT_DIR"
 {
   for a in "$@"; do
@@ -30,7 +31,9 @@ const RECORD = `d="$FAKE_AGENT_DIR"
 pwd -P > "$d/cwd.tmp"
 echo $$ > "$d/pid.tmp"
 mv "$d/cwd.tmp" "$d/cwd"
+if [ -n "$FAKE_AGENT_RECORD_DELAY" ]; then sleep "$FAKE_AGENT_RECORD_DELAY"; fi
 mv "$d/pid.tmp" "$d/pid"
+if [ -n "$FAKE_AGENT_RECORD_DELAY" ]; then sleep "$FAKE_AGENT_RECORD_DELAY"; fi
 mv "$d/argv.tmp" "$d/argv"
 i=0
 while [ ! -e "$d/release" ] && [ $i -lt 600 ]; do

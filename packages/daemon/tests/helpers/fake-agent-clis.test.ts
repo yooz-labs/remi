@@ -51,6 +51,15 @@ describe('a fake agent that is slow to record', () => {
     expect(Number(fs.readFileSync(path.join(codexDir, 'pid'), 'utf8'))).toBe(proc?.pid as number);
   });
 
+  test('the delay is real: recording takes at least a pause per argument and per rename, so the tests above bite', async () => {
+    // Five arguments and two pauses between the renames at 0.2 s each is a floor of 1.2 s. If the
+    // pause did nothing the other two tests would still pass against an atomic recorder, and would
+    // say nothing about a recorder that writes in place.
+    const begin = Date.now() - 100; // the fake was spawned a moment before this test body ran
+    await waitForRecordedArgv(codexDir);
+    expect(Date.now() - begin).toBeGreaterThanOrEqual(1000);
+  });
+
   test('a reader that waits for argv to exist, as the old helper did, never sees it half written', async () => {
     const argv = path.join(codexDir, 'argv');
     const start = Date.now();

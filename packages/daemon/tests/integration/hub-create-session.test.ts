@@ -465,6 +465,27 @@ describe('a hub creating a session for a harness (#1179)', () => {
       90000,
     );
 
+    test('a Claude request that resumes nothing is not held up by a live session that has no id yet', async () => {
+      const r = await startHub({ claude: true, codex: true });
+      const holder = Bun.spawn(['sleep', '60']);
+      sleepers.push(holder);
+      // A session that has only just started: Claude's id is not learned yet.
+      new SessionStore(path.join(r.hub.home, '.remi', 'sessions.json')).save({
+        remiSessionId: crypto.randomUUID(),
+        claudeSessionId: null,
+        projectPath: r.hub.work,
+        port: 19999,
+        pid: holder.pid,
+        startedAt: new Date().toISOString(),
+        exitedAt: null,
+        exitCode: null,
+      });
+      for (const options of [{ harness: 'claude' }, { args: ['--model', 'opus'] }]) {
+        const { response } = await ask(r, options);
+        expect(response.success, response.error).toBe(true);
+      }
+    }, 90000);
+
     test('a resume of a session nobody holds, or only history holds, is spawned', async () => {
       const r = await startHub({ claude: true, codex: true });
       await holdClaudeSession(r, { exited: true });

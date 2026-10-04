@@ -378,6 +378,8 @@ describe('create requests naming a harness (#1179)', () => {
       ['a delete character', '/tmp/a\u007fb'],
       ['a C1 control (the single-character CSI)', '/tmp/a\u009b2Kb'],
       ['a C1 control (next line)', '/tmp/a\u0085b'],
+      ['the last C0 control (the unit separator)', '/tmp/a\u001fb'],
+      ['the last C1 control', '/tmp/a\u009fb'],
       ['a number', 5],
       ['an object', { toString: () => '/tmp' }],
       ['an array', ['/tmp']],
@@ -412,6 +414,8 @@ describe('create requests naming a harness (#1179)', () => {
       ['a hyphen inside a name', '/tmp/my-project/-x'],
       ['a home-relative path', '~/project'],
       ['non-ASCII letters', '/tmp/projet-\u00e9t\u00e9'],
+      ['a space in a name', '/tmp/my project'],
+      ['the character just above the C1 controls (a no-break space)', '/tmp/a\u00a0b'],
     ])('a directory that is %s is accepted (G7)', async (_name, directory) => {
       await handlers().onCreateSessionRequest(CID, directory, REQ);
       expect(response().success).toBe(true);

@@ -335,16 +335,18 @@ describe('findLegacyWriters', () => {
       ).toEqual([old, none].sort());
     });
 
-    test('the version must be equal as a string: a prefix or a different case is another build', () => {
+    test('the version must be equal as a string: a prefix, an extension or a different case is another build', () => {
       const prefix = livePid();
       const cased = livePid();
+      const longer = livePid();
       registerLive(prefix, '0.7.16-p1204');
       registerLive(cased, '0.7.16-P1204.1');
+      registerLive(longer, `${OWN}0`);
       expect(
         gate(OWN)
           .map((w) => w.pid)
           .sort(),
-      ).toEqual([prefix, cased].sort());
+      ).toEqual([prefix, cased, longer].sort());
     });
 
     test('the pid and recycled-pid rules still apply to a same-version record: it is simply skipped first', async () => {
