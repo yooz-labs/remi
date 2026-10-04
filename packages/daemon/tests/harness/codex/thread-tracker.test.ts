@@ -548,41 +548,100 @@ describe('status', () => {
     expect(ctx.statuses.map((s) => s.id).sort()).toEqual([a, child, grandchild].sort());
   });
 
-  test('a chain of parents counts up to eight hops and no further', async () => {
+  test('a chain of subagents counts however deep it goes, in order of arrival', async () => {
     const ctx = await setup();
     const a = crypto.randomUUID();
     ctx.started('tui', a);
     await waitUntil(ctx, () => ctx.identities.length === 1, 'the identity');
-    const chain = Array.from({ length: 10 }, () => crypto.randomUUID());
+    const chain = Array.from({ length: 12 }, () => crypto.randomUUID());
     chain.forEach((id, i) => {
       ctx.started('tui', id, setKey('parentThreadId', i === 0 ? a : chain[i - 1]));
     });
     await settle(300);
     const ours = await oursOf(ctx, chain);
-    expect([6, 7, 8, 9].map((i) => ours.has(chain[i] as string))).toEqual([
-      true,
-      true,
-      false,
-      false,
-    ]);
+    expect(ours.size).toBe(12);
   });
 
-  test('the memory of parent links is bounded: the oldest is forgotten first', async () => {
+  test('a subagent seen before its parent counts once the parent is known to be ours', async () => {
+    const ctx = await setup();
+    const a = crypto.randomUUID();
+    const child = crypto.randomUUID();
+    const grandchild = crypto.randomUUID();
+    ctx.started('tui', a);
+    await waitUntil(ctx, () => ctx.identities.length === 1, 'the identity');
+    // The grandchild's start arrives before its parent's: nothing says it is ours yet.
+    ctx.started('tui', grandchild, setKey('parentThreadId', child));
+    await settle(150);
+    expect((await oursOf(ctx, [grandchild])).size).toBe(0);
+    ctx.started('tui', child, setKey('parentThreadId', a));
+    await settle(150);
+    expect((await oursOf(ctx, [child, grandchild])).size).toBe(2);
+  });
+
+  test('threads that started before the tracked thread was known are adopted when it binds', async () => {
+    const ctx = await setup();
+    const a = crypto.randomUUID();
+    const child = crypto.randomUUID();
+    // The child's start arrives inside the window, before the parent has committed.
+    ctx.started('tui', a);
+    ctx.started('tui', child, setKey('parentThreadId', a));
+    await waitUntil(ctx, () => ctx.identities.length === 1, 'the identity');
+    await settle(150);
+    expect((await oursOf(ctx, [child])).size).toBe(1);
+  });
+
+  test("other windows' subagents never become ours, and a rotation drops the old thread's", async () => {
+    const ctx = await setup();
+    const a = crypto.randomUUID();
+    const child = crypto.randomUUID();
+    const foreign = crypto.randomUUID();
+    ctx.started('tui', a);
+    await waitUntil(ctx, () => ctx.identities.length === 1, 'the identity');
+    ctx.started('tui', child, setKey('parentThreadId', a));
+    ctx.started('tui', foreign, setKey('parentThreadId', crypto.randomUUID()));
+    await settle(150);
+    const before = await oursOf(ctx, [a, child, foreign]);
+    expect([before.has(a), before.has(child), before.has(foreign)]).toEqual([true, true, false]);
+
+    ctx.status(a, { type: 'idle' });
+    await settle(100);
+    const b = crypto.randomUUID();
+    ctx.started('tui', b);
+    await waitUntil(ctx, () => ctx.identities.length === 2, 'the rotation');
+    const after = await oursOf(ctx, [a, child, b]);
+    expect([after.has(a), after.has(child), after.has(b)]).toEqual([false, false, true]);
+  });
+
+  test("520 links of other windows' threads do not push our subagent out of the memory (W9)", async () => {
+    const ctx = await setup();
+    const a = crypto.randomUUID();
+    const child = crypto.randomUUID();
+    ctx.started('tui', a);
+    await waitUntil(ctx, () => ctx.identities.length === 1, 'the identity');
+    ctx.started('tui', child, setKey('parentThreadId', a));
+    // One memory shared by foreign and own links used to evict ours after 512 foreign ones.
+    for (let i = 0; i < 520; i++) {
+      ctx.started('tui', crypto.randomUUID(), setKey('parentThreadId', crypto.randomUUID()));
+    }
+    await settle(500);
+    expect((await oursOf(ctx, [child])).size).toBe(1);
+  });
+
+  test('our own subagents are bounded too: of 300, the oldest 44 are forgotten', async () => {
     const ctx = await setup();
     const a = crypto.randomUUID();
     ctx.started('tui', a);
     await waitUntil(ctx, () => ctx.identities.length === 1, 'the identity');
-    const children = Array.from({ length: 520 }, () => crypto.randomUUID());
+    const children = Array.from({ length: 300 }, () => crypto.randomUUID());
     for (const id of children) ctx.started('tui', id, setKey('parentThreadId', a));
-    await settle(400);
-    // 520 links against a memory of 512: the first eight are gone, the ninth is not.
+    await settle(500);
     const ours = await oursOf(ctx, [
       children[0],
-      children[7],
-      children[8],
-      children[519],
+      children[43],
+      children[44],
+      children[299],
     ] as string[]);
-    expect([0, 7, 8, 519].map((i) => ours.has(children[i] as string))).toEqual([
+    expect([0, 43, 44, 299].map((i) => ours.has(children[i] as string))).toEqual([
       false,
       false,
       true,

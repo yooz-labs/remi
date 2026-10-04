@@ -34,8 +34,13 @@
  * in the TUI and rotates the binding, but not while the tracked thread is
  * `active` (decided policy, unverified live): the old id is not kept.
  *
- * `isOurs` is the tracked thread and every thread whose parent chain reaches
- * it (subagents), so their status is the session's status.
+ * The tracked thread and every thread whose parent chain reaches it (subagents)
+ * are the session's, so their status is the session's status. Two bounded
+ * memories keep that: `descendants` (at most 256 ids, never pushed out by
+ * anyone else's threads) holds the ones known to be ours, and `pendingLinks`
+ * (at most 512, first in first out) holds the links seen before their parent was
+ * known to be ours, so a thread started before its parent still counts once the
+ * parent does, while the links of other windows only ever fill that second one.
  */
 
 import { realpathSync } from 'node:fs';
@@ -68,8 +73,8 @@ export interface ThreadTrackerDeps {
 
 /** A thread created more than this long before the spawn is not this session's. */
 const CREATED_BEFORE_SPAWN_SLACK_MS = 5000;
-const MAX_PARENT_LINKS = 512;
-const MAX_PARENT_DEPTH = 8;
+const MAX_PENDING_LINKS = 512;
+const MAX_DESCENDANTS = 256;
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -102,24 +107,18 @@ export class ThreadTracker {
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private trackedStatus: ThreadStatus | null = null;
   private failures = 0;
-  private readonly parents = new Map<string, string>();
+  /** Ids known to be descendants of the tracked thread, oldest first. */
+  private readonly descendants = new Set<string>();
+  /** Child -> parent, for links whose parent is not (yet) known to be ours. */
+  private readonly pendingLinks = new Map<string, string>();
 
   constructor(private readonly deps: ThreadTrackerDeps) {
     this.current = deps.expectedThreadId;
   }
 
-  /** The tracked thread, or a thread whose parent chain reaches it. */
+  /** The tracked thread, or a thread known to descend from it. */
   private isOurs(threadId: string): boolean {
-    if (this.current === null) return false;
-    if (threadId === this.current) return true;
-    let id = threadId;
-    for (let depth = 0; depth < MAX_PARENT_DEPTH; depth++) {
-      const parent = this.parents.get(id);
-      if (parent === undefined) return false;
-      if (parent === this.current) return true;
-      id = parent;
-    }
-    return false;
+    return threadId === this.current || this.descendants.has(threadId);
   }
 
   handleNotification(method: string, params: unknown): void {
@@ -151,15 +150,39 @@ export class ThreadTracker {
   private onThreadStarted(params: unknown): void {
     const thread = parseThread(isRecord(params) ? params['thread'] : null);
     if (thread === null) return;
-    if (thread.parentThreadId !== null) this.rememberParent(thread.id, thread.parentThreadId);
+    if (thread.parentThreadId !== null) this.noteLink(thread.id, thread.parentThreadId);
     if (this.isCandidate(thread)) this.consider(thread);
   }
 
-  private rememberParent(id: string, parent: string): void {
-    this.parents.set(id, parent);
-    if (this.parents.size > MAX_PARENT_LINKS) {
-      const oldest = this.parents.keys().next().value;
-      if (oldest !== undefined) this.parents.delete(oldest);
+  /** A `thread/started` with a parent: a descendant if the parent is ours, else a link to remember. */
+  private noteLink(id: string, parent: string): void {
+    if (this.isOurs(parent)) {
+      this.adopt(id);
+      return;
+    }
+    this.pendingLinks.delete(id);
+    this.pendingLinks.set(id, parent);
+    if (this.pendingLinks.size > MAX_PENDING_LINKS) {
+      const oldest = this.pendingLinks.keys().next().value;
+      if (oldest !== undefined) this.pendingLinks.delete(oldest);
+    }
+  }
+
+  /** `id` descends from the tracked thread; so do the threads that were waiting on it. */
+  private adopt(id: string): void {
+    const work = [id];
+    while (work.length > 0) {
+      const next = work.pop() as string;
+      this.pendingLinks.delete(next);
+      this.descendants.delete(next);
+      this.descendants.add(next);
+      if (this.descendants.size > MAX_DESCENDANTS) {
+        const oldest = this.descendants.values().next().value;
+        if (oldest !== undefined) this.descendants.delete(oldest);
+      }
+      for (const [child, parent] of this.pendingLinks) {
+        if (parent === next) work.push(child);
+      }
     }
   }
 
@@ -217,6 +240,11 @@ export class ThreadTracker {
       return;
     }
     this.current = id;
+    // The old thread's subagents are not this one's; threads that started before it was known are.
+    this.descendants.clear();
+    for (const [child, parent] of [...this.pendingLinks]) {
+      if (parent === id) this.adopt(child);
+    }
     this.isAttached = false;
     this.trackedStatus = null;
     this.failures = 0;
