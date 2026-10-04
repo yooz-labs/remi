@@ -12,6 +12,9 @@
  *     accidental field rename/add/remove on a message interface or its
  *     factory shows up as a failing test, not a silent wire-shape drift.
  *
+ * Variant fixtures (`FIXTURE_VARIANTS`, `<type>_<variant>.json`) keep a second
+ * golden for the shape an older peer still sends once a type's shape has grown.
+ *
  * A 46th fixture (`__unknown_type__.json`, deliberately NOT a registry key)
  * pins the forward-compat contract: `deserialize` returns `null` for a type
  * it doesn't recognize instead of throwing.

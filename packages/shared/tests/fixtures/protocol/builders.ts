@@ -341,6 +341,23 @@ export const FIXTURE_BUILDERS: { [K in keyof ProtocolMessageMap]: () => Protocol
  * `session_update` has one: `createSessionUpdate` calls `now()` again for
  * the nested `session.startedAt` (protocol.ts, `createSessionUpdate`).
  */
+/**
+ * A second golden for a message type whose wire shape grew: the shape an older peer still sends
+ * (#1179 review, G16). `FIXTURE_BUILDERS` holds one current shape per registry type; a variant is
+ * named `<type>_<variant>` and written to `<name>.json` beside it, so both shapes are pinned.
+ */
+export const FIXTURE_VARIANTS: Record<
+  string,
+  { type: keyof ProtocolMessageMap; build: () => ProtocolMessageMap[keyof ProtocolMessageMap] }
+> = {
+  // Before Phase 5 the request named a directory and nothing else; the registry golden now names
+  // a harness and arguments too, and an older client still sends this.
+  create_session_request_plain: {
+    type: 'create_session_request',
+    build: () => createCreateSessionRequest('/Users/fixture/project'),
+  },
+};
+
 const EXTRA_VOLATILE_PATHS: Partial<Record<keyof ProtocolMessageMap, readonly string[]>> = {
   session_update: ['session.startedAt'],
 };
