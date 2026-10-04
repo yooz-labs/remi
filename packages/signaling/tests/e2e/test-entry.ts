@@ -74,6 +74,16 @@ export class ConnectionRoom extends RealRoom {
     return super.webSocketMessage(ws, data);
   }
 
+  private readonly closes: string[] = [];
+  override async webSocketClose(ws: RoomSocket, code: number, reason: string): Promise<void> {
+    this.closes.push(`close ${code} ${JSON.stringify(reason)}`);
+    return super.webSocketClose(ws, code, reason);
+  }
+  override async webSocketError(ws: RoomSocket): Promise<void> {
+    this.closes.push('error');
+    return super.webSocketError(ws);
+  }
+
   override async fetch(request: Request): Promise<Response> {
     const path = new URL(request.url).pathname;
     if (path.endsWith('/__state')) {
@@ -86,6 +96,7 @@ export class ConnectionRoom extends RealRoom {
       });
     }
     if (path.endsWith('/__seen')) return Response.json(this.seen);
+    if (path.endsWith('/__closes')) return Response.json(this.closes);
     if (path.endsWith('/__legacy')) {
       const Pair = (
         globalThis as unknown as { WebSocketPair: new () => Record<number, RoomSocket> }

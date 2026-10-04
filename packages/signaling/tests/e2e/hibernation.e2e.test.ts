@@ -50,4 +50,15 @@ test('a session survives the object being evicted from memory and rebuilt', asyn
   expect(await client.text()).toBe('after hibernation');
   await client.send('and back');
   expect(await hostSide.link.text()).toBe('and back');
+
+  // the rebuilt object also knows the host is up and who is enrolled: a new device is admitted,
+  // told the host is up, and announced to the host, while the old session goes on
+  const second = await newIdentity();
+  expect(await host.enroll(second.publicKey)).toEqual({ t: 'ack', r: 'enroll', ok: true });
+  const { socket: joined, hostUp } = await connectClient(worker, machine, second);
+  expect(hostUp).toBe(true);
+  expect(await host.nextConnection()).toMatch(/^[0-9a-f]{32}$/);
+  expect(joined.isClosed).toBe(false);
+  await client.send('still here');
+  expect(await hostSide.link.text()).toBe('still here');
 }, 40_000);

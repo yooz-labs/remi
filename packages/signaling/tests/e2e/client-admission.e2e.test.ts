@@ -16,7 +16,6 @@ import {
   admit,
   admitText,
   advanceClock,
-  bunKeepsCloseReason,
   clientUrl,
   connectClient,
   hex,
@@ -24,6 +23,7 @@ import {
   newIdentity,
   newMachine,
   readNonce,
+  roomCloses,
   roomState,
   runAlarm,
 } from './endpoints.ts';
@@ -502,16 +502,25 @@ describe('when one end of a pipe closes', () => {
     const { socket } = await connectClient(worker, machine, device);
     const pipe = await host.openPipe(await host.nextConnection());
     await socket.json();
-    return { socket, pipe };
+    return { machine, socket, pipe };
   }
 
   test('the close code and reason the peer chose are passed on to the other end', async () => {
-    const { socket, pipe } = await openPipe();
-    socket.ws.close(4001, 'ended by the phone');
-    const closed = await pipe.closed;
-    expect(closed.code).toBe(4001);
-    // Bun 1.3.11 sends no close reason, so there is none to pass on there (see the helper)
-    if (await bunKeepsCloseReason()) expect(closed.reason).toBe('ended by the phone');
+    // Bun 1.3.11's client sometimes ends the connection without sending its close frame, and
+    // then the Worker (rightly) sees an abnormal end. A run is only counted when the Worker saw
+    // the close frame, so what is under test is what the Worker does with a clean close.
+    // The reason is one character because Bun 1.3.11's client drops a longer one when it closes.
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const { machine, socket, pipe } = await openPipe();
+      socket.ws.close(4001, 'x');
+      const closed = await pipe.closed;
+      const events = await roomCloses(worker, machine.ridHex);
+      if (events[0]?.startsWith('close 1006')) continue;
+      expect(events[0]).toBe('close 4001 "x"');
+      expect(closed).toEqual({ code: 4001, reason: 'x' });
+      return;
+    }
+    throw new Error('the client closed abnormally eight times in a row');
   });
 
   test('a socket that dies without a close frame ends the other with the generic close', async () => {
