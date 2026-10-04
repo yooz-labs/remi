@@ -39,6 +39,8 @@ interface Ctx {
   /** Another directory that exists, for a thread that is not this session's. */
   otherDir: string;
   identities: string[];
+  /** When each identity was committed, in `Date.now()` terms. */
+  identityAt: number[];
   statuses: Array<{ id: string; status: ThreadStatus }>;
   logs: string[];
   /** What the tracker asked to tell the user (system messages). */
@@ -68,6 +70,10 @@ interface Options {
   siblingSeeking?: () => boolean;
   /** How long after ready a session with no thread waits before saying so. */
   noIdentityMs?: number;
+  /** The ambiguity window; 'default' leaves it to the tracker's own (300 ms). */
+  ambiguityMs?: number | 'default';
+  /** The notice callback throws (a client the message cannot be sent to). */
+  noticeThrows?: boolean;
   retryMs?: number;
   spawnedAtMs?: number;
 }
@@ -82,6 +88,7 @@ async function setup(opts: Options = {}): Promise<Ctx> {
   for (const dir of [cwd, otherDir]) await Bun.write(join(dir, '.keep'), '');
 
   const identities: string[] = [];
+  const identityAt: number[] = [];
   const statuses: Ctx['statuses'] = [];
   const logs: string[] = [];
   const notices: string[] = [];
@@ -122,13 +129,17 @@ async function setup(opts: Options = {}): Promise<Ctx> {
       if (opts.identityError) throw opts.identityError;
       if (opts.throwOnIdentity) throw new Error('the store is unavailable');
       identities.push(id);
+      identityAt.push(Date.now());
     },
     siblingSeekingIdentity: opts.siblingSeeking ?? (() => false),
-    notice: (m) => notices.push(m),
+    notice: (m) => {
+      if (opts.noticeThrows) throw new Error('the message cannot be sent');
+      notices.push(m);
+    },
     onStatus: (id, status) => statuses.push({ id, status }),
     log: (m) => logs.push(m),
     retryMs: opts.retryMs ?? 40,
-    ambiguityMs: 150,
+    ...(opts.ambiguityMs === 'default' ? {} : { ambiguityMs: opts.ambiguityMs ?? 150 }),
     ...(opts.noIdentityMs !== undefined ? { noIdentityMs: opts.noIdentityMs } : {}),
   });
   cleanups.push(() => tracker.dispose());
@@ -142,6 +153,7 @@ async function setup(opts: Options = {}): Promise<Ctx> {
     cwd,
     otherDir,
     identities,
+    identityAt,
     statuses,
     logs,
     notices,
@@ -294,6 +306,37 @@ describe('identity discovery', () => {
     expect(ctx.identities).toEqual([first]);
     expect(ctx.logs.some((l) => l.includes('binding neither'))).toBe(false);
   });
+
+  test('the production window is 300 ms: nothing binds sooner (W4)', async () => {
+    const ctx = await setup({ ambiguityMs: 'default' });
+    const sent = Date.now();
+    ctx.started('tui', crypto.randomUUID());
+    await waitUntil(ctx, () => ctx.identities.length === 1, 'the identity');
+    // A timer is never early, so load can only make this bound easier to meet, never fail it.
+    expect((ctx.identityAt[0] as number) - sent).toBeGreaterThanOrEqual(270);
+  });
+
+  test("an ambiguity ends the first candidate's window: a later candidate keeps a whole window of its own (W4)", async () => {
+    const ctx = await setup({ ambiguityMs: 600 });
+    const tracked = crypto.randomUUID();
+    ctx.started('tui', tracked);
+    await waitUntil(ctx, () => ctx.identities.length === 1, 'the first identity');
+    ctx.status(tracked, { type: 'idle' });
+    await settle(100);
+
+    // A and B arrive together: ambiguous, neither binds. A's own timer must not outlive that.
+    ctx.started('tui', crypto.randomUUID());
+    ctx.started('tui', crypto.randomUUID());
+    await settle(150);
+    // C opens a window (to +750 ms). D arrives at +675 ms: after A's timer would have fired,
+    // inside C's window, so C and D are ambiguous as well.
+    ctx.started('tui', crypto.randomUUID());
+    await settle(525);
+    ctx.started('tui', crypto.randomUUID());
+    await settle(1000);
+    expect(ctx.identities).toEqual([tracked]);
+    expect(ctx.logs.filter((l) => l.includes('binding neither'))).toHaveLength(2);
+  }, 15000);
 
   test('a duplicate thread/started for the same thread is one candidate, not an ambiguity (W5)', async () => {
     const ctx = await setup();
@@ -559,10 +602,58 @@ describe('attach', () => {
     ctx.started('tui', crypto.randomUUID());
     await waitUntil(ctx, () => at.length >= 13, 'thirteen attempts', 8000);
     const gap = (i: number) => (at[i + 1] as number) - (at[i] as number);
-    // The 10th failure is the 10th attempt: gaps before it are the period, gaps after are 5x.
-    expect(gap(11)).toBeGreaterThanOrEqual(80);
-    expect(gap(11)).toBeGreaterThan(gap(3));
+    // Failure k schedules the gap after attempt k, so the 10th failure is the first slowed one:
+    // gap(9) and every gap after are 5 x 20 ms. Timers are never early, so these lower bounds
+    // hold under load, and a backoff that starts one failure late fails gap(9).
+    expect(gap(9)).toBeGreaterThanOrEqual(80);
+    expect(gap(10)).toBeGreaterThanOrEqual(80);
+    // The first ten attempts ran at the plain period: nine gaps of 20 ms, where a backoff that
+    // starts at the first failure would take nine of 100 ms.
+    expect((at[9] as number) - (at[0] as number)).toBeLessThan(600);
   });
+
+  /** Every attempt fails with -32600; what the tests below read is when, and for which thread. */
+  function failingAttempts(ctx: Ctx): Array<{ id: unknown; at: number }> {
+    const attempts: Array<{ id: unknown; at: number }> = [];
+    ctx.server.onRequest('thread/resume', (params) => {
+      attempts.push({ id: (params as Json)['threadId'], at: Date.now() });
+      throw { code: -32600, message: 'no rollout found' };
+    });
+    return attempts;
+  }
+
+  test('a new connection starts the period over, whatever the failures before it (W10)', async () => {
+    const ctx = await setup({ retryMs: 60 });
+    const attempts = failingAttempts(ctx);
+    ctx.started('tui', crypto.randomUUID());
+    await waitUntil(ctx, () => attempts.length >= 12, 'twelve attempts', 15000);
+    const slowed = (attempts[11] as { at: number }).at - (attempts[10] as { at: number }).at;
+    expect(slowed).toBeGreaterThanOrEqual(250);
+
+    ctx.tracker.handleDisconnected();
+    ctx.tracker.handleReady();
+    await waitUntil(ctx, () => attempts.length >= 14, 'two more attempts', 15000);
+    const restarted = (attempts[13] as { at: number }).at - (attempts[12] as { at: number }).at;
+    expect(restarted).toBeLessThan(slowed / 2);
+  }, 30000);
+
+  test('a rotation starts the period over for the new thread (W10)', async () => {
+    const ctx = await setup({ retryMs: 60 });
+    const attempts = failingAttempts(ctx);
+    const a = crypto.randomUUID();
+    const b = crypto.randomUUID();
+    ctx.started('tui', a);
+    await waitUntil(ctx, () => attempts.length >= 12, 'twelve attempts', 15000);
+    const slowed = (attempts[11] as { at: number }).at - (attempts[10] as { at: number }).at;
+    expect(slowed).toBeGreaterThanOrEqual(250);
+
+    ctx.started('tui', b);
+    const forB = () => attempts.filter((x) => x.id === b);
+    await waitUntil(ctx, () => forB().length >= 2, 'two attempts for the new thread', 15000);
+    expect((forB()[1] as { at: number }).at - (forB()[0] as { at: number }).at).toBeLessThan(
+      slowed / 2,
+    );
+  }, 30000);
 
   test('the status in the resume result is applied', async () => {
     const ctx = await setup();
@@ -700,6 +791,99 @@ describe('status', () => {
     ]);
   });
 
+  /** A link whose parent is nobody's we know: it fills the memory of links waiting for a parent. */
+  const foreignLinks = (ctx: Ctx, n: number): void => {
+    for (let i = 0; i < n; i++) {
+      ctx.started('tui', crypto.randomUUID(), setKey('parentThreadId', crypto.randomUUID()));
+    }
+  };
+
+  /** `parent` turns out to descend from the tracked thread, which adopts the links waiting on it. */
+  const parentIsOurs = (ctx: Ctx, parent: string, tracked: string): void =>
+    ctx.started('tui', parent, setKey('parentThreadId', tracked));
+
+  describe('the memory of links waiting for a parent holds 512 and forgets the oldest first (W9)', () => {
+    async function tracked() {
+      const ctx = await setup();
+      const a = crypto.randomUUID();
+      ctx.started('tui', a);
+      await waitUntil(ctx, () => ctx.identities.length === 1, 'the identity');
+      return { ctx, a };
+    }
+
+    test('512 links are all kept: the first of them still counts once its parent is ours', async () => {
+      const { ctx, a } = await tracked();
+      const child = crypto.randomUUID();
+      const parent = crypto.randomUUID();
+      ctx.started('tui', child, setKey('parentThreadId', parent));
+      foreignLinks(ctx, 511);
+      await settle(600);
+      parentIsOurs(ctx, parent, a);
+      await settle(300);
+      expect((await oursOf(ctx, [child, parent])).size).toBe(2);
+    });
+
+    test('the 513th pushes out the oldest', async () => {
+      const { ctx, a } = await tracked();
+      const child = crypto.randomUUID();
+      const parent = crypto.randomUUID();
+      ctx.started('tui', child, setKey('parentThreadId', parent));
+      foreignLinks(ctx, 512);
+      await settle(600);
+      parentIsOurs(ctx, parent, a);
+      await settle(300);
+      const ours = await oursOf(ctx, [child, parent]);
+      expect([ours.has(child), ours.has(parent)]).toEqual([false, true]);
+    });
+
+    test('a link seen again is the newest again', async () => {
+      const { ctx, a } = await tracked();
+      const child = crypto.randomUUID();
+      const parent = crypto.randomUUID();
+      ctx.started('tui', child, setKey('parentThreadId', parent));
+      foreignLinks(ctx, 511);
+      // Seen again (a replay): it moves to the back, so the next link pushes out another one.
+      ctx.started('tui', child, setKey('parentThreadId', parent));
+      foreignLinks(ctx, 1);
+      await settle(600);
+      parentIsOurs(ctx, parent, a);
+      await settle(300);
+      expect((await oursOf(ctx, [child])).size).toBe(1);
+    });
+
+    test('a link that was adopted no longer takes a place', async () => {
+      const { ctx, a } = await tracked();
+      const kept = crypto.randomUUID();
+      const keptParent = crypto.randomUUID();
+      const adopted = crypto.randomUUID();
+      const adoptedParent = crypto.randomUUID();
+      ctx.started('tui', kept, setKey('parentThreadId', keptParent));
+      ctx.started('tui', adopted, setKey('parentThreadId', adoptedParent));
+      // Its parent descends from the tracked thread: the link is used up and leaves the memory.
+      parentIsOurs(ctx, adoptedParent, a);
+      foreignLinks(ctx, 511);
+      await settle(600);
+      parentIsOurs(ctx, keptParent, a);
+      await settle(300);
+      expect((await oursOf(ctx, [kept, adopted])).size).toBe(2);
+    });
+  });
+
+  test('a subagent seen again is the newest again, in the memory of our own', async () => {
+    const ctx = await setup();
+    const a = crypto.randomUUID();
+    ctx.started('tui', a);
+    await waitUntil(ctx, () => ctx.identities.length === 1, 'the identity');
+    const children = Array.from({ length: 257 }, () => crypto.randomUUID());
+    for (const id of children.slice(0, 256)) ctx.started('tui', id, setKey('parentThreadId', a));
+    // The oldest is seen again, so the 257th pushes out the second-oldest instead.
+    ctx.started('tui', children[0] as string, setKey('parentThreadId', a));
+    ctx.started('tui', children[256] as string, setKey('parentThreadId', a));
+    await settle(600);
+    const ours = await oursOf(ctx, [children[0], children[1], children[256]] as string[]);
+    expect([0, 1, 256].map((i) => ours.has(children[i] as string))).toEqual([true, false, true]);
+  });
+
   test('a status that arrives during the window is delivered when the thread commits', async () => {
     const ctx = await setup();
     const id = crypto.randomUUID();
@@ -806,6 +990,19 @@ describe('binding re-checks the claims, and a sibling session keeps us from taki
     expect(ctx.resumeFrames()).toEqual([]);
   });
 
+  test('when the sibling sessions cannot be read, nothing binds, and it says so (W2)', async () => {
+    const ctx = await setup({
+      siblingSeeking: () => {
+        throw new Error('the store is unavailable');
+      },
+    });
+    ctx.started('tui', crypto.randomUUID());
+    await settle(500);
+    expect(ctx.identities).toEqual([]);
+    expect(ctx.resumeFrames()).toEqual([]);
+    expect(ctx.logs.some((l) => l.includes('could not read the sibling sessions'))).toBe(true);
+  });
+
   test('a sibling session still waiting for its thread blocks a first binding, with one notice', async () => {
     const ctx = await setup({ siblingSeeking: () => true });
     ctx.started('tui', crypto.randomUUID());
@@ -901,6 +1098,25 @@ describe('a session that never learns its thread says so (W11)', () => {
     const resumed = await setup({ noIdentityMs: 100, expected: crypto.randomUUID() });
     await settle(500);
     expect(resumed.notices).toEqual([]);
+  });
+
+  test('a notice that cannot be sent is logged and never thrown', async () => {
+    const ctx = await setup({ noIdentityMs: 100, noticeThrows: true });
+    await waitUntil(
+      ctx,
+      () => ctx.logs.some((l) => l.includes('could not send a notice')),
+      'the failure to be logged',
+    );
+    expect(ctx.notices).toEqual([]);
+    expect(ctx.logs.some((l) => l.includes('no thread/started'))).toBe(true);
+  });
+
+  test('after dispose the wait ends in silence', async () => {
+    const ctx = await setup({ noIdentityMs: 150 });
+    ctx.tracker.dispose();
+    await settle(450);
+    expect(ctx.notices).toEqual([]);
+    expect(ctx.logs.some((l) => l.includes('no thread/started'))).toBe(false);
   });
 
   test('a candidate still inside its window is no reason to say it', async () => {
