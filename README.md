@@ -57,15 +57,31 @@ remi attach --host 192.168.1.5 macbook/remi/main
 ### Codex (status and command approvals, not yet checked against a real Codex)
 
 `remi codex` runs `codex --no-alt-screen` the way `remi` runs Claude Code, and shows the session, what it is doing (working, waiting on an approval, idle) and the commands it asks to run on your phone.
-A command approval is a card with the command and Yes, No, and "Yes, for this session" when Codex offers it.
+A command approval is a card with the command, the directory it runs in when that is not the session's, and Yes, No, and "Yes, and don't ask again for this command this session" when Codex offers it.
+A command longer than 120 characters is shown with its middle cut, the way Claude's cards show it, and the whole command is in the card's detail; such a card has no lock-screen buttons, so Yes needs the app.
 The phone's answer goes to Codex's app-server, never into the terminal, and Codex decides what it means: remi relays the question, it does not judge the command.
 The first answer wins: answer in the terminal and the card clears on your phone, and a card answered a moment too late is refused.
-Every other kind of request (a file change, extra permissions, a question for you, an MCP prompt, a command that asks for more than itself, anything a subagent asks) shows up as a notice with no answer buttons, so answer it in the terminal.
+A card has no deadline: it stays answerable for as long as Codex keeps the request waiting, and if Codex has not confirmed an answer after 10 seconds you are told to check the terminal.
+Every other kind of request (a file change, extra permissions, a question for you, an MCP prompt, a command that asks for more than itself, anything a subagent asks) shows up as a notice with no answer buttons, so answer it in the terminal; its button reads "Dismiss (answer in the terminal)" and only clears the card from your phone.
+Text Codex chooses (a command, a reason, a question) is shown with control and bidirectional characters made visible as `\uXXXX` and long values cut with a note of how much is hidden.
 Turn notifications do not reach the phone yet.
 A message typed in the app to a Codex session is refused (the app shows it as failed, "type in the terminal") instead of being typed into Codex, because remi cannot see what Codex has on screen.
-The command is in the card and in the push notification (up to 120 characters in the title and 200 in the body), which goes through the signaling Worker and Apple's push service in plaintext, as every card does; a command can contain a secret.
+The command is in the card and in the push notification (the ask, up to 120 characters in the title and 200 in the body), which goes through the signaling Worker and Apple's push service in plaintext, as every card does; a command can contain a secret.
+The relay and the Worker carry the whole card, so a command up to 20000 characters, in plaintext until the relay's end-to-end encryption engages by default (#881).
+The card's command and directory are kept in memory only: the live-sessions file, the hub's session list and the menu-bar app show a fixed label ("Permission: Codex command"), and the remi log carries lengths, never the command, the directory or a full thread id.
+Whenever remi starts following a new Codex thread (a `/new` in the terminal, or another `codex` window in the same directory), the session says so, and approvals then come from the new thread.
 It has only been tested against a stand-in for Codex's app-server, not against a real Codex install.
-So these are not verified yet: that an answer from the phone closes Codex's own prompt, that the phone's No behaves like Codex's No, and that a dropped connection leaves Codex's prompt answerable in the terminal.
+So these are not verified yet:
+(a) that an answer from the phone runs the command and closes Codex's own prompt;
+(b) that answering in the terminal first clears the phone's card;
+(c) that the phone's No behaves like Codex's No, and whether it also interrupts the turn;
+(d) that a dropped connection (even a killed remi) leaves Codex's prompt up and answerable in the terminal, and does not cancel the request;
+(e) that remi's clean-up at exit is harmless to Codex;
+(f) that Codex accepts "don't ask again for this command this session" and remembers it;
+(g) that an interrupt, an Esc in the terminal or a finished turn clears the card (Codex has to report the request resolved);
+(h) that a subagent's request reaches remi at all;
+(i) that Codex keeps a pending request across a dropped client and sends it again, as the stand-in does;
+(j) that a plain `codex` window in the same directory re-binds an idle session.
 
 - **Arguments.**
   `-m/--model`, `-a/--ask-for-approval`, `-s/--sandbox`, `--add-dir`, `-i/--image` (not together with `resume`) and `--yolo` pass through; every other Codex flag and every Codex subcommand but `resume` is refused, so run `codex` directly for those.
