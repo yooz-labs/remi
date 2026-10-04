@@ -113,6 +113,14 @@ describe('CodexHarness', () => {
     for (const registry of registries) await registry.shutdown();
     process.env['PATH'] = originalPath ?? '/usr/bin:/bin';
     Reflect.deleteProperty(process.env, 'FAKE_CODEX_DIR');
+    // The PTY's exit handler writes `sessions.json` and the live-sessions file under `tmpDir`
+    // (it runs synchronously once `isRunning` turns false), so the child must be gone before the
+    // directory is removed, or the late write recreates it and it is never cleaned up.
+    await until(
+      () => launched.every((session) => !session.pty.isRunning),
+      'the fake codex children to exit',
+      10000,
+    );
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 

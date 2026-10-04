@@ -28,9 +28,11 @@ describe('socketDir', () => {
   });
 
   test('falls back to /tmp when a long TMPDIR would overflow sun_path', () => {
-    const base = join(mkdtempSync('/tmp/sd-'), 'x'.repeat(120));
+    // The directory `mkdtempSync` makes is the one to remove (the long child is inside it).
+    const parent = mkdtempSync('/tmp/sd-');
+    made.push(parent);
+    const base = join(parent, 'x'.repeat(120));
     mkdirSync(base);
-    made.push(base);
     process.env['TMPDIR'] = base;
     const dir = socketDir('sock-', 's.sock');
     made.push(dir);
