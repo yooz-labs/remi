@@ -15,7 +15,7 @@
  * Update or Trust modal, against a real Codex.
  */
 
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { HarnessId } from '@remi/shared';
@@ -149,6 +149,53 @@ function childEntries(r: Running): Array<{ pid: number; sessionId: string }> {
 
 /** The fake records whole or not at all, so the file existing is the whole list (P11). */
 const waitForArgv = (dir: string): Promise<string[]> => waitForRecordedArgv(dir);
+
+describe('startHub when the hub cannot start (Q2)', () => {
+  // The isolated directories and the fake app-server were made before `spawnHub` ran, and a throw
+  // left both behind (nothing had been pushed on `running` yet). The temp directory is a fresh
+  // short one under /tmp, so the fake server's socket directory (which falls back to /tmp when
+  // TMPDIR is long) lands in it too and one listing sees everything the test made.
+  // The directory outlives each test's own cleanup (a hub's `afterEach` removes its home), so it is
+  // made once and removed at the end.
+  let root: string;
+  let savedTmp: string | undefined;
+
+  beforeAll(() => {
+    root = fs.mkdtempSync('/tmp/remi-startfail-');
+  });
+
+  beforeEach(() => {
+    savedTmp = process.env['TMPDIR'];
+    process.env['TMPDIR'] = root;
+  });
+
+  afterEach(() => {
+    if (savedTmp === undefined) Reflect.deleteProperty(process.env, 'TMPDIR');
+    else process.env['TMPDIR'] = savedTmp;
+  });
+
+  afterAll(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  test('a hub that exits at once leaves no directory and no fake app-server behind', async () => {
+    const before = fs.readdirSync(root);
+    await expect(startHub({ codex: true }, '/nonexistent/cli.ts')).rejects.toThrow(
+      'Hub exited early',
+    );
+    expect(fs.readdirSync(root)).toEqual(before);
+  }, 60000);
+
+  test('the control: a hub that starts does leave its home, its work directory and the fake server until the test cleans up', async () => {
+    await startHub({ codex: true });
+    expect(
+      fs
+        .readdirSync(root)
+        .map((name) => name.replace(/[A-Za-z0-9]{6}$/, ''))
+        .sort(),
+    ).toEqual(['remi-fake-codex-', 'remi-hub-home-', 'remi-hub-work-']);
+  }, 60000);
+});
 
 describe('a hub creating a session for a harness (#1179)', () => {
   test('the session-less ack lists the harnesses that are installed, so a client can tell an older hub', async () => {

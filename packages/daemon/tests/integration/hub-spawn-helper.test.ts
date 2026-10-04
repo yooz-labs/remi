@@ -12,7 +12,9 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import type * as net from 'node:net';
+import * as path from 'node:path';
 import { DEFAULT_CONFIG } from '../../src/config/config.ts';
+import { isProcessAlive } from '../../src/session/process-alive.ts';
 import { occupyPort, reserveRange } from '../session/port-test-helpers.ts';
 import {
   CLI_TS,
@@ -46,6 +48,26 @@ describe('spawnHub', () => {
     hub = await spawnHub(undefined, {}, CLI_TS, port);
     expect(hub.port).toBe(port);
   });
+
+  test('a hub that stays up and never says it is ready is killed, not left running, when the wait ends (Q2)', async () => {
+    dirs = makeIsolatedDirs();
+    // A stand-in that never starts a hub: it records its pid in its working directory and idles.
+    const script = path.join(dirs.work, 'idle.ts');
+    fs.writeFileSync(
+      script,
+      "import * as fs from 'node:fs';\nfs.writeFileSync('pid', String(process.pid));\nsetInterval(() => {}, 1000);\n",
+    );
+    const port = await reserveRange(1, 50, BIND);
+    const message = await spawnHub(dirs, {}, script, port, 1500).then(
+      () => 'started',
+      (error: Error) => error.message,
+    );
+    expect(message).toContain('Timed out waiting for hub status file');
+    const pid = Number(fs.readFileSync(path.join(dirs.work, 'pid'), 'utf8'));
+    expect(pid).toBeGreaterThan(0);
+    // The kill is waited for before the throw, so the process is already gone when it arrives.
+    expect(isProcessAlive(pid)).toBe(false);
+  }, 30000);
 
   test("a hub that cannot bind its port fails with the hub's own words, not just an exit code", async () => {
     const port = await reserveRange(1, 50, BIND);
