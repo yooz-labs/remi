@@ -359,7 +359,7 @@ const CODEX_MAY_IMPORT: ReadonlyArray<{ readonly target: string; readonly why: s
   },
   {
     target: 'session/session-registry',
-    why: 'SessionRegistry, which the PTY spawn takes (phase 3), and question registration and eviction guards (phase 4)',
+    why: 'the SessionRegistry type of CodexLaunchDeps, handed to the PTY spawn, whose exit handler tells it the session ended (phase 3); question registration and eviction guards come later (phase 4)',
   },
   {
     target: 'session/session-registry-file',
