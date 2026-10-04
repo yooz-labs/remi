@@ -879,6 +879,35 @@ describe('parseArgs - remi codex and --harness (#1177)', () => {
     expect(prompt.claudeArgs).toEqual(['fix', 'the', 'config']);
   });
 
+  test('the word codex after another subcommand is not the subcommand (W15)', () => {
+    // `remi stop codex` must stop, not launch Codex; `remi new codex` is a new Claude session.
+    for (const cmd of [
+      'stop',
+      'new',
+      'ls',
+      'logs',
+      'status',
+      'config',
+      'serve',
+      'start',
+    ] as const) {
+      const r = parseArgs([cmd, 'codex']);
+      expect(r.subcommand, cmd).toBe(cmd);
+    }
+    // Where the subcommand takes a word of its own, that word is it, as before.
+    const attach = parseArgs(['attach', 'codex']);
+    expect(attach.subcommand).toBe('attach');
+    expect(attach.subcommandArg).toBe('codex');
+    // A second `codex` word after the argument is no longer a subcommand either.
+    const second = parseArgs(['attach', 'a', 'codex']);
+    expect(second.subcommand).toBe('attach');
+    expect(second.subcommandArg).toBe('a');
+    expect(second.claudeArgs).toEqual(['codex']);
+    // Flags first, then codex: still the subcommand.
+    expect(parseArgs(['--daemon', 'codex']).subcommand).toBe('codex');
+    expect(parseArgs(['--host', 'h', 'codex']).subcommand).toBe('codex');
+  });
+
   test("that rule is codex's alone: for every other subcommand the last one still wins", () => {
     expect(parseArgs(['new', 'ls']).subcommand).toBe('ls');
     expect(parseArgs(['status', 'config']).subcommand).toBe('config');

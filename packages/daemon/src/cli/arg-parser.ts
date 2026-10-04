@@ -380,9 +380,14 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
       showVersion = true;
     } else if (arg === '--help' || arg === '-h') {
       showHelp = true;
-    } else if (isSubcommand(arg as string) && subcommand !== 'codex') {
+    } else if (
+      isSubcommand(arg as string) &&
+      subcommand !== 'codex' &&
+      !(arg === 'codex' && subcommand !== undefined)
+    ) {
       // Once `codex` is the subcommand, the words after it are Codex's (a prompt may say
-      // "status" or "config"), so a later subcommand name is not a subcommand.
+      // "status" or "config"), so a later subcommand name is not a subcommand. And `codex`
+      // itself is a subcommand only when none was given: `remi stop codex` stops.
       subcommand = arg as Subcommand;
       if (SUBCOMMANDS_WITH_ARG_LIST.has(subcommand)) {
         // Consume every following operand up to the first flag: the verb and
