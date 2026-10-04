@@ -113,7 +113,7 @@ export function legacyWriterRefusal(writers: readonly LegacyWriter[]): string {
   return [
     'remi codex will not start: an older remi is running, and it would erase the Codex session id from sessions.json the next time it writes that file.',
     ...lines,
-    `Run \`remi stop --all\` for the live ones, then start remi codex again. The first version that keeps the id is ${IDENTITY_SHIM_MIN_VERSION}.`,
+    `Run \`remi stop --all\` for the live ones (it also ends interactive remi sessions), then start remi codex again. The first version that keeps the id is ${IDENTITY_SHIM_MIN_VERSION}; a version that does not parse, such as a PR-stamped build, counts as older.`,
   ].join('\n');
 }
 

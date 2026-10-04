@@ -254,6 +254,11 @@ describe('CodexHarness', () => {
       expect(message).toContain('no version recorded');
       expect(message).toContain('remi stop --all');
       expect(message).toContain(IDENTITY_SHIM_MIN_VERSION);
+      // What the fix costs and how a version is read (W17d, decision D7).
+      expect(message).toContain('also ends interactive remi sessions');
+      expect(message).toContain('does not parse');
+      expect(message).toContain('PR-stamped');
+      expect(message).toContain('counts as older');
       expect(fs.existsSync(path.join(tmpDir, 'sessions.json'))).toBe(false);
     });
 
