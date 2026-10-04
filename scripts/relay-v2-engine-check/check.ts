@@ -129,8 +129,20 @@ const b64url = (h: string): string =>
     .replace(/\//g, '_')
     .replace(/=+$/, '');
 
-/** An ECDH pair from a scalar by JWK import with the public coordinates supplied. */
-async function jwkPair(scalar: Uint8Array): Promise<r.EcPair> {
+const jwkPairs = new Map<string, Promise<r.EcPair>>();
+
+/** An ECDH pair from a scalar by JWK import with the public coordinates supplied (memoized: the BigInt work is slow). */
+function jwkPair(scalar: Uint8Array): Promise<r.EcPair> {
+  const key = hex(scalar);
+  let pair = jwkPairs.get(key);
+  if (pair === undefined) {
+    pair = buildJwkPair(scalar);
+    jwkPairs.set(key, pair);
+  }
+  return pair;
+}
+
+async function buildJwkPair(scalar: Uint8Array): Promise<r.EcPair> {
   const point = multiply(BigInt(`0x${hex(scalar)}`), [GX, GY]);
   if (!point) throw new Error('scalar is a multiple of the group order');
   const [x, y] = point;
