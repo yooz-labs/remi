@@ -7,6 +7,7 @@
  */
 
 import type { UISession } from '@/types';
+import type { HarnessId } from '@remi/shared';
 
 /** Visual state for a session, derived from connection + agent status. */
 export type PillState = 'asking' | 'working' | 'idle' | 'connecting' | 'offline';
@@ -81,4 +82,28 @@ export function splitSessionName(
   const project = (slash >= 0 ? rest.slice(0, slash) : rest) || 'session';
   const branch = slash >= 0 ? rest.slice(slash + 1) : null;
   return { host, project, branch };
+}
+
+/**
+ * The label a session shows for its harness (#1179), or null for none. A Claude
+ * session, and any session whose daemon names no harness (an older one), shows
+ * nothing: it looks exactly as it did before harnesses existed. Another harness
+ * is named, so a Codex session is not mistaken for Claude.
+ */
+export function harnessLabel(harness: HarnessId | undefined): string | null {
+  switch (harness) {
+    case undefined:
+    case 'claude':
+      return null;
+    case 'codex':
+      return 'Codex';
+    case 'opencode':
+      return 'OpenCode';
+    default: {
+      // A new HarnessId must be labeled above or this line fails to compile.
+      const _exhaustive: never = harness;
+      void _exhaustive;
+      return null;
+    }
+  }
 }
