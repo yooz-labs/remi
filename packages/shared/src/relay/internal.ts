@@ -19,3 +19,4 @@ export * from './channel.ts';
 export * from './pairing.ts';
 export * from './seal.ts';
 export * from './small-order.ts';
+export * from './worker-wire.ts';
