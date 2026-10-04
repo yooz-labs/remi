@@ -499,7 +499,7 @@ export interface HarnessChat {
 - **`remi status`/`attach`/`ls`.** Unchanged, except `LiveSessionEntry.harness?` (Phase 5).
 
 **As built in Phase 5 (#1179, ADR 0033 Phase 5 amendment).** Where this section and the shipped code differ, the code and the ADR win; the differences are these.
-- `--harness` is hidden for a child daemon, but `remi new --host --harness codex` is a user-facing form (`--help` lists it), and `remi codex --host` works.
+- `--harness` is how a hub tells a child daemon its harness, and `remi new --host --harness codex` is a user-facing form (`--help` lists it); `remi codex --host` works.
 - The hub's child is started with the inherited flags, `--harness <id>`, then `--` and the validated arguments, last; the arguments reach a daemon as `explicitArgs` (tokens after the first `--` only), not as `passthroughArgs`.
 - A new `HarnessRegistry` (`harness/registry.ts`, built in `cli.ts`) holds each harness's command, remote allowlist, older-daemon gate and headless notice; the plan listed no registry file.
 - Claude's remote allowlist is `harness/claude-args.ts`; its model name may not start with a hyphen (tighter than #1165 B).
@@ -509,7 +509,8 @@ export interface HarnessChat {
 - `resume_session_request` on a daemon that hosts Codex is refused `UNSUPPORTED`; `resolveStoredSession`'s Codex branch is deleted (the lead's decision: `remi --sessions` prints the whole resume command).
 - Live-sessions: `harness` on the entry, three Claude-only readers filter on it (`couldBeClaudeEntry`); no Codex-side reader exists to change.
 - `Bun.which` ignores a `process.env.PATH` change made after startup, so availability passes the PATH explicitly (found while writing the registry test).
-- Not done: LV-4, the gate of this phase. Codex is advertised before it passes (open call 17 not applied).
+- Not done: LV-4, the gate of this phase. Codex is advertised before it passes (open call 17 not applied; the lead decided to keep it so, since LV-4 is a hard gate on merging the epic).
+- Changed by the Phase 5 review (ADR 0033, its last section): a remote Codex request may only tighten the host's posture (`-a untrusted`, `-s read-only`), Claude's allowlist drops `--continue`, the hub refuses a resume of a thread a live session holds before it spawns, every create request's `directory` is checked, the client reads short host-free texts, `--host` and a Codex `--daemon` refuse loose arguments, the notice names the exact session to `remi attach`, and `SessionStore.findByHarnessSessionId` is gone.
 
 ---
 
@@ -690,7 +691,7 @@ export function findLegacyWriters(deps: {
    As shipped in PR #1182; the denylist this plan first described here is superseded by the review's default-deny allowlist:
    - **Local: a default-deny flag allowlist.** `-m/--model`, `-a/--ask-for-approval`, `-s/--sandbox`, `--add-dir`, `-i/--image`, `--dangerously-bypass-approvals-and-sandbox`/`--yolo`, `-h/--help` and `-V/--version` pass (also as `--flag=value` and, for the short ones, attached as `-mX`); `--no-alt-screen` is accepted and removed, because the launch adds its own. Every other flag is refused by name. A denylist (`-c/--config`, `--enable`, `--disable`, `-p/--profile`, `--strict-config`, `--dangerously-bypass-hook-trust`, `--no-daemon`, `--search`, `--approve-for-me`, `--not-so-yolo`, `--remote*`, `--oss`, `--local-provider`, `-C/--cd`, `--worktree`) only chooses the refusal message. A valued flag never takes a flag-shaped token as its value.
    - **Prompt and subcommands.** The returned args are `[...flags, 'resume', uuid]` or `[...flags, '--', ...promptWords]`: a prompt always follows an inserted `--`, so Codex cannot read it as a subcommand, and a `--` the user typed makes the rest prompt text. Only `resume <uuid>` runs a subcommand, and it needs an explicit UUID (`--last` and the picker are refused). The list of Codex subcommand names (32, from 0.160.0) only gives a clear refusal when the first positional is one; safety does not depend on it.
-   - **Remote (default-deny, used by Phase 5):** `validateCodexRemoteArgs(args: unknown)` allows `-m/--model <[A-Za-z0-9._:\[\]-]{1,64}>` with no leading hyphen, `-a untrusted|on-request`, `-s read-only|workspace-write` and `resume <uuid>` (returned last), each at most once, at most 16 arguments of at most 256 characters, no NUL, and is total over any input.
+   - **Remote (default-deny, used by Phase 5):** `validateCodexRemoteArgs(args: unknown)` allows `-m/--model <[A-Za-z0-9._:\[\]-]{1,64}>` with no leading hyphen, `-a untrusted|on-request`, `-s read-only|workspace-write` (changed by the Phase 5 review: only `-a untrusted` and `-s read-only`, so a remote request can tighten the host's posture and never loosen it) and `resume <uuid>` (returned last, lowercased), each at most once, at most 16 arguments of at most 256 characters, no NUL, and is total over any input.
    - The working directory is `realpath`-normalized and must exist and be a directory (`resolveCodexWorkingDirectory`).
 8. ADR 0033 amendment.
 
