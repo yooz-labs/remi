@@ -498,6 +498,19 @@ export interface HarnessChat {
 - **Web (minimum).** A harness label on the session card and chat header, and the `standingGrant` union value. `Question.answerPath` is not added (no consumer yet).
 - **`remi status`/`attach`/`ls`.** Unchanged, except `LiveSessionEntry.harness?` (Phase 5).
 
+**As built in Phase 5 (#1179, ADR 0033 Phase 5 amendment).** Where this section and the shipped code differ, the code and the ADR win; the differences are these.
+- `--harness` is hidden for a child daemon, but `remi new --host --harness codex` is a user-facing form (`--help` lists it), and `remi codex --host` works.
+- The hub's child is started with the inherited flags, `--harness <id>`, then `--` and the validated arguments, last; the arguments reach a daemon as `explicitArgs` (tokens after the first `--` only), not as `passthroughArgs`.
+- A new `HarnessRegistry` (`harness/registry.ts`, built in `cli.ts`) holds each harness's command, remote allowlist, older-daemon gate and headless notice; the plan listed no registry file.
+- Claude's remote allowlist is `harness/claude-args.ts`; its model name may not start with a hyphen (tighter than #1165 B).
+- `hello_ack.harnesses` lists a harness by PATH presence, read at each ack. It is on every ack the production daemon sends, a hub's session-less one and the resume acks included, and `Connection`'s own library-only ack does not carry it.
+- Dual-emit: one `SessionIdentity` produces `claudeSessionId` and `harnessSessionId` in `createHelloAck` (`binding: {identity, transcriptPath}`) and `createQuestion`; the daemon's own session-list entry is decorated, the transcript-discovered entries are not (a #1162 test pins that), and a Codex `hello_ack` no longer carries `claudeSessionId: null`.
+- `create_session_response` has an optional `notice` (Codex only): the hub cannot know that a headless Codex reached its prompt, so it says so and names `remi attach` (carry-over item d). The web client does not show it.
+- `resume_session_request` on a daemon that hosts Codex is refused `UNSUPPORTED`; `resolveStoredSession`'s Codex branch is deleted (the lead's decision: `remi --sessions` prints the whole resume command).
+- Live-sessions: `harness` on the entry, three Claude-only readers filter on it (`couldBeClaudeEntry`); no Codex-side reader exists to change.
+- `Bun.which` ignores a `process.env.PATH` change made after startup, so availability passes the PATH explicitly (found while writing the registry test).
+- Not done: LV-4, the gate of this phase. Codex is advertised before it passes (open call 17 not applied).
+
 ---
 
 ## 3. Tests, fixtures, live verification (item 6)

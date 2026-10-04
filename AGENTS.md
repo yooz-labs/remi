@@ -96,10 +96,11 @@ The harness reads `hookServer`, `PORT`, the websocket port and `[prompts]` throu
 `tests/harness/harness-boundary.test.ts` keeps `harness/types.ts`, `harness/decision.ts`, `cli/current-session.ts`, `cli/session-phases/pty-session-setup.ts` (the PTY spawn, which takes its command, environment and output sink as parameters), `cli/handlers/`, `api/` and `session/` from importing `hooks/`, `auto-approve/`, `transcript/`, `cli/session-phases/`, `cli/claude-binding` or the Claude screen parsers, apart from three documented handler imports (chat-seam debt); fix the import rather than adding to that list.
 A second rule lets only `cli.ts` and `harness/` import `harness/index`, `harness/claude` or `harness/claude-session` at runtime, which keeps the launch path from becoming an import cycle.
 A third is an allowlist for `harness/codex/` (`CODEX_MAY_IMPORT` in the test): its own files, `node:*`, `@remi/shared`, `harness/types`, `harness/decision`, `cli/session-phases/pty-session-setup.ts` (and no other session phase) and, under `session/`, the session store, binding store, registry, live-sessions registry file, `legacy-writers` and `shell-quote`; and only `cli.ts` may import `harness/codex/`, which is why `harness/index.ts` does not re-export it.
-`remi codex` is the Codex adapter (epic #1175, ADR 0033): it launches Codex, finds the session's thread on the shared app-server, reports its status and shows the thread's command approvals as phone cards (see "Codex approvals" below), and typed chat from a client is refused (`PROMPT_WAITING`); there are no turn pushes and no wire identity field yet (`harness` and `harnessSessionId` are typed on the wire and set by nothing), which come with the epic's later phases (`.context/codex-epic-plan-2026-10.md`).
+`remi codex` is the Codex adapter (epic #1175, ADR 0033): it launches Codex, finds the session's thread on the shared app-server, reports its status and shows the thread's command approvals as phone cards (see "Codex approvals" below), and typed chat from a client is refused (`PROMPT_WAITING`); there are no turn pushes yet, which come with the epic's later phase (`.context/codex-epic-plan-2026-10.md`).
+The wire names the harness (`harness`, `harnessSessionId`, `hello_ack.harnesses`; see "Harness identity and `create_session_request`" below).
 `Harness` has no `command`: the PTY spawn takes an optional `launch: {command, childEnv}` and an `outputSink`, and absent `launch` it is the Claude launch; `CodexHarness.preflight` (not a `Harness` member) is what `cli.ts` calls before it boots a Codex launch.
 `Harness.transcriptPath` may return `null` (no transcript file), which every reader treats as "no file".
-The store reads are harness-aware (#1176): `getMostRecent('claude')` and `resolveStoredSession(..., {harness: 'claude'})` skip or refuse a record of another harness, `findByClaudeSessionId` and `updateClaudeSessionId` are Claude-only, and `--sessions` labels a record `claude:<first 8 of its id>` or, for another harness, `<harness>:<last 8 of its id>` (a Codex thread id is a UUIDv7, whose first eight characters are a timestamp).
+The store reads are harness-aware (#1176): `getMostRecent('claude')` and `resolveStoredSession(..., {harness: 'claude'})` (Claude-only since #1179: nothing resolved a Codex record by remi id or prefix, so that branch is gone) skip or refuse a record of another harness, `findByClaudeSessionId` and `updateClaudeSessionId` are Claude-only, and `--sessions` labels a record `claude:<first 8 of its id>` or, for another harness, `<harness>:<last 8 of its id>` (a Codex thread id is a UUIDv7, whose first eight characters are a timestamp).
 `session/legacy-writers.ts` (the older-daemon gate, read before any Codex record is written) and `harness/codex/codex-args.ts` (argument validation) are called by the Codex launch; the gate narrows the older-daemon hazard and does not close it (see its header).
 
 ## Repository Structure
@@ -161,16 +162,21 @@ registers itself in live-sessions.
 - `--install` generates a LaunchAgent running `<PATH-resolved remi> serve`
   with `KeepAlive.SuccessfulExit=false` (clean stop stays stopped; crash
   exit(1) restarts).
+- A `create_session_request` may name a harness and its arguments (#1179, "Harness identity and
+  `create_session_request`" below). The hub itself is still session-less and Claude-only: it only
+  spawns the child daemon that hosts the Codex or Claude session.
 - A `resume_session_request` that reaches the hub is **refused**
   (`resume_session_response{success:false, errorCode:'UNSUPPORTED'}`,
   `cli/handlers/resume-session-events.ts`, #1124), never run: before the guard
   the shared handler called `createNewSession` inside the hub, and when that
   Claude exited the hub exited 0 and the LaunchAgent did not restart it.
   Resuming *through* the hub (spawn a child daemon) is not implemented: a
-  `remi --daemon` child silently drops Claude args (`cli.ts` passes no
-  `claudeArgs` to `createNewSession` in daemon mode) and the web resume flow
-  cannot follow a session on another port. Tracked as #1129. `remi --resume
-  <session>` from a terminal works.
+  `remi --daemon` child reads Claude args only from after a `--` since #1179
+  (a hub appends the ones it validated there), which is the first half of it,
+  but a resumed session's binding and hooks through a child are unverified and
+  the web resume flow cannot follow a session on another port. Tracked as
+  #1129. `remi --resume <session>` from a terminal works. A daemon that hosts
+  Codex refuses `resume_session_request` the same way (#1179).
 
 ## Transport Options
 
@@ -621,6 +627,19 @@ those two are both exactly `{token, title, body}`.
 - `HookEventBridge` builds the option set at hook time; a binary card is held and pushed at once, and its answer is the hook response (#1126).
 - A standing option is answered by echoing its `permission_suggestions` entry (`QuestionOption.suggestionIndex`) as `{behavior:"allow", updatedPermissions:[...]}` on the held hook. Verified live on Claude Code 2.1.287 (#1126 spike F4) for `setMode` and `addRules`; every echo is sent with `destination: "session"` (lead decision), and an echoed `addDirectories` did not stop the repeat prompt, so it is never offered.
 - Redeploy the signaling server after any `packages/signaling/` change.
+
+### Harness identity and `create_session_request` (epic #1175 phase 5, #1179, ADR 0033)
+
+What ships, read against `packages/shared/src/protocol.ts` and `packages/daemon/src`. Nothing here was run against a real Codex: every black-box test uses a fake `claude` and `codex` and the stand-in app-server. LV-4 (a Codex session created from a hub request reaches its prompt headless, against the real Codex) is NOT done.
+
+- **Dual-emit.** `hello_ack` (when it carries the binding), `question` and the daemon's own entry in the session list carry `harness` and `harnessSessionId`. For Claude `harnessSessionId` equals `claudeSessionId` (a `hello_ack` keeps null on both); for Codex `claudeSessionId` is omitted and `harnessSessionId` is null on a `hello_ack` until the thread is learned, and left off a `question` or a list entry while null. Nothing depends on it: answers are addressed by `questionId`, and a client's answer still echoes only `claudeSessionId` (the signaling Worker rebuilds answers from a fixed list). One value produces both ids in `createHelloAck` and `createQuestion`, so they cannot differ. The Claude transcripts a daemon finds on disk (`source: 'transcript'`), a hub's session-less ack and the resume acks name no harness; absence reads as Claude.
+- **`hello_ack.harnesses`** lists the harnesses a daemon can start on EVERY ack it sends: those it has an adapter for (`HarnessRegistry`, built in `cli.ts`) whose command resolves on the PATH the process has now (the command is never run; `Bun.which` ignores a PATH changed after startup, so the PATH is passed). An older hub omits it and ignores `create_session_request.harness`, starting Claude, so the CLI sender (`remi codex --host`, `remi new --host --harness codex`) sends a harness or arguments only to a daemon that lists the harness. Codex is advertised by PATH presence, before LV-4: the owner may want it gated.
+- **`create_session_request.harness` and `.args`** are checked before a port is probed or anything is spawned (`checkHarnessRequest`): a known harness id, an adapter, its command on PATH, `args` against that harness's remote allowlist (`validateClaudeRemoteArgs`; `validateCodexRemoteArgs` from Phase 2), and for Codex the older-daemon gate (`legacyWriterRefusal` text). A refusal is `create_session_response{success:false, error}` and spawns nothing. The child is started with the inherited flags, then `--harness <id>`, then `--` and the arguments, last, so no remote argument can be read as a remi flag. A request naming no harness is the Claude spawn it always was. Claude allows `--resume`/`-r <uuid>`, `--continue`/`-c`, `--fork-session` and `--model <name>` (no leading hyphen); a Codex request may carry `resume <uuid>`, which the validator allows and which is unverified headless.
+- **A daemon reads its harness arguments only from after `--`** (`ParsedArgs.explicitArgs`, tokens after the first `--` and nothing else; `passthroughArgs` is the wrapper's, with strays and the `--`). A stray word is still ignored, so an existing LaunchAgent plist starts as before. `remi codex --daemon` validates them with the local Codex validator.
+- **What a headless success does not say.** `create_session_response.success` means the child daemon was spawned and registered. A Codex session the hub starts has no terminal, so Codex may stop at an Update or Trust prompt that remi never answers (remi types nothing into a Codex PTY): the response then carries `notice`, naming `remi attach` on the host, and the CLI prints it. The web client does not show the notice (no UI change in this phase). Unverified live: that `remi attach` dismisses such a prompt.
+- **Resume.** A `resume_session_request` to a daemon that hosts Codex is refused `UNSUPPORTED`, like the hub's, before any path runs.
+- **Live-sessions.** An entry may carry `harness` (absent means Claude, so a Claude entry is byte-identical to before; Codex daemons and wrappers write it). The transcript binder's sibling and port-claim checks and the foreign-session escalator no longer count a daemon that hosts Codex as a Claude sibling (`couldBeClaudeEntry`; an entry naming no harness, Claude, or a harness this build does not know still counts, the file's fail-safe). There is no Codex-side reader of live-sessions entries: the thread tracker's sibling guard reads the store, which is already harness-aware.
+- **Web.** A harness other than Claude is named by a small label next to the status pill on the session card and the chat header; a Claude session, or one from an older daemon, renders identical markup. Nothing else changed in the UI.
 
 ### Codex approvals (`remi codex`, epic #1175 phase 4, ADR 0033)
 

@@ -53,9 +53,9 @@
  * the remi state directory, or an entry of its `live-sessions` directory).
  *
  * The Codex launch calls it (`cli.ts` wires it into `CodexHarness`, whose
- * `checkCodexLaunch` runs before `preAssign`, #1177); the hub's refusal of a
- * Codex `create_session_request` is phase 5. It is tested against real files and
- * real processes.
+ * `checkCodexLaunch` runs before `preAssign`, #1177), and so does the hub's
+ * refusal of a Codex `create_session_request` (`HarnessRegistry`, #1179). It is
+ * tested against real files and real processes.
  */
 
 import { spawnSync } from 'node:child_process';

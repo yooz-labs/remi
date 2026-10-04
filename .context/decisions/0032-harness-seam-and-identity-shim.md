@@ -42,7 +42,7 @@ Add the vocabulary and make the store tolerate it, without changing what any dae
    `getIdentity` returns `null` for an absent record and for an unrecognized `harness` string, so a caller never mistakes a newer daemon's record that names its harness as a string for a Claude one.
    That guarantee covers strings only: a non-string `harness` is treated as absent by the parser (decision 4), so `getIdentity` reports it as Claude.
    `get()` is not widened; it still returns exactly `{ claudeSessionId }`.
-6. **Wire fields are typed, not emitted.**
+6. **Wire fields are typed, not emitted.** (Changed by #1179: `harness` and `harnessSessionId` are emitted on `hello_ack`, `question` and the daemon's own session-list entry, `create_session_request` has `harness` and `args`, and `hello_ack` has `harnesses`; `answerPath` is still not added. See ADR 0033, Phase 5 amendment. The text below is what was true when this was written.)
    `harness?` and `harnessSessionId?` exist on `DiscoverableSession`, `HelloAckMessage` and `QuestionMessage` (written `?: T | undefined` for `exactOptionalPropertyTypes`), each documented as typed only.
    Populating them, adding `answerPath`, and giving `create_session_request` `harness` and `args` with an argument allowlist are deferred to the Codex epic (#1165): nothing consumes them until a non-Claude harness exists, and a typed-but-unpopulated field described as shipped is the failure AGENTS.md rule 4 names.
 7. **`Decision` is `type Decision = Question`.**
@@ -59,7 +59,7 @@ Add the vocabulary and make the store tolerate it, without changing what any dae
   Such a daemon drops `harness` on its next rewrite, and the record then reads as Claude.
   The Codex epic must close that before it writes the first non-Claude record (for example by refusing to create one while an older daemon is registered).
   This phase makes the current build tolerant; it does not retrofit the builds already installed.
-- `getIdentity` has no production caller yet, and no code sets `harness` or `harnessSessionId` on a record or a message (checked below), so the behavior of every shipped path is unchanged.
+- `getIdentity` has no production caller yet, and no code sets `harness` or `harnessSessionId` on a record or a message (checked below), so the behavior of every shipped path is unchanged. (Changed since: Codex records set them (#1177) and the wire emits them (#1179); `getIdentity` is called by the session list and every question emission.)
 - Besides `getIdentity`, these exports have no production caller: `identityFromClaudeId`, `isHarnessId`, `HARNESS_IDS` and `SessionIdentity` (reached only through `getIdentity`), and `DEFAULT_HARNESS`, `Decision`, `AnswerPath`, `LocalRender` and `ResolvedBy` (tests and doc comments only).
   They are vocabulary for the Codex epic (#1165); delete any it does not use.
 - A record whose harness string this build does not know was reachable by `claudeSessionId` through the existing methods when this was written; only `getIdentity` withheld it. Changed by #1176: `findByClaudeSessionId` and the fallback of `resolveStoredSession` match Claude records only, `getMostRecent('claude')` skips such a record, and `remi --resume <remi id>` of one exits 1 with a message instead of resuming it.
@@ -90,7 +90,7 @@ Add the vocabulary and make the store tolerate it, without changing what any dae
 - Checks that nothing populates the new fields, run on the finished branch:
   - `grep -rn "harnessSessionId" packages/*/src` hits only declarations (`shared/src/types.ts`, `protocol.ts`, `StoredSession`), the parser copy in `parseStoredSession`, `getIdentity`, `shared/src/harness.ts`, and, since Phase 2, the parameter name of `Harness.resumeArgs` and `Harness.transcriptPath` (`harness/types.ts`, `harness/claude.ts`), which carries the id a caller passes in and sets it on no record or message.
   - `grep -rn "getIdentity" packages/*/src` hits only its definition and comments.
-  - `packages/shared/tests/harness.test.ts` asserts the `hello_ack`, `question` and `session_list_response` factories emit neither key.
+  - `packages/shared/tests/harness.test.ts` asserts the `hello_ack`, `question` and `session_list_response` factories emit neither key. (Changed by #1179: it asserts they emit neither key GIVEN no identity, and that they dual-emit the identity they are given.)
 - ADR 0011 (verify before you describe) is why each wire field says "typed only" instead of describing intent; ADR 0012 (protocol registry) is untouched because no message type is added.
 
 ## Phase 2 amendment: the `Harness` descriptor (#1163)

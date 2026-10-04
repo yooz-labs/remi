@@ -229,7 +229,7 @@ Phase 2 amendment: foundations, zero behavior change for Claude (#1176).
 1. The older-daemon hazard (#1165 D) is narrowed by a refusal, not closed, and not by a second store file.
 `findLegacyWriters` (`session/legacy-writers.ts`) lists every live process, other than the caller, that is older than `IDENTITY_SHIM_MIN_VERSION` (`0.7.16-dev.7`) or records no usable version, from the live-sessions entries, the hub's `daemon-status.json` and each `status-<PORT>.json`; a dead or absent pid is ignored, a record written before the process now holding its pid started is ignored as a recycled pid (an undeterminable time keeps the writer, reported unverified, with its file), and a process named in several records is reported once. The Codex launch will refuse to start (Phase 3) while the list is not empty, before `preAssign` writes the first non-Claude record. It sees only older processes alive at launch: an older binary started later (`remi --sessions`, `--resume`, any wrapper start, a LaunchAgent hub restarting on its old binary) can still rewrite `sessions.json` and erase `harness` and `harnessSessionId`, and residual R12 (an older binary registered nowhere) also slips through; the Codex launch must tell the user, and no sidecar identity file is planned. Every commit of the seam epic branch carries the shim at `0.7.16-dev.6`, so a locally built seam-era binary and a PR-stamped build such as `0.7.16-p1182.1` are refused (fail-safe). A second store file would force a merge in every consumer of `SessionStore`.
 2. The reads are harness-aware (#1165 D, second half).
-`getMostRecent(harness?)` filters by the stored harness (absence means Claude), `remi --resume` asks for `claude`, `resolveStoredSession(..., {harness})` throws `SessionHarnessMismatchError` for a Remi id or prefix that names another harness's record and matches the harness's own session id only among that harness's records, `--sessions` prints `claude:<first 8>` or `<harness>:<last 8>` (a Codex id is a UUIDv7; `<harness>:-` before the id is known), and `findByClaudeSessionId` and `updateClaudeSessionId` are Claude-only. This supersedes the last Consequences bullet of ADR 0032.
+`getMostRecent(harness?)` filters by the stored harness (absence means Claude), `remi --resume` asks for `claude`, `resolveStoredSession(..., {harness})` throws `SessionHarnessMismatchError` for a Remi id or prefix that names another harness's record and matches the harness's own session id only among that harness's records (changed by #1179: the option is Claude-only now, the non-Claude branch was deleted because nothing called it), `--sessions` prints `claude:<first 8>` or `<harness>:<last 8>` (a Codex id is a UUIDv7; `<harness>:-` before the id is known), and `findByClaudeSessionId` and `updateClaudeSessionId` are Claude-only. This supersedes the last Consequences bullet of ADR 0032.
 3. Store writes for a non-Claude identity.
 `SessionStore.updateHarnessIdentity` fills in the id of a record created naming its harness; it refuses `claude` and a record naming another harness. `findByHarnessSessionId` finds a record by pair and prefers the single active owner. `assertUniqueSessionIdentities` rejects two active records with the same non-Claude pair, for an unknown harness string too.
 4. Argument policy: default-deny in both modes.
@@ -304,13 +304,13 @@ The parser keeps the user's `--` in a new `passthroughArgs`, and `remi codex` ha
 `remi --recent` validates the Codex arguments before it shows the picker, so a refusal is exit 2 before any prompt.
 The carry-over from Phase 2 said Codex flags that collide with remi's must be written after `--`.
 That is not what ships: the validator makes everything after `--` prompt text, so such a flag cannot be passed through remi at all, and the help and the README say so.
-`remi codex --daemon` takes no arguments until the hub can pass them (phase 5), `--host`, `--resume`, and the hub with a harness are refused with exit 2.
+`remi codex --daemon` takes no arguments until the hub can pass them (phase 5), `--host`, `--resume`, and the hub with a harness are refused with exit 2. (Changed by #1179: `remi codex --daemon` takes arguments after `--` and `--host` is accepted; `--resume` and the hub with a harness are still refused. See the Phase 5 amendment.)
 9. **Purge before recording.**
 `updateHarnessIdentity` and a `preAssign` that names a thread now purge dead holders first, in the binding store, because a record whose process died without exiting cleanly kept counting as an active holder of its thread and made the write refuse a free thread (Phase 2 review).
 `remi codex resume <uuid>` also refuses a thread another live remi session holds, after the same purge, and resumes a thread that has several exited rows.
 10. **Resume and the mismatch pointer.**
 `remi codex resume <uuid>` works (`codex --no-alt-screen resume <uuid>`, attaching on ready with no `thread/started`), so `SessionHarnessMismatchError` names it, with the whole thread id for a Codex record that has one, and `--sessions` prints `resume: cd <directory> && remi codex resume <id>` under each exited Codex record, because its label cuts the id to eight characters and the resume looks the thread up from the session's own directory.
-`remi codex resume` takes the whole thread id only: `resolveStoredSession`'s Codex branch (a remi id or prefix) still has no production caller, and the hub's refusal of `resume_session_request` on a non-Claude daemon is phase 5.
+`remi codex resume` takes the whole thread id only: `resolveStoredSession`'s Codex branch (a remi id or prefix) had no production caller and was deleted in #1179, and the refusal of `resume_session_request` on a non-Claude daemon shipped there too.
 11. **Deviations from the issue.**
 `CodexHarness` is not exported from `harness/index.ts`: the boundary test allows only `cli.ts` to import `harness/codex/`, and the rule is not loosened.
 `codex-socket.ts` is a new file.
@@ -326,7 +326,7 @@ For such a session the line at the top of `onUserInput` that logs every user inp
 13. **Not verified, for LV-2 (run live on 2026-10-04: the Phase 4 amendment's item 11 gives the results; only the cold start (R2), `-- exec x`, `-- login` and a `/resume` of an unloaded thread are still not seen).**
 That Codex's server accepts the hand-rolled client's handshake (LV-1 is the same question); that bare `codex` starts the shared daemon on a cold start (R2); that `thread/started` for the TUI thread arrives within about 2 s and the title helper is ignored; that the attach succeeds after the first message; that a dropped subscriber leaves the TUI untouched; that no `.claude/settings.local.json` appears; whether the system message shows anywhere; whether `thread/started` carries any client marker that would tell a non-remi window apart; that `remi codex -- login` and `remi codex -- exec x` send those words as prompt text (the inserted `--` in `codex-args.ts` is unverified, and so is item 8's claim that it makes every word a prompt); `-i` together with `resume`; that TUI-internal `/resume` emits no `thread/started` (the spike's `expB3.jsonl:12-13` shows none, so the tracker keeps the old thread, a known limit); and `kill -9` of remi in the middle of an approval.
 14. **Exports with no production caller in this PR.**
-`UntrustedSocketError` (read as an `instanceof` only by the launch's notice wording and tests), `validateCodexRemoteArgs` (phase 5), `SessionBindingStore.getIdentity` and `SessionStore.findByHarnessSessionId` (phase 5, the session list and the resume lookup), `resolveStoredSession`'s Codex branch (phase 5), and the client's `AppServerDisconnectedError`, `AppServerTimeoutError` and `AppServerSerializationError` (phase 4 reads them when it answers).
+`UntrustedSocketError` (read as an `instanceof` only by the launch's notice wording and tests), `validateCodexRemoteArgs` (phase 5: the hub calls it, #1179), `SessionBindingStore.getIdentity` (phase 5: the session list and every question emission call it, #1179) and `SessionStore.findByHarnessSessionId` (still none, see the Phase 5 amendment), `resolveStoredSession`'s Codex branch (deleted in #1179), and the client's `AppServerDisconnectedError`, `AppServerTimeoutError` and `AppServerSerializationError` (phase 4 reads them when it answers).
 The tracker's test-only accessors were removed.
 `shellQuote` moved to `session/shell-quote.ts` and is called by `codex-session.ts` (the resume line) and `session-store.ts` (the mismatch pointer); `codex-args.ts`'s `UUID_PATTERN` is now exported and used by `thread-protocol.ts`.
 `ThreadClaimedError`, `codexLaunchRefusal` and `codexResumeCommand` have callers in `cli.ts` or the launch.
@@ -375,7 +375,7 @@ This is accepted by design: the claim is that remi types only raw input (an atta
 A subagent's status is forgotten when the link drops and is not fetched again; a still-waiting subagent reads as not waiting until its next frame.
 In phase 4 a subagent's approval is a `terminalOnly` card, and whether it is replayed to a connection that resumed only the main thread is unverified (LV-3 (h)).
 - **E5, hub requests.**
-`resume_session_request` and `create_session_request` on a Codex daemon stay phase 5 item 7 (tracked in #1179); this phase does not touch them.
+`resume_session_request` and `create_session_request` on a Codex daemon stay phase 5 item 7 (tracked in #1179); this phase does not touch them. (Done in #1179: see the Phase 5 amendment.)
 
 ## Phase 4 amendment: approvals reach the phone (#1178)
 
@@ -488,3 +488,85 @@ Mutants of the new logic and of each wiring line, with the tests that kill them,
 - Q2, ids: every shortened thread id (logs, notices, the `codex:<id>` label of `--sessions`, the claimed-thread and ambiguous-identity errors) is its last eight characters (`shortThreadId`), because a UUIDv7 starts with a timestamp; whole ids stay in resume commands and mismatch pointers; remi's and Claude's v4 ids keep their first eight.
 - Q4, request id 0: the first real request id was 0; the fake server counts from 0 and tests pin the client, the decision channel and the card key (no falsy check on an id exists).
 - Q3 and Q4, documentation: the live results above replace "unverified" for exactly the items listed there; the rest stays unverified.
+
+## Phase 5 amendment: wire identity, `create_session` with a harness, web label (#1179)
+
+Phase 5 puts the harness on the wire and lets a client ask a hub for a Codex or Claude session with arguments.
+Nothing here was run against a real Codex: every black-box test spawns the real `cli.ts`, hub and child daemons and a real WebSocket client, but the agents are fake `claude` and `codex` executables on a PATH of fakes plus `/usr/bin:/bin`, and the app-server is the stand-in.
+LV-4 (a Codex session created from a hub request, in an already-trusted directory, reaches the prompt headless) is NOT done, and the gate "LV-4 passed" is therefore not met; item 13 lists what it must check.
+
+1. **Dual-emit, from one value.**
+`hello_ack` (on the acks that carry the binding), `question` and the daemon's own session-list entry carry `harness` and `harnessSessionId`.
+`createHelloAck` takes `binding: {identity, transcriptPath}` and `createQuestion` takes an `identity`, and each derives both ids from it: Claude's id is `claudeSessionId` AND `harnessSessionId` (a `hello_ack` keeps null on both), another harness's id is `harnessSessionId` alone and `claudeSessionId` is omitted.
+A question or a list entry has no null: with the id unknown it names the harness and no id.
+The Codex id is null on a `hello_ack` sent before `thread/started` and nothing depends on it, because answers are addressed by `questionId` and a client still echoes only `claudeSessionId` (the signaling Worker rebuilds an answer from a fixed list, so no client-to-daemon field was added; a Codex client sends none and `guardBinding` accepts that).
+`CurrentOwnedSession` gained `identity` (from `identityOfRecord`, which `SessionBindingStore.getIdentity` now also calls; a record that names a harness this build does not know, or no record, falls back to the daemon's own harness with a null id, never to a guess at Claude).
+`getIdentity` has two production callers, the session list (`session-events.ts`) and every question emission (`cli.ts`'s `getIdentity` for the message API); the issue named the first.
+The Claude transcripts a daemon finds on disk (`source: 'transcript'`) are not decorated: the #1162 discovery test pins that they carry no identity, and absence reads as Claude (see item 11).
+2. **`hello_ack.harnesses` on every ack, and the registry.**
+`HarnessRegistry` (`harness/registry.ts`, neutral) maps an id to `{command, validateRemoteArgs, launchRefusal?, headlessNotice?}`; `cli.ts` builds it because the validators sit behind the import boundary.
+A harness is offered when the registry has a spec for it and its command resolves on the PATH the process has NOW, in `HARNESS_IDS` order; `opencode` has no spec, so no daemon offers it.
+The command is never run (a test makes it write a marker and checks it never does).
+`Bun.which` reads the PATH the process started with and ignores a later change to `process.env.PATH` (checked on Bun 1.3.11 and 1.4.2), and every daemon changes it at boot (`resolveShellPath`), so the PATH is passed explicitly; a test points `process.env.PATH` at a directory after startup and would fail without it.
+The list is read at each ack, so a command installed later is offered without a restart.
+Every ack the production daemon sends carries it: the three in `connection-events.ts` (attached, query-mode, and the session-less one a hub sends) and both in `resume-session-events.ts`; `Connection`'s own ack (`connection.ts`, library consumers only, `skipHelloAck` is always set by the daemon) does not.
+Codex is advertised by PATH presence, before LV-4 (plan open call 17): the owner may want it gated.
+3. **The trust boundary for a create request** (`checkHarnessRequest`, before a port is probed or anything spawned), in this order: a known harness id (`isHarnessId`), an adapter in the registry, its command on PATH (only when a harness is named: a request that names none keeps Claude's old behavior, a spawn that fails inside the child if there is no `claude`), `args` against that harness's remote allowlist, then for a named harness its older-daemon gate (`legacyWriterRefusal`, the Phase 3 text).
+A refusal is `create_session_response{success:false, error}` with the reason and nothing spawned; the log says only that the checks refused one.
+The child is started with the inherited flags, then `--harness <id>`, then `--` and the arguments, last (a request that names no harness appends no `--harness`; one with no arguments appends no `--`).
+Claude's allowlist (`harness/claude-args.ts`, default deny, each slot once, at most 16 arguments of at most 256 characters, no NUL): `--resume`/`-r <uuid>`, `--continue`/`-c`, `--fork-session`, `--model <name>`.
+It is tighter than #1165 B in one place: the model name may not start with a hyphen, which the issue's pattern allows and which would let a flag stand in as the value.
+`validateCodexRemoteArgs` (Phase 2) also allows `resume <uuid>`, so a hub request can ask for a Codex resume; the validators decide and the issue lists hub-spawned `resume` as out of scope, so this is allowed by the validator and unverified headless (item 13).
+4. **`explicitArgs`.**
+`ParsedArgs.explicitArgs` is the tokens after the first `--` and nothing else.
+`passthroughArgs` (Phase 3) is the wrapper's: strays and the `--` itself, which `validateCodexArgs` needs to tell a prompt from flags, and which would turn a hub's `-m x` into prompt text if a daemon read it.
+A daemon passes `explicitArgs` to `createNewSession` (Claude) or to the local Codex validator (`remi codex --daemon`, whose "takes no arguments yet" refusal is gone); a stray word elsewhere is still ignored, so an existing LaunchAgent plist starts as before.
+The hub validated the arguments with the remote allowlist and the child validates them again with the local one; a Claude child does not re-validate (a person running `remi --daemon -- <args>` is the principal, as for a wrapper).
+5. **The sender and the mixed-version guard.**
+`remote-new-client.ts` sends `harness` and `args` (`remi codex --host`, `remi new --host --harness codex`; the Phase 3 refusal of `--host` for a harness is gone) and only to a daemon whose `hello_ack` lists the harness (arguments with no harness are Claude's and need `claude` listed): an older daemon omits `harnesses` and would ignore both fields and start a plain Claude session, so the client refuses with "does not offer X; nothing was started".
+The conformance is two-sided over both transports as far as each allows (ADR 0014): over the direct WebSocket the shipping sender (`createRemoteSession`) runs against a real `WebSocketAdapter`, and the real web `WebSocketClient` sends the factory's request to a real `WebSocketAdapter` in the conformance test; over the relay the shipping factory's request goes through `RelayAdapter`'s `createTransport` seam, labeled as the transport-seam test it is (#881: no real relay client exists).
+6. **Resume.**
+A `resume_session_request` to a daemon that hosts anything but Claude is answered `UNSUPPORTED` (`resume_session_response{success:false, errorCode:'UNSUPPORTED'}`, text naming `remi codex resume <thread id>`, the request never echoed) before any path runs; `harnessId` is a required dependency of the handler, like `hubMode`.
+7. **The live-sessions entry.**
+`LiveSessionEntry.harness?` (a string; absent means Claude): a Claude daemon writes none, so its entry is byte-identical to before (a test reads the file), and a Codex daemon or wrapper writes `codex`.
+`couldBeClaudeEntry` excludes only an entry that names a KNOWN other harness; absent, `claude` and a harness this build does not know count, the fail-safe `claudeChildLooksAlive` already uses for a legacy entry.
+Three readers use it, each with a test that fails when its check is removed: `TranscriptBinder.hasSiblingInDir`, the binder's stored-port reclaim check (`portClaimedByLiveSibling`) and `ForeignSessionEscalator.classifyOwnership` (its two signals read one filtered list).
+No Codex-side reader of live-sessions entries exists (`ThreadTracker`'s sibling guard and `claimedByOthers` read the store, which is harness-aware through `isClaudeRecord`), so nothing needed the "a Claude entry must not count as a Codex one" half.
+`isValidEntry` rejects a `harness` that is not a string like any other malformed field, which removes the entry.
+8. **`resolveStoredSession`'s Codex branch is deleted**, with its three tests (the fallback on a thread id among Codex records, several Codex owners as an ambiguity, one active owner winning over exited history).
+`opts.harness` is `'claude'` only, by type (a `@ts-expect-error` test) and by a runtime refusal for a cast around it; `SessionHarnessMismatchError`, the exact and prefix Remi id paths and the Claude fallback are unchanged.
+9. **What a headless success does not say.**
+`success` on `create_session_response` means the child daemon was spawned and registered, not that the harness reached its prompt (the same for Claude, which may sit at its trust prompt in an untrusted directory).
+For a harness whose spec has a `headlessNotice` (Codex) the success carries an optional `notice`: Codex was started without a terminal, remi cannot tell whether it reached its prompt, it may be waiting at an Update or Trust prompt that only a terminal can answer, run `remi attach` on the host.
+The CLI prints it; the web client does not (no UI in this phase), and a refusal or a Claude success carries none.
+Why the notice and not silence or `success:false`: the hub cannot know either way, and remi never types into a Codex PTY, so the only truthful words are the unknown and the way out.
+`remi attach` reaching such a prompt is the claim LV-4 must check.
+10. **Web.**
+`UISession.harness` is copied from `hello_ack` (an existing session's patch and a new one's entry) and from each list entry; a source pin reads the three copies in `App.tsx`.
+`harnessLabel` (in `session-display.ts`, the single source for session display): `claude` and an absent harness are no label, `codex` is "Codex", `opencode` is "OpenCode".
+The card and the chat header show a small chip beside the status pill; a Claude session renders markup identical to before (tested with the real components), and a Codex session differs by that chip alone.
+The header's binding button still reads `claudeSessionId`, so a Codex session has none; the thread id is not shown anywhere (a label for it would carry its last eight characters, `shortThreadId`).
+11. **Deviations from the issue and the plan, and contradictions found.**
+- `harness/registry.ts` is new; ADR 0032 said the id-keyed registry arrives with the first caller that needs one, which is this.
+- `create_session_response.notice` is a new daemon-to-client field the issue does not list (carry-over item (d)).
+- The Claude model name may not start with a hyphen (item 3).
+- The issue lists `cli/handlers/message-api-setup.ts`; the file is `cli/session-phases/message-api-setup.ts`.
+- The transcript-discovered list entries carry no harness (item 1), against a literal reading of "dual-emit on `DiscoverableSession`".
+- A Codex `hello_ack` used to carry `claudeSessionId: null` (through the Claude-shaped binding); it is now omitted, as the issue says; the Phase 3 characterization test reads it with `?? null` and stayed green.
+- The Phase 3 test that pinned `remi codex --host` as an exit-2 refusal now pins that it asks the remote daemon (exit 1 with none listening).
+- The plan's section 2.6 and the issue say a request carrying `resume` is out of scope; the Phase 2 validator allows `resume <uuid>` and was not narrowed (item 3).
+- Plan open call 17 (advertise Codex only after LV-4) is not applied: availability is PATH presence, as the issue says.
+- The plan's "exports with no production caller" rule: none in this PR; `SessionStore.findByHarnessSessionId` (Phase 2) still has none, and its caller would be a lookup by thread id that no code path needs yet.
+12. **Test changes to existing files, all disclosed in the PR:** `harness.test.ts` (the declared change: the factories no longer emit neither key), setup lines in `binding-protocol.test.ts` (the binding's shape), the new required dependencies added to each handler constructor in the existing tests, `message-api-setup.test.ts` (`getClaudeSessionId` became `getIdentity`), the `--host` test in `codex-launch-characterization.test.ts`, and the three deleted tests of item 8.
+13. **What LV-4 must verify (not done).**
+(a) a Codex session created from a hub request in an already-trusted directory reaches its prompt with no terminal attached, learns its thread, and shows an approval card that the phone's answer closes;
+(b) what Codex does headless at an Update prompt and at a Trust prompt in an untrusted directory, and that `remi attach` on the host dismisses them, so the notice's advice is true;
+(c) that `-m`, `-a untrusted|on-request`, `-s read-only|workspace-write` and `resume <uuid>` are accepted by the real Codex as the validators assume (the spellings come from embedded help strings, never from a run), and that `resume <uuid>` through a hub request works at all;
+(d) that the daemon cold start (R2) works from a hub child with no terminal;
+(e) that `codex` resolves on the hub's PATH after `resolveShellPath` to the binary the child runs;
+(f) the web app's label on a real Codex session, and `remi codex --host` from a second machine.
+14. **Receipts.**
+Pins first, in their own commits, red where they pin new behavior: the additive-golden test (the four, later five, messages that gained fields keep every legacy field with its value, and the added fields are exactly the named ones), the black-box test of what a real Claude daemon sends (legacy keys unchanged, identity added), and the readiness-notice pins.
+The golden diff is additions only (the parsed diff, checked by `protocol-fixtures-additive.test.ts`); two pre-existing lines show as changed in the text diff only because the last field of an object gained a trailing comma.
+`macos-fixture-conformance.test.ts` is green, and the real Swift decoders were checked directly: the real `HubProtocol.swift` was compiled with `swiftc` and decoded the regenerated `hello_ack` golden, a Codex-shaped ack (no `claudeSessionId`, null `harnessSessionId`, `harnesses`) and the other four frames HubClient decodes; a synthesized `Decodable` ignores unknown keys.
+Mutants, gates and the removed-line check are in the PR.
