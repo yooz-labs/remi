@@ -21,6 +21,7 @@ real problems for months. Known cases, all confirmed:
 | allow-patterns match tool names (`config.ts`) | substring match, so `Read` covered `cat x \| sh` | #536, a P0 |
 | `relay-adapter-auth.test.ts` "tests the relay adapter" | never constructed one; 8 tests that could not fail on that claim (corrected from a stale "29" — ADR 0014) | mandatory kex shipped uncovered |
 | "the relay is now end-to-end encrypted" (#543, believed done) | engages only when an authenticator exists, i.e. never by default | #881, found while *writing the README fix for the previous row* |
+| README "Relay (connection code, works from anywhere)", on by default | no shipped client can join a room; the daemon registered one anyway and accepted an unauthenticated peer | #1193, closed by turning it off and failing closed |
 
 The pattern is what matters: **a wrong security description reads as "this is
 handled," so nobody looks again.** Docs that overstate protection are more
@@ -77,7 +78,7 @@ bun run build && npx cap sync android && npx cap open android
 │  React + Capacitor (iOS / Android / Web / Desktop)               │
 │  Chat View (xterm.js) | Session List | Notifications             │
 └──────────────────────────┬───────────────────────────────────────┘
-                           │ WebSocket (transport-encrypted)
+                           │ WebSocket (direct; remi adds no encryption, ADR 0009)
 ┌──────────────────────────▼───────────────────────────────────────┐
 │                 REMI DAEMON (server / dev machine)               │
 │  PTY Manager | Session Registry | Event Parser | WebSocket:8765  │
@@ -136,7 +137,7 @@ Key directories to know:
 
 Epic #648 phase 1 (#542). The hub is a **session-less supervisor**: it binds
 the well-known port (18765 preferred, 20-port probe), runs the shared services
-(WebSocket, mDNS, relay, Telegram, device tokens), serves the machine's
+(WebSocket, mDNS, the relay when enabled, Telegram, device tokens), serves the machine's
 session list (`daemonPorts` from `~/.remi/live-sessions/`), and spawns child
 `remi --daemon` session daemons on create-session requests. It **never**
 spawns Claude, never installs Claude hook config in its cwd, and never
@@ -172,11 +173,11 @@ registers itself in live-sessions.
 | Method | When to use |
 |---|---|
 | Direct connection | Same Wi-Fi, Tailscale, VPN, SSH tunnel |
-| Signaling relay | No direct access. Every protocol message is carried by the Cloudflare Worker |
+| Signaling relay | Not usable today. Off by default, and nothing remote ships through it (see below) |
 
 **Direct connection now requires setting `daemon.bind` (#880).** The default is
-`127.0.0.1`, so a stock daemon accepts only loopback: SSH tunnels and the relay
-still work untouched, but **LAN direct, Tailscale direct (100.x) and mDNS
+`127.0.0.1`, so a stock daemon accepts only loopback: SSH tunnels still work
+untouched, but **LAN direct, Tailscale direct (100.x) and mDNS
 discovery all stop** until the user opts in. mDNS does not even advertise on a
 loopback bind (`cli.ts` skips the publisher), so the daemon does not fail — it
 disappears, which is the confusing half.
@@ -187,10 +188,20 @@ auth exemption (`peer-helpers.ts`, #869) — it reinstates the hole behind a
 safer-looking front. Recommend an SSH tunnel, or an explicit `bind` plus
 `--auth`.
 
+**The relay is off by default, and without an authenticator it accepts nothing (#1193).**
+`network.relay` defaults to `false`; `network.relay = true` or `--permanent-code` turns it on, and `--no-relay` wins over both.
+With it on and no `authenticator` (only `--auth --permanent-code` supplies one), `RelayAdapter` refuses every peer (`auth_result` with `RELAY_AUTH_REQUIRED`, `onConnect` never fires), drops every inbound frame before it is parsed, and prints a boot notice saying no relay client can connect.
+Dropping frames matters as much as refusing peers: the Worker forwards a `relay` frame from a socket that never sent `join` straight to the host (`connection-room.ts`, `getPeer` does not check the sender's role), so a frame can arrive with no peer at all.
+A `config.toml` that already holds `relay = true` (`remi config init` wrote it before #1193) keeps the adapter registered, and it now refuses too.
+No shipped client can use the relay: the web client has no code that joins a room or does the key exchange, and no native client holds a signaling URL.
+The rebuild is planned (`.context/strategy-2026-10.md` section 9); nothing remote ships through the relay today.
+
 **There is no WebRTC.** No `RTCPeerConnection` or data channel exists anywhere
 in this repo. The worker was built to relay a *handshake*, with WebRTC intended
-to carry the session; that second half was never implemented, so the relay
-became the data transport by default and is the only remote path there is.
+to carry the session; that second half was never implemented, so the relay was
+left as a data transport that no shipped client can use, and the only remote
+paths that work today are direct ones (an SSH tunnel, or an explicit `bind` plus
+`--auth`).
 Anything describing a peer-to-peer path, DTLS, or TURN relaying opaque blobs is
 describing an intention, not this codebase (#543).
 
@@ -640,12 +651,15 @@ hand.
 2. **Reliable messaging** — WhatsApp-style states (sending → sent → delivered → read).
 3. **No data in cloud** — the relay should carry ciphertext it cannot read, so the
    worker is a courier and not a reader. **This is still a goal, not a
-   description.** #543 built the encryption; #881 is that it engages only when an
-   `authenticator` is present, which `cli.ts` supplies only in permanent-code
-   mode — so a default install, and even `--auth` alone, never derives session
-   keys. Outbound then REFUSES to send (a breakage, not a leak) while inbound
-   still ACCEPTS plaintext (a leak). Name the direction; conflating them is how
-   the first draft of this very row got it wrong.
+   description.** #543 built the encryption daemon-side only; #881 is that it
+   engages only when an `authenticator` is present, which `cli.ts` supplies only
+   in permanent-code mode — so a default install, and even `--auth` alone, never
+   derives session keys — and that no client implements the other half. Since
+   #1193 the relay is off by default and a daemon without an authenticator
+   refuses in BOTH directions: outbound refuses to send, inbound refuses every
+   peer and frame. Before #1193 outbound REFUSED (a breakage, not a leak) while
+   inbound still ACCEPTED plaintext (a leak). Name the direction; conflating them
+   is how the first draft of this very row got it wrong.
    The principle as previously written ("peer-to-peer when possible; TURN only
    relays encrypted blobs") described a WebRTC design that was never built, which
    is precisely why nobody noticed the worker was receiving plaintext

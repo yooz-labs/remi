@@ -4,6 +4,24 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+### Relay: off by default, and closed without authentication (#1193)
+
+`network.relay` now defaults to `false`.
+No shipped client can join a relay room or do its key exchange, yet every daemon registered a room and accepted an unauthenticated peer, gated only by the 30-bit room code.
+Nobody could use the relay, so nobody loses anything; one inbound door is shut.
+
+#### Changed
+
+- A stock daemon no longer registers a room with the signaling Worker.
+  `network.relay = true` in `config.toml` or `--permanent-code` still enables it, and `--no-relay` still wins over both.
+  A `config.toml` written by `remi config init` before this change holds `relay = true` and keeps the relay enabled, which is now harmless (next item).
+- The relay adapter refuses every peer and drops every inbound frame when it has no authenticator (only `--auth --permanent-code` supplies one), and prints a boot notice saying so.
+  That includes frames that arrive with no peer, and a lock-screen answer, which used to be accepted on the room code alone in that mode.
+- The room code is no longer printed to the log when no authenticator is configured, since nobody can use it.
+- With `--auth --permanent-code` nothing changes.
+- `remi --help`, the README and AGENTS.md no longer describe the relay as a way to connect from anywhere.
+  Nothing remote ships through it today; a rebuild is planned.
+
 ### Harness seam: Claude Code is one implementation of an interface (#1161, [ADR 0032](.context/decisions/0032-harness-seam-and-identity-shim.md))
 
 The first step toward a second agent CLI: the daemon asks a `Harness` for what is specific to the CLI it wraps, and Claude Code is the only implementation.
