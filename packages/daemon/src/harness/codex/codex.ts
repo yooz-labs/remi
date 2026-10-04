@@ -44,11 +44,11 @@ export class CodexHarness implements Harness {
    * written, so `cli.ts` can refuse (exit 2 or 1) before it boots a daemon or
    * takes over the terminal. `createSession` repeats both before `preAssign`.
    */
-  preflight(userArgs: readonly string[]): CodexPreflight {
+  preflight(userArgs: readonly string[], workingDirectory: string): CodexPreflight {
     if (!this.launchDeps) {
       throw new Error('CodexHarness was built without launch dependencies; it cannot preflight');
     }
-    return checkCodexLaunch(this.launchDeps, userArgs);
+    return checkCodexLaunch(this.launchDeps, userArgs, workingDirectory);
   }
 
   createSession(ctx: HarnessLaunchContext): HarnessSession {

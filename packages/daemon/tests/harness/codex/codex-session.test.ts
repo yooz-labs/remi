@@ -23,6 +23,7 @@ import {
   type CodexLaunchDeps,
   CodexLaunchRefusal,
   checkCodexLaunch,
+  codexLaunchRefusal,
   legacyWriterRefusal,
   olderRemiNotice,
 } from '../../../src/harness/codex/codex-session.ts';
@@ -33,7 +34,11 @@ import type { LegacyWriter } from '../../../src/session/legacy-writers.ts';
 import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
 import { SessionRegistryFile } from '../../../src/session/session-registry-file.ts';
 import { SessionRegistry } from '../../../src/session/session-registry.ts';
-import { SessionStore, type StoredSession } from '../../../src/session/session-store.ts';
+import {
+  AmbiguousSessionIdentityError,
+  SessionStore,
+  type StoredSession,
+} from '../../../src/session/session-store.ts';
 import { threadStartedFrame, threadStatusFrame } from '../../helpers/codex-threads.ts';
 import { FakeAppServer } from '../../helpers/fake-app-server.ts';
 
@@ -51,6 +56,7 @@ done
 const nowSec = (): number => Math.floor(Date.now() / 1000);
 
 /** Cases that start PTYs and wait out windows or watchdogs. */
+const THREAD_FOR_AMBIGUITY = '00000000-0000-7000-8000-0000000000dd';
 const slow = (name: string, fn: () => Promise<void>) => test(name, fn, 30000);
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -277,12 +283,75 @@ describe('CodexHarness', () => {
       );
       const before = fs.readFileSync(path.join(tmpDir, 'sessions.json'), 'utf8');
       legacy = [legacyWriter()];
-      const checked = checkCodexLaunch(buildDeps(null), [
-        'resume',
-        '00000000-0000-7000-8000-0000000000aa',
-      ]);
+      const checked = checkCodexLaunch(
+        buildDeps(null),
+        ['resume', '00000000-0000-7000-8000-0000000000aa'],
+        workDir,
+      );
       expect(checked.ok).toBe(false);
       expect(fs.readFileSync(path.join(tmpDir, 'sessions.json'), 'utf8')).toBe(before);
+    });
+
+    test('a working directory that does not exist is refused by the check, before any record (W7)', () => {
+      const checked = checkCodexLaunch(buildDeps(null), [], path.join(tmpDir, 'gone'));
+      expect(checked.ok).toBe(false);
+      if (!checked.ok) {
+        expect(checked.exitCode).toBe(1);
+        expect(checked.message).toContain('does not exist');
+      }
+      expect(fs.existsSync(path.join(tmpDir, 'sessions.json'))).toBe(false);
+    });
+
+    test('an argument refusal still comes first, with exit 2, whatever the directory (W7)', () => {
+      const checked = checkCodexLaunch(buildDeps(null), ['--bogus'], path.join(tmpDir, 'gone'));
+      expect(checked.ok).toBe(false);
+      if (!checked.ok) expect(checked.exitCode).toBe(2);
+    });
+
+    test('two sessions racing for one thread: the loser is a refusal with exit 1, not a crash (W7)', () => {
+      // A real store that lets a competing session record the thread between the preflight's
+      // read and this session's own write: the window a race lives in.
+      const THREAD = '00000000-0000-7000-8000-0000000000cc';
+      class RacingStore extends SessionStore {
+        raced = false;
+        override list(): StoredSession[] {
+          const rows = super.list();
+          if (!this.raced) {
+            this.raced = true;
+            this.save(record({ harnessSessionId: THREAD }));
+          }
+          return rows;
+        }
+      }
+      const racing = new RacingStore(path.join(tmpDir, 'sessions.json'));
+      const deps = buildDeps(null, {
+        sessionStore: racing,
+        bindingStore: new SessionBindingStore(racing),
+      });
+      let error: unknown;
+      let created: ReturnType<typeof create> | undefined;
+      try {
+        created = create(deps, ['resume', THREAD]);
+      } catch (e) {
+        error = e;
+      }
+      expect(created).toBeUndefined();
+      expect(error).toBeInstanceOf(CodexLaunchRefusal);
+      expect((error as CodexLaunchRefusal).exitCode).toBe(1);
+      expect((error as Error).message).toContain('Ambiguous');
+      // Only the winner's record is left active.
+      expect(racing.list().filter((s) => s.exitedAt === null)).toHaveLength(1);
+    });
+
+    test('codexLaunchRefusal reads the errors a launch may end in, and nothing else (W7)', () => {
+      expect(codexLaunchRefusal(new CodexLaunchRefusal('no', 2))).toEqual({
+        message: 'no',
+        exitCode: 2,
+      });
+      const ambiguous = new AmbiguousSessionIdentityError('codex', THREAD_FOR_AMBIGUITY, 2);
+      expect(codexLaunchRefusal(ambiguous)).toEqual({ message: ambiguous.message, exitCode: 1 });
+      expect(codexLaunchRefusal(new Error('boom'))).toBeNull();
+      expect(codexLaunchRefusal('text')).toBeNull();
     });
 
     test('the notice for the user names the minimum version and what is lost', () => {
@@ -297,7 +366,7 @@ describe('CodexHarness', () => {
     test('a thread already open in a live remi session is refused, naming that session', () => {
       const open = record({ harnessSessionId: THREAD });
       sessionStore.save(open);
-      const checked = checkCodexLaunch(buildDeps(null), ['resume', THREAD]);
+      const checked = checkCodexLaunch(buildDeps(null), ['resume', THREAD], workDir);
       expect(checked.ok).toBe(false);
       if (!checked.ok) {
         expect(checked.exitCode).toBe(1);
@@ -320,10 +389,11 @@ describe('CodexHarness', () => {
           }),
         );
       }
-      expect(checkCodexLaunch(buildDeps(null), ['resume', THREAD])).toEqual({
+      expect(checkCodexLaunch(buildDeps(null), ['resume', THREAD], workDir)).toEqual({
         ok: true,
         args: ['resume', THREAD],
         resumeThreadId: THREAD,
+        directory: workDir,
       });
     });
 
@@ -333,7 +403,7 @@ describe('CodexHarness', () => {
       );
       const open = record({ harnessSessionId: THREAD });
       sessionStore.save(open);
-      const checked = checkCodexLaunch(buildDeps(null), ['resume', THREAD]);
+      const checked = checkCodexLaunch(buildDeps(null), ['resume', THREAD], workDir);
       expect(checked.ok).toBe(false);
       if (!checked.ok) expect(checked.message).toContain(open.remiSessionId.slice(0, 8));
     });
@@ -347,8 +417,13 @@ describe('CodexHarness', () => {
           exitCode: 0,
         }),
       );
-      const checked = checkCodexLaunch(buildDeps(null), ['resume', THREAD]);
-      expect(checked).toEqual({ ok: true, args: ['resume', THREAD], resumeThreadId: THREAD });
+      const checked = checkCodexLaunch(buildDeps(null), ['resume', THREAD], workDir);
+      expect(checked).toEqual({
+        ok: true,
+        args: ['resume', THREAD],
+        resumeThreadId: THREAD,
+        directory: workDir,
+      });
     });
 
     test('a record whose process died without exiting cleanly is purged first, so the resume goes ahead', () => {
@@ -366,10 +441,11 @@ describe('CodexHarness', () => {
     });
 
     test('a fresh launch has no resume check and a prompt goes after an inserted --', () => {
-      expect(checkCodexLaunch(buildDeps(null), ['fix', 'it'])).toEqual({
+      expect(checkCodexLaunch(buildDeps(null), ['fix', 'it'], workDir)).toEqual({
         ok: true,
         args: ['--', 'fix', 'it'],
         resumeThreadId: null,
+        directory: workDir,
       });
     });
   });
@@ -1049,7 +1125,7 @@ describe('CodexHarness', () => {
 
     test('built without launch dependencies it refuses to launch or preflight', () => {
       const harness = new CodexHarness();
-      expect(() => harness.preflight([])).toThrow('without launch dependencies');
+      expect(() => harness.preflight([], workDir)).toThrow('without launch dependencies');
       expect(() =>
         harness.createSession({
           sessionId: crypto.randomUUID() as UUID,
@@ -1066,8 +1142,13 @@ describe('CodexHarness', () => {
 
     test('preflight is the check, with nothing written', () => {
       const harness = new CodexHarness(buildDeps(null));
-      expect(harness.preflight(['--bogus']).ok).toBe(false);
-      expect(harness.preflight([])).toEqual({ ok: true, args: [], resumeThreadId: null });
+      expect(harness.preflight(['--bogus'], workDir).ok).toBe(false);
+      expect(harness.preflight([], workDir)).toEqual({
+        ok: true,
+        args: [],
+        resumeThreadId: null,
+        directory: workDir,
+      });
       expect(fs.existsSync(path.join(tmpDir, 'sessions.json'))).toBe(false);
     });
   });

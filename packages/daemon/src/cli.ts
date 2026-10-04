@@ -198,7 +198,7 @@ import {
   remiHome,
   serviceCommandRefusal,
 } from './config/remi-home.ts';
-import { CodexLaunchRefusal, olderRemiNotice } from './harness/codex/codex-session.ts';
+import { codexLaunchRefusal, olderRemiNotice } from './harness/codex/codex-session.ts';
 import { CodexHarness } from './harness/codex/codex.ts';
 import { ClaudeHarness } from './harness/index.ts';
 import type { Harness, HarnessSession } from './harness/index.ts';
@@ -1851,7 +1851,10 @@ if (codexHarness) {
     console.error('remi codex --daemon takes no arguments yet.');
     process.exit(2);
   }
-  const preflight = codexHarness.preflight(cliDaemonMode ? [] : parsedArgs.passthroughArgs);
+  const preflight = codexHarness.preflight(
+    cliDaemonMode ? [] : parsedArgs.passthroughArgs,
+    process.cwd(),
+  );
   if (!preflight.ok) {
     console.error(preflight.message);
     process.exit(preflight.exitCode);
@@ -2563,8 +2566,8 @@ if (cliDaemonMode) {
       liveSessionsRegistry.unregister(sessionId);
       await registry.stopAll();
       // A Codex launch the harness refuses after the preflight passed (an older remi that started
-      // in between) keeps its own exit code.
-      process.exit(err instanceof CodexLaunchRefusal ? err.exitCode : 1);
+      // in between, a race for a thread) keeps its own exit code.
+      process.exit(codexLaunchRefusal(err)?.exitCode ?? 1);
     }
 
     const managedSession = sessionRegistry.getSession(sessionId);
@@ -2798,14 +2801,32 @@ if (cliDaemonMode) {
   const reservedRows = statusBarActive ? 1 : 0;
 
   // Create and start the primary PTY session
-  const ptySession = await createNewSession(
-    sessionId,
-    workingDirectory,
-    ptyMessageFanout,
-    harnessId === 'codex' ? codexLaunchArgs : claudeArgs,
-    true, // pass-through mode
-    reservedRows,
-  );
+  let ptySession: PTYSession;
+  try {
+    ptySession = await createNewSession(
+      sessionId,
+      workingDirectory,
+      ptyMessageFanout,
+      harnessId === 'codex' ? codexLaunchArgs : claudeArgs,
+      true, // pass-through mode
+      reservedRows,
+    );
+  } catch (err) {
+    if (harnessId !== 'codex') throw err;
+    // A Codex launch that fails after boot (a refusal the preflight could not see, a race for
+    // a thread, a `codex` that is not installed) used to die as an unhandled rejection with its
+    // text in the log: a wrapper's console is redirected there. Say it on the real stderr, with
+    // the refusal's own exit code.
+    const refusal = codexLaunchRefusal(err);
+    const message = refusal ? refusal.message : `Failed to create session: ${errorToString(err)}`;
+    try {
+      fs.writeSync(2, `${message}\n`);
+    } catch {
+      // stderr may already be gone
+    }
+    await cleanup().catch(() => {});
+    process.exit(refusal?.exitCode ?? 1);
+  }
 
   // Start drawing the reserved-row bar now that the PTY is up. Reads the live
   // StatusWriter state and repaints on a 250ms timer (the cadence of the

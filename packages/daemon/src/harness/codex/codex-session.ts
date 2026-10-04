@@ -93,8 +93,24 @@ export class CodexLaunchRefusal extends Error {
 }
 
 export type CodexPreflight =
-  | { ok: true; args: string[]; resumeThreadId: string | null }
+  | { ok: true; args: string[]; resumeThreadId: string | null; directory: string }
   | { ok: false; exitCode: 1 | 2; message: string };
+
+/**
+ * The message and exit code of an error a Codex launch may end in, or null for any other.
+ * `cli.ts` prints it on the real stderr (a wrapper's console goes to the log, so a refusal
+ * after boot would otherwise leave no trace on screen) and exits with the code.
+ */
+export function codexLaunchRefusal(error: unknown): { message: string; exitCode: 1 | 2 } | null {
+  if (error instanceof CodexLaunchRefusal) {
+    return { message: error.message, exitCode: error.exitCode };
+  }
+  // The store refuses to choose between two records of one thread (a race between two resumes,
+  // or a store that already holds the thread twice).
+  if (error instanceof AmbiguousSessionIdentityError)
+    return { message: error.message, exitCode: 1 };
+  return null;
+}
 
 /** What the launch prints so nobody learns the hazard from a lost session id (see the file header). */
 export function olderRemiNotice(): string {
@@ -118,18 +134,24 @@ export function legacyWriterRefusal(writers: readonly LegacyWriter[]): string {
 }
 
 /**
- * Steps 1 and 2 of the launch, and for a resume a check that no live remi
- * session already holds the thread: arguments, then the older-daemon gate, with
- * nothing written before either passes (the store is purged only after the gate).
+ * Steps 1 and 2 of the launch, the working directory, and for a resume a check
+ * that no live remi session already holds the thread: arguments, then the
+ * older-daemon gate, then the directory (which must exist and be searchable),
+ * with nothing written before any of them passes (the store is purged only
+ * after the gate). `directory` in the result is the working directory as
+ * `realpath` resolves it, the one identity matching compares against.
  */
 export function checkCodexLaunch(
   deps: Pick<CodexLaunchDeps, 'legacyWriters' | 'sessionStore'>,
   userArgs: readonly string[],
+  workingDirectory: string,
 ): CodexPreflight {
   const parsed = validateCodexArgs(userArgs);
   if (!parsed.ok) return { ok: false, exitCode: 2, message: parsed.error };
   const writers = deps.legacyWriters();
   if (writers.length > 0) return { ok: false, exitCode: 1, message: legacyWriterRefusal(writers) };
+  const cwd = resolveCodexWorkingDirectory(workingDirectory);
+  if (!cwd.ok) return { ok: false, exitCode: 1, message: cwd.error };
   const threadId = parsed.resumeThreadId;
   if (threadId !== null) {
     try {
@@ -154,7 +176,7 @@ export function checkCodexLaunch(
       return { ok: false, exitCode: 1, message: error.message };
     }
   }
-  return { ok: true, args: parsed.args, resumeThreadId: threadId };
+  return { ok: true, args: parsed.args, resumeThreadId: threadId, directory: cwd.directory };
 }
 
 /**
@@ -199,23 +221,30 @@ export function createCodexSession(
   const { sessionId, workingDirectory, messageApi } = ctx;
   const log = (message: string): void => deps.log(`[Codex] ${message}`);
 
-  const checked = checkCodexLaunch(deps, ctx.extraArgs);
+  const checked = checkCodexLaunch(deps, ctx.extraArgs, workingDirectory);
   if (!checked.ok) throw new CodexLaunchRefusal(checked.message, checked.exitCode);
-  const cwd = resolveCodexWorkingDirectory(workingDirectory);
-  if (!cwd.ok) throw new CodexLaunchRefusal(cwd.error, 1);
+  const cwd = { directory: checked.directory };
 
-  deps.bindingStore.preAssign({
-    remiSessionId: sessionId,
-    claudeSessionId: null,
-    harness: 'codex',
-    harnessSessionId: checked.resumeThreadId,
-    projectPath: workingDirectory,
-    port: deps.currentPort(),
-    pid: process.pid,
-    startedAt: new Date().toISOString(),
-    exitedAt: null,
-    exitCode: null,
-  });
+  try {
+    deps.bindingStore.preAssign({
+      remiSessionId: sessionId,
+      claudeSessionId: null,
+      harness: 'codex',
+      harnessSessionId: checked.resumeThreadId,
+      projectPath: workingDirectory,
+      port: deps.currentPort(),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      exitedAt: null,
+      exitCode: null,
+    });
+  } catch (error) {
+    // Another session took the thread between the check above and this write: a refusal,
+    // not a crash.
+    const refusal = codexLaunchRefusal(error);
+    if (refusal) throw new CodexLaunchRefusal(refusal.message, refusal.exitCode);
+    throw error;
+  }
 
   // The statuses of the tracked thread and its descendants, and the one the session last reported.
   const statuses = new Map<string, ThreadStatus>();

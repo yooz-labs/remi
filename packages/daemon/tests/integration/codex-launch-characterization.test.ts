@@ -114,13 +114,18 @@ function collect(stream: ReadableStream<Uint8Array>, sink: { text: string }): vo
   })().catch(() => {});
 }
 
-function makeFakes(home: string): { fakeDir: string; env: Record<string, string> } {
+function makeFakes(
+  home: string,
+  withCodex = true,
+): { fakeDir: string; env: Record<string, string> } {
   const fakeDir = path.join(home, 'fake-codex');
   const fakeBin = path.join(home, 'fake-bin');
   fs.mkdirSync(fakeDir, { recursive: true });
   fs.mkdirSync(fakeBin, { recursive: true });
-  fs.writeFileSync(path.join(fakeBin, 'codex'), FAKE_CODEX);
-  fs.chmodSync(path.join(fakeBin, 'codex'), 0o755);
+  if (withCodex) {
+    fs.writeFileSync(path.join(fakeBin, 'codex'), FAKE_CODEX);
+    fs.chmodSync(path.join(fakeBin, 'codex'), 0o755);
+  }
   const shell = path.join(fakeBin, 'sh-path');
   fs.writeFileSync(shell, FAKE_SHELL);
   fs.chmodSync(shell, 0o755);
@@ -152,9 +157,11 @@ async function startDaemon(): Promise<Running> {
 async function startWrapper(
   args: readonly string[],
   subcommand: string | null = 'codex',
+  opts: { seed?: (home: string) => void; withCodex?: boolean } = {},
 ): Promise<Running> {
   const { home, work } = makeIsolatedDirs();
-  const { fakeDir, env } = makeFakes(home);
+  const { fakeDir, env } = makeFakes(home, opts.withCodex ?? true);
+  opts.seed?.(home);
   const server = FakeAppServer.start();
   const port = await reserveRange(1, 50, '127.0.0.1');
   const proc = Bun.spawn(
@@ -658,5 +665,45 @@ describe('remi codex launch (wrapper and refusals, #1177)', () => {
     expect(read(path.join(r.fakeDir, 'argv'))).toBe('--no-alt-screen\n--\nstatus\n');
     fs.writeFileSync(path.join(r.fakeDir, 'release'), '');
     expect(await Promise.race([r.proc.exited, Bun.sleep(15000).then(() => 'timeout')])).toBe(0);
+  }, 40000);
+
+  test('a launch that fails after boot says why on stderr and exits 1: no codex on the PATH (W7)', async () => {
+    const r = await startWrapper([], 'codex', { withCodex: false });
+    const code = await Promise.race([r.proc.exited, Bun.sleep(20000).then(() => 'timeout')]);
+    expect(code).toBe(1);
+    // In wrapper mode the console goes to the log, so this text reached stderr by another way.
+    expect(r.output.text).toContain('Failed to create session');
+    expect(r.output.text).toContain('codex');
+  }, 40000);
+
+  test('a store that already holds one thread twice is refused on stderr with exit 1, after boot (W7)', async () => {
+    const sleeper = Bun.spawn(['/bin/sleep', '60'], { stdout: 'ignore', stderr: 'ignore' });
+    sleepers.push(sleeper);
+    const thread = crypto.randomUUID();
+    const r = await startWrapper([], 'codex', {
+      seed: (home) => {
+        fs.mkdirSync(path.join(home, '.remi'), { recursive: true });
+        const row = () => ({
+          remiSessionId: crypto.randomUUID(),
+          claudeSessionId: null,
+          harness: 'codex',
+          harnessSessionId: thread,
+          projectPath: '/work/elsewhere',
+          port: 19000,
+          pid: sleeper.pid,
+          startedAt: new Date().toISOString(),
+          exitedAt: null,
+          exitCode: null,
+        });
+        fs.writeFileSync(
+          path.join(home, '.remi', 'sessions.json'),
+          JSON.stringify({ version: 1, sessions: [row(), row()] }),
+        );
+      },
+    });
+    const code = await Promise.race([r.proc.exited, Bun.sleep(20000).then(() => 'timeout')]);
+    expect(code).toBe(1);
+    expect(r.output.text).toContain(`Ambiguous codex session ID ${thread.slice(0, 8)}`);
+    expect(fileExists(r, 'pid')).toBe(false);
   }, 40000);
 });
