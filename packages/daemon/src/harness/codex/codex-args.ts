@@ -33,15 +33,15 @@
  * positional is a Codex subcommand name, instead of starting an interactive
  * session whose prompt is that word. Only `resume <uuid>` runs a subcommand.
  *
- * A token after a `--` the user typed is prompt text. `arg-parser.ts` (the
- * `--` branch, lines 183-188) drops a user's `--` and pushes the rest into
- * `claudeArgs`, so today the user's own `--` never reaches this validator;
- * phase 3 owns that wiring (a flag of `remi codex` written after `--` is still
- * Codex's, not remi's).
+ * A token after a `--` the user typed is prompt text. `arg-parser.ts` drops
+ * that `--` from `claudeArgs` but keeps it in `passthroughArgs`, which `remi
+ * codex` hands to this validator (#1177). So a word after the user's `--` is
+ * prompt text, never a flag, and a Codex flag that has the same name as one of
+ * remi's (`-h`, `--version`, `--dir`, `--port`, `--resume`) cannot be passed
+ * through remi: remi reads its own flags anywhere before the `--`.
  *
- * Both validators are consumed by the Codex launch (phase 3) and the hub
- * (phase 5); this phase has no production caller and the tests are their only
- * users until then.
+ * `validateCodexArgs` is consumed by the Codex launch (#1177); the remote
+ * validator is the hub's, in phase 5, and until then only its tests call it.
  *
  * Not verified, because remi must not start Codex to find out: the flag lists
  * come from the epic plan, the spike, and a read-only look at the embedded

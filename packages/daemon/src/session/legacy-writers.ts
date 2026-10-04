@@ -10,7 +10,7 @@
  * then read as a Claude record. The decided policy is a refusal, not a second
  * store file: before the first non-Claude record is written, `findLegacyWriters`
  * lists every live process that could rewrite the file without the shim, and
- * the Codex launch (phase 3) refuses to start while there is one.
+ * the Codex launch (#1177) refuses to start while there is one.
  *
  * It looks in three places: the live-sessions entries (every session daemon,
  * and a wrapper, registers one with its `version`), the hub's
@@ -52,9 +52,10 @@
  * delete the named `file` (a `status-<PORT>.json` or `daemon-status.json` under
  * the remi state directory, or an entry of its `live-sessions` directory).
  *
- * No production caller until the Codex launch (phase 3), which calls it before
- * `preAssign`; the exports are tested against real files and real processes
- * until then.
+ * The Codex launch calls it (`cli.ts` wires it into `CodexHarness`, whose
+ * `checkCodexLaunch` runs before `preAssign`, #1177); the hub's refusal of a
+ * Codex `create_session_request` is phase 5. It is tested against real files and
+ * real processes.
  */
 
 import { spawnSync } from 'node:child_process';
@@ -72,7 +73,7 @@ import type { SessionRegistryFile } from './session-registry-file.ts';
  * develop binary reports with it. It is in no tagged release (v0.7.15 is the
  * newest tag). See the file header for what this makes the gate refuse.
  *
- * Exported because the Codex launch's refusal names it (phase 3).
+ * Exported because the Codex launch's refusal names it (#1177).
  */
 export const IDENTITY_SHIM_MIN_VERSION = '0.7.16-dev.7';
 
