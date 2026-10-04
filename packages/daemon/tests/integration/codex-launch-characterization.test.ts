@@ -968,6 +968,34 @@ describe('remi codex approvals (daemon, black-box characterization, #1178)', () 
     }
   }, 60000);
 
+  test('remi unstick (SIGUSR2) dismisses an open card on every client, answers nothing and types nothing', async () => {
+    const a = await attachedDaemon();
+    try {
+      const requestId = a.r.server.request(
+        commandApprovalRequest(a.tuiId, 'touch unstick-marker'),
+        a.tuiId,
+      );
+      await pollUntil(() => cards(a.received).length === 1, 10000, 'the approval card');
+      const card = (cards(a.received)[0] as QuestionMessage).question;
+      process.kill(a.r.proc.pid, 'SIGUSR2');
+      await pollUntil(
+        () => resolvedCards(a.received).some((m) => m.questionId === card.id),
+        8000,
+        'question_resolved after the unstick',
+      );
+      expect(resolvedCards(a.received).find((m) => m.questionId === card.id)?.reason).toBe(
+        'cancelled',
+      );
+      expect(a.r.output.text).toContain('Force-released 1 session(s): 1 card(s) resolved');
+      // The request is still pending for the TUI; remi answered nothing and typed nothing.
+      expect(a.r.server.isPending(a.tuiId, requestId)).toBe(true);
+      expect(answersSent(a.r, a.client)).toEqual([]);
+      expect(stdinBytes(a.r)).toBe(0);
+    } finally {
+      a.ws.close();
+    }
+  }, 60000);
+
   test("a card only the terminal can answer refuses every answer, Cancel only clears it, and neither answers the request nor types an Esc; another thread's request makes no card", async () => {
     const a = await attachedDaemon();
     try {
