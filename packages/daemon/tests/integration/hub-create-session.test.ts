@@ -426,15 +426,19 @@ function runCli(r: Running, args: readonly string[]) {
   });
   sleepers.push(proc);
   const output = { text: '' };
+  const stderr = { text: '' };
+  // A stream has one reader: stderr is split so it can be read both with stdout and apart.
+  const [errForOutput, errApart] = proc.stderr.tee();
   collect(proc.stdout, output);
-  collect(proc.stderr, output);
-  return { proc, output };
+  collect(errForOutput, output);
+  collect(errApart, stderr);
+  return { proc, output, stderr };
 }
 
 describe('the CLI creating a session on a hub (#1179)', () => {
   test('remi codex --host starts a Codex session there with the arguments after --', async () => {
     const r = await startHub({ codex: true });
-    const { output } = runCli(r, [
+    const { output, stderr } = runCli(r, [
       'codex',
       '--host',
       'localhost',
@@ -456,6 +460,9 @@ describe('the CLI creating a session on a hub (#1179)', () => {
       'the notice on stderr',
     );
     expect(output.text).not.toContain('remi attach');
+    // Progress and the notice go to stderr: stdout belongs to the attached terminal.
+    expect(stderr.text).toContain('Update or Trust prompt');
+    expect(stderr.text).toContain('Creating session on localhost');
   }, 90000);
 
   test.each([
