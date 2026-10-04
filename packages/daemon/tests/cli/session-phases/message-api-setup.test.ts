@@ -168,6 +168,39 @@ describe('createMessageApiForSession', () => {
     expect(emitted).not.toContain('harnessSessionId');
   });
 
+  test('the log line for a detected question names its text, and only its length when told to redact it (#1178)', () => {
+    const lines: string[] = [];
+    configureLogger({ writeLog: (line) => lines.push(line) });
+    const sessionId = sessionRegistry.createSessionId();
+    sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    const q = { ...questionWith([yesOpt, noOpt]), text: 'Allow Codex to run: sk-command-secret' };
+    for (const redactQuestionLogs of [false, true]) {
+      const { messageApi } = createMessageApiForSession(
+        {
+          sessionRegistry,
+          transcriptWatchers,
+          deviceTokens,
+          pushConfig: () => ({ signalingUrl: 'ws://fake-signaling' }),
+          updateRemiStatus: () => {},
+          maxBulletLength: 4000,
+          sendMessage: () => {},
+          redactQuestionLogs,
+        },
+        sessionId,
+      );
+      messageApi.handleQuestion(q, { held: true });
+    }
+    const detected = lines.filter((l) => l.includes('Question detected'));
+    expect(detected).toHaveLength(2);
+    expect(detected[0]).toContain('Allow Codex to run: sk-command-secret');
+    expect(detected[1]).toContain(`(${q.text.length} chars)`);
+    expect(detected[1]).not.toContain('sk-command-secret');
+  });
+
   test('a held push is stamped held on the wire and in the registry', () => {
     // Since #1125 a held push is a card pushed by id before its render; the
     // stamp keys handleAnswer's free-text-on-held-card refusal (#1134).

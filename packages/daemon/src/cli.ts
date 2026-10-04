@@ -1088,6 +1088,8 @@ const sessionRegistry = new SessionRegistry(
   {
     orphanTimeoutMs,
     maxReplayHistory: 1000,
+    // A Codex card's text is a command (#1178): the registry's log lines leave it out.
+    redactQuestionLogs: harnessId === 'codex',
   },
   {
     onSessionCreated: (sessionId) => {
@@ -1554,6 +1556,8 @@ async function createNewSession(
       updateRemiStatus: (patch) => updateRemiStatus(patch),
       maxBulletLength: MAX_BULLET_LENGTH,
       sendMessage,
+      // A Codex card's text is a command (#1178): the log line for it leaves the text out.
+      redactQuestionLogs: harnessId === 'codex',
       // Lazy disk-backed read so the binding seen on each question emission is
       // the current value — survives /resume rotation via the hook bridge's
       // bindingStore.update write. Wrapped in try/catch so a transient
