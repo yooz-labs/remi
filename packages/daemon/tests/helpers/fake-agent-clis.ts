@@ -45,10 +45,23 @@ while [ ! -e "$d/release" ] && [ $i -lt 600 ]; do
 done
 `;
 
+/**
+ * A fake that dies the way a real Codex does when its flags are wrong (LV-4): `FAKE_AGENT_PRINT` is
+ * written to the terminal, then, if `FAKE_AGENT_EXIT` is set, the fake ends with that code after
+ * `FAKE_AGENT_EXIT_AFTER` seconds (default none). With neither set it does nothing, so the fakes
+ * that wait for `release` behave as before.
+ */
+export const PRINT_AND_EXIT = `if [ -n "$FAKE_AGENT_PRINT" ]; then printf '%s\\n' "$FAKE_AGENT_PRINT"; fi
+if [ -n "$FAKE_AGENT_EXIT" ]; then
+  sleep "\${FAKE_AGENT_EXIT_AFTER:-0}"
+  exit "$FAKE_AGENT_EXIT"
+fi
+`;
+
 const RECORD = RECORD_FILES + WAIT_FOR_RELEASE;
 
 /** `codex`: records, then waits. It reads no stdin, so a typed byte would stay in the pipe unseen; the Codex launch tests count stdin separately. */
-export const FAKE_CODEX = `#!/bin/sh\nFAKE_AGENT_DIR="$FAKE_CODEX_DIR"\n${RECORD}`;
+export const FAKE_CODEX = `#!/bin/sh\nFAKE_AGENT_DIR="$FAKE_CODEX_DIR"\n${RECORD_FILES}${PRINT_AND_EXIT}${WAIT_FOR_RELEASE}`;
 
 /** `claude`: records, writes the (empty) transcript Claude would write for its `--session-id`, then waits. */
 export const FAKE_CLAUDE = `#!/bin/sh

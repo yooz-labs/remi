@@ -42,6 +42,7 @@ import {
 } from '../../../src/session/session-store.ts';
 import { threadStartedFrame, threadStatusFrame } from '../../helpers/codex-threads.ts';
 import {
+  PRINT_AND_EXIT,
   RECORD_FILES,
   WAIT_FOR_RELEASE,
   waitForRecordedArgv,
@@ -53,7 +54,7 @@ import { FakeAppServer } from '../../helpers/fake-app-server.ts';
 // this fake adds the terminal size its wrapper test reads.
 const FAKE_CODEX = `#!/bin/sh
 FAKE_AGENT_DIR="$FAKE_CODEX_DIR"
-${RECORD_FILES}stty size > "$d/size"
+${RECORD_FILES}${PRINT_AND_EXIT}stty size > "$d/size"
 ${WAIT_FOR_RELEASE}`;
 
 const nowSec = (): number => Math.floor(Date.now() / 1000);
@@ -634,6 +635,156 @@ describe('CodexHarness', () => {
       expect(session.decisions.isHeld(crypto.randomUUID() as UUID)).toBe(false);
       expect(session.decisions.forceRelease('test')).toEqual({ resolved: 0 });
       expect(session.decisions.screen).toBeUndefined();
+    });
+  });
+
+  describe('what Codex printed when it died at startup (LV-4)', () => {
+    // Codex 0.160.0 exits 2 with a flag error on its terminal; that output used to go nowhere, so
+    // only `exited with code 2` reached a log. These run a real fake `codex` that prints a text and
+    // exits, in a real PTY, and read what the session logs.
+    const ERROR = "error: invalid value 'never-seen' for '--ask-for-approval' [possible values]";
+    /** The log entries that carry what the child printed. */
+    const printed = (): string[] => logs.filter((l) => l.includes('its first output'));
+
+    function fakeCodex(print: string, exit: number | null, exitAfterSec?: number): void {
+      process.env['FAKE_AGENT_PRINT'] = print;
+      if (exit !== null) process.env['FAKE_AGENT_EXIT'] = String(exit);
+      if (exitAfterSec !== undefined) process.env['FAKE_AGENT_EXIT_AFTER'] = String(exitAfterSec);
+    }
+
+    afterEach(() => {
+      for (const key of ['FAKE_AGENT_PRINT', 'FAKE_AGENT_EXIT', 'FAKE_AGENT_EXIT_AFTER']) {
+        Reflect.deleteProperty(process.env, key);
+      }
+    });
+
+    /** A session built like `create`, but with the sends recorded, so a test can say nothing was sent. */
+    function createSending(deps: CodexLaunchDeps) {
+      const sessionId = crypto.randomUUID() as UUID;
+      const sent: unknown[] = [];
+      const messages: Message[] = [];
+      const messageApi = new MessageAPI(
+        { sessionId, initialBulletId: 1, maxBulletLength: 500 },
+        { onStructuredMessage: (m) => messages.push(m), onStatusChange: () => {} },
+      );
+      const session = new CodexHarness(deps).createSession({
+        sessionId,
+        workingDirectory: workDir,
+        extraArgs: [],
+        passThrough: false,
+        reservedRows: 0,
+        messageApi,
+        sendAndRecord: (...a) => sent.push(a),
+        sendMessage: (...a) => sent.push(a),
+      });
+      launched.push(session);
+      return { session, sent, messages };
+    }
+
+    const exited = (session: HarnessSession) =>
+      until(() => !session.pty.isRunning, 'the fake codex to exit', 10000);
+
+    test('a Codex that prints an error and exits 2 has that error in the log, once, with its exit code', async () => {
+      fakeCodex(ERROR, 2);
+      const { session } = createSending(buildDeps(startServer()));
+      await session.start();
+      await exited(session);
+      const entries = printed();
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toContain(ERROR);
+      expect(entries[0]).toContain('code 2');
+      expect(entries[0]).toContain('before it named a thread');
+      // Nothing logs it a second time when the session is torn down.
+      session.dispose();
+      expect(printed()).toHaveLength(1);
+    });
+
+    test('it goes to the log alone: no client message, structured message or raw frame carries it', async () => {
+      fakeCodex(ERROR, 2);
+      const { session, sent, messages } = createSending(buildDeps(startServer()));
+      await session.start();
+      await exited(session);
+      expect(printed()).toHaveLength(1);
+      expect(JSON.stringify(sent)).not.toContain('invalid value');
+      expect(JSON.stringify(messages)).not.toContain('invalid value');
+    });
+
+    test('what is logged is escaped and one line: a terminal sequence, a bidi override and the line ends are written out', async () => {
+      fakeCodex('\u001b[31mboom\u001b[0m \u202e after', 2);
+      const { session } = createSending(buildDeps(startServer()));
+      await session.start();
+      await exited(session);
+      const [entry] = printed();
+      expect(entry).toContain('\\u001B[31mboom\\u001B[0m \\u202E after');
+      // The terminal turns the newline into carriage return and newline; both stay visible text.
+      expect(entry).toContain('\\u000D\\n');
+      expect(entry).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u202e]/);
+      expect(entry).not.toContain('\n');
+    });
+
+    test('at most the first 2 KB is kept, however much it printed', async () => {
+      fakeCodex(`${'x'.repeat(3000)} END-OF-OUTPUT`, 2);
+      const { session } = createSending(buildDeps(startServer()));
+      await session.start();
+      await exited(session);
+      const [entry] = printed();
+      expect(entry).toContain('x'.repeat(2048));
+      expect(entry).not.toContain('x'.repeat(2049));
+      expect(entry).not.toContain('END-OF-OUTPUT');
+      expect(entry?.length).toBeLessThan(2048 + 400);
+    });
+
+    test('a Codex that exits after the startup window logs nothing, its exit code is all there is', async () => {
+      // The window is shortened for the test; the fake prints at once and exits 2 after 0.9 s.
+      fakeCodex(ERROR, 2, 0.9);
+      const { session } = createSending(buildDeps(startServer(), { startupFailureWindowMs: 300 }));
+      await session.start();
+      await exited(session);
+      expect(printed()).toEqual([]);
+    });
+
+    test('a Codex that exits inside the window does log, so the window test above is not passing by accident', async () => {
+      fakeCodex(ERROR, 2, 0.1);
+      const { session } = createSending(buildDeps(startServer(), { startupFailureWindowMs: 5000 }));
+      await session.start();
+      await exited(session);
+      expect(printed()).toHaveLength(1);
+    });
+
+    test('a session that has named its thread logs nothing when Codex later exits, however soon', async () => {
+      fakeCodex(ERROR, null);
+      const server = startServer();
+      const { session } = createSending(buildDeps(server));
+      await session.start();
+      await until(
+        () =>
+          server.clientIds().length === 1 &&
+          server
+            .framesFrom(server.clientIds()[0] as number)
+            .some((f) => f['method'] === 'initialized'),
+        'the client handshake',
+      );
+      const id = crypto.randomUUID();
+      server.emit(threadStartedFrame('tui', { id, cwd: workDir, createdAtSec: nowSec() }), {
+        broadcast: true,
+      });
+      await until(
+        () => logs.some((l) => l.includes(`identity: thread ${id.slice(-8)}`)),
+        'the identity',
+      );
+      expect(printed()).toEqual([]);
+      session.pty.signal('SIGKILL');
+      await exited(session);
+      expect(printed()).toEqual([]);
+    });
+
+    test('a Codex that is still running logs nothing', async () => {
+      fakeCodex(ERROR, null);
+      const { session } = createSending(buildDeps(startServer()));
+      await session.start();
+      await sleep(700);
+      expect(session.pty.isRunning).toBe(true);
+      expect(printed()).toEqual([]);
     });
   });
 
