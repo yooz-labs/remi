@@ -21,7 +21,7 @@ import * as path from 'node:path';
 // partial list (#1204 round 2, P11). `FAKE_AGENT_RECORD_DELAY` (seconds) puts a pause after each
 // argument written and between the renames, which is how the helper's own test makes the old race
 // (and a rename of argv before cwd and pid) certain instead of rare.
-const RECORD = `d="$FAKE_AGENT_DIR"
+export const RECORD_FILES = `d="$FAKE_AGENT_DIR"
 {
   for a in "$@"; do
     printf '%s\\n' "$a"
@@ -35,12 +35,17 @@ if [ -n "$FAKE_AGENT_RECORD_DELAY" ]; then sleep "$FAKE_AGENT_RECORD_DELAY"; fi
 mv "$d/pid.tmp" "$d/pid"
 if [ -n "$FAKE_AGENT_RECORD_DELAY" ]; then sleep "$FAKE_AGENT_RECORD_DELAY"; fi
 mv "$d/argv.tmp" "$d/argv"
-i=0
+`;
+
+/** Wait until `release` exists (60 s at most, so a failed run cannot leave the fake looping). */
+export const WAIT_FOR_RELEASE = `i=0
 while [ ! -e "$d/release" ] && [ $i -lt 600 ]; do
   sleep 0.1
   i=$((i + 1))
 done
 `;
+
+const RECORD = RECORD_FILES + WAIT_FOR_RELEASE;
 
 /** `codex`: records, then waits. It reads no stdin, so a typed byte would stay in the pipe unseen; the Codex launch tests count stdin separately. */
 export const FAKE_CODEX = `#!/bin/sh\nFAKE_AGENT_DIR="$FAKE_CODEX_DIR"\n${RECORD}`;

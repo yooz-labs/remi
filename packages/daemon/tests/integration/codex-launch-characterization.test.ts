@@ -96,6 +96,12 @@ afterEach(async () => {
  * its stdin (raw mode, no echo, so a lone byte is seen at once) into `stdin`;
  * then waits until `release` exists (60 s at most, so a failed run cannot leave
  * it looping) and exits 0.
+ *
+ * The files are written one after another, `pid` after the others and `stdin` after `pid`, and
+ * `waitForFakeCodex` waits for both of those two. A shell redirect creates its file empty and fills
+ * it as it runs, so a test that read a file the moment it existed could see half of it; here
+ * `pid` and `stdin` existing means the files before them are whole, and the first test below pins
+ * the order (#1204 round 2, Q1).
  */
 const FAKE_CODEX = `#!/bin/sh
 d="$FAKE_CODEX_DIR"
@@ -210,6 +216,15 @@ async function startWrapper(
   running.push(r);
   return r;
 }
+
+describe('the fake codex records in an order the waits rely on (Q1)', () => {
+  test('argv, the environment files and cwd come before pid, and pid before stdin', () => {
+    const at = (name: string) => FAKE_CODEX.indexOf(`"$d/${name}"`);
+    const order = ['argv', 'remi_port', 'alt_screen', 'codex_home', 'env', 'cwd', 'pid', 'stdin'];
+    expect(order.map(at).every((index) => index >= 0)).toBe(true);
+    expect(order.map(at)).toEqual([...order.map(at)].sort((a, b) => a - b));
+  });
+});
 
 function fileExists(r: Running, name: string): boolean {
   return fs.existsSync(path.join(r.fakeDir, name));

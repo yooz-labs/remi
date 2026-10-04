@@ -41,21 +41,20 @@ import {
   type StoredSession,
 } from '../../../src/session/session-store.ts';
 import { threadStartedFrame, threadStatusFrame } from '../../helpers/codex-threads.ts';
+import {
+  RECORD_FILES,
+  WAIT_FOR_RELEASE,
+  waitForRecordedArgv,
+} from '../../helpers/fake-agent-clis.ts';
 import { FakeAppServer } from '../../helpers/fake-app-server.ts';
 
+// The shared recorder writes cwd, pid and argv under temporary names and renames them into place, so
+// the file existing is the whole list (a redirect creates it empty and fills it as the loop runs);
+// this fake adds the terminal size its wrapper test reads.
 const FAKE_CODEX = `#!/bin/sh
-d="$FAKE_CODEX_DIR"
-for a in "$@"; do
-  printf '%s\\n' "$a"
-  if [ -n "$FAKE_AGENT_RECORD_DELAY" ]; then sleep "$FAKE_AGENT_RECORD_DELAY"; fi
-done > "$d/argv"
-stty size > "$d/size"
-i=0
-while [ ! -e "$d/release" ] && [ $i -lt 100 ]; do
-  sleep 0.1
-  i=$((i + 1))
-done
-`;
+FAKE_AGENT_DIR="$FAKE_CODEX_DIR"
+${RECORD_FILES}stty size > "$d/size"
+${WAIT_FOR_RELEASE}`;
 
 const nowSec = (): number => Math.floor(Date.now() / 1000);
 
@@ -552,10 +551,7 @@ describe('CodexHarness', () => {
     test('spawns codex --no-alt-screen with the validated arguments after it', async () => {
       const a = create(buildDeps(startServer()), ['-m', 'some-model']);
       await a.session.start();
-      await until(() => fs.existsSync(path.join(fakeDir, 'argv')), 'the fake codex');
-      expect(fs.readFileSync(path.join(fakeDir, 'argv'), 'utf8')).toBe(
-        '--no-alt-screen\n-m\nsome-model\n',
-      );
+      expect(await waitForRecordedArgv(fakeDir)).toEqual(['--no-alt-screen', '-m', 'some-model']);
     });
 
     test('a wrapper session gets the whole terminal: Codex reserves no status row', async () => {
@@ -597,10 +593,13 @@ describe('CodexHarness', () => {
     test('a prompt is passed after --, and a resume as the subcommand last', async () => {
       const a = create(buildDeps(startServer()), ['--yolo', 'hello', 'there']);
       await a.session.start();
-      await until(() => fs.existsSync(path.join(fakeDir, 'argv')), 'the fake codex');
-      expect(fs.readFileSync(path.join(fakeDir, 'argv'), 'utf8')).toBe(
-        '--no-alt-screen\n--yolo\n--\nhello\nthere\n',
-      );
+      expect(await waitForRecordedArgv(fakeDir)).toEqual([
+        '--no-alt-screen',
+        '--yolo',
+        '--',
+        'hello',
+        'there',
+      ]);
     });
 
     test('a resumed thread is attached as soon as the link is ready, with no thread/started', async () => {
