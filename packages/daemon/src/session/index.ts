@@ -32,6 +32,7 @@ export {
   type LiveSessionEntry,
   type PendingQuestionEntry,
   claudeChildLooksAlive,
+  couldBeClaudeEntry,
   DEFAULT_BASE_PORT,
   DEFAULT_PORT_RANGE,
 } from './session-registry-file.ts';

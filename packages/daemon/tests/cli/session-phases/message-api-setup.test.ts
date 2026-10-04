@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import type { AgentStatus, ProtocolMessage, Question, QuestionOption, UUID } from '@remi/shared';
-import { generateId, now } from '@remi/shared';
+import { generateId, identityFromClaudeId, now } from '@remi/shared';
 import type { DeviceTokenEntry } from '../../../src/cli/handlers/trivial-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import { createMessageApiForSession } from '../../../src/cli/session-phases/message-api-setup.ts';
@@ -413,7 +413,10 @@ describe('createMessageApiForSession', () => {
           sendMessage: (sid, message) => {
             sendCalls.push({ sessionId: sid, message });
           },
-          getClaudeSessionId: get,
+          getIdentity: () => {
+            const id = get();
+            return id === null ? null : identityFromClaudeId(id);
+          },
         },
         sessionId,
       );

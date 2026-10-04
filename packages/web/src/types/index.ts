@@ -4,6 +4,7 @@
  * These types extend the shared protocol types with UI-specific state.
  */
 
+import type { HarnessId } from '@remi/shared';
 import type { QuestionResolvedMessage } from '@remi/shared/protocol.ts';
 import type { AgentStatus, MessageState, Timestamp, UUID } from '@remi/shared/types.ts';
 
@@ -163,6 +164,11 @@ export interface UISession {
   readonly claudeSessionId?: UUID;
   /** Absolute path to the bound .jsonl transcript (#430). */
   readonly transcriptPath?: string;
+  /**
+   * The harness this session runs under (#1179). Absent means Claude (an older daemon names none);
+   * only a harness other than Claude is labeled (`harnessLabel`).
+   */
+  readonly harness?: HarnessId;
   /**
    * This entry is a subagent view spawned by a parent session, not a
    * top-level session (epic #499 phase 3). Its `id` is the subagent's

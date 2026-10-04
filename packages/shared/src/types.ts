@@ -554,16 +554,17 @@ export interface DiscoverableSession {
   readonly transcriptPath?: string | undefined;
 
   /**
-   * The harness this session runs under (#1162, ADR 0032). Typed only: no
-   * daemon code sets it, so every entry omits it, and a reader should
-   * treat absence as the default harness (`claude`); none reads it yet. Declared
-   * now so the Codex epic adds a producer, not a protocol change.
+   * The harness this session runs under (#1179, ADR 0032), sent for the
+   * daemon's own session. The Claude transcripts a daemon finds on disk
+   * (`source: 'transcript'`) carry none. A reader treats absence (an older
+   * daemon, or a transcript entry) as the default harness (`claude`).
    */
   readonly harness?: HarnessId | undefined;
 
   /**
-   * The harness's own id for this session (#1162, ADR 0032). Typed only and
-   * never set today; for a Claude entry the id is {@link claudeSessionId}.
+   * The harness's own id for this session (#1179). For a Claude entry it equals
+   * {@link claudeSessionId}, and for another harness `claudeSessionId` is omitted.
+   * Omitted while the id is not known.
    */
   readonly harnessSessionId?: string | undefined;
 

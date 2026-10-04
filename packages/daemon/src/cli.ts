@@ -198,16 +198,21 @@ import {
   remiHome,
   serviceCommandRefusal,
 } from './config/remi-home.ts';
-import { validateCodexArgs } from './harness/codex/codex-args.ts';
+import { validateClaudeRemoteArgs } from './harness/claude-args.ts';
+import { attachCommand } from './harness/codex/attach-hint.ts';
+import { validateCodexArgs, validateCodexRemoteArgs } from './harness/codex/codex-args.ts';
 import {
   codexLaunchRefusal,
   codexResumeCommand,
+  findHeldThread,
+  legacyWriterRefusal,
   olderRemiNotice,
 } from './harness/codex/codex-session.ts';
 import { CodexHarness } from './harness/codex/codex.ts';
 import { shortThreadId } from './harness/codex/thread-id.ts';
 import { ClaudeHarness } from './harness/index.ts';
 import type { Harness, HarnessSession } from './harness/index.ts';
+import { HarnessRegistry } from './harness/registry.ts';
 import { ForeignSessionEscalator, HookConfigManager, HookServer } from './hooks/index.ts';
 import type { PermissionDeniedHookInput, StopHookInput } from './hooks/index.ts';
 // Static, unlike the publisher below it: this is a pure decision with no
@@ -273,7 +278,7 @@ import { resolveDirectory } from './cli/path-resolver.ts';
 // ---------------------------------------------------------------------------
 // Parse CLI arguments
 // ---------------------------------------------------------------------------
-import { parseArgs, parseHostPath } from './cli/arg-parser.ts';
+import { looseArgs, parseArgs, parseHostPath } from './cli/arg-parser.ts';
 import { formatCommandHelp, formatHelp } from './cli/help.ts';
 
 const parsedArgs = parseArgs(process.argv.slice(2));
@@ -417,20 +422,30 @@ const cliPushSecret = parsedArgs.pushSecret ?? process.env['REMI_PUSH_SECRET'];
 const cliOrphanTimeout = parsedArgs.orphanTimeout;
 const claudeArgs = [...parsedArgs.claudeArgs];
 
-// Which harness this process hosts (#1177): `remi codex`, or the hidden `--harness <id>` a hub
+// Which harness this process hosts (#1177): `remi codex`, or the `--harness <id>` a hub
 // gives a child daemon. This build has adapters for Claude and Codex only.
 const harnessId: HarnessId = parsedArgs.harness ?? (cliSubcommand === 'codex' ? 'codex' : 'claude');
 {
+  // `--host` sends only what follows `--`. `--resume` is remi's own flag, so `parseArgs` consumes it
+  // and it is not a loose word (G2): without this a Claude `remi new --host h --resume X` looked X
+  // up in the LOCAL store (Session not found, or a silently fresh remote session when a local one
+  // held the id), the silent-drop class of G2 (#1204 round 2, P5).
+  const resumeWithHost =
+    cliHost !== undefined &&
+    cliResume !== undefined &&
+    (cliSubcommand === 'new' || cliSubcommand === undefined || cliSubcommand === 'codex');
   const refusal =
-    harnessId !== 'claude' && harnessId !== 'codex'
-      ? `This build has no ${harnessId} adapter.`
-      : harnessId !== 'claude' && serveMode
-        ? 'The hub hosts no session of its own, so it takes no --harness.'
-        : harnessId !== 'claude' && cliHost !== undefined
-          ? `remi ${harnessId} --host is not supported yet: the wire does not carry a harness.`
-          : harnessId === 'codex' && cliResume !== undefined
-            ? "--resume is remi's flag for Claude sessions; resume a Codex thread with `remi codex resume <thread id>` (`remi --sessions` lists the ids)."
-            : null;
+    resumeWithHost && harnessId === 'codex'
+      ? 'remi: --resume is not sent to a remote host; for Codex put the resume after --: remi codex --host <host> -- resume <thread id>'
+      : resumeWithHost
+        ? 'remi: --resume is not sent to a remote host; put it after --: -- --resume <uuid>'
+        : harnessId !== 'claude' && harnessId !== 'codex'
+          ? `This build has no ${harnessId} adapter.`
+          : harnessId !== 'claude' && serveMode
+            ? 'The hub hosts no session of its own, so it takes no --harness.'
+            : harnessId === 'codex' && cliResume !== undefined
+              ? "--resume is remi's flag for Claude sessions; resume a Codex thread with `remi codex resume <thread id>` (`remi --sessions` lists the ids)."
+              : null;
   if (refusal !== null) {
     console.error(refusal);
     process.exit(2);
@@ -830,8 +845,22 @@ if (cliResume !== undefined) {
 // Handle 'new' subcommand enhancements: --host, --dir, --recent
 // ---------------------------------------------------------------------------
 
-// remi new --host: create session on remote daemon, then auto-attach
-if ((cliSubcommand === 'new' || cliSubcommand === undefined) && cliHost) {
+// remi new --host (and `remi codex --host`): create session on remote daemon, then auto-attach
+if (
+  (cliSubcommand === 'new' || cliSubcommand === undefined || cliSubcommand === 'codex') &&
+  cliHost
+) {
+  // Only the words after `--` go to the remote session. A loose one used to be dropped without a
+  // word, so the host started its own defaults (a fresh session where a resume was typed, its own
+  // sandbox where `-s read-only` was): refused instead, before anything is sent (#1179 review, G2).
+  const loose = looseArgs(parsedArgs);
+  if (loose.length > 0) {
+    console.error(
+      `remi: arguments for the remote session go after \`--\` (for example \`remi codex --host <host> -- -m <model>\`); not sent: ${loose.join(' ')}`,
+    );
+    process.exit(2);
+  }
+
   // Support host:path syntax (e.g. yahyas-mcm:~/Documents/git/project)
   const { host: effectiveHost, directory: hostDir } = parseHostPath(cliHost);
 
@@ -870,6 +899,11 @@ if ((cliSubcommand === 'new' || cliSubcommand === undefined) && cliHost) {
       host: effectiveHost,
       port: resolvedPort,
       directory,
+      // Named only when the person named one (`remi codex`, `--harness`): a request that names none
+      // is the plain request an older daemon already understands. What follows `--` is the
+      // harness's arguments; the remote daemon checks them against its own allowlist.
+      harness: parsedArgs.harness ?? (cliSubcommand === 'codex' ? 'codex' : undefined),
+      args: parsedArgs.explicitArgs,
     });
     process.exit(result.exitCode);
   } catch (err) {
@@ -1560,16 +1594,16 @@ async function createNewSession(
       sendMessage,
       // A Codex card's text is a command (#1178): the log line for it leaves the text out.
       redactQuestionLogs: harnessId === 'codex',
-      // Lazy disk-backed read so the binding seen on each question emission is
-      // the current value — survives /resume rotation via the hook bridge's
-      // bindingStore.update write. Wrapped in try/catch so a transient
-      // sessions.json I/O hiccup cannot kill question emission (the dep
-      // contract is non-throwing).
-      getClaudeSessionId: () => {
+      // Lazy disk-backed read so the identity seen on each question emission is
+      // the current value: it survives /resume rotation via the hook bridge's
+      // bindingStore.update write, and a Codex session's thread id once learned.
+      // Wrapped in try/catch so a transient sessions.json I/O hiccup cannot kill
+      // question emission (the dep contract is non-throwing).
+      getIdentity: () => {
         try {
-          return (bindingStore.get(sessionId)?.claudeSessionId ?? null) as UUID | null;
+          return bindingStore.getIdentity(sessionId);
         } catch (err) {
-          logError(`[Binding] getClaudeSessionId lookup failed: ${errorToString(err)}`);
+          logError(`[Binding] getIdentity lookup failed: ${errorToString(err)}`);
           return null;
         }
       },
@@ -1835,6 +1869,27 @@ const claudeHarness = new ClaudeHarness(transcriptDiscovery, {
   sessionNotifiers,
 });
 
+/**
+ * The `harness` of this daemon's live-sessions entry (#1179): absent for Claude, so a Claude
+ * entry stays byte-identical to what an older remi wrote and reads (ADR 0032), named for any other.
+ */
+function liveEntryHarness(): { harness?: HarnessId } {
+  return harnessId === 'claude' ? {} : { harness: harnessId };
+}
+
+// The older-daemon gate (#1165 D): the live remi processes that would erase a Codex identity.
+// The Codex launch reads it before it writes a record, and the hub before it spawns a Codex child.
+// A record of exactly this build's version is the same build and has the same shim, so it is not
+// an older remi even when the version does not parse (a PR-stamped build's sessions, wrappers and
+// hub would otherwise each count as one, #1204 round 2).
+const legacyWriters = () =>
+  findLegacyWriters({
+    liveSessions: liveSessionsRegistry,
+    statusFiles: () => readStatusFiles(REMI_DIR),
+    selfPid: process.pid,
+    ownVersion: REMI_VERSION,
+  });
+
 // `remi codex` hosts a Codex session instead (#1177). Its launch reads these services when a
 // session starts, and the older-daemon gate reads the live-sessions entries and status files of
 // other remi processes then. `onQuestionResolved` is how an approval card that Codex resolved
@@ -1851,30 +1906,112 @@ const codexHarness =
         cleanup,
         env: () => process.env,
         onQuestionResolved,
-        legacyWriters: () =>
-          findLegacyWriters({
-            liveSessions: liveSessionsRegistry,
-            statusFiles: () => readStatusFiles(REMI_DIR),
-            selfPid: process.pid,
-          }),
+        legacyWriters,
         remiVersion: REMI_VERSION,
         log,
       })
     : undefined;
 const harness: Harness = codexHarness ?? claudeHarness;
 
+/** What a remote requester is told when the older-daemon gate refuses a Codex session (G8): no pid, no file. */
+const LEGACY_WRITER_CLIENT_TEXT =
+  "An older remi is running on the host and would erase the Codex session id from its sessions file, so a Codex session was not started. Update or stop that remi on the host, then try again; the host's remi log names it.";
+
+/** What a remote requester is told when a resume names a session or thread a live session holds (P4, P10): no id, no port. */
+const HELD_THREAD_CLIENT_TEXT =
+  'That Codex thread is already open in a live remi session on the host.';
+const HELD_CLAUDE_CLIENT_TEXT =
+  'That Claude session is already open in a live remi session on the host.';
+const AMBIGUOUS_THREAD_CLIENT_TEXT =
+  "That Codex thread cannot be resumed from here: the host's records of it are ambiguous.";
+
+// The harnesses a `create_session_request` may name (#1179), and what each allows: advertised on
+// every hello_ack (`harnesses`) and checked before anything is spawned. Built here because the
+// validators sit behind the import boundary that keeps Claude and Codex apart.
+const harnessRegistry = new HarnessRegistry({
+  claude: {
+    command: 'claude',
+    validateRemoteArgs: validateClaudeRemoteArgs,
+    // A resume of a Claude session a live remi session already holds would make two active records
+    // of it (a wrapper and a child both claiming the id), so it is refused here, before a child is
+    // spawned, whether or not the request names the harness. The requester is told that the session
+    // is open and nothing about the holder; the holder goes to the log (#1204 round 2, P10).
+    launchRefusal: ({ resumeThreadId }) => {
+      if (resumeThreadId === null) return null;
+      const holder = sessionStore
+        .list()
+        .find(
+          (s) => isClaudeRecord(s) && s.claudeSessionId === resumeThreadId && s.exitedAt === null,
+        );
+      if (holder === undefined) return null;
+      return {
+        client: HELD_CLAUDE_CLIENT_TEXT,
+        detail: `a resume of the Claude session ${resumeThreadId.slice(0, 8)} was refused: it is open in remi session ${holder.remiSessionId.slice(0, 8)} (port ${holder.port})`,
+      };
+    },
+  },
+  codex: {
+    command: 'codex',
+    validateRemoteArgs: validateCodexRemoteArgs,
+    // A session the hub starts has no terminal, and Codex may stop at an Update or Trust prompt
+    // that remi never answers (it types nothing into Codex); the hub cannot see that it did, or that
+    // it has already exited (the hub answers once the child has registered, before it launches
+    // Codex). Line one is the condition, line two the way out, naming this session: a bare
+    // `remi attach` takes the newest one. Nothing host-local (no path, no pid).
+    headlessNotice: ({ sessionId, port }) =>
+      [
+        'Codex was started on the host without a terminal, so remi cannot tell whether it reached its prompt: it may be waiting at an Update or Trust prompt, or may already have exited.',
+        `If it does not respond, \`${attachCommand(port, sessionId)}\` shows it, from a machine that can reach that port (<host> is the address you reached this daemon at); that this lets you answer such a prompt has not been checked against a real Codex.`,
+      ].join('\n'),
+    // The requester gets a short text; the host's log gets the whole reason (pids, files). Then a
+    // resume of a thread a live session holds is refused here, before a child is spawned: the
+    // requester is told the thread is open and nothing about the session that holds it, and the
+    // log names the holder and its port (#1204 round 2, P4). The person at the machine, running
+    // `remi codex resume` locally, still reads the full text (`heldThreadRefusal`).
+    launchRefusal: ({ resumeThreadId }) => {
+      const writers = legacyWriters();
+      if (writers.length > 0) {
+        return { client: LEGACY_WRITER_CLIENT_TEXT, detail: legacyWriterRefusal(writers) };
+      }
+      if (resumeThreadId === null) return null;
+      const held = findHeldThread(sessionStore, resumeThreadId);
+      if (held === null) return null;
+      const ending = shortThreadId(resumeThreadId);
+      if (held.kind === 'ambiguous') {
+        return {
+          client: AMBIGUOUS_THREAD_CLIENT_TEXT,
+          detail: `a resume of the Codex thread ending ${ending} was refused: the session store holds more than one active record of it`,
+        };
+      }
+      return {
+        client: HELD_THREAD_CLIENT_TEXT,
+        detail: `a resume of the Codex thread ending ${ending} was refused: it is open in remi session ${held.remiSessionId.slice(0, 8)} (port ${held.port})`,
+      };
+    },
+  },
+});
+
 // A Codex launch that will be refused is refused HERE, before a daemon boots or a wrapper takes
 // over the terminal (where console output goes to the log): a refused argument exits 2, an older
-// live remi exits 1, and nothing has been written yet. `--daemon` takes no arguments until the
-// hub can pass them (a later phase). What the launch cannot protect against is said once.
+// live remi exits 1, and nothing has been written yet. A daemon's arguments are what follows
+// `--` (`explicitArgs`: a hub puts the ones it validated there, last). What the launch cannot
+// protect against is said once.
 let codexLaunchArgs: string[] = [];
 if (codexHarness) {
-  if (cliDaemonMode && parsedArgs.passthroughArgs.length > 0) {
-    console.error('remi codex --daemon takes no arguments yet.');
+  // A daemon reads its arguments from what follows `--` and nothing else (a hub appends them
+  // there, last); a wrapper hands everything the user typed to the validator. A loose word on a
+  // Codex daemon is an error, as every argument was before Phase 5: ignoring it would start Codex
+  // without what was asked (#1179 review, G3). A Claude daemon still ignores loose words, so an
+  // existing LaunchAgent plist starts as before.
+  const loose = cliDaemonMode ? looseArgs(parsedArgs) : [];
+  if (loose.length > 0) {
+    console.error(
+      `remi codex --daemon takes its Codex arguments after \`--\`; not recognized: ${loose.join(' ')}`,
+    );
     process.exit(2);
   }
   const preflight = codexHarness.preflight(
-    cliDaemonMode ? [] : parsedArgs.passthroughArgs,
+    cliDaemonMode ? parsedArgs.explicitArgs : parsedArgs.passthroughArgs,
     process.cwd(),
   );
   if (!preflight.ok) {
@@ -1911,6 +2048,7 @@ const currentOwnedSession = makeCurrentSessionResolver({
   getPrimarySessionId,
   sessionStore,
   harness,
+  harnessId,
 });
 
 const transcriptHandlers: TranscriptHandlers = createTranscriptHandlers({
@@ -1927,6 +2065,8 @@ const transcriptHandlers: TranscriptHandlers = createTranscriptHandlers({
 const resumeSessionHandlers: ResumeSessionHandlers = createResumeSessionHandlers({
   // `remi serve` is session-less and must never run Claude (#1124).
   hubMode: serveMode,
+  harnessId,
+  harnesses: () => harnessRegistry.available(),
   sessionRegistry,
   sessionStore,
   bindingStore,
@@ -1937,6 +2077,7 @@ const resumeSessionHandlers: ResumeSessionHandlers = createResumeSessionHandlers
 });
 
 const createSessionHandlers_: CreateSessionHandlers = createCreateSessionHandlers({
+  harnesses: harnessRegistry,
   liveSessionsRegistry,
   spawningPorts,
   basePort: remiConfig.daemon.base_port,
@@ -1980,8 +2121,11 @@ const hubClientTracker: HubClientTracker | null = serveMode
   : null;
 
 const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
+  hubMode: serveMode,
   sessionRegistry,
   currentOwnedSession,
+  harnessId,
+  harnesses: () => harnessRegistry.available(),
   trackConnection: (id, adapterType) => registry.trackConnection(id, adapterType),
   untrackConnection: (id) => registry.untrackConnection(id),
   onConnectionAdded: () => updateRemiStatus({ connections: remiStatus.connections + 1 }),
@@ -2577,11 +2721,18 @@ if (cliDaemonMode) {
       name: path.basename(workingDirectory),
       startedAt: new Date().toISOString(),
       version: REMI_VERSION,
+      ...liveEntryHarness(),
     });
 
-    // Create the PTY session
+    // Create the PTY session. A hub's child gets its harness's arguments from after `--`
+    // (`explicitArgs`, #1179); a loose word elsewhere on the command line is still ignored.
     try {
-      await createNewSession(sessionId, workingDirectory, ptyMessageFanout);
+      await createNewSession(
+        sessionId,
+        workingDirectory,
+        ptyMessageFanout,
+        harnessId === 'codex' ? codexLaunchArgs : [...parsedArgs.explicitArgs],
+      );
     } catch (err) {
       const msg = errorToString(err);
       console.error(`Failed to create session: ${msg}`);
@@ -2797,6 +2948,7 @@ if (cliDaemonMode) {
       name: path.basename(workingDirectory),
       startedAt: new Date().toISOString(),
       version: REMI_VERSION,
+      ...liveEntryHarness(),
     });
 
     // Notify attached clients when a new dist/remi build replaces this binary

@@ -51,6 +51,7 @@ import {
   type ThreadRole,
   realScheduler,
 } from '../../../src/harness/codex/codex-decisions.ts';
+import { attachWords } from '../../../src/harness/codex/terminal-words.ts';
 import type { HeldAnswer } from '../../../src/harness/decision.ts';
 import type { DecisionChannel } from '../../../src/harness/types.ts';
 import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
@@ -63,6 +64,7 @@ import { commandApprovalRequest, fileChangeRequest } from '../../helpers/codex-t
 const UNSENT_NOTICE =
   'remi could not deliver that answer to Codex; try again from the new card if one appears, or answer in the terminal';
 const MAIN = '00000000-0000-7000-8000-0000000000c1';
+const SESSION_FOR_WORDS = '55555555-5555-4555-8555-555555555555';
 const SUB = '00000000-0000-7000-8000-0000000000c2';
 const STRANGER = '00000000-0000-7000-8000-0000000000c3';
 
@@ -738,6 +740,44 @@ describe('CodexDecisions', () => {
       const q = only();
       decisions.answerHeld(q.id, { kind: 'text', text: 'accept' });
       expect(sched.timers).toEqual([]);
+    });
+  });
+
+  describe('a session with no terminal says where to look and answer instead (G12)', () => {
+    const headless = () => build({ terminal: () => attachWords(19999, SESSION_FOR_WORDS) });
+    const ADDRESS = '`remi attach <host>:19999/55555555`';
+
+    test('an answer Codex never confirms: check the session, not a terminal', () => {
+      decisions = headless();
+      toDispose.push(decisions);
+      request(5);
+      const q = only();
+      expect(decisions.answerHeld(q.id, optionNamed(q, 'Yes'))).toBe('resolved');
+      sched.fire(sched.live()[0]);
+      expect(notices).toEqual([
+        `Codex has not confirmed the answer; check the session with ${ADDRESS}`,
+      ]);
+    });
+
+    test('an answer that could not be sent: answer with remi attach, not in a terminal', () => {
+      decisions = headless();
+      toDispose.push(decisions);
+      request(5);
+      const q = only();
+      linkUp = false;
+      expect(decisions.answerHeld(q.id, optionNamed(q, 'Yes'))).toBe('closed');
+      expect(notices).toEqual([
+        `remi could not deliver that answer to Codex; try again from the new card if one appears, or answer with ${ADDRESS}`,
+      ]);
+    });
+
+    test('a card only a terminal could answer names remi attach, and the wrapper default is unchanged', () => {
+      decisions = headless();
+      toDispose.push(decisions);
+      const { method, params } = fileChangeRequest(MAIN);
+      decisions.handleServerRequest({ id: 7, method, params });
+      expect(only().text).toContain(`Answer it with ${ADDRESS}.`);
+      expect(only().text).not.toContain('in the terminal');
     });
   });
 

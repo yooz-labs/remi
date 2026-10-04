@@ -5,8 +5,8 @@
  * implementation while conforming to the adapter interface.
  */
 
-import type { AgentStatus, Message, ProtocolMessage, Question, UUID } from '@remi/shared';
-import { createAgentOutput, createQuestion, createSessionUpdate } from '@remi/shared';
+import type { AgentStatus, Message, ProtocolMessage, UUID } from '@remi/shared';
+import { createAgentOutput, createSessionUpdate } from '@remi/shared';
 import type { Authenticator } from '../auth/authenticator.ts';
 import { pickClientMessageEvents } from '../server/client-message-events.ts';
 import {
@@ -185,15 +185,6 @@ export class WebSocketAdapter implements ConnectionAdapter {
     }
 
     const protocolMessage = createAgentOutput(message);
-    return this.server.sendTo(connectionId, protocolMessage);
-  }
-
-  sendQuestion(connectionId: UUID, question: Question, sessionId: UUID): boolean {
-    if (!this.server) {
-      return false;
-    }
-
-    const protocolMessage = createQuestion(question, sessionId);
     return this.server.sendTo(connectionId, protocolMessage);
   }
 

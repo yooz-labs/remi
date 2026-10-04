@@ -76,6 +76,12 @@ The card's command and directory are kept in memory only: the live-sessions file
 Whenever remi starts following a new Codex thread (a `/new` in the terminal, or another `codex` window in the same directory), the session says so, and approvals then come from the new thread.
 A `kill -9` of remi also ends your Codex window (Codex gets a hangup when remi's terminal closes, as Claude does), while a pending approval stays pending in Codex's app-server.
 
+Starting Codex on another machine: `remi codex --host <ip>` (or `remi new --host <ip> --harness codex`) asks that machine's remi to start it, and only if that remi lists `codex` among the harnesses it can start (an older remi does not, and then nothing is started).
+The words after `--` there are not a prompt: the remote remi accepts only `-m/--model <name>`, `-a untrusted`, `-s read-only` and `resume <thread id>` (resume through a hub is unverified against a real Codex), and refuses the request otherwise.
+A remote request may only tighten the host's approval and sandbox settings, never loosen them, so `-a on-request` and `-s workspace-write` are refused there (widening needs a person at the terminal, where `remi codex` allows them).
+A session started this way has no terminal, so Codex may wait at an Update or Trust prompt that nothing answers: the CLI says so when it starts one, and attaches you to the new session, which is where you answer such a prompt (not yet checked against a real Codex).
+The notice the hub sends has a second line for a client that does not attach: it names `remi attach <host>:<port>/<id>` for exactly that session, since a bare `remi attach` takes the newest one (the web app does not show the notice yet).
+
 **Checked live** (against the real Codex 0.160.0, on 2026-10-04, by a spike agent):
 (a) a phone Yes ran the command and Codex's prompt closed, and both phone clients were told the card was answered;
 (b) answering in the terminal first told every phone client the card was canceled, and a late phone Yes was refused by remi itself (that Codex ignores a late answer was not re-tested; the spike covers it);

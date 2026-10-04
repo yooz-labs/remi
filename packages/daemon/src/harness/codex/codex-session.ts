@@ -63,9 +63,11 @@ import { shellQuote } from '../../session/shell-quote.ts';
 import type { HarnessLaunchContext, HarnessSession } from '../types.ts';
 import { AppServerClient, type AppServerClientOptions } from './app-server-client.ts';
 import { parseResolved } from './approval-cards.ts';
+import { localAttachCommand } from './attach-hint.ts';
 import { resolveCodexWorkingDirectory, validateCodexArgs } from './codex-args.ts';
 import { CodexDecisions, type CodexDecisionsDeps } from './codex-decisions.ts';
 import { UntrustedSocketError, resolveCodexSocketPath } from './codex-socket.ts';
+import { TERMINAL, type TerminalWords, attachWords } from './terminal-words.ts';
 import type { ThreadStatus } from './thread-protocol.ts';
 import { ThreadClaimedError, ThreadTracker, type ThreadTrackerDeps } from './thread-tracker.ts';
 
@@ -165,6 +167,46 @@ export function legacyWriterRefusal(writers: readonly LegacyWriter[]): string {
 }
 
 /**
+ * The refusal for a resume of a thread a live remi session already holds, or null. Only an ACTIVE
+ * holder matters: the purge in `list()` has already turned a dead process's record into history, and
+ * the store refuses two active holders. A lookup that read the exited rows too would see the several
+ * rows of one thread that every second resume leaves as an ambiguity, and refuse the third resume
+ * until the purge. Used by the launch (`checkCodexLaunch`) and by the hub before it spawns a child for a
+ * `resume` (#1179, H2), so the two say the same thing: the child's refusal reached a remote client
+ * only as "Daemon process exited unexpectedly".
+ */
+export function heldThreadRefusal(sessionStore: SessionStore, threadId: string): string | null {
+  const held = findHeldThread(sessionStore, threadId);
+  if (held === null) return null;
+  if (held.kind === 'ambiguous') return held.message;
+  // For the person at the machine, with an address that can be pasted into a shell (P9).
+  return `Codex thread ${threadId} is already open in remi session ${held.remiSessionId.slice(0, 8)} (port ${held.port}); attach to it with \`${localAttachCommand(held.port, held.remiSessionId)}\` or close it first.`;
+}
+
+/** Who holds a thread: a live session, or a store that cannot say (it holds two active records of it). */
+export type HeldThread =
+  | { readonly kind: 'held'; readonly remiSessionId: string; readonly port: number }
+  | { readonly kind: 'ambiguous'; readonly message: string };
+
+/**
+ * The live session that holds `threadId`, or null. `heldThreadRefusal` words it for the person
+ * at the machine; the hub reads the holder to put it in its own log and tells the client less
+ * (#1204 round 2, P4).
+ */
+export function findHeldThread(sessionStore: SessionStore, threadId: string): HeldThread | null {
+  try {
+    const owner = sessionStore
+      .list()
+      .find((s) => s.harness === 'codex' && s.harnessSessionId === threadId && s.exitedAt === null);
+    if (owner === undefined) return null;
+    return { kind: 'held', remiSessionId: owner.remiSessionId, port: owner.port };
+  } catch (error) {
+    if (!(error instanceof AmbiguousSessionIdentityError)) throw error;
+    return { kind: 'ambiguous', message: error.message };
+  }
+}
+
+/**
  * Steps 1 and 2 of the launch, the working directory, and for a resume a check
  * that no live remi session already holds the thread: arguments, then the
  * older-daemon gate, then the directory (which must exist and be searchable),
@@ -185,27 +227,8 @@ export function checkCodexLaunch(
   if (!cwd.ok) return { ok: false, exitCode: 1, message: cwd.error };
   const threadId = parsed.resumeThreadId;
   if (threadId !== null) {
-    try {
-      // Only an ACTIVE holder matters (the purge in `list()` has already turned a dead
-      // process's record into history, and the store refuses two active holders). Not
-      // `findByHarnessSessionId`: it reads several exited rows of one thread, which every
-      // second resume leaves, as an ambiguity and would refuse the third until the purge.
-      const owner = deps.sessionStore
-        .list()
-        .find(
-          (s) => s.harness === 'codex' && s.harnessSessionId === threadId && s.exitedAt === null,
-        );
-      if (owner !== undefined) {
-        return {
-          ok: false,
-          exitCode: 1,
-          message: `Codex thread ${threadId} is already open in remi session ${owner.remiSessionId.slice(0, 8)} (port ${owner.port}); attach to it with \`remi attach\` or close it first.`,
-        };
-      }
-    } catch (error) {
-      if (!(error instanceof AmbiguousSessionIdentityError)) throw error;
-      return { ok: false, exitCode: 1, message: error.message };
-    }
+    const held = heldThreadRefusal(deps.sessionStore, threadId);
+    if (held !== null) return { ok: false, exitCode: 1, message: held };
   }
   return { ok: true, args: parsed.args, resumeThreadId: threadId, directory: cwd.directory };
 }
@@ -218,11 +241,12 @@ export function checkCodexLaunch(
  */
 const ROTATION_MESSAGE = 'remi now follows a new Codex thread; approvals come from it';
 
-const LINK_UNAVAILABLE_MESSAGE =
-  'remi cannot reach the shared Codex app-server, so its status here is not updating; the session still works in the terminal.';
+/** What the link notices say of the session itself: it works in the terminal, or `remi attach` shows it. */
+const linkUnavailableMessage = (words: TerminalWords): string =>
+  `remi cannot reach the shared Codex app-server, so its status here is not updating; ${words.works}.`;
 /** Said instead when the socket was found but refused: the cause is a fixable permission. */
-const LINK_UNTRUSTED_MESSAGE =
-  'remi will not connect to the shared Codex app-server: its control directory is not private (the remi log says which); the session still works in the terminal.';
+const linkUntrustedMessage = (words: TerminalWords): string =>
+  `remi will not connect to the shared Codex app-server: its control directory is not private (the remi log says which); ${words.works}.`;
 /** How long after its start a session with no thread may still be the one a new thread is for. */
 const FIRST_THREAD_WINDOW_MS = 60_000;
 const DEFAULT_LINK_WATCHDOG_MS = 30_000;
@@ -246,6 +270,11 @@ export function createCodexSession(
 ): HarnessSession {
   const { sessionId, workingDirectory, messageApi } = ctx;
   const log = (message: string): void => deps.log(`[Codex] ${message}`);
+  // Where the person looks and answers (G12): the terminal of a wrapper session; for one a hub or
+  // `remi codex --daemon` runs there is none, and `remi attach` names this session. Read when a
+  // message is made, since the port settles after the session is built.
+  const words = (): TerminalWords =>
+    ctx.passThrough ? TERMINAL : attachWords(deps.wsPort(), sessionId);
 
   const checked = checkCodexLaunch(deps, ctx.extraArgs, workingDirectory);
   if (!checked.ok) throw new CodexLaunchRefusal(checked.message, checked.exitCode);
@@ -340,8 +369,8 @@ export function createCodexSession(
       );
       sendSystemMessage(
         socketError instanceof UntrustedSocketError
-          ? LINK_UNTRUSTED_MESSAGE
-          : LINK_UNAVAILABLE_MESSAGE,
+          ? linkUntrustedMessage(words())
+          : linkUnavailableMessage(words()),
       );
     }, deps.linkWatchdogMs ?? DEFAULT_LINK_WATCHDOG_MS);
   };
@@ -403,6 +432,7 @@ export function createCodexSession(
     threadRole: (threadId) => link.tracker?.role(threadId) ?? null,
     log,
     notice: sendSystemMessage,
+    terminal: words,
     ...deps.decisions,
   });
   // A card whose request is pending is not evicted by the pending-question cap.
@@ -440,6 +470,7 @@ export function createCodexSession(
         return !(Date.now() - Date.parse(s.startedAt) >= FIRST_THREAD_WINDOW_MS);
       }),
     notice: sendSystemMessage,
+    terminal: words,
     onIdentity: (threadId) => {
       try {
         deps.bindingStore.updateHarnessIdentity(sessionId, 'codex', threadId);

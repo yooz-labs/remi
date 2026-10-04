@@ -84,11 +84,12 @@ export function spawnServeRaw(
   work: string,
   port: number,
   envOverrides: Record<string, string> = {},
+  cliPath: string = CLI_TS,
 ): Bun.Subprocess<'ignore', 'pipe', 'pipe'> {
   return Bun.spawn(
     [
       'bun',
-      CLI_TS,
+      cliPath,
       'serve',
       '--port',
       String(port),
@@ -157,28 +158,50 @@ export async function spawnDaemon(
 export async function spawnHub(
   dirs?: { home: string; work: string },
   envOverrides: Record<string, string> = {},
+  cliPath: string = CLI_TS,
+  chosenPort?: number,
+  readyTimeoutMs = 15000,
 ): Promise<HubHandle> {
   const { home, work } = dirs ?? makeIsolatedDirs();
-  const port = await findTestPort();
-  const proc = spawnServeRaw(home, work, port, envOverrides);
+  // `findTestPort` hands the lowest free port from 19200 to every caller, so two test processes on
+  // one machine can get the same one; a caller that runs beside others picks a random probed port
+  // instead (`reserveRange`, as `spawnDaemon` does) and passes it here (#1204 round 2, P11).
+  const port = chosenPort ?? (await findTestPort());
+  const proc = spawnServeRaw(home, work, port, envOverrides, cliPath);
   const hub: HubHandle = { proc, home, work, port };
 
   const statusFile = path.join(home, '.remi', 'daemon-status.json');
-  await pollUntil(
-    () => {
-      if (proc.exitCode !== null) {
-        throw new Error(`Hub exited early with code ${proc.exitCode}`);
-      }
-      try {
-        const status = JSON.parse(fs.readFileSync(statusFile, 'utf-8'));
-        return status.wsPort === port;
-      } catch {
-        return false;
-      }
-    },
-    15000,
-    'hub status file',
-  );
+  try {
+    await pollUntil(
+      () => {
+        if (proc.exitCode !== null) {
+          throw new Error(`Hub exited early with code ${proc.exitCode}`);
+        }
+        try {
+          const status = JSON.parse(fs.readFileSync(statusFile, 'utf-8'));
+          return status.wsPort === port;
+        } catch {
+          return false;
+        }
+      },
+      readyTimeoutMs,
+      'hub status file',
+    );
+  } catch (error) {
+    // A hub that is still running when the wait ends has no handle the caller could clean up, so it
+    // is killed here and waited for (Q2). An exit says nothing about why; what the hub printed does
+    // (a port in use, a bad flag).
+    const exitedByItself = proc.exitCode !== null;
+    if (!exitedByItself) {
+      proc.kill('SIGKILL');
+      await proc.exited;
+    }
+    if (exitedByItself) {
+      const said = `${await new Response(proc.stderr).text()}${await new Response(proc.stdout).text()}`;
+      throw new Error(`${(error as Error).message}\n${said.trim().slice(-1500)}`);
+    }
+    throw error;
+  }
   return hub;
 }
 

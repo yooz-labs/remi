@@ -12,8 +12,8 @@ import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { DEFAULT_HARNESS, errorToString } from '@remi/shared';
-import type { HarnessId, UUID } from '@remi/shared';
+import { DEFAULT_HARNESS, errorToString, identityFromClaudeId, isHarnessId } from '@remi/shared';
+import type { HarnessId, SessionIdentity, UUID } from '@remi/shared';
 import { normalizeProjectPath } from '../cli/path-resolver.ts';
 import { remiHome } from '../config/remi-home.ts';
 import { isProcessAlive } from './process-alive.ts';
@@ -153,6 +153,19 @@ export function storedHarness(session: Pick<StoredSession, 'harness'>): string {
 /** True for a Claude record (no `harness`, or `claude`). */
 export function isClaudeRecord(session: Pick<StoredSession, 'harness'>): boolean {
   return storedHarness(session) === DEFAULT_HARNESS;
+}
+
+/**
+ * The harness-neutral identity of a stored record (ADR 0032, #1179): a Claude
+ * record's is derived from `claudeSessionId` alone, so the two cannot differ;
+ * another known harness reports its stored `harnessSessionId`, or null before it
+ * has one. Null for a harness this build does not know, never a guess.
+ */
+export function identityOfRecord(stored: StoredSession): SessionIdentity | null {
+  if (stored.harness === undefined) return identityFromClaudeId(stored.claudeSessionId);
+  if (!isHarnessId(stored.harness)) return null;
+  if (stored.harness === 'claude') return identityFromClaudeId(stored.claudeSessionId);
+  return { harness: stored.harness, harnessSessionId: stored.harnessSessionId ?? null };
 }
 
 function parseStoredSession(value: unknown, index: number, filePath: string): StoredSession {
@@ -303,21 +316,25 @@ export class SessionHarnessMismatchError extends Error {
 /**
  * Resolve a CLI resume query without ever choosing the first ambiguous row.
  *
- * `opts.harness` is the harness the caller resumes (`claude` for `--resume`).
- * An exact or prefix Remi id that names a record of another harness throws
- * `SessionHarnessMismatchError`, so a Codex session is never resumed as a
- * Claude one. The fallback on the harness's own session id matches only among
- * that harness's records: for Claude, `claudeSessionId` of Claude records, so a
- * non-Claude record can never be found by a Claude id. Without `opts.harness`
- * a Remi id resolves whatever the record's harness and the fallback is
- * Claude's.
+ * `opts.harness` is the harness the caller resumes; only `claude` (`remi --resume`) has a caller
+ * (#1179 removed the branch that matched another harness's own session id: `remi --sessions`
+ * prints the whole resume command, and `remi codex resume <thread id>` takes a whole thread id,
+ * so nothing resolves a Codex record by remi id or prefix). An exact or prefix Remi id that
+ * names a record of another harness throws `SessionHarnessMismatchError`, so a Codex session is
+ * never resumed as a Claude one. The fallback matches `claudeSessionId` of Claude records only,
+ * so a non-Claude record can never be found by a Claude id. Without `opts.harness` a Remi id
+ * resolves whatever the record's harness.
  */
 export function resolveStoredSession(
   sessions: readonly StoredSession[],
   query: string,
-  opts: { readonly harness?: HarnessId } = {},
+  opts: { readonly harness?: 'claude' } = {},
 ): StoredSession | null {
   const { harness } = opts;
+  // The type already refuses another harness; a cast around it must not get a Claude record back.
+  if (harness !== undefined && harness !== DEFAULT_HARNESS) {
+    throw new Error(`resolveStoredSession resolves ${DEFAULT_HARNESS} sessions only`);
+  }
   const checked = (session: StoredSession | null): StoredSession | null => {
     if (session && harness !== undefined && storedHarness(session) !== harness) {
       throw new SessionHarnessMismatchError(session);
@@ -337,15 +354,8 @@ export function resolveStoredSession(
   }
   if (prefixRemi.length === 1) return checked(prefixRemi[0] ?? null);
 
-  if (harness === undefined || harness === DEFAULT_HARNESS) {
-    return selectClaudeSessionMatch(
-      sessions.filter((session) => isClaudeRecord(session) && session.claudeSessionId === query),
-      query,
-    );
-  }
-  return selectSessionMatch(
-    sessions.filter((session) => session.harness === harness && session.harnessSessionId === query),
-    harness,
+  return selectClaudeSessionMatch(
+    sessions.filter((session) => isClaudeRecord(session) && session.claudeSessionId === query),
     query,
   );
 }
@@ -813,21 +823,6 @@ export class SessionStore {
       (s) => isClaudeRecord(s) && s.claudeSessionId === claudeSessionId,
     );
     return selectClaudeSessionMatch(matches, claudeSessionId);
-  }
-
-  /**
-   * Find a session by its harness's own session id (#1176). For `claude` this
-   * is `findByClaudeSessionId`; for any other harness it matches the stored
-   * `harness` and `harnessSessionId` together, and, like the Claude lookup,
-   * prefers the single active owner over exited history. Several active
-   * owners are an ambiguity, never resolved by picking one.
-   */
-  findByHarnessSessionId(harness: HarnessId, harnessSessionId: string): StoredSession | null {
-    if (harness === DEFAULT_HARNESS) return this.findByClaudeSessionId(harnessSessionId);
-    const matches = this.read().filter(
-      (s) => s.harness === harness && s.harnessSessionId === harnessSessionId,
-    );
-    return selectSessionMatch(matches, harness, harnessSessionId);
   }
 
   /** Find a session by its Remi session ID. */

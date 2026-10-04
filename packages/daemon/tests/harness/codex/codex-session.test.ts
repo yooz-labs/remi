@@ -41,18 +41,20 @@ import {
   type StoredSession,
 } from '../../../src/session/session-store.ts';
 import { threadStartedFrame, threadStatusFrame } from '../../helpers/codex-threads.ts';
+import {
+  RECORD_FILES,
+  WAIT_FOR_RELEASE,
+  waitForRecordedArgv,
+} from '../../helpers/fake-agent-clis.ts';
 import { FakeAppServer } from '../../helpers/fake-app-server.ts';
 
+// The shared recorder writes cwd, pid and argv under temporary names and renames them into place, so
+// the file existing is the whole list (a redirect creates it empty and fills it as the loop runs);
+// this fake adds the terminal size its wrapper test reads.
 const FAKE_CODEX = `#!/bin/sh
-d="$FAKE_CODEX_DIR"
-for a in "$@"; do printf '%s\\n' "$a"; done > "$d/argv"
-stty size > "$d/size"
-i=0
-while [ ! -e "$d/release" ] && [ $i -lt 100 ]; do
-  sleep 0.1
-  i=$((i + 1))
-done
-`;
+FAKE_AGENT_DIR="$FAKE_CODEX_DIR"
+${RECORD_FILES}stty size > "$d/size"
+${WAIT_FOR_RELEASE}`;
 
 const nowSec = (): number => Math.floor(Date.now() / 1000);
 
@@ -409,8 +411,56 @@ describe('CodexHarness', () => {
       if (!checked.ok) {
         expect(checked.exitCode).toBe(1);
         expect(checked.message).toContain(open.remiSessionId.slice(0, 8));
-        expect(checked.message).toContain('remi attach');
+        // For the person at the machine: an address the local attach accepts, with a real host,
+        // that can be pasted into a shell (a `<host>` placeholder would be a redirect there, P9).
+        expect(checked.message).toContain(
+          `\`remi attach localhost:19998/${open.remiSessionId.slice(0, 8)}\``,
+        );
+        expect(checked.message).not.toContain('<host>');
       }
+    });
+
+    test('an active record of another harness with the same id is not a holder', () => {
+      // `opencode` has no adapter yet, but a record naming it is data this build can read.
+      sessionStore.save(record({ harness: 'opencode', harnessSessionId: THREAD }));
+      expect(checkCodexLaunch(buildDeps(null), ['resume', THREAD], workDir)).toEqual({
+        ok: true,
+        args: ['resume', THREAD],
+        resumeThreadId: THREAD,
+        directory: workDir,
+      });
+    });
+
+    test('a store that cannot choose between two holders is a refusal with its own text, and any other store error is not swallowed', () => {
+      class AmbiguousStore extends SessionStore {
+        override list(): StoredSession[] {
+          throw new AmbiguousSessionIdentityError('codex', THREAD, 2);
+        }
+      }
+      const ambiguous = new AmbiguousStore(path.join(tmpDir, 'ambiguous.json'));
+      const checked = checkCodexLaunch(
+        buildDeps(null, { sessionStore: ambiguous }),
+        ['resume', THREAD],
+        workDir,
+      );
+      expect(checked).toEqual({
+        ok: false,
+        exitCode: 1,
+        message: new AmbiguousSessionIdentityError('codex', THREAD, 2).message,
+      });
+
+      class BrokenStore extends SessionStore {
+        override list(): StoredSession[] {
+          throw new Error('the store is unreadable');
+        }
+      }
+      expect(() =>
+        checkCodexLaunch(
+          buildDeps(null, { sessionStore: new BrokenStore(path.join(tmpDir, 'broken.json')) }),
+          ['resume', THREAD],
+          workDir,
+        ),
+      ).toThrow('the store is unreadable');
     });
 
     test('a thread with several exited records and no active one resumes (W3)', () => {
@@ -489,13 +539,30 @@ describe('CodexHarness', () => {
   });
 
   describe('the child', () => {
+    // The fake pauses after each argument it writes, so a test that reads `argv` as soon as the
+    // file EXISTS sees half of it every time instead of once in a while (#1204 round 2, P11, Q1).
+    beforeEach(() => {
+      process.env['FAKE_AGENT_RECORD_DELAY'] = '0.15';
+    });
+    afterEach(() => {
+      Reflect.deleteProperty(process.env, 'FAKE_AGENT_RECORD_DELAY');
+    });
+
+    test('the fake is slow to record, so the argv tests here would catch a half-written file (Q1)', async () => {
+      // Three arguments, then a pause between each of the two renames, at 0.15 s each, is a floor of
+      // 0.75 s from the spawn (a sleep never ends early; 50 ms of slack is for the clock). If the
+      // delay or any pause did nothing, the argv tests would pass whether or not the recorder is atomic.
+      const spawnedAt = Date.now();
+      const a = create(buildDeps(startServer()), ['-m', 'some-model']);
+      await a.session.start();
+      await waitForRecordedArgv(fakeDir);
+      expect(Date.now() - spawnedAt).toBeGreaterThanOrEqual(700);
+    });
+
     test('spawns codex --no-alt-screen with the validated arguments after it', async () => {
       const a = create(buildDeps(startServer()), ['-m', 'some-model']);
       await a.session.start();
-      await until(() => fs.existsSync(path.join(fakeDir, 'argv')), 'the fake codex');
-      expect(fs.readFileSync(path.join(fakeDir, 'argv'), 'utf8')).toBe(
-        '--no-alt-screen\n-m\nsome-model\n',
-      );
+      expect(await waitForRecordedArgv(fakeDir)).toEqual(['--no-alt-screen', '-m', 'some-model']);
     });
 
     test('a wrapper session gets the whole terminal: Codex reserves no status row', async () => {
@@ -537,10 +604,13 @@ describe('CodexHarness', () => {
     test('a prompt is passed after --, and a resume as the subcommand last', async () => {
       const a = create(buildDeps(startServer()), ['--yolo', 'hello', 'there']);
       await a.session.start();
-      await until(() => fs.existsSync(path.join(fakeDir, 'argv')), 'the fake codex');
-      expect(fs.readFileSync(path.join(fakeDir, 'argv'), 'utf8')).toBe(
-        '--no-alt-screen\n--yolo\n--\nhello\nthere\n',
-      );
+      expect(await waitForRecordedArgv(fakeDir)).toEqual([
+        '--no-alt-screen',
+        '--yolo',
+        '--',
+        'hello',
+        'there',
+      ]);
     });
 
     test('a resumed thread is attached as soon as the link is ready, with no thread/started', async () => {
@@ -1172,6 +1242,38 @@ describe('CodexHarness', () => {
     });
   });
 
+  describe('a session that never learns its thread, by where it runs (G12)', () => {
+    const systemTexts = (messages: Message[]) =>
+      messages.filter((m) => m.sender === 'system').map((m) => m.content);
+
+    test('with no terminal the notice also names an Update or Trust prompt and remi attach', async () => {
+      const server = startServer();
+      const { session, sessionId, messages } = create(
+        buildDeps(server, { tracker: { noIdentityMs: 150 } }),
+        [],
+        false,
+      );
+      await session.start();
+      await until(() => systemTexts(messages).length === 1, 'the notice');
+      const text = systemTexts(messages)[0] as string;
+      expect(text).toStartWith("remi could not find this session's Codex thread");
+      expect(text).toContain('Update or Trust prompt');
+      expect(text).toContain(`\`remi attach <host>:19999/${sessionId.slice(0, 8)}\``);
+    });
+
+    test('a wrapper session, which has the terminal, keeps the plain notice', async () => {
+      const server = startServer();
+      const { session, messages } = create(
+        buildDeps(server, { tracker: { noIdentityMs: 150 } }),
+        [],
+        true,
+      );
+      await session.start();
+      await until(() => systemTexts(messages).length === 1, 'the notice');
+      expect(systemTexts(messages)).toEqual(["remi could not find this session's Codex thread"]);
+    });
+  });
+
   describe('the link watchdog', () => {
     const noticeCount = (messages: Message[]) =>
       messages.filter((m) => m.sender === 'system').length;
@@ -1187,6 +1289,44 @@ describe('CodexHarness', () => {
       expect(text).not.toContain('not private');
       expect(logs.filter((l) => l.includes('not reachable'))).toHaveLength(1);
       expect(session.pty.isRunning).toBe(true);
+    });
+
+    test('a session with no terminal points at remi attach, not at a terminal (G12)', async () => {
+      const { session, sessionId, messages } = create(
+        buildDeps(null, { linkWatchdogMs: 200 }),
+        [],
+        false,
+      );
+      await session.start();
+      await until(() => noticeCount(messages) === 1, 'the notice');
+      const text = messages.find((m) => m.sender === 'system')?.content ?? '';
+      expect(text).toContain(`\`remi attach <host>:19999/${sessionId.slice(0, 8)}\``);
+      expect(text).not.toContain('in the terminal');
+    });
+
+    test('a wrapper session, which has the terminal, keeps saying the session works in it (G12)', async () => {
+      const { session, messages } = create(buildDeps(null, { linkWatchdogMs: 200 }), [], true);
+      await session.start();
+      await until(() => noticeCount(messages) === 1, 'the notice');
+      const text = messages.find((m) => m.sender === 'system')?.content ?? '';
+      expect(text).toContain('the session still works in the terminal');
+      expect(text).not.toContain('remi attach');
+    });
+
+    test('an untrusted control directory says the same about where the session is (G12)', async () => {
+      const server = startServer();
+      fs.chmodSync(path.join(server.codexHome, 'app-server-control'), 0o755);
+      const { session, sessionId, messages } = create(
+        buildDeps(server, { linkWatchdogMs: 300 }),
+        [],
+        false,
+      );
+      await session.start();
+      await until(() => noticeCount(messages) === 1, 'the notice');
+      const text = messages.find((m) => m.sender === 'system')?.content ?? '';
+      expect(text).toContain('its control directory is not private');
+      expect(text).toContain(`remi attach <host>:19999/${sessionId.slice(0, 8)}`);
+      expect(text).not.toContain('in the terminal');
     });
 
     test('a control directory open to others is never connected through, and the notice says so (W12, W17b)', async () => {

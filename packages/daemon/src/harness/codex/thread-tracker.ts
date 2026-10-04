@@ -80,6 +80,7 @@
 import { realpathSync } from 'node:fs';
 
 import { type AppServerClient, AppServerRpcError } from './app-server-client.ts';
+import { TERMINAL, type TerminalWords } from './terminal-words.ts';
 import { shortThreadId } from './thread-id.ts';
 import {
   type ThreadInfo,
@@ -118,6 +119,11 @@ export interface ThreadTrackerDeps {
   siblingInDirectory?: (rotating: boolean) => boolean;
   /** Tell the user something as a system message; the tracker sends each kind at most once. */
   notice?: (message: string) => void;
+  /**
+   * Where the person looks when a session never learns its thread: the terminal, or `remi attach`
+   * for a session with none (G12). Absent is the terminal.
+   */
+  terminal?: () => TerminalWords;
   log: (message: string) => void;
   /**
    * Test seams: the attach retry period (1000 ms), the ambiguity window (300 ms) and how long
@@ -271,7 +277,7 @@ export class ThreadTracker {
         return;
       }
       this.deps.log('no thread/started for this directory since the link came up');
-      this.tell('no-identity', "remi could not find this session's Codex thread");
+      this.tell('no-identity', (this.deps.terminal?.() ?? TERMINAL).noThread);
     }, ms);
   }
 

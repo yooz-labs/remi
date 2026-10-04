@@ -172,6 +172,37 @@ describe('golden table: real frames to Question JSON', () => {
   });
 });
 
+describe('a card for a session with no terminal says where to answer it instead (G12)', () => {
+  const HEADLESS = { ...WHERE, where: 'with `remi attach <host>:1/ab`' };
+
+  test('a terminal-only card', () => {
+    const [fileChange] = loadFixtureFrames('synthetic-from-schema.jsonl').map(
+      (f) => f.frame as Frame,
+    );
+    const spec = buildApprovalCard(fileChange as Frame, mint, HEADLESS);
+    expect(spec?.question.text).toBe(
+      'Codex asks to change files: synthetic file change. Answer it with `remi attach <host>:1/ab`.',
+    );
+  });
+
+  test('the generic card', () => {
+    const frame = realFrame('expA-accept.jsonl', 47);
+    const spec = buildApprovalCard(
+      { ...frame, params: { ...frame.params, command: undefined } },
+      mint,
+      HEADLESS,
+    );
+    expect(spec?.question.text).toBe(
+      'Codex is asking for approval; answer it with `remi attach <host>:1/ab`',
+    );
+    // Without the option it is the terminal wording it always was.
+    expect(
+      buildApprovalCard({ ...frame, params: { ...frame.params, command: undefined } }, mint, WHERE)
+        ?.question.text,
+    ).toBe('Codex is asking for approval; answer it in the terminal');
+  });
+});
+
 describe('lock-screen pin: the unchanged dispatcher reads the cards by meaning', () => {
   const listed = (decisions: unknown[]): Question => {
     const frame = realFrame('expA-accept.jsonl', 47);

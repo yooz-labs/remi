@@ -10,6 +10,7 @@ import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AppServerClient } from '../../../src/harness/codex/app-server-client.ts';
+import { type TerminalWords, attachWords } from '../../../src/harness/codex/terminal-words.ts';
 import type { ThreadStatus } from '../../../src/harness/codex/thread-protocol.ts';
 import { ThreadClaimedError, ThreadTracker } from '../../../src/harness/codex/thread-tracker.ts';
 import { type Json, threadStartedFrame, threadStatusFrame } from '../../helpers/codex-threads.ts';
@@ -82,6 +83,8 @@ interface Options {
   spawnedAtMs?: number;
   /** `onAttached` throws (a callback that fails must not break the attach). */
   attachedThrows?: boolean;
+  /** What the notices say about where to look: absent is a session with a terminal. */
+  terminal?: () => TerminalWords;
 }
 
 async function setup(opts: Options = {}): Promise<Ctx> {
@@ -156,6 +159,7 @@ async function setup(opts: Options = {}): Promise<Ctx> {
     retryMs: opts.retryMs ?? 40,
     ...(opts.ambiguityMs === 'default' ? {} : { ambiguityMs: opts.ambiguityMs ?? 150 }),
     ...(opts.noIdentityMs !== undefined ? { noIdentityMs: opts.noIdentityMs } : {}),
+    ...(opts.terminal !== undefined ? { terminal: opts.terminal } : {}),
   });
   cleanups.push(() => tracker.dispose());
   client.start();
@@ -1189,6 +1193,18 @@ describe('a session that never learns its thread says so (W11)', () => {
     ctx.tracker.handleReady();
     await settle(500);
     expect(ctx.notices).toHaveLength(1);
+  });
+
+  test('a session with no terminal also names an Update or Trust prompt, and remi attach as the way to reach it (G12)', async () => {
+    const ctx = await setup({
+      noIdentityMs: 150,
+      terminal: () => attachWords(19999, '55555555-5555-4555-8555-555555555555'),
+    });
+    await waitUntil(ctx, () => ctx.notices.length === 1, 'the notice');
+    expect(ctx.notices[0]).toStartWith(NOTICE);
+    expect(ctx.notices[0]).toContain('Update or Trust prompt');
+    expect(ctx.notices[0]).toContain('`remi attach <host>:19999/55555555`');
+    expect(ctx.notices[0]).not.toContain('the terminal');
   });
 
   test('it does not stop the tracker: a thread that shows up later still binds', async () => {

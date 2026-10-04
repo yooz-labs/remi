@@ -15,8 +15,19 @@
  * It looks in three places: the live-sessions entries (every session daemon,
  * and a wrapper, registers one with its `version`), the hub's
  * `daemon-status.json`, and each session daemon's `status-<PORT>.json`. A
- * process is a legacy writer when its pid is alive, is not the caller's own,
- * and its version is absent, unparsable, or older than `IDENTITY_SHIM_MIN_VERSION`.
+ * process is a legacy writer when its pid is alive, is not the caller's own, and
+ * its version is absent, unparsable, or older than `IDENTITY_SHIM_MIN_VERSION`,
+ * unless it is EXACTLY the caller's own version (`ownVersion`).
+ *
+ * A same-version record is the same build, and so has the same shim: the one
+ * assumption here is that a version string identifies a build. It is what lets
+ * a PR-stamped build (`bump-version.sh set 0.7.16-p1204.1`, which AGENTS.md
+ * recommends for LV-4) create Codex sessions beside its own sessions, wrappers
+ * and hub: its version does not parse, so without this each of them would read
+ * as an older remi. The assumption fails for two different builds stamped with
+ * the same string (a rebuild with the same version after a rollback, say); the
+ * file's other limit is the same kind, and a record that names no version, or
+ * another version that does not parse, is still refused.
  *
  * What it cannot see, so what still erases a Codex identity:
  *
@@ -53,9 +64,9 @@
  * the remi state directory, or an entry of its `live-sessions` directory).
  *
  * The Codex launch calls it (`cli.ts` wires it into `CodexHarness`, whose
- * `checkCodexLaunch` runs before `preAssign`, #1177); the hub's refusal of a
- * Codex `create_session_request` is phase 5. It is tested against real files and
- * real processes.
+ * `checkCodexLaunch` runs before `preAssign`, #1177), and so does the hub's
+ * refusal of a Codex `create_session_request` (`HarnessRegistry`, #1179). It is
+ * tested against real files and real processes.
  */
 
 import { spawnSync } from 'node:child_process';
@@ -217,12 +228,20 @@ export interface FindLegacyWritersDeps {
   readonly processStartTime?: (pid: number) => Date | null;
   /** The caller's own pid, which is never a legacy writer. */
   readonly selfPid: number;
+  /**
+   * The caller's own version string. A record whose version is exactly this is the same build, so
+   * it has the same shim and is not a legacy writer, whether or not the string parses (a
+   * PR-stamped build's does not). It replaces the hub-child rule of #1204's first rework (the
+   * child skipped its parent hub by pid): the parent hub is of the same build, so it is covered, and
+   * the pid rule would also have skipped a parent hub of a genuinely older version.
+   */
+  readonly ownVersion?: string;
 }
 
 const HUB_STATUS_FILE = 'daemon-status.json';
 
 /**
- * Every live process, other than the caller, that is older than
+ * Every live process, other than the caller and records of its own version, that is older than
  * `IDENTITY_SHIM_MIN_VERSION` or records no usable version, and whose record
  * is not stale (see the file header on recycled pids). A process named by
  * several records is reported once, by the first record that names it and
@@ -244,6 +263,7 @@ export function findLegacyWriters(deps: FindLegacyWritersDeps): LegacyWriter[] {
   ): void => {
     if (pid === undefined || !Number.isInteger(pid) || pid <= 0) return;
     if (pid === deps.selfPid || found.has(pid)) return;
+    if (version !== undefined && version === deps.ownVersion) return;
     if (version !== undefined) {
       const order = compareRemiVersion(version, IDENTITY_SHIM_MIN_VERSION);
       if (order !== null && order >= 0) return;

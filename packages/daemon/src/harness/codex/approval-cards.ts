@@ -44,6 +44,7 @@ import type { Question, QuestionOption, QuestionStep, UUID } from '@remi/shared'
 import { HEAD_KEEP, SUMMARY_MAX, TAIL_KEEP, cutSummary } from '../../hooks/tool-summary.ts';
 import type { HeldAnswer } from '../decision.ts';
 import type { RequestId } from './app-server-protocol.ts';
+import { TERMINAL } from './terminal-words.ts';
 
 export interface PendingRequestSpec {
   /**
@@ -79,7 +80,7 @@ export const COMMAND_TEXT_MAX = 20_000;
 /** Codex's stated reason is shown after the command, cut at this many characters (marked like every other cut field). */
 const REASON_MAX = 300;
 
-const GENERIC_ASK = 'Codex is asking for approval; answer it in the terminal';
+const genericAsk = (where: string): string => `Codex is asking for approval; answer it ${where}`;
 
 /**
  * What the live-sessions file, the hub census and the menu-bar notifications show of a card
@@ -203,6 +204,8 @@ interface Context {
   mintId: () => UUID;
   agentId: string | undefined;
   sessionDirectory: string;
+  /** Where a person answers what the phone cannot: "in the terminal", or `remi attach` for a session with none. */
+  where: string;
 }
 
 /** A card nobody can answer from the phone: it says what Codex asks and where to answer. */
@@ -221,7 +224,7 @@ function terminalOnly(
     method: c.req.method,
     question: {
       id: c.mintId(),
-      text: note ? `${who}${ask}. Answer it in the terminal.` : `${who}${ask}`,
+      text: note ? `${who}${ask}. Answer it ${c.where}.` : `${who}${ask}`,
       options: [],
       allowsFreeText: false,
       isAnswered: false,
@@ -240,7 +243,7 @@ function terminalOnly(
   };
 }
 
-const generic = (c: Context): PendingRequestSpec => terminalOnly(c, GENERIC_ASK, {}, false);
+const generic = (c: Context): PendingRequestSpec => terminalOnly(c, genericAsk(c.where), {}, false);
 
 function commandCard(c: Context): PendingRequestSpec {
   const { params } = c;
@@ -429,7 +432,7 @@ function elicitationCard(c: Context): PendingRequestSpec {
 export function buildApprovalCard(
   req: { id: RequestId; method: string; params: unknown },
   mintId: () => UUID,
-  opts: { agentId?: string; sessionDirectory: string },
+  opts: { agentId?: string; sessionDirectory: string; where?: string },
 ): PendingRequestSpec | null {
   if (!HANDLED.has(req.method)) return null;
   const threadId = requestThreadId(req.params);
@@ -441,6 +444,7 @@ export function buildApprovalCard(
     mintId,
     agentId: opts.agentId,
     sessionDirectory: opts.sessionDirectory,
+    where: opts.where ?? TERMINAL.where,
   };
   switch (req.method) {
     case COMMAND:

@@ -1,6 +1,6 @@
 /**
  * Writing and finding a non-Claude harness identity (epic #1175, phase 2
- * #1176): `SessionStore.updateHarnessIdentity`, `findByHarnessSessionId`, the
+ * #1176): `SessionStore.updateHarnessIdentity`, the
  * uniqueness rule for an active non-Claude pair, and the binding store's
  * `updateHarnessIdentity` and `preAssign` log. Real stores on temp files, no
  * stand-ins.
@@ -227,71 +227,6 @@ describe('harness identity in the session store (#1176)', () => {
       ]);
 
       expect(() => store.findByClaudeSessionId('claude-w')).toThrow(AmbiguousSessionIdentityError);
-    });
-  });
-
-  describe('findByHarnessSessionId', () => {
-    test('matches the harness and the id together', () => {
-      const codex = codexRecord({ harnessSessionId: THREAD_A });
-      store.save(codex);
-      store.save(codexRecord({ harnessSessionId: THREAD_B }));
-
-      expect(store.findByHarnessSessionId('codex', THREAD_A)?.remiSessionId).toBe(
-        codex.remiSessionId,
-      );
-      expect(store.findByHarnessSessionId('codex', 'no-such-thread')).toBeNull();
-    });
-
-    test('the same id under another harness, or as a Claude id, is not a match', () => {
-      store.save(makeSession({ harness: 'opencode', harnessSessionId: THREAD_A }));
-      store.save(makeSession({ claudeSessionId: THREAD_A }));
-
-      expect(store.findByHarnessSessionId('codex', THREAD_A)).toBeNull();
-    });
-
-    test('claude looks up the claudeSessionId column', () => {
-      const claude = makeSession({ claudeSessionId: 'claude-3' });
-      store.save(claude);
-      store.save(codexRecord({ harnessSessionId: 'claude-3' }));
-
-      expect(store.findByHarnessSessionId('claude', 'claude-3')?.remiSessionId).toBe(
-        claude.remiSessionId,
-      );
-    });
-
-    test('prefers the single active owner over exited history', () => {
-      const historical = codexRecord({
-        harnessSessionId: THREAD_A,
-        startedAt: '2026-10-01T00:00:00.000Z',
-        exitedAt: '2026-10-01T01:00:00.000Z',
-        exitCode: 0,
-        pid: null,
-      });
-      const current = codexRecord({ harnessSessionId: THREAD_A });
-      store.save(historical);
-      store.save(current);
-
-      expect(store.findByHarnessSessionId('codex', THREAD_A)?.remiSessionId).toBe(
-        current.remiSessionId,
-      );
-    });
-
-    test('several exited owners and no active one is an ambiguity, not a guess', () => {
-      for (const day of ['01', '02']) {
-        store.save(
-          codexRecord({
-            harnessSessionId: THREAD_A,
-            startedAt: `2026-10-${day}T00:00:00.000Z`,
-            exitedAt: `2026-10-${day}T01:00:00.000Z`,
-            exitCode: 0,
-            pid: null,
-          }),
-        );
-      }
-
-      expect(() => store.findByHarnessSessionId('codex', THREAD_A)).toThrow(
-        AmbiguousSessionIdentityError,
-      );
     });
   });
 

@@ -16,7 +16,7 @@
  */
 
 import { createError, createHelloAck, createReplayBatch } from '@remi/shared';
-import type { UUID } from '@remi/shared';
+import type { CreateHelloAckOptions, HarnessId, UUID } from '@remi/shared';
 
 import type { AdapterMetadata } from '../../adapters/index.ts';
 import type { SessionRegistry } from '../../session/index.ts';
@@ -31,6 +31,21 @@ export interface ConnectionHandlerDeps {
   /** Resolves the daemon's current owned session so every hello_ack carries the
    *  authoritative claudeSessionId + transcriptPath the client must follow (#499). */
   currentOwnedSession: () => CurrentOwnedSession | null;
+  /**
+   * The harness this daemon hosts. A hello_ack names it even when no session
+   * record resolves, so a Codex daemon never claims to be Claude (#1179).
+   */
+  harnessId: HarnessId;
+  /**
+   * A hub is session-less by design and hosts no harness, so its session-less ack names none. Any
+   * other daemon's does, even before its session exists (#1179 review, G9).
+   */
+  hubMode: boolean;
+  /**
+   * The harnesses this daemon can start (`HarnessRegistry.available`), read at
+   * each ack so a command installed later is offered without a restart (#1179).
+   */
+  harnesses: () => readonly HarnessId[];
   /** Forward to AdapterRegistry.trackConnection. */
   trackConnection: (connectionId: UUID, adapterType: string) => void;
   /** Forward to AdapterRegistry.untrackConnection. */
@@ -61,6 +76,9 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
   const {
     sessionRegistry,
     currentOwnedSession,
+    harnessId,
+    hubMode,
+    harnesses,
     trackConnection,
     untrackConnection,
     onConnectionAdded,
@@ -72,11 +90,19 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
     onPeerDisconnect,
   } = deps;
 
-  /** The current binding for hello_ack: {claudeSessionId, transcriptPath}. */
-  const currentBinding = (): { claudeSessionId: UUID | null; transcriptPath: string | null } => {
+  /** Every hello_ack names the daemon's version and the harnesses it can start (#539, #1179). */
+  const ack = (sessionId: UUID | null, options: CreateHelloAckOptions = {}) =>
+    createHelloAck('1.0.0', sessionId, {
+      ...options,
+      daemonVersion: remiVersion,
+      harnesses: harnesses(),
+    });
+
+  /** The current binding for hello_ack: who the session is, and the transcript it writes. */
+  const currentBinding = () => {
     const current = currentOwnedSession();
     return {
-      claudeSessionId: current?.claudeSessionId ?? null,
+      identity: current?.identity ?? { harness: harnessId, harnessSessionId: null },
       transcriptPath: current?.transcriptPath ?? null,
     };
   };
@@ -121,7 +147,7 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
           if (result.success) {
             send(
               connectionId,
-              createHelloAck('1.0.0', currentPrimary, {
+              ack(currentPrimary, {
                 resumeInfo: {
                   isResume: result.replayMessages.length > 0,
                   replayCount: result.replayMessages.length,
@@ -129,7 +155,6 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
                 },
                 binding: currentBinding(),
                 attachState: result.attachState,
-                daemonVersion: remiVersion,
               }),
             );
             onPeerConnect?.(connectionId, metadata);
@@ -143,7 +168,7 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
               (m) => send(connectionId, m),
               currentPrimary,
               result.currentQuestions,
-              currentBinding().claudeSessionId ?? undefined,
+              currentBinding().identity,
             );
             if (resent > 0) {
               log(`Re-sent ${resent} pending question(s) to connection ${connectionId}`);
@@ -160,13 +185,7 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
         // without attach so utility clients (ls, kill) can still send
         // requests. Still carry the binding so the client follows the
         // current session (#499).
-        send(
-          connectionId,
-          createHelloAck('1.0.0', currentPrimary, {
-            binding: currentBinding(),
-            daemonVersion: remiVersion,
-          }),
-        );
+        send(connectionId, ack(currentPrimary, { binding: currentBinding() }));
         onPeerConnect?.(connectionId, metadata);
         log(
           `Connection ${connectionId} connected without attach (${isQueryMode ? 'query mode' : 'attach race'})`,
@@ -177,8 +196,9 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
       // No session available: still ack the connection with a null sessionId
       // rather than erroring out. This is the normal steady state for a
       // session-less hub daemon (#542) and also covers the brief startup
-      // window on an ordinary daemon before its primary session is created.
-      send(connectionId, createHelloAck('1.0.0', null, { daemonVersion: remiVersion }));
+      // window on an ordinary daemon before its primary session is created,
+      // whose ack names its harness: a Codex daemon must not read as Claude.
+      send(connectionId, ack(null, hubMode ? {} : { harness: harnessId }));
       onPeerConnect?.(connectionId, metadata);
       log(`Connection ${connectionId} connected session-less (no active session)`);
     },

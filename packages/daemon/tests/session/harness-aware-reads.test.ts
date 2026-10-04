@@ -19,7 +19,6 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { UUID } from '@remi/shared';
 import {
-  AmbiguousSessionIdentityError,
   SessionHarnessMismatchError,
   SessionStore,
   type StoredSession,
@@ -182,47 +181,14 @@ describe('resolveStoredSession(sessions, query, { harness })', () => {
     expect(resolveStoredSession([odd], CLAUDE_ID)).toBeNull();
   });
 
-  test('with codex, the fallback matches the thread id among codex records only', () => {
-    expect(
-      resolveStoredSession([claudeRecord, codexRecord], THREAD_ID, { harness: 'codex' })
-        ?.remiSessionId,
-    ).toBe(CODEX_REMI_ID);
-    // A Claude id is not a Codex thread id.
-    expect(
-      resolveStoredSession([claudeRecord, codexRecord], CLAUDE_ID, { harness: 'codex' }),
-    ).toBeNull();
-    // The same id under another harness is not a Codex thread.
-    const other = record({ harness: 'opencode', harnessSessionId: THREAD_ID });
-    expect(resolveStoredSession([other], THREAD_ID, { harness: 'codex' })).toBeNull();
-    // A claude record found by remi id is a mismatch for codex.
-    expect(() =>
-      resolveStoredSession([claudeRecord], CLAUDE_REMI_ID, { harness: 'codex' }),
-    ).toThrow('this session ran under claude; this build cannot resume it');
+  test('the harness option is Claude-only: another harness does not compile, and a cast around it is refused', () => {
+    // @ts-expect-error resolveStoredSession resumes Claude records only (#1179 removed the other branch)
+    const lookup = () => resolveStoredSession([claudeRecord], CLAUDE_ID, { harness: 'codex' });
+    expect(lookup).toThrow('resolves claude sessions only');
   });
 
   test('without a harness a remi id resolves whatever its record ran under', () => {
     expect(resolveStoredSession([codexRecord], CODEX_REMI_ID)?.remiSessionId).toBe(CODEX_REMI_ID);
-  });
-
-  test('several codex owners of a thread and none active are an ambiguity, not a guess', () => {
-    const a = record({ ...codexRecord, remiSessionId: crypto.randomUUID() as UUID });
-    const b = record({ ...codexRecord, remiSessionId: crypto.randomUUID() as UUID });
-    expect(() => resolveStoredSession([a, b], THREAD_ID, { harness: 'codex' })).toThrow(
-      AmbiguousSessionIdentityError,
-    );
-  });
-
-  test('exactly one active codex owner of a thread wins over exited history', () => {
-    const exited = record({ ...codexRecord, remiSessionId: crypto.randomUUID() as UUID });
-    const active = record({
-      ...codexRecord,
-      remiSessionId: crypto.randomUUID() as UUID,
-      exitedAt: null,
-      exitCode: null,
-    });
-    expect(
-      resolveStoredSession([exited, active], THREAD_ID, { harness: 'codex' })?.remiSessionId,
-    ).toBe(active.remiSessionId);
   });
 });
 

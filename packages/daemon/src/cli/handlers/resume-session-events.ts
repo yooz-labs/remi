@@ -17,6 +17,12 @@
  * entire createNewSession closure (PTY + MessageAPI + transcript watcher
  * + hook setup) out of cli.ts to test this handler.
  *
+ * A daemon that hosts another harness than Claude (`remi codex`, #1179) refuses
+ * resume the same way, with the same code: every path below finds a Claude
+ * session id in the Claude transcript layout and spawns `claude --resume`, which
+ * a Codex daemon must never do. A Codex thread resumes from a terminal
+ * (`remi codex resume <thread id>`); resuming one through a hub is not built.
+ *
  * Hub mode (`remi serve`, #1124): the hub is a session-less supervisor and
  * must never run Claude itself, but both transports (`server/connection.ts`,
  * `remote/relay-adapter.ts`) dispatch resume requests to this handler
@@ -35,7 +41,7 @@ import {
   createResumeSessionResponse,
   errorToString,
 } from '@remi/shared';
-import type { ProtocolMessage, UUID } from '@remi/shared';
+import type { HarnessId, ProtocolMessage, UUID } from '@remi/shared';
 
 import type { Harness } from '../../harness/types.ts';
 import type { SessionBindingStore, SessionRegistry, SessionStore } from '../../session/index.ts';
@@ -75,6 +81,16 @@ export function hubResumeUnsupportedMessage(requestedSessionId: string): string 
   return `Resuming a session through the hub is not supported yet. Run 'remi --resume ${session}' from a terminal on the host machine.`;
 }
 
+/**
+ * Why a daemon hosting another harness refuses resume (#1179). The words name the one command
+ * that works for Codex; they never echo the request, which is client-supplied.
+ */
+export function harnessResumeUnsupportedMessage(harnessId: HarnessId): string {
+  return harnessId === 'codex'
+    ? "Resuming a session from the app is not supported for Codex yet. Run 'remi codex resume <thread id>' from a terminal on the host machine ('remi --sessions' lists the ids)."
+    : `Resuming a session from the app is not supported for ${harnessId} yet.`;
+}
+
 /** Same code vocabulary as the `error` frame (see `connection.ts` UNSUPPORTED). */
 export const HUB_RESUME_UNSUPPORTED_CODE = 'UNSUPPORTED';
 
@@ -88,6 +104,17 @@ export interface ResumeSessionHandlerDeps {
    * failing open into running Claude in a hub.
    */
   hubMode: boolean;
+  /**
+   * The harness this daemon hosts. Anything but Claude refuses resume (#1179). Required with no
+   * default, like `hubMode`: a composition root that forgets it fails to compile instead of
+   * failing open into `claude --resume` inside a Codex daemon.
+   */
+  harnessId: HarnessId;
+  /**
+   * The harnesses this daemon can start, named on the acks this handler sends so
+   * that every hello_ack carries them (#1179).
+   */
+  harnesses: () => readonly HarnessId[];
   sessionRegistry: SessionRegistry;
   /** Full-record reads that also need projectPath (resume seed by remi id). */
   sessionStore: SessionStore;
@@ -106,6 +133,8 @@ export type ResumeSessionHandlers = ReturnType<typeof createResumeSessionHandler
 export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
   const {
     hubMode,
+    harnessId,
+    harnesses,
     sessionRegistry,
     sessionStore,
     bindingStore,
@@ -141,6 +170,23 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
         return;
       }
 
+      // A daemon that hosts another harness has no Claude session to resume or attach a Claude
+      // resume to (#1179): refused with the hub's code, before any path below runs.
+      if (harnessId !== 'claude') {
+        log(`Refusing resume: this daemon hosts ${harnessId}, not Claude`);
+        send(
+          connectionId,
+          createResumeSessionResponse(
+            false,
+            requestId,
+            undefined,
+            harnessResumeUnsupportedMessage(harnessId),
+            HUB_RESUME_UNSUPPORTED_CODE,
+          ),
+        );
+        return;
+      }
+
       // Path 1: target matches the live session, try to attach.
       const existingSession = sessionRegistry.getSession(targetSessionId as UUID);
       if (existingSession) {
@@ -155,6 +201,7 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
                 replayCount: result.replayMessages.length,
                 nextBulletId: result.nextBulletId,
               },
+              harnesses: harnesses(),
             }),
           );
           if (result.replayMessages.length > 0) {
@@ -304,6 +351,7 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
             connectionId,
             createHelloAck('1.0.0', newSessionId, {
               resumeInfo: { isResume: false, replayCount: 0, nextBulletId: 1 },
+              harnesses: harnesses(),
             }),
           );
           log(`Session ${newSessionId} created via resume (claude: ${claudeSessionId})`);

@@ -36,6 +36,7 @@ import type { ProtocolMessage, ProtocolMessageMap } from '@remi/shared/protocol.
 import {
   MESSAGE_DIRECTION,
   createAuqAnswer,
+  createCreateSessionRequest,
   createHello,
   deserialize,
   generateId,
@@ -203,6 +204,30 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
     expect(call?.event).toBe('onAnswer');
     // onAnswer(connectionId, sessionId, questionId, answer, claudeSessionId, extra)
     expect((call?.args[5] as { selections?: unknown } | undefined)?.selections).toEqual(selections);
+  });
+
+  test('a create request from the real client carries its harness and args to onCreateSessionRequest as extra (#1179)', async () => {
+    const request = createCreateSessionRequest('/work/project', {
+      harness: 'codex',
+      args: ['-m', 'some-model'],
+    });
+    const before = eventCalls.length;
+    client.send(request);
+    await waitFor(() => eventCalls.length > before);
+    const call = eventCalls[eventCalls.length - 1];
+    expect(call?.event).toBe('onCreateSessionRequest');
+    // onCreateSessionRequest(connectionId, directory, requestId, extra)
+    expect(call?.args.slice(1)).toEqual([
+      '/work/project',
+      request.id,
+      { harness: 'codex', args: ['-m', 'some-model'] },
+    ]);
+
+    // A plain request has no extra: an older daemon's callers read it exactly as before.
+    const plainBefore = eventCalls.length;
+    client.send(createCreateSessionRequest('/work/project'));
+    await waitFor(() => eventCalls.length > plainBefore);
+    expect(eventCalls[eventCalls.length - 1]?.args[3]).toBeUndefined();
   });
 
   test('sanity: every EXPECTED_EVENT key is a real c2d type covered by the loop above', () => {

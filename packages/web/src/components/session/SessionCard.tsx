@@ -8,7 +8,7 @@
 
 import { StatusPill } from '@/components/StatusPill';
 import { formatRelativeTime } from '@/lib/format-time';
-import { sessionPillState, splitSessionName } from '@/lib/session-display';
+import { harnessLabel, sessionPillState, splitSessionName } from '@/lib/session-display';
 import type { ConnectionId, UISession } from '@/types';
 import type { UUID } from '@remi/shared/types.ts';
 import { clsx } from 'clsx';
@@ -44,6 +44,7 @@ export function SessionCard({
   // transcript-only rows do not.
   const canKill = onKill && session.source === 'daemon';
   const state = sessionPillState(session);
+  const harness = harnessLabel(session.harness);
   const isAsking = state === 'asking';
   const isConnected = session.connectionStatus === 'connected';
   const showResume = onResume && session.canResume && session.connectionStatus === 'disconnected';
@@ -82,6 +83,11 @@ export function SessionCard({
             {branch || project}
           </span>
           <StatusPill state={state} className="shrink-0" />
+          {harness !== null && (
+            <span className="shrink-0 rounded border border-[var(--color-border)] px-1.5 py-px font-mono text-[10px] uppercase tracking-wide text-[var(--color-text-muted)]">
+              {harness}
+            </span>
+          )}
         </div>
 
         {/* preview (two lines) */}

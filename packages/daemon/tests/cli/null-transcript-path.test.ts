@@ -84,6 +84,7 @@ describe('Harness.transcriptPath returning null is "no file"', () => {
       getPrimarySessionId: () => REMI_ID,
       sessionStore,
       harness: noFile,
+      harnessId: 'claude',
     })();
 
     expect(current?.claudeSessionId).toBe(CLAUDE_ID as UUID);
