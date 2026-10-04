@@ -804,3 +804,172 @@ describe('parseArgs - removed auto-approve flags', () => {
     });
   });
 });
+
+describe('parseArgs - remi codex and --harness (#1177)', () => {
+  const UUID = '00000000-0000-7000-8000-0000000000aa';
+
+  test('codex is a subcommand, and the words after it are Codex arguments', () => {
+    const r = parseArgs(['codex']);
+    expect(r.subcommand).toBe('codex');
+    expect(r.claudeArgs).toEqual([]);
+    expect(r.passthroughArgs).toEqual([]);
+    expect(r.harness).toBeUndefined();
+
+    const resume = parseArgs(['codex', 'resume', UUID]);
+    expect(resume.subcommand).toBe('codex');
+    expect(resume.claudeArgs).toEqual(['resume', UUID]);
+    expect(resume.passthroughArgs).toEqual(['resume', UUID]);
+  });
+
+  test('remi still reads its own flags beside the Codex words, and leaves the Codex ones alone', () => {
+    const r = parseArgs([
+      'codex',
+      '--port',
+      '19000',
+      '--dir',
+      '/tmp/x',
+      '-m',
+      'some-model',
+      '--yolo',
+    ]);
+    expect(r.port).toBe(19000);
+    expect(r.dir).toBe('/tmp/x');
+    expect(r.claudeArgs).toEqual(['-m', 'some-model', '--yolo']);
+    expect(r.passthroughArgs).toEqual(['-m', 'some-model', '--yolo']);
+  });
+
+  test("-h and --help beside codex are remi's, so `remi codex -h` shows the codex help", () => {
+    for (const flag of ['-h', '--help']) {
+      const r = parseArgs(['codex', flag]);
+      expect(r.showHelp).toBe(true);
+      expect(r.subcommand).toBe('codex');
+      expect(r.claudeArgs).toEqual([]);
+    }
+  });
+
+  test("remi -c stays Claude's --continue: a Claude argument, not a subcommand", () => {
+    const r = parseArgs(['-c']);
+    expect(r.subcommand).toBeUndefined();
+    expect(r.claudeArgs).toEqual(['-c']);
+    expect(r.harness).toBeUndefined();
+  });
+
+  test("the user's own -- is kept in place in passthroughArgs, and what follows it is not remi's", () => {
+    const r = parseArgs(['codex', '-m', 'x', '--', 'fix', '--port', '1', '-h']);
+    expect(r.claudeArgs).toEqual(['-m', 'x', 'fix', '--port', '1', '-h']);
+    expect(r.passthroughArgs).toEqual(['-m', 'x', '--', 'fix', '--port', '1', '-h']);
+    expect(r.port).toBeUndefined();
+    expect(r.showHelp).toBe(false);
+  });
+
+  test('a -- first, or an empty word after it, behaves the same way', () => {
+    expect(parseArgs(['codex', '--', 'hello']).passthroughArgs).toEqual(['--', 'hello']);
+    expect(parseArgs(['codex', '--']).passthroughArgs).toEqual(['--']);
+    expect(parseArgs(['codex', '--', '', 'x']).passthroughArgs).toEqual(['--', 'x']);
+  });
+
+  test('once codex is the subcommand, a later word that names a subcommand is a Codex word', () => {
+    for (const word of ['status', 'config', 'new', 'logs', 'stop', 'ls', 'kill', 'code']) {
+      const r = parseArgs(['codex', word]);
+      expect(r.subcommand, word).toBe('codex');
+      expect(r.claudeArgs, word).toEqual([word]);
+    }
+    const prompt = parseArgs(['codex', 'fix', 'the', 'config']);
+    expect(prompt.subcommand).toBe('codex');
+    expect(prompt.claudeArgs).toEqual(['fix', 'the', 'config']);
+  });
+
+  test('the word codex after another subcommand is not the subcommand (W15)', () => {
+    // `remi stop codex` must stop, not launch Codex; `remi new codex` is a new Claude session.
+    for (const cmd of [
+      'stop',
+      'new',
+      'ls',
+      'logs',
+      'status',
+      'config',
+      'serve',
+      'start',
+    ] as const) {
+      const r = parseArgs([cmd, 'codex']);
+      expect(r.subcommand, cmd).toBe(cmd);
+    }
+    // Where the subcommand takes a word of its own, that word is it, as before.
+    const attach = parseArgs(['attach', 'codex']);
+    expect(attach.subcommand).toBe('attach');
+    expect(attach.subcommandArg).toBe('codex');
+    // A second `codex` word after the argument is no longer a subcommand either.
+    const second = parseArgs(['attach', 'a', 'codex']);
+    expect(second.subcommand).toBe('attach');
+    expect(second.subcommandArg).toBe('a');
+    expect(second.claudeArgs).toEqual(['codex']);
+    // Flags first, then codex: still the subcommand.
+    expect(parseArgs(['--daemon', 'codex']).subcommand).toBe('codex');
+    expect(parseArgs(['--host', 'h', 'codex']).subcommand).toBe('codex');
+  });
+
+  test("that rule is codex's alone: for every other subcommand the last one still wins", () => {
+    expect(parseArgs(['new', 'ls']).subcommand).toBe('ls');
+    expect(parseArgs(['status', 'config']).subcommand).toBe('config');
+  });
+
+  test('for every other command passthroughArgs is claudeArgs with the -- kept', () => {
+    const r = parseArgs(['new', '--host', 'h', '--', '--resume']);
+    expect(r.claudeArgs).toEqual(['--resume']);
+    expect(r.passthroughArgs).toEqual(['--', '--resume']);
+    const plain = parseArgs(['--verbose', 'x']);
+    expect(plain.passthroughArgs).toEqual(plain.claudeArgs);
+  });
+
+  describe('--harness', () => {
+    test('names the harness, for any known id', () => {
+      expect(parseArgs(['--harness', 'codex']).harness).toBe('codex');
+      expect(parseArgs(['--daemon', '--harness', 'claude']).harness).toBe('claude');
+      expect(parseArgs(['--harness', 'opencode']).harness).toBe('opencode');
+    });
+
+    test('is not a Codex or Claude argument', () => {
+      const r = parseArgs(['--harness', 'codex', '--daemon']);
+      expect(r.claudeArgs).toEqual([]);
+      expect(r.passthroughArgs).toEqual([]);
+      expect(r.daemonMode).toBe(true);
+      // Its value is consumed: `codex` here is not the subcommand, nor `claude` a Claude word.
+      expect(r.subcommand).toBeUndefined();
+      expect(parseArgs(['--harness', 'claude']).claudeArgs).toEqual([]);
+    });
+
+    test('an unknown id, a missing value and a flag as the value are errors', () => {
+      expect(parseArgs(['--harness', 'bogus']).error).toContain('unknown harness "bogus"');
+      expect(parseArgs(['--harness', 'bogus']).error).toContain('claude, codex, opencode');
+      expect(parseArgs(['--harness']).error).toContain('requires a value');
+      expect(parseArgs(['--harness', '--daemon']).error).toContain('requires a value');
+    });
+
+    test('is case-sensitive', () => {
+      expect(parseArgs(['--harness', 'Codex']).error).toContain('unknown harness');
+    });
+
+    test('conflicts with a different subcommand harness, and agrees with the same one', () => {
+      expect(parseArgs(['codex', '--harness', 'claude']).error).toContain(
+        '--harness claude conflicts with the codex subcommand',
+      );
+      expect(parseArgs(['--harness', 'opencode', 'codex']).error).toContain('conflicts');
+      const same = parseArgs(['codex', '--harness', 'codex']);
+      expect(same.error).toBeUndefined();
+      expect(same.harness).toBe('codex');
+    });
+
+    test('an earlier error is not replaced by the conflict', () => {
+      expect(parseArgs(['codex', '--port', 'x', '--harness', 'claude']).error).toContain(
+        'Invalid port',
+      );
+    });
+
+    test('after a user -- it is a word, not a flag', () => {
+      const r = parseArgs(['codex', '--', '--harness', 'claude']);
+      expect(r.harness).toBeUndefined();
+      expect(r.error).toBeUndefined();
+      expect(r.passthroughArgs).toEqual(['--', '--harness', 'claude']);
+    });
+  });
+});

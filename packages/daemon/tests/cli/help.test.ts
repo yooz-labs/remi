@@ -196,3 +196,37 @@ describe('help formatting', () => {
     expect(line).toMatch(/--label "name" \S/);
   });
 });
+
+describe('the codex help (#1177)', () => {
+  const plain = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, '');
+
+  test('the global help lists remi codex and its resume', () => {
+    const output = plain(formatHelp('0.0.0'));
+    expect(output).toContain('remi codex ');
+    expect(output).toContain('remi codex resume <id>');
+  });
+
+  test('remi codex --help says what ships: status only, and what is refused', () => {
+    const output = plain(formatCommandHelp('codex'));
+    expect(output).toContain('remi codex resume <thread id>');
+    expect(output).toContain('status only');
+    expect(output).toContain('Approvals and turn notifications do not reach the');
+    // Phone chat is refused for a Codex session (W1), and the 30 s notice is not promised (W18).
+    expect(output).toContain('a message typed from the phone is refused');
+    expect(output).toContain('type in the terminal');
+    expect(output).toContain('some clients, the web client today, do not show it');
+    expect(output).not.toMatch(/chat[^.]*reach the\s+phone yet/);
+    expect(output).toContain('-i/--image cannot be combined with resume');
+    expect(output).toContain('never starts or stops the shared Codex app-server');
+    // The `--` rule as shipped: the words after it are a prompt, never flags.
+    expect(output).toContain('Everything after `--` is the first prompt, as text, never a flag');
+    expect(output).toContain('-h, --help, -v, --version, --dir, --port, --resume');
+    expect(output).toContain('run codex directly');
+  });
+
+  test('every subcommand still has a help entry', () => {
+    for (const command of ['codex', 'new', 'ls', 'serve']) {
+      expect(formatCommandHelp(command)).not.toContain('No help available');
+    }
+  });
+});

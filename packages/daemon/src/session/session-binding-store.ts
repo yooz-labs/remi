@@ -20,7 +20,7 @@
  * SessionRegistryFile; transcriptPath has no disk column today (a phase-3 concern).
  */
 
-import { identityFromClaudeId, isHarnessId } from '@remi/shared';
+import { errorToString, identityFromClaudeId, isHarnessId } from '@remi/shared';
 import type { HarnessId, SessionIdentity, UUID } from '@remi/shared';
 
 import { log } from '../cli/logger.ts';
@@ -134,15 +134,32 @@ export class SessionBindingStore {
    * touch the transcript index, which maps a Claude id to a Claude transcript;
    * a non-Claude harness has no entry there.
    *
-   * No production caller yet: the Codex launch (phase 3) records the thread id
-   * with it, once the app-server names one.
+   * The Codex launch (#1177) records the thread id with it, once the app-server
+   * names one. It purges first: a record whose process died without exiting
+   * cleanly still counts as an active holder of its thread id until a purge
+   * marks it exited, and would make this write refuse a thread that is free.
    */
   updateHarnessIdentity(
     remiSessionId: UUID,
     harness: Exclude<HarnessId, 'claude'>,
     harnessSessionId: string,
   ): void {
+    this.purgeBeforeIdentity();
     this.store.updateHarnessIdentity(remiSessionId, harness, harnessSessionId);
+  }
+
+  /**
+   * Mark records of dead processes exited before an identity is recorded, as
+   * `store.list()` does for Claude's `--resume`. Best effort: a purge that
+   * fails (a lock timeout) must not stop the write that follows, which fails
+   * on its own if the store is really unavailable.
+   */
+  private purgeBeforeIdentity(): void {
+    try {
+      this.store.purgeStale();
+    } catch (err) {
+      log(`[sessions] purge before recording a harness identity failed: ${errorToString(err)}`);
+    }
   }
 
   /**
@@ -152,6 +169,11 @@ export class SessionBindingStore {
    * responsibility to populate correctly — the accessor does not own them.
    */
   preAssign(session: StoredSession): void {
+    // A non-Claude record that names its thread id up front (a Codex resume)
+    // must not collide with a dead process's unpurged record of that thread.
+    if (!isClaudeRecord(session) && typeof session.harnessSessionId === 'string') {
+      this.purgeBeforeIdentity();
+    }
     // Mirror from save()'s returned (normalized) record, not the raw input —
     // otherwise a caller passing an unnormalized projectPath would seed
     // TranscriptIndex with a value that silently diverges from what
