@@ -211,8 +211,10 @@ describe('createRemoteSession sends a harness only to a daemon that offers it (#
     },
   );
 
-  test('a port the daemon leaves out is the one the client asked, and a plain UUID and port pass', async () => {
+  test('a plain UUID and port pass, and a success that names no port is the one the client asked', async () => {
     offered = ['codex'];
+    expect(await create('codex')).toEqual({ sessionId: SESSION, port });
+    rawAnswer = { port: undefined };
     expect(await create('codex')).toEqual({ sessionId: SESSION, port });
   });
 
