@@ -29,6 +29,8 @@ describe('cli.ts passes the harness to its handlers (#1179)', () => {
     const block = call('createConnectionHandlers({');
     expect(block).toContain('\n  harnessId,');
     expect(block).toContain('harnesses: () => harnessRegistry.available(),');
+    // A hub hosts no session, so its session-less ack must not name a harness (G9).
+    expect(block).toContain('hubMode: serveMode,');
   });
 
   test("the resume handlers get the daemon's harness and the available harnesses", () => {

@@ -64,10 +64,13 @@ describe('hello_ack and re-sent questions carry the harness identity (#1179)', (
     harnessId: HarnessId;
     harnesses?: () => readonly HarnessId[];
     current?: () => CurrentOwnedSession | null;
+    /** A hub hosts no session, so its session-less ack names no harness. */
+    hubMode?: boolean;
   }) {
     return createConnectionHandlers({
       sessionRegistry,
       currentOwnedSession: opts.current ?? (() => null),
+      hubMode: opts.hubMode ?? false,
       harnessId: opts.harnessId,
       harnesses: opts.harnesses ?? (() => ['codex']),
       trackConnection: () => {},
@@ -111,13 +114,30 @@ describe('hello_ack and re-sent questions carry the harness identity (#1179)', (
     expect(acks().map((a) => a.harnesses)).toEqual([['claude'], ['claude', 'codex'], ['codex']]);
   });
 
-  test('a session-less ack names no session identity, only the harnesses', async () => {
-    await connect(handlers({ harnessId: 'claude' }));
+  test("a hub's session-less ack names no session identity and no harness, only the harnesses", async () => {
+    await connect(handlers({ harnessId: 'claude', hubMode: true }));
     const ack = acks()[0] as HelloAckMessage;
     expect(ack.sessionId).toBeNull();
     expect(ack.harnesses).toEqual(['codex']);
     for (const key of ['harness', 'harnessSessionId', 'claudeSessionId', 'transcriptPath']) {
       expect(key in ack).toBe(false);
+    }
+  });
+
+  test('a daemon that is not a hub names its harness on the ack it sends before its session exists (G9)', async () => {
+    // The brief startup window of an ordinary daemon: no primary session yet, so no binding. A
+    // Codex daemon must not read as Claude by the absence of a field.
+    await connect(handlers({ harnessId: 'codex' }));
+    await connect(handlers({ harnessId: 'claude' }));
+    const [codex, claude] = acks() as [HelloAckMessage, HelloAckMessage];
+    expect(codex.sessionId).toBeNull();
+    expect(codex.harness).toBe('codex');
+    expect(claude.harness).toBe('claude');
+    // Only the harness: no session identity or transcript is invented for a session that is not there.
+    for (const ack of [codex, claude]) {
+      for (const key of ['harnessSessionId', 'claudeSessionId', 'transcriptPath']) {
+        expect(key in ack, key).toBe(false);
+      }
     }
   });
 

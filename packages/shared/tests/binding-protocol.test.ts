@@ -45,6 +45,20 @@ describe('binding fields on the wire (#429)', () => {
     expect(round.transcriptPath).toBeNull();
   });
 
+  test('hello_ack names a harness without a binding, and only the harness (G9)', () => {
+    const named = createHelloAck('1.0.0', null, { harness: 'codex' });
+    expect(named.harness).toBe('codex');
+    for (const key of ['harnessSessionId', 'claudeSessionId', 'transcriptPath']) {
+      expect(key in named, key).toBe(false);
+    }
+    // A binding names the harness itself, and it wins.
+    const bound = createHelloAck('1.0.0', RID, {
+      harness: 'codex',
+      binding: { identity: identityFromClaudeId(CID), transcriptPath: null },
+    });
+    expect(bound.harness).toBe('claude');
+  });
+
   test('hello_ack without binding arg omits the fields (back-compat)', () => {
     const msg = createHelloAck('1.0.0', RID);
     const round = deserialize(serialize(msg));

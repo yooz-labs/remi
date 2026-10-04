@@ -150,6 +150,8 @@ describe('a hub creating a session for a harness (#1179)', () => {
     const ack = received.find((m): m is HelloAckMessage => m.type === 'hello_ack');
     expect(ack?.sessionId).toBeNull();
     expect(ack?.harnesses).toEqual(['claude', 'codex']);
+    // A hub hosts no session, so it names no harness of its own (G9).
+    expect(ack).not.toHaveProperty('harness');
 
     const claudeOnly = await startHub({ claude: true });
     const second = await connectAndHello(claudeOnly.hub.port);
