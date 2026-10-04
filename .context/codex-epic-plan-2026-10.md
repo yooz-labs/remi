@@ -401,7 +401,7 @@ export class CodexDecisions implements DecisionChannel {
 
 | Member | Meaning for Codex |
 |---|---|
-| `answerHeld(qid, a)` | id never seen: `'unknown'`. Known id: never `'unknown'`. Not pending (resolved, retired, disconnected): `'closed'`. Client not `ready`: `'closed'` plus log. `terminalOnly`: `cancel` gives `'closed'` (card dismissed, nothing sent, nothing typed), anything else `'refused'`. Actionable: map via `responseFor`, `client.respond(...)`, then `'resolved'`. |
+| `answerHeld(qid, a)` | id never seen: `'unknown'` (as built: `'closed'`, never `'unknown'`, see above). Known id: never `'unknown'`. Not pending (resolved, retired, disconnected): `'closed'`. Client not `ready`: `'closed'` plus log. `terminalOnly`: `cancel` gives `'closed'` (card dismissed, nothing sent, nothing typed), anything else `'refused'`. Actionable: map via `responseFor`, `client.respond(...)`, then `'resolved'`. |
 | `retireQuestion(qid)` | stop tracking; send nothing; the app-server request stays pending for the TUI |
 | `isHeld(qid)` | actionable and pending |
 | `hasMainHold()` | any pending main-thread request, or the latest status flags for the tracked thread are non-empty |
@@ -409,6 +409,13 @@ export class CodexDecisions implements DecisionChannel {
 | `noteTerminalEscape()` | no-op; the app-server's `serverRequest/resolved` is authoritative |
 | `forceRelease(reason)` | dismiss every local card (`question_resolved` `'cancelled'`), stop tracking, send nothing; returns the count |
 | `screen` | undefined (no PTY parsing), so any typed path fails closed. `trackerScreenDeps` returns `null` for `observedPromptOptions`. |
+
+**As built in Phase 4 (ADR 0033 amendment, #1178).** Where this section and the shipped code differ, the code and the ADR win; the differences are these.
+- `answerHeld` is never `unknown`, for any id (the table row above says `unknown` for an id never seen): the answer and Cancel handlers type for `unknown`.
+- `handleServerRequest(req)` takes one argument; the thread's role comes from the `threadRole` dependency (`ThreadTracker.role`: `main`, `subagent` or null), which is also read at the answer. A subagent's request is always `terminalOnly`. The tracker gained `role()` and `onAttached` (the replay window starts at a successful attach).
+- "Retire on disconnect" means: unanswerable at once, still shown until the replay replaces it or the replay window ends (then it is dismissed); with no re-attach it is dismissed after 30 s. `CodexDecisions` also has `dispose()`; its client dependency is `respond` only.
+- A request that does not name its thread is no card (`null`), and a command over 20000 characters is a `terminalOnly` card.
+- `onQuestionResolved` is a `CodexLaunchDeps` member, and the question-detected log line and the registry's cap-eviction warning log a length for Codex.
 
 **Hold semantics.** Codex is the arbiter. remi holds nothing. No `HeldAnswerOutcome` means "waiting for a deadline".
 
