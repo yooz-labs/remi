@@ -8,9 +8,9 @@
  * TranscriptBinder keeps current — so it follows /clear rotations.
  */
 
-import type { UUID } from '@remi/shared';
+import type { HarnessId, SessionIdentity, UUID } from '@remi/shared';
 import type { Harness } from '../harness/types.ts';
-import type { SessionStore } from '../session/session-store.ts';
+import { type SessionStore, identityOfRecord } from '../session/session-store.ts';
 
 /** The daemon's current owned session, resolved on demand. */
 export interface CurrentOwnedSession {
@@ -23,6 +23,11 @@ export interface CurrentOwnedSession {
    * unknown, or the harness has no transcript file to name.
    */
   readonly transcriptPath: string | null;
+  /**
+   * Who the session is for every harness (#1179): Claude's id is
+   * `claudeSessionId`, another harness's is its own, null until learned.
+   */
+  readonly identity: SessionIdentity;
 }
 
 export interface CurrentSessionResolverDeps {
@@ -31,6 +36,8 @@ export interface CurrentSessionResolverDeps {
   sessionStore: Pick<SessionStore, 'findByRemiSessionId'>;
   /** Derives the transcript path from the stored project path and harness session id. */
   harness: Pick<Harness, 'transcriptPath'>;
+  /** The harness this daemon hosts: the identity of a session whose record is missing or names none this build knows. */
+  harnessId: HarnessId;
 }
 
 /**
@@ -42,7 +49,7 @@ export interface CurrentSessionResolverDeps {
 export function makeCurrentSessionResolver(
   deps: CurrentSessionResolverDeps,
 ): () => CurrentOwnedSession | null {
-  const { getPrimarySessionId, sessionStore, harness } = deps;
+  const { getPrimarySessionId, sessionStore, harness, harnessId } = deps;
   return () => {
     // Must never throw: this runs in the void transcript-load handler's
     // NOT_FOUND path, which is not wrapped — a disk hiccup on the store read
@@ -59,7 +66,11 @@ export function makeCurrentSessionResolver(
         claudeSessionId && projectPath
           ? harness.transcriptPath(projectPath, claudeSessionId)
           : null;
-      return { sessionId, claudeSessionId, transcriptPath };
+      const identity = (stored ? identityOfRecord(stored) : null) ?? {
+        harness: harnessId,
+        harnessSessionId: null,
+      };
+      return { sessionId, claudeSessionId, transcriptPath, identity };
     } catch {
       return null;
     }

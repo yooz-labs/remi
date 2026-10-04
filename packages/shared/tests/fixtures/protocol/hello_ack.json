@@ -8,7 +8,10 @@
   "replayCount": 0,
   "nextBulletId": 1,
   "claudeSessionId": "fixture-claude-session-id",
+  "harness": "claude",
+  "harnessSessionId": "fixture-claude-session-id",
   "transcriptPath": "/Users/fixture/transcript.jsonl",
   "attachState": "attached",
-  "daemonVersion": "0.7.4-dev.1"
+  "daemonVersion": "0.7.4-dev.1",
+  "harnesses": ["claude", "codex"]
 }

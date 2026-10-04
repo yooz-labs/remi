@@ -16,7 +16,7 @@
  */
 
 import { createError, createHelloAck, createReplayBatch } from '@remi/shared';
-import type { UUID } from '@remi/shared';
+import type { HarnessId, UUID } from '@remi/shared';
 
 import type { AdapterMetadata } from '../../adapters/index.ts';
 import type { SessionRegistry } from '../../session/index.ts';
@@ -31,6 +31,11 @@ export interface ConnectionHandlerDeps {
   /** Resolves the daemon's current owned session so every hello_ack carries the
    *  authoritative claudeSessionId + transcriptPath the client must follow (#499). */
   currentOwnedSession: () => CurrentOwnedSession | null;
+  /**
+   * The harness this daemon hosts. A hello_ack names it even when no session
+   * record resolves, so a Codex daemon never claims to be Claude (#1179).
+   */
+  harnessId: HarnessId;
   /** Forward to AdapterRegistry.trackConnection. */
   trackConnection: (connectionId: UUID, adapterType: string) => void;
   /** Forward to AdapterRegistry.untrackConnection. */
@@ -61,6 +66,7 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
   const {
     sessionRegistry,
     currentOwnedSession,
+    harnessId,
     trackConnection,
     untrackConnection,
     onConnectionAdded,
@@ -72,11 +78,11 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
     onPeerDisconnect,
   } = deps;
 
-  /** The current binding for hello_ack: {claudeSessionId, transcriptPath}. */
-  const currentBinding = (): { claudeSessionId: UUID | null; transcriptPath: string | null } => {
+  /** The current binding for hello_ack: who the session is, and the transcript it writes. */
+  const currentBinding = () => {
     const current = currentOwnedSession();
     return {
-      claudeSessionId: current?.claudeSessionId ?? null,
+      identity: current?.identity ?? { harness: harnessId, harnessSessionId: null },
       transcriptPath: current?.transcriptPath ?? null,
     };
   };
@@ -143,7 +149,7 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
               (m) => send(connectionId, m),
               currentPrimary,
               result.currentQuestions,
-              currentBinding().claudeSessionId ?? undefined,
+              currentBinding().identity,
             );
             if (resent > 0) {
               log(`Re-sent ${resent} pending question(s) to connection ${connectionId}`);

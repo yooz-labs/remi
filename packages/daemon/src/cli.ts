@@ -1560,16 +1560,16 @@ async function createNewSession(
       sendMessage,
       // A Codex card's text is a command (#1178): the log line for it leaves the text out.
       redactQuestionLogs: harnessId === 'codex',
-      // Lazy disk-backed read so the binding seen on each question emission is
-      // the current value — survives /resume rotation via the hook bridge's
-      // bindingStore.update write. Wrapped in try/catch so a transient
-      // sessions.json I/O hiccup cannot kill question emission (the dep
-      // contract is non-throwing).
-      getClaudeSessionId: () => {
+      // Lazy disk-backed read so the identity seen on each question emission is
+      // the current value: it survives /resume rotation via the hook bridge's
+      // bindingStore.update write, and a Codex session's thread id once learned.
+      // Wrapped in try/catch so a transient sessions.json I/O hiccup cannot kill
+      // question emission (the dep contract is non-throwing).
+      getIdentity: () => {
         try {
-          return (bindingStore.get(sessionId)?.claudeSessionId ?? null) as UUID | null;
+          return bindingStore.getIdentity(sessionId);
         } catch (err) {
-          logError(`[Binding] getClaudeSessionId lookup failed: ${errorToString(err)}`);
+          logError(`[Binding] getIdentity lookup failed: ${errorToString(err)}`);
           return null;
         }
       },
@@ -1911,6 +1911,7 @@ const currentOwnedSession = makeCurrentSessionResolver({
   getPrimarySessionId,
   sessionStore,
   harness,
+  harnessId,
 });
 
 const transcriptHandlers: TranscriptHandlers = createTranscriptHandlers({
@@ -1982,6 +1983,7 @@ const hubClientTracker: HubClientTracker | null = serveMode
 const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
   sessionRegistry,
   currentOwnedSession,
+  harnessId,
   trackConnection: (id, adapterType) => registry.trackConnection(id, adapterType),
   untrackConnection: (id) => registry.untrackConnection(id),
   onConnectionAdded: () => updateRemiStatus({ connections: remiStatus.connections + 1 }),

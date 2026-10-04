@@ -9,6 +9,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   DEFAULT_HARNESS,
   HARNESS_IDS,
+  createCreateSessionRequest,
   createHelloAck,
   createQuestion,
   createSessionListResponse,
@@ -116,7 +117,7 @@ describe('Decision', () => {
   });
 });
 
-describe('typed optional wire fields (#1162)', () => {
+describe('harness wire fields (#1162, #1179)', () => {
   const sessionId = '11111111-1111-4111-8111-111111111111';
   const claudeId = '22222222-2222-4222-8222-222222222222';
   const question: Question = {
@@ -138,16 +139,14 @@ describe('typed optional wire fields (#1162)', () => {
     claudeSessionId: claudeId,
   };
 
-  test('no message factory emits harness or harnessSessionId', () => {
+  test('given no identity, no factory emits harness, harnessSessionId or harnesses', () => {
     const ack = createHelloAck('0.0.0-test', sessionId, {
       resumeInfo: { isResume: true, replayCount: 3, nextBulletId: 7 },
-      binding: { claudeSessionId: claudeId, transcriptPath: '/tmp/t.jsonl' },
       attachState: 'attached',
       daemonVersion: '0.0.0-test',
     });
-    const asked = createQuestion(question, sessionId, claudeId);
+    const asked = createQuestion(question, sessionId);
     const list = createSessionListResponse([discoverable], sessionId, [18765]);
-
     for (const message of [ack, asked, list]) {
       const wire = serialize(message);
       expect(wire).not.toContain('harness');
@@ -156,10 +155,77 @@ describe('typed optional wire fields (#1162)', () => {
     }
   });
 
+  test('a Claude identity is dual-emitted: harnessSessionId equals claudeSessionId, null included', () => {
+    const bound = createHelloAck('0.0.0-test', sessionId, {
+      binding: { identity: identityFromClaudeId(claudeId), transcriptPath: '/tmp/t.jsonl' },
+      harnesses: ['claude', 'codex'],
+    });
+    expect(bound.harness).toBe('claude');
+    expect(bound.claudeSessionId).toBe(claudeId);
+    expect(bound.harnessSessionId).toBe(claudeId);
+    expect(bound.harnesses).toEqual(['claude', 'codex']);
+
+    const unbound = createHelloAck('0.0.0-test', sessionId, {
+      binding: { identity: identityFromClaudeId(null), transcriptPath: null },
+    });
+    expect(unbound.claudeSessionId).toBeNull();
+    expect(unbound.harnessSessionId).toBeNull();
+    expect(unbound.harness).toBe('claude');
+
+    const asked = createQuestion(question, sessionId, identityFromClaudeId(claudeId));
+    expect(asked.harness).toBe('claude');
+    expect(asked.claudeSessionId).toBe(claudeId);
+    expect(asked.harnessSessionId).toBe(claudeId);
+
+    // A question has no null: with no id known it names the harness and nothing else.
+    const early = createQuestion(question, sessionId, identityFromClaudeId(null));
+    expect(Object.keys(early)).toContain('harness');
+    expect(Object.keys(early)).not.toContain('claudeSessionId');
+    expect(Object.keys(early)).not.toContain('harnessSessionId');
+  });
+
+  test('another harness sends harnessSessionId alone, null until learned on the ack, and no claudeSessionId', () => {
+    const thread = '01950000-0000-7000-8000-000000000042';
+    const learned = createHelloAck('0.0.0-test', sessionId, {
+      binding: { identity: { harness: 'codex', harnessSessionId: thread }, transcriptPath: null },
+    });
+    expect(learned.harness).toBe('codex');
+    expect(learned.harnessSessionId).toBe(thread);
+    expect(Object.keys(learned)).not.toContain('claudeSessionId');
+
+    const unknown = createHelloAck('0.0.0-test', sessionId, {
+      binding: { identity: { harness: 'codex', harnessSessionId: null }, transcriptPath: null },
+    });
+    expect(unknown.harnessSessionId).toBeNull();
+    expect(Object.keys(unknown)).not.toContain('claudeSessionId');
+
+    const asked = createQuestion(question, sessionId, {
+      harness: 'codex',
+      harnessSessionId: thread,
+    });
+    expect(asked.harness).toBe('codex');
+    expect(asked.harnessSessionId).toBe(thread);
+    expect(Object.keys(asked)).not.toContain('claudeSessionId');
+  });
+
+  test('a create request carries harness and args only when given', () => {
+    const plain = createCreateSessionRequest('/tmp/project');
+    expect(Object.keys(plain)).not.toContain('harness');
+    expect(Object.keys(plain)).not.toContain('args');
+    const codex = createCreateSessionRequest('/tmp/project', {
+      harness: 'codex',
+      args: ['-m', 'some-model'],
+    });
+    expect(codex.harness).toBe('codex');
+    expect(codex.args).toEqual(['-m', 'some-model']);
+    // An empty argument list is still a list: the field is what was given.
+    expect(createCreateSessionRequest(undefined, { args: [] }).args).toEqual([]);
+  });
+
   test('a message that does carry them round-trips, and exactOptionalPropertyTypes allows absence and undefined', () => {
     // Each assignment only compiles with `harness?: HarnessId | undefined` and
     // `harnessSessionId?: ... | undefined`: the repo sets exactOptionalPropertyTypes.
-    const base = createQuestion(question, sessionId, claudeId);
+    const base = createQuestion(question, sessionId, identityFromClaudeId(claudeId));
     const withIdentity: QuestionMessage = {
       ...base,
       harness: 'codex',

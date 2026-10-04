@@ -18,5 +18,7 @@
     "isAnswered": false
   },
   "sessionId": "fixture-session-id",
+  "harness": "claude",
+  "harnessSessionId": "fixture-claude-session-id",
   "claudeSessionId": "fixture-claude-session-id"
 }

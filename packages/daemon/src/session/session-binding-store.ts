@@ -20,11 +20,11 @@
  * SessionRegistryFile; transcriptPath has no disk column today (a phase-3 concern).
  */
 
-import { errorToString, identityFromClaudeId, isHarnessId } from '@remi/shared';
+import { errorToString } from '@remi/shared';
 import type { HarnessId, SessionIdentity, UUID } from '@remi/shared';
 
 import { log } from '../cli/logger.ts';
-import { isClaudeRecord } from './session-store.ts';
+import { identityOfRecord, isClaudeRecord } from './session-store.ts';
 import type { SessionStore, StoredSession } from './session-store.ts';
 import type { TranscriptIndex } from './transcript-index.ts';
 
@@ -80,15 +80,11 @@ export class SessionBindingStore {
    * string as Claude. A non-string `harness` never reaches here: the parser
    * treats it as absent, so it reads as Claude (ADR 0032, decision 5).
    *
-   * No production caller; the Codex epic (#1165) adds the first (ADR 0032).
+   * The session list's decoration and every question emission call it (#1179).
    */
   getIdentity(remiSessionId: UUID): SessionIdentity | null {
     const stored = this.store.findByRemiSessionId(remiSessionId);
-    if (!stored) return null;
-    if (stored.harness === undefined) return identityFromClaudeId(stored.claudeSessionId);
-    if (!isHarnessId(stored.harness)) return null;
-    if (stored.harness === 'claude') return identityFromClaudeId(stored.claudeSessionId);
-    return { harness: stored.harness, harnessSessionId: stored.harnessSessionId ?? null };
+    return stored ? identityOfRecord(stored) : null;
   }
 
   /** Reverse lookup: the full record bound to a Claude session id (disk-backed). */

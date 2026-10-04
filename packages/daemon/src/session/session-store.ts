@@ -12,8 +12,8 @@ import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { DEFAULT_HARNESS, errorToString } from '@remi/shared';
-import type { HarnessId, UUID } from '@remi/shared';
+import { DEFAULT_HARNESS, errorToString, identityFromClaudeId, isHarnessId } from '@remi/shared';
+import type { HarnessId, SessionIdentity, UUID } from '@remi/shared';
 import { normalizeProjectPath } from '../cli/path-resolver.ts';
 import { remiHome } from '../config/remi-home.ts';
 import { isProcessAlive } from './process-alive.ts';
@@ -153,6 +153,19 @@ export function storedHarness(session: Pick<StoredSession, 'harness'>): string {
 /** True for a Claude record (no `harness`, or `claude`). */
 export function isClaudeRecord(session: Pick<StoredSession, 'harness'>): boolean {
   return storedHarness(session) === DEFAULT_HARNESS;
+}
+
+/**
+ * The harness-neutral identity of a stored record (ADR 0032, #1179): a Claude
+ * record's is derived from `claudeSessionId` alone, so the two cannot differ;
+ * another known harness reports its stored `harnessSessionId`, or null before it
+ * has one. Null for a harness this build does not know, never a guess.
+ */
+export function identityOfRecord(stored: StoredSession): SessionIdentity | null {
+  if (stored.harness === undefined) return identityFromClaudeId(stored.claudeSessionId);
+  if (!isHarnessId(stored.harness)) return null;
+  if (stored.harness === 'claude') return identityFromClaudeId(stored.claudeSessionId);
+  return { harness: stored.harness, harnessSessionId: stored.harnessSessionId ?? null };
 }
 
 function parseStoredSession(value: unknown, index: number, filePath: string): StoredSession {

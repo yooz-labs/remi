@@ -34,6 +34,7 @@ function resolver(primary: UUID | null) {
     getPrimarySessionId: () => primary,
     sessionStore,
     harness: new ClaudeHarness(transcriptDiscovery),
+    harnessId: 'claude',
   });
 }
 
