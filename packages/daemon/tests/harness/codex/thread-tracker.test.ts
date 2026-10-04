@@ -60,6 +60,8 @@ interface Ctx {
   status(id: string, status: Json): void;
   /** How many times the tracker logged a successful attach. */
   attachCount(): number;
+  /** The thread id of each `onAttached` call, in order. */
+  attached: string[];
 }
 
 interface Options {
@@ -78,6 +80,8 @@ interface Options {
   noticeThrows?: boolean;
   retryMs?: number;
   spawnedAtMs?: number;
+  /** `onAttached` throws (a callback that fails must not break the attach). */
+  attachedThrows?: boolean;
 }
 
 async function setup(opts: Options = {}): Promise<Ctx> {
@@ -95,6 +99,7 @@ async function setup(opts: Options = {}): Promise<Ctx> {
   const logs: string[] = [];
   const notices: string[] = [];
   const siblingAsked: boolean[] = [];
+  const attached: string[] = [];
   const claimed = new Set<string>();
   let ready!: () => void;
   const isReady = new Promise<void>((resolve) => {
@@ -143,6 +148,10 @@ async function setup(opts: Options = {}): Promise<Ctx> {
       notices.push(m);
     },
     onStatus: (id, status) => statuses.push({ id, status }),
+    onAttached: (id) => {
+      attached.push(id);
+      if (opts.attachedThrows) throw new Error('the callback failed');
+    },
     log: (m) => logs.push(m),
     retryMs: opts.retryMs ?? 40,
     ...(opts.ambiguityMs === 'default' ? {} : { ambiguityMs: opts.ambiguityMs ?? 150 }),
@@ -176,6 +185,7 @@ async function setup(opts: Options = {}): Promise<Ctx> {
       ),
     status: (id, status) => server.emit(threadStatusFrame(id, status), { broadcast: true }),
     attachCount: () => logs.filter((l) => l.startsWith('attached to thread')).length,
+    attached,
   };
 }
 
@@ -1227,5 +1237,129 @@ describe('a session that never learns its thread says so (W11)', () => {
     await waitUntil(ctx, () => ctx.identities.length === 1, 'the identity');
     await settle(400);
     expect(ctx.notices).toEqual([]);
+  });
+});
+
+describe("role: which of the threads on the link are this session's (#1178)", () => {
+  test('before an identity nothing has a role, a pending candidate included', async () => {
+    const ctx = await setup({ ambiguityMs: 400 });
+    const a = crypto.randomUUID();
+    expect(ctx.tracker.role(a)).toBeNull();
+    ctx.started('tui', a);
+    await settle(100);
+    // Seen, but still inside its window: not committed, so not ours.
+    expect(ctx.identities).toEqual([]);
+    expect(ctx.tracker.role(a)).toBeNull();
+    await waitUntil(ctx, () => ctx.identities.length === 1, 'the identity');
+    expect(ctx.tracker.role(a)).toBe('main');
+  });
+
+  test('a known thread (resume) is main from the start, with no thread/started; nothing else is', async () => {
+    const known = crypto.randomUUID();
+    const ctx = await setup({ expected: known });
+    expect(ctx.tracker.role(known)).toBe('main');
+    expect(ctx.tracker.role(crypto.randomUUID())).toBeNull();
+  });
+
+  test("the tracked thread is main, a descendant at any depth is a subagent, another window's thread is nothing", async () => {
+    const ctx = await setup();
+    const a = crypto.randomUUID();
+    const child = crypto.randomUUID();
+    const grandchild = crypto.randomUUID();
+    const stranger = crypto.randomUUID();
+    const strangerChild = crypto.randomUUID();
+    ctx.started('tui', a);
+    await waitUntil(ctx, () => ctx.identities.length === 1, 'the identity');
+    ctx.started('tui', child, setKey('parentThreadId', a));
+    ctx.started('tui', grandchild, setKey('parentThreadId', child));
+    ctx.started('tui', strangerChild, setKey('parentThreadId', stranger));
+    await settle(150);
+    expect(ctx.tracker.role(a)).toBe('main');
+    expect(ctx.tracker.role(child)).toBe('subagent');
+    expect(ctx.tracker.role(grandchild)).toBe('subagent');
+    expect(ctx.tracker.role(stranger)).toBeNull();
+    expect(ctx.tracker.role(strangerChild)).toBeNull();
+    expect(ctx.tracker.role('not-a-thread')).toBeNull();
+  });
+
+  test('a rotation takes the old thread and its subagents out: they have no role afterwards', async () => {
+    const ctx = await setup();
+    const a = crypto.randomUUID();
+    const child = crypto.randomUUID();
+    const b = crypto.randomUUID();
+    ctx.started('tui', a);
+    await waitUntil(ctx, () => ctx.identities.length === 1, 'the identity');
+    ctx.started('tui', child, setKey('parentThreadId', a));
+    await settle(150);
+    expect([ctx.tracker.role(a), ctx.tracker.role(child)]).toEqual(['main', 'subagent']);
+
+    ctx.status(a, { type: 'idle' });
+    await settle(100);
+    ctx.started('tui', b);
+    await waitUntil(ctx, () => ctx.identities.length === 2, 'the rotation');
+    expect([ctx.tracker.role(a), ctx.tracker.role(child), ctx.tracker.role(b)]).toEqual([
+      null,
+      null,
+      'main',
+    ]);
+  });
+});
+
+describe('onAttached: the attach to the tracked thread succeeded (#1178)', () => {
+  test('it fires once per successful attach, with the thread, and not for a failed one', async () => {
+    const ctx = await setup({ retryMs: 40 });
+    const id = crypto.randomUUID();
+    ctx.started('tui', id);
+    await waitUntil(ctx, () => ctx.resumeFrames().length >= 2, 'a failed attach and a retry');
+    expect(ctx.attached).toEqual([]);
+    ctx.server.createRollout(id);
+    await waitUntil(ctx, () => ctx.attached.length === 1, 'the attach');
+    expect(ctx.attached).toEqual([id]);
+    await settle(200);
+    expect(ctx.attached).toEqual([id]);
+  });
+
+  test('it fires again after the link drops and returns, and after a rotation, for the new thread', async () => {
+    const ctx = await setup({ retryMs: 40 });
+    const a = crypto.randomUUID();
+    const b = crypto.randomUUID();
+    ctx.server.createRollout(a);
+    ctx.server.createRollout(b);
+    ctx.started('tui', a);
+    await waitUntil(ctx, () => ctx.attached.length === 1, 'the first attach');
+    ctx.server.dropClient(ctx.server.clientIds()[0] as number);
+    await waitUntil(ctx, () => ctx.attached.length === 2, 'the attach after the reconnect');
+    ctx.status(a, { type: 'idle' });
+    await settle(100);
+    ctx.started('tui', b);
+    await waitUntil(ctx, () => ctx.attached.length === 3, 'the attach of the new thread');
+    expect(ctx.attached).toEqual([a, a, b]);
+  });
+
+  test('a callback that throws is logged and does not undo the attach or stop later ones', async () => {
+    const ctx = await setup({ retryMs: 40, attachedThrows: true });
+    const id = crypto.randomUUID();
+    ctx.server.createRollout(id);
+    ctx.started('tui', id);
+    await waitUntil(ctx, () => ctx.attached.length === 1, 'the attach');
+    expect(ctx.attachCount()).toBe(1);
+    expect(ctx.logs.some((l) => l.includes('attach callback failed'))).toBe(true);
+    // Still attached: no retry follows, and a reconnect attaches (and calls back) again.
+    const frames = ctx.resumeFrames().length;
+    await settle(150);
+    expect(ctx.resumeFrames()).toHaveLength(frames);
+    ctx.server.dropClient(ctx.server.clientIds()[0] as number);
+    await waitUntil(ctx, () => ctx.attached.length === 2, 'the next attach');
+  });
+
+  test('after dispose it fires no more', async () => {
+    const ctx = await setup({ retryMs: 40 });
+    const id = crypto.randomUUID();
+    ctx.started('tui', id);
+    await waitUntil(ctx, () => ctx.resumeFrames().length >= 1, 'the first attach attempt');
+    ctx.tracker.dispose();
+    ctx.server.createRollout(id);
+    await settle(250);
+    expect(ctx.attached).toEqual([]);
   });
 });

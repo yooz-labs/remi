@@ -67,6 +67,13 @@
  * after the link came up (looking again once if a candidate was then inside its
  * window): the thread is learned only from a live `thread/started`, so a
  * connection that opened after the frame never sees it.
+ *
+ * Phase 4 (#1178) adds two things the approval cards read. `role` says whether a
+ * thread is the tracked one (`main`), a descendant of it (`subagent`) or neither,
+ * which is how a server request is kept from becoming a card for a thread that is
+ * not this session's. `onAttached` fires after each successful attach: the app-server
+ * replays a pending request to a client that attaches, so that is the moment the
+ * replay window of a reconnect starts.
  */
 
 import { realpathSync } from 'node:fs';
@@ -94,6 +101,11 @@ export interface ThreadTrackerDeps {
    */
   onIdentity(threadId: string): void;
   onStatus(threadId: string, status: ThreadStatus): void;
+  /**
+   * The attach to the tracked thread succeeded (first time, after a retry, after a reconnect or
+   * a rotation). A throw is logged and changes nothing.
+   */
+  onAttached?: (threadId: string) => void;
   /**
    * Is another live remi codex session in this directory in the way of binding a new thread
    * here? A `thread/started` carries nothing that says which session it is for, so while one is,
@@ -194,6 +206,16 @@ export class ThreadTracker {
   /** The tracked thread, or a thread known to descend from it. */
   private isOurs(threadId: string): boolean {
     return threadId === this.current || this.descendants.has(threadId);
+  }
+
+  /**
+   * `main` for the tracked thread, `subagent` for a thread known to descend from it, null for
+   * anything else (another window's thread, a candidate still inside its window, a thread of
+   * before a rotation). What a server request about `threadId` may become depends on it.
+   */
+  role(threadId: string): 'main' | 'subagent' | null {
+    if (threadId === this.current) return 'main';
+    return this.descendants.has(threadId) ? 'subagent' : null;
   }
 
   handleNotification(method: string, params: unknown): void {
@@ -473,6 +495,11 @@ export class ThreadTracker {
         this.deps.log(`attached to thread ${short(id)}`);
         const resumed = parseThread(isRecord(result) ? result['thread'] : null);
         if (resumed?.status) this.applyStatus(id, resumed.status);
+        try {
+          this.deps.onAttached?.(id);
+        } catch (error) {
+          this.deps.log(`attach callback failed (${describeError(error)})`);
+        }
       },
       (error: unknown) => {
         this.attaching = false;
