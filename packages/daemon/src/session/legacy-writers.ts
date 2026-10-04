@@ -15,8 +15,10 @@
  * It looks in three places: the live-sessions entries (every session daemon,
  * and a wrapper, registers one with its `version`), the hub's
  * `daemon-status.json`, and each session daemon's `status-<PORT>.json`. A
- * process is a legacy writer when its pid is alive, is not the caller's own,
- * and its version is absent, unparsable, or older than `IDENTITY_SHIM_MIN_VERSION`.
+ * process is a legacy writer when its pid is alive, is not the caller's own
+ * (nor one the caller excludes: a hub-spawned child excludes its parent hub, the
+ * same build, whose version may not parse), and its version is absent, unparsable,
+ * or older than `IDENTITY_SHIM_MIN_VERSION`.
  *
  * What it cannot see, so what still erases a Codex identity:
  *
@@ -217,12 +219,19 @@ export interface FindLegacyWritersDeps {
   readonly processStartTime?: (pid: number) => Date | null;
   /** The caller's own pid, which is never a legacy writer. */
   readonly selfPid: number;
+  /**
+   * Other pids that are never legacy writers. A hub-spawned child names its parent hub: the
+   * hub runs the same build as the child (it spawned it from its own command), but a build whose
+   * version does not parse, such as a PR-stamped one, would read as older and the hub would
+   * refuse its own child.
+   */
+  readonly excludePids?: readonly number[];
 }
 
 const HUB_STATUS_FILE = 'daemon-status.json';
 
 /**
- * Every live process, other than the caller, that is older than
+ * Every live process, other than the caller (and `excludePids`), that is older than
  * `IDENTITY_SHIM_MIN_VERSION` or records no usable version, and whose record
  * is not stale (see the file header on recycled pids). A process named by
  * several records is reported once, by the first record that names it and
@@ -243,7 +252,7 @@ export function findLegacyWriters(deps: FindLegacyWritersDeps): LegacyWriter[] {
     recordedAtMs: number | undefined,
   ): void => {
     if (pid === undefined || !Number.isInteger(pid) || pid <= 0) return;
-    if (pid === deps.selfPid || found.has(pid)) return;
+    if (pid === deps.selfPid || deps.excludePids?.includes(pid) || found.has(pid)) return;
     if (version !== undefined) {
       const order = compareRemiVersion(version, IDENTITY_SHIM_MIN_VERSION);
       if (order !== null && order >= 0) return;
