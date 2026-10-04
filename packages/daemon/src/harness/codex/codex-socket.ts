@@ -32,8 +32,12 @@ export class UntrustedSocketError extends Error {
 const CONTROL_DIR = 'app-server-control';
 const SOCKET_NAME = 'app-server-control.sock';
 
-/** `dir` resolved through symlinks, if it is a directory only this user can use. */
-function trustedDirectory(dir: string, uid: number): string {
+/**
+ * `dir` resolved through symlinks, if it is a directory only this user can use. `label` says
+ * which one it is in a refusal: the `link` directory holds the symlink, the `socket` directory
+ * holds the real socket it points to.
+ */
+function trustedDirectory(dir: string, uid: number, label: 'link' | 'socket'): string {
   let real: string;
   let stat: fs.Stats;
   try {
@@ -45,13 +49,18 @@ function trustedDirectory(dir: string, uid: number): string {
     }
     throw error;
   }
-  if (!stat.isDirectory())
-    throw new UntrustedSocketError('a Codex control path is not a directory');
+  if (!stat.isDirectory()) {
+    throw new UntrustedSocketError(`the Codex ${label} path ${real} is not a directory`);
+  }
   if (stat.uid !== uid) {
-    throw new UntrustedSocketError('a Codex control directory is not owned by this user');
+    throw new UntrustedSocketError(
+      `the Codex ${label} directory ${real} is not owned by this user (owned by uid ${stat.uid}, expected ${uid}); remi will not connect through it`,
+    );
   }
   if ((stat.mode & 0o077) !== 0) {
-    throw new UntrustedSocketError('a Codex control directory is open to group or others');
+    throw new UntrustedSocketError(
+      `the Codex ${label} directory ${real} is open to group or others (mode ${(stat.mode & 0o777).toString(8)}); remi will not connect through it until you run chmod 700 on it`,
+    );
   }
   return real;
 }
@@ -72,14 +81,17 @@ export function resolveCodexSocketPath(
     ? path.resolve(env['CODEX_HOME'])
     : path.join(opts.homedir ?? os.homedir(), '.codex');
 
-  const linkDir = trustedDirectory(path.join(codexHome, CONTROL_DIR), uid);
+  const linkDir = trustedDirectory(path.join(codexHome, CONTROL_DIR), uid, 'link');
   let socket = path.join(linkDir, SOCKET_NAME);
   let stat: fs.Stats;
   try {
     stat = fs.lstatSync(socket);
     if (stat.isSymbolicLink()) {
       const target = path.resolve(linkDir, fs.readlinkSync(socket));
-      socket = path.join(trustedDirectory(path.dirname(target), uid), path.basename(target));
+      socket = path.join(
+        trustedDirectory(path.dirname(target), uid, 'socket'),
+        path.basename(target),
+      );
       stat = fs.lstatSync(socket);
     }
   } catch (error) {

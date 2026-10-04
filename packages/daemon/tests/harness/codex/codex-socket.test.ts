@@ -123,8 +123,33 @@ describe('resolveCodexSocketPath', () => {
         error = e;
       }
       expect(error, mode.toString(8)).toBeInstanceOf(UntrustedSocketError);
-      expect((error as Error).message).toContain('open to group or others');
+      const message = (error as Error).message;
+      expect(message).toContain('open to group or others');
+      // Which directory, what mode it has, and the way out (W17).
+      expect(message).toContain('link directory');
+      expect(message).toContain(`mode ${mode.toString(8)}`);
+      expect(message).toContain(realpathSync(l.controlDir));
+      expect(message).toContain('chmod 700');
     }
+  });
+
+  test('the message names the socket directory when that is the open one, and its mode (W17)', async () => {
+    const l = makeLayout({ target: 0o775 });
+    await listen(join(l.targetDir, 's.sock'));
+    symlinkSync(join(l.targetDir, 's.sock'), l.link);
+    let error: unknown;
+    try {
+      resolveCodexSocketPath(env(l));
+    } catch (e) {
+      error = e;
+    }
+    expect(error).toBeInstanceOf(UntrustedSocketError);
+    const message = (error as Error).message;
+    expect(message).toContain('socket directory');
+    expect(message).not.toContain('link directory');
+    expect(message).toContain('mode 775');
+    expect(message).toContain(realpathSync(l.targetDir));
+    expect(message).toContain('chmod 700');
   });
 
   test('the socket directory behind a link is held to the same rule', async () => {
@@ -141,6 +166,10 @@ describe('resolveCodexSocketPath', () => {
     expect(() => resolveCodexSocketPath(env(l), { uid: uid + 1 })).toThrow(
       'not owned by this user',
     );
+    expect(() => resolveCodexSocketPath(env(l), { uid: uid + 1 })).toThrow(
+      `uid ${uid}, expected ${uid + 1}`,
+    );
+    expect(() => resolveCodexSocketPath(env(l), { uid: uid + 1 })).toThrow('link directory');
     expect(resolveCodexSocketPath(env(l), { uid })).toContain('app-server-control.sock');
   });
 
