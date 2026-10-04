@@ -878,6 +878,18 @@ describe('CodexHarness', () => {
       expect(server.clientIds()).toEqual([]);
     });
 
+    test('dispose after the link was up leaves no timer and sends no notice (W6)', async () => {
+      // Dispose stops the client, which reports a drop; that must not re-arm the watchdog.
+      const server = startServer();
+      const { session, messages } = create(buildDeps(server, { linkWatchdogMs: 200 }));
+      await session.start();
+      await until(() => logs.some((l) => l.includes('app-server ')), 'the client to be ready');
+      session.dispose();
+      await sleep(700);
+      expect(noticeCount(messages)).toBe(0);
+      expect(logs.some((l) => l.includes('not reachable'))).toBe(false);
+    });
+
     test('dispose cancels the watchdog and is safe to call twice', async () => {
       const { session, messages } = create(buildDeps(null, { linkWatchdogMs: 200 }));
       await session.start();

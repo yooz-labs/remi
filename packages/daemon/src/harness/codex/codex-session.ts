@@ -228,6 +228,8 @@ export function createCodexSession(
   // The tracker needs the client and the client's events need the tracker, so the events
   // reach it through this holder (nothing arrives before `client.start()`).
   const link: { tracker?: ThreadTracker } = {};
+  // Set first by dispose(): stopping the client reports a drop, which must not re-arm the watchdog.
+  let disposed = false;
   let watchdog: ReturnType<typeof setTimeout> | undefined;
   let warned = false;
   const cancelWatchdog = (): void => {
@@ -272,6 +274,7 @@ export function createCodexSession(
       ...deps.appServer,
     },
     (event) => {
+      if (disposed) return;
       if (event.type === 'ready') {
         cancelWatchdog();
         const version = /^[^\s/]+\/(\d[^\s]*)/.exec(event.userAgent)?.[1];
@@ -357,7 +360,6 @@ export function createCodexSession(
     },
   );
 
-  let disposed = false;
   return {
     pty,
     decisions: NO_DECISIONS,
