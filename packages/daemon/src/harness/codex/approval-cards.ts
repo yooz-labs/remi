@@ -39,7 +39,7 @@ import { resolve } from 'node:path';
 import { escapeUnsafeText } from '@remi/shared';
 import type { Question, QuestionOption, QuestionStep, UUID } from '@remi/shared';
 
-import { truncateSummary } from '../../hooks/tool-summary.ts';
+import { HEAD_KEEP, SUMMARY_MAX, TAIL_KEEP, cutSummary } from '../../hooks/tool-summary.ts';
 import type { HeldAnswer } from '../decision.ts';
 import type { RequestId } from './app-server-protocol.ts';
 
@@ -100,6 +100,36 @@ const MAX_STEPS = 8;
 const MAX_STEP_OPTIONS = 12;
 const MAX_PERMISSION_NAMES = 20;
 const DIRECTORY_MAX = 500;
+
+/** An escape `escapeUnsafeText` writes: `\\uXXXX`, or `\\u{XXXXX}` above the Basic Multilingual Plane. */
+const ESCAPE = /\\u(?:[0-9A-F]{4}|\{[0-9A-F]{1,6}\})/g;
+/** The longest escape, `\\u{E007F}`: nine characters. */
+const ESCAPE_MAX = 9;
+
+/** `index`, or the end of the escape it falls inside (an escape is never cut in the middle). */
+function outOfEscape(text: string, index: number): number {
+  ESCAPE.lastIndex = Math.max(0, index - ESCAPE_MAX);
+  for (let m = ESCAPE.exec(text); m !== null && m.index < index; m = ESCAPE.exec(text)) {
+    const end = m.index + m[0].length;
+    if (end > index) return end;
+  }
+  return index;
+}
+
+/**
+ * A command (already escaped) cut the way Claude's cards cut one, head and tail around a count of
+ * what is hidden, but never in the middle of an escape: the head is extended to the end of one
+ * that straddles its boundary and the tail starts after one that straddles its own, and the count
+ * is what lies between. A command with nothing to snap is cut exactly as `truncateSummary` does.
+ */
+function cutCommand(command: string): string {
+  if (command.length <= SUMMARY_MAX) return command;
+  return cutSummary(
+    command,
+    outOfEscape(command, HEAD_KEEP),
+    outOfEscape(command, command.length - TAIL_KEEP),
+  );
+}
 
 const clip = (text: string, max: number): string =>
   text.length > max ? `${text.slice(0, max)} [${text.length - max} characters hidden]` : text;
@@ -257,10 +287,10 @@ function commandCard(c: Context): PendingRequestSpec {
     option('No', noDecision, { isNo: true }),
   ];
   // A command longer than a lock screen shows is cut the way Claude's cards cut it (head, a count
-  // of what is hidden, tail: a command's dangerous part is as likely at its end), and the whole
-  // command goes in `detail`, which the app shows in full and the dispatcher never turns into
-  // lock-screen buttons (`pushCategoryFor`).
-  const shown = truncateSummary(command);
+  // of what is hidden, tail: a command's dangerous part is as likely at its end), but off any
+  // escape (`cutCommand`), and the whole command goes in `detail`, which the app shows in full and
+  // the dispatcher never turns into lock-screen buttons (`pushCategoryFor`).
+  const shown = cutCommand(command);
   // A command is judged by where it runs as much as by its text (a relative path, a recursive
   // delete in the wrong tree): the directory is on the card, in the app and in the push, whenever
   // it is not the session's own. It then also goes in `detail`, so a card that names another

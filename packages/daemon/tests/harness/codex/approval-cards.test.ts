@@ -20,7 +20,7 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import type { Question, UUID } from '@remi/shared';
+import { type Question, type UUID, escapeUnsafeText } from '@remi/shared';
 import { formatQuestionCard, formatQuestionKeyboard } from '../../../src/adapters/telegram-ui.ts';
 import {
   COMMAND_TEXT_MAX,
@@ -793,6 +793,81 @@ describe('a long command is never approvable from a surface that cuts it (S1)', 
     expect(cut.detail).toBe(over);
     expect(pushCategoryFor(cut)).toBeUndefined();
     expect(selectDynOptions(cut)).toBe(false);
+  });
+
+  describe('a cut never lands inside an escape (T5)', () => {
+    const bidi = String.fromCodePoint(0x202e);
+    const tag = String.fromCodePoint(0xe0041);
+    const PREFIX = 'Allow Codex to run: ';
+    const accept = { availableDecisions: ['accept', 'cancel'] };
+
+    test('an escape across the head boundary is kept whole and one across the tail boundary is dropped whole, and the count follows', () => {
+      // Escaped: 77 a, three \u202E (the 80th character is inside the first), 100 m, a fourth
+      // \u202E (the 30th from the end is inside it), 27 y. 228 characters in all.
+      const raw = `${'a'.repeat(77)}${bidi.repeat(3)}${'m'.repeat(100)}${bidi}${'y'.repeat(27)}`;
+      const q = build(accept, {}, raw).question;
+      // Head: 77 a and the first escape (83); tail: after the fourth escape (201); 118 hidden.
+      expect(q.text).toBe(
+        `${PREFIX}${'a'.repeat(77)}\\u202E … [118 chars hidden] … ${'y'.repeat(27)}`,
+      );
+      expect(q.detail).toBe(escapeUnsafeText(raw));
+    });
+
+    test('an astral escape (the Tags block) is snapped the same way', () => {
+      // `\u{E0041}` is nine characters; the 80th is inside it.
+      const raw = `${'a'.repeat(77)}${tag}${'m'.repeat(100)}${tag}${'y'.repeat(27)}`;
+      const escaped = escapeUnsafeText(raw);
+      expect(escaped.length).toBe(77 + 9 + 100 + 9 + 27);
+      const q = build(accept, {}, raw).question;
+      // Head: 77 a and the first escape (86); tail: after the second escape (195); 109 hidden.
+      expect(q.text).toBe(
+        `${PREFIX}${'a'.repeat(77)}\\u{E0041} … [109 chars hidden] … ${'y'.repeat(27)}`,
+      );
+    });
+
+    test('whatever the command, the kept head and tail end and start on whole escapes, and head + hidden + tail is the escaped command', () => {
+      const alphabet = ['a', 'b', 'z', ' ', '/', bidi, tag, '\x1b', String.fromCodePoint(0x200b)];
+      let seed = 20260410;
+      const next = (n: number): number => {
+        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+        return seed % n;
+      };
+      const spans = (text: string): Array<[number, number]> =>
+        [...text.matchAll(/\\u(?:[0-9A-F]{4}|\{[0-9A-F]{1,6}\})/g)].map((m) => [
+          m.index as number,
+          (m.index as number) + m[0].length,
+        ]);
+      for (let n = 0; n < 3000; n++) {
+        const length = 100 + next(120);
+        const raw = Array.from({ length }, () => alphabet[next(alphabet.length)]).join('');
+        const escaped = escapeUnsafeText(raw);
+        if (escaped.length <= 120) continue;
+        const text = build(accept, {}, raw).question.text.slice(PREFIX.length);
+        const m = /^([\s\S]*) … \[(\d+) chars hidden\] … ([\s\S]*)$/.exec(text);
+        expect(m, `a cut card for ${JSON.stringify(raw)}`).not.toBeNull();
+        const [head, hidden, tail] = [m?.[1] as string, Number(m?.[2]), m?.[3] as string];
+        expect(escaped.startsWith(head) && escaped.endsWith(tail)).toBe(true);
+        expect(head.length + hidden + tail.length).toBe(escaped.length);
+        for (const [start, end] of spans(escaped)) {
+          expect(head.length > start && head.length < end, 'the head ends inside an escape').toBe(
+            false,
+          );
+          const tailStart = escaped.length - tail.length;
+          expect(tailStart > start && tailStart < end, 'the tail starts inside an escape').toBe(
+            false,
+          );
+        }
+      }
+    });
+
+    test("Claude's cut is unchanged: the same text through truncateSummary is cut at exactly 80 and 30, escape or not", () => {
+      const value = `${'a'.repeat(77)}${'\\u202E'.repeat(3)}${'m'.repeat(100)}\\u202E${'y'.repeat(27)}`;
+      expect(value.length).toBe(228);
+      expect(truncateSummary(value)).toBe(
+        `${value.slice(0, 80)} … [118 chars hidden] … ${value.slice(-30)}`,
+      );
+      expect(truncateSummary(value).startsWith(`${'a'.repeat(77)}\\u2 …`)).toBe(true);
+    });
   });
 
   test("Codex's stated reason follows the cut command and does not displace its tail from the push body", () => {

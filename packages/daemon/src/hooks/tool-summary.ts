@@ -11,11 +11,20 @@
 
 /** Longest summary emitted verbatim, so a lock-screen card or terminal
  *  prompt stays one bounded line. */
-const SUMMARY_MAX = 120;
+export const SUMMARY_MAX = 120;
 /** A longer value keeps its first `HEAD_KEEP` and last `TAIL_KEEP` characters
  *  around an explicit marker saying how much is hidden. */
-const HEAD_KEEP = 80;
-const TAIL_KEEP = 30;
+export const HEAD_KEEP = 80;
+export const TAIL_KEEP = 30;
+
+/**
+ * `value` cut to its first `headEnd` and its last characters from `tailStart`, around the marker
+ * that says how many characters are hidden between them. `truncateSummary` calls it with the fixed
+ * lengths; the Codex card calls it with the same lengths moved off an escape sequence.
+ */
+export function cutSummary(value: string, headEnd: number, tailStart: number): string {
+  return `${value.slice(0, headEnd)} … [${tailStart - headEnd} chars hidden] … ${value.slice(tailStart)}`;
+}
 
 /**
  * Bound a summary without hiding its end. With no judge behind the card
@@ -25,8 +34,7 @@ const TAIL_KEEP = 30;
  */
 export function truncateSummary(value: string): string {
   if (value.length <= SUMMARY_MAX) return value;
-  const hidden = value.length - HEAD_KEEP - TAIL_KEEP;
-  return `${value.slice(0, HEAD_KEEP)} … [${hidden} chars hidden] … ${value.slice(-TAIL_KEEP)}`;
+  return cutSummary(value, HEAD_KEEP, value.length - TAIL_KEEP);
 }
 
 /**
