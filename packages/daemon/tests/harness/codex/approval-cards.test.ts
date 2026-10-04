@@ -810,3 +810,137 @@ describe('a long command is never approvable from a surface that cuts it (S1)', 
     ).toBeUndefined();
   });
 });
+
+describe('text a hostile server controls is escaped before any client sees it (S5)', () => {
+  /** A clipboard write, a line overwrite with a carriage return, a bidi override and isolate, a zero-width space. */
+  /** Built from code points, so this source never holds a raw bidi or zero-width character. */
+  const ch = (...codes: number[]): string => String.fromCharCode(...codes);
+  const hostile = `ok\x1b]52;c;QUJD\x07 \x1b[2K\r ${ch(0x202e)}fdp.exe${ch(0x2066)}${ch(0x200b)}`;
+  const escaped = 'ok\\u001B]52;c;QUJD\\u0007 \\u001B[2K\\u000D \\u202Efdp.exe\\u2066\\u200B';
+  const isUnsafeCode = (c: number): boolean =>
+    (c <= 0x1f && c !== 0x09 && c !== 0x0a) ||
+    (c >= 0x7f && c <= 0x9f) ||
+    (c >= 0x200b && c <= 0x200f) ||
+    c === 0x2028 ||
+    c === 0x2029 ||
+    (c >= 0x202a && c <= 0x202e) ||
+    (c >= 0x2066 && c <= 0x2069);
+  const hasUnsafe = (text: string): boolean =>
+    [...text].some((ch) => isUnsafeCode(ch.charCodeAt(0)));
+
+  /** Every string anywhere in a card: what a client could render. */
+  function strings(value: unknown): string[] {
+    if (typeof value === 'string') return [value];
+    if (Array.isArray(value)) return value.flatMap(strings);
+    if (typeof value === 'object' && value !== null) return Object.values(value).flatMap(strings);
+    return [];
+  }
+  const frame = (method: string, params: Record<string, unknown>) => ({ id: 3, method, params });
+  const card = (f: ReturnType<typeof frame>, opts: { agentId?: string } = {}): Question => {
+    const spec = buildApprovalCard(f, mint, opts);
+    if (spec === null) throw new Error('no card');
+    return spec.question;
+  };
+  const clean = (q: Question): void => {
+    for (const text of strings(q)) expect(hasUnsafe(text), JSON.stringify(text)).toBe(false);
+  };
+
+  test('a command: the text and the reason come out escaped, and a long one keeps its escaped whole in detail', () => {
+    const q = build({ reason: hostile }, {}, `ls ${hostile}`).question;
+    clean(q);
+    expect(q.text).toBe(`Allow Codex to run: ls ${escaped}\nCodex's stated reason: ${escaped}`);
+    const long = build(
+      { availableDecisions: ['accept', 'cancel'] },
+      {},
+      `${hostile}${'x'.repeat(200)}`,
+    ).question;
+    clean(long);
+    expect(long.detail).toBe(`${escaped}${'x'.repeat(200)}`);
+  });
+
+  test('a command that is only long because of what escaping makes of it is terminalOnly, never cut', () => {
+    const bidi = ch(0x202e).repeat(COMMAND_TEXT_MAX / 2);
+    const spec = build({}, {}, bidi);
+    expect(spec.actionable).toBe(false);
+    expect(spec.question.text).toContain('too long to show');
+    clean(spec.question);
+  });
+
+  test('a terminalOnly command (a stdin write) shows its escaped text too', () => {
+    const q = build({ kind: 'writeStdin' }, {}, hostile).question;
+    clean(q);
+    expect(q.text).toBe(`Codex asks to run: ${escaped}. Answer it in the terminal.`);
+  });
+
+  test("a subagent's command is escaped too", () => {
+    clean(build({}, { agentId: OTHER_THREAD }, hostile).question);
+  });
+
+  test('a file change: the reason and the grant root', () => {
+    const q = card(
+      frame('item/fileChange/requestApproval', {
+        threadId: THREAD,
+        reason: hostile,
+        grantRoot: hostile,
+      }),
+    );
+    clean(q);
+    expect(q.text).toBe(
+      `Codex asks to change files: ${escaped} (write access under ${escaped}). Answer it in the terminal.`,
+    );
+  });
+
+  test('permissions: the reason and the names of what is asked for', () => {
+    const q = card(
+      frame('item/permissions/requestApproval', {
+        threadId: THREAD,
+        reason: hostile,
+        permissions: { [hostile]: { enabled: true } },
+      }),
+    );
+    clean(q);
+    expect(q.text).toBe(
+      `Codex asks for extra permissions (${escaped}): ${escaped}. Answer it in the terminal.`,
+    );
+  });
+
+  test('an MCP elicitation: the server name and the message', () => {
+    const q = card(
+      frame('mcpServer/elicitation/request', {
+        threadId: THREAD,
+        serverName: hostile,
+        message: hostile,
+      }),
+    );
+    clean(q);
+    expect(q.text).toBe(`MCP server ${escaped} asks: ${escaped}. Answer it in the terminal.`);
+  });
+
+  test('a user-input question: header, question text, option labels and descriptions', () => {
+    const q = card(
+      frame('item/tool/requestUserInput', {
+        threadId: THREAD,
+        questions: [
+          {
+            id: 'q1',
+            header: hostile,
+            question: hostile,
+            options: [{ label: hostile, description: hostile }],
+          },
+        ],
+      }),
+    );
+    clean(q);
+    expect(q.text).toBe(escaped);
+    expect(q.questions?.[0]?.header).toBe(escaped);
+    expect(q.questions?.[0]?.options[0]?.label).toBe(escaped);
+    expect(q.questions?.[0]?.options[0]?.description).toBe(escaped);
+  });
+
+  test('ordinary text with a newline and a tab is untouched', () => {
+    const q = build({ reason: 'two\nlines\tand a tab' }, {}, 'echo a\n\techo b').question;
+    expect(q.text).toBe(
+      "Allow Codex to run: echo a\n\techo b\nCodex's stated reason: two\nlines\tand a tab",
+    );
+  });
+});

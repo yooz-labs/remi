@@ -32,6 +32,7 @@
  * client behaves like the TUI's own No is unverified (plan LV-3(c)).
  */
 
+import { escapeUnsafeText } from '@remi/shared';
 import type { Question, QuestionOption, QuestionStep, UUID } from '@remi/shared';
 
 import { truncateSummary } from '../../hooks/tool-summary.ts';
@@ -79,6 +80,18 @@ const isRecord = (v: unknown): v is Record<string, unknown> =>
 
 /** A non-empty string, or null. */
 const nonEmpty = (v: unknown): string | null => (typeof v === 'string' && v.length > 0 ? v : null);
+
+/**
+ * A non-empty string a peer chose, made safe to show: a terminal escape sequence, a bidi control
+ * or a zero-width character in it comes out as a visible `\uXXXX` (`escapeUnsafeText`), because a
+ * card's text reaches the attach client's terminal, the web card, Telegram and a push, and a
+ * hostile command would otherwise act on each. Everything a card shows from the request goes
+ * through here (the thread and request ids, which are matched and never shown, do not).
+ */
+const display = (v: unknown): string | null => {
+  const text = nonEmpty(v);
+  return text === null ? null : escapeUnsafeText(text);
+};
 
 export const requestKey = (threadId: string, requestId: RequestId): string =>
   `${threadId}:${String(requestId)}`;
@@ -162,12 +175,14 @@ const generic = (c: Context): PendingRequestSpec => terminalOnly(c, GENERIC_ASK,
 
 function commandCard(c: Context): PendingRequestSpec {
   const { params } = c;
-  const command = nonEmpty(params['command']);
-  if (command === null) return generic(c);
+  const asked = nonEmpty(params['command']);
+  if (asked === null) return generic(c);
+  // The bound is on what would be shown: escaping makes a bidi control six characters long.
+  const command = escapeUnsafeText(asked);
   if (command.length > COMMAND_TEXT_MAX) {
     return terminalOnly(
       c,
-      `Codex asks to run a command too long to show (${command.length} characters)`,
+      `Codex asks to run a command too long to show (${asked.length} characters)`,
     );
   }
   const listed = listedDecisions(params['availableDecisions']);
@@ -209,10 +224,11 @@ function commandCard(c: Context): PendingRequestSpec {
   // lock-screen buttons (`pushCategoryFor`).
   const shown = truncateSummary(command);
   const stated = nonEmpty(params['reason']);
+  // Cut before escaping, so a cut never lands inside a `\uXXXX`.
   const reason =
     stated === null
       ? ''
-      : `\nCodex's stated reason: ${stated.length > REASON_MAX ? `${stated.slice(0, REASON_MAX)}...` : stated}`;
+      : `\nCodex's stated reason: ${escapeUnsafeText(stated.length > REASON_MAX ? `${stated.slice(0, REASON_MAX)}...` : stated)}`;
   return {
     key: requestKey(c.threadId, c.req.id),
     threadId: c.threadId,
@@ -237,17 +253,17 @@ function userInputCard(c: Context): PendingRequestSpec {
   const raw = Array.isArray(c.params['questions']) ? c.params['questions'] : [];
   const steps: QuestionStep[] = [];
   for (const q of raw) {
-    const text = isRecord(q) ? nonEmpty(q['question']) : null;
+    const text = isRecord(q) ? display(q['question']) : null;
     if (!isRecord(q) || text === null) return generic(c);
-    const header = nonEmpty(q['header']);
+    const header = display(q['header']);
     const choices = Array.isArray(q['options']) ? q['options'].filter(isRecord) : [];
     steps.push({
       ...(header === null ? {} : { header }),
       text,
       multiSelect: false,
       options: choices.flatMap((o) => {
-        const label = nonEmpty(o['label']);
-        const description = nonEmpty(o['description']);
+        const label = display(o['label']);
+        const description = display(o['description']);
         if (label === null) return [];
         return [{ ...option(label, label, {}), ...(description === null ? {} : { description }) }];
       }),
@@ -261,10 +277,10 @@ function userInputCard(c: Context): PendingRequestSpec {
 const reasonSuffix = (reason: string | null): string => (reason === null ? '' : `: ${reason}`);
 
 function fileChangeCard(c: Context): PendingRequestSpec {
-  const root = nonEmpty(c.params['grantRoot']);
+  const root = display(c.params['grantRoot']);
   return terminalOnly(
     c,
-    `Codex asks to change files${reasonSuffix(nonEmpty(c.params['reason']))}${root === null ? '' : ` (write access under ${root})`}`,
+    `Codex asks to change files${reasonSuffix(display(c.params['reason']))}${root === null ? '' : ` (write access under ${root})`}`,
   );
 }
 
@@ -272,11 +288,11 @@ function permissionsCard(c: Context): PendingRequestSpec {
   const asked = isRecord(c.params['permissions'])
     ? Object.entries(c.params['permissions'])
         .filter(([, v]) => v !== null && v !== undefined)
-        .map(([name]) => name)
+        .map(([name]) => escapeUnsafeText(name))
     : [];
   return terminalOnly(
     c,
-    `Codex asks for extra permissions${asked.length === 0 ? '' : ` (${asked.join(', ')})`}${reasonSuffix(nonEmpty(c.params['reason']))}`,
+    `Codex asks for extra permissions${asked.length === 0 ? '' : ` (${asked.join(', ')})`}${reasonSuffix(display(c.params['reason']))}`,
   );
 }
 
@@ -290,8 +306,8 @@ function hostOf(url: unknown): string | null {
 }
 
 function elicitationCard(c: Context): PendingRequestSpec {
-  const server = nonEmpty(c.params['serverName']);
-  const message = nonEmpty(c.params['message']);
+  const server = display(c.params['serverName']);
+  const message = display(c.params['message']);
   if (server === null || message === null) return generic(c);
   const host = c.params['mode'] === 'url' ? hostOf(c.params['url']) : null;
   return terminalOnly(

@@ -40,6 +40,7 @@ import {
   createUserInput,
   serialize,
 } from '@remi/shared/protocol.ts';
+import { formatQuestionBanner } from '../../src/cli/attach-client.ts';
 import { olderRemiNotice } from '../../src/harness/codex/codex-session.ts';
 import { IDENTITY_SHIM_MIN_VERSION } from '../../src/session/legacy-writers.ts';
 import {
@@ -994,6 +995,40 @@ describe('remi codex approvals (daemon, black-box characterization, #1178)', () 
       expect(a.r.output.text).toContain('chars=');
       expect(a.r.output.text).not.toContain('e2e-flood');
       expect(stdinBytes(a.r)).toBe(0);
+      await rawControl(a);
+    } finally {
+      a.ws.close();
+    }
+  }, 60000);
+
+  test('a hostile command reaches every client escaped: no terminal sequence, no bidi control, and the attach banner shows it as text (S5)', async () => {
+    const a = await attachedDaemon();
+    try {
+      const code = (...codes: number[]): string => String.fromCharCode(...codes);
+      // A clipboard write, a line overwrite, a report query, a bidi override and a zero-width space.
+      const hostile = `echo ok${code(0x1b)}]52;c;QUJD${code(0x07)} ${code(0x1b)}[2K${code(0x0d)}${code(0x1b)}[6n ${code(0x202e)}fdp.exe${code(0x200b)}`;
+      a.r.server.request(commandApprovalRequest(a.tuiId, hostile), a.tuiId);
+      await pollUntil(() => cards(a.received).length === 1, 10000, 'the hostile card');
+      const card = (cards(a.received)[0] as QuestionMessage).question;
+      const shown = [card.text, card.detail ?? ''].join('');
+      for (const ch of shown) {
+        const c = ch.charCodeAt(0);
+        const unsafe =
+          (c <= 0x1f && c !== 0x09 && c !== 0x0a) ||
+          (c >= 0x7f && c <= 0x9f) ||
+          (c >= 0x200b && c <= 0x200f) ||
+          (c >= 0x202a && c <= 0x202e) ||
+          (c >= 0x2066 && c <= 0x2069);
+        expect(unsafe, `U+${c.toString(16)} on the wire`).toBe(false);
+      }
+      expect(card.text).toContain(
+        '\\u001B]52;c;QUJD\\u0007 \\u001B[2K\\u000D\\u001B[6n \\u202Efdp.exe\\u200B',
+      );
+      // The attach client's banner of that very card writes only its own escape sequences.
+      const banner = formatQuestionBanner(card);
+      expect(banner.match(/\x1b/g)?.length).toBe(7);
+      expect(banner).not.toContain(code(0x07));
+      expect(banner).not.toContain(code(0x202e));
       await rawControl(a);
     } finally {
       a.ws.close();
