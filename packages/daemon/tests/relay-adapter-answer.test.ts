@@ -16,6 +16,7 @@ import type { UUID } from '@remi/shared';
 import { Authenticator } from '../src/auth/authenticator.ts';
 import { IdentityStore } from '../src/auth/identity-store.ts';
 import { RelayAdapter } from '../src/remote/relay-adapter.ts';
+import { RecordingTransport, settle } from './remote/relay-test-peer.ts';
 
 const SID = 'aaaaaaaa-0000-0000-0000-000000000000' as UUID;
 const QID = 'bbbbbbbb-0000-0000-0000-000000000000' as UUID;
@@ -155,14 +156,34 @@ describe('relay-adapter self-authenticating answer (#591)', () => {
     expect(calls).toHaveLength(0);
   });
 
-  test('no authenticator (rotating no-auth) -> dispatched code-gated, no signature needed', async () => {
+  test('no authenticator (rotating no-auth) -> refused, never dispatched (#1193)', async () => {
+    // Driven through the real `relay` event, not the private method: the claim
+    // is about what the adapter does with a frame, and a peer-less answer needs
+    // no connected peer to arrive. Without an authenticator the room code was
+    // the only gate here; now there is no gate to pass, so nothing is dispatched.
     const calls: Relayed[] = [];
+    const transport = new RecordingTransport();
     const adapter = new RelayAdapter(
-      { signalingUrl: 'wss://ignored.example.com' },
+      {
+        enabled: true,
+        signalingUrl: 'wss://ignored.example.com',
+        createTransport: () => transport,
+      },
       recordingEvents(calls),
     );
-    await handle(adapter, { type: 'answer', sessionId: SID, questionId: QID, answer: ANSWER });
-    expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatchObject({ sessionId: SID, questionId: QID, answer: ANSWER });
+    await adapter.start();
+    transport.emit(
+      'relay',
+      JSON.stringify({
+        type: 'answer',
+        sessionId: SID,
+        questionId: QID,
+        answer: ANSWER,
+        auth: {},
+      }),
+    );
+    await settle();
+    expect(calls).toHaveLength(0);
+    await adapter.stop();
   });
 });
