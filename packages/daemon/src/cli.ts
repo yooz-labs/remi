@@ -219,6 +219,7 @@ import {
   shouldNotifyTurnComplete,
 } from './notifications/turn-timer.ts';
 import { PTYManager, type PTYSession } from './pty/index.ts';
+import { RELAY_NOT_STARTED_NOTICE } from './remote/relay-notices.ts';
 import {
   AmbiguousSessionIdentityError,
   DEFAULT_BASE_PORT,
@@ -2064,40 +2065,33 @@ if (TELEGRAM_ENABLED && TELEGRAM_TOKEN) {
   registry.register(telegramAdapter);
 }
 
-// Off unless enabled (#1193); `--permanent-code` is itself the opt-in.
-if (
-  relayRequested(remiConfig.network.relay, { noRelay: cliNoRelay, permanentCode: cliPermanentCode })
-) {
+// Off unless enabled (#1193); `--permanent-code` is itself the opt-in. Without
+// it nothing can authenticate a relay peer, so no adapter is created at all and
+// the daemon holds no connection to the Worker.
+const relayWanted = relayRequested(remiConfig.network.relay, {
+  noRelay: cliNoRelay,
+  permanentCode: cliPermanentCode,
+});
+if (relayWanted && !cliPermanentCode) {
+  console.error(RELAY_NOT_STARTED_NOTICE);
+} else if (relayWanted) {
   const { RelayAdapter } = await import('./remote/relay-adapter.ts');
-  const { generateConnectionCode } = await import('./remote/signaling-client.ts');
   const signalingUrl = cliSignalingUrl ?? remiConfig.network.signaling_url;
 
-  let relayAdapter: InstanceType<typeof RelayAdapter>;
-
-  if (cliPermanentCode) {
-    // Permanent code mode: persist code to disk, require Ed25519 auth over relay
-    if (!authenticator) {
-      console.error(
-        'Permanent connection codes require authentication. Pass --auth (a non-localhost bind does NOT enable it on its own; see #880).',
-      );
-      process.exit(1);
-    }
-    const { CodeStore } = await import('./remote/code-store.ts');
-    const codeStore = new CodeStore();
-    const code = codeStore.load() ?? codeStore.refresh();
-    relayAdapter = new RelayAdapter(
-      { enabled: true, signalingUrl, code, rotateCode: false as const, authenticator },
-      sharedEvents,
+  // Permanent code mode: persist code to disk, require Ed25519 auth over relay
+  if (!authenticator) {
+    console.error(
+      'Permanent connection codes require authentication. Pass --auth (a non-localhost bind does NOT enable it on its own; see #880).',
     );
-  } else {
-    // Rotating code mode (only when the relay is enabled by hand): ephemeral
-    // code and no authenticator, so the adapter refuses every peer (#1193)
-    const code = generateConnectionCode();
-    relayAdapter = new RelayAdapter(
-      { enabled: true, signalingUrl, code, rotateCode: true as const },
-      sharedEvents,
-    );
+    process.exit(1);
   }
+  const { CodeStore } = await import('./remote/code-store.ts');
+  const codeStore = new CodeStore();
+  const code = codeStore.load() ?? codeStore.refresh();
+  const relayAdapter = new RelayAdapter(
+    { enabled: true, signalingUrl, code, rotateCode: false as const, authenticator },
+    sharedEvents,
+  );
 
   if (daemonAnswerKey) relayAdapter.setAnswerKey(daemonAnswerKey);
   registry.register(relayAdapter);
