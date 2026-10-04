@@ -91,16 +91,30 @@ async function startHub(
   cliPath?: string,
 ): Promise<Running> {
   const dirs = makeIsolatedDirs();
-  const agents = installFakeAgents(dirs.home, which);
-  const server = FakeAppServer.start();
-  // A random probed port, not the lowest free one from 19200 that every test process is given (P11).
-  const port = await reserveRange(1, 50, DEFAULT_CONFIG.daemon.bind);
-  const hub = await spawnHub(dirs, { ...agents.env, CODEX_HOME: server.codexHome }, cliPath, port);
-  const r = { hub, agents, server, log: { text: '' } };
-  collect(hub.proc.stdout as ReadableStream<Uint8Array>, r.log);
-  collect(hub.proc.stderr as ReadableStream<Uint8Array>, r.log);
-  running.push(r);
-  return r;
+  let server: FakeAppServer | undefined;
+  try {
+    const agents = installFakeAgents(dirs.home, which);
+    server = FakeAppServer.start();
+    // A random probed port, not the lowest free one from 19200 that every test process is given (P11).
+    const port = await reserveRange(1, 50, DEFAULT_CONFIG.daemon.bind);
+    const hub = await spawnHub(
+      dirs,
+      { ...agents.env, CODEX_HOME: server.codexHome },
+      cliPath,
+      port,
+    );
+    const r = { hub, agents, server, log: { text: '' } };
+    collect(hub.proc.stdout as ReadableStream<Uint8Array>, r.log);
+    collect(hub.proc.stderr as ReadableStream<Uint8Array>, r.log);
+    running.push(r);
+    return r;
+  } catch (error) {
+    // Nothing is on `running` yet, so the `afterEach` would never see these (Q2).
+    await server?.stop();
+    fs.rmSync(dirs.home, { recursive: true, force: true });
+    fs.rmSync(dirs.work, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 interface Asked {

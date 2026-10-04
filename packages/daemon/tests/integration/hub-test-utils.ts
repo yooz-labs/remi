@@ -160,6 +160,7 @@ export async function spawnHub(
   envOverrides: Record<string, string> = {},
   cliPath: string = CLI_TS,
   chosenPort?: number,
+  readyTimeoutMs = 15000,
 ): Promise<HubHandle> {
   const { home, work } = dirs ?? makeIsolatedDirs();
   // `findTestPort` hands the lowest free port from 19200 to every caller, so two test processes on
@@ -183,12 +184,19 @@ export async function spawnHub(
           return false;
         }
       },
-      15000,
+      readyTimeoutMs,
       'hub status file',
     );
   } catch (error) {
-    // An exit says nothing about why. What the hub printed does (a port in use, a bad flag).
-    if (proc.exitCode !== null) {
+    // A hub that is still running when the wait ends has no handle the caller could clean up, so it
+    // is killed here and waited for (Q2). An exit says nothing about why; what the hub printed does
+    // (a port in use, a bad flag).
+    const exitedByItself = proc.exitCode !== null;
+    if (!exitedByItself) {
+      proc.kill('SIGKILL');
+      await proc.exited;
+    }
+    if (exitedByItself) {
       const said = `${await new Response(proc.stderr).text()}${await new Response(proc.stdout).text()}`;
       throw new Error(`${(error as Error).message}\n${said.trim().slice(-1500)}`);
     }
