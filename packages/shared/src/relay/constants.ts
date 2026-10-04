@@ -61,5 +61,6 @@ export const LABEL = {
   admitClient: 'remi-relay-v2 admit client',
   admitTag: 'remi-relay-v2 admit',
   fingerprint: 'remi-relay-v2 fingerprint',
+  signerCheck: 'remi-relay-v2 signer check',
   seal: 'remi-relay-v2 seal',
 } as const;

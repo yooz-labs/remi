@@ -14,7 +14,7 @@
  * path exists only in `deterministic.ts`, for tests and vectors (ADR section 17).
  */
 
-import { type Bytes, be64, concat, own, utf8 } from './bytes.ts';
+import { type Bytes, be64, concat, lps, own, utf8 } from './bytes.ts';
 import { type Direction, LABEL, RID_LEN, V } from './constants.ts';
 import { RelayError } from './errors.ts';
 
@@ -49,18 +49,41 @@ export async function ridOf(machinePublicKey: Uint8Array): Promise<Uint8Array> {
   return (await sha256(machinePublicKey)).slice(0, RID_LEN);
 }
 
-/** A signer over a private key the caller already holds (for example one imported from storage). */
-export const signerFromKey = (privateKey: CryptoKey, publicKey: Uint8Array): Signer => ({
-  publicKey,
-  sign: async (message) =>
-    new Uint8Array(await crypto.subtle.sign('Ed25519', privateKey, own(message))),
-});
+/**
+ * What `signerFromKey` signs once to prove the pair matches. It is `lps(label, 32 zero
+ * bytes)`: 62 bytes with its own label, so it is disjoint from every other signed message
+ * (ADR 0034 section 18), and the signature never leaves this function.
+ */
+export const SIGNER_CHECK = lps(LABEL.signerCheck, new Uint8Array(32));
+
+/**
+ * A signer over a private key the caller already holds (for example one imported from
+ * storage). A private key that does not match `publicKey`, or cannot sign, would produce
+ * signatures nobody can verify and fail silently at the peer, so the pair is checked
+ * once here: a mismatch is `BAD_SIGNATURE`, at construction.
+ */
+export async function signerFromKey(privateKey: CryptoKey, publicKey: Uint8Array): Promise<Signer> {
+  const signer: Signer = {
+    publicKey,
+    sign: async (message) =>
+      new Uint8Array(await crypto.subtle.sign('Ed25519', privateKey, own(message))),
+  };
+  let matches = false;
+  try {
+    matches = await verifySignature(publicKey, SIGNER_CHECK, await signer.sign(SIGNER_CHECK));
+  } catch {
+    // A key that cannot sign is the same failure as one that does not match.
+  }
+  if (!matches) throw new RelayError('BAD_SIGNATURE');
+  return signer;
+}
 
 /**
  * A fresh Ed25519 identity from the engine's `generateKey`. Persist `pkcs8` (the
  * engine's own export, the same form the v1 identity stores) together with
- * `signer.publicKey`, and rebuild the signer with `importKey('pkcs8', ...)` and
- * `signerFromKey`.
+ * `signer.publicKey`, and rebuild the signer with `importKey('pkcs8', ..., false, ...)`
+ * and `signerFromKey`. The signer's key is imported again from that export as
+ * NON-extractable, so the extractable key `generateKey` made is not kept.
  */
 export async function generateIdentity(): Promise<{ signer: Signer; pkcs8: Bytes }> {
   const pair = await crypto.subtle.generateKey('Ed25519', true, ['sign', 'verify']);
@@ -68,8 +91,9 @@ export async function generateIdentity(): Promise<{ signer: Signer; pkcs8: Bytes
     crypto.subtle.exportKey('raw', pair.publicKey),
     crypto.subtle.exportKey('pkcs8', pair.privateKey),
   ]);
+  const privateKey = await crypto.subtle.importKey('pkcs8', pkcs8, 'Ed25519', false, ['sign']);
   return {
-    signer: signerFromKey(pair.privateKey, new Uint8Array(publicKey)),
+    signer: await signerFromKey(privateKey, new Uint8Array(publicKey)),
     pkcs8: new Uint8Array(pkcs8),
   };
 }

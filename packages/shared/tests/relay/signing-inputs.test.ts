@@ -31,6 +31,7 @@ const BUILDERS: [string, string, Uint8Array][] = [
   ['client transcript', r.LABEL.client, r.clientSigningInput(H)],
   ['host admission', r.LABEL.admitHost, r.admissionInput('host', RID, NONCE)],
   ['client admission', r.LABEL.admitClient, r.admissionInput('client', RID, NONCE)],
+  ['signer self-check', r.LABEL.signerCheck, r.SIGNER_CHECK],
 ];
 
 const startsWith = (bytes: Uint8Array, prefix: Uint8Array): boolean =>
@@ -89,23 +90,23 @@ describe('v2 signing inputs are disjoint from every other signed message', () =>
     }
   });
 
-  test('every Ed25519 signing call in the library passes one of the four builders', () => {
+  test('every Ed25519 signing call in the library passes one of the builders', () => {
     const dir = join(import.meta.dir, '..', '..', 'src', 'relay');
     const calls: string[] = [];
     for (const file of readdirSync(dir).filter((f) => f.endsWith('.ts'))) {
-      if (file === 'deterministic.ts' || file === 'primitives.ts') continue;
+      if (file === 'deterministic.ts') continue;
       for (const line of readFileSync(join(dir, file), 'utf8').split('\n')) {
         const t = line.trim();
         if (t.startsWith('//') || t.startsWith('*') || t.startsWith('/*')) continue;
+        // The raw WebCrypto primitive is counted separately below.
+        if (t.includes('subtle.sign(')) continue;
         for (const m of t.matchAll(/\.sign\(([^)]*\)?)/g)) calls.push(`${file}: ${m[1]}`);
       }
     }
-    expect(calls.length).toBeGreaterThanOrEqual(3);
+    expect(calls.length).toBeGreaterThanOrEqual(4);
     for (const call of calls) {
-      expect([call, /(hostSigningInput|clientSigningInput|admissionInput)\(/.test(call)]).toEqual([
-        call,
-        true,
-      ]);
+      const allowed = /(hostSigningInput|clientSigningInput|admissionInput)\(|SIGNER_CHECK/;
+      expect([call, allowed.test(call)]).toEqual([call, true]);
     }
     // And the raw primitive is only reached through `signerFromKey`'s `sign`.
     const prim = readFileSync(join(dir, 'primitives.ts'), 'utf8');

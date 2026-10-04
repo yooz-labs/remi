@@ -155,9 +155,57 @@ describe('production keys come from the engine', () => {
     expect(await r.verifySignature(signer.publicKey, message, sig)).toBe(true);
     // The persisted form: the engine's own export, imported again and given the stored public key.
     const key = await crypto.subtle.importKey('pkcs8', pkcs8, 'Ed25519', false, ['sign']);
-    const restored = signerFromKey(key, signer.publicKey);
+    const restored = await signerFromKey(key, signer.publicKey);
     expect(hex(await restored.sign(message))).toBe(hex(sig));
     expect((await generateIdentity()).signer.publicKey).not.toEqual(signer.publicKey);
+  });
+});
+
+describe('identity keys are checked and kept non-extractable', () => {
+  /** Record the calls to importKey and delegate to the real one. */
+  async function recordingImports<T>(
+    fn: () => Promise<T>,
+  ): Promise<{ value: T; imports: { format: string; extractable: boolean }[] }> {
+    const imports: { format: string; extractable: boolean }[] = [];
+    const real = crypto.subtle.importKey.bind(crypto.subtle);
+    crypto.subtle.importKey = ((...args: unknown[]) => {
+      imports.push({ format: args[0] as string, extractable: args[3] as boolean });
+      return (real as (...a: unknown[]) => Promise<CryptoKey>)(...args);
+    }) as typeof crypto.subtle.importKey;
+    try {
+      return { value: await fn(), imports };
+    } finally {
+      crypto.subtle.importKey = real;
+    }
+  }
+
+  test('generateIdentity keeps the in-memory signing key non-extractable: one non-extractable pkcs8 import', async () => {
+    const { value, imports } = await recordingImports(generateIdentity);
+    const pkcs8Imports = imports.filter((i) => i.format === 'pkcs8');
+    expect(pkcs8Imports).toEqual([{ format: 'pkcs8', extractable: false }]);
+    // The returned bytes are what to persist: they import again and sign the same way.
+    const key = await crypto.subtle.importKey('pkcs8', value.pkcs8, 'Ed25519', false, ['sign']);
+    const message = text('persisted');
+    expect(hex(await (await signerFromKey(key, value.signer.publicKey)).sign(message))).toBe(
+      hex(await value.signer.sign(message)),
+    );
+  });
+
+  test('signerFromKey refuses a private key that does not match the public key, with a typed error', async () => {
+    const a = await generateIdentity();
+    const b = await generateIdentity();
+    const keyA = await crypto.subtle.importKey('pkcs8', a.pkcs8, 'Ed25519', false, ['sign']);
+    expect((await signerFromKey(keyA, a.signer.publicKey)).publicKey).toEqual(a.signer.publicKey);
+    expect(await codeOf(signerFromKey(keyA, b.signer.publicKey))).toBe('BAD_SIGNATURE');
+    expect(await codeOf(signerFromKey(keyA, new Uint8Array(32)))).toBe('BAD_SIGNATURE');
+    expect(await codeOf(signerFromKey(keyA, a.signer.publicKey.slice(0, 31)))).toBe(
+      'BAD_SIGNATURE',
+    );
+  });
+
+  test('signerFromKey refuses a key that cannot sign (a P-256 key) with a typed error, not an engine error', async () => {
+    const wrongKind = (await generateEcPair()).privateKey;
+    expect(await codeOf(signerFromKey(wrongKind, new Uint8Array(32)))).toBe('BAD_SIGNATURE');
   });
 });
 
