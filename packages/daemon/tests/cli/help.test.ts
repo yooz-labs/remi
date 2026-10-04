@@ -206,23 +206,29 @@ describe('the codex help (#1177)', () => {
     expect(output).toContain('remi codex resume <id>');
   });
 
-  test('the global help line for remi codex carries the real-Codex qualifier (L3)', () => {
+  test('the global help line for remi codex says what it was checked against (L3, Q3)', () => {
     // The top-level quick start is the first place a person reads about remi codex; the
-    // approvals claim there must say it has not met a real Codex, as the command help and README do.
+    // approvals claim there must say which Codex it was checked against, as the command help and
+    // README do (the live run of 2026-10-04 against Codex 0.160.0 replaced "not yet checked").
     const line = plain(formatHelp('0.0.0'))
       .split('\n')
       .find((l) => l.trim().startsWith('remi codex ') && !l.includes('resume') && !l.includes('"'));
     expect(line).toBeDefined();
     expect(line).toContain('command approvals reach the phone');
-    expect(line).toContain('not yet checked against a real Codex');
+    expect(line).toContain('checked live against Codex 0.160.0');
+    expect(line).not.toContain('not yet checked against a real Codex');
   });
 
   test('remi codex --help says what ships: status and command approvals, and what is refused', () => {
     const output = plain(formatCommandHelp('codex'));
     expect(output).toContain('remi codex resume <thread id>');
     // What ships (#1178) and what is not checked: approvals reach the phone, the first answer wins,
-    // nothing else is answerable from it, and it has not met a real Codex.
-    expect(output).toContain('not yet checked against a real Codex');
+    // nothing else is answerable from it, and which Codex it was checked against.
+    expect(output).toContain(
+      'checked against Codex 0.160.0 on 2026-10-04; subagent requests not yet',
+    );
+    expect(output).not.toContain('not yet checked against a real Codex');
+    expect(output).toContain('Approve for me');
     expect(output).toContain('a command Codex asks to run');
     expect(output).toContain('the first answer wins');
     expect(output).toContain('show up as a notice to answer in the terminal');

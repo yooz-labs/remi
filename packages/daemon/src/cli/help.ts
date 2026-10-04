@@ -107,7 +107,7 @@ const commandHelp: Record<Subcommand, string[]> = {
     entry('--port PORT', 'Remote daemon port'),
   ],
   codex: [
-    'Start a Codex session with monitoring (not yet checked against a real Codex).',
+    'Start a Codex session with monitoring (checked against Codex 0.160.0 on 2026-10-04; subagent requests not yet).',
     '',
     dim(
       '  Runs `codex --no-alt-screen` in a terminal session the phone can see: the session and its',
@@ -118,7 +118,10 @@ const commandHelp: Record<Subcommand, string[]> = {
     dim(
       '  it from the phone or in the terminal, the first answer wins. Other requests (file changes,',
     ),
-    dim('  extra permissions, questions) show up as a notice to answer in the terminal.'),
+    dim(
+      '  extra permissions, questions) show up as a notice to answer in the terminal. With Codex',
+    ),
+    dim("  'Approve for me' Codex approves commands itself and remi sees no request."),
     dim('  Turn notifications do not reach the phone yet, and a message typed from the phone is'),
     dim('  refused: type in the terminal.'),
     dim(
@@ -357,7 +360,7 @@ export function formatHelp(version: string): string {
     entry('remi', 'Start Claude with monitoring'),
     entry(
       'remi codex',
-      'Start Codex with monitoring (command approvals reach the phone; not yet checked against a real Codex)',
+      'Start Codex with monitoring (command approvals reach the phone; checked live against Codex 0.160.0)',
     ),
     entry('remi ls', 'List running sessions'),
     entry('remi attach [name]', 'Attach to a session (Ctrl+B d to detach)'),
