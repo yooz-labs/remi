@@ -46,7 +46,7 @@ Only these, all through WebCrypto (`crypto.subtle`) in the TypeScript implementa
 
 | Use | Primitive | Encoding |
 |---|---|---|
-| Identity signatures | Ed25519 (RFC 8032, deterministic) | public key 32 bytes raw, signature 64 bytes |
+| Identity signatures | Ed25519 (RFC 8032) | public key 32 bytes raw, signature 64 bytes |
 | Key agreement | ECDH on P-256 | public key 65 bytes, uncompressed SEC1 (`0x04 \|\| X \|\| Y`); shared secret is the 32-byte X coordinate |
 | Key derivation | HKDF-SHA256 (RFC 5869), one Extract then one Expand per output | |
 | Authenticated encryption | AES-256-GCM, 12-byte nonce, 16-byte tag, tag appended to the ciphertext | |
@@ -55,6 +55,12 @@ Only these, all through WebCrypto (`crypto.subtle`) in the TypeScript implementa
 
 No new dependency is introduced.
 The implementation never decides a curve, hash or cipher at run time: nothing is negotiated.
+
+**How keys are made.**
+Production ephemeral P-256 pairs come from the engine's own `generateKey` (the public point exported raw, the private key non-extractable), and production Ed25519 identities from `generateKey` (or from a key the caller imported from its own storage) wrapped by `signerFromKey`.
+A persisted key is the engine's own export: PKCS8 for the private key (the form the v1 identity stores, `createIdentity` and `unlockIdentity` in `identity.ts`) together with the raw public key, so nothing in production asks an engine to derive a public key from a bare scalar or seed.
+Building a key from a bare scalar (PKCS8 with no public half, then a JWK export) exists only in `deterministic.ts`, for tests, the vector generator and the verifiers' reproducibility.
+Section 17 records why: that path fails on WebKit.
 
 An ephemeral or push-seal P-256 private key is a 32-byte big-endian scalar `d` with `1 <= d < n`, where `n` is the group order `FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551`.
 A generator that draws a scalar outside that range draws again.
@@ -79,9 +85,10 @@ Constants:
 | `RID_LEN` | 16 |
 | `MODE_PAIR`, `MODE_RESUME` | bytes `0x01`, `0x02`; the wire strings are `"pair"` and `"resume"` |
 | `DIR_C2H`, `DIR_H2C` | bytes `0x01` (client to host), `0x02` (host to client) |
-| `TYPE_AUTH`, `TYPE_READY`, `TYPE_DATA` | bytes `0x01`, `0x02`, `0x03` |
+| `TYPE_AUTH`, `TYPE_READY`, `TYPE_DATA`, `TYPE_BYE` | bytes `0x01`, `0x02`, `0x03`, `0x04` |
 | `MAX_COUNTER` | 2^40 = 1099511627776 |
 | `MAX_PLAINTEXT` | 524288 (2^19) bytes per data frame |
+| `BYE_FRAME` | `1 + 8 + 16` = 25 bytes, the length of a `TYPE_BYE` frame (no plaintext) and the smallest frame of any type |
 | `MIN_FRAME` | `1 + 8 + 1 + 16` = 26 bytes, the smallest binary data frame (one byte of plaintext) |
 | `MAX_FRAME` | `1 + 8 + MAX_PLAINTEXT + 16` = 524313 bytes, the largest binary data frame |
 | `MAX_CONTROL_TEXT` | 512 bytes of UTF-8, the largest control frame (an ordinary frame is ASCII, so bytes and characters agree) |
@@ -132,6 +139,13 @@ client_admission_input = lps("remi-relay-v2 admit client", rid, nonce)
   The Worker never sees `psk`, and `A` does not reveal it.
 
 An admission check passes only if the room id is exactly 16 bytes, the nonce exactly 32 bytes, the public key exactly 32 bytes and the signature exactly 64 bytes, as well as the signature verifying (and, for a host, the room id matching the key); any other length is a refusal even when the signature was made over those other bytes.
+**The ticket `A` is an abuse-control token and nothing more.**
+The Worker sees `A` (and the host's registered hash) in clear, so `A` must not be mistaken for a secret.
+It does not weaken the end-to-end guarantee: `A` is an HMAC output and does not reveal `psk`, and the session keys need `psk` inside the key derivation AND the ephemeral secrets, so an observer or the Worker holding `A` can reach the handshake but cannot derive a key or pass the host's check of `auth`.
+Its residual risk is a single-use race: whoever sees `A` first (the Worker, or a network observer if it travelled in clear) can present it before the legitimate phone and burn the registration, denying that phone the window until the host opens another.
+That is denial of a ten-minute pairing, not a compromise, and the loser fails visibly.
+R2 MUST compare the presented ticket's hash with the registered one in constant time and MUST burn the registration atomically with the check (section 19).
+
 An admission signature binds role, room and nonce, so it cannot be replayed to another room, another role or another socket.
 Admission is an access-control and abuse-control layer, not a confidentiality layer: nothing in the end-to-end protocol below depends on the Worker behaving.
 
@@ -290,32 +304,62 @@ ct||tag       = AES-256-GCM(key_d, nonce(c), aad(t, d, c), plaintext)
 Counter 0 is used once per direction, for `auth` (client to host) and `ready` (host to client).
 Data counters start at 1 in each direction and the largest valid counter is `MAX_COUNTER`.
 
-A data frame is a WebSocket binary message:
+After the handshake there are two binary frame types, both WebSocket binary messages:
 
 ```
-[TYPE_DATA] || be64(counter) || ct||tag          length 26 to MAX_FRAME
+data  [TYPE_DATA] || be64(counter) || ct||tag     length 26 to MAX_FRAME, plaintext 1 to MAX_PLAINTEXT bytes
+bye   [TYPE_BYE]  || be64(counter) || tag         length exactly 25 (BYE_FRAME), plaintext empty
 ```
 
-Plaintext length is 1 to `MAX_PLAINTEXT` bytes.
+A `bye` is the authenticated end of one direction.
+It takes the next counter like any frame, is sealed with `t = TYPE_BYE` in the AAD (so a data frame cannot be made into a BYE or the reverse), and carries no plaintext: its ciphertext is the 16-byte tag alone.
 
-Receiver, per direction, tracking `last` (0 after the handshake).
+Receiver, per direction, tracking `last` (0 after the handshake) and whether the peer has ended.
 Checks run in this order and stop at the first failure; the first failure closes the channel for good:
 
 1. The frame is binary, else `TYPE` (a text frame after the handshake, which includes a second `hello`).
-2. Length at least 26, else `MALFORMED`.
+2. Length at least `BYE_FRAME` (25), else `MALFORMED`.
 3. Length at most `MAX_FRAME`, else `OVERSIZE`.
-4. First byte is `TYPE_DATA`, else `TYPE`.
-5. `counter <= MAX_COUNTER`, else `COUNTER_LIMIT`.
-6. `counter == last + 1`, else `COUNTER`: a repeat, a reorder and a gap are all this one failure.
-7. The AEAD tag verifies under the receive key with `nonce(counter)` and `aad(TYPE_DATA, peer direction, counter)`, else `DECRYPT`.
-8. Only now is `last` set to `counter` and the plaintext returned.
+4. First byte is `TYPE_DATA` or `TYPE_BYE`, else `TYPE`.
+5. For `TYPE_BYE` the length is exactly 25, for `TYPE_DATA` at least 26, else `MALFORMED`.
+6. `counter <= MAX_COUNTER`, else `COUNTER_LIMIT`.
+7. The peer has not already ended, else `ENDED`: a frame of either type after a BYE is refused and closes the channel.
+8. `counter == last + 1`, else `COUNTER`: a repeat, a reorder and a gap are all this one failure.
+9. The AEAD tag verifies under the receive key with `nonce(counter)` and `aad(type, peer direction, counter)`, else `DECRYPT`.
+10. Only now is `last` set to `counter`; a `bye` marks the peer as ended and is delivered as the end marker (`null`), a `data` frame as its plaintext.
 
 Sender: the plaintext is copied when `send` is called, so a caller that reuses its buffer changes nothing; the counter is assigned synchronously at the same moment, so counter order is call order; a sender whose next counter would exceed `MAX_COUNTER` closes the channel (`COUNTER_LIMIT`); plaintext outside 1 to `MAX_PLAINTEXT` is refused before a counter is consumed (`OVERSIZE`, or `MALFORMED` for empty); more than `MAX_PENDING_SENDS` unsent frames refuses the new one before a counter is consumed (`QUEUE_FULL`).
+`bye()` queues a BYE behind everything already queued, under the same counter, queue and limit rules, and ends the sending side the moment it is accepted: a later `send` or `bye` is refused with `ENDED` and nothing more is emitted, while the channel keeps reading until the peer ends or the transport closes.
+A refused `bye` (`QUEUE_FULL`) does not end the sending side.
 Encryption and emission run through one promise chain, so frame `n + 1` is not emitted before frame `n`, whatever the relative speed of their encryptions.
 If encryption or emission of any frame fails, the channel closes with the failure close and every later send is refused (`CLOSED`): a frame is never skipped.
 After the first failure every later receive is `CLOSED`.
 Received frames are copied on arrival and processed through a second chain, so results are delivered in arrival order and a bad frame poisons the frames behind it.
 A deliberate local close ends the channel with code `CLOSE_NORMAL` and the reason `"closed"`; it is not a failure.
+
+**How the inbound stream ended.**
+When the transport closes, whatever the close code, the caller tells the channel (`transportClosed()`), and it says how the peer's stream ended:
+
+| Verdict | Meaning |
+|---|---|
+| `clean` | The peer's BYE arrived before the close, so every frame the peer sent before it was seen in order (counters are strict) and the peer intended to end. |
+| `unclean` | The transport closed with no BYE: the tail may be truncated. The peer may have crashed, or a relay dropped frames and the BYE and closed. |
+| `failed` | A check failed earlier; the channel was already closed. |
+
+What this detects, exactly:
+
+- A relay that drops the last frames of a stream **and** its BYE and then closes: `unclean`.
+- A relay that closes with no BYE for any reason: `unclean`, which is also what a crashed peer looks like; the library does not guess which.
+- A frame dropped, repeated or reordered before a delivered BYE: the counter check, as before.
+- A forged close: a relay can close the transport at will, and the verdict is then `unclean`; it cannot make a close look `clean`, because that needs a BYE and only the key holder can make one.
+
+What it does not detect:
+
+- Delay: a frame, or the BYE, that arrives late is valid.
+- A tail withheld while the transport stays open: no close is ever seen, so there is no verdict; deciding that silence is too long is a liveness question for the application (deadlines, acknowledgments).
+- Whether the peer received anything: a BYE ends one direction and proves nothing about delivery in the other, and `bye()` resolves when the frame is emitted, not when it is received.
+  Answers that must be known delivered still need an application acknowledgment.
+- A peer that never sends a BYE: the verdict is `unclean` for every ending, so a consumer that does not use BYE gets no benefit.
 
 There is no resumption.
 A reconnect is a new handshake with fresh ephemeral keys and nonces; session state belongs to the application, not to the key.
@@ -353,6 +397,7 @@ Error codes, which appear in tests and the local log only:
 | `TOKEN` | a pairing token that is malformed or outside the policy |
 | `QUEUE_FULL` | more than `MAX_PENDING_SENDS` unsent frames |
 | `CLOSED` | a send or receive on a channel that has closed |
+| `ENDED` | a send or `bye` after this side's own BYE, or a frame of any type after the peer's BYE |
 | `IO` | the transport or the engine failed while a frame was being sent |
 
 ## 9. Fingerprint shown to humans
@@ -399,7 +444,8 @@ Stated plainly, because the protocol hides content and does not hide this:
 
 The Worker does not see: any session id, any device name, any frame content, the pairing secret, the keys, or the fingerprint.
 An active Worker (or any network position between the peers) can drop, delay, duplicate, reorder or inject frames, refuse service, admit or refuse devices, and close either socket.
-Duplicates, reordering and injection are detected and close the channel; a delay is not detected; a drop followed by a later frame is detected as a gap; a drop of the tail followed by a close is not detected (see "Issues found while specifying").
+Duplicates, reordering and injection are detected and close the channel; a delay is not detected; a drop followed by a later frame is detected as a gap; a drop of the tail together with its BYE followed by a close is reported as an unclean end (section 7), while a tail withheld with the socket left open is not detected by the library.
+The 25-byte binary frame is a BYE, so the Worker can see when a stream ends cleanly, and that a side has no more to send.
 
 ## 12. Claims, and what demonstrates each
 
@@ -411,7 +457,8 @@ Every test was also checked by mutation: the mutated source was applied, the sui
 |---|---|
 | A replayed, reordered or dropped-then-continued frame, a truncated or extended frame, a flipped bit anywhere in a frame, a frame under another key, a reflected frame, counter 0 after the handshake, a counter above the limit with a valid tag, an oversized frame and a text frame after the handshake are each refused, and the channel then refuses everything | `channel.test.ts` (one test per case, a bit-by-bit test over a whole frame, 600 property cases); vectors `data_sequence` and `frame_length`; Python; Swift |
 | Every failure closes with one code and reason | `channel.test.ts` ("every failure closes with the same code and reason", "every RelayError code maps to the one wire close") |
-| A dropped tail is NOT detected | `channel.test.ts` ("a dropped tail is NOT detected"), recorded so it cannot be forgotten |
+| The stream's end is authenticated: a BYE is a counter-checked, AAD-typed, exactly 25-byte frame that only the key holder can make; a frame after it is refused; `transportClosed()` reports clean, unclean or failed as section 7 says; a tail dropped together with its BYE followed by a close is unclean | `channel.test.ts` ("authenticated end of stream (BYE)", 17 tests), `envelope.test.ts`; vectors `data_sequence` (BYE cases) and `frame_length`; Python; Swift |
+| What BYE does not detect: a tail withheld while the socket stays open, delay, delivery to the peer | `channel.test.ts` ("limits of the channel": two characterization tests), recorded so it cannot be forgotten |
 | A slow encryption cannot let a later frame leave first; a failed frame is never skipped | `channel.test.ts` ("ordered sending") |
 | The device key is never used before the host is verified, and the device identity and name are not on the wire in clear | `handshake.test.ts` ("the host is authenticated first", "not readable on the wire") |
 | Every term of `H1` is bound: rid, mode, both ephemeral keys, both nonces | `handshake.test.ts` ("a host signature over a transcript that differs in any single term", "a relay that changes the hello in transit"); vectors `hello_ack_verify`; Python |
@@ -426,6 +473,10 @@ Every test was also checked by mutation: the mutated source was applied, the sui
 | The wire bytes are the specified bytes | vectors (regeneration pin and conformance); Python; Swift: three implementations, TypeScript, Python and CryptoKit, agree |
 | No clock or platform random source is read inside the library, a run is a pure function of its inputs, and nothing outside the directory is imported | `source-guard.test.ts`; `handshake.test.ts` ("the same inputs always give byte-identical frames") |
 | Random single-character mutations of any handshake frame in transit never produce a channel | `handshake.test.ts` (120 seeded cases) |
+| The public `relayV2` surface is exactly the pinned list; no helper that builds a transcript, derives a key, frames bytes or builds a channel from raw keys is public | `public-surface.test.ts` |
+| Production keys come from the engine, and the scalar-import key path is unreachable from a production default | `primitives.test.ts` ("production keys come from the engine"), `handshake.test.ts` ("the key hook"), `source-guard.test.ts` (the path is imported by `internal.ts` only); section 17 for why |
+| Every v2 signed message is at least 54 bytes, begins with a zero byte and its own label, and no `.sign(` call in the library takes anything else | `signing-inputs.test.ts` (section 18) |
+| The library, its production key path and the vectors run on Bun 1.4.2, Bun 1.3.11, workerd 1.20260107.1 and WebKit (macOS 27.0.1); the scalar-import path fails on WebKit | section 17, a scratch experiment that is NOT committed: the results are recorded there, and R4 and R2 re-run them |
 
 Not claimed, because no test shows it:
 
@@ -434,9 +485,10 @@ Not claimed, because no test shows it:
 - **Metadata hiding.** Section 11 says what the Worker sees.
 - **Constant-time behavior** of any comparison or of the platform's AEAD and signature code.
 - **Zeroization** beyond the two cases in section 8 (the ephemeral scalar and the raw channel keys).
-- **Detection of a delayed or tail-truncated stream** (section 15.2).
-- **Behavior on engines other than Bun 1.4.2 and 1.3.11, CryptoKit and `cryptography`.**
-  Safari, workerd and the Cloudflare runtime are unverified; R2 and R4 must run the vectors there.
+- **Detection of delay, or of a tail withheld while the socket stays open** (sections 7 and 15.2).
+- **Behavior on an iOS device's WKWebView, on Safari, or on Cloudflare's deployed Workers fleet.**
+  Section 17 ran macOS 27.0.1's WebKit in a WKWebView and a local workerd; R4 (on a device) and R2 (against the deployed Worker) must re-run the vectors there.
+- **That the Python and Swift agreement validates the design** (section 13).
 
 ## 13. Test vectors and independent verifiers
 
@@ -452,13 +504,21 @@ Three independent consumers check the same bytes:
 
 The web client (R4) adds a fourth consumer by importing the shared package.
 
+**What the agreement shows, and what it does not.**
+The TypeScript implementation (BoringSSL through WebCrypto), the Python verifier (OpenSSL) and the CryptoKit verifier are independent of one another, so their agreement on every byte shows two things: the primitives are used correctly (the HKDF inputs, the AEAD nonce and AAD, the ECDH output and the signature inputs mean the same thing in three crypto libraries), and the wire format of this ADR is unambiguously implementable (a reader of the text reaches the committed bytes, and section 15.4 lists where the first reader had to guess).
+It does NOT show that the structural design is sound.
+The Python author read the vector file, intermediate values included, and all three implementations follow the same ADR, so a flaw in the ADR's design (what is bound, what is authenticated, what an attacker can reorder) would be reproduced identically by all three.
+That is the job of the independent cryptography review of this pull request (2026-10-04, a read-only adversarial reviewer on the strongest available model), which is the design check; this section's agreement is evidence of correct implementation and of an unambiguous text, not of security.
+
 ## 14. For implementers of R2 to R6
 
 **The Worker (R2) must:**
 
 - Issue a fresh 32-byte nonce per socket and accept each exactly once.
 - Admit a host only on a valid host admission proof with `SHA-256(M_pk)[0..16] == rid`.
-- Admit a client only on a valid client admission proof from an enrolled key, or during an open pairing window on a valid proof plus a ticket whose hash the host registered; delete the registration on use.
+- Admit a client only on a valid client admission proof from an enrolled key, or during an open pairing window on a valid proof plus a ticket whose hash the host registered; compare the ticket hash in constant time (`admitTagMatches`) and delete the registration atomically with the check, so two concurrent presentations of one ticket admit at most one.
+- Treat the ticket as Worker-visible and abuse-control only (section 4): never use it as a secret, never log it.
+- Prefer a strict Ed25519 verifier and reject small-order public keys at admission (section 17.2).
 - Change the enrolled set only on `enroll` and `revoke` messages from the authenticated host socket.
 - Treat everything after admission as opaque bytes: forward text and binary frames between a client and the host, never parse them, never log their content, log sizes at most.
 - Never accept a protocol version from a client or host; v2 is a path or a constant, not a negotiation.
@@ -473,7 +533,12 @@ The web client (R4) adds a fourth consumer by importing the shared package.
   The step functions are `hostOnHello`, then `onAuth` on its result, then `ready` on that: mark the offer used and store the enrollment durably, and have the operator confirm the fingerprint, before calling `ready`, and call `abort` on every step a closing connection leaves unfinished.
 - Close with the constants `CLOSE_CODE` and `CLOSE_REASON` on every thrown `RelayError`, and on every WebSocket text frame after the handshake, whatever its content.
 - Bound concurrent half-open handshakes (each costs an ECDH and a signature before the peer has proved anything), and close a connection whose next handshake frame does not arrive in time: the library checks deadlines only when a step is handled and has no timer.
-- Define application-level acknowledgments and an authenticated end-of-stream message inside the data channel, because the channel alone cannot tell a clean close from a truncation.
+- Send `bye()` on every orderly close, call `transportClosed()` when the socket closes and treat `unclean` as "the tail may be truncated" (log it, and re-ask for anything not acknowledged).
+- Define application-level acknowledgments inside the data channel for anything that must be known delivered (the answer to a prompt in particular): BYE ends a direction, it does not acknowledge receipt, and a tail withheld with the socket open is invisible to the library.
+- Assert at startup that the random source handed to the library is `systemRandom` (compare the reference), and refuse to start otherwise: a deterministic test source reused in production would repeat ephemerals and with them the session key and nonce.
+- Bound the work an unauthenticated `hello` can cause: in resume mode the host generates a key pair, does an ECDH and makes a signature before the client has proved anything (`hostOnHello`).
+  Worker admission limits who reaches the host and the daemon must add a concurrency bound.
+- Reject small-order device public keys at enrollment (section 17.2).
 - Use `systemRandom` and `Date.now()` only at the edge, passing them into the library.
 
 **The daemon must never:** reuse a `Channel` across connections; accept a pairing secret twice; send `ready` before the enrollment is stored; re-enter plaintext after a failure; log keys, secrets, plaintext or ciphertext.
@@ -487,7 +552,11 @@ The web client (R4) adds a fourth consumer by importing the shared package.
 
 **The clients must never:** send `auth` before `hello_ack` has verified (the library makes this impossible, a client must not work around it); fall back to plaintext or to another version; trust a `rid` that came from the wire.
 
-**R5 (push)** uses section 10 with the device's push key; the Notification Service Extension needs the private scalar in a shared keychain item and the verifier in section 13 shows CryptoKit can open the format.
+**R5 (push)** uses section 10 with the device's push key; the Notification Service Extension needs the private key in a shared keychain item and the verifier in section 13 shows CryptoKit can open the format.
+R5 MUST carry the device push key from the device to the daemon over the authenticated channel and bind it to the enrolled device that sent it, and MUST NOT put a push key in the QR: the token's optional key is the daemon's answer-sealing key (deviation 7 in section 15.1), and a regression that moves a push key into the token would let anyone who sees the QR seal pushes to a device.
+
+**R6 (answers)**: signed answers need question ids that are globally unique per prompt, a session nonce or an expiry, and single-accept by the daemon, because the channel cannot detect delay and a late or replayed answer is a valid frame.
+The seal's AAD already binds `rid || question_id`.
 
 **Exact list of v1 modules R3 deletes** (nothing is deleted in R1):
 
@@ -553,12 +622,11 @@ Nothing in this protocol silently differs from the plan.
 
 ### 15.2 Weaknesses and open points for the cryptography review
 
-1. **Tail truncation is not detectable at this layer.**
-   A relay that drops the last frames and then closes the socket looks like a clean close.
-   Dropped frames followed by a later frame are detected (gap), and a cut-off frame is detected (tag), but a dropped suffix is not.
-   The consequence is concrete: a dropped final answer.
-   Fix proposed: an authenticated end-of-stream and application acknowledgments inside the data channel (R3), or a counter-checked `TYPE_BYE` frame in this protocol if the review prefers it in the library.
-   R1 implements neither, and a characterization test records the limit.
+1. **Tail truncation: partly detected since the review (BYE).**
+   Dropped frames followed by a later frame are a gap, and a cut-off frame fails its tag.
+   A dropped suffix is detected only through the authenticated end of stream (section 7): a relay that drops the tail and the BYE and closes yields an `unclean` verdict, and cannot forge a BYE.
+   Still not detected by the library: a tail withheld while the socket stays open, and anything about delivery to the peer; both need application acknowledgments and deadlines (section 14, R3 and R6).
+   Tests record both the detected and the undetected cases.
 2. **Delay is undetectable.**
    There are no timestamps.
    An answer that arrives late is a valid answer; R6's signed answers carry their own expiry and single-accept rule.
@@ -575,9 +643,11 @@ Nothing in this protocol silently differs from the plan.
 6. **The host does an ECDH and a signature per unauthenticated `hello`.**
    That is an amplification a flood can use.
    Worker admission and a concurrency bound in the daemon (R3) are the mitigations; the library offers none beyond the deadlines.
-7. **Ed25519 verifiers differ on edge cases** (non-canonical `S`, small-order keys).
+7. **Ed25519 verification on non-canonical `S` and small-order keys, measured.**
+   Section 17.2 records what five implementations do: all reject a non-canonical `S`, and all accept the small-order public keys.
    A malleated `sig_h` makes the client's `H2` differ from the host's, so the handshake fails closed, and signatures are never used as identifiers.
-   The review should still decide whether verifiers must reject non-canonical `S`.
+   Small-order keys are self-targeting in this trust model (section 17.2).
+   Strict verifiers that also reject small-order public keys are recommended as defense in depth for the Worker and the clients.
 8. **Constant-time comparison and zeroization are platform properties.**
    The library compares the admission-ticket hash with a XOR-accumulate loop; JavaScript engines give no guarantee for such a loop, and nothing relies on it alone: a hash of a secret does not help an attacker who learns a prefix.
    AEAD tag comparison is inside WebCrypto and is not verified here.
@@ -593,11 +663,12 @@ Nothing in this protocol silently differs from the plan.
 13. **Every session key rests on the injected random source.**
     Counters are the nonces, so two sessions that derived the same keys would reuse nonces.
     The keys are fresh unless both peers draw the same ephemeral scalar and both nonces, which only a broken random source does.
-    `systemRandom` is `crypto.getRandomValues`, and the library never reads another source; the injected source of a test is deterministic by design and must never reach production.
-14. **An ephemeral key is built by importing its scalar as PKCS8 without the public half.**
-    The library does this so that a run is reproducible from an injected source and the private key stays non-extractable.
-    It works on Bun 1.4.2 and 1.3.11 (BoringSSL); it is unverified on WebKit (the iOS client) and on workerd.
-    If a platform refuses it, the fix is to compute the public point from the scalar (a few lines of BigInt scalar multiplication) and import a JWK instead; R4 must run the vectors in a real WKWebView before relying on this.
+    `systemRandom` is `crypto.getRandomValues`, and the library never reads another source; the injected source of a test is deterministic by design and must never reach production, and R3 must assert at startup that it is `systemRandom` (section 14).
+    Ephemeral keys no longer come from that source in production (the engine generates them), so only the nonces depend on it there.
+14. **Building a key from a bare scalar fails on WebKit; production no longer does it (resolved by the review, section 17).**
+    The first draft built every ephemeral key by importing a scalar as PKCS8 without the public half and asking the engine to derive the point.
+    It worked on Bun, and was unverified elsewhere; the experiment of section 17 shows WebKit refuses it (`DataError`).
+    Production ephemeral pairs now come from the engine's `generateKey` and identities from `generateKey` or an imported engine export; the scalar path is confined to `deterministic.ts` for tests and vectors.
 15. **No version negotiation exists, by design.**
     A v1 frame fails as `TYPE` or `VERSION` and closes; a v2 endpoint never speaks v1.
     There is nothing to downgrade to.
@@ -672,9 +743,12 @@ Top level: `format` (1), `protocol` (`"remi-relay-v2"`), `note`, `constants`, `i
 | `readyPlaintext`, `readyNonce`, `readyAad`, `readyCiphertext`, `ready` | the same for `ready` |
 | `fingerprint` | section 9's display string for `D_pk` and `M_pk` |
 | `data` | `{ c2h: [...], h2c: [...] }`, ten entries each: `{ counter, plaintext, nonce, aad, frame }` for counters 1 to 10; `frame` is the whole binary data frame |
+| `bye` | `{ c2h, h2c }`, each `{ counter, nonce, aad, frame }` with counter 11: the BYE each side sends after its ten data frames; `frame` is the whole 25-byte binary frame |
 
 A verifier checks that the ephemeral public keys follow from the scalars, that `z` follows from either side's scalar and the other's public key, that `h1`, `hostSignature`, `keys`, `h2`, `clientSignature`, the ciphertexts, the control frames, the nonces, the AADs, the fingerprint and every data frame follow from the inputs by sections 6, 7 and 9, and that every ciphertext opens to its plaintext.
-Ed25519 signatures are deterministic, so `hostSignature` and `clientSignature` can be compared byte for byte as well as verified.
+Signatures are compared by verification, and byte for byte only where the implementation signs deterministically.
+RFC 8032 signing is deterministic and Bun, workerd and OpenSSL follow it, so on those a recomputed `hostSignature` and `clientSignature` equal the file's; WebKit and CryptoKit sign with a random component (section 17.1), so there a verifier checks that the recorded signature verifies and takes the frames that contain a signature from the file.
+Randomized signing is not a protocol property: `H2` binds `sig_h`, which only its host produces, and nothing hashes `sig_c`.
 
 `admission`: `nonce`, `hostInput`, `hostSignature`, `clientInput`, `clientSignature` (section 4, for `identities.machine` and `identities.device` and the file's `rid`), `pairingSecret`, `ticket` (section 4's `A`), `ticketHash` (`SHA-256(A)`).
 
@@ -695,11 +769,130 @@ In `auth_check`, `enrolled` is what the host's enrolled set contains: in pair mo
 | `auth_open` | `z`, `h1`, `psk` (the host's, or `null`), `auth`; optionally `senderPsk` | Derives the keys from `z`, `h1` and `psk` and opens `auth`; the failure is `PAIRING` when `psk` is not `null` and `DECRYPT` when it is.  When `senderPsk` is present (it may be `null`), the keys derived with it must open `auth`, which shows the case differs from a valid one only in the pairing secret |
 | `auth_check` | `mode`, `z`, `h1`, `psk`, `hostSignature`, `auth`, `enrolled` (list of device public keys) | Opens `auth` (it must open), then applies section 6.3 step 5 in order: the name, `sig_c` over the recomputed `H2`, and in resume mode membership of `D_pk` in `enrolled` |
 | `ready_open` | `mode`, `z`, `h1`, `psk`, `ready` | Derives the keys, decodes the control frame `ready`, opens it under `k_h2c` and requires the one-byte echo of `mode` |
-| `data_sequence` | `key`, `direction` (the sender's direction byte), `startRecv`, `frames`, and for `accept` or a rejection `accepted` | Runs section 7's receiver over `frames` in order with `last + 1 = startRecv`, with `key` as the key of the frames' direction; `accepted` is how many frames were accepted before the first failure, and `code` is that failure's code |
-| `frame_length` | `length` | A data frame of that many bytes whose first byte is the data type and whose counter is 1: applies only checks 2 to 5 of section 7 (no tag check) |
+| `data_sequence` | `key`, `direction` (the sender's direction byte), `startRecv`, `frames`, and for `accept` or a rejection `accepted` | Runs section 7's receiver over `frames` in order with `last + 1 = startRecv`, with `key` as the key of the frames' direction, a BYE ending the stream as section 7 says (a frame after it is `ENDED`); `accepted` is how many frames (a BYE included) were accepted before the first failure, and `code` is that failure's code |
+| `frame_length` | `type`, `length` | A frame of that many bytes whose first byte is `type` and whose counter is 1: applies only checks 1 to 6 of section 7 (no tag check, no counter order) |
 | `token_decode` | `text`, `nowSec` | Decodes the token under section 5 with `nowSec` as the clock |
 | `seal_open` | `recipientScalar`, `aad`, `sealed` | Opens `sealed` under section 10; every failure is `DECRYPT` |
 | `admission_verify` | `role`, `publicKey`, `rid`, `nonce`, `signature` | Accepts exactly when section 4's check passes for that role |
+
+## 17. Engines, key construction and Ed25519 behavior (a scratch experiment, recorded here)
+
+The independent review asked that the key path stop relying on one engine.
+The library's production path was first built on an engine behavior (deriving a public key from a bare scalar or seed at import) that only Bun was known to support, and the web client runs this package in a WKWebView.
+This section records what was run to find out, and what changed.
+
+### 17.1 What ran
+
+One engine-independent check (no `node:` imports) was bundled with `bun build --target=browser` from the library's internal barrel plus `vectors.json`, and run in each engine below.
+It is a scratch experiment, not committed: it needs a bundler, a local workerd and a Swift harness, and its results are what this section records.
+Each run did: known-answer tests of the primitives (RFC 5869 test 1, RFC 4231 test 2, RFC 8032 test 1, the P-256 generator); the production key path (`generateEcPair`, `generateIdentity`, PKCS8 export and import round trips, ECDH both ways); complete production handshakes in both modes with data frames and a BYE followed by a clean close; a byte-for-byte replay of both committed sessions through the step functions; every negative and control case of the vector file; and the Ed25519 measurements of section 17.2.
+
+| Engine | Version | How it was run |
+|---|---|---|
+| Bun (JavaScriptCore, BoringSSL) | 1.4.2 and 1.3.11 | the bundle's source under `bun` |
+| workerd (the Cloudflare Workers runtime) | 1.20260107.1, through miniflare 4.20260107.0, compatibility date 2026-01-01 | `new Miniflare({ modules: true, script })` in a local process; no deployed Worker was contacted |
+| WebKit in a WKWebView | macOS 27.0.1 (26A434), WebKit.framework 22625.1.29.11.28 | a Swift program loading the bundle as a user script into a `WKWebView` of the system WebKit, document origin `http://localhost/` (a secure context, `crypto.subtle` present) |
+| Python `cryptography` (OpenSSL), CryptoKit | 50.0.2; macOS 27.0.1 | the verifiers of section 13 and a measurement script |
+
+Results:
+
+| Check group | Bun 1.4.2 | Bun 1.3.11 | workerd | WebKit |
+|---|---|---|---|---|
+| Primitives, production key path, production handshakes with data and BYE (19 checks) | 19 of 19 | 19 of 19 | 19 of 19 | 16 of 19 (the three misses below) |
+| Vector replay and all 193 negative and control cases, ephemeral keys built from the scalars in the file (24 checks) | 24 of 24 | 24 of 24 | 24 of 24 | 11 of 79 lines pass: every case that builds a key from a scalar fails with `DataError` |
+| The same, with each ephemeral key imported as a JWK with its public coordinates supplied (24 checks) | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 |
+
+What WebKit showed, exactly:
+
+1. **Importing a P-256 private key from PKCS8 without the public half fails**: `DataError: Data provided to an operation does not meet requirements`.
+   This is the path the first draft used for every ephemeral key, and the review's concern was right.
+   It now exists only in `deterministic.ts`; production uses `generateKey`, and every production check passes on WebKit.
+2. **Ed25519 import from a PKCS8 seed works and derives the right public key** (it matches RFC 8032), so a persisted identity in the engine's PKCS8 form imports on WebKit; production still does not rely on the derivation, because the public key is stored next to the PKCS8.
+3. **Ed25519 signing is randomized on WebKit** (and in CryptoKit): two signatures of one message differ, and each verifies on Bun, workerd, Python and CryptoKit.
+   Determinism is not a protocol property (section 16), so the committed vectors, which are produced on a deterministic engine, are replayed on WebKit with the recorded signatures (each verified by WebKit's own verifier) while every signing input is compared byte for byte.
+4. Everything else passed: `generateKey` for P-256 and Ed25519, raw public export, PKCS8 export and import round trips, ECDH, HKDF, HMAC, AES-GCM with the counter nonce and AAD, strict base64url and the full handshake.
+
+The replay on WebKit with JWK-imported keys is how the vector checks were discharged there.
+The coordinates came from the file, so it shows the protocol and verification run on WebKit; it deliberately does not show scalar derivation, which WebKit does not support.
+
+What was NOT established:
+
+- **An iOS device's WKWebView.**
+  macOS 27.0.1's WebKit is the same code base as the WKWebView in iOS but not the iOS build.
+  **Running `vectors.json` in a real WKWebView on an iPhone is the owner's R4 check** (section 19).
+- Safari as an application, Chrome and Firefox were not run.
+- The deployed Cloudflare fleet: workerd here is the open-source runtime at one version, run locally.
+  R2 re-runs the vectors against the deployed Worker.
+
+### 17.2 Ed25519 verification, measured
+
+The same cases were run on every implementation: a valid signature, a signature whose `S` was replaced by `S + L` (non-canonical), the all-identity "universal" signature (`R` the identity point, `S = 0`) under a small-order public key (the identity point), and the same shape under the order-2 point (valid for about half of all messages).
+
+| Implementation | Non-canonical `S` | Small-order public key (identity), any message | Order-2 key, accepted for N of 16 messages | Signing | 31-byte key |
+|---|---|---|---|---|---|
+| Bun 1.4.2 and 1.3.11 (BoringSSL) | rejected | accepted | 11 | deterministic | import throws |
+| workerd 1.20260107.1 | rejected | accepted | 11 | deterministic | import throws |
+| WebKit 22625.1.29 | rejected | accepted | 11 | randomized | import throws |
+| Python `cryptography` 50.0.2 (OpenSSL) | rejected | accepted | 11 | deterministic | `ValueError` |
+| CryptoKit (macOS 27.0.1) | rejected | accepted | 11 | randomized | throws |
+
+Every implementation rejects a malleated `S`.
+No implementation rejects small-order public keys: RFC 8032's verification equation does not forbid them.
+A signature one engine produces (WebKit's randomized one) verifies on the others.
+
+Consequences for this protocol:
+
+- Malleation of `sig_h` changes only a value that `H2` binds, so a malleated signature fails the handshake and never succeeds as another.
+- Small-order keys are self-targeting here.
+  A small-order machine key belongs to whoever minted the token or registered the room; it lets that party sign as itself and the room id derives from the key, so no one else's room is affected.
+  A small-order device key can only be enrolled by a party that holds the pairing secret or is already enrolled, so it adds no capability.
+- Recommendation, as defense in depth and not as a requirement of the design: clients and the Worker should prefer a strict verifier that also rejects the eight small-order encodings, at admission, pairing and pinning.
+  The library does not implement that check; R2 (admission) and R3 (enrollment) carry it (section 19).
+
+## 18. Invariant: v2 signing inputs are disjoint from every other signed message
+
+The v2 machine key is the Ed25519 identity the v1 Authenticator already keeps, and the v2 device key migrates from the v1 phone identity.
+v1 direct authentication signs a BARE 32-byte challenge, the v1 relay key exchange signs `len:value` text beginning with a digit, and the iOS answer path signs `sid|qid|ans`.
+A v2 signature must never be usable as any of those or the reverse.
+
+That holds because every v2 signed message is `lps(label, ...)`:
+
+- at least 54 bytes (the host transcript input is the shortest: 2 + 18 + 2 + 32), so it can never equal a 32-byte challenge;
+- the first byte is zero (the high byte of a label length below 256), while the v1 key exchange input and the answer message begin with a printable ASCII byte;
+- the first part is its own label (`remi-relay-v2 host`, `client`, `admit host`, `admit client`), distinct and none a prefix of another's length-prefixed form, so a signature over one input never verifies as another.
+
+The invariant is implicit in the construction.
+`signing-inputs.test.ts` makes it explicit: it builds all four inputs and the real v1 `kexSigningInput` and challenge, asserts the three properties above, asserts that a signature over one input does not verify as another, and has a source guard requiring every `.sign(` call in the library to pass one of the four builders, so a future signed message with another shape fails the test.
+
+## 19. Gates carried to later phases
+
+The library cannot enforce these contracts; each is owned by a later phase.
+The lead copies this table into the phase issues, and R7 (#1202) demonstrates every one in its end-to-end suite.
+A row is closed only by the evidence named in its last column.
+
+| Phase | Gate | Evidence that closes it |
+|---|---|---|
+| R2 (#1197) | Compare the registered admission-ticket hash in constant time (`admitTagMatches`) | The admission path calls `admitTagMatches`; a source guard bans `===` and `indexOf` on ticket hashes |
+| R2 (#1197) | Burn the ticket registration atomically with the check (one Durable Object transaction) | A test presenting one ticket twice and concurrently admits exactly one socket |
+| R2 (#1197) | Treat the ticket as Worker-visible and abuse-control only; never log it | Code review against section 4; the Worker's logs hold no ticket |
+| R2 (#1197) | Confirm the Cloudflare WebSocket message ceiling (1 MiB is unverified) and lower `MAX_PLAINTEXT` if it is wrong | A test through the real Durable Object sends frames of `MAX_FRAME` and `MAX_FRAME + 1` bytes |
+| R2 (#1197) | Limit hello floods: per-address and per-device-key rate limits and a cap on unadmitted sockets | A test that exceeds each limit and is refused |
+| R2 (#1197) | Host and client admission checks exactly as section 4 (lengths, role binding, room-id hash, enrolled set changed only by the authenticated host) | The vector `admission_verify` cases pass in the Worker, and tests for each refusal |
+| R2 (#1197) | Prefer a strict Ed25519 verifier: reject small-order public keys at admission | A test admitting the identity-point key is refused |
+| R2 (#1197) | Re-run `vectors.json` on the deployed Worker runtime | The section 17 check, run against the deployed Worker, is green |
+| R3 (#1198) | Burn the single-use pairing secret, confirm the fingerprint with the operator, store the enrollment durably, all BEFORE calling `ready`; enforce the ten-minute TTL | A real-daemon test in which `ready` is not sent until the enrollment is stored, and a second use of one secret is refused |
+| R3 (#1198) | Send `bye()` on every orderly close, call `transportClosed()` on every socket close and act on `unclean` | A real-daemon test that drops the tail and the BYE and sees the unclean verdict |
+| R3 (#1198) | Application acknowledgments for answers and anything that must be known delivered | A test in which a withheld acknowledgment is noticed by the application |
+| R3 (#1198) | Assert at startup that the injected random source is `systemRandom` | A test that a daemon built with another source refuses to start |
+| R3 (#1198) | Bound concurrent unauthenticated hellos and close idle or half-open handshakes (the library has no timer); call `abort` on unfinished steps | Tests of the bound and of an idle handshake being closed |
+| R3 (#1198) | Reject small-order device keys at enrollment | A test enrolling the identity-point key is refused |
+| R3 (#1198) | Close with `FAILURE_CLOSE` on every thrown `RelayError` and on every text frame after the handshake | A test per path against the real adapter |
+| R4 (#1199) | Run `vectors.json` in a real WKWebView on an iPhone (the owner) | The section 17 check, run on the device, is green and its output is recorded in the issue |
+| R4 (#1199) | Keep the device key in the platform keychain and persist it as the engine's PKCS8 export plus the raw public key; never import a bare scalar | A test and a code review of the identity store |
+| R4 (#1199) | Pin `M_pk` from the token, check expiry locally, show the fingerprint while waiting for `ready`, treat any close as final for the connection | Client tests of each |
+| R5 (#1200) | Carry the device push key over the authenticated channel and bind it to the enrolled device; never put a push key in the QR | A test that a push key sent by a device other than the enrolled one is refused, and that the token has no push key |
+| R6 (#1201) | Answers: globally unique question ids per prompt, a session nonce or expiry, single-accept by the daemon (the channel cannot detect delay) | Tests of a replayed, a late and a duplicate answer, each refused |
+| R7 (#1202) | The end-to-end suite demonstrates each row above against the real Durable Object, the real hub and a real client | The suite's report names the test for each row |
 
 ## Consequences
 
