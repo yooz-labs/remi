@@ -822,6 +822,7 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push('[network]');
   lines.push(`  mdns = ${config.network.mdns}`);
   lines.push(`  relay = ${config.network.relay}`);
+  lines.push('  # --permanent-code turns the relay on, whatever relay says');
   lines.push(`  signaling_url = "${config.network.signaling_url}"`);
   lines.push('');
   lines.push('[auth]');
