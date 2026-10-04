@@ -375,7 +375,9 @@ export class CodexDecisions implements DecisionChannel {
   /** The answer was delivered and Codex never said it was resolved. */
   private unconfirmed(entry: Entry): void {
     entry.confirmTimer = undefined;
-    if (entry.state !== 'answered' || this.byId.get(entry.spec.question.id) !== entry) return;
+    // `forget` clears this timer, so only a callback that was already running can find its entry
+    // gone; and an entry with a timer is always `answered`, so being tracked is the whole check.
+    if (this.byId.get(entry.spec.question.id) !== entry) return;
     this.deps.log(`no confirmation for the answer to ${logId(entry.spec.requestId)}`);
     this.forget(entry, false, 'unconfirmed');
     this.tell(UNCONFIRMED_NOTICE);
