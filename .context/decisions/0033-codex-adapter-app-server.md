@@ -661,3 +661,69 @@ A second flake of the same run, found by the twenty-run loops and the fresh-clon
 `findTestPort` hands the lowest free port from 19200 to every caller, so a second test process on the machine (another worktree's run, another agent's) can be given the same one; the same collision failed `hub-lifecycle.test.ts` twice in one full run, tests this PR does not own.
 `spawnHub` now takes the port as an option and puts what the hub printed in its early-exit error, and this PR's hub test takes a random, probed port from `reserveRange`, as `spawnDaemon` already does.
 
+## Phase 6 amendment: turn events and chat (#1180)
+
+Phase 6 pushes how a Codex turn ended and serves the Codex session's chat.
+Nothing here was run against a real Codex: the tests use the spike's real frames, the stand-in app-server and fakes, and live step LV-5 is NOT done.
+Item 9 lists what LV-5 must check, and the lead decides when to run it.
+
+1. **One sink for both harnesses.**
+`createTurnEventSink` (`notifications/turn-events.ts`) holds what `cli.ts`'s `onTurnStop` did inline: the `turn_complete` gate (`shouldNotifyTurnComplete`), who wants the push (`tokensWanting`), the text and the fan-out, plus `turnFailed` and `turnSucceeded` for the `turn_failed` notice.
+It is built once in `cli.ts` and reads the config, the devices and the signaling endpoint when a turn ends, never when it is built.
+`onTurnStop` keeps what is Claude's, the #914 session filter (`claudeHarness.admitsAnySession`, an early return, first) and the timer lookup and clear, and then calls `turnCompleted`; a source pin and the old claude-session pin both hold the filter.
+Claude's `StopFailure` wiring (`createTurnFailedRoutes` from the hook bridge, `ClaudeLaunchDeps.pushTurnFailed` and `dismissTurnFailed`) is unchanged; the sink uses the same routes for the failure it is handed, and the routes' `push` gained an optional agent name.
+`buildTurnFailedText`, `NotificationDispatcher.pushTurnFailed` and the routes take an `agentName` that defaults to `Claude`, so a failed Codex turn reads "Codex stopped" and no Claude test changed.
+One placeholder keeps the old behavior exactly: `onTurnStop` passes `getPrimarySessionId() ?? 'unbound'` as the session, which the sink titles "Agent", as the inline code did before a primary id existed (`onHarnessDenied` uses the same idiom).
+2. **The turn mapping** (`codex-turns.ts`, fed every notification of the app-server by the session).
+Only a `turn/completed` of the session's own thread counts (`ThreadTracker.role` is `main`); a subagent's turns end many times inside the main turn and another window's thread is not this session's.
+`completed`: `turnCompleted` with `elapsedMs = turn.durationMs` (unknown unless a finite number of at least zero) and `lastAssistantMessage` the text of the LAST `agentMessage` whose `phase` is `final_answer`, then `turnSucceeded`.
+`failed`: `turnFailed` with `agentName: 'Codex'`, `turn.error.message` as `errorDetails` (when it is not blank) and `codexErrorInfo` as `error` only when it is a string; the object variants (`httpConnectionFailed` and the like) carry no single code, so they read "Unknown error" plus the message.
+A failed turn carries no `lastAssistantMessage`: an earlier answer of that turn is not what went wrong.
+`interrupted`: `turnSucceeded` only.
+Any other status (`inProgress`, a status a newer Codex adds, a missing one) is logged WITHOUT its value and does nothing.
+The sink applies the same gates as for Claude, and a failed turn is never muted by `on_turn_complete`.
+3. **Decisions inside that mapping.**
+A turn with no `final_answer` message has nothing to show, so it is silent, as an empty `last_assistant_message` is for Claude; a message with `phase: null` is "unknown" (the schema says callers must treat it so) and is not guessed to be final, which means a model that sends no phase never pushes "turn complete" (fails toward silence; unverified whether any model in use does that).
+An interrupted turn is not announced: a phone No ends the turn (item 2 of the Phase 4 amendment) and so does Esc, which the person just did.
+A `turn/started` does not clear a stale failure notice (Claude's `UserPromptSubmit` does); the next completed or interrupted turn does.
+No de-duplication of `turn/completed` exists: the spike showed a late attacher replayed pending REQUESTS, not notifications, and nothing shows a repeat.
+4. **The chat seam.**
+`HarnessChat.readHistory(emit): Promise<number>` and `HarnessSession.chat?` (`harness/types.ts`); the transcript handler takes an optional `chatFor(remiSessionId)` and asks it BEFORE any file lookup, so a transcript file that happens to bear the id is not read in its place.
+It streams what the chat emits to the requesting connection, then sends `transcript_load_complete` with the count the chat returned and the request id, or `LOAD_FAILED` when the read fails (what was sent before stays sent; a synchronous throw is the same failure).
+Claude's sessions have no chat and take the transcript-file path unchanged.
+5. **History** (`codex-chat.ts`) is `thread/items/list {threadId, sortDirection: 'asc', limit: 100, cursor}`, oldest first, following `nextCursor` until it is null, each page emitted as it arrives.
+The schema (`ThreadItemsListResponse`: `data` of `ThreadItemEntry {turnId, item, startedAtMs, completedAtMs}`, `nextCursor`, `backwardsCursor`) is the only evidence of the response shape.
+The read builds its own MessageAPI, so it adds nothing to the session's message stream; the same item twice in one read is emitted once.
+A cursor that repeats stops the read, and so do 1000 pages (each logged), so a server that never ends cannot loop it.
+"no rollout found" (code -32600, the text `thread/resume` answers before the first message, LV-2) on the FIRST page is an empty history; the same text on a later page, and every other failure, is a `CodexHistoryError` whose text carries the code and none of the server's words (they may name a thread or a path, and the handler logs and sends the message).
+A page that is not a page (no `data` list, a cursor that is a number or empty) is an error and never an empty history; an entry of a page that is not an object with an `item` is skipped.
+A session that has not learned its thread has no history and asks nothing.
+6. **The mapping of an item** (shared by history and live).
+`userMessage` is a user message (its `text` parts joined by a newline; the type tag decides, never a `text` field on another part); `agentMessage` is an assistant message, commentary and final answer alike (the TUI shows both); a finished `commandExecution` is an assistant tool entry named `shell`: `tools: ['shell']`, no text, the structured message `Used shell` (as Claude's tool-only entries read), a `tool_use` block with `{command}` and a `tool_result` with the output, both bounded to 500 characters as Claude bounds a tool (the input stays valid JSON), and `isError` for `failed`, `declined` or a non-zero exit.
+One still `inProgress` is skipped: its completion arrives live, and a client keeps the first copy of an entry it sees, so sending it early would hide its result.
+`reasoning`, plans, hook prompts, file changes, tool calls, blank and image-only messages and any item type remi does not know are skipped.
+The entry id is the item id, so a history read and a live frame of one item carry the same `entryUuid` and a client drops the second.
+Message text is not bounded (as Claude's is not); the push text is.
+7. **Live.**
+Each `item/completed` of the main thread goes to every client through the launch context's `sendAndRecord`, structured by the session's own MessageAPI as Claude's binder does (so the structured agent output goes out too), once per item (the last 1024 ids are remembered; an item is remembered only after its send succeeded, so a failed send is tried again if the item is delivered again).
+A subagent's items and another window's are not this chat.
+A frame that completed while the link was down is missing from the live stream until a history read.
+Typed chat stays refused (`acceptsTypedChat: false`): Phase 6 gives Codex a chat to read, not one to type into.
+8. **Boundary, as allowlists.**
+`CODEX_MAY_IMPORT` gains `api/message-api` (the history's bullet structurer) and `notifications/turn-events`, which a new test pins as imported only as a type by every Codex module; the debt list is unchanged.
+9. **What LV-5 must check (not run).**
+(a) the `thread/items/list` response is the generated schema's, pages ascending as asked and accepts `limit: 100`;
+(b) what it answers for a thread with nothing written yet (assumed -32600 "no rollout found"; anything else reads as `LOAD_FAILED` until the first message);
+(c) whether its items include context Codex injects (an environment or instructions `userMessage`) that would show as chat bubbles;
+(d) an interrupted turn's `turn/completed` (assumed `status: "interrupted"`; the spike's phone No still reported `completed`) and a failed one's (assumed `status: "failed"` with `error: {message, codexErrorInfo, ...}`, from a `turn/start` with a bad model);
+(e) that `turn/completed` arrives once per turn per connection and carries a `final_answer` message on the models in use;
+(f) that `durationMs` of a long turn is its wall-clock length, which is the whole gate.
+10. **Deviations from the plan.**
+`parseTurnCompleted` and `parseThreadItem` live in `thread-protocol.ts` (the plan listed no parser file); the history error is a `CodexHistoryError` with a code (the plan said nothing of error text); the turn sink's `config` dependency is `{onTurnComplete, turnCompleteMinSeconds}` read per event; `startDaemon` in the characterization test takes optional extra arguments; and the history is capped at 1000 pages (the plan had no bound).
+The plan's mapping of `completed` said "`lastAssistantMessage` from the `agentMessage` with `phase:'final_answer'`": the last one is taken when there are several.
+11. **Receipts.**
+Pins first, in their own commit, red (the modules did not exist): the sink and the `onTurnStop` and `cli.ts` source pins, the Codex mapping on the real `turn/completed` frames (`expA-accept.jsonl:74`, `expA-decline.jsonl:141`), the chat on real items through the real client and the stand-in app-server, the `chatFor` seam, and the session wiring.
+125 mutants of the new logic and of each wiring line were applied to a committed tree, each run with `bun test --bail` and reverted with `git apply -R`: the five the plan names (the `admitsAnySession` filter removed from `onTurnStop`, the wrong `final_answer` item, `interrupted` pushing, `failed` not pushing, the history order reversed) and mutants for the behaviors of the sink, the turn mapping, the two parsers, the chat, the handler seam, the session wiring and the boundary.
+Seven survived at first and each is now pinned: six edge cases of the two parsers and an unparsable `turn/completed` that was not logged (found by the mutants, then covered by `thread-protocol.test.ts` and `codex-turns.test.ts`), and a history page with no `nextCursor` key.
+None survives now, and none was judged equivalent.
+The list, with the test that kills each, is in the PR.
