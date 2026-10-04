@@ -18,7 +18,7 @@
  *
  * Options are built by what they MEAN, never by position, and only from what the
  * request itself lists in `availableDecisions` (an absent list allows `accept`
- * and `decline`): `Yes` is `accept`; `Yes, for this session` is `acceptForSession`
+ * and `decline`): `Yes` is `accept`; `Yes, and don't ask again for this command this session` is `acceptForSession`
  * (Codex remembers it, remi writes nothing); `No` is `cancel` when listed, else
  * `decline`, else the card cannot be answered. The object-form decisions
  * (`acceptWithExecpolicyAmendment`, `applyNetworkPolicyAmendment`) write a
@@ -31,6 +31,8 @@
  * spike showed `decline` works although unlisted. Whether `cancel` from a second
  * client behaves like the TUI's own No is unverified (plan LV-3(c)).
  */
+
+import { resolve } from 'node:path';
 
 import { escapeUnsafeText } from '@remi/shared';
 import type { Question, QuestionOption, QuestionStep, UUID } from '@remi/shared';
@@ -95,6 +97,7 @@ const DESCRIPTION_MAX = 500;
 const MAX_STEPS = 8;
 const MAX_STEP_OPTIONS = 12;
 const MAX_PERMISSION_NAMES = 20;
+const DIRECTORY_MAX = 500;
 
 const clip = (text: string, max: number): string =>
   text.length > max ? `${text.slice(0, max)} [${text.length - max} characters hidden]` : text;
@@ -163,6 +166,7 @@ interface Context {
   params: Record<string, unknown>;
   mintId: () => UUID;
   agentId: string | undefined;
+  sessionDirectory: string;
 }
 
 /** A card nobody can answer from the phone: it says what Codex asks and where to answer. */
@@ -239,7 +243,7 @@ function commandCard(c: Context): PendingRequestSpec {
     option('Yes', 'accept', { isRecommended: true, isYes: true }),
     ...(forSession
       ? [
-          option('Yes, for this session', 'acceptForSession', {
+          option("Yes, and don't ask again for this command this session", 'acceptForSession', {
             isYes: true,
             standingGrant: 'session',
           }),
@@ -252,6 +256,15 @@ function commandCard(c: Context): PendingRequestSpec {
   // command goes in `detail`, which the app shows in full and the dispatcher never turns into
   // lock-screen buttons (`pushCategoryFor`).
   const shown = truncateSummary(command);
+  // A command is judged by where it runs as much as by its text (a relative path, a recursive
+  // delete in the wrong tree): the directory is on the card, in the app and in the push, whenever
+  // it is not the session's own. It then also goes in `detail`, so a card that names another
+  // directory gets no lock-screen buttons. Never in a log.
+  const where = nonEmpty(params['cwd']);
+  const place =
+    where !== null && resolve(where) !== resolve(c.sessionDirectory)
+      ? `\nIn directory: ${escapeUnsafeText(clip(where, DIRECTORY_MAX))}`
+      : '';
   const stated = nonEmpty(params['reason']);
   // Cut before escaping, so a cut never lands inside a `\uXXXX`.
   const reason =
@@ -265,13 +278,13 @@ function commandCard(c: Context): PendingRequestSpec {
     method: c.req.method,
     question: {
       id: c.mintId(),
-      text: `Allow Codex to run: ${shown}${reason}`,
+      text: `Allow Codex to run: ${shown}${place}${reason}`,
       options,
       allowsFreeText: false,
       isAnswered: false,
       kind: 'permission',
       pendingLabel: COMMAND_LABEL,
-      ...(shown === command ? {} : { detail: command }),
+      ...(shown === command && place === '' ? {} : { detail: `${command}${place}` }),
     },
     responses: new Map(options.map((o) => [o.value, { decision: o.value }])),
     noResponse: { decision: noDecision },
@@ -374,12 +387,19 @@ function elicitationCard(c: Context): PendingRequestSpec {
 export function buildApprovalCard(
   req: { id: RequestId; method: string; params: unknown },
   mintId: () => UUID,
-  opts: { agentId?: string },
+  opts: { agentId?: string; sessionDirectory: string },
 ): PendingRequestSpec | null {
   if (!HANDLED.has(req.method)) return null;
   const threadId = requestThreadId(req.params);
   if (threadId === null || !isRecord(req.params)) return null;
-  const c: Context = { req, threadId, params: req.params, mintId, agentId: opts.agentId };
+  const c: Context = {
+    req,
+    threadId,
+    params: req.params,
+    mintId,
+    agentId: opts.agentId,
+    sessionDirectory: opts.sessionDirectory,
+  };
   switch (req.method) {
     case COMMAND:
       return commandCard(c);

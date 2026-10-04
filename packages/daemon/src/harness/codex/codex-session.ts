@@ -385,6 +385,7 @@ export function createCodexSession(
   );
   const decisions = new CodexDecisions({
     sessionId,
+    sessionDirectory: cwd.directory,
     client,
     sessionRegistry: deps.sessionRegistry,
     present: (question) => {

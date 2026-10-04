@@ -44,6 +44,8 @@ import { fixtureFrameAt, loadFixtureFrames } from '../../helpers/codex-fixtures.
 import { commandApprovalRequest } from '../../helpers/codex-threads.ts';
 
 const MINTED = '00000000-0000-7000-8000-0000000000aa' as UUID;
+/** The session's own directory: the fixtures' `cwd`, so a card shows no directory line unless a test asks for one. */
+const WHERE = { sessionDirectory: '/work/project' };
 const mint = (): UUID => MINTED;
 
 type Frame = { id: number | string; method: string; params: Record<string, unknown> };
@@ -103,7 +105,7 @@ describe('golden table: real frames to Question JSON', () => {
 
   for (const row of rows) {
     test(`${row.name}: the whole card is as written, and the key includes the thread`, () => {
-      const spec = buildApprovalCard(row.frame, mint, {});
+      const spec = buildApprovalCard(row.frame, mint, WHERE);
       expect(spec).not.toBeNull();
       expect(spec?.question).toStrictEqual(row.question);
       // What goes over the wire is the same object.
@@ -118,13 +120,13 @@ describe('golden table: real frames to Question JSON', () => {
     // The fixture really lists it (this is the claim the card is checked against).
     const listed = frame.params['availableDecisions'] as unknown[];
     expect(listed.some((d) => typeof d === 'object')).toBe(true);
-    const spec = buildApprovalCard(frame, mint, {});
+    const spec = buildApprovalCard(frame, mint, WHERE);
     expect(spec?.question.options.map((o) => o.value)).toEqual(['accept', 'cancel']);
     expect(JSON.stringify(spec)).not.toContain('Amendment');
   });
 
   test('a blocking user-input request (expC.jsonl:31) is a terminalOnly multi_question card with its questions mirrored', () => {
-    const spec = buildApprovalCard(realFrame('expC.jsonl', 31), mint, {});
+    const spec = buildApprovalCard(realFrame('expC.jsonl', 31), mint, WHERE);
     expect(spec?.actionable).toBe(false);
     expect(spec?.question).toStrictEqual({
       id: MINTED,
@@ -154,7 +156,7 @@ describe('golden table: real frames to Question JSON', () => {
       'synthetic-from-schema.jsonl',
     ).map((f) => f.frame as Frame);
     const texts = [fileChange, permissions, elicitation].map((frame) => {
-      const spec = buildApprovalCard(frame as Frame, mint, {});
+      const spec = buildApprovalCard(frame as Frame, mint, WHERE);
       expect(spec?.actionable).toBe(false);
       expect(spec?.question.terminalOnly).toBe(true);
       expect(spec?.question.options).toEqual([]);
@@ -174,14 +176,14 @@ describe('lock-screen pin: the unchanged dispatcher reads the cards by meaning',
     const spec = buildApprovalCard(
       { ...frame, params: { ...frame.params, availableDecisions: decisions } },
       mint,
-      {},
+      WHERE,
     );
     if (!spec) throw new Error('no card');
     return spec.question;
   };
 
   test('[Yes, No] from the real frame gets REMI_YN, with dynamic options', () => {
-    const card = buildApprovalCard(realFrame('expA-accept.jsonl', 47), mint, {})
+    const card = buildApprovalCard(realFrame('expA-accept.jsonl', 47), mint, WHERE)
       ?.question as Question;
     expect(card.options.map((o) => o.label)).toEqual(['Yes', 'No']);
     expect(pushCategoryFor(card)).toBe('REMI_YN');
@@ -190,14 +192,18 @@ describe('lock-screen pin: the unchanged dispatcher reads the cards by meaning',
 
   test('[Yes, Yes for this session, No] gets no category and no dynamic options (a standing grant is never a lock-screen tap)', () => {
     const card = listed(['accept', 'acceptForSession', 'cancel']);
-    expect(card.options.map((o) => o.label)).toEqual(['Yes', 'Yes, for this session', 'No']);
+    expect(card.options.map((o) => o.label)).toEqual([
+      'Yes',
+      "Yes, and don't ask again for this command this session",
+      'No',
+    ]);
     expect(card.options[1]?.standingGrant).toBe('session');
     expect(pushCategoryFor(card)).toBeUndefined();
     expect(selectDynOptions(card)).toBe(false);
   });
 
   test('a terminalOnly card gets neither', () => {
-    const card = buildApprovalCard(realFrame('expC.jsonl', 31), mint, {})?.question as Question;
+    const card = buildApprovalCard(realFrame('expC.jsonl', 31), mint, WHERE)?.question as Question;
     expect(card.terminalOnly).toBe(true);
     expect(pushCategoryFor(card)).toBeUndefined();
     expect(selectDynOptions(card)).toBe(false);
@@ -215,7 +221,7 @@ function build(
   id = 7,
 ): PendingRequestSpec {
   const { method, params } = commandApprovalRequest(THREAD, command, over);
-  const spec = buildApprovalCard({ id, method, params }, mint, opts);
+  const spec = buildApprovalCard({ id, method, params }, mint, { ...WHERE, ...opts });
   if (spec === null) throw new Error('no card');
   return spec;
 }
@@ -261,7 +267,7 @@ describe('options come only from what the request lists', () => {
       listed: ['accept', 'acceptForSession', 'decline'],
       options: [
         ['Yes', 'accept'],
-        ['Yes, for this session', 'acceptForSession'],
+        ["Yes, and don't ask again for this command this session", 'acceptForSession'],
         ['No', 'decline'],
       ],
     },
@@ -433,7 +439,10 @@ describe('the other kinds of request', () => {
       'Item/commandExecution/requestApproval',
       '',
     ]) {
-      expect(buildApprovalCard(frame(method, { threadId: THREAD }), mint, {}), method).toBeNull();
+      expect(
+        buildApprovalCard(frame(method, { threadId: THREAD }), mint, WHERE),
+        method,
+      ).toBeNull();
       expect(isApprovalMethod(method), method).toBe(false);
     }
     expect(isApprovalMethod('item/commandExecution/requestApproval')).toBe(true);
@@ -453,7 +462,7 @@ describe('the other kinds of request', () => {
         buildApprovalCard(
           { id: 3, method: 'item/commandExecution/requestApproval', params },
           mint,
-          {},
+          WHERE,
         ),
       ).toBeNull();
     }
@@ -469,7 +478,7 @@ describe('the other kinds of request', () => {
       frame('item/commandExecution/requestApproval', { threadId: THREAD }),
     ];
     for (const c of cases) {
-      const spec = buildApprovalCard(c, mint, {});
+      const spec = buildApprovalCard(c, mint, WHERE);
       expect(spec?.question.text, c.method).toBe(generic);
       expect(spec?.actionable).toBe(false);
       expect(spec?.question.terminalOnly).toBe(true);
@@ -484,7 +493,7 @@ describe('the other kinds of request', () => {
         grantRoot: '/work/project',
       }),
       mint,
-      {},
+      WHERE,
     );
     expect(fileChange?.question.text).toBe(
       'Codex asks to change files: edit the config (write access under /work/project). Answer it in the terminal.',
@@ -492,7 +501,7 @@ describe('the other kinds of request', () => {
     const bare = buildApprovalCard(
       frame('item/fileChange/requestApproval', { threadId: THREAD, grantRoot: null }),
       mint,
-      {},
+      WHERE,
     );
     expect(bare?.question.text).toBe('Codex asks to change files. Answer it in the terminal.');
     const permissions = buildApprovalCard(
@@ -501,7 +510,7 @@ describe('the other kinds of request', () => {
         permissions: { network: { enabled: true }, fileSystem: null, other: {} },
       }),
       mint,
-      {},
+      WHERE,
     );
     expect(permissions?.question.text).toBe(
       'Codex asks for extra permissions (network, other). Answer it in the terminal.',
@@ -518,7 +527,7 @@ describe('the other kinds of request', () => {
         url: 'https://user:secret@auth.example.test/path?token=abc#frag',
       }),
       mint,
-      {},
+      WHERE,
     );
     expect(spec?.question.text).toBe(
       'MCP server srv asks: sign in (auth.example.test). Answer it in the terminal.',
@@ -546,7 +555,7 @@ describe('the other kinds of request', () => {
         ],
       }),
       mint,
-      {},
+      WHERE,
     );
     expect(spec?.question.text).toBe('First?');
     expect(spec?.question.questions).toEqual([
@@ -572,7 +581,7 @@ describe('the other kinds of request', () => {
   test('building a card does not change the request it was built from', () => {
     const { method, params } = commandApprovalRequest(THREAD, 'touch unit-marker');
     const before = JSON.stringify(params);
-    buildApprovalCard({ id: 1, method, params }, mint, {});
+    buildApprovalCard({ id: 1, method, params }, mint, WHERE);
     expect(JSON.stringify(params)).toBe(before);
   });
 });
@@ -840,7 +849,7 @@ describe('text a hostile server controls is escaped before any client sees it (S
   }
   const frame = (method: string, params: Record<string, unknown>) => ({ id: 3, method, params });
   const card = (f: ReturnType<typeof frame>, opts: { agentId?: string } = {}): Question => {
-    const spec = buildApprovalCard(f, mint, opts);
+    const spec = buildApprovalCard(f, mint, { ...WHERE, ...opts });
     if (spec === null) throw new Error('no card');
     return spec.question;
   };
@@ -951,7 +960,7 @@ describe('text a hostile server controls is escaped before any client sees it (S
 describe('what a hostile or buggy server sends is bounded before a card is built (S7)', () => {
   const frame = (method: string, params: Record<string, unknown>) => ({ id: 3, method, params });
   const card = (f: ReturnType<typeof frame>): Question => {
-    const spec = buildApprovalCard(f, mint, {});
+    const spec = buildApprovalCard(f, mint, WHERE);
     if (spec === null) throw new Error('no card');
     return spec.question;
   };
@@ -1069,7 +1078,7 @@ describe('the label a card leaves in the live-sessions file is fixed, never its 
   const secret = 'sk-live-do-not-write-this-to-disk';
   const frame = (method: string, params: Record<string, unknown>) => ({ id: 3, method, params });
   const card = (f: ReturnType<typeof frame>, opts: { agentId?: string } = {}): Question => {
-    const spec = buildApprovalCard(f, mint, opts);
+    const spec = buildApprovalCard(f, mint, { ...WHERE, ...opts });
     if (spec === null) throw new Error('no card');
     return spec.question;
   };
@@ -1134,5 +1143,82 @@ describe('the label a card leaves in the live-sessions file is fixed, never its 
       expect(label).toBe('Codex asks for approval');
       expect(label).not.toContain(secret);
     }
+  });
+});
+
+describe("the directory a command runs in is shown when it is not the session's (S11)", () => {
+  const run = (cwd: unknown, dir = '/work/session', command = 'git clean -fdx') =>
+    buildApprovalCard(
+      {
+        id: 4,
+        ...commandApprovalRequest(THREAD, command, {
+          cwd,
+          availableDecisions: ['accept', 'cancel'],
+        }),
+      },
+      mint,
+      { sessionDirectory: dir },
+    )?.question as Question;
+
+  test("in the session's own directory the card says nothing of it, and keeps its buttons", () => {
+    for (const cwd of [
+      '/work/session',
+      '/work/session/',
+      '/work/session/.',
+      '/work/other/../session',
+    ]) {
+      const q = run(cwd);
+      expect(q.text, cwd).toBe('Allow Codex to run: git clean -fdx');
+      expect(q.detail, cwd).toBeUndefined();
+      expect(pushCategoryFor(q), cwd).toBe('REMI_YN');
+    }
+  });
+
+  test('anywhere else the card says where, and the push has no buttons: Yes is made in the app, where the whole card is', () => {
+    const q = run('/work/elsewhere');
+    expect(q.text).toBe('Allow Codex to run: git clean -fdx\nIn directory: /work/elsewhere');
+    expect(q.detail).toBe('git clean -fdx\nIn directory: /work/elsewhere');
+    expect(pushCategoryFor(q)).toBeUndefined();
+    expect(selectDynOptions(q)).toBe(false);
+    // The directory sits between the command and Codex's reason.
+    const withReason = buildApprovalCard(
+      {
+        id: 4,
+        ...commandApprovalRequest(THREAD, 'git clean -fdx', {
+          cwd: '/work/elsewhere',
+          reason: 'tidy',
+        }),
+      },
+      mint,
+      { sessionDirectory: '/work/session' },
+    )?.question as Question;
+    expect(withReason.text).toBe(
+      "Allow Codex to run: git clean -fdx\nIn directory: /work/elsewhere\nCodex's stated reason: tidy",
+    );
+  });
+
+  test('a cut command and a directory that differs share one detail, the whole command then the directory', () => {
+    const long = `echo ${'a'.repeat(200)}`;
+    const q = run('/work/elsewhere', '/work/session', long);
+    expect(q.detail).toBe(`${long}\nIn directory: /work/elsewhere`);
+    expect(q.text.startsWith('Allow Codex to run: echo ')).toBe(true);
+    expect(q.text.endsWith('\nIn directory: /work/elsewhere')).toBe(true);
+  });
+
+  test('no directory in the request, or one that is not text, adds nothing', () => {
+    for (const cwd of [undefined, null, '', 42, {}]) {
+      const q = run(cwd);
+      expect(q.text, String(cwd)).toBe('Allow Codex to run: git clean -fdx');
+      expect(q.detail).toBeUndefined();
+    }
+  });
+
+  test('a directory a server chose is escaped and bounded like any other text', () => {
+    const bidi = String.fromCharCode(0x202e);
+    const q = run(`/work/${bidi}gnp${'d'.repeat(5000)}`);
+    expect(q.text).not.toContain(bidi);
+    expect(q.text).toContain('In directory: /work/\\u202Egnp');
+    expect(q.text).toContain('characters hidden]');
+    expect((q.text.match(/d/g) ?? []).length).toBeLessThan(2100);
   });
 });

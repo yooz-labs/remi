@@ -839,6 +839,9 @@ describe('remi codex approvals (daemon, black-box characterization, #1178)', () 
     return { r, client, tuiId, ws, received, sessionId };
   }
 
+  /** A command approval of the TUI thread, running in the session's own directory (as Codex's would). */
+  const commandRequest = (a: Attached, command: string, over: Record<string, unknown> = {}) =>
+    commandApprovalRequest(a.tuiId, command, { cwd: fs.realpathSync(a.r.work), ...over });
   const cards = (received: ProtocolMessage[]): QuestionMessage[] =>
     received.filter((m): m is QuestionMessage => m.type === 'question');
   const refusals = (received: ProtocolMessage[]): ErrorMessage[] =>
@@ -877,10 +880,7 @@ describe('remi codex approvals (daemon, black-box characterization, #1178)', () 
   test('the card reaches the phone stamped held; every answer variant is refused and types nothing; Yes answers through the app-server, clears the card, and still types nothing', async () => {
     const a = await attachedDaemon();
     try {
-      const requestId = a.r.server.request(
-        commandApprovalRequest(a.tuiId, 'touch e2e-marker'),
-        a.tuiId,
-      );
+      const requestId = a.r.server.request(commandRequest(a, 'touch e2e-marker'), a.tuiId);
       await pollUntil(() => cards(a.received).length === 1, 10000, 'the approval card');
       const card = (cards(a.received)[0] as QuestionMessage).question;
       expect(card.held).toBe(true);
@@ -945,10 +945,7 @@ describe('remi codex approvals (daemon, black-box characterization, #1178)', () 
   test('the TUI answering first clears the card on the phone, and a late phone answer gets STALE_ANSWER and sends nothing', async () => {
     const a = await attachedDaemon();
     try {
-      const requestId = a.r.server.request(
-        commandApprovalRequest(a.tuiId, 'touch tui-first'),
-        a.tuiId,
-      );
+      const requestId = a.r.server.request(commandRequest(a, 'touch tui-first'), a.tuiId);
       await pollUntil(() => cards(a.received).length === 1, 10000, 'the approval card');
       const card = (cards(a.received)[0] as QuestionMessage).question;
 
@@ -1007,7 +1004,7 @@ describe('remi codex approvals (daemon, black-box characterization, #1178)', () 
       const code = (...codes: number[]): string => String.fromCharCode(...codes);
       // A clipboard write, a line overwrite, a report query, a bidi override and a zero-width space.
       const hostile = `echo ok${code(0x1b)}]52;c;QUJD${code(0x07)} ${code(0x1b)}[2K${code(0x0d)}${code(0x1b)}[6n ${code(0x202e)}fdp.exe${code(0x200b)}`;
-      a.r.server.request(commandApprovalRequest(a.tuiId, hostile), a.tuiId);
+      a.r.server.request(commandRequest(a, hostile), a.tuiId);
       await pollUntil(() => cards(a.received).length === 1, 10000, 'the hostile card');
       const card = (cards(a.received)[0] as QuestionMessage).question;
       const shown = [card.text, card.detail ?? ''].join('');
@@ -1040,10 +1037,7 @@ describe('remi codex approvals (daemon, black-box characterization, #1178)', () 
     try {
       const secret = 'sk-live-do-not-write-this-to-disk';
       a.r.server.request(
-        commandApprovalRequest(
-          a.tuiId,
-          `curl -H "Authorization: Bearer ${secret}" https://example.test`,
-        ),
+        commandRequest(a, `curl -H "Authorization: Bearer ${secret}" https://example.test`),
         a.tuiId,
       );
       a.r.server.request(
@@ -1090,10 +1084,7 @@ describe('remi codex approvals (daemon, black-box characterization, #1178)', () 
   test('remi unstick (SIGUSR2) dismisses an open card on every client, answers nothing and types nothing', async () => {
     const a = await attachedDaemon();
     try {
-      const requestId = a.r.server.request(
-        commandApprovalRequest(a.tuiId, 'touch unstick-marker'),
-        a.tuiId,
-      );
+      const requestId = a.r.server.request(commandRequest(a, 'touch unstick-marker'), a.tuiId);
       await pollUntil(() => cards(a.received).length === 1, 10000, 'the approval card');
       const card = (cards(a.received)[0] as QuestionMessage).question;
       process.kill(a.r.proc.pid, 'SIGUSR2');

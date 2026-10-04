@@ -230,6 +230,9 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
     return { server, session, registry, sessionId, sent, errors, logs, handlers, tuiId };
   }
 
+  /** A command approval of the TUI thread, running in the session's own directory (as Codex's would). */
+  const commandRequest = (r: Rig, command: string, over: Record<string, unknown> = {}) =>
+    commandApprovalRequest(r.tuiId, command, { cwd: workDir, ...over });
   const cards = (r: Rig): QuestionMessage[] =>
     r.sent.filter((m): m is QuestionMessage => m.type === 'question');
   const resolved = (r: Rig): QuestionResolvedMessage[] =>
@@ -265,10 +268,13 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
   test('the phone accepts first: the app-server gets accept, resolves the request, and the card is gone with nothing typed', async () => {
     const r = await attached();
     await until(() => fs.existsSync(path.join(fakeDir, 'stdin')), 'the fake codex');
-    const id = r.server.request(commandApprovalRequest(r.tuiId, 'touch phone-first'), r.tuiId);
+    const id = r.server.request(commandRequest(r, 'touch phone-first'), r.tuiId);
     await until(() => pending(r).length === 1, 'the card');
     const card = pending(r)[0] as Question;
     expect(card.held).toBe(true);
+    // The command runs in the session's own directory, so the card does not name one.
+    expect(card.text).toBe('Allow Codex to run: touch phone-first');
+    expect(card.detail).toBeUndefined();
     expect(cards(r)).toHaveLength(1);
 
     await answer(r, card, 'Yes');
@@ -288,7 +294,7 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
     const r = await attached({
       decisions: { replayWindowMs: 200, disconnectGraceMs: 800, confirmMs: 300 },
     });
-    const id = r.server.request(commandApprovalRequest(r.tuiId, 'touch never-confirmed'), r.tuiId);
+    const id = r.server.request(commandRequest(r, 'touch never-confirmed'), r.tuiId);
     await until(() => pending(r).length === 1, 'the card');
     const card = pending(r)[0] as Question;
     r.server.ignoreAnswers();
@@ -310,7 +316,7 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
     const r = await attached({
       decisions: { replayWindowMs: 200, disconnectGraceMs: 800, confirmMs: 300 },
     });
-    const id = r.server.request(commandApprovalRequest(r.tuiId, 'touch confirmed'), r.tuiId);
+    const id = r.server.request(commandRequest(r, 'touch confirmed'), r.tuiId);
     await until(() => pending(r).length === 1, 'the card');
     await answer(r, pending(r)[0] as Question, 'Yes');
     await until(() => !r.server.isPending(r.tuiId, id), 'the request to be resolved');
@@ -319,9 +325,24 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
     expect(systemNotices(r)).toEqual([]);
   });
 
+  test('a command that runs in another directory says so on its card, and the app is where it is approved', async () => {
+    const r = await attached();
+    r.server.request(
+      commandRequest(r, 'touch elsewhere-marker', { cwd: '/somewhere/else' }),
+      r.tuiId,
+    );
+    await until(() => pending(r).length === 1, 'the card');
+    const card = pending(r)[0] as Question;
+    expect(card.text).toBe(
+      'Allow Codex to run: touch elsewhere-marker\nIn directory: /somewhere/else',
+    );
+    expect(card.detail).toBe('touch elsewhere-marker\nIn directory: /somewhere/else');
+    await expectNothingTyped(r);
+  });
+
   test('the TUI answers first: the card clears with question_resolved, and a late phone answer is STALE_ANSWER and sends nothing', async () => {
     const r = await attached();
-    const id = r.server.request(commandApprovalRequest(r.tuiId, 'touch tui-first'), r.tuiId);
+    const id = r.server.request(commandRequest(r, 'touch tui-first'), r.tuiId);
     await until(() => pending(r).length === 1, 'the card');
     const card = pending(r)[0] as Question;
 
@@ -338,8 +359,8 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
 
   test('two requests in a row have two ids: each card answers its own request, and one resolved clears only its own card', async () => {
     const r = await attached();
-    const first = r.server.request(commandApprovalRequest(r.tuiId, 'touch first'), r.tuiId);
-    const second = r.server.request(commandApprovalRequest(r.tuiId, 'touch second'), r.tuiId);
+    const first = r.server.request(commandRequest(r, 'touch first'), r.tuiId);
+    const second = r.server.request(commandRequest(r, 'touch second'), r.tuiId);
     expect(second).toBe(first + 1);
     await until(() => pending(r).length === 2, 'both cards');
     const [one, two] = pending(r) as [Question, Question];
@@ -363,7 +384,7 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
     const client = r.server.clientIds()[0] as number;
     const stranger = crypto.randomUUID();
     r.server.emitTo(client, { id: 900, ...commandApprovalRequest(stranger, 'touch elsewhere') });
-    const id = r.server.request(commandApprovalRequest(r.tuiId, 'touch ours'), r.tuiId);
+    const id = r.server.request(commandRequest(r, 'touch ours'), r.tuiId);
     await until(() => pending(r).length === 1, 'our card');
     expect(pending(r)[0]?.text).toBe('Allow Codex to run: touch ours');
     expect(cards(r)).toHaveLength(1);
@@ -438,7 +459,7 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
   describe('the link drops in the middle of an approval', () => {
     test('the card is retired, the replay makes a new card with a new id whose answer works, and the old one cannot be answered', async () => {
       const r = await attached();
-      const id = r.server.request(commandApprovalRequest(r.tuiId, 'touch survive'), r.tuiId);
+      const id = r.server.request(commandRequest(r, 'touch survive'), r.tuiId);
       await until(() => pending(r).length === 1, 'the card');
       const old = pending(r)[0] as Question;
       const firstClient = r.server.clientIds()[0] as number;
@@ -480,7 +501,7 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
     test('a request resolved while the link was down is not replayed: its retired card is swept after the replay window', async () => {
       // The grace period is ten minutes, so only the replay window after the re-attach can sweep it.
       const r = await attached({ decisions: { replayWindowMs: 200, disconnectGraceMs: 600_000 } });
-      const id = r.server.request(commandApprovalRequest(r.tuiId, 'touch gone'), r.tuiId);
+      const id = r.server.request(commandRequest(r, 'touch gone'), r.tuiId);
       await until(() => pending(r).length === 1, 'the card');
       const old = pending(r)[0] as Question;
       r.server.dropClient(r.server.clientIds()[0] as number);
@@ -494,7 +515,7 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
 
     test('a link that does not come back dismisses the retired card after the grace period', async () => {
       const r = await attached({ decisions: { replayWindowMs: 100, disconnectGraceMs: 300 } });
-      r.server.request(commandApprovalRequest(r.tuiId, 'touch dead-link'), r.tuiId);
+      r.server.request(commandRequest(r, 'touch dead-link'), r.tuiId);
       await until(() => pending(r).length === 1, 'the card');
       const old = pending(r)[0] as Question;
       // The server goes away for good: stop it, so no reconnect can succeed.
@@ -507,7 +528,7 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
 
   test('cards of a thread the session moved off are dismissed at the rotation, and its requests make no card afterwards', async () => {
     const r = await attached();
-    const id = r.server.request(commandApprovalRequest(r.tuiId, 'touch old-thread'), r.tuiId);
+    const id = r.server.request(commandRequest(r, 'touch old-thread'), r.tuiId);
     await until(() => pending(r).length === 1, 'the card');
     const old = pending(r)[0] as Question;
 
@@ -526,7 +547,7 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
     // The old thread's request, delivered again, is not this session's any more.
     r.server.emitTo(r.server.clientIds()[0] as number, {
       id,
-      ...commandApprovalRequest(r.tuiId, 'touch old-thread'),
+      ...commandRequest(r, 'touch old-thread'),
     });
     await sleep(150);
     expect(pending(r)).toEqual([]);
@@ -544,7 +565,7 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
       const unpinned = pending(r)[0] as Question;
       // Then ten pending approvals: the cap is eight, every approval is pinned.
       for (let i = 0; i < 10; i++) {
-        r.server.request(commandApprovalRequest(r.tuiId, `touch pinned-${i}`), r.tuiId);
+        r.server.request(commandRequest(r, `touch pinned-${i}`), r.tuiId);
       }
       await until(() => cards(r).length === 11, 'eleven cards');
       // The cap took the unpinned card and none of the approvals (it goes past eight rather than
@@ -559,7 +580,7 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
 
   test('disposing the session dismisses its cards, and nothing is answered afterwards', async () => {
     const r = await attached();
-    r.server.request(commandApprovalRequest(r.tuiId, 'touch at-exit'), r.tuiId);
+    r.server.request(commandRequest(r, 'touch at-exit'), r.tuiId);
     await until(() => pending(r).length === 1, 'the card');
     const card = pending(r)[0] as Question;
     r.session.dispose();
@@ -571,7 +592,7 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
   test('typed chat is refused while a card is up, and raw input is the one thing that reaches the terminal', async () => {
     const r = await attached();
     await until(() => fs.existsSync(path.join(fakeDir, 'stdin')), 'the fake codex');
-    r.server.request(commandApprovalRequest(r.tuiId, 'touch chat'), r.tuiId);
+    r.server.request(commandRequest(r, 'touch chat'), r.tuiId);
     await until(() => pending(r).length === 1, 'the card');
     await r.handlers.onUserInput(CID, r.sessionId, 'typed chat', false);
     expect(r.errors.map((e) => e.code)).toEqual(['PROMPT_WAITING']);

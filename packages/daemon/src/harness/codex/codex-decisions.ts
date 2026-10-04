@@ -90,6 +90,8 @@ export const realScheduler: Scheduler = {
 export interface CodexDecisionsDeps {
   /** The remi session whose cards these are (the registry's id). */
   sessionId: UUID;
+  /** The session's working directory, as `realpath` resolves it: a command that runs elsewhere says where on its card. */
+  sessionDirectory: string;
   client: Pick<AppServerClient, 'respond'>;
   sessionRegistry: Pick<SessionRegistry, 'removeQuestion'>;
   /** Show a card: `messageApi.handleQuestion(q, { held: true })`, which stamps `held`. */
@@ -159,11 +161,10 @@ export class CodexDecisions implements DecisionChannel {
       this.deps.log(`ignored request ${logId(req.id)}: it is not about this session's thread`);
       return;
     }
-    const spec = buildApprovalCard(
-      req,
-      generateId,
-      role === 'subagent' ? { agentId: threadId } : {},
-    );
+    const spec = buildApprovalCard(req, generateId, {
+      sessionDirectory: this.deps.sessionDirectory,
+      ...(role === 'subagent' ? { agentId: threadId } : {}),
+    });
     if (spec === null) {
       this.deps.log(`ignored request ${logId(req.id)}: no card for it`);
       return;

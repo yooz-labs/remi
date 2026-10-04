@@ -167,6 +167,8 @@ describe('CodexDecisions', () => {
   function build(over: Partial<CodexDecisionsDeps> = {}): CodexDecisions {
     return new CodexDecisions({
       sessionId,
+      // The directory of the fixtures' commands, so no card here names a directory.
+      sessionDirectory: '/work/project',
       client: {
         respond: (id, result) => {
           if (respondThrows) throw new Error('cannot serialize');
