@@ -67,6 +67,7 @@ import { attachCommand } from './attach-hint.ts';
 import { resolveCodexWorkingDirectory, validateCodexArgs } from './codex-args.ts';
 import { CodexDecisions, type CodexDecisionsDeps } from './codex-decisions.ts';
 import { UntrustedSocketError, resolveCodexSocketPath } from './codex-socket.ts';
+import { TERMINAL, type TerminalWords, attachWords } from './terminal-words.ts';
 import type { ThreadStatus } from './thread-protocol.ts';
 import { ThreadClaimedError, ThreadTracker, type ThreadTrackerDeps } from './thread-tracker.ts';
 
@@ -222,11 +223,12 @@ export function checkCodexLaunch(
  */
 const ROTATION_MESSAGE = 'remi now follows a new Codex thread; approvals come from it';
 
-const LINK_UNAVAILABLE_MESSAGE =
-  'remi cannot reach the shared Codex app-server, so its status here is not updating; the session still works in the terminal.';
+/** What the link notices say of the session itself: it works in the terminal, or `remi attach` shows it. */
+const linkUnavailableMessage = (words: TerminalWords): string =>
+  `remi cannot reach the shared Codex app-server, so its status here is not updating; ${words.works}.`;
 /** Said instead when the socket was found but refused: the cause is a fixable permission. */
-const LINK_UNTRUSTED_MESSAGE =
-  'remi will not connect to the shared Codex app-server: its control directory is not private (the remi log says which); the session still works in the terminal.';
+const linkUntrustedMessage = (words: TerminalWords): string =>
+  `remi will not connect to the shared Codex app-server: its control directory is not private (the remi log says which); ${words.works}.`;
 /** How long after its start a session with no thread may still be the one a new thread is for. */
 const FIRST_THREAD_WINDOW_MS = 60_000;
 const DEFAULT_LINK_WATCHDOG_MS = 30_000;
@@ -250,6 +252,11 @@ export function createCodexSession(
 ): HarnessSession {
   const { sessionId, workingDirectory, messageApi } = ctx;
   const log = (message: string): void => deps.log(`[Codex] ${message}`);
+  // Where the person looks and answers (G12): the terminal of a wrapper session; for one a hub or
+  // `remi codex --daemon` runs there is none, and `remi attach` names this session. Read when a
+  // message is made, since the port settles after the session is built.
+  const words = (): TerminalWords =>
+    ctx.passThrough ? TERMINAL : attachWords(deps.wsPort(), sessionId);
 
   const checked = checkCodexLaunch(deps, ctx.extraArgs, workingDirectory);
   if (!checked.ok) throw new CodexLaunchRefusal(checked.message, checked.exitCode);
@@ -344,8 +351,8 @@ export function createCodexSession(
       );
       sendSystemMessage(
         socketError instanceof UntrustedSocketError
-          ? LINK_UNTRUSTED_MESSAGE
-          : LINK_UNAVAILABLE_MESSAGE,
+          ? linkUntrustedMessage(words())
+          : linkUnavailableMessage(words()),
       );
     }, deps.linkWatchdogMs ?? DEFAULT_LINK_WATCHDOG_MS);
   };
@@ -407,6 +414,7 @@ export function createCodexSession(
     threadRole: (threadId) => link.tracker?.role(threadId) ?? null,
     log,
     notice: sendSystemMessage,
+    terminal: words,
     ...deps.decisions,
   });
   // A card whose request is pending is not evicted by the pending-question cap.
@@ -444,6 +452,7 @@ export function createCodexSession(
         return !(Date.now() - Date.parse(s.startedAt) >= FIRST_THREAD_WINDOW_MS);
       }),
     notice: sendSystemMessage,
+    terminal: words,
     onIdentity: (threadId) => {
       try {
         deps.bindingStore.updateHarnessIdentity(sessionId, 'codex', threadId);

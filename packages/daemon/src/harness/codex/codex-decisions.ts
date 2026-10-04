@@ -67,6 +67,7 @@ import {
   requestThreadId,
   responseFor,
 } from './approval-cards.ts';
+import { TERMINAL, type TerminalWords } from './terminal-words.ts';
 import { shortThreadId } from './thread-id.ts';
 
 export type ThreadRole = 'main' | 'subagent';
@@ -105,6 +106,12 @@ export interface CodexDecisionsDeps {
   log: (message: string) => void;
   /** Tell the person something as a system message (an answer Codex never confirmed, one that could not be sent). */
   notice: (message: string) => void;
+  /**
+   * Where the person looks and answers: the terminal for a wrapper session, `remi attach` for one
+   * with none (G12). Absent is the terminal. Read each time a message is made, since the port a
+   * session listens on is settled after it is built.
+   */
+  terminal?: () => TerminalWords;
   /** Test seams: how long after a re-attach a request that was not replayed is dismissed (3000 ms) and how long a link may stay down before its retired cards are (30 000 ms), how long a delivered answer waits for Codex to confirm it (10 000 ms), and the clock. */
   replayWindowMs?: number;
   disconnectGraceMs?: number;
@@ -134,9 +141,10 @@ const DISCONNECT_GRACE_MS = 30_000;
  * overlay is still up. This long after the answer, the person is told to check the terminal.
  */
 const CONFIRM_MS = 10_000;
-const UNCONFIRMED_NOTICE = 'Codex has not confirmed the answer; check the terminal';
-const UNSENT_NOTICE =
-  'remi could not deliver that answer to Codex; try again from the new card if one appears, or answer in the terminal';
+const unconfirmedNotice = (words: TerminalWords): string =>
+  `Codex has not confirmed the answer; check ${words.look}`;
+const unsentNotice = (words: TerminalWords): string =>
+  `remi could not deliver that answer to Codex; try again from the new card if one appears, or answer ${words.where}`;
 /** More requests than this at once is not Codex asking: the oldest are dismissed, never answered. */
 const MAX_TRACKED = 64;
 
@@ -169,6 +177,7 @@ export class CodexDecisions implements DecisionChannel {
     }
     const spec = buildApprovalCard(req, generateId, {
       sessionDirectory: this.deps.sessionDirectory,
+      where: this.words().where,
       ...(role === 'subagent' ? { agentId: threadId } : {}),
     });
     if (spec === null) {
@@ -282,7 +291,7 @@ export class CodexDecisions implements DecisionChannel {
       // to be dead). The request may still be pending, and a replay may bring it back as a card.
       if (encoded) this.deps.log(`not answered ${logId(spec.requestId)}: the link did not take it`);
       this.forget(entry, false, 'closed');
-      this.tell(UNSENT_NOTICE);
+      this.tell(unsentNotice(this.words()));
       return 'closed';
     }
     entry.state = 'answered';
@@ -372,6 +381,10 @@ export class CodexDecisions implements DecisionChannel {
     return this.deps.scheduler ?? realScheduler;
   }
 
+  private words(): TerminalWords {
+    return this.deps.terminal?.() ?? TERMINAL;
+  }
+
   /** Say something to the person; a failure to say it is logged, never thrown into the answer path. */
   private tell(message: string): void {
     try {
@@ -391,7 +404,7 @@ export class CodexDecisions implements DecisionChannel {
     if (this.byId.get(entry.spec.question.id) !== entry) return;
     this.deps.log(`no confirmation for the answer to ${logId(entry.spec.requestId)}`);
     this.forget(entry, false, 'unconfirmed');
-    this.tell(UNCONFIRMED_NOTICE);
+    this.tell(unconfirmedNotice(this.words()));
   }
 
   private armSweep(ms: number): void {

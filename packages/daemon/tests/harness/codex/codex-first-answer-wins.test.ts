@@ -324,7 +324,7 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
     ]);
   });
 
-  test('an answer Codex never confirms tells the person to check the terminal, and the card is already gone', async () => {
+  test('an answer Codex never confirms tells the person to check the session (this one has no terminal: remi attach), and the card is already gone', async () => {
     const r = await attached({
       decisions: { replayWindowMs: 200, disconnectGraceMs: 800, confirmMs: 300 },
     });
@@ -339,7 +339,9 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
     expect(pending(r)).toEqual([]);
     expect(systemNotices(r)).toEqual([]);
     await until(() => systemNotices(r).length === 1, 'the notice that Codex has not confirmed');
-    expect(systemNotices(r)[0]).toContain('Codex has not confirmed the answer; check the terminal');
+    expect(systemNotices(r)[0]).toContain(
+      'Codex has not confirmed the answer; check the session with `remi attach <host>:',
+    );
     // Codex never resolved it: the request is still waiting, and remi did not claim otherwise twice.
     expect(r.server.isPending(r.tuiId, id)).toBe(true);
     await expectNothingTyped(r);
