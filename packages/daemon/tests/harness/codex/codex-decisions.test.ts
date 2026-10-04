@@ -552,6 +552,19 @@ describe('CodexDecisions', () => {
       expect(responses).toEqual([{ id: 6, result: { decision: 'accept' } }]);
     });
 
+    test('the replay window, not the grace period, ends the wait once the tracker attached again', async () => {
+      // The grace period is a minute: only the window (50 ms) can dismiss the card in time.
+      const quick = build({ replayWindowMs: 50, disconnectGraceMs: 60_000 });
+      toDispose.push(quick);
+      const { method, params } = commandApprovalRequest(MAIN, 'touch x');
+      quick.handleServerRequest({ id: 5, method, params });
+      const card = only();
+      quick.handleDisconnected();
+      quick.handleReattached();
+      await until(() => pending().length === 0, 'the sweep after the window', 5000);
+      expect(resolvedMessages().map((m) => m.questionId)).toEqual([card.id]);
+    });
+
     test('a link that never comes back dismisses its retired cards after the grace period, and a re-attach shortens the wait to the replay window', async () => {
       request(5);
       const q = only();
