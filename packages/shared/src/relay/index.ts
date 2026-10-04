@@ -20,3 +20,4 @@ export * from './envelope.ts';
 export * from './channel.ts';
 export * from './pairing.ts';
 export * from './handshake.ts';
+export * from './seal.ts';
