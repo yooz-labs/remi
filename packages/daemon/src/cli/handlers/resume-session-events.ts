@@ -35,7 +35,7 @@ import {
   createResumeSessionResponse,
   errorToString,
 } from '@remi/shared';
-import type { ProtocolMessage, UUID } from '@remi/shared';
+import type { HarnessId, ProtocolMessage, UUID } from '@remi/shared';
 
 import type { Harness } from '../../harness/types.ts';
 import type { SessionBindingStore, SessionRegistry, SessionStore } from '../../session/index.ts';
@@ -88,6 +88,11 @@ export interface ResumeSessionHandlerDeps {
    * failing open into running Claude in a hub.
    */
   hubMode: boolean;
+  /**
+   * The harnesses this daemon can start, named on the acks this handler sends so
+   * that every hello_ack carries them (#1179).
+   */
+  harnesses: () => readonly HarnessId[];
   sessionRegistry: SessionRegistry;
   /** Full-record reads that also need projectPath (resume seed by remi id). */
   sessionStore: SessionStore;
@@ -106,6 +111,7 @@ export type ResumeSessionHandlers = ReturnType<typeof createResumeSessionHandler
 export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
   const {
     hubMode,
+    harnesses,
     sessionRegistry,
     sessionStore,
     bindingStore,
@@ -155,6 +161,7 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
                 replayCount: result.replayMessages.length,
                 nextBulletId: result.nextBulletId,
               },
+              harnesses: harnesses(),
             }),
           );
           if (result.replayMessages.length > 0) {
@@ -304,6 +311,7 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
             connectionId,
             createHelloAck('1.0.0', newSessionId, {
               resumeInfo: { isResume: false, replayCount: 0, nextBulletId: 1 },
+              harnesses: harnesses(),
             }),
           );
           log(`Session ${newSessionId} created via resume (claude: ${claudeSessionId})`);

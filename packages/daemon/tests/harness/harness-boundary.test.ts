@@ -56,6 +56,8 @@ const NEUTRAL_DIRS = ['cli/handlers', 'api', 'session'] as const;
 const NEUTRAL_FILES = [
   'harness/types.ts',
   'harness/decision.ts',
+  // The registry of harnesses a create request may name (#1179): it knows ids and commands, not Claude.
+  'harness/registry.ts',
   'cli/current-session.ts',
   // The PTY spawn takes its command, environment and output sink as
   // parameters (#1176), so a second harness can use it without Claude's parser.
@@ -70,6 +72,7 @@ const FORBIDDEN_FILES = [
   'harness/claude',
   'harness/claude-session',
   'harness/claude-transcript-path',
+  'harness/claude-args',
   'parser/output-processor',
   'parser/question-parser',
   'parser/status-parser',

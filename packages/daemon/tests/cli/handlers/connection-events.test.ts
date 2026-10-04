@@ -80,6 +80,7 @@ describe('createConnectionHandlers', () => {
       sessionRegistry,
       currentOwnedSession,
       harnessId: 'claude',
+      harnesses: () => ['claude'],
       trackConnection: (id, type) => {
         trackedConnections.push({ id, type });
       },
@@ -604,6 +605,7 @@ describe('onPeerConnect/onPeerDisconnect feed the hub census (#650)', () => {
         sessionRegistry,
         currentOwnedSession: () => null,
         harnessId: 'claude',
+        harnesses: () => ['claude'],
         trackConnection: () => {},
         untrackConnection: () => {},
         onConnectionAdded: () => {},

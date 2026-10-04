@@ -81,6 +81,7 @@ describe('createResumeSessionHandlers', () => {
   ) {
     return createResumeSessionHandlers({
       hubMode,
+      harnesses: () => ['claude'],
       sessionRegistry,
       sessionStore,
       bindingStore,
@@ -167,6 +168,7 @@ describe('createResumeSessionHandlers', () => {
     } as unknown as SessionStore;
     const handlers = createResumeSessionHandlers({
       hubMode: false,
+      harnesses: () => ['claude'],
       sessionRegistry,
       sessionStore: failingStore,
       bindingStore,
@@ -199,6 +201,7 @@ describe('createResumeSessionHandlers', () => {
     } as unknown as TranscriptDiscovery;
     const handlers = createResumeSessionHandlers({
       hubMode: false,
+      harnesses: () => ['claude'],
       sessionRegistry,
       sessionStore,
       bindingStore: ambiguousBindingStore,
@@ -396,6 +399,7 @@ describe('createResumeSessionHandlers', () => {
       } as unknown as SessionStore;
       const handlers = createResumeSessionHandlers({
         hubMode: true,
+        harnesses: () => ['claude'],
         sessionRegistry,
         sessionStore: throwingStore,
         bindingStore,

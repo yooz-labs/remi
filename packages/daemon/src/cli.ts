@@ -198,16 +198,19 @@ import {
   remiHome,
   serviceCommandRefusal,
 } from './config/remi-home.ts';
-import { validateCodexArgs } from './harness/codex/codex-args.ts';
+import { validateClaudeRemoteArgs } from './harness/claude-args.ts';
+import { validateCodexArgs, validateCodexRemoteArgs } from './harness/codex/codex-args.ts';
 import {
   codexLaunchRefusal,
   codexResumeCommand,
+  legacyWriterRefusal,
   olderRemiNotice,
 } from './harness/codex/codex-session.ts';
 import { CodexHarness } from './harness/codex/codex.ts';
 import { shortThreadId } from './harness/codex/thread-id.ts';
 import { ClaudeHarness } from './harness/index.ts';
 import type { Harness, HarnessSession } from './harness/index.ts';
+import { HarnessRegistry } from './harness/registry.ts';
 import { ForeignSessionEscalator, HookConfigManager, HookServer } from './hooks/index.ts';
 import type { PermissionDeniedHookInput, StopHookInput } from './hooks/index.ts';
 // Static, unlike the publisher below it: this is a pure decision with no
@@ -1835,6 +1838,15 @@ const claudeHarness = new ClaudeHarness(transcriptDiscovery, {
   sessionNotifiers,
 });
 
+// The older-daemon gate (#1165 D): the live remi processes that would erase a Codex identity.
+// The Codex launch reads it before it writes a record, and the hub before it spawns a Codex child.
+const legacyWriters = () =>
+  findLegacyWriters({
+    liveSessions: liveSessionsRegistry,
+    statusFiles: () => readStatusFiles(REMI_DIR),
+    selfPid: process.pid,
+  });
+
 // `remi codex` hosts a Codex session instead (#1177). Its launch reads these services when a
 // session starts, and the older-daemon gate reads the live-sessions entries and status files of
 // other remi processes then. `onQuestionResolved` is how an approval card that Codex resolved
@@ -1851,17 +1863,27 @@ const codexHarness =
         cleanup,
         env: () => process.env,
         onQuestionResolved,
-        legacyWriters: () =>
-          findLegacyWriters({
-            liveSessions: liveSessionsRegistry,
-            statusFiles: () => readStatusFiles(REMI_DIR),
-            selfPid: process.pid,
-          }),
+        legacyWriters,
         remiVersion: REMI_VERSION,
         log,
       })
     : undefined;
 const harness: Harness = codexHarness ?? claudeHarness;
+
+// The harnesses a `create_session_request` may name (#1179), and what each allows: advertised on
+// every hello_ack (`harnesses`) and checked before anything is spawned. Built here because the
+// validators sit behind the import boundary that keeps Claude and Codex apart.
+const harnessRegistry = new HarnessRegistry({
+  claude: { command: 'claude', validateRemoteArgs: validateClaudeRemoteArgs },
+  codex: {
+    command: 'codex',
+    validateRemoteArgs: validateCodexRemoteArgs,
+    launchRefusal: () => {
+      const writers = legacyWriters();
+      return writers.length > 0 ? legacyWriterRefusal(writers) : null;
+    },
+  },
+});
 
 // A Codex launch that will be refused is refused HERE, before a daemon boots or a wrapper takes
 // over the terminal (where console output goes to the log): a refused argument exits 2, an older
@@ -1928,6 +1950,7 @@ const transcriptHandlers: TranscriptHandlers = createTranscriptHandlers({
 const resumeSessionHandlers: ResumeSessionHandlers = createResumeSessionHandlers({
   // `remi serve` is session-less and must never run Claude (#1124).
   hubMode: serveMode,
+  harnesses: () => harnessRegistry.available(),
   sessionRegistry,
   sessionStore,
   bindingStore,
@@ -1984,6 +2007,7 @@ const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
   sessionRegistry,
   currentOwnedSession,
   harnessId,
+  harnesses: () => harnessRegistry.available(),
   trackConnection: (id, adapterType) => registry.trackConnection(id, adapterType),
   untrackConnection: (id) => registry.untrackConnection(id),
   onConnectionAdded: () => updateRemiStatus({ connections: remiStatus.connections + 1 }),

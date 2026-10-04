@@ -90,6 +90,8 @@ describe('a Codex daemon on the wire (#1179)', () => {
       expect(ack?.harness).toBe('codex');
       expect(ack?.harnessSessionId).toBeNull();
       expect('claudeSessionId' in (ack as object)).toBe(false);
+      // Only the fake `codex` is on this PATH.
+      expect(ack?.harnesses).toEqual(['codex']);
     } finally {
       early.ws.close();
     }
