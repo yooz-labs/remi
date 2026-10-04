@@ -18,3 +18,4 @@ export {
 } from './primitives.ts';
 export * from './envelope.ts';
 export * from './channel.ts';
+export * from './pairing.ts';
