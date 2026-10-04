@@ -413,6 +413,49 @@ describe('CodexHarness', () => {
       }
     });
 
+    test('an active record of another harness with the same id is not a holder', () => {
+      // `opencode` has no adapter yet, but a record naming it is data this build can read.
+      sessionStore.save(record({ harness: 'opencode', harnessSessionId: THREAD }));
+      expect(checkCodexLaunch(buildDeps(null), ['resume', THREAD], workDir)).toEqual({
+        ok: true,
+        args: ['resume', THREAD],
+        resumeThreadId: THREAD,
+        directory: workDir,
+      });
+    });
+
+    test('a store that cannot choose between two holders is a refusal with its own text, and any other store error is not swallowed', () => {
+      class AmbiguousStore extends SessionStore {
+        override list(): StoredSession[] {
+          throw new AmbiguousSessionIdentityError('codex', THREAD, 2);
+        }
+      }
+      const ambiguous = new AmbiguousStore(path.join(tmpDir, 'ambiguous.json'));
+      const checked = checkCodexLaunch(
+        buildDeps(null, { sessionStore: ambiguous }),
+        ['resume', THREAD],
+        workDir,
+      );
+      expect(checked).toEqual({
+        ok: false,
+        exitCode: 1,
+        message: new AmbiguousSessionIdentityError('codex', THREAD, 2).message,
+      });
+
+      class BrokenStore extends SessionStore {
+        override list(): StoredSession[] {
+          throw new Error('the store is unreadable');
+        }
+      }
+      expect(() =>
+        checkCodexLaunch(
+          buildDeps(null, { sessionStore: new BrokenStore(path.join(tmpDir, 'broken.json')) }),
+          ['resume', THREAD],
+          workDir,
+        ),
+      ).toThrow('the store is unreadable');
+    });
+
     test('a thread with several exited records and no active one resumes (W3)', () => {
       // Two exited rows for one thread, as two earlier resumes leave. A lookup that treats
       // them as an ambiguity would refuse every later resume until the 7-day purge.

@@ -37,6 +37,8 @@ describe('createRemoteSession sends a harness only to a daemon that offers it (#
   let notice: string | undefined;
   /** When set the daemon refuses the request with this text, as a failed `create_session_response`. */
   let failure: string | undefined;
+  /** The port the daemon says it started the session on; absent is the daemon's own. */
+  let spawnedPort: number | undefined;
   /** When set the daemon answers the request with a protocol `error` message of this text instead. */
   let protocolError: string | undefined;
   let requests: Array<{ directory: string | undefined; extra: CreateSessionExtra | undefined }>;
@@ -62,7 +64,14 @@ describe('createRemoteSession sends a harness only to a daemon that offers it (#
             connectionId,
             failure !== undefined
               ? createCreateSessionResponse(false, requestId, undefined, failure)
-              : createCreateSessionResponse(true, requestId, SESSION, undefined, port, notice),
+              : createCreateSessionResponse(
+                  true,
+                  requestId,
+                  SESSION,
+                  undefined,
+                  spawnedPort ?? port,
+                  notice,
+                ),
           );
         },
       },
@@ -80,6 +89,7 @@ describe('createRemoteSession sends a harness only to a daemon that offers it (#
     notice = undefined;
     failure = undefined;
     protocolError = undefined;
+    spawnedPort = undefined;
     stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-remote-new-'));
     savedHome = process.env['REMI_HOME'];
     process.env['REMI_HOME'] = stateDir;
@@ -208,6 +218,14 @@ describe('createRemoteSession sends a harness only to a daemon that offers it (#
       const { lines } = await run('codex');
       expect(lines).toContain('bad\\u001B[2Ktext');
       expect(lines.join('\n')).not.toContain('\u001b');
+    });
+
+    test('it attaches to the port the daemon started the session on, and says so', async () => {
+      offered = ['claude'];
+      spawnedPort = port + 1;
+      const { lines, attached } = await run('claude');
+      expect(lines).toContain(`New daemon spawned on port ${port + 1}`);
+      expect(attached).toEqual([{ host: 'localhost', port: port + 1, sessionId: SESSION }]);
     });
 
     test('no notice, nothing extra is printed', async () => {

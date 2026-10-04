@@ -202,7 +202,7 @@ describe('create requests naming a harness (#1179)', () => {
   });
 
   describe('the handler', () => {
-    function handlers() {
+    function handlers(over: Partial<Parameters<typeof createCreateSessionHandlers>[0]> = {}) {
       return createCreateSessionHandlers({
         harnesses: registry(),
         liveSessionsRegistry: new SessionRegistryFile(path.join(dir, 'live')),
@@ -223,6 +223,7 @@ describe('create requests naming a harness (#1179)', () => {
           spawns.push({ port, directory, extraArgs });
           return { sessionId: '55555555-5555-4555-8555-555555555555', port, pid: 4242 };
         },
+        ...over,
       });
     }
     const response = () =>
@@ -407,6 +408,14 @@ describe('create requests naming a harness (#1179)', () => {
       expect(line).toContain('not allowed');
       // No raw ESC, BEL or right-to-left override reaches the host's log.
       expect(line).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f\u202a-\u202e]/);
+    });
+
+    test('the response and the notice name the port the spawn reported, not the one probed', async () => {
+      await handlers({
+        spawnDaemon: async () => ({ sessionId: SPAWNED.sessionId, port: 20009, pid: 4242 }),
+      }).onCreateSessionRequest(CID, '/tmp/project', REQ, { harness: 'codex' });
+      expect((response() as { port?: number }).port).toBe(20009);
+      expect(response().notice).toBe(noticeFor({ sessionId: SPAWNED.sessionId, port: 20009 }));
     });
 
     test('a plain request spawns exactly as it did before, with only the inherited flags', async () => {
