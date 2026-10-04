@@ -1309,7 +1309,7 @@ describe('remi codex turns and chat (daemon, black-box characterization, #1180)'
       await pollUntil(() => pushed(a, 'turn_failed').length >= 1, 10000, 'the turn_failed push');
       const failed = pushed(a, 'turn_failed')[0] as Push;
       expect(failed.title?.endsWith(': Codex stopped')).toBe(true);
-      expect(failed.body).toBe('usageLimitExceeded. E2E-LIMIT-TEXT');
+      expect(failed.body).toBe('Usage limit reached. E2E-LIMIT-TEXT');
       expect(failed.questionId).toBe(`turn-failed-${a.sessionId}`);
       expect(failed.authorization).toBe('Bearer e2e-push-secret');
 

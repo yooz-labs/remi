@@ -171,12 +171,38 @@ describe('parseTurnCompleted (#1180)', () => {
   test('reads the real turn/completed of the spike (expA-accept.jsonl:74)', () => {
     expect(parseTurnCompleted(params(turnCompletedFrame(placeholderUuid(1))))).toEqual({
       threadId: placeholderUuid(1),
+      turnId: placeholderUuid(2),
       status: 'completed',
       durationMs: 5563,
       finalAnswer: 'done',
+      itemsView: 'summary',
       errorMessage: null,
       errorCode: null,
     });
+  });
+
+  test('the turn id is its non-empty text; anything else is unknown, so the turn cannot be told from a repeat', () => {
+    const idOf = (id: unknown) => {
+      const frame = turnCompletedFrame('t') as { params: { turn: Json } };
+      frame.params.turn['id'] = id;
+      return parseTurnCompleted(frame.params)?.turnId;
+    };
+
+    expect(idOf('turn-7')).toBe('turn-7');
+    for (const bad of ['', 7, null, undefined, {}]) expect(idOf(bad), String(bad)).toBeNull();
+  });
+
+  test('the items view is one of Codex’s three, and anything else is unknown (it may be logged, so it is never free text)', () => {
+    const viewOf = (view: unknown) => {
+      const frame = turnCompletedFrame('t') as { params: { turn: Json } };
+      frame.params.turn['itemsView'] = view;
+      return parseTurnCompleted(frame.params)?.itemsView;
+    };
+
+    for (const view of ['notLoaded', 'summary', 'full']) expect(String(viewOf(view))).toBe(view);
+    for (const bad of ['everything', '', 7, null, undefined]) {
+      expect(viewOf(bad), String(bad)).toBeNull();
+    }
   });
 
   test('reads a failure: the message, and the code only when it is a string', () => {

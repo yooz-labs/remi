@@ -55,6 +55,36 @@ const CAPTURED_500 = {
     'API Error: 500 Internal server error. This is a server-side issue, usually temporary — try again in a moment. If it persists, check https://status.claude.com.',
 };
 
+/** Codex's string `codexErrorInfo` values (the generated schema's `CodexErrorInfo`) with a reason, and what each reads as (#1180). */
+const CODEX_CODES: ReadonlyArray<readonly [string, string]> = [
+  ['usageLimitExceeded', 'Usage limit reached'],
+  ['rateLimitExceeded', 'Rate limit reached'],
+  ['serverOverloaded', 'API overloaded'],
+  ['internalServerError', 'Server error'],
+  ['unauthorized', 'Authentication failed'],
+  ['badRequest', 'Invalid request'],
+  ['contextWindowExceeded', 'Context window exceeded'],
+  ['sessionBudgetExceeded', 'Session budget exceeded'],
+  ['sandboxError', 'Sandbox error'],
+  ['other', 'Unknown error'],
+];
+
+describe('describeTurnFailure: Codex codes (#1180)', () => {
+  test.each(CODEX_CODES)('%s reads as "%s", as a Claude code does', (code, phrase) => {
+    expect(describeTurnFailure(code)).toBe(phrase);
+  });
+
+  test('a Codex code with no phrase is shown as is, like any unknown code', () => {
+    for (const code of ['cyberPolicy', 'tooManyDenials', 'flexUnavailable']) {
+      expect(describeTurnFailure(code)).toBe(code);
+    }
+  });
+
+  test('the phrases Claude Code has are the ones it always had', () => {
+    for (const [code, phrase] of DOCUMENTED_CODES) expect(describeTurnFailure(code)).toBe(phrase);
+  });
+});
+
 describe('describeTurnFailure', () => {
   test.each(DOCUMENTED_CODES)('%s reads as "%s"', (code, phrase) => {
     expect(describeTurnFailure(code)).toBe(phrase);

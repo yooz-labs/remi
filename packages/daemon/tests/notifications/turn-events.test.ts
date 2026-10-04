@@ -349,8 +349,8 @@ describe('createTurnEventSink', () => {
       const { opts } = sent[0] as Sent;
       expect(opts.kind).toBe('turn_failed');
       expect(opts.title).toBe(`${name}: Codex stopped`);
-      // An unknown code is shown as is, then Codex's own words.
-      expect(opts.body).toBe('usageLimitExceeded. You have hit your usage limit.');
+      // A known Codex code reads as a phrase, as Claude's do, then Codex's own words.
+      expect(opts.body).toBe('Usage limit reached. You have hit your usage limit.');
       expect(opts.questionId).toBe(turnFailedCollapseId(SID));
       expect(opts.sessionId).toBe(SID);
       expect(opts.category).toBeUndefined();

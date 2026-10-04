@@ -325,6 +325,74 @@ describe('createCodexChat', () => {
       expect(result?.toolOutput).toHaveLength(500);
     });
 
+    test('a command and its output are written out safely: control, invisible and bidi characters become visible text, after the 500-character cut', async () => {
+      servePages({
+        '': itemsListPage(
+          [
+            {
+              item: realItem('commandExecution', {
+                command: "echo \u202egnirts' \u001b[31m",
+                aggregatedOutput: '\u001b[31mred\u001b[0m \u0007 \u200b\ttab\nnext',
+              }),
+            },
+          ],
+          null,
+        ),
+      });
+
+      const m = (await history()).messages[0] as TranscriptContentMessage;
+
+      const use = m.contentBlocks?.find((b) => b.type === 'tool_use');
+      const result = m.contentBlocks?.find((b) => b.type === 'tool_result');
+      expect(JSON.parse(use?.toolInput ?? '').command).toBe("echo \\u202Egnirts' \\u001B[31m");
+      expect(result?.toolOutput).toBe('\\u001B[31mred\\u001B[0m \\u0007 \\u200B\ttab\nnext');
+      // Nothing of the raw characters is left in what goes to the client.
+      expect(JSON.stringify(m.contentBlocks)).not.toMatch(
+        /[\u0000-\u0008\u000b-\u001f\u202e\u200b]/,
+      );
+    });
+
+    test('the cut is made first and the escape after: 500 characters of the original, however long they then read', async () => {
+      const command = `${'a'.repeat(499)}\u001bTAIL`;
+      const output = `${'b'.repeat(500)}\u001bNOT-INCLUDED`;
+      servePages({
+        '': itemsListPage(
+          [{ item: realItem('commandExecution', { command, aggregatedOutput: output }) }],
+          null,
+        ),
+      });
+
+      const m = (await history()).messages[0] as TranscriptContentMessage;
+
+      const use = m.contentBlocks?.find((b) => b.type === 'tool_use');
+      const result = m.contentBlocks?.find((b) => b.type === 'tool_result');
+      // 499 letters and the escape character make the 500; the escape is written out whole.
+      expect(JSON.parse(use?.toolInput ?? '').command).toBe(`${'a'.repeat(499)}\\u001B`);
+      // The escape character is character 501, outside the cut: it is not there to be written out.
+      expect(result?.toolOutput).toBe('b'.repeat(500));
+    });
+
+    test('chat prose is NOT escaped, deliberately: an emoji sequence keeps its joiner, and the text is the model’s own', async () => {
+      const family = '\u{1f468}\u200d\u{1f469}\u200d\u{1f467}';
+      const prose = `${family} done \u202e<- as sent, \u001b[0m`;
+      servePages({
+        '': itemsListPage(
+          [
+            { item: userMessageItem('u1', prose) },
+            { item: agentMessageItem('a1', prose, 'final_answer') },
+          ],
+          null,
+        ),
+      });
+
+      const { messages } = await history();
+
+      for (const m of messages) {
+        expect(m.content).toBe(prose);
+        expect(m.message.content).toBe(prose);
+      }
+    });
+
     test('an in-progress command is not shown yet: its completion arrives live, and a client keeps the first copy it sees', async () => {
       servePages({
         '': itemsListPage(
@@ -533,7 +601,7 @@ describe('createCodexChat', () => {
             throw failure;
           });
           const error = await rejection(make().readHistory(() => {}));
-          expect((error as { code?: number }).code).toBe(failure.code);
+          expect((error as Error).message).toContain(`code ${failure.code}`);
         }
       });
 
@@ -548,7 +616,7 @@ describe('createCodexChat', () => {
 
         const error = await rejection(make().readHistory((m) => emitted.push(m.entryUuid)));
 
-        expect((error as { code?: number }).code).toBe(-32600);
+        expect((error as Error).message).toContain('code -32600');
         // What the first page gave was already sent; the client gets the error after it.
         expect(emitted).toEqual(['u1']);
       });
@@ -647,34 +715,34 @@ describe('createCodexChat', () => {
       });
     });
 
-    test('nothing a message says reaches a log line', async () => {
-      servePages({
-        '': itemsListPage(
-          [
-            { item: userMessageItem('u1', 'PRIVATE-USER-TEXT') },
-            {
-              item: realItem('commandExecution', {
-                command: 'PRIVATE-COMMAND',
-                aggregatedOutput: 'PRIVATE-OUTPUT',
-              }),
-            },
-          ],
-          null,
-        ),
-      });
-      await history();
+    test('a failed history read says the code and none of the server’s words (the log checks hold for any code that never logs; the mutants K31 and K39 are the real guard)', async () => {
       server.onRequest('thread/items/list', () => {
         throw { code: -32603, message: 'PRIVATE-SERVER-TEXT' };
       });
       const failure = await rejection(make().readHistory(() => {}));
 
-      const log = logs.join('\n');
-      expect(log).not.toContain('PRIVATE');
-      expect(log).not.toContain(MAIN);
-      // The error a client and the handler's log read carries the code, not the server's words
-      // (which may name a thread or a path).
+      // What the client and the handler's log read: the code, not the server's words, which may
+      // name a thread or a path.
+      expect((failure as Error).message).toContain('code -32603');
       expect((failure as Error).message).not.toContain('PRIVATE');
-      expect((failure as Error).message).toContain('-32603');
+      expect((failure as Error).message).not.toContain(MAIN);
+      // The client's own log lines (the link) are the only ones: the chat logs none for this failure.
+      expect(logs.join('\n')).not.toContain('PRIVATE');
+    });
+
+    test('the lines the history read does log hold counts and names, never a message', async () => {
+      servePages({
+        '': itemsListPage([{ item: userMessageItem('u1', 'PRIVATE-USER-TEXT') }], 'stuck'),
+        stuck: itemsListPage([{ item: userMessageItem('u2', 'PRIVATE-SECOND-TEXT') }], 'stuck'),
+      });
+
+      await history();
+
+      // The repeated cursor is the one line a successful read can log.
+      const chatLines = logs.filter((l) => /cursor|history/i.test(l));
+      expect(chatLines).toHaveLength(1);
+      expect(chatLines[0]).not.toContain('PRIVATE');
+      expect(chatLines[0]).not.toContain('stuck');
     });
   });
 
@@ -730,6 +798,26 @@ describe('createCodexChat', () => {
         message: m.message.content,
       });
       expect(fromLive.map(essence)).toEqual(fromHistory.map(essence));
+    });
+
+    test('a live command is written out safely too: the same builder as history', () => {
+      make().handleNotification(
+        'item/completed',
+        itemCompletedFrame(
+          MAIN,
+          realItem('commandExecution', {
+            id: 'live-cmd',
+            command: 'ls \u202e',
+            aggregatedOutput: '\u001b[1mout',
+          }),
+        )['params'],
+      );
+
+      const m = transcripts()[0] as TranscriptContentMessage;
+      const use = m.contentBlocks?.find((b) => b.type === 'tool_use');
+      const result = m.contentBlocks?.find((b) => b.type === 'tool_result');
+      expect(JSON.parse(use?.toolInput ?? '').command).toBe('ls \\u202E');
+      expect(result?.toolOutput).toBe('\\u001B[1mout');
     });
 
     test('what is not chat is ignored, and so is an item still in progress', () => {
