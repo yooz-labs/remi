@@ -587,6 +587,55 @@ describe('the CLI creating a session on a hub (#1179)', () => {
     60000,
   );
 
+  test.each([
+    ['new', ['new'], 'put it after --: -- --resume <uuid>'],
+    ['no subcommand', [], 'put it after --: -- --resume <uuid>'],
+    ['codex', ['codex'], '-- resume <thread id>'],
+  ])(
+    '--resume with --host (%s) is refused with exit 2 before any lookup or request, and says where it goes (P5)',
+    async (_name, words, hint) => {
+      const r = await startHub({ claude: true, codex: true });
+      const { proc, output } = runCli(r, [
+        ...words,
+        '--host',
+        'localhost',
+        '--port',
+        String(r.hub.port),
+        '--resume',
+        '3f9c2a1e-0000-4000-8000-000000000042',
+      ]);
+      expect(await proc.exited).toBe(2);
+      expect(output.text).toContain('--resume is not sent to a remote host');
+      expect(output.text).toContain(hint);
+      // Not the local store lookup `--resume` used to start (and a silent fresh remote session when a
+      // local session held the id), and nothing reached the hub.
+      expect(output.text).not.toContain('Session not found');
+      expect(r.log.text).not.toContain('Create session request');
+      expect(childEntries(r)).toEqual([]);
+    },
+    60000,
+  );
+
+  test('the same resume after -- is sent to the hub, which spawns Claude with it', async () => {
+    const r = await startHub({ claude: true });
+    runCli(r, [
+      'new',
+      '--host',
+      'localhost',
+      '--port',
+      String(r.hub.port),
+      '--dir',
+      r.hub.work,
+      '--',
+      '--resume',
+      '3f9c2a1e-0000-4000-8000-000000000042',
+    ]);
+    expect((await waitForArgv(r.agents.claudeDir)).slice(0, 2)).toEqual([
+      '--resume',
+      '3f9c2a1e-0000-4000-8000-000000000042',
+    ]);
+  }, 90000);
+
   test('remi new --host --harness codex is the same request', async () => {
     const r = await startHub({ codex: true });
     runCli(r, [
