@@ -367,6 +367,63 @@ describe('a hub creating a session for a harness (#1179)', () => {
     expect(r.log.text).not.toContain(THREAD);
   }, 90000);
 
+  describe('a session store that holds two active records of one thread (P4, P10)', () => {
+    // `list()` refuses to choose between them. Written as raw JSON: `save()` would not allow it.
+    const THREAD = '01950000-0000-7000-8000-0000000000aa';
+    function writeAmbiguousStore(r: Running) {
+      const holder = Bun.spawn(['sleep', '60']);
+      sleepers.push(holder);
+      const record = () => ({
+        remiSessionId: crypto.randomUUID(),
+        claudeSessionId: null,
+        harness: 'codex',
+        harnessSessionId: THREAD,
+        projectPath: r.hub.work,
+        port: 19999,
+        pid: holder.pid,
+        startedAt: new Date().toISOString(),
+        exitedAt: null,
+        exitCode: null,
+      });
+      fs.mkdirSync(path.join(r.hub.home, '.remi'), { recursive: true });
+      fs.writeFileSync(
+        path.join(r.hub.home, '.remi', 'sessions.json'),
+        JSON.stringify({ version: 1, sessions: [record(), record()] }),
+      );
+    }
+
+    test('a Codex resume of that thread is refused with its own generic text, and the log names the thread by its last eight characters', async () => {
+      const r = await startHub({ claude: true, codex: true });
+      writeAmbiguousStore(r);
+      const { response } = await ask(r, { harness: 'codex', args: ['resume', THREAD] });
+      expect(response.success).toBe(false);
+      expect(response.error).toBe(
+        "That Codex thread cannot be resumed from here: the host's records of it are ambiguous.",
+      );
+      expect(childEntries(r)).toEqual([]);
+      await pollUntil(
+        () => r.log.text.includes('more than one active record of it'),
+        10000,
+        "the hub's log to say why",
+      );
+      expect(r.log.text).toContain(THREAD.slice(-8));
+      expect(r.log.text).not.toContain(THREAD);
+    }, 90000);
+
+    test('a Claude resume fails closed: the store cannot be read, so nothing is spawned and the client reads the opaque text', async () => {
+      const r = await startHub({ claude: true, codex: true });
+      writeAmbiguousStore(r);
+      const { response } = await ask(r, {
+        harness: 'claude',
+        args: ['--resume', '3f9c2a1e-0000-4000-8000-000000000042'],
+      });
+      expect(response.success).toBe(false);
+      expect(response.error).toContain('could not be started');
+      expect(childEntries(r)).toEqual([]);
+      expect(fs.existsSync(path.join(r.agents.claudeDir, 'argv'))).toBe(false);
+    }, 90000);
+  });
+
   describe('a resume of a Claude session a live session holds (P10)', () => {
     const CLAUDE_ID = '3f9c2a1e-0000-4000-8000-000000000042';
     const GENERIC = 'That Claude session is already open in a live remi session on the host.';
