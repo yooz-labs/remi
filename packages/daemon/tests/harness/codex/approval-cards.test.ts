@@ -1227,20 +1227,22 @@ describe('what a hostile or buggy server sends is bounded before a card is built
   });
 
   test('audit: every field of every card builder with the worst the server can send, and the bound of each kind', () => {
-    const dir = 'd'.repeat(huge.length);
+    // Far past every bound (the largest is 20000) but small enough to build fast on every Bun.
+    const big = 'h'.repeat(100_000);
+    const dir = 'd'.repeat(big.length);
     const bounds: Array<[string, Question, number]> = [
       // text and detail: the command (20000) and the directory (500) at their bounds
       [
         'a command at the bound, with a directory and a reason',
         build(
-          { cwd: `/${dir}`, reason: huge, availableDecisions: ['accept', 'cancel'] },
+          { cwd: `/${dir}`, reason: big, availableDecisions: ['accept', 'cancel'] },
           {},
           'c'.repeat(COMMAND_TEXT_MAX),
         ).question,
         // The text (cut command, directory, reason) and the detail (command, directory).
         COMMAND_TEXT_MAX + 2000,
       ],
-      ['a command over the bound', build({ reason: huge }, {}, huge).question, 300],
+      ['a command over the bound', build({ reason: big }, {}, big).question, 300],
       [
         'a command that cannot be answered, at the bound',
         build({ kind: 'writeStdin' }, {}, 'c'.repeat(COMMAND_TEXT_MAX)).question,
@@ -1251,8 +1253,8 @@ describe('what a hostile or buggy server sends is bounded before a card is built
         card(
           frame('item/fileChange/requestApproval', {
             threadId: THREAD,
-            reason: huge,
-            grantRoot: huge,
+            reason: big,
+            grantRoot: big,
           }),
         ),
         5000,
@@ -1262,21 +1264,21 @@ describe('what a hostile or buggy server sends is bounded before a card is built
         card(
           frame('item/permissions/requestApproval', {
             threadId: THREAD,
-            reason: huge,
+            reason: big,
             permissions: Object.fromEntries(
-              Array.from({ length: 5000 }, (_, i) => [`${huge}${i}`, {}]),
+              Array.from({ length: 100 }, (_, i) => [`${big}${i}`, {}]),
             ),
           }),
         ),
         20 * 300 + 4000,
       ],
       [
-        'an elicitation, with a url whose host is huge',
+        'an elicitation, with a url whose host is very long',
         card(
           frame('mcpServer/elicitation/request', {
             threadId: THREAD,
-            serverName: huge,
-            message: huge,
+            serverName: big,
+            message: big,
             mode: 'url',
             url: `https://${'h'.repeat(100_000)}.test/`,
           }),
@@ -1290,9 +1292,9 @@ describe('what a hostile or buggy server sends is bounded before a card is built
             threadId: THREAD,
             questions: Array.from({ length: 50 }, (_, i) => ({
               id: `q${i}`,
-              header: huge,
-              question: huge,
-              options: Array.from({ length: 50 }, () => ({ label: huge, description: huge })),
+              header: big,
+              question: big,
+              options: Array.from({ length: 50 }, () => ({ label: big, description: big })),
             })),
           }),
         ),
