@@ -569,6 +569,21 @@ describe('the other kinds of request', () => {
   });
 });
 
+describe('what a card carries fits the clients that read it', () => {
+  test("Telegram's callback data for any option of any card stays within its 64 bytes", () => {
+    const longest = build({
+      availableDecisions: ['accept', 'acceptForSession', 'decline', 'cancel'],
+    });
+    const values = longest.question.options.map((o) => o.value);
+    expect(values).toContain('acceptForSession');
+    for (const value of values) {
+      // The format `formatQuestionKeyboard` builds: `answer:<question id>:<option value>`.
+      const callback = `answer:${crypto.randomUUID()}:${value}`;
+      expect(new TextEncoder().encode(callback).length, value).toBeLessThanOrEqual(64);
+    }
+  });
+});
+
 describe('the key names a request by thread and id', () => {
   test('the same id on two threads is two requests', () => {
     expect(requestKey(THREAD, 5)).not.toBe(requestKey(OTHER_THREAD, 5));

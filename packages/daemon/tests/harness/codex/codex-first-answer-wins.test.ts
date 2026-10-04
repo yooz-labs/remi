@@ -425,7 +425,8 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
     });
 
     test('a request resolved while the link was down is not replayed: its retired card is swept after the replay window', async () => {
-      const r = await attached();
+      // The grace period is ten minutes, so only the replay window after the re-attach can sweep it.
+      const r = await attached({ decisions: { replayWindowMs: 200, disconnectGraceMs: 600_000 } });
       const id = r.server.request(commandApprovalRequest(r.tuiId, 'touch gone'), r.tuiId);
       await until(() => pending(r).length === 1, 'the card');
       const old = pending(r)[0] as Question;

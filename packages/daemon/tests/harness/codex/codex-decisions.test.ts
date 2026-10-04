@@ -680,16 +680,19 @@ describe('CodexDecisions', () => {
       decisions.retireQuestion(crypto.randomUUID() as UUID);
     });
 
-    test('forceRelease dismisses every card still shown and counts them, but not an answered one, and sends nothing', () => {
+    test('forceRelease dismisses every card still shown, retired ones included, and counts them, but not an answered one, and sends nothing', () => {
       request(5);
       request(6, 'touch two');
-      request(7, 'touch three');
-      const answered = pending()[0] as Question;
-      decisions.answerHeld(answered.id, optionNamed(answered, 'Yes'));
-      registry.removeQuestion(sessionId, answered.id);
       decisions.handleDisconnected();
+      // After the drop: one new card answered by the phone, one still waiting.
+      request(7, 'touch three');
       request(8, 'touch four');
+      const answered = pending().find((q) => q.text.endsWith('touch three')) as Question;
+      expect(decisions.answerHeld(answered.id, optionNamed(answered, 'Yes'))).toBe('resolved');
+      // The answer handler removes the card it answered.
+      registry.removeQuestion(sessionId, answered.id);
       decisions.handleStatus(MAIN, { type: 'active', activeFlags: ['waitingOnApproval'] });
+      // Two retired (5, 6) and one live (8) are shown; the answered one (7) is not.
       expect(decisions.forceRelease('remi unstick')).toEqual({ resolved: 3 });
       expect(pending()).toEqual([]);
       expect(resolvedMessages().every((m) => m.reason === 'cancelled')).toBe(true);
