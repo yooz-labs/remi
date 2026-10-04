@@ -1453,12 +1453,24 @@ describe("the directory a command runs in is shown when it is not the session's 
     expect(q.text.endsWith('\nIn directory: /work/elsewhere')).toBe(true);
   });
 
-  test('no directory in the request, or one that is not text, adds nothing', () => {
-    for (const cwd of [undefined, null, '', 42, {}]) {
+  test('a request that does not say where the command runs, or says it in a form that is not text, cannot be answered from the phone (T6)', () => {
+    // All six real command approvals of the spike carry `cwd` as a non-empty string
+    // (expA-accept.jsonl:16 and :47, expA-decline.jsonl:22 and :23, expB3.jsonl:20 and :25), so a
+    // missing or null one is not Codex's usual frame either: the person could not see where the
+    // command runs, so there is no one-tap Yes.
+    for (const cwd of [undefined, null, '', 42, {}, [], ['/etc'], true]) {
       const q = run(cwd);
-      expect(q.text, String(cwd)).toBe('Allow Codex to run: git clean -fdx');
-      expect(q.detail).toBeUndefined();
+      expect(q.terminalOnly, String(JSON.stringify(cwd))).toBe(true);
+      expect(q.options).toEqual([]);
+      expect(q.text).toBe('Codex asks to run: git clean -fdx. Answer it in the terminal.');
+      expect(pushCategoryFor(q)).toBeUndefined();
+      expect(selectDynOptions(q)).toBe(false);
+      expect(q.pendingLabel).toBe('Permission: Codex command');
     }
+    // The control: a readable directory, the session's own, keeps the card answerable.
+    const ok = run('/work/session');
+    expect(ok.terminalOnly).toBeUndefined();
+    expect(pushCategoryFor(ok)).toBe('REMI_YN');
   });
 
   test('a directory a server chose is escaped and bounded like any other text', () => {

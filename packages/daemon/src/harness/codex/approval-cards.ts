@@ -262,6 +262,10 @@ function commandCard(c: Context): PendingRequestSpec {
     params['proposedNetworkPolicyAmendments'] == null &&
     listed !== 'unreadable';
   const decisions = listed === 'unreadable' ? null : listed;
+  // Where the command runs is part of what the person approves, so a request that does not say
+  // (every real frame of the spike does, as a non-empty string) or says it in a form that is not
+  // text cannot be answered from the phone, like an unreadable list of decisions.
+  const where = nonEmpty(params['cwd']);
   const yes = decisions === null || decisions.has('accept');
   const forSession = decisions?.has('acceptForSession') === true;
   // No is `cancel` when listed (what the TUI's own No sends), else `decline`, else nothing.
@@ -270,7 +274,7 @@ function commandCard(c: Context): PendingRequestSpec {
     : decisions === null || decisions.has('decline')
       ? 'decline'
       : null;
-  if (!(plain && yes && noDecision !== null) || c.agentId !== undefined) {
+  if (!(plain && yes && noDecision !== null) || c.agentId !== undefined || where === null) {
     return terminalOnly(c, `Codex asks to run: ${command}`, {}, true, COMMAND_LABEL);
   }
 
@@ -295,9 +299,8 @@ function commandCard(c: Context): PendingRequestSpec {
   // delete in the wrong tree): the directory is on the card, in the app and in the push, whenever
   // it is not the session's own. It then also goes in `detail`, so a card that names another
   // directory gets no lock-screen buttons. Never in a log.
-  const where = nonEmpty(params['cwd']);
   const place =
-    where !== null && resolve(where) !== resolve(c.sessionDirectory)
+    resolve(where) !== resolve(c.sessionDirectory)
       ? `\nIn directory: ${escapeUnsafeText(clip(where, DIRECTORY_MAX))}`
       : '';
   const reason = display(params['reason'], REASON_MAX);
