@@ -37,7 +37,10 @@ describe('a fake agent that is slow to record', () => {
     // End the fake by its release file (it waits for one), and by its own PID if that is not enough.
     fs.writeFileSync(path.join(codexDir, 'release'), '');
     const pid = proc?.pid;
-    await Promise.race([proc?.exited, new Promise((resolve) => setTimeout(resolve, 3000))]);
+    await Promise.race([
+      proc?.exited ?? Promise.resolve(0),
+      new Promise<number>((resolve) => setTimeout(() => resolve(-1), 3000)),
+    ]);
     if (pid !== undefined && proc?.exitCode === null) proc.kill('SIGKILL');
     fs.rmSync(home, { recursive: true, force: true });
   });
@@ -45,7 +48,7 @@ describe('a fake agent that is slow to record', () => {
   test('waitForRecordedArgv returns every argument, and cwd and pid are whole when it does', async () => {
     expect(await waitForRecordedArgv(codexDir)).toEqual(ARGS);
     expect(fs.readFileSync(path.join(codexDir, 'cwd'), 'utf8').trim()).not.toBe('');
-    expect(Number(fs.readFileSync(path.join(codexDir, 'pid'), 'utf8'))).toBe(proc?.pid);
+    expect(Number(fs.readFileSync(path.join(codexDir, 'pid'), 'utf8'))).toBe(proc?.pid as number);
   });
 
   test('a reader that waits for argv to exist, as the old helper did, never sees it half written', async () => {

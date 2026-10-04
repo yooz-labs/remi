@@ -14,10 +14,10 @@ import {
   type FakeAgents,
   collect,
   installFakeAgents,
-  recordedArgv,
+  waitForRecordedArgv,
 } from '../helpers/fake-agent-clis.ts';
 import { FakeAppServer } from '../helpers/fake-app-server.ts';
-import { cleanupHub, makeIsolatedDirs, pollUntil, spawnDaemon } from './hub-test-utils.ts';
+import { cleanupHub, makeIsolatedDirs, spawnDaemon } from './hub-test-utils.ts';
 
 interface Running {
   proc: Bun.Subprocess<'ignore', 'pipe', 'pipe'>;
@@ -58,16 +58,9 @@ async function startDaemon(extraArgs: readonly string[]): Promise<Running> {
   return r;
 }
 
-async function argvOf(dir: string, r: Running): Promise<string[]> {
-  await pollUntil(
-    () => {
-      if (r.proc.exitCode !== null) throw new Error(`Daemon exited early (${r.proc.exitCode})`);
-      return fs.existsSync(path.join(dir, 'argv'));
-    },
-    20000,
-    'the fake agent to start',
-  );
-  return recordedArgv(dir);
+/** The fake records whole or not at all, so the file existing is the whole list (P11). */
+function argvOf(dir: string, r: Running): Promise<string[]> {
+  return waitForRecordedArgv(dir, { stillRunning: () => r.proc.exitCode === null });
 }
 
 describe('a daemon starts its harness with the arguments after -- (#1179)', () => {

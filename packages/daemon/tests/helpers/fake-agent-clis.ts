@@ -15,10 +15,23 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
+// The record is written under temporary names and RENAMED into place, `argv` last, so a reader that
+// sees a file sees all of it, and one that sees `argv` sees `cwd` and `pid` too. A shell redirect
+// creates its file empty and fills it as the loop runs, so waiting for `argv` to EXIST used to return a
+// partial list (#1204 round 2, P11). `FAKE_AGENT_RECORD_DELAY` (seconds) puts a pause after each
+// argument written, which is how the helper's own test makes the old race certain instead of rare.
 const RECORD = `d="$FAKE_AGENT_DIR"
-for a in "$@"; do printf '%s\\n' "$a"; done > "$d/argv"
-pwd -P > "$d/cwd"
-echo $$ > "$d/pid"
+{
+  for a in "$@"; do
+    printf '%s\\n' "$a"
+    if [ -n "$FAKE_AGENT_RECORD_DELAY" ]; then sleep "$FAKE_AGENT_RECORD_DELAY"; fi
+  done
+} > "$d/argv.tmp"
+pwd -P > "$d/cwd.tmp"
+echo $$ > "$d/pid.tmp"
+mv "$d/cwd.tmp" "$d/cwd"
+mv "$d/pid.tmp" "$d/pid"
+mv "$d/argv.tmp" "$d/argv"
 i=0
 while [ ! -e "$d/release" ] && [ $i -lt 600 ]; do
   sleep 0.1
@@ -86,6 +99,28 @@ export function installFakeAgents(
       FAKE_CLAUDE_DIR: claudeDir,
     },
   };
+}
+
+/**
+ * Wait until a fake agent has recorded its start, and return its arguments. Existence of `argv` is the
+ * signal: the fake renames it into place complete, after `cwd` and `pid` (see RECORD), so it is never
+ * read half written. `stillRunning` ends the wait early with a clear error when the process that was
+ * to start the agent has died.
+ */
+export async function waitForRecordedArgv(
+  dir: string,
+  options: { timeoutMs?: number; stillRunning?: () => boolean } = {},
+): Promise<string[]> {
+  const { timeoutMs = 20_000, stillRunning = () => true } = options;
+  const argv = path.join(dir, 'argv');
+  const start = Date.now();
+  while (!fs.existsSync(argv)) {
+    if (!stillRunning()) throw new Error('The process that starts the fake agent exited early');
+    if (Date.now() - start > timeoutMs)
+      throw new Error('Timed out waiting for the fake agent to start');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return recordedArgv(dir);
 }
 
 /** One argument per line, as the fakes record them. */

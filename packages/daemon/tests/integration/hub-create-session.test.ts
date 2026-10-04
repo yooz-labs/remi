@@ -30,7 +30,7 @@ import {
   type FakeAgents,
   collect,
   installFakeAgents,
-  recordedArgv,
+  waitForRecordedArgv,
 } from '../helpers/fake-agent-clis.ts';
 import { FakeAppServer } from '../helpers/fake-app-server.ts';
 import { type StampedBuild, copyBuild } from '../helpers/stamped-build.ts';
@@ -143,10 +143,8 @@ function childEntries(r: Running): Array<{ pid: number; sessionId: string }> {
     .filter((e) => typeof e.pid === 'number');
 }
 
-async function waitForArgv(dir: string): Promise<string[]> {
-  await pollUntil(() => fs.existsSync(path.join(dir, 'argv')), 20000, 'the fake agent to start');
-  return recordedArgv(dir);
-}
+/** The fake records whole or not at all, so the file existing is the whole list (P11). */
+const waitForArgv = (dir: string): Promise<string[]> => waitForRecordedArgv(dir);
 
 describe('a hub creating a session for a harness (#1179)', () => {
   test('the session-less ack lists the harnesses that are installed, so a client can tell an older hub', async () => {
