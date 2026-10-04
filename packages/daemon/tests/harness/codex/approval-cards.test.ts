@@ -1045,6 +1045,114 @@ describe('what a hostile or buggy server sends is bounded before a card is built
     expect(weight(q)).toBeLessThan(5000);
   });
 
+  test('an elicitation in url mode shows at most 200 characters of the host, cut with its marker, and the card stays small (T1)', () => {
+    const host = 'h'.repeat(100_000);
+    const q = card(
+      frame('mcpServer/elicitation/request', {
+        threadId: THREAD,
+        serverName: 'srv',
+        message: 'sign in',
+        mode: 'url',
+        url: `https://${host}.example.test/path`,
+      }),
+    );
+    const real = new URL(`https://${host}.example.test/path`).host;
+    expect(real.length).toBeGreaterThan(100_000);
+    expect(q.text).toBe(
+      `MCP server srv asks: sign in (${'h'.repeat(200)} ${marker(real.length - 200)}). Answer it in the terminal.`,
+    );
+    expect(weight(q)).toBeLessThan(1000);
+    // A host within the bound is shown whole, as before.
+    const ok = card(
+      frame('mcpServer/elicitation/request', {
+        threadId: THREAD,
+        serverName: 'srv',
+        message: 'sign in',
+        mode: 'url',
+        url: 'https://auth.example.test/p',
+      }),
+    );
+    expect(ok.text).toContain('(auth.example.test)');
+  });
+
+  test('audit: every field of every card builder with the worst the server can send, and the bound of each kind', () => {
+    const dir = 'd'.repeat(huge.length);
+    const bounds: Array<[string, Question, number]> = [
+      // text and detail: the command (20000) and the directory (500) at their bounds
+      [
+        'a command at the bound, with a directory and a reason',
+        build(
+          { cwd: `/${dir}`, reason: huge, availableDecisions: ['accept', 'cancel'] },
+          {},
+          'c'.repeat(COMMAND_TEXT_MAX),
+        ).question,
+        // The text (cut command, directory, reason) and the detail (command, directory).
+        COMMAND_TEXT_MAX + 2000,
+      ],
+      ['a command over the bound', build({ reason: huge }, {}, huge).question, 300],
+      [
+        'a command that cannot be answered, at the bound',
+        build({ kind: 'writeStdin' }, {}, 'c'.repeat(COMMAND_TEXT_MAX)).question,
+        COMMAND_TEXT_MAX + 300,
+      ],
+      [
+        'a file change',
+        card(
+          frame('item/fileChange/requestApproval', {
+            threadId: THREAD,
+            reason: huge,
+            grantRoot: huge,
+          }),
+        ),
+        5000,
+      ],
+      [
+        'permissions',
+        card(
+          frame('item/permissions/requestApproval', {
+            threadId: THREAD,
+            reason: huge,
+            permissions: Object.fromEntries(
+              Array.from({ length: 5000 }, (_, i) => [`${huge}${i}`, {}]),
+            ),
+          }),
+        ),
+        20 * 300 + 4000,
+      ],
+      [
+        'an elicitation, with a url whose host is huge',
+        card(
+          frame('mcpServer/elicitation/request', {
+            threadId: THREAD,
+            serverName: huge,
+            message: huge,
+            mode: 'url',
+            url: `https://${'h'.repeat(100_000)}.test/`,
+          }),
+        ),
+        5500,
+      ],
+      [
+        'a user-input request',
+        card(
+          frame('item/tool/requestUserInput', {
+            threadId: THREAD,
+            questions: Array.from({ length: 50 }, (_, i) => ({
+              id: `q${i}`,
+              header: huge,
+              question: huge,
+              options: Array.from({ length: 50 }, () => ({ label: huge, description: huge })),
+            })),
+          }),
+        ),
+        120_000,
+      ],
+    ];
+    for (const [what, q, bound] of bounds) {
+      expect(weight(q), `${what}: ${weight(q)} characters`).toBeLessThan(bound);
+    }
+  });
+
   test('a user-input request: every field of a step, the options of a step and the steps are bounded, and the cuts are marked', () => {
     const questions = Array.from({ length: 50 }, (_, i) => ({
       id: `q${i}`,

@@ -363,10 +363,13 @@ function permissionsCard(c: Context): PendingRequestSpec {
   );
 }
 
-/** The host of a URL, which is all an elicitation's `url` mode shows; null when it does not parse. */
+/**
+ * The host of a URL, which is all an elicitation's `url` mode shows; null when it does not parse.
+ * A host has no length limit in a URL, so it is cut like any other label.
+ */
 function hostOf(url: unknown): string | null {
   try {
-    return typeof url === 'string' ? new URL(url).host : null;
+    return typeof url === 'string' ? escapeUnsafeText(clip(new URL(url).host, LABEL_MAX)) : null;
   } catch {
     return null;
   }
