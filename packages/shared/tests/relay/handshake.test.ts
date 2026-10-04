@@ -1,10 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 import { b64u, concat } from '../../src/relay/bytes.ts';
+import { ecGenerate } from '../../src/relay/deterministic.ts';
 import * as r from '../../src/relay/internal.ts';
-import { aeadKey, aeadSeal, ecGenerate } from '../../src/relay/primitives.ts';
+import { aeadKey, aeadSeal } from '../../src/relay/primitives.ts';
 import { manualClient, manualHost, refHash } from './builders.ts';
 import { NOW, countingSigner, makeParts, runFlow } from './flow.ts';
-import { codeOf, hex, seed, seededRandom, text } from './helpers.ts';
+import { codeOf, det, hex, seed, seededRandom, text } from './helpers.ts';
 import { recorder } from './recorder.ts';
 
 /** Drive both sides by hand up to `hello_ack`, returning the pieces tests want to tamper with. */
@@ -22,12 +23,12 @@ async function toAck(
       deviceName: overrides.deviceName ?? 'Test phone',
       mode,
       ...(mode === 'pair' ? { pairingSecret: p.offer.secret } : {}),
-      random: seededRandom(`${label} client`),
+      ...det(`${label} client`),
     },
     NOW,
   );
   const h1 = await r.hostOnHello(
-    { machine: overrides.machine ?? p.machine, random: seededRandom(`${label} host`) },
+    { machine: overrides.machine ?? p.machine, ...det(`${label} host`) },
     c1.hello,
     p.policy,
     NOW,
@@ -116,7 +117,7 @@ describe('handshake, version, mode and type', () => {
     for (const v of [1, 3]) {
       const bad = hello.replace('"v":2', `"v":${v}`);
       const code = await codeOf(
-        r.hostOnHello({ machine: p.machine, random: seededRandom('v h') }, bad, p.policy, NOW),
+        r.hostOnHello({ machine: p.machine, ...det('v h') }, bad, p.policy, NOW),
       );
       expect(code).toBe('VERSION');
     }
@@ -137,23 +138,14 @@ describe('handshake, version, mode and type', () => {
       .encodeHello('pair', (await ecGenerate(seededRandom('m e'))).publicKey, seed('m n'))
       .replace('"pair"', '"admin"');
     expect(
-      await codeOf(
-        r.hostOnHello({ machine: p.machine, random: seededRandom('m h') }, hello, p.policy, NOW),
-      ),
+      await codeOf(r.hostOnHello({ machine: p.machine, ...det('m h') }, hello, p.policy, NOW)),
     ).toBe('MODE');
   });
 
   test('a frame of the wrong type for the step is refused by every step', async () => {
     const { p, c1, h1 } = await toAck();
     expect(
-      await codeOf(
-        r.hostOnHello(
-          { machine: p.machine, random: seededRandom('t') },
-          h1.helloAck,
-          p.policy,
-          NOW,
-        ),
-      ),
+      await codeOf(r.hostOnHello({ machine: p.machine, ...det('t') }, h1.helloAck, p.policy, NOW)),
     ).toBe('TYPE');
     expect(await codeOf(c1.onHelloAck(c1.hello, NOW + 1))).toBe('TYPE');
     const c2 = await (await toAck()).c1
@@ -181,7 +173,7 @@ describe('handshake, version, mode and type', () => {
             device: p.device,
             mode: 'pair',
             pairingSecret: p.offer.secret,
-            random: seededRandom('mf c'),
+            ...det('mf c'),
           },
           NOW,
         )
@@ -196,12 +188,7 @@ describe('handshake, version, mode and type', () => {
     ];
     for (const [, mutate] of cases) {
       const code = await codeOf(
-        r.hostOnHello(
-          { machine: p.machine, random: seededRandom('mf h') },
-          mutate(hello),
-          p.policy,
-          NOW,
-        ),
+        r.hostOnHello({ machine: p.machine, ...det('mf h') }, mutate(hello), p.policy, NOW),
       );
       expect(code).toBe('MALFORMED');
       const { c1 } = await toAck();
@@ -299,7 +286,7 @@ describe('handshake, the host is authenticated first', () => {
     for (const [name, frame] of tampered) {
       const policy: r.HostPolicy = { offers: [p.offer], isEnrolled: () => true };
       const host = await r.hostOnHello(
-        { machine: p.machine, random: seededRandom('transit host') },
+        { machine: p.machine, ...det('transit host') },
         frame,
         policy,
         NOW,
@@ -367,16 +354,11 @@ describe('handshake, key schedule', () => {
         device: p.device,
         mode: 'pair',
         pairingSecret: wrong,
-        random: seededRandom('wp c'),
+        ...det('wp c'),
       },
       NOW,
     );
-    const h1 = await r.hostOnHello(
-      { machine: p.machine, random: seededRandom('wp h') },
-      c1.hello,
-      p.policy,
-      NOW,
-    );
+    const h1 = await r.hostOnHello({ machine: p.machine, ...det('wp h') }, c1.hello, p.policy, NOW);
     const c2 = await c1.onHelloAck(h1.helloAck, NOW + 1);
     expect(await codeOf(h1.onAuth(c2.auth, p.policy, NOW + 2))).toBe('PAIRING');
   });
@@ -389,17 +371,12 @@ describe('handshake, key schedule', () => {
         machinePublicKey: p.machine.publicKey,
         device: p.device,
         mode: 'resume',
-        random: seededRandom('fl c'),
+        ...det('fl c'),
       },
       NOW,
     );
     const flipped = c1.hello.replace('"resume"', '"pair"');
-    const h1 = await r.hostOnHello(
-      { machine: p.machine, random: seededRandom('fl h') },
-      flipped,
-      p.policy,
-      NOW,
-    );
+    const h1 = await r.hostOnHello({ machine: p.machine, ...det('fl h') }, flipped, p.policy, NOW);
     expect(await codeOf(c1.onHelloAck(h1.helloAck, NOW + 1))).toBe('BAD_SIGNATURE');
   });
 
@@ -408,7 +385,7 @@ describe('handshake, key schedule', () => {
     const base = {
       machinePublicKey: p.machine.publicKey,
       device: p.device,
-      random: seededRandom('cfg'),
+      ...det('cfg'),
     };
     expect(await codeOf(r.clientStart({ ...base, mode: 'pair' }, NOW))).toBe('MODE');
     expect(
@@ -441,7 +418,7 @@ describe('handshake, the host checks the client', () => {
     const psk = mode === 'pair' ? p.offer.secret : null;
     const mc = await manualClient(mode, psk, p.machine.publicKey, label);
     const h1 = await r.hostOnHello(
-      { machine: p.machine, random: seededRandom(`${label} host`) },
+      { machine: p.machine, ...det(`${label} host`) },
       mc.hello,
       p.policy,
       NOW,
@@ -567,7 +544,7 @@ describe('handshake, the host checks the client', () => {
             device: p.device,
             deviceName,
             mode: 'resume',
-            random: seededRandom('cn'),
+            ...det('cn'),
           },
           NOW,
         ),
@@ -582,7 +559,7 @@ describe('handshake, the host checks the client', () => {
       const c2 = await first.c1.onHelloAck(first.h1.helloAck, NOW + 1);
       // The attacker replays the captured hello AND the captured auth to a fresh host.
       const fresh = await r.hostOnHello(
-        { machine: first.p.machine, random: seededRandom('replay fresh host') },
+        { machine: first.p.machine, ...det('replay fresh host') },
         first.c1.hello,
         first.p.policy,
         NOW + 5,
@@ -602,13 +579,13 @@ describe('handshake, pairing offers', () => {
         device: p.device,
         mode: 'pair',
         pairingSecret: p.offer.secret,
-        random: seededRandom('of c'),
+        ...det('of c'),
       },
       NOW,
     );
     const host = (offers: r.PairingOffer[], now = NOW): Promise<unknown> =>
       r.hostOnHello(
-        { machine: p.machine, random: seededRandom('of h') },
+        { machine: p.machine, ...det('of h') },
         c1.hello,
         { offers, isEnrolled: () => false },
         now,
@@ -628,12 +605,7 @@ describe('handshake, pairing offers', () => {
     const burned: r.HostPolicy = { offers: [{ ...p.offer, used: true }], isEnrolled: () => false };
     expect(
       await codeOf(
-        r.hostOnHello(
-          { machine: p.machine, random: seededRandom('reuse h2') },
-          c1.hello,
-          burned,
-          NOW + 3,
-        ),
+        r.hostOnHello({ machine: p.machine, ...det('reuse h2') }, c1.hello, burned, NOW + 3),
       ),
     ).toBe('PAIRING');
   });
@@ -652,16 +624,11 @@ describe('handshake, pairing offers', () => {
         device: p.device,
         mode: 'pair',
         pairingSecret: shortLived.secret,
-        random: seededRandom('late c'),
+        ...det('late c'),
       },
       NOW,
     );
-    const h1 = await r.hostOnHello(
-      { machine: p.machine, random: seededRandom('late h') },
-      c1.hello,
-      policy,
-      NOW,
-    );
+    const h1 = await r.hostOnHello({ machine: p.machine, ...det('late h') }, c1.hello, policy, NOW);
     const c2 = await c1.onHelloAck(h1.helloAck, NOW + 1);
     expect(await codeOf(h1.onAuth(c2.auth, policy, shortLived.expiresAtMs))).toBe('PAIRING');
     const c3 = await r.clientStart(
@@ -670,16 +637,11 @@ describe('handshake, pairing offers', () => {
         device: p.device,
         mode: 'pair',
         pairingSecret: shortLived.secret,
-        random: seededRandom('late c'),
+        ...det('late c'),
       },
       NOW,
     );
-    const h3 = await r.hostOnHello(
-      { machine: p.machine, random: seededRandom('late h') },
-      c3.hello,
-      policy,
-      NOW,
-    );
+    const h3 = await r.hostOnHello({ machine: p.machine, ...det('late h') }, c3.hello, policy, NOW);
     const c4 = await c3.onHelloAck(h3.helloAck, NOW + 1);
     expect((await h3.onAuth(c4.auth, policy, shortLived.expiresAtMs - 1)).offerIndex).toBe(0);
   });
@@ -698,16 +660,11 @@ describe('handshake, pairing offers', () => {
         device: p.device,
         mode: 'pair',
         pairingSecret: seed('many 2'),
-        random: seededRandom('many c'),
+        ...det('many c'),
       },
       NOW,
     );
-    const h1 = await r.hostOnHello(
-      { machine: p.machine, random: seededRandom('many h') },
-      c1.hello,
-      policy,
-      NOW,
-    );
+    const h1 = await r.hostOnHello({ machine: p.machine, ...det('many h') }, c1.hello, policy, NOW);
     const c2 = await c1.onHelloAck(h1.helloAck, NOW + 1);
     expect((await h1.onAuth(c2.auth, policy, NOW + 2)).offerIndex).toBe(2);
     // The burned offer's secret does not match even though it is listed.
@@ -717,12 +674,12 @@ describe('handshake, pairing offers', () => {
         device: p.device,
         mode: 'pair',
         pairingSecret: seed('many 0'),
-        random: seededRandom('many c3'),
+        ...det('many c3'),
       },
       NOW,
     );
     const h3 = await r.hostOnHello(
-      { machine: p.machine, random: seededRandom('many h3') },
+      { machine: p.machine, ...det('many h3') },
       c3.hello,
       policy,
       NOW,
@@ -743,7 +700,7 @@ describe('handshake, key confirmation', () => {
         device: p.device,
         mode,
         ...(psk ? { pairingSecret: psk } : {}),
-        random: seededRandom(`${label} c`),
+        ...det(`${label} c`),
       },
       NOW,
     );
@@ -897,8 +854,8 @@ describe('handshake, deadlines', () => {
   });
 });
 
-describe('handshake, secrets', () => {
-  test('the ephemeral scalar is overwritten once the key is built', async () => {
+describe('handshake, secrets and the key hook', () => {
+  test('with the test hook the ephemeral scalar is overwritten once the key is built', async () => {
     const p = await makeParts('wipe');
     const drawn: Uint8Array[] = [];
     const inner = seededRandom('wipe');
@@ -908,12 +865,66 @@ describe('handshake, secrets', () => {
       return out;
     };
     await r.clientStart(
-      { machinePublicKey: p.machine.publicKey, device: p.device, mode: 'resume', random },
+      {
+        machinePublicKey: p.machine.publicKey,
+        device: p.device,
+        mode: 'resume',
+        random,
+        ephemeral: () => r.ecGenerate(random),
+      },
       NOW,
     );
     expect(drawn.length).toBe(2);
     expect(hex(drawn[0] as Uint8Array)).toBe('00'.repeat(32));
     expect(hex(drawn[1] as Uint8Array)).not.toBe('00'.repeat(32));
+  });
+
+  test('by default the ephemeral keys come from the engine and the source supplies only the nonces', async () => {
+    const f = await runFlow({ production: true, label: 'engine keys' });
+    const g = await runFlow({ production: true, label: 'engine keys' });
+    // The same seeded source on both runs still gives different hellos and keys.
+    expect(f.hello).not.toBe(g.hello);
+    expect(f.draws).toEqual({ client: [32], host: [32] });
+    await f.client.send(text('engine-keyed'));
+    expect(hex(await f.host.receive(f.clientIo.frames[0] as Uint8Array))).toBe(
+      hex(text('engine-keyed')),
+    );
+    expect(await codeOf(g.host.receive(f.clientIo.frames[0] as Uint8Array))).toBe('DECRYPT');
+  });
+
+  test('the engine path works for a resume too, with an engine-generated device identity', async () => {
+    const { signer } = await r.generateIdentity();
+    const f = await runFlow({
+      production: true,
+      mode: 'resume',
+      label: 'engine identity',
+      device: signer,
+    });
+    await f.host.send(text('hello device'));
+    expect(hex(await f.client.receive(f.hostIo.frames[0] as Uint8Array))).toBe(
+      hex(text('hello device')),
+    );
+  });
+
+  test('the hook is called exactly once per peer and its pair is the one on the wire', async () => {
+    const p = await makeParts('hook');
+    let calls = 0;
+    const pair = await r.ecGenerate(seededRandom('hook pair'));
+    const c1 = await r.clientStart(
+      {
+        machinePublicKey: p.machine.publicKey,
+        device: p.device,
+        mode: 'resume',
+        random: seededRandom('hook nonce'),
+        ephemeral: async () => {
+          calls++;
+          return pair;
+        },
+      },
+      NOW,
+    );
+    expect(calls).toBe(1);
+    expect(hex(r.decodeHello(c1.hello).ephemeral)).toBe(hex(pair.publicKey));
   });
 });
 
@@ -941,13 +952,13 @@ describe('handshake, random mutation of any frame in transit never yields a chan
             device: p.device,
             mode: 'pair',
             pairingSecret: p.offer.secret,
-            random: seededRandom(`mut ${n} c`),
+            ...det(`mut ${n} c`),
           },
           NOW,
         );
         const hello = which === 0 ? mutate(c1.hello) : c1.hello;
         const h1 = await r.hostOnHello(
-          { machine: p.machine, random: seededRandom(`mut ${n} h`) },
+          { machine: p.machine, ...det(`mut ${n} h`) },
           hello,
           p.policy,
           NOW,

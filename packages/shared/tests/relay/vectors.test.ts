@@ -20,7 +20,7 @@ import {
 } from '../../src/relay/primitives.ts';
 import { NOW } from './flow.ts';
 import { VECTORS_PATH, generateVectors, render } from './generate-vectors.ts';
-import { hex, unhex } from './helpers.ts';
+import { detFrom, hex, unhex } from './helpers.ts';
 import { recorder } from './recorder.ts';
 
 // biome-ignore lint/suspicious/noExplicitAny: the file is plain JSON read by shape
@@ -50,7 +50,7 @@ const liveOffer: r.PairingOffer = {
 async function hostFor(name: 'pair' | 'resume', policy: r.HostPolicy) {
   const s = V.sessions[name];
   return r.hostOnHello(
-    { machine, random: fileRandom(s.hostEphemeral.scalar, s.hostNonce) },
+    { machine, ...detFrom(fileRandom(s.hostEphemeral.scalar, s.hostNonce)) },
     s.hello,
     policy,
     NOW,
@@ -66,7 +66,7 @@ async function clientFor(name: 'pair' | 'resume', machinePublicKey = machine.pub
       deviceName: s.deviceName,
       mode: name,
       ...(name === 'pair' ? { pairingSecret } : {}),
-      random: fileRandom(s.clientEphemeral.scalar, s.clientNonce),
+      ...detFrom(fileRandom(s.clientEphemeral.scalar, s.clientNonce)),
     },
     NOW,
   );
@@ -271,11 +271,9 @@ describe('relay v2 vectors: admission, token and sealing', () => {
     const recipient = await r.ecPairFromScalar(unhex(s.recipientScalar));
     expect(hex(recipient.publicKey)).toBe(s.recipientPublicKey);
     expect(hex(r.pushAad(unhex(s.rid), s.questionId))).toBe(s.aad);
-    const sealed = await r.seal(
-      recipient.publicKey,
-      unhex(s.aad),
-      unhex(s.plaintext),
-      fileRandom(s.ephemeralScalar, s.nonce),
+    const draws = fileRandom(s.ephemeralScalar, s.nonce);
+    const sealed = await r.seal(recipient.publicKey, unhex(s.aad), unhex(s.plaintext), draws, () =>
+      r.ecGenerate(draws),
     );
     expect(hex(sealed)).toBe(s.sealed);
     expect(hex(await r.openSeal(recipient, unhex(s.aad), unhex(s.sealed)))).toBe(s.plaintext);

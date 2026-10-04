@@ -1,17 +1,20 @@
 import { describe, expect, test } from 'bun:test';
+import { ecGenerate } from '../../src/relay/deterministic.ts';
 import * as r from '../../src/relay/internal.ts';
 import {
   aeadKey,
   aeadOpen,
   aeadSeal,
-  ecGenerate,
   ecdh,
   frameAad,
   frameNonce,
+  generateEcPair,
+  generateIdentity,
   hkdf,
   hmacSha256,
   importEcPublic,
   sha256,
+  signerFromKey,
 } from '../../src/relay/primitives.ts';
 import { codeOf, hex, seed, seededRandom, text, unhex } from './helpers.ts';
 
@@ -111,6 +114,50 @@ describe('P-256 keys', () => {
       expect(await codeOf(importEcPublic(bad))).toBe('MALFORMED');
       expect(await codeOf(ecdh(priv, bad))).toBe('MALFORMED');
     }
+  });
+});
+
+describe('production keys come from the engine', () => {
+  test('generateEcPair gives a fresh non-extractable pair whose public point is a valid raw key', async () => {
+    const a = await generateEcPair();
+    const b = await generateEcPair();
+    expect(a.publicKey.length).toBe(65);
+    expect(a.publicKey[0]).toBe(4);
+    expect(a.privateKey.extractable).toBe(false);
+    expect(hex(a.publicKey)).not.toBe(hex(b.publicKey));
+    await importEcPublic(a.publicKey);
+    expect(hex(await ecdh(a.privateKey, b.publicKey))).toBe(
+      hex(await ecdh(b.privateKey, a.publicKey)),
+    );
+  });
+
+  test('generateEcPair(true) gives a pair a device can persist (the push key) and restore', async () => {
+    const pair = await generateEcPair(true);
+    const pkcs8 = await crypto.subtle.exportKey('pkcs8', pair.privateKey);
+    const restored = await crypto.subtle.importKey(
+      'pkcs8',
+      pkcs8,
+      { name: 'ECDH', namedCurve: 'P-256' },
+      false,
+      ['deriveBits'],
+    );
+    const peer = await generateEcPair();
+    expect(hex(await ecdh(restored, peer.publicKey))).toBe(
+      hex(await ecdh(peer.privateKey, pair.publicKey)),
+    );
+  });
+
+  test('generateIdentity gives a working signer whose pkcs8 round trips to the same signatures', async () => {
+    const { signer, pkcs8 } = await generateIdentity();
+    expect(signer.publicKey.length).toBe(32);
+    const message = text('identity message');
+    const sig = await signer.sign(message);
+    expect(await r.verifySignature(signer.publicKey, message, sig)).toBe(true);
+    // The persisted form: the engine's own export, imported again and given the stored public key.
+    const key = await crypto.subtle.importKey('pkcs8', pkcs8, 'Ed25519', false, ['sign']);
+    const restored = signerFromKey(key, signer.publicKey);
+    expect(hex(await restored.sign(message))).toBe(hex(sig));
+    expect((await generateIdentity()).signer.publicKey).not.toEqual(signer.publicKey);
   });
 });
 

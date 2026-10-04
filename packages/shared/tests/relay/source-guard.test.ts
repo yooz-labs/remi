@@ -76,4 +76,19 @@ describe('relay v2 source guards', () => {
     }
     expect(seen).toBeGreaterThan(20);
   });
+  test('the scalar-import key path is test-only: no production module reaches it', () => {
+    const risky =
+      /ecPairFromScalar|signerFromSeed|P256_PKCS8|ED25519_PKCS8|validScalar|deterministic\.ts/;
+    for (const f of FILES) {
+      if (f === 'deterministic.ts' || f === 'internal.ts') continue;
+      const hits = codeLines(f).filter((l) => risky.test(l));
+      expect([f, hits]).toEqual([f, []]);
+    }
+    // `ecGenerate(rng)` is the same path under another name and is also confined.
+    for (const f of FILES) {
+      if (f === 'deterministic.ts' || f === 'internal.ts') continue;
+      expect([f, codeLines(f).some((l) => /\becGenerate\b/.test(l))]).toEqual([f, false]);
+    }
+    expect(codeLines('internal.ts').some((l) => l.includes('deterministic.ts'))).toBe(true);
+  });
 });

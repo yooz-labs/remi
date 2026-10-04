@@ -16,7 +16,10 @@ export {
   type EcPair,
   type Rng,
   type Signer,
+  generateEcPair,
+  generateIdentity,
   ridOf,
+  signerFromKey,
   systemRandom,
   verifySignature,
 } from './primitives.ts';

@@ -14,18 +14,12 @@ import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { b64u, be64, concat } from '../../src/relay/bytes.ts';
+import { ecGenerate } from '../../src/relay/deterministic.ts';
 import * as r from '../../src/relay/internal.ts';
-import {
-  aeadKey,
-  aeadSeal,
-  ecGenerate,
-  ecdh,
-  frameAad,
-  frameNonce,
-} from '../../src/relay/primitives.ts';
+import { aeadKey, aeadSeal, ecdh, frameAad, frameNonce } from '../../src/relay/primitives.ts';
 import { nodeSeal, refHash } from './builders.ts';
 import { NOW } from './flow.ts';
-import { hex, seed, seededRandom, text } from './helpers.ts';
+import { det, detFrom, hex, seed, seededRandom, text } from './helpers.ts';
 import { recorder } from './recorder.ts';
 
 export const VECTORS_PATH = join(import.meta.dir, '..', 'fixtures', 'relay-v2', 'vectors.json');
@@ -79,11 +73,11 @@ export async function generateVectors(): Promise<Obj> {
         deviceName: DEVICE_NAME,
         mode,
         ...(psk ? { pairingSecret: psk } : {}),
-        random: clientRng,
+        ...detFrom(clientRng),
       },
       NOW,
     );
-    const h1s = await r.hostOnHello({ machine, random: hostRng }, c1.hello, policy, NOW);
+    const h1s = await r.hostOnHello({ machine, ...detFrom(hostRng) }, c1.hello, policy, NOW);
     const c2 = await c1.onHelloAck(h1s.helloAck, NOW + 10);
     const h2s = await h1s.onAuth(c2.auth, policy, NOW + 20);
     const hostIo = recorder();
@@ -451,7 +445,7 @@ export async function generateVectors(): Promise<Obj> {
     );
     // A relay that flips the client's mode in transit: the host signs the mode it saw.
     const flipped = await r.hostOnHello(
-      { machine, random: seededRandom('vector flipped host') },
+      { machine, ...det('vector flipped host') },
       resume.hello.replace('"resume"', '"pair"'),
       { offers: [offer], isEnrolled: () => true },
       NOW,
@@ -1033,7 +1027,9 @@ export async function generateVectors(): Promise<Obj> {
   const sealPlain = text(
     JSON.stringify({ kind: 'question', title: 'Claude needs you', options: ['Yes', 'No'] }),
   );
-  const sealed = await r.seal(sealRecipient.publicKey, sealAad, sealPlain, sealRng);
+  const sealed = await r.seal(sealRecipient.publicKey, sealAad, sealPlain, sealRng, () =>
+    r.ecGenerate(sealRng),
+  );
   {
     const entry = (
       name: string,

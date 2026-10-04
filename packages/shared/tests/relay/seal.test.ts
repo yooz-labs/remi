@@ -88,17 +88,32 @@ describe('push sealing', () => {
     expect((await r.openSeal(pair, AAD, edge)).length).toBe(r.MAX_PUSH_PLAINTEXT);
   });
 
-  test('the ephemeral key and the nonce come from the injected source, in that order', async () => {
+  test('with the test hook the ephemeral key and the nonce come from the injected source, in that order', async () => {
     const { pair } = await recipient();
     const a = seededRandom('seal c');
-    const sealed = await r.seal(pair.publicKey, AAD, text('x'), a);
+    const sealed = await r.seal(pair.publicKey, AAD, text('x'), a, () => r.ecGenerate(a));
     expect(a.draws.length).toBe(2);
     expect(a.draws[1]?.length).toBe(12);
     expect(hex(sealed.slice(65, 77))).toBe(hex(a.draws[1] as Uint8Array));
-    const again = await r.seal(pair.publicKey, AAD, text('x'), seededRandom('seal c'));
-    expect(hex(again)).toBe(hex(sealed));
-    const other = await r.seal(pair.publicKey, AAD, text('x'), seededRandom('seal d'));
+    const again = seededRandom('seal c');
+    expect(
+      hex(await r.seal(pair.publicKey, AAD, text('x'), again, () => r.ecGenerate(again))),
+    ).toBe(hex(sealed));
+    const d = seededRandom('seal d');
+    const other = await r.seal(pair.publicKey, AAD, text('x'), d, () => r.ecGenerate(d));
     expect(hex(other)).not.toBe(hex(sealed));
+  });
+
+  test("by default the ephemeral key is the engine's: only the nonce is drawn, and equal sources still differ", async () => {
+    const { pair } = await recipient();
+    const a = seededRandom('seal engine');
+    const first = await r.seal(pair.publicKey, AAD, text('x'), a);
+    expect(a.draws.map((d) => d.length)).toEqual([12]);
+    const second = await r.seal(pair.publicKey, AAD, text('x'), seededRandom('seal engine'));
+    // Same nonce draw, different engine-generated ephemeral key.
+    expect(hex(second.slice(65, 77))).toBe(hex(first.slice(65, 77)));
+    expect(hex(second.slice(0, 65))).not.toBe(hex(first.slice(0, 65)));
+    expect(hex(await r.openSeal(pair, AAD, second))).toBe(hex(text('x')));
   });
 
   test('the associated data binds the room and the question', async () => {

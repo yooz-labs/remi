@@ -7,8 +7,9 @@
 
 import { createCipheriv, createECDH, createHash, hkdfSync } from 'node:crypto';
 import { lps } from '../../src/relay/bytes.ts';
+import { ecGenerate } from '../../src/relay/deterministic.ts';
 import * as r from '../../src/relay/internal.ts';
-import { aeadKey, aeadSeal, ecGenerate, ecdh } from '../../src/relay/primitives.ts';
+import { aeadKey, aeadSeal, ecdh } from '../../src/relay/primitives.ts';
 import { seed, seededRandom } from './helpers.ts';
 
 /** Reference length-prefix hash, written out here so these tests do not share the code under test. */

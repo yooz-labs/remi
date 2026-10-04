@@ -1,7 +1,7 @@
 /** A complete real handshake for the tests, built only from the shipping step functions. */
 
 import * as r from '../../src/relay/internal.ts';
-import { hex, seed, seededRandom } from './helpers.ts';
+import { det, hex, seed, seededRandom } from './helpers.ts';
 import { type Recorder, recorder } from './recorder.ts';
 
 export const NOW = 1_000_000;
@@ -20,6 +20,8 @@ export interface Flow {
   clientIo: Recorder;
   hostIo: Recorder;
   fingerprint: string;
+  /** Sizes of every draw each peer made from its random source. */
+  draws: { client: number[]; host: number[] };
 }
 
 export interface FlowOptions {
@@ -28,6 +30,8 @@ export interface FlowOptions {
   deviceName?: string;
   /** Override the device signer (for example to observe or corrupt it). */
   device?: r.Signer;
+  /** Leave the ephemeral-key hook out, as production does: the engine generates the keys. */
+  production?: boolean;
 }
 
 /** A complete real handshake, pair or resume, from the shipping step functions. */
@@ -41,6 +45,15 @@ export async function runFlow(options: FlowOptions = {}): Promise<Flow> {
     offers: mode === 'pair' ? [offer] : [],
     isEnrolled: (k) => hex(k) === hex(device.publicKey),
   };
+  const draws: Flow['draws'] = { client: [], host: [] };
+  const peer = (side: 'client' | 'host') => {
+    const config = det(`${label} ${side}`);
+    const random: r.Rng = (n) => {
+      draws[side].push(n);
+      return config.random(n);
+    };
+    return options.production ? { random } : { random, ephemeral: () => r.ecGenerate(random) };
+  };
   const c1 = await r.clientStart(
     {
       machinePublicKey: machine.publicKey,
@@ -48,16 +61,11 @@ export async function runFlow(options: FlowOptions = {}): Promise<Flow> {
       deviceName: options.deviceName ?? 'Test phone',
       mode,
       ...(mode === 'pair' ? { pairingSecret: offer.secret } : {}),
-      random: seededRandom(`${label} client`),
+      ...peer('client'),
     },
     NOW,
   );
-  const h1 = await r.hostOnHello(
-    { machine, random: seededRandom(`${label} host`) },
-    c1.hello,
-    policy,
-    NOW,
-  );
+  const h1 = await r.hostOnHello({ machine, ...peer('host') }, c1.hello, policy, NOW);
   const c2 = await c1.onHelloAck(h1.helloAck, NOW + 10);
   const h2 = await h1.onAuth(c2.auth, policy, NOW + 20);
   const hostIo = recorder();
@@ -78,6 +86,7 @@ export async function runFlow(options: FlowOptions = {}): Promise<Flow> {
     clientIo,
     hostIo,
     fingerprint: c2.fingerprint,
+    draws,
   };
 }
 

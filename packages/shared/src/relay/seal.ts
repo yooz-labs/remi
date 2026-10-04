@@ -10,7 +10,7 @@
 import { type Bytes, concat, lps, own, utf8 } from './bytes.ts';
 import { LABEL, MAX_PUSH_PLAINTEXT, MAX_QUESTION_ID, RID_LEN } from './constants.ts';
 import { RelayError } from './errors.ts';
-import { type EcPair, type Rng, ecGenerate, ecdh, hkdf } from './primitives.ts';
+import { type EcPair, type Rng, ecdh, generateEcPair, hkdf } from './primitives.ts';
 
 const EPHEMERAL = 65;
 const NONCE = 12;
@@ -43,20 +43,21 @@ export async function seal(
   aad: Uint8Array,
   plaintext: Uint8Array,
   random: Rng,
+  newEphemeral: () => Promise<EcPair> = generateEcPair,
 ): Promise<Bytes> {
   if (plaintext.length < 1) throw new RelayError('MALFORMED');
   if (plaintext.length > MAX_PUSH_PLAINTEXT) throw new RelayError('OVERSIZE');
-  const ephemeral = await ecGenerate(random);
+  const pair = await newEphemeral();
   const nonce = random(NONCE);
-  const shared = await ecdh(ephemeral.privateKey, recipientPublicKey);
+  const shared = await ecdh(pair.privateKey, recipientPublicKey);
   try {
-    const key = await sealKey(shared, ephemeral.publicKey, recipientPublicKey);
+    const key = await sealKey(shared, pair.publicKey, recipientPublicKey);
     const ciphertext = await crypto.subtle.encrypt(
       { name: 'AES-GCM', iv: own(nonce), additionalData: own(aad), tagLength: 128 },
       key,
       own(plaintext),
     );
-    return concat(ephemeral.publicKey, nonce, new Uint8Array(ciphertext));
+    return concat(pair.publicKey, nonce, new Uint8Array(ciphertext));
   } finally {
     shared.fill(0);
   }

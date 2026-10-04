@@ -37,13 +37,14 @@ import {
 import { RelayError } from './errors.ts';
 import { type PairingOffer, fingerprintOf, liveOffers } from './pairing.ts';
 import {
+  type EcPair,
   type Rng,
   type Signer,
   aeadKey,
   aeadOpen,
   aeadSeal,
-  ecGenerate,
   ecdh,
+  generateEcPair,
   hkdf,
   ridOf,
   sha256,
@@ -153,7 +154,10 @@ export interface ClientConfig {
   readonly mode: Mode;
   /** 32 bytes; required in pair mode, forbidden in resume mode. */
   readonly pairingSecret?: Uint8Array;
+  /** Nonces come from here; production passes `systemRandom`. */
   readonly random: Rng;
+  /** The ephemeral key pair. Production leaves this out: the engine's `generateKey` is used. */
+  readonly ephemeral?: () => Promise<EcPair>;
 }
 
 export interface ClientStep1 {
@@ -179,7 +183,7 @@ export async function clientStart(cfg: ClientConfig, startedAt: number): Promise
   }
   if ((cfg.mode === 'pair') !== (psk !== undefined)) throw new RelayError('MODE');
   const rid = await ridOf(cfg.machinePublicKey);
-  const ephemeral = await ecGenerate(cfg.random);
+  const ephemeral = await (cfg.ephemeral ?? generateEcPair)();
   const nonce = cfg.random(32);
 
   // Verify the host BEFORE anything of the device's is used: the device key signs
@@ -238,7 +242,10 @@ export async function clientStart(cfg: ClientConfig, startedAt: number): Promise
 
 export interface HostConfig {
   readonly machine: Signer;
+  /** Nonces come from here; production passes `systemRandom`. */
   readonly random: Rng;
+  /** The ephemeral key pair. Production leaves this out: the engine's `generateKey` is used. */
+  readonly ephemeral?: () => Promise<EcPair>;
 }
 
 export interface HostPolicy {
@@ -280,7 +287,7 @@ export async function hostOnHello(
     throw new RelayError('PAIRING');
   }
   const machinePublicKey = cfg.machine.publicKey;
-  const ephemeral = await ecGenerate(cfg.random);
+  const ephemeral = await (cfg.ephemeral ?? generateEcPair)();
   const nonce = cfg.random(32);
   const h1 = await transcriptH1({
     rid: await ridOf(machinePublicKey),

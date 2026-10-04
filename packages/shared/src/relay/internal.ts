@@ -12,6 +12,7 @@ export * from './constants.ts';
 export * from './errors.ts';
 export * from './bytes.ts';
 export * from './primitives.ts';
+export * from './deterministic.ts';
 export * from './envelope.ts';
 export * from './handshake.ts';
 export * from './channel.ts';

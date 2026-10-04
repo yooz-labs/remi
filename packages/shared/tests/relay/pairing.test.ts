@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import { createHash, createHmac } from 'node:crypto';
 import { b64u, fromB64u } from '../../src/relay/bytes.ts';
+import { ecGenerate } from '../../src/relay/deterministic.ts';
 import * as r from '../../src/relay/internal.ts';
-import { ecGenerate } from '../../src/relay/primitives.ts';
 import { codeOf, hex, seed, seededRandom, text, unhex } from './helpers.ts';
 
 const NOW_SEC = 1_800_000_000;

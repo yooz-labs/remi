@@ -7,9 +7,14 @@
  * v2 to what it replaces. Only `crypto.subtle` primitives the ADR names appear
  * here, and `systemRandom` is the only place the library touches the platform
  * random source: every state machine takes a `Rng` instead.
+ *
+ * Production keys come from the engine's own `generateKey`, and a persisted key
+ * is the engine's own export (PKCS8 plus the raw public key), so nothing here
+ * relies on an engine deriving a public key from a bare scalar or seed. That
+ * path exists only in `deterministic.ts`, for tests and vectors (ADR section 17).
  */
 
-import { type Bytes, be64, concat, fromB64u, own, utf8, zero } from './bytes.ts';
+import { type Bytes, be64, concat, own, utf8 } from './bytes.ts';
 import { type Direction, LABEL, RID_LEN, V } from './constants.ts';
 import { RelayError } from './errors.ts';
 
@@ -26,21 +31,13 @@ export interface Signer {
   sign(message: Uint8Array): Promise<Uint8Array>;
 }
 
-/** A P-256 key pair whose private half is a non-extractable `CryptoKey`. */
+/** A P-256 key pair: the raw public point and the private `CryptoKey`. */
 export interface EcPair {
   /** 65 bytes, uncompressed SEC1. */
   readonly publicKey: Uint8Array;
   readonly privateKey: CryptoKey;
 }
 
-const hexBytes = (h: string): Uint8Array =>
-  Uint8Array.from(h.match(/../g) ?? [], (x) => Number.parseInt(x, 16));
-const ED25519_PKCS8 = hexBytes('302e020100300506032b657004220420');
-const P256_PKCS8 = hexBytes(
-  '3041020100301306072a8648ce3d020106082a8648ce3d030107042730250201010420',
-);
-/** The P-256 group order. */
-const P256_ORDER = hexBytes('ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551');
 const P256 = { name: 'ECDH', namedCurve: 'P-256' } as const;
 
 export async function sha256(...parts: Uint8Array[]): Promise<Uint8Array> {
@@ -52,20 +49,29 @@ export async function ridOf(machinePublicKey: Uint8Array): Promise<Uint8Array> {
   return (await sha256(machinePublicKey)).slice(0, RID_LEN);
 }
 
-export async function signerFromSeed(seed: Uint8Array): Promise<Signer> {
-  const pkcs8 = concat(ED25519_PKCS8, seed);
-  try {
-    const exportable = await crypto.subtle.importKey('pkcs8', pkcs8, 'Ed25519', true, ['sign']);
-    const jwk = await crypto.subtle.exportKey('jwk', exportable);
-    const key = await crypto.subtle.importKey('pkcs8', pkcs8, 'Ed25519', false, ['sign']);
-    return {
-      publicKey: fromB64u(jwk.x ?? ''),
-      sign: async (message) =>
-        new Uint8Array(await crypto.subtle.sign('Ed25519', key, own(message))),
-    };
-  } finally {
-    zero(pkcs8);
-  }
+/** A signer over a private key the caller already holds (for example one imported from storage). */
+export const signerFromKey = (privateKey: CryptoKey, publicKey: Uint8Array): Signer => ({
+  publicKey,
+  sign: async (message) =>
+    new Uint8Array(await crypto.subtle.sign('Ed25519', privateKey, own(message))),
+});
+
+/**
+ * A fresh Ed25519 identity from the engine's `generateKey`. Persist `pkcs8` (the
+ * engine's own export, the same form the v1 identity stores) together with
+ * `signer.publicKey`, and rebuild the signer with `importKey('pkcs8', ...)` and
+ * `signerFromKey`.
+ */
+export async function generateIdentity(): Promise<{ signer: Signer; pkcs8: Bytes }> {
+  const pair = await crypto.subtle.generateKey('Ed25519', true, ['sign', 'verify']);
+  const [publicKey, pkcs8] = await Promise.all([
+    crypto.subtle.exportKey('raw', pair.publicKey),
+    crypto.subtle.exportKey('pkcs8', pair.privateKey),
+  ]);
+  return {
+    signer: signerFromKey(pair.privateKey, new Uint8Array(publicKey)),
+    pkcs8: new Uint8Array(pkcs8),
+  };
 }
 
 /** Fails closed: any malformed key, signature or engine error is `false`. */
@@ -83,41 +89,17 @@ export async function verifySignature(
   }
 }
 
-function validScalar(d: Uint8Array): boolean {
-  if (d.length !== 32 || d.every((b) => b === 0)) return false;
-  for (let i = 0; i < 32; i++) {
-    if ((d[i] ?? 0) !== (P256_ORDER[i] ?? 0)) return (d[i] ?? 0) < (P256_ORDER[i] ?? 0);
-  }
-  return false;
-}
-
-/** Build a P-256 pair from a 32-byte scalar `1 <= d < n`. The scalar is not retained. */
-export async function ecPairFromScalar(d: Uint8Array): Promise<EcPair> {
-  if (!validScalar(d)) throw new RelayError('MALFORMED');
-  const pkcs8 = concat(P256_PKCS8, d);
-  try {
-    const exportable = await crypto.subtle.importKey('pkcs8', pkcs8, P256, true, ['deriveBits']);
-    const jwk = await crypto.subtle.exportKey('jwk', exportable);
-    const privateKey = await crypto.subtle.importKey('pkcs8', pkcs8, P256, false, ['deriveBits']);
-    return {
-      publicKey: concat(Uint8Array.of(4), fromB64u(jwk.x ?? ''), fromB64u(jwk.y ?? '')),
-      privateKey,
-    };
-  } finally {
-    zero(pkcs8);
-  }
-}
-
-/** Fresh P-256 pair from the injected source, redrawing a scalar outside `[1, n-1]`. */
-export async function ecGenerate(random: Rng): Promise<EcPair> {
-  for (;;) {
-    const d = random(32);
-    try {
-      if (validScalar(d)) return await ecPairFromScalar(d);
-    } finally {
-      zero(d);
-    }
-  }
+/**
+ * A fresh P-256 pair from the engine's `generateKey`, the public point exported
+ * raw. The private key is non-extractable unless the caller (a device persisting
+ * a push key) asks otherwise.
+ */
+export async function generateEcPair(extractable = false): Promise<EcPair> {
+  const pair = await crypto.subtle.generateKey(P256, extractable, ['deriveBits']);
+  return {
+    publicKey: new Uint8Array(await crypto.subtle.exportKey('raw', pair.publicKey)),
+    privateKey: pair.privateKey,
+  };
 }
 
 /** A valid P-256 public key, or `MALFORMED`: the platform rejects an off-curve point at import. */

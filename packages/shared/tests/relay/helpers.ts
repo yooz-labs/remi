@@ -53,3 +53,15 @@ export function codeOfSync(fn: () => unknown): r.RelayErrorCode {
   }
   throw new Error('expected a RelayError, got a return value');
 }
+
+/**
+ * The deterministic test configuration of a handshake peer: nonces and ephemeral
+ * keys both come from one seeded source, scalar first and nonce second, which is
+ * the draw order the committed vectors record. Production passes only `random`.
+ */
+export function detFrom(random: r.Rng): { random: r.Rng; ephemeral: () => Promise<r.EcPair> } {
+  return { random, ephemeral: () => r.ecGenerate(random) };
+}
+
+export const det = (label: string): { random: r.Rng; ephemeral: () => Promise<r.EcPair> } =>
+  detFrom(seededRandom(label));
