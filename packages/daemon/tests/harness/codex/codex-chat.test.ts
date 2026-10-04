@@ -354,7 +354,7 @@ describe('createCodexChat', () => {
 
     test('the cut is made first and the escape after: 500 characters of the original, however long they then read', async () => {
       const command = `${'a'.repeat(499)}\u001bTAIL`;
-      const output = `${'b'.repeat(500)}\u001bNOT-INCLUDED`;
+      const output = `${'b'.repeat(499)}\u001bNOT-INCLUDED`;
       servePages({
         '': itemsListPage(
           [{ item: realItem('commandExecution', { command, aggregatedOutput: output }) }],
@@ -368,8 +368,8 @@ describe('createCodexChat', () => {
       const result = m.contentBlocks?.find((b) => b.type === 'tool_result');
       // 499 letters and the escape character make the 500; the escape is written out whole.
       expect(JSON.parse(use?.toolInput ?? '').command).toBe(`${'a'.repeat(499)}\\u001B`);
-      // The escape character is character 501, outside the cut: it is not there to be written out.
-      expect(result?.toolOutput).toBe('b'.repeat(500));
+      // The same for the output: 499 letters and the escape character are the 500.
+      expect(result?.toolOutput).toBe(`${'b'.repeat(499)}\\u001B`);
     });
 
     test('chat prose is NOT escaped, deliberately: an emoji sequence keeps its joiner, and the text is the model’s own', async () => {
@@ -597,6 +597,28 @@ describe('createCodexChat', () => {
         await server.waitFor(() => list.asked() === 2, 'the waiting read to ask');
         list.open(1);
         await b;
+      });
+
+      test('after a read has finished, two requests made together both succeed: the first runs, the second waits', async () => {
+        servePages({ '': itemsListPage([{ item: userMessageItem('u1', 'one') }], null) });
+        const chat = make();
+        expect(await chat.readHistory(() => {})).toBe(1);
+
+        const [a, b] = await Promise.all([chat.readHistory(() => {}), chat.readHistory(() => {})]);
+
+        expect([a, b]).toEqual([1, 1]);
+      });
+
+      test('a request that waited leaves the waiting slot free: a later pair of reads is served the same way', async () => {
+        servePages({ '': itemsListPage([{ item: userMessageItem('u1', 'one') }], null) });
+        const chat = make();
+        // First pair: one runs, one waits.
+        await Promise.all([chat.readHistory(() => {}), chat.readHistory(() => {})]);
+
+        // Second pair: the second must wait again, not be refused.
+        const second = await Promise.all([chat.readHistory(() => {}), chat.readHistory(() => {})]);
+
+        expect(second).toEqual([1, 1]);
       });
 
       test('a read that fails does not hold the next one', async () => {
@@ -1298,10 +1320,12 @@ describe('createCodexChat', () => {
       await make().catchUp();
       expect(idsOf()).toEqual([]);
 
+      servePages({ '': itemsListPage([{ item: userMessageItem('u1', 'one') }], null) });
       tracked = null;
       listCalls = [];
       await make().catchUp();
       expect(listCalls).toEqual([]);
+      expect(idsOf()).toEqual([]);
     });
 
     test('an attach while a catch-up is running is not lost: one more read follows it', async () => {

@@ -839,6 +839,16 @@ describe('createCodexTurns: a turn/completed delivered twice (#1180 review)', ()
     expect(events.filter((e) => e.kind === 'completed')).toHaveLength(6);
   });
 
+  test('a turn id that is the word null is an id like any other, and a turn with no id is not mistaken for it', () => {
+    const turns = make();
+    turns.handleNotification('turn/completed', turnWithId('null'));
+    const noId = turnCompletedFrame(MAIN) as { params: { turn: Json } };
+    noId.params.turn['id'] = undefined;
+    turns.handleNotification('turn/completed', noId['params']);
+
+    expect(events.filter((e) => e.kind === 'completed')).toHaveLength(2);
+  });
+
   test('a turn of a thread that is not the session’s is not remembered: the same id counts once the thread is', () => {
     const roles: Record<string, Role> = {};
     const turns = createCodexTurns({
