@@ -20,9 +20,11 @@
  */
 
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
-import { generateAnswerKeyPair, sealAnswer } from '@remi/shared';
+import * as path from 'node:path';
+import { generateAnswerKeyPair, sealAnswer, sign } from '@remi/shared';
 import type { AnswerKeyPair, UUID } from '@remi/shared';
 import type { AdapterEvents } from '../../src/adapters/connection-adapter.ts';
+import { IdentityStore } from '../../src/auth/identity-store.ts';
 import { RelayAdapter } from '../../src/remote/relay-adapter.ts';
 import {
   RecordingTransport,
@@ -167,7 +169,7 @@ describe('relay adapter without an authenticator (the default shape)', () => {
     expect(calls.userInputs).toHaveLength(0);
   });
 
-  test('an answer payload with no peer is not dispatched, signed or not', async () => {
+  test('an answer payload with no peer is not dispatched, unsigned or with an empty auth block', async () => {
     // The lock-screen answer path needs no peer; without an authenticator it
     // used to trust the room code alone (`handleRelayedAnswer`).
     const answer = { sessionId: 's', questionId: 'q', answer: 'Yes' };
@@ -176,6 +178,63 @@ describe('relay adapter without an authenticator (the default shape)', () => {
     await settle();
     expect(calls.relayedAnswers).toHaveLength(0);
     expect(calls.answers).toHaveLength(0);
+  });
+
+  test('a real signature from an authorized key is honored with an authenticator and dropped without one', async () => {
+    // The strongest form of "signed or not": the answer carries a genuine
+    // Ed25519 signature from a key the daemon's store authorizes. With an
+    // authenticator on that store it is delivered; the adapter under test has
+    // none, and must drop it all the same.
+    const made = await makeAuthenticator();
+    try {
+      const clientStore = new IdentityStore(path.join(made.dir, 'client'));
+      await clientStore.generate('clientpass');
+      const client = await clientStore.unlock('clientpass');
+      await made.store.addAuthorizedKey(client.publicKeyRaw, 'test-phone');
+      const sessionId = '0199f3a1-0000-7000-8000-000000000001';
+      const questionId = '0199f3a1-0000-7000-8000-000000000002';
+      const body = {
+        type: 'answer',
+        sessionId,
+        questionId,
+        answer: 'Yes',
+        auth: {
+          signature: await sign(
+            client.privateKey,
+            new TextEncoder().encode(`${sessionId}|${questionId}|Yes`).buffer as ArrayBuffer,
+          ),
+          clientPublicKey: client.publicKeyRaw,
+          clientFingerprint: client.fingerprint,
+        },
+      };
+
+      // Control: an adapter that has the authenticator delivers it.
+      const controlCalls: Calls = { connects: 0, userInputs: [], answers: [], relayedAnswers: [] };
+      const controlTransport = new RecordingTransport();
+      const control = new RelayAdapter(
+        {
+          enabled: true,
+          signalingUrl: SIGNALING_URL,
+          code: ROOM_CODE,
+          rotateCode: false,
+          authenticator: made.authenticator,
+          createTransport: () => controlTransport,
+        },
+        recordingEvents(controlCalls),
+      );
+      await control.start();
+      controlTransport.emit('relay', JSON.stringify(body));
+      await settle(() => controlCalls.relayedAnswers.length > 0);
+      await control.stop();
+      expect(controlCalls.relayedAnswers).toHaveLength(1);
+
+      // Under test: no authenticator, same frame.
+      transport.emit('relay', JSON.stringify(body));
+      await settle();
+      expect(calls.relayedAnswers).toHaveLength(0);
+    } finally {
+      made.remove();
+    }
   });
 
   test('a sealed answer with no peer is not opened or dispatched', async () => {
@@ -203,7 +262,7 @@ describe('relay adapter without an authenticator (the default shape)', () => {
     expect(log.lines().slice(before)).toHaveLength(1);
   });
 
-  test('outbound stays refused: nothing but the refusal frame reaches the Worker', async () => {
+  test('nothing leaves but the refusal frame, whatever the daemon tries to send', async () => {
     transport.emit('peer-connected', 'client');
     await settle();
     const frame = {

@@ -708,8 +708,13 @@ describe('network.relay is off by default (#1193)', () => {
     expect(loadConfig(TEST_CONFIG).network.relay).toBe(false);
   });
 
-  test('`remi config` shows the effective value', () => {
-    expect(formatConfig(loadConfig(missing()), missing())).toContain('relay = false');
+  test('`remi config` shows the configured value, and says --permanent-code turns the relay on regardless', () => {
+    // formatConfig prints what the FILE says; the command line is not in
+    // scope, so `--permanent-code` can start a relay while this says `false`.
+    // The honest output names that instead of claiming an effective state.
+    const stock = formatConfig(loadConfig(missing()), missing());
+    expect(stock).toContain('relay = false');
+    expect(stock).toContain('--permanent-code turns the relay on');
     fs.writeFileSync(TEST_CONFIG, '[network]\nrelay = true\n');
     expect(formatConfig(loadConfig(TEST_CONFIG), TEST_CONFIG)).toContain('relay = true');
   });
