@@ -31,7 +31,7 @@ bun remove -g remi
 # Start Claude Code with Remi (session persists if terminal closes)
 remi -- claude
 
-# Start Codex with Remi (status and command approvals, see below)
+# Start Codex with Remi (status, command approvals, turn notifications and chat, see below)
 remi codex
 
 # Detach: Ctrl+B d
@@ -54,7 +54,7 @@ remi attach --host 192.168.1.5 macbook/remi/main
 2. Connect via local network, connection code, or direct address
 3. Monitor and respond to all your agent sessions
 
-### Codex (status and command approvals; checked live against Codex 0.160.0 on 2026-10-04, except subagents and the daemon's cold start)
+### Codex (status, command approvals, turn notifications and chat; approvals checked live against Codex 0.160.0 on 2026-10-04, except subagents and the daemon's cold start; turns and chat not yet run against a real Codex)
 
 `remi codex` runs `codex --no-alt-screen` the way `remi` runs Claude Code, and shows the session, what it is doing (working, waiting on an approval, idle) and the commands it asks to run on your phone.
 A command approval is a card with the command, the directory it runs in when that is not the session's, and Yes and No (Codex's own No), and "Yes, and don't ask again for this command this session" if Codex ever offers it.
@@ -68,7 +68,11 @@ A card has no deadline: it stays answerable for as long as Codex keeps the reque
 Every other kind of request (a file change, extra permissions, a question for you, an MCP prompt, a command that asks for more than itself, anything a subagent asks) shows up as a notice with no answer buttons, so answer it in the terminal; its button reads "Dismiss (answer in the terminal)" and only clears the card from your phone.
 With Codex's "Approve for me" mode (the status line reads "Read Only (Approve for me)"), Codex's own reviewer approves a command automatically and sends no approval request to any client, so remi shows nothing and cannot answer for it.
 Text Codex chooses (a command, a reason, a question) is shown with control, invisible and bidirectional characters made visible (`\uXXXX`, or `\u{XXXXX}` for the Tags block; the list is in ADR 0033, phase 4 amendment) and long values cut with a note of how much is hidden.
-Turn notifications do not reach the phone yet.
+When a turn ends, your phone is told the way it is for Claude: a turn that ran at least `turn_complete_min_seconds` (60 by default) pushes "turn complete" with the end of Codex's final answer (`notifications.on_turn_complete` and the per-device switch mute it), and a turn that failed pushes "Codex stopped" with the reason and Codex's own words, which only the per-device switch mutes.
+A turn you interrupt (Esc, or the phone's No) pushes nothing and clears an earlier "Codex stopped".
+Turns that Codex's subagents run are not announced.
+The app can load a Codex session's history (what you and Codex said, and the shell commands Codex ran, as a "shell" entry) and shows new messages as they finish; a session that has not started its thread has no history yet, and an exited session's history is not loaded.
+The final answer in the push goes through the signaling Worker and Apple's push service in plaintext, like the cards.
 A message typed in the app to a Codex session is refused (the app shows it as failed, "type in the terminal") instead of being typed into Codex, because remi cannot see what Codex has on screen.
 The command is in the card and in the push notification (the ask, up to 120 characters in the title and 200 in the body), which goes through the signaling Worker and Apple's push service in plaintext, as every card does; a command can contain a secret.
 The relay and the Worker carry the whole card, so a command up to 20000 characters, in plaintext until the relay's end-to-end encryption engages by default (#881).
