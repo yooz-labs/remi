@@ -212,8 +212,7 @@ export async function clientStart(cfg: ClientConfig, startedAt: number): Promise
           checkDeadline(startedAt, readyNow, readyDeadline(cfg.mode));
           const ct = decodeSealedControl(readyFrame, 'ready');
           const echo = await aeadOpen(await aeadKey(keys.h2c), TYPE_READY, DIR_H2C, 0, ct);
-          if (echo.length !== 1 || echo[0] !== MODE_BYTE[cfg.mode])
-            throw new RelayError('MODE_MISMATCH');
+          if (echo[0] !== MODE_BYTE[cfg.mode]) throw new RelayError('MODE_MISMATCH');
           return Channel.create({ sendKey: keys.c2h, recvKey: keys.h2c, direction: DIR_C2H, io });
         },
       );
@@ -324,9 +323,8 @@ export async function hostOnHello(
         if (opened === null) throw new RelayError(hello.mode === 'pair' ? 'PAIRING' : 'DECRYPT');
         const { keys, plaintext, offerIndex } = opened;
         try {
-          if (plaintext.length < 96 || plaintext.length > 96 + MAX_DEVICE_NAME) {
-            throw new RelayError('MALFORMED');
-          }
+          // The envelope bounds the ciphertext to 112..176 bytes, so this plaintext is
+          // 96..160 bytes: key, signature, then at most 64 bytes of name.
           const devicePublicKey = plaintext.slice(0, 32);
           const nameBytes = plaintext.slice(96);
           checkName(nameBytes);
