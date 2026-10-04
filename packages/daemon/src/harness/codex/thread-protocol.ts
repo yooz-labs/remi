@@ -99,6 +99,8 @@ export function parseThread(v: unknown): ThreadInfo | null {
  */
 export interface TurnCompletedInfo {
   threadId: string;
+  /** `Turn.id`, when it is non-empty text: a turn without one cannot be told from a repeat. */
+  turnId: string | null;
   /** `Turn.status`: `completed`, `interrupted`, `failed` or `inProgress`; null when absent or not text. */
   status: string | null;
   /** `Turn.durationMs`, when it is a finite number of at least zero; null otherwise. */
@@ -108,6 +110,11 @@ export interface TurnCompletedInfo {
    * turn's last word. A message with no phase is "phase unknown" and is never taken for it.
    */
   finalAnswer: string | null;
+  /**
+   * `Turn.itemsView` (`notLoaded`, `summary` or `full`: how much of `items` the frame holds), only
+   * when it is one of those three, because it may be logged and so is never free text.
+   */
+  itemsView: 'notLoaded' | 'summary' | 'full' | null;
   /** `Turn.error.message`, when it is text with something in it. */
   errorMessage: string | null;
   /** `Turn.error.codexErrorInfo`, only when it is a string (the object variants carry no single code). */
@@ -134,12 +141,15 @@ export function parseTurnCompleted(v: unknown): TurnCompletedInfo | null {
     }
   }
   const error = turn['error'];
+  const view = turn['itemsView'];
   return {
     threadId: v['threadId'],
+    turnId: nonBlank(turn['id']),
     status: stringOrNull(turn['status']),
     durationMs:
       typeof duration === 'number' && Number.isFinite(duration) && duration >= 0 ? duration : null,
     finalAnswer,
+    itemsView: view === 'notLoaded' || view === 'summary' || view === 'full' ? view : null,
     errorMessage: isRecord(error) ? nonBlank(error['message']) : null,
     errorCode: isRecord(error) ? nonBlank(error['codexErrorInfo']) : null,
   };

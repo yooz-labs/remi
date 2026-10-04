@@ -60,7 +60,6 @@ export interface TurnFailedEvent {
   readonly error?: string | undefined;
   /** The words the agent or its API gave with the failure. */
   readonly errorDetails?: string | undefined;
-  readonly lastAssistantMessage?: string | undefined;
   /** Who stopped: "Claude" or "Codex". It names the agent in the notice's title. */
   readonly agentName: string;
 }
@@ -139,9 +138,6 @@ export function createTurnEventSink(deps: TurnEventSinkDeps): TurnEventSink {
       const input: TurnFailedInput = {
         ...(event.error !== undefined ? { error: event.error } : {}),
         ...(event.errorDetails !== undefined ? { error_details: event.errorDetails } : {}),
-        ...(event.lastAssistantMessage !== undefined
-          ? { last_assistant_message: event.lastAssistantMessage }
-          : {}),
       };
       failedRoutes.push(event.sessionId, input, event.agentName);
     },

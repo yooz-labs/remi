@@ -1,0 +1,54 @@
+/**
+ * How the Codex adapter makes what Codex chose safe before it reaches a push or a chat tool entry
+ * (#1180 review). `escapeUnsafeText` (`@remi/shared`, Phase 4) is the SET of characters: control
+ * characters but tab and newline, the C1 controls, the invisible and the bidirectional ones. These
+ * two helpers decide how that set is applied.
+ *
+ * - {@link boundedEscape}: for text a person must be able to read as it is, with the character
+ *   written out (`\u202E`), never dropped. Used for a failure's details and code.
+ * - {@link pushProse}: for the model's own prose in a notification, where the characters are
+ *   removed instead, except the zero-width joiner, which an emoji sequence needs.
+ */
+
+import { escapeUnsafeText } from '@remi/shared';
+
+const ZERO_WIDTH_JOINER = '\u200d';
+const ELLIPSIS = '\u2026';
+/** A push body shows 200 characters; prose beyond this many raw characters is never read. */
+const PROSE_SCAN_MAX = 4000;
+
+/**
+ * `text` with every character of the shared set written out as visible text, and at most `max`
+ * characters long AFTER that (UTF-16 code units, as the cuts further on count). Each code point
+ * is escaped on its own and the cut falls between code points, never inside an escape, so no
+ * `\u20` fragment is left; a cut ends with an ellipsis, which the bound includes.
+ */
+export function boundedEscape(text: string, max: number): string {
+  if (max <= 0) return '';
+  // One more code point than max tells a text that fits from one that does not: an escape is
+  // never shorter than the character it stands for.
+  const head = Array.from(text).slice(0, max + 1);
+  const pieces = head.map(escapeUnsafeText);
+  const total = pieces.reduce((sum, piece) => sum + piece.length, 0);
+  if (head.length <= max && total <= max) return pieces.join('');
+  let out = '';
+  for (const piece of pieces) {
+    if (out.length + piece.length > max - 1) break;
+    out += piece;
+  }
+  return out + ELLIPSIS;
+}
+
+/**
+ * The model's prose for a notification: every character `escapeUnsafeText` would write out is
+ * REMOVED instead (a push has no use for an escape sequence, a bell or a bidi override), except the
+ * zero-width joiner, so an emoji sequence such as a family survives. Only the first
+ * {@link PROSE_SCAN_MAX} characters are read.
+ */
+export function pushProse(text: string): string {
+  let out = '';
+  for (const ch of text.slice(0, PROSE_SCAN_MAX)) {
+    if (ch === ZERO_WIDTH_JOINER || escapeUnsafeText(ch) === ch) out += ch;
+  }
+  return out;
+}

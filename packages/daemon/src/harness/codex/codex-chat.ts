@@ -12,7 +12,9 @@
  *   shows both);
  * - `commandExecution` is an assistant tool entry named `shell`: the command as the
  *   tool's input and its output as the result, 500 characters each as Claude bounds a
- *   tool, and an error when the command failed, was declined or exited non-zero. One
+ *   tool (cut first, then every control, invisible and bidirectional character written
+ *   out as visible text), and an error when the command failed, was declined or exited
+ *   non-zero. One
  *   still running is left for its completion, which arrives live;
  * - everything else (reasoning, plans, file changes, tool calls, items of a newer Codex)
  *   is not chat and is skipped.
@@ -36,12 +38,17 @@
  * (the shape here is the generated schema's `ThreadItemsListResponse`), its paging, and
  * the error it answers for a thread with nothing written.
  *
+ * Message prose (a user's or the agent's text) is NOT escaped, deliberately: it is shown as the
+ * model or the person wrote it, and escaping would break an emoji sequence at its zero-width
+ * joiner. Claude's transcript bridge does the same with Claude's text, and the push of a final
+ * answer is made safe separately (`codex-turns.ts`).
+ *
  * Nothing a message says is logged: not its text, its command or its output.
  */
 
 import type { Message, ProtocolMessage, TranscriptContentBlock, UUID } from '@remi/shared';
 import type { TranscriptContentMessage } from '@remi/shared';
-import { createTranscriptContent, generateId, now } from '@remi/shared';
+import { createTranscriptContent, escapeUnsafeText, generateId, now } from '@remi/shared';
 
 import { MessageAPI } from '../../api/message-api.ts';
 import type { HarnessChat } from '../types.ts';
@@ -50,6 +57,7 @@ import {
   AppServerDisconnectedError,
   AppServerRpcError,
 } from './app-server-client.ts';
+import { describeError } from './describe-error.ts';
 import { type ThreadItemInfo, parseThreadItem } from './thread-protocol.ts';
 
 /** The items asked for per page. The app-server may give fewer, or more. */
@@ -88,10 +96,7 @@ export interface CodexChat extends HarnessChat {
 
 /** What could not be read, in words with no server text: the app-server's own message may carry an id or a path. */
 export class CodexHistoryError extends Error {
-  constructor(
-    message: string,
-    readonly code?: number,
-  ) {
+  constructor(message: string) {
     super(message);
     this.name = 'CodexHistoryError';
   }
@@ -142,13 +147,17 @@ function timestampOf(completedAtMs: number | null): string {
 }
 
 function toolBlocks(entry: Extract<Entry, { kind: 'shell' }>): TranscriptContentBlock[] {
-  const output = entry.output?.slice(0, TOOL_FIELD_MAX) ?? '';
+  // Cut first, escape after (as the Phase 4 cards do): a command and its output are Codex's and the
+  // program's words, and a terminal sequence or a bidi override in them is written out as visible
+  // text (`escapeUnsafeText`), so the cut never lands inside an escape.
+  const command = escapeUnsafeText(entry.command.slice(0, TOOL_FIELD_MAX));
+  const output = escapeUnsafeText(entry.output?.slice(0, TOOL_FIELD_MAX) ?? '');
   return [
     {
       type: 'tool_use',
       toolUseId: entry.id,
       toolName: SHELL_TOOL,
-      toolInput: JSON.stringify({ command: entry.command.slice(0, TOOL_FIELD_MAX) }),
+      toolInput: JSON.stringify({ command }),
     },
     {
       type: 'tool_result',
@@ -220,16 +229,11 @@ function parsePage(v: unknown): Page | null {
   return { items, nextCursor: next ?? null };
 }
 
-function describeError(error: unknown): string {
-  return error instanceof Error ? error.name : typeof error;
-}
-
 /** Words for a failed request that carry the code and nothing the server said. */
 function historyError(error: unknown): CodexHistoryError {
   if (error instanceof AppServerRpcError) {
     return new CodexHistoryError(
       `the Codex app-server could not list the history (code ${error.code})`,
-      error.code,
     );
   }
   if (error instanceof AppServerDisconnectedError) {

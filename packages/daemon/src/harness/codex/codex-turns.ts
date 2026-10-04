@@ -14,12 +14,10 @@
  *   `turn_complete_min_seconds`, the per-device preference, a message to show.
  *   A turn with no `final_answer` message (a model that sends no phase) has
  *   nothing to show, so it stays silent, as an empty `last_assistant_message`
- *   does for Claude.
+ *   does for Claude; one line without content says so (and the items view).
  * - `failed`: `turnFailed` naming Codex, with `error.message` as the details and
  *   `codexErrorInfo` as the code when it is a string. Never gated by
- *   `on_turn_complete` (a failed turn is the one turn end a user must not miss),
- *   and it carries no `lastAssistantMessage`: a failed turn's earlier answer is
- *   not what went wrong.
+ *   `on_turn_complete` (a failed turn is the one turn end a user must not miss).
  * - `interrupted`: `turnSucceeded` only. Someone stopped the turn; that is neither
  *   a "done" push nor a failure, and it proves a failure notice stale. That a turn
  *   ended by the phone's No (`cancel`), Esc or `turn/interrupt` reports this status
@@ -28,9 +26,24 @@
  *
  * Only the session's own thread counts (`threadRole` is `main`): a subagent's
  * turn ends many times inside the main turn, and another window's thread is not
- * this session's. Nothing a turn says is logged: the answer, the error text and
- * the thread id stay out of the log, and a status remi does not know is logged
- * without its value.
+ * this session's. A turn id that was already announced is not announced again
+ * (the last 64 are remembered): nothing shows that Codex repeats a
+ * `turn/completed`, but a re-attach must not push twice if it does.
+ *
+ * What Codex chose is made safe before it leaves remi (`safe-text.ts`): a failure's
+ * details and code are written out with every control, invisible and bidirectional
+ * character visible (`escapeUnsafeText`'s set), cut to what the push shows
+ * AFTER counting the escapes so a cut never lands inside one, and the final answer
+ * in the push has those characters removed except the zero-width joiner, which an
+ * emoji sequence needs. Chat prose is NOT touched here (`codex-chat.ts` leaves it
+ * as the model wrote it, deliberately). Claude's `last_assistant_message` has the
+ * same exposure today and is not changed by this phase.
+ *
+ * Nothing a turn says is logged: the answer, the error text and the thread id
+ * stay out of the log, and a status remi does not know is logged without its
+ * value. A turn that ended while remi was not attached (before the first attach,
+ * or while the link was down) is never seen, so it pushes nothing, and a stale
+ * "Codex stopped" stays until the next completed or interrupted turn.
  *
  * What no real frame has shown yet: a `failed` or an `interrupted` turn (live
  * step LV-5). The shapes here follow the generated schema (`Turn`, `TurnError`).
@@ -39,10 +52,17 @@
 import type { UUID } from '@remi/shared';
 
 import type { TurnEventSink } from '../../notifications/turn-events.ts';
+import { describeError } from './describe-error.ts';
+import { boundedEscape, pushProse } from './safe-text.ts';
 import { parseTurnCompleted } from './thread-protocol.ts';
 
 /** Who the failure notice says stopped. */
 const AGENT_NAME = 'Codex';
+/** What the notice shows of a failure's own words, and of an unknown code (the lengths `turn-failed.ts` cuts to). */
+const ERROR_DETAILS_MAX = 140;
+const ERROR_CODE_MAX = 40;
+/** How many announced turn ids are remembered, to drop a `turn/completed` that is delivered again. */
+const RECENT_TURNS = 64;
 
 export interface CodexTurnsDeps {
   /** The remi session whose turns these are. */
@@ -58,12 +78,19 @@ export interface CodexTurns {
   handleNotification(method: string, params: unknown): void;
 }
 
-function describeError(error: unknown): string {
-  return error instanceof Error ? error.name : typeof error;
-}
-
 export function createCodexTurns(deps: CodexTurnsDeps): CodexTurns {
   const { sessionId, sink } = deps;
+  /** Ids of the turns announced, oldest first. */
+  const announced = new Set<string>();
+
+  const remember = (turnId: string | null): void => {
+    if (turnId === null) return;
+    announced.add(turnId);
+    if (announced.size > RECENT_TURNS) {
+      const oldest = announced.values().next().value;
+      if (oldest !== undefined) announced.delete(oldest);
+    }
+  };
 
   /** One sink call: a throw is logged by name only and never stops the next call or leaves the handler. */
   const guarded = (what: string, call: () => void): void => {
@@ -83,30 +110,47 @@ export function createCodexTurns(deps: CodexTurnsDeps): CodexTurns {
         return;
       }
       if (deps.threadRole(turn.threadId) !== 'main') return;
+      if (turn.turnId !== null && announced.has(turn.turnId)) return;
 
       switch (turn.status) {
-        case 'completed':
+        case 'completed': {
+          remember(turn.turnId);
+          if (turn.finalAnswer === null) {
+            // Nothing to push: say so once, so a model that sends no phase is not a silent mystery.
+            const view = turn.itemsView === null ? '' : ` (items view: ${turn.itemsView})`;
+            deps.log(
+              `a completed turn has no final_answer message, so no turn_complete push${view}`,
+            );
+          }
           guarded('turnCompleted', () =>
             sink.turnCompleted({
               sessionId,
               elapsedMs: turn.durationMs ?? undefined,
-              lastAssistantMessage: turn.finalAnswer ?? undefined,
+              lastAssistantMessage:
+                turn.finalAnswer === null ? undefined : pushProse(turn.finalAnswer),
               reentry: false,
             }),
           );
           guarded('turnSucceeded', () => sink.turnSucceeded(sessionId));
           break;
+        }
         case 'failed':
+          remember(turn.turnId);
           guarded('turnFailed', () =>
             sink.turnFailed({
               sessionId,
-              ...(turn.errorCode !== null ? { error: turn.errorCode } : {}),
-              ...(turn.errorMessage !== null ? { errorDetails: turn.errorMessage } : {}),
+              ...(turn.errorCode !== null
+                ? { error: boundedEscape(turn.errorCode, ERROR_CODE_MAX) }
+                : {}),
+              ...(turn.errorMessage !== null
+                ? { errorDetails: boundedEscape(turn.errorMessage, ERROR_DETAILS_MAX) }
+                : {}),
               agentName: AGENT_NAME,
             }),
           );
           break;
         case 'interrupted':
+          remember(turn.turnId);
           guarded('turnSucceeded', () => sink.turnSucceeded(sessionId));
           break;
         default:

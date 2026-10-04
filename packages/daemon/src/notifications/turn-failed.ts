@@ -59,6 +59,18 @@ const KNOWN_ERROR_PHRASES: ReadonlyMap<string, string> = new Map([
   ['max_output_tokens', 'Output token limit reached'],
   ['cloud_credential_error', 'Cloud credentials could not be loaded'],
   ['unknown', 'Unknown error'],
+  // Codex's string `codexErrorInfo` values (the generated schema's `CodexErrorInfo`, #1180), so a
+  // failed Codex turn reads like Claude's. A value with no phrase here is shown as is.
+  ['usageLimitExceeded', 'Usage limit reached'],
+  ['rateLimitExceeded', 'Rate limit reached'],
+  ['serverOverloaded', 'API overloaded'],
+  ['internalServerError', 'Server error'],
+  ['unauthorized', 'Authentication failed'],
+  ['badRequest', 'Invalid request'],
+  ['contextWindowExceeded', 'Context window exceeded'],
+  ['sessionBudgetExceeded', 'Session budget exceeded'],
+  ['sandboxError', 'Sandbox error'],
+  ['other', 'Unknown error'],
 ]);
 
 /** What a payload with no usable `error` reads as: the binary itself sends
