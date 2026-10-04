@@ -17,7 +17,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } fr
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import type { HarnessId, UUID } from '@remi/shared';
+import type { HarnessId, ProtocolMessage, UUID } from '@remi/shared';
 import { createCreateSessionResponse, createError, createHelloAck } from '@remi/shared';
 import { WebSocketAdapter } from '../../src/adapters/websocket-adapter.ts';
 import { createRemoteSession, runRemoteNew } from '../../src/cli/remote-new-client.ts';
@@ -39,6 +39,8 @@ describe('createRemoteSession sends a harness only to a daemon that offers it (#
   let failure: string | undefined;
   /** The port the daemon says it started the session on; absent is the daemon's own. */
   let spawnedPort: number | undefined;
+  /** When set, fields that overwrite the daemon's success response as it goes on the wire (a daemon may send anything). */
+  let rawAnswer: Record<string, unknown> | undefined;
   /** When set the daemon answers the request with a protocol `error` message of this text instead. */
   let protocolError: string | undefined;
   let requests: Array<{ directory: string | undefined; extra: CreateSessionExtra | undefined }>;
@@ -58,6 +60,13 @@ describe('createRemoteSession sends a harness only to a daemon that offers it (#
           requests.push({ directory, extra });
           if (protocolError !== undefined) {
             adapter.sendRaw(connectionId, createError('SOME_CODE', protocolError));
+            return;
+          }
+          if (rawAnswer !== undefined) {
+            adapter.sendRaw(connectionId, {
+              ...createCreateSessionResponse(true, requestId, SESSION, undefined, port),
+              ...rawAnswer,
+            } as unknown as ProtocolMessage);
             return;
           }
           adapter.sendRaw(
@@ -90,6 +99,7 @@ describe('createRemoteSession sends a harness only to a daemon that offers it (#
     failure = undefined;
     protocolError = undefined;
     spawnedPort = undefined;
+    rawAnswer = undefined;
     stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-remote-new-'));
     savedHome = process.env['REMI_HOME'];
     process.env['REMI_HOME'] = stateDir;
@@ -173,6 +183,35 @@ describe('createRemoteSession sends a harness only to a daemon that offers it (#
     protocolError = undefined;
     notice = hostile;
     expect((await create('codex')).notice).toBe(shown);
+  });
+
+  test.each([
+    [
+      'a session id with a terminal sequence',
+      { sessionId: '55\u001b[2K5555-5555-4555-8555-555555555555' },
+    ],
+    ['a session id that is not a UUID', { sessionId: 'fixture-session-id' }],
+    ['a session id that is not a string', { sessionId: 5 }],
+    ['a port that is a string', { port: '1234' }],
+    ['a port with a terminal sequence', { port: '1\u001b[2K' }],
+    ['a port of zero', { port: 0 }],
+    ['a port above 65535', { port: 70000 }],
+    ['a fractional port', { port: 12.5 }],
+  ])(
+    'an answer with %s is refused, so nothing the daemon chose reaches the screen or the attach (G10)',
+    async (_name, fields) => {
+      offered = ['codex'];
+      rawAnswer = fields;
+      const message = await create('codex').catch((error: Error) => error.message);
+      expect(message).toBe(
+        'Failed to create session: the daemon sent an answer this client cannot read',
+      );
+    },
+  );
+
+  test('a port the daemon leaves out is the one the client asked, and a plain UUID and port pass', async () => {
+    offered = ['codex'];
+    expect(await create('codex')).toEqual({ sessionId: SESSION, port });
   });
 
   describe('runRemoteNew prints what the hub said, then attaches (G11)', () => {
