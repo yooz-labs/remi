@@ -838,6 +838,14 @@ describe('a long command is never approvable from a surface that cuts it (S1)', 
       pushCategoryFor({ ...claudePermission, kind: 'plan_approval', detail: 'plan' }),
     ).toBeUndefined();
   });
+
+  test('an empty detail is nothing unseen: the card keeps its buttons, any other detail removes them', () => {
+    const card: Question = { ...commandCard('touch x'), detail: '' };
+    expect(pushCategoryFor(card)).toBe('REMI_YN');
+    expect(selectDynOptions(card)).toBe(true);
+    expect(pushCategoryFor({ ...card, detail: 'touch x and more' })).toBeUndefined();
+    expect(selectDynOptions({ ...card, detail: 'touch x and more' })).toBe(false);
+  });
 });
 
 describe('text a hostile server controls is escaped before any client sees it (S5)', () => {
@@ -892,6 +900,8 @@ describe('text a hostile server controls is escaped before any client sees it (S
     const spec = build({}, {}, bidi);
     expect(spec.actionable).toBe(false);
     expect(spec.question.text).toContain('too long to show');
+    // The count is the command's own length, not what escaping made of it.
+    expect(spec.question.text).toContain(`(${COMMAND_TEXT_MAX / 2} characters)`);
     clean(spec.question);
   });
 
@@ -1088,6 +1098,15 @@ describe('what a hostile or buggy server sends is bounded before a card is built
       `Allow Codex to run: echo a\nCodex's stated reason: ${'h'.repeat(300)}...`,
     );
     expect(weight(spec.question)).toBeLessThan(500);
+    // The numbers the ADR, AGENTS.md and the README state: the bound is 20000, a reason of exactly
+    // 300 characters is whole and one more is cut.
+    expect(COMMAND_TEXT_MAX).toBe(20_000);
+    expect(build({ reason: 'h'.repeat(300) }, {}, 'echo a').question.text).toBe(
+      `Allow Codex to run: echo a\nCodex's stated reason: ${'h'.repeat(300)}`,
+    );
+    expect(build({ reason: 'h'.repeat(301) }, {}, 'echo a').question.text).toBe(
+      `Allow Codex to run: echo a\nCodex's stated reason: ${'h'.repeat(300)}...`,
+    );
   });
 });
 
@@ -1115,6 +1134,8 @@ describe('the label a card leaves in the live-sessions file is fixed, never its 
       build({ kind: 'writeStdin' }, {}, `echo ${secret}`).question,
       build({}, { agentId: OTHER_THREAD }, `echo ${secret}`).question,
       build({ availableDecisions: ['accept'] }, {}, `echo ${secret}`).question,
+      // Too long to show: terminalOnly, and its label is still the command's, never its text.
+      build({}, {}, `echo ${secret} ${'x'.repeat(COMMAND_TEXT_MAX)}`).question,
     ];
     for (const q of cards) {
       expect(q.pendingLabel).toBe('Permission: Codex command');
@@ -1237,6 +1258,15 @@ describe("the directory a command runs in is shown when it is not the session's 
     expect(q.text).toContain('In directory: /work/\\u202Egnp');
     expect(q.text).toContain('characters hidden]');
     expect((q.text.match(/d/g) ?? []).length).toBeLessThan(2100);
+  });
+
+  test('the directory bound is 500 characters: exactly 500 is whole, one more is cut and says so', () => {
+    const whole = `/work/${'d'.repeat(494)}`;
+    expect(whole).toHaveLength(500);
+    expect(run(whole).text).toContain(`In directory: ${whole}`);
+    expect(run(whole).text).not.toContain('characters hidden');
+    const q = run(`${whole}d`);
+    expect(q.text).toContain(`In directory: ${whole} [1 characters hidden]`);
   });
 });
 
