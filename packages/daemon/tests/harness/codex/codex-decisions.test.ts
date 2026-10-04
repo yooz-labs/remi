@@ -440,6 +440,7 @@ describe('CodexDecisions', () => {
       const q = only();
       expect(decisions.answerHeld(q.id, optionNamed(q, 'Yes'))).toBe('resolved');
       expect(responses).toEqual([{ id: 0, result: { decision: 'accept' } }]);
+      expect(logs).toContain(`answered 0 on ${MAIN.slice(-8)}`);
       // Its resolved is matched by id 0 too, not lost to a falsy check.
       decisions.handleResolved({ threadId: MAIN, requestId: 0 });
       request(0);

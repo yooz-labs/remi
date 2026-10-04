@@ -1020,6 +1020,14 @@ describe('binding re-checks the claims, and a sibling session keeps us from taki
     expect(ctx.logs.some((l) => l.includes('held by another session'))).toBe(true);
   });
 
+  test('the claimed-thread error names the thread by its last eight characters (Q2)', () => {
+    const id = '01a106f2-2f1c-7a35-9d4e-8b6f1c2d3e4a';
+    expect(new ThreadClaimedError(id).message).toBe(
+      'thread 1c2d3e4a is claimed by another session',
+    );
+    expect(new ThreadClaimedError(id).threadId).toBe(id);
+  });
+
   test('a store that says another session holds the thread is logged as that, and the thread is not retried', async () => {
     const id = crypto.randomUUID();
     const ctx = await setup({ identityError: new ThreadClaimedError(id) });
