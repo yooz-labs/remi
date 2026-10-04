@@ -84,7 +84,7 @@ Constants:
 | `MAX_PLAINTEXT` | 524288 (2^19) bytes per data frame |
 | `MIN_FRAME` | `1 + 8 + 1 + 16` = 26 bytes, the smallest binary data frame (one byte of plaintext) |
 | `MAX_FRAME` | `1 + 8 + MAX_PLAINTEXT + 16` = 524313 bytes, the largest binary data frame |
-| `MAX_CONTROL_TEXT` | 512 characters, the largest control frame |
+| `MAX_CONTROL_TEXT` | 512 bytes of UTF-8, the largest control frame (an ordinary frame is ASCII, so bytes and characters agree) |
 | `MAX_DEVICE_NAME` | 64 bytes of UTF-8 |
 | `HANDSHAKE_TIMEOUT_MS` | 30000 |
 | `PAIR_CONFIRM_TIMEOUT_MS` | 120000 |
@@ -131,6 +131,7 @@ client_admission_input = lps("remi-relay-v2 admit client", rid, nonce)
   The host registered `SHA-256(A)` with the Worker with a time to live; the Worker compares `SHA-256(presented A)` to the registered value in constant time, admits on a match and deletes the registration (single use).
   The Worker never sees `psk`, and `A` does not reveal it.
 
+An admission check passes only if the room id is exactly 16 bytes, the nonce exactly 32 bytes, the public key exactly 32 bytes and the signature exactly 64 bytes, as well as the signature verifying (and, for a host, the room id matching the key); any other length is a refusal even when the signature was made over those other bytes.
 An admission signature binds role, room and nonce, so it cannot be replayed to another room, another role or another socket.
 Admission is an access-control and abuse-control layer, not a confidentiality layer: nothing in the end-to-end protocol below depends on the Worker behaving.
 
@@ -153,11 +154,12 @@ offset  size  field
 String form: `"remi-pair2:" || b64u(token bytes)`.
 A token is at most 11 + 868 characters.
 
-A decoder rejects (code `TOKEN`, or `EXPIRED` where noted):
+A decoder checks the following in this order and reports the first failure (code `TOKEN`, or `EXPIRED` where noted); an expired token whose url is also invalid is therefore `TOKEN`:
 
 - a string without the prefix, or with a payload that is not canonical base64url;
-- a token shorter than the fixed part, with `token_version != 2`, with any reserved flag bit set, or with a `relay_url` length outside 1 to 512;
-- a `relay_url` that does not match `^(wss://[a-z0-9.-]+|ws://(localhost|127\.0\.0\.1))(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?$` (no userinfo, no query, no fragment, no IPv6 literal, lowercase host);
+- a token shorter than 75 bytes (the 74 fixed bytes before the optional seal key and at least one byte of url), with `token_version != 2`, or with any reserved flag bit (1 to 7) set;
+- an `expires_at` that does not fit a safe integer (above 2^53 - 1), or a `relay_url` (the bytes after the fixed part and the seal key, if flagged) longer than 512 bytes;
+- a `relay_url` that does not match, as a whole string (no trailing newline), `^(wss://[a-z0-9.-]+|ws://(localhost|127\.0\.0\.1))(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?$` (no userinfo, no query, no fragment, no IPv6 literal, lowercase host; the pattern is ASCII, so any other byte is a refusal and no separate UTF-8 check is needed);
 - `expires_at <= now` (code `EXPIRED`);
 - `expires_at > now + PAIRING_TTL_SECONDS + PAIRING_SKEW_SECONDS`: a token that outlives the policy is malformed, not generous;
 - a seal key that is not a valid P-256 point.
@@ -191,16 +193,19 @@ Lengths: `E_*` 65, `n_*` 32, `sig_h` 64, `auth_ciphertext` 112 to 176, `ready_ci
 A strict decoder applies these steps in order and stops at the first failure.
 All failures are errors, and none is recovered from.
 
-1. The text is a string of at most `MAX_CONTROL_TEXT` characters, else `OVERSIZE`.
-2. It parses as JSON and is an object with an integer `v`, else `MALFORMED`.
-3. `v == 2`, else `VERSION`.
-4. `t` is the type the receiver expects at this step of the handshake, else `TYPE` (an unknown type, a known type at the wrong step, or a binary frame where text is expected).
-5. For `hello`, `m` is `"pair"` or `"resume"`, else `MODE`.
-6. The object has exactly the expected keys, each value a string, each binary value canonical base64url of exactly the stated length, else `MALFORMED`.
+1. The frame is a text string, else `TYPE` (a binary frame where text is expected); it is at most `MAX_CONTROL_TEXT` bytes of UTF-8, else `OVERSIZE`.
+2. It parses as JSON (RFC 8259: `NaN`, `Infinity`, comments and trailing commas are not JSON) and is an object with an integer `v`, else `MALFORMED`.
+   An integer is a JSON number whose value is an integer: `3.0` is an integer and `true`, `"2"` and `2.5` are not.
+3. `v == 2` by value, else `VERSION`.
+   (So `3.0` is `VERSION`, and `2.0` passes this step and fails step 7.)
+4. `t` is the type the receiver expects at this step of the handshake, else `TYPE` (an unknown type, a known type at the wrong step, a missing `t`, or a `t` that is not a string).
+5. For `hello`, `m` is `"pair"` or `"resume"`, else `MODE` (including a missing `m` and a non-string `m`).
+6. The object has exactly the expected keys, each value a string, each binary value canonical base64url of the stated length (`auth_ciphertext` within its range, every other value exactly), else `MALFORMED`.
 7. The canonical text rebuilt by the encoder from the decoded values equals the received text character for character, else `MALFORMED`.
    This one comparison rejects duplicate keys, reordered keys, whitespace, alternative escapes and non-canonical numbers.
 
-`E_c` and `E_h` must also be valid P-256 points; the platform rejects an off-curve point at import and that is `MALFORMED`.
+For `hello` and `hello_ack` the decoded ephemeral key must also begin with the byte `0x04` (an uncompressed point), else `MALFORMED`; that prefix check belongs to the decoder, whatever the platform's import accepts.
+That the key is a point on the curve is checked when it is used for ECDH, and is `MALFORMED` too; the `ec_point` vectors cover it.
 
 ### 6.2 Transcript, signatures, key schedule
 
@@ -217,6 +222,9 @@ H2  = SHA-256( lps("remi-relay-v2 H2", H1, sig_h, D_pk, name) )
 sig_c = Ed25519(D_sk, lps("remi-relay-v2 client", H2))
 ```
 
+Every argument of `lps` is its own part, so the one-byte `[V]` and `[mode]` in `H1` each carry their own 2-byte length prefix (`0001 02`, `0001 01`), as does the label.
+`sig_h` and `sig_c` are plain Ed25519 over the `lps`-wrapped bytes, with no extra hashing.
+In §6.2 the HKDF `info` is the raw ASCII label (not length-prefixed), the salt is the 32-byte `H1`, and with an empty `psk` the input key material is just the 32 bytes of `Z`.
 `mode` in `H1` is the byte `0x01` or `0x02`, the mode the client sent in `hello`.
 `name` is the device name bytes (empty when absent).
 Each HKDF call performs Extract with the given salt and `ikm` and then Expand with the given `info`; the two calls therefore share one pseudorandom key and differ only in `info`.
@@ -240,12 +248,15 @@ Each HKDF call performs Extract with the given salt and `ikm` and then Expand wi
    It is sealed with `k_c2h` as a frame of type `TYPE_AUTH`, direction `DIR_C2H`, counter 0 (section 7).
 5. **Host checks the client.**
    The host derives the keys and opens `auth`.
-   - Resume mode: keys use an empty `psk`.
+   - Resume mode: keys use an empty `psk`; if `auth` does not open, the failure is `DECRYPT`.
    - Pair mode: the host tries each live offer in order, deriving keys with that offer's secret; the first offer under which the tag verifies is the matching one.
      If none verifies, it closes (`PAIRING`).
+     Which offers are tried: the live offers in the order of the policy's list, at most `MAX_PAIRING_OFFERS` of them.
+     Once an offer's secret opens `auth` the search stops: a later failure (the name or the signature) is reported as that failure, and no other offer is tried.
      This is why a client with the wrong pairing secret fails here, with the same observable result as any other failure.
    The decoder has already bounded the `auth` ciphertext to 112 to 176 bytes, so the plaintext is 96 to 160 bytes: `D_pk` is its first 32 bytes, `sig_c` the next 64, and the rest is the name.
    The host then checks, in this order: the name (`NAME`), `sig_c` under `D_pk` over the host's own `H2` (`BAD_SIGNATURE`), and in resume mode that `D_pk` is enrolled (`UNKNOWN_DEVICE`).
+   Enrollment is checked in resume mode only; in pair mode the library does not look at the enrolled set (re-pairing an enrolled device is the daemon's decision).
    In pair mode the library reports which offer matched; the daemon then shows the fingerprint (section 9) to the operator, enrolls `D_pk` and burns the offer.
    Only after that does the daemon ask the library for `ready`.
 6. **Host to client, `ready`.**
@@ -259,6 +270,9 @@ Deadlines, in milliseconds from the moment the first handshake message was handl
 - The client's `hello_ack` handling, and the host's `auth` handling, must happen within `HANDSHAKE_TIMEOUT_MS`.
 - `ready`, on both sides (the host's call to produce it, the client's handling of it), must happen within `HANDSHAKE_TIMEOUT_MS` in resume mode and within `PAIR_CONFIRM_TIMEOUT_MS` in pair mode, which leaves room for a human to confirm the fingerprint.
 - A violation is `EXPIRED`.
+- The boundary is inclusive: a step handled exactly `limit` milliseconds after the start is on time, and one millisecond later is `EXPIRED`.
+- The check happens when the step is handled; the library has no timer.
+  A handshake in which nothing arrives never calls a step, so the daemon must close an idle half-open connection itself (section 14).
 
 Each step of the handshake is single use: the library hands back the next step from the one before, so a step cannot be taken out of order and no channel exists before key confirmation.
 Calling a step twice, or after `abort`, is `STATE`.
@@ -299,6 +313,7 @@ Checks run in this order and stop at the first failure; the first failure closes
 Sender: the plaintext is copied when `send` is called, so a caller that reuses its buffer changes nothing; the counter is assigned synchronously at the same moment, so counter order is call order; a sender whose next counter would exceed `MAX_COUNTER` closes the channel (`COUNTER_LIMIT`); plaintext outside 1 to `MAX_PLAINTEXT` is refused before a counter is consumed (`OVERSIZE`, or `MALFORMED` for empty); more than `MAX_PENDING_SENDS` unsent frames refuses the new one before a counter is consumed (`QUEUE_FULL`).
 Encryption and emission run through one promise chain, so frame `n + 1` is not emitted before frame `n`, whatever the relative speed of their encryptions.
 If encryption or emission of any frame fails, the channel closes with the failure close and every later send is refused (`CLOSED`): a frame is never skipped.
+After the first failure every later receive is `CLOSED`.
 Received frames are copied on arrival and processed through a second chain, so results are delivered in arrival order and a bad frame poisons the frames behind it.
 A deliberate local close ends the channel with code `CLOSE_NORMAL` and the reason `"closed"`; it is not a failure.
 
@@ -320,7 +335,7 @@ Error codes, which appear in tests and the local log only:
 
 | Code | Meaning |
 |---|---|
-| `MALFORMED` | a frame, token or key that does not parse, has a wrong length or is not canonical |
+| `MALFORMED` | a frame or key that does not parse, has a wrong length or is not canonical |
 | `VERSION` | a control frame whose `v` is an integer other than 2 |
 | `TYPE` | a frame of the wrong type for the step (text where binary is expected and the reverse included) |
 | `MODE` | a `hello` whose mode is not `pair` or `resume`, or a client configured with a pairing secret in the wrong mode |
@@ -362,8 +377,10 @@ key  = HKDF-SHA256(Z, salt = E, info = lps("remi-relay-v2 seal", R), L = 32)
 sealed = E (65) || nonce (12) || AES-256-GCM(key, nonce, aad, plaintext)
 ```
 
+In this section the HKDF `info` is `lps("remi-relay-v2 seal", R)`, which is length-prefixed, unlike the raw labels of section 6.2.
 For a push, `aad = rid || question_id` where `rid` is the 16 bytes above and `question_id` is 1 to 64 bytes of UTF-8 (the same string is the APNS collapse id).
 Plaintext is 1 to `MAX_PUSH_PLAINTEXT` bytes; APNS allows 4096 bytes per payload in total, and R5 sets the exact budget.
+On the sealing side a plaintext of 0 or more than `MAX_PUSH_PLAINTEXT` bytes, a `question_id` outside 1 to 64 bytes, a `rid` that is not 16 bytes and a recipient key that is not a valid point are refused (`MALFORMED`, `OVERSIZE` for the over-long plaintext); no vector covers the sealing side.
 The opener rejects a sealed value shorter than `65 + 12 + 16 + 1` or longer than `65 + 12 + 16 + MAX_PUSH_PLAINTEXT`, imports `E` (which validates the point), derives the key and decrypts; any failure is `DECRYPT`.
 
 The AAD makes a sealed push unusable for a different room or question.
@@ -455,7 +472,7 @@ The web client (R4) adds a fourth consumer by importing the shared package.
 - Keep a `PairingOffer` per live token.
   The step functions are `hostOnHello`, then `onAuth` on its result, then `ready` on that: mark the offer used and store the enrollment durably, and have the operator confirm the fingerprint, before calling `ready`, and call `abort` on every step a closing connection leaves unfinished.
 - Close with the constants `CLOSE_CODE` and `CLOSE_REASON` on every thrown `RelayError`, and on every WebSocket text frame after the handshake, whatever its content.
-- Bound concurrent half-open handshakes (each costs an ECDH and a signature before the peer has proved anything).
+- Bound concurrent half-open handshakes (each costs an ECDH and a signature before the peer has proved anything), and close a connection whose next handshake frame does not arrive in time: the library checks deadlines only when a step is handled and has no timer.
 - Define application-level acknowledgments and an authenticated end-of-stream message inside the data channel, because the channel alone cannot tell a clean close from a truncation.
 - Use `systemRandom` and `Date.now()` only at the edge, passing them into the library.
 
@@ -599,12 +616,38 @@ Nothing in this protocol silently differs from the plan.
 
 ### 15.4 Ambiguities exposed by the independent Python verifier
 
-(Filled in after the verifier, written from this text alone, has run.)
+`scripts/verify-relay-v2-vectors.py` was written by a separate agent that read only this ADR and the vector file, never the TypeScript.
+It did read the vector file as well, so it was not blind to the recorded intermediate values (for example the signing inputs), and a reading that the vectors made obvious is marked as such in its report.
+It matched every recorded value on its first run, including all negative cases, so nothing was found by a mismatch; it exposed the points below by having to choose.
+Two reported readings differed from the reference implementation once the vectors were extended, and the ADR now states the intended one.
+Each item names where this ADR was changed.
+
+1. **Admission lengths** were unstated: a client proof over a 31-byte nonce verifies as a signature and was rejected only by an unwritten length rule. Section 4 now lists the lengths (a vector for a 15-byte room id was added).
+2. **A binary frame where text is expected** was claimed by both step 1 and step 4 of section 6.1. Step 1 now says `TYPE`.
+3. **Where the point check lives.** The `0x04` prefix belongs to the decoder and the on-curve check to ECDH. Python's `cryptography` accepts compressed points, so the platform is not a safe place to leave it. Section 6.1 says so.
+4. **"Exactly the stated length"** contradicted the `auth` range. Step 6 now says so.
+5. **Token versus frame error code.** The `MALFORMED` row of section 8 listed tokens; they are `TOKEN`.
+6. **Token check order and "fixed part".** Section 5 now fixes the order (the bullet order) and the 75-byte minimum, adds the safe-integer rule for `expires_at`, and says the url pattern matches the whole string (Python's `$` also matches before a final newline; a vector pins it).
+7. **`integer v`.** The reference was value-based (`3.0` is `VERSION`) and the verifier literal (`3.0` was `MALFORMED`). Section 6.1 now defines it by value and a vector pins it, together with `true`, `NaN` (not JSON) and a number `t` and `m`.
+8. **`MAX_CONTROL_TEXT` units.** Characters, code points and UTF-16 units differ for non-ASCII text, and the reference counted UTF-16 units. It is now 512 bytes of UTF-8, in the implementation and in a vector (300 two-byte characters are `OVERSIZE`).
+9. **Enrollment in pair mode** was unstated, and the pair-mode vectors listed the device as already enrolled. Section 6.3 says the library checks enrollment in resume mode only, and the pair vectors now carry an empty `enrolled` list.
+10. **Device name rules.** A leading byte order mark is a character (the reference was stripping it by default and now keeps it, with a test), C1 controls are allowed, U+0020 is allowed and U+001F is not, and the empty name is allowed; vectors pin each. "Too long" cannot be reached through the handshake because the `auth` ciphertext range bounds the name at 64 bytes first.
+11. **Ordering of the host's checks** (name, then signature, then enrollment) was untested because no vector had two defects. Two vectors do now. The order of data-frame checks 3 and 4 (`OVERSIZE` before `TYPE`) is still not pinned by a vector, because a vector cannot carry a 512 KiB frame.
+12. **Deadlines.** Boundary inclusivity, the absence of a timer and the daemon's duty to close an idle connection are now stated in section 6.3 and section 14; the vectors do not cover deadlines, `handshake.test.ts` does.
+13. **Pair offers.** Which offers are tried (the first live ones in policy order, at most eight) and what happens when an offer opens `auth` but a later check fails (that failure is reported, no other offer is tried) are now in section 6.3.
+14. **Codes after a failure and on the sealing side.** Later receives are `CLOSED`; the sealing side's refusals have codes now (section 10) but no vectors.
+15. **Easy to get wrong, now stated where they were only implied:** every `lps` argument is a part (the one-byte version and mode carry their own length prefix), the signatures are over the `lps` bytes, the HKDF `info` is raw in section 6.2 and length-prefixed in section 10, resume key material is `Z` alone, and the direction byte in the AAD is the sender's at both ends.
+16. **Vectors that tested less than they claimed** (reported in the verifier's mutation run, 23 of 79 mutations of its own code survived): the unrelated-rule cases such as extra field, reordered keys and whitespace are all caught by the canonical comparison alone, which is by design (section 6.1 step 7) and the ADR now says the other rules are redundant for that purpose; positive coverage for `ws://localhost`, ports, paths, reserved flag bits, empty names and C1 characters was missing and was added; "host proof for another room" has two defects at once and is named that way, with the client-role twin isolating the signature binding.
+17. **Section 16 wording.** Plain strings versus hex, the informational `session` field and the `enrolled` list are clarified.
+
+Not resolved by the extension, left for the cryptography review: Ed25519 verifier strictness on non-canonical `S` and small-order keys (section 15.2, item 7); no vector exercises either.
+
+The verifier also reported that its author broke the "Python only through `uv`" rule twice, using the system `python3` to read the vector file's structure and to patch a scratch script outside the repository; no repository file was involved.
 
 ## 16. Vector file format
 
 `vectors.json` is one JSON object.
-Every byte value is a lowercase hex string; control frames are the exact JSON text strings of section 6.1; numbers are JSON numbers.
+Every byte value is a lowercase hex string; control frames and tokens are the exact text strings of sections 6.1 and 5; `deviceName`, `questionId`, `relayUrl` and every `name` are plain strings (a name is always UTF-8 when used as bytes); numbers are JSON numbers.
 A verifier recomputes every value it can from the inputs and compares, and runs every negative case; reading a value from the file and trusting it proves nothing.
 
 Top level: `format` (1), `protocol` (`"remi-relay-v2"`), `note`, `constants`, `identities`, `rid`, `ridDerivation`, `sessions`, `admission`, `pairingToken`, `seal`, `negative`.
@@ -641,7 +684,8 @@ Ed25519 signatures are deterministic, so `hostSignature` and `clientSignature` c
 
 `negative` is a list of cases.
 Every case has `kind`, `name` and `expect` (`"accept"` for a positive control, `"reject"` otherwise); a rejecting case has `code`, the error code of section 8 that the first failing check produces (except `admission_verify`, which only has a verdict).
-Cases of kinds `hello_ack_verify`, `auth_open`, `auth_check` and `ready_open` also carry `session` (`"pair"` or `"resume"`), which names the session the case was derived from and is informational: a verifier works from the fields below.
+Cases of kinds `hello_ack_verify`, `auth_open`, `auth_check` and `ready_open` also carry `session` (`"pair"` or `"resume"`), which names the session the case was derived from and is informational (a case's `helloAck` may come from another session than its `clientHello`): a verifier works from the fields below.
+In `auth_check`, `enrolled` is what the host's enrolled set contains: in pair mode the device is not enrolled yet and the list is empty.
 
 | `kind` | Fields | What a verifier does |
 |---|---|---|
