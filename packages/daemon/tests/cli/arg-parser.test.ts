@@ -904,6 +904,9 @@ describe('parseArgs - remi codex and --harness (#1177)', () => {
       expect(r.claudeArgs).toEqual([]);
       expect(r.passthroughArgs).toEqual([]);
       expect(r.daemonMode).toBe(true);
+      // Its value is consumed: `codex` here is not the subcommand, nor `claude` a Claude word.
+      expect(r.subcommand).toBeUndefined();
+      expect(parseArgs(['--harness', 'claude']).claudeArgs).toEqual([]);
     });
 
     test('an unknown id, a missing value and a flag as the value are errors', () => {
