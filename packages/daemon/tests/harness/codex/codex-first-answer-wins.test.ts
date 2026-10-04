@@ -554,6 +554,36 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
     expect(answersSent(r)).toEqual([]);
   });
 
+  test('every rotation tells the person that approvals now come from another thread, once per rotation and not once per session (S3)', async () => {
+    const r = await attached();
+    // The first binding is not a rotation: nothing is said.
+    expect(systemNotices(r)).toEqual([]);
+    const notice = 'remi now follows a new Codex thread; approvals come from it';
+    let current = r.tuiId;
+    for (let n = 1; n <= 2; n++) {
+      r.server.emit(threadStatusFrame(current, { type: 'idle' }), { broadcast: true });
+      await sleep(100);
+      current = crypto.randomUUID();
+      r.server.emit(
+        threadStartedFrame('tui', { id: current, cwd: workDir, createdAtSec: nowSec() }),
+        {
+          broadcast: true,
+        },
+      );
+      await until(() => systemNotices(r).length === n, `the notice of rotation ${n}`);
+      expect(systemNotices(r)[n - 1]).toContain(notice);
+      expect(r.logs.filter((l) => l.includes('rotated from'))).toHaveLength(n);
+    }
+    // Nothing more is said, and the new thread's approvals are the ones that become cards.
+    await sleep(200);
+    expect(systemNotices(r)).toHaveLength(2);
+    r.server.emitTo(r.server.clientIds()[0] as number, {
+      id: 900,
+      ...commandApprovalRequest(current, 'touch new-thread', { cwd: workDir }),
+    });
+    await until(() => pending(r).length === 1, 'the new thread card');
+  });
+
   test('the pending-question cap evicts an older card nobody is held for, and never a pending approval', async () => {
     const r = await attached();
     const warn = console.warn;

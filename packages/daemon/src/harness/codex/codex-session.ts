@@ -210,6 +210,14 @@ export function checkCodexLaunch(
   return { ok: true, args: parsed.args, resumeThreadId: threadId, directory: cwd.directory };
 }
 
+/**
+ * Said at EVERY rotation (a `/new` in the TUI, or a plain codex window in the same directory that
+ * looks like one): the session keeps its approval authority across the move, so the person is
+ * told, each time, that approvals now come from the new thread. It is not a security boundary
+ * (same user, same machine); it is only never silent.
+ */
+const ROTATION_MESSAGE = 'remi now follows a new Codex thread; approvals come from it';
+
 const LINK_UNAVAILABLE_MESSAGE =
   'remi cannot reach the shared Codex app-server, so its status here is not updating; the session still works in the terminal.';
 /** Said instead when the socket was found but refused: the cause is a fixable permission. */
@@ -455,6 +463,7 @@ export function createCodexSession(
       if (rotating) {
         // The old thread's cards are not this session's any more, and must not be answered.
         decisions.forceRelease('the session moved to a new thread');
+        sendSystemMessage(ROTATION_MESSAGE);
         publish();
       }
     },
