@@ -110,7 +110,7 @@ describe('validateCodexArgs: the allowlist, one test per flag', () => {
   test.each([
     ['-m', 'a-model'],
     ['--model', 'a-model'],
-    ['-a', 'untrusted'],
+    ['-a', 'never'],
     ['--ask-for-approval', 'on-request'],
     ['-s', 'read-only'],
     ['--sandbox', 'workspace-write'],
@@ -378,7 +378,7 @@ describe('validateCodexArgs: a Codex subcommand name as the first positional is 
 
   test('also after allowed flags and their values, and with a prompt behind it', () => {
     expect(refusal(validateCodexArgs(['-m', 'x', 'exec']))).toContain('exec is a Codex');
-    expect(refusal(validateCodexArgs(['--model', 'x', '-a', 'untrusted', 'login']))).toContain(
+    expect(refusal(validateCodexArgs(['--model', 'x', '-a', 'never', 'login']))).toContain(
       'login is a Codex',
     );
     expect(refusal(validateCodexArgs(['exec', 'ls']))).toContain('exec is a Codex');
@@ -505,11 +505,11 @@ describe('validateCodexRemoteArgs: the default-deny allowlist', () => {
     expect(validateCodexRemoteArgs([])).toEqual({ ok: true, args: [], resumeThreadId: null });
   });
 
-  test('accepts a model, an approval policy, a sandbox mode and resume; resume <uuid> is returned last', () => {
-    const args = ['-s', 'read-only', 'resume', UUID, '--model', 'gpt-5.1', '-a', 'untrusted'];
+  test('accepts a model, a sandbox mode and resume; resume <uuid> is returned last', () => {
+    const args = ['-s', 'read-only', 'resume', UUID, '--model', 'gpt-5.1'];
     expect(remoteOk(args)).toEqual({
       ok: true,
-      args: ['-s', 'read-only', '--model', 'gpt-5.1', '-a', 'untrusted', 'resume', UUID],
+      args: ['-s', 'read-only', '--model', 'gpt-5.1', 'resume', UUID],
       resumeThreadId: UUID,
     });
   });
@@ -517,7 +517,6 @@ describe('validateCodexRemoteArgs: the default-deny allowlist', () => {
   test('both model spellings and the allowed value sets', () => {
     expect(remoteOk(['-m', 'a.b_c:d[1]-2']).args).toEqual(['-m', 'a.b_c:d[1]-2']);
     expect(remoteOk(['--model', 'x']).args).toEqual(['--model', 'x']);
-    expect(remoteOk(['-a', 'untrusted']).args).toEqual(['-a', 'untrusted']);
     expect(remoteOk(['-s', 'read-only']).args).toEqual(['-s', 'read-only']);
   });
 
@@ -530,20 +529,9 @@ describe('validateCodexRemoteArgs: the default-deny allowlist', () => {
     expect(remoteRefused(['-m'])).toContain('model');
   });
 
-  test('a remote request may only tighten the host posture: -a untrusted and -s read-only, nothing looser (H3)', () => {
-    // `on-request` and `workspace-write` were allowed until the Phase 5 review: a remote client
-    // must not loosen what the host chose (widening needs a person at the terminal).
-    for (const bad of [
-      'on-request',
-      'never',
-      'on-failure',
-      'on_request',
-      'UNTRUSTED',
-      'untrusted ',
-      '',
-    ]) {
-      expect(remoteRefused(['-a', bad]), bad).toContain('-a may only be untrusted');
-    }
+  test('a remote request may only tighten the host posture: -s read-only, nothing looser (H3)', () => {
+    // `workspace-write` was allowed until the Phase 5 review: a remote client must not loosen what
+    // the host chose (widening needs a person at the terminal). `-a` has its own test, below.
     for (const bad of [
       'workspace-write',
       'danger-full-access',
@@ -554,7 +542,6 @@ describe('validateCodexRemoteArgs: the default-deny allowlist', () => {
     ]) {
       expect(remoteRefused(['-s', bad]), bad).toContain('-s may only be read-only');
     }
-    expect(remoteRefused(['-a'])).toContain('-a may only be untrusted');
     expect(remoteRefused(['-s'])).toContain('-s may only be read-only');
   });
 
@@ -612,7 +599,6 @@ describe('validateCodexRemoteArgs: the default-deny allowlist', () => {
 
   test('each option at most once', () => {
     expect(remoteRefused(['-m', 'a', '--model', 'b'])).toContain('twice');
-    expect(remoteRefused(['-a', 'untrusted', '-a', 'untrusted'])).toContain('twice');
     expect(remoteRefused(['-s', 'read-only', '-s', 'read-only'])).toContain('twice');
     expect(remoteRefused(['resume', UUID, 'resume', UUID])).toContain('twice');
   });
@@ -624,7 +610,6 @@ describe('validateCodexRemoteArgs: the default-deny allowlist', () => {
       '--no-alt-screen',
       '--model=gpt-5',
       '-mgpt-5',
-      '--ask-for-approval',
       '--sandbox',
       '--dangerously-bypass-approvals-and-sandbox',
       '--yolo',
@@ -662,9 +647,9 @@ describe('validateCodexRemoteArgs: the default-deny allowlist', () => {
   });
 
   test('at most 16 arguments, 256 characters each, no NUL, only strings', () => {
-    const eight = ['-m', 'x', '-a', 'untrusted', '-s', 'read-only', 'resume', UUID];
-    expect(remoteOk(eight).args).toHaveLength(8);
-    expect(remoteRefused([...eight, ...eight, 'extra'])).toContain('at most 16');
+    const six = ['-m', 'x', '-s', 'read-only', 'resume', UUID];
+    expect(remoteOk(six).args).toHaveLength(6);
+    expect(remoteRefused([...six, ...six, ...six])).toContain('at most 16');
     expect(remoteRefused(new Array(17).fill('x'))).toContain('at most 16');
     expect(remoteRefused(['-m', 'x'.repeat(257)])).toContain('256');
     expect(remoteRefused(['-m', 'a\0b'])).toContain('NUL');

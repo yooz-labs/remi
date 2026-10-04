@@ -14,7 +14,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { installFakeAgents, waitForRecordedArgv } from './fake-agent-clis.ts';
 
-const ARGS = ['--no-alt-screen', '-m', 'fixture-model', '-a', 'untrusted'];
+const ARGS = ['--no-alt-screen', '-m', 'fixture-model', '-s', 'read-only'];
 
 describe('a fake agent that is slow to record', () => {
   let home: string;

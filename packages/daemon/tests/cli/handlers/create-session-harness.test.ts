@@ -121,8 +121,8 @@ describe('create requests naming a harness (#1179)', () => {
 
     test('--harness first, then -- and the arguments, last', () => {
       expect(
-        spawnArgs({ harness: 'codex', args: ['-m', 'some-model', '-a', 'untrusted'] }),
-      ).toEqual(['--harness', 'codex', '--', '-m', 'some-model', '-a', 'untrusted']);
+        spawnArgs({ harness: 'codex', args: ['-m', 'some-model', '-s', 'read-only'] }),
+      ).toEqual(['--harness', 'codex', '--', '-m', 'some-model', '-s', 'read-only']);
       expect(spawnArgs({ harness: 'codex', args: ['resume', THREAD] })).toEqual([
         '--harness',
         'codex',
