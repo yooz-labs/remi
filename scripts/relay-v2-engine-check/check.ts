@@ -731,7 +731,7 @@ export function describe(report: Report): string {
   const scalar = s.failures.filter((x) => x.group === 'scalar');
   if (scalar.length > 0) {
     lines.push(`  scalar-built keys: ${scalar.length} lines fail; distinct causes:`);
-    for (const cause of new Set(scalar.map((x) => x.detail ?? 'no detail').slice(0, 40))) {
+    for (const cause of new Set(scalar.map((x) => x.detail ?? 'no detail'))) {
       lines.push(`    ${cause}`);
     }
   }
