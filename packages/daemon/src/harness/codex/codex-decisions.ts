@@ -49,7 +49,7 @@
  * reports stays until the link drops, `remi unstick` or the session ends.
  */
 
-import { generateId } from '@remi/shared';
+import { escapeUnsafeText, generateId } from '@remi/shared';
 import type { Question, UUID } from '@remi/shared';
 
 import type { SessionRegistry } from '../../session/session-registry.ts';
@@ -138,7 +138,8 @@ const UNSENT_NOTICE =
 const MAX_TRACKED = 64;
 
 const short = (id: string): string => id.slice(0, 8);
-const logId = (id: RequestId): string => String(id).slice(0, 24);
+/** A request id, for a log line: cut, and escaped, because a string id is chosen by the server. */
+const logId = (id: RequestId): string => escapeUnsafeText(String(id).slice(0, 24));
 
 export class CodexDecisions implements DecisionChannel {
   private readonly byKey = new Map<string, Entry>();
@@ -152,7 +153,9 @@ export class CodexDecisions implements DecisionChannel {
   handleServerRequest(req: { id: RequestId; method: string; params: unknown }): void {
     if (this.disposed) return;
     if (!isApprovalMethod(req.method)) {
-      this.deps.log(`ignored a ${JSON.stringify(req.method.slice(0, 64))} request`);
+      this.deps.log(
+        `ignored a ${escapeUnsafeText(JSON.stringify(req.method.slice(0, 64)))} request`,
+      );
       return;
     }
     const threadId = requestThreadId(req.params);

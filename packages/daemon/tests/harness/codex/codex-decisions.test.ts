@@ -384,6 +384,32 @@ describe('CodexDecisions', () => {
       expect(all).not.toContain(MAIN);
       expect(all).toContain(MAIN.slice(0, 8));
     });
+
+    test('text a server chose reaches a log line escaped: a string request id and a method name with control and bidi characters', () => {
+      const bidi = String.fromCharCode(0x202e);
+      const id = `a\x1b[2Kb${bidi}c`;
+      const { method, params } = commandApprovalRequest(MAIN, 'touch x');
+      decisions.handleServerRequest({ id, method, params });
+      const q = only();
+      expect(decisions.answerHeld(q.id, optionNamed(q, 'Yes'))).toBe('resolved');
+      decisions.handleServerRequest({ id: 9, method: `bogus\x1b]52;c;QQ\x07${bidi}`, params: {} });
+      decisions.handleServerRequest({
+        id: `x${bidi}y`,
+        method,
+        params: { ...params, threadId: STRANGER },
+      });
+      const all = logs.join('\n');
+      expect(all).toContain('a\\u001B[2Kb\\u202Ec');
+      expect(all).toContain('bogus');
+      expect(all).toContain('x\\u202Ey');
+      for (const c of all) {
+        const code = c.charCodeAt(0);
+        expect(code >= 0x20 || code === 0x0a, `a raw control character ${code} in a log line`).toBe(
+          true,
+        );
+        expect(code, 'a raw bidi control in a log line').not.toBe(0x202e);
+      }
+    });
   });
 
   describe('answering', () => {
