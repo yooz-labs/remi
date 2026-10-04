@@ -141,7 +141,7 @@ describe('daemon inbound dispatch: RelayAdapter transport-seam conformance (#899
   describe.each(C2D_TYPES.filter((t) => EXPECTED_EVENT[t]))('%s', (type) => {
     test('emitted relay message is routed to the correct real AdapterEvents callback', async () => {
       const fixture = loadFixture(type);
-      await peer.send(fixture);
+      await peer.send(fixture, () => eventCalls.length > 0);
 
       expect(eventCalls).toHaveLength(1);
       expect(eventCalls[0]?.event).toBe(EXPECTED_EVENT[type]);
@@ -159,7 +159,7 @@ describe('daemon inbound dispatch: RelayAdapter transport-seam conformance (#899
       answer: '',
       selections: [{ questionIndex: 0, optionIndices: [1] }],
     };
-    await peer.send(withSelections);
+    await peer.send(withSelections, () => eventCalls.length > 0);
 
     expect(eventCalls).toHaveLength(1);
     expect(eventCalls[0]?.event).toBe('onAnswer');
@@ -177,7 +177,7 @@ describe('daemon inbound dispatch: RelayAdapter transport-seam conformance (#899
       { questionIndex: 0, optionIndices: [], text: 'Teal with a hint of gold' },
       { questionIndex: 1, optionIndices: [0, 2] },
     ];
-    await peer.send({ ...fixture, answer: '', selections });
+    await peer.send({ ...fixture, answer: '', selections }, () => eventCalls.length > 0);
 
     expect(eventCalls).toHaveLength(1);
     expect(eventCalls[0]?.event).toBe('onAnswer');
@@ -192,7 +192,7 @@ describe('daemon inbound dispatch: RelayAdapter transport-seam conformance (#899
       answer: 'No',
       message: 'run the tests first',
     };
-    await peer.send(withMessage);
+    await peer.send(withMessage, () => eventCalls.length > 0);
 
     expect(eventCalls).toHaveLength(1);
     expect(eventCalls[0]?.event).toBe('onAnswer');
@@ -243,7 +243,7 @@ describe('daemon inbound dispatch: RelayAdapter transport-seam conformance (#899
       id: 'bogus-id',
       timestamp: new Date().toISOString(),
     } as unknown as ProtocolMessage;
-    await peer.send(bogus);
+    await peer.send(bogus, () => peer.sentAfterHandshake().length > 0);
 
     expect(eventCalls).toHaveLength(0);
     expect(peer.sentAfterHandshake()).toHaveLength(1);
@@ -259,7 +259,7 @@ describe('daemon inbound dispatch: RelayAdapter transport-seam conformance (#899
     // exact scenario (see connection.ts's analogous UNKNOWN_MESSAGE case in
     // the web-side conformance test).
     const fixture = loadFixture('question');
-    await peer.send(fixture);
+    await peer.send(fixture, () => peer.sentAfterHandshake().length > 0);
 
     expect(eventCalls).toHaveLength(0);
     expect(peer.sentAfterHandshake()).toHaveLength(1);

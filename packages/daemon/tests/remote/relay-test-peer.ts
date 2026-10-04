@@ -58,10 +58,22 @@ export class RecordingTransport implements RelayTransport {
   close(): void {}
 }
 
-/** Wait for the adapter's async handshake and decryption continuations to settle. */
-export async function settle(): Promise<void> {
+/**
+ * Wait for the adapter's async handshake and decryption continuations.
+ *
+ * With `until`, polls for the effect the caller expects (up to `timeoutMs`), so
+ * a loaded machine cannot turn a slow AES-GCM call into a failure. Without it,
+ * waits a fixed beat, which is the only option for "nothing should happen": a
+ * slow machine can then only make such a check pass early, never fail it.
+ */
+export async function settle(until?: () => boolean, timeoutMs = 3000): Promise<void> {
   for (let i = 0; i < 12; i++) await Promise.resolve();
-  await new Promise((r) => setTimeout(r, 10));
+  if (!until) {
+    await new Promise((r) => setTimeout(r, 10));
+    return;
+  }
+  const deadline = Date.now() + timeoutMs;
+  while (!until() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 2));
 }
 
 export interface AuthenticatedRelayPeer {
@@ -69,8 +81,11 @@ export interface AuthenticatedRelayPeer {
   readonly transport: RecordingTransport;
   /** What the daemon handed the Worker after the handshake finished. */
   sentAfterHandshake(): string[];
-  /** Seal one client-to-daemon message with the session keys and deliver it, as the Worker would. */
-  send(message: object): Promise<void>;
+  /**
+   * Seal one client-to-daemon message with the session keys and deliver it, as
+   * the Worker would. Pass `until` when an effect is expected (see `settle`).
+   */
+  send(message: object, until?: () => boolean): Promise<void>;
   dispose(): Promise<void>;
 }
 
@@ -103,7 +118,7 @@ export async function startAuthenticatedRelayPeer(
     await adapter.start();
 
     transport.emit('peer-connected');
-    await settle();
+    await settle(() => transport.sent.length > 0);
     const challenge = JSON.parse(transport.sent.at(-1) ?? 'null') as AuthChallengeMessage | null;
     if (challenge?.type !== 'auth_challenge') throw new Error('the adapter sent no auth challenge');
 
@@ -125,6 +140,7 @@ export async function startAuthenticatedRelayPeer(
       challenge.challenge,
       false,
     );
+    const beforeResponse = transport.sent.length;
     transport.emit(
       'relay',
       JSON.stringify(
@@ -136,7 +152,7 @@ export async function startAuthenticatedRelayPeer(
         ),
       ),
     );
-    await settle();
+    await settle(() => transport.sent.length > beforeResponse);
     const result = JSON.parse(transport.sent.at(-1) ?? 'null') as {
       type?: string;
       success?: boolean;
@@ -153,9 +169,9 @@ export async function startAuthenticatedRelayPeer(
       adapter: started,
       transport,
       sentAfterHandshake: () => transport.sent.slice(handshakeSent),
-      send: async (message) => {
+      send: async (message, until) => {
         transport.emit('relay', await encryptRelayPayload(keys.send, JSON.stringify(message)));
-        await settle();
+        await settle(until);
       },
       dispose: async () => {
         await started.stop();

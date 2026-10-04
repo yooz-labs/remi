@@ -46,7 +46,9 @@ describe('RelayAdapter.routeMessage seam guard (#916)', () => {
     const peer = await startAuthenticatedRelayPeer(events);
     try {
       // (1) the throw must not escape the adapter's 'relay' event handler.
-      await expect(peer.send(createTerminalResize(80, 24))).resolves.toBeUndefined();
+      await expect(
+        peer.send(createTerminalResize(80, 24), () => peer.sentAfterHandshake().length > 0),
+      ).resolves.toBeUndefined();
 
       // (2) the peer receives an error reply naming the failing type -- this is
       // the behavioral change: before #916, handleRelayMessage's outer catch
@@ -60,7 +62,7 @@ describe('RelayAdapter.routeMessage seam guard (#916)', () => {
       // (3) the adapter is not wedged: a later, unrelated message on the same
       // peer connection still routes.
       const before = peer.sentAfterHandshake().length;
-      await peer.send(createUserInput('sess-id' as UUID, 'hello', false));
+      await peer.send(createUserInput('sess-id' as UUID, 'hello', false), () => userInputs > 0);
       // The handler ran, and no NEW error/UNSUPPORTED reply was sent. The
       // handler count is what shows the peer survived: over the encrypted
       // path a dropped peer would also send nothing.

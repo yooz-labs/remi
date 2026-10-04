@@ -258,7 +258,7 @@ describe('relay adapter with an authenticator (permanent code), the unchanged pa
     const peer = await startAuthenticatedRelayPeer(recordingEvents(calls));
     try {
       expect(calls.connects).toBe(1);
-      await peer.send(KEYSTROKE);
+      await peer.send(KEYSTROKE, () => calls.userInputs.length > 0);
       expect(calls.userInputs).toHaveLength(1);
       // onUserInput(connectionId, sessionId, content, raw, ...)
       expect(calls.userInputs[0]?.slice(1, 4)).toEqual(['x', '1\r', true]);
