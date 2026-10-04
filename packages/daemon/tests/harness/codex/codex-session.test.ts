@@ -553,9 +553,9 @@ describe('CodexHarness', () => {
 
   describe('status from the app-server', () => {
     /** Start a session on a fake app-server and wait for its client and tracker to be up. */
-    async function startedSession(args: string[] = []) {
+    async function startedSession(args: string[] = [], over: Partial<CodexLaunchDeps> = {}) {
       const server = startServer();
-      const created = create(buildDeps(server), args);
+      const created = create(buildDeps(server, over), args);
       await created.session.start();
       await until(
         () =>
@@ -715,7 +715,10 @@ describe('CodexHarness', () => {
     });
 
     test("a dropped link takes the subagents' statuses with it and keeps the tracked thread's (W8)", async () => {
-      const { server, statuses } = await startedSession();
+      // The reconnect is 4 s away, so only the drop itself can be what clears the wait.
+      const { server, statuses } = await startedSession([], {
+        appServer: { backoff: { initialMs: 4000, maxMs: 4000 } },
+      });
       const main = crypto.randomUUID();
       const child = crypto.randomUUID();
       server.emit(tui(main), { broadcast: true });
@@ -739,7 +742,8 @@ describe('CodexHarness', () => {
       // own status stays until the attach after the reconnect reports it again.
       const client = server.clientIds()[0] as number;
       server.dropClient(client);
-      await until(() => statuses.at(-1) === 'thinking', 'the subagent wait to be dropped', 6000);
+      await until(() => statuses.at(-1) === 'thinking', 'the subagent wait to be dropped', 2500);
+      expect(server.clientIds()).toEqual([]);
     });
 
     test("a thread that is not the session's changes nothing: the session reports only its own thread's idle", async () => {
@@ -955,6 +959,38 @@ describe('CodexHarness', () => {
       );
     });
 
+    test('a holder the claim check could not see is still refused by the store, and not retried (W2)', async () => {
+      // The check reads `deps.sessionStore`; the write goes through the binding store. Another
+      // remi process writing between the two is the only way the write can find a holder the
+      // check did not, so the check is given a store that sees no one, over the same file.
+      class BlindStore extends SessionStore {
+        override list(): StoredSession[] {
+          return [];
+        }
+      }
+      const server = startServer();
+      const created = create(
+        buildDeps(server, { sessionStore: new BlindStore(path.join(tmpDir, 'sessions.json')) }),
+      );
+      await created.session.start();
+      await until(() => server.clientIds().length === 1, 'the connection');
+      const held = crypto.randomUUID();
+      sessionStore.save(record({ harnessSessionId: held, projectPath: tmpDir }));
+
+      const frame = threadStartedFrame('tui', { id: held, cwd: workDir, createdAtSec: nowSec() });
+      server.emit(frame, { broadcast: true });
+      await until(() => logs.some((l) => l.includes('is claimed by another session')), 'the log');
+      expect(bindingStore.getIdentity(created.sessionId)?.harnessSessionId).toBeNull();
+      expect(logs.some((l) => l.includes('could not record the thread id'))).toBe(false);
+
+      // The same thread again: it is not tried (and refused) a second time.
+      const tries = logs.filter((l) => l.includes('is claimed by another session')).length;
+      server.emit(frame, { broadcast: true });
+      await sleep(600);
+      expect(logs.filter((l) => l.includes('is claimed by another session'))).toHaveLength(tries);
+      expect(logs.some((l) => l.includes('could not record the thread id'))).toBe(false);
+    });
+
     test('a Claude record, an exited record and a thread this very session holds do not claim', async () => {
       const { server, sessionId } = await startedSession();
       const id = crypto.randomUUID();
@@ -987,9 +1023,9 @@ describe('CodexHarness', () => {
       await until(() => noticeCount(messages) === 1, 'the notice');
       await sleep(500);
       expect(noticeCount(messages)).toBe(1);
-      expect(messages.find((m) => m.sender === 'system')?.content).toContain(
-        'shared Codex app-server',
-      );
+      const text = messages.find((m) => m.sender === 'system')?.content ?? '';
+      expect(text).toContain('cannot reach the shared Codex app-server');
+      expect(text).not.toContain('not private');
       expect(logs.filter((l) => l.includes('not reachable'))).toHaveLength(1);
       expect(session.pty.isRunning).toBe(true);
     });
@@ -1059,6 +1095,65 @@ describe('CodexHarness', () => {
         }
       },
     );
+
+    slow(
+      'a link that drops inside the stable period and stays down still fires the watchdog (W17c)',
+      async () => {
+        // The drop arms the watchdog; the stable timer of the connection that just ended must
+        // not outlive it and cancel what the drop armed.
+        const server = startServer();
+        const { session, messages } = create(
+          buildDeps(server, { linkWatchdogMs: 1000, linkStableMs: 700 }),
+        );
+        await session.start();
+        await until(linkWasUp, 'the link to come up');
+        await server.stop();
+        await until(() => noticeCount(messages) === 1, 'the notice after the early drop', 8000);
+      },
+    );
+
+    slow(
+      'a socket that resolved after an untrusted attempt does not keep the untrusted wording (W12)',
+      async () => {
+        // The first attempts are refused as not private; then the directory is fixed and the link
+        // flaps (accepts and drops), so the watchdog fires after attempts that resolved fine. What
+        // it says must come from those, not from the refusal long gone.
+        const server = startServer();
+        const control = path.join(server.codexHome, 'app-server-control');
+        fs.chmodSync(control, 0o755);
+        const { session, messages } = create(
+          buildDeps(server, {
+            linkWatchdogMs: 1500,
+            linkStableMs: 700,
+            appServer: { backoff: { initialMs: 10, maxMs: 40 } },
+          }),
+        );
+        await session.start();
+        await until(() => logs.some((l) => l.includes('open to group or others')), 'the refusal');
+        fs.chmodSync(control, 0o700);
+        await until(linkWasUp, 'the link to come up once the directory is private');
+        const flap = setInterval(() => {
+          for (const client of server.clientIds()) server.dropClient(client);
+        }, 100);
+        try {
+          await until(() => noticeCount(messages) === 1, 'the notice', 8000);
+        } finally {
+          clearInterval(flap);
+        }
+        const text = messages.find((m) => m.sender === 'system')?.content ?? '';
+        expect(text).toContain('cannot reach');
+        expect(text).not.toContain('not private');
+      },
+    );
+
+    test('with the production wait, a session is not told its thread is missing in its first moments (W11)', async () => {
+      const { session, messages } = create(buildDeps(startServer()));
+      await session.start();
+      await until(linkWasUp, 'the link to come up');
+      await sleep(500);
+      expect(noticeCount(messages)).toBe(0);
+      expect(logs.some((l) => l.includes('no thread/started'))).toBe(false);
+    });
 
     slow('a link that drops and stays down sends the notice once', async () => {
       const server = startServer();
