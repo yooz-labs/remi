@@ -294,6 +294,65 @@ describe('findLegacyWriters', () => {
     expect(find(process.pid + 1).length).toBe(1);
   });
 
+  describe('ownVersion: a record of the same build is the same shim (#1204 round 2, P1)', () => {
+    // A PR-stamped build (`bump-version.sh set 0.7.16-p1204.1`) does not parse, so without this its
+    // own sessions, wrappers and hub would each read as an older remi to the next Codex create.
+    const OWN = '0.7.16-p1204.1';
+    const gate = (ownVersion?: string) =>
+      findLegacyWriters({
+        liveSessions: registry,
+        statusFiles: () => readStatusFiles(remiDir),
+        selfPid: process.pid,
+        ...(ownVersion !== undefined && { ownVersion }),
+      });
+
+    test('a sibling with the SAME unparsable version is not a writer, from every source', () => {
+      registerLive(livePid(), OWN);
+      writeStatus('daemon-status.json', { pid: livePid(), mode: 'hub', version: OWN });
+      writeStatus('status-19921.json', { pid: livePid(), version: OWN });
+      expect(gate(OWN)).toEqual([]);
+      // Without the option the same records are what they were: unparsable, so older.
+      expect(gate()).toHaveLength(3);
+    });
+
+    test('a sibling of ANOTHER unparsable version is still a writer', () => {
+      const pid = livePid();
+      registerLive(pid, '0.7.16-p9999.1');
+      registerLive(livePid(), OWN);
+      expect(gate(OWN).map((w) => w.pid)).toEqual([pid]);
+    });
+
+    test('a lower parsable version is still a writer, and so is no version at all', () => {
+      const old = livePid();
+      const none = livePid();
+      registerLive(old, '0.7.15');
+      registerLive(none);
+      registerLive(livePid(), OWN);
+      expect(
+        gate(OWN)
+          .map((w) => w.pid)
+          .sort(),
+      ).toEqual([old, none].sort());
+    });
+
+    test('the version must be equal as a string: a prefix or a different case is another build', () => {
+      const prefix = livePid();
+      const cased = livePid();
+      registerLive(prefix, '0.7.16-p1204');
+      registerLive(cased, '0.7.16-P1204.1');
+      expect(
+        gate(OWN)
+          .map((w) => w.pid)
+          .sort(),
+      ).toEqual([prefix, cased].sort());
+    });
+
+    test('the pid and recycled-pid rules still apply to a same-version record: it is simply skipped first', async () => {
+      writeStatus('status-19921.json', { pid: await deadPid(), version: OWN });
+      expect(gate(OWN)).toEqual([]);
+    });
+  });
+
   test('a pid in excludePids is never a writer, from every source; any other writer is still found (H5)', () => {
     // A hub-spawned child names its parent hub here: the hub runs this same build, but a build
     // whose version does not parse (a PR-stamped one) would otherwise read as older.

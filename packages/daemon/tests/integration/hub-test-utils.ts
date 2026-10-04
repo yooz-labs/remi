@@ -84,11 +84,12 @@ export function spawnServeRaw(
   work: string,
   port: number,
   envOverrides: Record<string, string> = {},
+  cliPath: string = CLI_TS,
 ): Bun.Subprocess<'ignore', 'pipe', 'pipe'> {
   return Bun.spawn(
     [
       'bun',
-      CLI_TS,
+      cliPath,
       'serve',
       '--port',
       String(port),
@@ -157,10 +158,11 @@ export async function spawnDaemon(
 export async function spawnHub(
   dirs?: { home: string; work: string },
   envOverrides: Record<string, string> = {},
+  cliPath: string = CLI_TS,
 ): Promise<HubHandle> {
   const { home, work } = dirs ?? makeIsolatedDirs();
   const port = await findTestPort();
-  const proc = spawnServeRaw(home, work, port, envOverrides);
+  const proc = spawnServeRaw(home, work, port, envOverrides, cliPath);
   const hub: HubHandle = { proc, home, work, port };
 
   const statusFile = path.join(home, '.remi', 'daemon-status.json');

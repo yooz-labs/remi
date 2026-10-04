@@ -33,6 +33,7 @@ import {
   recordedArgv,
 } from '../helpers/fake-agent-clis.ts';
 import { FakeAppServer } from '../helpers/fake-app-server.ts';
+import { type StampedBuild, copyBuild } from '../helpers/stamped-build.ts';
 import {
   CLI_TS,
   type HubHandle,
@@ -55,6 +56,7 @@ interface Running {
 }
 const running: Running[] = [];
 const sleepers: Array<Bun.Subprocess> = [];
+const builds: StampedBuild[] = [];
 
 afterEach(async () => {
   for (const r of running.splice(0)) {
@@ -79,13 +81,17 @@ afterEach(async () => {
     await r.server.stop();
   }
   for (const s of sleepers.splice(0)) s.kill('SIGKILL');
+  for (const b of builds.splice(0)) b.remove();
 });
 
-async function startHub(which: { codex?: boolean; claude?: boolean }): Promise<Running> {
+async function startHub(
+  which: { codex?: boolean; claude?: boolean },
+  cliPath?: string,
+): Promise<Running> {
   const dirs = makeIsolatedDirs();
   const agents = installFakeAgents(dirs.home, which);
   const server = FakeAppServer.start();
-  const hub = await spawnHub(dirs, { ...agents.env, CODEX_HOME: server.codexHome });
+  const hub = await spawnHub(dirs, { ...agents.env, CODEX_HOME: server.codexHome }, cliPath);
   const r = { hub, agents, server, log: { text: '' } };
   collect(hub.proc.stdout as ReadableStream<Uint8Array>, r.log);
   collect(hub.proc.stderr as ReadableStream<Uint8Array>, r.log);
@@ -375,6 +381,69 @@ describe('a hub creating a session for a harness (#1179)', () => {
     },
     90000,
   );
+
+  describe('a hub of a PR-stamped build (#1204 round 2, P1)', () => {
+    // `bump-version.sh set 0.7.16-p1204.1` is what AGENTS.md recommends for LV-4's build: its
+    // version does not parse, so the gate used to read every session of it as an older remi.
+    const STAMP = '0.7.16-p1204.1';
+
+    async function stampedHub() {
+      const build = copyBuild(STAMP);
+      builds.push(build);
+      return startHub({ claude: true, codex: true }, build.cliPath);
+    }
+
+    const childVersions = (r: Running) => {
+      const liveDir = path.join(r.hub.home, '.remi', 'live-sessions');
+      return fs
+        .readdirSync(liveDir)
+        .map(
+          (f) =>
+            JSON.parse(fs.readFileSync(path.join(liveDir, f), 'utf-8')) as { version?: string },
+        )
+        .map((e) => e.version);
+    };
+
+    test('two Claude sessions of the same build do not stop a Codex create', async () => {
+      const r = await stampedHub();
+      expect((await ask(r, { harness: 'claude' })).response.success).toBe(true);
+      expect((await ask(r)).response.success).toBe(true);
+      // The sessions really are of the unparsable build: that is what the gate must not refuse.
+      expect(childVersions(r)).toEqual([STAMP, STAMP]);
+
+      const codex = await ask(r, { harness: 'codex' });
+      expect(codex.response.error).toBeUndefined();
+      expect(codex.response.success).toBe(true);
+      expect(await waitForArgv(r.agents.codexDir)).toEqual(['--no-alt-screen']);
+      // The Codex child's own gate saw its siblings and its parent hub, all of the same build.
+      expect(childVersions(r)).toEqual([STAMP, STAMP, STAMP]);
+    }, 180000);
+
+    test('a live remi of ANOTHER unparsable build is still an older remi', async () => {
+      const r = await stampedHub();
+      const sleeper = Bun.spawn(['sleep', '60']);
+      sleepers.push(sleeper);
+      const liveDir = path.join(r.hub.home, '.remi', 'live-sessions');
+      fs.mkdirSync(liveDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(liveDir, 'other-build.json'),
+        JSON.stringify({
+          sessionId: 'other-build',
+          pid: sleeper.pid,
+          wsPort: 19998,
+          hookPort: 0,
+          projectPath: r.hub.work,
+          name: 'other',
+          startedAt: new Date(Date.now() + 2000).toISOString(),
+          version: '0.7.16-p9999.1',
+        }),
+      );
+      const refused = await ask(r, { harness: 'codex' });
+      expect(refused.response.success).toBe(false);
+      expect(refused.response.error).toContain('older remi');
+      expect(fs.existsSync(path.join(r.agents.codexDir, 'argv'))).toBe(false);
+    }, 90000);
+  });
 
   test('a hub whose own version does not parse still starts its Codex child: the child does not count its parent hub as an older remi (H5)', async () => {
     const r = await startHub({ codex: true });
