@@ -163,6 +163,14 @@ describe('the Phase 5 golden fixtures only add fields (#1179)', () => {
     expect(load('hello_ack')['harnesses']).toEqual(['claude', 'codex']);
   });
 
+  test('the plain create_session_request golden is exactly the request an older client sends: no harness, no arguments (G16)', () => {
+    // The registry fixture became a Codex request in Phase 5; the plain shape stays pinned here.
+    expect(load('create_session_request_plain')).toEqual({
+      type: 'create_session_request',
+      directory: '/Users/fixture/project',
+    });
+  });
+
   test('the create_session_request fixture names a harness and its arguments', () => {
     const request = load('create_session_request');
     expect(request['harness']).toBe('codex');

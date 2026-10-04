@@ -23,7 +23,11 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MESSAGE_DIRECTION, deserialize, serialize } from '../src/protocol.ts';
 import type { ProtocolMessageMap } from '../src/protocol.ts';
-import { FIXTURE_BUILDERS, normalizeForComparison } from './fixtures/protocol/builders.ts';
+import {
+  FIXTURE_BUILDERS,
+  FIXTURE_VARIANTS,
+  normalizeForComparison,
+} from './fixtures/protocol/builders.ts';
 
 const FIXTURES_DIR = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'protocol');
 
@@ -66,6 +70,36 @@ describe('protocol fixtures (#895)', () => {
         JSON.parse(JSON.stringify(builder())) as Record<string, unknown>,
       );
 
+      expect(regenerated).toEqual(checkedIn);
+    });
+  });
+
+  // A message type whose wire shape grew (a field added) keeps a second golden for the shape an
+  // older peer still sends, so both shapes are pinned (#1179 review, G16). The registry fixture
+  // above is the current shape; a variant is named `<type>_<variant>`.
+  describe.each(Object.entries(FIXTURE_VARIANTS))('variant fixture %s', (name, variant) => {
+    test('is of a registry type', () => {
+      expect(registryTypes).toContain(variant.type);
+      expect(name.startsWith(`${variant.type}_`)).toBe(true);
+    });
+
+    test('fixture file exists, round-trips, and is the type it says', () => {
+      const raw = loadFixtureRaw(name);
+      const deserialized = deserialize(raw);
+      expect(deserialized?.type).toBe(variant.type);
+      // biome-ignore lint/style/noNonNullAssertion: asserted not-null above
+      expect(JSON.parse(serialize(deserialized!))).toEqual(JSON.parse(raw));
+    });
+
+    test('regenerated fixture matches the checked-in copy', () => {
+      const checkedIn = normalizeForComparison(
+        variant.type,
+        JSON.parse(loadFixtureRaw(name)) as Record<string, unknown>,
+      );
+      const regenerated = normalizeForComparison(
+        variant.type,
+        JSON.parse(JSON.stringify(variant.build())) as Record<string, unknown>,
+      );
       expect(regenerated).toEqual(checkedIn);
     });
   });
