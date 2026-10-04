@@ -920,6 +920,10 @@ describe('remi codex approvals (daemon, black-box characterization, #1178)', () 
       expect(a.r.server.isPending(a.tuiId, requestId)).toBe(false);
       expect(stdinBytes(a.r)).toBe(0);
 
+      // The card carries the command, because the person must see it; the daemon's log does not.
+      expect(a.r.output.text).not.toContain('e2e-marker');
+      expect(a.r.output.text).not.toContain(a.tuiId);
+
       // Positive control: a person's raw keystroke does reach the child.
       a.ws.send(serialize(createUserInput(a.sessionId, 'q', true)));
       await pollUntil(() => stdinBytes(a.r) === 1, 8000, 'the raw byte to reach codex');

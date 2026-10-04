@@ -1833,9 +1833,10 @@ const claudeHarness = new ClaudeHarness(transcriptDiscovery, {
   sessionNotifiers,
 });
 
-// `remi codex` hosts a Codex session instead (#1177). Observe-only: its launch reads these
-// services when a session starts, and the older-daemon gate reads the live-sessions entries and
-// status files of other remi processes then.
+// `remi codex` hosts a Codex session instead (#1177). Its launch reads these services when a
+// session starts, and the older-daemon gate reads the live-sessions entries and status files of
+// other remi processes then. `onQuestionResolved` is how an approval card that Codex resolved
+// (the TUI answered first) is cleared on every client (#1178).
 const codexHarness =
   harnessId === 'codex'
     ? new CodexHarness({
@@ -1847,6 +1848,7 @@ const codexHarness =
         wsPort: () => remiStatus.wsPort,
         cleanup,
         env: () => process.env,
+        onQuestionResolved,
         legacyWriters: () =>
           findLegacyWriters({
             liveSessions: liveSessionsRegistry,

@@ -1,15 +1,19 @@
 /**
- * The Codex launch behind the harness seam (epic #1175, phase 3 #1177):
- * OBSERVE-ONLY. It spawns `codex --no-alt-screen <validated arguments>` in a PTY,
- * learns which thread of the shared app-server is the session's, and reports that
- * thread's status. No approval card, no answer, no turn push and no wire field
- * exists yet (phases 4 to 6), and chat text typed from a client (the phone,
- * Telegram, the relay) is refused with `PROMPT_WAITING` (`acceptsTypedChat:
- * false`): the TUI cannot be read, so a typed message and its Enter could land on
- * an approval overlay or a modal. The child's stdin sees only what is typed at
- * the terminal and raw input (an attach client's keystrokes, the Escape button,
- * `/interrupt`), which the client marks `raw` and the daemon cannot tell from a
- * script.
+ * The Codex launch behind the harness seam (epic #1175; phase 3 #1177 launched
+ * it and reported its status, phase 4 #1178 added the approvals): it spawns
+ * `codex --no-alt-screen <validated arguments>` in a PTY, learns which thread of
+ * the shared app-server is the session's, reports that thread's status, and
+ * shows the thread's approval requests as phone cards (`CodexDecisions`). No
+ * turn push and no wire identity field exists yet (phases 5 and 6).
+ *
+ * remi RELAYS an approval; Codex decides. Nothing is ever typed into the PTY for an
+ * answer: a phone answer goes to the app-server as the request's result, and
+ * chat text typed from a client (the phone, Telegram, the relay) is refused with
+ * `PROMPT_WAITING` (`acceptsTypedChat: false`), because the TUI cannot be read and
+ * a typed message and its Enter could land on a modal. The child's stdin sees only
+ * what is typed at the terminal and raw input (an attach client's keystrokes, the
+ * Escape button, `/interrupt`), which the client marks `raw` and the daemon cannot
+ * tell from a script.
  *
  * Order of the state-changing steps (`createCodexSession`):
  * 1. `validateCodexArgs`: a refusal exits 2. (The working directory must also exist
@@ -39,7 +43,7 @@
  */
 
 import { generateId, now } from '@remi/shared';
-import type { AgentStatus, Message } from '@remi/shared';
+import type { AgentStatus, Message, UUID } from '@remi/shared';
 
 import {
   NOOP_OUTPUT_SINK,
@@ -56,9 +60,11 @@ import {
   isClaudeRecord,
 } from '../../session/session-store.ts';
 import { shellQuote } from '../../session/shell-quote.ts';
-import type { DecisionChannel, HarnessLaunchContext, HarnessSession } from '../types.ts';
+import type { HarnessLaunchContext, HarnessSession } from '../types.ts';
 import { AppServerClient, type AppServerClientOptions } from './app-server-client.ts';
+import { parseResolved } from './approval-cards.ts';
 import { resolveCodexWorkingDirectory, validateCodexArgs } from './codex-args.ts';
+import { CodexDecisions, type CodexDecisionsDeps } from './codex-decisions.ts';
 import { UntrustedSocketError, resolveCodexSocketPath } from './codex-socket.ts';
 import type { ThreadStatus } from './thread-protocol.ts';
 import { ThreadClaimedError, ThreadTracker, type ThreadTrackerDeps } from './thread-tracker.ts';
@@ -77,15 +83,22 @@ export interface CodexLaunchDeps {
   legacyWriters: () => LegacyWriter[];
   /** remi's own version, sent as the app-server client's version. */
   remiVersion: string;
+  /**
+   * A card stopped being pending without a phone answer (the TUI answered, the replay did not
+   * bring it back): broadcast `question_resolved` and clear its lock-screen push.
+   */
+  onQuestionResolved: (sid: UUID, qid: UUID, reason: 'answered' | 'cancelled') => void;
   log: (message: string) => void;
   /**
    * Test seams (production leaves them out): the client's reconnect backoff, the 30 s link
-   * watchdog, and the tracker's attach retry period and ambiguity window.
+   * watchdog, the tracker's attach retry period and ambiguity window, and the approval cards'
+   * replay window and link grace.
    */
   appServer?: Pick<AppServerClientOptions, 'backoff'>;
   linkWatchdogMs?: number;
   linkStableMs?: number;
   tracker?: Pick<ThreadTrackerDeps, 'retryMs' | 'ambiguityMs' | 'noIdentityMs'>;
+  decisions?: Pick<CodexDecisionsDeps, 'replayWindowMs' | 'disconnectGraceMs'>;
 }
 
 /** A launch remi refuses, with the exit code `cli.ts` ends with (2 for arguments, 1 otherwise). */
@@ -196,23 +209,6 @@ export function checkCodexLaunch(
   }
   return { ok: true, args: parsed.args, resumeThreadId: threadId, directory: cwd.directory };
 }
-
-/**
- * Nothing is held and nothing is answerable (phase 3 shows no cards), which is
- * what the answer and Stop handlers read for a session with no gate. It also says
- * no prompt is up, so it cannot keep chat out: `acceptsTypedChat: false` does that
- * (without it a typed message and its Enter would reach whatever the TUI shows).
- * Phase 4 replaces it with the real channel.
- */
-const NO_DECISIONS: DecisionChannel = {
-  answerHeld: () => 'unknown',
-  retireQuestion: () => {},
-  isHeld: () => false,
-  hasMainHold: () => false,
-  hasOpenHookPrompt: () => false,
-  noteTerminalEscape: () => {},
-  forceRelease: () => ({ resolved: 0 }),
-};
 
 const LINK_UNAVAILABLE_MESSAGE =
   'remi cannot reach the shared Codex app-server, so its status here is not updating; the session still works in the terminal.';
@@ -372,14 +368,35 @@ export function createCodexSession(
       } else if (event.type === 'disconnected') {
         clearTimeout(stableTimer);
         dropDescendantStatuses();
+        decisions.handleDisconnected();
         link.tracker?.handleDisconnected();
         armWatchdog();
       } else if (event.type === 'notification') {
         link.tracker?.handleNotification(event.method, event.params);
+        if (event.method === 'serverRequest/resolved') {
+          const resolved = parseResolved(event.params);
+          if (resolved !== null) decisions.handleResolved(resolved);
+        }
+      } else if (event.type === 'serverRequest') {
+        // Only `CodexDecisions` may answer one, and only a card's own option.
+        decisions.handleServerRequest({ id: event.id, method: event.method, params: event.params });
       }
-      // A server request is for phase 4; it is never answered here.
     },
   );
+  const decisions = new CodexDecisions({
+    sessionId,
+    client,
+    sessionRegistry: deps.sessionRegistry,
+    present: (question) => {
+      messageApi.handleQuestion(question, { held: true });
+    },
+    onQuestionResolved: deps.onQuestionResolved,
+    threadRole: (threadId) => link.tracker?.role(threadId) ?? null,
+    log,
+    ...deps.decisions,
+  });
+  // A card whose request is pending is not evicted by the pending-question cap.
+  deps.sessionRegistry.setQuestionEvictionGuard(sessionId, (id) => decisions.isHeld(id));
   const tracker = new ThreadTracker({
     client,
     sessionCwd: cwd.directory,
@@ -433,14 +450,20 @@ export function createCodexSession(
       const rotating = trackedId !== null;
       trackedId = threadId;
       statuses.clear();
-      if (rotating) publish();
+      if (rotating) {
+        // The old thread's cards are not this session's any more, and must not be answered.
+        decisions.forceRelease('the session moved to a new thread');
+        publish();
+      }
     },
     onStatus: (threadId, status) => {
       // Only an active thread counts, so only an active one is kept.
       if (status.type === 'active') statuses.set(threadId, status);
       else statuses.delete(threadId);
+      decisions.handleStatus(threadId, status);
       publish();
     },
+    onAttached: () => decisions.handleReattached(),
     log,
     ...deps.tracker,
   });
@@ -469,7 +492,7 @@ export function createCodexSession(
 
   return {
     pty,
-    decisions: NO_DECISIONS,
+    decisions,
     acceptsTypedChat: false,
     start: async () => {
       await pty.start();
@@ -483,6 +506,7 @@ export function createCodexSession(
       cancelWatchdog();
       tracker.dispose();
       client.stop();
+      decisions.dispose();
     },
   };
 }

@@ -141,6 +141,7 @@ describe('CodexHarness', () => {
       env: () => ({ CODEX_HOME: server ? server.codexHome : path.join(tmpDir, 'no-codex-home') }),
       legacyWriters: () => legacy,
       remiVersion: 'test',
+      onQuestionResolved: () => {},
       log: (m) => logs.push(m),
       appServer: { backoff: { initialMs: 10, maxMs: 40 } },
       ...over,
