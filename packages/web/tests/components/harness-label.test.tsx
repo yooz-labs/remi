@@ -46,6 +46,48 @@ describe('harnessLabel', () => {
   });
 });
 
+describe('harnessLabel for a harness this build does not know (G13)', () => {
+  // The wire carries whatever string a newer daemon names; a session of an unknown harness must not
+  // look like Claude, so it is named, as text only, and kept short.
+  const label = (value: unknown) => harnessLabel(value as HarnessId);
+
+  test('a harness outside the union is shown as its own name', () => {
+    expect(label('future-agent')).toBe('future-agent');
+  });
+
+  test('a long name is cut to 16 characters, by character, never in the middle of a pair', () => {
+    expect(label('x'.repeat(40))).toBe('x'.repeat(16));
+    expect(label('\u{1F916}'.repeat(20))).toBe('\u{1F916}'.repeat(16));
+  });
+
+  test('what is not a name is no label: empty, white space, and anything that is not a string', () => {
+    for (const value of ['', '   ', 5, null, {}, ['codex'], true]) {
+      expect(label(value), JSON.stringify(value)).toBeNull();
+    }
+  });
+
+  test('a control or bidi character in the name is written out, not passed on to the screen', () => {
+    expect(label('a\u202eb\u001b[2K')).toBe('a\\u202Eb\\u001B[2K');
+  });
+
+  test('the known harnesses are unchanged', () => {
+    expect(label('claude')).toBeNull();
+    expect(label('codex')).toBe('Codex');
+    expect(label('opencode')).toBe('OpenCode');
+    expect(label(undefined)).toBeNull();
+  });
+
+  test.each([
+    ['the session card', card],
+    ['the chat header', header],
+  ])('%s shows it, escaped by the renderer', (_name, render) => {
+    expect(render('future-agent' as HarnessId)).toMatch(/<span class="[^"]*">future-agent<\/span>/);
+    const markup = render('<img onerror=x>' as HarnessId);
+    expect(markup).not.toContain('<img');
+    expect(markup).toContain('&lt;img onerror=x&gt;');
+  });
+});
+
 describe.each([
   ['the session card', card],
   ['the chat header', header],
