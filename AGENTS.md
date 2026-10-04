@@ -189,12 +189,19 @@ safer-looking front. Recommend an SSH tunnel, or an explicit `bind` plus
 `--auth`.
 
 **The relay is off by default, and without an authenticator it accepts nothing (#1193).**
-`network.relay` defaults to `false`; `network.relay = true` or `--permanent-code` turns it on, and `--no-relay` wins over both.
-With it on and no `authenticator` (only `--auth --permanent-code` supplies one), `RelayAdapter` refuses every peer (`auth_result` with `RELAY_AUTH_REQUIRED`, `onConnect` never fires), drops every inbound frame before it is parsed, and prints a boot notice saying no relay client can connect.
-Dropping frames matters as much as refusing peers: the Worker can deliver a `relay` frame to the host with no peer ever having joined (`connection-room.ts`), so the frame drop is what closes that path.
-A `config.toml` that already holds `relay = true` (`remi config init` wrote it before #1193) keeps the adapter registered, and it now refuses too.
+`network.relay` defaults to `false`; `network.relay = true` or `--permanent-code` turns it on, `--permanent-code` wins over `relay = false`, and `--no-relay` wins over both.
+With it on and no `authenticator` (only `--auth --permanent-code` supplies one), `cli.ts` prints a notice (how to enable it, what to use today, and how to silence it with `network.relay = false` or `--no-relay`) and creates no adapter, so the daemon holds no connection to the Worker.
+`RelayAdapter` fails closed on its own as the second layer: it refuses every peer (`auth_result` with `RELAY_AUTH_REQUIRED`, `onConnect` never fires), drops every inbound `relay` payload before it is parsed (the signaling client has already parsed the outer frame), and acts on `peer-connected` and `peer-disconnected` only for the Worker role `client`.
+The role check matters because the Worker gives a socket that never joined the role `pending` and tells the host whenever any socket closes (`connection-room.ts`), and because the Worker can deliver a `relay` frame to the host with no peer ever having joined, so the frame drop is what closes that path.
+A `config.toml` that already holds `relay = true` (`remi config init` wrote it before #1193) keeps the setting and now gets the boot notice instead of a relay.
 No shipped client can use the relay: the web client has no code that joins a room or does the key exchange, and no native client holds a signaling URL.
-The rebuild is planned (`.context/strategy-2026-10.md` section 9); nothing remote ships through the relay today.
+The rebuild is planned (`.context/strategy-2026-10.md` section 9, `.context/relay-rebuild-plan-2026-10.md`); nothing remote ships through the relay today.
+
+**`--auth --permanent-code` is authenticated, not paired.**
+`cli.ts` builds the Authenticator with `tofuMode: 'auto-accept'` unless `--no-tofu` is passed, and `verifyResponse` adds an unknown key to `authorized_keys` and persists it.
+So unless `--no-tofu` is set, any client that knows the room code is added to the authorized keys on its first connection, and the same keys admit the direct WebSocket connection when `--auth` is on.
+The adapter prints a warning at boot in that mode.
+This is not widened into a behavior change here: the v1 permanent mode is deleted by the relay rebuild (#1198), which replaces trust on first use with a pairing secret.
 
 **There is no WebRTC.** No `RTCPeerConnection` or data channel exists anywhere
 in this repo. The worker was built to relay a *handshake*, with WebRTC intended
@@ -653,8 +660,8 @@ hand.
    worker is a courier and not a reader. **This is still a goal, not a
    description.** #543 built the encryption daemon-side only; #881 is that it
    engages only when an `authenticator` is present, which `cli.ts` supplies only
-   in permanent-code mode — so a default install, and even `--auth` alone, never
-   derives session keys — and that no client implements the other half. Since
+   in permanent-code mode (so a default install, and even `--auth` alone, never
+   derives session keys), and that no client implements the other half. Since
    #1193 the relay is off by default and a daemon without an authenticator
    refuses in BOTH directions: outbound refuses to send, inbound refuses every
    peer and frame. Before #1193 outbound REFUSED (a breakage, not a leak) while
