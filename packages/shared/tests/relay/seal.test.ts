@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test';
-import { createCipheriv, createDecipheriv, createECDH, hkdfSync } from 'node:crypto';
+import { createDecipheriv, createECDH, hkdfSync } from 'node:crypto';
 import { relayV2 as r } from '../../src/index.ts';
 import { lps } from '../../src/relay/bytes.ts';
+import { nodeSeal } from './builders.ts';
 import { codeOf, codeOfSync, hex, seed, seededRandom, text } from './helpers.ts';
 
 const RID = seed('seal rid').slice(0, 16);
@@ -35,28 +36,6 @@ function nodeOpen(
     decipher.update(Buffer.from(sealed.slice(77, sealed.length - 16))),
     decipher.final(),
   ]).toString('utf8');
-}
-
-/** Seal with Node's crypto, written independently, with no bound on the plaintext. */
-function nodeSeal(
-  recipientPublic: Uint8Array,
-  aad: Uint8Array,
-  plaintext: Uint8Array,
-  label: string,
-): Uint8Array {
-  const rng = seededRandom(label);
-  const ephemeral = createECDH('prime256v1');
-  ephemeral.setPrivateKey(Buffer.from(seed(`${label} ephemeral`)));
-  const e = ephemeral.getPublicKey();
-  const shared = ephemeral.computeSecret(Buffer.from(recipientPublic));
-  const key = Buffer.from(
-    hkdfSync('sha256', shared, e, Buffer.from(lps('remi-relay-v2 seal', recipientPublic)), 32),
-  );
-  const nonce = Buffer.from(rng(12));
-  const cipher = createCipheriv('aes-256-gcm', key, nonce);
-  cipher.setAAD(Buffer.from(aad));
-  const body = Buffer.concat([cipher.update(Buffer.from(plaintext)), cipher.final()]);
-  return new Uint8Array(Buffer.concat([e, nonce, body, cipher.getAuthTag()]));
 }
 
 describe('push sealing', () => {

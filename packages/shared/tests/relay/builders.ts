@@ -5,10 +5,11 @@
  * different transcript) and still have a real counterpart judge it.
  */
 
-import { createHash } from 'node:crypto';
+import { createCipheriv, createECDH, createHash, hkdfSync } from 'node:crypto';
 import { relayV2 as r } from '../../src/index.ts';
+import { lps } from '../../src/relay/bytes.ts';
 import { aeadKey, aeadSeal, ecGenerate, ecdh } from '../../src/relay/primitives.ts';
-import { seededRandom } from './helpers.ts';
+import { seed, seededRandom } from './helpers.ts';
 
 /** Reference length-prefix hash, written out here so these tests do not share the code under test. */
 export const refHash = (...parts: Uint8Array[]): Uint8Array => {
@@ -94,4 +95,26 @@ export async function manualHost(
         await aeadSeal(await aeadKey(keys.h2c), r.TYPE_READY, r.DIR_H2C, 0, plaintext),
       ),
   };
+}
+
+/** Seal with Node's crypto, written independently, with no bound on the plaintext. */
+export function nodeSeal(
+  recipientPublic: Uint8Array,
+  aad: Uint8Array,
+  plaintext: Uint8Array,
+  label: string,
+): Uint8Array {
+  const rng = seededRandom(label);
+  const ephemeral = createECDH('prime256v1');
+  ephemeral.setPrivateKey(Buffer.from(seed(`${label} ephemeral`)));
+  const e = ephemeral.getPublicKey();
+  const shared = ephemeral.computeSecret(Buffer.from(recipientPublic));
+  const key = Buffer.from(
+    hkdfSync('sha256', shared, e, Buffer.from(lps('remi-relay-v2 seal', recipientPublic)), 32),
+  );
+  const nonce = Buffer.from(rng(12));
+  const cipher = createCipheriv('aes-256-gcm', key, nonce);
+  cipher.setAAD(Buffer.from(aad));
+  const body = Buffer.concat([cipher.update(Buffer.from(plaintext)), cipher.final()]);
+  return new Uint8Array(Buffer.concat([e, nonce, body, cipher.getAuthTag()]));
 }
