@@ -74,7 +74,7 @@ const HANDLED = new Set([COMMAND, FILE_CHANGE, PERMISSIONS, USER_INPUT, ELICITAT
  * approve what they could not read, so a longer command makes a `terminalOnly` card instead.
  */
 export const COMMAND_TEXT_MAX = 20_000;
-/** Codex's stated reason is shown after the command, cut at this many characters. */
+/** Codex's stated reason is shown after the command, cut at this many characters (marked like every other cut field). */
 const REASON_MAX = 300;
 
 const GENERIC_ASK = 'Codex is asking for approval; answer it in the terminal';
@@ -270,12 +270,9 @@ function commandCard(c: Context): PendingRequestSpec {
     where !== null && resolve(where) !== resolve(c.sessionDirectory)
       ? `\nIn directory: ${escapeUnsafeText(clip(where, DIRECTORY_MAX))}`
       : '';
-  const stated = nonEmpty(params['reason']);
-  // Cut before escaping, so a cut never lands inside a `\uXXXX`.
-  const reason =
-    stated === null
-      ? ''
-      : `\nCodex's stated reason: ${escapeUnsafeText(stated.length > REASON_MAX ? `${stated.slice(0, REASON_MAX)}...` : stated)}`;
+  const reason = display(params['reason'], REASON_MAX);
+  // `display` cuts before escaping, so a cut never lands inside a `\uXXXX`, and says what it cut.
+  const reasonLine = reason === null ? '' : `\nCodex's stated reason: ${reason}`;
   return {
     key: requestKey(c.threadId, c.req.id),
     threadId: c.threadId,
@@ -283,7 +280,7 @@ function commandCard(c: Context): PendingRequestSpec {
     method: c.req.method,
     question: {
       id: c.mintId(),
-      text: `Allow Codex to run: ${shown}${place}${reason}`,
+      text: `Allow Codex to run: ${shown}${place}${reasonLine}`,
       options,
       allowsFreeText: false,
       isAnswered: false,

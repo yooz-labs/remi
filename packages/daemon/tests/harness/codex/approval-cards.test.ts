@@ -409,7 +409,7 @@ describe('what makes a command approval more than the command', () => {
     );
     const longReason = build({ reason: 'r'.repeat(400) });
     expect(longReason.question.text).toBe(
-      `Allow Codex to run: touch unit-marker\nCodex's stated reason: ${'r'.repeat(300)}...`,
+      `Allow Codex to run: touch unit-marker\nCodex's stated reason: ${'r'.repeat(300)} [100 characters hidden]`,
     );
     expect(build({ reason: '' }).question.text).toBe('Allow Codex to run: touch unit-marker');
   });
@@ -1045,6 +1045,38 @@ describe('what a hostile or buggy server sends is bounded before a card is built
     expect(weight(q)).toBeLessThan(5000);
   });
 
+  test('a cut is made before escaping, so it never lands inside an escape, in every field that is cut (T4 B)', () => {
+    const bidi = String.fromCodePoint(0x202e);
+    const escapedBidi = '\\u202E';
+    // A file change's reason: the bidi control is the last character kept.
+    const fileChange = card(
+      frame('item/fileChange/requestApproval', {
+        threadId: THREAD,
+        reason: `${'a'.repeat(textBound - 1)}${bidi}${'b'.repeat(10)}`,
+        grantRoot: '/ok',
+      }),
+    );
+    expect(fileChange.text).toContain(`${'a'.repeat(textBound - 1)}${escapedBidi} ${marker(10)}`);
+    // A command's reason (300), its directory (500) and a permission name (200).
+    const command = build(
+      {
+        reason: `${'a'.repeat(299)}${bidi}${'b'.repeat(10)}`,
+        cwd: `/${'d'.repeat(498)}${bidi}xxxxx`,
+      },
+      {},
+      'echo a',
+    ).question;
+    expect(command.text).toContain(`In directory: /${'d'.repeat(498)}${escapedBidi} ${marker(5)}`);
+    expect(command.text).toContain(`${'a'.repeat(299)}${escapedBidi} ${marker(10)}`);
+    const permissions = card(
+      frame('item/permissions/requestApproval', {
+        threadId: THREAD,
+        permissions: { [`${'a'.repeat(199)}${bidi}bbb`]: {} },
+      }),
+    );
+    expect(permissions.text).toContain(`${'a'.repeat(199)}${escapedBidi} ${marker(3)}`);
+  });
+
   test('an elicitation in url mode shows at most 200 characters of the host, cut with its marker, and the card stays small (T1)', () => {
     const host = 'h'.repeat(100_000);
     const q = card(
@@ -1198,7 +1230,7 @@ describe('what a hostile or buggy server sends is bounded before a card is built
   test('the command reason stays at 300, and the command itself is the 20000-character card or terminalOnly', () => {
     const spec = build({ reason: huge }, {}, 'echo a');
     expect(spec.question.text).toBe(
-      `Allow Codex to run: echo a\nCodex's stated reason: ${'h'.repeat(300)}...`,
+      `Allow Codex to run: echo a\nCodex's stated reason: ${'h'.repeat(300)} ${marker(huge.length - 300)}`,
     );
     expect(weight(spec.question)).toBeLessThan(500);
     // The numbers the ADR, AGENTS.md and the README state: the bound is 20000, a reason of exactly
@@ -1208,7 +1240,7 @@ describe('what a hostile or buggy server sends is bounded before a card is built
       `Allow Codex to run: echo a\nCodex's stated reason: ${'h'.repeat(300)}`,
     );
     expect(build({ reason: 'h'.repeat(301) }, {}, 'echo a').question.text).toBe(
-      `Allow Codex to run: echo a\nCodex's stated reason: ${'h'.repeat(300)}...`,
+      `Allow Codex to run: echo a\nCodex's stated reason: ${'h'.repeat(300)} ${marker(1)}`,
     );
   });
 });
