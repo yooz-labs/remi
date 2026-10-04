@@ -18,8 +18,10 @@
  *
  * Options are built by what they MEAN, never by position, and only from what the
  * request itself lists in `availableDecisions` (an absent list allows `accept`
- * and `decline`): `Yes` is `accept`; `Yes, and don't ask again for this command this session` is `acceptForSession`
- * (Codex remembers it, remi writes nothing); `No` is `cancel` when listed, else
+ * and `decline`): `Yes` is `accept`; `Yes, and don't ask again for this command
+ * this session` is `acceptForSession` (remi writes nothing; that Codex accepts
+ * and remembers it is schema-only, not checked against a real Codex, LV-3 (f));
+ * `No` is `cancel` when listed, else
  * `decline`, else the card cannot be answered. The object-form decisions
  * (`acceptWithExecpolicyAmendment`, `applyNetworkPolicyAmendment`) write a
  * persistent policy from a phone tap and are never offered, so the listed

@@ -404,10 +404,12 @@ export interface QuestionOption {
    * card whose standing option is a `'setMode'` gets no actionable category
    * and is answered in the app. Ignored on the wire otherwise.
    *
-   * `'session'` (#1178) is Codex's "Yes, for this session" (`acceptForSession`):
-   * Codex itself remembers the approval for the rest of the session, remi
-   * writes no rule or settings file. It carries no `suggestionIndex` (there is
-   * no suggestion to echo), and like `'setMode'` it gets no lock-screen category.
+   * `'session'` (#1178) is Codex's `acceptForSession`: remi writes no rule or
+   * settings file, and sends the decision the request itself listed. That
+   * Codex accepts it and remembers the command for the session is schema-only
+   * and NOT yet checked against a real Codex (live step LV-3 (f)). It carries
+   * no `suggestionIndex` (there is no suggestion to echo), and like `'setMode'`
+   * it gets no lock-screen category.
    */
   readonly standingGrant?: 'addRules' | 'setMode' | 'session' | undefined;
 

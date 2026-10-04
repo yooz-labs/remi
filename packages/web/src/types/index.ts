@@ -201,8 +201,9 @@ export interface UIQuestionOption {
    *  `'addRules'` allows a rule for this session, `'setMode'` switches the
    *  session's permission mode. Absent for a one-time Yes, a No, and every
    *  option read off the screen (a hook-less prompt). `'session'` (#1178) is
-   *  Codex's own "Yes, for this session": Codex remembers it, remi writes
-   *  nothing. */
+   *  Codex's `acceptForSession`: remi writes nothing and sends the decision the
+   *  request listed; that Codex remembers it is not yet checked against a real
+   *  Codex (LV-3 (f)). */
   readonly standingGrant?: 'addRules' | 'setMode' | 'session';
 }
 
