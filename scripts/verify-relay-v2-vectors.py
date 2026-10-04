@@ -20,6 +20,7 @@ import base64
 import hashlib
 import hmac
 import json
+import math
 import re
 import sys
 from collections import Counter
@@ -52,9 +53,10 @@ V = 2
 RID_LEN = 16
 MODES = {"pair": 0x01, "resume": 0x02}
 DIR_C2H, DIR_H2C = 0x01, 0x02
-TYPE_AUTH, TYPE_READY, TYPE_DATA = 0x01, 0x02, 0x03
+TYPE_AUTH, TYPE_READY, TYPE_DATA, TYPE_BYE = 0x01, 0x02, 0x03, 0x04
 MAX_COUNTER = 2**40
 MAX_PLAINTEXT = 524288
+BYE_FRAME = 1 + 8 + 16
 MIN_FRAME = 1 + 8 + 1 + 16
 MAX_FRAME = 1 + 8 + MAX_PLAINTEXT + 16
 MAX_CONTROL_TEXT = 512
@@ -264,20 +266,23 @@ def decode_control(text: Any, expected: str) -> dict[str, Any]:
     if len(text.encode("utf-8")) > MAX_CONTROL_TEXT:  # step 1
         raise RelayError("OVERSIZE", "control text too long")
     try:  # step 2
-        obj = json.loads(text, parse_constant=_reject_json_constant)
+        # Every number is read as an IEEE 754 double, as JSON.parse does; the ADR
+        # does not say which numeric domain "an integer" is judged in.
+        obj = json.loads(text, parse_constant=_reject_json_constant, parse_int=float)
     except ValueError as exc:
         raise RelayError("MALFORMED", "not JSON") from exc
     # An integer is a JSON number with an integer value (so 3.0 counts, true does not).
     version = obj.get("v") if isinstance(obj, dict) else None
-    is_number = isinstance(version, (int, float)) and not isinstance(version, bool)
-    if not is_number or version != int(version):
+    is_integer = isinstance(version, float) and math.isfinite(version)
+    if not is_integer or version != int(version):
         raise RelayError("MALFORMED", "not an object with an integer v")
-    if obj["v"] != V:  # step 3
-        raise RelayError("VERSION", f"v is {obj['v']}")
+    if version != V:  # step 3
+        raise RelayError("VERSION", f"v is {version}")
     if obj.get("t") != expected:  # step 4
         raise RelayError("TYPE", f"t is {obj.get('t')!r}, expected {expected!r}")
-    if expected == "hello" and obj.get("m") not in MODES:  # step 5
-        raise RelayError("MODE", f"m is {obj.get('m')!r}")
+    mode = obj.get("m")
+    if expected == "hello" and not (isinstance(mode, str) and mode in MODES):  # step 5
+        raise RelayError("MODE", f"m is {mode!r}")
     layout = CONTROL_LAYOUT[expected]  # step 6
     if set(obj) != {"v", "t", *(key for key, _ in layout)}:
         raise RelayError("MALFORMED", "wrong key set")
@@ -333,25 +338,32 @@ def open_frame(
         raise RelayError("DECRYPT", "tag does not verify") from exc
 
 
-def encode_data_frame(
-    key: bytes, sender_direction: int, counter: int, plaintext: bytes
+def encode_frame(
+    key: bytes, frame_type: int, sender_direction: int, counter: int, plaintext: bytes
 ) -> bytes:
-    sealed = seal_frame(key, TYPE_DATA, sender_direction, counter, plaintext)
-    return bytes([TYPE_DATA]) + be64(counter) + sealed
+    """A binary frame: data carries plaintext, a BYE carries none (the tag alone)."""
+    sealed = seal_frame(key, frame_type, sender_direction, counter, plaintext)
+    return bytes([frame_type]) + be64(counter) + sealed
 
 
-def parse_data_frame_header(frame: bytes) -> int:
-    """Checks 2 to 5 of section 7; returns the counter."""
-    if len(frame) < MIN_FRAME:
+def parse_frame_header(frame: bytes) -> tuple[int, int]:
+    """Checks 2 to 6 of section 7; returns (type, counter)."""
+    if len(frame) < BYE_FRAME:  # check 2
+        raise RelayError("MALFORMED", "frame shorter than 25 bytes")
+    if len(frame) > MAX_FRAME:  # check 3
+        raise RelayError("OVERSIZE", "frame longer than MAX_FRAME")
+    frame_type = frame[0]
+    if frame_type not in (TYPE_DATA, TYPE_BYE):  # check 4
+        raise RelayError("TYPE", f"first byte is {frame_type:#04x}")
+    if frame_type == TYPE_BYE:  # check 5
+        if len(frame) != BYE_FRAME:
+            raise RelayError("MALFORMED", "a BYE is exactly 25 bytes")
+    elif len(frame) < MIN_FRAME:
         raise RelayError("MALFORMED", "data frame shorter than 26 bytes")
-    if len(frame) > MAX_FRAME:
-        raise RelayError("OVERSIZE", "data frame longer than MAX_FRAME")
-    if frame[0] != TYPE_DATA:
-        raise RelayError("TYPE", f"first byte is {frame[0]:#04x}")
     counter = int.from_bytes(frame[1:9], "big")
-    if counter > MAX_COUNTER:
+    if counter > MAX_COUNTER:  # check 6
         raise RelayError("COUNTER_LIMIT", f"counter {counter} above the limit")
-    return counter
+    return frame_type, counter
 
 
 class DataReceiver:
@@ -362,28 +374,41 @@ class DataReceiver:
         self.sender_direction = sender_direction
         self.last = last
         self.closed = False
+        self.ended = False
 
-    def receive(self, frame: Any) -> bytes:
+    def receive(self, frame: Any) -> bytes | None:
+        """The delivered plaintext of a data frame, or None for a BYE (end marker)."""
         if self.closed:
             raise RelayError("CLOSED", "channel already failed")
         try:
-            plaintext, counter = self._open(frame)
+            frame_type, counter, plaintext = self._open(frame)
         except RelayError:
             self.closed = True
             raise
-        self.last = counter
+        self.last = counter  # check 10
+        if frame_type == TYPE_BYE:
+            self.ended = True
+            return None
         return plaintext
 
-    def _open(self, frame: Any) -> tuple:
+    def _open(self, frame: Any) -> tuple[int, int, bytes]:
         if isinstance(frame, str):  # check 1
             raise RelayError("TYPE", "text frame on the data channel")
-        counter = parse_data_frame_header(frame)  # checks 2 to 5
-        if counter != self.last + 1:  # check 6
+        frame_type, counter = parse_frame_header(frame)  # checks 2 to 6
+        if self.ended:  # check 7
+            raise RelayError("ENDED", "frame after the peer's BYE")
+        if counter != self.last + 1:  # check 8
             raise RelayError("COUNTER", f"got {counter}, expected {self.last + 1}")
-        plaintext = open_frame(  # check 7
-            self.key, TYPE_DATA, self.sender_direction, counter, frame[9:]
+        plaintext = open_frame(  # check 9
+            self.key, frame_type, self.sender_direction, counter, frame[9:]
         )
-        return plaintext, counter
+        return frame_type, counter, plaintext
+
+    def stream_verdict(self) -> str:
+        """How the inbound stream ended if the transport closed now (section 7)."""
+        if self.closed:
+            return "failed"
+        return "clean" if self.ended else "unclean"
 
 
 # ---------------------------------------------------------------------------
@@ -667,6 +692,27 @@ def verify_constants(g: Group, constants: dict[str, Any]) -> None:
         set(constants) == set(expected),
         str(set(constants) ^ set(expected)),
     )
+    # The file carries neither BYE_FRAME nor the type bytes; tie the ADR-only
+    # BYE_FRAME to the frame sizes the file does carry.
+    g.same("minFrame is BYE_FRAME plus one byte", constants["minFrame"], BYE_FRAME + 1)
+    g.same(
+        "maxFrame is maxPlaintext plus BYE_FRAME",
+        constants["maxFrame"],
+        constants["maxPlaintext"] + BYE_FRAME,
+    )
+    # Where the ADR's table gives both a formula and its value, check both.
+    stated = (
+        ("BYE_FRAME", BYE_FRAME, 25),
+        ("MIN_FRAME", MIN_FRAME, 26),
+        ("MAX_FRAME", MAX_FRAME, 524313),
+        ("MAX_COUNTER", MAX_COUNTER, 1099511627776),
+        ("TYPE_AUTH", TYPE_AUTH, 1),
+        ("TYPE_READY", TYPE_READY, 2),
+        ("TYPE_DATA", TYPE_DATA, 3),
+        ("TYPE_BYE", TYPE_BYE, 4),
+    )
+    for name, formula, value in stated:
+        g.same(f"{name} is {value} in the ADR table", formula, value)
 
 
 def verify_identities(g: Group, vectors: dict[str, Any]) -> bytes:
@@ -702,10 +748,13 @@ def verify_session(
     g.same("h1", h1, vec["h1"])
     g.same("hostSigningInput", host_signing_input(h1), vec["hostSigningInput"])
     sig_h = ed25519_sign(machine_seed, host_signing_input(h1))
+    # Section 16: compare bytes (OpenSSL signs deterministically) and verify.
     g.same("hostSignature", sig_h, vec["hostSignature"])
     g.ok(
-        "hostSignature verifies",
-        ed25519_verify(machine_pk, sig_h, host_signing_input(h1)),
+        "recorded hostSignature verifies",
+        ed25519_verify(
+            machine_pk, bytes.fromhex(vec["hostSignature"]), host_signing_input(h1)
+        ),
     )
     g.same(
         "helloAck", encode_control("hello_ack", e=e_h, n=n_h, s=sig_h), vec["helloAck"]
@@ -724,8 +773,10 @@ def verify_session(
     sig_c = ed25519_sign(device_seed, client_signing_input(h2))
     g.same("clientSignature", sig_c, vec["clientSignature"])
     g.ok(
-        "clientSignature verifies",
-        ed25519_verify(device_pk, sig_c, client_signing_input(h2)),
+        "recorded clientSignature verifies",
+        ed25519_verify(
+            device_pk, bytes.fromhex(vec["clientSignature"]), client_signing_input(h2)
+        ),
     )
 
     auth_plaintext = device_pk + sig_c + name
@@ -766,10 +817,13 @@ def verify_session(
         lambda: client_open_ready(vec["ready"], z, h1, psk, mode),
     )
 
-    verify_data_frames(g, vec["data"], keys)
+    verify_data_frames(g, vec["data"], vec["bye"], keys)
 
 
-def verify_data_frames(g: Group, data: dict[str, Any], keys: SessionKeys) -> None:
+def verify_data_frames(
+    g: Group, data: dict[str, Any], bye: dict[str, Any], keys: SessionKeys
+) -> None:
+    g.ok("bye has exactly c2h and h2c", set(bye) == {"c2h", "h2c"}, str(sorted(bye)))
     for label, direction, key in (
         ("c2h", DIR_C2H, keys.c2h),
         ("h2c", DIR_H2C, keys.h2c),
@@ -784,13 +838,53 @@ def verify_data_frames(g: Group, data: dict[str, Any], keys: SessionKeys) -> Non
             g.same(
                 f"{where} aad", frame_aad(TYPE_DATA, direction, counter), entry["aad"]
             )
-            frame = encode_data_frame(key, direction, counter, plaintext)
+            frame = encode_frame(key, TYPE_DATA, direction, counter, plaintext)
             g.same(f"{where} frame", frame, entry["frame"])
             received = g.accepts(
                 f"{where} accepted by the receiver",
                 lambda entry=entry: receiver.receive(bytes.fromhex(entry["frame"])),
             )
             g.same(f"{where} opens to its plaintext", received, entry["plaintext"])
+        verify_stream_end(g, label, direction, key, data[label], bye[label], receiver)
+
+
+def verify_stream_end(
+    g: Group,
+    label: str,
+    direction: int,
+    key: bytes,
+    data: list[dict[str, Any]],
+    entry: dict[str, Any],
+    receiver: DataReceiver,
+) -> None:
+    """The recorded BYE of one direction, and what its absence or forgery means."""
+    where = f"bye.{label}"
+    g.ok(f"{where} fields", set(entry) == {"counter", "nonce", "aad", "frame"})
+    counter = entry["counter"]
+    g.same(f"{where} counter follows the data frames", receiver.last + 1, counter)
+    g.same(f"{where} nonce", frame_nonce(counter), entry["nonce"])
+    g.same(f"{where} aad", frame_aad(TYPE_BYE, direction, counter), entry["aad"])
+    frame = encode_frame(key, TYPE_BYE, direction, counter, b"")
+    g.same(f"{where} frame", frame, entry["frame"])
+    g.same(f"{where} frame is BYE_FRAME bytes", len(frame), BYE_FRAME)
+    g.accepts(
+        f"{where} accepted by the receiver",
+        lambda: receiver.receive(bytes.fromhex(entry["frame"])),
+    )
+    g.same(f"{where} ends the stream cleanly", receiver.stream_verdict(), "clean")
+
+    frames = [bytes.fromhex(item["frame"]) for item in data]
+    forged = frame[:-1] + bytes([frame[-1] ^ 0x01])
+    scenarios = (
+        ("the BYE dropped", frames, "unclean"),
+        ("the tail and the BYE dropped", frames[:7], "unclean"),
+        ("a BYE with a flipped tag bit", frames + [forged], "failed"),
+    )
+    for name, stream, verdict in scenarios:
+        replay = DataReceiver(key, direction)
+        for item in stream:
+            attempt(lambda item=item, replay=replay: replay.receive(item))
+        g.same(f"{where} {name} is {verdict}", replay.stream_verdict(), verdict)
 
 
 def verify_admission_section(g: Group, vectors: dict[str, Any], rid: bytes) -> None:
@@ -802,9 +896,10 @@ def verify_admission_section(g: Group, vectors: dict[str, Any], rid: bytes) -> N
         signature = ed25519_sign(bytes.fromhex(identities[who]["seed"]), message)
         g.same(f"{role} signature", signature, adm[f"{role}Signature"])
         public = bytes.fromhex(identities[who]["publicKey"])
+        recorded = bytes.fromhex(adm[f"{role}Signature"])
         g.ok(
-            f"{role} proof passes the Worker check",
-            verify_admission(role, public, rid, nonce, signature),
+            f"recorded {role} proof passes the Worker check",
+            verify_admission(role, public, rid, nonce, recorded),
         )
     ticket = admission_ticket(bytes.fromhex(adm["pairingSecret"]))
     g.same("ticket", ticket, adm["ticket"])
@@ -920,24 +1015,30 @@ def case_ready_open(case: dict[str, Any]) -> Outcome:
 def case_data_sequence(case: dict[str, Any]) -> Outcome:
     key = bytes.fromhex(case["key"])
     receiver = DataReceiver(key, case["direction"], case["startRecv"] - 1)
+    frames = [bytes.fromhex(frame_hex) for frame_hex in case["frames"]]
     accepted = 0
-    for frame_hex in case["frames"]:
-        frame = bytes.fromhex(frame_hex)
+    for index, frame in enumerate(frames):
         failure = attempt(lambda frame=frame: receiver.receive(frame))
-        if failure.code is not None:
-            again = attempt(lambda frame=frame: receiver.receive(frame))
+        if failure.code is None:
+            accepted += 1
+            continue
+        # Section 7: after the first failure every later receive is CLOSED, even
+        # a frame that would have been valid; the file records no code for them.
+        for later in frames[index:]:
+            again = attempt(lambda later=later: receiver.receive(later))
             if again.code != "CLOSED":
                 return Outcome(
                     f"VERIFIER: channel not closed for good ({again.code})", accepted
                 )
-            return Outcome(failure.code, accepted)
-        accepted += 1
+        return Outcome(failure.code, accepted)
     return Outcome(None, accepted)
 
 
 def case_frame_length(case: dict[str, Any]) -> Outcome:
-    frame = bytes([TYPE_DATA]) + be64(1) + b"\x00" * (case["length"] - 9)
-    return attempt(lambda: parse_data_frame_header(frame))
+    """A frame of `length` bytes of the given type, counter 1: checks 1 to 6 only."""
+    header = bytes([case["type"]]) + be64(1)
+    frame = header.ljust(case["length"], b"\x00")[: case["length"]]
+    return attempt(lambda: parse_frame_header(frame))
 
 
 def case_token_decode(case: dict[str, Any]) -> Outcome:
@@ -976,14 +1077,67 @@ CASE_HANDLERS: dict[str, Callable[[dict[str, Any]], Outcome]] = {
 }
 
 
+# The fields section 16 lists for each kind, besides kind, name, expect and code.
+# `accepted` is required for every data_sequence case ("for accept or a rejection").
+CASE_FIELDS: dict[str, tuple[frozenset, frozenset]] = {
+    "control_decode": (frozenset({"frame", "text"}), frozenset()),
+    "ec_point": (frozenset({"publicKey"}), frozenset()),
+    "hello_ack_verify": (
+        frozenset({"session", "machinePublicKey", "clientHello", "helloAck"}),
+        frozenset(),
+    ),
+    "auth_open": (
+        frozenset({"session", "z", "h1", "psk", "auth"}),
+        frozenset({"senderPsk"}),
+    ),
+    "auth_check": (
+        frozenset(
+            {"session", "mode", "z", "h1", "psk", "hostSignature", "auth", "enrolled"}
+        ),
+        frozenset(),
+    ),
+    "ready_open": (
+        frozenset({"session", "mode", "z", "h1", "psk", "ready"}),
+        frozenset(),
+    ),
+    "data_sequence": (
+        frozenset({"key", "direction", "startRecv", "frames", "accepted"}),
+        frozenset(),
+    ),
+    "frame_length": (frozenset({"type", "length"}), frozenset()),
+    "token_decode": (frozenset({"text", "nowSec"}), frozenset()),
+    "seal_open": (frozenset({"recipientScalar", "aad", "sealed"}), frozenset()),
+    "admission_verify": (
+        frozenset({"role", "publicKey", "rid", "nonce", "signature"}),
+        frozenset(),
+    ),
+}
+
+
+def shape_problem(case: dict[str, Any]) -> str | None:
+    """Describe a case whose fields differ from section 16's list, or return None."""
+    required, optional = CASE_FIELDS[case["kind"]]
+    common = {"kind", "name", "expect", "code"}
+    missing = sorted((required | {"name", "expect"}) - set(case))
+    unknown = sorted(set(case) - required - optional - common)
+    if missing or unknown:
+        return f"missing fields {missing}, unlisted fields {unknown}"
+    return None
+
+
 def judge_case(case: dict[str, Any], outcome: Outcome) -> str | None:
     """Describe the disagreement between a case and an outcome, or return None."""
+    if case["expect"] not in ("accept", "reject"):
+        return f"expect is {case['expect']!r}"
     if case["expect"] == "accept":
         if outcome.code is not None:
             return f"expected accept, implementation rejected with {outcome.code}"
     else:
         if outcome.code is None:
             return "expected reject, implementation accepted"
+        # Section 16: every rejecting case has a code, except admission_verify.
+        if "code" not in case and case["kind"] != "admission_verify":
+            return "a rejecting case has no code"
         if "code" in case and outcome.code != case["code"]:
             return (
                 f"expected code {case['code']}, implementation reported {outcome.code}"
@@ -999,7 +1153,12 @@ def judge_case(case: dict[str, Any], outcome: Outcome) -> str | None:
 def verify_negative_cases(tally: Tally, cases: list[dict[str, Any]]) -> None:
     for case in cases:
         group = tally.group(f"negative.{case['kind']}")
-        problem = judge_case(case, CASE_HANDLERS[case["kind"]](case))
+        if case["kind"] not in CASE_HANDLERS:
+            group.ok(case["name"], False, "no handler for this kind of case")
+            continue
+        problem = shape_problem(case)
+        if problem is None:
+            problem = judge_case(case, CASE_HANDLERS[case["kind"]](case))
         group.ok(case["name"], problem is None, problem or "")
 
 
