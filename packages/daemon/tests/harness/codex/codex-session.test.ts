@@ -1172,6 +1172,38 @@ describe('CodexHarness', () => {
     });
   });
 
+  describe('a session that never learns its thread, by where it runs (G12)', () => {
+    const systemTexts = (messages: Message[]) =>
+      messages.filter((m) => m.sender === 'system').map((m) => m.content);
+
+    test('with no terminal the notice also names an Update or Trust prompt and remi attach', async () => {
+      const server = startServer();
+      const { session, sessionId, messages } = create(
+        buildDeps(server, { tracker: { noIdentityMs: 150 } }),
+        [],
+        false,
+      );
+      await session.start();
+      await until(() => systemTexts(messages).length === 1, 'the notice');
+      const text = systemTexts(messages)[0] as string;
+      expect(text).toStartWith("remi could not find this session's Codex thread");
+      expect(text).toContain('Update or Trust prompt');
+      expect(text).toContain(`\`remi attach <host>:19999/${sessionId.slice(0, 8)}\``);
+    });
+
+    test('a wrapper session, which has the terminal, keeps the plain notice', async () => {
+      const server = startServer();
+      const { session, messages } = create(
+        buildDeps(server, { tracker: { noIdentityMs: 150 } }),
+        [],
+        true,
+      );
+      await session.start();
+      await until(() => systemTexts(messages).length === 1, 'the notice');
+      expect(systemTexts(messages)).toEqual(["remi could not find this session's Codex thread"]);
+    });
+  });
+
   describe('the link watchdog', () => {
     const noticeCount = (messages: Message[]) =>
       messages.filter((m) => m.sender === 'system').length;
