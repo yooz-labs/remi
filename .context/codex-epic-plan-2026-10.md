@@ -275,19 +275,21 @@ export interface ThreadTrackerDeps {
   spawnedAtMs: number;
   expectedThreadId: string | null;             // resume
   claimedByOthers: () => ReadonlySet<string>;  // active non-Claude records in the store
-  onIdentity(threadId: string): void;          // persist
+  onIdentity(threadId: string): void;          // persist; throws ThreadClaimedError if the store says another session holds it
   onStatus(threadId: string, status: ThreadStatus): void;
+  siblingInDirectory?: (rotating: boolean) => boolean;  // another live remi codex session in the way of a bind
+  notice?: (message: string) => void;          // a system message, sent at most once per kind
   log: (m: string) => void;
+  retryMs?: number; ambiguityMs?: number; noIdentityMs?: number;  // test seams
 }
 export class ThreadTracker {
   constructor(deps: ThreadTrackerDeps);
   handleNotification(method: string, params: unknown): void;
-  handleReady(reconnect: boolean): void;       // (re)attach
-  readonly threadId: string | null;
-  readonly attached: boolean;
-  isOurs(threadId: string): boolean;           // tracked, or a descendant via parentThreadId
+  handleReady(): void;                         // (re)attach; a new connection starts the retry period over
+  handleDisconnected(): void;                  // the subscription is gone
   dispose(): void;
 }
+// No `threadId`, `attached` or `isOurs` accessors: the session reads what it needs through the callbacks.
 ```
 
 Candidate rule on `thread/started` (all must hold):
@@ -297,17 +299,17 @@ Candidate rule on `thread/started` (all must hold):
 - `parentThreadId === null`.
 - `realpath(cwd) === sessionCwd`.
 - `createdAtSec*1000 >= spawnedAtMs - 5000`.
-- Id not in `claimedByOthers()`.
-- No tracked thread yet.
+- The id is a UUID (`parseThread` returns null for anything else: it is stored and printed in a command line), not in `claimedByOthers()`, not the tracked thread's and not one the store refused.
+- A tracked thread does not end the search: a later candidate is a rotation (below).
 
-The first match waits 300 ms. If a second DISTINCT candidate arrives inside that window, bind neither, log, and set no identity (fail closed). It is decided by arrival, not by `createdAt`: the real frames carry whole seconds (`createdAtSec`), so a createdAt comparison cannot tell two windows apart at 300 ms, and it is not used. A repeat of the same thread id is not a second candidate. At commit the claim is checked again (another session may have taken the thread during the window), and the binding is refused while another active remi codex session in the same directory still has no thread id (it may be that session's). Residual risk (R4): a non-remi TUI in the same cwd started in the same window.
+The first match waits 300 ms. If a second DISTINCT candidate arrives inside that window, bind neither, log, and set no identity (fail closed). It is decided by arrival, not by `createdAt`: the real frames carry whole seconds (`createdAtSec`), so a createdAt comparison cannot tell two windows apart at 300 ms, and it is not used. A repeat of the same thread id is not a second candidate. At commit the claim is checked again (another session may have taken the thread during the window), and so is the sibling guard (E1, E2): a `thread/started` cannot be attributed to a session, so a first bind is refused while another live remi codex session in the same directory has no thread id and started under 60 s ago (an older one no longer blocks), and the candidate is DROPPED, not retained, since after a block keeping it would bind a guess. The user is told once ("another remi codex session in this directory is starting or has no thread yet; this session did not bind. Restart one of them if this persists."). Residual risk (R4): a non-remi TUI in the same cwd started in the same window.
 
 On identity:
 - `bindingStore.updateHarnessIdentity(sessionId, 'codex', threadId)`.
 - Attach with exactly `thread/resume {threadId, excludeTurns:true}` and no overrides (the spike showed overrides persist, report §2). Pin: the frame is exactly that.
-- Retry on `-32600` or any error: immediately on `thread/status/changed` to `active` for the tracked thread, otherwise every 1 s for the session's life. Replay delivers a request that arrived before attach (`expB3.jsonl:51`).
+- Retry on `-32600` or any error: immediately on `thread/status/changed` to `active` for the tracked thread, otherwise every 1 s, and every 5 s after ten failures, for the session's life; a `-32601` (this app-server has no `thread/resume`) stops the retries until the next `ready`. Replay delivers a request that arrived before attach (`expB3.jsonl:51`).
 - Resume of a known id (`resume <uuid>`): attach on `ready`; `thread/started` is not required (`expB3.jsonl:12-13`).
-- Rotation (`/new` inside the TUI): a later candidate matching the same rule rotates the binding only if the tracked thread's status is not `active` (DECIDED POLICY, unverified live, R4), only if the thread is not held by another session, and not while a sibling session in the directory is still seeking its own id. The old id is not retained, and every rotation logs `rotated from <8> to <8>`. Residual (R4): a plain non-remi `codex` window opened in the same directory while this session is idle is indistinguishable from `/new` and re-binds it. TUI-internal `/resume` emits no `thread/started` (`expB3.jsonl:12-13`), so the tracker keeps the old thread; that is a known limit.
+- Rotation (`/new` inside the TUI): a later candidate matching the same rule rotates the binding only if the tracked thread's status is not `active` (DECIDED POLICY, unverified live, R4), only if the thread is not held by another session, and not while ANY other live non-Claude remi session shares the directory, bound or not (E1): a `/new` frame cannot be attributed to a session, so with two sessions in one directory a `/new` in either is followed by neither (a known limit; each logs it and tells its user once, "a new thread appeared; another remi codex session shares this directory; not following it"). The old id is not retained, and every rotation logs `rotated from <8> to <8>`. Residual (R4): a plain non-remi `codex` window opened in the same directory while this session is idle is indistinguishable from `/new` and re-binds it. TUI-internal `/resume` emits no `thread/started` (`expB3.jsonl:12-13`), so the tracker keeps the old thread; that is a known limit.
 - A server request for a thread that `thread/started` showed as a descendant (parent chain reaches the tracked thread) is accepted as `terminalOnly` (v1). Requests for anything else are ignored.
 
 **Older-daemon hazard, #1165 D (narrowed in Phase 2, enforced at launch in Phase 3; not closed).**
@@ -714,7 +716,7 @@ DECIDED POLICY:
 - `CodexHarness` is NOT exported from `harness/index.ts`: only `cli.ts` imports `harness/codex/` (the boundary test), and that rule is not loosened.
 - remi never starts the daemon (§2.3).
 - One `thread/resume` shape, no overrides.
-- No rotation while the tracked thread is `active`, and none onto a sibling session's thread.
+- No rotation while the tracked thread is `active`, none onto a thread another session holds, and none while any other live remi session shares the directory (E1).
 - Phone chat typing to Codex is refused in this phase (`acceptsTypedChat:false`, code `PROMPT_WAITING`).
 - No `thread/list` recovery for a session that never learns its thread; it says so after 30 s (a system message, logged) and a follow-up issue, gated by LV-2, decides whether to add one.
 - The daemon-mode launch passes no args until Phase 5.
@@ -759,6 +761,7 @@ DECIDED POLICY (all in §2.4, restated as the checklist the reviewer uses):
 - Object-form decisions are never offered.
 - The client never answers a request it does not handle.
 - Cards are retired on disconnect and re-created from replay.
+- A subagent's status is forgotten on a link drop and not fetched again (the Phase 3 limit, E4): a subagent that is still waiting reads as not waiting until its next frame, and the replay re-delivers its approval card, which is the part a person can act on.
 - `answerHeld` is never `unknown` for a known id.
 - Phone chat typing is already refused (`acceptsTypedChat:false`, Phase 3); Phase 4 keeps it and extends the typed-bytes-zero pin to every answer variant.
 - `held` is stamped so the push always goes to the lock screen and free text is refused.
@@ -885,7 +888,7 @@ Out of scope: a `harness_denied` equivalent, subagent chat, exited-session histo
 | R1 | A non-answering subscriber disconnecting does not cancel the pending request | LV-3(d) | Do not ship Phase 4; remi becomes harmful on any socket blip. Redesign to minimize reconnects and tell the owner. |
 | R2 | Bare `codex` auto-starts the shared daemon (`daemon_auto_start`, the lock file dated Sep 25) | LV-2(b) | The watchdog fires and approvals never arrive. Fallbacks: run `codex app-server daemon start` before spawn, or spawn with `--remote unix://<socket>` (verified shared in the spike). Owner pick. |
 | R3 | A hand-rolled client interoperates with Codex's server | LV-1 | Fix the codec, or move the pin to >= 1.3.13 and use native `ws+unix`. |
-| R4 | cwd plus `threadSource`/`ephemeral`/time identifies the TUI thread and `/new` rotates | LV-2, tests | Fail closed (no identity, no cards, logged). Residuals: (1) a non-remi TUI in the same cwd started in the same window; (2) a plain non-remi `codex` window opened in the same directory while the tracked thread is not active is indistinguishable from `/new` and re-binds (every rotation logs `rotated from <8> to <8>`); (3) TUI-internal `/resume` emits no `thread/started` (`expB3.jsonl:12-13`), so the tracker keeps the old thread. |
+| R4 | cwd plus `threadSource`/`ephemeral`/time identifies the TUI thread and `/new` rotates | LV-2, tests | Fail closed (no identity, no cards, logged). Residuals: (1) a non-remi TUI in the same cwd started in the same window; (2) a plain non-remi `codex` window opened in the same directory while the tracked thread is not active is indistinguishable from `/new` and re-binds (every rotation logs `rotated from <8> to <8>`); (3) TUI-internal `/resume` emits no `thread/started` (`expB3.jsonl:12-13`), so the tracker keeps the old thread; (4) two remi codex sessions in one directory: a `/new` in either is followed by neither (E1), and an unbound sibling blocks a first bind only for 60 s (E2). |
 | R5 | `cancel` from a second client resolves the request like the TUI's No | LV-3(c) | Flip the No mapping to `decline` (listed or not). |
 | R6 | `thread/items/list` pages history | LV-5 | Fall back to the rollout at `thread.path`. |
 | R7 | A headless Codex launch reaches the prompt | LV-4 | The Trust and Update modals block with nobody to answer. Mitigation: the hub advertises `codex` only after LV-4, and a user can `remi attach`. |

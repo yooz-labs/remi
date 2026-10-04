@@ -70,14 +70,14 @@ It has only been tested against a stand-in for Codex's app-server, not against a
   `remi codex resume <thread id>` takes the whole thread id, which `remi --sessions` prints under each exited Codex session.
 - **The Codex app-server.**
   Codex's TUI starts and shares one app-server for all your Codex windows.
-  Remi never starts, stops or upgrades it, and it ignores the threads of your other Codex windows.
+  Remi never starts, stops or upgrades it, and it ignores the threads of your other Codex windows, except that it cannot tell windows apart that share one directory (see "Which thread is yours").
   If remi cannot reach it for 30 seconds, it says so once in the remi log (and sends a system message that some clients, the web app today, do not show), and the session goes on in the terminal.
   Remi connects only to a control directory that only you can use (mode 700, owned by you), and checks that just before it connects, not along the whole path above it, so a directory someone else can swap in between the check and the connection is not covered.
 - **Which thread is yours.**
-  Remi picks its session's Codex thread by directory and start time.
-  Two Codex windows started in one directory together make it bind neither, and a plain `codex` window opened in that directory while the remi session is idle looks the same as `/new` and may take the binding over (the remi log says "rotated").
+  Remi picks its session's Codex thread by directory and start time, and a new thread says nothing about which window it is for.
+  So with two or more Codex windows in one directory: two started together bind neither; a `/new` in one of two remi sessions there is followed by neither (each says so once); a remi session that has no thread yet and is under a minute old keeps another one in that directory from binding a new thread (the message says to restart one of them); and a plain `codex` window opened there while a remi session is idle looks the same as `/new` and may take the binding over (the remi log says "rotated").
   Switching threads with `/resume` inside Codex is not followed.
-  One directory per Codex window avoids all three.
+  One directory per Codex window avoids all of it.
 - **An older remi erases Codex session ids.**
   Codex thread ids are kept in `sessions.json`, and a remi older than 0.7.16-dev.7 that writes that file afterwards drops them.
   `remi codex` refuses to start while such a remi is running (`remi stop --all` stops it), and says so again when it starts, because it cannot stop an old binary that starts later.

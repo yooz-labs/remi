@@ -252,18 +252,20 @@ Nothing here was run against a real Codex: every claim below about Codex's behav
 1. **The launch.**
 `codex --no-alt-screen <validated arguments>` in a PTY, in the session's working directory, with `process.env` plus `FORCE_COLOR` and `TERM`, which the PTY layer sets for every launch, and nothing else (no `REMI_PORT`, none of Claude's variables; the characterization test pins the child's whole environment against the parent's), no override flag, and no reserved status row.
 The steps that change state run in this order: `validateCodexArgs` (a refusal is exit 2), the older-daemon gate (exit 1), the working directory check (exit 1), `preAssign` of `{harness: 'codex', claudeSessionId: null, harnessSessionId: <thread or null>}`, the PTY, and only then the app-server client, because the TUI is what starts the shared daemon.
-Nothing under `harness/codex/` types into the PTY: the child's stdin sees only a person's raw input (the characterization test counts the bytes: zero), and phone chat is refused before it reaches the PTY (item 12).
+Nothing under `harness/codex/` types into the PTY: the child's stdin sees only what is typed at the terminal and raw input (an attach client's keystrokes, the Escape button, `/interrupt`), which the client marks `raw` and the daemon cannot tell from a script (E3; the characterization test counts the bytes of a phone message: zero), and phone chat is refused before it reaches the PTY (item 12).
 A Stop force-closes the session (`gracefulExitInput` is null), and `HarnessSession.decisions` holds nothing and answers nothing.
 2. **Identity (`ThreadTracker`).**
-A `thread/started` is a candidate only if it is not ephemeral, comes from `threadSource` `user` (or has none and a rollout `path`), has an environment and no parent, has a cwd that `realpath` resolves to the session's, was created at most 5 s before the spawn, and is not held by an active non-Claude record of another remi session.
+A `thread/started` is a candidate only if its id is a UUID (`parseThread` returns null for anything else, because the id is stored in `sessions.json` and printed in the resume line, R3), it is not ephemeral, comes from `threadSource` `user` (or has none and a rollout `path`), has an environment and no parent, has a cwd that `realpath` resolves to the session's, was created at most 5 s before the spawn, and is not held by an active non-Claude record of another remi session.
 The title helper that appears about 7 s after the TUI thread (`expB.jsonl:12`) fails three of those (it is ephemeral, from another source, and has no environment), and each rule has a frame that breaks only it.
 The first candidate waits 300 ms, and a second DISTINCT candidate that ARRIVES inside that window means two Codex windows started in the directory together, so neither binds and a session without an identity keeps none (fail closed, plan risk R4).
 Arrival decides, not `createdAt`: the real frames carry whole seconds, so no comparison of `createdAt` at 300 ms is possible, and none is made (an earlier draft of this item and of the plan said otherwise).
 A repeat of the pending thread's id is the same candidate, not a second, and does not trip the latch.
-When the window ends the claim is checked again, and so is whether another active remi codex session in the same directory still has no thread id (it may own the new thread): then this session binds nothing and says so once.
+When the window ends the claim is checked again, and so is the sibling guard (E1, E2): a `thread/started` carries nothing that says which session it is for, so a FIRST bind is refused while another live remi codex session in the same directory has no thread id and started under 60 s ago (an older one no longer blocks, and a start time that cannot be read counts as young), and a ROTATION is refused while ANY other live non-Claude remi session shares the directory, bound or not.
+A refused candidate is dropped, not retained, since after a block keeping it would bind a guess; the session says so once, with what to do, and logs each block.
 A thread the store refuses at the write (`ThreadClaimedError`, another session took it first) is remembered and never retried.
-A later candidate rotates the binding (`/new`), but not while the tracked thread is `active`, and every rotation logs `rotated from <8> to <8>`; the old id is not kept.
-Descendants, followed by parent links, count as the session's: at most 256 ids known to be ours and at most 512 links whose parent is not yet known to be ours, first in first out, so another window's threads can only fill the second memory.
+A later candidate rotates the binding (`/new`), but not while the tracked thread is `active` and not past the sibling guard above, and every rotation logs `rotated from <8> to <8>`; the old id is not kept.
+With two remi codex sessions in one directory that means a `/new` in either is followed by neither (E1, a known limit), and the first session also declines the other's first thread, once, with the same message.
+Descendants, followed by parent links, count as the session's: at most 256 ids known to be ours and at most 512 links whose parent is not yet known to be ours, first in first out, so another window's threads can only fill the second memory; a descendant pushed out of the first is reported idle (R7), since its frames are ignored from then on.
 Identity is persisted with `SessionBindingStore.updateHarnessIdentity`; for a resume the record already names the thread.
 3. **Attach.**
 `thread/resume {threadId, excludeTurns: true}` and nothing else, ever (the spike showed an override persists on the thread).
@@ -273,13 +275,13 @@ Only the first failure and every thirtieth are logged, and no thread frame of an
 4. **Status.**
 The session's status is the aggregate of the tracked thread and its descendants: `waiting` if any is `active` with a flag (an unknown flag counts), else `thinking` if any is `active`, else `idle`; it is reported through `messageApi.handleStatusChange` only when it changes.
 Other threads never change it.
-A drop of the link and a rotation forget the descendants' statuses, since their frames can no longer be trusted to arrive.
+A drop of the link and a rotation forget the descendants' statuses, since their frames can no longer be trusted to arrive, and they are not fetched again (E4): a subagent that is still waiting reads as not waiting until its next frame, and phase 4's replay re-delivers its approval card, which is the part a person can act on.
 5. **The shared daemon.**
 remi never starts, stops, restarts or upgrades it.
 If no connection is ready 30 s after the spawn, or the link drops and stays down 30 s, one log line and one system-sender message say so, once per session, and the session carries on as a plain terminal session.
 A link counts as up only after it has stayed up 5 s, so a connection that is accepted and dropped at once does not cancel the notice; the edge is that a first connection that becomes ready in the last 5 s of the 30 s window does not cancel it in time, and the notice is sent although the link is then up.
 The wording differs for a socket that exists but was refused as not private: it says the control directory is not private and that the log names it.
-A session that is connected but never learns its thread says so once, 30 s after the link came up, if it still has none and none is about to bind.
+A session that is connected but never learns its thread says so once, 30 s after the link came up, if it still has none and no candidate is inside its window; with one inside it, it looks once more when that window is over (R8), so a candidate that is then refused still reaches the user.
 Every one of these messages is a `structured_agent_output` with `sender: 'system'`; the web client renders chat from `transcript_content` and uses that message only to mark the session active, so it does not show there today (unverified elsewhere, a wire change is out of scope), and the log line is the record that always exists.
 6. **Socket trust.**
 `${CODEX_HOME ?? ~/.codex}/app-server-control/app-server-control.sock` is a symlink to a short path.
@@ -319,19 +321,20 @@ The daemon version is logged from `initialize.userAgent` only; remi never runs `
 12. **Chat is refused in this phase.**
 `HarnessSession.acceptsTypedChat` (absent means true) is false for Codex, and `onUserInput` refuses non-raw text for such a session before the `promptUp` guard, with code `PROMPT_WAITING` and the message "This session does not take typed messages from the app yet; type in the terminal." (D1).
 Without it a message from a phone, Telegram or the relay would have been typed, plus its Enter, into whatever the Codex TUI had focused (an approval overlay, the Update modal), the failure the spike's Update-modal incident showed (a typed digit ran an installer): `promptUp` reads "nothing up" for a session with no screen reads and no decision channel.
-Raw input (an attach client, the web Escape button, Telegram `/interrupt`) still reaches the terminal, since a person is behind it.
-The refusal logs the length of the text and never the text; a line near the top of `onUserInput` that logs chat content for every harness is older and unchanged.
+Raw input (an attach client's keystrokes, the web Escape button, Telegram `/interrupt`) still reaches the terminal: `raw: true` is set by the client, the daemon cannot tell a person from a script, and an attach client's keystrokes must reach Codex, which is accepted by design (E3).
+For such a session the line at the top of `onUserInput` that logs every user input logs the length only, raw input included, and the refusal logs the length too (R6); Claude's line is unchanged.
 13. **Not verified, for LV-2.**
 That Codex's server accepts the hand-rolled client's handshake (LV-1 is the same question); that bare `codex` starts the shared daemon on a cold start (R2); that `thread/started` for the TUI thread arrives within about 2 s and the title helper is ignored; that the attach succeeds after the first message; that a dropped subscriber leaves the TUI untouched; that no `.claude/settings.local.json` appears; whether the system message shows anywhere; whether `thread/started` carries any client marker that would tell a non-remi window apart; that `remi codex -- login` and `remi codex -- exec x` send those words as prompt text (the inserted `--` in `codex-args.ts` is unverified, and so is item 8's claim that it makes every word a prompt); `-i` together with `resume`; that TUI-internal `/resume` emits no `thread/started` (the spike's `expB3.jsonl:12-13` shows none, so the tracker keeps the old thread, a known limit); and `kill -9` of remi in the middle of an approval.
 14. **Exports with no production caller in this PR.**
 `UntrustedSocketError` (read as an `instanceof` only by the launch's notice wording and tests), `validateCodexRemoteArgs` (phase 5), `SessionBindingStore.getIdentity` and `SessionStore.findByHarnessSessionId` (phase 5, the session list and the resume lookup), `resolveStoredSession`'s Codex branch (phase 5), and the client's `AppServerDisconnectedError`, `AppServerTimeoutError` and `AppServerSerializationError` (phase 4 reads them when it answers).
 The tracker's test-only accessors were removed.
+`shellQuote` moved to `session/shell-quote.ts` and is called by `codex-session.ts` (the resume line) and `session-store.ts` (the mismatch pointer); `codex-args.ts`'s `UUID_PATTERN` is now exported and used by `thread-protocol.ts`.
 `ThreadClaimedError`, `codexLaunchRefusal` and `codexResumeCommand` have callers in `cli.ts` or the launch.
 Everything else this phase added or inherited from phase 2 has a caller in `cli.ts` or the launch: see the table in the PR.
 15. **Receipts.**
 Pins first: `codex-launch-characterization.test.ts` was committed red before any implementation, and `launch-characterization.test.ts` passes unmodified before and after the `cli.ts` gating.
 About 130 mutants were applied, each to a committed tree and reverted with `git apply -R`: all killed except the equivalent ones listed in the PR (two guards that each hide the other, a claim filter that was then removed, a memory-hygiene delete, a path the store normalizes).
-The review rework (W1 to W21) wrote each failing test before its fix and ran mutants on its new logic: see the PR.
+The review rework (W1 to W21) and its second round (R1 to R9) wrote each failing test before its fix and ran mutants on their new logic: see the PR.
 Gate results and the removed-line check are in the PR.
 
 ### Decisions recorded in the review rework
@@ -340,7 +343,7 @@ Gate results and the removed-line check are in the PR.
 Phone chat for Codex is refused in this phase through `acceptsTypedChat`, with code `PROMPT_WAITING` and a Codex-specific message, because the web client fails the refused bubble only for that code (`web/src/lib/prompt-waiting.ts`).
 The plan placed `acceptsTypedChat` in phase 4; it ships here.
 - **D2, rotation.**
-A later same-directory thread rotates the binding while the tracked thread is not active, but never onto a thread another session holds, never while a sibling session is still seeking its own thread, and the claim is re-checked at commit.
+A later same-directory thread rotates the binding while the tracked thread is not active, but never onto a thread another session holds, never while another live session shares the directory (E1, which replaced the first guard, a sibling still without a thread), and the claim is re-checked at commit.
 Residual: a plain non-remi `codex` window opened in the same directory while the session is idle is indistinguishable from `/new` and re-binds it; every rotation logs `rotated from <8> to <8>`.
 TUI-internal `/resume` emits no `thread/started`, so the tracker keeps the old thread (a known limit).
 Both are LV-2 items and plan risk R4.
@@ -354,3 +357,22 @@ A session that never learns its thread is told so after 30 s instead; a follow-u
 The check-to-connect window and the unchecked ancestor directories are documented (item 6), not closed, and there is no ancestor walk.
 - **D7, older daemons.**
 The gate has no marker field to read; the refusal text explains what it can and cannot see (item 7).
+
+### Decisions recorded in review rework round 2
+
+- **E1, rotation against any sibling.**
+A rotation fails closed against ANY other live non-Claude remi session in the same directory, bound or not.
+A `/new` frame cannot be attributed to a session: with two bound idle sessions A and B, a `/new` in B reaches both trackers, and whichever commit timer fired first (A, the older connection, nearly always) rotated onto B's thread while B stayed on its own.
+So a `/new` in either is followed by neither (a known limit); each logs it and tells its user once, "a new thread appeared; another remi codex session shares this directory; not following it".
+The plain-window residual of D2 stays.
+- **E2, the first-bind window.**
+An unbound sibling blocks a first bind only while its `startedAt` is under 60 s old (its first-thread window); a 6 hour old row with no thread no longer blocks anyone.
+A blocked candidate is dropped, not retained, and the notice says what to do ("restart one of them if this persists").
+- **E3, raw input.**
+`raw: true` is set by the client, and the daemon cannot tell a person from a script; an attach client's keystrokes must reach Codex.
+This is accepted by design: the claim is that remi types only raw input (an attach client's keystrokes, the Escape button, `/interrupt`) into a Codex PTY, which the client marks, not that a person is behind it.
+- **E4, subagent status after a blip.**
+A subagent's status is forgotten when the link drops and is not fetched again; a still-waiting subagent reads as not waiting until its next frame.
+Phase 4's replay re-delivers its approval card, which is the actionable part.
+- **E5, hub requests.**
+`resume_session_request` and `create_session_request` on a Codex daemon stay phase 5 item 7 (tracked in #1179); this phase does not touch them.
