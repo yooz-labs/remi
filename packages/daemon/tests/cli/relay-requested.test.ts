@@ -25,6 +25,13 @@ describe('relayRequested', () => {
     expect(relayRequested(false, parseArgs(['--auth', '--permanent-code']))).toBe(true);
   });
 
+  test('--permanent-code beats network.relay = false: the command line wins over the config', () => {
+    // Deliberate precedence (#1193 review F10), named in `remi --help`: asking
+    // for the authenticated relay on the command line is not undone by a
+    // relay = false left in config.toml.
+    expect(relayRequested(false, parseArgs(['--auth', '--permanent-code']))).toBe(true);
+  });
+
   test('--no-relay wins over the config and over --permanent-code', () => {
     expect(relayRequested(true, parseArgs(['--no-relay']))).toBe(false);
     expect(relayRequested(false, parseArgs(['--no-relay', '--permanent-code']))).toBe(false);

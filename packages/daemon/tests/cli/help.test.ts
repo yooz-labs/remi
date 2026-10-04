@@ -223,9 +223,11 @@ describe('relay wording', () => {
     }
   });
 
-  test('--permanent-code says it needs auth and turns the relay on', () => {
+  test('--permanent-code says it needs auth, turns the relay on, and beats relay = false', () => {
     process.env['NO_COLOR'] = '1';
-    expect(formatHelp('0.0.0')).toContain('needs auth on; turns the relay on');
+    const help = formatHelp('0.0.0');
+    expect(help).toContain('needs auth on; turns the relay on');
+    expect(help).toContain('even if network.relay = false');
   });
 
   test('`remi code` is described as the permanent relay code, in the help and in its own help', () => {
