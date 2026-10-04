@@ -38,7 +38,6 @@ import {
   createAgentOutput,
   createAuthResult,
   createError,
-  createQuestion,
   decryptRelayPayload,
   deriveRelaySessionKeys,
   encryptRelayPayload,
@@ -55,7 +54,6 @@ import type {
   EphemeralKeyPair,
   Message,
   ProtocolMessage,
-  Question,
   RelaySessionKeys,
   UUID,
 } from '@remi/shared';
@@ -675,10 +673,6 @@ export class RelayAdapter implements ConnectionAdapter {
 
   sendMessage(connectionId: UUID, message: Message): boolean {
     return this.sendRaw(connectionId, createAgentOutput(message));
-  }
-
-  sendQuestion(connectionId: UUID, question: Question, sessionId: UUID): boolean {
-    return this.sendRaw(connectionId, createQuestion(question, sessionId));
   }
 
   sendStatus(_connectionId: UUID, _status: AgentStatus, _context?: string): boolean {
