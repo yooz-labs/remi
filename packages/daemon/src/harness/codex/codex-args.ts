@@ -298,14 +298,22 @@ const REMOTE_MAX_ARGS = 16;
 const REMOTE_MAX_ARG_LENGTH = 256;
 /** A model name: no leading hyphen, so it can never read as a flag. */
 const REMOTE_MODEL_PATTERN = /^[A-Za-z0-9._:[\]][A-Za-z0-9._:[\]-]{0,63}$/;
-const REMOTE_APPROVAL_POLICIES: readonly string[] = ['untrusted', 'on-request'];
-const REMOTE_SANDBOX_MODES: readonly string[] = ['read-only', 'workspace-write'];
+/**
+ * A remote request may only TIGHTEN the posture the host chose, never loosen it (ADR 0033,
+ * Phase 5 review): `untrusted` asks for every command and `read-only` writes nothing, while
+ * `on-request` and `workspace-write` are looser than a host's stricter default. Widening needs
+ * a person at the terminal (Claude's allowlist leaves out `--permission-mode` for the same reason).
+ */
+const REMOTE_APPROVAL_POLICY = 'untrusted';
+const REMOTE_SANDBOX_MODE = 'read-only';
 
 /**
  * Validate the arguments of a Codex session requested over the wire
  * (default-deny). Accepted, each at most once and in any order: `-m` or
- * `--model` followed by a model name, `-a untrusted|on-request`,
- * `-s read-only|workspace-write`, and `resume <uuid>`. Everything else is
+ * `--model` followed by a model name, `-a untrusted`, `-s read-only`, and
+ * `resume <uuid>` (UNVERIFIED headless, an LV-4 item). A remote request may only
+ * tighten the host's posture: `-a on-request` and `-s workspace-write` are refused.
+ * Everything else is
  * refused, including a prompt, `--`, `--no-alt-screen` (remi adds it) and the
  * `--flag=value` spelling. At most 16 arguments of at most 256 characters
  * each, none containing NUL.
@@ -313,8 +321,8 @@ const REMOTE_SANDBOX_MODES: readonly string[] = ['read-only', 'workspace-write']
  * Total over any input: what is not an array of strings (undefined, null, a
  * number, an object that only looks like an array) is a refusal, never a
  * throw, because the hub feeds it parsed wire JSON (#1179). The returned arguments are
- * the flags in the order given, then `resume <uuid>` last, the same shape the
- * local validator returns.
+ * the flags in the order given, then `resume <uuid>` last (the UUID lowercase), the same
+ * shape the local validator returns.
  */
 export function validateCodexRemoteArgs(args: unknown): CodexArgsResult {
   if (!Array.isArray(args)) return refuse('remote codex arguments must be an array');
@@ -333,7 +341,6 @@ export function validateCodexRemoteArgs(args: unknown): CodexArgsResult {
   const seen = new Set<string>();
   const flags: string[] = [];
   let resumeThreadId: string | null = null;
-  let resumeToken: string | null = null;
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i] as string;
     const value = tokens[i + 1];
@@ -349,17 +356,19 @@ export function validateCodexRemoteArgs(args: unknown): CodexArgsResult {
         break;
       case '-a':
         slot = 'approval';
-        if (value === undefined || !REMOTE_APPROVAL_POLICIES.includes(value)) {
+        if (value !== REMOTE_APPROVAL_POLICY) {
           return refuse(
-            `remote codex arguments: -a must be ${REMOTE_APPROVAL_POLICIES.join(' or ')}`,
+            `remote codex arguments: -a may only be ${REMOTE_APPROVAL_POLICY} (a remote request can tighten the host's posture, never loosen it)`,
           );
         }
         flags.push(token, value);
         break;
       case '-s':
         slot = 'sandbox';
-        if (value === undefined || !REMOTE_SANDBOX_MODES.includes(value)) {
-          return refuse(`remote codex arguments: -s must be ${REMOTE_SANDBOX_MODES.join(' or ')}`);
+        if (value !== REMOTE_SANDBOX_MODE) {
+          return refuse(
+            `remote codex arguments: -s may only be ${REMOTE_SANDBOX_MODE} (a remote request can tighten the host's posture, never loosen it)`,
+          );
         }
         flags.push(token, value);
         break;
@@ -369,7 +378,6 @@ export function validateCodexRemoteArgs(args: unknown): CodexArgsResult {
           return refuse('remote codex arguments: resume needs a session id (a UUID)');
         }
         resumeThreadId = value.toLowerCase();
-        resumeToken = value;
         break;
       default:
         return refuse(`remote codex arguments: ${JSON.stringify(token)} is not allowed`);
@@ -380,7 +388,7 @@ export function validateCodexRemoteArgs(args: unknown): CodexArgsResult {
   }
   return {
     ok: true,
-    args: resumeToken === null ? flags : [...flags, 'resume', resumeToken],
+    args: resumeThreadId === null ? flags : [...flags, 'resume', resumeThreadId],
     resumeThreadId,
   };
 }

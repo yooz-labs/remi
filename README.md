@@ -77,7 +77,8 @@ Whenever remi starts following a new Codex thread (a `/new` in the terminal, or 
 A `kill -9` of remi also ends your Codex window (Codex gets a hangup when remi's terminal closes, as Claude does), while a pending approval stays pending in Codex's app-server.
 
 Starting Codex on another machine: `remi codex --host <ip>` (or `remi new --host <ip> --harness codex`) asks that machine's remi to start it, and only if that remi lists `codex` among the harnesses it can start (an older remi does not, and then nothing is started).
-The words after `--` there are not a prompt: the remote remi accepts only `-m/--model <name>`, `-a untrusted|on-request`, `-s read-only|workspace-write` and `resume <thread id>`, and refuses the request otherwise.
+The words after `--` there are not a prompt: the remote remi accepts only `-m/--model <name>`, `-a untrusted`, `-s read-only` and `resume <thread id>` (resume through a hub is unverified against a real Codex), and refuses the request otherwise.
+A remote request may only tighten the host's approval and sandbox settings, never loosen them, so `-a on-request` and `-s workspace-write` are refused there (widening needs a person at the terminal, where `remi codex` allows them).
 A session started this way has no terminal, so Codex may wait at an Update or Trust prompt that nothing answers: the CLI prints a notice saying so when it starts one (the web app does not show it yet), and `remi attach` on that machine is how you answer it (not yet checked against a real Codex).
 
 **Checked live** (against the real Codex 0.160.0, on 2026-10-04, by a spike agent):

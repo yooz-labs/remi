@@ -151,8 +151,11 @@ const commandHelp: Record<Subcommand, string[]> = {
     entry('--port PORT', 'WebSocket port'),
     '',
     dim('  With --host the words after `--` are not a prompt: the remote remi accepts only'),
-    dim('  -m/--model <name>, -a untrusted|on-request, -s read-only|workspace-write and'),
-    dim('  `resume <thread id>`, and refuses the request otherwise. The session has no terminal:'),
+    dim('  -m/--model <name>, -a untrusted, -s read-only and `resume <thread id>` (resume is'),
+    dim(
+      '  unverified headless), and refuses the request otherwise: a remote request may tighten the',
+    ),
+    dim("  host's approval and sandbox settings, never loosen them. The session has no terminal:"),
     dim('  Codex may wait at an Update or Trust prompt that only a terminal can answer; if it'),
     dim('  does not respond, run `remi attach` on that machine (unverified against a real Codex).'),
     '',
