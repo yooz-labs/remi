@@ -41,7 +41,7 @@ describe('cli.ts registration site (source-level wiring pin)', () => {
   );
 
   test('registers the relay through relayRequested', () => {
-    expect(source).toMatch(/if \(relayRequested\(remiConfig\.network\.relay,/);
+    expect(source).toMatch(/if \(\s*relayRequested\(remiConfig\.network\.relay,/);
   });
 
   test('reads network.relay nowhere else', () => {

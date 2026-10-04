@@ -156,6 +156,25 @@ describe('relay-adapter self-authenticating answer (#591)', () => {
     expect(calls).toHaveLength(0);
   });
 
+  test('no authenticator -> the handler itself refuses an unsigned answer (#1193)', async () => {
+    // Called directly: the `relay` event already drops frames without an
+    // authenticator, and this is what keeps the method safe on its own.
+    const calls: Relayed[] = [];
+    const adapter = new RelayAdapter(
+      { signalingUrl: 'wss://ignored.example.com' },
+      recordingEvents(calls),
+    );
+    await handle(adapter, { type: 'answer', sessionId: SID, questionId: QID, answer: ANSWER });
+    await handle(adapter, {
+      type: 'answer',
+      sessionId: SID,
+      questionId: QID,
+      answer: ANSWER,
+      auth: {},
+    });
+    expect(calls).toHaveLength(0);
+  });
+
   test('no authenticator (rotating no-auth) -> refused, never dispatched (#1193)', async () => {
     // Driven through the real `relay` event, not the private method: the claim
     // is about what the adapter does with a frame, and a peer-less answer needs
