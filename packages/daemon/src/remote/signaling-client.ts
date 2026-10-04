@@ -35,8 +35,10 @@ export interface SignalingClientOptions {
 
 export interface SignalingClientEvents {
   registered: (code: string, expiresAt: string) => void;
-  'peer-connected': () => void;
-  'peer-disconnected': () => void;
+  /** `role` is the Worker's word for who joined: `client` for a client. */
+  'peer-connected': (role?: string) => void;
+  /** `role` is the CLOSING socket's role (`client`, `host`, or `pending` for one that never joined). */
+  'peer-disconnected': (role?: string) => void;
   relay: (payload: string) => void;
   error: (code: string, message: string) => void;
   close: () => void;
@@ -96,10 +98,10 @@ export class SignalingClient extends EventEmitter {
             this.emit('registered', msg.code, msg.expiresAt);
             break;
           case 'peer-connected':
-            this.emit('peer-connected');
+            this.emit('peer-connected', msg.role);
             break;
           case 'peer-disconnected':
-            this.emit('peer-disconnected');
+            this.emit('peer-disconnected', msg.role);
             break;
           case 'relay':
             this.emit('relay', msg.payload);

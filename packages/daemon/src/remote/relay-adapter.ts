@@ -83,7 +83,9 @@ export interface RelayTransport {
   on(event: 'registered', cb: (code: string, expiresAt: string) => void): void;
   on(event: 'relay', cb: (payload: string) => void): void;
   on(event: 'error', cb: (code: string, message: string) => void): void;
-  on(event: 'open' | 'close' | 'peer-connected' | 'peer-disconnected', cb: () => void): void;
+  on(event: 'open' | 'close', cb: () => void): void;
+  /** `role` is the Worker's: who joined, or the role of the socket that closed. */
+  on(event: 'peer-connected' | 'peer-disconnected', cb: (role?: string) => void): void;
   on(event: 'code-rotated', cb: (code: string) => void): void;
   // biome-ignore lint/suspicious/noExplicitAny: the emitter is heterogeneous by design
   on(event: string, cb: (...args: any[]) => void): void;
@@ -223,7 +225,13 @@ export class RelayAdapter implements ConnectionAdapter {
       this.announceCode('Code rotated', newCode);
     });
 
-    this.client.on('peer-connected', () => {
+    this.client.on('peer-connected', (role?: string) => {
+      // Only a client is a peer. The Worker reports a socket that never joined
+      // as `pending`, and tells the host when ANY socket closes; acting on a
+      // bare "peer" event would let a stranger connect and close to drop the
+      // real peer (#1193 review). Silent: strangers choose how often this runs.
+      if (role !== 'client') return;
+
       const authenticator = this.config.authenticator;
       if (!authenticator) {
         // #1193: with nothing to authenticate against, accepting a peer would
@@ -253,7 +261,8 @@ export class RelayAdapter implements ConnectionAdapter {
       });
     });
 
-    this.client.on('peer-disconnected', () => {
+    this.client.on('peer-disconnected', (role?: string) => {
+      if (role !== 'client') return;
       this.resetClient('Remote client disconnected');
     });
 
