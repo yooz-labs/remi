@@ -236,6 +236,15 @@ export interface Question {
   readonly terminalOnly?: boolean | undefined;
 
   /**
+   * On a `terminalOnly` card: Cancel only clears the card from the apps (#1178). The agent's own
+   * prompt stays open where it is waiting, and nothing is answered, so the card must not say the
+   * call is declined. Set by Codex, whose app-server request stays pending after a phone Cancel;
+   * absent on Claude's terminal-only cards, whose Cancel denies the call. Clients read it for
+   * the Cancel label.
+   */
+  readonly cancelDismissesOnly?: boolean | undefined;
+
+  /**
    * Long-form text the prompt is about (#1127): the plan of a
    * `'plan_approval'` card, verbatim (markdown). The app shows it in full;
    * the push shows its start; a text-only surface may shorten it. `text`

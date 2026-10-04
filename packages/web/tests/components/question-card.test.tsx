@@ -27,6 +27,74 @@ function render(question: UIQuestion): string {
   );
 }
 
+/**
+ * #1178 (S6): a Codex card nobody can answer from the phone has no options, and its Cancel only
+ * clears it (the request stays pending in Codex's own prompt), where Claude's terminal-only cards
+ * deny the call. The daemon marks the first with `cancelDismissesOnly`; the card must offer no
+ * input it will refuse and must not claim a decline that does not happen.
+ */
+describe('a terminal-only card whose Cancel only dismisses (#1178)', () => {
+  const codexCard: UIQuestion = {
+    id: 'codex' as UIQuestion['id'],
+    sessionId: 's' as UIQuestion['sessionId'],
+    type: 'free_text',
+    prompt: 'Codex asks to change files: edit the config. Answer it in the terminal.',
+    timestamp: TS,
+    kind: 'permission',
+    terminalOnly: true,
+    cancelDismissesOnly: true,
+  };
+
+  test('it offers no text input, says to answer in the terminal, and its X says it only dismisses', () => {
+    const html = render(codexCard);
+    expect(html).not.toContain('<input');
+    expect(html).not.toContain('Type your response');
+    expect(html).toContain('Answer this in the terminal.');
+    expect(html).toContain('aria-label="Dismiss (answer in the terminal)"');
+    expect(html).not.toContain('Decline tool call');
+  });
+
+  test('a form card of the same kind says the same on its button and its X', () => {
+    const html = render({
+      ...codexCard,
+      kind: 'multi_question',
+      type: 'numbered',
+      questions: [{ text: 'Pick?', multiSelect: false, options: [opt('Red', 'Red')] }],
+    });
+    expect(html).toContain('>Dismiss (answer in the terminal)</button>');
+    expect(html).toContain('aria-label="Dismiss (answer in the terminal)"');
+    expect(html).not.toContain('Decline tool call');
+  });
+
+  test("Claude's terminal-only card is untouched: it still says Decline tool call, and a plain free-text card still has its input", () => {
+    const claudeTerminalOnly = { ...codexCard, cancelDismissesOnly: undefined };
+    const html = render(claudeTerminalOnly);
+    expect(html).toContain('aria-label="Decline tool call"');
+    expect(html).not.toContain('Dismiss (answer in the terminal)');
+    // The control: a card that takes text keeps its input row.
+    const free = render({ ...codexCard, terminalOnly: undefined, cancelDismissesOnly: undefined });
+    expect(free).toContain('<input');
+  });
+
+  test('the daemon field reaches the card through the wire mapping, and its absence stays absent', () => {
+    const wire: Question = {
+      id: 'q' as Question['id'],
+      text: 'Codex asks for approval',
+      options: [],
+      allowsFreeText: false,
+      isAnswered: false,
+      terminalOnly: true,
+      cancelDismissesOnly: true,
+    };
+    const mapped = mapQuestionToUIQuestion(wire, 's' as UIQuestion['sessionId'], TS);
+    expect(mapped.cancelDismissesOnly).toBe(true);
+    const { cancelDismissesOnly: _dropped, ...claude } = wire;
+    expect(Object.keys(mapQuestionToUIQuestion(claude, 's' as UIQuestion['sessionId'], TS))).not.toContain(
+      'cancelDismissesOnly',
+    );
+  });
+});
+
 describe('QuestionCard (#1127)', () => {
   const plan: UIQuestion = {
     id: 'plan' as UIQuestion['id'],

@@ -191,6 +191,9 @@ function terminalOnly(
       isAnswered: false,
       kind: 'permission',
       terminalOnly: true,
+      // A phone Cancel clears the card and answers nothing (`CodexDecisions.answerHeld`), so the
+      // app must not say it declines anything.
+      cancelDismissesOnly: true,
       pendingLabel,
       ...(c.agentId === undefined ? {} : { agentId: c.agentId }),
       ...extra,

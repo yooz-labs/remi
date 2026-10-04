@@ -136,6 +136,7 @@ describe('golden table: real frames to Question JSON', () => {
       isAnswered: false,
       kind: 'multi_question',
       terminalOnly: true,
+      cancelDismissesOnly: true,
       pendingLabel: 'Codex asks for approval',
       questions: [
         {
@@ -1220,5 +1221,42 @@ describe("the directory a command runs in is shown when it is not the session's 
     expect(q.text).toContain('In directory: /work/\\u202Egnp');
     expect(q.text).toContain('characters hidden]');
     expect((q.text.match(/d/g) ?? []).length).toBeLessThan(2100);
+  });
+});
+
+describe('a Codex card nobody can answer says its Cancel only dismisses (S6)', () => {
+  const frame = (method: string, params: Record<string, unknown>) => ({ id: 3, method, params });
+  const card = (f: ReturnType<typeof frame>): Question => {
+    const spec = buildApprovalCard(f, mint, WHERE);
+    if (spec === null) throw new Error('no card');
+    return spec.question;
+  };
+
+  test('every terminalOnly card carries the marker, the answerable command card does not', () => {
+    const terminal = [
+      card(frame('item/fileChange/requestApproval', { threadId: THREAD, reason: 'r' })),
+      card(frame('item/permissions/requestApproval', { threadId: THREAD })),
+      card(
+        frame('mcpServer/elicitation/request', { threadId: THREAD, serverName: 's', message: 'm' }),
+      ),
+      card(
+        frame('item/tool/requestUserInput', {
+          threadId: THREAD,
+          questions: [{ id: 'q', question: 'Q?' }],
+        }),
+      ),
+      card(frame('item/tool/requestUserInput', { threadId: THREAD, questions: 'nope' })),
+      build({ kind: 'writeStdin' }).question,
+      build({}, { agentId: OTHER_THREAD }).question,
+      build({ command: '' }).question,
+      build({ availableDecisions: ['accept'] }).question,
+    ];
+    for (const q of terminal) {
+      expect(q.terminalOnly).toBe(true);
+      expect(q.cancelDismissesOnly).toBe(true);
+    }
+    const answerable = build({ availableDecisions: ['accept', 'cancel'] }).question;
+    expect(answerable.terminalOnly).toBeUndefined();
+    expect(Object.keys(answerable)).not.toContain('cancelDismissesOnly');
   });
 });

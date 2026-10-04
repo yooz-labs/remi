@@ -241,6 +241,8 @@ export interface UIQuestion {
   /** #1127 review S7: no phone answer can be applied (an AskUserQuestion that
    *  did not parse exactly); answer in the terminal, or Cancel. */
   readonly terminalOnly?: boolean;
+  /** On a terminal-only card: Cancel only clears the card, the agent's prompt stays open (#1178). */
+  readonly cancelDismissesOnly?: boolean;
   /** #626: the full sub-question set (AskUserQuestion), rendered as an interactive
    *  form in #627. */
   readonly questions?: readonly UIQuestionStep[];
