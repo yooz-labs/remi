@@ -528,9 +528,7 @@ export function ConnectModal({
                 <CodeInput value={code} onChange={setCode} disabled={isConnecting} />
               </label>
               <p className="text-xs text-[var(--color-text-muted)]">
-                Enter the connection code, four letters and four digits, such as the permanent code
-                from{' '}
-                <span className="font-mono text-[var(--color-text-secondary)]">remi code</span>.
+                Four letters and four digits, for example ABCD-2345.
               </p>
             </div>
           )}
