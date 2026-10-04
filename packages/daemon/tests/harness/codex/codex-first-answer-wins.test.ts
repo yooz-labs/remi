@@ -492,21 +492,28 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
     expect(answersSent(r)).toEqual([]);
   });
 
-  test('pending approvals are never evicted by the pending-question cap, which only older, unpinned cards are', async () => {
+  test('the pending-question cap evicts an older card nobody is held for, and never a pending approval', async () => {
     const r = await attached();
     const warn = console.warn;
     console.warn = () => {};
     try {
+      // One terminalOnly card first: nothing is held for it, so nothing pins it.
+      r.server.request(fileChangeRequest(r.tuiId, 'older unpinned card'), r.tuiId);
+      await until(() => cards(r).length === 1, 'the unpinned card');
+      const unpinned = pending(r)[0] as Question;
+      // Then ten pending approvals: the cap is eight, every approval is pinned.
       for (let i = 0; i < 10; i++) {
         r.server.request(commandApprovalRequest(r.tuiId, `touch pinned-${i}`), r.tuiId);
       }
-      await until(() => cards(r).length === 10, 'ten cards');
+      await until(() => cards(r).length === 11, 'eleven cards');
+      // The cap took the unpinned card and none of the approvals (it goes past eight rather than
+      // evict one of them).
+      expect(pending(r).some((q) => q.id === unpinned.id)).toBe(false);
+      expect(pending(r)).toHaveLength(10);
+      expect(pending(r).every((q) => r.session.decisions.isHeld(q.id))).toBe(true);
     } finally {
       console.warn = warn;
     }
-    // The cap is eight; every card here waits for an answer, so none was evicted.
-    expect(pending(r)).toHaveLength(10);
-    expect(pending(r).every((q) => r.session.decisions.isHeld(q.id))).toBe(true);
   });
 
   test('disposing the session dismisses its cards, and nothing is answered afterwards', async () => {

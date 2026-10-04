@@ -68,6 +68,25 @@ import {
 
 export type ThreadRole = 'main' | 'subagent';
 
+/**
+ * The clock the channel's timers run on. Production uses {@link realScheduler}; a test hands in one
+ * that fires only what it chooses, so what is set and cleared is observable and nothing sleeps.
+ */
+export interface Scheduler {
+  set(fn: () => void, ms: number): unknown;
+  clear(handle: unknown): void;
+}
+
+/** `setTimeout`, unref'd: a pending sweep or confirmation never keeps the daemon's event loop alive. */
+export const realScheduler: Scheduler = {
+  set: (fn, ms) => {
+    const timer = setTimeout(fn, ms);
+    timer.unref?.();
+    return timer;
+  },
+  clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout> | undefined),
+};
+
 export interface CodexDecisionsDeps {
   /** The remi session whose cards these are (the registry's id). */
   sessionId: UUID;
@@ -79,9 +98,10 @@ export interface CodexDecisionsDeps {
   /** The tracker's `role`: is this thread the session's, or a subagent's, or neither? */
   threadRole: (threadId: string) => ThreadRole | null;
   log: (message: string) => void;
-  /** Test seams: how long after a re-attach a request that was not replayed is dismissed (1500 ms) and how long a link may stay down before its retired cards are (30 000 ms). */
+  /** Test seams: how long after a re-attach a request that was not replayed is dismissed (3000 ms) and how long a link may stay down before its retired cards are (30 000 ms), and the clock. */
   replayWindowMs?: number;
   disconnectGraceMs?: number;
+  scheduler?: Scheduler;
 }
 
 type EntryState = 'live' | 'answered' | 'retired';
@@ -91,7 +111,12 @@ interface Entry {
   state: EntryState;
 }
 
-const REPLAY_WINDOW_MS = 1500;
+/**
+ * How long after a re-attach a request that was not replayed is dismissed. The replay took 4 ms in
+ * the spike (`expB3.jsonl:49-51`); a slow one would flicker (a card dismissed, then made again,
+ * with a second push), so the window is generous: 3 s.
+ */
+const REPLAY_WINDOW_MS = 3000;
 const DISCONNECT_GRACE_MS = 30_000;
 /** More requests than this at once is not Codex asking: the oldest are dismissed, never answered. */
 const MAX_TRACKED = 64;
@@ -102,7 +127,7 @@ const logId = (id: RequestId): string => String(id).slice(0, 24);
 export class CodexDecisions implements DecisionChannel {
   private readonly byKey = new Map<string, Entry>();
   private readonly byId = new Map<UUID, Entry>();
-  private sweepTimer: ReturnType<typeof setTimeout> | undefined;
+  private sweepTimer: unknown;
   private disposed = false;
 
   constructor(private readonly deps: CodexDecisionsDeps) {}
@@ -258,7 +283,7 @@ export class CodexDecisions implements DecisionChannel {
   noteTerminalEscape(): void {}
 
   forceRelease(reason: string): { resolved: number } {
-    clearTimeout(this.sweepTimer);
+    this.clock.clear(this.sweepTimer);
     this.sweepTimer = undefined;
     let resolved = 0;
     for (const entry of [...this.byId.values()]) {
@@ -303,9 +328,13 @@ export class CodexDecisions implements DecisionChannel {
     }
   }
 
+  private get clock(): Scheduler {
+    return this.deps.scheduler ?? realScheduler;
+  }
+
   private armSweep(ms: number): void {
-    clearTimeout(this.sweepTimer);
-    this.sweepTimer = setTimeout(() => this.sweep(), ms);
+    this.clock.clear(this.sweepTimer);
+    this.sweepTimer = this.clock.set(() => this.sweep(), ms);
   }
 
   /** Dismiss every retired card that nothing replaced. */

@@ -37,7 +37,9 @@ import { COMMAND_TEXT_MAX } from '../../../src/harness/codex/approval-cards.ts';
 import {
   CodexDecisions,
   type CodexDecisionsDeps,
+  type Scheduler,
   type ThreadRole,
+  realScheduler,
 } from '../../../src/harness/codex/codex-decisions.ts';
 import type { HeldAnswer } from '../../../src/harness/decision.ts';
 import type { DecisionChannel } from '../../../src/harness/types.ts';
@@ -51,14 +53,43 @@ const MAIN = '00000000-0000-7000-8000-0000000000c1';
 const SUB = '00000000-0000-7000-8000-0000000000c2';
 const STRANGER = '00000000-0000-7000-8000-0000000000c3';
 
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+/** One timer a channel asked for, as a recording scheduler saw it. */
+interface RecordedTimer {
+  readonly fn: () => void;
+  readonly ms: number;
+  cleared: boolean;
+  fired: boolean;
+}
 
-async function until(cond: () => boolean, what: string, timeoutMs = 4000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!cond()) {
-    if (Date.now() > deadline) throw new Error(`Timed out waiting for ${what}`);
-    await sleep(10);
-  }
+/**
+ * A scheduler that runs nothing by itself: the test fires the timers it wants, so a test of "what
+ * is dismissed when the window ends" needs no sleep and cannot flake, and a claim about a timer
+ * that is set or cleared is observable. It replaces only the clock, never the channel's logic.
+ */
+function recordingScheduler() {
+  const timers: RecordedTimer[] = [];
+  const scheduler: Scheduler = {
+    set: (fn, ms) => {
+      const timer: RecordedTimer = { fn, ms, cleared: false, fired: false };
+      timers.push(timer);
+      return timer;
+    },
+    clear: (handle) => {
+      if (handle !== undefined) (handle as RecordedTimer).cleared = true;
+    },
+  };
+  return {
+    scheduler,
+    timers,
+    /** The timers still waiting: set, not cleared, not fired. */
+    live: (): RecordedTimer[] => timers.filter((t) => !t.cleared && !t.fired),
+    fire(timer: RecordedTimer | undefined): void {
+      if (timer === undefined || timer.cleared || timer.fired)
+        throw new Error('no live timer to fire');
+      timer.fired = true;
+      timer.fn();
+    },
+  };
 }
 
 describe('CodexDecisions', () => {
@@ -75,6 +106,7 @@ describe('CodexDecisions', () => {
   let presentThrows: boolean;
   let roles: Map<string, ThreadRole>;
   let pty: PtyCapture;
+  let sched: ReturnType<typeof recordingScheduler>;
   let presented: Question[];
   const toDispose: CodexDecisions[] = [];
 
@@ -94,6 +126,7 @@ describe('CodexDecisions', () => {
       [SUB, 'subagent'],
     ]);
     pty = { writes: [], submits: [] };
+    sched = recordingScheduler();
     configureLogger({ writeLog: () => {} });
     const { messageApi } = createMessageApiForSession(
       {
@@ -144,8 +177,7 @@ describe('CodexDecisions', () => {
       onQuestionResolved: (sid, qid, reason) => sent.push(createQuestionResolved(sid, qid, reason)),
       threadRole: (id) => roles.get(id) ?? null,
       log: (m) => logs.push(m),
-      replayWindowMs: 60,
-      disconnectGraceMs: 150,
+      scheduler: sched.scheduler,
       ...over,
     });
   }
@@ -274,21 +306,18 @@ describe('CodexDecisions', () => {
     });
 
     test('more requests than the bound dismiss the oldest, which is never answered, and keep the newest', () => {
-      // The registry's own cap of eight warns for each card it evicts; not this test's news.
-      const warn = console.warn;
-      console.warn = () => {};
-      try {
-        for (let id = 1; id <= 70; id++) request(id, `touch m${id}`);
-      } finally {
-        console.warn = warn;
-      }
+      // The guard the session installs: live approvals are not evicted by the registry's cap of
+      // eight, so what is left in the registry is what the channel itself still tracks.
+      registry.setQuestionEvictionGuard(sessionId, (id) => decisions.isHeld(id));
+      for (let id = 1; id <= 70; id++) request(id, `touch m${id}`);
       expect(responses).toEqual([]);
-      // The registry's own cap keeps the unpinned ones to eight, so count what the channel tracks.
       const held = pending().filter((q) => decisions.isHeld(q.id));
-      expect(held.length).toBeLessThanOrEqual(64);
+      // Exactly the bound: the 64 newest are kept, the six oldest were dismissed.
+      expect(held).toHaveLength(64);
       expect(held.map((q) => q.text)).toContain('Allow Codex to run: touch m70');
-      expect(held.map((q) => q.text)).not.toContain('Allow Codex to run: touch m1');
-      expect(resolvedMessages().length).toBeGreaterThanOrEqual(6);
+      expect(held.map((q) => q.text)).toContain('Allow Codex to run: touch m7');
+      expect(held.map((q) => q.text)).not.toContain('Allow Codex to run: touch m6');
+      expect(resolvedMessages()).toHaveLength(6);
       expect(resolvedMessages().every((m) => m.reason === 'cancelled')).toBe(true);
     });
 
@@ -528,18 +557,23 @@ describe('CodexDecisions', () => {
       expect(responses).toEqual([{ id: 5, result: { decision: 'accept' } }]);
     });
 
-    test('a request not replayed by the end of the window was resolved while the link was down: its card is dismissed then, and not before', async () => {
+    test('a request not replayed by the end of the window was resolved while the link was down: its card is dismissed then, and not before', () => {
       request(5);
       request(6, 'touch two');
       const [one, two] = pending() as [Question, Question];
       decisions.handleDisconnected();
+      // The link is down: the grace period waits, so nothing is dismissed for a link that may return.
+      expect(sched.live().map((t) => t.ms)).toEqual([30_000]);
       decisions.handleReattached();
+      // The tracker attached again: the replay window (3 s) takes the grace period's place.
+      expect(sched.live().map((t) => t.ms)).toEqual([3_000]);
       // Replayed: only request 6 comes back, and its retired card is replaced at once.
       request(6, 'touch two');
       expect(resolvedMessages().map((m) => m.questionId)).toEqual([two.id]);
       // Request 5's retired card is still there, inside the window.
       expect(pending().some((q) => q.id === one.id)).toBe(true);
-      await until(() => !pending().some((q) => q.id === one.id), 'the sweep');
+      sched.fire(sched.live()[0]);
+      expect(pending().some((q) => q.id === one.id)).toBe(false);
       expect(resolvedMessages().map((m) => [m.questionId, m.reason])).toEqual([
         [two.id, 'cancelled'],
         [one.id, 'cancelled'],
@@ -551,44 +585,34 @@ describe('CodexDecisions', () => {
       expect(responses).toEqual([{ id: 6, result: { decision: 'accept' } }]);
     });
 
-    test('the replay window, not the grace period, ends the wait once the tracker attached again', async () => {
-      // The grace period is a minute: only the window (50 ms) can dismiss the card in time.
-      const quick = build({ replayWindowMs: 50, disconnectGraceMs: 60_000 });
-      toDispose.push(quick);
-      const { method, params } = commandApprovalRequest(MAIN, 'touch x');
-      quick.handleServerRequest({ id: 5, method, params });
-      const card = only();
-      quick.handleDisconnected();
-      quick.handleReattached();
-      await until(() => pending().length === 0, 'the sweep after the window', 5000);
-      expect(resolvedMessages().map((m) => m.questionId)).toEqual([card.id]);
-    });
-
-    test('a link that never comes back dismisses its retired cards after the grace period, and a re-attach shortens the wait to the replay window', async () => {
+    test('a link that never comes back dismisses its retired cards when the grace period ends', () => {
       request(5);
       const q = only();
       decisions.handleDisconnected();
       expect(pending()).toHaveLength(1);
-      await until(() => pending().length === 0, 'the grace sweep');
+      expect(sched.live().map((t) => t.ms)).toEqual([30_000]);
+      sched.fire(sched.live()[0]);
+      expect(pending()).toEqual([]);
       expect(resolvedMessages().map((m) => m.questionId)).toEqual([q.id]);
       expect(logs.some((l) => l.includes('were not replayed'))).toBe(true);
     });
 
-    test('a second drop inside the window starts the grace over, so a card is not swept while the link is down', async () => {
-      const slow = build({ replayWindowMs: 40, disconnectGraceMs: 600 });
-      toDispose.push(slow);
-      const { method, params } = commandApprovalRequest(MAIN, 'touch x');
-      slow.handleServerRequest({ id: 5, method, params });
-      slow.handleDisconnected();
-      slow.handleReattached();
-      slow.handleDisconnected();
-      await sleep(250);
-      // Past the replay window (40 ms), well inside the grace (600 ms): still there.
+    test('a second drop inside the window starts the grace over: one live timer, the grace, and the window cleared', () => {
+      request(5);
+      decisions.handleDisconnected();
+      decisions.handleReattached();
+      decisions.handleDisconnected();
+      expect(sched.timers.map((t) => [t.ms, t.cleared])).toEqual([
+        [30_000, true],
+        [3_000, true],
+        [30_000, false],
+      ]);
+      expect(sched.live()).toHaveLength(1);
       expect(pending()).toHaveLength(1);
       expect(resolvedMessages()).toEqual([]);
     });
 
-    test('an answered request is forgotten at the drop: no card, nothing to sweep, nothing dismissed', async () => {
+    test('an answered request is forgotten at the drop: no card, no timer, nothing dismissed', () => {
       request(5);
       const q = only();
       expect(decisions.answerHeld(q.id, optionNamed(q, 'Yes'))).toBe('resolved');
@@ -596,7 +620,7 @@ describe('CodexDecisions', () => {
       registry.removeQuestion(sessionId, q.id);
       decisions.handleDisconnected();
       decisions.handleReattached();
-      await sleep(200);
+      expect(sched.timers).toEqual([]);
       expect(resolvedMessages()).toEqual([]);
       // Nothing is tracked for it any more.
       expect(decisions.forceRelease('probe')).toEqual({ resolved: 0 });
@@ -605,24 +629,40 @@ describe('CodexDecisions', () => {
       expect(cards()).toHaveLength(2);
     });
 
-    test('a drop with no cards sets no timer, and a re-attach with none retired sets none either', async () => {
+    test('a drop with no cards sets no timer, and a re-attach with none retired sets none either', () => {
       decisions.handleDisconnected();
       decisions.handleReattached();
       request(5);
-      await sleep(250);
+      expect(sched.timers).toEqual([]);
       expect(pending()).toHaveLength(1);
       expect(resolvedMessages()).toEqual([]);
     });
 
-    test('after dispose a retired card is dismissed once, and no timer fires later', async () => {
+    test('remi unstick (forceRelease) cancels the pending sweep, so a later firing cannot happen', () => {
+      request(5);
+      decisions.handleDisconnected();
+      expect(sched.live()).toHaveLength(1);
+      decisions.forceRelease('remi unstick');
+      expect(sched.live()).toEqual([]);
+      expect(sched.timers.every((t) => t.cleared)).toBe(true);
+    });
+
+    test('after dispose a retired card is dismissed once, and the timer is cleared', () => {
       request(5);
       const q = only();
       decisions.handleDisconnected();
       decisions.dispose();
       expect(resolvedMessages().map((m) => m.questionId)).toEqual([q.id]);
-      await sleep(300);
-      expect(resolvedMessages()).toHaveLength(1);
-      expect(logs.some((l) => l.includes('were not replayed'))).toBe(false);
+      expect(sched.live()).toEqual([]);
+      expect(sched.timers).toHaveLength(1);
+      expect(sched.timers[0]?.cleared).toBe(true);
+    });
+
+    test("the real scheduler's timers never keep the process alive (unref'd), and clearing one is safe", () => {
+      const timer = realScheduler.set(() => {}, 60_000) as { hasRef(): boolean };
+      expect(timer.hasRef()).toBe(false);
+      realScheduler.clear(timer);
+      realScheduler.clear(undefined);
     });
   });
 
@@ -798,18 +838,41 @@ describe('CodexDecisions', () => {
       expect(responses).toEqual([]);
     });
 
-    test('a late phone answer after the TUI answered is STALE_ANSWER, sends nothing and types nothing; a retired card is the same', async () => {
+    test('a late phone answer after the TUI answered is STALE_ANSWER, sends nothing and types nothing; a retired card is the same, and each card is dismissed exactly once', async () => {
       request(5);
       const q = only();
       decisions.handleResolved({ threadId: MAIN, requestId: 5 });
       await handlers.onAnswer(CID, sessionId, q.id, 'Yes', undefined, undefined);
       expect(errorsOf(errors)[0]?.code).toBe('STALE_ANSWER');
+      // The TUI's resolved dismissed it; the stale answer dismissed nothing more.
+      expect(resolvedMessages().map((m) => [m.questionId, m.reason])).toEqual([
+        [q.id, 'cancelled'],
+      ]);
 
       request(6);
       const retired = only();
       decisions.handleDisconnected();
       await handlers.onAnswer(CID, sessionId, retired.id, 'Yes', undefined, undefined);
       expect(errorsOf(errors).map((e) => e.code)).toEqual(['STALE_ANSWER', 'STALE_ANSWER']);
+      expect(responses).toEqual([]);
+      expect(typed()).toEqual([]);
+      // The channel answers `closed` for a retired card and leaves its dismissal to the handler,
+      // which does it once; a channel that dismissed it too would broadcast it twice.
+      expect(resolvedMessages().map((m) => [m.questionId, m.reason])).toEqual([
+        [q.id, 'cancelled'],
+        [retired.id, 'answered'],
+      ]);
+    });
+
+    test('a retired card cancelled through the handler is dismissed exactly once, and nothing is sent or typed', async () => {
+      request(5);
+      const retired = only();
+      decisions.handleDisconnected();
+      await handlers.onAnswer(CID, sessionId, retired.id, '', undefined, { cancel: true });
+      expect(pending()).toEqual([]);
+      expect(resolvedMessages().map((m) => [m.questionId, m.reason])).toEqual([
+        [retired.id, 'answered'],
+      ]);
       expect(responses).toEqual([]);
       expect(typed()).toEqual([]);
     });
