@@ -42,6 +42,10 @@ describe('validateClaudeRemoteArgs: what is allowed', () => {
     ]);
   });
 
+  test('a model name keeps its case: only a UUID is lowercased', () => {
+    expect(accepted(['--model', 'Claude-Opus-4.5'])).toEqual(['--model', 'Claude-Opus-4.5']);
+  });
+
   test('--fork-session beside --resume <uuid>, in either order', () => {
     expect(accepted(['--resume', UUID, '--fork-session'])).toEqual([
       '--resume',
