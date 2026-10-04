@@ -214,11 +214,12 @@ import { ClaudeHarness } from './harness/index.ts';
 import type { Harness, HarnessSession } from './harness/index.ts';
 import { HarnessRegistry } from './harness/registry.ts';
 import { ForeignSessionEscalator, HookConfigManager, HookServer } from './hooks/index.ts';
-import type { PermissionDeniedHookInput, StopHookInput } from './hooks/index.ts';
+import type { PermissionDeniedHookInput } from './hooks/index.ts';
 // Static, unlike the publisher below it: this is a pure decision with no
 // side effects and nothing to load, so there is nothing for a dynamic import
 // to defer -- and it is needed on the path where mDNS never starts at all.
 import { mdnsSuppression, mdnsSuppressionMessage } from './mdns/advertise-decision.ts';
+import { createClaudeTurnStop } from './notifications/claude-turn-stop.ts';
 import { DeviceTokenStore } from './notifications/device-token-store.ts';
 import { pushHarnessDenied } from './notifications/harness-denied.ts';
 import type { NotificationDispatcher } from './notifications/notification-dispatcher.ts';
@@ -1358,51 +1359,18 @@ const turnEvents = createTurnEventSink({
 });
 
 /**
- * Push a "turn complete" notification when `Stop` reports a genuinely long,
- * non-reentrant turn (#914). Config-gated (default on, 60s) and fails toward
- * silence on any unknown signal -- see `shouldNotifyTurnComplete`, which the
- * sink applies (`notifications/turn-events.ts`; #1180 moved the gate, the text
- * and the fan-out there, so Codex shares them). Fire-and-forget, mirroring
- * `deliverSubagentAlert` immediately above: a notification bug must never
- * delay or break the hook response Claude is blocking on.
- *
- * What stays here is what is Claude's: the session filter and the timer.
- *
- * Deliberately does NOT check `hook-bridge-setup.ts`'s `binder.admits()` (the
- * transcript-binding validity gate its own Stop listener uses) -- that state
- * lives inside that file's closure, and this listener is a second, additive
- * `hookServer.on('Stop', ...)` registration that intentionally never touches
- * it (#914 scope: Q2 owns hook-bridge-setup.ts). remi is one session per
- * daemon, so every Stop this process's own hookServer sees is this session's;
- * the narrow gap that leaves is a resumed/rotated session mid-race, which
- * `shouldNotifyTurnComplete`'s own gates (unknown elapsed, empty message)
- * catch most instances of anyway.
+ * Claude's `Stop` listener (#914): the #914 session filter, then the turn's duration from the
+ * timer above, handed to the sink (`notifications/claude-turn-stop.ts`; #1180 moved the filter
+ * order, the timer reads and the hand-off out of `cli.ts` so a test reaches them, and the gate,
+ * the text and the fan-out into the sink). `claudeHarness` is built further down; the filter
+ * asks it when a Stop arrives, never before.
  */
-function onTurnStop(input: StopHookInput): void {
-  // Session filter FIRST (#914). Claude Code broadcasts every event to every
-  // daemon registered for the directory, so an unfiltered Stop here is very
-  // likely a sibling's. Note the timer cannot save us: `onAnyEvent` observes
-  // sibling events too, so `elapsedMs` comes back populated and plausible.
-  // Fail closed -- no admitting session means we do not claim this turn.
-  if (!claudeHarness.admitsAnySession(input)) return;
-
-  const elapsedMs = turnTimer.elapsedMs(input.prompt_id);
-  // A stop-hook re-entry means the turn is still going, not finished -- do
-  // NOT clear the mark for it: the eventual real Stop still needs the turn's
-  // original first-seen time to measure the full duration.
-  // The sink never notifies on a re-entry; this only gates the clear's timing.
-  if (!input.stop_hook_active) {
-    turnTimer.clear(input.prompt_id);
-  }
-
-  turnEvents.turnCompleted({
-    // 'unbound' names no session, so the push is titled "Agent", as it was before a primary id exists.
-    sessionId: getPrimarySessionId() ?? 'unbound',
-    elapsedMs,
-    lastAssistantMessage: input.last_assistant_message,
-    reentry: input.stop_hook_active,
-  });
-}
+const onTurnStop = createClaudeTurnStop({
+  admits: (input) => claudeHarness.admitsAnySession(input),
+  timer: turnTimer,
+  primarySessionId: getPrimarySessionId,
+  sink: turnEvents,
+});
 
 // Hook infrastructure (initialized in wrapper mode when hooks are enabled)
 let HOOK_PORT = 0; // OS-assigned; actual port read from hookServer.port after start
