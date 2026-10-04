@@ -1110,6 +1110,22 @@ describe('a session that never learns its thread says so (W11)', () => {
     expect(ctx.logs.join('\n')).not.toContain('touch');
   });
 
+  test('a candidate pending when the wait ends is looked at again, so a refusal still reaches the user (R8)', async () => {
+    const ctx = await setup({ noIdentityMs: 100 });
+    // The wait ends at 100 ms with this candidate still in its 150 ms window; the store then
+    // says another session holds it, so nothing binds and the session is still without a thread.
+    const id = crypto.randomUUID();
+    ctx.started('tui', id);
+    await settle(40);
+    ctx.claimed.add(id);
+    await waitUntil(ctx, () => ctx.notices.length === 1, 'the notice after the refusal');
+    expect(ctx.notices).toEqual([NOTICE]);
+    expect(ctx.identities).toEqual([]);
+    // Once only: the second look is the last.
+    await settle(500);
+    expect(ctx.notices).toHaveLength(1);
+  });
+
   test('a notice that cannot be sent is logged and never thrown', async () => {
     const ctx = await setup({ noIdentityMs: 100, noticeThrows: true });
     await waitUntil(

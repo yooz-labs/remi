@@ -100,6 +100,8 @@ const CREATED_BEFORE_SPAWN_SLACK_MS = 5000;
 /** After this many failed attaches the retry period is multiplied by RETRY_BACKOFF_FACTOR. */
 const BACKOFF_AFTER_FAILURES = 10;
 const RETRY_BACKOFF_FACTOR = 5;
+/** How long a first candidate waits for a second before it is committed. */
+const AMBIGUITY_WINDOW_MS = 300;
 /** How long after `ready` a session with no thread waits before saying so. */
 const NO_IDENTITY_NOTICE_MS = 30_000;
 const MAX_PENDING_LINKS = 512;
@@ -168,6 +170,7 @@ export class ThreadTracker {
 
   /** The link is up (first time or again): attach to the tracked thread, if there is one. */
   handleReady(): void {
+    if (this.disposed) return;
     this.ready = true;
     this.isAttached = false;
     // A new connection is a new chance: the period starts over, and so does an app-server
@@ -192,12 +195,26 @@ export class ThreadTracker {
     ) {
       return;
     }
+    this.armNoIdentityTimer(this.deps.noIdentityMs ?? NO_IDENTITY_NOTICE_MS, true);
+  }
+
+  /**
+   * After `ms`, say the thread was not found if there is still none. A candidate that is inside
+   * its window then may yet be refused (held by another session, a sibling in the directory), so
+   * the check is made once more when that window is over (`mayExtend`); a later one is not
+   * waited for, since the session has been waiting long enough.
+   */
+  private armNoIdentityTimer(ms: number, mayExtend: boolean): void {
     this.noIdentityTimer = setTimeout(() => {
       this.noIdentityTimer = undefined;
-      if (this.disposed || this.current !== null || this.pending !== null) return;
+      if (this.disposed || this.current !== null) return;
+      if (this.pending !== null) {
+        if (mayExtend) this.armNoIdentityTimer(this.deps.ambiguityMs ?? AMBIGUITY_WINDOW_MS, false);
+        return;
+      }
       this.deps.log('no thread/started for this directory since the link came up');
       this.tell('no-identity', "remi could not find this session's Codex thread");
-    }, this.deps.noIdentityMs ?? NO_IDENTITY_NOTICE_MS);
+    }, ms);
   }
 
   /** The link dropped: the subscription is gone, and nothing can be retried until it is back. */
@@ -316,7 +333,10 @@ export class ThreadTracker {
       return;
     }
     this.pending = { thread, status: thread.status };
-    this.pendingTimer = setTimeout(() => this.commit(), this.deps.ambiguityMs ?? 300);
+    this.pendingTimer = setTimeout(
+      () => this.commit(),
+      this.deps.ambiguityMs ?? AMBIGUITY_WINDOW_MS,
+    );
   }
 
   private commit(): void {
