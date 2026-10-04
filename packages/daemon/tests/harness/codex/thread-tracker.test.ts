@@ -236,6 +236,22 @@ describe('identity discovery', () => {
     expect(ctx.identities).toEqual([]);
   });
 
+  test('the window is 300 ms of creation time: 200 ms apart is ambiguous, 500 ms apart is not', async () => {
+    const together = await setup();
+    const sec = nowSec();
+    together.started('tui', crypto.randomUUID(), undefined, sec);
+    together.started('tui', crypto.randomUUID(), undefined, sec + 0.2);
+    await settle(420);
+    expect(together.identities).toEqual([]);
+
+    const apart = await setup();
+    const first = crypto.randomUUID();
+    apart.started('tui', first, undefined, sec);
+    apart.started('tui', crypto.randomUUID(), undefined, sec + 0.5);
+    await waitUntil(apart, () => apart.identities.length >= 1, 'an identity');
+    expect(apart.identities).toEqual([first]);
+  });
+
   test('two candidates created a second apart are not ambiguous: the first wins', async () => {
     const ctx = await setup();
     const first = crypto.randomUUID();
@@ -327,6 +343,7 @@ describe('rotation (/new in the TUI)', () => {
     await settle(420);
     expect(ctx.identities).toEqual([a]);
     expect(ctx.tracker.threadId).toBe(a);
+    expect(ctx.logs.some((l) => l.includes('while the tracked thread is active'))).toBe(true);
 
     ctx.status(a, { type: 'idle' });
     await settle(100);
@@ -397,8 +414,11 @@ describe('attach', () => {
     ctx.started('tui', id);
     await waitUntil(ctx, () => ctx.resumeFrames().length === 1, 'the first thread/resume');
 
-    // Another thread going active is no reason to retry.
+    // Another thread going active is no reason to retry, nor is a subagent of this one.
     ctx.status(other, { type: 'active', activeFlags: [] });
+    const child = crypto.randomUUID();
+    ctx.started('tui', child, setKey('parentThreadId', id));
+    ctx.status(child, { type: 'active', activeFlags: [] });
     await settle(300);
     expect(ctx.resumeFrames()).toHaveLength(1);
 
@@ -568,7 +588,12 @@ describe('what it logs, and after dispose', () => {
     const ctx = await setup();
     const a = crypto.randomUUID();
     ctx.started('tui', a);
-    await waitUntil(ctx, () => ctx.resumeFrames().length >= 1, 'the first attach attempt');
+    // The first attempt has failed (so no request is in flight to hide a later attach).
+    await waitUntil(
+      ctx,
+      () => ctx.logs.some((l) => l.includes('thread/resume')),
+      'the failed attach',
+    );
     ctx.tracker.dispose();
     const frames = ctx.resumeFrames().length;
     const statuses = ctx.statuses.length;
