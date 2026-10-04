@@ -364,6 +364,8 @@ describe('a hub creating a session for a harness (#1179)', () => {
     ['a hyphen-led directory a child would re-parse as a remi flag', '--no-auth'],
     ['a directory with a NUL byte', '/tmp/a\u0000b'],
     ['a directory with a newline', '/tmp/a\nb'],
+    ['a directory with a terminal escape sequence', '/tmp/a\u001b[2Kb'],
+    ['a directory with a C1 control', '/tmp/a\u009b2Kb'],
     ['a directory that is not a string', 5],
     ['a null directory', null],
   ])(

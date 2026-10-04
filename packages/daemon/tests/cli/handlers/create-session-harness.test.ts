@@ -331,6 +331,12 @@ describe('create requests naming a harness (#1179)', () => {
       ['a NUL byte', '/tmp/a\0b'],
       ['a newline', '/tmp/a\nb'],
       ['a carriage return', '/tmp/a\rb'],
+      ['a terminal escape sequence', '/tmp/a\u001b[2Kb'],
+      ['a bell', '/tmp/a\u0007b'],
+      ['a tab', '/tmp/a\tb'],
+      ['a delete character', '/tmp/a\u007fb'],
+      ['a C1 control (the single-character CSI)', '/tmp/a\u009b2Kb'],
+      ['a C1 control (next line)', '/tmp/a\u0085b'],
       ['a number', 5],
       ['an object', { toString: () => '/tmp' }],
       ['an array', ['/tmp']],
@@ -364,6 +370,7 @@ describe('create requests naming a harness (#1179)', () => {
       ['an absolute path', '/tmp/project'],
       ['a hyphen inside a name', '/tmp/my-project/-x'],
       ['a home-relative path', '~/project'],
+      ['non-ASCII letters', '/tmp/projet-\u00e9t\u00e9'],
     ])('a directory that is %s is accepted (G7)', async (_name, directory) => {
       await handlers().onCreateSessionRequest(CID, directory, REQ);
       expect(response().success).toBe(true);
@@ -396,6 +403,27 @@ describe('create requests naming a harness (#1179)', () => {
       expect(response().error).not.toContain('/home/someone');
       expect(response().error).not.toContain('exited unexpectedly');
       expect(logged.some((line) => line.includes('/home/someone/.remi/daemon.log'))).toBe(true);
+    });
+
+    test('a directory the handler accepts is logged escaped: a bidi override and a zero-width space are written out (P3)', async () => {
+      await handlers().onCreateSessionRequest(CID, '/tmp/a\u202eb\u200bc', REQ);
+      expect(response().success).toBe(true);
+      const line = logged.find((l) => l.includes('Spawning new daemon')) ?? '';
+      expect(line).toContain('/tmp/a\\u202Eb\\u200Bc');
+      expect(line).not.toMatch(/[\u200b-\u200f\u202a-\u202e]/);
+    });
+
+    test('a failure that carries the directory is logged escaped too, and the client still reads the short text (P3)', async () => {
+      await handlers({
+        spawnDaemon: async () => {
+          throw new Error('cannot start in /tmp/a\u202eb');
+        },
+      }).onCreateSessionRequest(CID, '/tmp/a\u202eb', REQ);
+      expect(response().success).toBe(false);
+      expect(response().error).toContain('could not be started');
+      const line = logged.find((l) => l.includes('Failed to spawn daemon')) ?? '';
+      expect(line).toContain('/tmp/a\\u202Eb');
+      expect(line).not.toMatch(/[\u202a-\u202e]/);
     });
 
     test('a refusal is logged with its reason, and the arguments in it are shown escaped', async () => {
