@@ -684,6 +684,13 @@ def verify_constants(g: Group, constants: dict[str, Any]) -> None:
         "maxPushPlaintext": MAX_PUSH_PLAINTEXT,
         "closeCode": CLOSE_CODE,
         "closeReason": CLOSE_REASON,
+        "byeFrame": BYE_FRAME,
+        "typeAuth": TYPE_AUTH,
+        "typeReady": TYPE_READY,
+        "typeData": TYPE_DATA,
+        "typeBye": TYPE_BYE,
+        "dirC2h": DIR_C2H,
+        "dirH2c": DIR_H2C,
     }
     for name, value in expected.items():
         g.same(name, value, constants[name])
@@ -692,8 +699,7 @@ def verify_constants(g: Group, constants: dict[str, Any]) -> None:
         set(constants) == set(expected),
         str(set(constants) ^ set(expected)),
     )
-    # The file carries neither BYE_FRAME nor the type bytes; tie the ADR-only
-    # BYE_FRAME to the frame sizes the file does carry.
+    # The file now carries BYE_FRAME and the type bytes; keep the relations between the sizes.
     g.same("minFrame is BYE_FRAME plus one byte", constants["minFrame"], BYE_FRAME + 1)
     g.same(
         "maxFrame is maxPlaintext plus BYE_FRAME",

@@ -258,17 +258,33 @@ describe('data channel', () => {
 });
 
 describe('counter and size limits', () => {
-  test('the sender stops at the maximum counter and closes', async () => {
+  test('the sender keeps the last counter for BYE: data stops one short, the channel stays open, BYE still ends it', async () => {
     const { client, host, clientIo } = await pair({
-      client: { nextSend: r.MAX_COUNTER },
-      host: { nextRecv: r.MAX_COUNTER },
+      client: { nextSend: r.MAX_COUNTER - 1 },
+      host: { nextRecv: r.MAX_COUNTER - 1 },
     });
-    await client.send(text('last'));
-    expect(counterOf(clientIo.frames[0] as Uint8Array)).toBe(r.MAX_COUNTER);
-    expect(hex(data(await host.receive(clientIo.frames[0] as Uint8Array)))).toBe(hex(text('last')));
+    await client.send(text('last data'));
+    expect(counterOf(clientIo.frames[0] as Uint8Array)).toBe(r.MAX_COUNTER - 1);
     expect(await codeOf(client.send(text('one too many')))).toBe('COUNTER_LIMIT');
+    expect(client.closed).toBe(false);
+    expect(clientIo.closes).toEqual([]);
+    await client.bye();
+    expect(counterOf(clientIo.frames[1] as Uint8Array)).toBe(r.MAX_COUNTER);
+    expect(hex(data(await host.receive(clientIo.frames[0] as Uint8Array)))).toBe(
+      hex(text('last data')),
+    );
+    expect(await host.receive(clientIo.frames[1] as Uint8Array)).toBeNull();
+    expect(host.transportClosed()).toBe('clean');
+  });
+
+  test('a sender past the maximum counter fails and closes, BYE included', async () => {
+    const { client, clientIo } = await pair({ client: { nextSend: r.MAX_COUNTER + 1 } });
+    expect(await codeOf(client.send(text('x')))).toBe('COUNTER_LIMIT');
     expect(clientIo.closes).toEqual([FAILURE]);
-    expect(clientIo.frames.length).toBe(1);
+    expect(clientIo.frames.length).toBe(0);
+    const second = await pair({ client: { nextSend: r.MAX_COUNTER + 1 } });
+    expect(await codeOf(second.client.bye())).toBe('COUNTER_LIMIT');
+    expect(second.clientIo.closes).toEqual([FAILURE]);
   });
 
   test('the receiver accepts the maximum counter and refuses the next one even with a valid tag', async () => {

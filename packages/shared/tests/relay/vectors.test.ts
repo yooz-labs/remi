@@ -116,6 +116,23 @@ describe('relay v2 vectors: the committed file', () => {
       r.CLOSE_CODE,
       r.CLOSE_REASON,
     ]);
+    expect([
+      c.byeFrame,
+      c.typeAuth,
+      c.typeReady,
+      c.typeData,
+      c.typeBye,
+      c.dirC2h,
+      c.dirH2c,
+    ]).toEqual([
+      r.BYE_FRAME,
+      r.TYPE_AUTH,
+      r.TYPE_READY,
+      r.TYPE_DATA,
+      r.TYPE_BYE,
+      r.DIR_C2H,
+      r.DIR_H2C,
+    ]);
   });
 });
 
@@ -347,11 +364,22 @@ async function runNegative(n: J): Promise<Outcome> {
         nextRecv: n.startRecv,
       });
       let accepted = 0;
+      let first: Outcome | null = null;
       for (const f of n.frames) {
         const o = await run(() => receiver.receive(unhex(f)));
-        if (!o.ok) return { ...o, accepted };
+        if (first !== null) {
+          // The first failure closes the channel for good: every later frame is refused.
+          if (o.ok || o.code !== 'CLOSED')
+            return { ok: false, code: 'NOT CLOSED FOR GOOD', accepted };
+          continue;
+        }
+        if (!o.ok) {
+          first = { ...o, accepted };
+          continue;
+        }
         accepted++;
       }
+      if (first !== null) return first;
       return { ok: true, accepted };
     }
     case 'frame_length':

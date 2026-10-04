@@ -210,6 +210,7 @@ All failures are errors, and none is recovered from.
 1. The frame is a text string, else `TYPE` (a binary frame where text is expected); it is at most `MAX_CONTROL_TEXT` bytes of UTF-8, else `OVERSIZE`.
 2. It parses as JSON (RFC 8259: `NaN`, `Infinity`, comments and trailing commas are not JSON) and is an object with an integer `v`, else `MALFORMED`.
    An integer is a JSON number whose value is an integer: `3.0` is an integer and `true`, `"2"` and `2.5` are not.
+   Numbers are read as IEEE-754 doubles, as `JSON.parse` reads them, so `1e400` (infinite) is not an integer and `3.0000000000000001` reads as 3; and when a key occurs twice the LAST occurrence is the one steps 2 to 6 see (step 7 then refuses the frame, which is not canonical).
 3. `v == 2` by value, else `VERSION`.
    (So `3.0` is `VERSION`, and `2.0` passes this step and fails step 7.)
 4. `t` is the type the receiver expects at this step of the handshake, else `TYPE` (an unknown type, a known type at the wrong step, a missing `t`, or a `t` that is not a string).
@@ -328,7 +329,11 @@ Checks run in this order and stop at the first failure; the first failure closes
 9. The AEAD tag verifies under the receive key with `nonce(counter)` and `aad(type, peer direction, counter)`, else `DECRYPT`.
 10. Only now is `last` set to `counter`; a `bye` marks the peer as ended and is delivered as the end marker (`null`), a `data` frame as its plaintext.
 
-Sender: the plaintext is copied when `send` is called, so a caller that reuses its buffer changes nothing; the counter is assigned synchronously at the same moment, so counter order is call order; a sender whose next counter would exceed `MAX_COUNTER` closes the channel (`COUNTER_LIMIT`); plaintext outside 1 to `MAX_PLAINTEXT` is refused before a counter is consumed (`OVERSIZE`, or `MALFORMED` for empty); more than `MAX_PENDING_SENDS` unsent frames refuses the new one before a counter is consumed (`QUEUE_FULL`).
+Sender: the plaintext is copied when `send` is called, so a caller that reuses its buffer changes nothing; the counter is assigned synchronously at the same moment, so counter order is call order.
+The final counter, `MAX_COUNTER`, is kept for the BYE: a data `send` that would take it is refused with `COUNTER_LIMIT` and the channel stays open, so a sender that has used every data counter can still end cleanly; a sender whose next counter is already above `MAX_COUNTER` fails (`COUNTER_LIMIT`) and closes the channel.
+Plaintext outside 1 to `MAX_PLAINTEXT` is refused before a counter is consumed (`OVERSIZE`, or `MALFORMED` for empty); more than `MAX_PENDING_SENDS` unsent frames refuses the new one before a counter is consumed (`QUEUE_FULL`).
+**A refusal is not a failure.**
+A send or `bye` refused with `ENDED`, `QUEUE_FULL`, `OVERSIZE`, an empty `MALFORMED` or a data `COUNTER_LIMIT` at the reserved counter emits nothing, consumes no counter, and leaves the channel open (the caller may reduce the message, wait, or end the stream); only a failure of the channel's own work (encryption or emission, any receive check, a counter already past the limit) closes it with the failure close.
 `bye()` queues a BYE behind everything already queued, under the same counter, queue and limit rules, and ends the sending side the moment it is accepted: a later `send` or `bye` is refused with `ENDED` and nothing more is emitted, while the channel keeps reading until the peer ends or the transport closes.
 A refused `bye` (`QUEUE_FULL`) does not end the sending side.
 Encryption and emission run through one promise chain, so frame `n + 1` is not emitted before frame `n`, whatever the relative speed of their encryptions.
@@ -343,8 +348,12 @@ When the transport closes, whatever the close code, the caller tells the channel
 | Verdict | Meaning |
 |---|---|
 | `clean` | The peer's BYE arrived before the close, so every frame the peer sent before it was seen in order (counters are strict) and the peer intended to end. |
-| `unclean` | The transport closed with no BYE: the tail may be truncated. The peer may have crashed, or a relay dropped frames and the BYE and closed. |
+| `unclean` | The transport closed with no BYE: the tail may be truncated. The peer may have crashed, or a relay dropped frames and the BYE and closed. This is also the verdict after this side's own deliberate close or after this side's own BYE alone: the verdict is about the INBOUND stream. |
 | `failed` | A check failed earlier; the channel was already closed. |
+
+A receive after any close of the channel, a failure or a deliberate local close, is `CLOSED`; a receive after the peer's BYE is `ENDED` (once it passes the checks that precede it).
+`transportClosed()` is idempotent.
+The verdict is library behavior, not wire behavior, so the vector file carries no verdicts: the TypeScript tests exercise the channel and the Python verifier models the table above.
 
 What this detects, exactly:
 
@@ -388,7 +397,7 @@ Error codes, which appear in tests and the local log only:
 | `BAD_SIGNATURE` | an Ed25519 signature that does not verify |
 | `DECRYPT` | an AEAD tag that does not verify, or a sealed value that cannot be opened |
 | `COUNTER` | a data counter that is not exactly `last + 1` |
-| `COUNTER_LIMIT` | a counter above `MAX_COUNTER`, received or about to be sent |
+| `COUNTER_LIMIT` | a counter above `MAX_COUNTER`, received or about to be sent, or a data send refused one short because the last counter is kept for BYE |
 | `UNKNOWN_DEVICE` | resume by a device key the host has not enrolled |
 | `PAIRING` | pair mode with no live offer, or no live offer whose secret opens `auth` |
 | `EXPIRED` | a handshake deadline passed, or a pairing token past its expiry |
@@ -455,7 +464,8 @@ Every test was also checked by mutation: the mutated source was applied, the sui
 
 | Claim | Evidence |
 |---|---|
-| A replayed, reordered or dropped-then-continued frame, a truncated or extended frame, a flipped bit anywhere in a frame, a frame under another key, a reflected frame, counter 0 after the handshake, a counter above the limit with a valid tag, an oversized frame and a text frame after the handshake are each refused, and the channel then refuses everything | `channel.test.ts` (one test per case, a bit-by-bit test over a whole frame, 600 property cases); vectors `data_sequence` and `frame_length`; Python; Swift |
+| A replayed, reordered or dropped-then-continued frame, a truncated or extended frame, a flipped bit anywhere in a frame, a frame under another key, a reflected frame, counter 0 after the handshake, a counter above the limit with a valid tag and an oversized frame are each refused, and the channel then refuses everything (a valid frame after a failure included) | `channel.test.ts` (one test per case, a bit-by-bit test over a whole frame, 600 property cases); vectors `data_sequence` (which feed every frame after the first failure and require `CLOSED`) and `frame_length`; Python; Swift (which stops at the first failure) |
+| A text frame after the handshake is refused | `channel.test.ts` only: a vector frame is a hex string, so no vector can carry a text frame |
 | Every failure closes with one code and reason | `channel.test.ts` ("every failure closes with the same code and reason", "every RelayError code maps to the one wire close") |
 | The stream's end is authenticated: a BYE is a counter-checked, AAD-typed, exactly 25-byte frame that only the key holder can make; a frame after it is refused; `transportClosed()` reports clean, unclean or failed as section 7 says; a tail dropped together with its BYE followed by a close is unclean | `channel.test.ts` ("authenticated end of stream (BYE)", 17 tests), `envelope.test.ts`; vectors `data_sequence` (BYE cases) and `frame_length`; Python; Swift |
 | What BYE does not detect: a tail withheld while the socket stays open, delay, delivery to the peer | `channel.test.ts` ("limits of the channel": two characterization tests), recorded so it cannot be forgotten |
@@ -531,7 +541,8 @@ That is the job of the independent cryptography review of this pull request (202
 - Create the machine identity once and keep it; derive `rid` from it.
 - Keep a `PairingOffer` per live token.
   The step functions are `hostOnHello`, then `onAuth` on its result, then `ready` on that: mark the offer used and store the enrollment durably, and have the operator confirm the fingerprint, before calling `ready`, and call `abort` on every step a closing connection leaves unfinished.
-- Close with the constants `CLOSE_CODE` and `CLOSE_REASON` on every thrown `RelayError`, and on every WebSocket text frame after the handshake, whatever its content.
+- Close with the constants `CLOSE_CODE` and `CLOSE_REASON` on every `RelayError` thrown by a handshake step, and on every WebSocket text frame after the handshake, whatever its content.
+  A `Channel` closes itself through its `io` on every failure it counts (section 7), and a refused send (`ENDED`, `QUEUE_FULL`, `OVERSIZE`, empty, the reserved counter) is not a failure and must not close the connection: it would kill the read half that `bye()` keeps open.
 - Bound concurrent half-open handshakes (each costs an ECDH and a signature before the peer has proved anything), and close a connection whose next handshake frame does not arrive in time: the library checks deadlines only when a step is handled and has no timer.
 - Send `bye()` on every orderly close, call `transportClosed()` when the socket closes and treat `unclean` as "the tail may be truncated" (log it, and re-ask for anything not acknowledged).
 - Define application-level acknowledgments inside the data channel for anything that must be known delivered (the answer to a prompt in particular): BYE ends a direction, it does not acknowledge receipt, and a tail withheld with the socket open is invisible to the library.
@@ -703,7 +714,7 @@ Each item names where this ADR was changed.
 8. **`MAX_CONTROL_TEXT` units.** Characters, code points and UTF-16 units differ for non-ASCII text, and the reference counted UTF-16 units. It is now 512 bytes of UTF-8, in the implementation and in a vector (300 two-byte characters are `OVERSIZE`).
 9. **Enrollment in pair mode** was unstated, and the pair-mode vectors listed the device as already enrolled. Section 6.3 says the library checks enrollment in resume mode only, and the pair vectors now carry an empty `enrolled` list.
 10. **Device name rules.** A leading byte order mark is a character (the reference was stripping it by default and now keeps it, with a test), C1 controls are allowed, U+0020 is allowed and U+001F is not, and the empty name is allowed; vectors pin each. "Too long" cannot be reached through the handshake because the `auth` ciphertext range bounds the name at 64 bytes first.
-11. **Ordering of the host's checks** (name, then signature, then enrollment) was untested because no vector had two defects. Two vectors do now. The order of data-frame checks 3 and 4 (`OVERSIZE` before `TYPE`) is still not pinned by a vector, because a vector cannot carry a 512 KiB frame.
+11. **Ordering of the host's checks** (name, then signature, then enrollment) was untested because no vector had two defects. Two vectors do now. The order of data-frame checks 3 and 4 (`OVERSIZE` before `TYPE`) was thought unpinnable because a vector cannot carry a 512 KiB frame; the second round (below) showed a `frame_length` case carries one by length alone, and it now pins it.
 12. **Deadlines.** Boundary inclusivity, the absence of a timer and the daemon's duty to close an idle connection are now stated in section 6.3 and section 14; the vectors do not cover deadlines, `handshake.test.ts` does.
 13. **Pair offers.** Which offers are tried (the first live ones in policy order, at most eight) and what happens when an offer opens `auth` but a later check fails (that failure is reported, no other offer is tried) are now in section 6.3.
 14. **Codes after a failure and on the sealing side.** Later receives are `CLOSED`; the sealing side's refusals have codes now (section 10) but no vectors.
@@ -711,9 +722,37 @@ Each item names where this ADR was changed.
 16. **Vectors that tested less than they claimed** (reported in the verifier's mutation run, 23 of 79 mutations of its own code survived): the unrelated-rule cases such as extra field, reordered keys and whitespace are all caught by the canonical comparison alone, which is by design (section 6.1 step 7) and the ADR now says the other rules are redundant for that purpose; positive coverage for `ws://localhost`, ports, paths, reserved flag bits, empty names and C1 characters was missing and was added; "host proof for another room" has two defects at once and is named that way, with the client-role twin isolating the signature binding.
 17. **Section 16 wording.** Plain strings versus hex, the informational `session` field and the `enrolled` list are clarified.
 
-Not resolved by the extension, left for the cryptography review: Ed25519 verifier strictness on non-canonical `S` and small-order keys (section 15.2, item 7); no vector exercises either.
+The first verifier's author reported that it broke the "Python only through `uv`" rule twice, using the system `python3` to read the vector file's structure and to patch a scratch script outside the repository; no repository file was involved.
 
-The verifier also reported that its author broke the "Python only through `uv`" rule twice, using the system `python3` to read the vector file's structure and to patch a scratch script outside the repository; no repository file was involved.
+### 15.5 Second round: ambiguities exposed after BYE was added
+
+After the independent review the spec gained BYE and the engine evidence.
+A second fresh agent updated the Python verifier from the ADR and the vector file (it also read the previous verifier, which was itself written from the ADR; it never read the TypeScript or the Swift).
+It implemented BYE from the ADR text alone before opening the old code, matched every BYE vector on the first try, and then reported the points below.
+Each names where the ADR or the vectors changed.
+
+1. **Refusal versus failure** (a contradiction between sections 14 and 7): section 14 said to close on every thrown `RelayError`, which would close a channel whose read half `bye()` is meant to keep open.
+   Section 7 now separates a refusal (nothing emitted, no counter consumed, channel open) from a failure, and section 14 closes only on handshake-step errors and text frames.
+2. **A sender with no counters left could not end cleanly** (a design gap): `bye()` takes a counter and the limit closed the channel.
+   The final counter is now kept for the BYE (a sender-side rule, wire-invariant): data stops one short with the channel open, the BYE goes out at `MAX_COUNTER`.
+   Tests and mutations pin it.
+3. **The stream-end verdicts were underspecified and cannot be carried by the vectors.**
+   Section 7 now says the verdict is about the inbound stream (so unclean after this side's own close or own BYE alone), that a receive after a close is `CLOSED` and after the peer's BYE `ENDED`, and that verdicts are library behavior the vectors do not carry.
+4. **`minFrame` kept its name and value but the minimum of any frame became 25**, and the file carried neither `byeFrame` nor the type bytes: `constants` now carries `byeFrame`, `typeAuth`, `typeReady`, `typeData`, `typeBye`, `dirC2h`, `dirH2c`, and section 16 says which is the data minimum.
+5. **"A frame after it is `ENDED`" was imprecise**: an earlier check of section 7 refuses a malformed frame first.
+   Section 16 says so, and three vectors pin it (after a BYE: an unknown type is `TYPE`, a short BYE is `MALFORMED`, a counter above the limit is `COUNTER_LIMIT`).
+6. **The check order was barely pinned.**
+   Two-defect vectors now pin checks 4 and 5 before 6 (an unknown type, a 26-byte BYE and a 25-byte data frame, each with a counter above the limit) and a `frame_length` case pins `OVERSIZE` before `TYPE` (type 5, 524314 bytes).
+7. **`direction` and `key` in `data_sequence`**: in the reflected cases `direction` is deliberately the wrong direction.
+   Section 16 now says both are used exactly as given.
+8. **`frame_length` filler**: every byte zero except the type and the counter field; check 1 is vacuous for bytes.
+9. **Numbers and duplicate keys in step 2**: read as IEEE-754 doubles, and the last of a duplicated key wins; vectors pin `1e400`, a list and an object as `m`, and a duplicated mode whose first value is invalid.
+10. **The order-2 count in section 17.2 was not reproducible without the messages**: the 16 messages are now named.
+11. **Vectors that test less than they claim**: check 1 (a text frame) cannot be carried by a hex-string vector, so section 12 credits it to the TypeScript tests only; two cases were renamed for what they actually pin (a 25-byte data frame is too short for data; the BYE delivered twice pins `ENDED` before the counter check); and a valid frame after a failure is now an explicit case, which the runners feed and require to be refused.
+12. **Mutations of the Python verifier's BYE logic** (42 breakages, 34 caught): the 8 survivors were the rules above that the vectors did not pin (`ENDED` before checks 2 to 6; check 4 before 3; check 1; check 6 before 5 and 4) plus three internal comparisons that are equivalent for a correct receiver.
+    Items 5 and 6 add the vectors that close the first, second and fourth; check 1 is the third and stays TypeScript-only.
+
+Not resolved by the extension, left for the cryptography review: Ed25519 verifier strictness on small-order public keys (section 17.2 measures it and recommends strict verifiers; no engine rejects them).
 
 ## 16. Vector file format
 
@@ -723,7 +762,7 @@ A verifier recomputes every value it can from the inputs and compares, and runs 
 
 Top level: `format` (1), `protocol` (`"remi-relay-v2"`), `note`, `constants`, `identities`, `rid`, `ridDerivation`, `sessions`, `admission`, `pairingToken`, `seal`, `negative`.
 
-- `constants`: `v`, `maxCounter`, `maxPlaintext`, `maxFrame`, `minFrame`, `maxControlText`, `maxDeviceName`, `handshakeTimeoutMs`, `pairConfirmTimeoutMs`, `pairingTtlSeconds`, `pairingSkewSeconds`, `maxPushPlaintext`, `closeCode`, `closeReason`: the values of section 2.
+- `constants`: `v`, `maxCounter`, `maxPlaintext`, `maxFrame`, `minFrame`, `maxControlText`, `maxDeviceName`, `handshakeTimeoutMs`, `pairConfirmTimeoutMs`, `pairingTtlSeconds`, `pairingSkewSeconds`, `maxPushPlaintext`, `closeCode`, `closeReason`, `byeFrame`, `typeAuth`, `typeReady`, `typeData`, `typeBye`, `dirC2h`, `dirH2c`: the values of section 2.  `minFrame` is the smallest DATA frame (26); the smallest frame of any type is `byeFrame` (25), the threshold of check 2 in section 7.
 - `identities`: `machine`, `device`, `impostorMachine`, each `{ seed, publicKey }`; `seed` is the 32-byte Ed25519 seed (RFC 8032) and `publicKey` its public key.
 - `rid` is section 3's room id of `identities.machine.publicKey`; `ridDerivation` is the same value computed separately and must equal it.
 
@@ -769,8 +808,8 @@ In `auth_check`, `enrolled` is what the host's enrolled set contains: in pair mo
 | `auth_open` | `z`, `h1`, `psk` (the host's, or `null`), `auth`; optionally `senderPsk` | Derives the keys from `z`, `h1` and `psk` and opens `auth`; the failure is `PAIRING` when `psk` is not `null` and `DECRYPT` when it is.  When `senderPsk` is present (it may be `null`), the keys derived with it must open `auth`, which shows the case differs from a valid one only in the pairing secret |
 | `auth_check` | `mode`, `z`, `h1`, `psk`, `hostSignature`, `auth`, `enrolled` (list of device public keys) | Opens `auth` (it must open), then applies section 6.3 step 5 in order: the name, `sig_c` over the recomputed `H2`, and in resume mode membership of `D_pk` in `enrolled` |
 | `ready_open` | `mode`, `z`, `h1`, `psk`, `ready` | Derives the keys, decodes the control frame `ready`, opens it under `k_h2c` and requires the one-byte echo of `mode` |
-| `data_sequence` | `key`, `direction` (the sender's direction byte), `startRecv`, `frames`, and for `accept` or a rejection `accepted` | Runs section 7's receiver over `frames` in order with `last + 1 = startRecv`, with `key` as the key of the frames' direction, a BYE ending the stream as section 7 says (a frame after it is `ENDED`); `accepted` is how many frames (a BYE included) were accepted before the first failure, and `code` is that failure's code |
-| `frame_length` | `type`, `length` | A frame of that many bytes whose first byte is `type` and whose counter is 1: applies only checks 1 to 6 of section 7 (no tag check, no counter order) |
+| `data_sequence` | `key`, `direction`, `startRecv`, `frames`, `accepted` | Runs section 7's receiver over `frames` in order, expecting counter `startRecv` first, with `key` as the AEAD key and `direction` as the direction byte of the AAD (taken exactly as given: a reflected case sets it to the WRONG direction on purpose); `accepted` is how many frames (a BYE included) were accepted before the first failure and `code` is that failure's code; the first failure closes the receiver, so a verifier feeds every remaining frame too and requires each to be refused with `CLOSED`, whether or not it is valid.  A frame after a BYE is `ENDED` unless an earlier check of section 7 refuses it first. |
+| `frame_length` | `type`, `length` | A frame of `length` bytes, every byte zero except the first (`type`) and the counter field (1): applies checks 2 to 6 of section 7 (check 1 is vacuous for bytes), with no counter order and no tag check |
 | `token_decode` | `text`, `nowSec` | Decodes the token under section 5 with `nowSec` as the clock |
 | `seal_open` | `recipientScalar`, `aad`, `sealed` | Opens `sealed` under section 10; every failure is `DECRYPT` |
 | `admission_verify` | `role`, `publicKey`, `rid`, `nonce`, `signature` | Accepts exactly when section 4's check passes for that role |
@@ -826,7 +865,7 @@ What was NOT established:
 
 ### 17.2 Ed25519 verification, measured
 
-The same cases were run on every implementation: a valid signature, a signature whose `S` was replaced by `S + L` (non-canonical), the all-identity "universal" signature (`R` the identity point, `S = 0`) under a small-order public key (the identity point), and the same shape under the order-2 point (valid for about half of all messages).
+The same cases were run on every implementation: a valid signature, a signature whose `S` was replaced by `S + L` (non-canonical), the all-identity "universal" signature (`R` the identity point, `S = 0`) under a small-order public key (the identity point), and the same shape under the order-2 point (valid for about half of all messages; the count in the table is over the 16 ASCII messages `message 0` to `message 15`).
 
 | Implementation | Non-canonical `S` | Small-order public key (identity), any message | Order-2 key, accepted for N of 16 messages | Signing | 31-byte key |
 |---|---|---|---|---|---|

@@ -142,6 +142,11 @@ export class Channel {
       this.fail();
       return Promise.reject(new RelayError('COUNTER_LIMIT'));
     }
+    // The final counter is kept for the BYE, so a sender that has run out of data
+    // counters can still end cleanly: data is refused one short, the channel stays open.
+    if (type !== TYPE_BYE && this.nextSend === MAX_COUNTER) {
+      return Promise.reject(new RelayError('COUNTER_LIMIT'));
+    }
     const counter = this.nextSend++;
     if (type === TYPE_BYE) this.sendEnded = true;
     // The caller may reuse its buffer before the queued encryption runs.

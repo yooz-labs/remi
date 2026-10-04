@@ -259,6 +259,20 @@ export async function generateVectors(): Promise<Obj> {
     ctl('hello version 1 (a v1 peer)', 'hello', pair.hello.replace('"v":2', '"v":1'), 'VERSION');
     ctl('hello version is a string', 'hello', pair.hello.replace('"v":2', '"v":"2"'), 'MALFORMED');
     ctl('hello version 2.0', 'hello', pair.hello.replace('"v":2', '"v":2.0'), 'MALFORMED');
+    ctl(
+      'hello version 1e400 (not finite as a double)',
+      'hello',
+      pair.hello.replace('"v":2', '"v":1e400'),
+      'MALFORMED',
+    );
+    ctl('hello mode is a list', 'hello', pair.hello.replace('"pair"', '[]'), 'MODE');
+    ctl('hello mode is an object', 'hello', pair.hello.replace('"pair"', '{}'), 'MODE');
+    ctl(
+      'hello duplicate mode, first invalid, last valid (the last one is read, then step 7 refuses)',
+      'hello',
+      pair.hello.replace('"m":"pair"', '"m":"admin","m":"pair"'),
+      'MALFORMED',
+    );
     ctl('hello unknown mode', 'hello', h({ m: 'admin' }), 'MODE');
     ctl('hello wrong type', 'hello', h({ t: 'hello_ack' }), 'TYPE');
     ctl('hello extra field', 'hello', pair.hello.replace('}', ',"x":"y"}'), 'MALFORMED');
@@ -862,7 +876,12 @@ export async function generateVectors(): Promise<Obj> {
       0,
       'COUNTER',
     );
-    seq('the frame shorter than the minimum', [(f[0] as Uint8Array).slice(0, 25)], 0, 'MALFORMED');
+    seq(
+      'a data frame of 25 bytes (an empty plaintext) is too short for data',
+      [(f[0] as Uint8Array).slice(0, 25)],
+      0,
+      'MALFORMED',
+    );
     seq('a reflected frame: opened under the other direction', f, 0, 'DECRYPT', {
       direction: r.DIR_H2C,
     });
@@ -929,7 +948,12 @@ export async function generateVectors(): Promise<Obj> {
       11,
       'ENDED',
     );
-    seq('the BYE replayed', [...ten, bye, bye], 11, 'ENDED');
+    seq(
+      'the BYE delivered twice: the second is ENDED, not a counter failure',
+      [...ten, bye, bye],
+      11,
+      'ENDED',
+    );
     seq(
       'a BYE that skips a counter',
       [f[0] as Uint8Array, await sealAs(r.TYPE_BYE, 3, empty)],
@@ -995,6 +1019,56 @@ export async function generateVectors(): Promise<Obj> {
         startRecv: r.MAX_COUNTER,
       },
     );
+    // After the BYE, a malformed frame is refused by its own earlier check, before ENDED is reached.
+    const byeAt1 = await sealAs(r.TYPE_BYE, 1, empty);
+    seq(
+      'after the BYE, a frame of unknown type reports the type',
+      [byeAt1, Uint8Array.from(byeAt1, (x, i) => (i === 0 ? 5 : x))],
+      1,
+      'TYPE',
+    );
+    seq(
+      'after the BYE, a BYE cut short reports the length',
+      [byeAt1, byeAt1.slice(0, 24)],
+      1,
+      'MALFORMED',
+    );
+    seq(
+      'after the BYE, a counter above the limit reports the limit',
+      [byeAt1, await atLimit(r.MAX_COUNTER + 1)],
+      1,
+      'COUNTER_LIMIT',
+    );
+    // Two defects at once pin the order of the checks that precede the counter order.
+    const typeFiveAtLimit = Uint8Array.from(
+      await sealAs(r.TYPE_BYE, r.MAX_COUNTER + 1, empty),
+      (x, i) => (i === 0 ? 5 : x),
+    );
+    seq(
+      'an unknown type with a counter above the limit reports the type',
+      [typeFiveAtLimit],
+      0,
+      'TYPE',
+    );
+    seq(
+      'a 26-byte BYE with a counter above the limit reports the length',
+      [await sealAs(r.TYPE_BYE, r.MAX_COUNTER + 1, text('x'))],
+      0,
+      'MALFORMED',
+    );
+    seq(
+      'a 25-byte data frame with a counter above the limit reports the length',
+      [await sealAs(r.TYPE_DATA, r.MAX_COUNTER + 1, empty)],
+      0,
+      'MALFORMED',
+    );
+    // The channel is closed for good by the first failure: a valid frame after it is refused too.
+    seq(
+      'a valid frame after a failed one is refused (the channel stays closed)',
+      [flip(f[0] as Uint8Array, (f[0] as Uint8Array).length - 1), f[0] as Uint8Array],
+      0,
+      'DECRYPT',
+    );
     // Frame length rules, with the type byte spelled out.
     for (const [type, len, expectation, code] of [
       [r.TYPE_DATA, 24, 'reject', 'MALFORMED'],
@@ -1009,6 +1083,8 @@ export async function generateVectors(): Promise<Obj> {
       [r.TYPE_BYE, r.MAX_FRAME + 1, 'reject', 'OVERSIZE'],
       [5, 25, 'reject', 'TYPE'],
       [0, 26, 'reject', 'TYPE'],
+      [r.TYPE_AUTH, 26, 'reject', 'TYPE'],
+      [5, r.MAX_FRAME + 1, 'reject', 'OVERSIZE'],
     ] as const) {
       negative.push({
         kind: 'frame_length',
@@ -1365,6 +1441,13 @@ export async function generateVectors(): Promise<Obj> {
     maxPushPlaintext: r.MAX_PUSH_PLAINTEXT,
     closeCode: r.CLOSE_CODE,
     closeReason: r.CLOSE_REASON,
+    byeFrame: r.BYE_FRAME,
+    typeAuth: r.TYPE_AUTH,
+    typeReady: r.TYPE_READY,
+    typeData: r.TYPE_DATA,
+    typeBye: r.TYPE_BYE,
+    dirC2h: r.DIR_C2H,
+    dirH2c: r.DIR_H2C,
   };
 
   return {
