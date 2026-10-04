@@ -128,9 +128,16 @@ export function checkCodexLaunch(
   const threadId = parsed.resumeThreadId;
   if (threadId !== null) {
     try {
-      deps.sessionStore.list();
-      const owner = deps.sessionStore.findByHarnessSessionId('codex', threadId);
-      if (owner !== null && owner.exitedAt === null) {
+      // Only an ACTIVE holder matters (the purge in `list()` has already turned a dead
+      // process's record into history, and the store refuses two active holders). Not
+      // `findByHarnessSessionId`: it reads several exited rows of one thread, which every
+      // second resume leaves, as an ambiguity and would refuse the third until the purge.
+      const owner = deps.sessionStore
+        .list()
+        .find(
+          (s) => s.harness === 'codex' && s.harnessSessionId === threadId && s.exitedAt === null,
+        );
+      if (owner !== undefined) {
         return {
           ok: false,
           exitCode: 1,

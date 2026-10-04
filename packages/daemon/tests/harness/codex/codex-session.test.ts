@@ -293,6 +293,38 @@ describe('CodexHarness', () => {
       }
     });
 
+    test('a thread with several exited records and no active one resumes (W3)', () => {
+      // Two exited rows for one thread, as two earlier resumes leave. A lookup that treats
+      // them as an ambiguity would refuse every later resume until the 7-day purge.
+      for (const hoursAgo of [3, 2]) {
+        sessionStore.save(
+          record({
+            harnessSessionId: THREAD,
+            pid: null,
+            startedAt: new Date(Date.now() - hoursAgo * 3_600_000).toISOString(),
+            exitedAt: new Date(Date.now() - (hoursAgo - 0.5) * 3_600_000).toISOString(),
+            exitCode: 0,
+          }),
+        );
+      }
+      expect(checkCodexLaunch(buildDeps(null), ['resume', THREAD])).toEqual({
+        ok: true,
+        args: ['resume', THREAD],
+        resumeThreadId: THREAD,
+      });
+    });
+
+    test('exited history beside one active holder still refuses, naming the holder (W3)', () => {
+      sessionStore.save(
+        record({ harnessSessionId: THREAD, pid: null, exitedAt: new Date().toISOString() }),
+      );
+      const open = record({ harnessSessionId: THREAD });
+      sessionStore.save(open);
+      const checked = checkCodexLaunch(buildDeps(null), ['resume', THREAD]);
+      expect(checked.ok).toBe(false);
+      if (!checked.ok) expect(checked.message).toContain(open.remiSessionId.slice(0, 8));
+    });
+
     test('an exited record of the thread is history, not a holder', () => {
       sessionStore.save(
         record({
