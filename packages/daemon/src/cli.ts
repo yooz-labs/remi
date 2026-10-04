@@ -422,7 +422,7 @@ const cliPushSecret = parsedArgs.pushSecret ?? process.env['REMI_PUSH_SECRET'];
 const cliOrphanTimeout = parsedArgs.orphanTimeout;
 const claudeArgs = [...parsedArgs.claudeArgs];
 
-// Which harness this process hosts (#1177): `remi codex`, or the hidden `--harness <id>` a hub
+// Which harness this process hosts (#1177): `remi codex`, or the `--harness <id>` a hub
 // gives a child daemon. This build has adapters for Claude and Codex only.
 const harnessId: HarnessId = parsedArgs.harness ?? (cliSubcommand === 'codex' ? 'codex' : 'claude');
 {
