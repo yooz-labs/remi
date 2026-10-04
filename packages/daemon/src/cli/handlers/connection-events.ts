@@ -37,6 +37,11 @@ export interface ConnectionHandlerDeps {
    */
   harnessId: HarnessId;
   /**
+   * A hub is session-less by design and hosts no harness, so its session-less ack names none. Any
+   * other daemon's does, even before its session exists (#1179 review, G9).
+   */
+  hubMode: boolean;
+  /**
    * The harnesses this daemon can start (`HarnessRegistry.available`), read at
    * each ack so a command installed later is offered without a restart (#1179).
    */
@@ -72,6 +77,7 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
     sessionRegistry,
     currentOwnedSession,
     harnessId,
+    hubMode,
     harnesses,
     trackConnection,
     untrackConnection,
@@ -190,8 +196,9 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
       // No session available: still ack the connection with a null sessionId
       // rather than erroring out. This is the normal steady state for a
       // session-less hub daemon (#542) and also covers the brief startup
-      // window on an ordinary daemon before its primary session is created.
-      send(connectionId, ack(null));
+      // window on an ordinary daemon before its primary session is created,
+      // whose ack names its harness: a Codex daemon must not read as Claude.
+      send(connectionId, ack(null, hubMode ? {} : { harness: harnessId }));
       onPeerConnect?.(connectionId, metadata);
       log(`Connection ${connectionId} connected session-less (no active session)`);
     },

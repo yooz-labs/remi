@@ -2071,6 +2071,7 @@ const hubClientTracker: HubClientTracker | null = serveMode
   : null;
 
 const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
+  hubMode: serveMode,
   sessionRegistry,
   currentOwnedSession,
   harnessId,

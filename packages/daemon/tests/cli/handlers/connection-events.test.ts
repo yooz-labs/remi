@@ -79,6 +79,7 @@ describe('createConnectionHandlers', () => {
     return createConnectionHandlers({
       sessionRegistry,
       currentOwnedSession,
+      hubMode: false,
       harnessId: 'claude',
       harnesses: () => ['claude'],
       trackConnection: (id, type) => {
@@ -604,6 +605,7 @@ describe('onPeerConnect/onPeerDisconnect feed the hub census (#650)', () => {
       const handlers = createConnectionHandlers({
         sessionRegistry,
         currentOwnedSession: () => null,
+        hubMode: true,
         harnessId: 'claude',
         harnesses: () => ['claude'],
         trackConnection: () => {},

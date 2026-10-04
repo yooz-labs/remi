@@ -1429,6 +1429,12 @@ export interface CreateHelloAckOptions {
   daemonVersion?: string | undefined;
   /** The harnesses this daemon can start (#1179), on every ack. */
   harnesses?: readonly HarnessId[] | undefined;
+  /**
+   * The harness this daemon hosts, for an ack with no `binding` (the brief window before its session
+   * exists). Ignored when a binding is given, which names the harness itself. A hub hosts none and
+   * passes nothing.
+   */
+  harness?: HarnessId | undefined;
 }
 
 /**
@@ -1439,7 +1445,7 @@ export function createHelloAck(
   sessionId: UUID | null,
   options: CreateHelloAckOptions = {},
 ): HelloAckMessage {
-  const { resumeInfo, binding, attachState, daemonVersion, harnesses } = options;
+  const { resumeInfo, binding, attachState, daemonVersion, harnesses, harness } = options;
   return {
     type: 'hello_ack',
     id: generateId(),
@@ -1459,6 +1465,9 @@ export function createHelloAck(
       harnessSessionId: binding.identity.harnessSessionId,
       transcriptPath: binding.transcriptPath,
     }),
+    // No binding, but the daemon knows what it hosts: only the harness is named, so a Codex daemon
+    // does not read as Claude by the absence of a field.
+    ...(binding === undefined && harness !== undefined && { harness }),
     ...(attachState !== undefined && { attachState }),
     ...(daemonVersion !== undefined && { daemonVersion }),
     ...(harnesses !== undefined && { harnesses }),
