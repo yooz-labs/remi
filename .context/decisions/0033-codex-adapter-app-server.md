@@ -242,3 +242,77 @@ Phase 2 amendment: foundations, zero behavior change for Claude (#1176).
 8. Boundary: `harness/codex/*` may import `cli/session-phases/pty-session-setup.ts` and nothing else under `cli/session-phases/`, and `pty-session-setup.ts` is held neutral. The general rule that nothing under `harness/codex/` imports a Claude module is Phase 1's.
 9. Exports with no production caller until Phase 3 or 5: see the list in the PR body.
 10. Receipts: pins first (commit `374f43ad`), the mutation list above, `launch-characterization.test.ts` unmodified and green 10 of 10 plus 4 concurrent, the base-against-head comparison on a Claude-only store (0 differences), 4974 tests passing on Bun 1.4.2 and 1.3.11.
+
+## Phase 3 amendment: `remi codex` launch, identity and status (#1177)
+
+Phase 3 is observe-only: `remi codex` launches Codex, finds which thread of the shared app-server is the session's, and reports that thread's status.
+No approval card, answer, chat, turn push or wire field exists yet (phases 4 to 6).
+Nothing here was run against a real Codex: every claim below about Codex's behavior comes from the spike's frames or is listed under "Not verified".
+
+1. **The launch.**
+`codex --no-alt-screen <validated arguments>` in a PTY, in the session's working directory, with `process.env` and nothing added (no `REMI_PORT`, none of Claude's variables), no override flag, and no reserved status row.
+The steps that change state run in this order: `validateCodexArgs` (a refusal is exit 2), the older-daemon gate (exit 1), `preAssign` of `{harness: 'codex', claudeSessionId: null, harnessSessionId: <thread or null>}`, the PTY, and only then the app-server client, because the TUI is what starts the shared daemon.
+Nothing under `harness/codex/` types into the PTY: the child's stdin sees only a person's raw input (the characterization test counts the bytes: zero).
+A Stop force-closes the session (`gracefulExitInput` is null), and `HarnessSession.decisions` holds nothing and answers nothing.
+2. **Identity (`ThreadTracker`).**
+A `thread/started` is a candidate only if it is not ephemeral, comes from `threadSource` `user` (or has none and a rollout `path`), has an environment and no parent, has a cwd that `realpath` resolves to the session's, was created at most 5 s before the spawn, and is not held by an active non-Claude record of another remi session.
+The title helper that appears about 7 s after the TUI thread (`expB.jsonl:12`) fails three of those (it is ephemeral, from another source, and has no environment), and each rule has a frame that breaks only it.
+The first candidate waits 300 ms: a second one created within 300 ms of it means two Codex windows started in the directory together, so neither binds and a session without an identity keeps none (fail closed, plan risk R4).
+A later candidate rotates the binding (`/new`), but not while the tracked thread is `active`; the old id is not kept.
+Descendants, followed by parent links (at most eight hops, at most 512 links remembered), count as the session's.
+Identity is persisted with `SessionBindingStore.updateHarnessIdentity`; for a resume the record already names the thread.
+3. **Attach.**
+`thread/resume {threadId, excludeTurns: true}` and nothing else, ever (the spike showed an override persists on the thread).
+It is retried on any error, `-32600` being the one expected, at once when the tracked thread turns `active` and otherwise every second, and once more after every reconnect.
+The result's thread status is applied.
+Only the first failure and every thirtieth are logged, and no thread frame of another thread, no cwd and no id longer than eight characters is ever logged.
+4. **Status.**
+The session's status is the aggregate of the tracked thread and its descendants: `waiting` if any is `active` with a flag (an unknown flag counts), else `thinking` if any is `active`, else `idle`; it is reported through `messageApi.handleStatusChange` only when it changes.
+Other threads never change it.
+5. **The shared daemon.**
+remi never starts, stops, restarts or upgrades it.
+If no connection is ready 30 s after the spawn, or the link drops and stays down 30 s, one log line and one system-sender message say so, once per session, and the session carries on as a plain terminal session.
+The message is a `structured_agent_output` with `sender: 'system'`; the web client renders chat from `transcript_content` and uses that message only to mark the session active, so it may not show there (unverified, a wire change is out of scope).
+6. **Socket trust.**
+`${CODEX_HOME ?? ~/.codex}/app-server-control/app-server-control.sock` is a symlink to a short path.
+`realpath` throws `EOPNOTSUPP` on a socket (and a link to one) on Bun, so the directories are resolved with `realpath` and the link is read with `readlink`, one hop; a chain, a file or a missing target is refused.
+Both the link's directory and the socket's must be owned by the current uid with no group or other bit, or `UntrustedSocketError` is raised and nothing connects.
+The check is applied inside the client's `socketPath()`, so it runs on every reconnect attempt.
+This is in `codex-socket.ts`, a file the issue did not list.
+7. **The older-daemon gate.**
+`checkCodexLaunch` runs before the first record is written, twice: in `cli.ts` before a daemon boots or a wrapper takes the terminal (where console output goes to the log), and again in `createCodexSession` before `preAssign`.
+The refusal names each writer's file and pid identity (`delete <file>` when it could not be verified), the minimum version `0.7.16-dev.7`, and `remi stop --all`.
+The launch prints once that an older remi started later (`remi --sessions`, `--resume`, a restarted hub on an old binary) erases Codex identities, which the gate cannot prevent.
+`findLegacyWriters` is not read-only: its `listLive()` deletes live-sessions entries whose pid is dead or whose JSON is invalid.
+8. **Arguments, the user's own `--`, and `--harness`.**
+The parser keeps the user's `--` in a new `passthroughArgs`, and `remi codex` hands those to `validateCodexArgs`, so a prompt of words that look like flags reaches Codex after an inserted `--`.
+`remi -c` stays Claude's `--continue`; `codex` is a subcommand, and once it is, a later word that names a remi subcommand is a Codex word.
+`--harness <id>` is hidden and tells a child daemon its harness; it conflicts with a different subcommand harness, and this build has adapters for Claude and Codex only.
+The carry-over from Phase 2 said Codex flags that collide with remi's must be written after `--`.
+That is not what ships: the validator makes everything after `--` prompt text, so such a flag cannot be passed through remi at all, and the help and the README say so.
+`remi codex --daemon` takes no arguments until the hub can pass them (phase 5), `--host`, `--resume`, and the hub with a harness are refused with exit 2.
+9. **Purge before recording.**
+`updateHarnessIdentity` and a `preAssign` that names a thread now purge dead holders first, in the binding store, because a record whose process died without exiting cleanly kept counting as an active holder of its thread and made the write refuse a free thread (Phase 2 review).
+`remi codex resume <uuid>` also refuses a thread another live remi session holds, after the same purge.
+10. **Resume and the mismatch pointer.**
+`remi codex resume <uuid>` works (`codex --no-alt-screen resume <uuid>`, attaching on ready with no `thread/started`), so `SessionHarnessMismatchError` names it, with the whole thread id for a Codex record that has one, and `--sessions` prints `resume: remi codex resume <id>` under each exited Codex record, because its label cuts the id to eight characters.
+`remi codex resume` takes the whole thread id only: `resolveStoredSession`'s Codex branch (a remi id or prefix) still has no production caller, and the hub's refusal of `resume_session_request` on a non-Claude daemon is phase 5.
+11. **Deviations from the issue.**
+`CodexHarness` is not exported from `harness/index.ts`: the boundary test allows only `cli.ts` to import `harness/codex/`, and the rule is not loosened.
+`codex-socket.ts` is a new file.
+The daemon version is logged from `initialize.userAgent` only; remi never runs `codex --version`.
+`thread-protocol.ts` types an active thread's flags as strings, so an unknown flag still reads as waiting.
+`ThreadTracker.handleReady` takes no argument and a `handleDisconnected` was added.
+`CodexLaunchDeps` has a `log`, a `remiVersion` and test seams `appServer` and `linkWatchdogMs`, and no `onQuestionResolved` or `turnEvents` yet.
+12. **A gap until phase 4.**
+A chat message sent from a phone to a Codex session is typed into the PTY by the existing chat path, because `acceptsTypedChat: false` is phase 4's.
+Until then a typed message plus its Enter reaches whatever the Codex TUI has focused, the failure the spike's Update-modal incident showed (a typed digit ran an installer).
+13. **Not verified, for LV-2.**
+That Codex's server accepts the hand-rolled client's handshake (LV-1 is the same question); that bare `codex` starts the shared daemon on a cold start (R2); that `thread/started` for the TUI thread arrives within about 2 s and the title helper is ignored; that the attach succeeds after the first message; that a dropped subscriber leaves the TUI untouched; that no `.claude/settings.local.json` appears; and whether the system message shows anywhere.
+14. **Exports with no production caller in this PR.**
+`UntrustedSocketError` (read as an `instanceof` only by tests; its message is what the client logs), `validateCodexRemoteArgs` (phase 5), `SessionBindingStore.getIdentity` (phase 5, the session list), `resolveStoredSession`'s Codex branch (phase 5), and the client's `AppServerDisconnectedError`, `AppServerTimeoutError` and `AppServerSerializationError` (phase 4 reads them when it answers).
+Everything else this phase added or inherited from phase 2 has a caller in `cli.ts` or the launch: see the table in the PR.
+15. **Receipts.**
+Pins first: `codex-launch-characterization.test.ts` was committed red before any implementation, and `launch-characterization.test.ts` passes unmodified before and after the `cli.ts` gating.
+About 130 mutants were applied, each to a committed tree and reverted with `git apply -R`: all killed except the equivalent ones listed in the PR (two guards that each hide the other, a claim filter that was then removed, a memory-hygiene delete, a path the store normalizes).
+Gate results and the removed-line check are in the PR.

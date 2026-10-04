@@ -31,6 +31,9 @@ bun remove -g remi
 # Start Claude Code with Remi (session persists if terminal closes)
 remi -- claude
 
+# Start Codex with Remi (status only for now, see below)
+remi codex
+
 # Detach: Ctrl+B d
 # List sessions
 remi ls
@@ -50,6 +53,27 @@ remi attach --host 192.168.1.5 macbook/remi/main
 1. Open the web app or install the mobile app (iOS/Android)
 2. Connect via local network, connection code, or direct address
 3. Monitor and respond to all your agent sessions
+
+### Codex (status only, not yet checked against a real Codex)
+
+`remi codex` runs `codex --no-alt-screen` the way `remi` runs Claude Code, and shows the session and what it is doing (working, waiting on an approval, idle) on your phone.
+This is the first step.
+Approvals, chat and turn notifications do not reach the phone yet, so keep answering in the terminal.
+It has only been tested against a stand-in for Codex's app-server, not against a real Codex install.
+
+- **Arguments.**
+  `-m/--model`, `-a/--ask-for-approval`, `-s/--sandbox`, `--add-dir`, `-i/--image` and `--yolo` pass through; every other Codex flag and every Codex subcommand but `resume` is refused, so run `codex` directly for those.
+  Everything after `--` is the first prompt, as text, never a flag.
+  Remi's own flags (`-h`, `--help`, `-v`, `--version`, `--dir`, `--port`, `--resume` and the rest) are remi's wherever they stand before `--`, so a Codex flag with the same name cannot be passed through remi.
+- **Resume.**
+  `remi codex resume <thread id>` takes the whole thread id, which `remi --sessions` prints under each exited Codex session.
+- **The Codex app-server.**
+  Codex's TUI starts and shares one app-server for all your Codex windows.
+  Remi never starts, stops or upgrades it, and it only watches the thread of its own session.
+  If remi cannot reach it for 30 seconds, one message says so and the session goes on in the terminal.
+- **An older remi erases Codex session ids.**
+  Codex thread ids are kept in `sessions.json`, and a remi older than 0.7.16-dev.7 that writes that file afterwards drops them.
+  `remi codex` refuses to start while such a remi is running (`remi stop --all` stops it), and says so again when it starts, because it cannot stop an old binary that starts later.
 
 ## Features
 
