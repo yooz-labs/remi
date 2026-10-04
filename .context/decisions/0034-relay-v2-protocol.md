@@ -82,6 +82,7 @@ Constants:
 | `TYPE_AUTH`, `TYPE_READY`, `TYPE_DATA` | bytes `0x01`, `0x02`, `0x03` |
 | `MAX_COUNTER` | 2^40 = 1099511627776 |
 | `MAX_PLAINTEXT` | 524288 (2^19) bytes per data frame |
+| `MIN_FRAME` | `1 + 8 + 1 + 16` = 26 bytes, the smallest binary data frame (one byte of plaintext) |
 | `MAX_FRAME` | `1 + 8 + MAX_PLAINTEXT + 16` = 524313 bytes, the largest binary data frame |
 | `MAX_CONTROL_TEXT` | 512 characters, the largest control frame |
 | `MAX_DEVICE_NAME` | 64 bytes of UTF-8 |
@@ -90,8 +91,11 @@ Constants:
 | `PAIRING_TTL_SECONDS` | 600 |
 | `PAIRING_SKEW_SECONDS` | 60 |
 | `MAX_PENDING_SENDS` | 64 |
+| `MAX_PAIRING_OFFERS` | 8, how many live offers a host tries for one `auth` |
 | `MAX_PUSH_PLAINTEXT` | 2048 bytes |
-| `CLOSE_CODE`, `CLOSE_REASON` | 4400 and the string `"closed"` |
+| `MAX_QUESTION_ID` | 64 bytes |
+| `CLOSE_CODE`, `CLOSE_REASON` | 4400 and the string `"closed"`, the close of every failure |
+| `CLOSE_NORMAL` | 1000, the close code of a deliberate local close (reason `"closed"`) |
 
 The 1 MiB WebSocket message ceiling of Cloudflare Workers is the reason `MAX_FRAME` is half of it.
 That ceiling is the documented figure and is unverified here; R2 must confirm it against the deployed runtime and lower `MAX_PLAINTEXT` if it is wrong.
@@ -240,7 +244,8 @@ Each HKDF call performs Extract with the given salt and `ikm` and then Expand wi
    - Pair mode: the host tries each live offer in order, deriving keys with that offer's secret; the first offer under which the tag verifies is the matching one.
      If none verifies, it closes (`PAIRING`).
      This is why a client with the wrong pairing secret fails here, with the same observable result as any other failure.
-   It then checks, in this order: the plaintext length and layout (`MALFORMED`), the name (`NAME`), `sig_c` under `D_pk` over the host's own `H2` (`BAD_SIGNATURE`), and in resume mode that `D_pk` is enrolled (`UNKNOWN_DEVICE`).
+   The decoder has already bounded the `auth` ciphertext to 112 to 176 bytes, so the plaintext is 96 to 160 bytes: `D_pk` is its first 32 bytes, `sig_c` the next 64, and the rest is the name.
+   The host then checks, in this order: the name (`NAME`), `sig_c` under `D_pk` over the host's own `H2` (`BAD_SIGNATURE`), and in resume mode that `D_pk` is enrolled (`UNKNOWN_DEVICE`).
    In pair mode the library reports which offer matched; the daemon then shows the fingerprint (section 9) to the operator, enrolls `D_pk` and burns the offer.
    Only after that does the daemon ask the library for `ready`.
 6. **Host to client, `ready`.**
@@ -255,7 +260,9 @@ Deadlines, in milliseconds from the moment the first handshake message was handl
 - `ready`, on both sides (the host's call to produce it, the client's handling of it), must happen within `HANDSHAKE_TIMEOUT_MS` in resume mode and within `PAIR_CONFIRM_TIMEOUT_MS` in pair mode, which leaves room for a human to confirm the fingerprint.
 - A violation is `EXPIRED`.
 
-State misuse (a transition called out of order, a state used twice) is `STATE`.
+Each step of the handshake is single use: the library hands back the next step from the one before, so a step cannot be taken out of order and no channel exists before key confirmation.
+Calling a step twice, or after `abort`, is `STATE`.
+A step that fails overwrites its secrets, and `abort` does the same for a handshake the caller abandons.
 
 ## 7. Encrypted frames and the data channel
 
@@ -289,10 +296,11 @@ Checks run in this order and stop at the first failure; the first failure closes
 7. The AEAD tag verifies under the receive key with `nonce(counter)` and `aad(TYPE_DATA, peer direction, counter)`, else `DECRYPT`.
 8. Only now is `last` set to `counter` and the plaintext returned.
 
-Sender: the counter is assigned synchronously when `send` is called, so counter order is call order; a sender whose next counter would exceed `MAX_COUNTER` closes the channel (`COUNTER_LIMIT`); plaintext outside 1 to `MAX_PLAINTEXT` is refused before a counter is consumed (`OVERSIZE`, or `MALFORMED` for empty); more than `MAX_PENDING_SENDS` unsent frames refuses the new one before a counter is consumed (`QUEUE_FULL`).
+Sender: the plaintext is copied when `send` is called, so a caller that reuses its buffer changes nothing; the counter is assigned synchronously at the same moment, so counter order is call order; a sender whose next counter would exceed `MAX_COUNTER` closes the channel (`COUNTER_LIMIT`); plaintext outside 1 to `MAX_PLAINTEXT` is refused before a counter is consumed (`OVERSIZE`, or `MALFORMED` for empty); more than `MAX_PENDING_SENDS` unsent frames refuses the new one before a counter is consumed (`QUEUE_FULL`).
 Encryption and emission run through one promise chain, so frame `n + 1` is not emitted before frame `n`, whatever the relative speed of their encryptions.
-If encryption or emission of any frame fails, the channel closes: a frame is never skipped.
-Received frames are processed through a second chain, so results are delivered in arrival order.
+If encryption or emission of any frame fails, the channel closes with the failure close and every later send is refused (`CLOSED`): a frame is never skipped.
+Received frames are copied on arrival and processed through a second chain, so results are delivered in arrival order and a bad frame poisons the frames behind it.
+A deliberate local close ends the channel with code `CLOSE_NORMAL` and the reason `"closed"`; it is not a failure.
 
 There is no resumption.
 A reconnect is a new handshake with fresh ephemeral keys and nonces; session state belongs to the application, not to the key.
@@ -304,8 +312,33 @@ A reconnect is a new handshake with fresh ephemeral keys and nonces; session sta
 - An unknown version, mode or message type closes.
 - There is no plaintext fallback: no frame is ever accepted or sent unencrypted after `hello_ack`, and `hello` and `hello_ack` carry only public values.
 - The close code and reason are constants of the module; no failure path chooses them.
-- Key material is dropped when a handshake or channel ends: raw secret bytes the library holds (ephemeral scalars, the shared secret, derived keys) are overwritten with zeros, and `CryptoKey` references are released.
+- Key material is dropped when a handshake or channel ends, to the extent the platform allows.
+  What the library does: the ephemeral scalar is overwritten as soon as the key is built (a test shows it); the raw channel keys are overwritten as soon as they are imported (a test shows it); a step that fails or is aborted overwrites the secrets it holds (not observable from outside, so no test shows it); a failed channel releases its `CryptoKey` references.
   A `CryptoKey` cannot be zeroed and JavaScript gives no guarantee about copies the engine made, so this is best effort and is claimed no further.
+
+Error codes, which appear in tests and the local log only:
+
+| Code | Meaning |
+|---|---|
+| `MALFORMED` | a frame, token or key that does not parse, has a wrong length or is not canonical |
+| `VERSION` | a control frame whose `v` is an integer other than 2 |
+| `TYPE` | a frame of the wrong type for the step (text where binary is expected and the reverse included) |
+| `MODE` | a `hello` whose mode is not `pair` or `resume`, or a client configured with a pairing secret in the wrong mode |
+| `MODE_MISMATCH` | a `ready` that opens but echoes another mode |
+| `OVERSIZE` | a control frame or data frame over its limit, or a plaintext over its limit |
+| `BAD_SIGNATURE` | an Ed25519 signature that does not verify |
+| `DECRYPT` | an AEAD tag that does not verify, or a sealed value that cannot be opened |
+| `COUNTER` | a data counter that is not exactly `last + 1` |
+| `COUNTER_LIMIT` | a counter above `MAX_COUNTER`, received or about to be sent |
+| `UNKNOWN_DEVICE` | resume by a device key the host has not enrolled |
+| `PAIRING` | pair mode with no live offer, or no live offer whose secret opens `auth` |
+| `EXPIRED` | a handshake deadline passed, or a pairing token past its expiry |
+| `STATE` | a step called twice or after `abort` |
+| `NAME` | a device name that is too long, not UTF-8 or contains a control character |
+| `TOKEN` | a pairing token that is malformed or outside the policy |
+| `QUEUE_FULL` | more than `MAX_PENDING_SENDS` unsent frames |
+| `CLOSED` | a send or receive on a channel that has closed |
+| `IO` | the transport or the engine failed while a frame was being sent |
 
 ## 9. Fingerprint shown to humans
 
@@ -531,7 +564,59 @@ Nothing in this protocol silently differs from the plan.
 
 ## 16. Vector file format
 
-(Filled in by the commit that adds the vectors.)
+`vectors.json` is one JSON object.
+Every byte value is a lowercase hex string; control frames are the exact JSON text strings of section 6.1; numbers are JSON numbers.
+A verifier recomputes every value it can from the inputs and compares, and runs every negative case; reading a value from the file and trusting it proves nothing.
+
+Top level: `format` (1), `protocol` (`"remi-relay-v2"`), `note`, `constants`, `identities`, `rid`, `ridDerivation`, `sessions`, `admission`, `pairingToken`, `seal`, `negative`.
+
+- `constants`: `v`, `maxCounter`, `maxPlaintext`, `maxFrame`, `minFrame`, `maxControlText`, `maxDeviceName`, `handshakeTimeoutMs`, `pairConfirmTimeoutMs`, `pairingTtlSeconds`, `pairingSkewSeconds`, `maxPushPlaintext`, `closeCode`, `closeReason`: the values of section 2.
+- `identities`: `machine`, `device`, `impostorMachine`, each `{ seed, publicKey }`; `seed` is the 32-byte Ed25519 seed (RFC 8032) and `publicKey` its public key.
+- `rid` is section 3's room id of `identities.machine.publicKey`; `ridDerivation` is the same value computed separately and must equal it.
+
+`sessions.pair` and `sessions.resume` are complete handshakes of the two modes, with these fields:
+
+| Field | Meaning |
+|---|---|
+| `mode`, `psk`, `deviceName` | the mode, the 32-byte pairing secret (`null` in resume mode), the device name used (UTF-8) |
+| `clientEphemeral`, `hostEphemeral` | `{ scalar, publicKey }`: the P-256 private scalar (32 bytes) and its 65-byte public key |
+| `clientNonce`, `hostNonce` | `n_c`, `n_h` |
+| `hello`, `helloAck` | the control frames of section 6.1 |
+| `h1`, `hostSigningInput`, `hostSignature` | `H1`, `lps("remi-relay-v2 host", H1)`, `sig_h` |
+| `z` | the 32-byte ECDH shared secret |
+| `keys` | `{ c2h, h2c }`: `k_c2h`, `k_h2c` |
+| `h2`, `clientSigningInput`, `clientSignature` | `H2`, `lps("remi-relay-v2 client", H2)`, `sig_c` |
+| `authPlaintext`, `authNonce`, `authAad`, `authCiphertext`, `auth` | the `auth` plaintext, the 12-byte nonce, the 24-byte AAD, the ciphertext with tag, the control frame |
+| `readyPlaintext`, `readyNonce`, `readyAad`, `readyCiphertext`, `ready` | the same for `ready` |
+| `fingerprint` | section 9's display string for `D_pk` and `M_pk` |
+| `data` | `{ c2h: [...], h2c: [...] }`, ten entries each: `{ counter, plaintext, nonce, aad, frame }` for counters 1 to 10; `frame` is the whole binary data frame |
+
+A verifier checks that the ephemeral public keys follow from the scalars, that `z` follows from either side's scalar and the other's public key, that `h1`, `hostSignature`, `keys`, `h2`, `clientSignature`, the ciphertexts, the control frames, the nonces, the AADs, the fingerprint and every data frame follow from the inputs by sections 6, 7 and 9, and that every ciphertext opens to its plaintext.
+Ed25519 signatures are deterministic, so `hostSignature` and `clientSignature` can be compared byte for byte as well as verified.
+
+`admission`: `nonce`, `hostInput`, `hostSignature`, `clientInput`, `clientSignature` (section 4, for `identities.machine` and `identities.device` and the file's `rid`), `pairingSecret`, `ticket` (section 4's `A`), `ticketHash` (`SHA-256(A)`).
+
+`pairingToken`: `nowSec`, `noSealKey` and `withSealKey`, each `{ text, relayUrl, machinePublicKey, secret, expiresAtSec, sealPublicKey }` (`sealPublicKey` is `null` when absent): `text` is section 5's string for those fields.
+
+`seal`: `recipientScalar`, `recipientPublicKey`, `rid`, `questionId`, `aad`, `plaintext`, `ephemeralScalar`, `nonce`, `sealed`: section 10's output for a push with those inputs.
+
+`negative` is a list of cases.
+Every case has `kind`, `name` and `expect` (`"accept"` for a positive control, `"reject"` otherwise); a rejecting case has `code`, the error code of section 8 that the first failing check produces (except `admission_verify`, which only has a verdict).
+Cases of kinds `hello_ack_verify`, `auth_open`, `auth_check` and `ready_open` also carry `session` (`"pair"` or `"resume"`), which names the session the case was derived from and is informational: a verifier works from the fields below.
+
+| `kind` | Fields | What a verifier does |
+|---|---|---|
+| `control_decode` | `frame` (`"hello"`, `"hello_ack"`, `"auth"` or `"ready"`), `text` | Applies the strict decoder of section 6.1, expecting that frame type, to `text` |
+| `ec_point` | `publicKey` | Accepts only a valid uncompressed P-256 point |
+| `hello_ack_verify` | `machinePublicKey`, `clientHello`, `helloAck` | Acts as the client of section 6.3 step 3: takes its mode, `E_c` and `n_c` from `clientHello`, the host values from `helloAck`, derives `rid` from `machinePublicKey`, computes `H1` and verifies `sig_h`; the failure is `BAD_SIGNATURE` |
+| `auth_open` | `z`, `h1`, `psk` (the host's, or `null`), `auth`; optionally `senderPsk` | Derives the keys from `z`, `h1` and `psk` and opens `auth`; the failure is `PAIRING` when `psk` is not `null` and `DECRYPT` when it is.  When `senderPsk` is present (it may be `null`), the keys derived with it must open `auth`, which shows the case differs from a valid one only in the pairing secret |
+| `auth_check` | `mode`, `z`, `h1`, `psk`, `hostSignature`, `auth`, `enrolled` (list of device public keys) | Opens `auth` (it must open), then applies section 6.3 step 5 in order: the name, `sig_c` over the recomputed `H2`, and in resume mode membership of `D_pk` in `enrolled` |
+| `ready_open` | `mode`, `z`, `h1`, `psk`, `ready` | Derives the keys, decodes the control frame `ready`, opens it under `k_h2c` and requires the one-byte echo of `mode` |
+| `data_sequence` | `key`, `direction` (the sender's direction byte), `startRecv`, `frames`, and for `accept` or a rejection `accepted` | Runs section 7's receiver over `frames` in order with `last + 1 = startRecv`, with `key` as the key of the frames' direction; `accepted` is how many frames were accepted before the first failure, and `code` is that failure's code |
+| `frame_length` | `length` | A data frame of that many bytes whose first byte is the data type and whose counter is 1: applies only checks 2 to 5 of section 7 (no tag check) |
+| `token_decode` | `text`, `nowSec` | Decodes the token under section 5 with `nowSec` as the clock |
+| `seal_open` | `recipientScalar`, `aad`, `sealed` | Opens `sealed` under section 10; every failure is `DECRYPT` |
+| `admission_verify` | `role`, `publicKey`, `rid`, `nonce`, `signature` | Accepts exactly when section 4's check passes for that role |
 
 ## Consequences
 
