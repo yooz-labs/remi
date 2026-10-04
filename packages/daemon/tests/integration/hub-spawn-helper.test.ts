@@ -67,7 +67,8 @@ describe('spawnHub', () => {
     expect(pid).toBeGreaterThan(0);
     // The kill is waited for before the throw, so the process is already gone when it arrives.
     expect(isProcessAlive(pid)).toBe(false);
-  }, 30000);
+    // Under the default wait of 15 s this would have run out of time: the parameter is honored.
+  }, 10000);
 
   test("a hub that cannot bind its port fails with the hub's own words, not just an exit code", async () => {
     const port = await reserveRange(1, 50, BIND);

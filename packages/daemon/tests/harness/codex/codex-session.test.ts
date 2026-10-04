@@ -548,6 +548,17 @@ describe('CodexHarness', () => {
       Reflect.deleteProperty(process.env, 'FAKE_AGENT_RECORD_DELAY');
     });
 
+    test('the fake is slow to record, so the argv tests here would catch a half-written file (Q1)', async () => {
+      // Three arguments, then a pause between each of the two renames, at 0.15 s each, is a floor of
+      // 0.75 s from the spawn (a sleep never ends early; 50 ms of slack is for the clock). If the
+      // delay or any pause did nothing, the argv tests would pass whether or not the recorder is atomic.
+      const spawnedAt = Date.now();
+      const a = create(buildDeps(startServer()), ['-m', 'some-model']);
+      await a.session.start();
+      await waitForRecordedArgv(fakeDir);
+      expect(Date.now() - spawnedAt).toBeGreaterThanOrEqual(700);
+    });
+
     test('spawns codex --no-alt-screen with the validated arguments after it', async () => {
       const a = create(buildDeps(startServer()), ['-m', 'some-model']);
       await a.session.start();
