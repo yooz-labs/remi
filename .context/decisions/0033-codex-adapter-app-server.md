@@ -233,7 +233,7 @@ Phase 2 amendment: foundations, zero behavior change for Claude (#1176).
 3. Store writes for a non-Claude identity.
 `SessionStore.updateHarnessIdentity` fills in the id of a record created naming its harness; it refuses `claude` and a record naming another harness. `findByHarnessSessionId` found a record by pair and preferred the single active owner; it had no production caller and was deleted in the Phase 5 review (G14), since its throw on two exited rows is wrong for every lookup a caller would make (Phase 6 can add one that returns a list). `assertUniqueSessionIdentities` rejects two active records with the same non-Claude pair, for an unknown harness string too.
 4. Argument policy: default-deny in both modes.
-`validateCodexArgs` allows `-m/--model`, `-a/--ask-for-approval`, `-s/--sandbox`, `--add-dir`, `-i/--image`, `--dangerously-bypass-approvals-and-sandbox`/`--yolo`, `-h/--help`, `-V/--version` and `--no-alt-screen`, and refuses every other flag by name; its denylist (`--worktree`, `-C/--cd`, `-c/--config`, `--enable`, `--disable`, `-p/--profile`, `--strict-config`, `--dangerously-bypass-hook-trust`, `--no-daemon`, `--remote*`, `--approve-for-me`, `--not-so-yolo`, `--search`, `--oss`, `--local-provider`) only chooses the message. `-C/--cd` and `--worktree` are refused because identity matching uses the session cwd. The returned arguments are `[...flags, 'resume', uuid]` or `[...flags, '--', ...promptWords]`, so Codex cannot read a prompt as a subcommand whatever its spelling; the subcommand name list is a message only. A valued flag never takes a flag-shaped token as its value. `validateCodexRemoteArgs` is the default-deny allowlist for a request over the wire: `-m/--model`, `-a untrusted|on-request`, `-s read-only|workspace-write`, `resume <uuid>`, at most 16 arguments of at most 256 characters, no NUL, total over any input. Unverified, because remi must not run Codex: the lists come from the plan, the spike and a read-only look at Codex 0.160.0's embedded help strings. The arg parser drops a user's `--` today, which Phase 3 owns.
+`validateCodexArgs` allows `-m/--model`, `-a/--ask-for-approval`, `-s/--sandbox`, `--add-dir`, `-i/--image`, `--dangerously-bypass-approvals-and-sandbox`/`--yolo`, `-h/--help`, `-V/--version` and `--no-alt-screen`, and refuses every other flag by name; its denylist (`--worktree`, `-C/--cd`, `-c/--config`, `--enable`, `--disable`, `-p/--profile`, `--strict-config`, `--dangerously-bypass-hook-trust`, `--no-daemon`, `--remote*`, `--approve-for-me`, `--not-so-yolo`, `--search`, `--oss`, `--local-provider`) only chooses the message. `-C/--cd` and `--worktree` are refused because identity matching uses the session cwd. The returned arguments are `[...flags, 'resume', uuid]` or `[...flags, '--', ...promptWords]`, so Codex cannot read a prompt as a subcommand whatever its spelling; the subcommand name list is a message only. A valued flag never takes a flag-shaped token as its value. `validateCodexRemoteArgs` is the default-deny allowlist for a request over the wire: `-m/--model`, `-a untrusted|on-request`, `-s read-only|workspace-write`, `resume <uuid>`, at most 16 arguments of at most 256 characters, no NUL, total over any input (changed twice since: the Phase 5 review cut it to `-a untrusted` and `-s read-only`, and LV-4 showed Codex 0.160.0 rejects `-a untrusted`, so it now allows `-m`, `-s read-only` and `resume <uuid>` and refuses `-a` in every form; see H3 and "LV-4 results"). Unverified when written, because remi must not run Codex: the lists came from the plan, the spike and a read-only look at Codex 0.160.0's embedded help strings, and the `-a untrusted` spelling was wrong. The arg parser drops a user's `--` today, which Phase 3 owns.
 5. Neutral PTY spawn.
 `createPtySessionForSession` takes `outputSink` (`PtyOutputSink`, with `NOOP_OUTPUT_SINK` for a harness that reads no PTY output) and an optional `launch: {command, childEnv}` with both members required, so a non-Claude command never inherits `buildClaudeChildEnv`; absent, it is the Claude launch. `onExit`'s `markClaudeChildExited` is neutral in effect: the `claudeChild*` fields name the harness's child whichever command it is.
 6. The notifier registration moved (#1165 E).
@@ -323,7 +323,7 @@ The daemon version is logged from `initialize.userAgent` only; remi never runs `
 Without it a message from a phone, Telegram or the relay would have been typed, plus its Enter, into whatever the Codex TUI had focused (an approval overlay, the Update modal), the failure the spike's Update-modal incident showed (a typed digit ran an installer): `promptUp` reads "nothing up" for a session with no screen reads and no decision channel.
 Raw input (an attach client's keystrokes, the web Escape button, Telegram `/interrupt`) still reaches the terminal: `raw: true` is set by the client, the daemon cannot tell a person from a script, and an attach client's keystrokes must reach Codex, which is accepted by design (E3).
 For such a session the line at the top of `onUserInput` that logs every user input logs the length only, raw input included, and the refusal logs the length too (R6); Claude's line is unchanged.
-13. **Not verified, for LV-2 (run live on 2026-10-04: the Phase 4 amendment's item 11 gives the results; only the cold start (R2), `-- exec x`, `-- login` and a `/resume` of an unloaded thread are still not seen).**
+13. **Not verified, for LV-2 (run live on 2026-10-04: the Phase 4 amendment's item 11 gives the results; only the cold start (R2), `-- exec x`, `-- login` and a `/resume` of an unloaded thread were still not seen; LV-4 then saw the cold start, see "LV-4 results").**
 That Codex's server accepts the hand-rolled client's handshake (LV-1 is the same question); that bare `codex` starts the shared daemon on a cold start (R2); that `thread/started` for the TUI thread arrives within about 2 s and the title helper is ignored; that the attach succeeds after the first message; that a dropped subscriber leaves the TUI untouched; that no `.claude/settings.local.json` appears; whether the system message shows anywhere; whether `thread/started` carries any client marker that would tell a non-remi window apart; that `remi codex -- login` and `remi codex -- exec x` send those words as prompt text (the inserted `--` in `codex-args.ts` is unverified, and so is item 8's claim that it makes every word a prompt); `-i` together with `resume`; that TUI-internal `/resume` emits no `thread/started` (the spike's `expB3.jsonl:12-13` shows none, so the tracker keeps the old thread, a known limit); and `kill -9` of remi in the middle of an approval.
 14. **Exports with no production caller in this PR.**
 `UntrustedSocketError` (read as an `instanceof` only by the launch's notice wording and tests), `validateCodexRemoteArgs` (phase 5: the hub calls it, #1179), `SessionBindingStore.getIdentity` (phase 5: the session list and every question emission call it, #1179) (`SessionStore.findByHarnessSessionId`, which had none, was deleted in the Phase 5 review), `resolveStoredSession`'s Codex branch (deleted in #1179), and the client's `AppServerDisconnectedError`, `AppServerTimeoutError` and `AppServerSerializationError` (phase 4 reads them when it answers).
@@ -465,7 +465,7 @@ Verified: (a) a phone Yes (`accept`) ran the command and the overlay closed, and
 LV-1: the handshake of the hand-rolled client works against the real server (`initialize` answered in 2 ms with result keys `userAgent`, `codexHome`, `platformFamily`, `platformOs`; the 101 response carries `x-codex-websocket-max-unfragmented-message-bytes: 16777216` and no extensions; `optOutNotificationMethods` is accepted and effective; `thread/loaded/list` and `server/diagnostics` are answered; R3 is answered), except the keepalive (item 15).
 LV-2: `thread/started` for the TUI thread arrives within about 0.8 s of the spawn, with `cwd` equal to the scratch directory's realpath, and the identity is written to `sessions.json` at that moment, before any message; the ephemeral `threadSource: "thread_title"` helper thread (0 environments, no path) appears about 1 s after the first message and is ignored; `thread/resume` fails -32600 "no rollout found for thread id <uuid>" before the first message (the exact text of the fixture) and succeeds about 1 s after it; no `.claude/settings.local.json` is written and `~/.claude/settings.json` is unchanged; `thread/started` carries no client marker (a plain window and a remi-spawned one are indistinguishable; `source` is "vscode", `originator` is daemon-global); a TUI `/resume` of a thread already loaded in the daemon emits no `thread/started`; words after `--` are read as prompt text (checked only with `help` and `completion bash`; `-- exec x` and `login` were not run); and `-i <missing.png> resume <uuid>` makes clap swallow `resume` and the uuid as image paths, so the TUI started a fresh session and auto-submitted the images, a verified hazard that confirms remi's refusal of `-i` with `resume`.
 Facts seen live: a `kill -9` of remi also ends the user's Codex TUI (the child gets SIGHUP when remi's PTY master closes, the same wrapper-owns-the-PTY posture as Claude) while the pending approval stays pending on the daemon; with Codex's "Approve for me" (approvalPolicy on-request with the default reviewer, status line "Read Only (Approve for me)") Codex's Guardian approves a command automatically and sends NO `requestApproval` to any client, so remi shows nothing and cannot answer, and the Guardian frames that now exist (`item/autoApprovalReview/started`, `item/autoApprovalReview/completed`, a `guardianWarning` text) are not handled (the plan's statement that no Guardian frames were captured was wrong); `originator` is daemon-global, set by the first client that initialized (after a `remi` client initialized first, later TUI-created threads read "remi", R8); server request ids start at 0.
-Still not seen: (h) a subagent's request (whether it is addressed to a connection that resumed only the main thread, and replayed); LV-2 (b), the cold start of the daemon with it stopped (R2); `-- exec x` and `-- login`; a TUI `/resume` of an unloaded thread.
+Still not seen: (h) a subagent's request (whether it is addressed to a connection that resumed only the main thread, and replayed); LV-2 (b), the cold start of the daemon with it stopped (R2; seen by LV-4, see "LV-4 results"); `-- exec x` and `-- login`; a TUI `/resume` of an unloaded thread.
 12. **Decisions of the review rework (F1 to F8).**
 - F1, no per-card deadline for Codex: Claude's holds are bounded by hook timeouts remi cannot lift, but a Codex request waits in the app-server without a deadline and the card mirrors it, so expiring the card would strand a request that is still pending. The consequence, stated plainly: a card on a lock screen stays answerable for as long as Codex waits. There is no timer.
 - F2, rotation keeps approval authority (residual R4): a plain non-remi `codex` window in the same directory, opened while the session is idle, looks like a `/new` and re-binds it, and approvals then come from that thread. It is not closed here (same user, same machine, not a security boundary), but never silent: every rotation sends the system message "remi now follows a new Codex thread; approvals come from it", once per rotation event, next to the log line `rotated from <last 8> to <last 8>`. Confirmed live on 2026-10-04: a plain `codex` window re-bound an idle session and the message reached the phone.
@@ -518,8 +518,8 @@ The child is started with the inherited flags, then `--harness <id>`, then `--` 
 Claude's allowlist (`harness/claude-args.ts`, default deny, each slot once, at most 16 arguments of at most 256 characters, no NUL): `--resume`/`-r <uuid>` (lowercased), `--fork-session` only beside a resume, `--model <name>`.
 (Changed by the Phase 5 review, H4: `--continue`/`-c` was on this list, from #1165 B, and was dropped.)
 It is tighter than #1165 B in one place: the model name may not start with a hyphen, which the issue's pattern allows and which would let a flag stand in as the value.
-`validateCodexRemoteArgs` (Phase 2) also allows `resume <uuid>`, so a hub request can ask for a Codex resume; the validators decide and the issue lists hub-spawned `resume` as out of scope, so this is allowed by the validator and unverified headless (item 13).
-(Changed by the Phase 5 review, H3: it now allows `-a untrusted` and `-s read-only` only, and the hub refuses a resume of a thread a live session holds before it spawns, H2.)
+`validateCodexRemoteArgs` (Phase 2) also allows `resume <uuid>`, so a hub request can ask for a Codex resume; the validators decide and the issue lists hub-spawned `resume` as out of scope, so this is allowed by the validator; LV-4 ran it headless against the real Codex ("LV-4 results").
+(Changed by the Phase 5 review, H3: it allowed `-a untrusted` and `-s read-only` only, and the hub refuses a resume of a thread a live session holds before it spawns, H2. Changed again after LV-4: `-a untrusted` is not a Codex value, so it allows `-s read-only` and no `-a` at all, H3.)
 4. **`explicitArgs`.**
 `ParsedArgs.explicitArgs` is the tokens after the first `--` and nothing else.
 `passthroughArgs` (Phase 3) is the wrapper's: strays and the `--` itself, which `validateCodexArgs` needs to tell a prompt from flags, and which would turn a hub's `-m x` into prompt text if a daemon read it.
@@ -545,7 +545,7 @@ Line one is the condition: Codex was started without a terminal, remi cannot tel
 Line two is the way out, naming this session by the address `remi attach` accepts (`remi attach <host>:<port>/<id8>`; a bare `remi attach` takes the newest session, which may be another) with the hedge that this has not been checked against a real Codex.
 The CLI prints line one only, since it attaches itself, and prints it escaped; the web client does not show the notice (no UI in this phase), and a refusal or a Claude success carries none.
 Why the notice and not silence or `success:false`: the hub cannot know either way, and remi never types into a Codex PTY, so the only truthful words are the unknown and the way out.
-`remi attach` reaching such a prompt is the claim LV-4 must check.
+`remi attach` reaching such a prompt is the claim LV-4 had to check, and it did not: no Update or Trust modal appeared in any launch, so the claim is still unverified and the notice's second line keeps its hedge ("LV-4 results").
 10. **Web.**
 `UISession.harness` is copied from `hello_ack` (an existing session's patch and a new one's entry) and from each list entry; a source pin reads the three copies in `App.tsx`.
 `harnessLabel` (in `session-display.ts`, the single source for session display): `claude` and an absent harness are no label, `codex` is "Codex", `opencode` is "OpenCode".
@@ -563,10 +563,10 @@ The header's binding button still reads `claudeSessionId`, so a Codex session ha
 - Plan open call 17 (advertise Codex only after LV-4) is not applied: availability is PATH presence, as the issue says.
 - The plan's "exports with no production caller" rule: none in this PR; `SessionStore.findByHarnessSessionId` (Phase 2) had none and was deleted in the Phase 5 review (G14), with its tests; a lookup by thread id, if a later phase needs one, should return a list.
 12. **Test changes to existing files, all disclosed in the PR:** `harness.test.ts` (the declared change: the factories no longer emit neither key), setup lines in `binding-protocol.test.ts` (the binding's shape), the new required dependencies added to each handler constructor in the existing tests, `message-api-setup.test.ts` (`getClaudeSessionId` became `getIdentity`), the `--host` test in `codex-launch-characterization.test.ts`, and the three deleted tests of item 8.
-13. **What LV-4 must verify (not done).**
+13. **What LV-4 had to verify (run live on 2026-10-04: the results are in "LV-4 results", below; this list is what was asked, as written before the run).**
 (a) a Codex session created from a hub request in an already-trusted directory reaches its prompt with no terminal attached, learns its thread, and shows an approval card that the phone's answer closes;
 (b) what Codex does headless at an Update prompt and at a Trust prompt in an untrusted directory, and that `remi attach` on the host dismisses them, so the notice's advice is true;
-(c) that `-m`, `-a untrusted` and `-s read-only` are accepted by the real Codex as the validators assume (the spellings come from embedded help strings, never from a run), and that `resume <uuid>` through a hub request works at all (the Phase 5 review narrowed the list, H3, and added items (g) and (h) below);
+(c) that `-m`, `-a untrusted` and `-s read-only` are accepted by the real Codex as the validators assume (the spellings come from embedded help strings, never from a run; LV-4: `-a untrusted` is REJECTED, the other two are accepted), and that `resume <uuid>` through a hub request works at all (the Phase 5 review narrowed the list, H3, and added items (g) and (h) below);
 (d) that the daemon cold start (R2) works from a hub child with no terminal;
 (e) that `codex` resolves on the hub's PATH after `resolveShellPath` to the binary the child runs;
 (f) the web app's label on a real Codex session, and `remi codex --host` from a second machine;
@@ -578,6 +578,69 @@ The golden diff is additions only (the parsed diff, checked by `protocol-fixture
 `macos-fixture-conformance.test.ts` is green, and the real Swift decoders were checked directly: the real `HubProtocol.swift` was compiled with `swiftc` and decoded the regenerated `hello_ack` golden, a Codex-shaped ack (no `claudeSessionId`, null `harnessSessionId`, `harnesses`) and the other four frames HubClient decodes; a synthesized `Decodable` ignores unknown keys.
 Mutants, gates and the removed-line check are in the PR.
 
+### LV-4 results (live, 2026-10-04)
+
+This section sits here, with the Phase 5 amendment it gates, though the run came after the rework and round 2 below.
+It records what was observed, as plain facts; the open questions it raises are filed as issues, and no decision is written for them.
+
+The run was made by a spike agent against the owner's installed Codex 0.160.0 and Claude Code 2.1.289, with remi 0.7.16-dev.7 from the epic branch at ea25b980 (Phase 5 merged), on Bun 1.4.2.
+The hub ran from source with an isolated `REMI_HOME`, with no relay and no mDNS, loopback only, on ports well away from the owner's own remi sessions.
+The budget spent was 3 Codex turns and 1 Claude turn.
+The shared Codex daemon was stopped before the run (its control directory held only the startup lock file and no Codex process) and stopped again afterward.
+Before every key typed through `remi attach`, the screen matched none of the Update, Trust or modal markers and the composer placeholder was visible; no digit was sent.
+
+Status per item of item 13 (the letters are that list's):
+
+- **(a) A Codex session created from a hub request: PASS for the prompt and the identity; the approval card is NOT RUN.**
+  A `create_session_request {harness: "codex", args: ["-s", "read-only"]}` was answered with success about 0.3 s after the spawn (the hub answers once the child registered, before Codex launches).
+  The child ran `codex --no-alt-screen -s read-only` in a PTY with no terminal.
+  `remi attach`, read only, showed the Codex banner, the directory and the composer, and no modal.
+  The child's log shows `could not connect (attempt 1): the Codex control socket does not exist (yet)`, then the app-server version, `identity: thread` with the first eight characters, `Status: idle`, `thread/resume failed (code -32600); retrying` (no rollout before the first message, as in LV-2) and `attached to thread` after the first message.
+  The child's `hello_ack` had `harness: "codex"`, a `harnessSessionId` equal to the thread id, no `claudeSessionId` and `harnesses: ["claude", "codex"]`; its session-list entry had `harness: "codex"` and `canResume: false`; the hub's own list was session-less with `daemonPorts`.
+  `create_session_response.notice` was present for Codex and absent for Claude.
+  Three turns raised no approval: the host's default posture in this run was `danger-full-access` with Codex's own "Approve for me", so a plain session never asks, and with `-s read-only` the write was blocked and the model did not escalate.
+  The approval card's JSON shape and its closing after a phone answer were therefore not observed for a hub-created session (they were observed live in LV-3 for a TUI-launched `remi codex`).
+- **(b) The Update prompt and the Trust prompt: NOT RUN.**
+  None appeared in any launch.
+  One footer, `1 warning · f2 to view`, showed on every session, with or without remi's flags; it was not opened.
+- **(c) Flags against the real Codex: FAIL for `-a untrusted` (fixed here); PASS for the rest.**
+  Codex 0.160.0 rejects `-a untrusted` with exit 2 (`invalid value 'untrusted' for '--ask-for-approval' [possible values: on-request, never]`).
+  It was the only `-a` value the hub's remote validator allowed, so every remote request with `-a` produced a dead child, and the client saw "The session could not be started on the host; the host's remi log has the reason."
+  The spelling had come from embedded help strings and was wrong for this value.
+  `-a on-request`, `-a never`, `-s read-only`, `-s workspace-write` and `-m <model>` are accepted by Codex.
+  Through the hub, `-m` and `-s read-only` were accepted and the child came up; `-a on-request` and `-s workspace-write` were refused by the hub (H3), as designed.
+  The fix: the remote allowlist carries no `-a` at all (H3, changed after LV-4).
+  The startup failure was also opaque: the child's PTY output went to `NOOP_OUTPUT_SINK`, so only `exited with code 2` reached a log.
+  Fixed here: the session keeps the first 2 KB of the child's output until it has named a thread, and logs it once, escaped, when the PTY exits within about 10 seconds of the spawn.
+  `resume <uuid>` through a hub request: PASS (item 13 (c), second half).
+  It was refused with the H2/P4 text while a live remi session held the thread; after that session stopped, the same request resumed headless, with the same thread and the earlier turns replayed and no model turn.
+- **(d) The daemon cold start (R2) from a hub child with no terminal: PASS.**
+  With the daemon stopped, the child came up and the client connected after its first attempt failed, as the log lines in (a) show.
+- **(e) `codex` on the hub's PATH: PASS.**
+  The hub-spawned child ran the same Codex binary the owner's login shell resolves, and `resolveShellPath` with a minimal LaunchAgent-like PATH resolved `codex` and `claude` to the same real paths.
+- **(f) The web label and `remi codex --host` from a second machine: NOT RUN.**
+- **(g) Claude through a hub: PASS for the spawn and for `--resume <id>`.**
+  The spawn carried no `harness` field, the entry read `harness: "claude"`, and `--model` worked.
+  Refused as designed: `--permission-mode`, `--continue`, and `--resume` of an id a live session holds.
+  A session started directly with `--permission-mode acceptEdits` and then resumed through the hub with `--resume` came back in `accept edits` mode, although the hub child's arguments named no mode and the account default differs: Claude restores the session's earlier mode on resume.
+  `bypassPermissions` was not tried.
+  A `resume_session_request` sent to the hub is UNSUPPORTED, as documented (#1124, #1129).
+- **(h) The headless Update and Trust prompts, and `remi attach` as the way out: NOT RUN.**
+  No modal appeared, so `create_session_response.notice`'s sentence that `remi attach` lets the user answer an Update or Trust prompt is still UNVERIFIED and keeps its hedge.
+
+NOT RUN, listed once so nothing is read as passed: an approval card on a hub-created session; the Update and Trust modals through `remi attach`; `remi codex --host` from a second machine; the web label.
+
+What the run showed, as facts and not as decisions:
+
+- A hub-created Codex session has no first prompt by construction: a remote request's `args` may not contain `--`, and phone chat to a Codex session is refused (W1), so the first turn needs a person at the terminal or at `remi attach`.
+- The host's Codex posture decides whether any approval appears at all: with `danger-full-access` and "Approve for me" nothing asks, so no approval reaches the phone without a host configuration that asks.
+  A remote request with no arguments inherits that posture; H3 lets a request only tighten it, and the only tightening Codex 0.160.0 takes from a flag is `-s read-only`.
+- On a cold start the Codex TUI itself started the shared daemon, not remi.
+  The control socket appeared as a symlink to a socket in a per-user temporary directory; `codex app-server --listen unix:// --managed-daemon` and `codex app-server daemon pid-update-loop` both had the TUI as their parent, each in its own process group, so both outlived the TUI and the remi child.
+  The child's argv has no `--remote`; this ADR has no line that says it does.
+- `codex app-server daemon stop` stops the app-server but leaves its `pid-update-loop` helper running, with parent pid 1, until it is killed by pid.
+- Claude restores the earlier permission mode on `--resume`, as (g) says.
+
 ### Decisions recorded in the Phase 5 review rework
 
 Two fresh reviewers (the wire and trust boundary; the daemon wiring, tests and docs) found no critical defect: `--` is last in the only spawn path, both remote allowlists are default deny with no bypass found, the goldens are additions only, every ack carries `harnesses`, and Claude's paths are unchanged.
@@ -587,16 +650,17 @@ They found real work, G1 to G18, and the lead decided H1 to H5.
 There is no opt-in switch: the PR targets the epic branch, nothing reaches users from it, and LV-4 is a HARD gate on merging the epic.
 If LV-4 shows trouble, the lead gates the advertisement then.
 - **H2, a remote Codex `resume <uuid>` stays in the validator, and the hub refuses a held thread.**
-It fails closed, it is the Phase 2 capability and it has tests, but it is UNVERIFIED headless and is an LV-4 item.
+It fails closed, it is the Phase 2 capability and it has tests; it was unverified headless when decided, and LV-4 then ran it ("LV-4 results").
 The hub refuses a thread a live session already holds BEFORE it spawns; before, the child refused and the client saw only "Daemon process exited unexpectedly".
 (Changed in round 2 of the PR review, P4: the client reads a generic text, "That Codex thread is already open in a live remi session on the host", with no id and no port, because the first rework's text named another session's first eight id characters and its port; the hub's log has the holder, escaped. The person running `remi codex resume` at the machine keeps the full text, with an address they can paste into a shell, `remi attach localhost:<port>/<id8>` (P9), since a `<host>` placeholder is a redirect there.)
 - **H3, a remote Codex request may only tighten the host's posture.**
-`-s read-only`, `-a untrusted`, `-m` and `resume <uuid>` are allowed, and `-s workspace-write` and `-a on-request` are refused remotely.
-A remote client must not loosen what the host chose, as Claude's allowlist leaves out `--permission-mode`; widening needs a person at the terminal, where `remi codex` still allows both.
+`-s read-only`, `-m` and `resume <uuid>` are allowed, and `-s workspace-write` and `-a` in every form are refused remotely.
+A remote client must not loosen what the host chose, as Claude's allowlist leaves out `--permission-mode`; widening needs a person at the terminal, where `remi codex` still allows `-s workspace-write` and `-a`.
+(Changed after LV-4: H3 first allowed `-a untrusted`, as the one value that asks for every command. Codex 0.160.0 rejects it with exit 2, since `--ask-for-approval` accepts only `on-request` and `never`, so every remote request with `-a` produced a dead child. The lead's decision: the remote rule is now no `-a` at all, any value, because neither accepted value can be shown to tighten a posture remi cannot read, and the host's own configuration may already be stricter than `on-request`. The refusal says why. `REMOTE_APPROVAL_POLICY` is removed. The local validator still passes `-a` through unchanged, a person at their own terminal, and Codex reports its own error for a value it does not take.)
 - **H4, the Claude allowlist drops `--continue`, which amends #1165 B's list.**
 The launch injects `--session-id` for a session with none of its own (`claude-binding.ts`), and Claude Code very likely rejects `--session-id` beside `--continue` unless `--fork-session` is given; unverified, so it fails closed.
 `--fork-session` is refused unless a `--resume <uuid>` is also present, for the same reason.
-`-r/--resume <uuid>` and `--model` stay, and `--resume` through a hub is UNVERIFIED: whether a resumed session keeps a permissive permission mode from its earlier life is unknown and is on the LV-4 checklist (item 13 (g)).
+`-r/--resume <uuid>` and `--model` stay. `--resume` through a hub was unverified when decided; LV-4 ran it, and a resumed session came back in the permission mode of its earlier life ("LV-4 results").
 - **H5, the older-daemon gate in a hub-spawned child excludes its parent hub.**
 With `REMI_SPAWNED_CHILD=1` the gate also excludes `process.ppid`: the hub started the child from its own command, so it is the same build, but a version that does not parse (a PR-stamped build, which AGENTS.md recommends for test builds) read as older and the hub refused its own child.
 (Superseded in round 2 of the PR review, P1: any SIBLING of the same PR-stamped build tripped the gate too, so a Claude session created from the phone made the next Codex create fail with a false "an older remi is running", which blocks LV-4.
@@ -626,7 +690,7 @@ A later phase can add a lookup that returns a list.
 - **G17.** `--harness` is no longer called hidden, `new --host` help says what the `--` rule is, and comments say that `Connection`'s own ack never reaches a client in production and that a discovered transcript carries no harness because absence means Claude by construction.
 - **G18.** This record, and the list of what is still not verified.
 
-What is still not verified, for LV-4 (G18; item 13 has the rest):
+What was still not verified, for LV-4, when the rework was written (G18; item 13 has the rest; the outcomes are in "LV-4 results": (a) PASS, (b) PASS, with the earlier permission mode restored on resume, (c) NOT RUN, (d) `-a untrusted` REJECTED, `-m` and `-s read-only` accepted):
 (a) a remote Codex `resume <uuid>` headless;
 (b) Claude's `--resume <uuid>` through a hub, and whether a permissive permission mode carries over;
 (c) the headless Update and Trust prompts, and `remi attach` as the way out;
@@ -649,7 +713,7 @@ Daemon text is escaped only when it is a string; the notice is kept only when it
 Three doc statements corrected (`--harness` is not hidden, the directory rule, the help's unverified label for `--resume` through a hub); the `FIXTURE_VARIANTS` block no longer sits between a doc comment and its const; and the G15 source scan now reads every `.ts` file under `packages/daemon/src` for `createQuestion`, however it was imported, and refuses a literal `undefined` or `null` identity, a spread, an alias, a re-export and a use as a value (synthetic offending source for each shows the scan can fail).
 - **P9, the local held-thread text** names `remi attach localhost:<port>/<id8>`; `<host>` stays only in the hub's notice and in the messages a headless session sends its clients (`TerminalWords`), where it is a placeholder, and the notice adds that the address works from a machine that can reach that port (it does not through a single-port SSH tunnel or the relay).
 - **P10, a Claude `--resume` through a hub is refused when a live session holds the id** (a judgment call, decided): the Claude allowlist returns the session it names, the check runs whether or not the request names the harness, the client text is generic ("That Claude session is already open in a live remi session on the host"), the holder is in the log, and `START_FAILED_TEXT` stays opaque.
-Claude `--resume` through a hub is still UNVERIFIED against a real Claude (item 13 (g)).
+Claude `--resume` through a hub was still unverified against a real Claude then; LV-4 ran it ("LV-4 results").
 
 - **P11, a flake in our own test.**
 The fake `claude` and `codex` wrote `argv` with a shell redirect, which creates the file empty and fills it as the loop runs, so a test that waited for the file to EXIST read half the argument list (seen on Bun 1.3.11).
