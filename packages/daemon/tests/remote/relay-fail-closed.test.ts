@@ -24,7 +24,12 @@ import { generateAnswerKeyPair, sealAnswer } from '@remi/shared';
 import type { AnswerKeyPair, UUID } from '@remi/shared';
 import type { AdapterEvents } from '../../src/adapters/connection-adapter.ts';
 import { RelayAdapter } from '../../src/remote/relay-adapter.ts';
-import { RecordingTransport, settle, startAuthenticatedRelayPeer } from './relay-test-peer.ts';
+import {
+  RecordingTransport,
+  makeAuthenticator,
+  settle,
+  startAuthenticatedRelayPeer,
+} from './relay-test-peer.ts';
 
 /** The payload the issue names: a single keystroke typed into the live session. */
 const KEYSTROKE = { type: 'user_input', sessionId: 'x', content: '1\r', raw: true };
@@ -288,5 +293,62 @@ describe('relay adapter with an authenticator (permanent code), the unchanged pa
     } finally {
       await peer.dispose();
     }
+  });
+});
+
+// #1193 review F1: the permanent-code mode authenticates a key, but by default
+// (trust on first use, `tofuMode: 'auto-accept'`) it ADDS any unknown key it is
+// shown to the authorized keys. So anyone who knows the room code is admitted on
+// their first connection. This change does not widen into a behavior change;
+// it makes the property loud at boot, with the way to turn it off.
+describe('permanent-code mode warns that trust on first use admits unknown keys', () => {
+  let log: ReturnType<typeof captureConsole>;
+
+  beforeEach(() => {
+    log = captureConsole();
+  });
+
+  afterEach(() => {
+    log.restore();
+  });
+
+  async function startWith(tofuMode: 'auto-accept' | 'reject'): Promise<string[]> {
+    const made = await makeAuthenticator(tofuMode);
+    const transport = new RecordingTransport();
+    const adapter = new RelayAdapter(
+      {
+        enabled: true,
+        signalingUrl: SIGNALING_URL,
+        code: ROOM_CODE,
+        rotateCode: false,
+        authenticator: made.authenticator,
+        createTransport: () => transport,
+      },
+      {},
+    );
+    try {
+      await adapter.start();
+      return log.lines();
+    } finally {
+      await adapter.stop();
+      made.remove();
+    }
+  }
+
+  test('with trust on first use (the default) it says unknown keys are added, and how to stop that', async () => {
+    const lines = await startWith('auto-accept');
+    const warning = lines.find((line) => line.includes('authorized keys'));
+    expect(warning).toBeDefined();
+    expect(warning).toContain('first connection');
+    expect(warning).toContain('--no-tofu');
+    // One or two lines, and nothing a reader could use to find the room.
+    expect((warning as string).split('\n').length).toBeLessThanOrEqual(2);
+    expect(warning).not.toContain(ROOM_CODE);
+    expect(warning).not.toContain(SIGNALING_URL);
+  });
+
+  test('with --no-tofu (reject) there is no such warning', async () => {
+    const lines = await startWith('reject');
+    expect(lines.some((line) => line.includes('authorized keys'))).toBe(false);
   });
 });
