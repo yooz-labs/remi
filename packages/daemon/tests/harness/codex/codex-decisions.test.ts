@@ -5,12 +5,22 @@
  * broadcast the way it is in production), and the real input handlers for the
  * "types nothing" group.
  *
- * What is NOT real here, disclosed: the client. `CodexDecisions` only needs
- * `respond(id, result)` of the app-server client, so these tests give it a
- * recording one that can be told the link is down or that it throws. It decides
- * nothing; it is the I/O boundary. The real `AppServerClient`, `ThreadTracker`
- * and `FakeAppServer` run in `codex-first-answer-wins.test.ts`, and the whole
- * daemon in `integration/codex-launch-characterization.test.ts`.
+ * Fault injection, ALL of it, disclosed. These stand in for a collaborator of
+ * `CodexDecisions`; none replaces `CodexDecisions` or the card builder:
+ *  - the app-server client: only `respond(id, result)` is needed, so a recording
+ *    one that can be told the link is down or that `respond` throws (the I/O
+ *    boundary; it decides nothing);
+ *  - `threadRole`: a `roles` map standing in for `ThreadTracker.role`;
+ *  - `present`: a wrapper that can throw before it reaches the real
+ *    `messageApi.handleQuestion`;
+ *  - `sessionRegistry.removeQuestion` and `onQuestionResolved`: replaced by
+ *    functions that throw, in the one test of a failing clean-up;
+ *  - `notice`: a collector of the system messages;
+ *  - the scheduler: a recording one that fires only the timers a test chooses
+ *    (it replaces the clock, never the logic).
+ * The real `AppServerClient`, `ThreadTracker` and `FakeAppServer` run in
+ * `codex-first-answer-wins.test.ts`, and the whole daemon in
+ * `integration/codex-launch-characterization.test.ts`.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
