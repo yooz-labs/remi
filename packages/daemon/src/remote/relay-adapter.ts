@@ -7,11 +7,17 @@
  * ## Nothing is accepted without an authenticator (#1193)
  *
  * Auth is determined by the presence of an `authenticator` in the config, which
- * `cli.ts` passes only for `--auth --permanent-code`. Without one the adapter
- * refuses every peer and drops every inbound frame, so a daemon that has the
- * relay enabled by hand still has no inbound path. The relay is also off by
- * default (`network.relay`), and no shipped client can complete the handshake
- * below (#881).
+ * `cli.ts` passes only for `--auth --permanent-code`. `cli.ts` creates this
+ * adapter only in that case (a relay requested without it prints a notice and no
+ * adapter exists, so the daemon holds no connection to the Worker), and the
+ * adapter fails closed by itself as the second layer: without an authenticator
+ * it refuses every peer and drops every inbound `relay` payload before it is
+ * parsed. The relay is also off by default (`network.relay`), and no shipped
+ * client can complete the handshake below (#881).
+ *
+ * Only the role `client` is a peer. The Worker reports a socket that never
+ * joined as `pending` and tells the host when any socket closes, so
+ * `peer-connected` and `peer-disconnected` act only on the role `client`.
  *
  * With an authenticator the adapter runs a challenge-response handshake before
  * accepting any protocol messages from the relay peer:
@@ -30,9 +36,10 @@
  *   messages (public keys and signatures by design) and a signed or sealed
  *   lock-screen answer are read.
  *
- * Without an authenticator neither direction runs: there is no handshake, so no
- * keys, so no peer. Before #1193 the inbound half was the exception, and a
- * plaintext `user_input`, `answer` or device token was accepted.
+ * Without an authenticator no handshake runs, so there are no keys and no peer;
+ * the only thing sent is one plaintext `auth_result` refusal per peer. Before
+ * #1193 the inbound half was the exception, and a plaintext `user_input`,
+ * `answer` or device token was accepted.
  */
 
 import {

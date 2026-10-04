@@ -722,7 +722,7 @@ describe('network.relay is off by default (#1193)', () => {
   test('`remi config init` writes the off value for a new install', () => {
     // It materializes the default into the file, and a value on disk beats a
     // changed default; an install that ran it before this change keeps `relay =
-    // true`, which the adapter now refuses to serve (relay-fail-closed.test.ts).
+    // true`, which now only prints a notice at boot (integration/relay-registration.test.ts).
     initConfigFile(TEST_CONFIG);
     expect(fs.readFileSync(TEST_CONFIG, 'utf-8')).toContain('relay = false');
     expect(loadConfig(TEST_CONFIG).network.relay).toBe(false);

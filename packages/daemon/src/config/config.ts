@@ -283,9 +283,10 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // signaling Worker, and no shipped client can join one, so the relay gave a
     // default install no remote capability and an inbound path gated only by
     // the room code. `relay = true` (or `--permanent-code`) still turns it on,
-    // and without `--auth --permanent-code` the adapter then refuses every peer.
+    // and without `--auth --permanent-code` the daemon prints a notice and
+    // starts no relay at all (and the adapter would refuse every peer anyway).
     // A config.toml that already holds `relay = true` (from `remi config init`
-    // before this change) keeps the adapter registered; it now refuses too.
+    // before this change) keeps the setting and gets that notice at boot.
     relay: false,
     signaling_url: 'wss://remi-signaling.yooz.workers.dev/connect',
   },
@@ -730,7 +731,7 @@ require_local_auth = false
 [network]
 mdns = ${DEFAULT_CONFIG.network.mdns}
 # Off by default: no shipped client connects through the relay yet (#1193).
-# With it on, peers are refused unless the daemon runs with --auth --permanent-code.
+# With it on, no relay starts unless the daemon runs with --auth --permanent-code.
 relay = ${DEFAULT_CONFIG.network.relay}
 signaling_url = "${DEFAULT_CONFIG.network.signaling_url}"
 
