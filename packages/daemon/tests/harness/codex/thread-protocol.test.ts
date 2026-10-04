@@ -44,6 +44,25 @@ describe('parseThread', () => {
     expect(parseThread({ ...realThread(7), ephemeral: false })?.ephemeral).toBe(false);
   });
 
+  test('an id that is not a UUID is not a thread: it is stored and printed in a command line (R3)', () => {
+    const hostile = [
+      'x; rm -rf ~',
+      '$(id)',
+      'a',
+      ' ',
+      '00000000-0000-7000-8000-00000000000g',
+      `${placeholderUuid(7)}\n`,
+      `${placeholderUuid(7)} && id`,
+      placeholderUuid(7).slice(1),
+    ];
+    for (const id of hostile) {
+      expect(parseThread({ ...realThread(7), id }), JSON.stringify(id)).toBeNull();
+    }
+    // The shape is what counts, not the letter case.
+    const upper = placeholderUuid(7).toUpperCase();
+    expect(parseThread({ ...realThread(7), id: upper })?.id).toBe(upper);
+  });
+
   test('it is null unless the value is an object with a non-empty string id', () => {
     for (const value of [null, undefined, 'x', 7, [], [realThread(7)], {}, { id: '' }, { id: 5 }]) {
       expect(parseThread(value), JSON.stringify(value)).toBeNull();
@@ -63,7 +82,7 @@ describe('parseThread', () => {
   test('missing or mistyped optional fields become null or zero, never a throw', () => {
     expect(
       parseThread({
-        id: 'a',
+        id: placeholderUuid(3),
         cwd: 5,
         createdAt: 'now',
         path: 7,
@@ -71,7 +90,7 @@ describe('parseThread', () => {
         environments: 3,
       }),
     ).toEqual({
-      id: 'a',
+      id: placeholderUuid(3),
       cwd: null,
       ephemeral: true,
       createdAtSec: null,
@@ -81,8 +100,9 @@ describe('parseThread', () => {
       environmentCount: 0,
       status: null,
     });
-    expect(parseThread({ id: 'a', createdAt: Number.NaN })?.createdAtSec).toBeNull();
-    expect(parseThread({ id: 'a', createdAt: Number.POSITIVE_INFINITY })?.createdAtSec).toBeNull();
+    const id = placeholderUuid(3);
+    expect(parseThread({ id, createdAt: Number.NaN })?.createdAtSec).toBeNull();
+    expect(parseThread({ id, createdAt: Number.POSITIVE_INFINITY })?.createdAtSec).toBeNull();
   });
 });
 

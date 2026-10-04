@@ -54,6 +54,7 @@ import {
   type SessionStore,
   isClaudeRecord,
 } from '../../session/session-store.ts';
+import { shellQuote } from '../../session/shell-quote.ts';
 import type { DecisionChannel, HarnessLaunchContext, HarnessSession } from '../types.ts';
 import { AppServerClient, type AppServerClientOptions } from './app-server-client.ts';
 import { resolveCodexWorkingDirectory, validateCodexArgs } from './codex-args.ts';
@@ -117,19 +118,15 @@ export function codexLaunchRefusal(error: unknown): { message: string; exitCode:
   return null;
 }
 
-/** `text` as one shell word: unchanged when it is plain, else in single quotes. */
-function shellQuote(text: string): string {
-  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(text) ? text : `'${text.replaceAll("'", "'\\''")}'`;
-}
-
 /**
  * The command that resumes a Codex session from `remi --sessions`. `remi codex resume` runs
  * Codex in the current directory and the new record takes that directory as its project path,
- * so the line changes into the session's own first; the path is quoted so pasting the line
- * cannot run anything else.
+ * so the line changes into the session's own first; the path and the id are each quoted as
+ * one shell word, so pasting the line cannot run anything else (a thread id is a UUID by
+ * the time it is stored, but it is printed from a file, so it is quoted anyway).
  */
 export function codexResumeCommand(projectPath: string, threadId: string): string {
-  return `cd ${shellQuote(projectPath)} && remi codex resume ${threadId}`;
+  return `cd ${shellQuote(projectPath)} && remi codex resume ${shellQuote(threadId)}`;
 }
 
 /** What the launch prints so nobody learns the hazard from a lost session id (see the file header). */

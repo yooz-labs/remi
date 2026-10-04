@@ -17,6 +17,7 @@ import type { HarnessId, UUID } from '@remi/shared';
 import { normalizeProjectPath } from '../cli/path-resolver.ts';
 import { remiHome } from '../config/remi-home.ts';
 import { isProcessAlive } from './process-alive.ts';
+import { shellQuote } from './shell-quote.ts';
 
 export interface StoredSession {
   remiSessionId: UUID;
@@ -290,7 +291,7 @@ export class SessionHarnessMismatchError extends Error {
     const harness = storedHarness(session);
     super(
       harness === 'codex' && session.harnessSessionId
-        ? `this session ran under codex; resume it with \`remi codex resume ${session.harnessSessionId}\``
+        ? `this session ran under codex; resume it with \`remi codex resume ${shellQuote(session.harnessSessionId)}\``
         : `this session ran under ${harness}; this build cannot resume it`,
     );
     this.name = 'SessionHarnessMismatchError';

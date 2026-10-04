@@ -154,7 +154,8 @@ const SUBCOMMAND_NAMES: readonly string[] = [
   'a',
 ];
 
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** The shape of a Codex thread id (a UUID), the only thing remi stores or prints as one. */
+export const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function refuse(error: string): CodexArgsResult {
   return { ok: false, error };

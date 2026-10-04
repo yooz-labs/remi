@@ -376,6 +376,13 @@ describe('CodexHarness', () => {
       }
     });
 
+    test('a thread id that is not one word is quoted in the command line too (R3)', () => {
+      expect(codexResumeCommand('/work', 'x; touch /tmp/pwned')).toBe(
+        "cd /work && remi codex resume 'x; touch /tmp/pwned'",
+      );
+      expect(codexResumeCommand('/work', "it's")).toBe("cd /work && remi codex resume 'it'\\''s'");
+    });
+
     test('the notice for the user names the minimum version and what is lost', () => {
       expect(olderRemiNotice()).toContain(IDENTITY_SHIM_MIN_VERSION);
       expect(olderRemiNotice()).toContain('erases');

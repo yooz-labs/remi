@@ -138,6 +138,13 @@ describe('resolveStoredSession(sessions, query, { harness })', () => {
     );
   });
 
+  test('a thread id that is not one word is quoted in the pointer, never printed raw (R3)', () => {
+    const odd = record({ ...codexRecord, harnessSessionId: 'x; touch /tmp/pwned' });
+    expect(() => resolveStoredSession([odd], CODEX_REMI_ID, { harness: 'claude' })).toThrow(
+      "this session ran under codex; resume it with `remi codex resume 'x; touch /tmp/pwned'`",
+    );
+  });
+
   test('a codex record that never learned its thread id points at nothing: there is nothing to resume', () => {
     const unnamed = record({ ...codexRecord, harnessSessionId: null });
     expect(() => resolveStoredSession([unnamed], CODEX_REMI_ID, { harness: 'claude' })).toThrow(

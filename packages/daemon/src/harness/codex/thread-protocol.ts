@@ -8,6 +8,8 @@
  * (cwd, preview, path) can reach a log line.
  */
 
+import { UUID_PATTERN } from './codex-args.ts';
+
 /**
  * `thread/status/changed` and `Thread.status`. An unknown flag still makes an
  * `active` thread "waiting": Codex only sets a flag when the thread is blocked
@@ -62,11 +64,13 @@ export function parseThreadStatus(v: unknown): ThreadStatus | null {
 
 /**
  * A `Thread` (the `thread` of `thread/started` and of a `thread/resume`
- * result), or null when it is not an object with a non-empty string `id`, or
- * its `parentThreadId` is neither a string nor null.
+ * result), or null when it is not an object with a UUID `id`, or its
+ * `parentThreadId` is neither a string nor null. The id is the only field remi
+ * persists and prints (in a `remi codex resume` line), so anything but a UUID
+ * is not a thread at all: it never binds.
  */
 export function parseThread(v: unknown): ThreadInfo | null {
-  if (!isRecord(v) || typeof v['id'] !== 'string' || v['id'] === '') return null;
+  if (!isRecord(v) || typeof v['id'] !== 'string' || !UUID_PATTERN.test(v['id'])) return null;
   const parent = v['parentThreadId'];
   if (parent !== undefined && parent !== null && typeof parent !== 'string') return null;
   const createdAt = v['createdAt'];

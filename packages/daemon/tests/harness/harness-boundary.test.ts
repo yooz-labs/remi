@@ -354,6 +354,10 @@ const CODEX_MAY_IMPORT: ReadonlyArray<{ readonly target: string; readonly why: s
   },
   { target: 'session/session-store', why: 'SessionStore reads and the identity record (phase 3)' },
   {
+    target: 'session/shell-quote',
+    why: 'shellQuote, so the paste-ready `remi codex resume` line is one shell word per argument (phase 3)',
+  },
+  {
     target: 'session/session-binding-store',
     why: 'SessionBindingStore.preAssign and updateHarnessIdentity (phase 3)',
   },

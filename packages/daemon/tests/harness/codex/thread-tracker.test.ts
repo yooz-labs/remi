@@ -1100,6 +1100,16 @@ describe('a session that never learns its thread says so (W11)', () => {
     expect(resumed.notices).toEqual([]);
   });
 
+  test('a thread whose id is not a UUID never binds, and the wait ends in the notice (R3)', async () => {
+    const ctx = await setup({ noIdentityMs: 250 });
+    ctx.started('tui', 'x; touch /tmp/pwned');
+    await waitUntil(ctx, () => ctx.notices.length === 1, 'the notice');
+    expect(ctx.notices).toEqual([NOTICE]);
+    expect(ctx.identities).toEqual([]);
+    expect(ctx.resumeFrames()).toEqual([]);
+    expect(ctx.logs.join('\n')).not.toContain('touch');
+  });
+
   test('a notice that cannot be sent is logged and never thrown', async () => {
     const ctx = await setup({ noIdentityMs: 100, noticeThrows: true });
     await waitUntil(
