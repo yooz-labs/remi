@@ -18,11 +18,13 @@
  * it never binds (spike, `expB.jsonl:7` and `:12`).
  *
  * The first candidate waits `ambiguityMs` (300) before it is committed: a
- * second candidate whose creation time is within 300 ms of the first's means
- * two Codex windows started in this directory together, and remi cannot tell
- * which is its own. Then it binds neither (fail closed): a session with no
- * identity keeps none, and a session that has one keeps it. Residual risk R4: a
- * non-remi window in the same directory that starts in the same second.
+ * second DISTINCT candidate arriving inside that window means two Codex windows
+ * started in this directory together, and remi cannot tell which is its own.
+ * Then it binds neither (fail closed): a session with no identity keeps none
+ * (and keeps none for good), and a session that has one keeps it. It is decided
+ * by arrival, not by `createdAt`, which has whole-second resolution in the real
+ * frames; a repeat of the same thread id is not a second candidate. Residual
+ * risk R4: a non-remi window in the same directory that starts in that window.
  *
  * Attach is `thread/resume {threadId, excludeTurns: true}` and nothing else (the
  * spike showed an override persists on the thread). It fails with `-32600`
@@ -66,7 +68,6 @@ export interface ThreadTrackerDeps {
 
 /** A thread created more than this long before the spawn is not this session's. */
 const CREATED_BEFORE_SPAWN_SLACK_MS = 5000;
-const AMBIGUOUS_CREATED_WITHIN_MS = 300;
 const MAX_PARENT_LINKS = 512;
 const MAX_PARENT_DEPTH = 8;
 
@@ -191,14 +192,12 @@ export class ThreadTracker {
     }
     const first = this.pending;
     if (first !== null) {
-      const apartMs =
-        Math.abs((thread.createdAtSec as number) - (first.thread.createdAtSec as number)) * 1000;
-      if (apartMs <= AMBIGUOUS_CREATED_WITHIN_MS) {
-        clearTimeout(this.pendingTimer);
-        this.pending = null;
-        if (this.current === null) this.refused = true;
-        this.deps.log('two threads started in this directory together; binding neither');
-      }
+      // A repeat of the pending thread (a replay) is the same candidate, not a second.
+      if (thread.id === first.thread.id) return;
+      clearTimeout(this.pendingTimer);
+      this.pending = null;
+      if (this.current === null) this.refused = true;
+      this.deps.log('two threads started in this directory together; binding neither');
       return;
     }
     this.pending = { thread, status: thread.status };

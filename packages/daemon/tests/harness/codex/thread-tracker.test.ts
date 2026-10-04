@@ -253,30 +253,53 @@ describe('identity discovery', () => {
     expect(ctx.identities).toEqual([]);
   });
 
-  test('the window is 300 ms of creation time: 200 ms apart is ambiguous, 500 ms apart is not', async () => {
-    const together = await setup();
+  test('ambiguity is decided by arrival: two distinct candidates inside the window bind neither, whatever their creation times (W4)', async () => {
+    // createdAt has whole-second resolution in the real frames, so "created within 300 ms" can
+    // only ever have meant "the same second". What the tracker can see is when they arrived.
     const sec = nowSec();
-    together.started('tui', crypto.randomUUID(), undefined, sec);
-    together.started('tui', crypto.randomUUID(), undefined, sec + 0.2);
-    await settle(420);
-    expect(together.identities).toEqual([]);
-
-    const apart = await setup();
-    const first = crypto.randomUUID();
-    apart.started('tui', first, undefined, sec);
-    apart.started('tui', crypto.randomUUID(), undefined, sec + 0.5);
-    await waitUntil(apart, () => apart.identities.length >= 1, 'an identity');
-    expect(apart.identities).toEqual([first]);
+    for (const apartSec of [0, 1, 5]) {
+      const ctx = await setup();
+      ctx.started('tui', crypto.randomUUID(), undefined, sec);
+      ctx.started('tui', crypto.randomUUID(), undefined, sec + apartSec);
+      await settle(420);
+      expect(ctx.identities, `${apartSec} s apart`).toEqual([]);
+      expect(ctx.logs.some((l) => l.includes('binding neither'))).toBe(true);
+    }
   });
 
-  test('two candidates created a second apart are not ambiguous: the first wins', async () => {
+  test('a candidate that arrives after the window is not part of it: the first has bound by then', async () => {
     const ctx = await setup();
     const first = crypto.randomUUID();
-    ctx.started('tui', first, undefined, nowSec());
-    ctx.started('tui', crypto.randomUUID(), undefined, nowSec() + 2);
-    await waitUntil(ctx, () => ctx.identities.length >= 1, 'an identity');
-    await settle();
+    ctx.started('tui', first);
+    await waitUntil(ctx, () => ctx.identities.length === 1, 'the first identity');
+    ctx.status(first, { type: 'active', activeFlags: [] });
+    await settle(100);
+    // Tracked and active: the later candidate is ignored (not ambiguous, not bound).
+    ctx.started('tui', crypto.randomUUID());
+    await settle(420);
     expect(ctx.identities).toEqual([first]);
+    expect(ctx.logs.some((l) => l.includes('binding neither'))).toBe(false);
+  });
+
+  test('a duplicate thread/started for the same thread is one candidate, not an ambiguity (W5)', async () => {
+    const ctx = await setup();
+    const id = crypto.randomUUID();
+    const sec = nowSec();
+    // Two identical frames inside the window (a replay, a reconnect that re-sent the start).
+    ctx.started('tui', id, undefined, sec);
+    ctx.started('tui', id, undefined, sec);
+    await waitUntil(ctx, () => ctx.identities.length === 1, 'the identity');
+    await settle(420);
+    expect(ctx.identities).toEqual([id]);
+    expect(ctx.logs.some((l) => l.includes('binding neither'))).toBe(false);
+
+    // And it did not latch the refusal: after the thread goes idle, a later thread rotates it.
+    ctx.status(id, { type: 'idle' });
+    await settle(100);
+    const next = crypto.randomUUID();
+    ctx.started('tui', next);
+    await waitUntil(ctx, () => ctx.identities.length === 2, 'the rotation');
+    expect(ctx.identities).toEqual([id, next]);
   });
 
   test('a callback that throws leaves the tracker without the id, and says so', async () => {
