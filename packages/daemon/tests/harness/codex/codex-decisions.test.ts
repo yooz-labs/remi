@@ -102,6 +102,20 @@ function recordingScheduler() {
   };
 }
 
+/**
+ * Run `fn` with the registry's "cap exceeded, none is evictable" warning silenced: the bound tests
+ * hold far more live cards than its cap of eight on purpose, and each would print a line.
+ */
+function withoutCapWarnings(fn: () => void): void {
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    fn();
+  } finally {
+    console.warn = warn;
+  }
+}
+
 describe('CodexDecisions', () => {
   let tmpDir: string;
   let registry: SessionRegistry;
@@ -325,7 +339,9 @@ describe('CodexDecisions', () => {
       // The guard the session installs: live approvals are not evicted by the registry's cap of
       // eight, so what is left in the registry is what the channel itself still tracks.
       registry.setQuestionEvictionGuard(sessionId, (id) => decisions.isHeld(id));
-      for (let id = 1; id <= 70; id++) request(id, `touch m${id}`);
+      withoutCapWarnings(() => {
+        for (let id = 1; id <= 70; id++) request(id, `touch m${id}`);
+      });
       expect(responses).toEqual([]);
       const held = pending().filter((q) => decisions.isHeld(q.id));
       // Exactly the bound: the 64 newest are kept, the six oldest were dismissed.
@@ -335,6 +351,20 @@ describe('CodexDecisions', () => {
       expect(held.map((q) => q.text)).not.toContain('Allow Codex to run: touch m6');
       expect(resolvedMessages()).toHaveLength(6);
       expect(resolvedMessages().every((m) => m.reason === 'cancelled')).toBe(true);
+    });
+
+    test('at the bound an answered card is dropped without a dismissal: its card is already gone', () => {
+      registry.setQuestionEvictionGuard(sessionId, (id) => decisions.isHeld(id));
+      request(1, 'touch first');
+      const first = only();
+      expect(decisions.answerHeld(first.id, optionNamed(first, 'Yes'))).toBe('resolved');
+      registry.removeQuestion(sessionId, first.id);
+      withoutCapWarnings(() => {
+        for (let id = 2; id <= 65; id++) request(id, `touch m${id}`);
+      });
+      // 65 tracked: the oldest, the answered one, goes quietly; all 64 live cards stay.
+      expect(resolvedMessages()).toEqual([]);
+      expect(pending().filter((q) => decisions.isHeld(q.id))).toHaveLength(64);
     });
 
     test('a log line carries no command, no reason and no full thread id', () => {
@@ -576,6 +606,60 @@ describe('CodexDecisions', () => {
       expect(notices).toEqual([]);
     });
 
+    test('an unconfirmed answer frees its slot in the bound and dismisses nothing a second time', () => {
+      registry.setQuestionEvictionGuard(sessionId, (id) => decisions.isHeld(id));
+      request(1, 'touch keep');
+      request(2, 'touch unconfirmed');
+      const b = pending().find((p) => p.text.endsWith('touch unconfirmed')) as Question;
+      expect(decisions.answerHeld(b.id, optionNamed(b, 'Yes'))).toBe('resolved');
+      // What the input handler does for a resolved answer: the card leaves the registry.
+      registry.removeQuestion(sessionId, b.id);
+      sched.fire(sched.live()[0]);
+      expect(notices).toHaveLength(1);
+      expect(resolvedMessages()).toEqual([]);
+      // 1 live card plus 63 more is 64: the bound is not reached, so the first card is not
+      // evicted. A forgotten-late entry would make it 65 and dismiss it.
+      withoutCapWarnings(() => {
+        for (let id = 3; id <= 65; id++) request(id, `touch m${id}`);
+      });
+      expect(resolvedMessages()).toEqual([]);
+      expect(pending().filter((q) => decisions.isHeld(q.id))).toHaveLength(64);
+    });
+
+    test('a timer callback that runs after its entry was forgotten does nothing', () => {
+      request(5);
+      const q = only();
+      decisions.answerHeld(q.id, optionNamed(q, 'Yes'));
+      const stale = (sched.live()[0] as RecordedTimer).fn;
+      decisions.handleResolved({ threadId: MAIN, requestId: 5 });
+      logs.length = 0;
+      stale();
+      expect(notices).toEqual([]);
+      expect(logs).toEqual([]);
+    });
+
+    test('a notice that throws is logged by error name and never reaches the answer path or the timer', () => {
+      const failing = build({
+        notice: () => {
+          throw new Error('notice down');
+        },
+      });
+      toDispose.push(failing);
+      const { method, params } = commandApprovalRequest(MAIN, 'touch unit-marker');
+      failing.handleServerRequest({ id: 7, method, params });
+      const q = pending().find((p) => failing.isHeld(p.id)) as Question;
+      // Delivered, then never confirmed: the timer's notice throws.
+      expect(failing.answerHeld(q.id, optionNamed(q, 'Yes'))).toBe('resolved');
+      expect(() => sched.fire(sched.live()[0])).not.toThrow();
+      // Not delivered: the notice of the failed send throws.
+      failing.handleServerRequest({ id: 8, method, params });
+      const q2 = pending().find((p) => failing.isHeld(p.id)) as Question;
+      linkUp = false;
+      expect(failing.answerHeld(q2.id, optionNamed(q2, 'Yes'))).toBe('closed');
+      expect(logs.filter((l) => l.includes('could not send a notice (Error)'))).toHaveLength(2);
+      expect(logs.join('\n')).not.toContain('notice down');
+    });
+
     test('an answer that was not delivered starts no confirmation timer', () => {
       request(5);
       const q = only();
@@ -604,6 +688,10 @@ describe('CodexDecisions', () => {
       expect(notices).toHaveLength(1);
       expect(notices[0]).toContain('try again from the new card');
       expect(notices[0]).toContain('answer in the terminal');
+      // The channel forgets the request but leaves the card to the caller (the input handler
+      // consumes and dismisses it once): it dismisses nothing itself.
+      expect(resolvedMessages()).toEqual([]);
+      expect(pending()).toHaveLength(1);
     });
 
     test('an answer that could not be encoded is logged as that, with the same words to the person', () => {
@@ -685,6 +773,23 @@ describe('CodexDecisions', () => {
       expect(responses).toEqual([{ id: 6, result: { decision: 'accept' } }]);
     });
 
+    test('the window and the grace are the seams a caller gives, else 3 s and 30 s', () => {
+      const seam = build({ replayWindowMs: 777, disconnectGraceMs: 4242 });
+      toDispose.push(seam);
+      const { method, params } = commandApprovalRequest(MAIN, 'touch unit-marker');
+      seam.handleServerRequest({ id: 9, method, params });
+      seam.handleDisconnected();
+      expect(sched.live().map((t) => t.ms)).toEqual([4242]);
+      seam.handleReattached();
+      expect(sched.live().map((t) => t.ms)).toEqual([777]);
+      // The defaults, from a channel that was given neither.
+      request(10);
+      decisions.handleDisconnected();
+      expect(sched.live().map((t) => t.ms)).toEqual([777, 30_000]);
+      decisions.handleReattached();
+      expect(sched.live().map((t) => t.ms)).toEqual([777, 3000]);
+    });
+
     test('a link that never comes back dismisses its retired cards when the grace period ends', () => {
       request(5);
       const q = only();
@@ -764,6 +869,15 @@ describe('CodexDecisions', () => {
       expect(timer.hasRef()).toBe(false);
       realScheduler.clear(timer);
       realScheduler.clear(undefined);
+    });
+
+    test('the real scheduler fires a timer that is left alone and never one it cleared', async () => {
+      const fired: string[] = [];
+      const cleared = realScheduler.set(() => fired.push('cleared'), 5);
+      realScheduler.set(() => fired.push('kept'), 5);
+      realScheduler.clear(cleared);
+      await new Promise((r) => setTimeout(r, 40));
+      expect(fired).toEqual(['kept']);
     });
   });
 
