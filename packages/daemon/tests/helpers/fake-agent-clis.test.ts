@@ -20,11 +20,13 @@ describe('a fake agent that is slow to record', () => {
   let home: string;
   let proc: Bun.Subprocess | undefined;
   let codexDir: string;
+  let spawnedAt: number;
 
   beforeEach(() => {
     home = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-fake-agents-'));
     const agents = installFakeAgents(home, { codex: true });
     codexDir = agents.codexDir;
+    spawnedAt = Date.now();
     proc = Bun.spawn([path.join(home, 'fake-bin', 'codex'), ...ARGS], {
       // The fake is a shell script: a system PATH is all it needs, and the delay is two tenths of a second per argument.
       env: { PATH: '/usr/bin:/bin', FAKE_CODEX_DIR: codexDir, FAKE_AGENT_RECORD_DELAY: '0.2' },
@@ -52,12 +54,12 @@ describe('a fake agent that is slow to record', () => {
   });
 
   test('the delay is real: recording takes at least a pause per argument and per rename, so the tests above bite', async () => {
-    // Five arguments and two pauses between the renames at 0.2 s each is a floor of 1.2 s. If the
-    // pause did nothing the other two tests would still pass against an atomic recorder, and would
-    // say nothing about a recorder that writes in place.
-    const begin = Date.now() - 100; // the fake was spawned a moment before this test body ran
+    // A pause after each of five arguments and between the two pairs of renames, 0.2 s each, is a
+    // floor of 1.4 s (a sleep never ends early). If any pause did nothing the other tests would
+    // still pass against an atomic recorder, and would say nothing about a recorder that writes in
+    // place; 50 ms of slack is for the clock.
     await waitForRecordedArgv(codexDir);
-    expect(Date.now() - begin).toBeGreaterThanOrEqual(1000);
+    expect(Date.now() - spawnedAt).toBeGreaterThanOrEqual(1350);
   });
 
   test('a reader that waits for argv to exist, as the old helper did, never sees it half written', async () => {
