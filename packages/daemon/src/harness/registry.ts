@@ -21,7 +21,10 @@ export type RemoteArgsResult =
   | {
       readonly ok: true;
       readonly args: readonly string[];
-      /** The thread a `resume <id>` names, lowercased; null or absent when the request resumes none. */
+      /**
+       * The id a `resume` names, lowercased: a Codex thread (`resume <uuid>`) or a Claude session
+       * (`--resume <uuid>`); null or absent when the request resumes none.
+       */
       readonly resumeThreadId?: string | null;
     }
   | { readonly ok: false; readonly error: string };

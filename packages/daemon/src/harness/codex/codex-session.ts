@@ -63,7 +63,7 @@ import { shellQuote } from '../../session/shell-quote.ts';
 import type { HarnessLaunchContext, HarnessSession } from '../types.ts';
 import { AppServerClient, type AppServerClientOptions } from './app-server-client.ts';
 import { parseResolved } from './approval-cards.ts';
-import { attachCommand } from './attach-hint.ts';
+import { localAttachCommand } from './attach-hint.ts';
 import { resolveCodexWorkingDirectory, validateCodexArgs } from './codex-args.ts';
 import { CodexDecisions, type CodexDecisionsDeps } from './codex-decisions.ts';
 import { UntrustedSocketError, resolveCodexSocketPath } from './codex-socket.ts';
@@ -176,15 +176,33 @@ export function legacyWriterRefusal(writers: readonly LegacyWriter[]): string {
  * only as "Daemon process exited unexpectedly".
  */
 export function heldThreadRefusal(sessionStore: SessionStore, threadId: string): string | null {
+  const held = findHeldThread(sessionStore, threadId);
+  if (held === null) return null;
+  if (held.kind === 'ambiguous') return held.message;
+  // For the person at the machine, with an address that can be pasted into a shell (P9).
+  return `Codex thread ${threadId} is already open in remi session ${held.remiSessionId.slice(0, 8)} (port ${held.port}); attach to it with \`${localAttachCommand(held.port, held.remiSessionId)}\` or close it first.`;
+}
+
+/** Who holds a thread: a live session, or a store that cannot say (it holds two active records of it). */
+export type HeldThread =
+  | { readonly kind: 'held'; readonly remiSessionId: string; readonly port: number }
+  | { readonly kind: 'ambiguous'; readonly message: string };
+
+/**
+ * The live session that holds `threadId`, or null. `heldThreadRefusal` words it for the person
+ * at the machine; the hub reads the holder to put it in its own log and tells the client less
+ * (#1204 round 2, P4).
+ */
+export function findHeldThread(sessionStore: SessionStore, threadId: string): HeldThread | null {
   try {
     const owner = sessionStore
       .list()
       .find((s) => s.harness === 'codex' && s.harnessSessionId === threadId && s.exitedAt === null);
     if (owner === undefined) return null;
-    return `Codex thread ${threadId} is already open in remi session ${owner.remiSessionId.slice(0, 8)} (port ${owner.port}); attach to it with \`${attachCommand(owner.port, owner.remiSessionId)}\` (<host> is the machine running it) or close it first.`;
+    return { kind: 'held', remiSessionId: owner.remiSessionId, port: owner.port };
   } catch (error) {
     if (!(error instanceof AmbiguousSessionIdentityError)) throw error;
-    return error.message;
+    return { kind: 'ambiguous', message: error.message };
   }
 }
 

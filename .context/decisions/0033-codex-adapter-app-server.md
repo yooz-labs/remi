@@ -588,7 +588,8 @@ There is no opt-in switch: the PR targets the epic branch, nothing reaches users
 If LV-4 shows trouble, the lead gates the advertisement then.
 - **H2, a remote Codex `resume <uuid>` stays in the validator, and the hub refuses a held thread.**
 It fails closed, it is the Phase 2 capability and it has tests, but it is UNVERIFIED headless and is an LV-4 item.
-The hub refuses a thread a live session already holds BEFORE it spawns, with the text the child would give (`heldThreadRefusal`, one function for the launch and the hub); before, the child refused and the client saw only "Daemon process exited unexpectedly".
+The hub refuses a thread a live session already holds BEFORE it spawns; before, the child refused and the client saw only "Daemon process exited unexpectedly".
+(Changed in round 2 of the PR review, P4: the client reads a generic text, "That Codex thread is already open in a live remi session on the host", with no id and no port, because the first rework's text named another session's first eight id characters and its port; the hub's log has the holder, escaped. The person running `remi codex resume` at the machine keeps the full text, with an address they can paste into a shell, `remi attach localhost:<port>/<id8>` (P9), since a `<host>` placeholder is a redirect there.)
 - **H3, a remote Codex request may only tighten the host's posture.**
 `-s read-only`, `-a untrusted`, `-m` and `resume <uuid>` are allowed, and `-s workspace-write` and `-a on-request` are refused remotely.
 A remote client must not loosen what the host chose, as Claude's allowlist leaves out `--permission-mode`; widening needs a person at the terminal, where `remi codex` still allows both.
@@ -610,7 +611,7 @@ The child's own refusal text is not relayed to the client: it holds pids, files 
 - **G2.** `remi codex --host` and `remi new --host` refuse a word that is not after `--` (exit 2, nothing sent, the words named), for Claude too: the host's own defaults would otherwise apply with no warning.
 - **G3.** `remi codex --daemon` refuses a loose word (exit 2) again, with a message that says the arguments go after `--` (the Phase 3 text, "takes no arguments yet", stopped being true); a Claude daemon still ignores loose words.
 - **G4, G5.** The allowlists as H3 and H4 say, UUIDs lowercased in both, and the mutants that survived are pinned: the leading anchor of the UUID pattern, case folding of flag names, `--continue` by name, a model name keeping its case.
-- **G6.** The hub-side refusal of a held thread (H2).
+- **G6.** The hub-side refusal of a held thread (H2), with the client text of P4.
 - **G7.** The `directory` of every create request is refused when it is not a string, starts with a hyphen (a child would re-parse it as a flag), or holds a control character (round 2, P3: any C0 control, DEL or C1 control, where the first round had only NUL, newline and carriage return, so an escape sequence passed), and the hub's log lines that carry it are escaped; this also covers the plain Claude request, and no real client sends such a value.
 - **G8.** The client reads short, host-free texts: the older-daemon gate says an older remi is running and to update or stop it, a failed spawn says only that the session could not be started, and the pids, files, paths and the failure go to the hub's log.
 - **G9.** The session-less ack of a daemon that is not a hub names its `harness` alone, so a Codex daemon never reads as Claude by an absent field; a hub, which hosts nothing, names none.
@@ -630,3 +631,20 @@ What is still not verified, for LV-4 (G18; item 13 has the rest):
 (b) Claude's `--resume <uuid>` through a hub, and whether a permissive permission mode carries over;
 (c) the headless Update and Trust prompts, and `remi attach` as the way out;
 (d) `-m`, `-a untrusted` and `-s read-only` accepted by the real Codex as the validators assume.
+
+### Decisions recorded in round 2 of the PR review
+
+A fresh re-review found no critical defect, confirmed the first rework's fixes (its own fuzz of both remote validators, 169 thousand inputs, found no loosening), and found one important gap and a few smaller ones (P1 to P10).
+
+- **P1, the older-daemon gate and a PR-stamped build.**
+See the note under H5 above: `ownVersion` replaces H5's pid rule.
+- **P2, the sender reads any JSON.**
+Daemon text is escaped only when it is a string; the notice is kept only when it is a string; `harnesses` counts only as an array.
+- **P3, control characters and logs.**
+`directoryRefusal` refuses any C0 control, DEL and any C1 control, and the hub's log lines that carry the directory write it escaped.
+- **P4, a generic client text for a held Codex thread**, with the holder and its port in the hub's log (the note under H2 above).
+- **P5, `--resume` with `--host`.**
+`remi new --host h --resume X` (and `remi codex --host h --resume X`) is refused with exit 2 before any local lookup, and says to put it after `--`: `parseArgs` consumes `--resume` as a remi flag, so it is not a loose word, and the Claude path used to look the id up in the LOCAL store (or, if a local session held the id, start a fresh remote session with no warning), the silent-drop class of G2.
+- **P9, the local held-thread text** names `remi attach localhost:<port>/<id8>`; `<host>` stays only in the hub's notice and in the messages a headless session sends its clients (`TerminalWords`), where it is a placeholder, and the notice adds that the address works from a machine that can reach that port (it does not through a single-port SSH tunnel or the relay).
+- **P10, a Claude `--resume` through a hub is refused when a live session holds the id** (a judgment call, decided): the Claude allowlist returns the session it names, the check runs whether or not the request names the harness, the client text is generic ("That Claude session is already open in a live remi session on the host"), the holder is in the log, and `START_FAILED_TEXT` stays opaque.
+Claude `--resume` through a hub is still UNVERIFIED against a real Claude (item 13 (g)).

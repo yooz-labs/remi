@@ -101,14 +101,14 @@ export function checkHarnessRequest(
   }
   const checked = spec.validateRemoteArgs(args ?? []);
   if (!checked.ok) return { ok: false, error: checked.error };
-  if (harness !== undefined) {
-    const refusal =
-      spec.launchRefusal?.({
-        args: checked.args,
-        resumeThreadId: checked.resumeThreadId ?? null,
-      }) ?? null;
-    if (refusal !== null) return { ok: false, error: refusal.client, detail: refusal.detail };
-  }
+  // Every request that reaches here has a harness or arguments, a Claude resume with no harness
+  // named included: a resume of a session a live one holds must be refused whichever way it is asked.
+  const refusal =
+    spec.launchRefusal?.({
+      args: checked.args,
+      resumeThreadId: checked.resumeThreadId ?? null,
+    }) ?? null;
+  if (refusal !== null) return { ok: false, error: refusal.client, detail: refusal.detail };
   return {
     ok: true,
     spawnArgs: [

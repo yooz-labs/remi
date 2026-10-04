@@ -11,3 +11,11 @@
 export function attachCommand(port: number, sessionId: string): string {
   return `remi attach <host>:${port}/${sessionId.slice(0, 8)}`;
 }
+
+/**
+ * The same address for a person at the machine the session runs on: the host is `localhost`, a real
+ * one, because a `<host>` placeholder pasted into a shell is a redirect (#1204 round 2, P9).
+ */
+export function localAttachCommand(port: number, sessionId: string): string {
+  return `remi attach localhost:${port}/${sessionId.slice(0, 8)}`;
+}

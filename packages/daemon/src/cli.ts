@@ -204,7 +204,7 @@ import { validateCodexArgs, validateCodexRemoteArgs } from './harness/codex/code
 import {
   codexLaunchRefusal,
   codexResumeCommand,
-  heldThreadRefusal,
+  findHeldThread,
   legacyWriterRefusal,
   olderRemiNotice,
 } from './harness/codex/codex-session.ts';
@@ -1905,11 +1905,39 @@ const harness: Harness = codexHarness ?? claudeHarness;
 const LEGACY_WRITER_CLIENT_TEXT =
   "An older remi is running on the host and would erase the Codex session id from its sessions file, so a Codex session was not started. Update or stop that remi on the host, then try again; the host's remi log names it.";
 
+/** What a remote requester is told when a resume names a session or thread a live session holds (P4, P10): no id, no port. */
+const HELD_THREAD_CLIENT_TEXT =
+  'That Codex thread is already open in a live remi session on the host.';
+const HELD_CLAUDE_CLIENT_TEXT =
+  'That Claude session is already open in a live remi session on the host.';
+const AMBIGUOUS_THREAD_CLIENT_TEXT =
+  "That Codex thread cannot be resumed from here: the host's records of it are ambiguous.";
+
 // The harnesses a `create_session_request` may name (#1179), and what each allows: advertised on
 // every hello_ack (`harnesses`) and checked before anything is spawned. Built here because the
 // validators sit behind the import boundary that keeps Claude and Codex apart.
 const harnessRegistry = new HarnessRegistry({
-  claude: { command: 'claude', validateRemoteArgs: validateClaudeRemoteArgs },
+  claude: {
+    command: 'claude',
+    validateRemoteArgs: validateClaudeRemoteArgs,
+    // A resume of a Claude session a live remi session already holds would make two active records
+    // of it (a wrapper and a child both claiming the id), so it is refused here, before a child is
+    // spawned, whether or not the request names the harness. The requester is told that the session
+    // is open and nothing about the holder; the holder goes to the log (#1204 round 2, P10).
+    launchRefusal: ({ resumeThreadId }) => {
+      if (resumeThreadId === null) return null;
+      const holder = sessionStore
+        .list()
+        .find(
+          (s) => isClaudeRecord(s) && s.claudeSessionId === resumeThreadId && s.exitedAt === null,
+        );
+      if (holder === undefined) return null;
+      return {
+        client: HELD_CLAUDE_CLIENT_TEXT,
+        detail: `a resume of the Claude session ${resumeThreadId.slice(0, 8)} was refused: it is open in remi session ${holder.remiSessionId.slice(0, 8)} (port ${holder.port})`,
+      };
+    },
+  },
   codex: {
     command: 'codex',
     validateRemoteArgs: validateCodexRemoteArgs,
@@ -1921,21 +1949,31 @@ const harnessRegistry = new HarnessRegistry({
     headlessNotice: ({ sessionId, port }) =>
       [
         'Codex was started on the host without a terminal, so remi cannot tell whether it reached its prompt: it may be waiting at an Update or Trust prompt, or may already have exited.',
-        `If it does not respond, \`${attachCommand(port, sessionId)}\` shows it (<host> is the address you reached this daemon at); that this lets you answer such a prompt has not been checked against a real Codex.`,
+        `If it does not respond, \`${attachCommand(port, sessionId)}\` shows it, from a machine that can reach that port (<host> is the address you reached this daemon at); that this lets you answer such a prompt has not been checked against a real Codex.`,
       ].join('\n'),
     // The requester gets a short text; the host's log gets the whole reason (pids, files). Then a
-    // resume of a thread a live session holds is refused here, before a child is spawned, with the
-    // text the child would have refused with.
+    // resume of a thread a live session holds is refused here, before a child is spawned: the
+    // requester is told the thread is open and nothing about the session that holds it, and the
+    // log names the holder and its port (#1204 round 2, P4). The person at the machine, running
+    // `remi codex resume` locally, still reads the full text (`heldThreadRefusal`).
     launchRefusal: ({ resumeThreadId }) => {
       const writers = legacyWriters();
       if (writers.length > 0) {
         return { client: LEGACY_WRITER_CLIENT_TEXT, detail: legacyWriterRefusal(writers) };
       }
-      const held = resumeThreadId === null ? null : heldThreadRefusal(sessionStore, resumeThreadId);
-      if (resumeThreadId === null || held === null) return null;
+      if (resumeThreadId === null) return null;
+      const held = findHeldThread(sessionStore, resumeThreadId);
+      if (held === null) return null;
+      const ending = shortThreadId(resumeThreadId);
+      if (held.kind === 'ambiguous') {
+        return {
+          client: AMBIGUOUS_THREAD_CLIENT_TEXT,
+          detail: `a resume of the Codex thread ending ${ending} was refused: the session store holds more than one active record of it`,
+        };
+      }
       return {
-        client: held,
-        detail: `a resume of the Codex thread ending ${shortThreadId(resumeThreadId)} was refused: a live remi session holds it`,
+        client: HELD_THREAD_CLIENT_TEXT,
+        detail: `a resume of the Codex thread ending ${ending} was refused: it is open in remi session ${held.remiSessionId.slice(0, 8)} (port ${held.port})`,
       };
     },
   },

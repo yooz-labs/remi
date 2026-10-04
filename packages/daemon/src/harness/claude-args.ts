@@ -53,6 +53,8 @@ export function validateClaudeRemoteArgs(args: unknown): RemoteArgsResult {
 
   const seen = new Set<string>();
   const out: string[] = [];
+  /** The session a `--resume` names, for the hub's held-session check (#1204 round 2, P10). */
+  let resumeId: string | null = null;
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i] as string;
     const value = tokens[i + 1];
@@ -90,12 +92,14 @@ export function validateClaudeRemoteArgs(args: unknown): RemoteArgsResult {
     out.push(token);
     if (takesValue) {
       // A UUID is lowercase on the way out, whatever case it came in.
-      out.push(slot === 'resume' ? (value as string).toLowerCase() : (value as string));
+      const shown = slot === 'resume' ? (value as string).toLowerCase() : (value as string);
+      if (slot === 'resume') resumeId = shown;
+      out.push(shown);
       i++;
     }
   }
   if (seen.has('fork') && !seen.has('resume')) {
     return refuse('claude arguments: --fork-session needs --resume <uuid>');
   }
-  return { ok: true, args: out };
+  return { ok: true, args: out, resumeThreadId: resumeId };
 }
