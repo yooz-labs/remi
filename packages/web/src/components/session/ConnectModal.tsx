@@ -1,8 +1,10 @@
 /**
  * ConnectModal component.
  *
- * Simplified connection flow: enter a host to discover sessions,
- * or use a connection code for remote access via WebRTC.
+ * Simplified connection flow: enter a host to discover sessions.
+ * A connection-code tab exists behind `onConnectCode`, but `App.tsx` does not
+ * pass it and no client code opens a relay room, so it is never rendered; it
+ * returns with the relay rebuild.
  */
 
 import { useKeyboard } from '@/hooks/useKeyboard';
@@ -526,9 +528,9 @@ export function ConnectModal({
                 <CodeInput value={code} onChange={setCode} disabled={isConnecting} />
               </label>
               <p className="text-xs text-[var(--color-text-muted)]">
-                Enter the 8-digit code from{' '}
-                <span className="font-mono text-[var(--color-text-secondary)]">remi code</span> for
-                remote access.
+                Enter the connection code, four letters and four digits, such as the permanent code
+                from{' '}
+                <span className="font-mono text-[var(--color-text-secondary)]">remi code</span>.
               </p>
             </div>
           )}
