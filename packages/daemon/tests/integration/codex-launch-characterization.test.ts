@@ -968,6 +968,28 @@ describe('remi codex approvals (daemon, black-box characterization, #1178)', () 
     }
   }, 60000);
 
+  test("the registry's cap-eviction warning, reached by a flood of cards nobody pins, names no card text (#1178)", async () => {
+    const a = await attachedDaemon();
+    try {
+      // Nine file-change cards at once: they are terminalOnly, so nothing pins them, and the
+      // registry's cap of eight evicts the oldest and warns. That warning must not carry the text.
+      for (let i = 0; i < 9; i++) {
+        a.r.server.request(fileChangeRequest(a.tuiId, `e2e-flood-${i}`), a.tuiId);
+      }
+      await pollUntil(() => cards(a.received).length === 9, 10000, 'nine cards');
+      await pollUntil(
+        () => a.r.output.text.includes('pending-question cap (8) exceeded; evicted oldest'),
+        8000,
+        'the eviction warning',
+      );
+      expect(a.r.output.text).toContain('chars=');
+      expect(a.r.output.text).not.toContain('e2e-flood');
+      expect(stdinBytes(a.r)).toBe(0);
+    } finally {
+      a.ws.close();
+    }
+  }, 60000);
+
   test('remi unstick (SIGUSR2) dismisses an open card on every client, answers nothing and types nothing', async () => {
     const a = await attachedDaemon();
     try {
