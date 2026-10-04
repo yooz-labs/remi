@@ -95,9 +95,9 @@ describe('P-256 keys', () => {
     const a = await ecGenerate(seededRandom('ecdh a'));
     const b = await ecGenerate(seededRandom('ecdh b'));
     const ab = await ecdh(a.privateKey, b.publicKey);
-    const ba = await ecdh(b.privateKey, a.publicKey);
+    const fromB = await ecdh(b.privateKey, a.publicKey);
     expect(ab.length).toBe(32);
-    expect(hex(ab)).toBe(hex(ba));
+    expect(hex(ab)).toBe(hex(fromB));
   });
 
   test('a public key off the curve, with the wrong prefix or the wrong length is MALFORMED', async () => {
