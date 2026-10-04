@@ -355,7 +355,10 @@ export function formatHelp(version: string): string {
     '',
     bold('Quick Start:'),
     entry('remi', 'Start Claude with monitoring'),
-    entry('remi codex', 'Start Codex with monitoring (command approvals reach the phone)'),
+    entry(
+      'remi codex',
+      'Start Codex with monitoring (command approvals reach the phone; not yet checked against a real Codex)',
+    ),
     entry('remi ls', 'List running sessions'),
     entry('remi attach [name]', 'Attach to a session (Ctrl+B d to detach)'),
     '',

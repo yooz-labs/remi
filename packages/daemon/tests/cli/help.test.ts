@@ -206,6 +206,17 @@ describe('the codex help (#1177)', () => {
     expect(output).toContain('remi codex resume <id>');
   });
 
+  test('the global help line for remi codex carries the real-Codex qualifier (L3)', () => {
+    // The top-level quick start is the first place a person reads about remi codex; the
+    // approvals claim there must say it has not met a real Codex, as the command help and README do.
+    const line = plain(formatHelp('0.0.0'))
+      .split('\n')
+      .find((l) => l.trim().startsWith('remi codex ') && !l.includes('resume') && !l.includes('"'));
+    expect(line).toBeDefined();
+    expect(line).toContain('command approvals reach the phone');
+    expect(line).toContain('not yet checked against a real Codex');
+  });
+
   test('remi codex --help says what ships: status and command approvals, and what is refused', () => {
     const output = plain(formatCommandHelp('codex'));
     expect(output).toContain('remi codex resume <thread id>');
