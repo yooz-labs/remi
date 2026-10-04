@@ -48,6 +48,22 @@ interface RemoteSessionResult {
   readonly notice?: string;
 }
 
+const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Whether a success the daemon sent can be used: a session id that is a UUID and a port that is an
+ * integer from 1 to 65535 (or none). Both are printed and the port is attached to, and the wire
+ * carries whatever JSON a daemon chose, so a value of another shape (a terminal sequence in the
+ * first eight characters of the id, a string for the port) is refused, not shown (#1179 review, G10).
+ */
+function isUsableAnswer(sessionId: unknown, port: unknown): boolean {
+  if (typeof sessionId !== 'string' || !UUID_SHAPE.test(sessionId)) return false;
+  return (
+    port === undefined ||
+    (Number.isInteger(port) && (port as number) >= 1 && (port as number) <= 65535)
+  );
+}
+
 export async function createRemoteSession(
   host: string,
   port: number,
@@ -119,6 +135,15 @@ export async function createRemoteSession(
         );
       } else if (msg.type === 'create_session_response') {
         if (msg.success && msg.sessionId) {
+          if (!isUsableAnswer(msg.sessionId, msg.port)) {
+            done(
+              undefined,
+              new Error(
+                'Failed to create session: the daemon sent an answer this client cannot read',
+              ),
+            );
+            return;
+          }
           // The daemon spawned a new daemon; use the returned port (or original if not present)
           done({
             sessionId: msg.sessionId,

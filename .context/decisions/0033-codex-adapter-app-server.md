@@ -610,7 +610,7 @@ The child's own refusal text is not relayed to the client: it holds pids, files 
 - **G7.** The `directory` of every create request is refused when it is not a string, starts with a hyphen (a child would re-parse it as a flag), or holds a NUL or a newline; this also covers the plain Claude request, and no real client sends such a value.
 - **G8.** The client reads short, host-free texts: the older-daemon gate says an older remi is running and to update or stop it, a failed spawn says only that the session could not be started, and the pids, files, paths and the failure go to the hub's log.
 - **G9.** The session-less ack of a daemon that is not a hub names its `harness` alone, so a Codex daemon never reads as Claude by an absent field; a hub, which hosts nothing, names none.
-- **G10.** Everything a daemon sends that the CLI prints (errors, the notice) is printed escaped (`escapeUnsafeText`).
+- **G10.** Everything a daemon sends that the CLI prints is safe to print: errors and the notice are escaped (`escapeUnsafeText`), and a success whose session id is not a UUID or whose port is not an integer from 1 to 65535 is refused (both are printed and the port is attached to), which the reviewers did not name and which I found while checking the claim.
 - **G11.** The notice as item 9 now says.
 - **G12.** The messages a Codex session sends itself name `remi attach` with this session's address when the session was not launched with a terminal (`TerminalWords`), and keep the terminal wording for a wrapper session; the missing-thread notice also names an Update or Trust prompt.
 - **G13.** The web label shows a harness this build does not know as its own name, cut to 16 characters with control and bidi characters written out.
