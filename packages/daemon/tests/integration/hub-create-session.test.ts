@@ -284,6 +284,44 @@ describe('a hub creating a session for a harness (#1179)', () => {
     const claude = await ask(r, { harness: 'claude' });
     expect(claude.response.success).toBe(true);
   }, 90000);
+
+  test('a hub whose own version does not parse still starts its Codex child: the child does not count its parent hub as an older remi (H5)', async () => {
+    const r = await startHub({ codex: true });
+    const statusFile = path.join(r.hub.home, '.remi', 'daemon-status.json');
+    const readStatus = () =>
+      JSON.parse(fs.readFileSync(statusFile, 'utf-8')) as Record<string, unknown>;
+    const { ws, received } = await connectAndHello(r.hub.port);
+    try {
+      // The hub rewrites its status file after a client connects (a 300 ms debounce), and not
+      // again until something changes. Wait for that write, then put in the file the version a
+      // PR-stamped build reports (`bump-version.sh set 0.7.16-p1204.1`, which AGENTS.md
+      // recommends for test builds): it does not parse, so the gate reads it as older.
+      await pollUntil(
+        () => readStatus()['connections'] === 1,
+        10000,
+        "the hub's status file to count the client",
+      );
+      const staged = `${statusFile}.staged`;
+      fs.writeFileSync(staged, JSON.stringify({ ...readStatus(), version: '0.7.16-p1204.1' }));
+      fs.renameSync(staged, statusFile);
+
+      const request = createCreateSessionRequest(r.hub.work, { harness: 'codex' });
+      ws.send(serialize(request));
+      const isResponse = (m: ProtocolMessage): m is CreateSessionResponseMessage =>
+        m.type === 'create_session_response' && m.requestId === request.id;
+      await pollUntil(() => received.some(isResponse), 30000, 'the create_session_response');
+      const response = received.find(isResponse) as CreateSessionResponseMessage;
+
+      // The hub's own gate skips the hub itself; the CHILD's gate must skip its parent too, or the
+      // child exits in its preflight and the client sees only that the process exited.
+      expect(response.success, response.error).toBe(true);
+      expect(await waitForArgv(r.agents.codexDir)).toEqual(['--no-alt-screen']);
+      // Validity of the test: the hub did not write its file again before the child read it.
+      expect(readStatus()['version']).toBe('0.7.16-p1204.1');
+    } finally {
+      ws.close();
+    }
+  }, 90000);
 });
 
 /** `cli.ts <args>` as a client of the hub, with no terminal. The caller ends it. */

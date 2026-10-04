@@ -294,6 +294,37 @@ describe('findLegacyWriters', () => {
     expect(find(process.pid + 1).length).toBe(1);
   });
 
+  test('a pid in excludePids is never a writer, from every source; any other writer is still found (H5)', () => {
+    // A hub-spawned child names its parent hub here: the hub runs this same build, but a build
+    // whose version does not parse (a PR-stamped one) would otherwise read as older.
+    const hub = livePid();
+    writeStatus('daemon-status.json', { pid: hub, mode: 'hub', version: '0.7.16-p1204.1' });
+    registerLive(hub, '0.7.16-p1204.1');
+    writeStatus('status-19921.json', { pid: hub });
+    const other = livePid();
+    registerLive(other, '0.7.0');
+    const gate = (excludePids?: readonly number[]) =>
+      findLegacyWriters({
+        liveSessions: registry,
+        statusFiles: () => readStatusFiles(remiDir),
+        selfPid: process.pid,
+        ...(excludePids !== undefined && { excludePids }),
+      });
+
+    expect(
+      gate()
+        .map((w) => w.pid)
+        .sort(),
+    ).toEqual([hub, other].sort());
+    expect(
+      gate([])
+        .map((w) => w.pid)
+        .sort(),
+    ).toEqual([hub, other].sort());
+    expect(gate([hub]).map((w) => w.pid)).toEqual([other]);
+    expect(gate([hub, other])).toEqual([]);
+  });
+
   test('a process named by several records is reported once, by the first that passes', () => {
     const pid = livePid();
     const file = registerLive(pid, '0.7.0');
