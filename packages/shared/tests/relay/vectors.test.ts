@@ -205,7 +205,7 @@ for (const name of ['pair', 'resume'] as const) {
       await client.bye();
       expect(hex(clientIo.frames[10] as Uint8Array)).toBe(s.bye.c2h.frame);
       expect(await host.receive(unhex(s.bye.c2h.frame))).toBeNull();
-      expect(host.transportClosed()).toBe('clean');
+      expect(await host.transportClosed()).toBe('clean');
     });
 
     test('the handshake frames are sealed exactly as documented', async () => {

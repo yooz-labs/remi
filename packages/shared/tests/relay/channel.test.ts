@@ -274,7 +274,7 @@ describe('counter and size limits', () => {
       hex(text('last data')),
     );
     expect(await host.receive(clientIo.frames[1] as Uint8Array)).toBeNull();
-    expect(host.transportClosed()).toBe('clean');
+    expect(await host.transportClosed()).toBe('clean');
   });
 
   test('a sender past the maximum counter fails and closes, BYE included', async () => {
@@ -489,14 +489,14 @@ describe('authenticated end of stream (BYE)', () => {
     expect(await host.receive(clientIo.frames[1] as Uint8Array)).toBeNull();
     expect(host.peerEnded).toBe(true);
     expect(host.closed).toBe(false);
-    expect(host.transportClosed()).toBe('clean');
+    expect(await host.transportClosed()).toBe('clean');
   });
 
   test('a close with no BYE is unclean: the tail may be truncated', async () => {
     const { client, host, clientIo } = await pair();
     await sendMany(client, clientIo, 2);
     await host.receive(clientIo.frames[0] as Uint8Array);
-    expect(host.transportClosed()).toBe('unclean');
+    expect(await host.transportClosed()).toBe('unclean');
     expect(host.closed).toBe(true);
   });
 
@@ -507,7 +507,7 @@ describe('authenticated end of stream (BYE)', () => {
     await client.send(text('3'));
     await client.bye();
     await host.receive(clientIo.frames[0] as Uint8Array); // frames 2, 3 and the BYE are dropped
-    expect(host.transportClosed()).toBe('unclean');
+    expect(await host.transportClosed()).toBe('unclean');
   });
 
   test('a dropped frame before a delivered BYE is a counter gap, caught as before', async () => {
@@ -517,7 +517,7 @@ describe('authenticated end of stream (BYE)', () => {
     await client.bye();
     await host.receive(clientIo.frames[0] as Uint8Array);
     expect(await codeOf(host.receive(clientIo.frames[2] as Uint8Array))).toBe('COUNTER');
-    expect(host.transportClosed()).toBe('failed');
+    expect(await host.transportClosed()).toBe('failed');
   });
 
   test('after bye the sender sends nothing: send and a second bye are ENDED, and the channel still reads', async () => {
@@ -641,8 +641,8 @@ describe('authenticated end of stream (BYE)', () => {
     await host.bye();
     expect(await host.receive(clientIo.frames[0] as Uint8Array)).toBeNull();
     expect(await client.receive(hostIo.frames[0] as Uint8Array)).toBeNull();
-    expect(host.transportClosed()).toBe('clean');
-    expect(client.transportClosed()).toBe('clean');
+    expect(await host.transportClosed()).toBe('clean');
+    expect(await client.transportClosed()).toBe('clean');
   });
 
   test('bye takes a counter, so it respects the counter limit and the queue limit', async () => {
@@ -671,14 +671,90 @@ describe('authenticated end of stream (BYE)', () => {
   test('transportClosed is idempotent, and a local close with no peer BYE is unclean too', async () => {
     const { host } = await pair();
     host.close();
-    expect(host.transportClosed()).toBe('unclean');
-    expect(host.transportClosed()).toBe('unclean');
+    expect(await host.transportClosed()).toBe('unclean');
+    expect(await host.transportClosed()).toBe('unclean');
+  });
+
+  test('transportClosed drains: with the BYE receive still in flight the verdict is clean', async () => {
+    // A WebSocket close event fires after the last message event, while that message's
+    // receive is still awaiting the engine. The caller must not have to await it first.
+    const { client, host, clientIo } = await pair();
+    await client.send(text('x'));
+    await client.bye();
+    await host.receive(clientIo.frames[0] as Uint8Array);
+    const pending = host.receive(clientIo.frames[1] as Uint8Array);
+    expect(await host.transportClosed()).toBe('clean');
+    expect(await pending).toBeNull();
+    expect(host.peerEnded).toBe(true);
+  });
+
+  test('transportClosed drains: a data receive in flight is delivered and the verdict is unclean', async () => {
+    const { client, host, clientIo } = await pair();
+    await client.send(text('still arriving'));
+    const pending = host.receive(clientIo.frames[0] as Uint8Array);
+    expect(await host.transportClosed()).toBe('unclean');
+    expect(hex(data(await pending))).toBe(hex(text('still arriving')));
+  });
+
+  test('transportClosed drains: a failing receive in flight makes the verdict failed', async () => {
+    const { client, host, clientIo } = await pair();
+    await client.send(text('x'));
+    const bad = (clientIo.frames[0] as Uint8Array).slice();
+    bad[bad.length - 1] = (bad[bad.length - 1] ?? 0) ^ 1;
+    const pending = host.receive(bad);
+    expect(await host.transportClosed()).toBe('failed');
+    expect(await codeOf(pending)).toBe('DECRYPT');
+  });
+
+  test('two concurrent transportClosed calls with a BYE in flight agree', async () => {
+    const { client, host, clientIo } = await pair();
+    await client.bye();
+    const pending = host.receive(clientIo.frames[0] as Uint8Array);
+    const [a, b] = await Promise.all([host.transportClosed(), host.transportClosed()]);
+    expect([a, b]).toEqual(['clean', 'clean']);
+    expect(await pending).toBeNull();
+  });
+
+  test('a close after this side already ended its own stream is still judged by the INBOUND stream', async () => {
+    const own = await pair();
+    await own.client.bye();
+    expect(await own.client.transportClosed()).toBe('unclean');
+    const both = await pair();
+    await both.client.bye();
+    await both.host.bye();
+    expect(await both.client.receive(both.hostIo.frames[0] as Uint8Array)).toBeNull();
+    expect(await both.client.transportClosed()).toBe('clean');
+  });
+
+  test('a local close() after the peer BYE was seen is clean, with no peer BYE it is unclean', async () => {
+    const seen = await pair();
+    await seen.client.bye();
+    expect(await seen.host.receive(seen.clientIo.frames[0] as Uint8Array)).toBeNull();
+    seen.host.close();
+    expect(await seen.host.transportClosed()).toBe('clean');
+    const unseen = await pair();
+    unseen.host.close();
+    expect(await unseen.host.transportClosed()).toBe('unclean');
+  });
+
+  test('a frame injected after the peer BYE fails the channel but peerEnded stays true: R3 reads both', async () => {
+    const { client, host, clientIo } = await pair();
+    await client.bye();
+    expect(await host.receive(clientIo.frames[0] as Uint8Array)).toBeNull();
+    const key = await aeadKey(K_C2H);
+    const injected = encodeDataFrame(
+      2,
+      await aeadSeal(key, r.TYPE_DATA, r.DIR_C2H, 2, text('injected')),
+    );
+    expect(await codeOf(host.receive(injected))).toBe('ENDED');
+    expect(host.peerEnded).toBe(true);
+    expect(await host.transportClosed()).toBe('failed');
   });
 
   test('a failed channel reports failed, whatever else happened', async () => {
     const { host } = await pair();
     await codeOf(host.receive(new Uint8Array(40)));
-    expect(host.transportClosed()).toBe('failed');
+    expect(await host.transportClosed()).toBe('failed');
   });
 });
 

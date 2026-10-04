@@ -194,9 +194,12 @@ export class Channel {
 
   /**
    * The transport has closed (the caller saw the socket close, whatever the code).
-   * Says whether the inbound stream ended cleanly, and ends the channel. Idempotent.
+   * Drains every receive already queued, so a close event that fires while the last
+   * frame is still being opened does not hide it, then says how the inbound stream
+   * ended and ends the channel. Idempotent; concurrent calls agree.
    */
-  transportClosed(): StreamEnd {
+  async transportClosed(): Promise<StreamEnd> {
+    await this.recvTail;
     const verdict: StreamEnd = this.failed ? 'failed' : this.ended ? 'clean' : 'unclean';
     this.drop();
     return verdict;
