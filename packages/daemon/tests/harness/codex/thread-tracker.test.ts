@@ -513,6 +513,43 @@ describe('attach', () => {
     await waitUntil(ctx, () => ctx.attachCount() === 2, 'attached again');
   });
 
+  test('a method the app-server does not have (-32601) is logged once and not retried until the next ready (W10)', async () => {
+    const ctx = await setup({ retryMs: 40 });
+    ctx.server.onRequest('thread/resume', () => {
+      throw { code: -32601, message: 'method not found' };
+    });
+    const id = crypto.randomUUID();
+    ctx.started('tui', id);
+    await waitUntil(ctx, () => ctx.resumeFrames().length === 1, 'the first thread/resume');
+    // Neither the timer nor the tracked thread going active retries it.
+    ctx.status(id, { type: 'active', activeFlags: [] });
+    await settle(400);
+    expect(ctx.resumeFrames()).toHaveLength(1);
+    expect(ctx.logs.filter((l) => l.includes('not available'))).toHaveLength(1);
+
+    // A new connection may be a newer server: one more try, and again no retry.
+    ctx.tracker.handleDisconnected();
+    ctx.tracker.handleReady();
+    await waitUntil(ctx, () => ctx.resumeFrames().length === 2, 'the try after ready');
+    await settle(300);
+    expect(ctx.resumeFrames()).toHaveLength(2);
+  });
+
+  test('after ten failures the retry slows to five times the period (W10)', async () => {
+    const ctx = await setup({ retryMs: 20 });
+    const at: number[] = [];
+    ctx.server.onRequest('thread/resume', () => {
+      at.push(Date.now());
+      throw { code: -32600, message: 'no rollout found' };
+    });
+    ctx.started('tui', crypto.randomUUID());
+    await waitUntil(ctx, () => at.length >= 13, 'thirteen attempts', 8000);
+    const gap = (i: number) => (at[i + 1] as number) - (at[i] as number);
+    // The 10th failure is the 10th attempt: gaps before it are the period, gaps after are 5x.
+    expect(gap(11)).toBeGreaterThanOrEqual(80);
+    expect(gap(11)).toBeGreaterThan(gap(3));
+  });
+
   test('the status in the resume result is applied', async () => {
     const ctx = await setup();
     const id = crypto.randomUUID();

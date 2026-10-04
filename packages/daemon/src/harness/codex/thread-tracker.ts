@@ -29,8 +29,9 @@
  * Attach is `thread/resume {threadId, excludeTurns: true}` and nothing else (the
  * spike showed an override persists on the thread). It fails with `-32600`
  * ("no rollout found") until the first message of the thread, so it is retried:
- * at once when the tracked thread turns `active`, otherwise every second, for
- * the life of the session. A new candidate after the first identity is a `/new`
+ * at once when the tracked thread turns `active`, otherwise every second (every
+ * five seconds after ten failures), for the life of the session; a server with no
+ * `thread/resume` at all (`-32601`) is asked once per connection. A new candidate after the first identity is a `/new`
  * in the TUI and rotates the binding, but not while the tracked thread is
  * `active` (decided policy, unverified live): the old id is not kept.
  *
@@ -73,8 +74,14 @@ export interface ThreadTrackerDeps {
 
 /** A thread created more than this long before the spawn is not this session's. */
 const CREATED_BEFORE_SPAWN_SLACK_MS = 5000;
+/** After this many failed attaches the retry period is multiplied by RETRY_BACKOFF_FACTOR. */
+const BACKOFF_AFTER_FAILURES = 10;
+const RETRY_BACKOFF_FACTOR = 5;
 const MAX_PENDING_LINKS = 512;
 const MAX_DESCENDANTS = 256;
+
+/** JSON-RPC "method not found". */
+const METHOD_NOT_FOUND = -32601;
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -107,6 +114,8 @@ export class ThreadTracker {
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private trackedStatus: ThreadStatus | null = null;
   private failures = 0;
+  /** The app-server has no `thread/resume` (`-32601`): not retried until the next `ready`. */
+  private resumeUnavailable = false;
   /** Ids known to be descendants of the tracked thread, oldest first. */
   private readonly descendants = new Set<string>();
   /** Child -> parent, for links whose parent is not (yet) known to be ours. */
@@ -131,6 +140,10 @@ export class ThreadTracker {
   handleReady(): void {
     this.ready = true;
     this.isAttached = false;
+    // A new connection is a new chance: the period starts over, and so does an app-server
+    // that lacked `thread/resume` (it may have been upgraded).
+    this.failures = 0;
+    this.resumeUnavailable = false;
     this.attach();
   }
 
@@ -278,6 +291,7 @@ export class ThreadTracker {
   private attach(): void {
     const id = this.current;
     if (id === null || this.isAttached || this.attaching || !this.ready || this.disposed) return;
+    if (this.resumeUnavailable) return;
     this.clearRetry();
     this.attaching = true;
     this.deps.client.request('thread/resume', { threadId: id, excludeTurns: true }).then(
@@ -301,13 +315,24 @@ export class ThreadTracker {
           this.attach();
           return;
         }
+        if (error instanceof AppServerRpcError && error.code === METHOD_NOT_FOUND) {
+          this.resumeUnavailable = true;
+          this.deps.log(
+            'thread/resume is not available on this app-server; not retrying until it reconnects',
+          );
+          return;
+        }
         this.failures += 1;
         if (this.failures === 1 || this.failures % 30 === 0) {
           this.deps.log(
             `thread/resume for ${short(id)} failed (${describeError(error)}); retrying (attempt ${this.failures})`,
           );
         }
-        this.retryTimer = setTimeout(() => this.attach(), this.deps.retryMs ?? 1000);
+        const period = this.deps.retryMs ?? 1000;
+        this.retryTimer = setTimeout(
+          () => this.attach(),
+          this.failures >= BACKOFF_AFTER_FAILURES ? period * RETRY_BACKOFF_FACTOR : period,
+        );
       },
     );
   }
