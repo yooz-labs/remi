@@ -949,6 +949,13 @@ export interface CreateSessionResponseMessage {
   readonly requestId: UUID;
   /** Port of the new daemon (when session was spawned on a new daemon) */
   readonly port?: number;
+  /**
+   * What a success does not say (#1179): for a harness started without a terminal that may stop at a
+   * prompt only a terminal can answer (Codex's Update and Trust prompts), the daemon cannot know the
+   * session reached its prompt, so it says so and what to do. `success` means the session daemon was
+   * spawned and registered, never that the harness is ready. Absent for Claude and for a refusal.
+   */
+  readonly notice?: string | undefined;
 }
 
 /** Request to resume a dead/ended Claude Code session */
@@ -1968,6 +1975,7 @@ export function createCreateSessionResponse(
   sessionId?: UUID,
   error?: string,
   port?: number,
+  notice?: string,
 ): CreateSessionResponseMessage {
   return {
     type: 'create_session_response',
@@ -1978,6 +1986,7 @@ export function createCreateSessionResponse(
     ...(sessionId !== undefined && { sessionId }),
     ...(error !== undefined && { error }),
     ...(port !== undefined && { port }),
+    ...(notice !== undefined && { notice }),
   };
 }
 

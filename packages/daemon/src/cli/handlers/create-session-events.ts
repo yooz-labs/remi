@@ -35,12 +35,13 @@ export interface SpawnResult {
  * of a launch (the older-daemon gate, for Codex). On success, the arguments to append to the
  * child's command line: `--harness <id>` and then `-- <args>`, last, so no remote argument can be
  * read as a remi flag (`--no-auth`). A request that names no harness spawns Claude exactly as it
- * always did, with nothing appended unless it brought `args`.
+ * always did, with nothing appended unless it brought `args`. `notice` is what a success does
+ * not say for a harness that may stop at a prompt nobody can answer headless.
  */
 export function checkHarnessRequest(
   registry: HarnessRegistry,
   extra: CreateSessionExtra | undefined,
-): { ok: true; spawnArgs: string[] } | { ok: false; error: string } {
+): { ok: true; spawnArgs: string[]; notice?: string } | { ok: false; error: string } {
   const { harness, args } = extra ?? {};
   if (harness === undefined && args === undefined) return { ok: true, spawnArgs: [] };
 
@@ -72,6 +73,7 @@ export function checkHarnessRequest(
       ...(harness !== undefined ? ['--harness', id] : []),
       ...(checked.args.length > 0 ? ['--', ...checked.args] : []),
     ],
+    ...(spec.headlessNotice !== undefined && { notice: spec.headlessNotice }),
   };
 }
 
@@ -185,6 +187,7 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
               result.sessionId as UUID,
               undefined,
               result.port,
+              request.notice,
             ),
           );
           log(

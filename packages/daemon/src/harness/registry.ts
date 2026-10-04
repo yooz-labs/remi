@@ -31,6 +31,12 @@ export interface HarnessSpec {
   readonly validateRemoteArgs: (args: unknown) => RemoteArgsResult;
   /** Why a session of this harness cannot start right now (the older-daemon gate), or null. */
   readonly launchRefusal?: () => string | null;
+  /**
+   * What a successful create does not tell the client (#1179): this harness is started with no
+   * terminal and may stop at a prompt only a terminal can answer, which the daemon cannot see. Sent
+   * as the response's `notice`; absent for a harness with no such prompt.
+   */
+  readonly headlessNotice?: string;
 }
 
 /**

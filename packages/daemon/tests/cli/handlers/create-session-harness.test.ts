@@ -30,6 +30,7 @@ const CID = 'conn0000-0000-0000-0000-000000000000' as UUID;
 const REQ = 'req00000-0000-0000-0000-000000000000' as UUID;
 const THREAD = '01950000-0000-7000-8000-0000000000aa';
 const GATE_TEXT = 'remi codex will not start: an older remi is running (test gate text)';
+const NOTICE = 'started without a terminal (test notice text)';
 
 describe('create requests naming a harness (#1179)', () => {
   let dir: string;
@@ -68,6 +69,7 @@ describe('create requests naming a harness (#1179)', () => {
       codex: {
         command: 'codex',
         validateRemoteArgs: validateCodexRemoteArgs,
+        headlessNotice: NOTICE,
         launchRefusal: () => {
           gateCalls += 1;
           return gate;
@@ -162,6 +164,15 @@ describe('create requests naming a harness (#1179)', () => {
       expect(gateCalls).toBe(1);
     });
 
+    test('the notice of a harness that starts headless rides on the check, and only on that harness', () => {
+      const codex = checkHarnessRequest(registry(), { harness: 'codex' });
+      expect(codex.ok && codex.notice).toBe(NOTICE);
+      const claude = checkHarnessRequest(registry(), { harness: 'claude' });
+      expect(claude.ok && 'notice' in claude).toBe(false);
+      const plain = checkHarnessRequest(registry(), undefined);
+      expect(plain.ok && 'notice' in plain).toBe(false);
+    });
+
     test('a clear gate lets the request through', () => {
       gate = null;
       expect(spawnArgs({ harness: 'codex' })).toEqual(['--harness', 'codex']);
@@ -194,7 +205,13 @@ describe('create requests naming a harness (#1179)', () => {
       });
     }
     const response = () =>
-      sent[0] as { type: string; success: boolean; error?: string; requestId: UUID };
+      sent[0] as {
+        type: string;
+        success: boolean;
+        error?: string;
+        requestId: UUID;
+        notice?: string;
+      };
 
     test('spawns with the inherited flags, then --harness, then -- and the arguments, last', async () => {
       await handlers().onCreateSessionRequest(CID, '/tmp/project', REQ, {
@@ -218,6 +235,25 @@ describe('create requests naming a harness (#1179)', () => {
       // Nothing a remote client sent can come before `--`, so none can be read as a remi flag.
       expect(extra.indexOf('--harness')).toBeLessThan(extra.indexOf('--'));
       expect(extra.indexOf('--')).toBe(extra.lastIndexOf('--'));
+    });
+
+    test('the success of a harness that starts headless carries its notice, Claude and a refusal carry none', async () => {
+      await handlers().onCreateSessionRequest(CID, '/tmp/project', REQ, { harness: 'codex' });
+      expect(response().success).toBe(true);
+      expect(response().notice).toBe(NOTICE);
+
+      sent = [];
+      await handlers().onCreateSessionRequest(CID, '/tmp/project', REQ, { harness: 'claude' });
+      expect(response().success).toBe(true);
+      expect('notice' in response()).toBe(false);
+
+      sent = [];
+      await handlers().onCreateSessionRequest(CID, '/tmp/project', REQ, {
+        harness: 'codex',
+        args: ['--no-auth'],
+      });
+      expect(response().success).toBe(false);
+      expect('notice' in response()).toBe(false);
     });
 
     test('a refused request answers once, probes no port and spawns nothing', async () => {

@@ -33,6 +33,8 @@ describe('createRemoteSession sends a harness only to a daemon that offers it (#
   let savedHome: string | undefined;
   /** What the daemon puts in its hello_ack; `undefined` is an older daemon, which has no such field. */
   let offered: readonly HarnessId[] | undefined;
+  /** What the daemon says its success does not (#1179); undefined sends none. */
+  let notice: string | undefined;
   let requests: Array<{ directory: string | undefined; extra: CreateSessionExtra | undefined }>;
 
   beforeAll(async () => {
@@ -50,7 +52,7 @@ describe('createRemoteSession sends a harness only to a daemon that offers it (#
           requests.push({ directory, extra });
           adapter.sendRaw(
             connectionId,
-            createCreateSessionResponse(true, requestId, SESSION, undefined, port),
+            createCreateSessionResponse(true, requestId, SESSION, undefined, port, notice),
           );
         },
       },
@@ -65,6 +67,7 @@ describe('createRemoteSession sends a harness only to a daemon that offers it (#
   beforeEach(() => {
     requests = [];
     offered = undefined;
+    notice = undefined;
     stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-remote-new-'));
     savedHome = process.env['REMI_HOME'];
     process.env['REMI_HOME'] = stateDir;
@@ -114,6 +117,14 @@ describe('createRemoteSession sends a harness only to a daemon that offers it (#
     expect(requests).toEqual([
       { directory: '/work/project', extra: { harness: undefined, args: ['--continue'] } },
     ]);
+  });
+
+  test("the daemon's notice on a success comes back to the caller, and its absence stays absent", async () => {
+    offered = ['codex'];
+    notice = 'started without a terminal (test notice)';
+    expect(await create('codex')).toEqual({ sessionId: SESSION, port, notice });
+    notice = undefined;
+    expect(await create('codex')).toEqual({ sessionId: SESSION, port });
   });
 
   test('a plain request is the one an older daemon already understands: no extra at all', async () => {

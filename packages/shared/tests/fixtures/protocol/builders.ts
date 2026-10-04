@@ -270,7 +270,14 @@ export const FIXTURE_BUILDERS: { [K in keyof ProtocolMessageMap]: () => Protocol
       args: ['-m', 'fixture-model'],
     }),
   create_session_response: () =>
-    createCreateSessionResponse(true, REQUEST_ID, SESSION_ID, undefined, 19924),
+    createCreateSessionResponse(
+      true,
+      REQUEST_ID,
+      SESSION_ID,
+      undefined,
+      19924,
+      'Fixture notice: the session was started without a terminal.',
+    ),
   terminal_resize: () => createTerminalResize(120, 40),
   auth_challenge: () =>
     createAuthChallenge(

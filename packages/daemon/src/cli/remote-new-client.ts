@@ -40,6 +40,8 @@ export interface RemoteNewOptions {
 interface RemoteSessionResult {
   readonly sessionId: UUID;
   readonly port: number;
+  /** What the daemon says its success does not (#1179): shown to the person, never acted on. */
+  readonly notice?: string;
 }
 
 export async function createRemoteSession(
@@ -114,7 +116,11 @@ export async function createRemoteSession(
       } else if (msg.type === 'create_session_response') {
         if (msg.success && msg.sessionId) {
           // The daemon spawned a new daemon; use the returned port (or original if not present)
-          done({ sessionId: msg.sessionId, port: msg.port ?? port });
+          done({
+            sessionId: msg.sessionId,
+            port: msg.port ?? port,
+            ...(msg.notice !== undefined && { notice: msg.notice }),
+          });
         } else {
           done(undefined, new Error(`Failed to create session: ${msg.error ?? 'unknown error'}`));
         }
@@ -177,6 +183,7 @@ export async function runRemoteNew(opts: RemoteNewOptions): Promise<{ exitCode: 
     console.error(`New daemon spawned on port ${result.port}`);
   }
   console.error(`Session created: ${result.sessionId.slice(0, 8)}`);
+  if (result.notice !== undefined) console.error(result.notice);
   console.error('Attaching...');
 
   return runAttachClient({ host, port: result.port, sessionId: result.sessionId });

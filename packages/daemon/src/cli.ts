@@ -1884,6 +1884,10 @@ const harnessRegistry = new HarnessRegistry({
   codex: {
     command: 'codex',
     validateRemoteArgs: validateCodexRemoteArgs,
+    // A session the hub starts has no terminal, and Codex may stop at an Update or Trust prompt
+    // that remi never answers (it types nothing into Codex); the hub cannot see that it did.
+    headlessNotice:
+      'Codex was started on the host without a terminal, so remi cannot tell whether it reached its prompt. It may be waiting at an Update or Trust prompt that only a terminal can answer: if it does not respond, run `remi attach` on the host and answer it there.',
     launchRefusal: () => {
       const writers = legacyWriters();
       return writers.length > 0 ? legacyWriterRefusal(writers) : null;
