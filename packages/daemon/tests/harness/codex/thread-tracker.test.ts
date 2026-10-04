@@ -791,6 +791,36 @@ describe('status', () => {
     ]);
   });
 
+  test('a subagent pushed out of the memory is reported idle, so the session does not keep its last status (R7)', async () => {
+    const ctx = await setup();
+    const a = crypto.randomUUID();
+    ctx.started('tui', a);
+    await waitUntil(ctx, () => ctx.identities.length === 1, 'the identity');
+    const children = Array.from({ length: 257 }, () => crypto.randomUUID());
+    for (const id of children.slice(0, 256)) ctx.started('tui', id, setKey('parentThreadId', a));
+    await settle(500);
+    const first = children[0] as string;
+    ctx.status(first, { type: 'active', activeFlags: ['waitingOnApproval'] });
+    await waitUntil(
+      ctx,
+      () => ctx.statuses.some((s) => s.id === first && s.status.type === 'active'),
+      'the first subagent to be active',
+    );
+
+    // The 257th pushes the first out. Its frames are ignored from now on, so whatever it last
+    // said must not stand: it is reported idle once, at the moment it is forgotten.
+    ctx.started('tui', children[256] as string, setKey('parentThreadId', a));
+    await waitUntil(
+      ctx,
+      () => ctx.statuses.some((s) => s.id === first && s.status.type === 'idle'),
+      'the evicted subagent to be reported idle',
+    );
+    const mine = ctx.statuses.filter((s) => s.id === first);
+    expect(mine.map((s) => s.status.type)).toEqual(['active', 'idle']);
+    // Nobody else was swept up: the second subagent is still ours.
+    expect((await oursOf(ctx, [children[1] as string])).size).toBe(1);
+  });
+
   /** A link whose parent is nobody's we know: it fills the memory of links waiting for a parent. */
   const foreignLinks = (ctx: Ctx, n: number): void => {
     for (let i = 0; i < n; i++) {

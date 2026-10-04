@@ -262,7 +262,11 @@ export class ThreadTracker {
       this.descendants.add(next);
       if (this.descendants.size > MAX_DESCENDANTS) {
         const oldest = this.descendants.values().next().value;
-        if (oldest !== undefined) this.descendants.delete(oldest);
+        if (oldest !== undefined) {
+          this.descendants.delete(oldest);
+          // Its frames are ignored from here on, so what it last said must not stand.
+          this.deps.onStatus(oldest, { type: 'idle' });
+        }
       }
       for (const [child, parent] of this.pendingLinks) {
         if (parent === next) work.push(child);
