@@ -602,6 +602,14 @@ describe('remi codex launch (wrapper and refusals, #1177)', () => {
     expect(hub.output.text).toContain('hub hosts no session');
   }, 60000);
 
+  test("the words after the user's own -- are prompt text even when they look like flags", async () => {
+    const r = await startWrapper(['--', '-x', '--port', '1']);
+    await waitForFakeCodex(r);
+    expect(read(path.join(r.fakeDir, 'argv'))).toBe('--no-alt-screen\n--\n-x\n--port\n1\n');
+    fs.writeFileSync(path.join(r.fakeDir, 'release'), '');
+    expect(await Promise.race([r.proc.exited, Bun.sleep(15000).then(() => 'timeout')])).toBe(0);
+  }, 40000);
+
   test('a prompt word that names a remi subcommand is still a prompt: remi codex status', async () => {
     const r = await startWrapper(['status']);
     await waitForFakeCodex(r);
