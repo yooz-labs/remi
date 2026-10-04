@@ -1133,7 +1133,7 @@ describe('CodexDecisions', () => {
       ]);
     });
 
-    test('a retired card cancelled through the handler is dismissed exactly once, and nothing is sent or typed', async () => {
+    test('a retired card canceled through the handler is dismissed exactly once, and nothing is sent or typed', async () => {
       request(5);
       const retired = only();
       decisions.handleDisconnected();

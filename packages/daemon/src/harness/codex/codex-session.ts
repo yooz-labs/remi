@@ -226,7 +226,7 @@ const LINK_UNTRUSTED_MESSAGE =
 /** How long after its start a session with no thread may still be the one a new thread is for. */
 const FIRST_THREAD_WINDOW_MS = 60_000;
 const DEFAULT_LINK_WATCHDOG_MS = 30_000;
-/** A link counts as up, and the watchdog is cancelled, once it has stayed up this long (the client's own `stableMs`). */
+/** A link counts as up, and the watchdog is canceled, once it has stayed up this long (the client's own `stableMs`). */
 const DEFAULT_LINK_STABLE_MS = 5_000;
 
 /** The session's status from its thread and its descendants: waiting beats thinking beats idle. */
