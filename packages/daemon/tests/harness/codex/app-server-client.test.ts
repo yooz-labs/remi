@@ -73,6 +73,8 @@ describe('AppServerClient', () => {
         codexHome: '/work/codex-home',
         reconnect: false,
       });
+      // `initialized` is written before `ready` is emitted but reaches the server a moment later.
+      await server.waitFor(() => server.framesFrom(1).length >= 2, 'the initialized notification');
       const [first, second] = server.framesFrom(1);
       expect(first).toEqual({
         jsonrpc: '2.0',
@@ -369,14 +371,42 @@ describe('AppServerClient', () => {
         server.request({ method: 'item/commandExecution/requestApproval', params }, t2),
         server.request({ method: 'item/commandExecution/requestApproval', params }, t1),
       ];
-      expect(ids).toEqual([1, 2, 3]);
+      expect(ids).toEqual([0, 1, 2]);
       await server.waitFor(
         () => h.events.filter((e) => e.type === 'serverRequest').length === 3,
         'three server requests',
       );
       expect(h.events.flatMap((e) => (e.type === 'serverRequest' ? [e.id] : []))).toEqual([
-        1, 2, 3,
+        0, 1, 2,
       ]);
+    });
+
+    test('the first server request has id 0, as the real app-server counts: it surfaces, and respond(0) sends id 0 (Q4)', async () => {
+      // Verified live (Codex 0.160.0, 2026-10-04): the first real request id was 0. A truthiness
+      // check on an id would lose it.
+      const threadId = placeholderUuid(46);
+      server.createRollout(threadId);
+      const h = make();
+      await ready(h);
+      await h.client.request('thread/resume', { threadId });
+      const id = server.request(
+        {
+          method: 'item/commandExecution/requestApproval',
+          params: { threadId, command: 'touch x' },
+        },
+        threadId,
+      );
+      expect(id).toBe(0);
+      await server.waitFor(
+        () => h.events.some((e) => e.type === 'serverRequest' && e.id === 0),
+        'the request with id 0',
+      );
+      expect(h.client.respond(0, { decision: 'accept' })).toBe(true);
+      await server.waitFor(
+        () => server.received.some((r) => r.frame['id'] === 0 && 'result' in r.frame),
+        'the answer with id 0',
+      );
+      expect(server.isPending(threadId, 0)).toBe(false);
     });
 
     test('a client that subscribes late is replayed the pending request with the same id', async () => {

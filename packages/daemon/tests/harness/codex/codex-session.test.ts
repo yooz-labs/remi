@@ -113,6 +113,14 @@ describe('CodexHarness', () => {
     for (const registry of registries) await registry.shutdown();
     process.env['PATH'] = originalPath ?? '/usr/bin:/bin';
     Reflect.deleteProperty(process.env, 'FAKE_CODEX_DIR');
+    // The PTY's exit handler writes `sessions.json` and the live-sessions file under `tmpDir`
+    // (it runs synchronously once `isRunning` turns false), so the child must be gone before the
+    // directory is removed, or the late write recreates it and it is never cleaned up.
+    await until(
+      () => launched.every((session) => !session.pty.isRunning),
+      'the fake codex children to exit',
+      10000,
+    );
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -141,6 +149,7 @@ describe('CodexHarness', () => {
       env: () => ({ CODEX_HOME: server ? server.codexHome : path.join(tmpDir, 'no-codex-home') }),
       legacyWriters: () => legacy,
       remiVersion: 'test',
+      onQuestionResolved: () => {},
       log: (m) => logs.push(m),
       appServer: { backoff: { initialMs: 10, maxMs: 40 } },
       ...over,
@@ -1027,7 +1036,7 @@ describe('CodexHarness', () => {
         await sleep(100);
         server.emit(startFrame(t2), { broadcast: true });
         await until(() => holder(a.sessionId) === t2, 'A to rotate onto T2');
-        expect(logs).toContain(`[Codex] rotated from ${t1.slice(0, 8)} to ${t2.slice(0, 8)}`);
+        expect(logs).toContain(`[Codex] rotated from ${t1.slice(-8)} to ${t2.slice(-8)}`);
       },
     );
   });
@@ -1131,7 +1140,7 @@ describe('CodexHarness', () => {
       server.emit(frame, { broadcast: true });
       await until(() => logs.some((l) => l.includes('could not record the thread id')), 'the log');
       expect(logs.some((l) => l.includes('is claimed by another session'))).toBe(false);
-      expect(logs.some((l) => l.includes(other.slice(0, 8)))).toBe(true);
+      expect(logs.some((l) => l.includes(other.slice(-8)))).toBe(true);
 
       fs.writeFileSync(file, JSON.stringify({ ...rows, sessions: rows.sessions }));
       server.emit(frame, { broadcast: true });
@@ -1363,7 +1372,7 @@ describe('CodexHarness', () => {
     test('dispose after the link was up leaves no timer and sends no notice (W6)', async () => {
       // Dispose stops the client, which reports a drop; that must not re-arm the watchdog. The
       // watchdog is long against a slow connect, and the link has stayed up long enough (100 ms)
-      // to have cancelled it before dispose, so only the drop dispose causes could fire it.
+      // to have canceled it before dispose, so only the drop dispose causes could fire it.
       const server = startServer();
       const { session, messages } = create(
         buildDeps(server, { linkWatchdogMs: 1500, linkStableMs: 100 }),

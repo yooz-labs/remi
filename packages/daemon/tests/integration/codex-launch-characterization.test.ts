@@ -28,13 +28,30 @@ import type {
   ErrorMessage,
   HelloAckMessage,
   ProtocolMessage,
+  QuestionMessage,
+  QuestionResolvedMessage,
   SessionUpdateMessage,
 } from '@remi/shared/protocol.ts';
-import { PROMPT_WAITING_ERROR_CODE, createUserInput, serialize } from '@remi/shared/protocol.ts';
+import {
+  PROMPT_WAITING_ERROR_CODE,
+  createAnswer,
+  createAuqAnswer,
+  createCancelQuestion,
+  createUserInput,
+  serialize,
+} from '@remi/shared/protocol.ts';
+import { formatQuestionBanner } from '../../src/cli/attach-client.ts';
 import { olderRemiNotice } from '../../src/harness/codex/codex-session.ts';
 import { IDENTITY_SHIM_MIN_VERSION } from '../../src/session/legacy-writers.ts';
-import { type Json, threadStartedFrame, threadStatusFrame } from '../helpers/codex-threads.ts';
+import {
+  type Json,
+  commandApprovalRequest,
+  fileChangeRequest,
+  threadStartedFrame,
+  threadStatusFrame,
+} from '../helpers/codex-threads.ts';
 import { FakeAppServer } from '../helpers/fake-app-server.ts';
+import { hasUnsafeText } from '../helpers/unsafe-text.ts';
 import { reserveRange } from '../session/port-test-helpers.ts';
 import {
   CLI_TS,
@@ -428,7 +445,7 @@ describe('remi codex launch (daemon, black-box characterization, #1177)', () => 
       expect(statusesSeen(received)).toEqual(['idle']);
       r.server.createRollout(tuiId);
       await pollUntil(
-        () => r.output.text.includes(`attached to thread ${tuiId.slice(0, 8)}`),
+        () => r.output.text.includes(`attached to thread ${tuiId.slice(-8)}`),
         10000,
         'the attach to succeed after the rollout exists',
       );
@@ -471,9 +488,9 @@ describe('remi codex launch (daemon, black-box characterization, #1177)', () => 
 
       // Thread ids are logged truncated, and other threads' frames are never logged.
       expect(r.output.text).not.toContain(tuiId);
-      expect(r.output.text).not.toContain(helperId.slice(0, 8));
-      expect(r.output.text).not.toContain(strayId.slice(0, 8));
-      for (const id of brokenIds) expect(r.output.text).not.toContain(id.slice(0, 8));
+      expect(r.output.text).not.toContain(helperId.slice(-8));
+      expect(r.output.text).not.toContain(strayId.slice(-8));
+      for (const id of brokenIds) expect(r.output.text).not.toContain(id.slice(-8));
     } finally {
       ws.close();
     }
@@ -531,7 +548,7 @@ describe('remi codex launch (daemon, black-box characterization, #1177)', () => 
     );
     r.server.createRollout(tuiId);
     await pollUntil(
-      () => r.output.text.includes(`attached to thread ${tuiId.slice(0, 8)}`),
+      () => r.output.text.includes(`attached to thread ${tuiId.slice(-8)}`),
       10000,
       'the attach',
     );
@@ -740,7 +757,7 @@ describe('remi codex launch (wrapper and refusals, #1177)', () => {
     });
     const code = await Promise.race([r.proc.exited, Bun.sleep(20000).then(() => 'timeout')]);
     expect(code).toBe(1);
-    expect(r.output.text).toContain(`Ambiguous codex session ID ${thread.slice(0, 8)}`);
+    expect(r.output.text).toContain(`Ambiguous codex session ID ${thread.slice(-8)}`);
     expect(fileExists(r, 'pid')).toBe(false);
   }, 40000);
 
@@ -775,4 +792,359 @@ describe('remi codex launch (wrapper and refusals, #1177)', () => {
     expect(r.output.text).toContain('-c');
     expect(fileExists(r, 'pid')).toBe(false);
   }, 40000);
+});
+
+/**
+ * Approvals (#1178, Phase 4 of the Codex epic #1175), written against the plan's Phase 4
+ * section before `CodexDecisions` existed. The whole daemon is real (`cli.ts --daemon --harness
+ * codex`, the real input handlers, a real websocket client sending the real messages); the
+ * fake `codex` counts every byte on its stdin; the fake app-server is the Codex peer.
+ *
+ * "Types nothing" is only a claim when the real message was sent and a positive control shows
+ * the counter can move: every group below ends with the raw `q` that DOES arrive.
+ */
+describe('remi codex approvals (daemon, black-box characterization, #1178)', () => {
+  interface Attached {
+    r: Running;
+    client: number;
+    tuiId: string;
+    ws: WebSocket;
+    received: ProtocolMessage[];
+    sessionId: string;
+  }
+
+  /** A daemon whose session is attached to the TUI thread, and a phone connected to it. */
+  async function attachedDaemon(): Promise<Attached> {
+    const r = await startDaemon();
+    await waitForFakeCodex(r);
+    const client = await waitForAppServerClient(r);
+    const tuiId = crypto.randomUUID();
+    r.server.emit(
+      threadStartedFrame('tui', {
+        id: tuiId,
+        cwd: fs.realpathSync(r.work),
+        createdAtSec: Math.floor(Date.now() / 1000),
+      }),
+      { broadcast: true },
+    );
+    r.server.createRollout(tuiId);
+    await pollUntil(
+      () => r.output.text.includes(`attached to thread ${tuiId.slice(-8)}`),
+      10000,
+      'the attach',
+    );
+    const { ws, received } = await connectAndHello(r.port);
+    const sessionId = (
+      received.find((m): m is HelloAckMessage => m.type === 'hello_ack') as HelloAckMessage
+    ).sessionId as string;
+    return { r, client, tuiId, ws, received, sessionId };
+  }
+
+  /** A command approval of the TUI thread, running in the session's own directory (as Codex's would). */
+  const commandRequest = (a: Attached, command: string, over: Record<string, unknown> = {}) =>
+    commandApprovalRequest(a.tuiId, command, { cwd: fs.realpathSync(a.r.work), ...over });
+  const cards = (received: ProtocolMessage[]): QuestionMessage[] =>
+    received.filter((m): m is QuestionMessage => m.type === 'question');
+  const refusals = (received: ProtocolMessage[]): ErrorMessage[] =>
+    received.filter((m): m is ErrorMessage => m.type === 'error');
+  const resolvedCards = (received: ProtocolMessage[]): QuestionResolvedMessage[] =>
+    received.filter((m): m is QuestionResolvedMessage => m.type === 'question_resolved');
+  const stdinBytes = (r: Running): number => fs.statSync(path.join(r.fakeDir, 'stdin')).size;
+
+  /**
+   * The positive control for every "typed nothing" claim: a person's raw keystroke does reach the
+   * child, so a count of zero before it means nothing was typed, not that the counter is stuck
+   * (and a late write would show up as more than the one byte).
+   */
+  async function rawControl(a: Attached): Promise<void> {
+    a.ws.send(serialize(createUserInput(a.sessionId, 'q', true)));
+    await pollUntil(() => stdinBytes(a.r) === 1, 8000, 'the raw control byte to reach codex');
+    expect(read(path.join(a.r.fakeDir, 'stdin'))).toBe('q');
+  }
+
+  /** What the daemon's own connection answered to the app-server's server requests. */
+  function answersSent(r: Running, client: number): Json[] {
+    return r.server.framesFrom(client).filter((f) => f['method'] === undefined && 'id' in f);
+  }
+
+  /** Send `message`, and wait for the daemon's `code` refusal that follows it. */
+  async function refusedWith(a: Attached, message: ProtocolMessage, code: string): Promise<void> {
+    const before = refusals(a.received).filter((e) => e.code === code).length;
+    a.ws.send(serialize(message));
+    await pollUntil(
+      () => refusals(a.received).filter((e) => e.code === code).length > before,
+      8000,
+      `a ${code} refusal`,
+    );
+  }
+
+  test('the card reaches the phone stamped held; every answer variant is refused and types nothing; Yes answers through the app-server, clears the card, and still types nothing', async () => {
+    const a = await attachedDaemon();
+    try {
+      const requestId = a.r.server.request(commandRequest(a, 'touch e2e-marker'), a.tuiId);
+      await pollUntil(() => cards(a.received).length === 1, 10000, 'the approval card');
+      const card = (cards(a.received)[0] as QuestionMessage).question;
+      expect(card.held).toBe(true);
+      expect(card.text).toBe('Allow Codex to run: touch e2e-marker');
+      expect(card.options.map((o) => [o.label, o.value])).toEqual([
+        ['Yes', 'accept'],
+        ['No', 'cancel'],
+      ]);
+      expect(card.terminalOnly).toBeUndefined();
+      expect(cards(a.received)[0]?.claudeSessionId).toBeUndefined();
+
+      // Every way of answering that is not one of the card's options is refused, and nothing
+      // is typed: free text, a structured answer, an answer to a question that is not there.
+      await refusedWith(a, createAnswer(a.sessionId, card.id, 'approve it please'), 'STALE_ANSWER');
+      await refusedWith(
+        a,
+        createAuqAnswer(a.sessionId, card.id, [{ questionIndex: 0, optionIndices: [0] }]),
+        'STALE_ANSWER',
+      );
+      await refusedWith(a, createAnswer(a.sessionId, crypto.randomUUID(), 'Yes'), 'STALE_ANSWER');
+      // Typed chat is refused with the code the web client reads.
+      await refusedWith(
+        a,
+        createUserInput(a.sessionId, 'typed chat text', false),
+        PROMPT_WAITING_ERROR_CODE,
+      );
+      // The refusals left the card and the request where they were.
+      expect(a.r.server.isPending(a.tuiId, requestId)).toBe(true);
+      expect(answersSent(a.r, a.client)).toEqual([]);
+      expect(resolvedCards(a.received)).toEqual([]);
+      expect(stdinBytes(a.r)).toBe(0);
+
+      // Yes (the lock screen sends the label): the app-server gets exactly `accept`.
+      a.ws.send(serialize(createAnswer(a.sessionId, card.id, 'Yes')));
+      await pollUntil(() => answersSent(a.r, a.client).length === 1, 8000, 'the answer frame');
+      expect(answersSent(a.r, a.client)[0]).toStrictEqual({
+        jsonrpc: '2.0',
+        id: requestId,
+        result: { decision: 'accept' },
+      });
+      await pollUntil(
+        () => resolvedCards(a.received).some((m) => m.questionId === card.id),
+        8000,
+        'question_resolved for the card',
+      );
+      expect(resolvedCards(a.received).find((m) => m.questionId === card.id)?.reason).toBe(
+        'answered',
+      );
+      expect(a.r.server.isPending(a.tuiId, requestId)).toBe(false);
+      expect(stdinBytes(a.r)).toBe(0);
+
+      // The card carries the command, because the person must see it; the daemon's log does not.
+      expect(a.r.output.text).not.toContain('e2e-marker');
+      expect(a.r.output.text).not.toContain(a.tuiId);
+
+      await rawControl(a);
+    } finally {
+      a.ws.close();
+    }
+  }, 90000);
+
+  test('the TUI answering first clears the card on the phone, and a late phone answer gets STALE_ANSWER and sends nothing', async () => {
+    const a = await attachedDaemon();
+    try {
+      const requestId = a.r.server.request(commandRequest(a, 'touch tui-first'), a.tuiId);
+      await pollUntil(() => cards(a.received).length === 1, 10000, 'the approval card');
+      const card = (cards(a.received)[0] as QuestionMessage).question;
+
+      a.r.server.resolve(a.tuiId, requestId);
+      await pollUntil(
+        () => resolvedCards(a.received).some((m) => m.questionId === card.id),
+        8000,
+        'question_resolved after the TUI answered',
+      );
+      expect(resolvedCards(a.received).find((m) => m.questionId === card.id)?.reason).toBe(
+        'cancelled',
+      );
+
+      // The phone tapped a moment too late: the real handler refuses, naming the card.
+      const before = refusals(a.received).length;
+      a.ws.send(serialize(createAnswer(a.sessionId, card.id, 'Yes')));
+      await pollUntil(() => refusals(a.received).length > before, 8000, 'the late refusal');
+      const refusal = refusals(a.received).at(-1) as ErrorMessage;
+      expect(refusal.code).toBe('STALE_ANSWER');
+      expect(refusal.details?.['questionId']).toBe(card.id);
+
+      expect(answersSent(a.r, a.client)).toEqual([]);
+      expect(stdinBytes(a.r)).toBe(0);
+      await rawControl(a);
+    } finally {
+      a.ws.close();
+    }
+  }, 60000);
+
+  test("the registry's cap-eviction warning, reached by a flood of cards nobody pins, names no card text (#1178)", async () => {
+    const a = await attachedDaemon();
+    try {
+      // Nine file-change cards at once: they are terminalOnly, so nothing pins them, and the
+      // registry's cap of eight evicts the oldest and warns. That warning must not carry the text.
+      for (let i = 0; i < 9; i++) {
+        a.r.server.request(fileChangeRequest(a.tuiId, `e2e-flood-${i}`), a.tuiId);
+      }
+      await pollUntil(() => cards(a.received).length === 9, 10000, 'nine cards');
+      await pollUntil(
+        () => a.r.output.text.includes('pending-question cap (8) exceeded; evicted oldest'),
+        8000,
+        'the eviction warning',
+      );
+      expect(a.r.output.text).toContain('chars=');
+      expect(a.r.output.text).not.toContain('e2e-flood');
+      expect(stdinBytes(a.r)).toBe(0);
+      await rawControl(a);
+    } finally {
+      a.ws.close();
+    }
+  }, 60000);
+
+  test('a hostile command reaches every client escaped: no terminal sequence, no bidi control, and the attach banner shows it as text (S5)', async () => {
+    const a = await attachedDaemon();
+    try {
+      const code = (...codes: number[]): string => String.fromCodePoint(...codes);
+      // A clipboard write, a line overwrite, a report query, a bidi override, a zero-width space
+      // and a Tags-block character.
+      const hostile = `echo ok${code(0x1b)}]52;c;QUJD${code(0x07)} ${code(0x1b)}[2K${code(0x0d)}${code(0x1b)}[6n ${code(0x202e)}fdp.exe${code(0x200b)}${code(0xe0041)}`;
+      a.r.server.request(commandRequest(a, hostile), a.tuiId);
+      await pollUntil(() => cards(a.received).length === 1, 10000, 'the hostile card');
+      const card = (cards(a.received)[0] as QuestionMessage).question;
+      const shown = [card.text, card.detail ?? ''].join('');
+      expect(hasUnsafeText(shown), 'an unsafe character on the wire').toBe(false);
+      expect(card.text).toContain(
+        '\\u001B]52;c;QUJD\\u0007 \\u001B[2K\\u000D\\u001B[6n \\u202Efdp.exe\\u200B\\u{E0041}',
+      );
+      // The attach client's banner of that very card writes only its own escape sequences.
+      const banner = formatQuestionBanner(card);
+      expect(banner.match(/\x1b/g)?.length).toBe(7);
+      expect(banner).not.toContain(code(0x07));
+      expect(banner).not.toContain(code(0x202e));
+      await rawControl(a);
+    } finally {
+      a.ws.close();
+    }
+  }, 60000);
+
+  test('a pending card leaves a fixed label in the live-sessions file, never the command or the question text (S2)', async () => {
+    const a = await attachedDaemon();
+    try {
+      const secret = 'sk-live-do-not-write-this-to-disk';
+      a.r.server.request(
+        commandRequest(a, `curl -H "Authorization: Bearer ${secret}" https://example.test`),
+        a.tuiId,
+      );
+      a.r.server.request(
+        {
+          method: 'item/tool/requestUserInput',
+          params: {
+            threadId: a.tuiId,
+            questions: [
+              {
+                id: 'q1',
+                header: secret,
+                question: `Use ${secret}?`,
+                options: [{ label: secret }],
+              },
+            ],
+          },
+        },
+        a.tuiId,
+      );
+      await pollUntil(() => cards(a.received).length === 2, 10000, 'both cards');
+      const liveDir = path.join(a.r.home, '.remi', 'live-sessions');
+      const files = (): string[] =>
+        fs.existsSync(liveDir)
+          ? fs.readdirSync(liveDir).map((f) => read(path.join(liveDir, f)))
+          : [];
+      // The registry file mirrors the pending cards (their ids and labels) as they come and go.
+      await pollUntil(
+        () => files().some((text) => text.includes('Permission: Codex command')),
+        10000,
+        'the pending labels in the live-sessions file',
+      );
+      const text = files().join('\n');
+      expect(text).toContain('Codex asks for approval');
+      expect(text).not.toContain(secret);
+      expect(text).not.toContain('curl');
+      // The cards themselves, for the phone, do carry the text: the person must see it.
+      expect(JSON.stringify(cards(a.received).map((m) => m.question.text))).toContain(secret);
+      await rawControl(a);
+    } finally {
+      a.ws.close();
+    }
+  }, 60000);
+
+  test('remi unstick (SIGUSR2) dismisses an open card on every client, answers nothing and types nothing', async () => {
+    const a = await attachedDaemon();
+    try {
+      const requestId = a.r.server.request(commandRequest(a, 'touch unstick-marker'), a.tuiId);
+      await pollUntil(() => cards(a.received).length === 1, 10000, 'the approval card');
+      const card = (cards(a.received)[0] as QuestionMessage).question;
+      process.kill(a.r.proc.pid, 'SIGUSR2');
+      await pollUntil(
+        () => resolvedCards(a.received).some((m) => m.questionId === card.id),
+        8000,
+        'question_resolved after the unstick',
+      );
+      expect(resolvedCards(a.received).find((m) => m.questionId === card.id)?.reason).toBe(
+        'cancelled',
+      );
+      expect(a.r.output.text).toContain('Force-released 1 session(s): 1 card(s) resolved');
+      // The request is still pending for the TUI; remi answered nothing and typed nothing.
+      expect(a.r.server.isPending(a.tuiId, requestId)).toBe(true);
+      expect(answersSent(a.r, a.client)).toEqual([]);
+      expect(stdinBytes(a.r)).toBe(0);
+      await rawControl(a);
+    } finally {
+      a.ws.close();
+    }
+  }, 60000);
+
+  test("a card only the terminal can answer refuses every answer, Cancel only clears it, and neither answers the request nor types an Esc; another thread's request makes no card", async () => {
+    const a = await attachedDaemon();
+    try {
+      // Another Codex thread's request reaches this very connection (the server can address any
+      // frame to it). It must never become a card, and never be answered. Frames on one connection
+      // arrive in order, so the card below proves this one was already handled.
+      const strangerId = 9001;
+      a.r.server.emitTo(a.client, {
+        id: strangerId,
+        ...commandApprovalRequest(crypto.randomUUID(), 'touch another-thread'),
+      });
+
+      const requestId = a.r.server.request(fileChangeRequest(a.tuiId, 'e2e file change'), a.tuiId);
+      await pollUntil(() => cards(a.received).length >= 1, 10000, 'the file-change card');
+      expect(cards(a.received)).toHaveLength(1);
+      const card = (cards(a.received)[0] as QuestionMessage).question;
+      expect(card.text).toContain('e2e file change');
+      expect(card.terminalOnly).toBe(true);
+      expect(card.options).toEqual([]);
+
+      await refusedWith(a, createAnswer(a.sessionId, card.id, 'Yes'), 'STALE_ANSWER');
+      await refusedWith(a, createAnswer(a.sessionId, card.id, 'free text'), 'STALE_ANSWER');
+      await refusedWith(
+        a,
+        createAuqAnswer(a.sessionId, card.id, [{ questionIndex: 0, optionIndices: [0] }]),
+        'STALE_ANSWER',
+      );
+      expect(a.r.server.isPending(a.tuiId, requestId)).toBe(true);
+
+      // Cancel dismisses the card for every client; it answers nothing and types nothing.
+      a.ws.send(serialize(createCancelQuestion(a.sessionId, card.id)));
+      await pollUntil(
+        () => resolvedCards(a.received).some((m) => m.questionId === card.id),
+        8000,
+        'question_resolved after Cancel',
+      );
+      expect(a.r.server.isPending(a.tuiId, requestId)).toBe(true);
+      expect(answersSent(a.r, a.client)).toEqual([]);
+      expect(stdinBytes(a.r)).toBe(0);
+      expect(a.r.output.text).not.toContain('touch another-thread');
+      expect(a.r.output.text).not.toContain('e2e file change');
+
+      await rawControl(a);
+    } finally {
+      a.ws.close();
+    }
+  }, 90000);
 });

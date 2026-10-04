@@ -61,6 +61,11 @@ export interface MessageApiSetupDeps {
    * errors rather than throwing into the emission path.
    */
   getClaudeSessionId?: () => UUID | null;
+  /**
+   * Log a detected question's length, not its first 50 characters (#1178): a Codex approval
+   * card's text is the command Codex asks to run, which a log must not carry. Default: the text.
+   */
+  redactQuestionLogs?: boolean;
 }
 
 export interface MessageApiHandle {
@@ -89,6 +94,7 @@ export function createMessageApiForSession(
     maxBulletLength,
     sendMessage,
     getClaudeSessionId,
+    redactQuestionLogs,
   } = deps;
 
   const sendAndRecord = (message: ProtocolMessage): void => {
@@ -134,7 +140,11 @@ export function createMessageApiForSession(
       log(`Message ${msgId} finalized`);
     },
     onQuestion: (question: Question, opts?: { held?: boolean }) => {
-      log(`Question detected: ${question.text.substring(0, 50)}...`);
+      log(
+        redactQuestionLogs
+          ? `Question detected (${question.text.length} chars)`
+          : `Question detected: ${question.text.substring(0, 50)}...`,
+      );
       const questionSessionId = getPrimarySessionId() ?? sessionId;
       const claudeSessionId = getClaudeSessionId?.() ?? undefined;
       // #753: stamp held-ness onto the question itself so every downstream

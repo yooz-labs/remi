@@ -108,7 +108,11 @@ export class FakeAppServer {
   /** Frames sent to a client right after its `initialize` result, as Codex sends `configWarning`. */
   initializeFrames: Json[] = [];
   private nextClient = 1;
-  private nextRequest = 1;
+  /** The real app-server counts its server requests from 0 (verified live, 0.160.0, 2026-10-04). */
+  private nextRequest = 0;
+  private answersIgnored = false;
+  private doublePongs = false;
+  private pingCount = 0;
 
   private constructor() {
     this.dir = socketDir('remi-fake-codex-', 's.sock');
@@ -138,6 +142,12 @@ export class FakeAppServer {
         },
         pong: (_ws, data) => {
           this.pongs.push(new Uint8Array(data));
+        },
+        ping: (ws, data) => {
+          this.pingCount += 1;
+          // Bun answers a ping with one pong by itself; the real Codex answers EVERY ping with two
+          // identical pongs (verified live against 0.160.0, 2026-10-04), which this adds.
+          if (this.doublePongs) ws.pong(data);
         },
       },
     });
@@ -227,6 +237,32 @@ export class FakeAppServer {
     return id;
   }
 
+  /**
+   * From now on an answer from a client decides nothing and draws no `serverRequest/resolved`: the
+   * request stays pending, as when Codex rejects an answer or never reports it. A model of the
+   * failure, not a Codex frame (no spike frame shows a rejected answer).
+   */
+  ignoreAnswers(): void {
+    this.answersIgnored = true;
+  }
+
+  /**
+   * Another subscriber (the TUI) answered first: the request is resolved and every subscriber of
+   * its thread is told, as when a client answers (spike: expA-accept.jsonl:51 to :53). It throws
+   * for a request that is not pending, so a test cannot resolve one by mistake.
+   */
+  resolve(threadId: string, requestId: number): void {
+    if (!this.pending.delete(this.key(threadId, requestId))) {
+      throw new Error(`no pending request ${requestId} for that thread`);
+    }
+    this.emit({ method: 'serverRequest/resolved', params: { threadId, requestId } }, { threadId });
+  }
+
+  /** Is the request still waiting for an answer? */
+  isPending(threadId: string, requestId: number): boolean {
+    return this.pending.has(this.key(threadId, requestId));
+  }
+
   /** Close one client's socket abruptly, with no close frame. */
   dropClient(client: number): void {
     this.clients.get(client)?.terminate();
@@ -244,6 +280,20 @@ export class FakeAppServer {
 
   pongPayloads(): Uint8Array[] {
     return this.pongs;
+  }
+
+  /**
+   * From now on answer every ping from a client with two identical pongs, as the real Codex does
+   * (Bun's own single pong, plus one more). A client that re-arms its keepalive on every pong
+   * ends up with timers it can no longer cancel.
+   */
+  doublePong(on = true): void {
+    this.doublePongs = on;
+  }
+
+  /** How many pings the server has received from clients, since it started. */
+  pingsReceived(): number {
+    return this.pingCount;
   }
 
   /** Wait until `predicate` holds, polling; rejects after `timeoutMs`. */
@@ -313,6 +363,7 @@ export class FakeAppServer {
    * the conservative one, and it is pinned in fake-app-server.test.ts.
    */
   private onAnswer(client: number, frame: Json): void {
+    if (this.answersIgnored) return;
     for (const [key, { threadId, frame: request }] of this.pending) {
       if (request['id'] !== frame['id']) continue;
       if (!this.subscriptions.get(client)?.has(threadId)) continue;

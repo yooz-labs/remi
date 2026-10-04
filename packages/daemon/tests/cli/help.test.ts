@@ -206,13 +206,37 @@ describe('the codex help (#1177)', () => {
     expect(output).toContain('remi codex resume <id>');
   });
 
-  test('remi codex --help says what ships: status only, and what is refused', () => {
+  test('the global help line for remi codex says what it was checked against (L3, Q3)', () => {
+    // The top-level quick start is the first place a person reads about remi codex; the
+    // approvals claim there must say which Codex it was checked against, as the command help and
+    // README do (the live run of 2026-10-04 against Codex 0.160.0 replaced "not yet checked").
+    const line = plain(formatHelp('0.0.0'))
+      .split('\n')
+      .find((l) => l.trim().startsWith('remi codex ') && !l.includes('resume') && !l.includes('"'));
+    expect(line).toBeDefined();
+    expect(line).toContain('command approvals reach the phone');
+    expect(line).toContain('checked live against Codex 0.160.0');
+    expect(line).not.toContain('not yet checked against a real Codex');
+  });
+
+  test('remi codex --help says what ships: status and command approvals, and what is refused', () => {
     const output = plain(formatCommandHelp('codex'));
     expect(output).toContain('remi codex resume <thread id>');
-    expect(output).toContain('status only');
-    expect(output).toContain('Approvals and turn notifications do not reach the');
+    // What ships (#1178) and what is not checked: approvals reach the phone, the first answer wins,
+    // nothing else is answerable from it, and which Codex it was checked against.
+    expect(output).toContain(
+      'checked against Codex 0.160.0 on 2026-10-04; subagent requests not yet',
+    );
+    expect(output).not.toContain('not yet checked against a real Codex');
+    expect(output).toContain('Approve for me');
+    expect(output).toContain('a command Codex asks to run');
+    expect(output).toContain('the first answer wins');
+    expect(output).toContain('show up as a notice to answer in the terminal');
+    expect(output).toContain('Turn notifications do not reach the phone yet');
+    expect(output).not.toContain('status only');
     // Phone chat is refused for a Codex session (W1), and the 30 s notice is not promised (W18).
-    expect(output).toContain('a message typed from the phone is refused');
+    expect(output).toContain('a message typed from the phone is');
+    expect(output).toContain('refused: type in the terminal');
     expect(output).toContain('type in the terminal');
     expect(output).toContain('some clients, the web client today, do not show it');
     expect(output).not.toMatch(/chat[^.]*reach the\s+phone yet/);

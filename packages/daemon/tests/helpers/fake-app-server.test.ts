@@ -28,9 +28,11 @@ describe('socketDir', () => {
   });
 
   test('falls back to /tmp when a long TMPDIR would overflow sun_path', () => {
-    const base = join(mkdtempSync('/tmp/sd-'), 'x'.repeat(120));
+    // The directory `mkdtempSync` makes is the one to remove (the long child is inside it).
+    const parent = mkdtempSync('/tmp/sd-');
+    made.push(parent);
+    const base = join(parent, 'x'.repeat(120));
     mkdirSync(base);
-    made.push(base);
     process.env['TMPDIR'] = base;
     const dir = socketDir('sock-', 's.sock');
     made.push(dir);
@@ -230,6 +232,70 @@ describe('FakeAppServer: the modeled behavior, one claim per test', () => {
     await server.waitFor(() => resolved(subscriber).length === 1, 'the subscriber resolves it');
   });
 
+  test('resolve() is another subscriber answering first: every subscriber is told, the request is gone, and it is not replayed', async () => {
+    const t = placeholderUuid(70);
+    server.createRollout(t);
+    const a = await connect();
+    const b = await connect();
+    await resume(a, t, 1);
+    await resume(b, t, 1);
+    const id = server.request(requestFrame, t);
+    await server.waitFor(() => requests(a).length === 1 && requests(b).length === 1, 'delivery');
+    expect(server.isPending(t, id)).toBe(true);
+    server.resolve(t, id);
+    await server.waitFor(
+      () => resolved(a).length === 1 && resolved(b).length === 1,
+      'resolved on both',
+    );
+    expect(resolved(a)[0]?.['params']).toEqual({ threadId: t, requestId: id });
+    expect(server.isPending(t, id)).toBe(false);
+    // Gone for good: a later subscriber sees no replay, and resolving it again is a test bug.
+    const late = await connect();
+    await resume(late, t, 1);
+    await settle();
+    expect(requests(late)).toHaveLength(0);
+    expect(() => server.resolve(t, id)).toThrow('no pending request');
+  });
+
+  test('ignoreAnswers() models an answer Codex never confirms: nothing resolves, and the request stays pending', async () => {
+    const t = placeholderUuid(71);
+    server.createRollout(t);
+    const a = await connect();
+    await resume(a, t, 1);
+    const id = server.request(requestFrame, t);
+    await server.waitFor(() => requests(a).length === 1, 'the request');
+    server.ignoreAnswers();
+    a.send({ jsonrpc: '2.0', id, result: { decision: 'accept' } });
+    await settle();
+    expect(resolved(a)).toHaveLength(0);
+    expect(server.isPending(t, id)).toBe(true);
+  });
+
+  test('doublePong() models Codex answering every ping with two identical pongs, and pingsReceived() counts the pings', async () => {
+    const pongs: number[] = [];
+    const conn = await connectUnixWebSocket(server.socketPath, {
+      onMessage: () => {},
+      onPong: () => pongs.push(1),
+      onClose: () => {},
+    });
+    clients.push(conn);
+    conn.ping('one');
+    await server.waitFor(() => pongs.length >= 1, 'a pong');
+    await settle();
+    expect(pongs).toHaveLength(1);
+    server.doublePong();
+    conn.ping('two');
+    await server.waitFor(() => pongs.length >= 3, 'two more pongs');
+    await settle();
+    expect(pongs).toHaveLength(3);
+    server.doublePong(false);
+    conn.ping('three');
+    await server.waitFor(() => pongs.length >= 4, 'one more pong');
+    await settle();
+    expect(pongs).toHaveLength(4);
+    expect(server.pingsReceived()).toBe(3);
+  });
+
   test('ids come from one counter shared by every thread', () => {
     const t = placeholderUuid(68);
     const ids = [
@@ -237,7 +303,8 @@ describe('FakeAppServer: the modeled behavior, one claim per test', () => {
       server.request(requestFrame, placeholderUuid(69)),
       server.request(requestFrame, t),
     ];
-    expect(ids).toEqual([1, 2, 3]);
+    // The real app-server counts from 0 (verified live, 0.160.0).
+    expect(ids).toEqual([0, 1, 2]);
   });
 
   test('generic JSON-RPC behavior, not Codex frames: -32601 for an unknown method, -32603 for a handler that throws, silence for ignore()', async () => {

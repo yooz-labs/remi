@@ -205,6 +205,7 @@ import {
   olderRemiNotice,
 } from './harness/codex/codex-session.ts';
 import { CodexHarness } from './harness/codex/codex.ts';
+import { shortThreadId } from './harness/codex/thread-id.ts';
 import { ClaudeHarness } from './harness/index.ts';
 import type { Harness, HarnessSession } from './harness/index.ts';
 import { ForeignSessionEscalator, HookConfigManager, HookServer } from './hooks/index.ts';
@@ -736,15 +737,16 @@ if (cliShowSessions) {
   } else {
     for (const s of sessions) {
       const status = s.exitedAt ? `exited (${s.exitCode})` : 'running';
-      // The harness's own id, labeled with its harness: `claude:<8>` for a
-      // Claude record, `codex:<8>` for a Codex one (#1176). A Claude record
+      // The harness's own id, labeled with its harness: `claude:<first 8>` for a
+      // Claude record, `codex:<last 8>` for a Codex one (#1176; a Codex thread id
+      // is a UUIDv7, whose first eight characters are a timestamp). A Claude record
       // with no id yet prints no label, as it always did; a record of another
       // harness with none prints `<harness>:-`, so it never reads as an
       // id-less Claude one.
       const claude = isClaudeRecord(s);
       const recordedId = claude ? s.claudeSessionId : (s.harnessSessionId ?? null);
       const idLabel = recordedId
-        ? ` ${storedHarness(s)}:${recordedId.slice(0, 8)}`
+        ? ` ${storedHarness(s)}:${claude ? recordedId.slice(0, 8) : shortThreadId(recordedId)}`
         : claude
           ? ''
           : ` ${storedHarness(s)}:-`;
@@ -1088,6 +1090,8 @@ const sessionRegistry = new SessionRegistry(
   {
     orphanTimeoutMs,
     maxReplayHistory: 1000,
+    // A Codex card's text is a command (#1178): the registry's log lines leave it out.
+    redactQuestionLogs: harnessId === 'codex',
   },
   {
     onSessionCreated: (sessionId) => {
@@ -1554,6 +1558,8 @@ async function createNewSession(
       updateRemiStatus: (patch) => updateRemiStatus(patch),
       maxBulletLength: MAX_BULLET_LENGTH,
       sendMessage,
+      // A Codex card's text is a command (#1178): the log line for it leaves the text out.
+      redactQuestionLogs: harnessId === 'codex',
       // Lazy disk-backed read so the binding seen on each question emission is
       // the current value — survives /resume rotation via the hook bridge's
       // bindingStore.update write. Wrapped in try/catch so a transient
@@ -1829,9 +1835,10 @@ const claudeHarness = new ClaudeHarness(transcriptDiscovery, {
   sessionNotifiers,
 });
 
-// `remi codex` hosts a Codex session instead (#1177). Observe-only: its launch reads these
-// services when a session starts, and the older-daemon gate reads the live-sessions entries and
-// status files of other remi processes then.
+// `remi codex` hosts a Codex session instead (#1177). Its launch reads these services when a
+// session starts, and the older-daemon gate reads the live-sessions entries and status files of
+// other remi processes then. `onQuestionResolved` is how an approval card that Codex resolved
+// (the TUI answered first) is cleared on every client (#1178).
 const codexHarness =
   harnessId === 'codex'
     ? new CodexHarness({
@@ -1843,6 +1850,7 @@ const codexHarness =
         wsPort: () => remiStatus.wsPort,
         cleanup,
         env: () => process.env,
+        onQuestionResolved,
         legacyWriters: () =>
           findLegacyWriters({
             liveSessions: liveSessionsRegistry,

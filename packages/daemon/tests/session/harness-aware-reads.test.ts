@@ -132,7 +132,7 @@ describe('resolveStoredSession(sessions, query, { harness })', () => {
     }
 
     expect(error).toBeInstanceOf(SessionHarnessMismatchError);
-    // The whole thread id, which `remi codex resume` needs and `--sessions` cuts to eight characters.
+    // The whole thread id, which `remi codex resume` needs and `--sessions` shortens to its last eight characters.
     expect((error as SessionHarnessMismatchError).message).toBe(
       `this session ran under codex; resume it with \`remi codex resume ${THREAD_ID}\``,
     );
@@ -295,7 +295,7 @@ describe('the real CLI over a store that holds a codex record', () => {
     expect(result.stderr).not.toContain('has no Claude session ID');
   }, 30000);
 
-  test('--sessions labels each record with its harness and the first 8 characters of its id', async () => {
+  test('--sessions labels each record with its harness and a short form of its id: the first 8 characters for Claude, the last 8 for Codex', async () => {
     const unnamed = record({
       remiSessionId: crypto.randomUUID() as UUID,
       harness: 'codex',
@@ -309,12 +309,41 @@ describe('the real CLI over a store that holds a codex record', () => {
     const line = (remiId: string) =>
       result.stdout.split('\n').find((l) => l.includes(remiId.slice(0, 8))) ?? '';
     expect(line(CLAUDE_REMI_ID)).toContain(` claude:${CLAUDE_ID.slice(0, 8)} `);
-    expect(line(CODEX_REMI_ID)).toContain(` codex:${THREAD_ID.slice(0, 8)} `);
+    expect(line(CODEX_REMI_ID)).toContain(` codex:${THREAD_ID.slice(-8)} `);
     expect(line(CODEX_REMI_ID)).not.toContain('claude:');
     expect(line(FUTURE_REMI_ID)).toContain(' from-a-newer-daemon:x-1 ');
     // A codex record with no thread id yet says so, and never reads as an
     // id-less Claude record, which has no label at all.
     expect(line(unnamed.remiSessionId)).toContain(' codex:- ');
+  }, 30000);
+
+  test('--sessions tells two Codex threads apart whose UUIDv7 ids share their first eight characters (Q2)', async () => {
+    // A UUIDv7 begins with a millisecond timestamp, so threads created within about 65 s share
+    // their first eight characters; the random part is at the end.
+    const first = '01a106f2-2f1c-7a35-9d4e-8b6f1c2d3e4a';
+    const second = '01a106f2-40b8-7c91-a2f7-5d9e0b7a6c13';
+    expect(first.slice(0, 8)).toBe(second.slice(0, 8));
+    const a = record({
+      remiSessionId: crypto.randomUUID() as UUID,
+      harness: 'codex',
+      harnessSessionId: first,
+      startedAt: ago(2),
+      exitedAt: ago(1.9),
+    });
+    const b = record({
+      remiSessionId: crypto.randomUUID() as UUID,
+      harness: 'codex',
+      harnessSessionId: second,
+      startedAt: ago(1),
+      exitedAt: ago(0.9),
+    });
+    const result = await runCli([a, b], ['--sessions', 'all']);
+    expect(result.code).toBe(0);
+    const line = (remiId: string) =>
+      result.stdout.split('\n').find((l) => l.includes(remiId.slice(0, 8))) ?? '';
+    expect(line(a.remiSessionId)).toContain(' codex:1c2d3e4a ');
+    expect(line(b.remiSessionId)).toContain(' codex:0b7a6c13 ');
+    expect(line(a.remiSessionId)).not.toContain(first.slice(0, 8));
   }, 30000);
 
   test('--sessions shows the whole thread id of an exited codex session as the command that resumes it', async () => {

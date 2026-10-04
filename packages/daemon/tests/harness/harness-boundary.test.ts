@@ -363,11 +363,15 @@ const CODEX_MAY_IMPORT: ReadonlyArray<{ readonly target: string; readonly why: s
   },
   {
     target: 'session/session-registry',
-    why: 'the SessionRegistry type of CodexLaunchDeps, handed to the PTY spawn, whose exit handler tells it the session ended (phase 3); question registration and eviction guards come later (phase 4)',
+    why: 'the SessionRegistry type of CodexLaunchDeps, handed to the PTY spawn, whose exit handler tells it the session ended (phase 3); removeQuestion for the cards CodexDecisions dismisses and setQuestionEvictionGuard, which pins the live ones (phase 4)',
   },
   {
     target: 'session/session-registry-file',
     why: 'SessionRegistryFile, the live-sessions registry the PTY spawn takes (phase 3)',
+  },
+  {
+    target: 'hooks/tool-summary',
+    why: "truncateSummary, the pure string helper that bounds a command in Claude's card text (head, a count of what is hidden, tail), shared so a Codex card bounds a long command the same way and never copies it (phase 4); the file imports nothing, which a test pins, and nothing else under hooks/ is allowed",
   },
   {
     target: 'session/legacy-writers',
@@ -776,5 +780,26 @@ describe('Codex files reach only the neutral PTY spawn under cli/session-phases'
       }
     }
     expect(offences).toEqual([]);
+  });
+});
+
+describe('the one hooks/ module Codex may import (#1178)', () => {
+  const file = join(SRC, 'hooks', 'tool-summary.ts');
+
+  test('hooks/tool-summary.ts imports nothing, so the allowlist entry that calls it a pure helper stays true', () => {
+    expect(moduleSpecifiers(file, readFileSync(file, 'utf8'))).toEqual([]);
+  });
+
+  test('it is the only hooks/ module on the Codex allowlist, and a Codex file does import it (not vacuous)', () => {
+    const hooksEntries = CODEX_MAY_IMPORT.filter((e) => e.target.startsWith('hooks/')).map(
+      (e) => e.target,
+    );
+    expect(hooksEntries).toEqual(['hooks/tool-summary']);
+    const importers = codexFiles().filter((f) =>
+      moduleSpecifiers(f, readFileSync(f, 'utf8')).some((m) =>
+        m.text.endsWith('hooks/tool-summary.ts'),
+      ),
+    );
+    expect(importers.map((f) => relative(SRC, f))).toEqual(['harness/codex/approval-cards.ts']);
   });
 });

@@ -200,8 +200,11 @@ export interface UIQuestionOption {
   /** What a standing option grants, by the daemon's meaning (#1126):
    *  `'addRules'` allows a rule for this session, `'setMode'` switches the
    *  session's permission mode. Absent for a one-time Yes, a No, and every
-   *  option read off the screen (a hook-less prompt). */
-  readonly standingGrant?: 'addRules' | 'setMode';
+   *  option read off the screen (a hook-less prompt). `'session'` (#1178) is
+   *  Codex's `acceptForSession`: remi writes nothing and sends the decision the
+   *  request listed; none of 7 real command approvals on Codex 0.160.0 listed
+   *  it, so what Codex does with it is unknown (LV-3 (f)). */
+  readonly standingGrant?: 'addRules' | 'setMode' | 'session';
 }
 
 /** One sub-question of a multi-question (AskUserQuestion) prompt (#626). */
@@ -239,6 +242,8 @@ export interface UIQuestion {
   /** #1127 review S7: no phone answer can be applied (an AskUserQuestion that
    *  did not parse exactly); answer in the terminal, or Cancel. */
   readonly terminalOnly?: boolean;
+  /** On a terminal-only card: Cancel only clears the card, the agent's prompt stays open (#1178). */
+  readonly cancelDismissesOnly?: boolean;
   /** #626: the full sub-question set (AskUserQuestion), rendered as an interactive
    *  form in #627. */
   readonly questions?: readonly UIQuestionStep[];

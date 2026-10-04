@@ -236,6 +236,15 @@ export interface Question {
   readonly terminalOnly?: boolean | undefined;
 
   /**
+   * On a `terminalOnly` card: Cancel only clears the card from the apps (#1178). The agent's own
+   * prompt stays open where it is waiting, and nothing is answered, so the card must not say the
+   * call is declined. Set by Codex, whose app-server request stays pending after a phone Cancel;
+   * absent on Claude's terminal-only cards, whose Cancel denies the call. Clients read it for
+   * the Cancel label.
+   */
+  readonly cancelDismissesOnly?: boolean | undefined;
+
+  /**
    * Long-form text the prompt is about (#1127): the plan of a
    * `'plan_approval'` card, verbatim (markdown). The app shows it in full;
    * the push shows its start; a text-only surface may shorten it. `text`
@@ -290,6 +299,15 @@ export interface Question {
    * re-sends all carry it.
    */
   readonly held?: boolean | undefined;
+
+  /**
+   * A fixed label for the places that keep only a flat label of a pending question: the
+   * live-sessions registry file (`pendingQuestions`), the hub census and the macOS menu-bar
+   * notifications (#1178). Set by a harness whose card text must not leave memory: a Codex card's
+   * text is the command Codex asks to run, and it would otherwise be written to disk as the
+   * label. When set, `buildPendingQuestionLabel` returns it as it is. Daemon-side; clients ignore it.
+   */
+  readonly pendingLabel?: string | undefined;
 
   /**
    * The untruncated signature a human answer was recorded under as session
@@ -385,8 +403,16 @@ export interface QuestionOption {
    * (REMI_YNA) is offered only for `'addRules'`, where its title is true; a
    * card whose standing option is a `'setMode'` gets no actionable category
    * and is answered in the app. Ignored on the wire otherwise.
+   *
+   * `'session'` (#1178) is Codex's `acceptForSession`: remi writes no rule or
+   * settings file, and sends the decision the request itself listed. Whether
+   * Codex accepts it and remembers the command for the session is unknown:
+   * none of 7 real command approvals on Codex 0.160.0 listed
+   * `acceptForSession` (live step LV-3 (f)). It carries
+   * no `suggestionIndex` (there is no suggestion to echo), and like `'setMode'`
+   * it gets no lock-screen category.
    */
-  readonly standingGrant?: 'addRules' | 'setMode' | undefined;
+  readonly standingGrant?: 'addRules' | 'setMode' | 'session' | undefined;
 
   /**
    * Public marker for an explicit, scoped session action. The grant's

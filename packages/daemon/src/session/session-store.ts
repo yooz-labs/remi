@@ -116,7 +116,9 @@ export class AmbiguousSessionIdentityError extends Error {
 
   constructor(identity: string, value: string, matchCount: number) {
     super(
-      `Ambiguous ${identity} session ID ${value.slice(0, 8)}: ${matchCount} records; refusing to choose one`,
+      // A Claude or remi id is random throughout, so its first eight characters name it; a
+      // non-Claude harness id (a Codex thread, a UUIDv7) starts with a timestamp, so its last do.
+      `Ambiguous ${identity} session ID ${identity === 'Claude' || identity === 'Remi' ? value.slice(0, 8) : value.slice(-8)}: ${matchCount} records; refusing to choose one`,
     );
     this.name = 'AmbiguousSessionIdentityError';
     this.identity = identity;
