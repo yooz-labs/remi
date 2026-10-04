@@ -542,6 +542,94 @@ describe('createCodexChat', () => {
       expect(structured).toEqual([]);
     });
 
+    describe('explicit reads of one session', () => {
+      /** A list that answers only when the test lets it. */
+      function gatedList() {
+        const gates: Array<() => void> = [];
+        server.onRequest('thread/items/list', () => {
+          listCalls.push({});
+          return new Promise((resolve) => {
+            gates.push(() =>
+              resolve(itemsListPage([{ item: userMessageItem(`u${gates.length}`, 'x') }], null)),
+            );
+          });
+        });
+        return {
+          open: (n: number) => gates[n]?.(),
+          asked: () => gates.length,
+        };
+      }
+
+      test('a second request while one is running waits for it, then runs on its own', async () => {
+        const list = gatedList();
+        const chat = make();
+        const first: string[] = [];
+        const second: string[] = [];
+
+        const a = chat.readHistory((m) => first.push(m.entryUuid));
+        await server.waitFor(() => list.asked() === 1, 'the first read to ask');
+        const b = chat.readHistory((m) => second.push(m.entryUuid));
+        await new Promise((r) => setTimeout(r, 50));
+        // The second has not asked: only one read of a session is in flight.
+        expect(list.asked()).toBe(1);
+
+        list.open(0);
+        expect(await a).toBe(1);
+        await server.waitFor(() => list.asked() === 2, 'the second read to ask');
+        list.open(1);
+        expect(await b).toBe(1);
+        expect(first).toHaveLength(1);
+        expect(second).toHaveLength(1);
+      });
+
+      test('a third request, with one running and one waiting, is refused with a clear error', async () => {
+        const list = gatedList();
+        const chat = make();
+
+        const a = chat.readHistory(() => {});
+        await server.waitFor(() => list.asked() === 1, 'the first read to ask');
+        const b = chat.readHistory(() => {});
+        const error = await rejection(chat.readHistory(() => {}));
+
+        expect((error as Error).message).toMatch(/another history read/);
+        list.open(0);
+        await a;
+        await server.waitFor(() => list.asked() === 2, 'the waiting read to ask');
+        list.open(1);
+        await b;
+      });
+
+      test('a read that fails does not hold the next one', async () => {
+        server.onRequest('thread/items/list', () => {
+          throw { code: -32603, message: 'boom' };
+        });
+        const chat = make();
+        await rejection(chat.readHistory(() => {}));
+
+        servePages({ '': itemsListPage([{ item: userMessageItem('u1', 'one') }], null) });
+        expect(await chat.readHistory(() => {})).toBe(1);
+      });
+
+      test('after a refusal the slot is free again once the running read ends', async () => {
+        const list = gatedList();
+        const chat = make();
+        const a = chat.readHistory(() => {});
+        await server.waitFor(() => list.asked() === 1, 'the first read to ask');
+        const b = chat.readHistory(() => {});
+        await rejection(chat.readHistory(() => {}));
+        list.open(0);
+        await a;
+        await server.waitFor(() => list.asked() === 2, 'the waiting read to ask');
+        list.open(1);
+        await b;
+
+        const c = chat.readHistory(() => {});
+        await server.waitFor(() => list.asked() === 3, 'a later read to ask');
+        list.open(2);
+        expect(await c).toBe(1);
+      });
+    });
+
     test('a session whose thread is not known yet has no history, and asks nothing', async () => {
       tracked = null;
       servePages({ '': itemsListPage([{ item: userMessageItem('u1', 'one') }], null) });
@@ -673,6 +761,22 @@ describe('createCodexChat', () => {
         expect((error as Error).message).toBe('the connection went away');
       });
 
+      test('an emit that throws stops the read from asking for more pages (the requester went away)', async () => {
+        servePages({
+          '': itemsListPage([{ item: userMessageItem('u1', 'one') }], 'c1'),
+          c1: itemsListPage([{ item: userMessageItem('u2', 'two') }], 'c2'),
+          c2: itemsListPage([{ item: userMessageItem('u3', 'three') }], null),
+        });
+
+        await rejection(
+          make().readHistory(() => {
+            throw new Error('gone');
+          }),
+        );
+
+        expect(listCalls).toHaveLength(1);
+      });
+
       test('a cursor that does not advance ends the read instead of looping, and says so', async () => {
         servePages({
           '': itemsListPage([{ item: userMessageItem('u1', 'one') }], 'stuck'),
@@ -686,20 +790,34 @@ describe('createCodexChat', () => {
         expect(logs.join('\n')).toMatch(/cursor/);
       });
 
-      test('a history that never ends is cut at the page limit, and says so', async () => {
+      test('cursors that alternate between two values end the read at once, not after the page limit', async () => {
+        servePages({
+          '': itemsListPage([{ item: userMessageItem('u1', 'one') }], 'A'),
+          A: itemsListPage([{ item: userMessageItem('u2', 'two') }], 'B'),
+          B: itemsListPage([{ item: userMessageItem('u3', 'three') }], 'A'),
+        });
+
+        const { messages } = await history();
+
+        // The third answer points back at A, which was already asked for: three requests, no more.
+        expect(listCalls).toHaveLength(3);
+        expect(messages.map((m) => m.entryUuid)).toEqual(['u1', 'u2', 'u3']);
+        expect(logs.join('\n')).toMatch(/cursor/);
+      });
+
+      test('a history that never ends is cut at 1000 pages by default, and says so', async () => {
         let n = 0;
         server.onRequest('thread/items/list', () => {
           n += 1;
           return itemsListPage([{ item: userMessageItem(`u${n}`, `m${n}`) }], `c${n}`);
         });
 
-        const { messages, count } = await history(make({ maxPages: 3 }));
+        const { count } = await history();
 
-        expect(count).toBe(3);
-        expect(messages.map((m) => m.entryUuid)).toEqual(['u1', 'u2', 'u3']);
-        expect(n).toBe(3);
-        expect(logs.join('\n')).toMatch(/3 pages/);
-      });
+        expect(n).toBe(1000);
+        expect(count).toBe(1000);
+        expect(logs.join('\n')).toMatch(/1000 pages/);
+      }, 30000);
 
       test('the page size is a request the app-server may ignore: a bigger page is read whole', async () => {
         servePages({
@@ -948,6 +1066,328 @@ describe('createCodexChat', () => {
       expect(logs.join('\n')).toContain('TypeError');
       expect(logs.join('\n')).not.toContain('PRIVATE');
       expect(transcripts()).toHaveLength(1);
+    });
+  });
+  describe('catch-up at attach (#1180 review)', () => {
+    const idsOf = () => transcripts().map((m) => m.entryUuid);
+
+    test('delivers what completed before the attach, the first prompt of a new thread included, oldest first', async () => {
+      servePages({
+        '': itemsListPage(
+          [
+            { item: userMessageItem('first-prompt', 'Run the tests') },
+            { item: realItem('commandExecution', { id: COMMAND_ID }) },
+            { item: agentMessageItem('a1', 'Ran them.', 'final_answer') },
+          ],
+          null,
+        ),
+      });
+
+      await make().catchUp();
+
+      expect(idsOf()).toEqual(['first-prompt', COMMAND_ID, 'a1']);
+      const [prompt] = transcripts();
+      expect(prompt?.role).toBe('user');
+      expect(prompt?.content).toBe('Run the tests');
+      expect(listCalls).toEqual([{ threadId: MAIN, sortDirection: 'asc', limit: 100 }]);
+    });
+
+    test('goes out through the session’s own message stream, structured by its own MessageAPI, as a live item does', async () => {
+      servePages({ '': itemsListPage([{ item: userMessageItem('u1', 'hello') }], null) });
+
+      await make().catchUp();
+
+      expect(structured).toHaveLength(1);
+      expect(transcripts()[0]?.message.id).toBe(structured[0]?.id as string);
+    });
+
+    test('an item already delivered live is not sent again, and the rest still is', async () => {
+      const chat = make();
+      chat.handleNotification(
+        'item/completed',
+        itemCompletedFrame(MAIN, agentMessageItem('a1', 'live first', 'final_answer'))['params'],
+      );
+      servePages({
+        '': itemsListPage(
+          [
+            { item: userMessageItem('u1', 'before') },
+            { item: agentMessageItem('a1', 'live first', 'final_answer') },
+          ],
+          null,
+        ),
+      });
+
+      await chat.catchUp();
+
+      expect(idsOf()).toEqual(['a1', 'u1']);
+    });
+
+    test('a second catch-up (a reconnect) sends nothing it already sent, and does send what is new', async () => {
+      const chat = make();
+      const items = [
+        { item: userMessageItem('u1', 'one') },
+        { item: userMessageItem('u2', 'two') },
+      ];
+      servePages({ '': itemsListPage(items, null) });
+      await chat.catchUp();
+      await chat.catchUp();
+      expect(idsOf()).toEqual(['u1', 'u2']);
+
+      servePages({
+        '': itemsListPage(
+          [...items, { item: agentMessageItem('a1', 'new', 'final_answer') }],
+          null,
+        ),
+      });
+      await chat.catchUp();
+      expect(idsOf()).toEqual(['u1', 'u2', 'a1']);
+    });
+
+    test('live items that arrive while the history is being read are held and sent after it, in order', async () => {
+      let release: () => void = () => {};
+      server.onRequest('thread/items/list', () => {
+        listCalls.push({});
+        return new Promise((resolve) => {
+          release = () =>
+            resolve(
+              itemsListPage(
+                [
+                  { item: userMessageItem('u1', 'first prompt') },
+                  { item: agentMessageItem('a1', 'also live', 'final_answer') },
+                ],
+                null,
+              ),
+            );
+        });
+      });
+      const chat = make();
+
+      const caughtUp = chat.catchUp();
+      await server.waitFor(() => listCalls.length === 1, 'the catch-up read to ask');
+      chat.handleNotification(
+        'item/completed',
+        itemCompletedFrame(MAIN, agentMessageItem('a1', 'also live', 'final_answer'))['params'],
+      );
+      chat.handleNotification(
+        'item/completed',
+        itemCompletedFrame(MAIN, agentMessageItem('a2', 'only live', 'final_answer'))['params'],
+      );
+      // Held: nothing has gone out yet, so the prompt cannot arrive after what it caused.
+      expect(idsOf()).toEqual([]);
+
+      release();
+      await caughtUp;
+
+      expect(idsOf()).toEqual(['u1', 'a1', 'a2']);
+    });
+
+    test('more live items than the hold takes are sent at once, and none is lost', async () => {
+      let release: () => void = () => {};
+      server.onRequest('thread/items/list', () => {
+        listCalls.push({});
+        return new Promise((resolve) => {
+          release = () => resolve(itemsListPage([{ item: userMessageItem('u1', 'prompt') }], null));
+        });
+      });
+      const chat = make();
+      const caughtUp = chat.catchUp();
+      await server.waitFor(() => listCalls.length === 1, 'the catch-up read to ask');
+
+      for (let i = 0; i < 300; i++) {
+        chat.handleNotification(
+          'item/completed',
+          itemCompletedFrame(MAIN, userMessageItem(`live-${i}`, `m${i}`))['params'],
+        );
+      }
+      // 256 are held; the rest went out when they arrived.
+      expect(idsOf()).toHaveLength(44);
+
+      release();
+      await caughtUp;
+      expect(idsOf()).toHaveLength(301);
+      expect(new Set(idsOf()).size).toBe(301);
+    });
+
+    test('a failing list is logged without content, delivers nothing, never throws, and the held items still go out', async () => {
+      let fail: () => void = () => {};
+      server.onRequest('thread/items/list', () => {
+        listCalls.push({});
+        return new Promise((_resolve, reject) => {
+          fail = () => reject({ code: -32603, message: 'PRIVATE-SERVER-TEXT' });
+        });
+      });
+      const chat = make();
+      const caughtUp = chat.catchUp();
+      await server.waitFor(() => listCalls.length === 1, 'the catch-up read to ask');
+      chat.handleNotification(
+        'item/completed',
+        itemCompletedFrame(MAIN, userMessageItem('held', 'PRIVATE-LIVE-TEXT'))['params'],
+      );
+
+      fail();
+      await caughtUp;
+
+      expect(idsOf()).toEqual(['held']);
+      const mine = logs.filter((l) => /catch/i.test(l));
+      expect(mine).toHaveLength(1);
+      expect(mine[0]).toContain('code -32603');
+      expect(logs.join('\n')).not.toContain('PRIVATE');
+    });
+
+    test('a list that never answers holds the live items only as long as its timeout', async () => {
+      server.ignore('thread/items/list');
+      const chat = make({ catchUpRequestTimeoutMs: 60 });
+      const caughtUp = chat.catchUp();
+      chat.handleNotification(
+        'item/completed',
+        itemCompletedFrame(MAIN, userMessageItem('held', 'x'))['params'],
+      );
+      expect(idsOf()).toEqual([]);
+
+      await caughtUp;
+
+      expect(idsOf()).toEqual(['held']);
+      expect(logs.some((l) => /catch/i.test(l))).toBe(true);
+    });
+
+    test('a thread longer than the catch-up bound is left to an explicit history read: nothing is sent, and it says so', async () => {
+      let n = 0;
+      server.onRequest('thread/items/list', () => {
+        n += 1;
+        return itemsListPage([{ item: userMessageItem(`u${n}`, `m${n}`) }], `c${n}`);
+      });
+
+      await make().catchUp();
+
+      // Five pages are read, the thread goes on, and the oldest 500 are not a catch-up: not sent.
+      expect(n).toBe(5);
+      expect(idsOf()).toEqual([]);
+      expect(logs.filter((l) => /catch/i.test(l))).toHaveLength(1);
+    });
+
+    test('a thread that fits in the bound exactly is caught up whole', async () => {
+      const pages: Record<string, Json> = {};
+      let cursor = '';
+      for (let page = 1; page <= 5; page++) {
+        const next = page === 5 ? null : `c${page}`;
+        pages[cursor] = itemsListPage([{ item: userMessageItem(`u${page}`, `m${page}`) }], next);
+        cursor = next ?? '';
+      }
+      servePages(pages);
+
+      await make().catchUp();
+
+      expect(idsOf()).toEqual(['u1', 'u2', 'u3', 'u4', 'u5']);
+    });
+
+    test('a cursor that repeats is an unfinished read: nothing is sent', async () => {
+      servePages({
+        '': itemsListPage([{ item: userMessageItem('u1', 'one') }], 'stuck'),
+        stuck: itemsListPage([{ item: userMessageItem('u2', 'two') }], 'stuck'),
+      });
+
+      await make().catchUp();
+
+      expect(idsOf()).toEqual([]);
+    });
+
+    test('a thread with nothing written yet, and a session with no thread, are nothing to catch up', async () => {
+      server.onRequest('thread/items/list', () => {
+        throw { code: -32600, message: `no rollout found for thread id ${MAIN}` };
+      });
+      await make().catchUp();
+      expect(idsOf()).toEqual([]);
+
+      tracked = null;
+      listCalls = [];
+      await make().catchUp();
+      expect(listCalls).toEqual([]);
+    });
+
+    test('an attach while a catch-up is running is not lost: one more read follows it', async () => {
+      const gates: Array<() => void> = [];
+      server.onRequest('thread/items/list', () => {
+        listCalls.push({});
+        return new Promise((resolve) => {
+          gates.push(() =>
+            resolve(
+              itemsListPage(
+                gates.length > 1
+                  ? [
+                      { item: userMessageItem('u1', 'one') },
+                      { item: userMessageItem('u2', 'after reconnect') },
+                    ]
+                  : [{ item: userMessageItem('u1', 'one') }],
+                null,
+              ),
+            ),
+          );
+        });
+      });
+      const chat = make();
+
+      const first = chat.catchUp();
+      await server.waitFor(() => gates.length === 1, 'the first read to ask');
+      const second = chat.catchUp();
+      gates[0]?.();
+      await server.waitFor(() => gates.length === 2, 'the follow-up read to ask');
+      gates[1]?.();
+      await Promise.all([first, second]);
+
+      expect(listCalls).toHaveLength(2);
+      expect(idsOf()).toEqual(['u1', 'u2']);
+    });
+
+    test('three attaches in a row are one running read and one follow-up, not three', async () => {
+      const gates: Array<() => void> = [];
+      server.onRequest('thread/items/list', () => {
+        listCalls.push({});
+        return new Promise((resolve) => {
+          gates.push(() => resolve(itemsListPage([], null)));
+        });
+      });
+      const chat = make();
+
+      const all = [chat.catchUp(), chat.catchUp(), chat.catchUp()];
+      await server.waitFor(() => gates.length === 1, 'the first read to ask');
+      gates[0]?.();
+      await server.waitFor(() => gates.length === 2, 'the follow-up to ask');
+      gates[1]?.();
+      await Promise.all(all);
+
+      expect(listCalls).toHaveLength(2);
+    });
+
+    test('a catch-up never delivers prose of another thread: it reads the thread tracked now', async () => {
+      servePages({ '': itemsListPage([{ item: userMessageItem('u1', 'one') }], null) });
+      tracked = OTHER;
+
+      await make().catchUp();
+
+      expect(listCalls.map((c) => c['threadId'])).toEqual([OTHER]);
+    });
+
+    test('a failing send is logged by name and does not stop the rest of the catch-up', async () => {
+      servePages({
+        '': itemsListPage(
+          [{ item: userMessageItem('u1', 'PRIVATE-ONE') }, { item: userMessageItem('u2', 'two') }],
+          null,
+        ),
+      });
+      let calls = 0;
+      const chat = make({
+        sendAndRecord: (message) => {
+          calls += 1;
+          if (calls === 1) throw new TypeError('PRIVATE-SEND-DETAIL');
+          live.push(message);
+        },
+      });
+
+      await chat.catchUp();
+
+      expect(idsOf()).toEqual(['u2']);
+      expect(logs.join('\n')).toContain('TypeError');
+      expect(logs.join('\n')).not.toContain('PRIVATE');
     });
   });
 });

@@ -16,15 +16,21 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ProtocolMessage, TranscriptContentMessage, UUID } from '@remi/shared';
 import { MessageAPI } from '../../../src/api/message-api.ts';
+import { SubagentViewRegistry } from '../../../src/api/subagent-view-registry.ts';
+import { createTranscriptHandlers } from '../../../src/cli/handlers/transcript-events.ts';
 import type { CodexLaunchDeps } from '../../../src/harness/codex/codex-session.ts';
 import { CodexHarness } from '../../../src/harness/codex/codex.ts';
+import { ClaudeHarness } from '../../../src/harness/index.ts';
 import type { HarnessSession } from '../../../src/harness/types.ts';
 import type { TurnEventSink } from '../../../src/notifications/turn-events.ts';
 import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
 import { SessionRegistryFile } from '../../../src/session/session-registry-file.ts';
 import { SessionRegistry } from '../../../src/session/session-registry.ts';
 import { SessionStore } from '../../../src/session/session-store.ts';
+import { TranscriptIndex } from '../../../src/session/transcript-index.ts';
+import { TranscriptDiscovery } from '../../../src/transcript/transcript-discovery.ts';
 import {
+  type Json,
   agentMessageItem,
   itemCompletedFrame,
   itemsListPage,
@@ -134,7 +140,13 @@ describe('a Codex session: turn events and chat', () => {
 
   /** A launched, started session attached to the TUI's thread (or to `resumeId`'s, with no `thread/started`). */
   async function launch(
-    opts: { sink?: TurnEventSink | null; resumeId?: string; noThread?: boolean } = {},
+    opts: {
+      sink?: TurnEventSink | null;
+      resumeId?: string;
+      noThread?: boolean;
+      /** Answers `thread/items/list`, registered BEFORE the attach so the catch-up at the attach reads it. */
+      list?: (params: unknown) => unknown;
+    } = {},
   ): Promise<Rig> {
     const server = FakeAppServer.start();
     servers.push(server);
@@ -178,6 +190,7 @@ describe('a Codex session: turn events and chat', () => {
     });
     launched.push(session);
     registry.registerSession(sessionId, workDir, session.pty, messageApi);
+    if (opts.list !== undefined) server.onRequest('thread/items/list', opts.list);
     await session.start();
     await until(() => server.clientIds().length === 1, 'the client to connect');
 
@@ -382,6 +395,135 @@ describe('a Codex session: turn events and chat', () => {
       expect(r.server.received.filter((f) => f.frame['method'] === 'thread/items/list')).toEqual(
         [],
       );
+    });
+  });
+  describe('catch-up at the attach (#1180 review)', () => {
+    const idsOf = (r: Rig): string[] => transcripts(r).map((m) => m.entryUuid);
+    const listCalls = (r: Rig): number =>
+      r.server.received.filter((f) => f.frame['method'] === 'thread/items/list').length;
+
+    test('the first prompt of a thread, which completed before remi attached, reaches the phone', async () => {
+      const r = await launch({
+        list: () =>
+          itemsListPage(
+            [
+              { item: userMessageItem('first-prompt', 'the prompt that started it') },
+              { item: agentMessageItem('a1', 'an answer', 'final_answer') },
+            ],
+            null,
+          ),
+      });
+
+      await until(() => idsOf(r).length === 2, 'the catch-up');
+
+      expect(idsOf(r)).toEqual(['first-prompt', 'a1']);
+      expect(transcripts(r)[0]?.role).toBe('user');
+      expect(transcripts(r)[0]?.sessionId).toBe(r.sessionId);
+    });
+
+    test('after a reconnect nothing is sent twice, and what is new is sent', async () => {
+      let items = [{ item: userMessageItem('first-prompt', 'the prompt') }];
+      const r = await launch({ list: () => itemsListPage(items, null) });
+      await until(() => idsOf(r).length === 1, 'the first catch-up');
+
+      items = [
+        ...items,
+        { item: agentMessageItem('a1', 'while the link was down', 'final_answer') },
+      ];
+      const client = r.server.clientIds()[0] as number;
+      r.server.dropClient(client);
+      await until(() => listCalls(r) === 2, 'the catch-up after the reconnect');
+      await until(() => idsOf(r).length === 2, 'the new item');
+
+      expect(idsOf(r)).toEqual(['first-prompt', 'a1']);
+    });
+
+    test('a failing list leaves the session working: it logs once without content, and live items still go out', async () => {
+      const r = await launch({
+        list: () => {
+          throw { code: -32603, message: 'PRIVATE-SERVER-TEXT' };
+        },
+      });
+      await until(() => r.logs.some((l) => /catch/i.test(l)), 'the catch-up failure to be logged');
+
+      r.server.emit(itemCompletedFrame(r.tuiId, userMessageItem('live', 'still delivered')), {
+        threadId: r.tuiId,
+      });
+      await until(() => idsOf(r).length === 1, 'the live item');
+
+      expect(idsOf(r)).toEqual(['live']);
+      expect(r.logs.filter((l) => /catch/i.test(l))).toHaveLength(1);
+      expect(r.logs.join('\n')).not.toContain('PRIVATE');
+      expect(r.logs.some((l) => l.includes('attached to thread'))).toBe(true);
+    });
+
+    test('a resumed session catches up its thread at once', async () => {
+      const r = await launch({
+        resumeId: crypto.randomUUID(),
+        list: () => itemsListPage([{ item: userMessageItem('first-prompt', 'old prompt') }], null),
+      });
+
+      await until(() => idsOf(r).length === 1, 'the catch-up');
+
+      expect(idsOf(r)).toEqual(['first-prompt']);
+    });
+
+    test('a session with no thread asks nothing at all', async () => {
+      const r = await launch({ noThread: true, list: () => itemsListPage([], null) });
+
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(listCalls(r)).toBe(0);
+    });
+  });
+
+  describe('a history read stops when the requester goes away (#1180 review)', () => {
+    test('the handler ends the read as soon as a send is refused, so no page is asked for after it', async () => {
+      const pages: Record<string, Json> = {
+        '': itemsListPage([{ item: userMessageItem('u1', 'one') }], 'c1'),
+        c1: itemsListPage([{ item: userMessageItem('u2', 'two') }], 'c2'),
+        c2: itemsListPage([{ item: userMessageItem('u3', 'three') }], null),
+      };
+      const asked: string[] = [];
+      const r = await launch({
+        list: (params) => {
+          const cursor = (params as { cursor?: string }).cursor ?? '';
+          asked.push(cursor);
+          // The catch-up reads the first page; the explicit read below is the one under test.
+          return pages[cursor];
+        },
+      });
+      await until(() => asked.length >= 1, 'the catch-up to ask');
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      asked.length = 0;
+
+      const sendCalls: Array<{ connectionId: string; type: string }> = [];
+      const sessionStore = new SessionStore(path.join(tmpDir, 'handler-sessions.json'));
+      const transcriptIndex = new TranscriptIndex(path.join(tmpDir, 'handler-index.json'));
+      const discovery = new TranscriptDiscovery({ projectsDir: path.join(tmpDir, 'projects') });
+      const handlers = createTranscriptHandlers({
+        transcriptDiscovery: discovery,
+        harness: new ClaudeHarness(discovery),
+        transcriptWatchers: new Map(),
+        bindingStore: new SessionBindingStore(sessionStore, transcriptIndex),
+        transcriptIndex,
+        currentOwnedSession: () => null,
+        subagentViews: new SubagentViewRegistry(),
+        chatFor: () => r.session.chat,
+        send: (connectionId, message) => {
+          sendCalls.push({ connectionId, type: message.type });
+          // The connection goes away after the first message.
+          return sendCalls.length < 1;
+        },
+      });
+
+      handlers.onTranscriptLoadRequest('conn' as UUID, r.sessionId, 'req' as UUID);
+      await until(() => asked.length >= 1, 'the explicit read to ask');
+      await new Promise((resolve) => setTimeout(resolve, 150));
+
+      // One page was asked for; the refused send ended the read, and no error was sent to a dead connection.
+      expect(asked).toEqual(['']);
+      expect(sendCalls.map((c) => c.type)).toEqual(['transcript_content']);
     });
   });
 });

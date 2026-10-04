@@ -30,6 +30,7 @@ import type {
   ProtocolMessage,
   QuestionMessage,
   QuestionResolvedMessage,
+  ReplayBatchMessage,
   SessionUpdateMessage,
   TranscriptContentMessage,
   TranscriptLoadCompleteMessage,
@@ -1208,7 +1209,12 @@ describe('remi codex turns and chat (daemon, black-box characterization, #1180)'
    * stand-in that records what it is sent, and a phone connected to it with a device registered.
    */
   async function attachedDaemon(
-    opts: { pushSecret?: string; failPushes?: () => boolean } = {},
+    opts: {
+      pushSecret?: string;
+      failPushes?: () => boolean;
+      /** Answers `thread/items/list`, registered before the attach, so the catch-up at the attach reads it. */
+      list?: (params: unknown) => unknown;
+    } = {},
   ): Promise<Attached> {
     const pushes: Push[] = [];
     const stub = Bun.serve({
@@ -1229,6 +1235,7 @@ describe('remi codex turns and chat (daemon, black-box characterization, #1180)'
       `http://127.0.0.1:${stub.port}`,
       ...(opts.pushSecret === undefined ? [] : ['--push-secret', opts.pushSecret]),
     ]);
+    if (opts.list !== undefined) r.server.onRequest('thread/items/list', opts.list);
     await waitForFakeCodex(r);
     await waitForAppServerClient(r);
     const tuiId = crypto.randomUUID();
@@ -1259,6 +1266,12 @@ describe('remi codex turns and chat (daemon, black-box characterization, #1180)'
     return { r, tuiId, ws, received, sessionId, pushes };
   }
 
+  /** The entry ids of every transcript_content a client received, live or inside a replay batch. */
+  const entryIds = (received: ProtocolMessage[]): string[] =>
+    received
+      .flatMap((m) => (m.type === 'replay_batch' ? (m as ReplayBatchMessage).messages : [m]))
+      .filter((m): m is TranscriptContentMessage => m.type === 'transcript_content')
+      .map((m) => m.entryUuid);
   const pushed = (a: Attached, kind: string): Push[] => a.pushes.filter((p) => p.kind === kind);
   const transcripts = (received: ProtocolMessage[]): TranscriptContentMessage[] =>
     received.filter((m): m is TranscriptContentMessage => m.type === 'transcript_content');
@@ -1423,6 +1436,40 @@ describe('remi codex turns and chat (daemon, black-box characterization, #1180)'
       expect(a.r.output.text).not.toContain('E2E-FIRST-PROMPT');
       expect(a.r.output.text).not.toContain('E2E-OUTPUT');
     } finally {
+      a.ws.close();
+    }
+  }, 90000);
+
+  test('the first prompt of a thread reaches a phone that connects after it: remi caught the thread up when it attached', async () => {
+    const a = await attachedDaemon({
+      list: () =>
+        itemsListPage(
+          [
+            { item: userMessageItem('e2e-first-prompt', 'E2E-FIRST-PROMPT') },
+            { item: agentMessageItem('e2e-answer', 'E2E-ANSWER', 'final_answer') },
+          ],
+          null,
+        ),
+    });
+    let late: { ws: WebSocket; received: ProtocolMessage[] } | undefined;
+    try {
+      // Both phones connect after the attach: the daemon sent the catch-up and recorded it for replay.
+      await pollUntil(
+        () => entryIds(a.received).includes('e2e-first-prompt'),
+        10000,
+        'the caught-up first prompt',
+      );
+      late = await connectAndHello(a.r.port);
+      await pollUntil(
+        () => entryIds(late?.received ?? []).includes('e2e-first-prompt'),
+        10000,
+        'the replay of the first prompt to the late phone',
+      );
+
+      expect(entryIds(late.received)).toEqual(['e2e-first-prompt', 'e2e-answer']);
+      expect(a.r.output.text).not.toContain('E2E-FIRST-PROMPT');
+    } finally {
+      late?.ws.close();
       a.ws.close();
     }
   }, 90000);
