@@ -30,6 +30,7 @@ const PUBLIC_FUNCTIONS = [
   'generateIdentity',
   'hostOnHello',
   'isLiveOffer',
+  'isSmallOrderPublicKey',
   'liveOffers',
   'openSeal',
   'pushAad',

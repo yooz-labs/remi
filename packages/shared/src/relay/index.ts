@@ -52,3 +52,4 @@ export {
   verifyAdmission,
 } from './pairing.ts';
 export { openSeal, pushAad, seal } from './seal.ts';
+export { isSmallOrderPublicKey } from './small-order.ts';
