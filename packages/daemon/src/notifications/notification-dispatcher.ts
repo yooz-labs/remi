@@ -678,8 +678,9 @@ export class NotificationDispatcher {
 
   /**
    * Notify every device that wants it that a turn ended on an API error
-   * (`StopFailure`, #1153): a usage or rate limit, authentication, and
-   * similar. Informational, never a card: no `category`, no `options`, and
+   * (Claude's `StopFailure`, #1153, or a failed Codex turn, #1180; `agentName`
+   * says which stopped, Claude when absent): a usage or rate limit,
+   * authentication, and similar. Informational, never a card: no `category`, no `options`, and
    * nothing is registered in-app (the card this replaced had Yes/No that no
    * answer could reach). Its `questionId` is the session's collapse key
    * (`turnFailedCollapseId`), so a repeat replaces the previous notification
@@ -700,7 +701,7 @@ export class NotificationDispatcher {
    * device accepted it, `failed` when every push failed. Fire-and-forget for
    * callers: the promise never rejects.
    */
-  pushTurnFailed(input: TurnFailedInput): Promise<DeliveryOutcome> {
+  pushTurnFailed(input: TurnFailedInput, agentName?: string): Promise<DeliveryOutcome> {
     const { sessionRegistry, deviceTokens, pushConfig } = this.deps;
     // #690: pick up a device a sibling daemon removed or muted since our last
     // read, as every other push does.
@@ -716,7 +717,7 @@ export class NotificationDispatcher {
     }
     this.turnFailedOutstanding = true;
     const sessionName = sessionRegistry.getSession(this.sessionId)?.name || 'Agent';
-    const { title, body } = buildTurnFailedText(sessionName, input);
+    const { title, body } = buildTurnFailedText(sessionName, input, agentName);
     const cfg = pushConfig();
     const pushSessionId = this.deps.getPrimarySessionId() ?? this.sessionId;
     const perToken = wanting.map((dt) =>
