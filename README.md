@@ -58,12 +58,13 @@ remi attach --host 192.168.1.5 macbook/remi/main
 
 `remi codex` runs `codex --no-alt-screen` the way `remi` runs Claude Code, and shows the session, what it is doing (working, waiting on an approval, idle) and the commands it asks to run on your phone.
 A command approval is a card with the command, the directory it runs in when that is not the session's, and Yes, No, and "Yes, and don't ask again for this command this session" when Codex offers it.
-A command longer than 120 characters is shown with its middle cut, the way Claude's cards show it, and the whole command is in the card's detail; such a card has no lock-screen buttons, so Yes needs the app.
+A command longer than 120 characters is shown with its middle cut, the way Claude's cards show it, and the whole command is in the card's detail; a card with a detail (a cut command, or one that runs in another directory) has no lock-screen buttons, so Yes needs the app.
+A command for which Codex does not say where it runs gets a card with no answer buttons, so answer it in the terminal.
 The phone's answer goes to Codex's app-server, never into the terminal, and Codex decides what it means: remi relays the question, it does not judge the command.
 The first answer wins: answer in the terminal and the card clears on your phone, and a card answered a moment too late is refused.
 A card has no deadline: it stays answerable for as long as Codex keeps the request waiting, and if Codex has not confirmed an answer after 10 seconds you are told to check the terminal.
 Every other kind of request (a file change, extra permissions, a question for you, an MCP prompt, a command that asks for more than itself, anything a subagent asks) shows up as a notice with no answer buttons, so answer it in the terminal; its button reads "Dismiss (answer in the terminal)" and only clears the card from your phone.
-Text Codex chooses (a command, a reason, a question) is shown with control and bidirectional characters made visible as `\uXXXX` and long values cut with a note of how much is hidden.
+Text Codex chooses (a command, a reason, a question) is shown with control, invisible and bidirectional characters made visible (`\uXXXX`, or `\u{XXXXX}` for the Tags block; the list is in ADR 0033, phase 4 amendment) and long values cut with a note of how much is hidden.
 Turn notifications do not reach the phone yet.
 A message typed in the app to a Codex session is refused (the app shows it as failed, "type in the terminal") instead of being typed into Codex, because remi cannot see what Codex has on screen.
 The command is in the card and in the push notification (the ask, up to 120 characters in the title and 200 in the body), which goes through the signaling Worker and Apple's push service in plaintext, as every card does; a command can contain a secret.
@@ -81,7 +82,8 @@ So these are not verified yet:
 (g) that an interrupt, an Esc in the terminal or a finished turn clears the card (Codex has to report the request resolved);
 (h) that a subagent's request reaches remi at all;
 (i) that Codex keeps a pending request across a dropped client and sends it again, as the stand-in does;
-(j) that a plain `codex` window in the same directory re-binds an idle session.
+(j) that a plain `codex` window in the same directory re-binds an idle session;
+(k) that Codex's directory for a command run in the session's directory equals its realpath (otherwise every card shows "In directory" and has no lock-screen buttons), and that Codex always sends one.
 
 - **Arguments.**
   `-m/--model`, `-a/--ask-for-approval`, `-s/--sandbox`, `--add-dir`, `-i/--image` (not together with `resume`) and `--yolo` pass through; every other Codex flag and every Codex subcommand but `resume` is refused, so run `codex` directly for those.
