@@ -806,6 +806,16 @@ describe('CodexDecisions', () => {
       expect(sched.live().map((t) => t.ms)).toEqual([777, 3000]);
     });
 
+    test('a phone answer to a retired card is closed and forgets it, so the sweep does not dismiss it a second time', () => {
+      request(5);
+      const q = only();
+      decisions.handleDisconnected();
+      expect(decisions.answerHeld(q.id, optionNamed(q, 'Yes'))).toBe('closed');
+      const before = resolvedMessages().length;
+      sched.fire(sched.live()[0]);
+      expect(resolvedMessages().length).toBe(before);
+    });
+
     test('a link that never comes back dismisses its retired cards when the grace period ends', () => {
       request(5);
       const q = only();
