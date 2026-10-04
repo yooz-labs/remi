@@ -170,11 +170,7 @@ function refusedFlagMessage(flag: string): string {
 
 /** `-i`, an attached `-iPATH`, `--image` or `--image=PATH`. */
 function isImageFlag(flag: string): boolean {
-  return (
-    flag === '--image' ||
-    flag.startsWith('--image=') ||
-    (flag.startsWith('-i') && !flag.startsWith('--'))
-  );
+  return flag === '--image' || flag.startsWith('--image=') || flag.startsWith('-i');
 }
 
 /** A token that is a flag, not a value: it starts with `-` and is more than a lone `-`. */
