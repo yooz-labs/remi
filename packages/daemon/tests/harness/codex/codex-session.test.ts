@@ -1,0 +1,713 @@
+/**
+ * `CodexHarness` and `createCodexSession` (epic #1175, phase 3 #1177), built the
+ * way the daemon builds them: a real harness over a real `SessionStore`,
+ * `SessionBindingStore`, `SessionRegistry` and `MessageAPI`, the real
+ * `AppServerClient` and `ThreadTracker` against the `FakeAppServer`, and (for the
+ * cases that start the session) a real PTY running a fake `codex` found on a
+ * PATH of fakes plus `/usr/bin:/bin`. The `cleanup` never resolves, so the PTY's
+ * exit handler can never reach `process.exit` in the test runner. The
+ * black-box launch is pinned by `integration/codex-launch-characterization.test.ts`.
+ *
+ * These pin what that test cannot easily see: the order of the state-changing
+ * steps, the status the session reports from several threads, the claimed-id
+ * rule against the real store, and the link watchdog.
+ */
+
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import type { AgentStatus, Message, UUID } from '@remi/shared';
+import { MessageAPI } from '../../../src/api/message-api.ts';
+import {
+  type CodexLaunchDeps,
+  CodexLaunchRefusal,
+  checkCodexLaunch,
+  legacyWriterRefusal,
+  olderRemiNotice,
+} from '../../../src/harness/codex/codex-session.ts';
+import { CodexHarness } from '../../../src/harness/codex/codex.ts';
+import type { HarnessSession } from '../../../src/harness/types.ts';
+import { IDENTITY_SHIM_MIN_VERSION } from '../../../src/session/legacy-writers.ts';
+import type { LegacyWriter } from '../../../src/session/legacy-writers.ts';
+import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
+import { SessionRegistryFile } from '../../../src/session/session-registry-file.ts';
+import { SessionRegistry } from '../../../src/session/session-registry.ts';
+import { SessionStore, type StoredSession } from '../../../src/session/session-store.ts';
+import { threadStartedFrame, threadStatusFrame } from '../../helpers/codex-threads.ts';
+import { FakeAppServer } from '../../helpers/fake-app-server.ts';
+
+const FAKE_CODEX = `#!/bin/sh
+d="$FAKE_CODEX_DIR"
+for a in "$@"; do printf '%s\\n' "$a"; done > "$d/argv"
+stty size > "$d/size"
+i=0
+while [ ! -e "$d/release" ] && [ $i -lt 100 ]; do
+  sleep 0.1
+  i=$((i + 1))
+done
+`;
+
+const nowSec = (): number => Math.floor(Date.now() / 1000);
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function until(cond: () => boolean, what: string, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!cond()) {
+    if (Date.now() > deadline) throw new Error(`Timed out waiting for ${what}`);
+    await sleep(15);
+  }
+}
+
+describe('CodexHarness', () => {
+  let tmpDir: string;
+  let workDir: string;
+  let fakeDir: string;
+  let sessionStore: SessionStore;
+  let bindingStore: SessionBindingStore;
+  let registries: SessionRegistry[];
+  let launched: HarnessSession[];
+  let servers: FakeAppServer[];
+  let logs: string[];
+  let legacy: LegacyWriter[];
+  let originalPath: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'remi-codex-session-')));
+    workDir = path.join(tmpDir, 'work');
+    fakeDir = path.join(tmpDir, 'fake');
+    fs.mkdirSync(workDir);
+    fs.mkdirSync(path.join(tmpDir, 'bin'));
+    fs.mkdirSync(fakeDir);
+    fs.writeFileSync(path.join(tmpDir, 'bin', 'codex'), FAKE_CODEX);
+    fs.chmodSync(path.join(tmpDir, 'bin', 'codex'), 0o755);
+    // No real `codex` can resolve: the PATH is the fake plus the system directories.
+    originalPath = process.env['PATH'];
+    process.env['PATH'] = `${path.join(tmpDir, 'bin')}:/usr/bin:/bin`;
+    process.env['FAKE_CODEX_DIR'] = fakeDir;
+    sessionStore = new SessionStore(path.join(tmpDir, 'sessions.json'));
+    bindingStore = new SessionBindingStore(sessionStore);
+    registries = [];
+    launched = [];
+    servers = [];
+    logs = [];
+    legacy = [];
+  });
+
+  afterEach(async () => {
+    for (const session of launched) {
+      if (session.pty.isRunning) session.pty.signal('SIGKILL');
+      session.dispose();
+    }
+    for (const server of servers) await server.stop();
+    for (const registry of registries) await registry.shutdown();
+    process.env['PATH'] = originalPath ?? '/usr/bin:/bin';
+    Reflect.deleteProperty(process.env, 'FAKE_CODEX_DIR');
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function startServer(): FakeAppServer {
+    const server = FakeAppServer.start();
+    servers.push(server);
+    return server;
+  }
+
+  function buildDeps(
+    server: FakeAppServer | null,
+    over: Partial<CodexLaunchDeps> = {},
+  ): CodexLaunchDeps {
+    const sessionRegistry = new SessionRegistry({ orphanTimeoutMs: 60000 });
+    registries.push(sessionRegistry);
+    const liveSessionsRegistry = new SessionRegistryFile(path.join(tmpDir, 'live-sessions'));
+    fs.mkdirSync(liveSessionsRegistry.dirPath, { recursive: true });
+    return {
+      sessionRegistry,
+      sessionStore,
+      bindingStore,
+      liveSessionsRegistry,
+      currentPort: () => 19999,
+      wsPort: () => 19999,
+      cleanup: () => new Promise<void>(() => {}),
+      env: () => ({ CODEX_HOME: server ? server.codexHome : path.join(tmpDir, 'no-codex-home') }),
+      legacyWriters: () => legacy,
+      remiVersion: 'test',
+      log: (m) => logs.push(m),
+      appServer: { backoff: { initialMs: 10, maxMs: 40 } },
+      ...over,
+    };
+  }
+
+  /** Build (not start) a Codex session the way `createNewSession` asks the harness for one. */
+  function create(deps: CodexLaunchDeps, args: string[] = [], passThrough = false) {
+    const sessionId = crypto.randomUUID() as UUID;
+    const messages: Message[] = [];
+    const statuses: AgentStatus[] = [];
+    const messageApi = new MessageAPI(
+      { sessionId, initialBulletId: 1, maxBulletLength: 500 },
+      {
+        onStructuredMessage: (m) => messages.push(m),
+        onStatusChange: (s) => statuses.push(s),
+      },
+    );
+    const session = new CodexHarness(deps).createSession({
+      sessionId,
+      workingDirectory: workDir,
+      extraArgs: args,
+      passThrough,
+      reservedRows: 5,
+      messageApi,
+      sendAndRecord: () => {},
+      sendMessage: () => {},
+    });
+    launched.push(session);
+    return { session, sessionId, messages, statuses };
+  }
+
+  const record = (over: Partial<StoredSession>): StoredSession => ({
+    remiSessionId: crypto.randomUUID() as UUID,
+    claudeSessionId: null,
+    harness: 'codex',
+    harnessSessionId: null,
+    projectPath: workDir,
+    port: 19998,
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+    exitedAt: null,
+    exitCode: null,
+    ...over,
+  });
+
+  const legacyWriter = (over: Partial<LegacyWriter> = {}): LegacyWriter => ({
+    source: 'live-session',
+    pid: 4242,
+    version: '0.7.15',
+    file: '/state/live-sessions/abc.json',
+    pidIdentity: 'verified',
+    ...over,
+  });
+
+  describe('the launch order', () => {
+    test('a launch records a codex session with no Claude id and no thread yet, and a resume names its thread', () => {
+      const deps = buildDeps(null);
+      const fresh = create(deps);
+      const threadId = crypto.randomUUID();
+      const resumed = create(deps, ['resume', threadId]);
+
+      expect(bindingStore.getIdentity(fresh.sessionId)).toEqual({
+        harness: 'codex',
+        harnessSessionId: null,
+      });
+      expect(sessionStore.findByRemiSessionId(fresh.sessionId)?.claudeSessionId).toBeNull();
+      expect(bindingStore.getIdentity(resumed.sessionId)).toEqual({
+        harness: 'codex',
+        harnessSessionId: threadId,
+      });
+      expect(sessionStore.findByRemiSessionId(fresh.sessionId)?.projectPath).toBe(workDir);
+      expect(sessionStore.findByRemiSessionId(fresh.sessionId)?.pid).toBe(process.pid);
+    });
+
+    test('a refused argument exits 2 and writes nothing', () => {
+      let error: unknown;
+      try {
+        create(buildDeps(null), ['-c', 'model=x']);
+      } catch (e) {
+        error = e;
+      }
+      expect(error).toBeInstanceOf(CodexLaunchRefusal);
+      expect((error as CodexLaunchRefusal).exitCode).toBe(2);
+      expect((error as Error).message).toContain('-c');
+      expect(fs.existsSync(path.join(tmpDir, 'sessions.json'))).toBe(false);
+    });
+
+    test('an older live remi refuses with exit 1 before any record is written, naming the file, the version and the fix', () => {
+      legacy = [
+        legacyWriter(),
+        legacyWriter({
+          source: 'hub',
+          pid: 77,
+          version: undefined,
+          file: '/state/daemon-status.json',
+          pidIdentity: 'unverified',
+        }),
+      ];
+      let error: unknown;
+      try {
+        create(buildDeps(null));
+      } catch (e) {
+        error = e;
+      }
+      expect(error).toBeInstanceOf(CodexLaunchRefusal);
+      expect((error as CodexLaunchRefusal).exitCode).toBe(1);
+      const message = (error as Error).message;
+      expect(message).toContain('/state/live-sessions/abc.json');
+      expect(message).toContain('pid 4242');
+      expect(message).toContain('version 0.7.15');
+      expect(message).toContain('/state/daemon-status.json');
+      expect(message).toContain('no version recorded');
+      expect(message).toContain('remi stop --all');
+      expect(message).toContain(IDENTITY_SHIM_MIN_VERSION);
+      expect(fs.existsSync(path.join(tmpDir, 'sessions.json'))).toBe(false);
+    });
+
+    test('a verified writer reads as live, an unverified one says to delete its file', () => {
+      const verified = legacyWriterRefusal([legacyWriter()]);
+      expect(verified).not.toContain('unverified');
+      expect(verified).not.toContain('delete');
+      const unverified = legacyWriterRefusal([legacyWriter({ pidIdentity: 'unverified' })]);
+      expect(unverified).toContain('unverified');
+      expect(unverified).toContain('delete /state/live-sessions/abc.json');
+    });
+
+    test('the gate comes before the store is touched: a refused launch leaves a stale record unpurged', () => {
+      sessionStore.save(
+        record({ pid: 2_147_483_000, harnessSessionId: '00000000-0000-7000-8000-0000000000aa' }),
+      );
+      const before = fs.readFileSync(path.join(tmpDir, 'sessions.json'), 'utf8');
+      legacy = [legacyWriter()];
+      const checked = checkCodexLaunch(buildDeps(null), [
+        'resume',
+        '00000000-0000-7000-8000-0000000000aa',
+      ]);
+      expect(checked.ok).toBe(false);
+      expect(fs.readFileSync(path.join(tmpDir, 'sessions.json'), 'utf8')).toBe(before);
+    });
+
+    test('the notice for the user names the minimum version and what is lost', () => {
+      expect(olderRemiNotice()).toContain(IDENTITY_SHIM_MIN_VERSION);
+      expect(olderRemiNotice()).toContain('erases');
+    });
+  });
+
+  describe('resume', () => {
+    const THREAD = '00000000-0000-7000-8000-0000000000bb';
+
+    test('a thread already open in a live remi session is refused, naming that session', () => {
+      const open = record({ harnessSessionId: THREAD });
+      sessionStore.save(open);
+      const checked = checkCodexLaunch(buildDeps(null), ['resume', THREAD]);
+      expect(checked.ok).toBe(false);
+      if (!checked.ok) {
+        expect(checked.exitCode).toBe(1);
+        expect(checked.message).toContain(open.remiSessionId.slice(0, 8));
+        expect(checked.message).toContain('remi attach');
+      }
+    });
+
+    test('an exited record of the thread is history, not a holder', () => {
+      sessionStore.save(
+        record({
+          harnessSessionId: THREAD,
+          pid: null,
+          exitedAt: new Date().toISOString(),
+          exitCode: 0,
+        }),
+      );
+      const checked = checkCodexLaunch(buildDeps(null), ['resume', THREAD]);
+      expect(checked).toEqual({ ok: true, args: ['resume', THREAD], resumeThreadId: THREAD });
+    });
+
+    test('a record whose process died without exiting cleanly is purged first, so the resume goes ahead', () => {
+      // Saved as running, pid long dead: only a purge turns it into history.
+      sessionStore.save(record({ harnessSessionId: THREAD, pid: 2_147_483_000 }));
+      const created = create(buildDeps(null), ['resume', THREAD]);
+      expect(bindingStore.getIdentity(created.sessionId)).toEqual({
+        harness: 'codex',
+        harnessSessionId: THREAD,
+      });
+      const holders = sessionStore
+        .list()
+        .filter((s) => s.harnessSessionId === THREAD && s.exitedAt === null);
+      expect(holders.map((s) => s.remiSessionId)).toEqual([created.sessionId]);
+    });
+
+    test('a fresh launch has no resume check and a prompt goes after an inserted --', () => {
+      expect(checkCodexLaunch(buildDeps(null), ['fix', 'it'])).toEqual({
+        ok: true,
+        args: ['--', 'fix', 'it'],
+        resumeThreadId: null,
+      });
+    });
+  });
+
+  describe('the child', () => {
+    test('spawns codex --no-alt-screen with the validated arguments after it', async () => {
+      const a = create(buildDeps(startServer()), ['-m', 'some-model']);
+      await a.session.start();
+      await until(() => fs.existsSync(path.join(fakeDir, 'argv')), 'the fake codex');
+      expect(fs.readFileSync(path.join(fakeDir, 'argv'), 'utf8')).toBe(
+        '--no-alt-screen\n-m\nsome-model\n',
+      );
+    });
+
+    test('a wrapper session gets the whole terminal: Codex reserves no status row', async () => {
+      // The shell asks for a reserved row (5 here); the Codex launch never takes one.
+      const a = create(buildDeps(startServer()), [], true);
+      await a.session.start();
+      await until(() => fs.existsSync(path.join(fakeDir, 'size')), 'the terminal size');
+      await until(
+        () => fs.readFileSync(path.join(fakeDir, 'size'), 'utf8').trim() !== '',
+        'a size',
+      );
+      expect(fs.readFileSync(path.join(fakeDir, 'size'), 'utf8').trim()).toBe(
+        `${process.stdout.rows || 40} ${process.stdout.columns || 120}`,
+      );
+    });
+
+    test('a prompt is passed after --, and a resume as the subcommand last', async () => {
+      const a = create(buildDeps(startServer()), ['--yolo', 'hello', 'there']);
+      await a.session.start();
+      await until(() => fs.existsSync(path.join(fakeDir, 'argv')), 'the fake codex');
+      expect(fs.readFileSync(path.join(fakeDir, 'argv'), 'utf8')).toBe(
+        '--no-alt-screen\n--yolo\n--\nhello\nthere\n',
+      );
+    });
+
+    test('a resumed thread is attached as soon as the link is ready, with no thread/started', async () => {
+      const server = startServer();
+      const threadId = crypto.randomUUID();
+      server.createRollout(threadId);
+      const a = create(buildDeps(server), ['resume', threadId]);
+      await a.session.start();
+      await until(
+        () => server.received.some((r) => r.frame['method'] === 'thread/resume'),
+        'thread/resume',
+      );
+      const frame = server.received.find((r) => r.frame['method'] === 'thread/resume');
+      expect(frame?.frame['params']).toStrictEqual({ threadId, excludeTurns: true });
+    });
+
+    test('a session of nothing held answers nothing and never claims a prompt is up', () => {
+      const { session } = create(buildDeps(null));
+      expect(session.decisions.hasMainHold()).toBe(false);
+      expect(session.decisions.hasOpenHookPrompt()).toBe(false);
+      expect(session.decisions.isHeld(crypto.randomUUID() as UUID)).toBe(false);
+      expect(session.decisions.forceRelease('test')).toEqual({ resolved: 0 });
+      expect(session.decisions.screen).toBeUndefined();
+    });
+  });
+
+  describe('status from the app-server', () => {
+    /** Start a session on a fake app-server and wait for its client and tracker to be up. */
+    async function startedSession(args: string[] = []) {
+      const server = startServer();
+      const created = create(buildDeps(server), args);
+      await created.session.start();
+      await until(
+        () =>
+          server.clientIds().length === 1 &&
+          server
+            .framesFrom(server.clientIds()[0] as number)
+            .some((f) => f['method'] === 'initialized'),
+        'the client handshake',
+      );
+      return { server, ...created };
+    }
+
+    const tui = (id: string) =>
+      threadStartedFrame('tui', { id, cwd: workDir, createdAtSec: nowSec() });
+
+    test('the TUI thread is recorded, and the title helper and a stray thread are not', async () => {
+      const { server, sessionId } = await startedSession();
+      const id = crypto.randomUUID();
+      // A user thread of another Codex window, in another directory.
+      server.emit(
+        threadStartedFrame('tui', { id: crypto.randomUUID(), cwd: tmpDir, createdAtSec: nowSec() }),
+        { broadcast: true },
+      );
+      server.emit(tui(id), { broadcast: true });
+      server.emit(
+        threadStartedFrame('title', {
+          id: crypto.randomUUID(),
+          cwd: workDir,
+          createdAtSec: nowSec(),
+        }),
+        { broadcast: true },
+      );
+      await until(
+        () => bindingStore.getIdentity(sessionId)?.harnessSessionId === id,
+        'the identity',
+      );
+      await sleep(500);
+      expect(bindingStore.getIdentity(sessionId)).toEqual({
+        harness: 'codex',
+        harnessSessionId: id,
+      });
+    });
+
+    test('waiting on approval is waiting, active is thinking, idle is idle, and a repeat reports nothing new', async () => {
+      const { server, statuses } = await startedSession();
+      const id = crypto.randomUUID();
+      server.emit(tui(id), { broadcast: true });
+      server.emit(threadStatusFrame(id, { type: 'active', activeFlags: ['waitingOnApproval'] }), {
+        broadcast: true,
+      });
+      await until(() => statuses.at(-1) === 'waiting', 'waiting');
+      server.emit(threadStatusFrame(id, { type: 'active', activeFlags: ['waitingOnApproval'] }), {
+        broadcast: true,
+      });
+      server.emit(threadStatusFrame(id, { type: 'active', activeFlags: [] }), { broadcast: true });
+      await until(() => statuses.at(-1) === 'thinking', 'thinking');
+      server.emit(threadStatusFrame(id, { type: 'idle' }), { broadcast: true });
+      await until(() => statuses.at(-1) === 'idle', 'idle');
+      server.emit(threadStatusFrame(id, { type: 'systemError' }), { broadcast: true });
+      server.emit(threadStatusFrame(id, { type: 'notLoaded' }), { broadcast: true });
+      await sleep(300);
+      expect(statuses).toEqual(['waiting', 'thinking', 'idle']);
+    });
+
+    test('a subagent waiting makes the session wait, and a subagent going idle does not end the main thread work', async () => {
+      const { server, statuses } = await startedSession();
+      const main = crypto.randomUUID();
+      const child = crypto.randomUUID();
+      server.emit(tui(main), { broadcast: true });
+      server.emit(
+        threadStartedFrame('tui', { id: child, cwd: workDir, createdAtSec: nowSec() }, (t) => {
+          t['parentThreadId'] = main;
+        }),
+        { broadcast: true },
+      );
+      server.emit(threadStatusFrame(main, { type: 'active', activeFlags: [] }), {
+        broadcast: true,
+      });
+      await until(() => statuses.at(-1) === 'thinking', 'thinking');
+
+      server.emit(
+        threadStatusFrame(child, { type: 'active', activeFlags: ['waitingOnApproval'] }),
+        { broadcast: true },
+      );
+      await until(() => statuses.at(-1) === 'waiting', 'waiting from the child');
+      server.emit(threadStatusFrame(child, { type: 'idle' }), { broadcast: true });
+      await until(
+        () => statuses.at(-1) === 'thinking',
+        'thinking again: the main thread is still active',
+      );
+      expect(statuses).toEqual(['thinking', 'waiting', 'thinking']);
+    });
+
+    test("a thread that is not the session's changes nothing: the session reports only its own thread's idle", async () => {
+      const { server, statuses } = await startedSession();
+      const main = crypto.randomUUID();
+      server.emit(tui(main), { broadcast: true });
+      server.emit(
+        threadStatusFrame(crypto.randomUUID(), {
+          type: 'active',
+          activeFlags: ['waitingOnApproval'],
+        }),
+        { broadcast: true },
+      );
+      await sleep(500);
+      // The only report is the TUI thread's own `idle`, from its thread/started frame.
+      expect(statuses).toEqual(['idle']);
+    });
+
+    test("a rotation forgets what the old thread's subagents were doing", async () => {
+      const { server, statuses, sessionId } = await startedSession();
+      const first = crypto.randomUUID();
+      const child = crypto.randomUUID();
+      const second = crypto.randomUUID();
+      server.emit(tui(first), { broadcast: true });
+      server.emit(
+        threadStartedFrame('tui', { id: child, cwd: workDir, createdAtSec: nowSec() }, (t) => {
+          t['parentThreadId'] = first;
+        }),
+        { broadcast: true },
+      );
+      await until(
+        () => bindingStore.getIdentity(sessionId)?.harnessSessionId === first,
+        'the identity',
+      );
+      server.emit(threadStatusFrame(first, { type: 'idle' }), { broadcast: true });
+      server.emit(
+        threadStatusFrame(child, { type: 'active', activeFlags: ['waitingOnApproval'] }),
+        { broadcast: true },
+      );
+      await until(() => statuses.at(-1) === 'waiting', 'waiting from the subagent');
+
+      // `/new`: the old thread is not active, so the new one takes over, and the old subagent's
+      // wait does not follow the session there.
+      server.emit(tui(second), { broadcast: true });
+      await until(
+        () => bindingStore.getIdentity(sessionId)?.harnessSessionId === second,
+        'the rotation',
+      );
+      await until(() => statuses.at(-1) === 'idle', 'idle on the new thread');
+      server.emit(threadStatusFrame(second, { type: 'active', activeFlags: [] }), {
+        broadcast: true,
+      });
+      await until(() => statuses.at(-1) === 'thinking', 'thinking on the new thread');
+    });
+  });
+
+  describe('claimed threads', () => {
+    async function startedSession() {
+      const server = startServer();
+      const created = create(buildDeps(server));
+      await created.session.start();
+      await until(
+        () =>
+          server.clientIds().length === 1 &&
+          server
+            .framesFrom(server.clientIds()[0] as number)
+            .some((f) => f['method'] === 'initialized'),
+        'the client handshake',
+      );
+      return { server, ...created };
+    }
+
+    test('a thread held by another live remi session is never taken, and a stale holder does not count', async () => {
+      const { server, sessionId } = await startedSession();
+      const held = crypto.randomUUID();
+      const stale = crypto.randomUUID();
+      sessionStore.save(record({ harnessSessionId: held }));
+      sessionStore.save(record({ harnessSessionId: stale, pid: 2_147_483_000 }));
+
+      server.emit(threadStartedFrame('tui', { id: held, cwd: workDir, createdAtSec: nowSec() }), {
+        broadcast: true,
+      });
+      await sleep(600);
+      expect(bindingStore.getIdentity(sessionId)?.harnessSessionId).toBeNull();
+
+      server.emit(threadStartedFrame('tui', { id: stale, cwd: workDir, createdAtSec: nowSec() }), {
+        broadcast: true,
+      });
+      await until(
+        () => bindingStore.getIdentity(sessionId)?.harnessSessionId === stale,
+        'the stale thread to bind',
+      );
+    });
+
+    test('a Claude record, an exited record and a thread this very session holds do not claim', async () => {
+      const { server, sessionId } = await startedSession();
+      const id = crypto.randomUUID();
+      sessionStore.save(record({ harness: undefined, claudeSessionId: id, harnessSessionId: id }));
+      sessionStore.save(
+        record({
+          harnessSessionId: id,
+          pid: null,
+          exitedAt: new Date().toISOString(),
+          exitCode: 0,
+        }),
+      );
+      server.emit(threadStartedFrame('tui', { id, cwd: workDir, createdAtSec: nowSec() }), {
+        broadcast: true,
+      });
+      await until(
+        () => bindingStore.getIdentity(sessionId)?.harnessSessionId === id,
+        'the thread to bind',
+      );
+    });
+  });
+
+  describe('the link watchdog', () => {
+    const noticeCount = (messages: Message[]) =>
+      messages.filter((m) => m.sender === 'system').length;
+
+    test('with no app-server it logs once and sends one system message, and the session carries on', async () => {
+      const { session, messages } = create(buildDeps(null, { linkWatchdogMs: 200 }));
+      await session.start();
+      await until(() => noticeCount(messages) === 1, 'the notice');
+      await sleep(500);
+      expect(noticeCount(messages)).toBe(1);
+      expect(messages.find((m) => m.sender === 'system')?.content).toContain(
+        'shared Codex app-server',
+      );
+      expect(logs.filter((l) => l.includes('not reachable'))).toHaveLength(1);
+      expect(session.pty.isRunning).toBe(true);
+    });
+
+    test('a link that comes up in time sends nothing', async () => {
+      const { session, messages } = create(buildDeps(startServer(), { linkWatchdogMs: 400 }));
+      await session.start();
+      await sleep(900);
+      expect(noticeCount(messages)).toBe(0);
+    });
+
+    test('a link that drops and stays down sends the notice once', async () => {
+      const server = startServer();
+      const { session, messages } = create(buildDeps(server, { linkWatchdogMs: 250 }));
+      await session.start();
+      await until(() => server.clientIds().length === 1, 'the client');
+      await sleep(100);
+      await server.stop();
+      await until(() => noticeCount(messages) === 1, 'the notice after the drop', 6000);
+      await sleep(500);
+      expect(noticeCount(messages)).toBe(1);
+    });
+
+    test('the notice is sent once per session, however many times the link drops', async () => {
+      const first = startServer();
+      const second = startServer();
+      const home = { current: first.codexHome };
+      const { session, messages } = create(
+        buildDeps(null, {
+          linkWatchdogMs: 250,
+          env: () => ({ CODEX_HOME: home.current }),
+        }),
+      );
+      await session.start();
+      await until(() => first.clientIds().length === 1, 'the first connection');
+      await first.stop();
+      await until(() => noticeCount(messages) === 1, 'the first notice', 6000);
+
+      // The link comes back on another socket, then drops again for good.
+      home.current = second.codexHome;
+      await until(() => second.clientIds().length === 1, 'the second connection', 6000);
+      await second.stop();
+      await sleep(900);
+      expect(noticeCount(messages)).toBe(1);
+    });
+
+    test('dispose closes the connection to the app-server', async () => {
+      const server = startServer();
+      const { session } = create(buildDeps(server));
+      await session.start();
+      await until(() => server.clientIds().length === 1, 'the connection');
+      session.dispose();
+      await until(() => server.clientIds().length === 0, 'the connection to close');
+      await sleep(300);
+      expect(server.clientIds()).toEqual([]);
+    });
+
+    test('dispose cancels the watchdog and is safe to call twice', async () => {
+      const { session, messages } = create(buildDeps(null, { linkWatchdogMs: 200 }));
+      await session.start();
+      session.dispose();
+      session.dispose();
+      await sleep(500);
+      expect(noticeCount(messages)).toBe(0);
+    });
+  });
+
+  describe('as a Harness', () => {
+    test('it types nothing to stop, names no transcript file, and resumes with the subcommand', () => {
+      const harness = new CodexHarness();
+      expect(harness.gracefulExitInput).toBeNull();
+      expect(harness.transcriptPath()).toBeNull();
+      expect(harness.resumeArgs('abc')).toEqual(['resume', 'abc']);
+    });
+
+    test('built without launch dependencies it refuses to launch or preflight', () => {
+      const harness = new CodexHarness();
+      expect(() => harness.preflight([])).toThrow('without launch dependencies');
+      expect(() =>
+        harness.createSession({
+          sessionId: crypto.randomUUID() as UUID,
+          workingDirectory: '/',
+          extraArgs: [],
+          passThrough: false,
+          reservedRows: 0,
+          messageApi: new MessageAPI({ sessionId: crypto.randomUUID() as UUID }),
+          sendAndRecord: () => {},
+          sendMessage: () => {},
+        }),
+      ).toThrow('without launch dependencies');
+    });
+
+    test('preflight is the check, with nothing written', () => {
+      const harness = new CodexHarness(buildDeps(null));
+      expect(harness.preflight(['--bogus']).ok).toBe(false);
+      expect(harness.preflight([])).toEqual({ ok: true, args: [], resumeThreadId: null });
+      expect(fs.existsSync(path.join(tmpDir, 'sessions.json'))).toBe(false);
+    });
+  });
+});

@@ -355,11 +355,19 @@ const CODEX_MAY_IMPORT: ReadonlyArray<{ readonly target: string; readonly why: s
   { target: 'session/session-store', why: 'SessionStore reads and the identity record (phase 3)' },
   {
     target: 'session/session-binding-store',
-    why: 'SessionBindingStore.getIdentity and preAssign (phase 3)',
+    why: 'SessionBindingStore.preAssign and updateHarnessIdentity (phase 3)',
   },
   {
     target: 'session/session-registry',
-    why: 'SessionRegistry question registration and eviction guards (phase 4)',
+    why: 'SessionRegistry, which the PTY spawn takes (phase 3), and question registration and eviction guards (phase 4)',
+  },
+  {
+    target: 'session/session-registry-file',
+    why: 'SessionRegistryFile, the live-sessions registry the PTY spawn takes (phase 3)',
+  },
+  {
+    target: 'session/legacy-writers',
+    why: 'LegacyWriter and IDENTITY_SHIM_MIN_VERSION, for the older-daemon refusal message (phase 3)',
   },
 ];
 
