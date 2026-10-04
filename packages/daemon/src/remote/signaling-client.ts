@@ -28,6 +28,13 @@ export function generateConnectionCode(): string {
   return `${alpha}-${numeric}`;
 }
 
+/**
+ * How many distinct unknown frame types are logged. A socket that never joined
+ * can have the Worker forward `offer`, `answer` and `ice-candidate` frames to
+ * the host without limit, so the log line is once per type and bounded.
+ */
+const MAX_UNKNOWN_TYPES_LOGGED = 16;
+
 export interface SignalingClientOptions {
   /** Rotate to a new code on each auto-reconnect (default: true) */
   rotateOnReconnect?: boolean;
@@ -54,6 +61,7 @@ export class SignalingClient extends EventEmitter {
   private closed = false;
   private code: string | null = null;
   private isReconnect = false;
+  private readonly unknownTypesLogged = new Set<string>();
 
   constructor(baseUrl: string, options?: SignalingClientOptions) {
     super();
@@ -110,7 +118,7 @@ export class SignalingClient extends EventEmitter {
             this.emit('error', msg.code, msg.message);
             break;
           default:
-            console.warn(`Unknown signaling message type: ${msg.type}`);
+            this.logUnknownType(msg.type);
         }
       } catch (e) {
         console.warn('Failed to parse signaling message:', e instanceof Error ? e.message : e);
@@ -153,6 +161,14 @@ export class SignalingClient extends EventEmitter {
 
   get connectionCode(): string | null {
     return this.code;
+  }
+
+  private logUnknownType(type: unknown): void {
+    const name = String(type).slice(0, 64);
+    if (this.unknownTypesLogged.has(name)) return;
+    if (this.unknownTypesLogged.size >= MAX_UNKNOWN_TYPES_LOGGED) return;
+    this.unknownTypesLogged.add(name);
+    console.warn(`Unknown signaling message type: ${name}`);
   }
 
   private send(msg: Record<string, unknown>): void {
