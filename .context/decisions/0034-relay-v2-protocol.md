@@ -58,6 +58,8 @@ The implementation never decides a curve, hash or cipher at run time: nothing is
 
 **How keys are made.**
 Production ephemeral P-256 pairs come from the engine's own `generateKey` (the public point exported raw, the private key non-extractable), and production Ed25519 identities from `generateKey` (or from a key the caller imported from its own storage) wrapped by `signerFromKey`.
+`signerFromKey` is async: it signs and verifies a 62-byte labeled probe once, so a private key that does not match the public key, or cannot sign, fails at construction with `BAD_SIGNATURE` instead of silently at the peer.
+`generateIdentity` re-imports its PKCS8 export as non-extractable for the in-memory signer, so the extractable key `generateKey` made is not kept.
 A persisted key is the engine's own export: PKCS8 for the private key (the form the v1 identity stores, `createIdentity` and `unlockIdentity` in `identity.ts`) together with the raw public key, so nothing in production asks an engine to derive a public key from a bare scalar or seed.
 Building a key from a bare scalar (PKCS8 with no public half, then a JWK export) exists only in `deterministic.ts`, for tests, the vector generator and the verifiers' reproducibility.
 Section 17 records why: that path fails on WebKit.
@@ -343,17 +345,21 @@ Received frames are copied on arrival and processed through a second chain, so r
 A deliberate local close ends the channel with code `CLOSE_NORMAL` and the reason `"closed"`; it is not a failure.
 
 **How the inbound stream ended.**
-When the transport closes, whatever the close code, the caller tells the channel (`transportClosed()`), and it says how the peer's stream ended:
+When the transport closes, whatever the close code, the caller tells the channel (`await transportClosed()`), and it says how the peer's stream ended.
+**The library drains first.**
+A WebSocket close event fires after the last message event, while that message's `receive()` may still be awaiting the engine; `transportClosed()` waits for every receive already queued before it reads the verdict, so a caller calls it in the close handler and need not await its receives first.
+A receive in flight is delivered (or refused) as usual, and a receive started after the call is `CLOSED`.
 
 | Verdict | Meaning |
 |---|---|
 | `clean` | The peer's BYE arrived before the close, so every frame the peer sent before it was seen in order (counters are strict) and the peer intended to end. |
-| `unclean` | The transport closed with no BYE: the tail may be truncated. The peer may have crashed, or a relay dropped frames and the BYE and closed. This is also the verdict after this side's own deliberate close or after this side's own BYE alone: the verdict is about the INBOUND stream. |
+| `unclean` | The transport closed with no BYE: the tail may be truncated. The peer may have crashed, or a relay dropped frames and the BYE and closed. This is also the verdict after this side's own `close()` or own BYE when no peer BYE has arrived: the verdict is about the INBOUND stream, so an own close with the peer's BYE already seen is `clean`. |
 | `failed` | A check failed earlier; the channel was already closed. |
 
 A receive after any close of the channel, a failure or a deliberate local close, is `CLOSED`; a receive after the peer's BYE is `ENDED` (once it passes the checks that precede it).
-`transportClosed()` is idempotent.
-The verdict is library behavior, not wire behavior, so the vector file carries no verdicts: the TypeScript tests exercise the channel and the Python verifier models the table above.
+`transportClosed()` is idempotent, and concurrent calls agree.
+A frame injected after the peer's BYE fails the channel (`ENDED`) but `peerEnded` stays true, so the verdict becomes `failed` while the peer did end its stream: a consumer reads `peerEnded` and the verdict together, and treats `peerEnded` with `failed` as an attack or a bug, not as a clean end.
+The verdict is library behavior, not wire behavior, so the vector file carries no verdicts: the TypeScript tests exercise the channel and the Python verifier models the table above as a function of state (it models no timing, so the drain changes nothing there; the Swift verifier models no verdicts).
 
 What this detects, exactly:
 
@@ -381,7 +387,7 @@ A reconnect is a new handshake with fresh ephemeral keys and nonces; session sta
 - There is no plaintext fallback: no frame is ever accepted or sent unencrypted after `hello_ack`, and `hello` and `hello_ack` carry only public values.
 - The close code and reason are constants of the module; no failure path chooses them.
 - Key material is dropped when a handshake or channel ends, to the extent the platform allows.
-  What the library does: the ephemeral scalar is overwritten as soon as the key is built (a test shows it); the raw channel keys are overwritten as soon as they are imported (a test shows it); a step that fails or is aborted overwrites the secrets it holds (not observable from outside, so no test shows it); a failed channel releases its `CryptoKey` references.
+  What the library does: production ephemeral keys are never present in JavaScript as bytes (the engine generates them and the private key is non-extractable), and with the test-only hook the scalar is overwritten as soon as the key is built (a test shows it); the raw channel keys are overwritten as soon as they are imported (a test shows it); a step that fails or is aborted overwrites the secrets it holds (not observable from outside, so no test shows it); a failed channel releases its `CryptoKey` references.
   A `CryptoKey` cannot be zeroed and JavaScript gives no guarantee about copies the engine made, so this is best effort and is claimed no further.
 
 Error codes, which appear in tests and the local log only:
@@ -407,7 +413,7 @@ Error codes, which appear in tests and the local log only:
 | `QUEUE_FULL` | more than `MAX_PENDING_SENDS` unsent frames |
 | `CLOSED` | a send or receive on a channel that has closed |
 | `ENDED` | a send or `bye` after this side's own BYE, or a frame of any type after the peer's BYE |
-| `IO` | the transport or the engine failed while a frame was being sent |
+| `IO` | the transport or the engine failed while a frame was being sent, or anything that is not a `RelayError` was thrown inside a handshake step (an engine failure, a keychain signer, a policy callback): a step only ever throws `RelayError` |
 
 ## 9. Fingerprint shown to humans
 
@@ -467,7 +473,8 @@ Every test was also checked by mutation: the mutated source was applied, the sui
 | A replayed, reordered or dropped-then-continued frame, a truncated or extended frame, a flipped bit anywhere in a frame, a frame under another key, a reflected frame, counter 0 after the handshake, a counter above the limit with a valid tag and an oversized frame are each refused, and the channel then refuses everything (a valid frame after a failure included) | `channel.test.ts` (one test per case, a bit-by-bit test over a whole frame, 600 property cases); vectors `data_sequence` (which feed every frame after the first failure and require `CLOSED`) and `frame_length`; Python; Swift (which stops at the first failure) |
 | A text frame after the handshake is refused | `channel.test.ts` only: a vector frame is a hex string, so no vector can carry a text frame |
 | Every failure closes with one code and reason | `channel.test.ts` ("every failure closes with the same code and reason", "every RelayError code maps to the one wire close") |
-| The stream's end is authenticated: a BYE is a counter-checked, AAD-typed, exactly 25-byte frame that only the key holder can make; a frame after it is refused; `transportClosed()` reports clean, unclean or failed as section 7 says; a tail dropped together with its BYE followed by a close is unclean | `channel.test.ts` ("authenticated end of stream (BYE)", 17 tests), `envelope.test.ts`; vectors `data_sequence` (BYE cases) and `frame_length`; Python; Swift |
+| The stream's end is authenticated: a BYE is a counter-checked, AAD-typed, exactly 25-byte frame that only the key holder can make; a frame after it is refused; `transportClosed()` reports clean, unclean or failed as section 7 says; a tail dropped together with its BYE followed by a close is unclean | `channel.test.ts` ("authenticated end of stream (BYE)", 24 tests, including the drain cases), `envelope.test.ts`; vectors `data_sequence` (BYE cases) and `frame_length`; Python; Swift |
+| A handshake step only ever throws a `RelayError`; a mismatched or non-signing identity key fails at construction; the signer's key is non-extractable | `handshake.test.ts` ("a step only ever throws a RelayError"), `primitives.test.ts` ("identity keys are checked and kept non-extractable") |
 | What BYE does not detect: a tail withheld while the socket stays open, delay, delivery to the peer | `channel.test.ts` ("limits of the channel": two characterization tests), recorded so it cannot be forgotten |
 | A slow encryption cannot let a later frame leave first; a failed frame is never skipped | `channel.test.ts` ("ordered sending") |
 | The device key is never used before the host is verified, and the device identity and name are not on the wire in clear | `handshake.test.ts` ("the host is authenticated first", "not readable on the wire") |
@@ -486,7 +493,7 @@ Every test was also checked by mutation: the mutated source was applied, the sui
 | The public `relayV2` surface is exactly the pinned list; no helper that builds a transcript, derives a key, frames bytes or builds a channel from raw keys is public | `public-surface.test.ts` |
 | Production keys come from the engine, and the scalar-import key path is unreachable from a production default | `primitives.test.ts` ("production keys come from the engine"), `handshake.test.ts` ("the key hook"), `source-guard.test.ts` (the path is imported by `internal.ts` only); section 17 for why |
 | Every v2 signed message is at least 54 bytes, begins with a zero byte and its own label, and no `.sign(` call in the library takes anything else | `signing-inputs.test.ts` (section 18) |
-| The library, its production key path and the vectors run on Bun 1.4.2, Bun 1.3.11, workerd 1.20260107.1 and WebKit (macOS 27.0.1); the scalar-import path fails on WebKit | section 17, a scratch experiment that is NOT committed: the results are recorded there, and R4 and R2 re-run them |
+| The library, its production key path and the vectors run on Bun 1.4.2, Bun 1.3.11, workerd 1.20260107.1, WebKit (macOS 27.0.1) and a desktop Chromium; the scalar-import path fails on WebKit | The committed engine check (`scripts/relay-v2-engine-check/`, section 17): its results are recorded there, `engine-check.test.ts` runs it under Bun in the suite and against corrupted vectors, and R4 and R2 run it on their targets |
 
 Not claimed, because no test shows it:
 
@@ -494,10 +501,11 @@ Not claimed, because no test shows it:
   The keys depend on the ephemeral shared secret (`handshake.test.ts`, key schedule), and the argument that this gives forward secrecy is the design's.
 - **Metadata hiding.** Section 11 says what the Worker sees.
 - **Constant-time behavior** of any comparison or of the platform's AEAD and signature code.
-- **Zeroization** beyond the two cases in section 8 (the ephemeral scalar and the raw channel keys).
+- **Zeroization** beyond the cases in section 8: with the test-only hook the ephemeral scalar is overwritten, and the raw channel keys are overwritten once imported; production ephemeral keys are never bytes in JavaScript.
 - **Detection of delay, or of a tail withheld while the socket stays open** (sections 7 and 15.2).
-- **Behavior on an iOS device's WKWebView, on Safari, or on Cloudflare's deployed Workers fleet.**
-  Section 17 ran macOS 27.0.1's WebKit in a WKWebView and a local workerd; R4 (on a device) and R2 (against the deployed Worker) must re-run the vectors there.
+- **Behavior on an iOS device's WKWebView, on an Android WebView, on Safari, or on Cloudflare's deployed Workers fleet.**
+  Section 17 ran macOS 27.0.1's WebKit in a WKWebView, a local workerd and a desktop Chromium; R4 (on an iPhone and on the Android target) and R2 (against the deployed Worker) must run the committed engine check there (`scripts/relay-v2-engine-check/`).
+  An Android System WebView older than the Chromium that added WebCrypto Ed25519 would throw on `generateIdentity`, `verifySignature` and admission signing, and the library fails closed (section 17.3).
 - **That the Python and Swift agreement validates the design** (section 13).
 
 ## 13. Test vectors and independent verifiers
@@ -541,12 +549,15 @@ That is the job of the independent cryptography review of this pull request (202
 - Create the machine identity once and keep it; derive `rid` from it.
 - Keep a `PairingOffer` per live token.
   The step functions are `hostOnHello`, then `onAuth` on its result, then `ready` on that: mark the offer used and store the enrollment durably, and have the operator confirm the fingerprint, before calling `ready`, and call `abort` on every step a closing connection leaves unfinished.
-- Close with the constants `CLOSE_CODE` and `CLOSE_REASON` on every `RelayError` thrown by a handshake step, and on every WebSocket text frame after the handshake, whatever its content.
+- Close with the constants `CLOSE_CODE` and `CLOSE_REASON` when a handshake step throws, and on every WebSocket text frame after the handshake, whatever its content.
+  A step only ever throws a `RelayError`: an engine failure, a keychain signer or a policy callback that throws is mapped to `IO`, so the daemon never meets a raw error from a step.
   A `Channel` closes itself through its `io` on every failure it counts (section 7), and a refused send (`ENDED`, `QUEUE_FULL`, `OVERSIZE`, empty, the reserved counter) is not a failure and must not close the connection: it would kill the read half that `bye()` keeps open.
 - Bound concurrent half-open handshakes (each costs an ECDH and a signature before the peer has proved anything), and close a connection whose next handshake frame does not arrive in time: the library checks deadlines only when a step is handled and has no timer.
-- Send `bye()` on every orderly close, call `transportClosed()` when the socket closes and treat `unclean` as "the tail may be truncated" (log it, and re-ask for anything not acknowledged).
+- Send `bye()` on every orderly close, call `await transportClosed()` in the socket's close handler (the library drains pending receives; the caller need not await them first) and treat `unclean` as "the tail may be truncated" (log it, and re-ask for anything not acknowledged); treat `peerEnded` together with `failed` as an attack or a bug (section 7).
 - Define application-level acknowledgments inside the data channel for anything that must be known delivered (the answer to a prompt in particular): BYE ends a direction, it does not acknowledge receipt, and a tail withheld with the socket open is invisible to the library.
-- Assert at startup that the random source handed to the library is `systemRandom` (compare the reference), and refuse to start otherwise: a deterministic test source reused in production would repeat ephemerals and with them the session key and nonce.
+- Assert at startup that the library is configured for production: `random === systemRandom` AND `ephemeral === undefined` (no caller-supplied ephemeral hook), and refuse to start otherwise.
+  A deterministic random source or a hook that returns a fixed pair would repeat ephemerals and with them the session key and nonce; the hook is the remaining way to do it.
+- Hold at most `MAX_PAIRING_OFFERS` (8) live pairing offers at a time: a host tries only the first eight live offers, so the ninth secret would never match.
 - Bound the work an unauthenticated `hello` can cause: in resume mode the host generates a key pair, does an ECDH and makes a signature before the client has proved anything (`hostOnHello`).
   Worker admission limits who reaches the host and the daemon must add a concurrency bound.
 - Reject small-order device public keys at enrollment (section 17.2).
@@ -754,6 +765,21 @@ Each names where the ADR or the vectors changed.
 
 Not resolved by the extension, left for the cryptography review: Ed25519 verifier strictness on small-order public keys (section 17.2 measures it and recommends strict verifiers; no engine rejects them).
 
+### 15.6 Delta review (round 2): what changed after the second review
+
+The second review attacked the BYE surface and the engine evidence, reproduced the WebKit findings in its own WKWebView, and found the rework wire-invariant where it claimed.
+It asked for nine things before R3 and R4 build on the library; all are applied, none changes a byte on the wire or `vectors.json`:
+
+1. `transportClosed()` drains pending receives before the verdict (section 7); it was reading the verdict while a receive was still awaiting the engine.
+2. The engine check is committed with runners and a README, and the vector test compares signatures by verification (sections 16 and 17.1, `scripts/relay-v2-engine-check/`).
+3. The zeroization sentences say that production ephemeral keys are never bytes in JavaScript (sections 8 and 12).
+4. Android WebView is named in every platform list, with the Ed25519 requirement and the R4 gate (sections 12, 17.1, 17.3, 19).
+5. The R3 production assertion also requires `ephemeral === undefined`, a daemon holds at most eight live offers, the drain contract is stated, and a handshake step only ever throws `RelayError` (an engine failure, a keychain signer or a policy callback maps to `IO`) (sections 14 and 19).
+6. `generateIdentity` keeps the in-memory signer's key non-extractable (section 1).
+7. `signerFromKey` checks the key pair once at construction (section 1, `BAD_SIGNATURE`).
+8. The verdict wording after an own close or own BYE says exactly when it is `unclean` and when `clean` (section 7).
+9. A frame injected after a received BYE leaves `peerEnded` true with a `failed` verdict, and consumers are told to read both (section 7).
+
 ## 16. Vector file format
 
 `vectors.json` is one JSON object.
@@ -814,54 +840,58 @@ In `auth_check`, `enrolled` is what the host's enrolled set contains: in pair mo
 | `seal_open` | `recipientScalar`, `aad`, `sealed` | Opens `sealed` under section 10; every failure is `DECRYPT` |
 | `admission_verify` | `role`, `publicKey`, `rid`, `nonce`, `signature` | Accepts exactly when section 4's check passes for that role |
 
-## 17. Engines, key construction and Ed25519 behavior (a scratch experiment, recorded here)
+## 17. Engines, key construction and Ed25519 behavior (a committed check, its results recorded here)
 
 The independent review asked that the key path stop relying on one engine.
 The library's production path was first built on an engine behavior (deriving a public key from a bare scalar or seed at import) that only Bun was known to support, and the web client runs this package in a WKWebView.
 This section records what was run to find out, and what changed.
+The check that produced it is committed (`scripts/relay-v2-engine-check/`), so it can be re-run on any target.
 
 ### 17.1 What ran
 
-One engine-independent check (no `node:` imports) was bundled with `bun build --target=browser` from the library's internal barrel plus `vectors.json`, and run in each engine below.
-It is a scratch experiment, not committed: it needs a bundler, a local workerd and a Swift harness, and its results are what this section records.
-Each run did: known-answer tests of the primitives (RFC 5869 test 1, RFC 4231 test 2, RFC 8032 test 1, the P-256 generator); the production key path (`generateEcPair`, `generateIdentity`, PKCS8 export and import round trips, ECDH both ways); complete production handshakes in both modes with data frames and a BYE followed by a clean close; a byte-for-byte replay of both committed sessions through the step functions; every negative and control case of the vector file; and the Ed25519 measurements of section 17.2.
+The check is committed, so every claim here can be re-run: `scripts/relay-v2-engine-check/` (its README has the exact `bun build --target=browser` commands and how to load the bundle in a web view).
+`check.ts` has no `node:` import and no Bun API; it imports the library's internal barrel and `vectors.json`, and `run()` returns a report that the runners print.
+Its groups are `base` (known answers of the primitives, the production key path, complete production handshakes in both modes with data and a BYE followed by a clean close), `jwk` (the committed vectors replayed through the step functions with every ephemeral key imported as a JWK whose public coordinates are supplied, the file's signatures replayed and verified on the engine, and every negative and control case run) and `scalar` (the same replay and known answers with keys built from a bare scalar or seed, informational).
+A target passes when no `base` or `jwk` check fails.
 
-| Engine | Version | How it was run |
+| Engine | Version | Runner |
 |---|---|---|
-| Bun (JavaScriptCore, BoringSSL) | 1.4.2 and 1.3.11 | the bundle's source under `bun` |
-| workerd (the Cloudflare Workers runtime) | 1.20260107.1, through miniflare 4.20260107.0, compatibility date 2026-01-01 | `new Miniflare({ modules: true, script })` in a local process; no deployed Worker was contacted |
-| WebKit in a WKWebView | macOS 27.0.1 (26A434), WebKit.framework 22625.1.29.11.28 | a Swift program loading the bundle as a user script into a `WKWebView` of the system WebKit, document origin `http://localhost/` (a secure context, `crypto.subtle` present) |
+| Bun (JavaScriptCore, BoringSSL) | 1.4.2 and 1.3.11 | `bun scripts/relay-v2-engine-check/run-bun.ts` |
+| workerd (the Cloudflare Workers runtime) | 1.20260107.1, through miniflare 4.20260107.0 (the lockfile's), compatibility date 2026-01-01 | `bun scripts/relay-v2-engine-check/run-workerd.ts`; local, no deployed Worker contacted |
+| WebKit in a WKWebView | macOS 27.0.1 (26A434), WebKit.framework 22625.1.29.11.28 | `bun scripts/relay-v2-engine-check/run-webkit.ts` (a Swift host, `webkit-host.swift`, document origin `http://localhost/`, a secure context) |
+| Chromium | Chrome for Testing 153.0.8010.12 (the headless shell of a Playwright cache on this Mac) | the same page bundle served from `http://127.0.0.1` and loaded with `--headless --dump-dom`; run once by hand, no committed runner |
 | Python `cryptography` (OpenSSL), CryptoKit | 50.0.2; macOS 27.0.1 | the verifiers of section 13 and a measurement script |
 
-Results:
+Results of the committed check:
 
-| Check group | Bun 1.4.2 | Bun 1.3.11 | workerd | WebKit |
-|---|---|---|---|---|
-| Primitives, production key path, production handshakes with data and BYE (19 checks) | 19 of 19 | 19 of 19 | 19 of 19 | 16 of 19 (the three misses below) |
-| Vector replay and all 193 negative and control cases, ephemeral keys built from the scalars in the file (24 checks) | 24 of 24 | 24 of 24 | 24 of 24 | 11 of 79 lines pass: every case that builds a key from a scalar fails with `DataError` |
-| The same, with each ephemeral key imported as a JWK with its public coordinates supplied (24 checks) | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 |
+| Group | Bun 1.4.2 | Bun 1.3.11 | workerd | WebKit | Chromium 153 |
+|---|---|---|---|---|---|
+| `base` (15 checks) | 15 of 15 | 15 of 15 | 15 of 15 | 15 of 15 | 15 of 15 |
+| `jwk` (24 checks) | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 |
+| `scalar` (informational) | 26 of 26 | 26 of 26 | 26 of 26 | 13 of 81 | 26 of 26 |
 
 What WebKit showed, exactly:
 
 1. **Importing a P-256 private key from PKCS8 without the public half fails**: `DataError: Data provided to an operation does not meet requirements`.
    This is the path the first draft used for every ephemeral key, and the review's concern was right.
-   It now exists only in `deterministic.ts`; production uses `generateKey`, and every production check passes on WebKit.
+   It now exists only in `deterministic.ts`; production uses `generateKey`, and every `base` and `jwk` check passes on WebKit.
+   (The 68 failing `scalar` lines are every replay and case that builds a key from a scalar.)
 2. **Ed25519 import from a PKCS8 seed works and derives the right public key** (it matches RFC 8032), so a persisted identity in the engine's PKCS8 form imports on WebKit; production still does not rely on the derivation, because the public key is stored next to the PKCS8.
 3. **Ed25519 signing is randomized on WebKit** (and in CryptoKit): two signatures of one message differ, and each verifies on Bun, workerd, Python and CryptoKit.
-   Determinism is not a protocol property (section 16), so the committed vectors, which are produced on a deterministic engine, are replayed on WebKit with the recorded signatures (each verified by WebKit's own verifier) while every signing input is compared byte for byte.
+   Determinism is not a protocol property (section 16), so the `jwk` group replays the file's recorded signatures and verifies each on the engine while every signing input is compared byte for byte.
 4. Everything else passed: `generateKey` for P-256 and Ed25519, raw public export, PKCS8 export and import round trips, ECDH, HKDF, HMAC, AES-GCM with the counter nonce and AAD, strict base64url and the full handshake.
 
-The replay on WebKit with JWK-imported keys is how the vector checks were discharged there.
-The coordinates came from the file, so it shows the protocol and verification run on WebKit; it deliberately does not show scalar derivation, which WebKit does not support.
+The `jwk` replay is how the vector checks are discharged on an engine that refuses scalar-built keys: the coordinates are computed in the check by a few lines of BigInt arithmetic, not by the engine, so it shows the protocol and verification run there and deliberately does not show scalar derivation.
 
 What was NOT established:
 
 - **An iOS device's WKWebView.**
   macOS 27.0.1's WebKit is the same code base as the WKWebView in iOS but not the iOS build.
-  **Running `vectors.json` in a real WKWebView on an iPhone is the owner's R4 check** (section 19).
-- Safari as an application, Chrome and Firefox were not run.
+  **Running the committed check on an iPhone is the owner's R4 check** (section 19).
+- **An Android WebView** (section 17.3): not run.
+- Safari as an application and Firefox were not run.
 - The deployed Cloudflare fleet: workerd here is the open-source runtime at one version, run locally.
-  R2 re-runs the vectors against the deployed Worker.
+  R2 runs the Worker bundle (`entry-worker.ts`) as a throwaway Worker on the deployed runtime and reads its report.
 
 ### 17.2 Ed25519 verification, measured
 
@@ -888,6 +918,17 @@ Consequences for this protocol:
 - Recommendation, as defense in depth and not as a requirement of the design: clients and the Worker should prefer a strict verifier that also rejects the eight small-order encodings, at admission, pairing and pinning.
   The library does not implement that check; R2 (admission) and R3 (enrollment) carry it (section 19).
 
+### 17.3 Android WebView
+
+remi targets Android through Capacitor, whose web layer is the Android System WebView, a Chromium.
+`generateIdentity`, `verifySignature` and the admission signing use WebCrypto Ed25519, which Chromium added in version 137 (stated in the independent review of this phase from Chromium's release notes; I did not verify the release note).
+An older System WebView has no Ed25519 in `crypto.subtle`: those calls throw, and the library fails closed (a handshake step maps the failure to `IO`), so the relay would be unusable there rather than unsafe.
+
+What was run: the committed check on a desktop Chromium 153 passed every `base` and `jwk` check (section 17.1).
+That shows the engine family works with this design; it does not show an Android WebView, which has a version of its own and ships through the Play Store independently of the OS.
+The minimum WebView version the design needs is that of Ed25519 in `crypto.subtle`: expected 137 and unverified on a device.
+R4 runs the committed check in the Android target's WebView (section 19) and decides what to do on a WebView without Ed25519.
+
 ## 18. Invariant: v2 signing inputs are disjoint from every other signed message
 
 The v2 machine key is the Ed25519 identity the v1 Authenticator already keeps, and the v2 device key migrates from the v1 phone identity.
@@ -898,10 +939,12 @@ That holds because every v2 signed message is `lps(label, ...)`:
 
 - at least 54 bytes (the host transcript input is the shortest: 2 + 18 + 2 + 32), so it can never equal a 32-byte challenge;
 - the first byte is zero (the high byte of a label length below 256), while the v1 key exchange input and the answer message begin with a printable ASCII byte;
-- the first part is its own label (`remi-relay-v2 host`, `client`, `admit host`, `admit client`), distinct and none a prefix of another's length-prefixed form, so a signature over one input never verifies as another.
+- the first part is its own label (`remi-relay-v2 host`, `client`, `admit host`, `admit client`, `signer check`), distinct and none a prefix of another's length-prefixed form, so a signature over one input never verifies as another.
+
+The fifth input is the probe `signerFromKey` signs once to prove a key pair matches: `lps("remi-relay-v2 signer check", 32 zero bytes)`, 62 bytes, whose signature never leaves the function.
 
 The invariant is implicit in the construction.
-`signing-inputs.test.ts` makes it explicit: it builds all four inputs and the real v1 `kexSigningInput` and challenge, asserts the three properties above, asserts that a signature over one input does not verify as another, and has a source guard requiring every `.sign(` call in the library to pass one of the four builders, so a future signed message with another shape fails the test.
+`signing-inputs.test.ts` makes it explicit: it builds all five inputs and the real v1 `kexSigningInput` and challenge, asserts the three properties above, asserts that a signature over one input does not verify as another, and has a source guard requiring every `.sign(` call in the library to pass one of the five builders, so a future signed message with another shape fails the test.
 
 ## 19. Gates carried to later phases
 
@@ -918,15 +961,17 @@ A row is closed only by the evidence named in its last column.
 | R2 (#1197) | Limit hello floods: per-address and per-device-key rate limits and a cap on unadmitted sockets | A test that exceeds each limit and is refused |
 | R2 (#1197) | Host and client admission checks exactly as section 4 (lengths, role binding, room-id hash, enrolled set changed only by the authenticated host) | The vector `admission_verify` cases pass in the Worker, and tests for each refusal |
 | R2 (#1197) | Prefer a strict Ed25519 verifier: reject small-order public keys at admission | A test admitting the identity-point key is refused |
-| R2 (#1197) | Re-run `vectors.json` on the deployed Worker runtime | The section 17 check, run against the deployed Worker, is green |
+| R2 (#1197) | Run the committed engine check on the deployed Worker runtime | `entry-worker.ts` (bundled as in `scripts/relay-v2-engine-check/README.md`) deployed as a throwaway Worker returns a report whose `base` and `jwk` groups have no failure |
 | R3 (#1198) | Burn the single-use pairing secret, confirm the fingerprint with the operator, store the enrollment durably, all BEFORE calling `ready`; enforce the ten-minute TTL | A real-daemon test in which `ready` is not sent until the enrollment is stored, and a second use of one secret is refused |
-| R3 (#1198) | Send `bye()` on every orderly close, call `transportClosed()` on every socket close and act on `unclean` | A real-daemon test that drops the tail and the BYE and sees the unclean verdict |
+| R3 (#1198) | Send `bye()` on every orderly close, `await transportClosed()` in every socket close handler (the library drains pending receives, callers need not await them), act on `unclean`, and treat `peerEnded` with `failed` as an attack or a bug | A real-daemon test that drops the tail and the BYE and sees the unclean verdict, one that closes with a receive still in flight and sees the clean verdict, and one that injects a frame after a BYE |
 | R3 (#1198) | Application acknowledgments for answers and anything that must be known delivered | A test in which a withheld acknowledgment is noticed by the application |
-| R3 (#1198) | Assert at startup that the injected random source is `systemRandom` | A test that a daemon built with another source refuses to start |
+| R3 (#1198) | Assert at startup that `random === systemRandom` AND `ephemeral === undefined` | A test that a daemon built with another random source, or with an ephemeral hook, refuses to start |
+| R3 (#1198) | Hold at most `MAX_PAIRING_OFFERS` (8) live offers | A test that a ninth live offer is refused by the daemon's offer store |
 | R3 (#1198) | Bound concurrent unauthenticated hellos and close idle or half-open handshakes (the library has no timer); call `abort` on unfinished steps | Tests of the bound and of an idle handshake being closed |
 | R3 (#1198) | Reject small-order device keys at enrollment | A test enrolling the identity-point key is refused |
-| R3 (#1198) | Close with `FAILURE_CLOSE` on every thrown `RelayError` and on every text frame after the handshake | A test per path against the real adapter |
-| R4 (#1199) | Run `vectors.json` in a real WKWebView on an iPhone (the owner) | The section 17 check, run on the device, is green and its output is recorded in the issue |
+| R3 (#1198) | Close with `FAILURE_CLOSE` when a handshake step throws (a step only ever throws a `RelayError`) and on every text frame after the handshake; do not close on a refused send | A test per path against the real adapter |
+| R4 (#1199) | Run the committed engine check in a real WKWebView on an iPhone (the owner) | `scripts/relay-v2-engine-check/` (README: bundle `entry-page.ts`, load it, call `__run`) run on the device has no `base` or `jwk` failure, and its output is recorded in the issue |
+| R4 (#1199) | Run the committed engine check on the Android target's WebView, and decide what the client does on a WebView without WebCrypto Ed25519 (the library fails closed) | The same check run on the Android target; its output and the minimum WebView version found are recorded in the issue |
 | R4 (#1199) | Keep the device key in the platform keychain and persist it as the engine's PKCS8 export plus the raw public key; never import a bare scalar | A test and a code review of the identity store |
 | R4 (#1199) | Pin `M_pk` from the token, check expiry locally, show the fingerprint while waiting for `ready`, treat any close as final for the connection | Client tests of each |
 | R5 (#1200) | Carry the device push key over the authenticated channel and bind it to the enrolled device; never put a push key in the QR | A test that a push key sent by a device other than the enrolled one is refused, and that the token has no push key |
