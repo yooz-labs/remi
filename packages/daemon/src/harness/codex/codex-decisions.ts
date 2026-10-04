@@ -235,8 +235,13 @@ export class CodexDecisions implements DecisionChannel {
     const entry = this.byId.get(questionId);
     // Never `unknown`, whatever the id: the handlers type into the PTY for `unknown`, and nothing
     // is typed for a Codex answer. A card this session never showed has no hold; it is closed.
-    if (entry === undefined || entry.state !== 'live') {
-      if (entry !== undefined) this.forget(entry, false, 'closed');
+    if (entry === undefined) return 'closed';
+    if (entry.state !== 'live') {
+      // A retired card is forgotten (the caller dismisses it, and the sweep must not again). An
+      // answered one keeps its entry and its confirmation timer: a second client's X or a double
+      // tap before `question_resolved` arrives reaches this point, and must not void the notice
+      // that Codex never confirmed the first answer.
+      if (entry.state === 'retired') this.forget(entry, false, 'closed');
       return 'closed';
     }
     const { spec } = entry;

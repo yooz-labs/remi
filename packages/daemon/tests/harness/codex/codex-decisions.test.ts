@@ -660,6 +660,22 @@ describe('CodexDecisions', () => {
       expect(logs.join('\n')).not.toContain('notice down');
     });
 
+    test('a second Yes or a second Cancel after the first answer leaves the confirmation timer set, and the notice still comes', () => {
+      request(5);
+      const q = only();
+      expect(decisions.answerHeld(q.id, optionNamed(q, 'Yes'))).toBe('resolved');
+      expect(sched.live()).toHaveLength(1);
+      // Before question_resolved arrives the card is still in the registry, so a second client's
+      // X or a double tap reaches the channel again: it is closed, and the timer is not touched.
+      expect(decisions.answerHeld(q.id, optionNamed(q, 'Yes'))).toBe('closed');
+      expect(sched.live()).toHaveLength(1);
+      expect(decisions.answerHeld(q.id, { kind: 'cancel' })).toBe('closed');
+      expect(sched.live()).toHaveLength(1);
+      expect(responses).toHaveLength(1);
+      sched.fire(sched.live()[0]);
+      expect(notices).toEqual(['Codex has not confirmed the answer; check the terminal']);
+    });
+
     test('an answer that was not delivered starts no confirmation timer', () => {
       request(5);
       const q = only();
