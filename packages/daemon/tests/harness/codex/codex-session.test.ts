@@ -45,7 +45,10 @@ import { FakeAppServer } from '../../helpers/fake-app-server.ts';
 
 const FAKE_CODEX = `#!/bin/sh
 d="$FAKE_CODEX_DIR"
-for a in "$@"; do printf '%s\\n' "$a"; done > "$d/argv"
+for a in "$@"; do
+  printf '%s\\n' "$a"
+  if [ -n "$FAKE_AGENT_RECORD_DELAY" ]; then sleep "$FAKE_AGENT_RECORD_DELAY"; fi
+done > "$d/argv"
 stty size > "$d/size"
 i=0
 while [ ! -e "$d/release" ] && [ $i -lt 100 ]; do
@@ -537,6 +540,15 @@ describe('CodexHarness', () => {
   });
 
   describe('the child', () => {
+    // The fake pauses after each argument it writes, so a test that reads `argv` as soon as the
+    // file EXISTS sees half of it every time instead of once in a while (#1204 round 2, P11, Q1).
+    beforeEach(() => {
+      process.env['FAKE_AGENT_RECORD_DELAY'] = '0.15';
+    });
+    afterEach(() => {
+      Reflect.deleteProperty(process.env, 'FAKE_AGENT_RECORD_DELAY');
+    });
+
     test('spawns codex --no-alt-screen with the validated arguments after it', async () => {
       const a = create(buildDeps(startServer()), ['-m', 'some-model']);
       await a.session.start();
