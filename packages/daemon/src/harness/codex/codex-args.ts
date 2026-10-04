@@ -18,7 +18,7 @@
  *   false refusal costs one retry. The denylist that remains only picks a more
  *   explanatory message for the flags remi knows it must not pass.
  * - `validateCodexRemoteArgs` is for a request that arrives over the wire
- *   (phase 5): loopback clients and capability-token holders skip auth, so
+ *   (the hub's `create_session_request`, #1179): loopback clients and capability-token holders skip auth, so
  *   unvalidated arguments would be a remote privilege boundary. It allows a
  *   model, an approval policy, a sandbox mode and `resume <uuid>`, with bounded
  *   size, and is total: any input that is not an array of those is a refusal,
@@ -41,7 +41,8 @@
  * through remi: remi reads its own flags anywhere before the `--`.
  *
  * `validateCodexArgs` is consumed by the Codex launch (#1177); the remote
- * validator is the hub's, in phase 5, and until then only its tests call it.
+ * validator is the hub's (`HarnessRegistry`, #1179), and the child daemon the
+ * hub spawns then validates the same arguments again with the local one.
  *
  * Not verified, because remi must not start Codex to find out: the flag lists
  * come from the epic plan, the spike, and a read-only look at the embedded
@@ -311,7 +312,7 @@ const REMOTE_SANDBOX_MODES: readonly string[] = ['read-only', 'workspace-write']
  *
  * Total over any input: what is not an array of strings (undefined, null, a
  * number, an object that only looks like an array) is a refusal, never a
- * throw, because phase 5 feeds it parsed wire JSON. The returned arguments are
+ * throw, because the hub feeds it parsed wire JSON (#1179). The returned arguments are
  * the flags in the order given, then `resume <uuid>` last, the same shape the
  * local validator returns.
  */

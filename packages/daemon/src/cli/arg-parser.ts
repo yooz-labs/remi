@@ -139,6 +139,13 @@ export interface ParsedArgs {
    * validates the words after a `--` as prompt text, not as flags, so it must see where they begin.
    */
   readonly passthroughArgs: readonly string[];
+  /**
+   * The tokens after the first `--`, and only those, without the `--` (#1179). This is what a
+   * hub appends to a child daemon's command line, last (`create-session-events.ts`), so a daemon
+   * reads its harness's arguments from here and ignores stray tokens: an existing LaunchAgent
+   * plist with a loose word in it starts exactly as before.
+   */
+  readonly explicitArgs: readonly string[];
   /** The harness the hidden `--harness <id>` names (#1177): how a hub tells a child daemon its harness. */
   readonly harness: HarnessId | undefined;
   readonly showVersion: boolean;
@@ -187,6 +194,7 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
   let error: string | undefined;
   const claudeArgs: string[] = [];
   const passthroughArgs: string[] = [];
+  const explicitArgs: string[] = [];
   let harness: HarnessId | undefined;
 
   for (let i = 0; i < args.length; i++) {
@@ -201,6 +209,7 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
         if (a) {
           claudeArgs.push(a);
           passthroughArgs.push(a);
+          explicitArgs.push(a);
         }
       }
       break;
@@ -489,6 +498,7 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
     orphanTimeout,
     claudeArgs,
     passthroughArgs,
+    explicitArgs,
     harness,
     showVersion,
     showHelp,

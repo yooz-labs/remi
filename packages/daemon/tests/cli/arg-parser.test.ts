@@ -972,4 +972,62 @@ describe('parseArgs - remi codex and --harness (#1177)', () => {
       expect(r.passthroughArgs).toEqual(['--', '--harness', 'claude']);
     });
   });
+  // -------------------------------------------------------------------------
+  // explicitArgs: what a hub appends to a child's command line (#1179)
+  // -------------------------------------------------------------------------
+  describe('explicitArgs (#1179)', () => {
+    test('are the tokens after the first --, without the --', () => {
+      const r = parseArgs(['--daemon', '--harness', 'codex', '--', '-m', 'some-model']);
+      expect(r.explicitArgs).toEqual(['-m', 'some-model']);
+      expect(r.harness).toBe('codex');
+      expect(r.daemonMode).toBe(true);
+    });
+
+    test('are empty without a --, and a stray word is still only a Claude argument', () => {
+      const r = parseArgs(['--daemon', 'stray', 'words']);
+      expect(r.explicitArgs).toEqual([]);
+      expect(r.claudeArgs).toEqual(['stray', 'words']);
+    });
+
+    test('do not include a stray word that came before the --', () => {
+      const r = parseArgs(['stray', '--', '--continue']);
+      expect(r.explicitArgs).toEqual(['--continue']);
+      expect(r.passthroughArgs).toEqual(['stray', '--', '--continue']);
+    });
+
+    test('a second -- is one of the arguments', () => {
+      expect(parseArgs(['--', '--', 'x']).explicitArgs).toEqual(['--', 'x']);
+    });
+
+    test('remi flags after the -- are arguments, not flags: a remote client cannot reach --no-auth', () => {
+      const r = parseArgs([
+        '--daemon',
+        '--bind',
+        'localhost',
+        '--',
+        '--no-auth',
+        '--bind',
+        '0.0.0.0',
+      ]);
+      expect(r.auth).toBeUndefined();
+      expect(r.bindHost).toBe('localhost');
+      expect(r.explicitArgs).toEqual(['--no-auth', '--bind', '0.0.0.0']);
+    });
+
+    test('remi flags before the -- are still read, in any order', () => {
+      const r = parseArgs([
+        '--no-auth',
+        '--harness',
+        'claude',
+        '--no-relay',
+        '--',
+        '--model',
+        'opus',
+      ]);
+      expect(r.auth).toBe(false);
+      expect(r.noRelay).toBe(true);
+      expect(r.harness).toBe('claude');
+      expect(r.explicitArgs).toEqual(['--model', 'opus']);
+    });
+  });
 });

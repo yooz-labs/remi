@@ -70,6 +70,9 @@ export function installFakeAgents(
     fs.writeFileSync(path.join(bin, name), text);
     fs.chmodSync(path.join(bin, name), 0o755);
   };
+  // The hub starts its children as `bun cli.ts ...` through PATH, and PATH holds only the fakes
+  // and the system directories: put the runtime under test in with them.
+  fs.symlinkSync(process.execPath, path.join(bin, 'bun'));
   if (which.codex) install('codex', FAKE_CODEX);
   if (which.claude) install('claude', FAKE_CLAUDE);
   install('sh-path', FAKE_SHELL);

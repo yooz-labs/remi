@@ -17,7 +17,7 @@ import {
   serialize,
 } from '@remi/shared';
 import { errorToString } from '@remi/shared';
-import type { ProtocolMessage, UUID } from '@remi/shared';
+import type { HarnessId, ProtocolMessage, UUID } from '@remi/shared';
 import { runAttachClient } from './attach-client.ts';
 import { performAuthHandshake } from './auth-helper.ts';
 import { capabilityWsOptions } from './capability-client.ts';
@@ -27,6 +27,14 @@ export interface RemoteNewOptions {
   readonly port: number;
   readonly directory?: string | undefined;
   readonly timeout?: number;
+  /**
+   * The harness to start there (#1179). Absent sends the plain request an older daemon
+   * understands. A named one is only sent to a daemon whose hello_ack lists it in `harnesses`:
+   * an older daemon ignores the field and would start Claude.
+   */
+  readonly harness?: HarnessId | undefined;
+  /** The harness's arguments (what follows `--`); the remote daemon checks them against its own allowlist. */
+  readonly args?: readonly string[] | undefined;
 }
 
 interface RemoteSessionResult {
@@ -34,11 +42,13 @@ interface RemoteSessionResult {
   readonly port: number;
 }
 
-async function createRemoteSession(
+export async function createRemoteSession(
   host: string,
   port: number,
   directory?: string,
   timeout = 30000,
+  harness?: HarnessId,
+  args: readonly string[] = [],
 ): Promise<RemoteSessionResult> {
   const url = `ws://${host}:${port}/ws`;
 
@@ -80,7 +90,27 @@ async function createRemoteSession(
 
     function handleMessage(msg: ProtocolMessage): void {
       if (msg.type === 'hello_ack') {
-        ws.send(serialize(createCreateSessionRequest(directory)));
+        // Arguments without a harness are Claude's. Either one asks for something an older daemon
+        // would silently drop, starting a plain Claude session, so it is sent only to a daemon
+        // that says it offers the harness.
+        const wanted = harness ?? (args.length > 0 ? 'claude' : undefined);
+        if (wanted !== undefined && msg.harnesses?.includes(wanted) !== true) {
+          done(
+            undefined,
+            new Error(
+              `The daemon at ${host}:${port} does not offer ${wanted} (it is an older remi, or has no ${wanted} installed); nothing was started.`,
+            ),
+          );
+          return;
+        }
+        ws.send(
+          serialize(
+            createCreateSessionRequest(directory, {
+              harness,
+              args: args.length > 0 ? args : undefined,
+            }),
+          ),
+        );
       } else if (msg.type === 'create_session_response') {
         if (msg.success && msg.sessionId) {
           // The daemon spawned a new daemon; use the returned port (or original if not present)
@@ -138,10 +168,10 @@ async function createRemoteSession(
 }
 
 export async function runRemoteNew(opts: RemoteNewOptions): Promise<{ exitCode: number }> {
-  const { host, port, directory, timeout } = opts;
+  const { host, port, directory, timeout, harness, args } = opts;
 
   console.error(`Creating session on ${host}:${port}...`);
-  const result = await createRemoteSession(host, port, directory, timeout);
+  const result = await createRemoteSession(host, port, directory, timeout, harness, args);
 
   if (result.port !== port) {
     console.error(`New daemon spawned on port ${result.port}`);

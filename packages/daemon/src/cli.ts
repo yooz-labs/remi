@@ -429,11 +429,9 @@ const harnessId: HarnessId = parsedArgs.harness ?? (cliSubcommand === 'codex' ? 
       ? `This build has no ${harnessId} adapter.`
       : harnessId !== 'claude' && serveMode
         ? 'The hub hosts no session of its own, so it takes no --harness.'
-        : harnessId !== 'claude' && cliHost !== undefined
-          ? `remi ${harnessId} --host is not supported yet: the wire does not carry a harness.`
-          : harnessId === 'codex' && cliResume !== undefined
-            ? "--resume is remi's flag for Claude sessions; resume a Codex thread with `remi codex resume <thread id>` (`remi --sessions` lists the ids)."
-            : null;
+        : harnessId === 'codex' && cliResume !== undefined
+          ? "--resume is remi's flag for Claude sessions; resume a Codex thread with `remi codex resume <thread id>` (`remi --sessions` lists the ids)."
+          : null;
   if (refusal !== null) {
     console.error(refusal);
     process.exit(2);
@@ -833,8 +831,11 @@ if (cliResume !== undefined) {
 // Handle 'new' subcommand enhancements: --host, --dir, --recent
 // ---------------------------------------------------------------------------
 
-// remi new --host: create session on remote daemon, then auto-attach
-if ((cliSubcommand === 'new' || cliSubcommand === undefined) && cliHost) {
+// remi new --host (and `remi codex --host`): create session on remote daemon, then auto-attach
+if (
+  (cliSubcommand === 'new' || cliSubcommand === undefined || cliSubcommand === 'codex') &&
+  cliHost
+) {
   // Support host:path syntax (e.g. yahyas-mcm:~/Documents/git/project)
   const { host: effectiveHost, directory: hostDir } = parseHostPath(cliHost);
 
@@ -873,6 +874,11 @@ if ((cliSubcommand === 'new' || cliSubcommand === undefined) && cliHost) {
       host: effectiveHost,
       port: resolvedPort,
       directory,
+      // Named only when the person named one (`remi codex`, `--harness`): a request that names none
+      // is the plain request an older daemon already understands. What follows `--` is the
+      // harness's arguments; the remote daemon checks them against its own allowlist.
+      harness: parsedArgs.harness ?? (cliSubcommand === 'codex' ? 'codex' : undefined),
+      args: parsedArgs.explicitArgs,
     });
     process.exit(result.exitCode);
   } catch (err) {
@@ -1887,16 +1893,15 @@ const harnessRegistry = new HarnessRegistry({
 
 // A Codex launch that will be refused is refused HERE, before a daemon boots or a wrapper takes
 // over the terminal (where console output goes to the log): a refused argument exits 2, an older
-// live remi exits 1, and nothing has been written yet. `--daemon` takes no arguments until the
-// hub can pass them (a later phase). What the launch cannot protect against is said once.
+// live remi exits 1, and nothing has been written yet. A daemon's arguments are what follows
+// `--` (`explicitArgs`: a hub puts the ones it validated there, last). What the launch cannot
+// protect against is said once.
 let codexLaunchArgs: string[] = [];
 if (codexHarness) {
-  if (cliDaemonMode && parsedArgs.passthroughArgs.length > 0) {
-    console.error('remi codex --daemon takes no arguments yet.');
-    process.exit(2);
-  }
+  // A daemon reads its arguments from what follows `--` and nothing else (a hub appends them
+  // there, last); a wrapper hands everything the user typed to the validator.
   const preflight = codexHarness.preflight(
-    cliDaemonMode ? [] : parsedArgs.passthroughArgs,
+    cliDaemonMode ? parsedArgs.explicitArgs : parsedArgs.passthroughArgs,
     process.cwd(),
   );
   if (!preflight.ok) {
@@ -2606,9 +2611,15 @@ if (cliDaemonMode) {
       version: REMI_VERSION,
     });
 
-    // Create the PTY session
+    // Create the PTY session. A hub's child gets its harness's arguments from after `--`
+    // (`explicitArgs`, #1179); a loose word elsewhere on the command line is still ignored.
     try {
-      await createNewSession(sessionId, workingDirectory, ptyMessageFanout);
+      await createNewSession(
+        sessionId,
+        workingDirectory,
+        ptyMessageFanout,
+        harnessId === 'codex' ? codexLaunchArgs : [...parsedArgs.explicitArgs],
+      );
     } catch (err) {
       const msg = errorToString(err);
       console.error(`Failed to create session: ${msg}`);

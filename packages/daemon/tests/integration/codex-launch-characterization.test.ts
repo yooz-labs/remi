@@ -666,11 +666,11 @@ describe('remi codex launch (wrapper and refusals, #1177)', () => {
     expect(fileExists(r, 'pid')).toBe(false);
   }, 40000);
 
-  test('remi codex --host is refused until the wire carries a harness', async () => {
+  test('remi codex --host asks the remote daemon instead of launching codex here: with none listening it exits 1 and starts nothing (#1179)', async () => {
     const r = await startWrapper(['--host', '127.0.0.1']);
     const code = await Promise.race([r.proc.exited, Bun.sleep(20000).then(() => 'timeout')]);
-    expect(code).toBe(2);
-    expect(r.output.text).toContain('--host');
+    expect(code).toBe(1);
+    expect(r.output.text).toContain('127.0.0.1');
     expect(storedSessions(r)).toEqual([]);
     expect(fileExists(r, 'pid')).toBe(false);
   }, 40000);
