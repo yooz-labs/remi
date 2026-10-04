@@ -127,6 +127,18 @@ function isOneTapAskUserQuestion(question: Question): boolean {
 }
 
 /**
+ * A card that carries more than its push can show (#1178): a permission card with `detail`, which
+ * only a Codex command longer than the push budget has (the text is cut head and tail, the whole
+ * command is in `detail`). Its Yes must not be one tap on a locked phone, because the person has
+ * not seen what the command does in between, so it gets no category and no dynamic buttons and
+ * is answered in the app, where `detail` is shown in full. A plan approval has `detail` too and
+ * already gets neither (`pushCategoryFor`).
+ */
+function hasUnseenDetail(question: Question): boolean {
+  return question.kind !== 'plan_approval' && (question.detail?.length ?? 0) > 0;
+}
+
+/**
  * The APNS category for a question card. A plan approval (#1127) never gets
  * one: approving a plan is not a lock-screen tap; nor does a card no phone
  * answer can be applied to (`terminalOnly`, review S7). An AskUserQuestion card
@@ -136,6 +148,8 @@ function isOneTapAskUserQuestion(question: Question): boolean {
  */
 export function pushCategoryFor(question: Question): string | undefined {
   if (question.kind === 'plan_approval' || question.terminalOnly === true) return undefined;
+  // A card whose push cannot show what it asks in full (`hasUnseenDetail`) is never one lock-screen tap.
+  if (hasUnseenDetail(question)) return undefined;
   if (question.kind === 'multi_question') {
     return isOneTapAskUserQuestion(question) ? selectPushCategory(question.options) : undefined;
   }
@@ -166,6 +180,7 @@ export function pushCategoryFor(question: Question): string | undefined {
  */
 export function selectDynOptions(question: Question): boolean {
   if (question.kind === 'plan_approval' || question.terminalOnly === true) return false;
+  if (hasUnseenDetail(question)) return false;
   if (question.kind === 'multi_question' && !isOneTapAskUserQuestion(question)) return false;
   const { options } = question;
   if (options.length < 2 || options.length > 4) return false;
@@ -243,7 +258,12 @@ export function buildPushText(
   const title = `${sessionName}: ${ask}`.slice(0, TITLE_MAX);
   // #1127: a card about a long text (a plan) shows the start of that text;
   // the app shows all of it, and the options are chosen there.
-  const detail = question.detail !== undefined ? normalizeNotificationText(question.detail) : '';
+  // A plan's push shows the start of the plan; a permission card's `detail` (a long Codex command)
+  // is not shown from its start, because the cut text above already shows both of its ends.
+  const detail =
+    question.kind === 'plan_approval' && question.detail !== undefined
+      ? normalizeNotificationText(question.detail)
+      : '';
   if (detail.length > 0) return { title, body: detail.slice(0, BODY_MAX) };
   const optionList = formatOptionList(question.options);
   const body = (optionList ? `${ask}\n${optionList}` : ask).slice(0, BODY_MAX);

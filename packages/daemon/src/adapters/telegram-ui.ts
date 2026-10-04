@@ -208,8 +208,9 @@ export function formatQuestionCard(question: Question): TelegramQuestionCard {
       return { text: `${plan}${OPTIONS_DO_NOT_FIT}`, keyboard: undefined };
     }
     // Leave room for the notice line, whose count is at most 7 digits.
+    const noun = question.kind === 'plan_approval' ? 'Plan' : 'Command';
     const notice = (missing: number) =>
-      `\n\n[Plan truncated: ${missing} more characters. Read it and answer in the app.]`;
+      `\n\n[${noun} truncated: ${missing} more characters. Read it and answer in the app.]`;
     const room = TELEGRAM_QUESTION_MAX - question.text.length - 2 - notice(9_999_999).length;
     const shown = detail.slice(0, Math.max(0, room));
     return {

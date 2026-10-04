@@ -34,6 +34,7 @@
 
 import type { Question, QuestionOption, QuestionStep, UUID } from '@remi/shared';
 
+import { truncateSummary } from '../../hooks/tool-summary.ts';
 import type { HeldAnswer } from '../decision.ts';
 import type { RequestId } from './app-server-protocol.ts';
 
@@ -202,6 +203,11 @@ function commandCard(c: Context): PendingRequestSpec {
       : []),
     option('No', noDecision, { isNo: true }),
   ];
+  // A command longer than a lock screen shows is cut the way Claude's cards cut it (head, a count
+  // of what is hidden, tail: a command's dangerous part is as likely at its end), and the whole
+  // command goes in `detail`, which the app shows in full and the dispatcher never turns into
+  // lock-screen buttons (`pushCategoryFor`).
+  const shown = truncateSummary(command);
   const stated = nonEmpty(params['reason']);
   const reason =
     stated === null
@@ -214,11 +220,12 @@ function commandCard(c: Context): PendingRequestSpec {
     method: c.req.method,
     question: {
       id: c.mintId(),
-      text: `Allow Codex to run: ${command}${reason}`,
+      text: `Allow Codex to run: ${shown}${reason}`,
       options,
       allowsFreeText: false,
       isAnswered: false,
       kind: 'permission',
+      ...(shown === command ? {} : { detail: command }),
     },
     responses: new Map(options.map((o) => [o.value, { decision: o.value }])),
     noResponse: { decision: noDecision },
