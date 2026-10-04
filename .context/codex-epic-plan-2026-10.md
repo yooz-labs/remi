@@ -379,7 +379,7 @@ export class CodexDecisions implements DecisionChannel {
 
 **Options (by meaning, never by position).**
 - `{label:'Yes', value:'accept', isYes:true, isNo:false, isRecommended:true}` if `accept` is listed (or the list is absent).
-- `{label:'Yes, for this session', value:'acceptForSession', isYes:true, standingGrant:'session'}` only if `acceptForSession` is listed.
+- `{label:'Yes, for this session', value:'acceptForSession', isYes:true, standingGrant:'session'}` only if `acceptForSession` is listed (relabeled "Yes, and don't ask again for this command this session" in the review rework, S12: it is schema-only, whether Codex remembers it is unverified, LV-3 (f)).
 - `{label:'No', value:<No decision>, isNo:true}` where the No decision is `cancel` if listed, else `decline` if the list is absent or lists it, else none (and the card becomes `terminalOnly`).
 - The object-form decisions (`acceptWithExecpolicyAmendment`, `applyNetworkPolicyAmendment`) are never offered: they write persistent policy from a phone tap, and Claude's rule (AGENTS.md) is that a phone tap never writes a settings file.
 - `standingGrant` gains the value `'session'` (shared `types.ts:389`, web `types/index.ts:204`). The web card hint already reads "This session" for any defined `standingGrant` (`QuestionCard.tsx:108`).
@@ -404,8 +404,8 @@ export class CodexDecisions implements DecisionChannel {
 | `answerHeld(qid, a)` | id never seen: `'unknown'` (as built: `'closed'`, never `'unknown'`, see above). Known id: never `'unknown'`. Not pending (resolved, retired, disconnected): `'closed'`. Client not `ready`: `'closed'` plus log. `terminalOnly`: `cancel` gives `'closed'` (card dismissed, nothing sent, nothing typed), anything else `'refused'`. Actionable: map via `responseFor`, `client.respond(...)`, then `'resolved'`. |
 | `retireQuestion(qid)` | stop tracking; send nothing; the app-server request stays pending for the TUI |
 | `isHeld(qid)` | actionable and pending |
-| `hasMainHold()` | any pending main-thread request, or the latest status flags for the tracked thread are non-empty |
-| `hasOpenHookPrompt()` | same as `hasMainHold()` plus any pending `terminalOnly` request |
+| `hasMainHold()` | as built: false (nothing reads it for Codex: chat is refused earlier and a Stop force-closes); the plan said any pending main-thread request or non-empty status flags |
+| `hasOpenHookPrompt()` | as built: false, for the same reason; the plan said `hasMainHold()` plus any pending `terminalOnly` request |
 | `noteTerminalEscape()` | no-op; the app-server's `serverRequest/resolved` is authoritative |
 | `forceRelease(reason)` | dismiss every local card (`question_resolved` `'cancelled'`), stop tracking, send nothing; returns the count |
 | `screen` | undefined (no PTY parsing), so any typed path fails closed. `trackerScreenDeps` returns `null` for `observedPromptOptions`. |
@@ -414,7 +414,9 @@ export class CodexDecisions implements DecisionChannel {
 - `answerHeld` is never `unknown`, for any id (the table row above says `unknown` for an id never seen): the answer and Cancel handlers type for `unknown`.
 - `handleServerRequest(req)` takes one argument; the thread's role comes from the `threadRole` dependency (`ThreadTracker.role`: `main`, `subagent` or null), which is also read at the answer. A subagent's request is always `terminalOnly`. The tracker gained `role()` and `onAttached` (the replay window starts at a successful attach).
 - "Retire on disconnect" means: unanswerable at once, still shown until the replay replaces it or the replay window ends (then it is dismissed); with no re-attach it is dismissed after 30 s. `CodexDecisions` also has `dispose()`; its client dependency is `respond` only.
-- A request that does not name its thread is no card (`null`), and a command over 20000 characters is a `terminalOnly` card.
+- A request that does not name its thread is no card (`null`), and a command over 20000 characters is a `terminalOnly` card; a command over 120 characters is cut (head, a count, tail) with the whole command in `detail`, and such a card gets no lock-screen buttons (the review's S1).
+- The replay window is 3 s (was 1.5 s), a delivered answer with no `serverRequest/resolved` after 10 s tells the person to check the terminal, every peer-chosen string is escaped and bounded, and a Codex card's label in the live-sessions file is fixed (the review's S5, S7, S8, S2).
+- There is no per-card deadline for Codex (F1): the card mirrors a request that waits in the app-server without one.
 - `onQuestionResolved` is a `CodexLaunchDeps` member, and the question-detected log line and the registry's cap-eviction warning log a length for Codex.
 
 **Hold semantics.** Codex is the arbiter. remi holds nothing. No `HeldAnswerOutcome` means "waiting for a deadline".
@@ -422,7 +424,7 @@ export class CodexDecisions implements DecisionChannel {
 **First answer wins and dismissal.**
 - `serverRequest/resolved` for a tracked key: if remi answered it, nothing more (the handler already removed the card at `input-events.ts:838-840`). Otherwise `sessionRegistry.removeQuestion(sid, qid, 'codex:resolved')` plus `onQuestionResolved(sid, qid, 'cancelled')`. This covers a terminal answer, and the card clears on every client.
 - A phone answer that lost the race is ignored by Codex with no error (spike), and the later `resolved` clears the card.
-- DECIDED POLICY: on disconnect, retire all cards immediately, because a card the phone cannot answer must not stay answerable. On reconnect the tracker re-resumes and the replayed requests create fresh cards with new ids. A 1.5 s replay window follows each re-resume (the spike's replay arrived in 4 ms, `expB3.jsonl:49-51`), and any pending key not re-seen after it is dismissed.
+- DECIDED POLICY: on disconnect, retire all cards immediately, because a card the phone cannot answer must not stay answerable. On reconnect the tracker re-resumes and the replayed requests create fresh cards with new ids. A 3 s replay window follows each re-resume (the spike's replay arrived in 4 ms, `expB3.jsonl:49-51`; the window was 1.5 s in the first delivery and was doubled in the review rework, ADR 0033 Phase 4 amendment), and any pending key not re-seen after it is dismissed.
 - A request from a daemon restart can reuse ids, which is harmless because cards are retired on disconnect and keys include the thread.
 
 **Never answer what we do not decide.** The client never sends an error response to a server request it does not handle. A JSON-RPC error from remi would be the "first answer" and could resolve the TUI's request. `account/chatgptAuthTokens/refresh` and `attestation/generate` are never answered or logged beyond the method name.
@@ -430,7 +432,7 @@ export class CodexDecisions implements DecisionChannel {
 **Chat guard.**
 - `HarnessSession.acceptsTypedChat?: boolean` (absent means true; Codex false). SHIPPED IN PHASE 3 (#1177, review finding W1), not Phase 4: with no screen reads and no decision channel, `promptUp` reads "nothing up" for a Codex session, so a phone message would have been typed with its Enter into an approval overlay.
 - `input-events.ts` refuses non-raw chat text for such a session before the `promptUp` guard, with code `PROMPT_WAITING` and a Codex-specific message ("This session does not take typed messages from the app yet; type in the terminal."). The code is `PROMPT_WAITING` and not `INPUT_NOT_DELIVERED` because the web client only fails the refused bubble for that code (`web/src/lib/prompt-waiting.ts`). Every caller of `onUserInput` (WebSocket, relay, Telegram text and `/interrupt`) reaches that one handler.
-- `promptUp` stays truthful through `hasMainHold`/`hasOpenHookPrompt` so a future `turn/start` chat path inherits it.
+- `promptUp` reads `hasMainHold`/`hasOpenHookPrompt`; as built they say false, and a future `turn/start` chat path (phase 6) adds what it needs.
 - Raw input from `remi attach`, the web Esc button and Telegram `/interrupt` stays (a person at the terminal; Esc at a Codex overlay is its own "No").
 
 ### 2.5 Chat source and turn events (item 4)
@@ -574,7 +576,7 @@ Safety rules for any agent driving the TUI:
 |---|---|---|---|
 | LV-1 | 1 | The hand-rolled client does `initialize`, `initialized`, `thread/loaded/list` and `server/diagnostics` against the real socket, idles 120 s (keepalive), and `optOutNotificationMethods` is accepted. Compare the result with the python client. | none |
 | LV-2 | 3 | `remi codex` in a scratch dir (a) with the daemon already running and (b), optionally, with it stopped to test auto-start; `thread/started` for cwd within about 2 s; the title-helper thread is ignored; identity recorded after the first message; `thread/resume` retry resolves; no `.claude/settings.local.json` written; the TUI is untouched; whether `thread/started` carries any client marker (so a non-remi window could be told apart); that TUI-internal `/resume` emits no `thread/started`; `remi codex -- login` and `remi codex -- exec x` (does Codex read the words after the inserted `--` as prompt text, as `codex-args.ts` assumes); `-i` together with `resume`; `kill -9` of remi in the middle of an approval. | one tiny turn |
-| LV-3 | 4 | The epic gate: (a) phone allow runs the command and the overlay closes; (b) the TUI answering first dismisses the phone card; (c) phone No (`cancel`) behaves like the TUI's; (d) a probe client mimicking remi (not remi) is `kill -9`'d while an approval is pending: the TUI overlay must stay up and answerable, and the request must not auto-cancel (R1); (e) `thread/unsubscribe` from remi at exit is harmless. | a few turns |
+| LV-3 | 4 | The epic gate: (a) phone allow runs the command and the overlay closes; (b) the TUI answering first dismisses the phone card; (c) phone No (`cancel`) behaves like the TUI's, and whether it also interrupts the turn; (d) a probe client mimicking remi (not remi) is `kill -9`'d while an approval is pending: the TUI overlay must stay up and answerable, and the request must not auto-cancel (R1); (e) `thread/unsubscribe` from remi at exit is harmless; (f) `acceptForSession` is accepted and remembered (schema-only so far); (g) interrupt, Esc and turn end produce `serverRequest/resolved` (if not, a follow-up adds status-based dismissal); (h) a subagent's request is addressed to a connection that resumed only the main thread, and is replayed; (i) the stand-in server's model (a pending request survives a subscriber drop and is replayed) is Codex's behavior; (j) a plain `codex` window in the same directory re-binds an idle session (R4). | a few turns |
 | LV-4 | 5 | A Codex session created from a hub request in an already-trusted directory reaches the prompt headless. | one launch |
 | LV-5 | 6 | `thread/items/list` ascending paging; an interrupted turn and a failed turn (`turn/start` with a bad model) produce the `turn/completed` statuses assumed. | one or two turns |
 
@@ -768,7 +770,7 @@ DECIDED POLICY (all in §2.4, restated as the checklist the reviewer uses):
 - Object-form decisions are never offered.
 - The client never answers a request it does not handle.
 - Cards are retired on disconnect and re-created from replay.
-- A subagent's status is forgotten on a link drop and not fetched again (the Phase 3 limit, E4): a subagent that is still waiting reads as not waiting until its next frame, and the replay re-delivers its approval card, which is the part a person can act on.
+- A subagent's status is forgotten on a link drop and not fetched again (the Phase 3 limit, E4): a subagent that is still waiting reads as not waiting until its next frame, in phase 4 a subagent's approval is always a `terminalOnly` card, and whether it is replayed to a connection that resumed only the main thread is unverified.
 - `answerHeld` is never `unknown` for a known id.
 - Phone chat typing is already refused (`acceptsTypedChat:false`, Phase 3); Phase 4 keeps it and extends the typed-bytes-zero pin to every answer variant.
 - `held` is stamped so the push always goes to the lock screen and free text is refused.
@@ -895,7 +897,7 @@ Out of scope: a `harness_denied` equivalent, subagent chat, exited-session histo
 | R1 | A non-answering subscriber disconnecting does not cancel the pending request | LV-3(d) | Do not ship Phase 4; remi becomes harmful on any socket blip. Redesign to minimize reconnects and tell the owner. |
 | R2 | Bare `codex` auto-starts the shared daemon (`daemon_auto_start`, the lock file dated Sep 25) | LV-2(b) | The watchdog fires and approvals never arrive. Fallbacks: run `codex app-server daemon start` before spawn, or spawn with `--remote unix://<socket>` (verified shared in the spike). Owner pick. |
 | R3 | A hand-rolled client interoperates with Codex's server | LV-1 | Fix the codec, or move the pin to >= 1.3.13 and use native `ws+unix`. |
-| R4 | cwd plus `threadSource`/`ephemeral`/time identifies the TUI thread and `/new` rotates | LV-2, tests | Fail closed (no identity, no cards, logged). Residuals: (1) a non-remi TUI in the same cwd started in the same window; (2) a plain non-remi `codex` window opened in the same directory while the tracked thread is not active is indistinguishable from `/new` and re-binds (every rotation logs `rotated from <8> to <8>`); (3) TUI-internal `/resume` emits no `thread/started` (`expB3.jsonl:12-13`), so the tracker keeps the old thread; (4) two remi codex sessions in one directory: a `/new` in either is followed by neither (E1), and an unbound sibling blocks a first bind only for 60 s (E2). |
+| R4 | cwd plus `threadSource`/`ephemeral`/time identifies the TUI thread and `/new` rotates | LV-2, tests | Fail closed (no identity, no cards, logged). Residuals: (1) a non-remi TUI in the same cwd started in the same window; (2) a plain non-remi `codex` window opened in the same directory while the tracked thread is not active is indistinguishable from `/new` and re-binds (every rotation logs `rotated from <8> to <8>` and, since the Phase 4 review, tells the person "remi now follows a new Codex thread; approvals come from it": the session keeps its approval authority across the move, not closed, never silent); (3) TUI-internal `/resume` emits no `thread/started` (`expB3.jsonl:12-13`), so the tracker keeps the old thread; (4) two remi codex sessions in one directory: a `/new` in either is followed by neither (E1), and an unbound sibling blocks a first bind only for 60 s (E2). |
 | R5 | `cancel` from a second client resolves the request like the TUI's No | LV-3(c) | Flip the No mapping to `decline` (listed or not). |
 | R6 | `thread/items/list` pages history | LV-5 | Fall back to the rollout at `thread.path`. |
 | R7 | A headless Codex launch reaches the prompt | LV-4 | The Trust and Update modals block with nobody to answer. Mitigation: the hub advertises `codex` only after LV-4, and a user can `remi attach`. |

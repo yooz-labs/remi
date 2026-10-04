@@ -275,7 +275,7 @@ Only the first failure and every thirtieth are logged, and no thread frame of an
 4. **Status.**
 The session's status is the aggregate of the tracked thread and its descendants: `waiting` if any is `active` with a flag (an unknown flag counts), else `thinking` if any is `active`, else `idle`; it is reported through `messageApi.handleStatusChange` only when it changes.
 Other threads never change it.
-A drop of the link and a rotation forget the descendants' statuses, since their frames can no longer be trusted to arrive, and they are not fetched again (E4): a subagent that is still waiting reads as not waiting until its next frame, and phase 4's replay re-delivers its approval card, which is the part a person can act on.
+A drop of the link and a rotation forget the descendants' statuses, since their frames can no longer be trusted to arrive, and they are not fetched again (E4): a subagent that is still waiting reads as not waiting until its next frame; in phase 4 a subagent's approval is always a `terminalOnly` card, and whether it is replayed to a connection that resumed only the main thread is unverified.
 5. **The shared daemon.**
 remi never starts, stops, restarts or upgrades it.
 If no connection is ready 30 s after the spawn, or the link drops and stays down 30 s, one log line and one system-sender message say so, once per session, and the session carries on as a plain terminal session.
@@ -373,7 +373,7 @@ A blocked candidate is dropped, not retained, and the notice says what to do ("r
 This is accepted by design: the claim is that remi types only raw input (an attach client's keystrokes, the Escape button, `/interrupt`) into a Codex PTY, which the client marks, not that a person is behind it.
 - **E4, subagent status after a blip.**
 A subagent's status is forgotten when the link drops and is not fetched again; a still-waiting subagent reads as not waiting until its next frame.
-Phase 4's replay re-delivers its approval card, which is the actionable part.
+In phase 4 a subagent's approval is a `terminalOnly` card, and whether it is replayed to a connection that resumed only the main thread is unverified (LV-3 (h)).
 - **E5, hub requests.**
 `resume_session_request` and `create_session_request` on a Codex daemon stay phase 5 item 7 (tracked in #1179); this phase does not touch them.
 
@@ -382,6 +382,7 @@ Phase 4's replay re-delivers its approval card, which is the actionable part.
 Phase 4 shows the app-server's command approvals as phone cards and sends the phone's answer back to the app-server.
 remi relays the approval and Codex decides (ADR 0030): nothing is judged, nothing is typed into the PTY for an answer, and a request remi does not handle is never answered.
 Nothing here was run against a real Codex: every claim about Codex's behavior comes from the spike's frames or from the stand-in app-server, and live step LV-3 (the epic gate) is NOT done (item 11).
+The review rework of PR #1188 is items 12 to 14; where it changed an earlier item, the item says so.
 
 1. **What becomes a card.**
 `CodexDecisions` (`codex-decisions.ts`) is the session's `DecisionChannel`, and `approval-cards.ts` builds the cards.
@@ -390,53 +391,79 @@ A request about any other thread, one that does not name its thread, and a metho
 Request ids are one daemon-global counter, so a request is keyed `(threadId, requestId)`, and the thread's role is read again when an answer arrives, so a card that outlived a rotation cannot be answered.
 2. **What is answerable.**
 Only a plain command approval of the main thread: `kind: 'command'`, no `approvalId`, no extra permissions, no network context, no proposed network policy amendment (a missing key counts as null, the real frame has none).
-Options are built by meaning from the request's own `availableDecisions`, which absent means `accept` and `decline`: Yes is `accept`; "Yes, for this session" is `acceptForSession`, offered only when listed (`standingGrant: 'session'`, a new union value: Codex remembers it, remi writes nothing, and the dispatcher gives the card no lock-screen category and no dynamic options); No is `cancel` when listed (what the TUI's own No sends), else `decline`, else the card cannot be answered.
+Options are built by meaning from the request's own `availableDecisions`, which absent means `accept` and `decline`: Yes is `accept`; "Yes, and don't ask again for this command this session" is `acceptForSession`, offered only when listed (`standingGrant: 'session'`, a new union value; it carries no suggestion index; the dispatcher gives the card no lock-screen category and no dynamic options); No is `cancel` when listed (what the TUI's own No sends), else `decline`, else the card cannot be answered.
+`acceptForSession` is schema-only: both real frames list `accept`, an amendment object and `cancel`, and no frame shows it sent or its effect, so that Codex accepts it and remembers the command for the session is unverified (LV-3 (f)); remi writes no rule or settings file either way.
 The object-form decisions are never offered: they write a persistent policy from a phone tap, and a phone tap never writes a settings file.
 A card without a Yes or without a No is `terminalOnly`.
-3. **Everything else is `terminalOnly`.**
-A file change, extra permissions, a user-input question (`kind: 'multi_question'`, questions mirrored for display), an MCP elicitation (a `url` shows its host only), a command that asks for more than itself, a subagent's request (always, with `agentId`), a known method whose fields do not parse (a generic card), and a command longer than 20000 characters (a card that cut a command short would let a person approve what they cannot read).
+A phone No, and the header X (Cancel), send `cancel`; whether Codex also interrupts the turn for `cancel` is unverified (F7, LV-3 (c)).
+3. **The command text, and what else is on the card.**
+The card text is `Allow Codex to run: <command>`, then, when the command runs somewhere other than the session's own directory, `In directory: <cwd>`, then Codex's stated reason (cut at 300 characters).
+A command longer than 120 characters is cut the way Claude's hook cards cut one (`truncateSummary`: the first 80 characters, a count of what is hidden, the last 30), because a command's dangerous part is as likely at its end, and the whole command goes in `detail`, which the app shows in full.
+A card with `detail` (a cut command, or a directory that differs) gets no lock-screen category and no dynamic buttons, so Yes needs the app, where the whole card is; its push shows the ask (both ends of the command), not the start of the detail.
+Telegram shows the text and the whole command, with its buttons, when they fit in one message; when they do not it says "Command truncated", shows the cut ask, and offers no buttons.
+Before the review, the text was the whole command and the lock screen and Telegram cut it from the end while still offering Yes (S1).
+A command whose escaped text is longer than 20000 characters is `terminalOnly` and is not shown cut.
+Every string the server chose is bounded (free text 2000 characters, labels and names 200, option descriptions 500, the directory 500; at most 8 questions of 12 options and 20 permission names) with a visible "[N characters hidden]" (S7), and escaped (`escapeUnsafeText` in `@remi/shared`): control characters other than newline and tab, DEL, C1, zero-width and bidi marks and the line separators come out as visible `\uXXXX`, never dropped (S5).
+The attach client's banner applies the same escape to the question text and the option labels, which also hardens Claude's banner; Claude's hook cards build their own text and have the same hole, not changed here.
+4. **Everything else is `terminalOnly`.**
+A file change, extra permissions, a user-input question (`kind: 'multi_question'`, questions mirrored for display), an MCP elicitation (a `url` shows its host only), a command that asks for more than itself, a subagent's request (always, with `agentId`), a known method whose fields do not parse (a generic card), and a command too long to show.
 Such a card says what Codex asks and has no answer controls; every answer is refused, and Cancel clears it from the phone and sends nothing, so the TUI's overlay stays.
-The command approval's card text is `Allow Codex to run: <command>`, with Codex's stated reason after it (cut at 300 characters).
-4. **Nothing is typed, by construction.**
+It carries `cancelDismissesOnly`, so the app's Cancel reads "Dismiss (answer in the terminal)", never "Decline tool call" (Claude's terminal-only cards keep that label, their Cancel denies), and a card with no options shows "Answer this in the terminal." and no text input (S6).
+5. **Nothing is typed, by construction.**
 The answer and Cancel handlers write to the PTY only when `answerHeld` says `unknown` (Cancel types an Esc for a card still in the registry).
 `CodexDecisions.answerHeld` never says it, for any id: a card it never showed reads `closed`.
-The plan's table said `unknown` for an id never seen; that left an Esc typed for any card something else put in the registry, which nothing does today and a test now does on purpose (deviation D1).
+The plan's table said `unknown` for an id never seen; that left an Esc typed for any card something else put in the registry, which nothing does today and a test now does on purpose (deviation D1, accepted by the review).
 There is also no `screen`, so a typed answer's guards fail closed, and chat is refused before it (`acceptsTypedChat`, phase 3).
-5. **First answer wins.**
+`hasMainHold` and `hasOpenHookPrompt` say false: the chat guard and Stop read them and neither can reach a Codex session (chat is refused earlier, a Stop force-closes), so the review removed the state behind them (the status hand-off, `mainWaiting`, the per-entry main flag); a typed path (phase 6) adds what it needs.
+6. **First answer wins, and an answer Codex does not confirm.**
 A `serverRequest/resolved` for a card remi did not answer dismisses it on every client (`question_resolved`, reason `cancelled`, as for Claude's terminal answers); one for a card remi answered changes nothing; a phone answer that arrives after it is `STALE_ANSWER` from the real answer handler.
 The answer is held in state `answered` until the resolved arrives, so a second answer cannot be sent.
 Codex ignores the loser of a race without an error (spike), so a phone answer that lost still reads "answered" on the phone.
-6. **The link.**
+"Delivered" is a frame written to a socket, not Codex's decision: ten seconds after a delivered answer with no resolved, the person gets the system message "Codex has not confirmed the answer; check the terminal" and the entry is forgotten (S8).
+A send that fails (a result that could not be encoded, or a link that did not take the frame) is logged by cause and tells the person to try again from the new card, if one appears, or answer in the terminal (S10).
+7. **The link.**
 When it drops, every card is retired at once: not answerable, `answerHeld` says `closed` even after the client is ready again (a reconnect can bring a different daemon whose ids repeat), but still shown.
-The tracker's new `onAttached` (after a successful `thread/resume`) starts a 1.5 s replay window: the app-server replays a pending request to a client that attaches (spike: same id, 4 ms, `expB3.jsonl:49-51`), and the replayed request makes a new card with a new id and dismisses the retired one in its place; a retired card nothing replayed by the end of the window was resolved while the link was down and is dismissed then.
+The tracker's `onAttached` (after a successful `thread/resume`) starts a 3 s replay window (it was 1.5 s; a slow replay then flickers less, F6): the app-server replays a pending request to a client that attaches (spike: same id, 4 ms, `expB3.jsonl:49-51`), and the replayed request makes a new card with a new id and dismisses the retired one in its place; a retired card nothing replayed by the end of the window was resolved while the link was down and is dismissed then.
 A link that never comes back dismisses the retired cards after 30 s (deviation D4), so no dead card outlives it.
 An answered entry is forgotten at the drop.
-The plan said "retire on disconnect" and "sweep what is not re-seen" and left what is swept undefined if retiring already removed the card; this keeps the card visible while retired, which is the only reading in which the sweep exists.
+The timers run on an injectable, unref'd scheduler: a pending sweep never holds the daemon's event loop, and tests observe the timers that are set and cleared.
 A rotation, `remi unstick`, and the session ending (`dispose`) dismiss every card.
-More than 64 requests at once dismiss the oldest, which are never answered.
-7. **Logs.**
+8. **Logs and what persists.**
 No command, cwd, prompt or full thread id: ids are cut to eight characters, a decision is logged as an id and a thread, never a command.
 Two neutral log lines printed the start of a card's text, which for Codex is a command: the question-detected line (`message-api-setup.ts`) and the registry's cap-eviction warning (`question-store.ts`).
 Both now log a length when the daemon hosts Codex (`redactQuestionLogs`, from `cli.ts`), and are unchanged for Claude (deviation D8).
-The card and the push carry the command (120 characters in the title, 200 in the body, plaintext to the Worker and APNS, as every card), because the person must see it.
-8. **Deviations from the plan and the issue.**
-- D1, `answerHeld` is never `unknown` (item 4).
+The text itself also reached the live-sessions registry file as a "label" (the first 140 characters of `Allow Codex to run: <command>`, read by the hub census and the macOS menu-bar notifications): a card now carries a fixed `pendingLabel` ("Permission: Codex command", or "Codex asks for approval" for every other kind), which `buildPendingQuestionLabel` returns as it is (S2).
+Where a card's text or detail leaves memory, and whether it should: the card to every client (WebSocket, relay, Telegram), intended, because the person must see it; the push, intended, the cut ask (title 120 and body 200 characters) in plaintext to the signaling Worker and APNS; the relay and Worker carry the full `question` message, the command up to 20000 characters, in plaintext until #881 is fixed (F8); the replay buffer, memory only, intended; the attach client's terminal banner, escaped; the live-sessions file, a fixed label only; `sessions.json`, no question data; the opt-in question trace, ids and signals only; a log, a length only; the history store, none (Codex chat history is phase 6).
+9. **Deviations from the plan and the issue.**
+- D1, `answerHeld` is never `unknown` (item 5).
 - D2, `CodexDecisions` takes `threadRole` as a dependency, returning `main`, `subagent` or null, where the plan passed `isOurs` as a boolean per call: a boolean cannot tell a subagent from the main thread, and the answer-time re-check needs it stored. The tracker gains `role()`; plan 2.3 said it has no such accessor, which phase 3's tests relied on, and phase 4 has the production caller.
 - D3, the tracker gains `onAttached`; the plan wired "`tracker.onNotification` into `handleReattached`", and no tracker event said an attach succeeded.
-- D4, retired cards stay shown and a 30 s grace dismisses them if no re-attach comes (item 6).
-- D5, `CodexDecisions` has `dispose()` (dismiss all, ignore later events and cancel the timer; the session's `dispose` calls it), its client dependency is `Pick<AppServerClient, 'respond'>` (a failed `respond` already says the link is not ready) and its registry dependency is `removeQuestion` only: the session installs the eviction guard, so a wiring test can catch its removal.
-- D6, `buildApprovalCard` returns null for a request that does not name its thread as well as for an unhandled method (nothing could say it is the session's); a command over 20000 characters and a subagent's command are `terminalOnly`.
+- D4, retired cards stay shown and a 30 s grace dismisses them if no re-attach comes (item 7).
+- D5, `CodexDecisions` has `dispose()` (dismiss all, ignore later events and cancel the timers; the session's `dispose` calls it), its client dependency is `Pick<AppServerClient, 'respond'>` (a failed `respond` already says the link is not ready) and its registry dependency is `removeQuestion` only: the session installs the eviction guard, so a wiring test can catch its removal.
+- D6, `buildApprovalCard` returns null for a request that does not name its thread as well as for an unhandled method (nothing could say it is the session's); a command too long to show and a subagent's command are `terminalOnly`.
 - D7, `onQuestionResolved` is a `CodexLaunchDeps` member (the plan's 2.3 listed it; phase 3 left it out).
-- D8, the two log lines of item 7, and `SessionRegistryConfig.redactQuestionLogs` and `QuestionStoreOptions.redactText` to carry it.
-- D9, `FakeAppServer` gained `resolve()` and `isPending()`, test helpers.
+- D8, the two log lines of item 8, and `SessionRegistryConfig.redactQuestionLogs` and `QuestionStoreOptions.redactText` to carry it.
+- D9, `FakeAppServer` gained `resolve()`, `isPending()` and `ignoreAnswers()`, test helpers.
 - `forceRelease` returns `{resolved}` (the harness contract), not a bare count.
-9. **Exports with no production caller in this PR.**
-None, with one note: `buildApprovalCard`, `responseFor`, `requestKey`, `requestThreadId` and `isApprovalMethod` are called by `codex-decisions.ts`, `parseResolved` by `codex-session.ts`, `ThreadTracker.role` and `onAttached` by `codex-session.ts`, and `COMMAND_TEXT_MAX` is exported only so the tests can check the bound that `commandCard` reads.
-10. **Receipts.**
-Pins first, in their own red commit: the golden table of real frames to `Question` JSON, the lock-screen category pin and the black-box typed-bytes-zero run of the whole daemon with a real websocket phone and a fake `codex` that counts its stdin (with a raw `q` as the positive control); then the implementation turned them green.
-The scenario tests (`codex-first-answer-wins.test.ts`) run the real client, tracker, registry, message API, input handlers and a stand-in app-server; the unit tests (`codex-decisions.test.ts`) give the channel a recording client, the one disclosed fault-injection boundary.
-Mutants of the new logic and of each wiring line, with the tests that kill them, are in the PR.
+- The review rework added two optional fields to `Question` (`pendingLabel`, `cancelDismissesOnly`), the shared `escapeUnsafeText`, `CodexDecisionsDeps.notice`, `sessionDirectory` and `scheduler`, an `hooks/tool-summary` entry on the Codex import allowlist (a test pins that the file imports nothing), and a change to `formatOptionList` (a value longer than three characters is not shown) and to Telegram's cut notice (`Command`, not `Plan`, for a command).
+10. **Exports with no production caller in this PR.**
+None, with one note: `buildApprovalCard`, `responseFor`, `requestKey`, `requestThreadId` and `isApprovalMethod` are called by `codex-decisions.ts`, `parseResolved` by `codex-session.ts`, `ThreadTracker.role` and `onAttached` by `codex-session.ts`, `escapeUnsafeText` by the card builders and the banner, and `COMMAND_TEXT_MAX` and `realScheduler` are exported so the tests can check the bound `commandCard` reads and the unref of the clock `CodexDecisions` defaults to.
 11. **Not verified, for LV-3.**
-(a) That a phone Yes runs the command and the overlay closes; (b) that the TUI answering first dismisses the phone card; (c) that `cancel` from a second client behaves like the TUI's own No (the fallback is `decline`, one line in `commandCard`); (d) that a probe client standing in for remi, `kill -9`'d while an approval is pending, leaves the overlay up and answerable and does not cancel the request (plan R1: if it does, do not merge; redesign around fewer reconnects), and, because remi's own link may drop, whether a dropped subscriber auto-cancels or auto-declines a pending request; (e) that `thread/unsubscribe` at exit is harmless.
-Also unverified: whether an interrupt, a turn ending or an Esc in the TUI produce `serverRequest/resolved` (until then a card whose resolution Codex never reports stays until the link drops, `remi unstick` or the end of the session), whether Codex addresses a subagent's request to this connection, and `kill -9` of remi in the middle of an approval (phase 3's LV-2 item, the same R1 question from the TUI's side).
-
+(a) That a phone Yes runs the command and the overlay closes; (b) that the TUI answering first dismisses the phone card; (c) that a phone No (`cancel`) behaves like the TUI's own No, and whether it also interrupts the turn (the fallback is `decline`, one line in `commandCard`); (d) that a probe client standing in for remi, `kill -9`'d while an approval is pending, leaves the overlay up and answerable and does not cancel the request (plan R1: if it does, do NOT merge; redesign around fewer reconnects), which is also whether a dropped subscriber auto-cancels or auto-declines a pending request; (e) that `thread/unsubscribe` at exit is harmless; (f) that `acceptForSession` is accepted and remembered; (g) whether an interrupt, an Esc in the TUI or a turn ending produce `serverRequest/resolved` (F3: if not, a follow-up adds status-based dismissal); (h) whether a subagent's request is addressed to a connection that resumed only the main thread, and whether it is replayed; (i) that the stand-in server's model (a pending request survives a subscriber drop and is replayed to the next subscriber) is Codex's behavior; (j) that a plain `codex` window in the same directory re-binds an idle session (residual R4, item 12).
+12. **Decisions of the review rework (F1 to F8).**
+- F1, no per-card deadline for Codex: Claude's holds are bounded by hook timeouts remi cannot lift, but a Codex request waits in the app-server without a deadline and the card mirrors it, so expiring the card would strand a request that is still pending. The consequence, stated plainly: a card on a lock screen stays answerable for as long as Codex waits. There is no timer.
+- F2, rotation keeps approval authority (residual R4): a plain non-remi `codex` window in the same directory, opened while the session is idle, looks like a `/new` and re-binds it, and approvals then come from that thread. It is not closed here (same user, same machine, not a security boundary), but never silent: every rotation sends the system message "remi now follows a new Codex thread; approvals come from it", once per rotation event, next to the log line `rotated from <8> to <8>`.
+- F3, no status-based dismissal of a live card: that a main-thread status leaving `waiting` means the request is over is an unverified inference, and a wrong dismissal strands a pending request. The only dismissal signals are `serverRequest/resolved`, a link drop, a rotation, `remi unstick` and the session ending. LV-3 (g) asks whether interrupt, Esc and turn end produce a resolved.
+- F4, a card dismissed by Cancel (a `terminalOnly` card) or by `remi unstick` comes back at the next replay (a reconnect or a re-attach) because the request is still pending: intended.
+- F5, a flapping link pushes the card again at each replay, and more than 64 requests at once dismiss the oldest live cards (they stay answerable in the terminal): intentional and fail-safe, not changed.
+- F6, the replay window is 3 s.
+- F7, a phone No and the header X send `cancel`, which in Codex may also interrupt the turn (unverified).
+- F8, the relay and Worker carry the full command in plaintext until #881 is fixed (item 8).
+13. **Review findings, by item.**
+S1 (a cut command, item 3), S2 (the fixed label, item 8), S3 (rotation message, F2), S4 (no deadline, F1), S5 (escaping, item 3), S6 (Cancel label and no input, item 4), S7 (bounds, item 3), S8 (unconfirmed answer, item 6), S9 (the push body reads labels, not Codex's words), S10 (send failure, item 6), S11 (the directory, item 3), S12 (the grant label, item 2).
+L2 (a subagent's approval is `terminalOnly`, and whether it is replayed to a connection that resumed only the main thread is unverified: this corrects the sentences of the phase 3 amendment, E4, and the plan that said the replay re-delivers a card a person can act on), L3 (unverified behavior now carries its label in the README, `--help`, the type comments and the lists), L4 to L6, L8 to L11 (tests that could not fail, or claimed more than they did, now do and can), L12 (two Codex test files leaked temp directories; `codex-session.test.ts` waited for nothing before removing a directory the PTY exit handler writes into).
+14. **Receipts.**
+Pins first, in their own red commit: the golden table of real frames to `Question` JSON, the lock-screen category pin and the black-box typed-bytes-zero run of the whole daemon with a real websocket phone and a fake `codex` that counts its stdin (with a raw `q` as the positive control); then the implementation turned them green.
+The scenario tests (`codex-first-answer-wins.test.ts`) run the real client, tracker, registry, message API, input handlers and a stand-in app-server.
+**Fault injection, all of it.** In `codex-decisions.test.ts` (the unit file) these stand in for a collaborator, and none replaces `CodexDecisions` or the card builder: a recording client that can be told the link is down or that its `respond` throws; a `roles` map standing in for `ThreadTracker.role`; a `present` that throws before it reaches `handleQuestion`; a `removeQuestion` and an `onQuestionResolved` that throw; a `notice` collector; and a recording scheduler that fires only the timers the test chooses (it replaces the clock, never the logic). The real `AppServerClient`, `ThreadTracker` and `FakeAppServer` are constructed only in `codex-first-answer-wins.test.ts`, and the whole daemon only in `integration/codex-launch-characterization.test.ts`.
+Mutants of the new logic and of each wiring line, with the tests that kill them, are in the PR.
