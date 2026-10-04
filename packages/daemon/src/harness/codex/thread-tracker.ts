@@ -63,13 +63,35 @@ export interface ThreadTrackerDeps {
   expectedThreadId: string | null;
   /** Thread ids held by the active non-Claude records of other remi sessions. */
   claimedByOthers: () => ReadonlySet<string>;
-  /** Persist a newly learned thread id; a throw leaves the tracker without it. */
+  /**
+   * Persist a newly learned thread id. A throw leaves the tracker without it; a
+   * `ThreadClaimedError` says the store found another session holding it.
+   */
   onIdentity(threadId: string): void;
   onStatus(threadId: string, status: ThreadStatus): void;
+  /**
+   * Is another active remi codex session in this directory still waiting for its own
+   * thread id? Then a new thread in the directory may be its, so this tracker neither
+   * binds it nor rotates onto it. Read when a candidate is about to be committed.
+   */
+  siblingSeekingIdentity?: () => boolean;
+  /** Tell the user something as a system message; the tracker sends each kind at most once. */
+  notice?: (message: string) => void;
   log: (message: string) => void;
-  /** Test seams: the attach retry period (1000 ms) and the ambiguity window (300 ms). */
+  /**
+   * Test seams: the attach retry period (1000 ms), the ambiguity window (300 ms) and how long
+   * after `ready` a session with no identity waits before saying so (30 000 ms).
+   */
   retryMs?: number;
   ambiguityMs?: number;
+}
+
+/** The store found another remi session holding the thread this one was about to take. */
+export class ThreadClaimedError extends Error {
+  constructor(readonly threadId: string) {
+    super(`thread ${threadId.slice(0, 8)} is claimed by another session`);
+    this.name = 'ThreadClaimedError';
+  }
 }
 
 /** A thread created more than this long before the spawn is not this session's. */
@@ -114,6 +136,10 @@ export class ThreadTracker {
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private trackedStatus: ThreadStatus | null = null;
   private failures = 0;
+  /** Threads the store said another session holds: never tried again. */
+  private readonly rejected = new Set<string>();
+  /** Kinds of notice already sent. */
+  private readonly told = new Set<string>();
   /** The app-server has no `thread/resume` (`-32601`): not retried until the next `ready`. */
   private resumeUnavailable = false;
   /** Ids known to be descendants of the tracked thread, oldest first. */
@@ -211,12 +237,37 @@ export class ThreadTracker {
     ) {
       return false;
     }
-    if (t.id === this.current) return false;
+    if (t.id === this.current || this.rejected.has(t.id)) return false;
+    return !this.isClaimed(t.id);
+  }
+
+  /** Is `id` held by another session? An unreadable answer counts as held (fail closed). */
+  private isClaimed(id: string): boolean {
     try {
-      return !this.deps.claimedByOthers().has(t.id);
+      return this.deps.claimedByOthers().has(id);
     } catch (error) {
       this.deps.log(`could not read the claimed thread ids (${describeError(error)})`);
-      return false;
+      return true;
+    }
+  }
+
+  private isSiblingSeeking(): boolean {
+    try {
+      return this.deps.siblingSeekingIdentity?.() ?? false;
+    } catch (error) {
+      this.deps.log(`could not read the sibling sessions (${describeError(error)})`);
+      return true;
+    }
+  }
+
+  /** Say `text` to the user as a system message, once per `kind` for the session. */
+  private tell(kind: string, text: string): void {
+    if (this.told.has(kind)) return;
+    this.told.add(kind);
+    try {
+      this.deps.notice?.(text);
+    } catch (error) {
+      this.deps.log(`could not send a notice (${describeError(error)})`);
     }
   }
 
@@ -246,12 +297,34 @@ export class ThreadTracker {
     if (candidate === null || this.disposed) return;
     if (this.current !== null && this.trackedStatus?.type === 'active') return;
     const { id } = candidate.thread;
+    // The checks that decide a binding run now, not when the frame arrived: another session
+    // may have taken the thread, or a sibling may have started, during the window.
+    if (this.isClaimed(id)) {
+      this.deps.log(`thread ${short(id)} is held by another session; not binding`);
+      return;
+    }
+    if (this.isSiblingSeeking()) {
+      this.deps.log(
+        'another remi codex session in this directory has no thread yet; not binding a new thread',
+      );
+      this.tell(
+        'sibling',
+        'another remi codex session in this directory is starting; identity not bound',
+      );
+      return;
+    }
     try {
       this.deps.onIdentity(id);
     } catch (error) {
-      this.deps.log(`could not record the thread id (${describeError(error)})`);
+      if (error instanceof ThreadClaimedError) {
+        this.rejected.add(id);
+        this.deps.log(`thread ${short(id)} is claimed by another session; not binding`);
+      } else {
+        this.deps.log(`could not record the thread id (${describeError(error)})`);
+      }
       return;
     }
+    const previous = this.current;
     this.current = id;
     // The old thread's subagents are not this one's; threads that started before it was known are.
     this.descendants.clear();
@@ -261,7 +334,11 @@ export class ThreadTracker {
     this.isAttached = false;
     this.trackedStatus = null;
     this.failures = 0;
-    this.deps.log(`identity: thread ${short(id)}`);
+    this.deps.log(
+      previous === null
+        ? `identity: thread ${short(id)}`
+        : `rotated from ${short(previous)} to ${short(id)}`,
+    );
     if (candidate.status !== null) this.applyStatus(id, candidate.status);
     this.attach();
   }

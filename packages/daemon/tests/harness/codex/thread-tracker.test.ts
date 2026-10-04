@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AppServerClient } from '../../../src/harness/codex/app-server-client.ts';
 import type { ThreadStatus } from '../../../src/harness/codex/thread-protocol.ts';
-import { ThreadTracker } from '../../../src/harness/codex/thread-tracker.ts';
+import { ThreadClaimedError, ThreadTracker } from '../../../src/harness/codex/thread-tracker.ts';
 import { type Json, threadStartedFrame, threadStatusFrame } from '../../helpers/codex-threads.ts';
 import { FakeAppServer } from '../../helpers/fake-app-server.ts';
 
@@ -41,6 +41,8 @@ interface Ctx {
   identities: string[];
   statuses: Array<{ id: string; status: ThreadStatus }>;
   logs: string[];
+  /** What the tracker asked to tell the user (system messages). */
+  notices: string[];
   claimed: Set<string>;
   /** The frames the tracker's client sent for `thread/resume`, across connections. */
   resumeFrames(): Json[];
@@ -59,7 +61,11 @@ interface Ctx {
 interface Options {
   expected?: string | null;
   throwOnIdentity?: boolean;
+  /** `onIdentity` throws this instead (a thread the store says another session holds). */
+  identityError?: Error;
   claimedThrows?: boolean;
+  /** Another remi codex session in this directory is still waiting for its thread. */
+  siblingSeeking?: () => boolean;
   retryMs?: number;
   spawnedAtMs?: number;
 }
@@ -76,6 +82,7 @@ async function setup(opts: Options = {}): Promise<Ctx> {
   const identities: string[] = [];
   const statuses: Ctx['statuses'] = [];
   const logs: string[] = [];
+  const notices: string[] = [];
   const claimed = new Set<string>();
   let ready!: () => void;
   const isReady = new Promise<void>((resolve) => {
@@ -110,9 +117,12 @@ async function setup(opts: Options = {}): Promise<Ctx> {
       return claimed;
     },
     onIdentity: (id) => {
+      if (opts.identityError) throw opts.identityError;
       if (opts.throwOnIdentity) throw new Error('the store is unavailable');
       identities.push(id);
     },
+    siblingSeekingIdentity: opts.siblingSeeking ?? (() => false),
+    notice: (m) => notices.push(m),
     onStatus: (id, status) => statuses.push({ id, status }),
     log: (m) => logs.push(m),
     retryMs: opts.retryMs ?? 40,
@@ -131,6 +141,7 @@ async function setup(opts: Options = {}): Promise<Ctx> {
     identities,
     statuses,
     logs,
+    notices,
     claimed,
     resumeFrames: () =>
       server.received.filter((r) => r.frame['method'] === 'thread/resume').map((r) => r.frame),
@@ -756,5 +767,99 @@ describe('what it logs, and after dispose', () => {
     await settle(500);
     expect(ctx.identities).toEqual([]);
     expect(ctx.resumeFrames()).toEqual([]);
+  });
+});
+
+describe('binding re-checks the claims, and a sibling session keeps us from taking its thread (W2)', () => {
+  test('a thread that another session claimed while the window ran is not bound', async () => {
+    const ctx = await setup();
+    const id = crypto.randomUUID();
+    ctx.started('tui', id);
+    // Free when the frame arrived, held by the time the window ends.
+    await settle(40);
+    ctx.claimed.add(id);
+    await settle(420);
+    expect(ctx.identities).toEqual([]);
+    expect(ctx.resumeFrames()).toEqual([]);
+    expect(ctx.logs.some((l) => l.includes('held by another session'))).toBe(true);
+  });
+
+  test('a store that says another session holds the thread is logged as that, and the thread is not retried', async () => {
+    const id = crypto.randomUUID();
+    const ctx = await setup({ identityError: new ThreadClaimedError(id) });
+    ctx.started('tui', id);
+    await waitUntil(
+      ctx,
+      () => ctx.logs.some((l) => l.includes('claimed by another session')),
+      'the log',
+    );
+    expect(ctx.logs.some((l) => l.includes('could not record'))).toBe(false);
+    const attempts = ctx.logs.filter((l) => l.includes('claimed by another session')).length;
+
+    // The same thread again (a replay): not tried again.
+    ctx.started('tui', id);
+    await settle(500);
+    expect(ctx.logs.filter((l) => l.includes('claimed by another session'))).toHaveLength(attempts);
+    expect(ctx.resumeFrames()).toEqual([]);
+  });
+
+  test('a sibling session still waiting for its thread blocks a first binding, with one notice', async () => {
+    const ctx = await setup({ siblingSeeking: () => true });
+    ctx.started('tui', crypto.randomUUID());
+    await settle(500);
+    expect(ctx.identities).toEqual([]);
+    expect(ctx.resumeFrames()).toEqual([]);
+    expect(ctx.logs.some((l) => l.includes('another remi codex session in this directory'))).toBe(
+      true,
+    );
+    expect(ctx.notices).toEqual([
+      'another remi codex session in this directory is starting; identity not bound',
+    ]);
+
+    // Once per session, however many threads come.
+    ctx.started('tui', crypto.randomUUID());
+    await settle(500);
+    expect(ctx.notices).toHaveLength(1);
+  });
+
+  test('a sibling still waiting also blocks a rotation of an idle session', async () => {
+    let seeking = false;
+    const ctx = await setup({ siblingSeeking: () => seeking });
+    const a = crypto.randomUUID();
+    ctx.started('tui', a);
+    await waitUntil(ctx, () => ctx.identities.length === 1, 'the identity');
+    ctx.status(a, { type: 'idle' });
+    await settle(100);
+
+    seeking = true;
+    ctx.started('tui', crypto.randomUUID());
+    await settle(500);
+    expect(ctx.identities).toEqual([a]);
+    expect(ctx.notices).toHaveLength(1);
+
+    // The sibling has its thread now: a later new thread is an ordinary rotation again.
+    seeking = false;
+    const c = crypto.randomUUID();
+    ctx.started('tui', c);
+    await waitUntil(ctx, () => ctx.identities.length === 2, 'the rotation');
+    expect(ctx.identities).toEqual([a, c]);
+  });
+
+  test('a rotation is logged with both ids cut to eight characters, the plain-window residual made visible', async () => {
+    const ctx = await setup();
+    const a = crypto.randomUUID();
+    const b = crypto.randomUUID();
+    ctx.started('tui', a);
+    await waitUntil(ctx, () => ctx.identities.length === 1, 'the identity');
+    expect(ctx.logs.some((l) => l.startsWith('identity: thread'))).toBe(true);
+    ctx.status(a, { type: 'idle' });
+    await settle(100);
+
+    // A plain codex window opened in this directory by hand looks exactly like a /new.
+    ctx.started('tui', b);
+    await waitUntil(ctx, () => ctx.identities.length === 2, 'the rotation');
+    expect(ctx.logs).toContain(`rotated from ${a.slice(0, 8)} to ${b.slice(0, 8)}`);
+    expect(ctx.logs.join('\n')).not.toContain(a);
+    expect(ctx.logs.join('\n')).not.toContain(b);
   });
 });

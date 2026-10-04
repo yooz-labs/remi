@@ -138,7 +138,12 @@ describe('CodexHarness', () => {
   }
 
   /** Build (not start) a Codex session the way `createNewSession` asks the harness for one. */
-  function create(deps: CodexLaunchDeps, args: string[] = [], passThrough = false) {
+  function create(
+    deps: CodexLaunchDeps,
+    args: string[] = [],
+    passThrough = false,
+    directory = workDir,
+  ) {
     const sessionId = crypto.randomUUID() as UUID;
     const messages: Message[] = [];
     const statuses: AgentStatus[] = [];
@@ -151,7 +156,7 @@ describe('CodexHarness', () => {
     );
     const session = new CodexHarness(deps).createSession({
       sessionId,
-      workingDirectory: workDir,
+      workingDirectory: directory,
       extraArgs: args,
       passThrough,
       reservedRows: 5,
@@ -618,6 +623,129 @@ describe('CodexHarness', () => {
       });
       await until(() => statuses.at(-1) === 'thinking', 'thinking on the new thread');
     });
+  });
+
+  describe('two sessions in one directory (W2)', () => {
+    /** These start two daemons' worth of PTYs and wait out their windows. */
+    const slow = (name: string, fn: () => Promise<void>) => test(name, fn, 30000);
+    /** Wait until `n` clients have finished their handshake with the fake app-server. */
+    const handshakes = (server: FakeAppServer, n: number) =>
+      until(
+        () =>
+          server.clientIds().length === n &&
+          server
+            .clientIds()
+            .every((c) => server.framesFrom(c).some((f) => f['method'] === 'initialized')),
+        `${n} client handshake(s)`,
+      );
+    const startFrame = (id: string, dir = workDir) =>
+      threadStartedFrame('tui', { id, cwd: dir, createdAtSec: nowSec() });
+    const holder = (sessionId: UUID) => bindingStore.getIdentity(sessionId)?.harnessSessionId;
+
+    /** A is bound to T1 and idle; B has just started in the same directory with no thread. */
+    async function boundAndFresh(windows: { a: number; b: number }) {
+      const server = startServer();
+      const a = create(buildDeps(server, { tracker: { ambiguityMs: windows.a } }));
+      await a.session.start();
+      await handshakes(server, 1);
+      const t1 = crypto.randomUUID();
+      server.emit(startFrame(t1), { broadcast: true });
+      await until(() => holder(a.sessionId) === t1, 'A to bind T1');
+      server.emit(threadStatusFrame(t1, { type: 'idle' }), { broadcast: true });
+      const b = create(buildDeps(server, { tracker: { ambiguityMs: windows.b } }));
+      await b.session.start();
+      await handshakes(server, 2);
+      return { server, a, b, t1 };
+    }
+
+    for (const [order, windows] of [
+      ['A commits first', { a: 120, b: 600 }],
+      ['B commits first', { a: 600, b: 120 }],
+    ] as const) {
+      slow(
+        `${order}: the idle session keeps its thread and the new session takes the new one`,
+        async () => {
+          const { server, a, b, t1 } = await boundAndFresh(windows);
+          const t2 = crypto.randomUUID();
+          server.emit(startFrame(t2), { broadcast: true });
+          await until(() => holder(b.sessionId) === t2, 'B to bind T2', 8000);
+          await sleep(900);
+          // The store, which is what every consumer reads, and not only what each tracker thinks.
+          expect(holder(a.sessionId)).toBe(t1);
+          expect(holder(b.sessionId)).toBe(t2);
+          const rows = sessionStore.list().filter((s) => s.exitedAt === null);
+          expect(rows.map((s) => [s.remiSessionId, s.harnessSessionId]).sort()).toEqual(
+            [
+              [a.sessionId, t1],
+              [b.sessionId, t2],
+            ].sort(),
+          );
+          expect(logs.some((l) => l.includes('could not record'))).toBe(false);
+        },
+      );
+    }
+
+    slow(
+      'two sessions that both wait for a thread bind neither, and each says so once',
+      async () => {
+        const server = startServer();
+        const a = create(buildDeps(server, { tracker: { ambiguityMs: 100 } }));
+        const b = create(buildDeps(server, { tracker: { ambiguityMs: 100 } }));
+        await a.session.start();
+        await b.session.start();
+        await handshakes(server, 2);
+        server.emit(startFrame(crypto.randomUUID()), { broadcast: true });
+        await sleep(900);
+        expect(holder(a.sessionId)).toBeNull();
+        expect(holder(b.sessionId)).toBeNull();
+        for (const s of [a, b]) {
+          const notices = s.messages.filter((m) => m.sender === 'system');
+          expect(notices.map((m) => m.content)).toEqual([
+            'another remi codex session in this directory is starting; identity not bound',
+          ]);
+        }
+      },
+    );
+
+    slow(
+      'a sibling in another directory, an exited one and a Claude one do not count',
+      async () => {
+        const server = startServer();
+        const otherDir = path.join(tmpDir, 'other');
+        fs.mkdirSync(otherDir);
+        create(buildDeps(server), [], false, otherDir);
+        sessionStore.save(
+          record({ harnessSessionId: null, pid: null, exitedAt: new Date().toISOString() }),
+        );
+        sessionStore.save(record({ harness: undefined, claudeSessionId: crypto.randomUUID() }));
+        const a = create(buildDeps(server, { tracker: { ambiguityMs: 100 } }));
+        await a.session.start();
+        await handshakes(server, 1);
+        const t1 = crypto.randomUUID();
+        server.emit(startFrame(t1), { broadcast: true });
+        await until(() => holder(a.sessionId) === t1, 'A to bind T1 despite them');
+      },
+    );
+
+    slow(
+      'a plain window opened by hand in the directory while the session is idle rebinds it, and says so',
+      async () => {
+        // The residual that cannot be told from a /new in the TUI (decision D2): documented, not silent.
+        const server = startServer();
+        const a = create(buildDeps(server, { tracker: { ambiguityMs: 100 } }));
+        await a.session.start();
+        await handshakes(server, 1);
+        const t1 = crypto.randomUUID();
+        const t2 = crypto.randomUUID();
+        server.emit(startFrame(t1), { broadcast: true });
+        await until(() => holder(a.sessionId) === t1, 'A to bind T1');
+        server.emit(threadStatusFrame(t1, { type: 'idle' }), { broadcast: true });
+        await sleep(100);
+        server.emit(startFrame(t2), { broadcast: true });
+        await until(() => holder(a.sessionId) === t2, 'A to rotate onto T2');
+        expect(logs).toContain(`[Codex] rotated from ${t1.slice(0, 8)} to ${t2.slice(0, 8)}`);
+      },
+    );
   });
 
   describe('claimed threads', () => {

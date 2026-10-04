@@ -54,7 +54,7 @@ import { AppServerClient, type AppServerClientOptions } from './app-server-clien
 import { resolveCodexWorkingDirectory, validateCodexArgs } from './codex-args.ts';
 import { resolveCodexSocketPath } from './codex-socket.ts';
 import type { ThreadStatus } from './thread-protocol.ts';
-import { ThreadTracker } from './thread-tracker.ts';
+import { ThreadClaimedError, ThreadTracker, type ThreadTrackerDeps } from './thread-tracker.ts';
 
 export interface CodexLaunchDeps {
   sessionRegistry: SessionRegistry;
@@ -71,9 +71,13 @@ export interface CodexLaunchDeps {
   /** remi's own version, sent as the app-server client's version. */
   remiVersion: string;
   log: (message: string) => void;
-  /** Test seams (production leaves them out): the client's reconnect backoff and the 30 s link watchdog. */
+  /**
+   * Test seams (production leaves them out): the client's reconnect backoff, the 30 s link
+   * watchdog, and the tracker's attach retry period and ambiguity window.
+   */
   appServer?: Pick<AppServerClientOptions, 'backoff'>;
   linkWatchdogMs?: number;
+  tracker?: Pick<ThreadTrackerDeps, 'retryMs' | 'ambiguityMs'>;
 }
 
 /** A launch remi refuses, with the exit code `cli.ts` ends with (2 for arguments, 1 otherwise). */
@@ -230,6 +234,25 @@ export function createCodexSession(
     clearTimeout(watchdog);
     watchdog = undefined;
   };
+  /** A system-sender message to the clients; a failure to send it is logged, never thrown. */
+  const sendSystemMessage = (content: string): void => {
+    const stamp = now();
+    const message: Message = {
+      id: generateId(),
+      sessionId,
+      sender: 'system',
+      content,
+      createdAt: stamp,
+      state: 'sent',
+      stateChangedAt: stamp,
+      isEditing: false,
+    };
+    try {
+      messageApi.handleMessage(message);
+    } catch (error) {
+      log(`could not send the notice (${error instanceof Error ? error.name : typeof error})`);
+    }
+  };
   const armWatchdog = (): void => {
     if (warned || watchdog !== undefined) return;
     watchdog = setTimeout(() => {
@@ -237,22 +260,7 @@ export function createCodexSession(
       log(
         'the shared app-server is not reachable; the session continues as a plain terminal session',
       );
-      const stamp = now();
-      const message: Message = {
-        id: generateId(),
-        sessionId,
-        sender: 'system',
-        content: LINK_UNAVAILABLE_MESSAGE,
-        createdAt: stamp,
-        state: 'sent',
-        stateChangedAt: stamp,
-        isEditing: false,
-      };
-      try {
-        messageApi.handleMessage(message);
-      } catch (error) {
-        log(`could not send the notice (${error instanceof Error ? error.name : typeof error})`);
-      }
+      sendSystemMessage(LINK_UNAVAILABLE_MESSAGE);
     }, deps.linkWatchdogMs ?? DEFAULT_LINK_WATCHDOG_MS);
   };
 
@@ -296,8 +304,24 @@ export function createCodexSession(
           )
           .map((s) => s.harnessSessionId as string),
       ),
+    // Another ACTIVE codex session in this directory that has no thread yet may own the next new
+    // thread there; the store's purge (in `list()`) has already dropped the dead.
+    siblingSeekingIdentity: () =>
+      deps.sessionStore.list().some((s) => {
+        if (isClaudeRecord(s) || s.exitedAt !== null || s.remiSessionId === sessionId) return false;
+        if (s.harnessSessionId !== undefined && s.harnessSessionId !== null) return false;
+        const there = resolveCodexWorkingDirectory(s.projectPath);
+        return there.ok && there.directory === cwd.directory;
+      }),
+    notice: sendSystemMessage,
     onIdentity: (threadId) => {
-      deps.bindingStore.updateHarnessIdentity(sessionId, 'codex', threadId);
+      try {
+        deps.bindingStore.updateHarnessIdentity(sessionId, 'codex', threadId);
+      } catch (error) {
+        // Another session took the thread between the tracker's check and this write.
+        if (error instanceof AmbiguousSessionIdentityError) throw new ThreadClaimedError(threadId);
+        throw error;
+      }
       // What the old thread's descendants were doing says nothing about the new one.
       statuses.clear();
     },
@@ -308,6 +332,7 @@ export function createCodexSession(
       publish();
     },
     log,
+    ...deps.tracker,
   });
   link.tracker = tracker;
 
