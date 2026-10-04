@@ -16,6 +16,7 @@ import {
   admit,
   admitText,
   advanceClock,
+  bunKeepsCloseReason,
   clientUrl,
   connectClient,
   hex,
@@ -507,7 +508,10 @@ describe('when one end of a pipe closes', () => {
   test('the close code and reason the peer chose are passed on to the other end', async () => {
     const { socket, pipe } = await openPipe();
     socket.ws.close(4001, 'ended by the phone');
-    expect(await pipe.closed).toEqual({ code: 4001, reason: 'ended by the phone' });
+    const closed = await pipe.closed;
+    expect(closed.code).toBe(4001);
+    // Bun 1.3.11 sends no close reason, so there is none to pass on there (see the helper)
+    if (await bunKeepsCloseReason()) expect(closed.reason).toBe('ended by the phone');
   });
 
   test('a socket that dies without a close frame ends the other with the generic close', async () => {

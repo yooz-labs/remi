@@ -361,6 +361,33 @@ export async function holdBurns(worker: TestWorker, ridHex: string, size: number
   } as RequestInit);
 }
 
+let closeReasonKept: Promise<boolean> | undefined;
+
+/**
+ * Whether this Bun's WebSocket client sends a close reason at all. Bun 1.3.11 drops it
+ * (a close(4001, 'x') arrives as an empty reason at any server, measured on a loopback
+ * server with no Worker involved); Bun 1.4.2 sends it. A test that needs the reason to
+ * cross asserts it only where the client can send one.
+ */
+export function bunKeepsCloseReason(): Promise<boolean> {
+  closeReasonKept ??= new Promise<boolean>((resolve) => {
+    const server = Bun.serve({
+      port: 0,
+      fetch: (req, s) => (s.upgrade(req) ? undefined : new Response('no')),
+      websocket: {
+        message() {},
+        close: (_ws, _code, reason) => {
+          resolve(reason === 'probe');
+          server.stop(true);
+        },
+      },
+    });
+    const ws = new WebSocket(`ws://127.0.0.1:${server.port}`);
+    ws.onopen = () => ws.close(4001, 'probe');
+  });
+  return closeReasonKept;
+}
+
 export async function runAlarm(worker: TestWorker, ridHex: string): Promise<void> {
   await fetch(`${worker.url}/__room/${ridHex}/__alarm`, {
     method: 'POST',
