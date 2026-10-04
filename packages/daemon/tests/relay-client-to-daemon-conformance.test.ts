@@ -46,7 +46,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { MESSAGE_DIRECTION, deserialize } from '@remi/shared';
+import { MESSAGE_DIRECTION, createCreateSessionRequest, deserialize } from '@remi/shared';
 import type { ProtocolMessage, ProtocolMessageMap, UUID } from '@remi/shared';
 import type { AdapterEvents } from '../src/adapters/connection-adapter.ts';
 import { RelayAdapter, type RelayTransport } from '../src/remote/relay-adapter.ts';
@@ -210,6 +210,40 @@ describe('daemon inbound dispatch: RelayAdapter transport-seam conformance (#899
       // No rejection was sent back for a type the router does recognize.
       expect(transport.sent).toHaveLength(0);
     });
+  });
+
+  test('a create request carries its harness and args to onCreateSessionRequest as extra (#1179)', () => {
+    // The shipping factory builds the request, as the CLI and the web client do.
+    const request = createCreateSessionRequest('/work/project', {
+      harness: 'codex',
+      args: ['-m', 'some-model'],
+    });
+    transport.emitRelay(request);
+
+    expect(eventCalls).toHaveLength(1);
+    expect(eventCalls[0]?.event).toBe('onCreateSessionRequest');
+    // onCreateSessionRequest(connectionId, directory, requestId, extra)
+    expect(eventCalls[0]?.args.slice(1)).toEqual([
+      '/work/project',
+      request.id,
+      { harness: 'codex', args: ['-m', 'some-model'] },
+    ]);
+  });
+
+  test('a plain create request has no extra, and a hostile one reaches the handler untouched to be refused there (#1179)', () => {
+    transport.emitRelay(createCreateSessionRequest('/work/project'));
+    expect(eventCalls[0]?.args[3]).toBeUndefined();
+
+    // Nothing is validated in the transport: a field that is not what the type says flows
+    // through for the handler's trust-boundary checks, as every other field does.
+    eventCalls.length = 0;
+    const hostile = {
+      ...createCreateSessionRequest('/work/project'),
+      harness: 5,
+      args: 'not an array',
+    } as unknown as ProtocolMessage;
+    transport.emitRelay(hostile);
+    expect(eventCalls[0]?.args[3]).toEqual({ harness: 5, args: 'not an array' });
   });
 
   test('answer selections/cancel are forwarded as extra over relay (#899: previously dropped)', () => {

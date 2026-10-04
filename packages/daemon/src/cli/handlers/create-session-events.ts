@@ -10,9 +10,11 @@
  * create requests race for the same free port.
  */
 
-import { createCreateSessionResponse, errorToString } from '@remi/shared';
+import { createCreateSessionResponse, errorToString, isHarnessId } from '@remi/shared';
 import type { UUID } from '@remi/shared';
 
+import type { HarnessRegistry } from '../../harness/registry.ts';
+import type { CreateSessionExtra } from '../../server/client-message-events.ts';
 import type { SessionRegistryFile } from '../../session/index.ts';
 import { findAvailableTcpPort as defaultFindAvailableTcpPort } from '../../session/port-utils.ts';
 import { spawnRemiDaemon as defaultSpawnRemiDaemon } from '../daemon-manager.ts';
@@ -26,7 +28,56 @@ export interface SpawnResult {
   readonly pid: number;
 }
 
+/**
+ * What a create request may ask of a harness, checked before a port is probed or anything is
+ * spawned (#1179): the harness must be one this build has an adapter for whose command resolves
+ * on PATH, its `args` must pass that harness's remote allowlist, and nothing may stand in the way
+ * of a launch (the older-daemon gate, for Codex). On success, the arguments to append to the
+ * child's command line: `--harness <id>` and then `-- <args>`, last, so no remote argument can be
+ * read as a remi flag (`--no-auth`). A request that names no harness spawns Claude exactly as it
+ * always did, with nothing appended unless it brought `args`.
+ */
+export function checkHarnessRequest(
+  registry: HarnessRegistry,
+  extra: CreateSessionExtra | undefined,
+): { ok: true; spawnArgs: string[] } | { ok: false; error: string } {
+  const { harness, args } = extra ?? {};
+  if (harness === undefined && args === undefined) return { ok: true, spawnArgs: [] };
+
+  if (harness !== undefined && !isHarnessId(harness)) {
+    return { ok: false, error: 'Unknown harness; the request was not started.' };
+  }
+  const id = harness ?? 'claude';
+  const spec = registry.get(id);
+  if (spec === undefined) {
+    return { ok: false, error: `This remi has no ${id} adapter; the request was not started.` };
+  }
+  // A request that names no harness keeps Claude's old behavior, a spawn that fails inside the
+  // child if there is no `claude`; one that names a harness is held to what is installed.
+  if (harness !== undefined && !registry.available().includes(id)) {
+    return {
+      ok: false,
+      error: `${id} is not available on this machine (no ${spec.command} on the daemon's PATH); nothing was started.`,
+    };
+  }
+  const checked = spec.validateRemoteArgs(args ?? []);
+  if (!checked.ok) return { ok: false, error: checked.error };
+  if (harness !== undefined) {
+    const refusal = spec.launchRefusal?.() ?? null;
+    if (refusal !== null) return { ok: false, error: refusal };
+  }
+  return {
+    ok: true,
+    spawnArgs: [
+      ...(harness !== undefined ? ['--harness', id] : []),
+      ...(checked.args.length > 0 ? ['--', ...checked.args] : []),
+    ],
+  };
+}
+
 export interface CreateSessionHandlerDeps {
+  /** The harnesses a request may name, and what each allows (`cli.ts` builds it). */
+  harnesses: HarnessRegistry;
   liveSessionsRegistry: SessionRegistryFile;
   /** In-flight spawn ports; shared with cli.ts daemon-mode startup. */
   spawningPorts: Set<number>;
@@ -60,6 +111,7 @@ export type CreateSessionHandlers = ReturnType<typeof createCreateSessionHandler
 
 export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
   const {
+    harnesses,
     liveSessionsRegistry,
     spawningPorts,
     basePort,
@@ -76,10 +128,23 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
       connectionId: UUID,
       directory: string | undefined,
       requestId: UUID,
+      extra?: CreateSessionExtra,
     ): Promise<void> => {
       log(`Create session request from ${connectionId}, spawning new daemon`);
 
       try {
+        // The trust boundary (#1179): refuse before a port is chosen or anything is spawned.
+        // The refusal text goes to the client; the log says only that one happened.
+        const request = checkHarnessRequest(harnesses, extra);
+        if (!request.ok) {
+          log('Create session request refused by the harness checks; nothing spawned');
+          send(
+            connectionId,
+            createCreateSessionResponse(false, requestId, undefined, request.error),
+          );
+          return;
+        }
+
         // Include in-flight spawn ports to prevent a TOCTOU race on
         // concurrent create requests.
         const liveUsed = new Set([
@@ -108,7 +173,10 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
         log(`Spawning new daemon on port ${freePort} for directory ${resolvedDirectory}`);
         spawningPorts.add(freePort);
         try {
-          const result = await spawnDaemon(freePort, resolvedDirectory, [...inheritedArgs()]);
+          const result = await spawnDaemon(freePort, resolvedDirectory, [
+            ...inheritedArgs(),
+            ...request.spawnArgs,
+          ]);
           send(
             connectionId,
             createCreateSessionResponse(

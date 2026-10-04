@@ -1961,6 +1961,7 @@ const resumeSessionHandlers: ResumeSessionHandlers = createResumeSessionHandlers
 });
 
 const createSessionHandlers_: CreateSessionHandlers = createCreateSessionHandlers({
+  harnesses: harnessRegistry,
   liveSessionsRegistry,
   spawningPorts,
   basePort: remiConfig.daemon.base_port,

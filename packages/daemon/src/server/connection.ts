@@ -49,7 +49,7 @@ import type {
   UserInputMessage,
 } from '@remi/shared';
 import type { Authenticator } from '../auth/authenticator.ts';
-import type { ClientMessageEvents } from './client-message-events.ts';
+import { type ClientMessageEvents, createSessionExtra } from './client-message-events.ts';
 import { type ClientMessageHandlers, routeClientMessage } from './route-client-message.ts';
 
 /** Connection state */
@@ -552,7 +552,11 @@ export class Connection {
 
   private handleCreateSessionRequest(message: CreateSessionRequestMessage): void {
     this.sendAck(message.id, 'delivered');
-    this.events.onCreateSessionRequest?.(message.directory, message.id);
+    this.events.onCreateSessionRequest?.(
+      message.directory,
+      message.id,
+      createSessionExtra(message),
+    );
   }
 
   private handleKillSessionRequest(message: KillSessionRequestMessage): void {

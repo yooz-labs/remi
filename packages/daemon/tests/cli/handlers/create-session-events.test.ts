@@ -8,10 +8,13 @@ import {
   createCreateSessionHandlers,
 } from '../../../src/cli/handlers/create-session-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
+import { HarnessRegistry } from '../../../src/harness/registry.ts';
 import { SessionRegistryFile } from '../../../src/session/session-registry-file.ts';
 
 const CID = 'conn0000-0000-0000-0000-000000000000' as UUID;
 const REQ = 'req00000-0000-0000-0000-000000000000' as UUID;
+/** No harness is named in these tests (a plain request), so none is offered. */
+const harnesses = new HarnessRegistry({});
 
 describe('createCreateSessionHandlers', () => {
   let tmpDir: string;
@@ -39,6 +42,7 @@ describe('createCreateSessionHandlers', () => {
 
   test('responds with failure when no free port is available', async () => {
     const handlers = createCreateSessionHandlers({
+      harnesses,
       liveSessionsRegistry,
       spawningPorts,
       basePort: 20000,
@@ -69,6 +73,7 @@ describe('createCreateSessionHandlers', () => {
       extraArgs: string[];
     }> = [];
     const handlers = createCreateSessionHandlers({
+      harnesses,
       liveSessionsRegistry,
       spawningPorts,
       basePort: 20000,
@@ -114,6 +119,7 @@ describe('createCreateSessionHandlers', () => {
   test('maps a missing directory to the home directory, not the hub cwd (#1025)', async () => {
     const spawnHistory: Array<string | undefined> = [];
     const handlers = createCreateSessionHandlers({
+      harnesses,
       liveSessionsRegistry,
       spawningPorts,
       basePort: 20000,
@@ -138,6 +144,7 @@ describe('createCreateSessionHandlers', () => {
   test('reserves the port during spawn then releases it', async () => {
     let sawReservedDuringSpawn = false;
     const handlers = createCreateSessionHandlers({
+      harnesses,
       liveSessionsRegistry,
       spawningPorts,
       basePort: 20000,
@@ -161,6 +168,7 @@ describe('createCreateSessionHandlers', () => {
 
   test('releases the reservation even if spawn throws, responds with failure', async () => {
     const handlers = createCreateSessionHandlers({
+      harnesses,
       liveSessionsRegistry,
       spawningPorts,
       basePort: 20000,
@@ -201,6 +209,7 @@ describe('createCreateSessionHandlers', () => {
 
     let usedPortsSeen: number[] = [];
     const handlers = createCreateSessionHandlers({
+      harnesses,
       liveSessionsRegistry,
       spawningPorts,
       basePort: 20000,
