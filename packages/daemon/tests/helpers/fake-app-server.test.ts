@@ -271,6 +271,31 @@ describe('FakeAppServer: the modeled behavior, one claim per test', () => {
     expect(server.isPending(t, id)).toBe(true);
   });
 
+  test('doublePong() models Codex answering every ping with two identical pongs, and pingsReceived() counts the pings', async () => {
+    const pongs: number[] = [];
+    const conn = await connectUnixWebSocket(server.socketPath, {
+      onMessage: () => {},
+      onPong: () => pongs.push(1),
+      onClose: () => {},
+    });
+    clients.push(conn);
+    conn.ping('one');
+    await server.waitFor(() => pongs.length >= 1, 'a pong');
+    await settle();
+    expect(pongs).toHaveLength(1);
+    server.doublePong();
+    conn.ping('two');
+    await server.waitFor(() => pongs.length >= 3, 'two more pongs');
+    await settle();
+    expect(pongs).toHaveLength(3);
+    server.doublePong(false);
+    conn.ping('three');
+    await server.waitFor(() => pongs.length >= 4, 'one more pong');
+    await settle();
+    expect(pongs).toHaveLength(4);
+    expect(server.pingsReceived()).toBe(3);
+  });
+
   test('ids come from one counter shared by every thread', () => {
     const t = placeholderUuid(68);
     const ids = [

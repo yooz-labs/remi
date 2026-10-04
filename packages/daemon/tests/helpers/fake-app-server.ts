@@ -110,6 +110,8 @@ export class FakeAppServer {
   private nextClient = 1;
   private nextRequest = 1;
   private answersIgnored = false;
+  private doublePongs = false;
+  private pingCount = 0;
 
   private constructor() {
     this.dir = socketDir('remi-fake-codex-', 's.sock');
@@ -139,6 +141,12 @@ export class FakeAppServer {
         },
         pong: (_ws, data) => {
           this.pongs.push(new Uint8Array(data));
+        },
+        ping: (ws, data) => {
+          this.pingCount += 1;
+          // Bun answers a ping with one pong by itself; the real Codex answers EVERY ping with two
+          // identical pongs (verified live against 0.160.0, 2026-10-04), which this adds.
+          if (this.doublePongs) ws.pong(data);
         },
       },
     });
@@ -271,6 +279,20 @@ export class FakeAppServer {
 
   pongPayloads(): Uint8Array[] {
     return this.pongs;
+  }
+
+  /**
+   * From now on answer every ping from a client with two identical pongs, as the real Codex does
+   * (Bun's own single pong, plus one more). A client that re-arms its keepalive on every pong
+   * ends up with timers it can no longer cancel.
+   */
+  doublePong(on = true): void {
+    this.doublePongs = on;
+  }
+
+  /** How many pings the server has received from clients, since it started. */
+  pingsReceived(): number {
+    return this.pingCount;
   }
 
   /** Wait until `predicate` holds, polling; rejects after `timeoutMs`. */
