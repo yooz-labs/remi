@@ -1,8 +1,9 @@
 /**
  * The harness seam (epic #1161, phase 2 #1163): what the daemon asks of the
  * agent CLI it wraps, behind one descriptor so a second harness has a place to
- * plug in. Claude Code is the only implementation (`ClaudeHarness`), and
- * wiring it in changes nothing the daemon does or emits (ADR 0032).
+ * plug in. Claude Code (`ClaudeHarness`) is the default implementation, and wiring
+ * it in changed nothing the daemon does or emits (ADR 0032); Codex
+ * (`CodexHarness`, observe-only) is the second (ADR 0033).
  *
  * One daemon hosts one session, so the harness is a per-daemon singleton: it
  * is constructed once in `cli.ts` and handed to the handler factories as a
@@ -94,9 +95,9 @@ export interface HarnessSession {
   /**
    * Does this session take chat text typed from a client (web, Telegram, the
    * relay)? Absent means yes. `false` makes the chat handler refuse the text
-   * (`PROMPT_WAITING`, naming the message) and type nothing; raw input, a
-   * person's keystrokes from an attach client, the Escape button or
-   * `/interrupt`, is never affected. Codex sets it (#1177): it has no screen
+   * (`PROMPT_WAITING`, naming the message) and type nothing; raw input (an
+   * attach client's keystrokes, the Escape button or `/interrupt`, which the
+   * client marks `raw`) is never affected. Codex sets it (#1177): it has no screen
    * reads, so nothing can tell remi that its TUI is showing an approval or a
    * modal that a typed Enter would confirm.
    */

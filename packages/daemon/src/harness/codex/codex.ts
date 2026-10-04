@@ -5,8 +5,10 @@
  * false); see that file.
  *
  * `gracefulExitInput` is null, so a Stop force-closes the session and never
- * types `/quit` into the Codex TUI: remi types into a Codex PTY only on a
- * person's raw input (the TUI once ran an installer on a typed digit).
+ * types `/quit` into the Codex TUI: remi types into a Codex PTY only on raw input
+ * (an attach client's keystrokes, the Escape button, `/interrupt`), which the
+ * client marks `raw` and the daemon cannot tell from a script (the TUI once ran an
+ * installer on a typed digit).
  *
  * `cli.ts` is the one importer of this directory (`harness-boundary.test.ts`),
  * which is why `harness/index.ts` does not re-export it.

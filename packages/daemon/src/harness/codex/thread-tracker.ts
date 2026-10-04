@@ -9,31 +9,49 @@
  * to eight characters.
  *
  * A `thread/started` is a candidate for this session's TUI thread only when ALL
- * hold: not ephemeral; `threadSource` is `user` (or null with a rollout
+ * hold: its id is a UUID (`parseThread`: the id is stored and printed in a
+ * command line); not ephemeral; `threadSource` is `user` (or null with a rollout
  * `path`); at least one environment; no parent; its cwd, resolved with
  * `realpath`, is the session's; created no more than 5 s before the spawn; not
- * claimed by another remi session; and, for the first identity, none is held.
- * The TUI also starts a title-helper thread in the same directory about 7 s
- * later (ephemeral, `thread_title`, no environments): the rules above are why
+ * the tracked thread; not one the store refused; and not claimed by another remi
+ * session. The TUI also starts a title-helper thread in the same directory about
+ * 7 s later (ephemeral, `thread_title`, no environments): the rules above are why
  * it never binds (spike, `expB.jsonl:7` and `:12`).
  *
  * The first candidate waits `ambiguityMs` (300) before it is committed: a
- * second DISTINCT candidate arriving inside that window means two Codex windows
- * started in this directory together, and remi cannot tell which is its own.
- * Then it binds neither (fail closed): a session with no identity keeps none
- * (and keeps none for good), and a session that has one keeps it. It is decided
- * by arrival, not by `createdAt`, which has whole-second resolution in the real
- * frames; a repeat of the same thread id is not a second candidate. Residual
- * risk R4: a non-remi window in the same directory that starts in that window.
+ * second DISTINCT candidate that ARRIVES inside that window means two Codex
+ * windows started in this directory together, and remi cannot tell which is its
+ * own. Then it binds neither (fail closed): a session with no identity keeps none
+ * (and keeps none for good), and a session that has one keeps it. Arrival decides,
+ * not `createdAt`, which has whole-second resolution in the real frames; a
+ * repeat of the same thread id is not a second candidate.
+ *
+ * At commit, not when the frame arrived, the claim is checked again (another
+ * session may have taken the thread during the window), and so is the sibling
+ * guard: a `thread/started` carries nothing that says which session it is for, so
+ * while another live remi codex session in the directory could own it, nothing is
+ * bound and the candidate is DROPPED, not kept (after a block it cannot be
+ * attributed, and keeping it would bind a guess). For a first bind only a sibling
+ * with no thread yet and a start under 60 s old is in the way; for a rotation any
+ * sibling is, bound or not, so with two sessions in one directory a `/new` in
+ * either is followed by neither (a known limit). Each block is logged, and the user
+ * is told once (once for a first bind, once for a rotation). A thread the store then refuses (`ThreadClaimedError`) is
+ * remembered and never retried.
+ *
+ * A candidate after the first identity is a `/new` in the TUI and rotates the
+ * binding, but not while the tracked thread is `active` and not past the sibling
+ * guard (decided policy, unverified live); the old id is not kept, and every
+ * rotation is logged as `rotated from <8> to <8>`. Residuals: a plain non-remi
+ * `codex` window opened in this directory while the session is idle looks exactly
+ * like a `/new` and re-binds it, and a `/resume` inside the TUI emits no
+ * `thread/started` (spike, `expB3.jsonl:12-13`), so the old thread is kept.
  *
  * Attach is `thread/resume {threadId, excludeTurns: true}` and nothing else (the
  * spike showed an override persists on the thread). It fails with `-32600`
- * ("no rollout found") until the first message of the thread, so it is retried:
- * at once when the tracked thread turns `active`, otherwise every second (every
- * five seconds after ten failures), for the life of the session; a server with no
- * `thread/resume` at all (`-32601`) is asked once per connection. A new candidate after the first identity is a `/new`
- * in the TUI and rotates the binding, but not while the tracked thread is
- * `active` (decided policy, unverified live): the old id is not kept.
+ * ("no rollout found") until the first message of the thread, so it is retried
+ * for the life of the session: at once when the tracked thread turns `active`,
+ * otherwise every second (every five seconds after ten failures). A server with
+ * no `thread/resume` at all (`-32601`) is asked once per connection.
  *
  * The tracked thread and every thread whose parent chain reaches it (subagents)
  * are the session's, so their status is the session's status. Two bounded
@@ -42,6 +60,13 @@
  * (at most 512, first in first out) holds the links seen before their parent was
  * known to be ours, so a thread started before its parent still counts once the
  * parent does, while the links of other windows only ever fill that second one.
+ * A descendant pushed out of the first is reported idle, since its frames are
+ * ignored from then on.
+ *
+ * A session that is connected but never learns its thread says so once, 30 s
+ * after the link came up (looking again once if a candidate was then inside its
+ * window): the thread is learned only from a live `thread/started`, so a
+ * connection that opened after the frame never sees it.
  */
 
 import { realpathSync } from 'node:fs';

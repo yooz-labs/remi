@@ -6,9 +6,10 @@
  * exists yet (phases 4 to 6), and chat text typed from a client (the phone,
  * Telegram, the relay) is refused with `PROMPT_WAITING` (`acceptsTypedChat:
  * false`): the TUI cannot be read, so a typed message and its Enter could land on
- * an approval overlay or a modal. The child's stdin sees only what a person types
- * at the terminal or sends as raw input (an attach client, the Escape button,
- * `/interrupt`).
+ * an approval overlay or a modal. The child's stdin sees only what is typed at
+ * the terminal and raw input (an attach client's keystrokes, the Escape button,
+ * `/interrupt`), which the client marks `raw` and the daemon cannot tell from a
+ * script.
  *
  * Order of the state-changing steps (`createCodexSession`):
  * 1. `validateCodexArgs`: a refusal exits 2. (The working directory must also exist
