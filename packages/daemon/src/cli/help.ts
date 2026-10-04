@@ -109,6 +109,13 @@ const commandHelp: Record<Subcommand, string[]> = {
     entry('--recent', 'Pick from recent project directories'),
     entry('--host HOST', 'Create session on remote daemon'),
     entry('--port PORT', 'Remote daemon port'),
+    entry('--harness ID', 'The harness to start: claude (default) or codex'),
+    '',
+    dim('  With --host only the words after `--` are sent, and a loose word is refused (exit 2).'),
+    dim('  A remi that lists the harness applies them after checking them against its own list'),
+    dim('  (Claude: --resume <uuid>, --fork-session with it, --model <name>); an older remi'),
+    dim('  does not know the field, so this command refuses to send arguments or a harness to'),
+    dim('  one that does not list the harness, and nothing is started.'),
   ],
   codex: [
     'Start a Codex session with monitoring (checked against Codex 0.160.0 on 2026-10-04; subagent requests not yet).',

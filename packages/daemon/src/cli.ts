@@ -278,7 +278,7 @@ import { resolveDirectory } from './cli/path-resolver.ts';
 // ---------------------------------------------------------------------------
 // Parse CLI arguments
 // ---------------------------------------------------------------------------
-import { parseArgs, parseHostPath } from './cli/arg-parser.ts';
+import { looseArgs, parseArgs, parseHostPath } from './cli/arg-parser.ts';
 import { formatCommandHelp, formatHelp } from './cli/help.ts';
 
 const parsedArgs = parseArgs(process.argv.slice(2));
@@ -838,6 +838,17 @@ if (
   (cliSubcommand === 'new' || cliSubcommand === undefined || cliSubcommand === 'codex') &&
   cliHost
 ) {
+  // Only the words after `--` go to the remote session. A loose one used to be dropped without a
+  // word, so the host started its own defaults (a fresh session where a resume was typed, its own
+  // sandbox where `-s read-only` was): refused instead, before anything is sent (#1179 review, G2).
+  const loose = looseArgs(parsedArgs);
+  if (loose.length > 0) {
+    console.error(
+      `remi: arguments for the remote session go after \`--\` (for example \`remi codex --host <host> -- -m <model>\`); not sent: ${loose.join(' ')}`,
+    );
+    process.exit(2);
+  }
+
   // Support host:path syntax (e.g. yahyas-mcm:~/Documents/git/project)
   const { host: effectiveHost, directory: hostDir } = parseHostPath(cliHost);
 
@@ -1938,7 +1949,17 @@ const harnessRegistry = new HarnessRegistry({
 let codexLaunchArgs: string[] = [];
 if (codexHarness) {
   // A daemon reads its arguments from what follows `--` and nothing else (a hub appends them
-  // there, last); a wrapper hands everything the user typed to the validator.
+  // there, last); a wrapper hands everything the user typed to the validator. A loose word on a
+  // Codex daemon is an error, as every argument was before Phase 5: ignoring it would start Codex
+  // without what was asked (#1179 review, G3). A Claude daemon still ignores loose words, so an
+  // existing LaunchAgent plist starts as before.
+  const loose = cliDaemonMode ? looseArgs(parsedArgs) : [];
+  if (loose.length > 0) {
+    console.error(
+      `remi codex --daemon takes its Codex arguments after \`--\`; not recognized: ${loose.join(' ')}`,
+    );
+    process.exit(2);
+  }
   const preflight = codexHarness.preflight(
     cliDaemonMode ? parsedArgs.explicitArgs : parsedArgs.passthroughArgs,
     process.cwd(),

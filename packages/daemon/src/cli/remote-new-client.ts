@@ -16,7 +16,7 @@ import {
   generateId,
   serialize,
 } from '@remi/shared';
-import { errorToString } from '@remi/shared';
+import { errorToString, escapeUnsafeText } from '@remi/shared';
 import type { HarnessId, ProtocolMessage, UUID } from '@remi/shared';
 import { runAttachClient } from './attach-client.ts';
 import { performAuthHandshake } from './auth-helper.ts';
@@ -40,7 +40,11 @@ export interface RemoteNewOptions {
 interface RemoteSessionResult {
   readonly sessionId: UUID;
   readonly port: number;
-  /** What the daemon says its success does not (#1179): shown to the person, never acted on. */
+  /**
+   * What the daemon says its success does not (#1179): shown to the person, never acted on. It is
+   * text a daemon chose and that this client trusts only on first use, so it arrives escaped
+   * (`escapeUnsafeText`): a terminal sequence or a bidi override in it cannot act on the screen.
+   */
   readonly notice?: string;
 }
 
@@ -119,14 +123,19 @@ export async function createRemoteSession(
           done({
             sessionId: msg.sessionId,
             port: msg.port ?? port,
-            ...(msg.notice !== undefined && { notice: msg.notice }),
+            ...(msg.notice !== undefined && { notice: escapeUnsafeText(msg.notice) }),
           });
         } else {
-          done(undefined, new Error(`Failed to create session: ${msg.error ?? 'unknown error'}`));
+          done(
+            undefined,
+            new Error(
+              `Failed to create session: ${escapeUnsafeText(msg.error ?? 'unknown error')}`,
+            ),
+          );
         }
       } else if (msg.type === 'error') {
         if (msg.code === 'AUTH_REQUIRED') return;
-        done(undefined, new Error(`Daemon error: ${msg.message}`));
+        done(undefined, new Error(`Daemon error: ${escapeUnsafeText(msg.message)}`));
       }
     }
 
@@ -173,18 +182,32 @@ export async function createRemoteSession(
   });
 }
 
-export async function runRemoteNew(opts: RemoteNewOptions): Promise<{ exitCode: number }> {
-  const { host, port, directory, timeout, harness, args } = opts;
+/** What `runRemoteNew` does outside the create itself; a test replaces both. */
+export interface RemoteNewDeps {
+  readonly attach?: typeof runAttachClient;
+  /** Where the progress lines go: stderr. */
+  readonly err?: (line: string) => void;
+}
 
-  console.error(`Creating session on ${host}:${port}...`);
+export async function runRemoteNew(
+  opts: RemoteNewOptions,
+  deps: RemoteNewDeps = {},
+): Promise<{ exitCode: number }> {
+  const { host, port, directory, timeout, harness, args } = opts;
+  const attach = deps.attach ?? runAttachClient;
+  const err = deps.err ?? ((line: string) => console.error(line));
+
+  err(`Creating session on ${host}:${port}...`);
   const result = await createRemoteSession(host, port, directory, timeout, harness, args);
 
   if (result.port !== port) {
-    console.error(`New daemon spawned on port ${result.port}`);
+    err(`New daemon spawned on port ${result.port}`);
   }
-  console.error(`Session created: ${result.sessionId.slice(0, 8)}`);
-  if (result.notice !== undefined) console.error(result.notice);
-  console.error('Attaching...');
+  err(`Session created: ${result.sessionId.slice(0, 8)}`);
+  // The notice's first line is the condition, the rest what to do about it, which for a person
+  // here is `remi attach`: this command attaches next, so it prints the condition only.
+  if (result.notice !== undefined) err(result.notice.split('\n', 1)[0] as string);
+  err('Attaching...');
 
-  return runAttachClient({ host, port: result.port, sessionId: result.sessionId });
+  return attach({ host, port: result.port, sessionId: result.sessionId });
 }

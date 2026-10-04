@@ -146,12 +146,28 @@ export interface ParsedArgs {
    * plist with a loose word in it starts exactly as before.
    */
   readonly explicitArgs: readonly string[];
-  /** The harness the hidden `--harness <id>` names (#1177): how a hub tells a child daemon its harness. */
+  /**
+   * The harness `--harness <id>` names: how a hub tells a child daemon its harness (#1177), and how
+   * `remi new --host <ip> --harness codex` asks a remote hub for one (#1179). User-facing; the help
+   * of `new` lists it.
+   */
   readonly harness: HarnessId | undefined;
   readonly showVersion: boolean;
   readonly showHelp: boolean;
   /** Callers MUST check this before using any other field. */
   readonly error: string | undefined;
+}
+
+/**
+ * The words that are neither a remi flag nor after a `--` (#1179 review): `claudeArgs` holds them
+ * first and then the tokens after the `--` (`explicitArgs`), so they are what is left at the front.
+ * A command that sends its harness arguments somewhere that reads only `explicitArgs` (`--host`, a
+ * Codex `--daemon`) must refuse these, or the person gets what they did not ask for, silently.
+ */
+export function looseArgs(
+  parsed: Pick<ParsedArgs, 'claudeArgs' | 'explicitArgs'>,
+): readonly string[] {
+  return parsed.claudeArgs.slice(0, parsed.claudeArgs.length - parsed.explicitArgs.length);
 }
 
 export function parseArgs(args: readonly string[]): ParsedArgs {

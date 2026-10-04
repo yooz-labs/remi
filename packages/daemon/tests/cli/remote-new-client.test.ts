@@ -179,7 +179,7 @@ describe('createRemoteSession sends a harness only to a daemon that offers it (#
         {
           attach: async (options) => {
             attached.push(options);
-            return { exitCode: 7 };
+            return { exitCode: 7, reason: 'detached' as const };
           },
           err: (line) => lines.push(line),
         },
@@ -199,7 +199,7 @@ describe('createRemoteSession sends a harness only to a daemon that offers it (#
       ]);
       expect(lines.join('\n')).not.toContain('remi attach');
       expect(attached).toEqual([{ host: 'localhost', port, sessionId: SESSION }]);
-      expect(result).toEqual({ exitCode: 7 });
+      expect(result.exitCode).toBe(7);
     });
 
     test('the printed condition is escaped too', async () => {
