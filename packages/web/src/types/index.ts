@@ -202,8 +202,8 @@ export interface UIQuestionOption {
    *  session's permission mode. Absent for a one-time Yes, a No, and every
    *  option read off the screen (a hook-less prompt). `'session'` (#1178) is
    *  Codex's `acceptForSession`: remi writes nothing and sends the decision the
-   *  request listed; that Codex remembers it is not yet checked against a real
-   *  Codex (LV-3 (f)). */
+   *  request listed; none of 7 real command approvals on Codex 0.160.0 listed
+   *  it, so what Codex does with it is unknown (LV-3 (f)). */
   readonly standingGrant?: 'addRules' | 'setMode' | 'session';
 }
 

@@ -40,7 +40,8 @@
  *
  * A candidate after the first identity is a `/new` in the TUI and rotates the
  * binding, but not while the tracked thread is `active` and not past the sibling
- * guard (decided policy, unverified live); the old id is not kept, and every
+ * guard (decided policy, not tried live; the idle plain-window re-bind below was seen
+ * live, 2026-10-04); the old id is not kept, and every
  * rotation is logged as `rotated from <last 8> to <last 8>`. Residuals: a plain non-remi
  * `codex` window opened in this directory while the session is idle looks exactly
  * like a `/new` and re-binds it, and a `/resume` inside the TUI emits no

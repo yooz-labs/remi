@@ -19,8 +19,9 @@
  * Options are built by what they MEAN, never by position, and only from what the
  * request itself lists in `availableDecisions` (an absent list allows `accept`
  * and `decline`): `Yes` is `accept`; `Yes, and don't ask again for this command
- * this session` is `acceptForSession` (remi writes nothing; that Codex accepts
- * and remembers it is schema-only, not checked against a real Codex, LV-3 (f));
+ * this session` is `acceptForSession` (remi writes nothing; none of 7 real command
+ * approvals on Codex 0.160.0 listed it, so it is unreachable in practice and what
+ * Codex does with it is unknown, LV-3 (f));
  * `No` is `cancel` when listed, else
  * `decline`, else the card cannot be answered. The object-form decisions
  * (`acceptWithExecpolicyAmendment`, `applyNetworkPolicyAmendment`) write a
@@ -30,8 +31,9 @@
  * option's own value.
  *
  * The real frame (`expA-accept.jsonl:47`) lists `cancel` and not `decline`; the
- * spike showed `decline` works although unlisted. Whether `cancel` from a second
- * client behaves like the TUI's own No is unverified (plan LV-3(c)).
+ * spike showed `decline` works although unlisted. A client's `cancel` is the TUI's
+ * own No: Codex declines the command and interrupts the turn (verified live, Codex
+ * 0.160.0, 2026-10-04, LV-3 (c)).
  */
 
 import { resolve } from 'node:path';

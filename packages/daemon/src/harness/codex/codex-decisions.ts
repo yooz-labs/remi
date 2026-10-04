@@ -40,13 +40,15 @@
  *   was resolved while the link was down, and is dismissed then. A link that never
  *   comes back dismisses them after a grace period, so no dead card outlives it.
  *   A retired card answered at the phone only clears: nothing is sent.
- * That a dropped subscriber does not cancel its pending requests is unverified
- * against a real Codex (plan R1, live step LV-3(d)).
+ * That a dropped subscriber does not cancel its pending requests was verified live
+ * (Codex 0.160.0, 2026-10-04; plan R1, LV-3 (d)): the prompt stays up and the same
+ * request is replayed.
  *
- * The TUI's answer, an interrupt or a turn ending also resolve a request; the
- * only signal handled for all of them is `serverRequest/resolved` (verified for
- * a client's answer, not for the others), so a card whose resolution Codex never
- * reports stays until the link drops, `remi unstick` or the session ends.
+ * The TUI's answer, an Esc, `turn/interrupt` and an RPC `cancel` each resolve a
+ * request; the only signal handled for all of them is `serverRequest/resolved`
+ * (verified live for each of them), so no status-based dismissal is needed. A
+ * card whose resolution Codex never reported would stay until the link drops,
+ * `remi unstick` or the session ends.
  */
 
 import { escapeUnsafeText, generateId } from '@remi/shared';

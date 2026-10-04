@@ -405,9 +405,10 @@ export interface QuestionOption {
    * and is answered in the app. Ignored on the wire otherwise.
    *
    * `'session'` (#1178) is Codex's `acceptForSession`: remi writes no rule or
-   * settings file, and sends the decision the request itself listed. That
-   * Codex accepts it and remembers the command for the session is schema-only
-   * and NOT yet checked against a real Codex (live step LV-3 (f)). It carries
+   * settings file, and sends the decision the request itself listed. Whether
+   * Codex accepts it and remembers the command for the session is unknown:
+   * none of 7 real command approvals on Codex 0.160.0 listed
+   * `acceptForSession` (live step LV-3 (f)). It carries
    * no `suggestionIndex` (there is no suggestion to echo), and like `'setMode'`
    * it gets no lock-screen category.
    */
