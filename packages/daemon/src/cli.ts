@@ -1892,6 +1892,8 @@ const codexHarness =
         onQuestionResolved,
         legacyWriters,
         remiVersion: REMI_VERSION,
+        // A finished turn is reported to the same sink Claude's Stop hook ends in (#1180).
+        turnEvents,
         log,
       })
     : undefined;

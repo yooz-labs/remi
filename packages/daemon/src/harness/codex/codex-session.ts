@@ -1,10 +1,13 @@
 /**
  * The Codex launch behind the harness seam (epic #1175; phase 3 #1177 launched
- * it and reported its status, phase 4 #1178 added the approvals): it spawns
+ * it and reported its status, phase 4 #1178 added the approvals, phase 6 #1180
+ * the turn events and the chat): it spawns
  * `codex --no-alt-screen <validated arguments>` in a PTY, learns which thread of
- * the shared app-server is the session's, reports that thread's status, and
- * shows the thread's approval requests as phone cards (`CodexDecisions`). No
- * turn push and no wire identity field exists yet (phases 5 and 6).
+ * the shared app-server is the session's, reports that thread's status, shows
+ * the thread's approval requests as phone cards (`CodexDecisions`), reports how
+ * each turn ended to the turn-event sink (`createCodexTurns`, `deps.turnEvents`)
+ * and serves the thread's chat (`createCodexChat`: `HarnessSession.chat` for the
+ * history, `sendAndRecord` for the live messages).
  *
  * remi RELAYS an approval; Codex decides. Nothing is ever typed into the PTY for an
  * answer: a phone answer goes to the app-server as the request's result, and
@@ -49,6 +52,7 @@ import {
   NOOP_OUTPUT_SINK,
   createPtySessionForSession,
 } from '../../cli/session-phases/pty-session-setup.ts';
+import type { TurnEventSink } from '../../notifications/turn-events.ts';
 import { IDENTITY_SHIM_MIN_VERSION } from '../../session/legacy-writers.ts';
 import type { LegacyWriter } from '../../session/legacy-writers.ts';
 import type { SessionBindingStore } from '../../session/session-binding-store.ts';
@@ -67,6 +71,7 @@ import { localAttachCommand } from './attach-hint.ts';
 import { resolveCodexWorkingDirectory, validateCodexArgs } from './codex-args.ts';
 import { CodexDecisions, type CodexDecisionsDeps } from './codex-decisions.ts';
 import { UntrustedSocketError, resolveCodexSocketPath } from './codex-socket.ts';
+import { createCodexTurns } from './codex-turns.ts';
 import { TERMINAL, type TerminalWords, attachWords } from './terminal-words.ts';
 import type { ThreadStatus } from './thread-protocol.ts';
 import { ThreadClaimedError, ThreadTracker, type ThreadTrackerDeps } from './thread-tracker.ts';
@@ -91,6 +96,11 @@ export interface CodexLaunchDeps {
    */
   onQuestionResolved: (sid: UUID, qid: UUID, reason: 'answered' | 'cancelled') => void;
   log: (message: string) => void;
+  /**
+   * Where a finished turn is reported (#1180): the daemon's turn-event sink, the one Claude's `Stop`
+   * hook ends in too. Left out, the session reports no turn (tests that do not look at turns).
+   */
+  turnEvents?: TurnEventSink;
   /**
    * Test seams (production leaves them out): the client's reconnect backoff and keepalive, the 30 s link
    * watchdog, the tracker's attach retry period and ambiguity window, and the approval cards'
@@ -410,6 +420,7 @@ export function createCodexSession(
         armWatchdog();
       } else if (event.type === 'notification') {
         link.tracker?.handleNotification(event.method, event.params);
+        turns?.handleNotification(event.method, event.params);
         if (event.method === 'serverRequest/resolved') {
           const resolved = parseResolved(event.params);
           if (resolved !== null) decisions.handleResolved(resolved);
@@ -437,6 +448,16 @@ export function createCodexSession(
   });
   // A card whose request is pending is not evicted by the pending-question cap.
   deps.sessionRegistry.setQuestionEvictionGuard(sessionId, (id) => decisions.isHeld(id));
+  // How each turn of the session's own thread ended (`turn/completed`), reported to the daemon's sink.
+  const turns =
+    deps.turnEvents === undefined
+      ? undefined
+      : createCodexTurns({
+          sessionId,
+          sink: deps.turnEvents,
+          threadRole: (threadId) => link.tracker?.role(threadId) ?? null,
+          log,
+        });
   const tracker = new ThreadTracker({
     client,
     sessionCwd: cwd.directory,
