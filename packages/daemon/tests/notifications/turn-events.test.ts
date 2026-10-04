@@ -453,40 +453,31 @@ describe('cli.ts wires the sink (source pins)', () => {
     fs.readFileSync(path.join(import.meta.dir, '..', '..', 'src', 'cli.ts'), 'utf8'),
   );
 
-  /** The text of the top-level function `name`, to its closing brace. */
-  function functionBody(name: string): string {
-    const start = CLI.indexOf(`function ${name}(`);
-    expect(start, `cli.ts has function ${name}`).toBeGreaterThanOrEqual(0);
-    const end = CLI.indexOf('\n}\n', start);
-    return CLI.slice(start, end);
+  /** The text of the call that starts at `opening`, to its closing `});`. */
+  function callFrom(opening: string): string {
+    const start = CLI.indexOf(opening);
+    expect(start, `cli.ts has ${opening}`).toBeGreaterThanOrEqual(0);
+    return CLI.slice(start, CLI.indexOf('\n});', start));
   }
 
-  test('onTurnStop applies the #914 session filter first, then hands the turn to the sink', () => {
-    const body = functionBody('onTurnStop');
-    const admitted = body.indexOf('claudeHarness.admitsAnySession(input)');
-    const handed = body.indexOf('turnEvents.turnCompleted(');
-    expect(admitted).toBeGreaterThanOrEqual(0);
-    expect(handed).toBeGreaterThan(admitted);
-    // The filter is an early return, not a condition around something else.
-    expect(body.slice(admitted - 5, admitted)).toBe('if (!');
-    expect(body).toContain('if (!claudeHarness.admitsAnySession(input)) return;');
+  test("onTurnStop is Claude's turn-stop handler, built from the harness's #914 filter, the turn timer, the primary session id and the sink", () => {
+    const call = callFrom('const onTurnStop = createClaudeTurnStop({');
+    expect(call).toContain('admits: (input) => claudeHarness.admitsAnySession(input),');
+    expect(call).toContain('timer: turnTimer,');
+    expect(call).toContain('primarySessionId: getPrimarySessionId,');
+    expect(call).toContain('sink: turnEvents,');
   });
 
-  test('onTurnStop keeps the timer: it reads the elapsed time and clears the mark except on a re-entry', () => {
-    const body = functionBody('onTurnStop');
-    expect(body).toContain('turnTimer.elapsedMs(input.prompt_id)');
-    expect(body).toContain('if (!input.stop_hook_active)');
-    expect(body).toContain('turnTimer.clear(input.prompt_id)');
-    expect(body).toContain('elapsedMs');
-    expect(body).toContain('reentry: input.stop_hook_active');
-    expect(body).toContain('lastAssistantMessage: input.last_assistant_message');
+  test('cli.ts holds no turn-stop logic of its own: the handler and the sink own the filter order, the gate, the text and the fan-out', () => {
+    expect(CLI).not.toContain('function onTurnStop(');
+    expect(CLI).not.toContain('shouldNotifyTurnComplete');
+    expect(CLI).not.toContain('buildTurnCompleteText');
+    expect(CLI).not.toContain('turnTimer.elapsedMs');
   });
 
-  test('onTurnStop no longer pushes by itself: the sink owns the gate, the text and the fan-out', () => {
-    const body = functionBody('onTurnStop');
-    expect(body).not.toContain('sendPushTrigger');
-    expect(body).not.toContain('shouldNotifyTurnComplete');
-    expect(body).not.toContain('buildTurnCompleteText');
+  test('the timer the handler reads is the one every hook event feeds, and the handler is the Stop listener of both launch modes', () => {
+    expect(CLI.split('onAnyEvent: (input) => turnTimer.observe(input.prompt_id)')).toHaveLength(3);
+    expect(CLI.split("hookServer.on('Stop', onTurnStop);")).toHaveLength(3);
   });
 
   test("the Codex harness is built with the daemon's sink, and Claude's StopFailure routes are untouched", () => {
@@ -498,15 +489,19 @@ describe('cli.ts wires the sink (source pins)', () => {
     expect(CLI).toContain('createTurnFailedRoutes(sessionNotifiers)');
   });
 
-  test('the sink reads the same config, devices and endpoint the inline code did', () => {
-    const start = CLI.indexOf('createTurnEventSink({');
-    expect(start).toBeGreaterThanOrEqual(0);
-    const call = CLI.slice(start, CLI.indexOf('\n});', start));
+  test('the sink reads the same config, devices, endpoint, secret and session name the inline code did', () => {
+    const call = callFrom('createTurnEventSink({');
     expect(call).toContain('remiConfig.notifications.on_turn_complete');
     expect(call).toContain('remiConfig.notifications.turn_complete_min_seconds');
-    expect(call).toContain('deviceTokens.values()');
+    expect(call).toContain('deviceTokens: () => deviceTokens.values(),');
+    expect(call).toContain(
+      'sessionName: (sessionId) => sessionRegistry.getSession(sessionId)?.name,',
+    );
     expect(call).toContain('notifiers: sessionNotifiers');
     expect(call).toContain('cliSignalingUrl ?? remiConfig.network.signaling_url');
+    expect(call).toContain('pushSecret: () => cliPushSecret,');
     expect(call).toContain('send: sendPushTrigger');
+    expect(call).toContain('log,');
+    expect(call).toContain("onError: (err) => logError('[TurnComplete] push failed:', err),");
   });
 });

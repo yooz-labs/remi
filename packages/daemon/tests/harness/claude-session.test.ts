@@ -590,9 +590,9 @@ describe('what cli.ts hands the harness (#1164)', () => {
     expect(handlers).toContain(
       '...gateAnswerDeps((sessionId) => harnessSessions.get(sessionId)?.decisions),',
     );
-    // onTurnStop applies the #914 session filter first and returns when no session claims the event.
-    const turnStop = functionBody('onTurnStop');
-    expect(turnStop).toContain('if (!claudeHarness.admitsAnySession(input)) return;');
+    // onTurnStop is built with the #914 session filter: it asks the harness whether any session claims the
+    // event (its order against the timer is `notifications/claude-turn-stop.ts`'s, pinned in its own test).
+    expect(cli).toContain('admits: (input) => claudeHarness.admitsAnySession(input),');
   });
 
   test('a commented-out line does not satisfy a pin', () => {

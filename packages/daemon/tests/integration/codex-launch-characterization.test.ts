@@ -1185,6 +1185,8 @@ describe('remi codex turns and chat (daemon, black-box characterization, #1180)'
     questionId?: string;
     dismiss?: boolean;
     sessionId?: string;
+    /** The `Authorization` header the daemon sent (`Bearer <push secret>`), if any. */
+    authorization?: string | undefined;
   }
 
   interface Attached {
@@ -1205,18 +1207,28 @@ describe('remi codex turns and chat (daemon, black-box characterization, #1180)'
    * A daemon whose session is attached to the TUI's thread, whose push endpoint is a local HTTP
    * stand-in that records what it is sent, and a phone connected to it with a device registered.
    */
-  async function attachedDaemon(): Promise<Attached> {
+  async function attachedDaemon(
+    opts: { pushSecret?: string; failPushes?: () => boolean } = {},
+  ): Promise<Attached> {
     const pushes: Push[] = [];
     const stub = Bun.serve({
       port: 0,
       hostname: '127.0.0.1',
       fetch: async (req) => {
-        if (new URL(req.url).pathname === '/push') pushes.push((await req.json()) as Push);
+        if (new URL(req.url).pathname === '/push') {
+          const body = (await req.json()) as Push;
+          pushes.push({ ...body, authorization: req.headers.get('authorization') ?? undefined });
+          if (opts.failPushes?.() === true) return new Response('refused', { status: 500 });
+        }
         return new Response('{"ok":true}', { headers: { 'content-type': 'application/json' } });
       },
     });
     stubs.push(stub);
-    const r = await startDaemon(['--signaling-url', `http://127.0.0.1:${stub.port}`]);
+    const r = await startDaemon([
+      '--signaling-url',
+      `http://127.0.0.1:${stub.port}`,
+      ...(opts.pushSecret === undefined ? [] : ['--push-secret', opts.pushSecret]),
+    ]);
     await waitForFakeCodex(r);
     await waitForAppServerClient(r);
     const tuiId = crypto.randomUUID();
@@ -1252,7 +1264,7 @@ describe('remi codex turns and chat (daemon, black-box characterization, #1180)'
     received.filter((m): m is TranscriptContentMessage => m.type === 'transcript_content');
 
   test('a finished turn becomes a push through the daemon’s sink: long ones push, short ones do not, a failure says Codex stopped, and an interrupted turn clears it', async () => {
-    const a = await attachedDaemon();
+    const a = await attachedDaemon({ pushSecret: 'e2e-push-secret' });
     try {
       // A short turn first (the real frame's 5.5 seconds is under the 60-second default), then a
       // long one: frames reach the daemon in order, so the one push proves the short one was seen.
@@ -1274,7 +1286,14 @@ describe('remi codex turns and chat (daemon, black-box characterization, #1180)'
       const done = pushed(a, 'turn_complete')[0] as Push;
       expect(done.token).toBe('e2e-device-token');
       expect(done.title?.endsWith(': turn complete')).toBe(true);
+      // Titled with the session's own name (host:directory), not the fallback "Agent".
+      expect(done.title).toContain(`:${path.basename(fs.realpathSync(a.r.work))}`);
+      expect(done.title?.startsWith('Agent')).toBe(false);
       expect(done.body).toBe('E2E-ANSWER-TEXT');
+      // The daemon's push secret goes with the push, as a bearer token, for both classes.
+      expect(done.authorization).toBe('Bearer e2e-push-secret');
+      // The sink logs what it pushed (the title only, never the answer).
+      expect(a.r.output.text).toContain(`[TurnComplete] ${done.title}`);
       // Dismiss-only, like Claude's: nothing to answer, no card.
       expect(done.questionId).toBeUndefined();
 
@@ -1292,6 +1311,7 @@ describe('remi codex turns and chat (daemon, black-box characterization, #1180)'
       expect(failed.title?.endsWith(': Codex stopped')).toBe(true);
       expect(failed.body).toBe('usageLimitExceeded. E2E-LIMIT-TEXT');
       expect(failed.questionId).toBe(`turn-failed-${a.sessionId}`);
+      expect(failed.authorization).toBe('Bearer e2e-push-secret');
 
       // An interrupted turn clears the notice with a quiet dismissal on the same key, and pushes nothing else.
       a.r.server.emit(turnCompletedFrame(a.tuiId, { status: 'interrupted', items: [] }), {
@@ -1307,6 +1327,26 @@ describe('remi codex turns and chat (daemon, black-box characterization, #1180)'
       expect(a.r.output.text).not.toContain('E2E-ANSWER-TEXT');
       expect(a.r.output.text).not.toContain('E2E-LIMIT-TEXT');
       expect(a.r.output.text).not.toContain(a.tuiId);
+    } finally {
+      a.ws.close();
+    }
+  }, 90000);
+
+  test('a push the endpoint refuses is reported in the daemon log and does not stop the next one', async () => {
+    let refuse = true;
+    const a = await attachedDaemon({ failPushes: () => refuse });
+    try {
+      a.r.server.emit(turnCompletedFrame(a.tuiId, { durationMs: 120_000 }), { threadId: a.tuiId });
+      await pollUntil(
+        () => a.r.output.text.includes('[TurnComplete] push failed'),
+        10000,
+        'the push failure to be logged',
+      );
+
+      refuse = false;
+      a.r.server.emit(turnCompletedFrame(a.tuiId, { durationMs: 121_000 }), { threadId: a.tuiId });
+      await pollUntil(() => a.pushes.length >= 2, 10000, 'the next push');
+      expect(a.pushes.map((p) => p.kind)).toEqual(['turn_complete', 'turn_complete']);
     } finally {
       a.ws.close();
     }
