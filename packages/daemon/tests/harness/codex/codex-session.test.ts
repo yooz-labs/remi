@@ -1189,6 +1189,44 @@ describe('CodexHarness', () => {
       expect(session.pty.isRunning).toBe(true);
     });
 
+    test('a session with no terminal points at remi attach, not at a terminal (G12)', async () => {
+      const { session, sessionId, messages } = create(
+        buildDeps(null, { linkWatchdogMs: 200 }),
+        [],
+        false,
+      );
+      await session.start();
+      await until(() => noticeCount(messages) === 1, 'the notice');
+      const text = messages.find((m) => m.sender === 'system')?.content ?? '';
+      expect(text).toContain(`\`remi attach <host>:19999/${sessionId.slice(0, 8)}\``);
+      expect(text).not.toContain('in the terminal');
+    });
+
+    test('a wrapper session, which has the terminal, keeps saying the session works in it (G12)', async () => {
+      const { session, messages } = create(buildDeps(null, { linkWatchdogMs: 200 }), [], true);
+      await session.start();
+      await until(() => noticeCount(messages) === 1, 'the notice');
+      const text = messages.find((m) => m.sender === 'system')?.content ?? '';
+      expect(text).toContain('the session still works in the terminal');
+      expect(text).not.toContain('remi attach');
+    });
+
+    test('an untrusted control directory says the same about where the session is (G12)', async () => {
+      const server = startServer();
+      fs.chmodSync(path.join(server.codexHome, 'app-server-control'), 0o755);
+      const { session, sessionId, messages } = create(
+        buildDeps(server, { linkWatchdogMs: 300 }),
+        [],
+        false,
+      );
+      await session.start();
+      await until(() => noticeCount(messages) === 1, 'the notice');
+      const text = messages.find((m) => m.sender === 'system')?.content ?? '';
+      expect(text).toContain('its control directory is not private');
+      expect(text).toContain(`remi attach <host>:19999/${sessionId.slice(0, 8)}`);
+      expect(text).not.toContain('in the terminal');
+    });
+
     test('a control directory open to others is never connected through, and the notice says so (W12, W17b)', async () => {
       // The socket trust check runs inside the client's socketPath(): without it the client
       // connects to a socket anyone on the machine could answer approvals through.
