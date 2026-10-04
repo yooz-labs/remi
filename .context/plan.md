@@ -31,9 +31,10 @@ uploaded for macOS and iOS.
    `tofuMode: 'auto-accept'`, so auth-on-a-network-bind is first-comer-wins and
    persists the attacker's key. Still gates #873, and #869/#875/#543 remain
    inert on a default install since each hangs off an authenticator that does
-   not exist when auth is off. Two paths the bind change does NOT cover: the
-   relay (default-on, dials outward, plaintext in rotating mode — #881) and any
-   local process (#869).
+   not exist when auth is off. Two paths the bind change did not cover: the
+   relay, since closed by #1193 (off by default; refuses every peer and frame
+   without an authenticator, and registers nothing without
+   `--auth --permanent-code`), and any local process (#869).
 3. **#883 — protocol-message fan-out**: 13 non-test files per message type, and
    a missed consumer fails silently.
 
