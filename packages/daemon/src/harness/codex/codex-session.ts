@@ -77,6 +77,7 @@ export interface CodexLaunchDeps {
    */
   appServer?: Pick<AppServerClientOptions, 'backoff'>;
   linkWatchdogMs?: number;
+  linkStableMs?: number;
   tracker?: Pick<ThreadTrackerDeps, 'retryMs' | 'ambiguityMs' | 'noIdentityMs'>;
 }
 
@@ -177,6 +178,8 @@ const LINK_UNAVAILABLE_MESSAGE =
 const LINK_UNTRUSTED_MESSAGE =
   'remi will not connect to the shared Codex app-server: its control directory is not private (the remi log says which); the session still works in the terminal.';
 const DEFAULT_LINK_WATCHDOG_MS = 30_000;
+/** A link counts as up, and the watchdog is cancelled, once it has stayed up this long (the client's own `stableMs`). */
+const DEFAULT_LINK_STABLE_MS = 5_000;
 
 /** The session's status from its thread and its descendants: waiting beats thinking beats idle. */
 function aggregateStatus(statuses: Iterable<ThreadStatus>): AgentStatus {
@@ -248,6 +251,7 @@ export function createCodexSession(
   /** Why the last attempt to find the socket failed, to word the watchdog's notice. */
   let socketError: unknown;
   let watchdog: ReturnType<typeof setTimeout> | undefined;
+  let stableTimer: ReturnType<typeof setTimeout> | undefined;
   let warned = false;
   const cancelWatchdog = (): void => {
     clearTimeout(watchdog);
@@ -307,11 +311,15 @@ export function createCodexSession(
       if (disposed) return;
       if (event.type === 'ready') {
         dropDescendantStatuses();
-        cancelWatchdog();
+        // A link that accepts and drops within a few seconds is not up: only one that stays up
+        // for linkStableMs cancels the watchdog, so a flapping link still gets its notice.
+        clearTimeout(stableTimer);
+        stableTimer = setTimeout(cancelWatchdog, deps.linkStableMs ?? DEFAULT_LINK_STABLE_MS);
         const version = /^[^\s/]+\/(\d[^\s]*)/.exec(event.userAgent)?.[1];
         if (version !== undefined) log(`app-server ${version}`);
         link.tracker?.handleReady();
       } else if (event.type === 'disconnected') {
+        clearTimeout(stableTimer);
         dropDescendantStatuses();
         link.tracker?.handleDisconnected();
         armWatchdog();
@@ -409,6 +417,7 @@ export function createCodexSession(
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      clearTimeout(stableTimer);
       cancelWatchdog();
       tracker.dispose();
       client.stop();

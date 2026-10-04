@@ -49,6 +49,9 @@ done
 `;
 
 const nowSec = (): number => Math.floor(Date.now() / 1000);
+
+/** Cases that start PTYs and wait out windows or watchdogs. */
+const slow = (name: string, fn: () => Promise<void>) => test(name, fn, 30000);
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function until(cond: () => boolean, what: string, timeoutMs = 5000): Promise<void> {
@@ -691,8 +694,6 @@ describe('CodexHarness', () => {
   });
 
   describe('two sessions in one directory (W2)', () => {
-    /** These start two daemons' worth of PTYs and wait out their windows. */
-    const slow = (name: string, fn: () => Promise<void>) => test(name, fn, 30000);
     /** Wait until `n` clients have finished their handshake with the fake app-server. */
     const handshakes = (server: FakeAppServer, n: number) =>
       until(
@@ -916,45 +917,87 @@ describe('CodexHarness', () => {
       expect(noticeCount(messages)).toBe(0);
     });
 
-    test('a link that comes up in time sends nothing', async () => {
-      const { session, messages } = create(buildDeps(startServer(), { linkWatchdogMs: 400 }));
+    /** The client reached `ready` (it logs the app-server's version then). */
+    const linkWasUp = () => logs.some((l) => l.includes('app-server '));
+
+    slow('a link that comes up in time and stays up sends nothing', async () => {
+      // The watchdog is long against a PTY spawn, a connect and an initialize, and the link
+      // counts as up for good once it has stayed up for linkStableMs.
+      const { session, messages } = create(
+        buildDeps(startServer(), { linkWatchdogMs: 2000, linkStableMs: 200 }),
+      );
       await session.start();
-      await sleep(900);
+      await until(linkWasUp, 'the link to come up');
+      await sleep(2600);
       expect(noticeCount(messages)).toBe(0);
     });
 
-    test('a link that drops and stays down sends the notice once', async () => {
+    slow(
+      'a link that keeps dropping inside the stable period still fires the watchdog (W17c)',
+      async () => {
+        const server = startServer();
+        const { session, messages } = create(
+          buildDeps(server, {
+            linkWatchdogMs: 700,
+            linkStableMs: 500,
+            appServer: { backoff: { initialMs: 10, maxMs: 40 } },
+          }),
+        );
+        await session.start();
+        await until(linkWasUp, 'the link to come up once');
+        // It accepts and drops every 100 ms, so it is never up for 500 ms.
+        const flap = setInterval(() => {
+          for (const client of server.clientIds()) server.dropClient(client);
+        }, 100);
+        try {
+          await until(() => noticeCount(messages) === 1, 'the notice for a flapping link', 6000);
+        } finally {
+          clearInterval(flap);
+        }
+      },
+    );
+
+    slow('a link that drops and stays down sends the notice once', async () => {
       const server = startServer();
-      const { session, messages } = create(buildDeps(server, { linkWatchdogMs: 250 }));
+      const { session, messages } = create(
+        buildDeps(server, { linkWatchdogMs: 1200, linkStableMs: 150 }),
+      );
       await session.start();
-      await until(() => server.clientIds().length === 1, 'the client');
-      await sleep(100);
+      await until(linkWasUp, 'the link to come up');
+      await sleep(400);
+      // Up, stable, and quiet: whatever fires next comes from the drop, not from the start.
+      expect(noticeCount(messages)).toBe(0);
       await server.stop();
-      await until(() => noticeCount(messages) === 1, 'the notice after the drop', 6000);
+      await until(() => noticeCount(messages) === 1, 'the notice after the drop', 8000);
       await sleep(500);
       expect(noticeCount(messages)).toBe(1);
     });
 
-    test('the notice is sent once per session, however many times the link drops', async () => {
+    slow('the notice is sent once per session, however many times the link drops', async () => {
       const first = startServer();
       const second = startServer();
       const home = { current: first.codexHome };
       const { session, messages } = create(
         buildDeps(null, {
-          linkWatchdogMs: 250,
+          linkWatchdogMs: 1200,
+          linkStableMs: 150,
           env: () => ({ CODEX_HOME: home.current }),
         }),
       );
       await session.start();
       await until(() => first.clientIds().length === 1, 'the first connection');
+      await until(linkWasUp, 'the link to come up');
+      await sleep(400);
+      expect(noticeCount(messages)).toBe(0);
       await first.stop();
-      await until(() => noticeCount(messages) === 1, 'the first notice', 6000);
+      await until(() => noticeCount(messages) === 1, 'the first notice', 8000);
 
-      // The link comes back on another socket, then drops again for good.
+      // The link comes back on another socket, stays up, then drops again for good.
       home.current = second.codexHome;
-      await until(() => second.clientIds().length === 1, 'the second connection', 6000);
+      await until(() => second.clientIds().length === 1, 'the second connection', 8000);
+      await sleep(400);
       await second.stop();
-      await sleep(900);
+      await sleep(2000);
       expect(noticeCount(messages)).toBe(1);
     });
 
