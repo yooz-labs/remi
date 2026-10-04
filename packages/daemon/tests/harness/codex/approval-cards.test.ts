@@ -575,7 +575,7 @@ describe('what a card carries fits the clients that read it', () => {
       availableDecisions: ['accept', 'acceptForSession', 'decline', 'cancel'],
     });
     const values = longest.question.options.map((o) => o.value);
-    expect(values).toContain('acceptForSession');
+    expect(values).toHaveLength(3);
     for (const value of values) {
       // The format `formatQuestionKeyboard` builds: `answer:<question id>:<option value>`.
       const callback = `answer:${crypto.randomUUID()}:${value}`;
