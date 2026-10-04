@@ -84,6 +84,7 @@ export interface ThreadTrackerDeps {
    */
   retryMs?: number;
   ambiguityMs?: number;
+  noIdentityMs?: number;
 }
 
 /** The store found another remi session holding the thread this one was about to take. */
@@ -99,6 +100,8 @@ const CREATED_BEFORE_SPAWN_SLACK_MS = 5000;
 /** After this many failed attaches the retry period is multiplied by RETRY_BACKOFF_FACTOR. */
 const BACKOFF_AFTER_FAILURES = 10;
 const RETRY_BACKOFF_FACTOR = 5;
+/** How long after `ready` a session with no thread waits before saying so. */
+const NO_IDENTITY_NOTICE_MS = 30_000;
 const MAX_PENDING_LINKS = 512;
 const MAX_DESCENDANTS = 256;
 
@@ -133,6 +136,7 @@ export class ThreadTracker {
   private refused = false;
   private pending: { thread: ThreadInfo; status: ThreadStatus | null } | null = null;
   private pendingTimer: ReturnType<typeof setTimeout> | undefined;
+  private noIdentityTimer: ReturnType<typeof setTimeout> | undefined;
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private trackedStatus: ThreadStatus | null = null;
   private failures = 0;
@@ -170,7 +174,30 @@ export class ThreadTracker {
     // that lacked `thread/resume` (it may have been upgraded).
     this.failures = 0;
     this.resumeUnavailable = false;
+    this.watchForNoIdentity();
     this.attach();
+  }
+
+  /**
+   * A thread is learned only from a live `thread/started`, so a connection that opened after
+   * the frame (a cold start, a reconnect) never learns it. Nothing can be done about that
+   * here (`thread/list`'s parameters are not verified), but the user is told once, 30 s after
+   * the link is up, when the session still has no thread and none is about to bind.
+   */
+  private watchForNoIdentity(): void {
+    if (
+      this.current !== null ||
+      this.noIdentityTimer !== undefined ||
+      this.told.has('no-identity')
+    ) {
+      return;
+    }
+    this.noIdentityTimer = setTimeout(() => {
+      this.noIdentityTimer = undefined;
+      if (this.disposed || this.current !== null || this.pending !== null) return;
+      this.deps.log('no thread/started for this directory since the link came up');
+      this.tell('no-identity', "remi could not find this session's Codex thread");
+    }, this.deps.noIdentityMs ?? NO_IDENTITY_NOTICE_MS);
   }
 
   /** The link dropped: the subscription is gone, and nothing can be retried until it is back. */
@@ -183,6 +210,7 @@ export class ThreadTracker {
   dispose(): void {
     this.disposed = true;
     clearTimeout(this.pendingTimer);
+    clearTimeout(this.noIdentityTimer);
     this.clearRetry();
   }
 

@@ -77,7 +77,7 @@ export interface CodexLaunchDeps {
    */
   appServer?: Pick<AppServerClientOptions, 'backoff'>;
   linkWatchdogMs?: number;
-  tracker?: Pick<ThreadTrackerDeps, 'retryMs' | 'ambiguityMs'>;
+  tracker?: Pick<ThreadTrackerDeps, 'retryMs' | 'ambiguityMs' | 'noIdentityMs'>;
 }
 
 /** A launch remi refuses, with the exit code `cli.ts` ends with (2 for arguments, 1 otherwise). */

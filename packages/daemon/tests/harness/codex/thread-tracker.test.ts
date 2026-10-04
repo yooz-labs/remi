@@ -66,6 +66,8 @@ interface Options {
   claimedThrows?: boolean;
   /** Another remi codex session in this directory is still waiting for its thread. */
   siblingSeeking?: () => boolean;
+  /** How long after ready a session with no thread waits before saying so. */
+  noIdentityMs?: number;
   retryMs?: number;
   spawnedAtMs?: number;
 }
@@ -127,6 +129,7 @@ async function setup(opts: Options = {}): Promise<Ctx> {
     log: (m) => logs.push(m),
     retryMs: opts.retryMs ?? 40,
     ambiguityMs: 150,
+    ...(opts.noIdentityMs !== undefined ? { noIdentityMs: opts.noIdentityMs } : {}),
   });
   cleanups.push(() => tracker.dispose());
   client.start();
@@ -861,5 +864,51 @@ describe('binding re-checks the claims, and a sibling session keeps us from taki
     expect(ctx.logs).toContain(`rotated from ${a.slice(0, 8)} to ${b.slice(0, 8)}`);
     expect(ctx.logs.join('\n')).not.toContain(a);
     expect(ctx.logs.join('\n')).not.toContain(b);
+  });
+});
+
+describe('a session that never learns its thread says so (W11)', () => {
+  const NOTICE = "remi could not find this session's Codex thread";
+
+  test('with no thread/started after the wait, one log line and one notice, once per session', async () => {
+    const ctx = await setup({ noIdentityMs: 150 });
+    await waitUntil(ctx, () => ctx.notices.length === 1, 'the notice');
+    expect(ctx.notices).toEqual([NOTICE]);
+    expect(ctx.logs.filter((l) => l.includes('no thread/started'))).toHaveLength(1);
+    // Not again, on the same connection or after a reconnect.
+    ctx.tracker.handleDisconnected();
+    ctx.tracker.handleReady();
+    await settle(500);
+    expect(ctx.notices).toHaveLength(1);
+  });
+
+  test('it does not stop the tracker: a thread that shows up later still binds', async () => {
+    const ctx = await setup({ noIdentityMs: 100 });
+    await waitUntil(ctx, () => ctx.notices.length === 1, 'the notice');
+    const id = crypto.randomUUID();
+    ctx.started('tui', id);
+    await waitUntil(ctx, () => ctx.identities.length === 1, 'the late identity');
+    expect(ctx.identities).toEqual([id]);
+  });
+
+  test('nothing is said when the thread is found in time, or already known', async () => {
+    const found = await setup({ noIdentityMs: 400 });
+    found.started('tui', crypto.randomUUID());
+    await waitUntil(found, () => found.identities.length === 1, 'the identity');
+    await settle(700);
+    expect(found.notices).toEqual([]);
+
+    const resumed = await setup({ noIdentityMs: 100, expected: crypto.randomUUID() });
+    await settle(500);
+    expect(resumed.notices).toEqual([]);
+  });
+
+  test('a candidate still inside its window is no reason to say it', async () => {
+    const ctx = await setup({ noIdentityMs: 100 });
+    // The window (150 ms) is still open when the 100 ms wait ends; the thread binds at 150 ms.
+    ctx.started('tui', crypto.randomUUID());
+    await waitUntil(ctx, () => ctx.identities.length === 1, 'the identity');
+    await settle(400);
+    expect(ctx.notices).toEqual([]);
   });
 });
