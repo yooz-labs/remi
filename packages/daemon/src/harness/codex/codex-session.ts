@@ -458,7 +458,10 @@ export function createCodexSession(
     threadId: () => trackedId,
     threadRole: (threadId) => link.tracker?.role(threadId) ?? null,
     messageApi,
-    sendAndRecord: ctx.sendAndRecord,
+    // A catch-up or a held item that finishes after the session was disposed sends nothing.
+    sendAndRecord: (message) => {
+      if (!disposed) ctx.sendAndRecord(message);
+    },
     log,
   });
   // How each turn of the session's own thread ended (`turn/completed`), reported to the daemon's sink.
@@ -538,7 +541,12 @@ export function createCodexSession(
       else statuses.delete(threadId);
       publish();
     },
-    onAttached: () => decisions.handleReattached(),
+    onAttached: () => {
+      decisions.handleReattached();
+      // What completed before this attach is never announced live (the first prompt of a new thread,
+      // anything between a drop and a re-attach): read it once now. It never rejects.
+      void chat.catchUp();
+    },
     log,
     ...deps.tracker,
   });

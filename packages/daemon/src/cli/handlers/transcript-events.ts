@@ -61,6 +61,14 @@ export interface TranscriptHandlerDeps {
   send: SendToConnection;
 }
 
+/** A send to the requester of a history load was refused: its connection is gone. */
+class RequesterGone extends Error {
+  constructor() {
+    super('the requester of the history load went away');
+    this.name = 'RequesterGone';
+  }
+}
+
 export type TranscriptHandlers = ReturnType<typeof createTranscriptHandlers>;
 
 export function createTranscriptHandlers(deps: TranscriptHandlerDeps) {
@@ -89,11 +97,17 @@ export function createTranscriptHandlers(deps: TranscriptHandlerDeps) {
   ): void {
     void (async () => {
       const count = await chat.readHistory((message) => {
-        send(connectionId, message);
+        // A send that is refused means the requester's connection is gone: the read stops here,
+        // so no page more is asked for on its behalf.
+        if (!send(connectionId, message)) throw new RequesterGone();
       });
       log(`Chat history load complete for ${sessionId}: ${count} messages`);
       send(connectionId, createTranscriptLoadComplete(sessionId, count, requestId));
     })().catch((error: unknown) => {
+      if (error instanceof RequesterGone) {
+        log(`Chat history load for ${sessionId} stopped: the requester went away`);
+        return;
+      }
       logError(`[TranscriptLoad] Failed to read the chat of ${sessionId}:`, error);
       send(
         connectionId,

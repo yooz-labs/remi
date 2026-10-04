@@ -31,7 +31,25 @@
  *
  * Live messages go out through the session's `sendAndRecord`, structured by the session's
  * own MessageAPI, as Claude's binder does, so a client connected now sees them and one
- * connecting later replays them. Only the session's own (`main`) thread counts: a subagent's
+ * connecting later replays them.
+ *
+ * What completed BEFORE remi attached (the first prompt of every new thread, and anything
+ * between a reconnect's drop and its re-attach) is never announced live: item and turn frames
+ * reach only the connection that is attached (`expA-accept.jsonl`: the second connection never
+ * receives the first `userMessage`). So after each successful attach the session calls
+ * `catchUp`: ONE internal read of the thread's history through the same paging code as
+ * `readHistory` (at most 5 pages, 3 s a request), whose items not yet delivered go out through
+ * `sendAndRecord`. It is delivered only when the whole thread fits in those pages: a longer
+ * thread is left to an explicit read (the oldest 500 items are not what is missing). Live items
+ * that arrive while it runs are held (at most 256, then sent at once) and go out after it, so
+ * a prompt is not preceded by the answer it caused. A failure is logged without content and
+ * never breaks the attach; a reconnect sends nothing twice (the delivered ids are remembered,
+ * the last 1024).
+ *
+ * An explicit read (`readHistory`) is bounded too: a cursor that comes back (any earlier one,
+ * not only the last) or 1000 pages end it, one read of a session runs at a time with one
+ * waiting (a third is refused), and it stops asking as soon as `emit` throws, which the
+ * transcript handler does when a send to the requester is refused. Only the session's own (`main`) thread counts: a subagent's
  * items and another window's are not this chat (subagent chat is out of scope).
  *
  * What no real frame has shown yet (live step LV-5): the response of `thread/items/list`
@@ -62,9 +80,15 @@ import { type ThreadItemInfo, parseThreadItem } from './thread-protocol.ts';
 
 /** The items asked for per page. The app-server may give fewer, or more. */
 const HISTORY_PAGE_SIZE = 100;
-/** A history read stops after this many pages, so a cursor that never ends cannot loop for ever. */
+/** An explicit history read stops after this many pages, so a cursor that never ends cannot loop for ever. */
 const HISTORY_MAX_PAGES = 1000;
-/** How many delivered live items are remembered to drop a repeat of one. */
+/** The catch-up at an attach reads at most this many pages, and delivers only a thread that ends within them. */
+const CATCH_UP_MAX_PAGES = 5;
+/** How long one request of the catch-up may take before it is given up on (the client's own is 15 s). */
+const CATCH_UP_REQUEST_TIMEOUT_MS = 3000;
+/** How many live items are held while a catch-up reads; more are sent at once. */
+const HOLD_MAX = 256;
+/** How many delivered items are remembered to drop a repeat of one. */
 const LIVE_MEMORY = 1024;
 /** Claude bounds a tool's input and output to this many characters; so does the shell entry. */
 const TOOL_FIELD_MAX = 500;
@@ -85,13 +109,19 @@ export interface CodexChatDeps {
   /** Send a message to every client and record it for replay. */
   sendAndRecord: (message: ProtocolMessage) => void;
   log: (message: string) => void;
-  /** Test seam: the page limit (default 1000). */
-  maxPages?: number;
+  /** Test seam: how long one request of the catch-up may take (default 3000). */
+  catchUpRequestTimeoutMs?: number;
 }
 
 export interface CodexChat extends HarnessChat {
   /** Feed every notification of the app-server; only an `item/completed` of the main thread does anything. */
   handleNotification(method: string, params: unknown): void;
+  /**
+   * The attach to the thread succeeded (the first time, after a retry, a reconnect or a rotation):
+   * deliver what completed before it. Never rejects; a call while one runs is not lost (one more
+   * read follows it).
+   */
+  catchUp(): Promise<void>;
 }
 
 /** What could not be read, in words with no server text: the app-server's own message may carry an id or a path. */
@@ -242,10 +272,12 @@ function historyError(error: unknown): CodexHistoryError {
   return new CodexHistoryError(`the Codex history could not be read (${describeError(error)})`);
 }
 
+/** How a paged read of a thread ended: its last page, the page limit, or a cursor that came back. */
+type PagesEnd = 'complete' | 'capped' | 'looped';
+
 export function createCodexChat(deps: CodexChatDeps): CodexChat {
   const { sessionId } = deps;
-  const maxPages = deps.maxPages ?? HISTORY_MAX_PAGES;
-  /** Live items already sent, oldest first. */
+  /** Items already sent to every client (live or by a catch-up), oldest first. */
   const delivered = new Set<string>();
 
   const remember = (id: string): void => {
@@ -256,65 +288,194 @@ export function createCodexChat(deps: CodexChatDeps): CodexChat {
     }
   };
 
-  return {
-    async readHistory(emit) {
-      const threadId = deps.threadId();
-      // No thread yet: nothing has been said, and there is nothing to ask for.
-      if (threadId === null) return 0;
-
-      // History is for the one who asked: a MessageAPI of its own, so the session's stream is untouched.
-      const history = new MessageAPI({ sessionId });
-      const seen = new Set<string>();
-      let count = 0;
-      let cursor: string | undefined;
-
-      for (let pageNumber = 1; pageNumber <= maxPages; pageNumber++) {
-        let result: unknown;
-        try {
-          result = await deps.client.request('thread/items/list', {
+  /**
+   * Page through the tracked thread's items, oldest first, handing each chat entry to `onEntry` as
+   * its page arrives. Ends at the last page, at `maxPages`, or when a page's cursor is one already
+   * asked for (the first request has none, so it is never the one repeated). Throws a
+   * {@link CodexHistoryError} for every failure but the thread that has nothing written yet,
+   * which is a complete, empty read.
+   */
+  async function readPages(
+    threadId: string,
+    limits: { maxPages: number; timeoutMs?: number },
+    onEntry: (entry: Entry, completedAtMs: number | null) => void,
+  ): Promise<PagesEnd> {
+    const asked = new Set<string>();
+    let cursor: string | undefined;
+    for (let pageNumber = 1; pageNumber <= limits.maxPages; pageNumber++) {
+      let result: unknown;
+      try {
+        result = await deps.client.request(
+          'thread/items/list',
+          {
             threadId,
             sortDirection: 'asc',
             limit: HISTORY_PAGE_SIZE,
             ...(cursor !== undefined ? { cursor } : {}),
-          });
-        } catch (error) {
-          // A thread nothing was written to has no rollout yet, and `thread/resume` answers that
-          // way before the first message (LV-2); asked for its first page, it is an empty history.
-          if (
-            pageNumber === 1 &&
-            error instanceof AppServerRpcError &&
-            error.code === INVALID_REQUEST &&
-            /no rollout found/i.test(error.message)
-          ) {
-            deps.log('the thread has no history yet');
-            return 0;
-          }
-          throw historyError(error);
+          },
+          limits.timeoutMs,
+        );
+      } catch (error) {
+        // A thread nothing was written to has no rollout yet, and `thread/resume` answers that
+        // way before the first message (LV-2); asked for its first page, it is an empty history.
+        if (
+          pageNumber === 1 &&
+          error instanceof AppServerRpcError &&
+          error.code === INVALID_REQUEST &&
+          /no rollout found/i.test(error.message)
+        ) {
+          deps.log('the thread has no history yet');
+          return 'complete';
         }
-
-        const page = parsePage(result);
-        if (page === null)
-          throw new CodexHistoryError('the Codex app-server sent a history page remi cannot read');
-
-        for (const { item, completedAtMs } of page.items) {
-          const entry = item === null ? null : entryOf(item);
-          if (entry === null || seen.has(entry.id)) continue;
-          const message = buildMessage(sessionId, entry, completedAtMs, history);
-          if (message === null) continue;
-          seen.add(entry.id);
-          emit(message);
-          count += 1;
-        }
-
-        if (page.nextCursor === null) return count;
-        if (page.nextCursor === cursor) {
-          deps.log('the app-server repeated a history cursor; the history read stopped');
-          return count;
-        }
-        cursor = page.nextCursor;
+        throw historyError(error);
       }
-      deps.log(`the history read stopped after ${maxPages} pages`);
-      return count;
+
+      const page = parsePage(result);
+      if (page === null)
+        throw new CodexHistoryError('the Codex app-server sent a history page remi cannot read');
+
+      for (const { item, completedAtMs } of page.items) {
+        const entry = item === null ? null : entryOf(item);
+        if (entry !== null) onEntry(entry, completedAtMs);
+      }
+
+      if (page.nextCursor === null) return 'complete';
+      if (asked.has(page.nextCursor)) return 'looped';
+      asked.add(page.nextCursor);
+      cursor = page.nextCursor;
+    }
+    return 'capped';
+  }
+
+  /** An explicit read: for the one who asked, through a MessageAPI of its own so the session's stream is untouched. */
+  async function runExplicit(emit: (message: TranscriptContentMessage) => void): Promise<number> {
+    const threadId = deps.threadId();
+    // No thread yet: nothing has been said, and there is nothing to ask for.
+    if (threadId === null) return 0;
+
+    const history = new MessageAPI({ sessionId });
+    const seen = new Set<string>();
+    let count = 0;
+    const end = await readPages(
+      threadId,
+      { maxPages: HISTORY_MAX_PAGES },
+      (entry, completedAtMs) => {
+        if (seen.has(entry.id)) return;
+        const message = buildMessage(sessionId, entry, completedAtMs, history);
+        if (message === null) return;
+        seen.add(entry.id);
+        emit(message);
+        count += 1;
+      },
+    );
+    if (end === 'looped')
+      deps.log('the app-server repeated a history cursor; the history read stopped');
+    else if (end === 'capped')
+      deps.log(`the history read stopped after ${HISTORY_MAX_PAGES} pages`);
+    return count;
+  }
+
+  // One explicit read of the session runs at a time, with one waiting: two phones that connect together
+  // both ask for the history, and a client that asks in a loop is refused, not queued without end.
+  let reading: Promise<unknown> | null = null;
+  let waiting = false;
+
+  /** Send one entry to every client, once: a repeat is dropped, and a failed send is tried again if it is delivered again. */
+  function deliver(entry: Entry, completedAtMs: number | null): void {
+    if (delivered.has(entry.id)) return;
+    try {
+      const message = buildMessage(sessionId, entry, completedAtMs, deps.messageApi);
+      if (message === null) return;
+      deps.sendAndRecord(message);
+      remember(entry.id);
+    } catch (error) {
+      deps.log(`could not send a chat message (${describeError(error)})`);
+    }
+  }
+
+  /** Live items that arrived while a catch-up read runs, in arrival order; null when none runs. */
+  let held: Array<{ entry: Entry; completedAtMs: number | null }> | null = null;
+
+  async function catchUpOnce(): Promise<void> {
+    const threadId = deps.threadId();
+    if (threadId === null) return;
+    const collected: Array<{ entry: Entry; completedAtMs: number | null }> = [];
+    const queue: NonNullable<typeof held> = [];
+    held = queue;
+    let end: PagesEnd | null = null;
+    try {
+      end = await readPages(
+        threadId,
+        {
+          maxPages: CATCH_UP_MAX_PAGES,
+          timeoutMs: deps.catchUpRequestTimeoutMs ?? CATCH_UP_REQUEST_TIMEOUT_MS,
+        },
+        (entry, completedAtMs) => collected.push({ entry, completedAtMs }),
+      );
+    } catch (error) {
+      const why = error instanceof CodexHistoryError ? error.message : describeError(error);
+      deps.log(`the chat catch-up failed (${why})`);
+    }
+    held = null;
+    if (end === 'complete') {
+      for (const { entry, completedAtMs } of collected) deliver(entry, completedAtMs);
+    } else if (end !== null) {
+      deps.log(
+        `the chat catch-up was skipped: the thread is longer than ${CATCH_UP_MAX_PAGES} pages or its cursor repeated, so an explicit history read has it`,
+      );
+    }
+    // What arrived meanwhile goes out after what came before it.
+    for (const { entry, completedAtMs } of queue) deliver(entry, completedAtMs);
+  }
+
+  let catching: Promise<void> | null = null;
+  let again = false;
+
+  return {
+    async readHistory(emit) {
+      if (reading !== null) {
+        if (waiting) {
+          throw new CodexHistoryError(
+            'another history read of this session is already waiting; try again in a moment',
+          );
+        }
+        waiting = true;
+        try {
+          await reading.catch(() => {});
+        } finally {
+          waiting = false;
+        }
+      }
+      const mine = runExplicit(emit);
+      reading = mine;
+      try {
+        return await mine;
+      } finally {
+        if (reading === mine) reading = null;
+      }
+    },
+
+    catchUp() {
+      if (catching !== null) {
+        again = true;
+        return catching;
+      }
+      const running = (async () => {
+        try {
+          do {
+            again = false;
+            await catchUpOnce();
+          } while (again);
+        } catch (error) {
+          // catchUpOnce never throws; this is for a bug, which must not break the attach.
+          deps.log(`the chat catch-up failed (${describeError(error)})`);
+        } finally {
+          held = null;
+          catching = null;
+        }
+      })();
+      catching = running;
+      return running;
     },
 
     handleNotification(method, params) {
@@ -325,20 +486,14 @@ export function createCodexChat(deps: CodexChatDeps): CodexChat {
       const entry = item === null ? null : entryOf(item);
       if (entry === null || delivered.has(entry.id)) return;
       const completed = params['completedAtMs'];
-      try {
-        const message = buildMessage(
-          sessionId,
-          entry,
-          typeof completed === 'number' && Number.isFinite(completed) ? completed : null,
-          deps.messageApi,
-        );
-        if (message === null) return;
-        deps.sendAndRecord(message);
-        // Only after it went out: a failed send is tried again if the item is delivered again.
-        remember(entry.id);
-      } catch (error) {
-        deps.log(`could not send a chat message (${describeError(error)})`);
+      const completedAtMs =
+        typeof completed === 'number' && Number.isFinite(completed) ? completed : null;
+      // A catch-up is reading the history this item may belong after: hold it, up to a bound.
+      if (held !== null && held.length < HOLD_MAX) {
+        held.push({ entry, completedAtMs });
+        return;
       }
+      deliver(entry, completedAtMs);
     },
   };
 }
