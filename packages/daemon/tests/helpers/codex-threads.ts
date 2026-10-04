@@ -84,3 +84,122 @@ export function fileChangeRequest(
   };
   return { method, params: { ...(JSON.parse(JSON.stringify(params)) as Json), threadId, reason } };
 }
+
+/**
+ * Turn and item frames (phase 6, #1180). Each is a real frame of the spike re-addressed to a
+ * thread a test chooses, so a test reads the shapes Codex 0.160.0 sent:
+ * `turn/completed` is `expA-accept.jsonl:74`, and the items are the `item` of
+ * `item/completed` for a user message (`:36`), a command (`:56`) and the final agent message
+ * (`:67`).
+ *
+ * No real frame of an INTERRUPTED or FAILED turn exists: the spike's decline run, where a phone
+ * No ends the turn, still reports `status: "completed"` at `expA-decline.jsonl:141`, and a
+ * failure was never provoked. `turnCompletedFrame` builds those two from the real completed
+ * frame with `status` and `error` set to the shapes of the generated schema (`Turn`, `TurnError`,
+ * `CodexErrorInfo`); live step LV-5 checks them. Likewise the `thread/items/list` page of
+ * `itemsListPage` is the generated schema's `ThreadItemsListResponse` around real items (no real
+ * response was captured).
+ */
+
+/** The turn id of the real accept run's frames (`expA-accept.jsonl:74`). */
+const placeholderTurnId = '00000000-0000-7000-8000-000000000002';
+
+/** The source lines of `expA-accept.jsonl` the real items come from. */
+const ITEM_LINES = { userMessage: 36, commandExecution: 56, agentMessage: 67 } as const;
+
+/** A copy of a real item, with `over` laid on top (a field set to `undefined` is removed). */
+export function realItem(kind: keyof typeof ITEM_LINES, over: Json = {}): Json {
+  const frame = fixtureFrameAt('expA-accept.jsonl', ITEM_LINES[kind]).frame as {
+    params: { item: Json };
+  };
+  const copy = { ...(JSON.parse(JSON.stringify(frame.params.item)) as Json), ...over };
+  for (const [key, value] of Object.entries(copy)) {
+    if (value === undefined) Reflect.deleteProperty(copy, key);
+  }
+  return copy;
+}
+
+/** The final agent message of the spike's accept run (`phase: "final_answer"`), with `over` on top. */
+export function agentMessageItem(
+  id: string,
+  text: string,
+  phase: 'final_answer' | 'commentary' | null,
+): Json {
+  return realItem('agentMessage', { id, text, phase });
+}
+
+/** A user message item (the real shape: `content` is a list of input parts). */
+export function userMessageItem(id: string, text: string): Json {
+  return realItem('userMessage', {
+    id,
+    content: [{ type: 'text', text, text_elements: [] }],
+  });
+}
+
+/** An `item/completed` notification for `item`, as the real frame at `expA-accept.jsonl:67` has it. */
+export function itemCompletedFrame(
+  threadId: string,
+  item: Json,
+  over: { turnId?: string; completedAtMs?: number } = {},
+): Json {
+  return {
+    method: 'item/completed',
+    params: {
+      item,
+      threadId,
+      turnId: over.turnId ?? placeholderTurnId,
+      completedAtMs: over.completedAtMs ?? 1700000001017,
+    },
+    emittedAtMs: (over.completedAtMs ?? 1700000001017) + 3,
+  };
+}
+
+export interface TurnCompletedOptions {
+  status?: string;
+  /** `Turn.error`: the schema's `TurnError`, or null. */
+  error?: Json | null;
+  /** `Turn.durationMs`; the real frame has 5563. */
+  durationMs?: number | null;
+  /** `Turn.items`; the real frame has the one final agent message. */
+  items?: Json[];
+}
+
+/** A `turn/completed` notification for `threadId`, the real frame of `expA-accept.jsonl:74` with `over` on top. */
+export function turnCompletedFrame(threadId: string, over: TurnCompletedOptions = {}): Json {
+  const frame = JSON.parse(JSON.stringify(fixtureFrameAt('expA-accept.jsonl', 74).frame)) as {
+    params: { threadId: string; turn: Json };
+  } & Json;
+  frame.params.threadId = threadId;
+  const turn = frame.params.turn;
+  // `in`, not `!== undefined`: a test may set a field to `undefined` to build a frame without it.
+  if ('status' in over) turn['status'] = over.status;
+  if ('error' in over) turn['error'] = over.error;
+  if ('durationMs' in over) turn['durationMs'] = over.durationMs;
+  if ('items' in over) turn['items'] = over.items;
+  return frame;
+}
+
+/** The schema's `TurnError`, for a failed turn. */
+export function turnError(message: string, codexErrorInfo: unknown = null): Json {
+  return { message, codexErrorInfo, additionalDetails: null, misalignment: null };
+}
+
+/**
+ * A `thread/items/list` result page (the schema's `ThreadItemsListResponse`: `data` is a list of
+ * `ThreadItemEntry`, `nextCursor` is null on the last page).
+ */
+export function itemsListPage(
+  entries: ReadonlyArray<{ item: Json; turnId?: string; completedAtMs?: number | null }>,
+  nextCursor: string | null,
+): Json {
+  return {
+    data: entries.map((e) => ({
+      turnId: e.turnId ?? placeholderTurnId,
+      item: e.item,
+      startedAtMs: null,
+      completedAtMs: e.completedAtMs === undefined ? 1700000001017 : e.completedAtMs,
+    })),
+    nextCursor,
+    backwardsCursor: entries.length > 0 ? 'backwards-cursor' : null,
+  };
+}
