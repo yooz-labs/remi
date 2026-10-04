@@ -345,6 +345,23 @@ describe('a hub creating a session for a harness (#1179)', () => {
     60000,
   );
 
+  test.each([['untrusted'], ['on-request'], ['never']])(
+    'a Codex request with -a %s is refused with its reason, and nothing is spawned (LV-4)',
+    async (value) => {
+      // Codex 0.160.0 rejects `-a untrusted` with exit 2, which used to kill the child: a remote
+      // request carries no -a at all, because no value of it can be shown to tighten the host.
+      const r = await startHub({ claude: true, codex: true });
+      const { response } = await ask(r, { harness: 'codex', args: ['-m', 'x', '-a', value] });
+      expect(response.success).toBe(false);
+      expect(response.error).toContain('-a/--ask-for-approval is not allowed');
+      expect(response.error).toContain('may only tighten');
+      expect(response.sessionId).toBeUndefined();
+      expect(childEntries(r)).toEqual([]);
+      expect(fs.existsSync(path.join(r.agents.codexDir, 'argv'))).toBe(false);
+    },
+    60000,
+  );
+
   test('a live remi older than the identity shim refuses a Codex request, with its text, and still serves Claude', async () => {
     const r = await startHub({ claude: true, codex: true });
     // A live process whose live-sessions entry says it is a remi from before the shim.

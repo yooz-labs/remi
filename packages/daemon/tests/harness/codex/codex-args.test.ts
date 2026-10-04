@@ -558,6 +558,39 @@ describe('validateCodexRemoteArgs: the default-deny allowlist', () => {
     expect(remoteRefused(['-s'])).toContain('-s may only be read-only');
   });
 
+  test('a remote request carries no -a at all: no value of it can be shown to tighten the host (LV-4)', () => {
+    // Codex 0.160.0 rejects `-a untrusted` (exit 2; it accepts only `on-request` and `never`), and
+    // neither of those is known to be stricter than what the host chose, which may already ask for
+    // more. So every spelling gets the one refusal that says why, wherever it stands in the list.
+    const spellings = [
+      ['-a'],
+      ['-a', 'untrusted'],
+      ['-a', 'on-request'],
+      ['-a', 'never'],
+      ['-a', ''],
+      ['--ask-for-approval'],
+      ['--ask-for-approval', 'on-request'],
+      ['--ask-for-approval=never'],
+      ['--ask-for-approval='],
+      ['-aon-request'],
+      ['-a=never'],
+    ];
+    for (const spelling of spellings) {
+      for (const args of [
+        spelling,
+        ['-m', 'x', ...spelling],
+        [...spelling, '-m', 'x'],
+        ['-s', 'read-only', 'resume', UUID, ...spelling],
+        [...spelling, ...spelling],
+      ]) {
+        const text = remoteRefused(args);
+        expect(text, JSON.stringify(args)).toContain('-a/--ask-for-approval is not allowed');
+        expect(text, JSON.stringify(args)).toContain('may only tighten');
+        expect(text, JSON.stringify(args)).not.toContain('may only be untrusted');
+      }
+    }
+  });
+
   test('resume needs a UUID', () => {
     expect(remoteRefused(['resume'])).toContain('resume');
     expect(remoteRefused(['resume', 'last'])).toContain('resume');

@@ -175,6 +175,21 @@ describe('create requests naming a harness (#1179)', () => {
       refusal({ harness: 'codex', args: { length: 0 } });
     });
 
+    test('a remote -a is refused with its reason, in any spelling, before the gate is asked (LV-4)', () => {
+      gate = GATE;
+      for (const args of [
+        ['-a', 'untrusted'],
+        ['-a', 'on-request'],
+        ['-m', 'x', '-a', 'never'],
+        ['--ask-for-approval=never'],
+      ]) {
+        const text = refusal({ harness: 'codex', args });
+        expect(text, JSON.stringify(args)).toContain('-a/--ask-for-approval is not allowed');
+        expect(text, JSON.stringify(args)).toContain('may only tighten');
+      }
+      expect(gateCalls).toBe(0);
+    });
+
     test('a launch refusal gives the client its short text, after the arguments pass', () => {
       gate = GATE;
       expect(refusal({ harness: 'codex', args: ['-m', 'x'] })).toBe(GATE.client);
