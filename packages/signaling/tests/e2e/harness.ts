@@ -69,19 +69,20 @@ async function bundleWithEsbuild(): Promise<string> {
   return output.text;
 }
 
+async function bundleWithBun(): Promise<string> {
+  const built = await Bun.build({
+    entrypoints: [`${PKG}/tests/e2e/test-entry.ts`],
+    target: 'browser',
+    format: 'esm',
+  });
+  const output = built.outputs[0];
+  if (!built.success || !output) throw new Error(built.logs.join('\n'));
+  return output.text();
+}
+
 /** Bundle the test entry (the real Worker plus the debug seams) once per test file. */
 function bundle(): Promise<string> {
-  if (process.env['E2E_BUNDLER'] === 'esbuild') return (bundled ??= bundleWithEsbuild());
-  bundled ??= (async () => {
-    const built = await Bun.build({
-      entrypoints: [`${PKG}/tests/e2e/test-entry.ts`],
-      target: 'browser',
-      format: 'esm',
-    });
-    const output = built.outputs[0];
-    if (!built.success || !output) throw new Error(built.logs.join('\n'));
-    return output.text();
-  })();
+  bundled ??= process.env['E2E_BUNDLER'] === 'esbuild' ? bundleWithEsbuild() : bundleWithBun();
   return bundled;
 }
 
