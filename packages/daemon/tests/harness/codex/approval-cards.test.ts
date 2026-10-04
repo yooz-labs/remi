@@ -21,7 +21,7 @@
 
 import { describe, expect, test } from 'bun:test';
 import type { Question, UUID } from '@remi/shared';
-import { formatQuestionCard } from '../../../src/adapters/telegram-ui.ts';
+import { formatQuestionCard, formatQuestionKeyboard } from '../../../src/adapters/telegram-ui.ts';
 import {
   COMMAND_TEXT_MAX,
   type PendingRequestSpec,
@@ -588,17 +588,33 @@ describe('the other kinds of request', () => {
 });
 
 describe('what a card carries fits the clients that read it', () => {
-  test("Telegram's callback data for any option of any card stays within its 64 bytes", () => {
-    const longest = build({
-      availableDecisions: ['accept', 'acceptForSession', 'decline', 'cancel'],
-    });
-    const values = longest.question.options.map((o) => o.value);
-    expect(values).toHaveLength(3);
-    for (const value of values) {
-      // The format `formatQuestionKeyboard` builds: `answer:<question id>:<option value>`.
-      const callback = `answer:${crypto.randomUUID()}:${value}`;
-      expect(new TextEncoder().encode(callback).length, value).toBeLessThanOrEqual(64);
+  test("the real Telegram keyboard's callback data for every option of every answerable card stays within 64 bytes, and names the card and the option", () => {
+    const all = ['accept', 'acceptForSession', 'decline', 'cancel'];
+    let checked = 0;
+    for (let mask = 0; mask < 1 << all.length; mask++) {
+      const listed = all.filter((_, i) => (mask >> i) & 1);
+      const spec = build({ availableDecisions: listed });
+      if (!spec.actionable) continue;
+      const keyboard = formatQuestionKeyboard(spec.question);
+      const buttons = keyboard.inline_keyboard.flat();
+      expect(buttons).toHaveLength(spec.question.options.length);
+      buttons.forEach((button, i) => {
+        const data = (button as { callback_data: string }).callback_data;
+        expect(data).toBe(`answer:${spec.question.id}:${spec.question.options[i]?.value}`);
+        // The question id in production is a UUID, 36 characters: measure with one.
+        const real = `answer:${crypto.randomUUID()}:${spec.question.options[i]?.value}`;
+        expect(new TextEncoder().encode(real).length, real).toBeLessThanOrEqual(64);
+        checked += 1;
+      });
     }
+    expect(checked).toBeGreaterThan(10);
+  });
+
+  test('the grant label is longer than a Telegram button: the message lists it in full and the buttons are numbered', () => {
+    const q = build({ availableDecisions: ['accept', 'acceptForSession', 'cancel'] }).question;
+    const rendered = formatQuestionCard(q);
+    expect(rendered.text).toContain("2. Yes, and don't ask again for this command this session");
+    expect(rendered.keyboard).toBeDefined();
   });
 });
 
