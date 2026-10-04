@@ -230,6 +230,31 @@ describe('FakeAppServer: the modeled behavior, one claim per test', () => {
     await server.waitFor(() => resolved(subscriber).length === 1, 'the subscriber resolves it');
   });
 
+  test('resolve() is another subscriber answering first: every subscriber is told, the request is gone, and it is not replayed', async () => {
+    const t = placeholderUuid(70);
+    server.createRollout(t);
+    const a = await connect();
+    const b = await connect();
+    await resume(a, t, 1);
+    await resume(b, t, 1);
+    const id = server.request(requestFrame, t);
+    await server.waitFor(() => requests(a).length === 1 && requests(b).length === 1, 'delivery');
+    expect(server.isPending(t, id)).toBe(true);
+    server.resolve(t, id);
+    await server.waitFor(
+      () => resolved(a).length === 1 && resolved(b).length === 1,
+      'resolved on both',
+    );
+    expect(resolved(a)[0]?.['params']).toEqual({ threadId: t, requestId: id });
+    expect(server.isPending(t, id)).toBe(false);
+    // Gone for good: a later subscriber sees no replay, and resolving it again is a test bug.
+    const late = await connect();
+    await resume(late, t, 1);
+    await settle();
+    expect(requests(late)).toHaveLength(0);
+    expect(() => server.resolve(t, id)).toThrow('no pending request');
+  });
+
   test('ids come from one counter shared by every thread', () => {
     const t = placeholderUuid(68);
     const ids = [

@@ -227,6 +227,23 @@ export class FakeAppServer {
     return id;
   }
 
+  /**
+   * Another subscriber (the TUI) answered first: the request is resolved and every subscriber of
+   * its thread is told, as when a client answers (spike: expA-accept.jsonl:51 to :53). It throws
+   * for a request that is not pending, so a test cannot resolve one by mistake.
+   */
+  resolve(threadId: string, requestId: number): void {
+    if (!this.pending.delete(this.key(threadId, requestId))) {
+      throw new Error(`no pending request ${requestId} for that thread`);
+    }
+    this.emit({ method: 'serverRequest/resolved', params: { threadId, requestId } }, { threadId });
+  }
+
+  /** Is the request still waiting for an answer? */
+  isPending(threadId: string, requestId: number): boolean {
+    return this.pending.has(this.key(threadId, requestId));
+  }
+
   /** Close one client's socket abruptly, with no close frame. */
   dropClient(client: number): void {
     this.clients.get(client)?.terminate();
