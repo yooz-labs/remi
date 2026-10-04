@@ -58,19 +58,26 @@ remi attach --host 192.168.1.5 macbook/remi/main
 
 `remi codex` runs `codex --no-alt-screen` the way `remi` runs Claude Code, and shows the session and what it is doing (working, waiting on an approval, idle) on your phone.
 This is the first step.
-Approvals, chat and turn notifications do not reach the phone yet, so keep answering in the terminal.
+Approvals and turn notifications do not reach the phone yet, so keep answering in the terminal.
+A message typed in the app to a Codex session is refused (the app shows it as failed, "type in the terminal") instead of being typed into Codex, because remi cannot see what Codex has on screen.
 It has only been tested against a stand-in for Codex's app-server, not against a real Codex install.
 
 - **Arguments.**
-  `-m/--model`, `-a/--ask-for-approval`, `-s/--sandbox`, `--add-dir`, `-i/--image` and `--yolo` pass through; every other Codex flag and every Codex subcommand but `resume` is refused, so run `codex` directly for those.
+  `-m/--model`, `-a/--ask-for-approval`, `-s/--sandbox`, `--add-dir`, `-i/--image` (not together with `resume`) and `--yolo` pass through; every other Codex flag and every Codex subcommand but `resume` is refused, so run `codex` directly for those.
   Everything after `--` is the first prompt, as text, never a flag.
   Remi's own flags (`-h`, `--help`, `-v`, `--version`, `--dir`, `--port`, `--resume` and the rest) are remi's wherever they stand before `--`, so a Codex flag with the same name cannot be passed through remi.
 - **Resume.**
   `remi codex resume <thread id>` takes the whole thread id, which `remi --sessions` prints under each exited Codex session.
 - **The Codex app-server.**
   Codex's TUI starts and shares one app-server for all your Codex windows.
-  Remi never starts, stops or upgrades it, and it only watches the thread of its own session.
-  If remi cannot reach it for 30 seconds, one message says so and the session goes on in the terminal.
+  Remi never starts, stops or upgrades it, and it ignores the threads of your other Codex windows.
+  If remi cannot reach it for 30 seconds, it says so once in the remi log (and sends a system message that some clients, the web app today, do not show), and the session goes on in the terminal.
+  Remi connects only to a control directory that only you can use (mode 700, owned by you), and checks that just before it connects, not along the whole path above it, so a directory someone else can swap in between the check and the connection is not covered.
+- **Which thread is yours.**
+  Remi picks its session's Codex thread by directory and start time.
+  Two Codex windows started in one directory together make it bind neither, and a plain `codex` window opened in that directory while the remi session is idle looks the same as `/new` and may take the binding over (the remi log says "rotated").
+  Switching threads with `/resume` inside Codex is not followed.
+  One directory per Codex window avoids all three.
 - **An older remi erases Codex session ids.**
   Codex thread ids are kept in `sessions.json`, and a remi older than 0.7.16-dev.7 that writes that file afterwards drops them.
   `remi codex` refuses to start while such a remi is running (`remi stop --all` stops it), and says so again when it starts, because it cannot stop an old binary that starts later.
