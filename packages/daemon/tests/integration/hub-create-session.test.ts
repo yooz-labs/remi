@@ -25,6 +25,7 @@ import type {
   ProtocolMessage,
 } from '@remi/shared/protocol.ts';
 import { createCreateSessionRequest, serialize } from '@remi/shared/protocol.ts';
+import { DEFAULT_CONFIG } from '../../src/config/config.ts';
 import { SessionStore } from '../../src/session/session-store.ts';
 import {
   type FakeAgents,
@@ -34,6 +35,7 @@ import {
 } from '../helpers/fake-agent-clis.ts';
 import { FakeAppServer } from '../helpers/fake-app-server.ts';
 import { type StampedBuild, copyBuild } from '../helpers/stamped-build.ts';
+import { reserveRange } from '../session/port-test-helpers.ts';
 import {
   CLI_TS,
   type HubHandle,
@@ -91,7 +93,9 @@ async function startHub(
   const dirs = makeIsolatedDirs();
   const agents = installFakeAgents(dirs.home, which);
   const server = FakeAppServer.start();
-  const hub = await spawnHub(dirs, { ...agents.env, CODEX_HOME: server.codexHome }, cliPath);
+  // A random probed port, not the lowest free one from 19200 that every test process is given (P11).
+  const port = await reserveRange(1, 50, DEFAULT_CONFIG.daemon.bind);
+  const hub = await spawnHub(dirs, { ...agents.env, CODEX_HOME: server.codexHome }, cliPath, port);
   const r = { hub, agents, server, log: { text: '' } };
   collect(hub.proc.stdout as ReadableStream<Uint8Array>, r.log);
   collect(hub.proc.stderr as ReadableStream<Uint8Array>, r.log);
