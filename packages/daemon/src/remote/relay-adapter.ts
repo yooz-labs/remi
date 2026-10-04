@@ -4,34 +4,35 @@
  * Uses the signaling server as a message relay for remote clients.
  * Remi protocol messages are serialized as relay payloads.
  *
- * Supports two modes:
- * - Rotating codes (default): code changes on each reconnect; no Ed25519 auth
- * - Permanent code (--permanent-code): code persists; Ed25519 auth required
+ * ## Nothing is accepted without an authenticator (#1193)
  *
- * Auth is determined by the presence of an `authenticator` in the config.
- * When set, the adapter runs a challenge-response handshake before accepting
- * any protocol messages from the relay peer:
+ * Auth is determined by the presence of an `authenticator` in the config, which
+ * `cli.ts` passes only for `--auth --permanent-code`. Without one the adapter
+ * refuses every peer and drops every inbound frame, so a daemon that has the
+ * relay enabled by hand still has no inbound path. The relay is also off by
+ * default (`network.relay`), and no shipped client can complete the handshake
+ * below (#881).
+ *
+ * With an authenticator the adapter runs a challenge-response handshake before
+ * accepting any protocol messages from the relay peer:
  *   peer-connected -> auth_challenge -> auth_response -> auth_result -> onConnect
  *
  * ## Encryption engages with auth, not with the relay (#881)
  *
  * The #543 key exchange rides that handshake, so it runs ONLY when an
- * `authenticator` is present. `cli.ts` passes one only in permanent-code mode,
- * so the DEFAULT rotating-code path never derives `sessionKeys` — even when the
- * user passed `--auth`.
+ * `authenticator` is present, and session keys exist only after it.
  *
- * The two directions then behave DIFFERENTLY, and the difference matters:
+ * - **Outbound** (`sendRaw`): refuses to send at all before the keys exist. It
+ *   returns false and logs rather than falling back to plaintext, which is
+ *   deliberate (#543: "a silent downgrade is exactly the bug").
+ * - **Inbound** (the `relay` handler): once the keys exist every payload must
+ *   decrypt, and a failure drops the peer. Before them only the handshake
+ *   messages (public keys and signatures by design) and a signed or sealed
+ *   lock-screen answer are read.
  *
- * - **Outbound** (`sendRaw`): refuses to send at all. It returns false and logs
- *   rather than falling back to plaintext, which is deliberate (#543: "a silent
- *   downgrade is exactly the bug"). The consequence is that in default mode the
- *   daemon cannot deliver ANY message over the relay — not a leak, a breakage.
- * - **Inbound** (the `relay` handler): falls through to `handleRelayMessage`
- *   on the raw payload, so an unencrypted `user_input`, `answer` or device
- *   token from a client IS accepted, and the Worker saw it in the clear.
- *
- * So "the relay is unencrypted by default" is wrong in the outbound direction
- * and right in the inbound one. Say which direction you mean; see #881.
+ * Without an authenticator neither direction runs: there is no handshake, so no
+ * keys, so no peer. Before #1193 the inbound half was the exception, and a
+ * plaintext `user_input`, `answer` or device token was accepted.
  */
 
 import {
@@ -106,7 +107,7 @@ interface RelayAdapterConfigBase extends AdapterConfig {
   ) => RelayTransport;
 }
 
-/** Rotating codes (default): code changes on reconnect; no auth required */
+/** Rotating codes: code changes on reconnect. With no `authenticator` every peer is refused (#1193). */
 interface RelayRotatingConfig extends RelayAdapterConfigBase {
   readonly rotateCode?: true;
   readonly code?: string;
@@ -138,6 +139,9 @@ export class RelayAdapter implements ConnectionAdapter {
 
   /** Auth state for the current relay peer */
   private authState: RelayAuthState = 'none';
+
+  /** The frame drop is logged once: frames are unbounded, peers are not. */
+  private droppedFrameLogged = false;
 
   /**
    * Relay end-to-end encryption state (#543). All three are per-connection and
@@ -172,6 +176,14 @@ export class RelayAdapter implements ConnectionAdapter {
     return this.config.authenticator != null;
   }
 
+  /**
+   * The room code is only worth printing when a client able to authenticate can
+   * use it; without an authenticator it would advertise a door that is shut.
+   */
+  private announceCode(label: string, code: string | null): void {
+    if (code && this.requiresAuth) console.log(`${label}: ${code}`);
+  }
+
   async start(): Promise<void> {
     if (this.running) {
       throw new Error('Relay adapter already running');
@@ -180,6 +192,13 @@ export class RelayAdapter implements ConnectionAdapter {
     if (!this.config.enabled) {
       console.log('Relay adapter disabled');
       return;
+    }
+
+    if (!this.requiresAuth) {
+      console.warn(
+        'Relay enabled without --auth --permanent-code: no relay client can connect in this mode.\n' +
+          'Use --auth --permanent-code, an SSH tunnel, or an explicit daemon.bind with --auth (Tailscale or LAN) instead.',
+      );
     }
 
     const rotateOnReconnect = this.config.rotateCode !== false;
@@ -191,46 +210,47 @@ export class RelayAdapter implements ConnectionAdapter {
 
     this.client.on('registered', (code: string) => {
       this.connectionCode = code;
-      console.log(`Remote access code: ${code}`);
+      this.announceCode('Remote access code', code);
     });
 
     this.client.on('open', () => {
       this.connectionCode = this.client?.connectionCode ?? null;
-      if (this.connectionCode) {
-        console.log(`Remote access code: ${this.connectionCode}`);
-      }
+      this.announceCode('Remote access code', this.connectionCode);
     });
 
     this.client.on('code-rotated', (newCode: string) => {
       this.connectionCode = newCode;
-      console.log(`Code rotated: ${newCode}`);
+      this.announceCode('Code rotated', newCode);
     });
 
     this.client.on('peer-connected', () => {
+      const authenticator = this.config.authenticator;
+      if (!authenticator) {
+        // #1193: with nothing to authenticate against, accepting a peer would
+        // hand the room code's holder the primary session. Tell the peer why
+        // (plaintext, no secret in it) and never attach it.
+        console.warn(
+          'Relay peer refused: no authenticator is configured (needs --auth --permanent-code).',
+        );
+        this.client?.sendRelay(
+          JSON.stringify(createAuthResult(false, undefined, 'RELAY_AUTH_REQUIRED')),
+        );
+        return;
+      }
+
       const connectionId = generateId();
       this.clientConnectionId = connectionId;
 
-      if (this.requiresAuth && this.config.authenticator) {
-        // Open the relay key exchange along with the challenge (#543), so
-        // encryption costs no extra round trip. Async because signing is, so
-        // the challenge is sent from the continuation.
-        this.authState = 'challenging';
-        this.startKeyExchange(connectionId).catch((err) => {
-          console.error(
-            `Relay key exchange could not start: ${errorToString(err)}. Refusing the connection rather than relaying in the clear.`,
-          );
-          this.resetClient('Key exchange failed');
-        });
-      } else {
-        // No auth required; accept connection immediately
-        this.authState = 'authenticated';
-        const metadata: AdapterMetadata = {
-          adapterType: this.type,
-          displayName: 'Remote Client',
-          platformData: { kind: 'relay', code: this.connectionCode },
-        };
-        this.events.onConnect?.(connectionId, metadata);
-      }
+      // Open the relay key exchange along with the challenge (#543), so
+      // encryption costs no extra round trip. Async because signing is, so
+      // the challenge is sent from the continuation.
+      this.authState = 'challenging';
+      this.startKeyExchange(connectionId).catch((err) => {
+        console.error(
+          `Relay key exchange could not start: ${errorToString(err)}. Refusing the connection rather than relaying in the clear.`,
+        );
+        this.resetClient('Key exchange failed');
+      });
     });
 
     this.client.on('peer-disconnected', () => {
@@ -238,6 +258,19 @@ export class RelayAdapter implements ConnectionAdapter {
     });
 
     this.client.on('relay', (rawPayload: string) => {
+      // #1193: without an authenticator nothing is read, peer or not. The
+      // Worker forwards a frame from a socket that never joined, so a frame can
+      // arrive with no peer at all; this drops it before anything parses it.
+      if (!this.requiresAuth) {
+        if (!this.droppedFrameLogged) {
+          this.droppedFrameLogged = true;
+          console.warn(
+            'Relay frame dropped: no authenticator is configured, so nothing is accepted.',
+          );
+        }
+        return;
+      }
+
       // Once the key exchange has completed, every payload is ciphertext
       // (#543). Before it, only the handshake messages travel, and those are
       // public keys and signatures by design.
@@ -432,11 +465,18 @@ export class RelayAdapter implements ConnectionAdapter {
    * route. Unlike a peer's relay message there is no connected /
    * handshake-authenticated WS peer, so the answer carries its own Ed25519 `auth`
    * block which we verify here before dispatching via the relayAnswer path (the
-   * same one the HTTP /answer endpoint uses). When the adapter runs without an
-   * authenticator (rotating-code no-auth mode) the room code is the only gate,
-   * consistent with the relay's WS path.
+   * same one the HTTP /answer endpoint uses). Without an authenticator there is
+   * nothing to verify it against, so it is dropped (#1193): the room code alone
+   * is not a credential. The `relay` handler already stops such frames; this
+   * keeps the method safe if it is ever reached another way.
    */
   private async handleRelayedAnswer(raw: Record<string, unknown>): Promise<void> {
+    const authenticator = this.config.authenticator;
+    if (!authenticator) {
+      console.warn('Relayed answer dropped: no authenticator is configured to verify it');
+      return;
+    }
+
     // A sealed envelope (#875) is opened before anything else looks at it: the
     // Worker forwards ciphertext, so sessionId/questionId/answer do not exist
     // until this succeeds. A failure is a wrong key or a tampered request, never
@@ -468,30 +508,28 @@ export class RelayAdapter implements ConnectionAdapter {
       return;
     }
 
-    if (this.config.authenticator) {
-      const auth = msg['auth'] as Record<string, unknown>;
-      const signature = typeof auth['signature'] === 'string' ? auth['signature'] : '';
-      const clientPublicKey =
-        typeof auth['clientPublicKey'] === 'string' ? auth['clientPublicKey'] : '';
-      const clientFingerprint =
-        typeof auth['clientFingerprint'] === 'string' ? auth['clientFingerprint'] : '';
-      if (!signature || !clientPublicKey || !clientFingerprint) {
-        console.warn('Relayed answer rejected: missing auth signature');
-        return;
-      }
-      // Canonical message must match the phone's signing input and the daemon's
-      // HTTP /answer verification (push-answer-relay.ts / websocket-server.ts).
-      const message = `${sessionId}|${questionId}|${answer}`;
-      const ok = await this.config.authenticator.verifyDetachedRequest(
-        message,
-        signature,
-        clientPublicKey,
-        clientFingerprint,
-      );
-      if (!ok) {
-        console.warn('Relayed answer rejected: signature verification failed');
-        return;
-      }
+    const auth = msg['auth'] as Record<string, unknown>;
+    const signature = typeof auth['signature'] === 'string' ? auth['signature'] : '';
+    const clientPublicKey =
+      typeof auth['clientPublicKey'] === 'string' ? auth['clientPublicKey'] : '';
+    const clientFingerprint =
+      typeof auth['clientFingerprint'] === 'string' ? auth['clientFingerprint'] : '';
+    if (!signature || !clientPublicKey || !clientFingerprint) {
+      console.warn('Relayed answer rejected: missing auth signature');
+      return;
+    }
+    // Canonical message must match the phone's signing input and the daemon's
+    // HTTP /answer verification (push-answer-relay.ts / websocket-server.ts).
+    const message = `${sessionId}|${questionId}|${answer}`;
+    const ok = await authenticator.verifyDetachedRequest(
+      message,
+      signature,
+      clientPublicKey,
+      clientFingerprint,
+    );
+    if (!ok) {
+      console.warn('Relayed answer rejected: signature verification failed');
+      return;
     }
 
     // Fail loud if the connection-independent relay handler is not wired (a
