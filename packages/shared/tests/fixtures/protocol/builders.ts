@@ -335,13 +335,6 @@ export const FIXTURE_BUILDERS: { [K in keyof ProtocolMessageMap]: () => Protocol
 };
 
 /**
- * Dotted paths, per message type, to fields that are legitimately volatile
- * beyond the universal envelope `id`/`timestamp` (every message has those
- * two; see `generateId()`/`now()` call sites in `protocol.ts`). Only
- * `session_update` has one: `createSessionUpdate` calls `now()` again for
- * the nested `session.startedAt` (protocol.ts, `createSessionUpdate`).
- */
-/**
  * A second golden for a message type whose wire shape grew: the shape an older peer still sends
  * (#1179 review, G16). `FIXTURE_BUILDERS` holds one current shape per registry type; a variant is
  * named `<type>_<variant>` and written to `<name>.json` beside it, so both shapes are pinned.
@@ -358,6 +351,13 @@ export const FIXTURE_VARIANTS: Record<
   },
 };
 
+/**
+ * Dotted paths, per message type, to fields that are legitimately volatile
+ * beyond the universal envelope `id`/`timestamp` (every message has those
+ * two; see `generateId()`/`now()` call sites in `protocol.ts`). Only
+ * `session_update` has one: `createSessionUpdate` calls `now()` again for
+ * the nested `session.startedAt` (protocol.ts, `createSessionUpdate`).
+ */
 const EXTRA_VOLATILE_PATHS: Partial<Record<keyof ProtocolMessageMap, readonly string[]>> = {
   session_update: ['session.startedAt'],
 };
