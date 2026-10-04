@@ -235,6 +235,24 @@ describe('against a byte-level peer', () => {
       expect(raw.clientMessages().map((m) => m['method'])).toEqual(['initialize', 'initialized']);
     });
 
+    test('a reply with another id than the initialize request does not make the client ready, and the real one still does', async () => {
+      const h = make();
+      h.client.start();
+      const raw = await peer.next();
+      raw.upgrade();
+      await waitFor(
+        () => raw.clientMessages().some((m) => m['method'] === 'initialize'),
+        'the initialize request',
+      );
+      const init = raw.clientMessages().find((m) => m['method'] === 'initialize');
+      raw.sendJson({ id: Number(init?.['id']) + 1000, result: { userAgent: 'wrong id' } });
+      await sleep(80);
+      expect(types(h), 'a reply to some other request is not the initialize reply').toEqual([]);
+      raw.sendJson({ id: init?.['id'], result: { userAgent: 'real' } });
+      await waitFor(() => types(h).includes('ready'), 'ready');
+      expect(h.events[0]).toMatchObject({ type: 'ready', userAgent: 'real' });
+    });
+
     test('a forged reply carrying the id the client is about to use is held back, then ignored', async () => {
       const h = make();
       h.client.start();
