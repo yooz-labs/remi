@@ -17,10 +17,27 @@ async function waitFor(predicate: () => boolean): Promise<void> {
   expect(predicate(), 'the real OS watcher reached the required boundary').toBe(true);
 }
 
-function fixture() {
+async function fixture(registerBeforeArm = false) {
   const dir = fs.mkdtempSync('/private/tmp/remi-watcher-recovery-');
   ownedDirs.push(dir);
   const registry = new SessionRegistryFile(dir);
+  const register = () =>
+    registry.register({
+      sessionId: '11111111-1111-1111-1111-111111111111',
+      pid: process.pid,
+      wsPort: 20050,
+      hookPort: 0,
+      projectPath: dir,
+      name: 'sibling',
+      startedAt: new Date().toISOString(),
+    });
+  if (registerBeforeArm) {
+    register();
+    // Settle the fixture's earlier native events BEFORE constructing the
+    // component; otherwise macOS may deliver that queued event after arm,
+    // accidentally rescuing a missing initial census. This is setup only.
+    await pause(500);
+  }
   const watchers: fs.FSWatcher[] = [];
   const realWatch = fs.watch;
   // Delegate every watch to the real OS. Capture its actual EventEmitter only
@@ -52,17 +69,9 @@ function fixture() {
     get collects() {
       return collects;
     },
-    register: () =>
-      registry.register({
-        sessionId: '11111111-1111-1111-1111-111111111111',
-        pid: process.pid,
-        wsPort: 20050,
-        hookPort: 0,
-        projectPath: dir,
-        name: 'sibling',
-        startedAt: new Date().toISOString(),
-      }),
-    stop: () => {
+    register,
+    stop: close,
+    dispose: () => {
       close();
       recorder.mockRestore();
     },
@@ -84,7 +93,7 @@ function interrupt(watcher: fs.FSWatcher): void {
 
 for (const boundary of ['pending debounce', 'closed rearm window'] as const) {
   test(`reconciles a sibling registered during ${boundary} without retouch (OS-boundary error injection)`, async () => {
-    const f = fixture();
+    const f = await fixture();
     try {
       const watcher = firstWatcher(f.watchers);
       if (boundary === 'pending debounce') {
@@ -112,13 +121,13 @@ for (const boundary of ['pending debounce', 'closed rearm window'] as const) {
       if (f.broadcasts[0]?.type === 'session_list_response')
         expect(f.broadcasts[0].daemonPorts).toEqual([20050]);
     } finally {
-      f.stop();
+      f.dispose();
     }
   }, 30_000);
 }
 
 test('closer cancels actual pending rearm and reconciliation (OS-boundary error injection)', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     interrupt(firstWatcher(f.watchers));
     f.stop();
@@ -128,12 +137,12 @@ test('closer cancels actual pending rearm and reconciliation (OS-boundary error 
     expect(f.collects, 'a stopped watcher cannot reconcile').toBe(0);
     expect(f.broadcasts).toHaveLength(0);
   } finally {
-    f.stop();
+    f.dispose();
   }
 });
 
 test('rearm reconciliation and a real registration event share one debounce', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     interrupt(firstWatcher(f.watchers));
     f.register();
@@ -149,12 +158,12 @@ test('rearm reconciliation and a real registration event share one debounce', as
     await pause(350);
     expect(f.broadcasts, 'event and reconciliation produce one debounced delivery').toHaveLength(1);
   } finally {
-    f.stop();
+    f.dispose();
   }
 }, 30_000);
 
 test('closer cancels reconciliation after actual watcher rearm', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     interrupt(firstWatcher(f.watchers));
     f.register();
@@ -164,12 +173,12 @@ test('closer cancels reconciliation after actual watcher rearm', async () => {
     expect(f.collects, 'closing after rearm cancels its pending reconciliation').toBe(0);
     expect(f.broadcasts).toHaveLength(0);
   } finally {
-    f.stop();
+    f.dispose();
   }
 }, 30_000);
 
 test('actual watcher errors exhaust the existing five-rearm budget', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     for (let index = 0; index < 5; index++) {
       const watcher = f.watchers[index];
@@ -186,6 +195,24 @@ test('actual watcher errors exhaust the existing five-rearm budget', async () =>
     expect(f.errors.some((error) => error.includes('budget exhausted'))).toBe(true);
     expect(f.broadcasts).toHaveLength(0);
   } finally {
-    f.stop();
+    f.dispose();
   }
 }, 30_000);
+
+// No event is required for an already durable sibling. This also pins the
+// initial census used to cover registrations whose startup fs event is lost.
+test('initial census discovers a durable sibling without a new filesystem event', async () => {
+  const f = await fixture(true);
+  try {
+    await pause(350);
+    expect(f.registry.getLivePorts()).toEqual([20050]);
+    expect(f.errors).toEqual([]);
+    expect(
+      f.broadcasts,
+      'initial successful arm reconciles existing live sibling state',
+    ).toHaveLength(1);
+    expect(f.broadcasts[0]?.type).toBe('session_list_response');
+  } finally {
+    f.dispose();
+  }
+});
