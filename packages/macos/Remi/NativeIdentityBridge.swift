@@ -327,7 +327,6 @@ enum NativePairingQRDecoder {
         request.symbologies = [.qr]
         // macOS 14's GPU-allowed path can miss this valid QR; the public CPU
         // path decodes it. Keep the default revision and the image bounds above.
-        request.usesCPUOnly = true
         try VNImageRequestHandler(cgImage: image).perform([request])
         let tokens = (request.results ?? []).compactMap { $0.payloadStringValue }.filter {
             $0.hasPrefix("remi-pair2:") && $0.utf8.count <= 4096 &&
