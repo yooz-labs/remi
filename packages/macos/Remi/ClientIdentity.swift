@@ -31,10 +31,15 @@ import Security
 struct ClientIdentity {
     let privateKey: Curve25519.Signing.PrivateKey
     let revision: String
+    /// A migrated passphrase-protected identity may sign only after foreground unlock.
+    /// This is an app policy; Keychain protects the native record at rest (#1199/#1201).
+    let requiresAppUnlock: Bool
 
-    init(privateKey: Curve25519.Signing.PrivateKey, revision: String = UUID().uuidString) {
+    init(privateKey: Curve25519.Signing.PrivateKey, revision: String = UUID().uuidString,
+         requiresAppUnlock: Bool = false) {
         self.privateKey = privateKey
         self.revision = revision
+        self.requiresAppUnlock = requiresAppUnlock
     }
 
     var publicKey: Curve25519.Signing.PublicKey { privateKey.publicKey }
@@ -136,18 +141,21 @@ enum ClientIdentityStore {
         let pkcs8: Data
         let publicKey: Data
         let revision: String
+        // Optional only for the initial R4 record format; missing means an unprotected native key.
+        let requiresAppUnlock: Bool?
         init(_ identity: ClientIdentity) {
             version = 2
             pkcs8 = Ed25519PKCS8.encode(identity.privateKey)
             publicKey = identity.publicKeyRaw
             revision = identity.revision
+            requiresAppUnlock = identity.requiresAppUnlock
         }
         func identity() throws -> ClientIdentity {
             guard version == 2, UUID(uuidString: revision) != nil else {
                 throw NativeIdentityError.malformed
             }
             return ClientIdentity(privateKey: try Ed25519PKCS8.decode(pkcs8, publicKey: publicKey),
-                                  revision: revision)
+                                  revision: revision, requiresAppUnlock: requiresAppUnlock ?? false)
         }
     }
 
@@ -179,15 +187,18 @@ enum ClientIdentityStore {
 
     /// An explicit inward import. A conflicting durable identity is untouched unless
     /// the caller presents its exact revision after a human chose replacement.
-    static func importIdentity(pkcs8: Data, publicKey: Data, replacing revision: String? = nil,
+    static func importIdentity(pkcs8: Data, publicKey: Data, replacing revision: String? = nil, requiresAppUnlock: Bool = false,
                                service: String = defaultService, account: String = defaultAccount) throws -> ClientIdentity {
         let key = try Ed25519PKCS8.decode(pkcs8, publicKey: publicKey)
         let existing = try load(service: service, account: account)
-        if let existing, existing.publicKeyRaw == publicKey { return existing }
+        if let existing, existing.publicKeyRaw == publicKey,
+           existing.requiresAppUnlock || !requiresAppUnlock { return existing }
         if let existing {
             guard revision == existing.revision else { throw NativeIdentityError.conflict }
         } else if revision != nil { throw NativeIdentityError.changed }
-        let imported = ClientIdentity(privateKey: key)
+        // Imports may tighten the policy, never silently remove it.
+        let imported = ClientIdentity(privateKey: key,
+                                      requiresAppUnlock: requiresAppUnlock || existing?.requiresAppUnlock == true)
         try persist(imported, service: service, account: account, updating: existing != nil)
         return imported
     }
@@ -266,7 +277,7 @@ enum RemiNativeStore {
                     }
                 }
             }
-            guard let native else { return nil }
+            guard let native, !native.requiresAppUnlock else { return nil }
             let signature = try native.sign(Data(message.utf8))
             return Auth(signature: signature.base64EncodedString(),
                         publicKey: native.publicKeyRaw.base64EncodedString(), fingerprint: native.fingerprint)

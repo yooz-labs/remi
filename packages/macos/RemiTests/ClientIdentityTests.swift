@@ -281,6 +281,7 @@ final class ClientIdentityTests: XCTestCase {
         XCTAssertEqual(SecItemUpdate(query as CFDictionary,
             [kSecValueData as String:try JSONSerialization.data(withJSONObject:record)] as CFDictionary),errSecSuccess)
         let protected = try XCTUnwrap(ClientIdentityStore.load(service:service,account:account))
+        XCTAssertTrue(protected.requiresAppUnlock)
         let message = Data("protected foreground signing".utf8)
         XCTAssertTrue(protected.publicKey.isValidSignature(try protected.sign(message),for:message))
         let suite = "remi1199-protected-\(UUID().uuidString)"
@@ -288,6 +289,20 @@ final class ClientIdentityTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName:suite) }
         XCTAssertNil(RemiNativeStore.sign(message:"session|question|yes",identity:protected,defaults:defaults),
                      "An imported app-unlock policy must not silently enable background answers")
+    }
+
+    func testProtectedImportPersistsPolicyAndCannotSilentlyRemoveIt() throws {
+        let incoming = ClientIdentity(privateKey: .init())
+        let protected = try ClientIdentityStore.importIdentity(
+            pkcs8: Ed25519PKCS8.encode(incoming.privateKey), publicKey: incoming.publicKeyRaw,
+            requiresAppUnlock: true, service: service, account: account)
+        XCTAssertTrue(try XCTUnwrap(ClientIdentityStore.load(service: service, account: account)).requiresAppUnlock)
+        let replacement = ClientIdentity(privateKey: .init())
+        let imported = try ClientIdentityStore.importIdentity(
+            pkcs8: Ed25519PKCS8.encode(replacement.privateKey), publicKey: replacement.publicKeyRaw,
+            replacing: protected.revision, requiresAppUnlock: false, service: service, account: account)
+        XCTAssertTrue(imported.requiresAppUnlock, "Replacement cannot implicitly enable background signing")
+        XCTAssertNotEqual(imported.revision, protected.revision)
     }
 
     // MARK: - Signing / verification
