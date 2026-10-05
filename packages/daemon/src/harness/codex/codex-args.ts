@@ -11,8 +11,9 @@
  *   `-m/--model`, `-a/--ask-for-approval`, `-s/--sandbox`, `--add-dir`,
  *   `-i/--image`, `--dangerously-bypass-approvals-and-sandbox`/`--yolo`,
  *   `-h/--help`, `-V/--version` and `--no-alt-screen`, and refuses every other
- *   flag. A value is passed on as typed, so Codex reports its own error for one it does
- *   not accept (0.160.0 takes only `on-request` and `never` for `-a`). A denylist is not enough: the one this file started with missed
+ *   flag. A value is passed on as typed, so Codex reports its own error for
+ *   one it does not accept (0.160.0 takes only `on-request` and `never` for
+ *   `-a`). A denylist is not enough: the one this file started with missed
  *   `--worktree` (it moves the session's cwd like `-C/--cd`) and
  *   `--not-so-yolo` within one Codex release, and a flag remi does not know
  *   fails silently (an approval path that never reaches the phone), where a
@@ -45,11 +46,14 @@
  * validator is the hub's (`HarnessRegistry`, #1179), and the child daemon the
  * hub spawns then validates the same arguments again with the local one.
  *
- * What a live run (LV-4, Codex 0.160.0) showed: `-m <model>`, `-a on-request`, `-a never`,
- * `-s read-only` and `-s workspace-write` are accepted by the real Codex, and `-a untrusted` is
- * REJECTED (exit 2: `--ask-for-approval` accepts only `on-request` and `never`). The first remote
- * allowlist took `untrusted` from embedded help strings, never from a run, and every remote
- * request with `-a` then produced a dead child.
+ * What a live run (LV-4, Codex 0.160.0) showed, by the exit code of `codex <flags> --help`
+ * (clap parsed the flags; none of them was run in a session): `-m <model>`, `-a on-request`,
+ * `-a never`, `-s read-only` and `-s workspace-write` parse, and `-a untrusted` is REJECTED
+ * (exit 2: `--ask-for-approval` accepts only `on-request` and `never`). Through a hub, `-m` and
+ * `-s read-only` also came up as a session; `-s workspace-write` and `-a on-request` were refused
+ * there by design, so they were never run in one. The first remote allowlist took `untrusted`
+ * from embedded help strings, never from a run, and every remote request with `-a` then produced
+ * a dead child.
  *
  * Still not verified by a run: the rest of the local flag list (`--add-dir`, `-i/--image`, ...)
  * comes from the epic plan, the spike, and a read-only look at the embedded clap strings of Codex
@@ -320,7 +324,7 @@ const REMOTE_SANDBOX_MODE = 'read-only';
  * configuration may already ask for more than `on-request`.
  */
 const REMOTE_APPROVAL_REFUSAL =
-  "remote codex arguments: -a/--ask-for-approval is not allowed: a remote request may only tighten the host's posture, and no value of it can be shown to (Codex accepts only on-request and never, and the host's own setting may already be stricter); set it in the host's Codex configuration or at its terminal";
+  "remote codex arguments: -a/--ask-for-approval is not allowed: a remote request may only tighten the host's posture, and no value of it can be shown to tighten it (Codex accepts only on-request and never, and the host's own setting may already be stricter); set it in the host's Codex configuration or at its terminal";
 
 /** `-a`, `-a=x`, `-ax` and the long flag with or without `=value`: every way clap takes the flag. */
 function isApprovalFlag(token: string): boolean {

@@ -149,6 +149,7 @@ const commandHelp: Record<Subcommand, string[]> = {
     entry('remi codex', 'Start Codex in the current directory'),
     entry('remi codex "fix the tests"', 'Start Codex with a first prompt'),
     entry('remi codex -m <model>', 'Also allowed: -a, -s, --add-dir, -i, --yolo'),
+    entry('', '(-a takes only on-request or never in Codex 0.160.0)'),
     entry('', '(-i/--image cannot be combined with resume)'),
     entry('remi codex resume <thread id>', 'Resume a Codex thread (the whole id)'),
     entry('remi --sessions', 'Lists Codex sessions, with the id to resume'),
